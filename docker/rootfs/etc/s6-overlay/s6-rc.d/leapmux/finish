@@ -1,0 +1,7 @@
+#!/command/execlineb -S1
+# If the service exits with a non-zero code, bring down the container.
+ifelse { s6-test $1 -ne 0 }
+{
+  s6-svscanctl -t /run/service
+}
+# Zero exit is normal (e.g. SIGTERM during shutdown)

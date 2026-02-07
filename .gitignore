@@ -1,0 +1,45 @@
+*.log
+*.swp
+*.swo
+*~
+
+# Build output
+/leapmux
+.task/
+
+# Generated code
+generated/
+
+# Go
+vendor/
+
+# Node/Bun
+node_modules/
+.vinxi/
+.output/
+frontend/dist/
+frontend/public/leapmux-service-worker-*
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Environment
+.env
+.env.local
+
+# Test artifacts
+test-results/
+frontend/test-results/
+frontend/playwright-report/
+coverage/

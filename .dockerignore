@@ -1,0 +1,40 @@
+# Version control
+.git/
+.gitignore
+
+# Build artifacts
+.task/
+leapmux
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Generated code (rebuilt in Docker)
+generated/
+*/generated/
+*/*/generated/
+
+# Frontend build artifacts (rebuilt in Docker)
+frontend/.output/
+frontend/.vinxi/
+frontend/node_modules/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Test artifacts
+frontend/tests/e2e/test-results/
+frontend/tests/e2e/playwright-report/
+
+# Docker files (not needed in build context except rootfs)
+docker/Dockerfile
+
+# Misc
+.DS_Store
+*.log
+mprocs.yaml

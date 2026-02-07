@@ -1,0 +1,81 @@
+syntax = "proto3";
+package leapmux.v1;
+
+// UserService manages user profile and preferences.
+// Called by Frontend on Hub via ConnectRPC.
+service UserService {
+  // Update the current user's profile.
+  rpc UpdateProfile(UpdateProfileRequest) returns (UpdateProfileResponse);
+  // Change the current user's password.
+  rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
+  // Get the current user's preferences.
+  rpc GetPreferences(GetPreferencesRequest) returns (GetPreferencesResponse);
+  // Update the current user's preferences.
+  rpc UpdatePreferences(UpdatePreferencesRequest) returns (UpdatePreferencesResponse);
+}
+
+message UpdateProfileRequest {
+  string username = 1;
+  string display_name = 2;
+  string email = 3;
+}
+
+message UpdateProfileResponse {
+  string username = 1;
+  string display_name = 2;
+  string email = 3;
+  string org_name = 4; // Updated personal org name (if username changed)
+}
+
+message ChangePasswordRequest {
+  string current_password = 1;
+  string new_password = 2;
+}
+
+message ChangePasswordResponse {}
+
+message GetPreferencesRequest {}
+
+message GetPreferencesResponse {
+  UserPreferences preferences = 1;
+}
+
+enum DiffView {
+  DIFF_VIEW_UNSPECIFIED = 0;
+  DIFF_VIEW_UNIFIED = 1;
+  DIFF_VIEW_SPLIT = 2;
+}
+
+enum TurnEndSound {
+  TURN_END_SOUND_UNSPECIFIED = 0;
+  TURN_END_SOUND_NONE = 1;
+  TURN_END_SOUND_DING_DONG = 2;
+}
+
+message UpdatePreferencesRequest {
+  repeated string ui_fonts = 5;
+  repeated string mono_fonts = 6;
+  string theme = 7;
+  string terminal_theme = 8;
+  bool ui_font_custom_enabled = 9;
+  bool mono_font_custom_enabled = 10;
+  DiffView diff_view = 11;
+  TurnEndSound turn_end_sound = 12;
+  uint32 turn_end_sound_volume = 13;
+}
+
+message UpdatePreferencesResponse {
+  UserPreferences preferences = 1;
+}
+
+message UserPreferences {
+  repeated string ui_fonts = 5;
+  repeated string mono_fonts = 6;
+  string theme = 7;
+  string terminal_theme = 8;
+  bool ui_font_custom_enabled = 9;
+  bool mono_font_custom_enabled = 10;
+  DiffView diff_view = 11;
+  TurnEndSound turn_end_sound = 12;
+  uint32 turn_end_sound_volume = 13;
+}

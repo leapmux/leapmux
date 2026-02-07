@@ -1,0 +1,78 @@
+syntax = "proto3";
+package leapmux.v1;
+
+// AuthService handles user authentication.
+// Called by Frontend on Hub via ConnectRPC.
+service AuthService {
+  // Authenticate with username and password.
+  rpc Login(LoginRequest) returns (LoginResponse);
+  // Invalidate the current session.
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  // Get the currently authenticated user.
+  rpc GetCurrentUser(GetCurrentUserRequest) returns (GetCurrentUserResponse);
+  // Register a new account.
+  rpc SignUp(SignUpRequest) returns (SignUpResponse);
+  // Verify email with a verification token.
+  rpc VerifyEmail(VerifyEmailRequest) returns (VerifyEmailResponse);
+  // Get public system information (no auth required).
+  rpc GetSystemInfo(GetSystemInfoRequest) returns (GetSystemInfoResponse);
+}
+
+message LoginRequest {
+  string username = 1;
+  string password = 2;
+}
+
+message LoginResponse {
+  string token = 1;
+  User user = 2;
+}
+
+message LogoutRequest {}
+
+message LogoutResponse {}
+
+message GetCurrentUserRequest {}
+
+message GetCurrentUserResponse {
+  User user = 1;
+}
+
+message SignUpRequest {
+  string username = 1;
+  string password = 2;
+  string display_name = 3;
+  string email = 4;
+}
+
+message SignUpResponse {
+  string token = 1;             // Empty if verification required
+  User user = 2;
+  bool verification_required = 3;
+}
+
+message VerifyEmailRequest {
+  string verification_token = 1;
+}
+
+message VerifyEmailResponse {
+  string token = 1;
+  User user = 2;
+}
+
+message User {
+  string id = 1;
+  string org_id = 2;
+  string username = 3;
+  string display_name = 4;
+  bool is_admin = 5;
+  string email = 6;
+  bool email_verified = 7;
+  string org_name = 8;
+}
+
+message GetSystemInfoRequest {}
+
+message GetSystemInfoResponse {
+  bool signup_enabled = 1;
+}

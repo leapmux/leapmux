@@ -1,0 +1,58 @@
+syntax = "proto3";
+package leapmux.v1;
+
+import "leapmux/v1/workspace.proto";
+
+// GitService provides git repository information and worktree management.
+// Called by Frontend on Hub via ConnectRPC.
+service GitService {
+  // Get git repository info for a path on a worker.
+  rpc GetGitInfo(GetGitInfoRequest) returns (GetGitInfoResponse);
+  // Check if closing a tab would leave a dirty worktree needing confirmation.
+  // Called BEFORE closing a tab so the frontend can ask the user first.
+  rpc CheckWorktreeStatus(CheckWorktreeStatusRequest) returns (CheckWorktreeStatusResponse);
+  // Force-remove a dirty worktree (after user confirmation).
+  rpc ForceRemoveWorktree(ForceRemoveWorktreeRequest) returns (ForceRemoveWorktreeResponse);
+  // Keep a dirty worktree on disk (stop tracking it).
+  rpc KeepWorktree(KeepWorktreeRequest) returns (KeepWorktreeResponse);
+}
+
+message GetGitInfoRequest {
+  string worker_id = 1;
+  string path = 2;
+  string org_id = 3;
+}
+
+message GetGitInfoResponse {
+  bool is_git_repo = 1;       // True if path is inside a git repo or worktree
+  bool is_worktree = 2;       // True if path is a linked worktree (not the main repo)
+  string repo_root = 3;       // Root of the main git repo (resolved through worktree if applicable)
+  string repo_dir_name = 4;   // Base directory name of the main repo
+  bool is_repo_root = 5;      // True if the queried path IS the repo root (after symlink resolution)
+}
+
+message ForceRemoveWorktreeRequest {
+  string worktree_id = 1;
+}
+
+message ForceRemoveWorktreeResponse {}
+
+message CheckWorktreeStatusRequest {
+  TabType tab_type = 1;
+  string tab_id = 2;
+}
+
+message CheckWorktreeStatusResponse {
+  bool has_worktree = 1;             // True if this tab is associated with a managed worktree
+  bool is_last_tab = 2;             // True if this is the last tab referencing the worktree
+  bool is_dirty = 3;                // True if the worktree has uncommitted changes or unpushed commits
+  string worktree_path = 4;         // Path of the worktree (for display in confirmation dialog)
+  string worktree_id = 5;           // Worktree ID (for ForceRemoveWorktree/KeepWorktree)
+  string branch_name = 6;           // Branch name associated with the worktree
+}
+
+message KeepWorktreeRequest {
+  string worktree_id = 1;
+}
+
+message KeepWorktreeResponse {}

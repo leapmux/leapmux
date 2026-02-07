@@ -1,0 +1,253 @@
+syntax = "proto3";
+package leapmux.v1;
+
+import "leapmux/v1/agent.proto";
+import "leapmux/v1/common.proto";
+import "leapmux/v1/terminal.proto";
+
+// WorkspaceService manages coding workspaces.
+// Called by Frontend on Hub via ConnectRPC.
+// Hub internally routes to the appropriate Worker.
+service WorkspaceService {
+  // Create a new coding workspace on a specific worker.
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
+  // List workspaces for the user's organization.
+  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
+  // Get a single workspace's details.
+  rpc GetWorkspace(GetWorkspaceRequest) returns (GetWorkspaceResponse);
+  // Rename a workspace.
+  rpc RenameWorkspace(RenameWorkspaceRequest) returns (RenameWorkspaceResponse);
+  // Soft-delete a workspace.
+  rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
+  // Update workspace sharing settings.
+  rpc UpdateWorkspaceSharing(UpdateWorkspaceSharingRequest) returns (UpdateWorkspaceSharingResponse);
+  // List users a workspace is shared with.
+  rpc ListWorkspaceShares(ListWorkspaceSharesRequest) returns (ListWorkspaceSharesResponse);
+  // List tabs for a workspace (ordered by position).
+  rpc ListTabs(ListTabsRequest) returns (ListTabsResponse);
+  // Get the tiling layout for a workspace.
+  rpc GetLayout(GetLayoutRequest) returns (GetLayoutResponse);
+  // Save the tiling layout for a workspace.
+  rpc SaveLayout(SaveLayoutRequest) returns (SaveLayoutResponse);
+}
+
+// TabType identifies the kind of workspace tab.
+enum TabType {
+  TAB_TYPE_UNSPECIFIED = 0;
+  TAB_TYPE_AGENT = 1;
+  TAB_TYPE_TERMINAL = 2;
+}
+
+// --- Workspace CRUD ---
+
+message CreateWorkspaceRequest {
+  string worker_id = 1;
+  string title = 2;
+  string working_dir = 3;
+  string org_id = 6;
+  bool create_worktree = 7;     // If true, create a git worktree before starting
+  string worktree_branch = 8;   // Branch name for the worktree
+}
+
+message CreateWorkspaceResponse {
+  Workspace workspace = 1;
+}
+
+message ListWorkspacesRequest {
+  PageRequest page = 1;
+  reserved 2;                 // was status filter
+  string org_id = 3;
+}
+
+message ListWorkspacesResponse {
+  repeated Workspace workspaces = 1;
+  PageResponse page = 2;
+  reserved 3;                 // was active_workspace_id
+}
+
+message GetWorkspaceRequest {
+  string org_id = 2;
+  string workspace_id = 1;
+}
+
+message GetWorkspaceResponse {
+  Workspace workspace = 1;
+}
+
+message Workspace {
+  string id = 1;
+  string org_id = 2;
+  reserved 3;               // was backend_id (moved to per-agent)
+  string created_by = 4;
+  string title = 5;
+  reserved 6;               // was working_dir (moved to per-agent)
+  reserved 8;               // was status
+  string created_at = 9;
+  reserved 10;              // was closed_at
+  ShareMode share_mode = 11;
+}
+
+// --- Workspace Sharing ---
+
+message UpdateWorkspaceSharingRequest {
+  string workspace_id = 1;
+  ShareMode share_mode = 2;
+  repeated string user_ids = 3; // Only used when share_mode = "members"
+}
+
+message UpdateWorkspaceSharingResponse {}
+
+message ListWorkspaceSharesRequest {
+  string workspace_id = 1;
+}
+
+message ListWorkspaceSharesResponse {
+  ShareMode share_mode = 1;
+  repeated WorkspaceShareMember members = 2; // Only populated when share_mode = "members"
+}
+
+message WorkspaceShareMember {
+  string user_id = 1;
+  string username = 2;
+  string display_name = 3;
+}
+
+// --- Workspace Rename & Delete ---
+
+message RenameWorkspaceRequest {
+  string workspace_id = 1;
+  string title = 2;
+}
+
+message RenameWorkspaceResponse {}
+
+message DeleteWorkspaceRequest {
+  string workspace_id = 1;
+}
+
+message DeleteWorkspaceResponse {}
+
+// --- Workspace Tabs ---
+
+message WorkspaceTab {
+  TabType tab_type = 1;
+  string tab_id = 2;
+  string position = 3;
+  string tile_id = 4;
+}
+
+message ListTabsRequest {
+  string org_id = 2;
+  string workspace_id = 1;
+}
+
+message ListTabsResponse {
+  repeated WorkspaceTab tabs = 1;
+  reserved 2, 3;
+  reserved "active_tab_type", "active_tab_id";
+}
+
+// --- Tiling Layout ---
+
+enum SplitDirection {
+  SPLIT_DIRECTION_UNSPECIFIED = 0;
+  SPLIT_DIRECTION_HORIZONTAL = 1;
+  SPLIT_DIRECTION_VERTICAL = 2;
+}
+
+message LayoutNode {
+  oneof node {
+    LayoutSplit split = 1;
+    LayoutLeaf leaf = 2;
+  }
+}
+
+message LayoutSplit {
+  string id = 1;
+  SplitDirection direction = 2;
+  repeated double ratios = 3;
+  repeated LayoutNode children = 4;
+}
+
+message LayoutLeaf {
+  string id = 1;
+}
+
+message GetLayoutRequest {
+  string org_id = 2;
+  string workspace_id = 1;
+}
+
+message GetLayoutResponse {
+  LayoutNode layout = 1;
+  repeated TileActiveTab active_tabs = 2;
+}
+
+message TileActiveTab {
+  string tile_id = 1;
+  TabType tab_type = 2;
+  string tab_id = 3;
+}
+
+message SaveLayoutRequest {
+  string org_id = 5;
+  string workspace_id = 1;
+  LayoutNode layout = 2;
+  repeated TileActiveTab active_tabs = 3;
+  repeated WorkspaceTab tabs = 4;
+}
+
+message SaveLayoutResponse {}
+
+// --- Event Streaming ---
+
+message WatchEventsRequest {
+  string org_id = 4;
+  string workspace_id = 1;
+  repeated WatchAgentEntry agents = 2;
+  repeated WatchTerminalEntry terminals = 3;
+}
+
+message WatchAgentEntry {
+  string agent_id = 1;
+  int64 after_seq = 2; // Resume from this sequence number (0 = from beginning, -1 = live only)
+}
+
+message WatchTerminalEntry {
+  string terminal_id = 1;
+}
+
+message WatchEventsResponse {
+  oneof event {
+    AgentEvent agent_event = 1;
+    TerminalEvent terminal_event = 2;
+  }
+}
+
+// AgentEvent wraps agent-related events with the originating agent_id.
+// Used both as the wire type in WatchEventsResponse and as the internal
+// broadcast type in agentmgr.Watcher.
+message AgentEvent {
+  string agent_id = 1;
+  oneof event {
+    AgentChatMessage agent_message = 2;
+    AgentStreamChunk stream_chunk = 3;
+    AgentStreamEnd stream_end = 4;
+    AgentStatusChange status_change = 5;
+    AgentControlRequest control_request = 6;
+    AgentControlCancelRequest control_cancel = 7;
+    AgentMessageError message_error = 8;
+    AgentMessageDeleted message_deleted = 9;
+  }
+}
+
+// TerminalEvent wraps terminal-related events with the originating terminal_id.
+// Used both as the wire type in WatchEventsResponse and as the internal
+// broadcast type in terminalmgr.Watcher.
+message TerminalEvent {
+  string terminal_id = 1;
+  oneof event {
+    TerminalData data = 2;
+    TerminalClosed closed = 3;
+  }
+}

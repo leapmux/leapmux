@@ -1,0 +1,243 @@
+syntax = "proto3";
+package leapmux.v1;
+
+// AgentService manages coding agents within workspaces.
+// Called by Frontend on Hub via ConnectRPC.
+// Each workspace can have multiple agents (1:N).
+service AgentService {
+  // Open a new coding agent in a workspace.
+  rpc OpenAgent(OpenAgentRequest) returns (OpenAgentResponse);
+  // Close a coding agent.
+  rpc CloseAgent(CloseAgentRequest) returns (CloseAgentResponse);
+  // Send a user message to a coding agent.
+  rpc SendAgentMessage(SendAgentMessageRequest) returns (SendAgentMessageResponse);
+  // List agents in a workspace.
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
+  // Get message history for an agent (paginated).
+  rpc ListAgentMessages(ListAgentMessagesRequest) returns (ListAgentMessagesResponse);
+  // Rename an agent.
+  rpc RenameAgent(RenameAgentRequest) returns (RenameAgentResponse);
+  // Send a control response (permission grant/deny) back to an agent.
+  rpc SendControlResponse(SendControlResponseRequest) returns (SendControlResponseResponse);
+  // Retry delivering a failed user message to the worker.
+  rpc RetryAgentMessage(RetryAgentMessageRequest) returns (RetryAgentMessageResponse);
+  // Delete a failed user message.
+  rpc DeleteAgentMessage(DeleteAgentMessageRequest) returns (DeleteAgentMessageResponse);
+  // Update agent settings (model, effort). Requires agent restart.
+  rpc UpdateAgentSettings(UpdateAgentSettingsRequest) returns (UpdateAgentSettingsResponse);
+}
+
+// AgentStatus tracks the lifecycle state of an agent.
+enum AgentStatus {
+  AGENT_STATUS_UNSPECIFIED = 0;
+  AGENT_STATUS_ACTIVE = 1;
+  AGENT_STATUS_CLOSED = 2;
+}
+
+// MessageRole identifies who produced a chat message.
+enum MessageRole {
+  MESSAGE_ROLE_UNSPECIFIED = 0;
+  MESSAGE_ROLE_USER = 1;
+  MESSAGE_ROLE_ASSISTANT = 2;
+  MESSAGE_ROLE_SYSTEM = 3;
+  MESSAGE_ROLE_RESULT = 4;
+  MESSAGE_ROLE_LEAPMUX = 5;  // Platform notifications (settings changes, interrupts)
+}
+
+// ContentCompression identifies the compression algorithm used for message content.
+enum ContentCompression {
+  CONTENT_COMPRESSION_UNSPECIFIED = 0;
+  CONTENT_COMPRESSION_NONE = 1;
+  CONTENT_COMPRESSION_ZSTD = 2;
+}
+
+// --- Agent CRUD ---
+
+message OpenAgentRequest {
+  string workspace_id = 1;
+  string model = 2;
+  string system_prompt = 3;
+  string title = 4;
+  string effort = 5;
+  string agent_session_id = 6;  // If set, resume from this session ID
+  string worker_id = 7;         // Target worker (required)
+  string working_dir = 8;       // Working directory on the worker (required)
+  bool create_worktree = 9;     // If true, create a git worktree before starting
+  string worktree_branch = 10;  // Branch name for the worktree
+}
+
+message OpenAgentResponse {
+  AgentInfo agent = 1;
+}
+
+message CloseAgentRequest {
+  string agent_id = 1;
+}
+
+message CloseAgentResponse {
+  bool worktree_cleanup_pending = 1;  // True if worktree is dirty and needs confirmation
+  string worktree_path = 2;           // Path of the dirty worktree
+  string worktree_id = 3;             // ID for ForceRemoveWorktree/KeepWorktree
+}
+
+message ListAgentsRequest {
+  string workspace_id = 1;
+}
+
+message ListAgentsResponse {
+  repeated AgentInfo agents = 1;
+}
+
+message RenameAgentRequest {
+  string agent_id = 1;
+  string title = 2;
+}
+
+message RenameAgentResponse {}
+
+message AgentInfo {
+  string id = 1;
+  string workspace_id = 2;
+  string title = 3;
+  string model = 4;
+  AgentStatus status = 5;
+  string created_at = 6;
+  string closed_at = 7;
+  string agent_session_id = 8;  // Non-empty if agent session can be resumed
+  string permission_mode = 9;
+  string effort = 10;
+  string worker_id = 11;        // Worker this agent runs on
+  string working_dir = 12;      // Working directory on the worker
+  AgentGitStatus git_status = 13; // Git status for the agent's working directory
+}
+
+// --- Agent Messaging ---
+
+message SendAgentMessageRequest {
+  string agent_id = 1;
+  string content = 2; // User message text
+}
+
+message SendAgentMessageResponse {}
+
+// AgentChatMessage represents a complete message in the conversation.
+message AgentChatMessage {
+  string id = 1;
+  MessageRole role = 2;
+  bytes content = 3; // JSON blob from Claude Code (may be compressed per content_compression)
+  int64 seq = 4;
+  string created_at = 5;
+  string delivery_error = 6; // Non-empty if worker delivery failed
+  ContentCompression content_compression = 7; // Compression algorithm used for content
+  string updated_at = 8; // Set when message is updated (e.g. thread merge)
+}
+
+// AgentStreamChunk provides token-by-token streaming.
+message AgentStreamChunk {
+  string message_id = 1;
+  bytes delta = 2; // Verbatim NDJSON line (stream_event from Claude Code)
+}
+
+// AgentStreamEnd signals that streaming for a message is complete.
+message AgentStreamEnd {
+  string message_id = 1;
+}
+
+// AgentStatusChange notifies of agent status transitions.
+message AgentStatusChange {
+  string agent_id = 1;
+  AgentStatus status = 2;
+  string agent_session_id = 3;  // Non-empty if agent session can be resumed
+  bool worker_online = 4;       // Whether the worker hosting this agent is online
+  string permission_mode = 5;
+  string model = 6;
+  string effort = 7;
+  AgentGitStatus git_status = 8; // Git status for the agent's working directory
+}
+
+// AgentGitStatus holds git repository status for an agent's working directory.
+message AgentGitStatus {
+  string branch = 1;        // Current branch name
+  int32 ahead = 2;          // Commits ahead of upstream
+  int32 behind = 3;         // Commits behind upstream
+  bool conflicted = 4;      // Has merge conflicts (unmerged paths)
+  bool stashed = 5;         // Has stashed changes
+  bool deleted = 6;         // Has staged deletions
+  bool renamed = 7;         // Has staged renames
+  bool modified = 8;        // Has modifications in working directory
+  bool type_changed = 9;    // Has type changes in staging area
+  bool added = 10;          // Has staged additions
+  bool untracked = 11;      // Has untracked files
+}
+
+// --- Message History ---
+
+message ListAgentMessagesRequest {
+  string agent_id = 1;
+  int64 after_seq = 2;  // Forward cursor: return messages with seq > after_seq (ascending)
+  int32 limit = 3;      // Max messages to return (Hub enforces max 50)
+  int64 before_seq = 4; // Backward cursor: return messages with seq < before_seq (returned ascending)
+}
+
+message ListAgentMessagesResponse {
+  repeated AgentChatMessage messages = 1;
+  bool has_more = 2;
+}
+
+// --- Control Request/Response ---
+
+// AgentControlRequest is sent when Claude Code needs user approval (e.g. ExitPlanMode, AskUserQuestion).
+message AgentControlRequest {
+  string agent_id = 1;
+  string request_id = 2;
+  bytes payload = 3;  // Full JSON of the control_request (verbatim)
+}
+
+// AgentControlCancelRequest is sent when Claude Code cancels a pending control request.
+message AgentControlCancelRequest {
+  string agent_id = 1;
+  string request_id = 2;
+}
+
+// SendControlResponseRequest sends a control response back to the agent.
+message SendControlResponseRequest {
+  string agent_id = 1;
+  bytes content = 2;  // Raw JSON control_response for Claude Code stdin
+}
+
+message SendControlResponseResponse {}
+
+// AgentMessageError notifies watchers of a message delivery failure.
+message AgentMessageError {
+  string agent_id = 1;
+  string message_id = 2;
+  string error = 3; // Non-empty = error, empty = cleared
+}
+
+// AgentMessageDeleted notifies watchers that a message was deleted.
+message AgentMessageDeleted {
+  string agent_id = 1;
+  string message_id = 2;
+}
+
+message RetryAgentMessageRequest {
+  string agent_id = 1;
+  string message_id = 2;
+}
+
+message RetryAgentMessageResponse {}
+
+message DeleteAgentMessageRequest {
+  string agent_id = 1;
+  string message_id = 2;
+}
+
+message DeleteAgentMessageResponse {}
+
+message UpdateAgentSettingsRequest {
+  string agent_id = 1;
+  string model = 2;   // Empty = don't change
+  string effort = 3;  // Empty = don't change
+}
+
+message UpdateAgentSettingsResponse {}

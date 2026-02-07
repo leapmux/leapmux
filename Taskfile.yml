@@ -1,0 +1,217 @@
+version: '3'
+
+run: once
+
+vars:
+  VERSION:
+    sh: cat VERSION.txt
+
+# --- Code Generation ---
+
+tasks:
+  generate:
+    desc: Generate all code (proto + sqlc)
+    deps: [generate-proto, generate-sqlc]
+
+  generate-proto:
+    desc: Generate Protocol Buffer code (Go + TypeScript)
+    sources:
+      - proto/**/*
+      - buf.gen.yaml
+      - buf.yaml
+    generates:
+      - generated/proto/**/*
+      - frontend/src/generated/**/*
+    cmds:
+      - rm -rf generated/proto/ frontend/src/generated/
+      - buf generate
+
+  generate-sqlc:
+    desc: Generate type-safe SQL code
+    deps: [generate-proto]
+    sources:
+      - generated/proto/**/*
+      - internal/hub/db/**/*.sql
+      - internal/hub/sqlc.yaml
+    generates:
+      - internal/hub/generated/db/**/*
+    cmds:
+      - cd internal/hub && sqlc generate
+
+  # --- Preparation ---
+
+  prepare:
+    desc: Prepare all dependencies
+    deps: [prepare-backend, prepare-frontend]
+
+  prepare-backend:
+    desc: Prepare backend (generate proto + sqlc)
+    deps: [generate-proto, generate-sqlc]
+
+  prepare-frontend:
+    desc: Install frontend dependencies
+    deps: [generate-proto]
+    sources:
+      - frontend/package.json
+      - frontend/bun.lock
+    generates:
+      - frontend/node_modules/**/*
+    cmds:
+      - cd frontend && bun install
+
+  # --- Build ---
+
+  build:
+    desc: Build all (backend + frontend)
+    deps: [build-backend, build-frontend]
+
+  embed-frontend:
+    desc: Embed frontend assets for go:embed
+    deps: [build-frontend]
+    sources:
+      - internal/hub/frontend.embed
+      - frontend/.output/public/**/*
+    generates:
+      - internal/hub/generated/frontend/embed.go
+      - internal/hub/generated/frontend/public/**/*
+    cmds:
+      - mkdir -p internal/hub/generated/frontend/public
+      - rsync -a internal/hub/frontend.embed internal/hub/generated/frontend/embed.go
+      - rsync -a --delete frontend/.output/public/ internal/hub/generated/frontend/public/
+
+  build-backend:
+    desc: Build leapmux binary
+    deps: [prepare-backend, embed-frontend]
+    sources:
+      - go.mod
+      - go.sum
+      - cmd/**/*
+      - generated/**/*
+      - hub/**/*
+      - internal/**/*
+      - worker/**/*
+      - "**/*.go"
+    generates:
+      - ./leapmux
+    cmds:
+      - go build -ldflags "-X main.version={{.VERSION}}" -o ./leapmux ./cmd/leapmux
+
+  build-frontend:
+    desc: Build frontend assets
+    deps: [prepare-frontend]
+    sources:
+      - frontend/package.json
+      - frontend/bun.lock
+      - frontend/src/**/*
+      - frontend/public/**/*
+      - frontend/app.config.ts
+      - frontend/tsconfig.json
+    generates:
+      - frontend/.output/**/*
+      - frontend/.vinxi/**/*
+    cmds:
+      - cd frontend && bun run build
+
+  # --- Testing ---
+
+  test:
+    desc: Run all tests
+    deps: [test-backend, test-frontend]
+
+  test-backend:
+    desc: Run Go tests
+    deps: [lint-backend]
+    cmds:
+      - go test ./...
+
+  test-frontend:
+    desc: Run frontend unit tests
+    deps: [lint-frontend]
+    cmds:
+      - cd frontend && bun run test
+
+  test-integration:
+    desc: Run integration tests
+    deps: [lint-backend]
+    cmds:
+      - go test -tags integration ./...
+
+  test-e2e:
+    desc: Run end-to-end tests
+    deps: [lint-frontend]
+    cmds:
+      - cd frontend && bun run test:e2e
+
+  # --- Linting ---
+
+  lint:
+    desc: Run all linters
+    deps: [lint-proto, lint-backend, lint-frontend]
+
+  lint-proto:
+    desc: Lint Protocol Buffer definitions
+    sources:
+      - proto/**/*.proto
+      - buf.yaml
+    cmds:
+      - buf lint
+
+  lint-backend:
+    desc: Lint Go code
+    deps: [prepare-backend, embed-frontend]
+    sources:
+      - go.mod
+      - go.sum
+      - "**/*.go"
+      - .golangci.yml
+    cmds:
+      - golangci-lint run ./...
+
+  lint-frontend:
+    desc: Lint frontend code
+    deps: [prepare-frontend]
+    sources:
+      - frontend/package.json
+      - frontend/bun.lock
+      - frontend/src/**/*
+      - frontend/tests/**/*
+      - frontend/public/**/*
+      - frontend/app.config.ts
+      - frontend/tsconfig.json
+      - frontend/vitest.config.ts
+      - frontend/eslint.config.ts
+    cmds:
+      - cd frontend && bun run lint .
+
+  # --- Development ---
+
+  dev:
+    desc: Start all services for development
+    deps: [build-backend, build-frontend]
+    cmds:
+      - mprocs
+
+  # --- Docker ---
+
+  docker-build:
+    desc: Build Docker image
+    vars:
+      PLATFORM: '{{.PLATFORM | default "linux/amd64,linux/arm64"}}'
+      TAG: '{{.TAG | default "leapmux:latest"}}'
+    cmds:
+      - docker buildx build
+        --platform {{.PLATFORM}}
+        --build-arg VERSION={{.VERSION}}
+        -f docker/Dockerfile
+        -t {{.TAG}}
+        .
+
+  # --- Clean ---
+
+  clean:
+    desc: Remove all build artifacts and generated code
+    cmds:
+      - rm -f ./leapmux
+      - rm -rf generated/ */generated/ */*/generated/
+      - rm -rf frontend/.output/ frontend/.vinxi/ frontend/node_modules/
+      - rm -rf .task/

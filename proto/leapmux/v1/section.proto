@@ -1,0 +1,89 @@
+syntax = "proto3";
+package leapmux.v1;
+
+// SectionService manages per-user workspace sections.
+// Called by Frontend on Hub via ConnectRPC.
+service SectionService {
+  // List all sections and workspace assignments for the current user.
+  // Auto-initializes default sections on first call.
+  rpc ListSections(ListSectionsRequest) returns (ListSectionsResponse);
+  // Create a new custom section.
+  rpc CreateSection(CreateSectionRequest) returns (CreateSectionResponse);
+  // Rename a custom section.
+  rpc RenameSection(RenameSectionRequest) returns (RenameSectionResponse);
+  // Delete a custom section (moves its workspaces to "In progress").
+  rpc DeleteSection(DeleteSectionRequest) returns (DeleteSectionResponse);
+  // Reorder a custom section (change its position).
+  rpc ReorderSection(ReorderSectionRequest) returns (ReorderSectionResponse);
+  // Move a workspace to a different section at a given position.
+  rpc MoveWorkspace(MoveWorkspaceRequest) returns (MoveWorkspaceResponse);
+}
+
+// SectionType distinguishes built-in from user-created sections.
+enum SectionType {
+  SECTION_TYPE_UNSPECIFIED = 0;
+  SECTION_TYPE_CUSTOM = 1;
+  SECTION_TYPE_IN_PROGRESS = 2;
+  SECTION_TYPE_ARCHIVED = 3;
+}
+
+// Section represents a user's workspace section.
+message Section {
+  string id = 1;
+  string name = 2;
+  string position = 3;
+  SectionType section_type = 4;
+}
+
+// SectionItem represents a workspace's assignment to a section.
+message SectionItem {
+  string workspace_id = 1;
+  string section_id = 2;
+  string position = 3;
+}
+
+message ListSectionsRequest {
+  string org_id = 1;
+}
+
+message ListSectionsResponse {
+  repeated Section sections = 1;
+  repeated SectionItem items = 2;
+}
+
+message CreateSectionRequest {
+  string name = 1;
+  string org_id = 2;
+}
+
+message CreateSectionResponse {
+  Section section = 1;
+}
+
+message RenameSectionRequest {
+  string section_id = 1;
+  string name = 2;
+}
+
+message RenameSectionResponse {}
+
+message DeleteSectionRequest {
+  string section_id = 1;
+}
+
+message DeleteSectionResponse {}
+
+message ReorderSectionRequest {
+  string section_id = 1;
+  string position = 2;
+}
+
+message ReorderSectionResponse {}
+
+message MoveWorkspaceRequest {
+  string workspace_id = 1;
+  string section_id = 2;
+  string position = 3;
+}
+
+message MoveWorkspaceResponse {}

@@ -1,0 +1,212 @@
+package service
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+
+	"connectrpc.com/connect"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/workermgr"
+)
+
+// GitService implements the GitServiceHandler interface.
+// It routes git info queries to the appropriate worker and manages worktree lifecycle.
+type GitService struct {
+	queries        *db.Queries
+	workerMgr      *workermgr.Manager
+	pending        *workermgr.PendingRequests
+	worktreeHelper *WorktreeHelper
+}
+
+// NewGitService creates a new GitService.
+func NewGitService(q *db.Queries, bm *workermgr.Manager, pr *workermgr.PendingRequests) *GitService {
+	return &GitService{
+		queries:        q,
+		workerMgr:      bm,
+		pending:        pr,
+		worktreeHelper: NewWorktreeHelper(q, bm, pr),
+	}
+}
+
+func (s *GitService) GetGitInfo(
+	ctx context.Context,
+	req *connect.Request[leapmuxv1.GetGitInfoRequest],
+) (*connect.Response[leapmuxv1.GetGitInfoResponse], error) {
+	user, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workerID := req.Msg.GetWorkerId()
+	conn, err := s.getWorkerConn(ctx, user, workerID, req.Msg.GetOrgId())
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := s.pending.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{
+		Payload: &leapmuxv1.ConnectResponse_GitInfo{
+			GitInfo: &leapmuxv1.GitInfoRequest{
+				Path: req.Msg.GetPath(),
+			},
+		},
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	gitResp := resp.GetGitInfoResp()
+	if gitResp == nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unexpected response type"))
+	}
+
+	if gitResp.GetError() != "" {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("%s", gitResp.GetError()))
+	}
+
+	return connect.NewResponse(&leapmuxv1.GetGitInfoResponse{
+		IsGitRepo:   gitResp.GetIsGitRepo(),
+		IsWorktree:  gitResp.GetIsWorktree(),
+		RepoRoot:    gitResp.GetRepoRoot(),
+		RepoDirName: gitResp.GetRepoDirName(),
+		IsRepoRoot:  gitResp.GetIsRepoRoot(),
+	}), nil
+}
+
+func (s *GitService) CheckWorktreeStatus(
+	ctx context.Context,
+	req *connect.Request[leapmuxv1.CheckWorktreeStatusRequest],
+) (*connect.Response[leapmuxv1.CheckWorktreeStatusResponse], error) {
+	_, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	tabType := req.Msg.GetTabType()
+	tabID := req.Msg.GetTabId()
+	if tabID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("tab_id is required"))
+	}
+
+	result := s.worktreeHelper.CheckTabWorktreeStatus(ctx, tabType, tabID)
+
+	return connect.NewResponse(&leapmuxv1.CheckWorktreeStatusResponse{
+		HasWorktree:  result.HasWorktree,
+		IsLastTab:    result.IsLastTab,
+		IsDirty:      result.IsDirty,
+		WorktreePath: result.WorktreePath,
+		WorktreeId:   result.WorktreeID,
+		BranchName:   result.BranchName,
+	}), nil
+}
+
+func (s *GitService) ForceRemoveWorktree(
+	ctx context.Context,
+	req *connect.Request[leapmuxv1.ForceRemoveWorktreeRequest],
+) (*connect.Response[leapmuxv1.ForceRemoveWorktreeResponse], error) {
+	_, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	worktreeID := req.Msg.GetWorktreeId()
+	if worktreeID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worktree_id is required"))
+	}
+
+	wt, err := s.queries.GetWorktreeByID(ctx, worktreeID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worktree not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	// Send force remove to worker.
+	conn := s.workerMgr.Get(wt.WorkerID)
+	if conn != nil {
+		resp, sendErr := s.pending.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{
+			Payload: &leapmuxv1.ConnectResponse_GitWorktreeRemove{
+				GitWorktreeRemove: &leapmuxv1.GitWorktreeRemoveRequest{
+					WorktreePath: wt.WorktreePath,
+					Force:        true,
+					BranchName:   wt.BranchName,
+				},
+			},
+		})
+		if sendErr != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("send worktree remove: %w", sendErr))
+		}
+		if removeResp := resp.GetGitWorktreeRemoveResp(); removeResp != nil && removeResp.GetError() != "" {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("remove worktree: %s", removeResp.GetError()))
+		}
+	}
+
+	// Clean up DB regardless of worker result.
+	if err := s.queries.DeleteWorktree(ctx, worktreeID); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete worktree record: %w", err))
+	}
+
+	return connect.NewResponse(&leapmuxv1.ForceRemoveWorktreeResponse{}), nil
+}
+
+func (s *GitService) KeepWorktree(
+	ctx context.Context,
+	req *connect.Request[leapmuxv1.KeepWorktreeRequest],
+) (*connect.Response[leapmuxv1.KeepWorktreeResponse], error) {
+	_, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	worktreeID := req.Msg.GetWorktreeId()
+	if worktreeID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worktree_id is required"))
+	}
+
+	// Just delete the DB record — leave the worktree on disk.
+	if err := s.queries.DeleteWorktree(ctx, worktreeID); err != nil {
+		if err == sql.ErrNoRows {
+			// Already gone, that's fine.
+			return connect.NewResponse(&leapmuxv1.KeepWorktreeResponse{}), nil
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	return connect.NewResponse(&leapmuxv1.KeepWorktreeResponse{}), nil
+}
+
+func (s *GitService) getWorkerConn(ctx context.Context, user *auth.UserInfo, workerID, requestedOrgID string) (*workermgr.Conn, error) {
+	if workerID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))
+	}
+
+	worker, err := s.queries.GetWorkerByIDInternal(ctx, workerID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	_, err = s.queries.GetVisibleWorker(ctx, db.GetVisibleWorkerParams{
+		UserID:   user.ID,
+		WorkerID: worker.ID,
+		OrgID:    worker.OrgID,
+	})
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	conn := s.workerMgr.Get(workerID)
+	if conn == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker is offline"))
+	}
+
+	return conn, nil
+}

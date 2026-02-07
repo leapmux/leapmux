@@ -1,0 +1,499 @@
+syntax = "proto3";
+package leapmux.v1;
+
+import "leapmux/v1/agent.proto";
+import "leapmux/v1/common.proto";
+
+// WorkerConnectorService is called BY Worker instances on Hub via gRPC.
+// Handles registration and the main bidirectional communication stream.
+service WorkerConnectorService {
+  // Request a unique registration URL/token.
+  rpc RequestRegistration(RequestRegistrationRequest) returns (RequestRegistrationResponse);
+  // Poll until a user approves the registration.
+  rpc PollRegistration(PollRegistrationRequest) returns (PollRegistrationResponse);
+  // Main bidirectional stream for all workspace/terminal/file I/O.
+  rpc Connect(stream ConnectRequest) returns (stream ConnectResponse);
+}
+
+// WorkerManagementService is called BY Frontend on Hub via ConnectRPC.
+// Manages worker registrations and listings.
+service WorkerManagementService {
+  // Approve a pending worker registration.
+  rpc ApproveRegistration(ApproveRegistrationRequest) returns (ApproveRegistrationResponse);
+  // List registered workers for the user's organization.
+  rpc ListWorkers(ListWorkersRequest) returns (ListWorkersResponse);
+  // Get a single worker's details.
+  rpc GetWorker(GetWorkerRequest) returns (GetWorkerResponse);
+  // Rename a worker.
+  rpc RenameWorker(RenameWorkerRequest) returns (RenameWorkerResponse);
+  // Deregister a worker (graceful shutdown with notification).
+  rpc DeregisterWorker(DeregisterWorkerRequest) returns (DeregisterWorkerResponse);
+  // Get pending registration details (shown on approval page).
+  rpc GetRegistration(GetRegistrationRequest) returns (GetRegistrationResponse);
+  // Update worker sharing settings.
+  rpc UpdateWorkerSharing(UpdateWorkerSharingRequest) returns (UpdateWorkerSharingResponse);
+  // List users a worker is shared with.
+  rpc ListWorkerShares(ListWorkerSharesRequest) returns (ListWorkerSharesResponse);
+}
+
+// --- Registration messages ---
+
+message RequestRegistrationRequest {
+  string hostname = 1;
+  string os = 2;
+  string arch = 3;
+  string version = 4;
+}
+
+message RequestRegistrationResponse {
+  string registration_url = 1;
+  string registration_token = 2;
+}
+
+message PollRegistrationRequest {
+  string registration_token = 1;
+}
+
+message PollRegistrationResponse {
+  RegistrationStatus status = 1;
+  string worker_id = 2;
+  string auth_token = 3;
+  string org_id = 4;
+}
+
+enum RegistrationStatus {
+  REGISTRATION_STATUS_UNSPECIFIED = 0;
+  REGISTRATION_STATUS_PENDING = 1;
+  REGISTRATION_STATUS_APPROVED = 2;
+  REGISTRATION_STATUS_REJECTED = 3;
+  REGISTRATION_STATUS_EXPIRED = 4;
+}
+
+// WorkerStatus tracks the lifecycle state of a worker.
+enum WorkerStatus {
+  WORKER_STATUS_UNSPECIFIED = 0;
+  WORKER_STATUS_ACTIVE = 1;
+  WORKER_STATUS_DEREGISTERING = 2;
+  WORKER_STATUS_DELETED = 3;
+}
+
+// NotificationType identifies what action a worker notification conveys.
+enum NotificationType {
+  NOTIFICATION_TYPE_UNSPECIFIED = 0;
+  NOTIFICATION_TYPE_DEREGISTER = 1;
+  NOTIFICATION_TYPE_TERMINATE_WORKSPACES = 2;
+}
+
+// NotificationStatus tracks worker notification delivery state.
+enum NotificationStatus {
+  NOTIFICATION_STATUS_UNSPECIFIED = 0;
+  NOTIFICATION_STATUS_PENDING = 1;
+  NOTIFICATION_STATUS_DELIVERED = 2;
+  NOTIFICATION_STATUS_FAILED = 3;
+}
+
+message ApproveRegistrationRequest {
+  string registration_token = 1;
+  string name = 2; // User-chosen name for this worker
+  string org_id = 3; // Organization to register worker in
+}
+
+message ApproveRegistrationResponse {
+  string worker_id = 1;
+}
+
+message ListWorkersRequest {
+  PageRequest page = 1;
+  string org_id = 2;
+}
+
+message ListWorkersResponse {
+  repeated Worker workers = 1;
+  PageResponse page = 2;
+}
+
+message GetWorkerRequest {
+  string worker_id = 1;
+}
+
+message GetWorkerResponse {
+  Worker worker = 1;
+}
+
+message RenameWorkerRequest {
+  string worker_id = 1;
+  string name = 2;
+}
+
+message RenameWorkerResponse {}
+
+message DeregisterWorkerRequest {
+  string worker_id = 1;
+}
+
+message DeregisterWorkerResponse {}
+
+message GetRegistrationRequest {
+  string registration_token = 1;
+}
+
+message GetRegistrationResponse {
+  string registration_token = 1;
+  string hostname = 2;
+  string os = 3;
+  string arch = 4;
+  string version = 5;
+  RegistrationStatus status = 6;
+}
+
+// --- Worker Sharing ---
+
+message UpdateWorkerSharingRequest {
+  string worker_id = 1;
+  ShareMode share_mode = 2;
+  repeated string user_ids = 3; // Only used when share_mode = "members"
+}
+
+message UpdateWorkerSharingResponse {}
+
+message ListWorkerSharesRequest {
+  string worker_id = 1;
+}
+
+message ListWorkerSharesResponse {
+  ShareMode share_mode = 1;
+  repeated ShareMember members = 2; // Only populated when share_mode = "members"
+}
+
+message ShareMember {
+  string user_id = 1;
+  string username = 2;
+  string display_name = 3;
+}
+
+message Worker {
+  string id = 1;
+  string org_id = 2;
+  string name = 3;
+  string hostname = 4;
+  string os = 5;
+  string arch = 6;
+  bool online = 7;
+  string created_at = 8;
+  string last_seen_at = 9;
+  string registered_by = 10;
+  ShareMode share_mode = 11;
+}
+
+// --- Bidirectional stream envelope messages ---
+
+// ConnectRequest wraps all messages from Worker to Hub.
+message ConnectRequest {
+  string request_id = 1;
+  oneof payload {
+    AgentOutput agent_output = 10;
+    AgentStarted agent_started = 11;
+    AgentStopped agent_stopped = 12;
+    TerminalOutput terminal_output = 20;
+    TerminalStarted terminal_started = 21;
+    TerminalExited terminal_exited = 22;
+    TerminalListResponse terminal_list_resp = 23;
+    ShellListResponse shell_list_resp = 24;
+    FileBrowseResponse file_browse_resp = 30;
+    FileReadResponse file_read_resp = 31;
+    FileStatResponse file_stat_resp = 32;
+    GitInfoResponse git_info_resp = 33;
+    GitWorktreeCreateResponse git_worktree_create_resp = 34;
+    GitWorktreeRemoveResponse git_worktree_remove_resp = 35;
+    AgentInputAck agent_input_ack = 13;
+    AgentGitInfo agent_git_info = 14;
+    DeregisterAck deregister_ack = 40;
+    TerminateWorkspacesAck terminate_workspaces_ack = 41;
+    Heartbeat heartbeat = 100;
+  }
+}
+
+// ConnectResponse wraps all messages from Hub to Worker.
+message ConnectResponse {
+  string request_id = 1;
+  oneof payload {
+    AgentStartRequest agent_start = 10;
+    AgentInput agent_input = 11;
+    AgentStopRequest agent_stop = 12;
+    AgentRawInput agent_raw_input = 13;
+    TerminalStartRequest terminal_start = 20;
+    TerminalInput terminal_input = 21;
+    TerminalResizeRequest terminal_resize = 22;
+    TerminalStopRequest terminal_stop = 23;
+    TerminalListRequest terminal_list = 24;
+    ShellListRequest shell_list = 25;
+    FileBrowseRequest file_browse = 30;
+    FileReadRequest file_read = 31;
+    FileStatRequest file_stat = 32;
+    GitInfoRequest git_info = 33;
+    GitWorktreeCreateRequest git_worktree_create = 34;
+    GitWorktreeRemoveRequest git_worktree_remove = 35;
+    DeregisterNotification deregister = 40;
+    TerminateWorkspacesNotification terminate_workspaces = 41;
+    HubShuttingDownNotification hub_shutting_down = 50;
+    Heartbeat heartbeat = 100;
+  }
+}
+
+// --- Agent messages (used in bidi stream) ---
+
+message AgentStartRequest {
+  string workspace_id = 1;
+  string working_dir = 2;
+  string model = 3;
+  string system_prompt = 4;
+  repeated string allowed_tools = 5;
+  string agent_id = 6;
+  string agent_session_id = 7;  // If set, worker uses --resume with this session ID
+  string permission_mode = 8;   // Permission mode to set on startup (default, acceptEdits, plan, bypassPermissions)
+  string effort = 9;            // Effort level (low, medium, high)
+}
+
+message AgentInput {
+  string workspace_id = 1;
+  bytes content = 2; // Raw NDJSON line to write to agent stdin
+  string agent_id = 3;
+}
+
+message AgentOutput {
+  string workspace_id = 1;
+  bytes content = 2; // Raw NDJSON line from agent stdout (verbatim)
+  string agent_id = 3;
+}
+
+message AgentStarted {
+  string workspace_id = 1;
+  string agent_session_id = 2;  // Session ID extracted from Claude Code's init message
+  string agent_id = 3;
+  string error = 4;
+  string resolved_working_dir = 5;
+  string permission_mode = 6;      // Confirmed permission mode after startup handshake
+  string effort = 7;               // Effort level echoed back from startup
+  AgentGitStatus git_status = 8;   // Git status for the resolved working directory
+}
+
+// AgentGitInfo carries git status updates from worker to hub (e.g. at turn-end).
+message AgentGitInfo {
+  string agent_id = 1;
+  string workspace_id = 2;
+  AgentGitStatus git_status = 3;
+}
+
+message AgentStopped {
+  string workspace_id = 1;
+  int32 exit_code = 2;
+  string error = 3;
+  string agent_id = 4;
+}
+
+message AgentStopRequest {
+  string workspace_id = 1;
+  string agent_id = 2;
+}
+
+// AgentInputAckError classifies the reason an agent input delivery failed.
+enum AgentInputAckError {
+  AGENT_INPUT_ACK_ERROR_UNSPECIFIED = 0;      // No error
+  AGENT_INPUT_ACK_ERROR_AGENT_NOT_FOUND = 1;  // Agent process doesn't exist
+  AGENT_INPUT_ACK_ERROR_INTERNAL = 2;         // Other errors (stdin write failure, etc.)
+}
+
+message AgentInputAck {
+  string agent_id = 1;
+  AgentInputAckError error = 2;
+  string error_reason = 3;  // Human-readable error message for logging
+}
+
+// AgentRawInput writes raw bytes directly to an agent's stdin without
+// wrapping in a UserInputMessage. Used for control_response messages.
+message AgentRawInput {
+  string workspace_id = 1;
+  bytes content = 2;
+  string agent_id = 3;
+}
+
+// --- Terminal messages (used in bidi stream) ---
+
+message TerminalStartRequest {
+  string terminal_id = 1;
+  string working_dir = 2;
+  uint32 rows = 3;
+  uint32 cols = 4;
+  string shell = 5;
+  string workspace_id = 6;
+}
+
+message TerminalInput {
+  string terminal_id = 1;
+  bytes data = 2;
+}
+
+message TerminalOutput {
+  string terminal_id = 1;
+  bytes data = 2;
+}
+
+message TerminalStarted {
+  string terminal_id = 1;
+  uint32 pid = 2;
+  string error = 3;
+  string resolved_working_dir = 4;
+}
+
+message TerminalResizeRequest {
+  string terminal_id = 1;
+  uint32 rows = 2;
+  uint32 cols = 3;
+}
+
+message TerminalStopRequest {
+  string terminal_id = 1;
+}
+
+message TerminalExited {
+  string terminal_id = 1;
+  int32 exit_code = 2;
+}
+
+message TerminalListRequest {
+  string workspace_id = 1;
+}
+
+message TerminalListResponse {
+  repeated TerminalListEntry terminals = 1;
+}
+
+message TerminalListEntry {
+  string terminal_id = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
+  bytes screen = 4;
+  bool exited = 5;
+}
+
+message ShellListRequest {
+  string workspace_id = 1;
+}
+
+message ShellListResponse {
+  repeated string shells = 1;
+  string default_shell = 2;
+}
+
+// --- File messages (used in bidi stream) ---
+
+message FileBrowseRequest {
+  string path = 1;
+}
+
+message FileBrowseResponse {
+  string path = 1;
+  repeated FileEntry entries = 2;
+  string error = 3;
+}
+
+message FileReadRequest {
+  string path = 1;
+  int64 offset = 2;
+  int64 limit = 3; // Max bytes to return; 0 = default (64KB)
+}
+
+message FileReadResponse {
+  string path = 1;
+  bytes content = 2;
+  int64 total_size = 3;
+  string error = 4;
+}
+
+message FileStatRequest {
+  string path = 1;
+}
+
+message FileStatResponse {
+  string path = 1;
+  FileEntry entry = 2;
+  string error = 3;
+}
+
+message FileEntry {
+  string name = 1;
+  bool is_dir = 2;
+  int64 size = 3;
+  string mod_time = 4;
+  string permissions = 5;
+}
+
+// --- Git messages (used in bidi stream) ---
+
+message GitInfoRequest {
+  string path = 1;
+}
+
+message GitInfoResponse {
+  string path = 1;
+  bool is_git_repo = 2;       // True if path is inside a git repo or worktree
+  bool is_worktree = 3;       // True if path is a linked worktree (not the main repo)
+  string repo_root = 4;       // Root of the main git repo (resolved through worktree if applicable)
+  string repo_dir_name = 5;   // Base directory name of the main repo
+  string error = 6;
+  bool is_repo_root = 7;      // True if the queried path IS the repo root (after symlink resolution)
+}
+
+message GitWorktreeCreateRequest {
+  string repo_root = 1;       // Main git repo root
+  string worktree_path = 2;   // Full path where worktree should be created
+  string branch_name = 3;     // Branch name for the new worktree
+}
+
+message GitWorktreeCreateResponse {
+  string worktree_path = 1;   // Resolved path of created worktree
+  string error = 2;
+}
+
+message GitWorktreeRemoveRequest {
+  string worktree_path = 1;   // Path to the worktree to remove
+  bool check_only = 2;        // If true, only check cleanliness, don't remove
+  bool force = 3;             // If true, remove even if not clean
+  string branch_name = 4;     // Branch to delete after worktree removal (required)
+}
+
+message GitWorktreeRemoveResponse {
+  string worktree_path = 1;
+  bool is_clean = 2;          // False if uncommitted changes or unpushed commits
+  string error = 3;
+}
+
+// --- Notification messages (used in bidi stream) ---
+
+message DeregisterNotification {
+  string reason = 1;
+}
+
+message DeregisterAck {}
+
+message TerminateWorkspacesNotification {
+  repeated string workspace_ids = 1;
+  string reason = 2;
+}
+
+message TerminateWorkspacesAck {
+  repeated string workspace_ids = 1;
+}
+
+// HubShuttingDownNotification is sent by the Hub to all connected workers
+// when it is shutting down. Workers should wait retry_delay_seconds before
+// attempting to reconnect, giving the Hub time to fully stop.
+message HubShuttingDownNotification {
+  int32 retry_delay_seconds = 1;
+}
+
+// --- Common ---
+
+message Heartbeat {
+  int64 timestamp_ms = 1;
+}

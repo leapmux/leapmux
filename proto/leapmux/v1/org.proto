@@ -1,0 +1,136 @@
+syntax = "proto3";
+package leapmux.v1;
+
+// OrgService manages organizations and their members.
+// Called by Frontend on Hub via ConnectRPC.
+service OrgService {
+  // Create a new organization.
+  rpc CreateOrg(CreateOrgRequest) returns (CreateOrgResponse);
+  // Get organization details.
+  rpc GetOrg(GetOrgRequest) returns (GetOrgResponse);
+  // Update organization settings.
+  rpc UpdateOrg(UpdateOrgRequest) returns (UpdateOrgResponse);
+  // Delete an organization.
+  rpc DeleteOrg(DeleteOrgRequest) returns (DeleteOrgResponse);
+  // List organizations the current user belongs to.
+  rpc ListMyOrgs(ListMyOrgsRequest) returns (ListMyOrgsResponse);
+  // Check if an organization name is taken (public).
+  rpc CheckOrgExists(CheckOrgExistsRequest) returns (CheckOrgExistsResponse);
+  // List members of an organization.
+  rpc ListOrgMembers(ListOrgMembersRequest) returns (ListOrgMembersResponse);
+  // Invite a user to an organization.
+  rpc InviteOrgMember(InviteOrgMemberRequest) returns (InviteOrgMemberResponse);
+  // Remove a member from an organization.
+  rpc RemoveOrgMember(RemoveOrgMemberRequest) returns (RemoveOrgMemberResponse);
+  // Update a member's role in an organization.
+  rpc UpdateOrgMember(UpdateOrgMemberRequest) returns (UpdateOrgMemberResponse);
+}
+
+// OrgMemberRole controls permissions within an organization.
+enum OrgMemberRole {
+  ORG_MEMBER_ROLE_UNSPECIFIED = 0;
+  ORG_MEMBER_ROLE_MEMBER = 1;
+  ORG_MEMBER_ROLE_ADMIN = 2;
+  ORG_MEMBER_ROLE_OWNER = 3;
+}
+
+// --- Org CRUD ---
+
+message CreateOrgRequest {
+  string name = 1;
+}
+
+message CreateOrgResponse {
+  Org org = 1;
+}
+
+message GetOrgRequest {
+  string org_id = 1;
+}
+
+message GetOrgResponse {
+  Org org = 1;
+}
+
+message UpdateOrgRequest {
+  string org_id = 1;
+  string name = 2;
+}
+
+message UpdateOrgResponse {
+  Org org = 1;
+}
+
+message DeleteOrgRequest {
+  string org_id = 1;
+}
+
+message DeleteOrgResponse {}
+
+message ListMyOrgsRequest {}
+
+message ListMyOrgsResponse {
+  repeated Org orgs = 1;
+}
+
+message CheckOrgExistsRequest {
+  string name = 1;
+}
+
+message CheckOrgExistsResponse {
+  bool exists = 1;
+}
+
+// --- Org Members ---
+
+message ListOrgMembersRequest {
+  string org_id = 1;
+}
+
+message ListOrgMembersResponse {
+  repeated OrgMember members = 1;
+}
+
+message InviteOrgMemberRequest {
+  string org_id = 1;
+  string username = 2;
+  OrgMemberRole role = 3;
+}
+
+message InviteOrgMemberResponse {
+  OrgMember member = 1;
+}
+
+message RemoveOrgMemberRequest {
+  string org_id = 1;
+  string user_id = 2;
+}
+
+message RemoveOrgMemberResponse {}
+
+message UpdateOrgMemberRequest {
+  string org_id = 1;
+  string user_id = 2;
+  OrgMemberRole role = 3;
+}
+
+message UpdateOrgMemberResponse {
+  OrgMember member = 1;
+}
+
+// --- Messages ---
+
+message Org {
+  string id = 1;
+  string name = 2;
+  bool is_personal = 3;
+  string created_at = 4;
+}
+
+message OrgMember {
+  string user_id = 1;
+  string username = 2;
+  string display_name = 3;
+  OrgMemberRole role = 4;
+  string joined_at = 5;
+}
