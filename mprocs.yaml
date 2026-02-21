@@ -1,0 +1,5 @@
+procs:
+  backend:
+    shell: "go run ./cmd/leapmux -dev-frontend http://localhost:4328"
+  frontend:
+    shell: "cd frontend && bun run dev"

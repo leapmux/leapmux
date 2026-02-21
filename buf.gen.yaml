@@ -1,0 +1,23 @@
+version: v2
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/leapmux/leapmux/generated/proto
+plugins:
+  # Go protobuf types
+  - remote: buf.build/protocolbuffers/go
+    out: generated/proto
+    opt: paths=source_relative
+  # Go ConnectRPC stubs (supports both Connect + gRPC protocols)
+  - remote: buf.build/connectrpc/go
+    out: generated/proto
+    opt: paths=source_relative
+  # TypeScript protobuf message types
+  - remote: buf.build/bufbuild/es
+    out: frontend/src/generated
+    opt: target=ts
+  # TypeScript ConnectRPC service client stubs
+  - remote: buf.build/connectrpc/es
+    out: frontend/src/generated
+    opt: target=ts

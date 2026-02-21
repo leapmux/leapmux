@@ -1,0 +1,103 @@
+syntax = "proto3";
+package leapmux.v1;
+
+// TerminalService manages interactive terminal sessions.
+// Called by Frontend on Hub via ConnectRPC.
+// Hub routes I/O to the Worker via the bidirectional gRPC stream.
+service TerminalService {
+  // Open a new terminal on a worker.
+  rpc OpenTerminal(OpenTerminalRequest) returns (OpenTerminalResponse);
+  // Close an active terminal.
+  rpc CloseTerminal(CloseTerminalRequest) returns (CloseTerminalResponse);
+  // Send keyboard input to a terminal.
+  rpc SendInput(SendInputRequest) returns (SendInputResponse);
+  // Resize a terminal.
+  rpc ResizeTerminal(ResizeTerminalRequest) returns (ResizeTerminalResponse);
+  // List active terminals for a workspace (restored from the Worker).
+  rpc ListTerminals(ListTerminalsRequest) returns (ListTerminalsResponse);
+  // List available shells on the worker.
+  rpc ListAvailableShells(ListAvailableShellsRequest) returns (ListAvailableShellsResponse);
+}
+
+message OpenTerminalRequest {
+  string org_id = 9;
+  string workspace_id = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
+  string working_dir = 4;
+  string shell = 5;
+  string worker_id = 6;         // Target worker (required)
+  bool create_worktree = 7;     // If true, create a git worktree before starting
+  string worktree_branch = 8;   // Branch name for the worktree
+}
+
+message OpenTerminalResponse {
+  string terminal_id = 1;
+}
+
+message CloseTerminalRequest {
+  string org_id = 3;
+  string workspace_id = 1;
+  string terminal_id = 2;
+}
+
+message CloseTerminalResponse {
+  bool worktree_cleanup_pending = 1;  // True if worktree is dirty and needs confirmation
+  string worktree_path = 2;           // Path of the dirty worktree
+  string worktree_id = 3;             // ID for ForceRemoveWorktree/KeepWorktree
+}
+
+message SendInputRequest {
+  string org_id = 4;
+  string workspace_id = 1;
+  string terminal_id = 2;
+  bytes data = 3;
+}
+
+message SendInputResponse {}
+
+message ResizeTerminalRequest {
+  string org_id = 5;
+  string workspace_id = 1;
+  string terminal_id = 2;
+  uint32 cols = 3;
+  uint32 rows = 4;
+}
+
+message ResizeTerminalResponse {}
+
+message ListTerminalsRequest {
+  string org_id = 2;
+  string workspace_id = 1;
+}
+
+message ListTerminalsResponse {
+  repeated TerminalInfo terminals = 1;
+}
+
+message TerminalInfo {
+  string terminal_id = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
+  bytes screen = 4;
+  bool exited = 5;
+}
+
+message TerminalData {
+  bytes data = 1;
+}
+
+message TerminalClosed {
+  int32 exit_code = 1;
+}
+
+message ListAvailableShellsRequest {
+  string org_id = 3;
+  string workspace_id = 1;
+  string worker_id = 2;   // Which worker to query for shells (required)
+}
+
+message ListAvailableShellsResponse {
+  repeated string shells = 1;       // Available shell paths, e.g., ["/bin/sh", "/bin/bash", "/bin/zsh"]
+  string default_shell = 2;         // The default shell ($SHELL or /bin/sh)
+}

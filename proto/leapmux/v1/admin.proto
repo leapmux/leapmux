@@ -1,0 +1,146 @@
+syntax = "proto3";
+package leapmux.v1;
+
+import "leapmux/v1/common.proto";
+
+// AdminService provides admin-only system management.
+// Called by Frontend on Hub via ConnectRPC.
+service AdminService {
+  // Get system settings.
+  rpc GetSettings(GetSettingsRequest) returns (GetSettingsResponse);
+  // Update system settings.
+  rpc UpdateSettings(UpdateSettingsRequest) returns (UpdateSettingsResponse);
+  // List all users (paginated with optional search).
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+  // Get a single user's details.
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+  // Create a new user (admin).
+  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
+  // Update a user (admin).
+  rpc UpdateUser(UpdateUserRequest) returns (UpdateUserResponse);
+  // Delete a user (admin).
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
+  // Reset a user's password (admin).
+  rpc ResetUserPassword(ResetUserPasswordRequest) returns (ResetUserPasswordResponse);
+  // Get the current hub log level.
+  rpc GetLogLevel(GetLogLevelRequest) returns (GetLogLevelResponse);
+  // Set the hub log level at runtime.
+  rpc SetLogLevel(SetLogLevelRequest) returns (SetLogLevelResponse);
+}
+
+// --- Settings ---
+
+message GetSettingsRequest {}
+
+message GetSettingsResponse {
+  SystemSettings settings = 1;
+}
+
+message UpdateSettingsRequest {
+  SystemSettings settings = 1;
+}
+
+message UpdateSettingsResponse {
+  SystemSettings settings = 1;
+}
+
+message SystemSettings {
+  bool signup_enabled = 1;
+  bool email_verification_required = 2;
+  SmtpConfig smtp = 3;
+}
+
+message SmtpConfig {
+  string host = 1;
+  int32 port = 2;
+  string username = 3;
+  bool password_set = 4; // Read-only: indicates password is configured
+  string password = 5;   // Write-only: set to update, empty to keep existing
+  string from_address = 6;
+  bool use_tls = 7;
+}
+
+// --- User Management ---
+
+message ListUsersRequest {
+  PageRequest page = 1;
+  string query = 2; // Optional search query
+}
+
+message ListUsersResponse {
+  repeated AdminUserView users = 1;
+  PageResponse page = 2;
+}
+
+message GetUserRequest {
+  string user_id = 1;
+}
+
+message GetUserResponse {
+  AdminUserView user = 1;
+}
+
+message CreateUserRequest {
+  string username = 1;
+  string password = 2;
+  string display_name = 3;
+  string email = 4;
+  bool is_admin = 5;
+}
+
+message CreateUserResponse {
+  AdminUserView user = 1;
+}
+
+message UpdateUserRequest {
+  string user_id = 1;
+  string display_name = 2;
+  string email = 3;
+  bool is_admin = 4;
+}
+
+message UpdateUserResponse {
+  AdminUserView user = 1;
+}
+
+message DeleteUserRequest {
+  string user_id = 1;
+}
+
+message DeleteUserResponse {}
+
+message ResetUserPasswordRequest {
+  string user_id = 1;
+  string new_password = 2;
+}
+
+message ResetUserPasswordResponse {}
+
+// --- Log Level ---
+
+message GetLogLevelRequest {}
+
+message GetLogLevelResponse {
+  string level = 1; // e.g. "DEBUG", "INFO", "WARN", "ERROR"
+}
+
+message SetLogLevelRequest {
+  string level = 1; // e.g. "DEBUG", "INFO", "WARN", "ERROR"
+}
+
+message SetLogLevelResponse {
+  string level = 1; // The level that was set
+}
+
+message AdminUserView {
+  string id = 1;
+  string username = 2;
+  string display_name = 3;
+  string email = 4;
+  bool email_verified = 5;
+  bool is_admin = 6;
+  string org_id = 7;     // Personal org ID
+  string org_name = 8;   // Personal org name
+  string created_at = 9;
+  string updated_at = 10;
+}

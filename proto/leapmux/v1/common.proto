@@ -1,0 +1,22 @@
+syntax = "proto3";
+package leapmux.v1;
+
+// ShareMode controls backend/workspace visibility.
+enum ShareMode {
+  SHARE_MODE_UNSPECIFIED = 0;
+  SHARE_MODE_PRIVATE = 1;
+  SHARE_MODE_ORG = 2;
+  SHARE_MODE_MEMBERS = 3;
+}
+
+// PageRequest specifies pagination parameters.
+message PageRequest {
+  int32 limit = 1;
+  string cursor = 2;
+}
+
+// PageResponse contains pagination metadata.
+message PageResponse {
+  string next_cursor = 1;
+  bool has_more = 2;
+}

@@ -1,0 +1,31 @@
+/* Override OAT dropdown animation direction when popover is flipped (opens upward). */
+ot-dropdown [popover][data-flipped] {
+  transform: translateY(4px);
+}
+
+ot-dropdown [popover][data-flipped]:popover-open {
+  transform: translateY(0);
+}
+
+@starting-style {
+  ot-dropdown [popover][data-flipped]:popover-open {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* Also handle non-ot-dropdown flipped popovers (e.g. link popover). */
+[popover][data-flipped] {
+  transform: translateY(4px);
+}
+
+[popover][data-flipped]:popover-open {
+  transform: translateY(0);
+}
+
+@starting-style {
+  [popover][data-flipped]:popover-open {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}

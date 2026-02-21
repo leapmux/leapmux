@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <g transform="translate(-38.4,-37.8) scale(1.15)">
+    <!-- Back panel -->
+    <rect x="96" y="128" width="248" height="184" rx="18" fill="#0D9488" opacity="0.12"/>
+
+    <!-- Middle panel -->
+    <rect x="132" y="160" width="248" height="184" rx="18" fill="#0D9488" opacity="0.28"/>
+
+    <!-- Front panel -->
+    <rect x="168" y="192" width="248" height="184" rx="18" fill="#FFFFFF"/>
+
+    <!-- Prompt chevron ">" on front panel -->
+    <path d="M236 268 L256 283 L236 298" fill="none" stroke="#0D9488" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Underscore cursor -->
+    <rect x="270" y="296" width="24" height="6" rx="3" fill="#0D9488" opacity="0.30"/>
+
+    <!-- AI sparkle - 4-point star -->
+    <path d="M338 257 L345 274 L362 281 L345 288 L338 305 L331 288 L314 281 L331 274 Z" fill="#FBBF24"/>
+
+    <!-- Small secondary sparkle -->
+    <path d="M370 239.5 L373 246.5 L380.5 249.5 L373 252.5 L370 259.5 L367 252.5 L359.5 249.5 L367 246.5 Z" fill="#FBBF24" opacity="0.55"/>
+
+    <!-- Subtle prompt on middle panel (peeking) -->
+    <path d="M180 236 L193 245 L180 254" fill="none" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
+  </g>
+</svg>
