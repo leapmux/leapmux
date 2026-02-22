@@ -19,6 +19,16 @@ func (c *Client) handleGitInfo(requestID string, req *leapmuxv1.GitInfoRequest) 
 		resp.RepoRoot = info.RepoRoot
 		resp.RepoDirName = info.RepoDirName
 		resp.IsRepoRoot = info.IsRepoRoot
+		resp.IsWorktreeRoot = info.IsWorktreeRoot
+
+		// Populate dirty status and current branch for repo/worktree roots.
+		if info.IsRepoRoot || info.IsWorktreeRoot {
+			if status := gitutil.GetGitStatus(req.GetPath()); status != nil {
+				resp.CurrentBranch = status.Branch
+				resp.IsDirty = status.Modified || status.Added || status.Deleted ||
+					status.Renamed || status.Untracked || status.TypeChanged || status.Conflicted
+			}
+		}
 	}
 
 	_ = c.Send(&leapmuxv1.ConnectRequest{
@@ -30,7 +40,7 @@ func (c *Client) handleGitInfo(requestID string, req *leapmuxv1.GitInfoRequest) 
 }
 
 func (c *Client) handleGitWorktreeCreate(requestID string, req *leapmuxv1.GitWorktreeCreateRequest) {
-	err := gitutil.CreateWorktree(req.GetRepoRoot(), req.GetWorktreePath(), req.GetBranchName())
+	err := gitutil.CreateWorktree(req.GetRepoRoot(), req.GetWorktreePath(), req.GetBranchName(), req.GetStartPoint())
 	resp := &leapmuxv1.GitWorktreeCreateResponse{WorktreePath: req.GetWorktreePath()}
 
 	if err != nil {

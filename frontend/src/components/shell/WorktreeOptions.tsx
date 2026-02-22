@@ -5,7 +5,7 @@ import { createEffect, createMemo, createSignal, on, Show } from 'solid-js'
 import { gitClient } from '~/api/clients'
 import { useOrg } from '~/context/OrgContext'
 import { validateBranchName } from '~/lib/validate'
-import { checkboxRow, errorText, labelRow, pathPreview, refreshButton } from '~/styles/shared.css'
+import { checkboxRow, errorText, labelRow, pathPreview, refreshButton, warningText } from '~/styles/shared.css'
 
 interface WorktreeOptionsProps {
   workerId: string
@@ -17,12 +17,16 @@ export const WorktreeOptions: Component<WorktreeOptionsProps> = (props) => {
   const org = useOrg()
   const [isGitRepo, setIsGitRepo] = createSignal(false)
   const [isRepoRoot, setIsRepoRoot] = createSignal(false)
+  const [isWorktreeRoot, setIsWorktreeRoot] = createSignal(false)
+  const [isDirty, setIsDirty] = createSignal(false)
   const [repoRoot, setRepoRoot] = createSignal('')
   const [repoDirName, setRepoDirName] = createSignal('')
   const [createWorktree, setCreateWorktree] = createSignal(false)
   const [branchName, setBranchName] = createSignal(generateSlug(3, { format: 'kebab' }))
   const [loading, setLoading] = createSignal(false)
   const branchError = createMemo(() => validateBranchName(branchName()))
+
+  const showWorktreeOption = () => isGitRepo() && (isRepoRoot() || isWorktreeRoot())
 
   const worktreePath = () => {
     if (!repoRoot() || !branchName())
@@ -36,6 +40,8 @@ export const WorktreeOptions: Component<WorktreeOptionsProps> = (props) => {
     if (!wid || !path) {
       setIsGitRepo(false)
       setIsRepoRoot(false)
+      setIsWorktreeRoot(false)
+      setIsDirty(false)
       setCreateWorktree(false)
       return
     }
@@ -49,16 +55,20 @@ export const WorktreeOptions: Component<WorktreeOptionsProps> = (props) => {
       })
       setIsGitRepo(resp.isGitRepo)
       setIsRepoRoot(resp.isRepoRoot)
+      setIsWorktreeRoot(resp.isWorktreeRoot)
+      setIsDirty(resp.isDirty)
       setRepoRoot(resp.repoRoot)
       setRepoDirName(resp.repoDirName)
-      // Reset worktree checkbox when path is not the repo root.
-      if (!resp.isGitRepo || !resp.isRepoRoot) {
+      // Reset worktree checkbox when path is not a repo or worktree root.
+      if (!resp.isGitRepo || (!resp.isRepoRoot && !resp.isWorktreeRoot)) {
         setCreateWorktree(false)
       }
     }
     catch {
       setIsGitRepo(false)
       setIsRepoRoot(false)
+      setIsWorktreeRoot(false)
+      setIsDirty(false)
       setCreateWorktree(false)
     }
     finally {
@@ -76,7 +86,7 @@ export const WorktreeOptions: Component<WorktreeOptionsProps> = (props) => {
   }
 
   return (
-    <Show when={!loading() && isGitRepo() && isRepoRoot()}>
+    <Show when={!loading() && showWorktreeOption()}>
       <label class={checkboxRow}>
         <input
           type="checkbox"
@@ -86,6 +96,11 @@ export const WorktreeOptions: Component<WorktreeOptionsProps> = (props) => {
         Create new worktree
       </label>
       <Show when={createWorktree()}>
+        <Show when={isDirty()}>
+          <div class={warningText}>
+            The selected working copy has uncommitted changes that will not be transferred to the new worktree.
+          </div>
+        </Show>
         <label>
           <div class={labelRow}>
             Branch Name

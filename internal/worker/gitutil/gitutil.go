@@ -189,17 +189,18 @@ func checkStash(dir string, status *GitStatus) {
 
 // GitInfo holds information about a path's git context.
 type GitInfo struct {
-	IsGitRepo   bool
-	IsWorktree  bool
-	RepoRoot    string // Main repo root (resolved through worktree links)
-	RepoDirName string // filepath.Base(RepoRoot)
-	IsRepoRoot  bool   // True if the queried path IS the repo root (after symlink resolution)
+	IsGitRepo      bool
+	IsWorktree     bool
+	RepoRoot       string // Main repo root (resolved through worktree links)
+	RepoDirName    string // filepath.Base(RepoRoot)
+	IsRepoRoot     bool   // True if the queried path IS the repo root (after symlink resolution)
+	IsWorktreeRoot bool   // True if the queried path IS a linked worktree root
 }
 
 // GetGitInfo checks if a path is inside a git repo and returns info.
 // Returns GitInfo with IsGitRepo=false (not an error) if the path is not inside a git repo.
 func GetGitInfo(path string) (*GitInfo, error) {
-	gitDir, isWorktree, err := findGitRoot(path)
+	gitDir, isWorktree, worktreeRoot, err := findGitRoot(path)
 	if err != nil {
 		if errors.Is(err, errNotGitRepo) {
 			return &GitInfo{IsGitRepo: false}, nil
@@ -226,12 +227,23 @@ func GetGitInfo(path string) (*GitInfo, error) {
 		resolvedPath = rp
 	}
 
+	// Determine if the queried path is a linked worktree root.
+	isWorktreeRoot := false
+	if isWorktree && worktreeRoot != "" {
+		resolvedWTRoot := worktreeRoot
+		if rp, err := filepath.EvalSymlinks(worktreeRoot); err == nil {
+			resolvedWTRoot = rp
+		}
+		isWorktreeRoot = resolvedPath == resolvedWTRoot
+	}
+
 	return &GitInfo{
-		IsGitRepo:   true,
-		IsWorktree:  isWorktree,
-		RepoRoot:    repoRoot,
-		RepoDirName: filepath.Base(repoRoot),
-		IsRepoRoot:  resolvedPath == repoRoot,
+		IsGitRepo:      true,
+		IsWorktree:     isWorktree,
+		RepoRoot:       repoRoot,
+		RepoDirName:    filepath.Base(repoRoot),
+		IsRepoRoot:     resolvedPath == repoRoot,
+		IsWorktreeRoot: isWorktreeRoot,
 	}, nil
 }
 
@@ -271,8 +283,9 @@ func ValidateBranchName(name string) error {
 }
 
 // CreateWorktree creates a new git worktree at the specified path.
+// startPoint specifies the base commit/branch for the new worktree.
 // If the branch already exists, it checks it out into the new worktree.
-func CreateWorktree(repoRoot, worktreePath, branchName string) error {
+func CreateWorktree(repoRoot, worktreePath, branchName, startPoint string) error {
 	if err := ValidateBranchName(branchName); err != nil {
 		return fmt.Errorf("invalid branch name: %w", err)
 	}
@@ -289,7 +302,9 @@ func CreateWorktree(repoRoot, worktreePath, branchName string) error {
 	}
 
 	// Try creating with new branch first.
-	cmd := exec.Command("git", "-C", repoRoot, "worktree", "add", worktreePath, "-b", branchName)
+	args := []string{"-C", repoRoot, "worktree", "add", worktreePath, "-b", branchName}
+	args = append(args, startPoint)
+	cmd := exec.Command("git", args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		outStr := string(output)
 		// If branch already exists, try without -b (checkout existing branch).
@@ -429,11 +444,12 @@ func DeleteBranch(repoRoot, branchName string) error {
 // Returns:
 //   - gitDir: the absolute path of the main repo's .git directory
 //   - isWorktree: true if the found .git was a file (linked worktree)
+//   - worktreeRoot: the directory containing the .git file (only set for linked worktrees)
 //   - err: errNotGitRepo if no .git found, or other OS errors
-func findGitRoot(path string) (string, bool, error) {
+func findGitRoot(path string) (string, bool, string, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
-		return "", false, err
+		return "", false, "", err
 	}
 	// Resolve symlinks for canonical paths (e.g. /var -> /private/var on macOS).
 	if resolved, err := filepath.EvalSymlinks(absPath); err == nil {
@@ -447,20 +463,20 @@ func findGitRoot(path string) (string, bool, error) {
 		if err == nil {
 			if fi.IsDir() {
 				// Regular git repo: .git is a directory.
-				return dotGit, false, nil
+				return dotGit, false, "", nil
 			}
 			// Linked worktree: .git is a file containing "gitdir: <path>".
 			mainGitDir, err := resolveWorktreeGitFile(dotGit)
 			if err != nil {
-				return "", false, err
+				return "", false, "", err
 			}
-			return mainGitDir, true, nil
+			return mainGitDir, true, dir, nil
 		}
 
 		parent := filepath.Dir(dir)
 		if parent == dir {
 			// Reached filesystem root.
-			return "", false, errNotGitRepo
+			return "", false, "", errNotGitRepo
 		}
 		dir = parent
 	}

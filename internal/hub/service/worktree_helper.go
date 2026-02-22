@@ -80,6 +80,15 @@ func (h *WorktreeHelper) CreateWorktreeIfRequested(
 
 	repoRoot := gitResp.GetRepoRoot()
 	repoDirName := gitResp.GetRepoDirName()
+	currentBranch := gitResp.GetCurrentBranch()
+
+	// Use the current branch of the selected directory as the start point.
+	// This ensures new worktrees branch from the correct ref, whether
+	// creating from the main repo or from an existing worktree.
+	startPoint := currentBranch
+	if startPoint == "" {
+		startPoint = "HEAD"
+	}
 
 	// Compute worktree path.
 	worktreePath := filepath.Join(filepath.Dir(repoRoot), repoDirName+"-worktrees", branchName)
@@ -104,6 +113,7 @@ func (h *WorktreeHelper) CreateWorktreeIfRequested(
 				RepoRoot:     repoRoot,
 				WorktreePath: worktreePath,
 				BranchName:   branchName,
+				StartPoint:   startPoint,
 			},
 		},
 	})
