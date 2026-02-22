@@ -1209,11 +1209,7 @@ test.describe('Horizontal Rule Backspace Revert', () => {
     expect(codeText).toBe('---')
   })
 
-  // Skip: ProseMirror's inlineCode mark is inclusive:false, so only the first
-  // dash gets the code mark. The remaining dashes are plain text, making it
-  // impossible to reliably prevent the HR input rule from firing in this
-  // specific scenario. The code block HR suppression IS tested above.
-  test.skip('--- does NOT trigger inside inline code', async ({ page, authenticatedWorkspace }) => {
+  test('--- does NOT trigger inside inline code', async ({ page, authenticatedWorkspace }) => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
@@ -1312,16 +1308,7 @@ test.describe('Link Input Rule', () => {
 })
 
 test.describe('Clipboard Copy/Paste', () => {
-  // Skip: Copy/paste of rich content (bold marks) in Playwright headless
-  // Chromium doesn't reliably preserve ProseMirror formatting. The clipboard
-  // API may strip rich text and paste plain text instead.
-  test.skip('copy and paste preserves markdown structure', async ({ page, context, authenticatedWorkspace }) => {
-    // Grant clipboard permissions for copy/paste
-    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-
-    // Switch to Cmd/Ctrl+Enter mode so Enter creates newlines
-    await page.locator('button:has-text("Enter sends")').click()
-
+  test('copy and paste preserves markdown structure', async ({ page, authenticatedWorkspace }) => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
@@ -1335,20 +1322,42 @@ test.describe('Clipboard Copy/Paste', () => {
     // Verify bold text exists
     await expect(editor.locator('strong')).toHaveText('bold text')
 
-    // Select all and copy
+    // Step 1: Verify that the copy serializer produces markdown with
+    // inline formatting (our clipboardTextSerializer override).
+    // Capture clipboard text by intercepting DataTransfer.setData
+    // during a copy triggered via execCommand.
     await page.keyboard.press('Meta+a')
-    await page.keyboard.press('Meta+c')
+    const clipboardText = await page.evaluate(() => {
+      let captured = ''
+      const origSetData = DataTransfer.prototype.setData
+      DataTransfer.prototype.setData = function (format: string, value: string) {
+        if (format === 'text/plain')
+          captured = value
+        return origSetData.call(this, format, value)
+      }
+      document.execCommand('copy')
+      DataTransfer.prototype.setData = origSetData
+      return captured
+    })
+    // clipboardTextSerializer should produce markdown with bold markers
+    expect(clipboardText).toContain('**')
 
-    // Collapse selection to the end, then add a new line
-    await page.keyboard.press('Meta+ArrowRight')
-    await page.keyboard.press('Enter')
+    // Step 2: Verify that pasting markdown with inline formatting
+    // restores the marks (our enhanced paste plugin). Clear the editor
+    // first, then paste the captured markdown via synthetic paste event.
+    await page.keyboard.press('Meta+a')
+    await page.keyboard.press('Backspace')
+    await expect(editor.locator('strong')).toHaveCount(0)
 
-    // Paste
-    await page.keyboard.press('Meta+v')
+    await page.evaluate((text) => {
+      const dt = new DataTransfer()
+      dt.setData('text/plain', text)
+      const event = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })
+      document.querySelector('.ProseMirror')!.dispatchEvent(event)
+    }, clipboardText)
 
-    // Should have two instances of bold text
-    const bolds = editor.locator('strong')
-    await expect(bolds).toHaveCount(2)
+    // The pasted markdown should produce bold text
+    await expect(editor.locator('strong')).toHaveText('bold text')
   })
 })
 

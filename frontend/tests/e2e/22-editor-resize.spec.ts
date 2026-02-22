@@ -98,9 +98,8 @@ test.describe('Editor Resize Handle', () => {
     // Verify the editor stays well within the viewport height after a large drag.
     const height = await wrapper.evaluate(el => el.getBoundingClientRect().height)
     const viewportHeight = page.viewportSize()!.height
-    // Should be less than 75% of viewport (the panel is smaller than the viewport,
-    // so the actual cap is even lower, but this is a safe upper bound)
-    expect(height).toBeLessThan(viewportHeight * 0.75)
+    // Should be at most 75% of viewport (the max editor height is 75% of the container)
+    expect(height).toBeLessThanOrEqual(viewportHeight * 0.75)
   })
 
   test('should persist resize height across page reload', async ({ page, authenticatedWorkspace }) => {
@@ -109,7 +108,7 @@ test.describe('Editor Resize Handle', () => {
     await expect(wrapper.locator('.ProseMirror')).toBeVisible()
     await page.waitForTimeout(500)
 
-    // Drag handle upward to set a custom min height
+    // Drag handle upward to set a custom height
     await dragResizeHandle(page, -60)
 
     // Wait for localStorage to be written after drag
@@ -128,7 +127,7 @@ test.describe('Editor Resize Handle', () => {
     await expect(wrapper.locator('.ProseMirror')).toBeVisible()
     await page.waitForTimeout(500)
 
-    // Editor should use the stored min height
+    // Editor should use the stored height (acts as min-height when content is small)
     await expect(async () => {
       const heightAfterReload = await wrapper.evaluate(el => el.getBoundingClientRect().height)
       expect(heightAfterReload).toBeGreaterThanOrEqual(storedVal)
@@ -165,13 +164,13 @@ test.describe('Editor Resize Handle', () => {
     expect(stored).toBeNull()
   })
 
-  test('should still auto-grow when content exceeds manual minimum', async ({ page, authenticatedWorkspace }) => {
+  test('should constrain height and scroll when content exceeds requested height', async ({ page, authenticatedWorkspace }) => {
     const wrapper = page.locator('[data-testid="chat-editor"]')
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await page.waitForTimeout(500)
 
-    // Drag handle up to set minHeight to ~60px
+    // Drag handle up to set requestedHeight to ~60px
     await dragResizeHandle(page, -25)
 
     const heightAfterResize = await wrapper.evaluate(el => el.getBoundingClientRect().height)
@@ -179,16 +178,22 @@ test.describe('Editor Resize Handle', () => {
     // Switch to Alt+Enter mode so Enter creates newlines
     await page.locator('button:has-text("Enter sends")').click()
 
-    // Type many lines to exceed the manual minimum
+    // Type many lines to exceed the requested height
     await editor.click()
     for (let i = 0; i < 10; i++) {
       await page.keyboard.type(`Line ${i + 1}`, { delay: 100 })
       await page.keyboard.press('Enter')
     }
 
+    // Height should stay approximately the same (constrained mode)
     await expect(async () => {
       const heightAfterTyping = await wrapper.evaluate(el => el.getBoundingClientRect().height)
-      expect(heightAfterTyping).toBeGreaterThan(heightAfterResize)
+      // Allow a small tolerance (±5px) for the constrained height
+      expect(heightAfterTyping).toBeLessThanOrEqual(heightAfterResize + 5)
     }).toPass({ timeout: 5000 })
+
+    // The editor should be scrollable (content overflows)
+    const isScrollable = await wrapper.evaluate(el => el.scrollHeight > el.clientHeight)
+    expect(isScrollable).toBe(true)
   })
 })
