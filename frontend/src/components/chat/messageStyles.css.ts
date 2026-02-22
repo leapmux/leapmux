@@ -42,8 +42,6 @@ export const thinkingHeader = style({
 })
 
 export const thinkingContent = style({
-  fontStyle: 'italic',
-  color: 'var(--muted-foreground)',
   marginTop: spacing.sm,
 })
 

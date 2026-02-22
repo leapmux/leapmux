@@ -431,17 +431,6 @@ function ThinkingMessage(props: { text: string, context?: RenderContext }): JSX.
             ? <ChevronDown size={14} class={toolUseIcon} />
             : <ChevronRight size={14} class={toolUseIcon} />}
         </span>
-        <Show when={props.context}>
-          <ToolHeaderActions
-            createdAt={props.context!.createdAt}
-            updatedAt={props.context!.updatedAt}
-            threadCount={0}
-            threadExpanded={false}
-            onToggleThread={() => {}}
-            onCopyJson={props.context!.onCopyJson ?? (() => {})}
-            jsonCopied={props.context!.jsonCopied ?? false}
-          />
-        </Show>
       </div>
       <Show when={expanded()}>
         <div class={thinkingContent}>

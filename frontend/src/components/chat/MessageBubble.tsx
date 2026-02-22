@@ -234,7 +234,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   }
 
   // Whether the message is rendered by a renderer that has its own internal ToolHeaderActions.
-  const hasInternalActions = () => category().kind === 'tool_use' || category().kind === 'assistant_thinking'
+  const hasInternalActions = () => category().kind === 'tool_use'
 
   const copyJson = async () => {
     await navigator.clipboard.writeText(prettifyJson(rawJson()))

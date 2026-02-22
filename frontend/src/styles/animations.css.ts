@@ -18,3 +18,8 @@ export const colorShiftPulse = keyframes({
 export const interruptPulse = style({
   animation: `${colorShiftPulse} 5s ease-in-out infinite`,
 })
+
+export const thinkingPulse = keyframes({
+  '0%, 100%': { opacity: 0.15 },
+  '50%': { opacity: 0.6 },
+})

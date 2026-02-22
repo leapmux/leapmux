@@ -39,8 +39,7 @@ export interface AgentEditorPanelProps {
   onInterrupt?: () => void
   settingsLoading?: boolean
   agentContextInfo?: AgentContextInfo
-  turnActive?: boolean
-  streamingText?: string
+  agentWorking?: boolean
   /** Height of the parent container, used for max editor height calculation. */
   containerHeight?: number
 }
@@ -141,15 +140,12 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     return tool === 'AskUserQuestion' || tool === 'request_user_input'
   }
 
-  // Whether the agent is currently streaming output.
-  const isStreaming = () => !!props.streamingText
+  // Whether the Interrupt button should be shown.
+  const showInterrupt = () => !!props.agentWorking && !activeControlRequest()
 
-  // Whether the agent is actively processing a turn (streaming or running tools).
-  const isProcessing = () => !!props.turnActive || isStreaming()
-
-  // Clear interrupt loading when the turn ends.
-  createEffect(on(isProcessing, (processing) => {
-    if (!processing) {
+  // Clear interrupt loading when the button hides.
+  createEffect(on(showInterrupt, (show) => {
+    if (!show) {
       interruptLoading.stop()
     }
   }))
@@ -465,7 +461,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           {model => (
             <label
               role="menuitemradio"
-              class={`${styles.settingsRadioItem} ${isStreaming() ? styles.settingsRadioItemDisabled : ''}`}
+              class={styles.settingsRadioItem}
               data-testid={`model-${model.value}`}
             >
               <input
@@ -473,11 +469,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                 name={`${menuId}-model`}
                 value={model.value}
                 checked={currentModel() === model.value}
-                disabled={isStreaming()}
                 onChange={() => {
-                  if (!isStreaming()) {
-                    props.onModelChange?.(model.value)
-                  }
+                  props.onModelChange?.(model.value)
                 }}
               />
               {model.label}
@@ -495,7 +488,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           {effort => (
             <label
               role="menuitemradio"
-              class={`${styles.settingsRadioItem} ${isStreaming() ? styles.settingsRadioItemDisabled : ''}`}
+              class={styles.settingsRadioItem}
               data-testid={`effort-${effort.value}`}
             >
               <input
@@ -503,11 +496,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                 name={`${menuId}-effort`}
                 value={effort.value}
                 checked={currentEffort() === effort.value}
-                disabled={isStreaming()}
                 onChange={() => {
-                  if (!isStreaming()) {
-                    props.onEffortChange?.(effort.value)
-                  }
+                  props.onEffortChange?.(effort.value)
                 }}
               />
               {effort.label}
@@ -515,16 +505,12 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           )}
         </For>
       </fieldset>
-
-      <Show when={isStreaming()}>
-        <div class={styles.disabledFootnote} data-testid="settings-disabled-footnote">Disabled while running</div>
-      </Show>
     </DropdownMenu>
   )
 
   return (
     <div ref={panelRef} class={styles.editorPanelWrapper} data-testid="agent-editor-panel">
-      <Show when={props.streamingText}>
+      <Show when={props.agentWorking}>
         <div class={styles.streamingIndicator}>Generating...</div>
       </Show>
       <div
@@ -635,7 +621,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                       </Show>
                     </div>
                     <div class={styles.footerBarRight}>
-                      <Show when={isProcessing()}>
+                      <Show when={showInterrupt()}>
                         <button
                           class={`${styles.interruptButton} ${interruptLoading.loading() ? '' : interruptPulse}`}
                           onClick={() => {

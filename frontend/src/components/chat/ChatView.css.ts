@@ -216,25 +216,10 @@ export const settingsRadioItem = style({
   },
 })
 
-export const settingsRadioItemDisabled = style({
-  'opacity': 0.4,
-  'cursor': 'default',
-  ':hover': {
-    backgroundColor: 'transparent',
-  },
-})
-
 export const settingsSeparator = style({
   height: '1px',
   backgroundColor: 'var(--border)',
   margin: `${spacing.xs} 0`,
-})
-
-export const disabledFootnote = style({
-  fontSize: 'var(--text-8)',
-  color: 'var(--muted-foreground)',
-  padding: `2px ${spacing.sm} ${spacing.xs}`,
-  fontStyle: 'italic',
 })
 
 export const footerBarRight = style({
