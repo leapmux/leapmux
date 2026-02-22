@@ -117,7 +117,7 @@ function toolResultWithAnswers(answers: Record<string, string>) {
 // AskUserQuestion thread rendering
 // ---------------------------------------------------------------------------
 
-describe('AskUserQuestion thread rendering', () => {
+describe('askUserQuestion thread rendering', () => {
   it('shows "Submitted answers" when controlResponse precedes tool_result', () => {
     const parent = askUserQuestionToolUse([{ header: 'Uncommitted' }])
     const msg = makeMsg({

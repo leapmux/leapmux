@@ -299,7 +299,11 @@ function renderAskUserQuestion(toolUse: Record<string, unknown>, context?: Rende
           const answer = answers?.[header]
           return (
             <div class={questionItem}>
-              <span class={questionText}>{'- '}{header}{': '}</span>
+              <span class={questionText}>
+                {'- '}
+                {header}
+                {': '}
+              </span>
               <span class={answerText}>
                 <strong>{answer ?? 'Not answered'}</strong>
               </span>

@@ -19,7 +19,7 @@ vi.mock('@solidjs/router', () => ({
 // Test helper component that captures org state
 function OrgStateCapture(props: { onState: (state: ReturnType<typeof useOrg>) => void }) {
   const org = useOrg()
-  props.onState(org)
+  props.onState(org) // eslint-disable-line solid/reactivity -- test helper captures state once
   return <div data-testid="capture">captured</div>
 }
 

@@ -120,15 +120,6 @@ export const sendButtonDisabled = style({
   },
 })
 
-export const streamingIndicator = style({
-  display: 'flex',
-  alignItems: 'center',
-  gap: spacing.sm,
-  padding: `${spacing.xs} ${spacing.lg}`,
-  fontSize: 'var(--text-7)',
-  color: 'var(--muted-foreground)',
-})
-
 export const emptyChat = style({
   display: 'flex',
   alignItems: 'center',

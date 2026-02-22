@@ -510,9 +510,6 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
 
   return (
     <div ref={panelRef} class={styles.editorPanelWrapper} data-testid="agent-editor-panel">
-      <Show when={props.agentWorking}>
-        <div class={styles.streamingIndicator}>Generating...</div>
-      </Show>
       <div
         class={`${styles.editorResizeHandle} ${isDragging() ? styles.editorResizeHandleActive : ''}`}
         data-testid="editor-resize-handle"

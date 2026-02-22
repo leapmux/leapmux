@@ -36,9 +36,11 @@ export interface WorkspaceSectionContentProps {
 }
 
 export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = (props) => {
+  /* eslint-disable solid/reactivity -- stable identifier for createDroppable */
   const droppable = createDroppable(`section-${props.sectionId}`, {
     sectionId: props.sectionId,
   })
+  /* eslint-enable solid/reactivity */
 
   // ---------------------------------------------------------------------------
   // Stable ID-based iteration for workspace items.
