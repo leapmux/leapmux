@@ -60,13 +60,6 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go install github.com/sqlc-dev/sqlc/cmd/sqlc@v${SQLC_VERSION} && \
     cd internal/hub && sqlc generate
 
-# Rename connectrpc package (mirrors Taskfile generate-proto step)
-RUN if [ -d generated/proto/leapmux/v1/leapmuxv1connect ]; then \
-      mv generated/proto/leapmux/v1/leapmuxv1connect generated/proto/leapmux/v1/connectrpc && \
-      sed -i 's/package leapmuxv1connect/package connectrpc/' generated/proto/leapmux/v1/connectrpc/*.go && \
-      sed -i 's|leapmuxv1connect|connectrpc|g' generated/proto/leapmux/v1/connectrpc/*.go; \
-    fi
-
 # Embed frontend assets
 COPY internal/hub/frontend.embed internal/hub/generated/frontend/embed.go
 COPY --from=frontend-builder /src/frontend/.output/public/ internal/hub/generated/frontend/public/
