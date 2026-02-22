@@ -32,7 +32,7 @@ RUN bun run build
 # ------------------------------------------------------------------
 # Stage 3: Build Go binary (cross-compiled, CGO_ENABLED=0)
 # ------------------------------------------------------------------
-FROM golang:1.24-alpine AS go-builder
+FROM golang:1.25-alpine AS go-builder
 
 ARG VERSION=dev
 ARG TARGETOS=linux
@@ -92,14 +92,17 @@ ARG TARGETARCH
 
 # Install s6-overlay (Docker uses amd64/arm64 but s6-overlay releases use
 # x86_64/aarch64, so we map the architecture name before downloading).
-# Ubuntu needs wget and xz-utils; Alpine's BusyBox provides both natively.
+# Alpine needs ca-certificates for HTTPS; Ubuntu needs ca-certificates, wget,
+# and xz-utils (Alpine's BusyBox provides wget and xz-capable tar natively).
 RUN case "${TARGETARCH}" in \
       amd64) S6_ARCH=x86_64 ;; \
       arm64) S6_ARCH=aarch64 ;; \
       *)     S6_ARCH="${TARGETARCH}" ;; \
     esac && \
-    if [ ! -f /etc/alpine-release ]; then \
-      apt-get update && apt-get install -y --no-install-recommends wget xz-utils \
+    if [ -f /etc/alpine-release ]; then \
+      apk add --no-cache ca-certificates; \
+    else \
+      apt-get update && apt-get install -y --no-install-recommends ca-certificates wget xz-utils \
       && rm -rf /var/lib/apt/lists/*; \
     fi && \
     wget -qO /tmp/s6-overlay-noarch.tar.xz \
