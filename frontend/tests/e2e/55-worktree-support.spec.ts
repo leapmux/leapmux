@@ -1025,7 +1025,7 @@ test.describe('Worktree Support', () => {
     expect(sourceBranchHead).not.toBe(mainHead)
 
     // Create workspace from the worktree root (source-branch) with createWorktree enabled
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,

@@ -143,6 +143,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
   // May fail if DragDropProvider context isn't available (e.g. during rapid tab creation)
   let zoneDroppable: ReturnType<typeof createDroppable> | undefined
   try {
+    // eslint-disable-next-line solid/reactivity -- stable identifier for createDroppable
     zoneDroppable = createDroppable(`${TABBAR_ZONE_PREFIX}${props.tileId}`)
   }
   catch { /* DragDropProvider context not available */ }

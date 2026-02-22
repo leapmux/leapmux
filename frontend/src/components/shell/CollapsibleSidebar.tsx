@@ -77,6 +77,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
   // state for async-loaded sections), then overlay defaults for sections that
   // are already present but have no saved preference.
   const initialOpen: Record<string, boolean> = { ...(props.initialOpenSections ?? {}) }
+  // eslint-disable-next-line solid/reactivity -- read once for initialization
   for (const s of props.sections) {
     if (s.railOnly)
       continue
@@ -328,6 +329,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
   // Collapse icon (stable — side doesn't change during component lifetime)
   // ---------------------------------------------------------------------------
 
+  // eslint-disable-next-line solid/reactivity -- side is stable for the component lifetime
   const CollapseIcon = props.side === 'left' ? PanelLeftClose : PanelRightClose
 
   // ---------------------------------------------------------------------------

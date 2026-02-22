@@ -161,7 +161,7 @@ const TreeNode: Component<{
 
     if (!loaded()) {
       untrack(() => {
-        doLoad().then(() => {
+        doLoad().then(() => { // eslint-disable-line solid/reactivity -- one-shot async load inside untrack
           setExpanded(true)
           // Scroll into view for the deepest auto-expanded node.
           // Only scroll if this is the closest ancestor (children will handle deeper).

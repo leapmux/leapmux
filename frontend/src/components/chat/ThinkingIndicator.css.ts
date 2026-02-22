@@ -6,7 +6,7 @@ export const container = style({
   display: 'flex',
   alignItems: 'center',
   gap: '6px',
-  padding: `${spacing.sm} ${spacing.lg}`,
+  padding: `${spacing.sm} 0`,
 })
 
 export const dot = style({

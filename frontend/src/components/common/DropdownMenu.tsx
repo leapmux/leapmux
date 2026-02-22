@@ -67,6 +67,7 @@ export interface DropdownMenuProps {
 }
 
 export function DropdownMenu(props: DropdownMenuProps) {
+  // eslint-disable-next-line solid/reactivity -- read once for a stable element ID
   const menuId = props.id ?? createUniqueId()
   const [isOpen, setIsOpen] = createSignal(false)
 
@@ -163,8 +164,9 @@ export function DropdownMenu(props: DropdownMenuProps) {
   }
 
   // Programmatic open/close when `open` accessor is provided
+  // eslint-disable-next-line solid/reactivity -- guards presence of accessor; on() tracks it reactively
   if (props.open) {
-    createEffect(on(props.open, (shouldOpen) => {
+    createEffect(on(props.open, (shouldOpen) => { // eslint-disable-line solid/reactivity -- passing accessor to on() is correct
       if (!popoverEl)
         return
       if (shouldOpen) {
@@ -249,7 +251,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
           <menu
             popover="auto"
             id={menuId}
-            ref={popoverRefCallback}
+            ref={popoverRefCallback /* eslint-disable-line solid/reactivity -- ref callback, not a signal */}
             class={props.class}
             data-testid={props['data-testid']}
           >
@@ -260,7 +262,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
         <div
           popover="auto"
           id={menuId}
-          ref={popoverRefCallback}
+          ref={popoverRefCallback /* eslint-disable-line solid/reactivity -- ref callback, not a signal */}
           class={props.class}
           data-testid={props['data-testid']}
         >

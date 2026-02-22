@@ -17,7 +17,7 @@ export function showToast(message: string, type: ToastType = 'danger') {
 
   const closeBtn = document.createElement('button')
   closeBtn.setAttribute('data-close', '')
-  closeBtn.textContent = '\u00d7'
+  closeBtn.textContent = '\u00D7'
   closeBtn.onclick = () => toast.remove()
   toast.appendChild(closeBtn)
 

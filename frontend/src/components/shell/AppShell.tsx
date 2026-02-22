@@ -1252,6 +1252,7 @@ export const AppShell: ParentComponent = (props) => {
       <AgentEditorPanel
         agentId={agentId()}
         agent={agentStore.state.agents.find(a => a.id === agentId())}
+        // eslint-disable-next-line solid/reactivity -- event handler, not a tracked scope
         onSendMessage={async (content) => {
           const id = focusedAgentId()
           if (!id)

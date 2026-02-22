@@ -9,7 +9,8 @@ const NOTIFICATION_TYPES = new Set(['settings_changed', 'context_cleared'])
 function getInnerMessageType(msg: AgentChatMessage): string | undefined {
   try {
     const text = decompressContentToString(msg.content, msg.contentCompression)
-    if (!text) return undefined
+    if (!text)
+      return undefined
     const parsed = JSON.parse(text)
     const inner = parsed?.messages?.[0] ?? parsed
     return inner?.type as string | undefined
@@ -24,10 +25,12 @@ function getInnerMessageType(msg: AgentChatMessage): string | undefined {
 export function isAgentWorking(msgs: AgentChatMessage[]): boolean {
   for (let i = msgs.length - 1; i >= 0; i--) {
     const msg = msgs[i]
-    if (msg.role !== MessageRole.RESULT) return true
+    if (msg.role !== MessageRole.RESULT)
+      return true
     // RESULT message — check if it's just a mid-turn notification to skip
     const innerType = getInnerMessageType(msg)
-    if (innerType && NOTIFICATION_TYPES.has(innerType)) continue
+    if (innerType && NOTIFICATION_TYPES.has(innerType))
+      continue
     return false // real turn-end RESULT
   }
   return false // no messages or all notifications
