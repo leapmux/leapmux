@@ -80,7 +80,7 @@ export async function installToastRecorder(page: Page) {
   await page.addInitScript(() => {
     ;(window as any).__recordedToasts = [] as RecordedToast[]
 
-    // Intercept window.ot assignment to monkey-patch toast()
+    // Intercept window.ot assignment to monkey-patch toast() and toastEl()
     let _ot: any
     Object.defineProperty(window, 'ot', {
       configurable: true,
@@ -101,6 +101,18 @@ export async function installToastRecorder(page: Page) {
           // Preserve .clear method
           patched.clear = original.clear
           val.toast = patched
+        }
+        if (val && typeof val.toastEl === 'function') {
+          const originalEl = val.toastEl
+          val.toastEl = function (element: HTMLElement, options?: any) {
+            const msg = element.querySelector('.toast-message')
+            ;(window as any).__recordedToasts.push({
+              message: msg?.textContent ?? '',
+              variant: element.getAttribute('data-variant') ?? '',
+              timestamp: Date.now(),
+            })
+            return originalEl.call(val, element, options)
+          }
         }
         _ot = val
       },
