@@ -527,29 +527,29 @@ func (s *AgentService) HandleAgentOutput(ctx context.Context, output *leapmuxv1.
 			}
 		}
 
-		// Extract thread_id for tool_use / tool_result threading.
-		// For user messages, also check the top-level parent_tool_use_id
-		// field which is set on control messages (e.g. ask_user_question
-		// responses).
-		var threadID string
-		switch envelope.Type {
-		case "assistant":
-			threadID = extractToolUseID(content)
-		case "user":
+		// Extract thread_id — try each extractor until one succeeds.
+		// Each looks at different JSON paths, so at most one will match.
+		threadID := extractToolUseID(content)
+		if threadID == "" {
 			threadID = extractToolResultID(content)
-			if threadID == "" {
-				threadID = extractParentToolUseID(content)
-			}
+		}
+		if threadID == "" {
+			threadID = extractParentToolUseID(content)
+		}
+		if threadID == "" {
+			threadID = extractSystemToolUseID(content)
 		}
 
-		// Tool_result with a matching parent: merge into the parent's row
+		// Child message with a matching parent: merge into the parent's row
 		// instead of creating a new row. This keeps thread messages in a
 		// single DB row and bumps the parent's seq so reconnection via
 		// afterSeq replays the updated thread.
-		if threadID != "" && role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
+		if threadID != "" && (role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER || role == leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM) {
 			if s.mergeIntoThread(ctx, agentID, threadID, content) {
-				// Detect plan mode changes from tool_result.
-				s.detectPlanModeFromToolResult(ctx, agentID, content)
+				if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
+					// Detect plan mode changes from tool_result.
+					s.detectPlanModeFromToolResult(ctx, agentID, content)
+				}
 				return
 			}
 			// Parent not found or merge failed — fall through to standalone insert.

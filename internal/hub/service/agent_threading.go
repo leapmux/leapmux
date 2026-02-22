@@ -49,6 +49,19 @@ func extractParentToolUseID(content []byte) string {
 	return msg.ParentToolUseID
 }
 
+// extractSystemToolUseID extracts the top-level tool_use_id from a system
+// message, or "" if not present.
+// Expected structure: {"type":"system","subtype":"task_started","tool_use_id":"toolu_..."}
+func extractSystemToolUseID(content []byte) string {
+	var msg struct {
+		ToolUseID string `json:"tool_use_id"`
+	}
+	if err := json.Unmarshal(content, &msg); err != nil {
+		return ""
+	}
+	return msg.ToolUseID
+}
+
 // extractToolResultID parses a user message's JSON content and returns the
 // first tool_result block's tool_use_id, or "" if none is found.
 // Expected structure: {"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_..."}]}}

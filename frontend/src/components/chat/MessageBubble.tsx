@@ -234,7 +234,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   }
 
   // Whether the message is rendered by a renderer that has its own internal ToolHeaderActions.
-  const hasInternalActions = () => category().kind === 'tool_use'
+  const hasInternalActions = () => category().kind === 'tool_use' || category().kind === 'assistant_thinking'
 
   const copyJson = async () => {
     await navigator.clipboard.writeText(prettifyJson(rawJson()))
@@ -242,42 +242,44 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     setTimeout(() => setJsonCopied(false), 2000)
   }
 
-  // Extract structuredPatch from the first thread child (tool_result) for the parent tool_use diff.
+  // Extract structuredPatch from a thread child (tool_result) for the parent tool_use diff.
+  // Scans all children to skip synthetic control responses that may precede the tool_result.
   const childToolUseResult = (): Record<string, unknown> | null => {
-    const children = parsed().children
-    if (children.length === 0)
-      return null
-    const child = children[0] as Record<string, unknown>
-    return (typeof child?.tool_use_result === 'object' && child.tool_use_result !== null)
-      ? child.tool_use_result as Record<string, unknown>
-      : null
+    for (const raw of parsed().children) {
+      const child = raw as Record<string, unknown>
+      if (typeof child?.tool_use_result === 'object' && child.tool_use_result !== null)
+        return child.tool_use_result as Record<string, unknown>
+    }
+    return null
   }
 
-  // Extract text content from the first thread child's tool_result.
+  // Extract text content from a thread child's tool_result.
+  // Scans all children to skip synthetic control responses that may precede the tool_result.
   const extractChildResultContent = (): string | undefined => {
-    const children = parsed().children
-    if (children.length === 0)
-      return undefined
-    try {
-      const child = children[0] as Record<string, unknown>
-      if (child?.type !== 'user')
-        return undefined
-      const msg = child.message as Record<string, unknown>
-      if (!msg?.content || !Array.isArray(msg.content))
-        return undefined
-      const toolResult = (msg.content as Array<Record<string, unknown>>).find(c => c.type === 'tool_result')
-      if (!toolResult)
-        return undefined
-      const resultData = toolResult as Record<string, unknown>
-      const content = Array.isArray(resultData.content)
-        ? (resultData.content as Array<Record<string, unknown>>)
-            .filter(c => c.type === 'text')
-            .map(c => c.text)
-            .join('')
-        : (typeof resultData.content === 'string' ? resultData.content : '')
-      return content || undefined
+    for (const raw of parsed().children) {
+      try {
+        const child = raw as Record<string, unknown>
+        if (child?.type !== 'user')
+          continue
+        const msg = child.message as Record<string, unknown>
+        if (!msg?.content || !Array.isArray(msg.content))
+          continue
+        const toolResult = (msg.content as Array<Record<string, unknown>>).find(c => c.type === 'tool_result')
+        if (!toolResult)
+          continue
+        const resultData = toolResult as Record<string, unknown>
+        const content = Array.isArray(resultData.content)
+          ? (resultData.content as Array<Record<string, unknown>>)
+              .filter(c => c.type === 'text')
+              .map(c => c.text)
+              .join('')
+          : (typeof resultData.content === 'string' ? resultData.content : '')
+        if (content)
+          return content
+      }
+      catch { continue }
     }
-    catch { return undefined }
+    return undefined
   }
 
   // Extract control response (approval/rejection) from thread children.

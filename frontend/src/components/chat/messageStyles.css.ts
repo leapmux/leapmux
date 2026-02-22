@@ -25,6 +25,28 @@ export const assistantMessage = style([messageBubble, {
   alignSelf: 'flex-start',
 }])
 
+export const thinkingMessage = style([messageBubble, {
+  backgroundColor: 'var(--card)',
+  border: '1px dashed var(--border)',
+  color: 'var(--foreground)',
+  alignSelf: 'flex-start',
+}])
+
+export const thinkingHeader = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: spacing.xs,
+  color: 'var(--muted-foreground)',
+  cursor: 'pointer',
+  userSelect: 'none',
+})
+
+export const thinkingContent = style({
+  fontStyle: 'italic',
+  color: 'var(--muted-foreground)',
+  marginTop: spacing.sm,
+})
+
 export const systemMessage = style([messageBubble, {
   backgroundColor: 'transparent',
   border: '1px dashed var(--border)',
@@ -96,7 +118,7 @@ export const messageRowCenter = style({
 })
 
 // Extra vertical spacing for user, assistant, and notification message rows
-globalStyle(`${messageRow}:has(> .${assistantMessage}), ${messageRowEnd}, ${messageRowCenter}`, {
+globalStyle(`${messageRow}:has(> .${assistantMessage}), ${messageRow}:has(> .${thinkingMessage}), ${messageRowEnd}, ${messageRowCenter}`, {
   marginTop: spacing.xs,
   marginBottom: spacing.xs,
 })

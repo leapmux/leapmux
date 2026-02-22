@@ -67,6 +67,150 @@ async function copyRawJson(): Promise<Record<string, unknown>> {
   return JSON.parse(clipboardContent!)
 }
 
+// ---------------------------------------------------------------------------
+// Helper: build AskUserQuestion thread messages
+// ---------------------------------------------------------------------------
+
+function askUserQuestionToolUse(questions: Array<{ header: string }>) {
+  return {
+    type: 'assistant',
+    message: {
+      content: [{
+        type: 'tool_use',
+        id: 'toolu_ask_1',
+        name: 'AskUserQuestion',
+        input: {
+          questions: questions.map(q => ({
+            question: `Question about ${q.header}?`,
+            header: q.header,
+            multiSelect: false,
+            options: [
+              { label: 'Option A', description: 'First option' },
+              { label: 'Option B', description: 'Second option' },
+            ],
+          })),
+        },
+      }],
+    },
+  }
+}
+
+function controlResponse(action = 'approved') {
+  return { isSynthetic: true, controlResponse: { action, comment: '' } }
+}
+
+function toolResultWithAnswers(answers: Record<string, string>) {
+  return {
+    type: 'user',
+    message: {
+      content: [{
+        type: 'tool_result',
+        content: 'User has answered your questions.',
+        tool_use_id: 'toolu_ask_1',
+      }],
+    },
+    tool_use_result: { answers },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// AskUserQuestion thread rendering
+// ---------------------------------------------------------------------------
+
+describe('AskUserQuestion thread rendering', () => {
+  it('shows "Submitted answers" when controlResponse precedes tool_result', () => {
+    const parent = askUserQuestionToolUse([{ header: 'Uncommitted' }])
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([
+        parent,
+        controlResponse(),
+        toolResultWithAnswers({ Uncommitted: 'Commit changes' }),
+      ]),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble.textContent).toContain('Submitted answers')
+    expect(bubble.textContent).not.toContain('Waiting for answers')
+  })
+
+  it('renders answers as bullet list with bold answer text', () => {
+    const parent = askUserQuestionToolUse([{ header: 'Uncommitted' }])
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([
+        parent,
+        controlResponse(),
+        toolResultWithAnswers({ Uncommitted: 'Commit changes' }),
+      ]),
+    })
+
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    // Check bullet prefix and header text
+    expect(bubble.textContent).toContain('- Uncommitted: ')
+    // Check that answer is bolded
+    const strong = container.querySelector('strong')
+    expect(strong).not.toBeNull()
+    expect(strong!.textContent).toBe('Commit changes')
+  })
+
+  it('shows "Not answered" for unanswered questions', () => {
+    const parent = askUserQuestionToolUse([{ header: 'Auth' }, { header: 'Database' }])
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([
+        parent,
+        controlResponse(),
+        toolResultWithAnswers({ Auth: 'OAuth' }),
+      ]),
+    })
+
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const strongs = container.querySelectorAll('strong')
+    const strongTexts = Array.from(strongs).map(el => el.textContent)
+    expect(strongTexts).toContain('OAuth')
+    expect(strongTexts).toContain('Not answered')
+  })
+
+  it('shows "Waiting for answers" with no thread children', () => {
+    const parent = askUserQuestionToolUse([{ header: 'Uncommitted' }])
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([parent]),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble.textContent).toContain('Waiting for answers')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rawJson (Copy Raw JSON feature)
+// ---------------------------------------------------------------------------
+
 describe('messageBubble rawJson', () => {
   it('includes metadata fields', async () => {
     const innerMsg = {
