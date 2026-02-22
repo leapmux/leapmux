@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -16,6 +17,7 @@ func (c *Client) handleAgentStart(ctx context.Context, requestID string, req *le
 	workspaceID := req.GetWorkspaceId()
 	model := req.GetModel()
 	workingDir := req.GetWorkingDir()
+	homeDir, _ := os.UserHomeDir()
 
 	if model == "" {
 		model = "haiku"
@@ -127,6 +129,7 @@ func (c *Client) handleAgentStart(ctx context.Context, requestID string, req *le
 				PermissionMode:     confirmedMode,
 				Effort:             req.GetEffort(),
 				GitStatus:          gitStatusToProto(gitutil.GetGitStatus(resolvedDir)),
+				HomeDir:            homeDir,
 			},
 		},
 	})

@@ -54,6 +54,8 @@ export interface RenderContext {
   /** ISO timestamp of the last update (thread merge). Preferred over createdAt when set. */
   updatedAt?: string
   workingDir?: string
+  /** Worker's home directory for tilde (~) path simplification. */
+  homeDir?: string
   /** Number of thread children (tool results). */
   threadChildCount?: number
   /** Whether thread is currently expanded. */
@@ -96,23 +98,42 @@ function markdownClass(_role: MessageRole): string {
 }
 
 /** Relativize an absolute path against the workspace working directory. */
-export function relativizePath(absPath: string, workingDir?: string): string {
+export function relativizePath(absPath: string, workingDir?: string, homeDir?: string): string {
   if (!workingDir)
     return absPath
   const base = workingDir.endsWith('/') ? workingDir : `${workingDir}/`
+
+  // Candidate 1: direct relative (path is under workingDir)
   if (absPath.startsWith(base)) {
-    return absPath.slice(base.length)
+    return absPath.slice(base.length) // always shortest for subpaths
   }
-  // Try to produce a ../ relative path
+
+  // Candidate 2: ../ relative path
   const baseParts = base.split('/').filter(Boolean)
   const absParts = absPath.split('/').filter(Boolean)
   let common = 0
-  while (common < baseParts.length && common < absParts.length && baseParts[common] === absParts[common]) {
+  while (common < baseParts.length && common < absParts.length && baseParts[common] === absParts[common])
     common++
-  }
   const ups = baseParts.length - common
-  const rel = '../'.repeat(ups) + absParts.slice(common).join('/')
-  return rel.length < absPath.length ? rel : absPath
+  const dotRel = '../'.repeat(ups) + absParts.slice(common).join('/')
+
+  // Candidate 3: ~/... tilde path
+  let tildePath: string | undefined
+  if (homeDir) {
+    const homeBase = homeDir.endsWith('/') ? homeDir : `${homeDir}/`
+    if (absPath === homeDir)
+      tildePath = '~'
+    else if (absPath.startsWith(homeBase))
+      tildePath = `~/${absPath.slice(homeBase.length)}`
+  }
+
+  // Pick shortest
+  let best = absPath
+  if (dotRel.length < best.length)
+    best = dotRel
+  if (tildePath !== undefined && tildePath.length < best.length)
+    best = tildePath
+  return best
 }
 
 /** Extract assistant content array from parsed message, or null if not applicable. */

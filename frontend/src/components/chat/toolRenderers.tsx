@@ -104,6 +104,7 @@ export function formatToolInput(input: unknown): string {
 /** Render per-tool compact display for a tool_use block. */
 export function renderToolDetail(toolName: string, input: Record<string, unknown>, context?: RenderContext): JSX.Element | null {
   const cwd = context?.workingDir
+  const homeDir = context?.homeDir
 
   switch (toolName) {
     case 'Bash': {
@@ -126,7 +127,7 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
             : ''
       return (
         <>
-          <span class={toolInputPath}>{relativizePath(path, cwd)}</span>
+          <span class={toolInputPath}>{relativizePath(path, cwd, homeDir)}</span>
           <span class={toolInputDetail}>{rangeStr}</span>
         </>
       )
@@ -139,7 +140,7 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
       const lineStr = lineCount > 0 ? ` (${lineCount} ${lineCount === 1 ? 'line' : 'lines'})` : ''
       return (
         <>
-          <span class={toolInputPath}>{relativizePath(path, cwd)}</span>
+          <span class={toolInputPath}>{relativizePath(path, cwd, homeDir)}</span>
           <span class={toolInputDetail}>{lineStr}</span>
         </>
       )
@@ -163,7 +164,7 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
       const hasStats = added > 0 || removed > 0
       return (
         <>
-          <span class={toolInputPath}>{relativizePath(path, cwd)}</span>
+          <span class={toolInputPath}>{relativizePath(path, cwd, homeDir)}</span>
           {hasStats && (
             <span class={toolInputDetail}>
               {' '}
@@ -189,12 +190,12 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
       const { pattern, path } = input as GlobInput
       // Relativize pattern if it's an absolute path without glob wildcards
       const displayPattern = pattern && pattern.startsWith('/') && !pattern.includes('*')
-        ? relativizePath(pattern, cwd)
+        ? relativizePath(pattern, cwd, homeDir)
         : (pattern || '')
       return (
         <span class={toolInputCode}>
           {displayPattern}
-          {path ? ` ${relativizePath(path, cwd)}` : ''}
+          {path ? ` ${relativizePath(path, cwd, homeDir)}` : ''}
         </span>
       )
     }
@@ -244,7 +245,7 @@ export function renderToolSubDetail(toolName: string, input: Record<string, unkn
       const { path } = input as GrepInput
       if (!path)
         return null
-      return <div class={cls}>{relativizePath(path, context?.workingDir)}</div>
+      return <div class={cls}>{relativizePath(path, context?.workingDir, context?.homeDir)}</div>
     }
     default:
       return null
@@ -484,7 +485,7 @@ function ToolResultMessage(props: {
         >
           <div class={toolUseHeader}>
             <Show when={props.filePath}>
-              <span class={toolInputPath}>{relativizePath(props.filePath, props.context?.workingDir)}</span>
+              <span class={toolInputPath}>{relativizePath(props.filePath, props.context?.workingDir, props.context?.homeDir)}</span>
             </Show>
             <div class={toolHeaderActions}>
               <IconButton

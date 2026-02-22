@@ -21,6 +21,8 @@ interface ChatViewProps {
   onDeleteMessage?: (messageId: string) => void
   /** Workspace working directory for relativizing file paths in tool messages. */
   workingDir?: string
+  /** Worker's home directory for tilde (~) path simplification. */
+  homeDir?: string
   /** Whether there are older messages available to fetch. */
   hasOlderMessages?: boolean
   /** Whether a fetch for older messages is in progress. */
@@ -238,6 +240,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     onRetry={() => props.onRetryMessage?.(msg.id)}
                     onDelete={() => props.onDeleteMessage?.(msg.id)}
                     workingDir={props.workingDir}
+                    homeDir={props.homeDir}
                   />
                 </div>
               )}

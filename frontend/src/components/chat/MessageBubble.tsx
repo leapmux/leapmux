@@ -90,6 +90,7 @@ interface MessageBubbleProps {
   onRetry?: () => void
   onDelete?: () => void
   workingDir?: string
+  homeDir?: string
 }
 
 export const MessageBubble: Component<MessageBubbleProps> = (props) => {
@@ -309,6 +310,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       createdAt: props.message.createdAt,
       updatedAt: props.message.updatedAt,
       workingDir: props.workingDir,
+      homeDir: props.homeDir,
       threadChildCount: nonControlChildren().length,
       threadExpanded: threadExpanded(),
       onToggleThread: () => setThreadExpanded(prev => !prev),
@@ -383,6 +385,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
                         <ErrorBoundary fallback={<span class={chatStyles.systemMessage}>Failed to render message</span>}>
                           {renderMessageContent(child, childRole(), {
                             workingDir: props.workingDir,
+                            homeDir: props.homeDir,
                             parentToolName: toolInfo?.name,
                             parentToolInput: toolInfo?.input,
                           })}

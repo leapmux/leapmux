@@ -53,6 +53,7 @@ type AgentService struct {
 	lastNotifThread sync.Map // agentID -> *notifThreadRef: current notification thread
 	lastAgentStatus sync.Map // agentID -> string: last status value ("" = null, non-empty = actual value)
 	gitStatus       sync.Map // agentID -> *leapmuxv1.AgentGitStatus: latest git status from worker
+	homeDir         sync.Map // agentID -> string: worker's home directory
 }
 
 // RestartOptions controls behavior when an agent is restarted via the
@@ -207,13 +208,19 @@ func (s *AgentService) OpenAgent(
 	// Register tab for worktree tracking (after successful agent start).
 	s.worktreeHelper.RegisterTabForWorktree(ctx, worktreeID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
 
+	// Cache and surface the worker's home directory.
+	agentHomeDir := resp.GetAgentStarted().GetHomeDir()
+	s.StoreHomeDir(agentID, agentHomeDir)
+
 	agent, err := s.queries.GetAgentByID(ctx, agentID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
+	agentProto := agentToProto(&agent)
+	agentProto.HomeDir = agentHomeDir
 	return connect.NewResponse(&leapmuxv1.OpenAgentResponse{
-		Agent: agentToProto(&agent),
+		Agent: agentProto,
 	}), nil
 }
 
@@ -341,6 +348,7 @@ func (s *AgentService) ListAgents(
 	protoAgents := make([]*leapmuxv1.AgentInfo, len(agents))
 	for i := range agents {
 		protoAgents[i] = agentToProto(&agents[i])
+		protoAgents[i].HomeDir = s.GetHomeDir(agents[i].ID)
 	}
 
 	return connect.NewResponse(&leapmuxv1.ListAgentsResponse{
@@ -553,6 +561,21 @@ func (s *AgentService) GetGitStatus(agentID string) *leapmuxv1.AgentGitStatus {
 func (s *AgentService) StoreGitStatus(agentID string, status *leapmuxv1.AgentGitStatus) {
 	if status != nil {
 		s.gitStatus.Store(agentID, status)
+	}
+}
+
+// GetHomeDir returns the cached home directory for an agent's worker, or empty string if not available.
+func (s *AgentService) GetHomeDir(agentID string) string {
+	if v, ok := s.homeDir.Load(agentID); ok {
+		return v.(string)
+	}
+	return ""
+}
+
+// StoreHomeDir caches the worker's home directory for an agent.
+func (s *AgentService) StoreHomeDir(agentID string, dir string) {
+	if dir != "" {
+		s.homeDir.Store(agentID, dir)
 	}
 }
 

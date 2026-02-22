@@ -275,6 +275,7 @@ message AgentStarted {
   string permission_mode = 6;      // Confirmed permission mode after startup handshake
   string effort = 7;               // Effort level echoed back from startup
   AgentGitStatus git_status = 8;   // Git status for the resolved working directory
+  string home_dir = 9;             // Worker's home directory for tilde path display
 }
 
 // AgentGitInfo carries git status updates from worker to hub (e.g. at turn-end).
