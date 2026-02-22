@@ -927,6 +927,124 @@ test.describe('Worktree Support', () => {
     expect(branchExists(repoDir, 'keep-branch')).toBe(true)
   })
 
+  // ─── Worktree-from-Worktree ──────────────────────────────────────
+
+  test('worktree checkbox appears for existing worktree root', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    const { adminToken, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-wt-root')
+    const realDataDir = realpathSync(dataDir)
+
+    // Create a worktree manually
+    const worktreeDir = join(realDataDir, 'test-repo-wt-root-wt')
+    execSync(`git worktree add ${join(dataDir, 'test-repo-wt-root-wt')} -b wt-root-branch`, { cwd: repoDir })
+    expect(existsSync(worktreeDir)).toBe(true)
+
+    await loginViaToken(page, adminToken)
+    await page.goto('/o/admin')
+    await waitForOrgPageReady(page)
+
+    await page.locator('[data-testid="sidebar-new-workspace"]').click()
+    await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
+
+    const createBtn = page.getByRole('button', { name: 'Create' })
+    const refreshBtn = page.getByTitle('Refresh workers')
+    await waitForWorker(page, createBtn, refreshBtn)
+
+    // Set working directory to the worktree root
+    const dialog = page.getByRole('dialog')
+    const pathInput = dialog.getByPlaceholder('Enter path...')
+    await pathInput.fill(worktreeDir)
+    await pathInput.press('Enter')
+
+    // Worktree checkbox should appear for an existing worktree root
+    await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
+
+    await page.getByRole('button', { name: 'Cancel' }).click()
+  })
+
+  test('dirty warning appears when source working copy has uncommitted changes', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    const { adminToken, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-dirty-warn')
+
+    // Make the repo dirty
+    writeFileSync(join(repoDir, 'dirty-file.txt'), 'uncommitted\n')
+
+    await loginViaToken(page, adminToken)
+    await page.goto('/o/admin')
+    await waitForOrgPageReady(page)
+
+    await page.locator('[data-testid="sidebar-new-workspace"]').click()
+    await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
+
+    const createBtn = page.getByRole('button', { name: 'Create' })
+    const refreshBtn = page.getByTitle('Refresh workers')
+    await waitForWorker(page, createBtn, refreshBtn)
+
+    const dialog = page.getByRole('dialog')
+    const pathInput = dialog.getByPlaceholder('Enter path...')
+    await pathInput.fill(repoDir)
+    await pathInput.press('Enter')
+
+    await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
+    await page.getByText('Create new worktree').click()
+
+    // Warning about uncommitted changes should be visible
+    await expect(page.getByText('uncommitted changes that will not be transferred')).toBeVisible()
+
+    await page.getByRole('button', { name: 'Cancel' }).click()
+  })
+
+  test('create worktree from existing worktree starts from correct branch', async ({
+    leapmuxServer,
+  }) => {
+    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-wt-from-wt')
+    const realDataDir = realpathSync(dataDir)
+
+    // Create a worktree with an extra commit that diverges from main
+    const firstWorktreeDir = join(realDataDir, 'test-repo-wt-from-wt-worktrees', 'source-branch')
+    execSync(`git worktree add ${join(dataDir, 'test-repo-wt-from-wt-worktrees/source-branch')} -b source-branch`, { cwd: repoDir })
+    expect(existsSync(firstWorktreeDir)).toBe(true)
+
+    // Add an extra commit on the source-branch worktree
+    execSync('git config user.email "test@test.com"', { cwd: firstWorktreeDir })
+    execSync('git config user.name "Test"', { cwd: firstWorktreeDir })
+    writeFileSync(join(firstWorktreeDir, 'extra.txt'), 'diverged\n')
+    execSync('git add .', { cwd: firstWorktreeDir })
+    execSync('git commit -m "diverge from main"', { cwd: firstWorktreeDir })
+
+    // Get the HEAD of source-branch (should differ from main)
+    const sourceBranchHead = execSync('git rev-parse HEAD', { cwd: firstWorktreeDir }).toString().trim()
+    const mainHead = execSync('git rev-parse HEAD', { cwd: repoDir }).toString().trim()
+    expect(sourceBranchHead).not.toBe(mainHead)
+
+    // Create workspace from the worktree root (source-branch) with createWorktree enabled
+    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+      hubUrl,
+      adminToken,
+      workerId,
+      'WT from WT WS',
+      adminOrgId,
+      firstWorktreeDir,
+      'derived-branch',
+    )
+
+    // The new worktree should exist
+    const derivedWorktreeDir = join(realDataDir, 'test-repo-wt-from-wt-worktrees', 'derived-branch')
+    expect(existsSync(derivedWorktreeDir)).toBe(true)
+
+    // The new worktree's HEAD should match the source-branch's HEAD (not main's HEAD)
+    const derivedHead = execSync('git rev-parse HEAD', { cwd: derivedWorktreeDir }).toString().trim()
+    expect(derivedHead).toBe(sourceBranchHead)
+    expect(derivedHead).not.toBe(mainHead)
+  })
+
   // ─── Edge Cases ────────────────────────────────────────────────────
 
   test('invalid branch name disables Create button and shows error', async ({

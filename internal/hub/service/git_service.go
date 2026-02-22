@@ -67,11 +67,14 @@ func (s *GitService) GetGitInfo(
 	}
 
 	return connect.NewResponse(&leapmuxv1.GetGitInfoResponse{
-		IsGitRepo:   gitResp.GetIsGitRepo(),
-		IsWorktree:  gitResp.GetIsWorktree(),
-		RepoRoot:    gitResp.GetRepoRoot(),
-		RepoDirName: gitResp.GetRepoDirName(),
-		IsRepoRoot:  gitResp.GetIsRepoRoot(),
+		IsGitRepo:      gitResp.GetIsGitRepo(),
+		IsWorktree:     gitResp.GetIsWorktree(),
+		RepoRoot:       gitResp.GetRepoRoot(),
+		RepoDirName:    gitResp.GetRepoDirName(),
+		IsRepoRoot:     gitResp.GetIsRepoRoot(),
+		IsWorktreeRoot: gitResp.GetIsWorktreeRoot(),
+		IsDirty:        gitResp.GetIsDirty(),
+		CurrentBranch:  gitResp.GetCurrentBranch(),
 	}), nil
 }
 
