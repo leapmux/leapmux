@@ -624,6 +624,25 @@ export async function loginViaToken(page: Page, token: string) {
 }
 
 /**
+ * Wait for the debounced layout save API call to complete.
+ * Returns a promise that resolves once the SaveLayout response arrives.
+ * Must be called **before** the action that triggers the save, then awaited
+ * after the action completes.
+ *
+ * Usage:
+ *   const saved = waitForLayoutSave(page)
+ *   await doSomethingThatTriggersLayoutSave()
+ *   await saved
+ *   await page.reload()
+ */
+export function waitForLayoutSave(page: Page) {
+  return page.waitForResponse(
+    resp => resp.url().includes('WorkspaceService/SaveLayout') && resp.ok(),
+    { timeout: 10_000 },
+  )
+}
+
+/**
  * Wait for a workspace page to be fully loaded.
  * Waits for either a tab or the "No tabs in this tile" empty state.
  */

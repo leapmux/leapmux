@@ -1,4 +1,5 @@
 import { expect, test } from './fixtures'
+import { waitForLayoutSave } from './helpers'
 
 test.describe('Tab Ordering Persistence', () => {
   test('should persist tab order after drag-drop reorder and page refresh', async ({ page, authenticatedWorkspace }) => {
@@ -43,15 +44,12 @@ test.describe('Tab Ordering Persistence', () => {
     await page.mouse.move(agentBox!.x + agentBox!.width / 2, agentBox!.y + agentBox!.height / 2, { steps: 10 })
     await page.mouse.up()
 
-    // Wait for the reorder API call to persist
-    await page.waitForTimeout(1000)
-
     // Verify reorder: [terminal, agent]
     const reorderedOrder = await getTabTypes()
     expect(reorderedOrder).toEqual(['terminal', 'agent'])
 
-    // Wait a moment, then refresh the page
-    await page.waitForTimeout(1000)
+    // Wait for the layout save to complete (500ms debounce + network round-trip)
+    await waitForLayoutSave(page)
     await page.reload()
 
     // Wait for tabs to load

@@ -1,4 +1,5 @@
 import { expect, test } from './fixtures'
+import { waitForLayoutSave } from './helpers'
 
 /** Open a new agent via the tab bar add menu. */
 async function openAgentViaUI(page: import('@playwright/test').Page) {
@@ -104,8 +105,8 @@ test.describe('Tiling Layout', () => {
     await page.locator('[data-testid="split-horizontal"]').first().click()
     await expect(page.locator('[data-testid="tile"]')).toHaveCount(2)
 
-    // Wait for debounced layout save
-    await page.waitForTimeout(1000)
+    // Wait for the layout save to complete (500ms debounce + network round-trip)
+    await waitForLayoutSave(page)
 
     // Reload
     await page.reload()

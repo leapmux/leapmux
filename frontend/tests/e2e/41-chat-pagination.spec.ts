@@ -30,10 +30,11 @@ async function waitForAssistantReply(page: Page) {
   ).toBeVisible({ timeout: 30_000 })
 }
 
-/** Wait for the agent to finish its turn (no more streaming indicator). */
+/** Wait for the agent to finish its turn (no more streaming/thinking indicators). */
 async function waitForTurnComplete(page: Page) {
-  // Wait for the streaming indicator to disappear (agent finished responding)
+  // Wait for the interrupt button and thinking indicator to disappear (agent finished responding)
   await expect(page.locator('[data-testid="interrupt-button"]')).not.toBeVisible({ timeout: 60_000 })
+  await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible()
 }
 
 test.describe('Chat Pagination & Scroll', () => {
@@ -57,33 +58,51 @@ test.describe('Chat Pagination & Scroll', () => {
   })
 
   test('should show scroll-to-bottom button when scrolled up', async ({ page, authenticatedWorkspace }) => {
+    // Use a small viewport to make content overflow more likely
+    await page.setViewportSize({ width: 1280, height: 400 })
+
     await ensureAgentTab(page)
 
-    // Send a message and wait for full reply to ensure enough content
+    // Send a message that generates a long response
     await sendMessage(page, 'Write a numbered list of 30 programming languages, one per line. Include a brief one-sentence description for each.')
     await waitForAssistantReply(page)
     await waitForTurnComplete(page)
 
-    const messageList = page.locator('[class*="messageList"]').first()
+    // Find the actual scrollable message container (overflow-y: auto),
+    // not the wrapper (overflow: hidden) which also matches [class*="messageList"].
+    const isScrollable = await page.evaluate(() => {
+      const els = document.querySelectorAll<HTMLElement>('[class*="messageList"]')
+      for (const el of els) {
+        if (getComputedStyle(el).overflowY === 'auto') {
+          return el.scrollHeight > el.clientHeight + 16
+        }
+      }
+      return false
+    })
+    expect(isScrollable).toBe(true)
 
-    // Check if content is scrollable (scrollHeight > clientHeight)
-    const isScrollable = await messageList.evaluate(
-      el => el.scrollHeight > el.clientHeight + 16,
-    )
-    if (!isScrollable) {
-      // Content not long enough to scroll — skip the scroll button test
-      test.skip()
-      return
-    }
-
-    // Scroll to top
-    await messageList.evaluate(el => el.scrollTop = 0)
+    // Scroll to top on the actual scrollable element
+    await page.evaluate(() => {
+      const els = document.querySelectorAll<HTMLElement>('[class*="messageList"]')
+      for (const el of els) {
+        if (getComputedStyle(el).overflowY === 'auto') {
+          el.scrollTop = 0
+          return
+        }
+      }
+    })
     await page.waitForTimeout(300)
 
-    // Verify we're not at the bottom (scroll-to-bottom button should be visible)
-    const atBottom = await messageList.evaluate(
-      el => el.scrollHeight - el.scrollTop - el.clientHeight < 16,
-    )
+    // Verify we're not at the bottom
+    const atBottom = await page.evaluate(() => {
+      const els = document.querySelectorAll<HTMLElement>('[class*="messageList"]')
+      for (const el of els) {
+        if (getComputedStyle(el).overflowY === 'auto') {
+          return el.scrollHeight - el.scrollTop - el.clientHeight < 16
+        }
+      }
+      return true
+    })
     expect(atBottom).toBe(false)
   })
 
@@ -136,6 +155,21 @@ test.describe('Chat Pagination & Scroll', () => {
 
     // Wait for messages to load (initial load happens on tab switch)
     await expect(chatContainer).toContainText('First Agent Reply', { timeout: 15_000 })
+  })
+
+  test('should show thinking indicator while agent is processing', async ({ page, authenticatedWorkspace }) => {
+    await ensureAgentTab(page)
+
+    await sendMessage(page, 'Say hello.')
+
+    // The thinking indicator should appear while the agent is processing
+    await expect(page.locator('[data-testid="thinking-indicator"]')).toBeVisible({ timeout: 10_000 })
+
+    // Wait for the turn to complete
+    await waitForTurnComplete(page)
+
+    // After turn completes, the thinking indicator should not be visible
+    await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible()
   })
 
   test('should load initial messages when opening existing agent', async ({ page, authenticatedWorkspace }) => {

@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
+import { waitForLayoutSave } from './helpers'
 
 /** Read terminal text content from the active xterm's buffer (WebGL renderer makes DOM rows empty). */
 async function getTerminalText(page: Page): Promise<string> {
@@ -96,9 +97,15 @@ test.describe('Terminal', () => {
   })
 
   test('should restore terminal screen content after page refresh', async ({ page, authenticatedWorkspace }) => {
+    // Start listening for the layout save before opening the terminal
+    const saved = waitForLayoutSave(page)
+
     // Open a terminal via the tab bar
     await openTerminalViaUI(page)
     await expect(page.locator('.xterm')).toBeVisible()
+
+    // Wait for the layout save to complete so the terminal tab is persisted
+    await saved
 
     // Type a marker and wait for it to appear
     await typeInTerminal(page, 'echo SCREENRESTORE')

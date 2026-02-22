@@ -29,7 +29,17 @@ test.describe('Chat Message Rendering', () => {
   test('should render assistant message as markdown', async ({ page, authenticatedWorkspace }) => {
     await sendAndWaitForReply(page, 'What is 2+2? Reply with just the number.')
 
-    const assistantBubble = page.locator('[data-testid="message-bubble"][data-role="assistant"]').first()
+    // Wait for turn to complete so the text bubble is present
+    await expect(page.locator('[data-testid="interrupt-button"]')).not.toBeVisible({ timeout: 30_000 })
+
+    // Find an assistant bubble whose message-content contains <p> tags
+    // (skip thinking bubbles and turn-end indicators which have no <p>)
+    const assistantBubble = page.locator(
+      '[data-testid="message-bubble"][data-role="assistant"]',
+    ).filter({
+      has: page.locator('[data-testid="message-content"] p'),
+    }).first()
+
     const content = assistantBubble.locator('[data-testid="message-content"]')
 
     // Content should be rendered as HTML elements (e.g. <p> tags), not raw text

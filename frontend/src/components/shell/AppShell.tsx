@@ -39,6 +39,7 @@ import { createTabStore, tabKey } from '~/stores/tab.store'
 import { createTerminalStore } from '~/stores/terminal.store'
 import { createWorkspaceStore } from '~/stores/workspace.store'
 import { dialogCompact } from '~/styles/shared.css'
+import { isAgentWorking } from '~/utils/agentState'
 import { buildInterruptRequest, buildSetPermissionModeRequest, DEFAULT_EFFORT, DEFAULT_MODEL } from '~/utils/controlResponse'
 import * as styles from './AppShell.css'
 import { Tile } from './Tile'
@@ -262,7 +263,7 @@ export const AppShell: ParentComponent = (props) => {
   let layoutSaveTimer: ReturnType<typeof setTimeout> | null = null
   const persistLayout = () => {
     const ws = activeWorkspace()
-    if (!ws)
+    if (!ws || workspaceLoading())
       return
     if (layoutSaveTimer)
       clearTimeout(layoutSaveTimer)
@@ -461,12 +462,14 @@ export const AppShell: ParentComponent = (props) => {
   }
 
   // Load agents and set up watchers when active workspace changes.
-  // Use `on()` to explicitly track only `activeWorkspaceId` — without it,
-  // SolidJS could track other reactive reads in the effect body and re-run
-  // the effect spuriously, creating duplicate async chains.
+  // Use `on()` to explicitly track only `activeWorkspaceId` and `orgId` —
+  // without it, SolidJS could track other reactive reads in the effect body
+  // and re-run the effect spuriously, creating duplicate async chains.
+  // Both are tracked because after page reload, orgId resolves asynchronously
+  // and must be available before API calls that require it (listTabs, getLayout).
   let loadGeneration = 0
-  createEffect(on(workspace.activeWorkspaceId, (activeId) => {
-    if (!activeId)
+  createEffect(on([workspace.activeWorkspaceId, org.orgId], ([activeId, currentOrgId]) => {
+    if (!activeId || !currentOrgId)
       return
 
     // Bump generation so stale Promise.all callbacks are discarded.
@@ -488,7 +491,7 @@ export const AppShell: ParentComponent = (props) => {
       .catch(() => {})
 
     // Restore terminals from server
-    const terminalsLoaded = terminalClient.listTerminals({ orgId: org.orgId(), workspaceId: activeId })
+    const terminalsLoaded = terminalClient.listTerminals({ orgId: currentOrgId, workspaceId: activeId })
       .then((resp) => {
         if (gen !== loadGeneration)
           return
@@ -510,11 +513,11 @@ export const AppShell: ParentComponent = (props) => {
       .catch(() => {})
 
     // Load persisted tab ordering
-    const tabsLoaded = workspaceClient.listTabs({ orgId: org.orgId(), workspaceId: activeId })
+    const tabsLoaded = workspaceClient.listTabs({ orgId: currentOrgId, workspaceId: activeId })
       .catch(() => null)
 
     // Load tiling layout
-    const layoutLoaded = workspaceClient.getLayout({ orgId: org.orgId(), workspaceId: activeId })
+    const layoutLoaded = workspaceClient.getLayout({ orgId: currentOrgId, workspaceId: activeId })
       .catch(() => null)
 
     // After everything loads, create tabs, apply ordering, and restore active tab.
@@ -1182,6 +1185,7 @@ export const AppShell: ParentComponent = (props) => {
                   <ChatView
                     messages={chatStore.getMessages(agentId)}
                     streamingText={chatStore.state.streamingText[agentId] ?? ''}
+                    agentWorking={isAgentWorking(chatStore.getMessages(agentId)) && controlStore.getRequests(agentId).length === 0}
                     messageErrors={chatStore.state.messageErrors}
                     onRetryMessage={messageId => handleRetryMessage(agentId, messageId)}
                     onDeleteMessage={messageId => handleDeleteMessage(agentId, messageId)}
@@ -1269,8 +1273,7 @@ export const AppShell: ParentComponent = (props) => {
         onInterrupt={handleInterrupt}
         settingsLoading={settingsLoading.loading()}
         agentContextInfo={agentContextStore.getInfo(agentId())}
-        turnActive={chatStore.isTurnActive(agentId())}
-        streamingText={chatStore.state.streamingText[agentId()] ?? ''}
+        agentWorking={isAgentWorking(chatStore.getMessages(agentId()))}
         containerHeight={props.containerHeight}
       />
     )

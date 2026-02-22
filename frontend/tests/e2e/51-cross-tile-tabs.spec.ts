@@ -1,5 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
 import { expect, test } from './fixtures'
+import { waitForLayoutSave } from './helpers'
 
 /** Wait for the workspace to be fully loaded with its initial agent tab. */
 async function waitForInitialAgent(page: Page) {
@@ -173,16 +174,25 @@ test.describe('Cross-Tile Tabs', () => {
   })
 
   test('cross-tile drag persists after reload', async ({ page, authenticatedWorkspace }) => {
-    // Wait for auto-created initial agent + create terminal
+    // Wait for auto-created initial agent
     await waitForInitialAgent(page)
-    await openTerminal(page)
 
-    // Split
+    // Create terminal and drain its layout save so it doesn't interfere later
+    const terminalSaved = waitForLayoutSave(page)
+    await openTerminal(page)
+    await terminalSaved
+
+    // Split and drain its layout save
+    const splitSaved = waitForLayoutSave(page)
     await splitHorizontal(page)
     await expect(page.locator('[data-testid="tile"]')).toHaveCount(2)
+    await splitSaved
 
     const tile1 = page.locator('[data-testid="tile"]').nth(0)
     const tile2 = page.locator('[data-testid="tile"]').nth(1)
+
+    // Set up listener for the cross-tile move's save before the drag
+    const dragSaved = waitForLayoutSave(page)
 
     // Drag terminal tab from tile 1 to tile 2
     const terminalTab = tile1.locator('[data-testid="tab"][data-tab-type="terminal"]')
@@ -194,8 +204,8 @@ test.describe('Cross-Tile Tabs', () => {
     await expect(tile1.locator('[data-testid="tab"]')).toHaveCount(1)
     await expect(tile2.locator('[data-testid="tab"]')).toHaveCount(1)
 
-    // Wait for persistence
-    await waitForLayoutPersistence(page)
+    // Wait for the drag's layout save to complete
+    await dragSaved
 
     // Reload
     await page.reload()

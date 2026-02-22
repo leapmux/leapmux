@@ -12,10 +12,13 @@ import * as styles from './ChatView.css'
 import { markdownContent } from './markdownContent.css'
 import { MessageBubble } from './MessageBubble'
 import { assistantMessage } from './messageStyles.css'
+import { ThinkingIndicator } from './ThinkingIndicator'
 
 interface ChatViewProps {
   messages: AgentChatMessage[]
   streamingText: string
+  /** Whether the agent is actively working (for showing the thinking indicator). */
+  agentWorking?: boolean
   messageErrors?: Record<string, string>
   onRetryMessage?: (messageId: string) => void
   onDeleteMessage?: (messageId: string) => void
@@ -163,6 +166,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   createEffect(() => {
     void props.messages.length
     void props.streamingText
+    void props.agentWorking
     if (untrack(atBottom) && messageListRef) {
       autoScrollPending = true
       requestAnimationFrame(() => {
@@ -221,7 +225,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       <div class={styles.messageListWrapper}>
         <div ref={messageListRef} class={styles.messageList} onScroll={handleScroll}>
           <Show
-            when={props.messages.length > 0 || props.streamingText}
+            when={props.messages.length > 0 || props.streamingText || props.agentWorking}
             fallback={<div class={styles.emptyChat}>Send a message to start</div>}
           >
             <Show when={props.fetchingOlder}>
@@ -250,6 +254,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                 {/* eslint-disable-next-line solid/no-innerhtml -- streaming text rendered via remark */}
                 <div class={markdownContent} innerHTML={renderedStreamHtml()} />
               </div>
+            </Show>
+            <Show when={props.agentWorking && !props.streamingText}>
+              <ThinkingIndicator />
             </Show>
           </Show>
         </div>
