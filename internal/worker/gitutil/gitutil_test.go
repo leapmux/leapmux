@@ -49,6 +49,7 @@ func TestGetGitInfo_RegularRepo(t *testing.T) {
 	assert.Equal(t, dir, info.RepoRoot)
 	assert.Equal(t, filepath.Base(dir), info.RepoDirName)
 	assert.True(t, info.IsRepoRoot)
+	assert.False(t, info.IsWorktreeRoot, "regular repo root should not be a worktree root")
 }
 
 func TestGetGitInfo_Worktree(t *testing.T) {
@@ -67,6 +68,29 @@ func TestGetGitInfo_Worktree(t *testing.T) {
 	assert.Equal(t, repoDir, info.RepoRoot)
 	assert.Equal(t, "myrepo", info.RepoDirName)
 	assert.False(t, info.IsRepoRoot, "worktree directory should not be the repo root")
+	assert.True(t, info.IsWorktreeRoot, "worktree directory should be the worktree root")
+}
+
+func TestGetGitInfo_WorktreeSubdir(t *testing.T) {
+	dir := resolvedTempDir(t)
+	repoDir := filepath.Join(dir, "myrepo")
+	require.NoError(t, os.Mkdir(repoDir, 0o755))
+	initGitRepo(t, repoDir)
+
+	wtDir := filepath.Join(dir, "myrepo-worktrees", "feature")
+	run(t, repoDir, "git", "worktree", "add", wtDir, "-b", "feature")
+
+	// Create a subdirectory inside the worktree.
+	subDir := filepath.Join(wtDir, "sub", "dir")
+	require.NoError(t, os.MkdirAll(subDir, 0o755))
+
+	info, err := GetGitInfo(subDir)
+	require.NoError(t, err)
+	assert.True(t, info.IsGitRepo)
+	assert.True(t, info.IsWorktree)
+	assert.Equal(t, repoDir, info.RepoRoot)
+	assert.False(t, info.IsRepoRoot)
+	assert.False(t, info.IsWorktreeRoot, "subdirectory inside worktree should not be worktree root")
 }
 
 func TestGetGitInfo_NotGitRepo(t *testing.T) {
@@ -100,7 +124,7 @@ func TestCreateWorktree_NewBranch(t *testing.T) {
 	initGitRepo(t, repoDir)
 
 	wtDir := filepath.Join(dir, "repo-worktrees", "new-feature")
-	err := CreateWorktree(repoDir, wtDir, "new-feature")
+	err := CreateWorktree(repoDir, wtDir, "new-feature", "HEAD")
 	require.NoError(t, err)
 
 	// Verify the worktree directory exists.
@@ -124,7 +148,7 @@ func TestCreateWorktree_ExistingBranch(t *testing.T) {
 	run(t, repoDir, "git", "branch", "existing-branch")
 
 	wtDir := filepath.Join(dir, "repo-worktrees", "existing-branch")
-	err := CreateWorktree(repoDir, wtDir, "existing-branch")
+	err := CreateWorktree(repoDir, wtDir, "existing-branch", "HEAD")
 	require.NoError(t, err)
 
 	// Verify the worktree is on the existing branch.
@@ -141,7 +165,7 @@ func TestCreateWorktree_InvalidBranch(t *testing.T) {
 	initGitRepo(t, repoDir)
 
 	wtDir := filepath.Join(dir, "repo-worktrees", "bad")
-	err := CreateWorktree(repoDir, wtDir, "bad..branch")
+	err := CreateWorktree(repoDir, wtDir, "bad..branch", "HEAD")
 	assert.Error(t, err)
 }
 
@@ -156,8 +180,86 @@ func TestCreateWorktree_PathExists(t *testing.T) {
 	require.NoError(t, os.MkdirAll(wtDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(wtDir, "file.txt"), []byte("block"), 0o644))
 
-	err := CreateWorktree(repoDir, wtDir, "taken")
+	err := CreateWorktree(repoDir, wtDir, "taken", "HEAD")
 	assert.Error(t, err)
+}
+
+func TestCreateWorktree_WithStartPoint(t *testing.T) {
+	dir := resolvedTempDir(t)
+	repoDir := filepath.Join(dir, "repo")
+	require.NoError(t, os.Mkdir(repoDir, 0o755))
+	initGitRepo(t, repoDir)
+
+	// Create a feature branch with an extra commit.
+	run(t, repoDir, "git", "checkout", "-b", "feature")
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "feature.txt"), []byte("feature work"), 0o644))
+	run(t, repoDir, "git", "add", ".")
+	run(t, repoDir, "git", "commit", "-m", "feature commit")
+
+	// Get the feature branch HEAD.
+	featureHead := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD")
+	featureHeadOutput, err := featureHead.Output()
+	require.NoError(t, err)
+	featureCommit := trimOutput(featureHeadOutput)
+
+	// Switch back to main.
+	run(t, repoDir, "git", "checkout", "-")
+
+	// Create a worktree from the feature branch.
+	wtDir := filepath.Join(dir, "repo-worktrees", "from-feature")
+	err = CreateWorktree(repoDir, wtDir, "from-feature", "feature")
+	require.NoError(t, err)
+
+	// Verify the new worktree's HEAD matches the feature branch HEAD.
+	wtHead := exec.Command("git", "-C", wtDir, "rev-parse", "HEAD")
+	wtHeadOutput, err := wtHead.Output()
+	require.NoError(t, err)
+	assert.Equal(t, featureCommit, trimOutput(wtHeadOutput),
+		"new worktree should start from the feature branch commit")
+
+	// Verify the feature.txt file exists in the worktree.
+	_, err = os.Stat(filepath.Join(wtDir, "feature.txt"))
+	assert.NoError(t, err, "feature.txt should exist in worktree created from feature branch")
+}
+
+func TestCreateWorktree_StartPointDifferentFromMainHead(t *testing.T) {
+	dir := resolvedTempDir(t)
+	repoDir := filepath.Join(dir, "repo")
+	require.NoError(t, os.Mkdir(repoDir, 0o755))
+	initGitRepo(t, repoDir)
+
+	// Get main branch HEAD.
+	mainHead := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD")
+	mainHeadOutput, err := mainHead.Output()
+	require.NoError(t, err)
+	mainCommit := trimOutput(mainHeadOutput)
+
+	// Create a branch with extra commits.
+	run(t, repoDir, "git", "checkout", "-b", "diverged")
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "extra.txt"), []byte("extra"), 0o644))
+	run(t, repoDir, "git", "add", ".")
+	run(t, repoDir, "git", "commit", "-m", "diverge")
+
+	divergedHead := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD")
+	divergedOutput, err := divergedHead.Output()
+	require.NoError(t, err)
+	divergedCommit := trimOutput(divergedOutput)
+	assert.NotEqual(t, mainCommit, divergedCommit, "diverged branch should have a different commit")
+
+	// Switch back to main.
+	run(t, repoDir, "git", "checkout", "-")
+
+	// Create worktree from diverged branch.
+	wtDir := filepath.Join(dir, "repo-worktrees", "from-diverged")
+	err = CreateWorktree(repoDir, wtDir, "from-diverged", "diverged")
+	require.NoError(t, err)
+
+	// Verify the worktree HEAD matches diverged, not main.
+	wtHead := exec.Command("git", "-C", wtDir, "rev-parse", "HEAD")
+	wtHeadOutput, err := wtHead.Output()
+	require.NoError(t, err)
+	assert.Equal(t, divergedCommit, trimOutput(wtHeadOutput),
+		"worktree should start from diverged branch, not main HEAD")
 }
 
 func TestIsWorktreeClean_Clean(t *testing.T) {

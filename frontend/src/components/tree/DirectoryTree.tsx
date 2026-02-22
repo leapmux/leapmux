@@ -4,7 +4,7 @@ import ChevronDown from 'lucide-solid/icons/chevron-down'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import File from 'lucide-solid/icons/file'
 import Folder from 'lucide-solid/icons/folder'
-import { createEffect, createSignal, For, Show } from 'solid-js'
+import { createEffect, createSignal, For, Show, untrack } from 'solid-js'
 import { fileClient } from '~/api/clients'
 import * as styles from './DirectoryTree.css'
 
@@ -95,13 +95,45 @@ const TreeNode: Component<{
   selectedPath: string
   onSelect: (path: string) => void
   depth: number
+  scrollContainer?: HTMLDivElement
 }> = (props) => {
   const [expanded, setExpanded] = createSignal(false)
   const [children, setChildren] = createSignal<TreeNodeData[]>([])
   const [loading, setLoading] = createSignal(false)
   const [loaded, setLoaded] = createSignal(false)
+  let wrapperRef!: HTMLDivElement
 
   const isSelected = () => props.selectedPath === props.node.path
+
+  const scrollIntoViewIfNeeded = () => {
+    const container = props.scrollContainer
+    if (!container || !wrapperRef)
+      return
+    requestAnimationFrame(() => {
+      const containerRect = container.getBoundingClientRect()
+      const wrapperRect = wrapperRef.getBoundingClientRect()
+      if (wrapperRect.bottom > containerRect.bottom) {
+        container.scrollTop += wrapperRect.top - containerRect.top
+      }
+    })
+  }
+
+  const doLoad = async () => {
+    if (loaded() || loading())
+      return
+    setLoading(true)
+    try {
+      const result = await loadChildren(props.workerId, props.node.path, props.showFiles)
+      setChildren(result)
+      setLoaded(true)
+    }
+    catch {
+      // ignore load errors
+    }
+    finally {
+      setLoading(false)
+    }
+  }
 
   const toggle = async () => {
     if (!props.node.isDir) {
@@ -109,27 +141,64 @@ const TreeNode: Component<{
       return
     }
     props.onSelect(props.node.path)
-    if (!loaded()) {
-      setLoading(true)
-      try {
-        const result = await loadChildren(props.workerId, props.node.path, props.showFiles)
-        setChildren(result)
-        setLoaded(true)
-      }
-      catch {
-        // ignore load errors
-      }
-      finally {
-        setLoading(false)
-      }
+    await doLoad()
+    const willExpand = !expanded()
+    setExpanded(willExpand)
+    if (willExpand) {
+      scrollIntoViewIfNeeded()
     }
-    setExpanded(!expanded())
   }
+
+  // Auto-expand when selectedPath is a descendant of this node.
+  createEffect(() => {
+    const selected = props.selectedPath
+    if (!props.node.isDir)
+      return
+    if (!selected.startsWith(`${props.node.path}/`))
+      return
+    if (loading())
+      return
+
+    if (!loaded()) {
+      untrack(() => {
+        doLoad().then(() => {
+          setExpanded(true)
+          // Scroll into view for the deepest auto-expanded node.
+          // Only scroll if this is the closest ancestor (children will handle deeper).
+          const hasMatchingChild = children().some(
+            c => c.isDir && (selected.startsWith(`${c.path}/`) || selected === c.path),
+          )
+          if (!hasMatchingChild) {
+            scrollIntoViewIfNeeded()
+          }
+        })
+      })
+    }
+    else if (!expanded()) {
+      setExpanded(true)
+    }
+  })
+
+  // Scroll into view when this node is selected via path input.
+  createEffect(() => {
+    if (props.selectedPath === props.node.path && wrapperRef) {
+      const container = props.scrollContainer
+      if (!container)
+        return
+      requestAnimationFrame(() => {
+        const containerRect = container.getBoundingClientRect()
+        const wrapperRect = wrapperRef.getBoundingClientRect()
+        if (wrapperRect.top < containerRect.top || wrapperRect.bottom > containerRect.bottom) {
+          container.scrollTop += wrapperRect.top - containerRect.top
+        }
+      })
+    }
+  })
 
   const indent = () => `${8 + props.depth * 16}px`
 
   return (
-    <>
+    <div ref={wrapperRef}>
       <div
         class={`${styles.node} ${isSelected() ? styles.nodeSelected : ''}`}
         style={{ 'padding-left': indent() }}
@@ -169,6 +238,7 @@ const TreeNode: Component<{
               selectedPath={props.selectedPath}
               onSelect={props.onSelect}
               depth={props.depth + 1}
+              scrollContainer={props.scrollContainer}
             />
           )}
         </For>
@@ -178,7 +248,7 @@ const TreeNode: Component<{
           </div>
         </Show>
       </Show>
-    </>
+    </div>
   )
 }
 
@@ -188,6 +258,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   const [error, setError] = createSignal<string | null>(null)
   const [inputValue, setInputValue] = createSignal('')
   let loadVersion = 0
+  let treeRef!: HTMLDivElement
 
   // Sync external selectedPath to input
   createEffect(() => {
@@ -250,7 +321,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
           placeholder="Enter path..."
         />
       </div>
-      <div class={styles.tree}>
+      <div class={styles.tree} ref={treeRef}>
         <Show when={error()}>
           <div class={styles.errorState}>{error()}</div>
         </Show>
@@ -271,6 +342,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
                   selectedPath={props.selectedPath}
                   onSelect={props.onSelect}
                   depth={0}
+                  scrollContainer={treeRef}
                 />
               )}
             </For>

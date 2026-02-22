@@ -442,12 +442,16 @@ message GitInfoResponse {
   string repo_dir_name = 5;   // Base directory name of the main repo
   string error = 6;
   bool is_repo_root = 7;      // True if the queried path IS the repo root (after symlink resolution)
+  bool is_worktree_root = 8;  // True if the queried path IS a linked worktree root
+  bool is_dirty = 9;          // True if the working directory has uncommitted changes
+  string current_branch = 10; // Current branch name of the working directory
 }
 
 message GitWorktreeCreateRequest {
   string repo_root = 1;       // Main git repo root
   string worktree_path = 2;   // Full path where worktree should be created
   string branch_name = 3;     // Branch name for the new worktree
+  string start_point = 4;     // Base commit/branch for the new worktree
 }
 
 message GitWorktreeCreateResponse {

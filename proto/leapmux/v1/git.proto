@@ -29,6 +29,9 @@ message GetGitInfoResponse {
   string repo_root = 3;       // Root of the main git repo (resolved through worktree if applicable)
   string repo_dir_name = 4;   // Base directory name of the main repo
   bool is_repo_root = 5;      // True if the queried path IS the repo root (after symlink resolution)
+  bool is_worktree_root = 6;  // True if the queried path IS a linked worktree root
+  bool is_dirty = 7;          // True if the working directory has uncommitted changes
+  string current_branch = 8;  // Current branch name of the working directory
 }
 
 message ForceRemoveWorktreeRequest {
