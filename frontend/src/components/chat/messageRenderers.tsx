@@ -6,16 +6,21 @@ import type { MessageCategory } from './messageClassification'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { TodoItem } from '~/stores/chat.store'
+import Bot from 'lucide-solid/icons/bot'
+import Brain from 'lucide-solid/icons/brain'
+import ChevronDown from 'lucide-solid/icons/chevron-down'
+import ChevronRight from 'lucide-solid/icons/chevron-right'
 import ListTodo from 'lucide-solid/icons/list-todo'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import Terminal from 'lucide-solid/icons/terminal'
 import TicketsPlane from 'lucide-solid/icons/tickets-plane'
 import Vote from 'lucide-solid/icons/vote'
-import { For, Show } from 'solid-js'
+import { createSignal, For, Show } from 'solid-js'
 import { TodoList } from '~/components/todo/TodoList'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { markdownContent } from './markdownContent.css'
+import { thinkingContent, thinkingHeader } from './messageStyles.css'
 import {
   compactBoundaryRenderer,
   contextClearedRenderer,
@@ -34,7 +39,6 @@ import {
 } from './toolRenderers'
 import {
   answerText,
-  questionHeader,
   questionItem,
   questionText,
   toolInputDetail,
@@ -295,16 +299,10 @@ function renderAskUserQuestion(toolUse: Record<string, unknown>, context?: Rende
           const answer = answers?.[header]
           return (
             <div class={questionItem}>
-              <Show
-                when={answer}
-                fallback={<span class={questionText}>{header}</span>}
-              >
-                <span class={questionHeader}>
-                  {header}
-                  {': '}
-                </span>
-                <span class={answerText}>{answer}</span>
-              </Show>
+              <span class={questionText}>{'- '}{header}{': '}</span>
+              <span class={answerText}>
+                <strong>{answer ?? 'Not answered'}</strong>
+              </span>
             </div>
           )
         }}
@@ -417,6 +415,82 @@ const assistantTextRenderer: MessageContentRenderer = {
   },
 }
 
+/** Inner component for thinking messages — owns local expand/collapse state. */
+function ThinkingMessage(props: { text: string, context?: RenderContext }): JSX.Element {
+  const [expanded, setExpanded] = createSignal(false)
+
+  return (
+    <>
+      <div class={thinkingHeader} onClick={() => setExpanded(prev => !prev)}>
+        <span class={inlineFlex} title="Thinking">
+          <Brain size={16} class={toolUseIcon} />
+        </span>
+        <span class={toolInputDetail}>Thinking</span>
+        <span class={inlineFlex}>
+          {expanded()
+            ? <ChevronDown size={14} class={toolUseIcon} />
+            : <ChevronRight size={14} class={toolUseIcon} />}
+        </span>
+        <Show when={props.context}>
+          <ToolHeaderActions
+            createdAt={props.context!.createdAt}
+            updatedAt={props.context!.updatedAt}
+            threadCount={0}
+            threadExpanded={false}
+            onToggleThread={() => {}}
+            onCopyJson={props.context!.onCopyJson ?? (() => {})}
+            jsonCopied={props.context!.jsonCopied ?? false}
+          />
+        </Show>
+      </div>
+      <Show when={expanded()}>
+        <div class={thinkingContent}>
+          <div class={markdownContent} innerHTML={renderMarkdown(props.text)} />
+        </div>
+      </Show>
+    </>
+  )
+}
+
+/** Handles assistant thinking messages: {"type":"assistant","message":{"content":[{"type":"thinking","thinking":"..."}]}} */
+const assistantThinkingRenderer: MessageContentRenderer = {
+  render(parsed, _role, context) {
+    if (!isObject(parsed) || !isObject(parsed.message))
+      return null
+    const content = (parsed.message as Record<string, unknown>).content
+    if (!Array.isArray(content))
+      return null
+    const thinkingBlock = content.find(
+      (c: unknown) => isObject(c) && c.type === 'thinking',
+    ) as Record<string, unknown> | undefined
+    if (!thinkingBlock)
+      return null
+    const text = String(thinkingBlock.thinking || '')
+    if (!text)
+      return null
+    return <ThinkingMessage text={text} context={context} />
+  },
+}
+
+/** Renders task_started system messages as a minimal "Task started" line (thread child). */
+const taskStartedRenderer: MessageContentRenderer = {
+  render(parsed, _role, _context) {
+    if (!isObject(parsed) || parsed.type !== 'system' || parsed.subtype !== 'task_started')
+      return null
+
+    return (
+      <div class={toolMessage}>
+        <div class={toolUseHeader}>
+          <span class={inlineFlex} title="Task Started">
+            <Bot size={16} class={toolUseIcon} />
+          </span>
+          <span class={toolInputDetail}>Task started</span>
+        </div>
+      </div>
+    )
+  },
+}
+
 /**
  * Handles user messages with string content: {"type":"user","message":{"content":"..."}}
  * This covers local slash command responses (e.g. /context) whose message.content
@@ -497,6 +571,7 @@ const KIND_RENDERERS: Record<string, (parsed: unknown, role: MessageRole, contex
   // dependency between messageRenderers ↔ toolRenderers.
   tool_result: (p, r, c) => toolResultRenderer.render(p, r, c),
   assistant_text: assistantTextRenderer.render,
+  assistant_thinking: assistantThinkingRenderer.render,
   user_text: userTextContentRenderer.render,
   user_content: userContentRenderer.render,
   task_notification: taskNotificationRenderer.render,
@@ -557,8 +632,10 @@ function getFallbackRenderers(): MessageContentRenderer[] {
       toolResultRenderer,
       userTextContentRenderer,
       assistantTextRenderer,
+      assistantThinkingRenderer,
       userContentRenderer,
       taskNotificationRenderer,
+      taskStartedRenderer,
       settingsChangedRenderer,
       interruptedRenderer,
       contextClearedRenderer,

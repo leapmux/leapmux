@@ -13,6 +13,7 @@ export type MessageCategory
     | { kind: 'tool_use', toolName: string, toolUse: Record<string, unknown>, content: Array<Record<string, unknown>> }
     | { kind: 'tool_result' }
     | { kind: 'assistant_text' }
+    | { kind: 'assistant_thinking' }
     | { kind: 'user_text' }
     | { kind: 'user_content' }
     | { kind: 'result_divider' }
@@ -105,6 +106,10 @@ export function classifyMessage(
         const hasText = contentArr.some(c => isObj(c) && c.type === 'text')
         if (hasText)
           return { kind: 'assistant_text' }
+        // Check for thinking content
+        const hasThinking = contentArr.some(c => isObj(c) && c.type === 'thinking')
+        if (hasThinking)
+          return { kind: 'assistant_thinking' }
       }
     }
     return { kind: 'unknown' }
@@ -174,6 +179,8 @@ export function messageRowClass(kind: MessageCategory['kind'], role: MessageRole
 export function messageBubbleClass(kind: MessageCategory['kind'], role: MessageRole): string {
   if (kind === 'notification' || kind === 'notification_thread')
     return chatStyles.systemMessage
+  if (kind === 'assistant_thinking')
+    return chatStyles.thinkingMessage
   if (META_KINDS.has(kind))
     return chatStyles.metaMessage
   return roleStyle(role)

@@ -126,6 +126,47 @@ func TestExtractParentToolUseID(t *testing.T) {
 	}
 }
 
+func TestExtractSystemToolUseID(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "extracts tool_use_id from task_started",
+			content: `{"type":"system","subtype":"task_started","tool_use_id":"toolu_abc"}`,
+			want:    "toolu_abc",
+		},
+		{
+			name:    "extracts tool_use_id from any subtype",
+			content: `{"type":"system","subtype":"other","tool_use_id":"toolu_xyz"}`,
+			want:    "toolu_xyz",
+		},
+		{
+			name:    "returns empty when tool_use_id absent",
+			content: `{"type":"system","subtype":"task_started"}`,
+			want:    "",
+		},
+		{
+			name:    "returns empty for empty tool_use_id",
+			content: `{"type":"system","subtype":"task_started","tool_use_id":""}`,
+			want:    "",
+		},
+		{
+			name:    "returns empty for invalid JSON",
+			content: `{bad`,
+			want:    "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractSystemToolUseID([]byte(tt.content))
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestWrapUnwrapContent(t *testing.T) {
 	original := []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"Hello"}]}}`)
 
