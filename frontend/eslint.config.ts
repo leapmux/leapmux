@@ -6,7 +6,7 @@ export default antfu({
     quotes: 'single',
   },
   solid: true,
-  ignores: ['src/gen/**', '.vinxi/**', '.output/**'],
+  ignores: ['src/gen/**', '.vinxi/**', '.output/**', 'app.config.timestamp_*'],
 }, {
   // Playwright fixture parameters (e.g. `authenticatedWorkspace`) must be destructured
   // to activate the fixture, even when not directly referenced in the test body.
