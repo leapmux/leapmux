@@ -1186,6 +1186,7 @@ export const AppShell: ParentComponent = (props) => {
                     onRetryMessage={messageId => handleRetryMessage(agentId, messageId)}
                     onDeleteMessage={messageId => handleDeleteMessage(agentId, messageId)}
                     workingDir={agentStore.state.agents.find(a => a.id === agentId)?.workingDir}
+                    homeDir={agentStore.state.agents.find(a => a.id === agentId)?.homeDir}
                     hasOlderMessages={chatStore.hasOlderMessages(agentId)}
                     fetchingOlder={chatStore.isFetchingOlder(agentId)}
                     onLoadOlderMessages={() => chatStore.loadOlderMessages(agentId)}

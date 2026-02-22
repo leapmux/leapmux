@@ -364,6 +364,10 @@ func (s *WorkerConnectorService) processWorkerMessage(
 		if gs := sanitizeGitStatus(payload.AgentStarted.GetGitStatus()); gs != nil {
 			s.agentSvc.StoreGitStatus(agentID, gs)
 		}
+		// Store worker home directory for tilde path display.
+		if homeDir := payload.AgentStarted.GetHomeDir(); homeDir != "" {
+			s.agentSvc.StoreHomeDir(agentID, homeDir)
+		}
 	case *leapmuxv1.ConnectRequest_AgentStopped:
 		agentID := payload.AgentStopped.GetAgentId()
 		slog.Info("agent stopped on worker",

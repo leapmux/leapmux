@@ -109,6 +109,7 @@ message AgentInfo {
   string worker_id = 11;        // Worker this agent runs on
   string working_dir = 12;      // Working directory on the worker
   AgentGitStatus git_status = 13; // Git status for the agent's working directory
+  string home_dir = 14;         // Worker's home directory for tilde path display
 }
 
 // --- Agent Messaging ---
