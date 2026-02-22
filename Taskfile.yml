@@ -194,17 +194,46 @@ tasks:
   # --- Docker ---
 
   docker-build:
-    desc: Build Docker image
+    desc: Build all Docker images
+    deps: [docker-build-alpine, docker-build-ubuntu]
+
+  docker-build-alpine:
+    desc: Build Alpine Docker image
     vars:
       PLATFORM: '{{.PLATFORM | default "linux/amd64,linux/arm64"}}'
       TAG: '{{.TAG | default "leapmux:latest"}}'
     cmds:
-      - docker buildx build
-        --platform {{.PLATFORM}}
-        --build-arg VERSION={{.VERSION}}
-        -f docker/Dockerfile
-        -t {{.TAG}}
-        .
+      - |
+        source .versions
+        docker buildx build \
+          --platform {{.PLATFORM}} \
+          --build-arg BASE_IMAGE=$ALPINE_IMAGE \
+          --build-arg BUF_VERSION=$BUF_VERSION \
+          --build-arg SQLC_VERSION=$SQLC_VERSION \
+          --build-arg S6_OVERLAY_VERSION=$S6_OVERLAY_VERSION \
+          --build-arg VERSION={{.VERSION}} \
+          -f docker/Dockerfile \
+          -t {{.TAG}} \
+          .
+
+  docker-build-ubuntu:
+    desc: Build Ubuntu Docker image
+    vars:
+      PLATFORM: '{{.PLATFORM | default "linux/amd64,linux/arm64"}}'
+      TAG: '{{.TAG | default "leapmux:ubuntu"}}'
+    cmds:
+      - |
+        source .versions
+        docker buildx build \
+          --platform {{.PLATFORM}} \
+          --build-arg BASE_IMAGE=$UBUNTU_IMAGE \
+          --build-arg BUF_VERSION=$BUF_VERSION \
+          --build-arg SQLC_VERSION=$SQLC_VERSION \
+          --build-arg S6_OVERLAY_VERSION=$S6_OVERLAY_VERSION \
+          --build-arg VERSION={{.VERSION}} \
+          -f docker/Dockerfile \
+          -t {{.TAG}} \
+          .
 
   # --- Clean ---
 

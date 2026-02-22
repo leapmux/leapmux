@@ -154,7 +154,7 @@ task dev
 
 Once all services are running, open your browser to:
 ```
-http://localhost:4328
+http://localhost:4327
 ```
 
 The `task dev` command uses `mprocs` to run two processes concurrently:
@@ -258,16 +258,23 @@ task clean
 
 ## Docker
 
-Build a Docker image containing the full LeapMux stack:
+Build Docker images containing the full LeapMux stack:
 
 ```bash
+# Build both Alpine and Ubuntu images
 task docker-build
+
+# Build only Alpine
+task docker-build-alpine
+
+# Build only Ubuntu
+task docker-build-ubuntu
 ```
 
 By default this builds for `linux/amd64` and `linux/arm64`. You can override the platform and tag:
 
 ```bash
-task docker-build PLATFORM=linux/amd64 TAG=leapmux:dev
+task docker-build-alpine PLATFORM=linux/amd64 TAG=leapmux:dev
 ```
 
 The image uses a multi-stage build (buf, Bun, Go) and runs with [s6-overlay](https://github.com/just-containers/s6-overlay) for process supervision. The Hub listens on port 4327 and data is stored in the `/data` volume.
@@ -275,6 +282,15 @@ The image uses a multi-stage build (buf, Bun, Go) and runs with [s6-overlay](htt
 ```bash
 docker run -p 4327:4327 -v leapmux-data:/data leapmux:latest
 ```
+
+Pre-built images are published to GHCR in two variants:
+
+| Variant          | Tag pattern         | Example                             |
+|------------------|---------------------|-------------------------------------|
+| Alpine (default) | `:<version>`        | `ghcr.io/org/leapmux:1.0.0`        |
+| Ubuntu           | `:<version>-ubuntu` | `ghcr.io/org/leapmux:1.0.0-ubuntu` |
+
+Tool and base image versions are centralized in the `.versions` file at the repository root.
 
 ---
 
