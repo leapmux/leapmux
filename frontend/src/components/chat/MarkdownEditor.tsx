@@ -6,7 +6,13 @@ import { highlight, highlightPluginConfig } from '@milkdown/plugin-highlight'
 import { createParser as createShikiParser } from '@milkdown/plugin-highlight/shiki'
 import { history } from '@milkdown/plugin-history'
 import { listener, listenerCtx } from '@milkdown/plugin-listener'
-import { commonmark, createCodeBlockCommand, toggleInlineCodeCommand } from '@milkdown/preset-commonmark'
+import {
+  commonmark,
+  createCodeBlockCommand,
+  createCodeBlockInputRule as milkdownCreateCodeBlockInputRule,
+  insertHrInputRule as milkdownInsertHrInputRule,
+  toggleInlineCodeCommand,
+} from '@milkdown/preset-commonmark'
 import { gfm } from '@milkdown/preset-gfm'
 import { TextSelection } from '@milkdown/prose/state'
 import { callCommand, replaceAll } from '@milkdown/utils'
@@ -42,8 +48,9 @@ interface MarkdownEditorProps {
   controlRequestId?: string
   onSend: (markdown: string) => boolean | void
   disabled?: boolean
-  minHeight?: number
+  requestedHeight?: number
   maxHeight?: number
+  onContentHeightChange?: (height: number) => void
   onContentChange?: (hasContent: boolean) => void
   sendRef?: (send: () => void) => void
   focusRef?: (focus: () => void) => void
@@ -103,6 +110,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   let editorInstance: Editor | undefined
   const [enterMode, setEnterMode] = createSignal<EnterKeyMode>(getEnterKeyMode())
   const [_markdown, setMarkdown] = createSignal('')
+  const [contentHeight, setContentHeight] = createSignal(0)
 
   /** Compute the localStorage draft key, incorporating controlRequestId when present. */
   const getDraftKey = () => {
@@ -343,7 +351,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
             }
           })
         })
-        .use(commonmark)
+        .use(commonmark.filter(p => p !== milkdownInsertHrInputRule && p !== milkdownCreateCodeBlockInputRule))
         .use(gfm)
         .use(history)
         .use(markdownPastePlugin)
@@ -376,6 +384,20 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     // Apply editable state and auto-focus — the createEffect on `disabled`
     // may have fired before the editor was created, so set it explicitly.
     applyEditorState(editor)
+    // Track content height via ResizeObserver for adaptive height behavior.
+    const proseMirrorEl = editorRef?.querySelector('.ProseMirror')
+    if (proseMirrorEl) {
+      const resizeObserver = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          const h = entry.borderBoxSize?.[0]?.blockSize
+            ?? entry.target.getBoundingClientRect().height
+          setContentHeight(h)
+          props.onContentHeightChange?.(h)
+        }
+      })
+      resizeObserver.observe(proseMirrorEl)
+      onCleanup(() => resizeObserver.disconnect())
+    }
     // Notify parent if we loaded a draft with content, and restore cursor position
     if (initialDraftKey && initialDraft.content) {
       props.onContentChange?.(true)
@@ -837,7 +859,11 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         ref={editorRef}
         data-testid="chat-editor"
         style={{
-          ...(props.minHeight ? { 'min-height': `${props.minHeight}px` } : {}),
+          ...(props.requestedHeight != null && contentHeight() > 0 && props.requestedHeight < contentHeight()
+            ? { height: `${props.requestedHeight}px` }
+            : props.requestedHeight != null
+              ? { 'min-height': `${props.requestedHeight}px` }
+              : {}),
           ...(props.maxHeight ? { 'max-height': `${props.maxHeight}px` } : {}),
         }}
       />

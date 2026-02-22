@@ -1,4 +1,4 @@
-import { parserCtx, schemaCtx } from '@milkdown/core'
+import { parserCtx, schemaCtx, serializerCtx } from '@milkdown/core'
 import { lift, wrapIn } from '@milkdown/prose/commands'
 import { DOMParser, DOMSerializer } from '@milkdown/prose/model'
 import { liftListItem, sinkListItem } from '@milkdown/prose/schema-list'
@@ -795,9 +795,21 @@ export function createCodeSpanEscapePlugin() {
  */
 export function createMarkdownPastePlugin() {
   return $prose((ctx) => {
+    const schema = ctx.get(schemaCtx)
     return new Plugin({
       key: new PluginKey('markdown-paste'),
       props: {
+        // Override milkdown's clipboardTextSerializer so that inline marks
+        // (bold, italic, etc.) are preserved as markdown in text/plain.
+        // Milkdown's built-in serializer treats single text nodes as "pure
+        // text" even when they have marks, stripping formatting.
+        clipboardTextSerializer: (slice) => {
+          const serializer = ctx.get(serializerCtx)
+          const doc = schema.topNodeType.createAndFill(undefined, slice.content)
+          if (!doc)
+            return ''
+          return serializer(doc)
+        },
         handlePaste: (view, event) => {
           const { clipboardData } = event
           if (!clipboardData)
@@ -816,10 +828,15 @@ export function createMarkdownPastePlugin() {
           if (!text)
             return false
 
-          // Only intercept if the plain text contains markdown block-level syntax
-          // (lists, headings, code fences, blockquotes) that would be lost in HTML paste
-          const hasMarkdownBlocks = /^(?:\s*[-+*]\s|#{1,6}\s|\d+\.\s|```|>\s)/m.test(text)
-          if (!hasMarkdownBlocks)
+          // Only intercept if the plain text contains markdown syntax that would
+          // be lost in HTML paste. This includes block-level syntax (lists,
+          // headings, code fences, blockquotes) and inline formatting (bold,
+          // strikethrough, inline code) which may be stripped when the clipboard
+          // loses text/html (e.g. headless browsers, cross-app paste).
+          const hasMarkdownSyntax
+            = /^(?:\s*[-+*]\s|#{1,6}\s|\d+\.\s|```|>\s)/m.test(text)
+              || /\*\*\S[^*]*\*\*|__\S[^_]*__|~~\S[^~]*~~|`[^`\n]+`/.test(text)
+          if (!hasMarkdownSyntax)
             return false
 
           try {
@@ -828,7 +845,6 @@ export function createMarkdownPastePlugin() {
             if (!slice || typeof slice === 'string')
               return false
 
-            const schema = ctx.get(schemaCtx)
             const dom = DOMSerializer.fromSchema(schema).serializeFragment(slice.content)
             const domParser = DOMParser.fromSchema(schema)
             const parsedSlice = domParser.parseSlice(dom)

@@ -82,8 +82,10 @@ function formatTokenCount(tokens: number): string {
 }
 
 export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
+  let panelRef: HTMLDivElement | undefined
   const menuId = createUniqueId()
   const [isDragging, setIsDragging] = createSignal(false)
+  const [_editorContentHeight, setEditorContentHeight] = createSignal(0)
   const [hasContent, setHasContent] = createSignal(false)
   const { loading: sending, start: startSending } = createLoadingSignal()
   const interruptLoading = createLoadingSignal()
@@ -198,13 +200,18 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     e.preventDefault()
     setIsDragging(true)
     const startY = e.clientY
-    const startMinHeight = editorMinHeightSignal() ?? EDITOR_MIN_HEIGHT
     const maxHeight = maxEditorHeight()
+    // Use the current visual height of the editor wrapper as the drag starting
+    // point so the drag feels anchored to the handle's visual position.
+    const editorWrapperEl = panelRef?.querySelector('[data-testid="chat-editor"]') as HTMLElement | null
+    const startHeight = editorWrapperEl?.getBoundingClientRect().height
+      ?? editorMinHeightSignal()
+      ?? EDITOR_MIN_HEIGHT
     document.body.style.cursor = 'row-resize'
 
     const onMouseMove = (moveEvent: MouseEvent) => {
       const delta = startY - moveEvent.clientY
-      const newMin = Math.max(EDITOR_MIN_HEIGHT, Math.min(maxHeight, startMinHeight + delta))
+      const newMin = Math.max(EDITOR_MIN_HEIGHT, Math.min(maxHeight, startHeight + delta))
       setEditorMinHeight(newMin)
     }
 
@@ -516,7 +523,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   )
 
   return (
-    <div class={styles.editorPanelWrapper} data-testid="agent-editor-panel">
+    <div ref={panelRef} class={styles.editorPanelWrapper} data-testid="agent-editor-panel">
       <Show when={props.streamingText}>
         <div class={styles.streamingIndicator}>Generating...</div>
       </Show>
@@ -533,8 +540,9 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           onSend={activeControlRequest() ? handleControlSend : handleSend}
           disabled={props.disabled}
           onTogglePlanMode={togglePlanMode}
-          minHeight={editorMinHeightSignal() ?? EDITOR_MIN_HEIGHT}
+          requestedHeight={editorMinHeightSignal()}
           maxHeight={maxEditorHeight()}
+          onContentHeightChange={setEditorContentHeight}
           onContentChange={(has) => {
             setHasContent(has)
             if (has && isAskUserQuestion()) {
