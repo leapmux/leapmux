@@ -20,7 +20,9 @@ FROM oven/bun:latest AS frontend-builder
 WORKDIR /src/frontend
 
 # Install dependencies first (cache layer)
+# scripts/only-bun.mjs is needed by the preinstall hook in package.json.
 COPY frontend/package.json frontend/bun.lock ./
+COPY frontend/scripts/ scripts/
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install --frozen-lockfile
 
