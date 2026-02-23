@@ -144,6 +144,20 @@ func (h *WorktreeHelper) CreateWorktreeIfRequested(
 	return worktreePath, wtID, nil
 }
 
+// LookupWorktreeForWorkingDir returns the worktree ID if the given working
+// directory exactly matches a managed worktree's path for the specified worker.
+// Returns empty string if no match is found.
+func (h *WorktreeHelper) LookupWorktreeForWorkingDir(ctx context.Context, workerID, workingDir string) string {
+	wt, err := h.queries.GetWorktreeByWorkerAndPath(ctx, db.GetWorktreeByWorkerAndPathParams{
+		WorkerID:     workerID,
+		WorktreePath: workingDir,
+	})
+	if err != nil {
+		return ""
+	}
+	return wt.ID
+}
+
 // RegisterTabForWorktree associates a tab with a worktree.
 // No-op if worktreeID is empty (tab is not using a managed worktree).
 func (h *WorktreeHelper) RegisterTabForWorktree(ctx context.Context, worktreeID string, tabType leapmuxv1.TabType, tabID string) {

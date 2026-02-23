@@ -122,6 +122,11 @@ func (s *AgentService) OpenAgent(
 		}
 	}
 
+	// Auto-detect existing worktree if the working directory matches one.
+	if worktreeID == "" {
+		worktreeID = s.worktreeHelper.LookupWorktreeForWorkingDir(ctx, workerID, workingDir)
+	}
+
 	model := req.Msg.GetModel()
 	if model == "" {
 		model = DefaultModel
@@ -162,9 +167,15 @@ func (s *AgentService) OpenAgent(
 		}
 	}
 
+	// Register tab for worktree tracking before SendAndWait so that closing
+	// another tab during the potentially slow worker handshake won't
+	// mistakenly delete the worktree.
+	s.worktreeHelper.RegisterTabForWorktree(ctx, worktreeID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
+
 	// Tell the worker to start an agent and wait for a response.
 	conn := s.workerMgr.Get(workerID)
 	if conn == nil {
+		s.unregisterWorktreeTab(ctx, worktreeID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker disconnected"))
 	}
 
@@ -183,12 +194,14 @@ func (s *AgentService) OpenAgent(
 		},
 	})
 	if err != nil {
+		s.unregisterWorktreeTab(ctx, worktreeID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("send agent start: %w", err))
 	}
 
 	// Check if the worker returned an error (e.g. invalid working directory).
 	if errMsg := resp.GetAgentStarted().GetError(); errMsg != "" {
-		// Clean up the DB agent we just created.
+		// Clean up the DB agent and worktree association we just created.
+		s.unregisterWorktreeTab(ctx, worktreeID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
 		if closeErr := s.queries.CloseAgent(ctx, agentID); closeErr != nil {
 			slog.Warn("failed to close agent after start error", "agent_id", agentID, "error", closeErr)
 		}
@@ -204,9 +217,6 @@ func (s *AgentService) OpenAgent(
 			slog.Warn("failed to set agent permission mode", "agent_id", agentID, "error", err)
 		}
 	}
-
-	// Register tab for worktree tracking (after successful agent start).
-	s.worktreeHelper.RegisterTabForWorktree(ctx, worktreeID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
 
 	// Cache and surface the worker's home directory.
 	agentHomeDir := resp.GetAgentStarted().GetHomeDir()
@@ -576,6 +586,21 @@ func (s *AgentService) GetHomeDir(agentID string) string {
 func (s *AgentService) StoreHomeDir(agentID string, dir string) {
 	if dir != "" {
 		s.homeDir.Store(agentID, dir)
+	}
+}
+
+// unregisterWorktreeTab removes a worktree tab association on agent start failure.
+// No-op if worktreeID is empty.
+func (s *AgentService) unregisterWorktreeTab(ctx context.Context, worktreeID string, tabType leapmuxv1.TabType, tabID string) {
+	if worktreeID == "" {
+		return
+	}
+	if err := s.queries.RemoveWorktreeTab(ctx, db.RemoveWorktreeTabParams{
+		WorktreeID: worktreeID,
+		TabType:    tabType,
+		TabID:      tabID,
+	}); err != nil {
+		slog.Warn("failed to unregister worktree tab", "worktree_id", worktreeID, "tab_id", tabID, "error", err)
 	}
 }
 

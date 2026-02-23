@@ -115,6 +115,11 @@ func (s *TerminalService) OpenTerminal(
 		}
 	}
 
+	// Auto-detect existing worktree if the working directory matches one.
+	if worktreeID == "" {
+		worktreeID = s.worktreeHelper.LookupWorktreeForWorkingDir(ctx, workerID, workingDir)
+	}
+
 	terminalID := id.Generate()
 	cols := req.Msg.GetCols()
 	rows := req.Msg.GetRows()
@@ -124,6 +129,11 @@ func (s *TerminalService) OpenTerminal(
 	if rows == 0 {
 		rows = 24
 	}
+
+	// Register tab for worktree tracking before SendAndWait so that closing
+	// another tab during the potentially slow worker handshake won't
+	// mistakenly delete the worktree.
+	s.worktreeHelper.RegisterTabForWorktree(ctx, worktreeID, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID)
 
 	// Tell the worker to start the terminal and wait for a response.
 	resp, err := s.pending.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{
@@ -139,18 +149,17 @@ func (s *TerminalService) OpenTerminal(
 		},
 	})
 	if err != nil {
+		s.unregisterWorktreeTab(ctx, worktreeID, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("send terminal start: %w", err))
 	}
 
 	// Check if the worker returned an error (e.g. invalid working directory).
 	if errMsg := resp.GetTerminalStarted().GetError(); errMsg != "" {
+		s.unregisterWorktreeTab(ctx, worktreeID, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID)
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%s", errMsg))
 	}
 
 	s.trackTerminal(terminalID, req.Msg.GetWorkspaceId(), workerID)
-
-	// Register tab for worktree tracking (after successful terminal start).
-	s.worktreeHelper.RegisterTabForWorktree(ctx, worktreeID, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID)
 
 	return connect.NewResponse(&leapmuxv1.OpenTerminalResponse{
 		TerminalId: terminalID,
@@ -524,4 +533,19 @@ func (s *TerminalService) GetTerminalWorkerID(terminalID string) string {
 		return info.workerID
 	}
 	return ""
+}
+
+// unregisterWorktreeTab removes a worktree tab association on terminal start failure.
+// No-op if worktreeID is empty.
+func (s *TerminalService) unregisterWorktreeTab(ctx context.Context, worktreeID string, tabType leapmuxv1.TabType, tabID string) {
+	if worktreeID == "" {
+		return
+	}
+	if err := s.queries.RemoveWorktreeTab(ctx, db.RemoveWorktreeTabParams{
+		WorktreeID: worktreeID,
+		TabType:    tabType,
+		TabID:      tabID,
+	}); err != nil {
+		slog.Warn("failed to unregister worktree tab", "worktree_id", worktreeID, "tab_id", tabID, "error", err)
+	}
 }
