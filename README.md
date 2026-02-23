@@ -121,16 +121,21 @@ Before you begin, ensure you have the following installed:
 - **Go** 1.25.7 or later
 - **Bun** (latest version) - JavaScript runtime and package manager
 - **Task** - Task runner (replaces Make)
-- **buf** CLI - Protocol Buffer code generation
+- **buf** CLI - Protocol Buffer code generation ([authentication](https://buf.build/docs/bsr/authentication/) recommended to avoid rate-limit errors)
 - **sqlc** - Type-safe SQL code generation
 - **golangci-lint** - Go linter
 - **SQLite** (usually pre-installed on most systems)
+- **Docker** - Required for building Docker images (on macOS, [Rancher Desktop](https://rancherdesktop.io/) is recommended)
 - **mprocs** (optional, for easier multi-process development)
 
-### macOS (Homebrew)
+### macOS
+
+Install [Bun](https://bun.sh/) by following the instructions at https://bun.sh/.
+
+Install the remaining dependencies with [Homebrew](https://brew.sh/):
 
 ```bash
-brew install go bun go-task buf sqlc golangci-lint mprocs
+brew install buf go go-task golangci-lint mprocs sqlc
 ```
 
 ### Operating System
@@ -298,48 +303,44 @@ Tool and base image versions are centralized in the `.versions` file at the repo
 
 ### Frontend
 
-- **SolidJS** - Reactive UI framework
-- **SolidJS Start** / **SolidJS Router** - Full-stack meta-framework and routing
-- **Vinxi** - Build framework (Vite-based)
-- **ConnectRPC** (@connectrpc/connect-web) - RPC client for browser
-- **xterm.js** - Terminal emulator
-- **Milkdown** - Markdown editor
-- **Oat** - Classless CSS framework
-- **Corvu** - Resizable panel components
-- **Solid DnD** - Drag-and-drop support
-- **Lucide** - Icon library
-- **Shiki** - Syntax highlighting
-- **Vanilla Extract** - Type-safe CSS-in-JS
-- **Vitest** - Unit testing
-- **Playwright** - End-to-end testing
-- **Bun** - Runtime and package manager
+- **[Bun](https://bun.sh/)** - Runtime and package manager
+- **[ConnectRPC](https://connectrpc.com/)** (@connectrpc/connect-web) - RPC client for browser
+- **[Corvu](https://corvu.dev/)** - Resizable panel components
+- **[Lucide](https://lucide.dev/)** - Icon library
+- **[Milkdown](https://milkdown.dev/)** - Markdown editor
+- **[Oat](https://oat.ink/)** - Classless CSS framework
+- **[Playwright](https://playwright.dev/)** - End-to-end testing
+- **[Shiki](https://shiki.style/)** - Syntax highlighting
+- **[Solid DnD](https://solid-dnd.com/)** - Drag-and-drop support
+- **[SolidJS](https://www.solidjs.com/)** - Reactive UI framework
+- **[Vanilla Extract](https://vanilla-extract.style/)** - Type-safe CSS-in-JS
+- **[Vinxi](https://vinxi.vercel.app/)** - Build framework (Vite-based)
+- **[Vitest](https://vitest.dev/)** - Unit testing
+- **[xterm.js](https://xtermjs.org/)** - Terminal emulator
 
 ### Hub (Central Service)
 
-- **Go** - Primary language
-- **ConnectRPC** - Modern gRPC-compatible RPC framework (Frontend communication)
-- **gRPC** - Standard gRPC (Worker communication)
-- **SQLite** - Embedded database
-- **sqlc** - Type-safe SQL code generation
-- **Goose** - Database migrations
-- **Protocol Buffers** - Service and message definitions
+- **[ConnectRPC](https://connectrpc.com/)** - Modern gRPC-compatible RPC framework (Frontend communication)
+- **[Go](https://go.dev/)** - Primary language
+- **[Goose](https://pressly.github.io/goose/)** - Database migrations
+- **[gRPC](https://grpc.io/)** - Standard gRPC (Worker communication)
+- **[Protocol Buffers](https://protobuf.dev/)** - Service and message definitions
+- **[SQLite](https://sqlite.org/)** - Embedded database
+- **[sqlc](https://sqlc.dev/)** - Type-safe SQL code generation
 
 ### Worker (Claude Code Wrapper)
 
-- **Go** - Primary language
-- **gRPC** - Communication with Hub
-- **PTY** - Pseudo-terminal management
-- **File System Access** - Safe file browsing and reading
-- **Git Utilities** - Repository info and worktree management
-- **Claude Code Integration** - Process management and NDJSON parsing
+- **[Git](https://git-scm.com/)** - Repository info and worktree management
+- **[Go](https://go.dev/)** - Primary language
+- **[gRPC](https://grpc.io/)** - Communication with Hub
 
 ### Build Tools
 
-- **Task** (go-task.dev) - Build orchestration with checksum-based caching
-- **mprocs** - Multi-process runner for development
-- **buf** - Protocol Buffer tooling
-- **golangci-lint** - Go linting
-- **ESLint** - TypeScript/JavaScript linting
+- **[buf](https://buf.build/)** - Protocol Buffer tooling
+- **[ESLint](https://eslint.org/)** - TypeScript/JavaScript linting
+- **[golangci-lint](https://golangci-lint.run/)** - Go linting
+- **[mprocs](https://github.com/pvolok/mprocs)** - Multi-process runner for development
+- **[Task](https://taskfile.dev/)** - Build orchestration with checksum-based caching
 
 ---
 
@@ -347,49 +348,15 @@ Tool and base image versions are centralized in the `.versions` file at the repo
 
 ```
 leapmux/
+├── .github/workflows/      # CI, Docker, and release workflows
+│
 ├── cmd/leapmux/            # Unified binary entry point
-│   ├── main.go             # Subcommand routing (hub, worker, standalone)
 │   ├── hub.go              # Hub mode
-│   ├── worker.go           # Worker mode
-│   └── standalone.go       # Standalone mode (hub + worker, default)
+│   ├── main.go             # Subcommand routing (hub, worker, standalone)
+│   ├── standalone.go       # Standalone mode (hub + worker, default)
+│   └── worker.go           # Worker mode
 │
-├── hub/                    # Hub public API (thin wrapper)
-│   └── server.go           # NewServer(), Serve(), RegisterBackend(), etc.
-│
-├── worker/                 # Worker public API (thin wrapper)
-│   └── runner.go           # Run(), RunConfig
-│
-├── internal/
-│   ├── hub/                # Hub implementation
-│   │   ├── agentmgr/       # Agent message routing and event broadcasting
-│   │   ├── auth/           # Session-based authentication
-│   │   ├── workermgr/      # Worker connection registry and pending approvals
-│   │   ├── bootstrap/      # Database initialization and seeding
-│   │   ├── config/         # Hub configuration
-│   │   ├── db/             # Database migrations, queries, and sqlc-generated code
-│   │   ├── email/          # Email sending
-│   │   ├── frontend/       # Frontend asset embedding and dev proxy
-│   │   ├── id/             # Unique ID generation
-│   │   ├── layout/         # Workspace tiling layout management
-│   │   ├── lexorank/       # LexoRank ordering for sections
-│   │   ├── msgcodec/       # Message compression (zstd)
-│   │   ├── notifier/       # Worker notification queue (persistent delivery with retries)
-│   │   ├── service/        # RPC service implementations
-│   │   ├── terminalmgr/    # Terminal session management
-│   │   ├── validate/       # Input validation
-│   │   └── generated/      # sqlc-generated code
-│   │
-│   ├── worker/             # Worker implementation
-│   │   ├── agent/          # Claude Code process management
-│   │   ├── config/         # Worker configuration
-│   │   ├── filebrowser/    # File system access
-│   │   ├── gitutil/        # Git repository utilities
-│   │   ├── hub/            # gRPC client to Hub (with auto-reconnect)
-│   │   └── terminal/       # PTY session management
-│   │
-│   ├── logging/            # Structured logging and middleware
-│   ├── metrics/            # Prometheus metrics and interceptors
-│   └── util/               # Shared utilities (timefmt, sanitize, testutil)
+├── docker/                 # Dockerfile and s6-overlay service definitions
 │
 ├── frontend/               # SolidJS web application
 │   ├── src/
@@ -406,21 +373,57 @@ leapmux/
 │   │   └── utils/          # Shared utility functions
 │   └── tests/              # Unit tests (Vitest) and E2E tests (Playwright)
 │
-├── proto/                  # Protocol Buffer definitions
-│   └── leapmux/v1/         # Service and message definitions
-│
 ├── generated/proto/        # Generated Go protobuf code
+│
+├── hub/                    # Hub public API (thin wrapper)
+│   └── server.go           # NewServer(), Serve(), RegisterBackend(), etc.
 │
 ├── icons/                  # SVG icons (light, dark, and default variants)
 │
-├── docker/                 # Dockerfile and s6-overlay service definitions
-├── .github/workflows/      # CI, Docker, and release workflows
-├── Taskfile.yml            # Build orchestration (go-task.dev)
-├── buf.yaml                # Protocol Buffer linting configuration
+├── internal/
+│   ├── hub/                # Hub implementation
+│   │   ├── agentmgr/       # Agent message routing and event broadcasting
+│   │   ├── auth/           # Session-based authentication
+│   │   ├── bootstrap/      # Database initialization and seeding
+│   │   ├── config/         # Hub configuration
+│   │   ├── db/             # Database migrations, queries, and sqlc-generated code
+│   │   ├── email/          # Email sending
+│   │   ├── frontend/       # Frontend asset embedding and dev proxy
+│   │   ├── generated/      # sqlc-generated code
+│   │   ├── id/             # Unique ID generation
+│   │   ├── layout/         # Workspace tiling layout management
+│   │   ├── lexorank/       # LexoRank ordering for sections
+│   │   ├── msgcodec/       # Message compression (zstd)
+│   │   ├── notifier/       # Worker notification queue (persistent delivery with retries)
+│   │   ├── service/        # RPC service implementations
+│   │   ├── terminalmgr/    # Terminal session management
+│   │   ├── validate/       # Input validation
+│   │   └── workermgr/      # Worker connection registry and pending approvals
+│   │
+│   ├── logging/            # Structured logging and middleware
+│   ├── metrics/            # Prometheus metrics and interceptors
+│   ├── util/               # Shared utilities (timefmt, sanitize, testutil)
+│   │
+│   └── worker/             # Worker implementation
+│       ├── agent/          # Claude Code process management
+│       ├── config/         # Worker configuration
+│       ├── filebrowser/    # File system access
+│       ├── gitutil/        # Git repository utilities
+│       ├── hub/            # gRPC client to Hub (with auto-reconnect)
+│       └── terminal/       # PTY session management
+│
+├── proto/                  # Protocol Buffer definitions
+│   └── leapmux/v1/         # Service and message definitions
+│
+├── worker/                 # Worker public API (thin wrapper)
+│   └── runner.go           # Run(), RunConfig
+│
 ├── buf.gen.yaml            # Protocol Buffer code generation targets
+├── buf.yaml                # Protocol Buffer linting configuration
 ├── mprocs.yaml             # Development process configuration
-├── VERSION.txt             # Version string
-└── README.md               # This file
+├── README.md               # This file
+├── Taskfile.yml            # Build orchestration (go-task.dev)
+└── VERSION.txt             # Version string
 ```
 
 ---
