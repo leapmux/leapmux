@@ -27,21 +27,6 @@ async function dragResizeHandle(page: Page, deltaY: number) {
 }
 
 /**
- * Get the per-agent editor height localStorage key for the current workspace.
- * Returns the first matching key, or null if none found.
- */
-async function getEditorHeightKey(page: Page): Promise<string | null> {
-  return page.evaluate((prefix) => {
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i)
-      if (key?.startsWith(prefix))
-        return key
-    }
-    return null
-  }, EDITOR_HEIGHT_KEY_PREFIX)
-}
-
-/**
  * Get the stored per-agent editor height value.
  */
 async function getStoredEditorHeight(page: Page): Promise<string | null> {

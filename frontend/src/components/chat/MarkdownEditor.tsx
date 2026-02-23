@@ -395,7 +395,8 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       let rafId = 0
       const resizeObserver = new ResizeObserver((entries) => {
         const entry = entries[entries.length - 1]
-        if (!entry) return
+        if (!entry)
+          return
         const h = entry.borderBoxSize?.[0]?.blockSize
           ?? entry.target.getBoundingClientRect().height
         cancelAnimationFrame(rafId)
