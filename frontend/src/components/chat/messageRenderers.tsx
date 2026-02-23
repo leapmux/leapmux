@@ -41,8 +41,6 @@ import {
 } from './toolRenderers'
 import {
   answerText,
-  questionItem,
-  questionText,
   toolInputDetail,
   toolInputSubDetail,
   toolMessage,
@@ -345,24 +343,22 @@ function renderAskUserQuestion(toolUse: Record<string, unknown>, context?: Rende
           />
         </Show>
       </div>
-      <For each={questions}>
-        {(q) => {
-          const header = String(q.header || '')
-          const answer = answers?.[header]
-          return (
-            <div class={questionItem}>
-              <span class={questionText}>
-                {'- '}
-                {header}
-                {': '}
-              </span>
-              <span class={answerText}>
-                <strong>{answer ?? 'Not answered'}</strong>
-              </span>
-            </div>
-          )
-        }}
-      </For>
+      <ul style={{ 'padding-left': '20px', 'margin': '4px 0 0' }}>
+        <For each={questions}>
+          {(q) => {
+            const header = String(q.header || '')
+            const answer = answers?.[header]
+            return (
+              <li>
+                <strong>{`${header}: `}</strong>
+                <Show when={answer} fallback={<em>Not answered</em>}>
+                  <div class={`${answerText} ${markdownContent}`} innerHTML={renderMarkdown(answer!)} />
+                </Show>
+              </li>
+            )
+          }}
+        </For>
+      </ul>
     </div>
   )
 }
