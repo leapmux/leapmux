@@ -1,6 +1,8 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 
+const EDITOR_HEIGHT_KEY_PREFIX = 'leapmux-editor-min-height-'
+
 /**
  * Simulate a drag gesture on the resize handle by dispatching native MouseEvents
  * directly on the handle element. This bypasses potential coordinate-targeting issues
@@ -24,10 +26,54 @@ async function dragResizeHandle(page: Page, deltaY: number) {
   await page.waitForTimeout(200)
 }
 
+/**
+ * Get the per-agent editor height localStorage key for the current workspace.
+ * Returns the first matching key, or null if none found.
+ */
+async function getEditorHeightKey(page: Page): Promise<string | null> {
+  return page.evaluate((prefix) => {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)
+      if (key?.startsWith(prefix))
+        return key
+    }
+    return null
+  }, EDITOR_HEIGHT_KEY_PREFIX)
+}
+
+/**
+ * Get the stored per-agent editor height value.
+ */
+async function getStoredEditorHeight(page: Page): Promise<string | null> {
+  return page.evaluate((prefix) => {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)
+      if (key?.startsWith(prefix))
+        return localStorage.getItem(key)
+    }
+    return null
+  }, EDITOR_HEIGHT_KEY_PREFIX)
+}
+
+/**
+ * Remove all per-agent editor height localStorage entries.
+ */
+async function clearEditorHeightKeys(page: Page): Promise<void> {
+  await page.evaluate((prefix) => {
+    const keysToRemove: string[] = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)
+      if (key?.startsWith(prefix))
+        keysToRemove.push(key)
+    }
+    keysToRemove.forEach(k => localStorage.removeItem(k))
+  }, EDITOR_HEIGHT_KEY_PREFIX)
+}
+
 test.describe('Editor Resize Handle', () => {
   test.afterEach(async ({ page }) => {
     // Clear the stored editor min height so tests don't leak state
-    await page.evaluate(() => localStorage.removeItem('leapmux-editor-min-height'))
+    await clearEditorHeightKeys(page)
   })
 
   test('should resize editor by dragging handle up', async ({ page, authenticatedWorkspace }) => {
@@ -114,7 +160,7 @@ test.describe('Editor Resize Handle', () => {
     // Wait for localStorage to be written after drag
     let storedVal = 0
     await expect(async () => {
-      const stored = await page.evaluate(() => localStorage.getItem('leapmux-editor-min-height'))
+      const stored = await getStoredEditorHeight(page)
       expect(stored).not.toBeNull()
       storedVal = Number.parseInt(stored!, 10)
       expect(storedVal).toBeGreaterThan(38)
@@ -160,7 +206,7 @@ test.describe('Editor Resize Handle', () => {
     }).toPass({ timeout: 5000 })
 
     // localStorage key should be removed
-    const stored = await page.evaluate(() => localStorage.getItem('leapmux-editor-min-height'))
+    const stored = await getStoredEditorHeight(page)
     expect(stored).toBeNull()
   })
 
@@ -195,5 +241,59 @@ test.describe('Editor Resize Handle', () => {
     // The editor should be scrollable (content overflows)
     const isScrollable = await wrapper.evaluate(el => el.scrollHeight > el.clientHeight)
     expect(isScrollable).toBe(true)
+  })
+
+  test('should reset min-height override when editor becomes empty after dragging to minimum', async ({ page, authenticatedWorkspace }) => {
+    const wrapper = page.locator('[data-testid="chat-editor"]')
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await page.waitForTimeout(500)
+
+    // Record the natural default height before any drag.
+    const defaultHeight = await wrapper.evaluate(el => el.getBoundingClientRect().height)
+
+    // Drag the resize handle upward to enlarge the editor first,
+    // then drag it back down to the minimum — this creates a stored
+    // min-height override at or below the EDITOR_MIN_HEIGHT (38px).
+    await dragResizeHandle(page, -60)
+    await dragResizeHandle(page, 200) // well past minimum → clamped to 38px
+
+    // A per-agent localStorage key should NOT exist because the value
+    // is at the minimum (the onMouseUp handler skips storage for values
+    // that are <= EDITOR_MIN_HEIGHT).
+    const storedAfterDrag = await getStoredEditorHeight(page)
+    expect(storedAfterDrag).toBeNull()
+
+    // The in-memory signal still holds the clamped value (38).
+    // Verify the editor has a min-height override applied (the wrapper
+    // should be approximately 38px — the clamped value).
+    await expect(async () => {
+      const h = await wrapper.evaluate(el => el.getBoundingClientRect().height)
+      expect(h).toBeGreaterThanOrEqual(35) // ~38px with tolerance
+      expect(h).toBeLessThanOrEqual(50)
+    }).toPass({ timeout: 5000 })
+
+    // Type some text into the editor.
+    await editor.click()
+    await page.keyboard.type('hello')
+    await page.waitForTimeout(200)
+
+    // Now clear the editor completely (select all + delete).
+    await page.keyboard.press('Meta+A')
+    await page.keyboard.press('Backspace')
+    await page.waitForTimeout(300)
+
+    // The min-height override should be cleared because the content is
+    // empty and the override was at the minimum. The editor should be
+    // back to its natural default height.
+    await expect(async () => {
+      const h = await wrapper.evaluate(el => el.getBoundingClientRect().height)
+      // Should be at or near the natural default height (no override).
+      expect(h).toBeLessThanOrEqual(defaultHeight + 5)
+    }).toPass({ timeout: 5000 })
+
+    // localStorage key should still be absent.
+    const storedAfterClear = await getStoredEditorHeight(page)
+    expect(storedAfterClear).toBeNull()
   })
 })

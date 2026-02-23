@@ -569,6 +569,14 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           onContentHeightChange={setEditorContentHeight}
           onContentChange={(has) => {
             setHasContent(has)
+            // When the editor becomes empty and the manual height override
+            // is at (or below) the minimum, clear it so the editor snaps
+            // back to its natural single-line size.
+            if (!has) {
+              const h = editorMinHeightSignal()
+              if (h !== undefined && h <= EDITOR_MIN_HEIGHT)
+                resetEditorHeight()
+            }
             if (has && isAskUserQuestion()) {
               const page = askCurrentPage()
               setAskSelections(prev => (prev[page] ?? []).length > 0 ? { ...prev, [page]: [] } : prev)
