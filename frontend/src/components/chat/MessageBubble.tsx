@@ -290,6 +290,26 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     return undefined
   }
 
+  // Extract is_error from a thread child's tool_result (for fallback rejection detection).
+  const extractChildResultIsError = (): boolean | undefined => {
+    for (const raw of parsed().children) {
+      try {
+        const child = raw as Record<string, unknown>
+        if (child?.type !== 'user')
+          continue
+        const msg = child.message as Record<string, unknown>
+        if (!msg?.content || !Array.isArray(msg.content))
+          continue
+        const toolResult = (msg.content as Array<Record<string, unknown>>).find(c => c.type === 'tool_result')
+        if (!toolResult)
+          continue
+        return (toolResult as Record<string, unknown>).is_error === true
+      }
+      catch { continue }
+    }
+    return undefined
+  }
+
   // Extract control response (approval/rejection) from thread children.
   const childControlResponse = (): { action: string, comment: string } | undefined => {
     const children = parsed().children
@@ -333,6 +353,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
         ? tur.answers as Record<string, string>
         : undefined,
       childResultContent: extractChildResultContent(),
+      childResultIsError: extractChildResultIsError(),
       childControlResponse: childControlResponse(),
     }
   }

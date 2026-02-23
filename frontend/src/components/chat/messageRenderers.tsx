@@ -86,6 +86,8 @@ export interface RenderContext {
   childAnswers?: Record<string, string>
   /** Text content from child tool_result message (for fallback descriptions, e.g. "User stopped"). */
   childResultContent?: string
+  /** Whether the child tool_result has is_error=true (for fallback rejection detection). */
+  childResultIsError?: boolean
   /** Control response (approval/rejection) threaded into this tool_use. */
   childControlResponse?: { action: string, comment: string }
 }
@@ -191,6 +193,22 @@ function renderExitPlanMode(toolUse: Record<string, unknown>, context?: RenderCo
   const input = toolUse.input
   const planText = isObject(input) ? String((input as Record<string, unknown>).plan || '') : ''
 
+  // Derive effective control response: prefer the explicit controlResponse
+  // threaded by the backend; fall back to tool_result-based detection for
+  // data where the controlResponse was lost to the pre-fix race condition.
+  const effectiveCr = (): { action: string, comment: string } | undefined => {
+    if (context?.childControlResponse)
+      return context.childControlResponse
+    const resultContent = context?.childResultContent
+    if (!resultContent)
+      return undefined
+    if (context?.childResultIsError === true)
+      return { action: 'rejected', comment: resultContent }
+    if (context?.childResultIsError === false || resultContent.toLowerCase().includes('approved your plan'))
+      return { action: 'approved', comment: '' }
+    return { action: 'rejected', comment: resultContent }
+  }
+
   return (
     <div class={toolMessage}>
       <div class={toolUseHeader}>
@@ -210,11 +228,16 @@ function renderExitPlanMode(toolUse: Record<string, unknown>, context?: RenderCo
           />
         </Show>
       </div>
+      <Show when={context?.childFilePath}>
+        <div class={toolInputSubDetail}>
+          {relativizePath(context!.childFilePath!, context?.workingDir, context?.homeDir)}
+        </div>
+      </Show>
       <Show when={planText}>
         <hr />
         <div class={markdownContent} innerHTML={renderMarkdown(planText)} />
       </Show>
-      <Show when={context?.childControlResponse}>
+      <Show when={effectiveCr()}>
         {cr => (
           <>
             <hr />
