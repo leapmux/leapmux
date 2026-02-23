@@ -107,27 +107,21 @@ func (s *AgentService) SendAgentMessage(
 
 	// Persist the user message BEFORE attempting resume/delivery so the
 	// message appears in chat even if delivery fails.
-	maxSeq, err := s.queries.GetMaxSeqByAgentID(ctx, agentID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	seq := maxSeq + 1
-
 	contentJSON, _ := json.Marshal(map[string]string{"content": content})
 	wrapped := wrapContent(contentJSON)
 	compressed, compressionType := msgcodec.Compress(wrapped)
 	msgID := id.Generate()
 	now := time.Now()
-	if err := s.queries.CreateMessage(ctx, db.CreateMessageParams{
+	seq, err := s.queries.CreateMessage(ctx, db.CreateMessageParams{
 		ID:                 msgID,
 		AgentID:            agentID,
-		Seq:                seq,
 		Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
 		Content:            compressed,
 		ContentCompression: compressionType,
 		ThreadID:           "",
 		CreatedAt:          now,
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("persist message: %w", err))
 	}
 
@@ -556,40 +550,10 @@ func (s *AgentService) HandleAgentOutput(ctx context.Context, output *leapmuxv1.
 		}
 
 		// Standalone message or no matching parent — wrap content and insert.
-		maxSeq, err := s.queries.GetMaxSeqByAgentID(ctx, agentID)
-		if err != nil {
-			slog.Error("get max seq", "agent_id", agentID, "error", err)
-			return
-		}
-		seq := maxSeq + 1
-
-		wrapped := wrapContent(content)
-		compressed, compressionType := msgcodec.Compress(wrapped)
-		msgID := id.Generate()
-		now := time.Now()
-		if err := s.queries.CreateMessage(ctx, db.CreateMessageParams{
-			ID:                 msgID,
-			AgentID:            agentID,
-			Seq:                seq,
-			Role:               role,
-			Content:            compressed,
-			ContentCompression: compressionType,
-			ThreadID:           threadID,
-			CreatedAt:          now,
-		}); err != nil {
+		if err := s.persistAndBroadcast(ctx, agentID, role, content, threadID); err != nil {
 			slog.Error("persist agent message", "agent_id", agentID, "error", err)
 			return
 		}
-
-		// Broadcast to watchers.
-		s.broadcastMessage(agentID, &leapmuxv1.AgentChatMessage{
-			Id:                 msgID,
-			Role:               role,
-			Content:            compressed,
-			ContentCompression: compressionType,
-			Seq:                seq,
-			CreatedAt:          timefmt.Format(now),
-		})
 
 		// Detect plan mode changes from tool_use / tool_result messages.
 		switch envelope.Type {
@@ -778,49 +742,34 @@ func (s *AgentService) clearDeliveryError(ctx context.Context, agentID, msgID st
 // persistAndBroadcast persists a message and broadcasts it to watchers.
 // It retries with an updated sequence number if the insert fails due to a
 // concurrent seq collision (UNIQUE constraint on agent_id, seq).
-func (s *AgentService) persistAndBroadcast(ctx context.Context, agentID string, role leapmuxv1.MessageRole, contentJSON []byte) error {
-	const maxRetries = 3
+func (s *AgentService) persistAndBroadcast(ctx context.Context, agentID string, role leapmuxv1.MessageRole, contentJSON []byte, threadID string) error {
 	msgID := id.Generate()
 	wrapped := wrapContent(contentJSON)
 	compressed, compressionType := msgcodec.Compress(wrapped)
-
 	now := time.Now()
-	var lastErr error
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		maxSeq, err := s.queries.GetMaxSeqByAgentID(ctx, agentID)
-		if err != nil {
-			return fmt.Errorf("get max seq for message: %w", err)
-		}
-		seq := maxSeq + 1
 
-		if err := s.queries.CreateMessage(ctx, db.CreateMessageParams{
-			ID:                 msgID,
-			AgentID:            agentID,
-			Seq:                seq,
-			Role:               role,
-			Content:            compressed,
-			ContentCompression: compressionType,
-			ThreadID:           "",
-			CreatedAt:          now,
-		}); err != nil {
-			lastErr = err
-			if attempt < maxRetries-1 {
-				continue // Retry with updated seq
-			}
-			return fmt.Errorf("persist message after %d retries: %w", maxRetries, lastErr)
-		}
-
-		s.broadcastMessage(agentID, &leapmuxv1.AgentChatMessage{
-			Id:                 msgID,
-			Role:               role,
-			Content:            compressed,
-			ContentCompression: compressionType,
-			Seq:                seq,
-			CreatedAt:          timefmt.Format(now),
-		})
-		return nil
+	seq, err := s.queries.CreateMessage(ctx, db.CreateMessageParams{
+		ID:                 msgID,
+		AgentID:            agentID,
+		Role:               role,
+		Content:            compressed,
+		ContentCompression: compressionType,
+		ThreadID:           threadID,
+		CreatedAt:          now,
+	})
+	if err != nil {
+		return fmt.Errorf("persist message: %w", err)
 	}
-	return lastErr
+
+	s.broadcastMessage(agentID, &leapmuxv1.AgentChatMessage{
+		Id:                 msgID,
+		Role:               role,
+		Content:            compressed,
+		ContentCompression: compressionType,
+		Seq:                seq,
+		CreatedAt:          timefmt.Format(now),
+	})
+	return nil
 }
 
 // broadcastNotification persists and broadcasts a MESSAGE_ROLE_LEAPMUX message
@@ -880,22 +829,16 @@ func (s *AgentService) appendToNotificationThread(ctx context.Context, agentID s
 
 	merged, _ := json.Marshal(wrapper)
 
-	maxSeq, err := s.queries.GetMaxSeqByAgentID(ctx, agentID)
-	if err != nil {
-		return fmt.Errorf("get max seq for notification thread: %w", err)
-	}
-	newSeq := maxSeq + 1
-
 	now := time.Now()
 	mergedCompressed, mergedCompType := msgcodec.Compress(merged)
-	if err := s.queries.UpdateMessageThread(ctx, db.UpdateMessageThreadParams{
+	newSeq, err := s.queries.UpdateMessageThread(ctx, db.UpdateMessageThreadParams{
 		Content:            mergedCompressed,
 		ContentCompression: mergedCompType,
-		Seq:                newSeq,
 		UpdatedAt:          sql.NullTime{Time: now, Valid: true},
 		ID:                 parentRow.ID,
 		AgentID:            agentID,
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("update notification thread: %w", err)
 	}
 
@@ -921,54 +864,39 @@ func (s *AgentService) appendToNotificationThread(ctx context.Context, agentID s
 // createNotificationStandalone creates a new standalone notification message
 // and records it as the current notification thread for the agent.
 func (s *AgentService) createNotificationStandalone(ctx context.Context, agentID string, role leapmuxv1.MessageRole, contentJSON []byte) error {
-	const maxRetries = 3
 	msgID := id.Generate()
 	wrapped := wrapContent(contentJSON)
 	compressed, compressionType := msgcodec.Compress(wrapped)
 	now := time.Now()
 
-	var lastErr error
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		maxSeq, err := s.queries.GetMaxSeqByAgentID(ctx, agentID)
-		if err != nil {
-			return fmt.Errorf("get max seq for notification: %w", err)
-		}
-		seq := maxSeq + 1
-
-		if err := s.queries.CreateMessage(ctx, db.CreateMessageParams{
-			ID:                 msgID,
-			AgentID:            agentID,
-			Seq:                seq,
-			Role:               role,
-			Content:            compressed,
-			ContentCompression: compressionType,
-			ThreadID:           "",
-			CreatedAt:          now,
-		}); err != nil {
-			lastErr = err
-			if attempt < maxRetries-1 {
-				continue
-			}
-			return fmt.Errorf("persist notification after %d retries: %w", maxRetries, lastErr)
-		}
-
-		// Record as current notification thread.
-		s.lastNotifThread.Store(agentID, &notifThreadRef{
-			msgID: msgID,
-			seq:   seq,
-		})
-
-		s.broadcastMessage(agentID, &leapmuxv1.AgentChatMessage{
-			Id:                 msgID,
-			Role:               role,
-			Content:            compressed,
-			ContentCompression: compressionType,
-			Seq:                seq,
-			CreatedAt:          timefmt.Format(now),
-		})
-		return nil
+	seq, err := s.queries.CreateMessage(ctx, db.CreateMessageParams{
+		ID:                 msgID,
+		AgentID:            agentID,
+		Role:               role,
+		Content:            compressed,
+		ContentCompression: compressionType,
+		ThreadID:           "",
+		CreatedAt:          now,
+	})
+	if err != nil {
+		return fmt.Errorf("persist notification: %w", err)
 	}
-	return lastErr
+
+	// Record as current notification thread.
+	s.lastNotifThread.Store(agentID, &notifThreadRef{
+		msgID: msgID,
+		seq:   seq,
+	})
+
+	s.broadcastMessage(agentID, &leapmuxv1.AgentChatMessage{
+		Id:                 msgID,
+		Role:               role,
+		Content:            compressed,
+		ContentCompression: compressionType,
+		Seq:                seq,
+		CreatedAt:          timefmt.Format(now),
+	})
+	return nil
 }
 
 // getOrCreateUsageSnapshot returns the token usage snapshot for the given agent,

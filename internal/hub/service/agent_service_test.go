@@ -257,10 +257,9 @@ func TestAgentService_ListAgentMessages(t *testing.T) {
 
 	// Insert messages directly.
 	for i := int64(1); i <= 5; i++ {
-		_ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
+		_, _ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
 			ID:                 id.Generate(),
 			AgentID:            agentID,
-			Seq:                i,
 			Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT,
 			Content:            []byte(`{"type":"assistant"}`),
 			ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
@@ -790,10 +789,9 @@ func TestAgentService_RetryAgentMessage_Success(t *testing.T) {
 
 	// Create a message with delivery_error set.
 	msgID := id.Generate()
-	_ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
+	_, _ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
 		ID:                 msgID,
 		AgentID:            agentID,
-		Seq:                1,
 		Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
 		Content:            []byte(`{"content":"Hello retry"}`),
 		ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
@@ -826,10 +824,9 @@ func TestAgentService_RetryAgentMessage_Failure(t *testing.T) {
 
 	// Create a message with delivery_error set.
 	msgID := id.Generate()
-	_ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
+	_, _ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
 		ID:                 msgID,
 		AgentID:            agentID,
-		Seq:                1,
 		Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
 		Content:            []byte(`{"content":"Hello retry fail"}`),
 		ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
@@ -893,10 +890,9 @@ func TestAgentService_RetryAgentMessage_RejectsNonUserMessage(t *testing.T) {
 	agentID := env.createAgentInDB(t, workspaceID, "Agent")
 
 	msgID := id.Generate()
-	_ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
+	_, _ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
 		ID:                 msgID,
 		AgentID:            agentID,
-		Seq:                1,
 		Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT,
 		Content:            []byte(`{"type":"assistant"}`),
 		ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
@@ -921,10 +917,9 @@ func TestAgentService_RetryAgentMessage_RejectsNoDeliveryError(t *testing.T) {
 	agentID := env.createAgentInDB(t, workspaceID, "Agent")
 
 	msgID := id.Generate()
-	_ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
+	_, _ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
 		ID:                 msgID,
 		AgentID:            agentID,
-		Seq:                1,
 		Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
 		Content:            []byte(`{"content":"No error here"}`),
 		ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
@@ -944,10 +939,9 @@ func TestAgentService_DeleteAgentMessage_Success(t *testing.T) {
 	agentID := env.createAgentInDB(t, workspaceID, "Agent")
 
 	msgID := id.Generate()
-	_ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
+	_, _ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
 		ID:                 msgID,
 		AgentID:            agentID,
-		Seq:                1,
 		Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
 		Content:            []byte(`{"content":"Delete me"}`),
 		ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
@@ -992,10 +986,9 @@ func TestAgentService_DeleteAgentMessage_RejectsNoDeliveryError(t *testing.T) {
 	agentID := env.createAgentInDB(t, workspaceID, "Agent")
 
 	msgID := id.Generate()
-	_ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
+	_, _ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
 		ID:                 msgID,
 		AgentID:            agentID,
-		Seq:                1,
 		Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
 		Content:            []byte(`{"content":"No error"}`),
 		ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
@@ -1120,10 +1113,9 @@ func TestAgentService_ListAgentMessages_BackwardPagination(t *testing.T) {
 
 	// Insert 10 messages (seq 1-10).
 	for i := int64(1); i <= 10; i++ {
-		_ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
+		_, _ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
 			ID:                 id.Generate(),
 			AgentID:            agentID,
-			Seq:                i,
 			Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT,
 			Content:            []byte(`{"type":"assistant"}`),
 			ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
@@ -1163,10 +1155,9 @@ func TestAgentService_ListAgentMessages_LatestN(t *testing.T) {
 
 	// Insert 10 messages (seq 1-10).
 	for i := int64(1); i <= 10; i++ {
-		_ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
+		_, _ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
 			ID:                 id.Generate(),
 			AgentID:            agentID,
-			Seq:                i,
 			Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT,
 			Content:            []byte(`{"type":"assistant"}`),
 			ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
@@ -1204,10 +1195,9 @@ func TestAgentService_ListAgentMessages_MaxLimit(t *testing.T) {
 
 	// Insert 60 messages.
 	for i := int64(1); i <= 60; i++ {
-		_ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
+		_, _ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
 			ID:                 id.Generate(),
 			AgentID:            agentID,
-			Seq:                i,
 			Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT,
 			Content:            []byte(`{"type":"assistant"}`),
 			ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
@@ -1271,10 +1261,9 @@ func TestAgentService_ListAgentMessages_IncludesDeliveryError(t *testing.T) {
 
 	// Message with delivery error.
 	msg1ID := id.Generate()
-	_ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
+	_, _ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
 		ID:                 msg1ID,
 		AgentID:            agentID,
-		Seq:                1,
 		Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
 		Content:            []byte(`{"content":"Failed msg"}`),
 		ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
@@ -1286,10 +1275,9 @@ func TestAgentService_ListAgentMessages_IncludesDeliveryError(t *testing.T) {
 	})
 
 	// Message without delivery error.
-	_ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
+	_, _ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
 		ID:                 id.Generate(),
 		AgentID:            agentID,
-		Seq:                2,
 		Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT,
 		Content:            []byte(`{"type":"assistant"}`),
 		ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
@@ -1313,7 +1301,6 @@ func TestMessageToProto_UpdatedAt(t *testing.T) {
 		msg := &gendb.Message{
 			ID:                 "msg-1",
 			AgentID:            "agent-1",
-			Seq:                1,
 			Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT,
 			Content:            []byte(`{}`),
 			ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
@@ -1329,7 +1316,6 @@ func TestMessageToProto_UpdatedAt(t *testing.T) {
 		msg := &gendb.Message{
 			ID:                 "msg-2",
 			AgentID:            "agent-1",
-			Seq:                2,
 			Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT,
 			Content:            []byte(`{}`),
 			ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,

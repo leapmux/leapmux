@@ -497,10 +497,9 @@ func TestWorkspaceService_WatchEvents_WithHistory(t *testing.T) {
 
 	// Insert 3 messages.
 	for i := int64(1); i <= 3; i++ {
-		_ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
+		_, _ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
 			ID:                 id.Generate(),
 			AgentID:            agentID,
-			Seq:                i,
 			Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT,
 			Content:            []byte(`{"type":"assistant"}`),
 			ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
@@ -537,10 +536,9 @@ func TestWorkspaceService_WatchEvents_LiveOnly(t *testing.T) {
 	agentID := env.createAgentInDB(t, workspaceID, "Agent")
 
 	// Insert a message that should NOT be replayed with afterSeq=-1.
-	_ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
+	_, _ = env.queries.CreateMessage(context.Background(), gendb.CreateMessageParams{
 		ID:                 id.Generate(),
 		AgentID:            agentID,
-		Seq:                1,
 		Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT,
 		Content:            []byte(`{"type":"assistant"}`),
 		ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
