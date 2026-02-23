@@ -80,12 +80,12 @@ export const resultDivider = style({
   },
 })
 
-// Control response message (compact, muted)
+// Control response message (compact)
 export const controlResponseMessage = style({
   display: 'flex',
   alignItems: 'center',
   gap: spacing.sm,
-  color: 'var(--muted-foreground)',
+  color: 'var(--foreground)',
   fontSize: 'var(--text-7)',
   alignSelf: 'stretch',
 })

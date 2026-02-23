@@ -22,7 +22,7 @@ import { TodoList } from '~/components/todo/TodoList'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { markdownContent } from './markdownContent.css'
-import { controlResponseMessage, thinkingContent, thinkingHeader } from './messageStyles.css'
+import { thinkingContent, thinkingHeader } from './messageStyles.css'
 import {
   compactBoundaryRenderer,
   contextClearedRenderer,
@@ -239,20 +239,15 @@ function renderExitPlanMode(toolUse: Record<string, unknown>, context?: RenderCo
         {cr => (
           <>
             <hr />
-            <div class={controlResponseMessage}>
-              {cr().action === 'approved'
-                ? (
-                    <>
-                      <Stamp size={14} />
-                      {' Approved'}
-                    </>
-                  )
-                : (
-                    <>
-                      <Hand size={14} />
-                      {' Rejected'}
-                    </>
-                  )}
+            <div class={toolUseHeader}>
+              <span class={inlineFlex}>
+                {cr().action === 'approved'
+                  ? <Stamp size={16} class={toolUseIcon} />
+                  : <Hand size={16} class={toolUseIcon} />}
+              </span>
+              <span class={toolInputDetail}>
+                {cr().action === 'approved' ? 'Approved' : 'Rejected'}
+              </span>
             </div>
             <Show when={cr().action !== 'approved' && cr().comment}>
               <div class={markdownContent} innerHTML={renderMarkdown(cr().comment)} />
