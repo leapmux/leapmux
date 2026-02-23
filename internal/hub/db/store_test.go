@@ -303,16 +303,18 @@ func TestMessages_CRUD(t *testing.T) {
 
 	// Create messages.
 	for i := int64(1); i <= 3; i++ {
-		err := q.CreateMessage(ctx, gendb.CreateMessageParams{
+		seq, err := q.CreateMessage(ctx, gendb.CreateMessageParams{
 			ID:                 makeID(),
 			AgentID:            agentID,
-			Seq:                i,
 			Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
 			Content:            []byte(`{"text":"hello"}`),
 			ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		})
 		if err != nil {
 			t.Fatalf("CreateMessage seq=%d: %v", i, err)
+		}
+		if seq != i {
+			t.Errorf("CreateMessage returned seq=%d, want %d", seq, i)
 		}
 	}
 
@@ -334,13 +336,6 @@ func TestMessages_CRUD(t *testing.T) {
 	})
 	if len(msgs2) != 2 {
 		t.Errorf("len from seq 1 = %d, want 2", len(msgs2))
-	}
-
-	// Max seq.
-	maxSeq, err := q.GetMaxSeqByAgentID(ctx, agentID)
-	require.NoError(t, err)
-	if maxSeq != 3 {
-		t.Errorf("maxSeq = %d, want 3", maxSeq)
 	}
 }
 

@@ -342,23 +342,16 @@ func (s *AgentService) mergeIntoThread(ctx context.Context, agentID, threadID st
 
 	merged := appendToThread(wrapper, parentRow.Seq, childJSON)
 
-	maxSeq, err := s.queries.GetMaxSeqByAgentID(ctx, agentID)
-	if err != nil {
-		slog.Error("get max seq for thread merge", "agent_id", agentID, "error", err)
-		return false
-	}
-	newSeq := maxSeq + 1
-
 	now := time.Now()
 	mergedCompressed, mergedCompType := msgcodec.Compress(merged)
-	if err := s.queries.UpdateMessageThread(ctx, db.UpdateMessageThreadParams{
+	newSeq, err := s.queries.UpdateMessageThread(ctx, db.UpdateMessageThreadParams{
 		Content:            mergedCompressed,
 		ContentCompression: mergedCompType,
-		Seq:                newSeq,
 		UpdatedAt:          sql.NullTime{Time: now, Valid: true},
 		ID:                 parentRow.ID,
 		AgentID:            agentID,
-	}); err != nil {
+	})
+	if err != nil {
 		slog.Error("update parent thread", "agent_id", agentID, "thread_id", threadID, "error", err)
 		return false
 	}
