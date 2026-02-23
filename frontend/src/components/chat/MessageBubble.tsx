@@ -21,6 +21,9 @@ function roleLabel(role: MessageRole): string {
   switch (role) {
     case MessageRole.USER: return 'user'
     case MessageRole.ASSISTANT: return 'assistant'
+    case MessageRole.SYSTEM: return 'system'
+    case MessageRole.RESULT: return 'result'
+    case MessageRole.LEAPMUX: return 'leapmux'
     default: return 'system'
   }
 }
@@ -118,8 +121,13 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
 
     try {
       const obj = JSON.parse(text)
-      if (obj?.messages && Array.isArray(obj.messages) && obj.messages.length > 0) {
+      if (obj?.messages && Array.isArray(obj.messages)) {
         // Wrapped format: {"old_seqs": [...], "messages": [{...}, ...]}
+        // An empty messages array can occur when notification consolidation
+        // cancels out all changes (e.g. plan mode toggled back).
+        if (obj.messages.length === 0) {
+          return { wrapper: obj, parentObject: undefined, rawText: text, children: [] }
+        }
         const first = obj.messages[0]
         const parent = (typeof first === 'object' && first !== null && !Array.isArray(first))
           ? first as Record<string, unknown>
@@ -282,6 +290,26 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     return undefined
   }
 
+  // Extract is_error from a thread child's tool_result (for fallback rejection detection).
+  const extractChildResultIsError = (): boolean | undefined => {
+    for (const raw of parsed().children) {
+      try {
+        const child = raw as Record<string, unknown>
+        if (child?.type !== 'user')
+          continue
+        const msg = child.message as Record<string, unknown>
+        if (!msg?.content || !Array.isArray(msg.content))
+          continue
+        const toolResult = (msg.content as Array<Record<string, unknown>>).find(c => c.type === 'tool_result')
+        if (!toolResult)
+          continue
+        return (toolResult as Record<string, unknown>).is_error === true
+      }
+      catch { continue }
+    }
+    return undefined
+  }
+
   // Extract control response (approval/rejection) from thread children.
   const childControlResponse = (): { action: string, comment: string } | undefined => {
     const children = parsed().children
@@ -325,6 +353,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
         ? tur.answers as Record<string, string>
         : undefined,
       childResultContent: extractChildResultContent(),
+      childResultIsError: extractChildResultIsError(),
       childControlResponse: childControlResponse(),
     }
   }

@@ -64,10 +64,10 @@ describe('classifyMessage', () => {
       expect(result.kind).not.toBe('notification_thread')
     })
 
-    it('does not classify empty messages array as notification_thread', () => {
+    it('classifies empty messages array as hidden (consolidated no-op)', () => {
       const result = classifyMessage(undefined, { old_seqs: [], messages: [] })
-      // With undefined parentObject and empty wrapper, falls to unknown
-      expect(result.kind).toBe('unknown')
+      // Empty wrapper (all notifications consolidated to no-ops) is hidden
+      expect(result.kind).toBe('hidden')
     })
 
     it('returns messages array in notification_thread category', () => {

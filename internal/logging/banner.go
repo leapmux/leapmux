@@ -126,11 +126,14 @@ func PrintAccessURL(addr string) {
 
 	if isTTY {
 		qrterminal.GenerateWithConfig(url, qrterminal.Config{
-			Level:     qrterminal.L,
-			Writer:    os.Stderr,
-			QuietZone: 1,
-			BlackChar: qrterminal.BLACK,
-			WhiteChar: qrterminal.WHITE,
+			Level:          qrterminal.L,
+			Writer:         os.Stderr,
+			QuietZone:      1,
+			HalfBlocks:     true,
+			BlackChar:      qrterminal.BLACK_BLACK,
+			WhiteChar:      qrterminal.WHITE_WHITE,
+			BlackWhiteChar: qrterminal.BLACK_WHITE,
+			WhiteBlackChar: qrterminal.WHITE_BLACK,
 		})
 		fmt.Fprintln(os.Stderr)
 	}
@@ -143,11 +146,14 @@ func PrintQRCode(url string) {
 		return
 	}
 	qrterminal.GenerateWithConfig(url, qrterminal.Config{
-		Level:     qrterminal.L,
-		Writer:    os.Stderr,
-		QuietZone: 1,
-		BlackChar: qrterminal.BLACK,
-		WhiteChar: qrterminal.WHITE,
+		Level:          qrterminal.L,
+		Writer:         os.Stderr,
+		QuietZone:      1,
+		HalfBlocks:     true,
+		BlackChar:      qrterminal.BLACK_BLACK,
+		WhiteChar:      qrterminal.WHITE_WHITE,
+		BlackWhiteChar: qrterminal.BLACK_WHITE,
+		WhiteBlackChar: qrterminal.WHITE_BLACK,
 	})
 	fmt.Fprintln(os.Stderr)
 }

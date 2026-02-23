@@ -49,19 +49,11 @@ func (s *AgentService) SendControlResponse(
 		return nil, err
 	}
 
-	// Send the raw control_response bytes to the worker, retrying once if the agent process is gone.
-	agentNotFound, err := s.deliverRawInputToWorker(ctx, agent.WorkerID, agent.WorkspaceID, agentID, content)
-	if agentNotFound {
-		slog.Info("agent process not found, restarting before retry", "agent_id", agentID)
-		if restartErr := s.ensureAgentActive(ctx, &agent, ws); restartErr == nil {
-			_, err = s.deliverRawInputToWorker(ctx, agent.WorkerID, agent.WorkspaceID, agentID, content)
-		}
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	// Persist a display message for the control response so it appears in chat history.
+	// Persist a display message for the control response BEFORE delivering to
+	// the worker. This prevents a race condition where the tool_result from
+	// Claude Code (triggered by receiving the control_response) arrives and
+	// merges into the parent thread concurrently, clobbering the display
+	// message via a lost-update in mergeIntoThread.
 	var crPayload struct {
 		Response struct {
 			RequestID string `json:"request_id"`
@@ -74,7 +66,7 @@ func (s *AgentService) SendControlResponse(
 	if err := json.Unmarshal(content, &crPayload); err == nil {
 		// Fetch the control request record to get tool_use_id for threading
 		// and tool_name for plan mode detection.
-		var toolUseID string
+		var toolUseID, toolName string
 		if reqID := crPayload.Response.RequestID; reqID != "" {
 			cr, crErr := s.queries.GetControlRequest(ctx, db.GetControlRequestParams{
 				AgentID:   agentID,
@@ -89,16 +81,44 @@ func (s *AgentService) SendControlResponse(
 				}
 				if json.Unmarshal(cr.Payload, &crBody) == nil {
 					toolUseID = crBody.Request.ToolUseID
+					toolName = crBody.Request.ToolName
+				}
+			}
 
-					// Detect plan mode changes from control responses (agent-initiated).
-					if crPayload.Response.Response.Behavior == "allow" {
-						switch crBody.Request.ToolName {
-						case "EnterPlanMode":
-							s.setAgentPermissionMode(ctx, agentID, "plan")
-						case "ExitPlanMode":
-							s.setAgentPermissionMode(ctx, agentID, "default")
-						}
-					}
+			action := "approved"
+			if crPayload.Response.Response.Behavior == "deny" {
+				action = "rejected"
+			}
+
+			displayContent := map[string]interface{}{
+				"isSynthetic": true,
+				"controlResponse": map[string]string{
+					"action":  action,
+					"comment": crPayload.Response.Response.Message,
+				},
+			}
+			displayJSON, _ := json.Marshal(displayContent)
+
+			// Thread the control response into the parent tool_use message so it
+			// appears alongside the tool rather than as a separate message that
+			// can get mis-ordered when the tool_result merge bumps the parent's seq.
+			merged := false
+			if toolUseID != "" {
+				merged = s.mergeIntoThread(ctx, agentID, toolUseID, displayJSON)
+			}
+			if !merged {
+				if err := s.persistAndBroadcast(ctx, agentID, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, displayJSON, ""); err != nil {
+					slog.Warn("failed to persist control response notification", "agent_id", agentID, "error", err)
+				}
+			}
+
+			// Detect plan mode changes from control responses (agent-initiated).
+			if crPayload.Response.Response.Behavior == "allow" {
+				switch toolName {
+				case "EnterPlanMode":
+					s.setAgentPermissionMode(ctx, agentID, "plan")
+				case "ExitPlanMode":
+					s.setAgentPermissionMode(ctx, agentID, "default")
 				}
 			}
 
@@ -109,33 +129,19 @@ func (s *AgentService) SendControlResponse(
 				slog.Error("delete control request on response", "agent_id", agentID, "request_id", reqID, "error", err)
 			}
 		}
+	}
 
-		action := "approved"
-		if crPayload.Response.Response.Behavior == "deny" {
-			action = "rejected"
+	// Send the raw control_response bytes to the worker, retrying once if the agent process is gone.
+	// This happens AFTER persisting the display message to prevent race conditions (see above).
+	agentNotFound, err := s.deliverRawInputToWorker(ctx, agent.WorkerID, agent.WorkspaceID, agentID, content)
+	if agentNotFound {
+		slog.Info("agent process not found, restarting before retry", "agent_id", agentID)
+		if restartErr := s.ensureAgentActive(ctx, &agent, ws); restartErr == nil {
+			_, err = s.deliverRawInputToWorker(ctx, agent.WorkerID, agent.WorkspaceID, agentID, content)
 		}
-
-		displayContent := map[string]interface{}{
-			"isSynthetic": true,
-			"controlResponse": map[string]string{
-				"action":  action,
-				"comment": crPayload.Response.Response.Message,
-			},
-		}
-		displayJSON, _ := json.Marshal(displayContent)
-
-		// Thread the control response into the parent tool_use message so it
-		// appears alongside the tool rather than as a separate message that
-		// can get mis-ordered when the tool_result merge bumps the parent's seq.
-		merged := false
-		if toolUseID != "" {
-			merged = s.mergeIntoThread(ctx, agentID, toolUseID, displayJSON)
-		}
-		if !merged {
-			if err := s.persistAndBroadcast(ctx, agentID, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, displayJSON, ""); err != nil {
-				slog.Warn("failed to persist control response notification", "agent_id", agentID, "error", err)
-			}
-		}
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	return connect.NewResponse(&leapmuxv1.SendControlResponseResponse{}), nil

@@ -824,6 +824,9 @@ func (s *AgentService) appendToNotificationThread(ctx context.Context, agentID s
 
 	// Append the new message and consolidate.
 	wrapper.OldSeqs = append(wrapper.OldSeqs, parentRow.Seq)
+	if len(wrapper.OldSeqs) > 16 {
+		wrapper.OldSeqs = wrapper.OldSeqs[len(wrapper.OldSeqs)-16:]
+	}
 	wrapper.Messages = append(wrapper.Messages, contentJSON)
 	wrapper.Messages = consolidateNotificationThread(wrapper.Messages)
 

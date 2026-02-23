@@ -10,8 +10,10 @@ import Bot from 'lucide-solid/icons/bot'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
+import Hand from 'lucide-solid/icons/hand'
 import ListTodo from 'lucide-solid/icons/list-todo'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
+import Stamp from 'lucide-solid/icons/stamp'
 import Terminal from 'lucide-solid/icons/terminal'
 import TicketsPlane from 'lucide-solid/icons/tickets-plane'
 import Vote from 'lucide-solid/icons/vote'
@@ -39,8 +41,6 @@ import {
 } from './toolRenderers'
 import {
   answerText,
-  questionItem,
-  questionText,
   toolInputDetail,
   toolInputSubDetail,
   toolMessage,
@@ -84,6 +84,8 @@ export interface RenderContext {
   childAnswers?: Record<string, string>
   /** Text content from child tool_result message (for fallback descriptions, e.g. "User stopped"). */
   childResultContent?: string
+  /** Whether the child tool_result has is_error=true (for fallback rejection detection). */
+  childResultIsError?: boolean
   /** Control response (approval/rejection) threaded into this tool_use. */
   childControlResponse?: { action: string, comment: string }
 }
@@ -189,6 +191,22 @@ function renderExitPlanMode(toolUse: Record<string, unknown>, context?: RenderCo
   const input = toolUse.input
   const planText = isObject(input) ? String((input as Record<string, unknown>).plan || '') : ''
 
+  // Derive effective control response: prefer the explicit controlResponse
+  // threaded by the backend; fall back to tool_result-based detection for
+  // data where the controlResponse was lost to the pre-fix race condition.
+  const effectiveCr = (): { action: string, comment: string } | undefined => {
+    if (context?.childControlResponse)
+      return context.childControlResponse
+    const resultContent = context?.childResultContent
+    if (!resultContent)
+      return undefined
+    if (context?.childResultIsError === true)
+      return { action: 'rejected', comment: resultContent }
+    if (context?.childResultIsError === false || resultContent.toLowerCase().includes('approved your plan'))
+      return { action: 'approved', comment: '' }
+    return { action: 'rejected', comment: resultContent }
+  }
+
   return (
     <div class={toolMessage}>
       <div class={toolUseHeader}>
@@ -196,7 +214,6 @@ function renderExitPlanMode(toolUse: Record<string, unknown>, context?: RenderCo
           <PlaneTakeoff size={16} class={toolUseIcon} />
         </span>
         <span class={toolInputDetail}>Leaving Plan Mode</span>
-        <ControlResponseTag response={context?.childControlResponse} />
         <Show when={context}>
           <ToolHeaderActions
             createdAt={context!.createdAt}
@@ -209,7 +226,35 @@ function renderExitPlanMode(toolUse: Record<string, unknown>, context?: RenderCo
           />
         </Show>
       </div>
-      {planText && <div class={markdownContent} innerHTML={renderMarkdown(planText)} />}
+      <Show when={context?.childFilePath}>
+        <div class={toolInputSubDetail}>
+          {relativizePath(context!.childFilePath!, context?.workingDir, context?.homeDir)}
+        </div>
+      </Show>
+      <Show when={planText}>
+        <hr />
+        <div class={markdownContent} innerHTML={renderMarkdown(planText)} />
+      </Show>
+      <Show when={effectiveCr()}>
+        {cr => (
+          <>
+            <hr />
+            <div class={toolUseHeader}>
+              <span class={inlineFlex}>
+                {cr().action === 'approved'
+                  ? <Stamp size={16} class={toolUseIcon} />
+                  : <Hand size={16} class={toolUseIcon} />}
+              </span>
+              <span class={toolInputDetail}>
+                {cr().action === 'approved' ? 'Approved' : 'Rejected'}
+              </span>
+            </div>
+            <Show when={cr().action !== 'approved' && cr().comment}>
+              <div class={markdownContent} innerHTML={renderMarkdown(cr().comment)} />
+            </Show>
+          </>
+        )}
+      </Show>
     </div>
   )
 }
@@ -293,24 +338,22 @@ function renderAskUserQuestion(toolUse: Record<string, unknown>, context?: Rende
           />
         </Show>
       </div>
-      <For each={questions}>
-        {(q) => {
-          const header = String(q.header || '')
-          const answer = answers?.[header]
-          return (
-            <div class={questionItem}>
-              <span class={questionText}>
-                {'- '}
-                {header}
-                {': '}
-              </span>
-              <span class={answerText}>
-                <strong>{answer ?? 'Not answered'}</strong>
-              </span>
-            </div>
-          )
-        }}
-      </For>
+      <ul style={{ 'padding-left': '20px', 'margin': '4px 0 0' }}>
+        <For each={questions}>
+          {(q) => {
+            const header = String(q.header || '')
+            const answer = answers?.[header]
+            return (
+              <li>
+                <strong>{`${header}: `}</strong>
+                <Show when={answer} fallback={<em>Not answered</em>}>
+                  <div class={`${answerText} ${markdownContent}`} innerHTML={renderMarkdown(answer!)} />
+                </Show>
+              </li>
+            )
+          }}
+        </For>
+      </ul>
     </div>
   )
 }

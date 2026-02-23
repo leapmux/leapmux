@@ -140,7 +140,7 @@ describe('askUserQuestion thread rendering', () => {
     expect(bubble.textContent).not.toContain('Waiting for answers')
   })
 
-  it('renders answers as bullet list with bold answer text', () => {
+  it('renders answers as bullet list with markdown answer text', () => {
     const parent = askUserQuestionToolUse([{ header: 'Uncommitted' }])
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
@@ -151,19 +151,16 @@ describe('askUserQuestion thread rendering', () => {
       ]),
     })
 
-    const { container } = render(() => (
+    render(() => (
       <PreferencesProvider>
         <MessageBubble message={msg} />
       </PreferencesProvider>
     ))
 
     const bubble = screen.getByTestId('message-content')
-    // Check bullet prefix and header text
-    expect(bubble.textContent).toContain('- Uncommitted: ')
-    // Check that answer is bolded
-    const strong = container.querySelector('strong')
-    expect(strong).not.toBeNull()
-    expect(strong!.textContent).toBe('Commit changes')
+    // Header and answer rendered as markdown unordered list
+    expect(bubble.textContent).toContain('Uncommitted:')
+    expect(bubble.textContent).toContain('Commit changes')
   })
 
   it('shows "Not answered" for unanswered questions', () => {
@@ -177,16 +174,17 @@ describe('askUserQuestion thread rendering', () => {
       ]),
     })
 
-    const { container } = render(() => (
+    render(() => (
       <PreferencesProvider>
         <MessageBubble message={msg} />
       </PreferencesProvider>
     ))
 
-    const strongs = container.querySelectorAll('strong')
-    const strongTexts = Array.from(strongs).map(el => el.textContent)
-    expect(strongTexts).toContain('OAuth')
-    expect(strongTexts).toContain('Not answered')
+    const bubble = screen.getByTestId('message-content')
+    // Answered question rendered as markdown
+    expect(bubble.textContent).toContain('OAuth')
+    // Unanswered question shows "Not answered" as plain text
+    expect(bubble.textContent).toContain('Not answered')
   })
 
   it('shows "Waiting for answers" with no thread children', () => {
