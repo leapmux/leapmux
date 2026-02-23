@@ -56,12 +56,16 @@ function modelLabel(model: string): string {
   return MODELS.find(m => m.value === model)?.label ?? 'Sonnet'
 }
 
-// Module-level signal: shared across all editor instances
+// Per-agent editor height state
 const EDITOR_MIN_HEIGHT = 38 // px – minimum height of the markdown editor wrapper
-const EDITOR_MIN_HEIGHT_KEY = 'leapmux-editor-min-height'
+const EDITOR_MIN_HEIGHT_KEY_PREFIX = 'leapmux-editor-min-height-'
 
-function getStoredEditorMinHeight(): number | undefined {
-  const stored = safeGetString(EDITOR_MIN_HEIGHT_KEY)
+function editorMinHeightKey(agentId: string): string {
+  return `${EDITOR_MIN_HEIGHT_KEY_PREFIX}${agentId}`
+}
+
+function getStoredEditorMinHeight(agentId: string): number | undefined {
+  const stored = safeGetString(editorMinHeightKey(agentId))
   if (stored) {
     const val = Number.parseInt(stored, 10)
     if (!Number.isNaN(val) && val >= EDITOR_MIN_HEIGHT)
@@ -70,7 +74,8 @@ function getStoredEditorMinHeight(): number | undefined {
   return undefined
 }
 
-const [editorMinHeightSignal, setEditorMinHeight] = createSignal<number | undefined>(getStoredEditorMinHeight())
+// In-memory cache of per-agent heights (avoids localStorage reads on every render).
+const editorMinHeightCache = new Map<string, number | undefined>()
 
 function formatTokenCount(tokens: number): string {
   if (tokens >= 1_000_000)
@@ -82,12 +87,30 @@ function formatTokenCount(tokens: number): string {
 
 export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   let panelRef: HTMLDivElement | undefined
+  let settingsPopoverEl: HTMLElement | undefined
   const menuId = createUniqueId()
   const [isDragging, setIsDragging] = createSignal(false)
   const [_editorContentHeight, setEditorContentHeight] = createSignal(0)
   const [hasContent, setHasContent] = createSignal(false)
   const { loading: sending, start: startSending } = createLoadingSignal()
   const interruptLoading = createLoadingSignal()
+
+  // Per-agent editor min height: reactive signal that switches when agentId changes.
+  const [editorMinHeightSignal, setEditorMinHeightSignal] = createSignal<number | undefined>(undefined)
+  // Load per-agent height when agentId changes.
+  createEffect(on(() => props.agentId, (agentId) => {
+    if (!agentId)
+      return
+    if (!editorMinHeightCache.has(agentId)) {
+      editorMinHeightCache.set(agentId, getStoredEditorMinHeight(agentId))
+    }
+    setEditorMinHeightSignal(editorMinHeightCache.get(agentId))
+  }))
+  const setEditorMinHeight = (val: number | undefined) => {
+    setEditorMinHeightSignal(val)
+    if (props.agentId)
+      editorMinHeightCache.set(props.agentId, val)
+  }
 
   // Shared state for AskUserQuestion selections
   const [askSelections, setAskSelections] = createSignal<Record<number, string[]>>({})
@@ -189,7 +212,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
 
   const maxEditorHeight = () => {
     const h = props.containerHeight ?? 0
-    return h > 0 ? Math.floor(h * 0.75) : 200
+    return h > 0 ? Math.floor(h * 0.5) : 200
   }
 
   const handleResizeStart = (e: MouseEvent) => {
@@ -217,11 +240,13 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       document.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('mouseup', onMouseUp)
       const val = editorMinHeightSignal()
-      if (val !== undefined && val > EDITOR_MIN_HEIGHT) {
-        safeSetString(EDITOR_MIN_HEIGHT_KEY, String(val))
-      }
-      else {
-        safeRemoveItem(EDITOR_MIN_HEIGHT_KEY)
+      if (props.agentId) {
+        if (val !== undefined && val > EDITOR_MIN_HEIGHT) {
+          safeSetString(editorMinHeightKey(props.agentId), String(val))
+        }
+        else {
+          safeRemoveItem(editorMinHeightKey(props.agentId))
+        }
       }
     }
 
@@ -231,7 +256,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
 
   const handleResizeReset = () => {
     setEditorMinHeight(undefined)
-    safeRemoveItem(EDITOR_MIN_HEIGHT_KEY)
+    if (props.agentId)
+      safeRemoveItem(editorMinHeightKey(props.agentId))
   }
 
   // Handles editor text for control requests.
@@ -244,6 +270,12 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       return
     clearDraft(`${props.agentId}-ctrl-${requestId}`)
     safeRemoveItem(`leapmux-ask-state-${props.agentId}-${requestId}`)
+  }
+
+  const resetEditorHeight = () => {
+    setEditorMinHeight(undefined)
+    if (props.agentId)
+      safeRemoveItem(editorMinHeightKey(props.agentId))
   }
 
   const handleControlSend = (content: string): boolean | void => {
@@ -261,6 +293,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       if (!submitted)
         return false
       cleanupControlRequestDrafts(req.requestId)
+      resetEditorHeight()
       return
     }
     const toolName = getToolName(req.payload)
@@ -270,10 +303,12 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     const bytes = new TextEncoder().encode(JSON.stringify(response))
     sendControlResponse(req.agentId, bytes)
     cleanupControlRequestDrafts(req.requestId)
+    resetEditorHeight()
   }
 
   const handleSend = (content: string) => {
     props.onSendMessage(content)
+    resetEditorHeight()
   }
 
   const [sessionIdCopied, setSessionIdCopied] = createSignal(false)
@@ -426,6 +461,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           </Show>
         </button>
       )}
+      popoverRef={(el) => { settingsPopoverEl = el }}
       class={styles.settingsMenu}
       data-testid="agent-settings-menu"
     >
@@ -444,7 +480,10 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                 name={`${menuId}-mode`}
                 value={mode.value}
                 checked={currentMode() === mode.value}
-                onChange={() => props.onPermissionModeChange?.(mode.value as PermissionMode)}
+                onChange={() => {
+                  props.onPermissionModeChange?.(mode.value as PermissionMode)
+                  settingsPopoverEl?.hidePopover()
+                }}
               />
               {mode.label}
             </label>
@@ -471,6 +510,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                 checked={currentModel() === model.value}
                 onChange={() => {
                   props.onModelChange?.(model.value)
+                  settingsPopoverEl?.hidePopover()
                 }}
               />
               {model.label}
@@ -498,6 +538,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                 checked={currentEffort() === effort.value}
                 onChange={() => {
                   props.onEffortChange?.(effort.value)
+                  settingsPopoverEl?.hidePopover()
                 }}
               />
               {effort.label}
@@ -528,6 +569,14 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           onContentHeightChange={setEditorContentHeight}
           onContentChange={(has) => {
             setHasContent(has)
+            // When the editor becomes empty and the manual height override
+            // is at (or below) the minimum, clear it so the editor snaps
+            // back to its natural single-line size.
+            if (!has) {
+              const h = editorMinHeightSignal()
+              if (h !== undefined && h <= EDITOR_MIN_HEIGHT)
+                resetEditorHeight()
+            }
             if (has && isAskUserQuestion()) {
               const page = askCurrentPage()
               setAskSelections(prev => (prev[page] ?? []).length > 0 ? { ...prev, [page]: [] } : prev)
@@ -561,6 +610,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                       const reqId = activeControlRequest()?.requestId
                       if (reqId)
                         cleanupControlRequestDrafts(reqId)
+                      resetEditorHeight()
                       return props.onControlResponse?.(agentId, content) ?? Promise.resolve()
                     }}
                     hasEditorContent={hasContent()}

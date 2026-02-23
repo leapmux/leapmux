@@ -270,7 +270,7 @@ func TestConsolidateNotificationThread_SettingsChangedMerge(t *testing.T) {
 
 func TestConsolidateNotificationThread_SettingsChangedNoOp(t *testing.T) {
 	// Settings changed from A→B, then B→A. Net effect is no-op.
-	// Should produce a context_cleared fallback (no effective changes).
+	// Should produce a no-op settings_changed (not context_cleared).
 	msg1, _ := json.Marshal(map[string]interface{}{
 		"type": "settings_changed",
 		"changes": map[string]interface{}{
@@ -285,13 +285,15 @@ func TestConsolidateNotificationThread_SettingsChangedNoOp(t *testing.T) {
 	})
 
 	result := consolidateNotificationThread([]json.RawMessage{msg1, msg2})
-	// No effective changes → fallback to context_cleared.
+	// No effective changes → no-op settings_changed fallback.
 	require.Len(t, result, 1)
 	var entry struct {
-		Type string `json:"type"`
+		Type    string                 `json:"type"`
+		Changes map[string]interface{} `json:"changes"`
 	}
 	require.NoError(t, json.Unmarshal(result[0], &entry))
-	assert.Equal(t, "context_cleared", entry.Type)
+	assert.Equal(t, "settings_changed", entry.Type)
+	assert.Empty(t, entry.Changes, "expected empty changes for no-op consolidation")
 }
 
 func TestConsolidateNotificationThread_ContextClearedDedup(t *testing.T) {

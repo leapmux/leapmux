@@ -59,8 +59,11 @@ export const WorktreeOptions: Component<WorktreeOptionsProps> = (props) => {
       setIsDirty(resp.isDirty)
       setRepoRoot(resp.repoRoot)
       setRepoDirName(resp.repoDirName)
-      // Reset worktree checkbox when path is not a repo or worktree root.
-      if (!resp.isGitRepo || (!resp.isRepoRoot && !resp.isWorktreeRoot)) {
+      // Default worktree checkbox based on whether the path is a repo/worktree root.
+      if (resp.isGitRepo && (resp.isRepoRoot || resp.isWorktreeRoot)) {
+        setCreateWorktree(true)
+      }
+      else {
         setCreateWorktree(false)
       }
     }

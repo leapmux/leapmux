@@ -2,9 +2,12 @@ package logging
 
 import (
 	"fmt"
+	"net"
 	"os"
+	"strings"
 
 	"github.com/mattn/go-isatty"
+	"github.com/mdp/qrterminal/v3"
 )
 
 // ANSI color codes.
@@ -93,4 +96,58 @@ func PrintBanner(mode, ver, addr string) {
 	} else {
 		fmt.Fprintf(os.Stderr, "\n  version %s   addr %s\n\n", ver, addr)
 	}
+}
+
+// addrToURL converts a listen address (e.g. ":4327", "0.0.0.0:4327",
+// "127.0.0.1:4327") into an http://localhost:<port> URL.
+func addrToURL(addr string) string {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		// Fallback: try stripping leading ':'
+		port = strings.TrimPrefix(addr, ":")
+	}
+	if port == "" || port == "80" {
+		return "http://localhost"
+	}
+	return "http://localhost:" + port
+}
+
+// PrintAccessURL prints the full access URL and a QR code to stderr.
+// The QR code is only printed when stderr is a TTY.
+func PrintAccessURL(addr string) {
+	url := addrToURL(addr)
+	isTTY := isatty.IsTerminal(os.Stderr.Fd()) || isatty.IsCygwinTerminal(os.Stderr.Fd())
+
+	if isTTY {
+		fmt.Fprintf(os.Stderr, "  %s%s➜%s  %s%s%s\n\n", bold, green, reset, bold, url, reset)
+	} else {
+		fmt.Fprintf(os.Stderr, "  ➜  %s\n\n", url)
+	}
+
+	if isTTY {
+		qrterminal.GenerateWithConfig(url, qrterminal.Config{
+			Level:     qrterminal.L,
+			Writer:    os.Stderr,
+			QuietZone: 1,
+			BlackChar: qrterminal.BLACK,
+			WhiteChar: qrterminal.WHITE,
+		})
+		fmt.Fprintln(os.Stderr)
+	}
+}
+
+// PrintQRCode prints just a QR code for the given URL to stderr (TTY only).
+func PrintQRCode(url string) {
+	isTTY := isatty.IsTerminal(os.Stderr.Fd()) || isatty.IsCygwinTerminal(os.Stderr.Fd())
+	if !isTTY {
+		return
+	}
+	qrterminal.GenerateWithConfig(url, qrterminal.Config{
+		Level:     qrterminal.L,
+		Writer:    os.Stderr,
+		QuietZone: 1,
+		BlackChar: qrterminal.BLACK,
+		WhiteChar: qrterminal.WHITE,
+	})
+	fmt.Fprintln(os.Stderr)
 }

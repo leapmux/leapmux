@@ -44,6 +44,7 @@ func runStandalone(args []string) error {
 	}
 
 	logging.PrintBanner("standalone", version, *addr)
+	logging.PrintAccessURL(*addr)
 
 	// Ensure top-level data directory exists.
 	if err := os.MkdirAll(*dataDir, 0o750); err != nil {

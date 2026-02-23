@@ -305,9 +305,12 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 	result = append(result, compactionBoundaries...)
 
 	if len(result) == 0 {
-		// Everything consolidated away — return a single no-op context_cleared.
-		// This shouldn't normally happen but provides a safe fallback.
-		data, _ := json.Marshal(map[string]string{"type": "context_cleared"})
+		// Everything consolidated away (e.g. settings toggled back and forth).
+		// Return a no-op settings_changed that renders as invisible on the frontend.
+		data, _ := json.Marshal(map[string]interface{}{
+			"type":    "settings_changed",
+			"changes": map[string]interface{}{},
+		})
 		return []json.RawMessage{data}
 	}
 

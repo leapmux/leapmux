@@ -179,7 +179,7 @@ export const comboboxItemCode = style({
 
 export const editorWrapper = style({
   minHeight: '38px',
-  maxHeight: 'min(200px, 25vh)',
+  maxHeight: '50vh',
   overflowY: 'auto',
 })
 

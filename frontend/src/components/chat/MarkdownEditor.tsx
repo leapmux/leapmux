@@ -385,18 +385,35 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     // may have fired before the editor was created, so set it explicitly.
     applyEditorState(editor)
     // Track content height via ResizeObserver for adaptive height behavior.
+    // We use requestAnimationFrame to coalesce observations and avoid a
+    // feedback loop: the observed height feeds into the wrapper's inline
+    // style (height / min-height), which can resize the observed element,
+    // re-triggering the observer.  By deferring the signal update to the
+    // next animation frame we let the browser settle before committing.
     const proseMirrorEl = editorRef?.querySelector('.ProseMirror')
     if (proseMirrorEl) {
+      let rafId = 0
       const resizeObserver = new ResizeObserver((entries) => {
-        for (const entry of entries) {
-          const h = entry.borderBoxSize?.[0]?.blockSize
-            ?? entry.target.getBoundingClientRect().height
-          setContentHeight(h)
-          props.onContentHeightChange?.(h)
-        }
+        const entry = entries[entries.length - 1]
+        if (!entry)
+          return
+        const h = entry.borderBoxSize?.[0]?.blockSize
+          ?? entry.target.getBoundingClientRect().height
+        cancelAnimationFrame(rafId)
+        rafId = requestAnimationFrame(() => {
+          // Only update when the value actually changed to avoid
+          // re-triggering the style/layout cycle.
+          if (Math.abs(contentHeight() - h) >= 1) {
+            setContentHeight(h)
+            props.onContentHeightChange?.(h)
+          }
+        })
       })
       resizeObserver.observe(proseMirrorEl)
-      onCleanup(() => resizeObserver.disconnect())
+      onCleanup(() => {
+        cancelAnimationFrame(rafId)
+        resizeObserver.disconnect()
+      })
     }
     // Notify parent if we loaded a draft with content, and restore cursor position
     if (initialDraftKey && initialDraft.content) {
