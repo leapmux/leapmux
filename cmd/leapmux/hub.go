@@ -27,6 +27,7 @@ func runHub(args []string) error {
 	}
 
 	logging.PrintBanner("hub", version, *addr)
+	logging.PrintAccessURL(*addr)
 
 	server, err := hub.NewServer(hub.ServerConfig{
 		DataDir:     *dataDir,

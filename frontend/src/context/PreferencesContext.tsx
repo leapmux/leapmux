@@ -94,7 +94,7 @@ function diffViewToProto(dv: DiffViewPreference): DiffView {
 }
 
 function turnEndSoundFromProto(tes: TurnEndSound): TurnEndSoundPreference {
-  return tes === TurnEndSound.DING_DONG ? 'ding-dong' : 'none'
+  return tes === TurnEndSound.NONE ? 'none' : 'ding-dong'
 }
 
 function turnEndSoundToProto(tes: TurnEndSoundPreference): TurnEndSound {
@@ -126,7 +126,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
   const [uiFonts, setUiFonts] = createSignal<string[]>([])
   const [monoFonts, setMonoFonts] = createSignal<string[]>([])
   const [accountDiffView, setAccountDiffView] = createSignal<DiffViewPreference>('unified')
-  const [accountTurnEndSound, setAccountTurnEndSound] = createSignal<TurnEndSoundPreference>('none')
+  const [accountTurnEndSound, setAccountTurnEndSound] = createSignal<TurnEndSoundPreference>('ding-dong')
   const [accountTurnEndSoundVolume, setAccountTurnEndSoundVolume] = createSignal<number>(100)
 
   // --- Browser-level (localStorage) ---

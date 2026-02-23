@@ -25,6 +25,10 @@ function getInnerMessageType(msg: AgentChatMessage): string | undefined {
 export function isAgentWorking(msgs: AgentChatMessage[]): boolean {
   for (let i = msgs.length - 1; i >= 0; i--) {
     const msg = msgs[i]
+    // LEAPMUX messages are platform notifications (settings_changed,
+    // context_cleared, etc.) — they never indicate the agent is working.
+    if (msg.role === MessageRole.LEAPMUX)
+      continue
     if (msg.role !== MessageRole.RESULT)
       return true
     // RESULT message — check if it's just a mid-turn notification to skip

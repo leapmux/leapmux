@@ -352,11 +352,10 @@ test.describe('Worktree Support', () => {
     await pathInput.fill(repoDir)
     await pathInput.press('Enter')
 
-    // Worktree checkbox should appear
+    // Worktree checkbox should appear and be checked by default
     await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
-    await page.getByText('Create new worktree').click()
 
-    // Branch name input and path preview should appear
+    // Branch name input and path preview should appear (checkbox is checked by default)
     await expect(page.getByText('Branch Name')).toBeVisible()
     await expect(page.getByText('Worktree path:')).toBeVisible()
 
@@ -454,8 +453,8 @@ test.describe('Worktree Support', () => {
     await pathInput.fill(repoDir)
     await pathInput.press('Enter')
 
+    // Worktree checkbox is checked by default
     await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
-    await page.getByText('Create new worktree').click()
 
     const branchInput = dialog.locator('input[type="text"][placeholder="feature-branch"]')
     await branchInput.clear()
@@ -991,10 +990,10 @@ test.describe('Worktree Support', () => {
     await pathInput.fill(repoDir)
     await pathInput.press('Enter')
 
+    // Worktree checkbox is checked by default
     await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
-    await page.getByText('Create new worktree').click()
 
-    // Warning about uncommitted changes should be visible
+    // Warning about uncommitted changes should be visible (checkbox is checked by default)
     await expect(page.getByText('uncommitted changes that will not be transferred')).toBeVisible()
 
     await page.getByRole('button', { name: 'Cancel' }).click()
@@ -1072,8 +1071,8 @@ test.describe('Worktree Support', () => {
     await pathInput.fill(repoDir)
     await pathInput.press('Enter')
 
+    // Worktree checkbox is checked by default
     await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
-    await page.getByText('Create new worktree').click()
 
     const branchInput = dialog.locator('input[type="text"][placeholder="feature-branch"]')
 
@@ -1128,8 +1127,8 @@ test.describe('Worktree Support', () => {
     await pathInput.fill(repoDir)
     await pathInput.press('Enter')
 
+    // Worktree checkbox is checked by default
     await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
-    await page.getByText('Create new worktree').click()
 
     // Read initial branch name
     const branchInput = dialog.locator('input[type="text"][placeholder="feature-branch"]')

@@ -110,4 +110,41 @@ describe('isAgentWorking', () => {
       makeMsg(MessageRole.RESULT),
     ])).toBe(false)
   })
+
+  it('skips LEAPMUX message and finds turn-end RESULT underneath', () => {
+    expect(isAgentWorking([
+      makeMsg(MessageRole.RESULT, wrap([{ type: 'result', subtype: 'turn_result' }])),
+      makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'settings_changed' }])),
+    ])).toBe(false)
+  })
+
+  it('skips LEAPMUX message and finds preceding ASSISTANT', () => {
+    expect(isAgentWorking([
+      makeMsg(MessageRole.ASSISTANT),
+      makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'settings_changed' }])),
+    ])).toBe(true)
+  })
+
+  it('skips multiple trailing LEAPMUX messages', () => {
+    expect(isAgentWorking([
+      makeMsg(MessageRole.RESULT, wrap([{ type: 'result', subtype: 'turn_result' }])),
+      makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'settings_changed' }])),
+      makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'context_cleared' }])),
+    ])).toBe(false)
+  })
+
+  it('returns false when all messages are LEAPMUX notifications', () => {
+    expect(isAgentWorking([
+      makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'settings_changed' }])),
+      makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'context_cleared' }])),
+    ])).toBe(false)
+  })
+
+  it('skips mixed LEAPMUX and notification RESULT messages', () => {
+    expect(isAgentWorking([
+      makeMsg(MessageRole.RESULT, wrap([{ type: 'result', subtype: 'turn_result' }])),
+      makeMsg(MessageRole.RESULT, wrap([{ type: 'settings_changed' }])),
+      makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'context_cleared' }])),
+    ])).toBe(false)
+  })
 })
