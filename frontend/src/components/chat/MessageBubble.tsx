@@ -21,6 +21,9 @@ function roleLabel(role: MessageRole): string {
   switch (role) {
     case MessageRole.USER: return 'user'
     case MessageRole.ASSISTANT: return 'assistant'
+    case MessageRole.SYSTEM: return 'system'
+    case MessageRole.RESULT: return 'result'
+    case MessageRole.LEAPMUX: return 'leapmux'
     default: return 'system'
   }
 }
@@ -118,8 +121,13 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
 
     try {
       const obj = JSON.parse(text)
-      if (obj?.messages && Array.isArray(obj.messages) && obj.messages.length > 0) {
+      if (obj?.messages && Array.isArray(obj.messages)) {
         // Wrapped format: {"old_seqs": [...], "messages": [{...}, ...]}
+        // An empty messages array can occur when notification consolidation
+        // cancels out all changes (e.g. plan mode toggled back).
+        if (obj.messages.length === 0) {
+          return { wrapper: obj, parentObject: undefined, rawText: text, children: [] }
+        }
         const first = obj.messages[0]
         const parent = (typeof first === 'object' && first !== null && !Array.isArray(first))
           ? first as Record<string, unknown>

@@ -36,7 +36,7 @@ export const toolbar = style({
   display: 'flex',
   alignItems: 'center',
   gap: spacing.xs,
-  padding: `0 ${spacing.sm}`,
+  padding: `${spacing.xs} ${spacing.sm}`,
   borderBottom: '1px solid var(--border)',
   backgroundColor: 'var(--card)',
   flexShrink: 0,

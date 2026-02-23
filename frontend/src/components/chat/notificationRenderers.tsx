@@ -55,7 +55,7 @@ export const settingsChangedRenderer: MessageContentRenderer = {
       parts.push('Context cleared')
     }
     if (parts.length === 0)
-      return <span />
+      return null
     return <div class={controlResponseMessage}>{parts.join(', ')}</div>
   },
 }
@@ -330,7 +330,7 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
   }
 
   if (elements.length === 0)
-    return <span />
+    return null
 
   if (elements.length === 1)
     return elements[0]

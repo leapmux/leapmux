@@ -46,6 +46,10 @@ export function classifyMessage(
   parentObject: Record<string, unknown> | undefined,
   wrapper: { old_seqs: number[], messages: unknown[] } | null,
 ): MessageCategory {
+  // 0. Empty wrapper (all notifications consolidated to no-ops) — hide.
+  if (wrapper && wrapper.messages.length === 0)
+    return { kind: 'hidden' }
+
   // 1. Notification thread (wrapper with notification-type first message)
   if (isNotificationThreadWrapper(wrapper))
     return { kind: 'notification_thread', messages: wrapper.messages }

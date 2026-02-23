@@ -43,7 +43,8 @@ export const base = style({
 export const active = style({
   backgroundColor: 'var(--card)',
   color: 'var(--foreground)',
-  borderColor: 'var(--border)',
+  outline: '1px solid var(--border)',
+  outlineOffset: '-1px',
 })
 
 // Size variants

@@ -10,8 +10,10 @@ import Bot from 'lucide-solid/icons/bot'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
+import Hand from 'lucide-solid/icons/hand'
 import ListTodo from 'lucide-solid/icons/list-todo'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
+import Stamp from 'lucide-solid/icons/stamp'
 import Terminal from 'lucide-solid/icons/terminal'
 import TicketsPlane from 'lucide-solid/icons/tickets-plane'
 import Vote from 'lucide-solid/icons/vote'
@@ -20,7 +22,7 @@ import { TodoList } from '~/components/todo/TodoList'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { markdownContent } from './markdownContent.css'
-import { thinkingContent, thinkingHeader } from './messageStyles.css'
+import { controlResponseMessage, thinkingContent, thinkingHeader } from './messageStyles.css'
 import {
   compactBoundaryRenderer,
   contextClearedRenderer,
@@ -196,7 +198,6 @@ function renderExitPlanMode(toolUse: Record<string, unknown>, context?: RenderCo
           <PlaneTakeoff size={16} class={toolUseIcon} />
         </span>
         <span class={toolInputDetail}>Leaving Plan Mode</span>
-        <ControlResponseTag response={context?.childControlResponse} />
         <Show when={context}>
           <ToolHeaderActions
             createdAt={context!.createdAt}
@@ -209,7 +210,35 @@ function renderExitPlanMode(toolUse: Record<string, unknown>, context?: RenderCo
           />
         </Show>
       </div>
-      {planText && <div class={markdownContent} innerHTML={renderMarkdown(planText)} />}
+      <Show when={planText}>
+        <hr />
+        <div class={markdownContent} innerHTML={renderMarkdown(planText)} />
+      </Show>
+      <Show when={context?.childControlResponse}>
+        {cr => (
+          <>
+            <hr />
+            <div class={controlResponseMessage}>
+              {cr().action === 'approved'
+                ? (
+                    <>
+                      <Stamp size={14} />
+                      {' Approved'}
+                    </>
+                  )
+                : (
+                    <>
+                      <Hand size={14} />
+                      {' Rejected'}
+                    </>
+                  )}
+            </div>
+            <Show when={cr().action !== 'approved' && cr().comment}>
+              <div class={markdownContent} innerHTML={renderMarkdown(cr().comment)} />
+            </Show>
+          </>
+        )}
+      </Show>
     </div>
   )
 }
