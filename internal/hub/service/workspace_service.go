@@ -159,6 +159,9 @@ func (s *WorkspaceService) CreateWorkspace(
 			slog.Error("failed to create initial agent", "workspace_id", workspaceID, "error", err)
 			agentID = ""
 		} else {
+			// Register worktree association before SendAndWait for consistency.
+			s.worktreeHelper.RegisterTabForWorktree(ctx, worktreeID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
+
 			resp, sendErr := s.pending.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{
 				Payload: &leapmuxv1.ConnectResponse_AgentStart{
 					AgentStart: &leapmuxv1.AgentStartRequest{
@@ -175,7 +178,8 @@ func (s *WorkspaceService) CreateWorkspace(
 				slog.Error("failed to start initial agent", "workspace_id", workspaceID, "error", sendErr)
 			} else if errMsg := resp.GetAgentStarted().GetError(); errMsg != "" {
 				slog.Error("initial agent start failed", "workspace_id", workspaceID, "error", errMsg)
-				// Clean up the orphaned DB agent so no dangling tab is created.
+				// Clean up the orphaned DB agent and worktree association.
+				s.unregisterWorktreeTab(ctx, worktreeID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
 				if closeErr := s.queries.CloseAgent(ctx, agentID); closeErr != nil {
 					slog.Warn("failed to close orphaned initial agent", "agent_id", agentID, "error", closeErr)
 				}
@@ -191,7 +195,7 @@ func (s *WorkspaceService) CreateWorkspace(
 		}
 	}
 
-	// Create initial tab entry for the agent and register worktree.
+	// Create initial tab entry for the agent.
 	if agentID != "" {
 		if err := s.queries.UpsertWorkspaceTab(ctx, db.UpsertWorkspaceTabParams{
 			WorkspaceID: workspaceID,
@@ -202,7 +206,6 @@ func (s *WorkspaceService) CreateWorkspace(
 		}); err != nil {
 			slog.Warn("failed to create initial workspace tab", "workspace_id", workspaceID, "agent_id", agentID, "error", err)
 		}
-		s.worktreeHelper.RegisterTabForWorktree(ctx, worktreeID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
 	}
 
 	// Auto-assign workspace to user's "In progress" section.
@@ -402,6 +405,21 @@ func (s *WorkspaceService) ListWorkspaceShares(
 // getVisibleWorkspace looks up a workspace by ID and org, then verifies the user can see it.
 func (s *WorkspaceService) getVisibleWorkspace(ctx context.Context, user *auth.UserInfo, orgID, workspaceID string) (*db.Workspace, error) {
 	return getVisibleWorkspace(ctx, s.queries, user, orgID, workspaceID)
+}
+
+// unregisterWorktreeTab removes a worktree tab association on agent start failure.
+// No-op if worktreeID is empty.
+func (s *WorkspaceService) unregisterWorktreeTab(ctx context.Context, worktreeID string, tabType leapmuxv1.TabType, tabID string) {
+	if worktreeID == "" {
+		return
+	}
+	if err := s.queries.RemoveWorktreeTab(ctx, db.RemoveWorktreeTabParams{
+		WorktreeID: worktreeID,
+		TabType:    tabType,
+		TabID:      tabID,
+	}); err != nil {
+		slog.Warn("failed to unregister worktree tab", "worktree_id", worktreeID, "tab_id", tabID, "error", err)
+	}
 }
 
 func (s *WorkspaceService) RenameWorkspace(
