@@ -16,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/id"
 	"github.com/leapmux/leapmux/internal/hub/timeout"
+	"github.com/leapmux/leapmux/internal/hub/validate"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
@@ -492,9 +493,9 @@ func (s *AgentService) RenameAgent(
 	}
 
 	agentID := req.Msg.GetAgentId()
-	title := req.Msg.GetTitle()
-	if title == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("title is required"))
+	title, err := validate.SanitizeName(req.Msg.GetTitle())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid title: %w", err))
 	}
 
 	agent, err := s.queries.GetAgentByID(ctx, agentID)

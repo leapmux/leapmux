@@ -2,14 +2,11 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
-	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -21,7 +18,6 @@ import (
 	"github.com/leapmux/leapmux/hub"
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/worker"
-	"golang.org/x/net/http2"
 )
 
 // standaloneState persists the auto-registered worker credentials.
@@ -98,27 +94,14 @@ func runStandalone(args []string) error {
 		"socket", socketPath,
 	)
 
-	// Create an h2c HTTP client that dials via Unix socket.
-	unixClient := &http.Client{
-		Transport: &http2.Transport{
-			AllowHTTP: true,
-			DialTLSContext: func(ctx context.Context, _, _ string, _ *tls.Config) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, "unix", socketPath)
-			},
-		},
-	}
-
-	// Run Worker in background.
+	// Run Worker in background, connecting via the Hub's Unix domain socket.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		// Use a dummy URL — the Unix socket transport ignores the host.
 		if err := worker.Run(ctx, worker.RunConfig{
-			HubURL:     "http://localhost",
-			DataDir:    workerDataDir,
-			AuthToken:  state.AuthToken,
-			HTTPClient: unixClient,
+			HubURL:    "unix:" + socketPath,
+			DataDir:   workerDataDir,
+			AuthToken: state.AuthToken,
 		}); err != nil {
 			slog.Error("worker error", "error", err)
 		}

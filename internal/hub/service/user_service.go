@@ -168,23 +168,29 @@ func (s *UserService) UpdatePreferences(ctx context.Context, req *connect.Reques
 		return nil, err
 	}
 
-	// Validate font names.
-	for _, name := range req.Msg.GetUiFonts() {
-		if err := validate.ValidateName(name); err != nil {
+	// Sanitize and validate font names.
+	uiFonts := req.Msg.GetUiFonts()
+	for i, name := range uiFonts {
+		sanitized, err := validate.SanitizeName(name)
+		if err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid UI font name %q: %w", name, err))
 		}
+		uiFonts[i] = sanitized
 	}
-	for _, name := range req.Msg.GetMonoFonts() {
-		if err := validate.ValidateName(name); err != nil {
+	monoFonts := req.Msg.GetMonoFonts()
+	for i, name := range monoFonts {
+		sanitized, err := validate.SanitizeName(name)
+		if err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid mono font name %q: %w", name, err))
 		}
+		monoFonts[i] = sanitized
 	}
 
-	uiFontsJSON, err := json.Marshal(req.Msg.GetUiFonts())
+	uiFontsJSON, err := json.Marshal(uiFonts)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("marshal ui_fonts: %w", err))
 	}
-	monoFontsJSON, err := json.Marshal(req.Msg.GetMonoFonts())
+	monoFontsJSON, err := json.Marshal(monoFonts)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("marshal mono_fonts: %w", err))
 	}

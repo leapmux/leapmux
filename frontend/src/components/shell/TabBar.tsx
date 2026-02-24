@@ -14,6 +14,7 @@ import X from 'lucide-solid/icons/x'
 import { createSignal, ErrorBoundary, For, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
+import { sanitizeName } from '~/lib/validate'
 import { tabKey, TabType } from '~/stores/tab.store'
 import { menuSectionHeader, monoFont } from '~/styles/shared.css'
 import { iconSize } from '~/styles/tokens'
@@ -192,7 +193,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
           class={styles.tabEditInput}
           type="text"
           value={editingValue()}
-          onInput={e => setEditingValue(e.currentTarget.value)}
+          onInput={e => setEditingValue(sanitizeName(e.currentTarget.value).value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               commitEdit(tab)

@@ -11,7 +11,7 @@ import (
 
 // Config holds the worker's runtime configuration.
 type Config struct {
-	HubURL  string `json:"hub_url"`  // Hub server URL (e.g. "http://localhost:4327")
+	HubURL  string `json:"hub_url"`  // Hub server URL (e.g. "http://localhost:4327") or "unix:<socket-path>"
 	DataDir string `json:"data_dir"` // Directory for persistent state
 }
 
@@ -26,7 +26,7 @@ type State struct {
 // Call flag.Parse() separately after defining all flags.
 func DefineFlags() *Config {
 	c := &Config{}
-	flag.StringVar(&c.HubURL, "hub", "http://localhost:4327", "Hub server URL")
+	flag.StringVar(&c.HubURL, "hub", "http://localhost:4327", "Hub server URL or unix:<socket-path>")
 	flag.StringVar(&c.DataDir, "data-dir", defaultDataDir(), "data directory")
 	return c
 }

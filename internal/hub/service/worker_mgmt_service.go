@@ -44,8 +44,8 @@ func (s *WorkerManagementService) ApproveRegistration(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("registration_token is required"))
 	}
 
-	name := req.Msg.GetName()
-	if err := validate.ValidateName(name); err != nil {
+	name, err := validate.SanitizeName(req.Msg.GetName())
+	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
@@ -201,8 +201,8 @@ func (s *WorkerManagementService) RenameWorker(
 		return nil, err
 	}
 
-	name := req.Msg.GetName()
-	if err := validate.ValidateName(name); err != nil {
+	name, err := validate.SanitizeName(req.Msg.GetName())
+	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
