@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 
 	"connectrpc.com/connect"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -130,32 +131,29 @@ func (s *GitService) ForceRemoveWorktree(
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	// Send force remove to worker.
-	conn := s.workerMgr.Get(wt.WorkerID)
-	if conn != nil {
-		deleteCtx, deleteCancel := context.WithTimeout(context.Background(), s.timeoutCfg.WorktreeDeleteTimeout())
-		defer deleteCancel()
-
-		resp, sendErr := s.pending.SendAndWait(deleteCtx, conn, &leapmuxv1.ConnectResponse{
-			Payload: &leapmuxv1.ConnectResponse_GitWorktreeRemove{
-				GitWorktreeRemove: &leapmuxv1.GitWorktreeRemoveRequest{
-					WorktreePath: wt.WorktreePath,
-					Force:        true,
-					BranchName:   wt.BranchName,
-				},
-			},
-		})
-		if sendErr != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("send worktree remove: %w", sendErr))
-		}
-		if removeResp := resp.GetGitWorktreeRemoveResp(); removeResp != nil && removeResp.GetError() != "" {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("remove worktree: %s", removeResp.GetError()))
-		}
-	}
-
-	// Clean up DB regardless of worker result.
+	// Delete DB record first — this is the authoritative state.
 	if err := s.queries.DeleteWorktree(ctx, worktreeID); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete worktree record: %w", err))
+	}
+
+	// Fire-and-forget: send removal request to worker in background.
+	// Worktree deletion is best-effort; the caller shouldn't wait for it.
+	conn := s.workerMgr.Get(wt.WorkerID)
+	if conn != nil {
+		go func() {
+			if err := conn.Send(&leapmuxv1.ConnectResponse{
+				Payload: &leapmuxv1.ConnectResponse_GitWorktreeRemove{
+					GitWorktreeRemove: &leapmuxv1.GitWorktreeRemoveRequest{
+						WorktreePath: wt.WorktreePath,
+						Force:        true,
+						BranchName:   wt.BranchName,
+					},
+				},
+			}); err != nil {
+				slog.Warn("failed to send worktree remove to worker",
+					"worktree_id", worktreeID, "worker_id", wt.WorkerID, "error", err)
+			}
+		}()
 	}
 
 	return connect.NewResponse(&leapmuxv1.ForceRemoveWorktreeResponse{}), nil

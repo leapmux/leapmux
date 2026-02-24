@@ -6,7 +6,7 @@ import Resizable from '@corvu/resizable'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createSignal, on, onMount, Show } from 'solid-js'
 import { agentClient, gitClient, sectionClient, terminalClient, workspaceClient } from '~/api/clients'
-import { agentCallTimeout, agentLoadingTimeoutMs, worktreeDeleteCallTimeout } from '~/api/transport'
+import { agentCallTimeout, agentLoadingTimeoutMs, apiCallTimeout } from '~/api/transport'
 import { AgentEditorPanel } from '~/components/chat/AgentEditorPanel'
 import { ChatView } from '~/components/chat/ChatView'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
@@ -784,7 +784,7 @@ export const AppShell: ParentComponent = (props) => {
       // Auto-handle worktree cleanup if the pre-close check stored a choice.
       if (resp.worktreeCleanupPending && resp.worktreeId) {
         if (pendingWorktreeChoice === 'remove') {
-          gitClient.forceRemoveWorktree({ worktreeId: resp.worktreeId }, worktreeDeleteCallTimeout()).catch(() => {})
+          gitClient.forceRemoveWorktree({ worktreeId: resp.worktreeId }, apiCallTimeout()).catch(() => {})
         }
         else {
           // Default to keep (if somehow no choice was stored)
@@ -864,7 +864,7 @@ export const AppShell: ParentComponent = (props) => {
       // Auto-handle worktree cleanup if the pre-close check stored a choice.
       if (resp.worktreeCleanupPending && resp.worktreeId) {
         if (pendingWorktreeChoice === 'remove') {
-          gitClient.forceRemoveWorktree({ worktreeId: resp.worktreeId }, worktreeDeleteCallTimeout()).catch(() => {})
+          gitClient.forceRemoveWorktree({ worktreeId: resp.worktreeId }, apiCallTimeout()).catch(() => {})
         }
         else {
           gitClient.keepWorktree({ worktreeId: resp.worktreeId }).catch(() => {})
@@ -968,7 +968,7 @@ export const AppShell: ParentComponent = (props) => {
     // Pre-close check: does this tab have a dirty worktree?
     try {
       const tabType = tab.type === TabType.AGENT ? TabType.AGENT : TabType.TERMINAL
-      const status = await gitClient.checkWorktreeStatus({ tabType, tabId: tab.id }, worktreeDeleteCallTimeout())
+      const status = await gitClient.checkWorktreeStatus({ tabType, tabId: tab.id }, apiCallTimeout())
       if (status.hasWorktree && status.isLastTab && status.isDirty) {
         const choice = await askWorktreeConfirmation(status)
         if (choice === 'cancel') {

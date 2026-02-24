@@ -76,7 +76,6 @@ message GetTimeoutsResponse {
   int32 api_timeout_seconds = 1;
   int32 agent_startup_timeout_seconds = 2;
   int32 worktree_create_timeout_seconds = 3;
-  int32 worktree_delete_timeout_seconds = 4;
 }
 
 message UserPreferences {

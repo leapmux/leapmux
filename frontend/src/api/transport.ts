@@ -60,14 +60,12 @@ export interface TimeoutConfig {
   apiTimeoutSeconds: number
   agentStartupTimeoutSeconds: number
   worktreeCreateTimeoutSeconds: number
-  worktreeDeleteTimeoutSeconds: number
 }
 
 const timeoutConfig: TimeoutConfig = {
   apiTimeoutSeconds: 10,
   agentStartupTimeoutSeconds: 30,
   worktreeCreateTimeoutSeconds: 60,
-  worktreeDeleteTimeoutSeconds: 60,
 }
 
 /** Load timeout configuration from the server. Call after authentication. */
@@ -81,8 +79,6 @@ export async function loadTimeouts(): Promise<void> {
       timeoutConfig.agentStartupTimeoutSeconds = resp.agentStartupTimeoutSeconds
     if (resp.worktreeCreateTimeoutSeconds > 0)
       timeoutConfig.worktreeCreateTimeoutSeconds = resp.worktreeCreateTimeoutSeconds
-    if (resp.worktreeDeleteTimeoutSeconds > 0)
-      timeoutConfig.worktreeDeleteTimeoutSeconds = resp.worktreeDeleteTimeoutSeconds
   }
   catch {
     // Use defaults if the server doesn't support this endpoint yet.
@@ -111,9 +107,9 @@ export function worktreeCreateCallTimeout(): CallOptions {
   return { timeoutMs: Math.ceil(TIMEOUT_MULTIPLIER * timeoutConfig.worktreeCreateTimeoutSeconds * 1000) }
 }
 
-/** RPC timeout for worktree deletion / status check. */
-export function worktreeDeleteCallTimeout(): CallOptions {
-  return { timeoutMs: Math.ceil(TIMEOUT_MULTIPLIER * timeoutConfig.worktreeDeleteTimeoutSeconds * 1000) }
+/** RPC timeout for general API calls. */
+export function apiCallTimeout(): CallOptions {
+  return { timeoutMs: Math.ceil(TIMEOUT_MULTIPLIER * timeoutConfig.apiTimeoutSeconds * 1000) }
 }
 
 // ---------------------------------------------------------------------------
@@ -131,11 +127,6 @@ export function agentLoadingTimeoutMs(agentActive: boolean): number {
 /** Loading timeout for worktree creation. */
 export function worktreeCreateLoadingTimeoutMs(): number {
   return Math.ceil(TIMEOUT_MULTIPLIER * timeoutConfig.worktreeCreateTimeoutSeconds * 1000)
-}
-
-/** Loading timeout for worktree deletion. */
-export function worktreeDeleteLoadingTimeoutMs(): number {
-  return Math.ceil(TIMEOUT_MULTIPLIER * timeoutConfig.worktreeDeleteTimeoutSeconds * 1000)
 }
 
 /** Loading timeout for general API calls. */

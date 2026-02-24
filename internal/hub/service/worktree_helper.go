@@ -231,7 +231,7 @@ func (h *WorktreeHelper) CheckTabWorktreeStatus(ctx context.Context, tabType lea
 		return result
 	}
 
-	deleteCtx, deleteCancel := context.WithTimeout(context.Background(), h.timeoutCfg.WorktreeDeleteTimeout())
+	deleteCtx, deleteCancel := context.WithTimeout(context.Background(), h.timeoutCfg.APITimeout())
 	defer deleteCancel()
 
 	resp, err := h.pending.SendAndWait(deleteCtx, conn, &leapmuxv1.ConnectResponse{
@@ -307,7 +307,7 @@ func (h *WorktreeHelper) UnregisterTabAndCleanup(ctx context.Context, tabType le
 		return WorktreeCleanupResult{}
 	}
 
-	deleteCtx, deleteCancel := context.WithTimeout(context.Background(), h.timeoutCfg.WorktreeDeleteTimeout())
+	deleteCtx, deleteCancel := context.WithTimeout(context.Background(), h.timeoutCfg.APITimeout())
 	defer deleteCancel()
 
 	resp, err := h.pending.SendAndWait(deleteCtx, conn, &leapmuxv1.ConnectResponse{

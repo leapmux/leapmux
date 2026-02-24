@@ -51,7 +51,6 @@ message SystemSettings {
   int32 api_timeout_seconds = 4;
   int32 agent_startup_timeout_seconds = 5;
   int32 worktree_create_timeout_seconds = 6;
-  int32 worktree_delete_timeout_seconds = 7;
 }
 
 message SmtpConfig {

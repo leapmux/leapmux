@@ -14,6 +14,5 @@ UPDATE system_settings SET
   api_timeout_seconds = ?,
   agent_startup_timeout_seconds = ?,
   worktree_create_timeout_seconds = ?,
-  worktree_delete_timeout_seconds = ?,
   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = 1;

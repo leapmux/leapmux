@@ -23,7 +23,6 @@ export const AdminSettingsPage: Component = () => {
   const [apiTimeout, setApiTimeout] = createSignal(10)
   const [agentStartupTimeout, setAgentStartupTimeout] = createSignal(30)
   const [worktreeCreateTimeout, setWorktreeCreateTimeout] = createSignal(60)
-  const [worktreeDeleteTimeout, setWorktreeDeleteTimeout] = createSignal(60)
   const [settingsSaving, setSettingsSaving] = createSignal(false)
   const [settingsMessage, setSettingsMessage] = createSignal<{ type: 'success' | 'error', text: string } | null>(null)
 
@@ -94,8 +93,6 @@ export const AdminSettingsPage: Component = () => {
           setAgentStartupTimeout(s.agentStartupTimeoutSeconds)
         if (s.worktreeCreateTimeoutSeconds > 0)
           setWorktreeCreateTimeout(s.worktreeCreateTimeoutSeconds)
-        if (s.worktreeDeleteTimeoutSeconds > 0)
-          setWorktreeDeleteTimeout(s.worktreeDeleteTimeoutSeconds)
       }
     }
     catch (e) {
@@ -146,7 +143,6 @@ export const AdminSettingsPage: Component = () => {
           apiTimeoutSeconds: apiTimeout(),
           agentStartupTimeoutSeconds: agentStartupTimeout(),
           worktreeCreateTimeoutSeconds: worktreeCreateTimeout(),
-          worktreeDeleteTimeoutSeconds: worktreeDeleteTimeout(),
         },
       })
       setSettingsMessage({ type: 'success', text: 'Settings saved.' })
@@ -318,10 +314,6 @@ export const AdminSettingsPage: Component = () => {
               <label class={styles.fieldLabel}>
                 Worktree Create Timeout (seconds)
                 <input type="number" min="1" max="600" value={String(worktreeCreateTimeout())} onInput={e => setWorktreeCreateTimeout(Number.parseInt(e.currentTarget.value) || 60)} />
-              </label>
-              <label class={styles.fieldLabel}>
-                Worktree Delete Timeout (seconds)
-                <input type="number" min="1" max="600" value={String(worktreeDeleteTimeout())} onInput={e => setWorktreeDeleteTimeout(Number.parseInt(e.currentTarget.value) || 60)} />
               </label>
             </div>
           </div>

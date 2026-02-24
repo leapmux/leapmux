@@ -98,10 +98,6 @@ func (s *AdminService) UpdateSettings(ctx context.Context, req *connect.Request[
 	if worktreeCreateTimeout <= 0 {
 		worktreeCreateTimeout = timeout.DefaultWorktreeCreateTimeout
 	}
-	worktreeDeleteTimeout := int64(reqSettings.GetWorktreeDeleteTimeoutSeconds())
-	if worktreeDeleteTimeout <= 0 {
-		worktreeDeleteTimeout = timeout.DefaultWorktreeDeleteTimeout
-	}
 
 	if err := s.queries.UpdateSystemSettings(ctx, db.UpdateSystemSettingsParams{
 		SignupEnabled:                signupEnabled,
@@ -115,7 +111,6 @@ func (s *AdminService) UpdateSettings(ctx context.Context, req *connect.Request[
 		ApiTimeoutSeconds:            apiTimeout,
 		AgentStartupTimeoutSeconds:   agentStartupTimeout,
 		WorktreeCreateTimeoutSeconds: worktreeCreateTimeout,
-		WorktreeDeleteTimeoutSeconds: worktreeDeleteTimeout,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update settings: %w", err))
 	}
@@ -456,6 +451,5 @@ func settingsToProto(s *db.SystemSetting) *leapmuxv1.SystemSettings {
 		ApiTimeoutSeconds:            int32(s.ApiTimeoutSeconds),
 		AgentStartupTimeoutSeconds:   int32(s.AgentStartupTimeoutSeconds),
 		WorktreeCreateTimeoutSeconds: int32(s.WorktreeCreateTimeoutSeconds),
-		WorktreeDeleteTimeoutSeconds: int32(s.WorktreeDeleteTimeoutSeconds),
 	}
 }

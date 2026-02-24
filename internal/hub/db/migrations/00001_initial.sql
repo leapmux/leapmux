@@ -264,7 +264,6 @@ CREATE TABLE system_settings (
     api_timeout_seconds             INTEGER NOT NULL DEFAULT 10,
     agent_startup_timeout_seconds   INTEGER NOT NULL DEFAULT 30,
     worktree_create_timeout_seconds INTEGER NOT NULL DEFAULT 60,
-    worktree_delete_timeout_seconds INTEGER NOT NULL DEFAULT 60,
     updated_at                      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
