@@ -208,7 +208,7 @@ func TestAgentService_CloseAgent(t *testing.T) {
 	for _, a := range listResp.Msg.GetAgents() {
 		if a.GetId() == agentID {
 			found = true
-			assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_CLOSED, a.GetStatus())
+			assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE, a.GetStatus())
 		}
 	}
 	assert.True(t, found, "closed agent not found in list")

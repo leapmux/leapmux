@@ -2,8 +2,8 @@ import type { Component } from 'solid-js'
 import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import RefreshCw from 'lucide-solid/icons/refresh-cw'
-import { createSignal, For, onMount, Show } from 'solid-js'
-import { agentClient, workerClient } from '~/api/clients'
+import { createEffect, createSignal, For, on, onMount, Show } from 'solid-js'
+import { agentClient, gitClient, workerClient } from '~/api/clients'
 import { agentCallTimeout, agentLoadingTimeoutMs } from '~/api/transport'
 import { WorktreeOptions } from '~/components/shell/WorktreeOptions'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
@@ -64,6 +64,26 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
       }
     }
   })
+
+  // If the default working directory is a worktree, resolve to the original repo root.
+  {
+    let resolved = false
+    createEffect(on(() => workerId(), async (wid) => {
+      if (resolved || !wid || !props.defaultWorkingDir)
+        return
+      resolved = true
+      try {
+        const resp = await gitClient.getGitInfo({
+          workerId: wid,
+          path: props.defaultWorkingDir,
+          orgId: org.orgId(),
+        })
+        if (resp.isWorktreeRoot && resp.repoRoot)
+          setWorkingDir(resp.repoRoot)
+      }
+      catch {}
+    }))
+  }
 
   const handleRefresh = async () => {
     setRefreshing(true)

@@ -303,7 +303,7 @@ func (n *Notifier) terminateWorkspacesOnWorker(ctx context.Context, workerID str
 				Event: &leapmuxv1.AgentEvent_StatusChange{
 					StatusChange: &leapmuxv1.AgentStatusChange{
 						AgentId:        agentID,
-						Status:         leapmuxv1.AgentStatus_AGENT_STATUS_CLOSED,
+						Status:         leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE,
 						AgentSessionId: sessionID,
 						WorkerOnline:   false,
 					},
@@ -345,7 +345,7 @@ func (n *Notifier) closeWorkspace(ctx context.Context, workspaceID string) {
 				Event: &leapmuxv1.AgentEvent_StatusChange{
 					StatusChange: &leapmuxv1.AgentStatusChange{
 						AgentId:        agentID,
-						Status:         leapmuxv1.AgentStatus_AGENT_STATUS_CLOSED,
+						Status:         leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE,
 						AgentSessionId: sessionID,
 						WorkerOnline:   false, // Workspace closed due to worker going away
 					},

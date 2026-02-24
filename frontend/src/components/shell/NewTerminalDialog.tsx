@@ -2,7 +2,7 @@ import type { Component } from 'solid-js'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import RefreshCw from 'lucide-solid/icons/refresh-cw'
 import { createEffect, createSignal, For, on, onMount, Show } from 'solid-js'
-import { terminalClient, workerClient } from '~/api/clients'
+import { gitClient, terminalClient, workerClient } from '~/api/clients'
 import { apiLoadingTimeoutMs } from '~/api/transport'
 import { WorktreeOptions } from '~/components/shell/WorktreeOptions'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
@@ -63,6 +63,26 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
       }
     }
   })
+
+  // If the default working directory is a worktree, resolve to the original repo root.
+  {
+    let resolved = false
+    createEffect(on(() => workerId(), async (wid) => {
+      if (resolved || !wid || !props.defaultWorkingDir)
+        return
+      resolved = true
+      try {
+        const resp = await gitClient.getGitInfo({
+          workerId: wid,
+          path: props.defaultWorkingDir,
+          orgId: org.orgId(),
+        })
+        if (resp.isWorktreeRoot && resp.repoRoot)
+          setWorkingDir(resp.repoRoot)
+      }
+      catch {}
+    }))
+  }
 
   // Fetch available shells when worker changes
   createEffect(on(() => workerId(), async (id) => {

@@ -31,7 +31,7 @@ service AgentService {
 enum AgentStatus {
   AGENT_STATUS_UNSPECIFIED = 0;
   AGENT_STATUS_ACTIVE = 1;
-  AGENT_STATUS_CLOSED = 2;
+  AGENT_STATUS_INACTIVE = 2;
 }
 
 // MessageRole identifies who produced a chat message.
