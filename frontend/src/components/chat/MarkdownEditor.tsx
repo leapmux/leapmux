@@ -39,7 +39,7 @@ import { CodeLanguagePopover } from './CodeLanguagePopover'
 import { EditorToolbar } from './EditorToolbar'
 import * as styles from './MarkdownEditor.css'
 
-type EnterKeyMode = 'default' | 'alt'
+type EnterKeyMode = 'enter-sends' | 'cmd-enter-sends'
 
 interface MarkdownEditorProps {
   /** Agent ID for per-tab draft persistence. */
@@ -68,7 +68,7 @@ const ENTER_KEY_MODE_KEY = 'leapmux-enter-key-mode'
 
 function getEnterKeyMode(): EnterKeyMode {
   const stored = safeGetString(ENTER_KEY_MODE_KEY)
-  return stored === 'alt' ? 'alt' : 'default'
+  return stored === 'enter-sends' ? 'enter-sends' : 'cmd-enter-sends'
 }
 
 const DRAFT_KEY_PREFIX = 'leapmux-editor-draft-'
@@ -145,7 +145,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
 
   // Persist enter key mode
   const toggleEnterMode = () => {
-    const next = enterMode() === 'default' ? 'alt' : 'default'
+    const next = enterMode() === 'enter-sends' ? 'cmd-enter-sends' : 'enter-sends'
     setEnterMode(next)
     safeSetString(ENTER_KEY_MODE_KEY, next)
   }
@@ -204,7 +204,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   }
 
   // Enter key mode reference for ProseMirror plugin (closures capture signal)
-  let enterModeRef: EnterKeyMode = 'default'
+  let enterModeRef: EnterKeyMode = 'cmd-enter-sends'
   createEffect(() => {
     enterModeRef = enterMode()
   })
