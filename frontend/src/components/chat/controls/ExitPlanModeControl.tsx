@@ -3,6 +3,7 @@ import type { ActionsProps } from './types'
 import type { ControlRequest } from '~/stores/control.store'
 
 import { For, Show } from 'solid-js'
+import { ButtonGroup } from '~/components/common/ButtonGroup'
 import { buildAllowResponse, getToolInput } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
 import { sendResponse } from './types'
@@ -51,9 +52,18 @@ export const ExitPlanModeActions: Component<ActionsProps> = (props) => {
     sendResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId))
   }
 
+  const handleBypassPermissions = () => {
+    // Approve the current request first, then switch to bypass mode.
+    sendResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId))
+    props.onPermissionModeChange?.('bypassPermissions')
+  }
+
   return (
     <div class={styles.controlFooter}>
       <div class={styles.controlFooterLeft}>
+        {props.infoTrigger}
+      </div>
+      <div class={styles.controlFooterRight}>
         <button
           class="outline"
           onClick={handleReject}
@@ -61,16 +71,24 @@ export const ExitPlanModeActions: Component<ActionsProps> = (props) => {
         >
           Reject
         </button>
-        {props.infoTrigger}
-      </div>
-      <div class={styles.controlFooterRight}>
-        <button
-          onClick={handleApprove}
-          disabled={props.hasEditorContent}
-          data-testid="plan-approve-btn"
-        >
-          Approve
-        </button>
+        <Show when={!props.hasEditorContent}>
+          <ButtonGroup>
+            <button
+              onClick={handleApprove}
+              data-testid="plan-approve-btn"
+            >
+              Approve
+            </button>
+            <button
+              data-variant="secondary"
+              onClick={handleBypassPermissions}
+              data-testid="control-bypass-btn"
+              title="Approve this plan and stop asking for permissions"
+            >
+              & Bypass Permissions
+            </button>
+          </ButtonGroup>
+        </Show>
       </div>
     </div>
   )

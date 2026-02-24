@@ -1,5 +1,6 @@
 import type { Accessor, JSX, Setter } from 'solid-js'
 import type { ControlRequest } from '~/stores/control.store'
+import type { PermissionMode } from '~/utils/controlResponse'
 
 interface QuestionOption {
   label: string
@@ -44,6 +45,8 @@ export interface ActionsProps {
   editorContentRef?: EditorContentRef
   /** Optional info trigger element (context usage icon) to render in the left section. */
   infoTrigger?: JSX.Element
+  /** Optional callback to change the agent's permission mode. */
+  onPermissionModeChange?: (mode: PermissionMode) => void
 }
 
 export function sendResponse(
