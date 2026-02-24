@@ -368,7 +368,7 @@ func TestAgentService_HandleAgentOutput_SkipsRedundantNullStatus(t *testing.T) {
 	watcher := env.agentMgr.Watch(agentID)
 	defer env.agentMgr.Unwatch(agentID, watcher)
 
-	// First null status — should be persisted and broadcast.
+	// First null status — should be skipped (no meaningful transition).
 	env.agentSvc.HandleAgentOutput(context.Background(), &leapmuxv1.AgentOutput{
 		AgentId: agentID,
 		Content: []byte(`{"type":"system","subtype":"status","status":null,"uuid":"u1"}`),
@@ -376,13 +376,12 @@ func TestAgentService_HandleAgentOutput_SkipsRedundantNullStatus(t *testing.T) {
 
 	select {
 	case event := <-watcher.C():
-		agentMsg := event.GetAgentMessage()
-		require.NotNil(t, agentMsg, "expected first null status to be broadcast")
-	case <-time.After(time.Second):
-		require.Fail(t, "timeout waiting for first null status broadcast")
+		require.Fail(t, "expected first null status to be skipped, got event: %v", event)
+	case <-time.After(200 * time.Millisecond):
+		// Expected: no broadcast for first null status.
 	}
 
-	// Second null status — should be skipped (redundant null→null).
+	// Second null status — should also be skipped (redundant null→null).
 	env.agentSvc.HandleAgentOutput(context.Background(), &leapmuxv1.AgentOutput{
 		AgentId: agentID,
 		Content: []byte(`{"type":"system","subtype":"status","status":null,"uuid":"u2"}`),
@@ -395,14 +394,14 @@ func TestAgentService_HandleAgentOutput_SkipsRedundantNullStatus(t *testing.T) {
 		// Expected: no broadcast for redundant null→null.
 	}
 
-	// Verify only one message persisted in DB.
+	// Verify no messages persisted in DB.
 	msgs, err := env.queries.ListMessagesByAgentID(context.Background(), gendb.ListMessagesByAgentIDParams{
 		AgentID: agentID,
 		Seq:     0,
 		Limit:   10,
 	})
 	require.NoError(t, err)
-	assert.Len(t, msgs, 1, "expected exactly one message in DB after redundant null status skip")
+	assert.Len(t, msgs, 0, "expected zero messages in DB after skipping both null statuses")
 }
 
 func TestAgentService_HandleAgentOutput_PersistsNullAfterCompacting(t *testing.T) {
