@@ -641,10 +641,10 @@ test.describe('Worktree Support', () => {
 
     // Now force-remove it
     await forceRemoveWorktreeViaAPI(hubUrl, adminToken, resp.worktreeId!)
-    expect(existsSync(worktreeDir)).toBe(false)
-
-    // Branch should also be deleted
-    expect(branchExists(repoDir, 'dirty-branch')).toBe(false)
+    await expect(async () => {
+      expect(existsSync(worktreeDir)).toBe(false)
+      expect(branchExists(repoDir, 'dirty-branch')).toBe(false)
+    }).toPass({ timeout: 15_000 })
   })
 
   test('worktree with local-only commits and no upstream triggers confirmation', async ({
@@ -686,10 +686,10 @@ test.describe('Worktree Support', () => {
 
     // Force-remove it
     await forceRemoveWorktreeViaAPI(hubUrl, adminToken, resp.worktreeId!)
-    expect(existsSync(worktreeDir)).toBe(false)
-
-    // Branch should also be deleted
-    expect(branchExists(repoDir, 'no-upstream-branch')).toBe(false)
+    await expect(async () => {
+      expect(existsSync(worktreeDir)).toBe(false)
+      expect(branchExists(repoDir, 'no-upstream-branch')).toBe(false)
+    }).toPass({ timeout: 15_000 })
   })
 
   test('dirty worktree with unpushed commits triggers confirmation', async ({

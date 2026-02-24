@@ -616,6 +616,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                     hasEditorContent={hasContent()}
                     onTriggerSend={() => triggerSend?.()}
                     editorContentRef={editorContentRef}
+                    onPermissionModeChange={props.onPermissionModeChange}
                     infoTrigger={
                       showInfoTrigger()
                         ? (

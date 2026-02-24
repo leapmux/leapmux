@@ -17,7 +17,7 @@ test.describe('Full Hub+Worker Restart', () => {
       // Step 1: Send a message and wait for a response
       await editor.click()
       await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
-      await page.keyboard.press('Enter')
+      await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 
       // Wait for the assistant's response containing "4"
@@ -71,7 +71,7 @@ test.describe('Full Hub+Worker Restart', () => {
       // Step 4: Send another message and wait for response.
       await editor.click()
       await page.keyboard.type('What is 3+3? Reply with just the number, nothing else.')
-      await page.keyboard.press('Enter')
+      await page.keyboard.press('Meta+Enter')
 
       // Wait for the assistant's response containing "6"
       await page.waitForFunction(() => {

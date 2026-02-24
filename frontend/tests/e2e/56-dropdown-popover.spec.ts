@@ -22,7 +22,7 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     // Send a message so the agent session starts and context info appears
     await editor.click()
     await page.keyboard.type('What is 1+1? Reply with just the number, nothing else.')
-    await page.keyboard.press('Enter')
+    await page.keyboard.press('Meta+Enter')
     await page.waitForFunction(() => {
       const body = document.body.textContent || ''
       return body.includes('2') && !body.includes('Send a message to start')
@@ -96,7 +96,7 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     // Send a message so the agent session starts and context info appears
     await editor.click()
     await page.keyboard.type('What is 1+1? Reply with just the number, nothing else.')
-    await page.keyboard.press('Enter')
+    await page.keyboard.press('Meta+Enter')
     await page.waitForFunction(() => {
       const body = document.body.textContent || ''
       return body.includes('2') && !body.includes('Send a message to start')

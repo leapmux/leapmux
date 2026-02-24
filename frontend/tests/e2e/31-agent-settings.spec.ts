@@ -1,13 +1,21 @@
 import type { Page } from '@playwright/test'
 import { expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
 
-/** Open the settings menu if not already visible. */
+/** Open the settings menu, retrying if it was caught mid-close animation. */
 async function openSettingsMenu(page: Page) {
+  const trigger = page.locator('[data-testid="agent-settings-trigger"]')
   const menu = page.locator('[data-testid="agent-settings-menu"]')
-  if (!await menu.isVisible()) {
-    await page.locator('[data-testid="agent-settings-trigger"]').click()
-  }
-  await expect(menu).toBeVisible()
+  await expect(async () => {
+    if (!await menu.isVisible()) {
+      await trigger.click()
+    }
+    await expect(menu).toBeVisible()
+  }).toPass({ timeout: 5000 })
+}
+
+/** Wait for the settings loading spinner to disappear. */
+async function waitForSettingsIdle(page: Page) {
+  await expect(page.locator('[data-testid="settings-loading-spinner"]')).not.toBeVisible()
 }
 
 /** Get the trigger button's text content. */
@@ -34,16 +42,19 @@ test.describe('Agent Settings', () => {
     await openSettingsMenu(page)
     await page.locator('[data-testid="permission-mode-plan"]').click()
     await expect(trigger).toContainText('Plan Mode')
+    await waitForSettingsIdle(page)
 
     // Switch to Accept Edits
     await openSettingsMenu(page)
     await page.locator('[data-testid="permission-mode-acceptEdits"]').click()
     await expect(trigger).toContainText('Accept Edits')
+    await waitForSettingsIdle(page)
 
     // Switch to Bypass Permissions
     await openSettingsMenu(page)
     await page.locator('[data-testid="permission-mode-bypassPermissions"]').click()
     await expect(trigger).toContainText('Bypass Permissions')
+    await waitForSettingsIdle(page)
 
     // Switch back to Default
     await openSettingsMenu(page)
@@ -151,7 +162,7 @@ test.describe('Agent Settings', () => {
     // Send a message to establish a session ID.
     await editor.click()
     await page.keyboard.type('What is 1+1? Reply with just the number, nothing else.')
-    await page.keyboard.press('Enter')
+    await page.keyboard.press('Meta+Enter')
 
     // Wait for a response (ensures init message and session ID are stored)
     await page.waitForFunction(() => {
@@ -180,7 +191,7 @@ test.describe('Agent Settings', () => {
     // Send a message to trigger agent re-launch via ensureAgentActive
     await editor.click()
     await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
-    await page.keyboard.press('Enter')
+    await page.keyboard.press('Meta+Enter')
 
     // Wait for a response (agent resumed successfully)
     await page.waitForFunction(() => {
@@ -199,7 +210,7 @@ test.describe('Agent Settings', () => {
     // Send a quick message to ensure the agent is fully started
     await editor.click()
     await page.keyboard.type('What is 1+1? Reply with just the number, nothing else.')
-    await page.keyboard.press('Enter')
+    await page.keyboard.press('Meta+Enter')
     await page.waitForFunction(() => {
       const body = document.body.textContent || ''
       return body.includes('2') && !body.includes('Send a message to start')
@@ -208,7 +219,7 @@ test.describe('Agent Settings', () => {
     // Verify the agent is still responsive after interrupt by sending another message
     await editor.click()
     await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
-    await page.keyboard.press('Enter')
+    await page.keyboard.press('Meta+Enter')
     await page.waitForFunction(() => {
       const body = document.body.textContent || ''
       return body.includes('4')

@@ -154,9 +154,9 @@ test.describe('Workspace UX Enhancements', () => {
       await page.goto(`/o/admin/workspace/${workspaceId1}`)
       await waitForWorkspaceReady(page)
 
-      // Navigate to the first workspace
-      await page.locator('[data-testid^="workspace-item-"]').filter({ hasText: 'Delete Target WS' }).click()
-      await expect(page).toHaveURL(/\/workspace\//)
+      // Ensure both workspaces are visible in the sidebar before deleting
+      await expect(page.locator('[data-testid^="workspace-item-"]').filter({ hasText: 'Delete Target WS' })).toBeVisible()
+      await expect(page.locator('[data-testid^="workspace-item-"]').filter({ hasText: 'Next WS' })).toBeVisible()
 
       // Set up dialog handler for the confirm prompt
       page.on('dialog', dialog => dialog.accept())
@@ -165,12 +165,12 @@ test.describe('Workspace UX Enhancements', () => {
       await openWorkspaceContextMenu(page, 'Delete Target WS')
       await page.getByRole('menuitem', { name: 'Delete' }).click()
 
+      // The deleted workspace should be gone from sidebar
+      await expect(page.locator('[data-testid^="workspace-item-"]').filter({ hasText: 'Delete Target WS' })).not.toBeVisible()
       // Should navigate to the next workspace
       await expect(page).toHaveURL(/\/workspace\//)
       // Verify the 'Next WS' workspace is visible in the sidebar
       await expect(page.getByText('Next WS')).toBeVisible()
-      // The deleted workspace should be gone from sidebar
-      await expect(page.getByText('Delete Target WS')).not.toBeVisible()
     }
     finally {
       // workspaceId1 was deleted by the test, but clean up best-effort

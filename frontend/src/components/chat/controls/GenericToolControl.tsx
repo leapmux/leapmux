@@ -2,6 +2,8 @@ import type { Component } from 'solid-js'
 import type { ActionsProps } from './types'
 import type { ControlRequest } from '~/stores/control.store'
 
+import { Show } from 'solid-js'
+import { ButtonGroup } from '~/components/common/ButtonGroup'
 import { buildAllowResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
 import { sendResponse } from './types'
@@ -30,23 +32,49 @@ export const GenericToolContent: Component<{ request: ControlRequest }> = (props
 }
 
 export const GenericToolActions: Component<ActionsProps> = (props) => {
-  const handleClick = () => {
-    if (props.hasEditorContent) {
-      // Editor text is used as deny comment via onSend handler
-      props.onTriggerSend()
-    }
-    else {
-      sendResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId))
-    }
+  const handleAllow = () => {
+    sendResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId))
+  }
+
+  const handleDeny = () => {
+    props.onTriggerSend()
+  }
+
+  const handleBypassPermissions = () => {
+    // Allow the current request first, then switch to bypass mode.
+    sendResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId))
+    props.onPermissionModeChange?.('bypassPermissions')
   }
 
   return (
-    <button
-      class={props.hasEditorContent ? 'outline' : undefined}
-      onClick={handleClick}
-      data-testid={props.hasEditorContent ? 'control-deny-btn' : 'control-allow-btn'}
+    <Show
+      when={!props.hasEditorContent}
+      fallback={(
+        <button
+          class="outline"
+          onClick={handleDeny}
+          data-testid="control-deny-btn"
+        >
+          Deny
+        </button>
+      )}
     >
-      {props.hasEditorContent ? 'Deny' : 'Allow'}
-    </button>
+      <ButtonGroup>
+        <button
+          onClick={handleAllow}
+          data-testid="control-allow-btn"
+        >
+          Allow
+        </button>
+        <button
+          data-variant="secondary"
+          onClick={handleBypassPermissions}
+          data-testid="control-bypass-btn"
+          title="Allow this request and stop asking for permissions"
+        >
+          & Bypass Permissions
+        </button>
+      </ButtonGroup>
+    </Show>
   )
 }

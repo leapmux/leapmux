@@ -20,7 +20,7 @@ test.describe('Message Delivery Error', () => {
       // Send a message and wait for an assistant response bubble
       await editor.click()
       await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
-      await page.keyboard.press('Enter')
+      await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 
       await expect(
@@ -34,7 +34,7 @@ test.describe('Message Delivery Error', () => {
       // Send a message while worker is offline
       await editor.click()
       await page.keyboard.type('This message should fail')
-      await page.keyboard.press('Enter')
+      await page.keyboard.press('Meta+Enter')
 
       // Assert delivery error is visible
       const errorIndicator = page.locator('[data-testid="message-error"]')
@@ -80,7 +80,7 @@ test.describe('Message Delivery Error', () => {
       // Send a message and wait for assistant response
       await editor.click()
       await page.keyboard.type('What is 1+1? Reply with just the number.')
-      await page.keyboard.press('Enter')
+      await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 
       await expect(
@@ -94,7 +94,7 @@ test.describe('Message Delivery Error', () => {
       // Send a message while offline
       await editor.click()
       await page.keyboard.type('This should fail and persist')
-      await page.keyboard.press('Enter')
+      await page.keyboard.press('Meta+Enter')
 
       // Assert error is visible
       const errorIndicator = page.locator('[data-testid="message-error"]')
@@ -134,7 +134,7 @@ test.describe('Message Delivery Error', () => {
       // Send a message and wait for assistant response
       await editor.click()
       await page.keyboard.type('What is 5+5? Reply with just the number.')
-      await page.keyboard.press('Enter')
+      await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 
       await expect(
@@ -151,7 +151,7 @@ test.describe('Message Delivery Error', () => {
       // Send a message while offline
       await editor.click()
       await page.keyboard.type('Delete this message')
-      await page.keyboard.press('Enter')
+      await page.keyboard.press('Meta+Enter')
 
       // Assert error is visible
       const errorIndicator = page.locator('[data-testid="message-error"]')

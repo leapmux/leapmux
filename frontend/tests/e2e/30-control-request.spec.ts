@@ -7,7 +7,7 @@ async function sendMessage(page: Page, text: string) {
   await expect(editor).toBeVisible()
   await editor.click()
   await page.keyboard.type(text, { delay: 100 })
-  await page.keyboard.press('Enter')
+  await page.keyboard.press('Meta+Enter')
   await expect(editor).toHaveText('')
 }
 

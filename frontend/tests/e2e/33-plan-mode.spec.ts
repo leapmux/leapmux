@@ -7,7 +7,7 @@ async function sendMessage(page: Page, text: string) {
   await expect(editor).toBeVisible()
   await editor.click()
   await page.keyboard.type(text, { delay: 100 })
-  await page.keyboard.press('Enter')
+  await page.keyboard.press('Meta+Enter')
 }
 
 /** Wait for the control request banner to appear. */
@@ -43,7 +43,10 @@ test.describe('Plan Mode', () => {
     const exitBanner1 = await waitForControlBanner(page)
     await expect(exitBanner1.getByText('Plan Ready for Review')).toBeVisible()
 
-    // ── Step 2: Reject the plan with empty rejection text ──
+    // ── Step 2: Reject the plan with a comment ──
+    const editorForReject = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await editorForReject.click()
+    await page.keyboard.type('not ready yet', { delay: 100 })
     const rejectBtn = page.locator('[data-testid="plan-reject-btn"]')
     await expect(rejectBtn).toBeEnabled()
     await rejectBtn.click()

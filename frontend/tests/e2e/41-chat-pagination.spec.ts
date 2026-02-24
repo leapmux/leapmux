@@ -21,7 +21,7 @@ async function sendMessage(page: Page, message: string) {
   await expect(editor).toBeVisible()
   await editor.click()
   await page.keyboard.type(message)
-  await page.keyboard.press('Enter')
+  await page.keyboard.press('Meta+Enter')
 }
 
 async function waitForAssistantReply(page: Page) {

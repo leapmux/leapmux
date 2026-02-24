@@ -14,7 +14,7 @@ test.describe('Sign Up', () => {
   test('should show error for duplicate username', async ({ page }) => {
     await signUpViaUI(page, 'admin', 'password123')
     // Should show an error (username taken)
-    await expect(page.getByText(/already|exists|taken/i)).toBeVisible()
+    await expect(page.getByText('username already taken')).toBeVisible()
   })
 
   test('should link back to login page', async ({ page }) => {

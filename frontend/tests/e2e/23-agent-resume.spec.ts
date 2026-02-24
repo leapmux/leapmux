@@ -17,7 +17,7 @@ test.describe('Agent Session Resume', () => {
       // Send a message and wait for response
       await editor.click()
       await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
-      await page.keyboard.press('Enter')
+      await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 
       // Wait for the response
@@ -41,7 +41,7 @@ test.describe('Agent Session Resume', () => {
       // Send a new message to the closed (but resumable) agent
       await editor.click()
       await page.keyboard.type('What is 3+3? Reply with just the number, nothing else.')
-      await page.keyboard.press('Enter')
+      await page.keyboard.press('Meta+Enter')
 
       // Wait for a response - the agent should have resumed
       await page.waitForFunction(() => {
@@ -69,7 +69,7 @@ test.describe('Agent Session Resume', () => {
       // Send a message and wait for response (establishes session)
       await editor.click()
       await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
-      await page.keyboard.press('Enter')
+      await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
       await page.waitForFunction(() => {
         const body = document.body.textContent || ''
@@ -114,7 +114,7 @@ test.describe('Agent Session Resume', () => {
       // Send a message and wait for response (establishes session)
       await editor.click()
       await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
-      await page.keyboard.press('Enter')
+      await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
       await page.waitForFunction(() => {
         const body = document.body.textContent || ''
@@ -132,7 +132,7 @@ test.describe('Agent Session Resume', () => {
       // Send another message to confirm agent is alive after restart
       await editor.click()
       await page.keyboard.type('What is 5+5? Reply with just the number, nothing else.')
-      await page.keyboard.press('Enter')
+      await page.keyboard.press('Meta+Enter')
 
       // Wait for response — verifies normal operation post-restart
       await page.waitForFunction(() => {

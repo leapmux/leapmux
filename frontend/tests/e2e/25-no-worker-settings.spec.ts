@@ -20,7 +20,7 @@ test.describe('Settings and /clear without Worker', () => {
       // Step 1: Send a message and wait for a response (agent starts)
       await editor.click()
       await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
-      await page.keyboard.press('Enter')
+      await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 
       // Wait for the assistant's response containing "4"
@@ -64,25 +64,24 @@ test.describe('Settings and /clear without Worker', () => {
         return hasUserMsg && hasAssistantResp
       })
 
-      // Helper: wait for a system notification bubble to contain the expected text.
+      // Helper: wait for a notification bubble to contain the expected text.
       const waitForNotification = (text: string) =>
-        page.waitForFunction((t) => {
-          const bubbles = document.querySelectorAll('[data-testid="message-bubble"][data-role="system"]')
-          for (const b of bubbles) {
-            if (b.textContent?.includes(t))
-              return true
-          }
-          return false
-        }, text)
+        expect(page.getByText(text)).toBeVisible()
 
-      // Helper: open the settings menu if not already visible.
+      // Helper: wait for the settings loading spinner to disappear.
+      const waitForSettingsIdle = () =>
+        expect(page.locator('[data-testid="settings-loading-spinner"]')).not.toBeVisible()
+
+      // Helper: open the settings menu, retrying if caught mid-close animation.
       const trigger = page.locator('[data-testid="agent-settings-trigger"]')
       const menu = page.locator('[data-testid="agent-settings-menu"]')
       const openSettingsMenu = async () => {
-        if (!await menu.isVisible()) {
-          await trigger.click()
-        }
-        await expect(menu).toBeVisible()
+        await expect(async () => {
+          if (!await menu.isVisible()) {
+            await trigger.click()
+          }
+          await expect(menu).toBeVisible()
+        }).toPass({ timeout: 5000 })
       }
 
       // Step 4: Change permission mode (Default → Plan Mode)
@@ -91,12 +90,14 @@ test.describe('Settings and /clear without Worker', () => {
 
       await expect(trigger).toContainText('Plan')
       await waitForNotification('Mode (Default \u2192 Plan Mode)')
+      await waitForSettingsIdle()
 
       // Step 5: Change model (Haiku → Sonnet)
       await openSettingsMenu()
       await page.locator('[data-testid="model-sonnet"]').click()
 
       await waitForNotification('Model (Haiku \u2192 Sonnet)')
+      await waitForSettingsIdle()
 
       // Step 6: Change effort (High → Medium)
       await openSettingsMenu()
@@ -107,7 +108,7 @@ test.describe('Settings and /clear without Worker', () => {
       // Step 7: Send /clear
       await editor.click()
       await page.keyboard.type('/clear')
-      await page.keyboard.press('Enter')
+      await page.keyboard.press('Meta+Enter')
 
       await waitForNotification('Context cleared')
 

@@ -30,7 +30,7 @@ test.describe('Workspace Chat', () => {
     // Send a message to Claude via the rich text editor
     await editor.click()
     await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
-    await page.keyboard.press('Enter')
+    await page.keyboard.press('Meta+Enter')
 
     // Editor should be cleared after sending
     await expect(editor).toHaveText('')

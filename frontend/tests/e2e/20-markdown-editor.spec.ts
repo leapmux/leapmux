@@ -82,9 +82,7 @@ test.describe('Markdown Editor Toolbar', () => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
-    // Switch to Alt+Enter mode so Enter creates newlines instead of sending
-    await page.locator('button:has-text("Enter sends")').click()
-
+    // Default mode is Cmd+Enter-to-send, so Enter creates newlines
     await editor.click()
 
     // Type many lines to exceed the old 120px limit
@@ -125,8 +123,7 @@ test.describe('Tab and Shift+Tab behavior', () => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
-    // Switch to Alt+Enter mode so Enter creates newlines
-    await page.locator('button:has-text("Enter sends")').click()
+    // Default mode is Cmd+Enter-to-send, so Enter creates newlines in lists
 
     // Create a bullet list with two items
     await editor.click()
@@ -154,8 +151,7 @@ test.describe('Tab and Shift+Tab behavior', () => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
-    // Switch to Alt+Enter mode
-    await page.locator('button:has-text("Enter sends")').click()
+    // Default mode is Cmd+Enter-to-send, so Enter creates newlines in lists
 
     // Create an ordered list with two items
     await editor.click()
@@ -456,8 +452,8 @@ test.describe('Draft Persistence', () => {
     await page.keyboard.type('message to send', { delay: 100 })
     await page.waitForTimeout(700)
 
-    // Send the message
-    await page.keyboard.press('Enter')
+    // Send the message (default mode is Cmd+Enter-to-send)
+    await page.keyboard.press('Meta+Enter')
 
     // Wait a moment for the clear to take effect
     await page.waitForTimeout(200)
@@ -505,9 +501,7 @@ test.describe('Draft Persistence', () => {
 
 test.describe('Horizontal Rule Input Rule', () => {
   test('typing --- creates a horizontal rule', async ({ page, authenticatedWorkspace }) => {
-    // Switch to Alt+Enter mode so Enter doesn't send
-    await page.locator('button:has-text("Enter sends")').click()
-
+    // Default mode is Cmd+Enter-to-send, so Enter creates newlines
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
@@ -522,9 +516,6 @@ test.describe('Horizontal Rule Input Rule', () => {
   })
 
   test('typing --- after text via Shift+Enter creates HR after paragraph', async ({ page, authenticatedWorkspace }) => {
-    // Switch to Cmd/Ctrl+Enter mode so Enter doesn't send
-    await page.locator('button:has-text("Enter sends")').click()
-
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
@@ -542,9 +533,6 @@ test.describe('Horizontal Rule Input Rule', () => {
 
 test.describe('List Input Rules After Soft Break', () => {
   test('Shift+Enter then "- " creates bullet list', async ({ page, authenticatedWorkspace }) => {
-    // Switch to Alt+Enter mode
-    await page.locator('button:has-text("Enter sends")').click()
-
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
@@ -559,9 +547,6 @@ test.describe('List Input Rules After Soft Break', () => {
   })
 
   test('Shift+Enter then "1. " creates ordered list', async ({ page, authenticatedWorkspace }) => {
-    // Switch to Alt+Enter mode
-    await page.locator('button:has-text("Enter sends")').click()
-
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
@@ -1163,9 +1148,7 @@ test.describe('Empty Code Block Backspace', () => {
 
 test.describe('Horizontal Rule Backspace Revert', () => {
   test('Backspace after HR reverts to --- text', async ({ page, authenticatedWorkspace }) => {
-    // Switch to Cmd/Ctrl+Enter mode so Enter creates newlines
-    await page.locator('button:has-text("Enter sends")').click()
-
+    // Default mode is Cmd+Enter-to-send, so Enter creates newlines
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
@@ -1253,9 +1236,6 @@ test.describe('Markdown Paste', () => {
 
 test.describe('Code Block Input Rule', () => {
   test('typing ``` creates a code block', async ({ page, authenticatedWorkspace }) => {
-    // Switch to Cmd/Ctrl+Enter mode so Enter doesn't send
-    await page.locator('button:has-text("Enter sends")').click()
-
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
@@ -1272,9 +1252,6 @@ test.describe('Code Block Input Rule', () => {
   })
 
   test('typing ``` after text creates code block after paragraph', async ({ page, authenticatedWorkspace }) => {
-    // Switch to Cmd/Ctrl+Enter mode
-    await page.locator('button:has-text("Enter sends")').click()
-
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
@@ -1392,7 +1369,34 @@ test.describe('Code Language Label', () => {
 })
 
 test.describe('Enter Sends Message', () => {
-  test('Enter sends message in default mode', async ({ page, authenticatedWorkspace }) => {
+  test('Cmd+Enter sends message in default mode', async ({ page, authenticatedWorkspace }) => {
+    // Default mode is Cmd+Enter-to-send
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // Type some text
+    await page.keyboard.type('hello from cmd enter', { delay: 100 })
+    await expect(editor).toContainText('hello from cmd enter')
+
+    // Plain Enter should NOT send — it creates a new line
+    await page.keyboard.press('Enter')
+    await page.waitForTimeout(200)
+    await expect(editor).toContainText('hello from cmd enter')
+
+    // Cmd+Enter should send
+    await page.keyboard.press('Meta+Enter')
+
+    // The editor should be cleared after sending
+    await page.waitForTimeout(300)
+    const textAfterSend = await editor.textContent()
+    expect(textAfterSend?.trim()).toBe('')
+  })
+
+  test('Enter sends message after toggling to Enter mode', async ({ page, authenticatedWorkspace }) => {
+    // Toggle from default Cmd+Enter mode to Enter-sends mode
+    await page.locator('button:has-text("Enter sends")').click()
+
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
@@ -1401,34 +1405,8 @@ test.describe('Enter Sends Message', () => {
     await page.keyboard.type('hello from enter key', { delay: 100 })
     await expect(editor).toContainText('hello from enter key')
 
-    // Press Enter to send (default mode)
+    // Enter should send in Enter-sends mode
     await page.keyboard.press('Enter')
-
-    // The editor should be cleared after sending
-    await page.waitForTimeout(300)
-    const textAfterSend = await editor.textContent()
-    expect(textAfterSend?.trim()).toBe('')
-  })
-
-  test('Cmd/Ctrl+Enter sends message in alt mode', async ({ page, authenticatedWorkspace }) => {
-    // Switch to Cmd/Ctrl+Enter mode
-    await page.locator('button:has-text("Enter sends")').click()
-
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    await editor.click()
-
-    // Type some text
-    await page.keyboard.type('hello from cmd enter', { delay: 100 })
-
-    // Plain Enter should NOT send — it creates a new line
-    await page.keyboard.press('Enter')
-    await page.waitForTimeout(200)
-    // Editor should still contain the text (not cleared)
-    await expect(editor).toContainText('hello from cmd enter')
-
-    // Cmd/Ctrl+Enter should send
-    await page.keyboard.press('Meta+Enter')
 
     // The editor should be cleared after sending
     await page.waitForTimeout(300)
@@ -1440,14 +1418,26 @@ test.describe('Enter Sends Message', () => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
-    // In default mode, button text is "Enter sends"
+    // The toggle button always contains "Enter sends" text in both modes
     const enterModeBtn = page.locator('button:has-text("Enter sends")')
     await expect(enterModeBtn).toBeVisible()
 
-    // Click to toggle to Cmd/Ctrl+Enter mode
+    // Click to toggle from default Cmd+Enter mode to Enter-sends mode
     await enterModeBtn.click()
 
-    // Verify that Enter in editor creates a newline (doesn't send)
+    // Verify that Enter in editor sends (clears editor)
+    await editor.click()
+    await page.keyboard.type('will be sent', { delay: 100 })
+    await page.keyboard.press('Enter')
+
+    await page.waitForTimeout(300)
+    const textAfterFirstSend = await editor.textContent()
+    expect(textAfterFirstSend?.trim()).toBe('')
+
+    // Click the same button again to toggle back to Cmd+Enter mode
+    await page.locator('button:has-text("Enter sends")').click()
+
+    // Type text and verify Enter creates a newline (doesn't send)
     await editor.click()
     await page.keyboard.type('test text', { delay: 100 })
     await page.keyboard.press('Enter')
@@ -1457,22 +1447,11 @@ test.describe('Enter Sends Message', () => {
     await expect(editor).toContainText('test text')
     await expect(editor).toContainText('new line')
 
-    // Click the same button again to toggle back to default mode
-    // The button still contains "Enter sends" text
-    await page.locator('button:has-text("Enter sends")').click()
+    // Cmd+Enter should send
+    await page.keyboard.press('Meta+Enter')
 
-    // Clear editor for clean test
-    await editor.click()
-    await page.keyboard.press('Meta+a')
-    await page.keyboard.press('Backspace')
-    await page.keyboard.type('will be sent', { delay: 100 })
-
-    // Enter should now send (back in default mode)
-    await page.keyboard.press('Enter')
-
-    // The editor should be cleared after sending
     await page.waitForTimeout(300)
-    const textAfterSend = await editor.textContent()
-    expect(textAfterSend?.trim()).toBe('')
+    const textAfterSecondSend = await editor.textContent()
+    expect(textAfterSecondSend?.trim()).toBe('')
   })
 })
