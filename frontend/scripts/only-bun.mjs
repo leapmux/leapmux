@@ -8,11 +8,13 @@ import { fileURLToPath } from 'node:url'
 
 const ua = env.npm_config_user_agent || ''
 if (!ua.startsWith('bun/')) {
-  // Clean up package-lock.json that npm creates before preinstall runs.
+  // Clean up lockfiles that other package managers create before preinstall runs.
   const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)))
-  const lockFile = join(projectRoot, 'package-lock.json')
-  if (existsSync(lockFile)) {
-    rmSync(lockFile)
+  for (const name of ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock']) {
+    const lockFile = join(projectRoot, name)
+    if (existsSync(lockFile)) {
+      rmSync(lockFile)
+    }
   }
 
   console.error(

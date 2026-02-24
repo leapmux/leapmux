@@ -1185,7 +1185,7 @@ export const AppShell: ParentComponent = (props) => {
                   <ChatView
                     messages={chatStore.getMessages(agentId)}
                     streamingText={chatStore.state.streamingText[agentId] ?? ''}
-                    agentWorking={isAgentWorking(chatStore.getMessages(agentId)) && controlStore.getRequests(agentId).length === 0}
+                    agentWorking={agentStore.state.agents.find(a => a.id === agentId)?.status === AgentStatus.ACTIVE && isAgentWorking(chatStore.getMessages(agentId)) && controlStore.getRequests(agentId).length === 0}
                     messageErrors={chatStore.state.messageErrors}
                     onRetryMessage={messageId => handleRetryMessage(agentId, messageId)}
                     onDeleteMessage={messageId => handleDeleteMessage(agentId, messageId)}
@@ -1274,7 +1274,7 @@ export const AppShell: ParentComponent = (props) => {
         onInterrupt={handleInterrupt}
         settingsLoading={settingsLoading.loading()}
         agentContextInfo={agentContextStore.getInfo(agentId())}
-        agentWorking={isAgentWorking(chatStore.getMessages(agentId()))}
+        agentWorking={agentStore.state.agents.find(a => a.id === agentId())?.status === AgentStatus.ACTIVE && isAgentWorking(chatStore.getMessages(agentId()))}
         containerHeight={props.containerHeight}
       />
     )

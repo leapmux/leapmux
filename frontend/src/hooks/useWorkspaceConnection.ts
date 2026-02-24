@@ -100,7 +100,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         chatStore.addMessage(agentId, msg)
         chatStore.clearStreamingText(agentId)
 
-        // Track turn activity based on the message's role.
+        // Play turn-end sound when a real RESULT (with subtype) arrives.
         if (msg.role === MessageRole.RESULT) {
           try {
             const text = decompressContentToString(msg.content, msg.contentCompression)
@@ -109,25 +109,20 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
               // Content is wrapped: {"old_seqs":[],"messages":[{...}]}
               const innerMsg = parsed?.messages?.[0] ?? parsed
               if (innerMsg?.subtype) {
-                chatStore.setTurnActive(agentId, false)
                 if (catchUpPhase === 'live')
                   params.onTurnEndSound?.()
               }
             }
           }
           catch {
-            // Ignore parse errors — don't change turn state.
+            // Ignore parse errors.
           }
-        }
-        else if (msg.role === MessageRole.USER) {
-          chatStore.setTurnActive(agentId, true)
         }
         break
       }
       case 'streamChunk': {
         const text = new TextDecoder().decode(inner.value.delta)
         chatStore.setStreamingText(agentId, (chatStore.state.streamingText[agentId] ?? '') + text)
-        chatStore.setTurnActive(agentId, true)
         break
       }
       case 'streamEnd':
@@ -148,8 +143,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           gitStatus: sc.gitStatus,
         })
         settingsLoading.stop()
-        if (sc.status === AgentStatus.CLOSED) {
-          chatStore.setTurnActive(sc.agentId, false)
+        if (sc.status === AgentStatus.INACTIVE) {
           if (catchUpPhase === 'live' && sc.agentSessionId) {
             params.onTurnEndSound?.()
           }
@@ -403,6 +397,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   })
 
   // When the worker goes offline, mark all non-exited terminals as disconnected
+  // and clear stale streaming text from agents.
   createEffect(() => {
     if (workerOnline())
       return
@@ -414,6 +409,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           instance.terminal.write('\r\n\r\n[Connection to the terminal was lost.]\r\n')
         }
       }
+    }
+    for (const a of agentStore.state.agents) {
+      chatStore.clearStreamingText(a.id)
     }
   })
 
