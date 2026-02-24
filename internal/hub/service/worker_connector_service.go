@@ -493,7 +493,7 @@ func (s *WorkerConnectorService) cleanupWorker(workerID string) {
 		}
 		if aErr == nil {
 			sc := AgentStatusChange(&a, false)
-			sc.Status = leapmuxv1.AgentStatus_AGENT_STATUS_CLOSED
+			sc.Status = leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE
 			sc.GitStatus = s.agentSvc.GetGitStatus(agentID)
 			events = append(events, agentmgr.AgentBroadcast{
 				AgentID: agentID,
