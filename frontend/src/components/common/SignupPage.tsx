@@ -5,6 +5,7 @@ import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createSignal, onMount, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { useAuth } from '~/context/AuthContext'
+import { sanitizeSlug } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
 import * as styles from './LoginPage.css'
 import { NotFoundPage } from './NotFoundPage'
@@ -38,11 +39,16 @@ export const SignupPage: Component = () => {
       setError('Passwords do not match.')
       return
     }
+    const [slug, slugErr] = sanitizeSlug('Username', username())
+    if (slugErr) {
+      setError(slugErr)
+      return
+    }
     setSubmitting(true)
     setError(null)
     try {
       const resp = await authClient.signUp({
-        username: username(),
+        username: slug,
         password: password(),
         displayName: displayName(),
         email: email(),
@@ -52,7 +58,7 @@ export const SignupPage: Component = () => {
       }
       else {
         auth.setAuth(resp.token, resp.user!)
-        navigate(`/o/${username()}`, { replace: true })
+        navigate(`/o/${slug}`, { replace: true })
       }
     }
     catch (e) {

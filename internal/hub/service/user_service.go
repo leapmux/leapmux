@@ -37,7 +37,10 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	newUsername := req.Msg.GetUsername()
+	newUsername, err := validate.SanitizeSlug("username", req.Msg.GetUsername())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	usernameChanged := newUsername != user.Username
 
 	// If the username is changing, check that the new one is not already taken.
