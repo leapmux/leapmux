@@ -113,7 +113,7 @@ test.describe('TabBar Improvements', () => {
     await expect(editor).toBeVisible()
     await editor.click()
     await page.keyboard.type('Say "hello". Reply with just the word, nothing else.')
-    await page.keyboard.press('Enter')
+    await page.keyboard.press('Meta+Enter')
 
     // Wait for the agent to respond (which triggers the init message with session ID)
     await page.waitForFunction(() => {

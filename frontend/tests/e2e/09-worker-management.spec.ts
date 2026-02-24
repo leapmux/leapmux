@@ -110,17 +110,18 @@ test.describe('Worker Management', () => {
     await page.getByRole('menuitem', { name: 'Sharing' }).click()
 
     // Sharing dialog should appear
-    await expect(page.getByRole('heading', { name: 'Worker Settings' })).toBeVisible()
-    await expect(page.getByText('Private')).toBeVisible()
-    await expect(page.getByText('All org members')).toBeVisible()
-    await expect(page.getByText('Specific members')).toBeVisible()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.getByRole('heading', { name: 'Worker Settings' })).toBeVisible()
+    await expect(dialog.getByText('Private')).toBeVisible()
+    await expect(dialog.getByText('All org members')).toBeVisible()
+    await expect(dialog.getByText('Specific members')).toBeVisible()
 
     // Select "All org members"
-    await page.getByText('All org members').click()
-    await page.getByRole('button', { name: 'Save' }).click()
+    await dialog.getByText('All org members').click()
+    await dialog.getByRole('button', { name: 'Save' }).click()
 
     // Dialog should close
-    await expect(page.getByRole('heading', { name: 'Worker Settings' })).not.toBeVisible()
+    await expect(dialog).not.toBeVisible()
 
     // Share mode badge should show "Org"
     await expect(page.getByTestId('worker-share-mode').filter({ hasText: 'Org' })).toBeVisible()
@@ -158,10 +159,11 @@ test.describe('Worker Management', () => {
     // Open sharing dialog and revert to private
     await page.getByTestId('worker-menu-trigger').first().click()
     await page.getByRole('menuitem', { name: 'Sharing' }).click()
-    await expect(page.getByRole('heading', { name: 'Worker Settings' })).toBeVisible()
-    await page.getByText('Private').click()
-    await page.getByRole('button', { name: 'Save' }).click()
-    await expect(page.getByRole('heading', { name: 'Worker Settings' })).not.toBeVisible()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.getByRole('heading', { name: 'Worker Settings' })).toBeVisible()
+    await dialog.getByText('Private').click()
+    await dialog.getByRole('button', { name: 'Save' }).click()
+    await expect(dialog).not.toBeVisible()
 
     // Share mode badge should show "Private"
     await expect(page.getByTestId('worker-share-mode').filter({ hasText: 'Private' })).toBeVisible()

@@ -206,8 +206,7 @@ test.describe('Editor Resize Handle', () => {
 
     const heightAfterResize = await wrapper.evaluate(el => el.getBoundingClientRect().height)
 
-    // Switch to Alt+Enter mode so Enter creates newlines
-    await page.locator('button:has-text("Enter sends")').click()
+    // Default mode is Cmd+Enter-to-send, so Enter creates newlines
 
     // Type many lines to exceed the requested height
     await editor.click()

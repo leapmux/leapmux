@@ -5,7 +5,7 @@ test.describe('Organization Management', () => {
   test('should navigate to org management page', async ({ page }) => {
     await loginViaUI(page)
     await page.goto('/o/admin/org')
-    await expect(page.getByText('Members')).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Members' })).toBeVisible()
   })
 
   test('should create a new organization', async ({ page }) => {
@@ -30,7 +30,7 @@ test.describe('Organization Management', () => {
   test('should show org members list', async ({ page }) => {
     await loginViaUI(page)
     await page.goto('/o/admin/org')
-    await expect(page.getByText('Members')).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Members' })).toBeVisible()
 
     // The members table should be visible
     const table = page.locator('table')

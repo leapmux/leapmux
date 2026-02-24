@@ -8,7 +8,7 @@ test.describe('Clear Command', () => {
     // Send a message to establish a session
     await editor.click()
     await page.keyboard.type('What is 1+1? Reply with just the number, nothing else.')
-    await page.keyboard.press('Enter')
+    await page.keyboard.press('Meta+Enter')
     await page.waitForFunction(() => {
       const body = document.body.textContent || ''
       return body.includes('2') && !body.includes('Send a message to start')
@@ -17,7 +17,7 @@ test.describe('Clear Command', () => {
     // Send /clear
     await editor.click()
     await page.keyboard.type('/clear')
-    await page.keyboard.press('Enter')
+    await page.keyboard.press('Meta+Enter')
 
     // Verify notification bubble appears
     await expect(page.getByText('Context cleared')).toBeVisible()
@@ -25,7 +25,7 @@ test.describe('Clear Command', () => {
     // Verify agent is still responsive (new session)
     await editor.click()
     await page.keyboard.type('What is 3+3? Reply with just the number, nothing else.')
-    await page.keyboard.press('Enter')
+    await page.keyboard.press('Meta+Enter')
     await page.waitForFunction(() => {
       const body = document.body.textContent || ''
       return body.includes('6')

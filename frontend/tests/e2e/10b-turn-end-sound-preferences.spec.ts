@@ -88,7 +88,7 @@ test.describe('Turn End Sound Preferences', () => {
     // Send a message
     await editor.click()
     await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
-    await page.keyboard.press('Enter')
+    await page.keyboard.press('Meta+Enter')
 
     // Wait for the interrupt button to appear (turn starts)
     await expect(page.locator('[data-testid="interrupt-button"]')).toBeVisible()
@@ -129,7 +129,7 @@ test.describe('Turn End Sound Preferences', () => {
     // Send a message
     await editor.click()
     await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
-    await page.keyboard.press('Enter')
+    await page.keyboard.press('Meta+Enter')
 
     // Wait for the interrupt button to appear
     await expect(page.locator('[data-testid="interrupt-button"]')).toBeVisible()
@@ -169,7 +169,7 @@ test.describe('Turn End Sound Preferences', () => {
     // Send a message and wait for the turn to complete
     await editor.click()
     await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
-    await page.keyboard.press('Enter')
+    await page.keyboard.press('Meta+Enter')
     await expect(page.locator('[data-testid="interrupt-button"]')).toBeVisible()
     await page.waitForFunction(() => {
       return !document.querySelector('[data-testid="interrupt-button"]')
@@ -220,7 +220,7 @@ test.describe('Turn End Sound Preferences', () => {
     // Send a message in the first agent tab and wait for the turn to complete
     await editor.click()
     await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
-    await page.keyboard.press('Enter')
+    await page.keyboard.press('Meta+Enter')
     await expect(page.locator('[data-testid="interrupt-button"]')).toBeVisible()
     await page.waitForFunction(() => {
       return !document.querySelector('[data-testid="interrupt-button"]')
