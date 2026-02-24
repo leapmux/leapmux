@@ -10,6 +10,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/id"
+	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 )
 
@@ -23,14 +24,15 @@ type WorktreeCleanupResult struct {
 // WorktreeHelper manages worktree lifecycle (creation, tab tracking, cleanup).
 // Shared by AgentService, TerminalService, and WorkspaceService.
 type WorktreeHelper struct {
-	queries   *db.Queries
-	workerMgr *workermgr.Manager
-	pending   *workermgr.PendingRequests
+	queries    *db.Queries
+	workerMgr  *workermgr.Manager
+	pending    *workermgr.PendingRequests
+	timeoutCfg *timeout.Config
 }
 
 // NewWorktreeHelper creates a new WorktreeHelper.
-func NewWorktreeHelper(q *db.Queries, bm *workermgr.Manager, pr *workermgr.PendingRequests) *WorktreeHelper {
-	return &WorktreeHelper{queries: q, workerMgr: bm, pending: pr}
+func NewWorktreeHelper(q *db.Queries, bm *workermgr.Manager, pr *workermgr.PendingRequests, tc *timeout.Config) *WorktreeHelper {
+	return &WorktreeHelper{queries: q, workerMgr: bm, pending: pr, timeoutCfg: tc}
 }
 
 // CreateWorktreeIfRequested creates a git worktree on the worker if requested.
@@ -56,7 +58,10 @@ func (h *WorktreeHelper) CreateWorktreeIfRequested(
 	}
 
 	// Get git info from the worker to find the repo root.
-	resp, err := h.pending.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{
+	createCtx, createCancel := context.WithTimeout(context.Background(), h.timeoutCfg.WorktreeCreateTimeout())
+	defer createCancel()
+
+	resp, err := h.pending.SendAndWait(createCtx, conn, &leapmuxv1.ConnectResponse{
 		Payload: &leapmuxv1.ConnectResponse_GitInfo{
 			GitInfo: &leapmuxv1.GitInfoRequest{
 				Path: workingDir,
@@ -107,7 +112,7 @@ func (h *WorktreeHelper) CreateWorktreeIfRequested(
 	}
 
 	// Create the worktree on the worker.
-	createResp, err := h.pending.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{
+	createResp, err := h.pending.SendAndWait(createCtx, conn, &leapmuxv1.ConnectResponse{
 		Payload: &leapmuxv1.ConnectResponse_GitWorktreeCreate{
 			GitWorktreeCreate: &leapmuxv1.GitWorktreeCreateRequest{
 				RepoRoot:     repoRoot,
@@ -226,7 +231,10 @@ func (h *WorktreeHelper) CheckTabWorktreeStatus(ctx context.Context, tabType lea
 		return result
 	}
 
-	resp, err := h.pending.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{
+	deleteCtx, deleteCancel := context.WithTimeout(context.Background(), h.timeoutCfg.WorktreeDeleteTimeout())
+	defer deleteCancel()
+
+	resp, err := h.pending.SendAndWait(deleteCtx, conn, &leapmuxv1.ConnectResponse{
 		Payload: &leapmuxv1.ConnectResponse_GitWorktreeRemove{
 			GitWorktreeRemove: &leapmuxv1.GitWorktreeRemoveRequest{
 				WorktreePath: wt.WorktreePath,
@@ -299,7 +307,10 @@ func (h *WorktreeHelper) UnregisterTabAndCleanup(ctx context.Context, tabType le
 		return WorktreeCleanupResult{}
 	}
 
-	resp, err := h.pending.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{
+	deleteCtx, deleteCancel := context.WithTimeout(context.Background(), h.timeoutCfg.WorktreeDeleteTimeout())
+	defer deleteCancel()
+
+	resp, err := h.pending.SendAndWait(deleteCtx, conn, &leapmuxv1.ConnectResponse{
 		Payload: &leapmuxv1.ConnectResponse_GitWorktreeRemove{
 			GitWorktreeRemove: &leapmuxv1.GitWorktreeRemoveRequest{
 				WorktreePath: wt.WorktreePath,

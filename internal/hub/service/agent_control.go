@@ -133,11 +133,14 @@ func (s *AgentService) SendControlResponse(
 
 	// Send the raw control_response bytes to the worker, retrying once if the agent process is gone.
 	// This happens AFTER persisting the display message to prevent race conditions (see above).
-	agentNotFound, err := s.deliverRawInputToWorker(ctx, agent.WorkerID, agent.WorkspaceID, agentID, content)
+	controlCtx, controlCancel := context.WithTimeout(context.Background(), s.timeoutCfg.AgentStartupTimeout()+s.timeoutCfg.APITimeout())
+	defer controlCancel()
+
+	agentNotFound, err := s.deliverRawInputToWorker(controlCtx, agent.WorkerID, agent.WorkspaceID, agentID, content)
 	if agentNotFound {
 		slog.Info("agent process not found, restarting before retry", "agent_id", agentID)
-		if restartErr := s.ensureAgentActive(ctx, &agent, ws); restartErr == nil {
-			_, err = s.deliverRawInputToWorker(ctx, agent.WorkerID, agent.WorkspaceID, agentID, content)
+		if restartErr := s.ensureAgentActive(controlCtx, &agent, ws); restartErr == nil {
+			_, err = s.deliverRawInputToWorker(controlCtx, agent.WorkerID, agent.WorkspaceID, agentID, content)
 		}
 	}
 	if err != nil {

@@ -3,7 +3,7 @@ import type { User } from '~/generated/leapmux/v1/auth_pb'
 import { create } from '@bufbuild/protobuf'
 import { createContext, createSignal, onMount, useContext } from 'solid-js'
 import { authClient } from '~/api/clients'
-import { clearToken, getToken, setOnAuthError, setToken } from '~/api/transport'
+import { clearToken, getToken, loadTimeouts, setOnAuthError, setToken } from '~/api/transport'
 import { LoginRequestSchema } from '~/generated/leapmux/v1/auth_pb'
 
 interface AuthState {
@@ -34,6 +34,8 @@ export const AuthProvider: ParentComponent = (props) => {
       try {
         const resp = await authClient.getCurrentUser({})
         setUser(resp.user ?? null)
+        // Load timeout configuration after successful auth validation.
+        loadTimeouts().catch(() => {})
       }
       catch {
         clearToken()
@@ -50,6 +52,7 @@ export const AuthProvider: ParentComponent = (props) => {
       const resp = await authClient.login(req)
       setToken(resp.token)
       setUser(resp.user ?? null)
+      loadTimeouts().catch(() => {})
     }
     catch (e) {
       const msg = e instanceof Error ? e.message : 'Login failed'

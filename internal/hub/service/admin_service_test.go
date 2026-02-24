@@ -19,6 +19,7 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/id"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/timeout"
 )
 
 type adminTestEnv struct {
@@ -43,7 +44,10 @@ func setupAdminTestServer(t *testing.T) *adminTestEnv {
 	err = bootstrap.Run(context.Background(), q)
 	require.NoError(t, err)
 
-	adminSvc := service.NewAdminService(q)
+	tc, err := timeout.NewFromDB(q)
+	require.NoError(t, err)
+
+	adminSvc := service.NewAdminService(q, tc)
 
 	mux := http.NewServeMux()
 	opts := connect.WithInterceptors(auth.NewInterceptor(q))

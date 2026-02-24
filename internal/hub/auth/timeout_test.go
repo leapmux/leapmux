@@ -42,7 +42,7 @@ func setupTimeoutTestServer(t *testing.T, timeout time.Duration) (leapmuxv1conne
 	capture := &timeoutCapture{inner: service.NewAuthService(q)}
 
 	mux := http.NewServeMux()
-	interceptors := connect.WithInterceptors(auth.NewTimeoutInterceptor(timeout))
+	interceptors := connect.WithInterceptors(auth.NewTimeoutInterceptor(func() time.Duration { return timeout }))
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(capture, interceptors)
 	mux.Handle(path, handler)
 

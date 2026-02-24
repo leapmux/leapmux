@@ -23,6 +23,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/id"
 	"github.com/leapmux/leapmux/internal/hub/msgcodec"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 )
 
@@ -54,9 +55,12 @@ func setupAgentTest(t *testing.T) *agentTestEnv {
 	workerMgr := workermgr.New()
 	agMgr := agentmgr.New()
 
-	pending := workermgr.NewPendingRequests()
-	worktreeHelper := service.NewWorktreeHelper(queries, workerMgr, pending)
-	agentSvc := service.NewAgentService(queries, workerMgr, agMgr, pending, worktreeHelper)
+	tc, tcErr := timeout.NewFromDB(queries)
+	require.NoError(t, tcErr)
+
+	pending := workermgr.NewPendingRequests(tc.APITimeout)
+	worktreeHelper := service.NewWorktreeHelper(queries, workerMgr, pending, tc)
+	agentSvc := service.NewAgentService(queries, workerMgr, agMgr, pending, worktreeHelper, tc)
 
 	mux := http.NewServeMux()
 	opts := connect.WithInterceptors(auth.NewInterceptor(queries))

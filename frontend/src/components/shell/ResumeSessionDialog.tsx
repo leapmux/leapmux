@@ -3,7 +3,9 @@ import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import RefreshCw from 'lucide-solid/icons/refresh-cw'
 import { createMemo, createSignal, For, onMount, Show } from 'solid-js'
 import { workerClient } from '~/api/clients'
+import { agentLoadingTimeoutMs } from '~/api/transport'
 import { useOrg } from '~/context/OrgContext'
+import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { spinner } from '~/styles/animations.css'
 import { dialogCompact, errorText, labelRow, refreshButton, spinning } from '~/styles/shared.css'
 
@@ -21,7 +23,7 @@ export const ResumeSessionDialog: Component<ResumeSessionDialogProps> = (props) 
   const [workers, setWorkers] = createSignal<import('~/generated/leapmux/v1/worker_pb').Worker[]>([])
   const [workerId, setWorkerId] = createSignal('')
   const [sessionId, setSessionId] = createSignal('')
-  const [submitting, setSubmitting] = createSignal(false)
+  const submitting = createLoadingSignal(agentLoadingTimeoutMs(false))
   const [refreshing, setRefreshing] = createSignal(false)
 
   const validationError = createMemo(() => {
@@ -35,7 +37,7 @@ export const ResumeSessionDialog: Component<ResumeSessionDialogProps> = (props) 
 
   const canSubmit = createMemo(() => {
     const value = sessionId().trim()
-    return value.length > 0 && workerId().length > 0 && !validationError() && !submitting()
+    return value.length > 0 && workerId().length > 0 && !validationError() && !submitting.loading()
   })
 
   const fetchWorkers = async () => {
@@ -76,7 +78,7 @@ export const ResumeSessionDialog: Component<ResumeSessionDialogProps> = (props) 
     if (!canSubmit())
       return
 
-    setSubmitting(true)
+    submitting.start()
     props.onResume(sessionId().trim(), workerId())
   }
 
@@ -140,7 +142,7 @@ export const ResumeSessionDialog: Component<ResumeSessionDialogProps> = (props) 
             disabled={!canSubmit()}
             data-testid="resume-session-submit"
           >
-            <Show when={submitting()}>
+            <Show when={submitting.loading()}>
               <LoaderCircle size={14} class={spinner} />
             </Show>
             Resume

@@ -10,20 +10,22 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/id"
 )
 
-const defaultSendTimeout = 30 * time.Second
-
 // PendingRequests tracks in-flight request/response pairs for worker
 // communication. Used when Hub sends a request to a worker and waits
 // for a matching response.
 type PendingRequests struct {
-	mu      sync.Mutex
-	pending map[string]chan *leapmuxv1.ConnectRequest // requestID -> response channel
+	mu             sync.Mutex
+	pending        map[string]chan *leapmuxv1.ConnectRequest // requestID -> response channel
+	defaultTimeout func() time.Duration
 }
 
 // NewPendingRequests creates a new PendingRequests tracker.
-func NewPendingRequests() *PendingRequests {
+// The defaultTimeout function is called when a context has no deadline
+// to determine the send timeout.
+func NewPendingRequests(defaultTimeout func() time.Duration) *PendingRequests {
 	return &PendingRequests{
-		pending: make(map[string]chan *leapmuxv1.ConnectRequest),
+		pending:        make(map[string]chan *leapmuxv1.ConnectRequest),
+		defaultTimeout: defaultTimeout,
 	}
 }
 
@@ -43,7 +45,7 @@ func (p *PendingRequests) SendAndWait(
 	// stale connection where the worker has died but hasn't been unregistered yet.
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, defaultSendTimeout)
+		ctx, cancel = context.WithTimeout(ctx, p.defaultTimeout())
 		defer cancel()
 	}
 

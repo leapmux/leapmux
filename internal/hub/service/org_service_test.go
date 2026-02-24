@@ -21,6 +21,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/id"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 )
 
@@ -48,9 +49,13 @@ func setupOrgTestServer(t *testing.T) *orgTestEnv {
 	require.NoError(t, err)
 
 	bgMgr := workermgr.New()
-	pendingReqs := workermgr.NewPendingRequests()
 	agentMgr := agentmgr.New()
-	notifierSvc := notifier.New(q, bgMgr, pendingReqs, agentMgr)
+
+	tc, tcErr := timeout.NewFromDB(q)
+	require.NoError(t, tcErr)
+
+	pendingReqs := workermgr.NewPendingRequests(tc.APITimeout)
+	notifierSvc := notifier.New(q, bgMgr, pendingReqs, agentMgr, tc)
 
 	mux := http.NewServeMux()
 	opts := connect.WithInterceptors(auth.NewInterceptor(q))

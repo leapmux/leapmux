@@ -9,6 +9,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 )
 
@@ -19,15 +20,17 @@ type GitService struct {
 	workerMgr      *workermgr.Manager
 	pending        *workermgr.PendingRequests
 	worktreeHelper *WorktreeHelper
+	timeoutCfg     *timeout.Config
 }
 
 // NewGitService creates a new GitService.
-func NewGitService(q *db.Queries, bm *workermgr.Manager, pr *workermgr.PendingRequests) *GitService {
+func NewGitService(q *db.Queries, bm *workermgr.Manager, pr *workermgr.PendingRequests, tc *timeout.Config) *GitService {
 	return &GitService{
 		queries:        q,
 		workerMgr:      bm,
 		pending:        pr,
-		worktreeHelper: NewWorktreeHelper(q, bm, pr),
+		worktreeHelper: NewWorktreeHelper(q, bm, pr, tc),
+		timeoutCfg:     tc,
 	}
 }
 
@@ -130,7 +133,10 @@ func (s *GitService) ForceRemoveWorktree(
 	// Send force remove to worker.
 	conn := s.workerMgr.Get(wt.WorkerID)
 	if conn != nil {
-		resp, sendErr := s.pending.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{
+		deleteCtx, deleteCancel := context.WithTimeout(context.Background(), s.timeoutCfg.WorktreeDeleteTimeout())
+		defer deleteCancel()
+
+		resp, sendErr := s.pending.SendAndWait(deleteCtx, conn, &leapmuxv1.ConnectResponse{
 			Payload: &leapmuxv1.ConnectResponse_GitWorktreeRemove{
 				GitWorktreeRemove: &leapmuxv1.GitWorktreeRemoveRequest{
 					WorktreePath: wt.WorktreePath,

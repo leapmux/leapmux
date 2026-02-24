@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"connectrpc.com/connect"
 	"github.com/coder/websocket"
@@ -15,6 +14,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/metrics"
 )
 
@@ -33,7 +33,7 @@ const (
 //  3. Client sends WatchEventsRequest as a protobuf-encoded binary frame.
 //  4. Server streams WatchEventsResponse as protobuf-encoded binary frames.
 //  5. Server closes with 1000 on normal completion.
-func WSWatchEventsHandler(queries *db.Queries, workspaceSvc *WorkspaceService, shutdownCh <-chan struct{}) http.Handler {
+func WSWatchEventsHandler(queries *db.Queries, workspaceSvc *WorkspaceService, shutdownCh <-chan struct{}, timeoutCfg *timeout.Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Reject new WebSocket connections during shutdown.
 		if shutdownCh != nil {
@@ -60,8 +60,8 @@ func WSWatchEventsHandler(queries *db.Queries, workspaceSvc *WorkspaceService, s
 		ctx := r.Context()
 
 		// Handshake timeout: the client must send the auth token and request
-		// within 10 seconds, otherwise the connection is closed.
-		handshakeCtx, handshakeCancel := context.WithTimeout(ctx, 10*time.Second)
+		// within the configured API timeout, otherwise the connection is closed.
+		handshakeCtx, handshakeCancel := context.WithTimeout(ctx, timeoutCfg.APITimeout())
 		defer handshakeCancel()
 
 		// 1. Read auth token (text frame).

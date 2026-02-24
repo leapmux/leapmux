@@ -6,6 +6,7 @@ import Resizable from '@corvu/resizable'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createSignal, on, onMount, Show } from 'solid-js'
 import { agentClient, gitClient, sectionClient, terminalClient, workspaceClient } from '~/api/clients'
+import { agentCallTimeout, agentLoadingTimeoutMs, worktreeDeleteCallTimeout } from '~/api/transport'
 import { AgentEditorPanel } from '~/components/chat/AgentEditorPanel'
 import { ChatView } from '~/components/chat/ChatView'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
@@ -104,7 +105,7 @@ export const AppShell: ParentComponent = (props) => {
   } | null>(null)
   // Stores the user's worktree choice so close handlers can auto-resolve cleanup.
   let pendingWorktreeChoice: 'keep' | 'remove' | null = null
-  const settingsLoading = createLoadingSignal()
+  const settingsLoading = createLoadingSignal(agentLoadingTimeoutMs(true))
 
   // Mobile layout state
   const isMobile = useIsMobile()
@@ -365,7 +366,7 @@ export const AppShell: ParentComponent = (props) => {
         workerId,
         workingDir,
         ...(sessionId ? { agentSessionId: sessionId } : {}),
-      })
+      }, agentCallTimeout(false))
       if (resp.agent) {
         const tileId = layoutStore.focusedTileId()
         agentStore.addAgent(resp.agent)
@@ -665,7 +666,9 @@ export const AppShell: ParentComponent = (props) => {
   // Handle control responses (permission grant/deny) for agent prompts
   const handleControlResponse = async (agentId: string, content: Uint8Array) => {
     try {
-      await agentClient.sendControlResponse({ agentId, content })
+      const agent = agentStore.state.agents.find(a => a.id === agentId)
+      const isActive = agent?.status === AgentStatus.ACTIVE
+      await agentClient.sendControlResponse({ agentId, content }, agentCallTimeout(isActive))
       // Remove from pending after successful send.
       const parsed = JSON.parse(new TextDecoder().decode(content))
       const requestId = parsed?.response?.request_id
@@ -695,7 +698,7 @@ export const AppShell: ParentComponent = (props) => {
         agentId,
         model: field === 'model' ? value : '',
         effort: field === 'effort' ? value : '',
-      })
+      }, agentCallTimeout(agent.status === AgentStatus.ACTIVE))
       settingsLoading.stop()
     }
     catch (err) {
@@ -714,7 +717,7 @@ export const AppShell: ParentComponent = (props) => {
       await agentClient.sendAgentMessage({
         agentId,
         content: buildInterruptRequest(),
-      })
+      }, agentCallTimeout(true))
     }
     catch (err) {
       showToast(err instanceof Error ? err.message : 'Failed to interrupt', 'danger')
@@ -737,7 +740,7 @@ export const AppShell: ParentComponent = (props) => {
       await agentClient.sendAgentMessage({
         agentId,
         content: buildSetPermissionModeRequest(mode),
-      })
+      }, agentCallTimeout(agent.status === AgentStatus.ACTIVE))
       settingsLoading.stop()
     }
     catch (err) {
@@ -751,7 +754,8 @@ export const AppShell: ParentComponent = (props) => {
   // Retry a failed message delivery
   const handleRetryMessage = async (agentId: string, messageId: string) => {
     try {
-      await agentClient.retryAgentMessage({ agentId, messageId })
+      const retryAgent = agentStore.state.agents.find(a => a.id === agentId)
+      await agentClient.retryAgentMessage({ agentId, messageId }, agentCallTimeout(retryAgent?.status === AgentStatus.ACTIVE))
       chatStore.clearMessageError(messageId)
     }
     catch (err) {
@@ -780,7 +784,7 @@ export const AppShell: ParentComponent = (props) => {
       // Auto-handle worktree cleanup if the pre-close check stored a choice.
       if (resp.worktreeCleanupPending && resp.worktreeId) {
         if (pendingWorktreeChoice === 'remove') {
-          gitClient.forceRemoveWorktree({ worktreeId: resp.worktreeId }).catch(() => {})
+          gitClient.forceRemoveWorktree({ worktreeId: resp.worktreeId }, worktreeDeleteCallTimeout()).catch(() => {})
         }
         else {
           // Default to keep (if somehow no choice was stored)
@@ -860,7 +864,7 @@ export const AppShell: ParentComponent = (props) => {
       // Auto-handle worktree cleanup if the pre-close check stored a choice.
       if (resp.worktreeCleanupPending && resp.worktreeId) {
         if (pendingWorktreeChoice === 'remove') {
-          gitClient.forceRemoveWorktree({ worktreeId: resp.worktreeId }).catch(() => {})
+          gitClient.forceRemoveWorktree({ worktreeId: resp.worktreeId }, worktreeDeleteCallTimeout()).catch(() => {})
         }
         else {
           gitClient.keepWorktree({ worktreeId: resp.worktreeId }).catch(() => {})
@@ -964,7 +968,7 @@ export const AppShell: ParentComponent = (props) => {
     // Pre-close check: does this tab have a dirty worktree?
     try {
       const tabType = tab.type === TabType.AGENT ? TabType.AGENT : TabType.TERMINAL
-      const status = await gitClient.checkWorktreeStatus({ tabType, tabId: tab.id })
+      const status = await gitClient.checkWorktreeStatus({ tabType, tabId: tab.id }, worktreeDeleteCallTimeout())
       if (status.hasWorktree && status.isLastTab && status.isDirty) {
         const choice = await askWorktreeConfirmation(status)
         if (choice === 'cancel') {
@@ -1258,7 +1262,8 @@ export const AppShell: ParentComponent = (props) => {
           if (!id)
             return
           try {
-            await agentClient.sendAgentMessage({ agentId: id, content })
+            const sendAgent = agentStore.state.agents.find(a => a.id === id)
+            await agentClient.sendAgentMessage({ agentId: id, content }, agentCallTimeout(sendAgent?.status === AgentStatus.ACTIVE))
           }
           catch (err) {
             showToast(err instanceof Error ? err.message : 'Failed to send message', 'danger')

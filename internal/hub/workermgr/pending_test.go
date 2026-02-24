@@ -11,7 +11,7 @@ import (
 )
 
 func TestPendingRequests_Complete(t *testing.T) {
-	p := NewPendingRequests()
+	p := NewPendingRequests(func() time.Duration { return 30 * time.Second })
 
 	// We can't use a real stream, so test Complete directly.
 	ch := make(chan *leapmuxv1.ConnectRequest, 1)
@@ -43,20 +43,20 @@ func TestPendingRequests_Complete(t *testing.T) {
 }
 
 func TestPendingRequests_CompleteUnknown(t *testing.T) {
-	p := NewPendingRequests()
+	p := NewPendingRequests(func() time.Duration { return 30 * time.Second })
 	if p.Complete("unknown", &leapmuxv1.ConnectRequest{}) {
 		t.Fatal("expected Complete to return false for unknown request")
 	}
 }
 
 func TestPendingRequests_SendAndWait_NilConn(t *testing.T) {
-	p := NewPendingRequests()
+	p := NewPendingRequests(func() time.Duration { return 30 * time.Second })
 	_, err := p.SendAndWait(context.Background(), nil, &leapmuxv1.ConnectResponse{})
 	require.Error(t, err)
 }
 
 func TestPendingRequests_SendAndWait_ContextCancel(t *testing.T) {
-	p := NewPendingRequests()
+	p := NewPendingRequests(func() time.Duration { return 30 * time.Second })
 
 	// Create a conn with nil stream — Send will fail.
 	conn := &Conn{WorkerID: "b1", OrgID: "o1"}
@@ -69,7 +69,7 @@ func TestPendingRequests_SendAndWait_ContextCancel(t *testing.T) {
 }
 
 func TestPendingRequests_OutOfOrder(t *testing.T) {
-	p := NewPendingRequests()
+	p := NewPendingRequests(func() time.Duration { return 30 * time.Second })
 
 	// Use a channel to safely capture sent messages from concurrent goroutines.
 	sentMsgs := make(chan *leapmuxv1.ConnectResponse, 2)

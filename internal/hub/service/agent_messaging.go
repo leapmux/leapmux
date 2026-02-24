@@ -75,15 +75,18 @@ func (s *AgentService) SendAgentMessage(
 			}
 		}
 
-		agentNotFound, err := s.deliverRawInputToWorker(ctx, agent.WorkerID, agent.WorkspaceID, agentID, []byte(content))
+		deliverCtx, deliverCancel := context.WithTimeout(context.Background(), s.timeoutCfg.AgentStartupTimeout()+s.timeoutCfg.APITimeout())
+		defer deliverCancel()
+
+		agentNotFound, err := s.deliverRawInputToWorker(deliverCtx, agent.WorkerID, agent.WorkspaceID, agentID, []byte(content))
 		if agentNotFound {
 			if isInterruptRequest(content) {
 				// Agent is already gone — nothing to interrupt.
 				return connect.NewResponse(&leapmuxv1.SendAgentMessageResponse{}), nil
 			}
 			slog.Info("agent process not found, restarting before retry", "agent_id", agentID)
-			if restartErr := s.ensureAgentActive(ctx, &agent, ws); restartErr == nil {
-				_, err = s.deliverRawInputToWorker(ctx, agent.WorkerID, agent.WorkspaceID, agentID, []byte(content))
+			if restartErr := s.ensureAgentActive(deliverCtx, &agent, ws); restartErr == nil {
+				_, err = s.deliverRawInputToWorker(deliverCtx, agent.WorkerID, agent.WorkspaceID, agentID, []byte(content))
 			}
 		}
 		if err != nil {
@@ -135,9 +138,21 @@ func (s *AgentService) SendAgentMessage(
 		CreatedAt:          timefmt.Format(now),
 	})
 
+	// Create a fresh context for agent operations. If the agent needs to be
+	// started/resumed, use a longer timeout that includes the startup time.
+	agentActive := agent.Status == leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE
+	var msgTimeout time.Duration
+	if agentActive {
+		msgTimeout = s.timeoutCfg.APITimeout()
+	} else {
+		msgTimeout = s.timeoutCfg.AgentStartupTimeout() + s.timeoutCfg.APITimeout()
+	}
+	msgCtx, msgCancel := context.WithTimeout(context.Background(), msgTimeout)
+	defer msgCancel()
+
 	// Resume the agent if needed.
-	if agent.Status != leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE {
-		if err := s.ensureAgentActive(ctx, &agent, ws); err != nil {
+	if !agentActive {
+		if err := s.ensureAgentActive(msgCtx, &agent, ws); err != nil {
 			errMsg := fmt.Sprintf("resume failed: %v", err)
 			s.setDeliveryError(context.Background(), agentID, msgID, errMsg)
 			return nil, err
@@ -145,11 +160,15 @@ func (s *AgentService) SendAgentMessage(
 	}
 
 	// Deliver the message to the worker, retrying once if the agent process is gone.
-	agentNotFound, deliveryErr := s.deliverMessageToWorker(ctx, agent.WorkerID, agent.WorkspaceID, agentID, content)
+	agentNotFound, deliveryErr := s.deliverMessageToWorker(msgCtx, agent.WorkerID, agent.WorkspaceID, agentID, content)
 	if agentNotFound {
 		slog.Info("agent process not found, restarting before retry", "agent_id", agentID)
-		if restartErr := s.ensureAgentActive(ctx, &agent, ws); restartErr == nil {
-			_, deliveryErr = s.deliverMessageToWorker(ctx, agent.WorkerID, agent.WorkspaceID, agentID, content)
+		// Extend timeout for the restart + redeliver cycle.
+		msgCancel()
+		msgCtx, msgCancel = context.WithTimeout(context.Background(), s.timeoutCfg.AgentStartupTimeout()+s.timeoutCfg.APITimeout())
+		defer msgCancel()
+		if restartErr := s.ensureAgentActive(msgCtx, &agent, ws); restartErr == nil {
+			_, deliveryErr = s.deliverMessageToWorker(msgCtx, agent.WorkerID, agent.WorkspaceID, agentID, content)
 		}
 	}
 	if deliveryErr != nil {
@@ -226,19 +245,34 @@ func (s *AgentService) RetryAgentMessage(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("parse message content: %w", err))
 	}
 
+	// Create a fresh context for agent operations.
+	retryActive := agent.Status == leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE
+	var retryTimeout time.Duration
+	if retryActive {
+		retryTimeout = s.timeoutCfg.APITimeout()
+	} else {
+		retryTimeout = s.timeoutCfg.AgentStartupTimeout() + s.timeoutCfg.APITimeout()
+	}
+	retryCtx, retryCancel := context.WithTimeout(context.Background(), retryTimeout)
+	defer retryCancel()
+
 	// Resume agent if needed.
-	if agent.Status != leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE {
-		if err := s.ensureAgentActive(ctx, &agent, ws); err != nil {
+	if !retryActive {
+		if err := s.ensureAgentActive(retryCtx, &agent, ws); err != nil {
 			return nil, err
 		}
 	}
 
 	// Deliver to worker, retrying once if the agent process is gone.
-	agentNotFound, deliveryErr := s.deliverMessageToWorker(ctx, agent.WorkerID, agent.WorkspaceID, agentID, parsed.Content)
+	agentNotFound, deliveryErr := s.deliverMessageToWorker(retryCtx, agent.WorkerID, agent.WorkspaceID, agentID, parsed.Content)
 	if agentNotFound {
 		slog.Info("agent process not found, restarting before retry", "agent_id", agentID)
-		if restartErr := s.ensureAgentActive(ctx, &agent, ws); restartErr == nil {
-			_, deliveryErr = s.deliverMessageToWorker(ctx, agent.WorkerID, agent.WorkspaceID, agentID, parsed.Content)
+		// Extend timeout for the restart + redeliver cycle.
+		retryCancel()
+		retryCtx, retryCancel = context.WithTimeout(context.Background(), s.timeoutCfg.AgentStartupTimeout()+s.timeoutCfg.APITimeout())
+		defer retryCancel()
+		if restartErr := s.ensureAgentActive(retryCtx, &agent, ws); restartErr == nil {
+			_, deliveryErr = s.deliverMessageToWorker(retryCtx, agent.WorkerID, agent.WorkspaceID, agentID, parsed.Content)
 		}
 	}
 	if deliveryErr != nil {

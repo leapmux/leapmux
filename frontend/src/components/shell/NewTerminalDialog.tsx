@@ -3,9 +3,11 @@ import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import RefreshCw from 'lucide-solid/icons/refresh-cw'
 import { createEffect, createSignal, For, on, onMount, Show } from 'solid-js'
 import { terminalClient, workerClient } from '~/api/clients'
+import { apiLoadingTimeoutMs } from '~/api/transport'
 import { WorktreeOptions } from '~/components/shell/WorktreeOptions'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
 import { useOrg } from '~/context/OrgContext'
+import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { spinner } from '~/styles/animations.css'
 import { dialogCompact, errorText, labelRow, refreshButton, spinning, treeContainer } from '~/styles/shared.css'
 
@@ -26,7 +28,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
   const [shells, setShells] = createSignal<string[]>([])
   const [shell, setShell] = createSignal('')
   const [shellsLoading, setShellsLoading] = createSignal(false)
-  const [submitting, setSubmitting] = createSignal(false)
+  const submitting = createLoadingSignal(apiLoadingTimeoutMs())
   const [error, setError] = createSignal<string | null>(null)
   const [refreshing, setRefreshing] = createSignal(false)
   const [createWorktree, setCreateWorktree] = createSignal(false)
@@ -98,7 +100,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
     if (!workerId() || !shell())
       return
 
-    setSubmitting(true)
+    submitting.start()
     setError(null)
     try {
       const resp = await terminalClient.openTerminal({
@@ -118,7 +120,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
       setError(err instanceof Error ? err.message : 'Failed to create terminal')
     }
     finally {
-      setSubmitting(false)
+      submitting.stop()
     }
   }
 
@@ -206,10 +208,10 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
           </button>
           <button
             type="submit"
-            disabled={submitting() || !workerId() || !shell() || (createWorktree() && !!worktreeBranchError())}
+            disabled={submitting.loading() || !workerId() || !shell() || (createWorktree() && !!worktreeBranchError())}
           >
-            <Show when={submitting()}><LoaderCircle size={14} class={spinner} /></Show>
-            {submitting() ? 'Creating...' : 'Create'}
+            <Show when={submitting.loading()}><LoaderCircle size={14} class={spinner} /></Show>
+            {submitting.loading() ? 'Creating...' : 'Create'}
           </button>
         </footer>
       </form>
