@@ -9,7 +9,7 @@ import { $prose } from '@milkdown/utils'
 /** Shared refs accessed by plugins via getter functions (closures over mutable refs). */
 export interface PluginRefs {
   getDisabled: () => boolean
-  getEnterMode: () => 'default' | 'alt'
+  getEnterMode: () => 'enter-sends' | 'cmd-enter-sends'
   getPlaceholder: () => string
   onSend: () => void
 }
@@ -47,7 +47,7 @@ export function createSendOnEnterPlugin(refs: Pick<PluginRefs, 'getDisabled' | '
           if (refs.getDisabled())
             return false
 
-          if (refs.getEnterMode() === 'default') {
+          if (refs.getEnterMode() === 'enter-sends') {
             if (event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey) {
               // Don't intercept Enter if the current line looks like a code fence
               // or horizontal rule so that input rules can fire
@@ -875,8 +875,8 @@ export function createListItemEnterPlugin(refs: Pick<PluginRefs, 'getEnterMode'>
           if (event.key !== 'Enter' || event.shiftKey || event.metaKey || event.ctrlKey)
             return false
 
-          // In default enter-mode, Enter sends the message — let sendPlugin handle it
-          if (refs.getEnterMode() === 'default')
+          // In enter-sends mode, Enter sends the message — let sendPlugin handle it
+          if (refs.getEnterMode() === 'enter-sends')
             return false
 
           const { state } = view

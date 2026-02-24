@@ -34,7 +34,7 @@ import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { positionPopoverAbove } from '~/lib/popoverPosition'
 import * as styles from './MarkdownEditor.css'
 
-type EnterKeyMode = 'default' | 'alt'
+type EnterKeyMode = 'enter-sends' | 'cmd-enter-sends'
 
 const isMac = typeof navigator !== 'undefined'
   && /Mac|iPhone|iPad|iPod/.test(navigator.platform)
@@ -239,7 +239,7 @@ export const EditorToolbar: Component<EditorToolbarProps> = (props) => {
   const modKeyLabel = isMac ? 'Cmd' : 'Ctrl'
 
   const enterModeTitle = () => {
-    if (props.enterMode() === 'default') {
+    if (props.enterMode() === 'enter-sends') {
       return `Enter to send, Shift+Enter for new line. Click to switch to ${modKeyLabel}+Enter mode.`
     }
     return `${modKeyLabel}+Enter to send, Enter for new line. Click to switch to Enter mode.`
@@ -499,7 +499,7 @@ export const EditorToolbar: Component<EditorToolbarProps> = (props) => {
           }}
         >
           <Show
-            when={props.enterMode() === 'default'}
+            when={props.enterMode() === 'enter-sends'}
             fallback={(
               <>
                 {isMac

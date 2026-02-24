@@ -63,7 +63,9 @@ tasks:
 
   build:
     desc: Build all (backend + frontend)
-    deps: [build-backend, build-frontend]
+    cmds:
+      - task: generate
+      - task: build-backend
 
   embed-frontend:
     desc: Embed frontend assets for go:embed
@@ -116,6 +118,12 @@ tasks:
 
   test:
     desc: Run all tests
+    cmds:
+      - task: generate
+      - task: _test
+
+  _test:
+    internal: true
     deps: [test-backend, test-frontend]
 
   test-backend:
@@ -146,6 +154,12 @@ tasks:
 
   lint:
     desc: Run all linters
+    cmds:
+      - task: generate
+      - task: _lint
+
+  _lint:
+    internal: true
     deps: [lint-proto, lint-backend, lint-frontend]
 
   lint-proto:
@@ -187,8 +201,9 @@ tasks:
 
   dev:
     desc: Start all services for development
-    deps: [build-backend, build-frontend]
     cmds:
+      - task: generate
+      - task: build-backend
       - mprocs
 
   # --- Docker ---
