@@ -46,7 +46,7 @@ func TestManager_Unwatch(t *testing.T) {
 		Event: &leapmuxv1.AgentEvent_StatusChange{
 			StatusChange: &leapmuxv1.AgentStatusChange{
 				AgentId: "a1",
-				Status:  leapmuxv1.AgentStatus_AGENT_STATUS_CLOSED,
+				Status:  leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE,
 			},
 		},
 	})
@@ -115,7 +115,7 @@ func TestManager_BroadcastMany(t *testing.T) {
 				Event: &leapmuxv1.AgentEvent_StatusChange{
 					StatusChange: &leapmuxv1.AgentStatusChange{
 						AgentId: "a2",
-						Status:  leapmuxv1.AgentStatus_AGENT_STATUS_CLOSED,
+						Status:  leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE,
 					},
 				},
 			},
@@ -136,7 +136,7 @@ func TestManager_BroadcastMany(t *testing.T) {
 	case got := <-w2.C():
 		require.NotNil(t, got.GetStatusChange())
 		assert.Equal(t, "a2", got.GetStatusChange().GetAgentId())
-		assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_CLOSED, got.GetStatusChange().GetStatus())
+		assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE, got.GetStatusChange().GetStatus())
 	default:
 		require.Fail(t, "expected event on w2 channel")
 	}

@@ -60,8 +60,6 @@ function extractTodos(message: AgentChatMessage): TodoItem[] | null {
 interface ChatStoreState {
   messagesByAgent: Record<string, AgentChatMessage[]>
   streamingText: Record<string, string>
-  /** Whether each agent is currently processing a turn (user sent a message, agent hasn't finished). */
-  turnActive: Record<string, boolean>
   messageErrors: Record<string, string>
   /** Latest TodoWrite todos per agent, updated incrementally as messages arrive. */
   todosByAgent: Record<string, TodoItem[]>
@@ -80,7 +78,6 @@ export function createChatStore() {
   const [state, setState] = createStore<ChatStoreState>({
     messagesByAgent: {},
     streamingText: {},
-    turnActive: {},
     messageErrors: {},
     todosByAgent: {},
     loading: false,
@@ -176,14 +173,6 @@ export function createChatStore() {
 
     clearStreamingText(agentId: string) {
       setState('streamingText', agentId, '')
-    },
-
-    setTurnActive(agentId: string, active: boolean) {
-      setState('turnActive', agentId, active)
-    },
-
-    isTurnActive(agentId: string): boolean {
-      return state.turnActive[agentId] ?? false
     },
 
     getTodos(agentId: string): TodoItem[] {
