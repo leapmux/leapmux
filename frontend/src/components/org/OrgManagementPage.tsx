@@ -5,9 +5,9 @@ import { A, useParams } from '@solidjs/router'
 import { createEffect, createSignal, For, Show } from 'solid-js'
 import { orgClient } from '~/api/clients'
 import { useAuth } from '~/context/AuthContext'
-import { sanitizeSlug } from '~/lib/validate'
 import { useOrg } from '~/context/OrgContext'
 import { OrgMemberRole } from '~/generated/leapmux/v1/org_pb'
+import { sanitizeSlug } from '~/lib/validate'
 import * as styles from './OrgManagementPage.css'
 
 export const OrgManagementPage: Component = () => {

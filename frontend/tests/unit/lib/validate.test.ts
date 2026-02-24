@@ -210,7 +210,7 @@ describe('sanitizeSlug', () => {
       ['my.name', 'dot'],
       ['user@org', 'at sign'],
       ['user/org', 'slash'],
-      ['caf\u00e9', 'unicode'],
+      ['caf\u00E9', 'unicode'],
     ]
 
     for (const [input, desc] of cases) {

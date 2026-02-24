@@ -3,9 +3,9 @@ import type { AdminUserView } from '~/generated/leapmux/v1/admin_pb'
 import { A } from '@solidjs/router'
 import { createSignal, For, onMount, Show } from 'solid-js'
 import { adminClient } from '~/api/clients'
-import { sanitizeSlug } from '~/lib/validate'
 import { loadTimeouts } from '~/api/transport'
 import { useAuth } from '~/context/AuthContext'
+import { sanitizeSlug } from '~/lib/validate'
 import * as styles from './AdminSettingsPage.css'
 
 export const AdminSettingsPage: Component = () => {
