@@ -24,6 +24,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/id"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/terminalmgr"
+	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 )
 
@@ -58,15 +59,18 @@ func setupWorkspaceTest(t *testing.T) *workspaceTestEnv {
 	agMgr := agentmgr.New()
 	tmMgr := terminalmgr.New()
 
-	pending := workermgr.NewPendingRequests()
-	worktreeHelper := service.NewWorktreeHelper(queries, workerMgr, pending)
+	tc, tcErr := timeout.NewFromDB(queries)
+	require.NoError(t, tcErr)
+
+	pending := workermgr.NewPendingRequests(tc.APITimeout)
+	worktreeHelper := service.NewWorktreeHelper(queries, workerMgr, pending, tc)
 	workspaceSvc := service.NewWorkspaceService(queries, workerMgr, agMgr, tmMgr, pending, worktreeHelper)
 
 	mux := http.NewServeMux()
 	opts := connect.WithInterceptors(auth.NewInterceptor(queries))
 	path, handler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, opts)
 	mux.Handle(path, handler)
-	mux.Handle("/ws/watch-events", service.WSWatchEventsHandler(queries, workspaceSvc, nil))
+	mux.Handle("/ws/watch-events", service.WSWatchEventsHandler(queries, workspaceSvc, nil, tc))
 
 	server := httptest.NewUnstartedServer(mux)
 	server.EnableHTTP2 = true

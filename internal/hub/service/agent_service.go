@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/id"
+	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
@@ -47,6 +48,7 @@ type AgentService struct {
 	agentMgr        *agentmgr.Manager
 	pending         *workermgr.PendingRequests
 	worktreeHelper  *WorktreeHelper
+	timeoutCfg      *timeout.Config
 	restartPending  sync.Map // agentID -> *RestartOptions: agents waiting for restart
 	planModeToolUse sync.Map // tool_use_id (string) -> targetMode (string): pending EnterPlanMode/ExitPlanMode tool uses
 	contextUsage    sync.Map // agentID -> *contextUsageSnapshot: latest token usage
@@ -63,8 +65,8 @@ type RestartOptions struct {
 }
 
 // NewAgentService creates a new AgentService.
-func NewAgentService(q *db.Queries, bm *workermgr.Manager, am *agentmgr.Manager, pr *workermgr.PendingRequests, wh *WorktreeHelper) *AgentService {
-	return &AgentService{queries: q, workerMgr: bm, agentMgr: am, pending: pr, worktreeHelper: wh}
+func NewAgentService(q *db.Queries, bm *workermgr.Manager, am *agentmgr.Manager, pr *workermgr.PendingRequests, wh *WorktreeHelper, tc *timeout.Config) *AgentService {
+	return &AgentService{queries: q, workerMgr: bm, agentMgr: am, pending: pr, worktreeHelper: wh, timeoutCfg: tc}
 }
 
 func (s *AgentService) OpenAgent(
@@ -179,7 +181,10 @@ func (s *AgentService) OpenAgent(
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker disconnected"))
 	}
 
-	resp, err := s.pending.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{
+	startupCtx, startupCancel := context.WithTimeout(context.Background(), s.timeoutCfg.AgentStartupTimeout()+s.timeoutCfg.APITimeout())
+	defer startupCancel()
+
+	resp, err := s.pending.SendAndWait(startupCtx, conn, &leapmuxv1.ConnectResponse{
 		Payload: &leapmuxv1.ConnectResponse_AgentStart{
 			AgentStart: &leapmuxv1.AgentStartRequest{
 				WorkspaceId:    workspaceID,

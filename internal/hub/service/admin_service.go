@@ -13,18 +13,20 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/id"
+	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
 
 // AdminService implements the leapmux.v1.AdminService ConnectRPC handler.
 type AdminService struct {
-	queries *db.Queries
+	queries    *db.Queries
+	timeoutCfg *timeout.Config
 }
 
 // NewAdminService creates a new AdminService.
-func NewAdminService(q *db.Queries) *AdminService {
-	return &AdminService{queries: q}
+func NewAdminService(q *db.Queries, tc *timeout.Config) *AdminService {
+	return &AdminService{queries: q, timeoutCfg: tc}
 }
 
 func requireAdmin(ctx context.Context) (*auth.UserInfo, error) {
@@ -84,15 +86,31 @@ func (s *AdminService) UpdateSettings(ctx context.Context, req *connect.Request[
 		smtpUseTls = 1
 	}
 
+	apiTimeout := int64(reqSettings.GetApiTimeoutSeconds())
+	if apiTimeout <= 0 {
+		apiTimeout = timeout.DefaultAPITimeout
+	}
+	agentStartupTimeout := int64(reqSettings.GetAgentStartupTimeoutSeconds())
+	if agentStartupTimeout <= 0 {
+		agentStartupTimeout = timeout.DefaultAgentStartupTimeout
+	}
+	worktreeCreateTimeout := int64(reqSettings.GetWorktreeCreateTimeoutSeconds())
+	if worktreeCreateTimeout <= 0 {
+		worktreeCreateTimeout = timeout.DefaultWorktreeCreateTimeout
+	}
+
 	if err := s.queries.UpdateSystemSettings(ctx, db.UpdateSystemSettingsParams{
-		SignupEnabled:             signupEnabled,
-		EmailVerificationRequired: emailVerificationRequired,
-		SmtpHost:                  reqSettings.GetSmtp().GetHost(),
-		SmtpPort:                  int64(reqSettings.GetSmtp().GetPort()),
-		SmtpUsername:              reqSettings.GetSmtp().GetUsername(),
-		SmtpPassword:              smtpPassword,
-		SmtpFromAddress:           reqSettings.GetSmtp().GetFromAddress(),
-		SmtpUseTls:                smtpUseTls,
+		SignupEnabled:                signupEnabled,
+		EmailVerificationRequired:    emailVerificationRequired,
+		SmtpHost:                     reqSettings.GetSmtp().GetHost(),
+		SmtpPort:                     int64(reqSettings.GetSmtp().GetPort()),
+		SmtpUsername:                 reqSettings.GetSmtp().GetUsername(),
+		SmtpPassword:                 smtpPassword,
+		SmtpFromAddress:              reqSettings.GetSmtp().GetFromAddress(),
+		SmtpUseTls:                   smtpUseTls,
+		ApiTimeoutSeconds:            apiTimeout,
+		AgentStartupTimeoutSeconds:   agentStartupTimeout,
+		WorktreeCreateTimeoutSeconds: worktreeCreateTimeout,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update settings: %w", err))
 	}
@@ -102,6 +120,9 @@ func (s *AdminService) UpdateSettings(ctx context.Context, req *connect.Request[
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get updated settings: %w", err))
 	}
+
+	// Refresh the in-memory timeout config.
+	s.timeoutCfg.Refresh(updated)
 
 	return connect.NewResponse(&leapmuxv1.UpdateSettingsResponse{
 		Settings: settingsToProto(&updated),
@@ -427,5 +448,8 @@ func settingsToProto(s *db.SystemSetting) *leapmuxv1.SystemSettings {
 			FromAddress: s.SmtpFromAddress,
 			UseTls:      s.SmtpUseTls == 1,
 		},
+		ApiTimeoutSeconds:            int32(s.ApiTimeoutSeconds),
+		AgentStartupTimeoutSeconds:   int32(s.AgentStartupTimeoutSeconds),
+		WorktreeCreateTimeoutSeconds: int32(s.WorktreeCreateTimeoutSeconds),
 	}
 }

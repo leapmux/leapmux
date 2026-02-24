@@ -18,6 +18,7 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/id"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/timeout"
 )
 
 type userTestEnv struct {
@@ -39,7 +40,11 @@ func setupUserTest(t *testing.T) *userTestEnv {
 	require.NoError(t, err)
 
 	queries := gendb.New(sqlDB)
-	userSvc := service.NewUserService(queries)
+
+	tc, tcErr := timeout.NewFromDB(queries)
+	require.NoError(t, tcErr)
+
+	userSvc := service.NewUserService(queries, tc)
 
 	mux := http.NewServeMux()
 	opts := connect.WithInterceptors(auth.NewInterceptor(queries))

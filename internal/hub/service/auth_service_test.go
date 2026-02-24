@@ -17,6 +17,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/timeout"
 )
 
 func setupTestServer(t *testing.T) (leapmuxv1connect.AuthServiceClient, *gendb.Queries) {
@@ -193,7 +194,9 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 	// Set up a UserService client using the same queries and auth interceptor.
 	mux := http.NewServeMux()
 	opts := connect.WithInterceptors(auth.NewInterceptor(q))
-	userSvc := service.NewUserService(q)
+	tc, tcErr := timeout.NewFromDB(q)
+	require.NoError(t, tcErr)
+	userSvc := service.NewUserService(q, tc)
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(path, handler)
 	server := httptest.NewServer(mux)

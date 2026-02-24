@@ -11,5 +11,8 @@ UPDATE system_settings SET
   smtp_password = ?,
   smtp_from_address = ?,
   smtp_use_tls = ?,
+  api_timeout_seconds = ?,
+  agent_startup_timeout_seconds = ?,
+  worktree_create_timeout_seconds = ?,
   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = 1;

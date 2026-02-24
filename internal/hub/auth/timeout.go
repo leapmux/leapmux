@@ -11,12 +11,13 @@ import (
 // the client does not send a timeout header (Connect-Timeout-Ms or
 // grpc-timeout). Streaming RPCs are not affected.
 type timeoutInterceptor struct {
-	defaultTimeout time.Duration
+	defaultTimeout func() time.Duration
 }
 
 // NewTimeoutInterceptor creates a ConnectRPC interceptor that applies
 // a default timeout to unary RPCs that have no client-supplied deadline.
-func NewTimeoutInterceptor(defaultTimeout time.Duration) connect.Interceptor {
+// The provided function is called on each request to get the current timeout.
+func NewTimeoutInterceptor(defaultTimeout func() time.Duration) connect.Interceptor {
 	return &timeoutInterceptor{defaultTimeout: defaultTimeout}
 }
 
@@ -24,7 +25,7 @@ func (t *timeoutInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 		if _, ok := ctx.Deadline(); !ok {
 			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, t.defaultTimeout)
+			ctx, cancel = context.WithTimeout(ctx, t.defaultTimeout())
 			defer cancel()
 		}
 		return next(ctx, req)

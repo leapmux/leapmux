@@ -4,9 +4,11 @@ import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import RefreshCw from 'lucide-solid/icons/refresh-cw'
 import { createEffect, createSignal, For, on, onMount, Show } from 'solid-js'
 import { agentClient, gitClient, workerClient } from '~/api/clients'
+import { agentCallTimeout, agentLoadingTimeoutMs } from '~/api/transport'
 import { WorktreeOptions } from '~/components/shell/WorktreeOptions'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
 import { useOrg } from '~/context/OrgContext'
+import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { spinner } from '~/styles/animations.css'
 import { dialogCompact, errorText, labelRow, refreshButton, spinning, treeContainer } from '~/styles/shared.css'
 
@@ -27,7 +29,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
   const [workers, setWorkers] = createSignal<import('~/generated/leapmux/v1/worker_pb').Worker[]>([])
   const [workerId, setWorkerId] = createSignal('')
   const [workingDir, setWorkingDir] = createSignal(props.defaultWorkingDir ?? '~')
-  const [submitting, setSubmitting] = createSignal(false)
+  const submitting = createLoadingSignal(agentLoadingTimeoutMs(false))
   const [error, setError] = createSignal<string | null>(null)
   const [refreshing, setRefreshing] = createSignal(false)
   const [createWorktree, setCreateWorktree] = createSignal(false)
@@ -94,7 +96,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
     if (!workerId())
       return
 
-    setSubmitting(true)
+    submitting.start()
     setError(null)
     try {
       const resp = await agentClient.openAgent({
@@ -107,7 +109,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
         createWorktree: createWorktree(),
         worktreeBranch: worktreeBranch(),
         ...(props.sessionId ? { agentSessionId: props.sessionId } : {}),
-      })
+      }, agentCallTimeout(false))
       if (resp.agent) {
         props.onCreated(resp.agent)
       }
@@ -116,7 +118,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
       setError(err instanceof Error ? err.message : 'Failed to create agent')
     }
     finally {
-      setSubmitting(false)
+      submitting.stop()
     }
   }
 
@@ -186,10 +188,10 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
           </button>
           <button
             type="submit"
-            disabled={submitting() || !workerId() || (createWorktree() && !!worktreeBranchError())}
+            disabled={submitting.loading() || !workerId() || (createWorktree() && !!worktreeBranchError())}
           >
-            <Show when={submitting()}><LoaderCircle size={14} class={spinner} /></Show>
-            {submitting() ? 'Creating...' : 'Create'}
+            <Show when={submitting.loading()}><LoaderCircle size={14} class={spinner} /></Show>
+            {submitting.loading() ? 'Creating...' : 'Create'}
           </button>
         </footer>
       </form>

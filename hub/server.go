@@ -26,6 +26,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/terminalmgr"
+	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/metrics"
@@ -83,17 +84,23 @@ func NewServer(sc ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("bootstrap: %w", err)
 	}
 
+	timeoutCfg, err := timeout.NewFromDB(queries)
+	if err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("load timeout config: %w", err)
+	}
+
 	shutdownCh := make(chan struct{})
 
 	wMgr := workermgr.New()
 	agentMgr := agentmgr.New()
 	termMgr := terminalmgr.New()
-	pendingReqs := workermgr.NewPendingRequests()
+	pendingReqs := workermgr.NewPendingRequests(timeoutCfg.APITimeout)
 
 	opts := connect.WithInterceptors(
 		auth.NewShutdownInterceptor(shutdownCh),
 		metrics.NewInterceptor(),
-		auth.NewTimeoutInterceptor(10*time.Second),
+		auth.NewTimeoutInterceptor(timeoutCfg.APITimeout),
 		auth.NewInterceptor(queries),
 	)
 
@@ -103,7 +110,7 @@ func NewServer(sc ServerConfig) (*Server, error) {
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(authPath, authHandler)
 
-	notifierSvc := notifier.New(queries, wMgr, pendingReqs, agentMgr)
+	notifierSvc := notifier.New(queries, wMgr, pendingReqs, agentMgr, timeoutCfg)
 
 	connectorSvc := service.NewWorkerConnectorService(queries, wMgr)
 	connectorSvc.SetNotifier(notifierSvc)
@@ -115,13 +122,13 @@ func NewServer(sc ServerConfig) (*Server, error) {
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(mgmtSvc, opts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
-	worktreeHelper := service.NewWorktreeHelper(queries, wMgr, pendingReqs)
+	worktreeHelper := service.NewWorktreeHelper(queries, wMgr, pendingReqs, timeoutCfg)
 
 	workspaceSvc := service.NewWorkspaceService(queries, wMgr, agentMgr, termMgr, pendingReqs, worktreeHelper)
 	workspacePath, workspaceHandler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, opts)
 	mux.Handle(workspacePath, workspaceHandler)
 
-	agentSvc := service.NewAgentService(queries, wMgr, agentMgr, pendingReqs, worktreeHelper)
+	agentSvc := service.NewAgentService(queries, wMgr, agentMgr, pendingReqs, worktreeHelper, timeoutCfg)
 	connectorSvc.SetAgentService(agentSvc)
 	connectorSvc.SetAgentMgr(agentMgr)
 	workspaceSvc.SetAgentService(agentSvc)
@@ -139,7 +146,7 @@ func NewServer(sc ServerConfig) (*Server, error) {
 	filePath, fileHandler := leapmuxv1connect.NewFileServiceHandler(fileSvc, opts)
 	mux.Handle(filePath, fileHandler)
 
-	gitSvc := service.NewGitService(queries, wMgr, pendingReqs)
+	gitSvc := service.NewGitService(queries, wMgr, pendingReqs, timeoutCfg)
 	gitPath, gitHandler := leapmuxv1connect.NewGitServiceHandler(gitSvc, opts)
 	mux.Handle(gitPath, gitHandler)
 
@@ -147,7 +154,7 @@ func NewServer(sc ServerConfig) (*Server, error) {
 	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, opts)
 	mux.Handle(orgPath, orgHandler)
 
-	userSvc := service.NewUserService(queries)
+	userSvc := service.NewUserService(queries, timeoutCfg)
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(userPath, userHandler)
 
@@ -155,12 +162,12 @@ func NewServer(sc ServerConfig) (*Server, error) {
 	sectionPath, sectionHandler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, opts)
 	mux.Handle(sectionPath, sectionHandler)
 
-	adminSvc := service.NewAdminService(queries)
+	adminSvc := service.NewAdminService(queries, timeoutCfg)
 	adminPath, adminHandler := leapmuxv1connect.NewAdminServiceHandler(adminSvc, opts)
 	mux.Handle(adminPath, adminHandler)
 
 	// WebSocket endpoint for WatchEvents (browser-friendly alternative to HTTP/2 streaming).
-	mux.Handle("/ws/watch-events", service.WSWatchEventsHandler(queries, workspaceSvc, shutdownCh))
+	mux.Handle("/ws/watch-events", service.WSWatchEventsHandler(queries, workspaceSvc, shutdownCh, timeoutCfg))
 
 	// Prometheus metrics endpoint.
 	mux.Handle("/metrics", promhttp.Handler())

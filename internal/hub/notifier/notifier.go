@@ -5,31 +5,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/agentmgr"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/id"
+	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 )
 
 // Notifier manages sending notifications to workers with persistent
 // queue fallback for reliable delivery.
 type Notifier struct {
-	queries   *db.Queries
-	workerMgr *workermgr.Manager
-	pending   *workermgr.PendingRequests
-	agentMgr  *agentmgr.Manager
+	queries    *db.Queries
+	workerMgr  *workermgr.Manager
+	pending    *workermgr.PendingRequests
+	agentMgr   *agentmgr.Manager
+	timeoutCfg *timeout.Config
 }
 
 // New creates a new Notifier.
-func New(q *db.Queries, wMgr *workermgr.Manager, pr *workermgr.PendingRequests, am *agentmgr.Manager) *Notifier {
+func New(q *db.Queries, wMgr *workermgr.Manager, pr *workermgr.PendingRequests, am *agentmgr.Manager, tc *timeout.Config) *Notifier {
 	return &Notifier{
-		queries:   q,
-		workerMgr: wMgr,
-		pending:   pr,
-		agentMgr:  am,
+		queries:    q,
+		workerMgr:  wMgr,
+		pending:    pr,
+		agentMgr:   am,
+		timeoutCfg: tc,
 	}
 }
 
@@ -39,7 +41,7 @@ func New(q *db.Queries, wMgr *workermgr.Manager, pr *workermgr.PendingRequests, 
 func (n *Notifier) SendOrQueue(ctx context.Context, workerID string, notificationType leapmuxv1.NotificationType, payload string, msg *leapmuxv1.ConnectResponse) error {
 	conn := n.workerMgr.Get(workerID)
 	if conn != nil {
-		sendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		sendCtx, cancel := context.WithTimeout(ctx, n.timeoutCfg.APITimeout())
 		defer cancel()
 
 		_, err := n.pending.SendAndWait(sendCtx, conn, msg)
@@ -83,7 +85,7 @@ func (n *Notifier) ProcessPendingNotifications(ctx context.Context, workerID str
 			continue
 		}
 
-		sendCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		sendCtx, cancel := context.WithTimeout(ctx, n.timeoutCfg.APITimeout())
 		_, sendErr := n.pending.SendAndWait(sendCtx, conn, msg)
 		cancel()
 

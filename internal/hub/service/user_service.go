@@ -10,18 +10,20 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/hub/validate"
 	"golang.org/x/crypto/bcrypt"
 )
 
 // UserService implements the leapmux.v1.UserService ConnectRPC handler.
 type UserService struct {
-	queries *db.Queries
+	queries    *db.Queries
+	timeoutCfg *timeout.Config
 }
 
 // NewUserService creates a new UserService.
-func NewUserService(q *db.Queries) *UserService {
-	return &UserService{queries: q}
+func NewUserService(q *db.Queries, tc *timeout.Config) *UserService {
+	return &UserService{queries: q, timeoutCfg: tc}
 }
 
 func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[leapmuxv1.UpdateProfileRequest]) (*connect.Response[leapmuxv1.UpdateProfileResponse], error) {
@@ -145,6 +147,18 @@ func (s *UserService) GetPreferences(ctx context.Context, req *connect.Request[l
 			TurnEndSound:          leapmuxv1.TurnEndSound(prefs.TurnEndSound),
 			TurnEndSoundVolume:    uint32(prefs.TurnEndSoundVolume),
 		},
+	}), nil
+}
+
+func (s *UserService) GetTimeouts(ctx context.Context, req *connect.Request[leapmuxv1.GetTimeoutsRequest]) (*connect.Response[leapmuxv1.GetTimeoutsResponse], error) {
+	if _, err := auth.MustGetUser(ctx); err != nil {
+		return nil, err
+	}
+
+	return connect.NewResponse(&leapmuxv1.GetTimeoutsResponse{
+		ApiTimeoutSeconds:            int32(s.timeoutCfg.APITimeout().Seconds()),
+		AgentStartupTimeoutSeconds:   int32(s.timeoutCfg.AgentStartupTimeout().Seconds()),
+		WorktreeCreateTimeoutSeconds: int32(s.timeoutCfg.WorktreeCreateTimeout().Seconds()),
 	}), nil
 }
 

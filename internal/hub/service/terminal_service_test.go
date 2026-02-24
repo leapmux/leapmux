@@ -20,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/id"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/terminalmgr"
+	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 )
 
@@ -50,9 +51,13 @@ func setupTerminalTest(t *testing.T) *terminalTestEnv {
 	queries := gendb.New(sqlDB)
 	workerMgr := workermgr.New()
 	termMgr := terminalmgr.New()
-	pending := workermgr.NewPendingRequests()
 
-	worktreeHelper := service.NewWorktreeHelper(queries, workerMgr, pending)
+	tc, tcErr := timeout.NewFromDB(queries)
+	require.NoError(t, tcErr)
+
+	pending := workermgr.NewPendingRequests(tc.APITimeout)
+
+	worktreeHelper := service.NewWorktreeHelper(queries, workerMgr, pending, tc)
 	terminalSvc := service.NewTerminalService(queries, workerMgr, termMgr, pending, worktreeHelper)
 
 	mux := http.NewServeMux()

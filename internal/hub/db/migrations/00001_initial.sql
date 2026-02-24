@@ -252,16 +252,19 @@ CREATE TABLE user_preferences (
 
 -- System settings (single-row)
 CREATE TABLE system_settings (
-    id                          INTEGER PRIMARY KEY CHECK (id = 1),
-    signup_enabled              INTEGER NOT NULL DEFAULT 0,
-    email_verification_required INTEGER NOT NULL DEFAULT 0,
-    smtp_host                   TEXT NOT NULL DEFAULT '',
-    smtp_port                   INTEGER NOT NULL DEFAULT 587,
-    smtp_username               TEXT NOT NULL DEFAULT '',
-    smtp_password               TEXT NOT NULL DEFAULT '',
-    smtp_from_address           TEXT NOT NULL DEFAULT '',
-    smtp_use_tls                INTEGER NOT NULL DEFAULT 1,
-    updated_at                  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    id                              INTEGER PRIMARY KEY CHECK (id = 1),
+    signup_enabled                  INTEGER NOT NULL DEFAULT 0,
+    email_verification_required     INTEGER NOT NULL DEFAULT 0,
+    smtp_host                       TEXT NOT NULL DEFAULT '',
+    smtp_port                       INTEGER NOT NULL DEFAULT 587,
+    smtp_username                   TEXT NOT NULL DEFAULT '',
+    smtp_password                   TEXT NOT NULL DEFAULT '',
+    smtp_from_address               TEXT NOT NULL DEFAULT '',
+    smtp_use_tls                    INTEGER NOT NULL DEFAULT 1,
+    api_timeout_seconds             INTEGER NOT NULL DEFAULT 10,
+    agent_startup_timeout_seconds   INTEGER NOT NULL DEFAULT 30,
+    worktree_create_timeout_seconds INTEGER NOT NULL DEFAULT 60,
+    updated_at                      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
 -- Pending control requests (survive hub restarts)

@@ -3,6 +3,7 @@ import type { AdminUserView } from '~/generated/leapmux/v1/admin_pb'
 import { A } from '@solidjs/router'
 import { createSignal, For, onMount, Show } from 'solid-js'
 import { adminClient } from '~/api/clients'
+import { loadTimeouts } from '~/api/transport'
 import { useAuth } from '~/context/AuthContext'
 import * as styles from './AdminSettingsPage.css'
 
@@ -19,6 +20,9 @@ export const AdminSettingsPage: Component = () => {
   const [smtpPasswordSet, setSmtpPasswordSet] = createSignal(false)
   const [smtpFromAddress, setSmtpFromAddress] = createSignal('')
   const [smtpUseTls, setSmtpUseTls] = createSignal(true)
+  const [apiTimeout, setApiTimeout] = createSignal(10)
+  const [agentStartupTimeout, setAgentStartupTimeout] = createSignal(30)
+  const [worktreeCreateTimeout, setWorktreeCreateTimeout] = createSignal(60)
   const [settingsSaving, setSettingsSaving] = createSignal(false)
   const [settingsMessage, setSettingsMessage] = createSignal<{ type: 'success' | 'error', text: string } | null>(null)
 
@@ -83,6 +87,12 @@ export const AdminSettingsPage: Component = () => {
           setSmtpFromAddress(s.smtp.fromAddress)
           setSmtpUseTls(s.smtp.useTls)
         }
+        if (s.apiTimeoutSeconds > 0)
+          setApiTimeout(s.apiTimeoutSeconds)
+        if (s.agentStartupTimeoutSeconds > 0)
+          setAgentStartupTimeout(s.agentStartupTimeoutSeconds)
+        if (s.worktreeCreateTimeoutSeconds > 0)
+          setWorktreeCreateTimeout(s.worktreeCreateTimeoutSeconds)
       }
     }
     catch (e) {
@@ -130,9 +140,14 @@ export const AdminSettingsPage: Component = () => {
             fromAddress: smtpFromAddress(),
             useTls: smtpUseTls(),
           },
+          apiTimeoutSeconds: apiTimeout(),
+          agentStartupTimeoutSeconds: agentStartupTimeout(),
+          worktreeCreateTimeoutSeconds: worktreeCreateTimeout(),
         },
       })
       setSettingsMessage({ type: 'success', text: 'Settings saved.' })
+      // Refresh the in-memory timeout config for this browser session.
+      loadTimeouts().catch(() => {})
       // Clear password field after save and refresh password-set status
       setSmtpPassword('')
       if (smtpPassword()) {
@@ -281,6 +296,24 @@ export const AdminSettingsPage: Component = () => {
               <label class={styles.toggleRow}>
                 <span class={styles.toggleLabel}>Use TLS</span>
                 <input type="checkbox" role="switch" checked={smtpUseTls()} onChange={e => setSmtpUseTls(e.currentTarget.checked)} />
+              </label>
+            </div>
+          </div>
+
+          <div class={styles.subsection}>
+            <h3>Timeouts</h3>
+            <div class="vstack gap-4">
+              <label class={styles.fieldLabel}>
+                API Timeout (seconds)
+                <input type="number" min="1" max="600" value={String(apiTimeout())} onInput={e => setApiTimeout(Number.parseInt(e.currentTarget.value) || 10)} />
+              </label>
+              <label class={styles.fieldLabel}>
+                Agent Startup Timeout (seconds)
+                <input type="number" min="1" max="600" value={String(agentStartupTimeout())} onInput={e => setAgentStartupTimeout(Number.parseInt(e.currentTarget.value) || 30)} />
+              </label>
+              <label class={styles.fieldLabel}>
+                Worktree Create Timeout (seconds)
+                <input type="number" min="1" max="600" value={String(worktreeCreateTimeout())} onInput={e => setWorktreeCreateTimeout(Number.parseInt(e.currentTarget.value) || 60)} />
               </label>
             </div>
           </div>

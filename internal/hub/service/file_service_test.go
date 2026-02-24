@@ -18,6 +18,7 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/id"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 )
 
@@ -43,7 +44,11 @@ func setupFileTest(t *testing.T) *fileTestEnv {
 
 	queries := gendb.New(sqlDB)
 	workerMgr := workermgr.New()
-	pendingReqs := workermgr.NewPendingRequests()
+
+	tc, tcErr := timeout.NewFromDB(queries)
+	require.NoError(t, tcErr)
+
+	pendingReqs := workermgr.NewPendingRequests(tc.APITimeout)
 
 	fileSvc := service.NewFileService(queries, workerMgr, pendingReqs)
 
