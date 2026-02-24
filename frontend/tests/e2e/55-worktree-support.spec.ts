@@ -1145,4 +1145,84 @@ test.describe('Worktree Support', () => {
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })
+
+  // ─── Dialog Default Working Directory Resolution ──────────────────
+
+  test('new agent dialog defaults to repo root when opened from worktree tab', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-agent-resolve')
+    const realRepoDir = realpathSync(repoDir)
+
+    // Create workspace with worktree so the initial agent tab is in the worktree
+    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+      hubUrl,
+      adminToken,
+      workerId,
+      'Agent Resolve WS',
+      adminOrgId,
+      repoDir,
+      'agent-resolve-branch',
+    )
+
+    await loginViaToken(page, adminToken)
+    await page.goto(`/o/admin/workspace/${workspaceId}`)
+    await waitForWorkspaceReady(page)
+
+    // Open "New agent..." dialog via the tab menu
+    const addMenu = page.locator('[data-testid="tab-more-menu"]').first()
+    await addMenu.click()
+    await page.getByRole('menuitem', { name: 'New agent...' }).click()
+
+    await expect(page.getByRole('heading', { name: 'New Agent' })).toBeVisible()
+
+    const dialog = page.getByRole('dialog')
+    const pathInput = dialog.getByPlaceholder('Enter path...')
+
+    // The path should resolve to the original repo root, not the worktree path.
+    await expect(pathInput).toHaveValue(realRepoDir, { timeout: 10000 })
+
+    await page.getByRole('button', { name: 'Cancel' }).click()
+  })
+
+  test('new terminal dialog defaults to repo root when opened from worktree tab', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-terminal-resolve')
+    const realRepoDir = realpathSync(repoDir)
+
+    // Create workspace with worktree so the initial agent tab is in the worktree
+    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+      hubUrl,
+      adminToken,
+      workerId,
+      'Terminal Resolve WS',
+      adminOrgId,
+      repoDir,
+      'terminal-resolve-branch',
+    )
+
+    await loginViaToken(page, adminToken)
+    await page.goto(`/o/admin/workspace/${workspaceId}`)
+    await waitForWorkspaceReady(page)
+
+    // Open "New terminal..." dialog via the tab menu
+    const addMenu = page.locator('[data-testid="tab-more-menu"]').first()
+    await addMenu.click()
+    await page.getByRole('menuitem', { name: 'New terminal...' }).click()
+
+    await expect(page.getByRole('heading', { name: 'New Terminal' })).toBeVisible()
+
+    const dialog = page.getByRole('dialog')
+    const pathInput = dialog.getByPlaceholder('Enter path...')
+
+    // The path should resolve to the original repo root, not the worktree path.
+    await expect(pathInput).toHaveValue(realRepoDir, { timeout: 10000 })
+
+    await page.getByRole('button', { name: 'Cancel' }).click()
+  })
 })
