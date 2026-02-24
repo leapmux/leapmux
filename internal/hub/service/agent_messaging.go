@@ -441,12 +441,12 @@ func (s *AgentService) HandleAgentOutput(ctx context.Context, output *leapmuxv1.
 		// Thread notification-eligible system messages (status, compact_boundary,
 		// microcompact_boundary) into the current notification thread.
 		if envelope.Type == "system" && isNotificationThreadable(content, role) {
-			// Skip redundant null→null status transitions. When a status message
-			// arrives with status=null and the previous status was also null,
-			// there is no state change to communicate — skip persist and broadcast.
+			// Skip null status when there is no meaningful transition to communicate.
+			// This covers (a) the very first status if it is null (renders invisible
+			// on the frontend anyway) and (b) redundant null→null repeats.
 			if statusVal, ok := extractStatusValue(content); ok {
 				prev, hasPrev := s.lastAgentStatus.Swap(agentID, statusVal)
-				if hasPrev && prev.(string) == "" && statusVal == "" {
+				if statusVal == "" && (!hasPrev || prev.(string) == "") {
 					return
 				}
 			}

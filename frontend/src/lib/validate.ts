@@ -1,29 +1,21 @@
-const NAME_PATTERN = /^[\w .\-]+$/
+// eslint-disable-next-line no-control-regex
+const NAME_FORBIDDEN_G = /[\x00-\x1F\x7F"\\]/g
 
 /**
- * Validates a name/title string.
- * Rules: trimmed non-empty, max 64 chars, only [a-zA-Z0-9 _\-.].
- * Returns an error message string, or null if valid.
+ * Sanitizes and validates a name/title string.
+ * Forbidden characters (control characters, " and \) are silently stripped.
+ * Returns the sanitized string and an error if the result is empty or exceeds 64 characters.
  */
-export function validateName(name: string): string | null {
-  const trimmed = name.trim()
-  if (trimmed === '') {
-    return 'Name must not be empty'
+export function sanitizeName(name: string): { value: string, error: string | null } {
+  const value = name.replace(NAME_FORBIDDEN_G, '').trim()
+  let error: string | null = null
+  if (value === '') {
+    error = 'Name must not be empty'
   }
-  if (trimmed.length > 64) {
-    return 'Name must be at most 64 characters'
+  else if (value.length > 64) {
+    error = 'Name must be at most 64 characters'
   }
-  if (!NAME_PATTERN.test(trimmed)) {
-    return 'Name must contain only letters, numbers, spaces, hyphens, underscores, and dots'
-  }
-  return null
-}
-
-/**
- * Returns true if the name is valid.
- */
-export function isValidName(name: string): boolean {
-  return validateName(name) === null
+  return { value, error }
 }
 
 // Characters forbidden in git branch names: space ~ ^ : ? * [ ] \

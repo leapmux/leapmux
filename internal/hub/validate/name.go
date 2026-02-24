@@ -2,24 +2,25 @@ package validate
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 )
 
-var namePattern = regexp.MustCompile(`^[a-zA-Z0-9 _\-.]+$`)
-
-// ValidateName validates a name/title string.
-// Rules: trimmed non-empty, max 64 chars, only [a-zA-Z0-9 _\-.].
-func ValidateName(name string) error {
-	trimmed := strings.TrimSpace(name)
-	if trimmed == "" {
-		return fmt.Errorf("name must not be empty")
+// SanitizeName sanitizes and validates a name/title string.
+// Forbidden characters (control characters, " and \) are silently stripped.
+// Returns the sanitized name or an error if the result is empty or exceeds 64 characters.
+func SanitizeName(name string) (string, error) {
+	var b strings.Builder
+	for _, r := range name {
+		if r >= 0x20 && r != 0x7F && r != '"' && r != '\\' {
+			b.WriteRune(r)
+		}
 	}
-	if len(trimmed) > 64 {
-		return fmt.Errorf("name must be at most 64 characters")
+	sanitized := strings.TrimSpace(b.String())
+	if sanitized == "" {
+		return "", fmt.Errorf("name must not be empty")
 	}
-	if !namePattern.MatchString(trimmed) {
-		return fmt.Errorf("name must contain only letters, numbers, spaces, hyphens, underscores, and dots")
+	if len(sanitized) > 64 {
+		return "", fmt.Errorf("name must be at most 64 characters")
 	}
-	return nil
+	return sanitized, nil
 }

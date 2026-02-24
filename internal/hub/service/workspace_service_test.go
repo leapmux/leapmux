@@ -383,7 +383,7 @@ func TestWorkspaceService_UpdateWorkspaceSharing_NotOwner(t *testing.T) {
 func TestWorkspaceService_CreateWorkspace_EmptyName(t *testing.T) {
 	env := setupWorkspaceTest(t)
 
-	// A whitespace-only title passes through to ValidateName which rejects it.
+	// A whitespace-only title passes through to SanitizeName which rejects it.
 	_, err := env.client.CreateWorkspace(context.Background(), authedReq(&leapmuxv1.CreateWorkspaceRequest{
 		WorkerId: env.workerID,
 		Title:    " ",

@@ -21,6 +21,7 @@ import { useAuth } from '~/context/AuthContext'
 import { useOrg } from '~/context/OrgContext'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
 import { mid } from '~/lib/lexorank'
+import { sanitizeName } from '~/lib/validate'
 import { createSectionStore } from '~/stores/section.store'
 import { iconSize } from '~/styles/tokens'
 import { CollapsibleSidebar } from './CollapsibleSidebar'
@@ -476,7 +477,7 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
             isArchived={isWorkspaceArchived}
             renamingWorkspaceId={renamingWorkspaceId()}
             renameValue={renameValue()}
-            onRenameInput={setRenameValue}
+            onRenameInput={v => setRenameValue(sanitizeName(v).value)}
             onRenameCommit={commitRename}
             onRenameCancel={cancelRename}
             isWorkspaceLoading={isWorkspaceLoading}

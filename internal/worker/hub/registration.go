@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
@@ -25,10 +27,21 @@ type RegistrationResult struct {
 // 1. Request a registration token from the Hub (retries with exponential backoff).
 // 2. Print the approval URL for the user.
 // 3. Poll until the registration is approved or expires.
+//
+// If hubURL starts with "unix:", it creates a Unix domain socket transport automatically.
 func Register(ctx context.Context, hubURL, hostname, os, arch, version string) (*RegistrationResult, error) {
+	var httpClient *http.Client
+	connectURL := hubURL
+	if strings.HasPrefix(hubURL, "unix:") {
+		socketPath := strings.TrimPrefix(hubURL, "unix:")
+		httpClient = newUnixSocketClient(socketPath)
+		connectURL = "http://localhost"
+	} else {
+		httpClient = newH2CClient()
+	}
 	client := leapmuxv1connect.NewWorkerConnectorServiceClient(
-		newH2CClient(),
-		hubURL,
+		httpClient,
+		connectURL,
 		connect.WithGRPC(),
 	)
 	return registerWithClient(ctx, client, hubURL, hostname, os, arch, version, newDefaultBackoff())
@@ -71,14 +84,25 @@ func registerWithClient(
 	}
 
 	regToken := reqResp.Msg.GetRegistrationToken()
-	regURL := hubURL + reqResp.Msg.GetRegistrationUrl()
+	regPath := reqResp.Msg.GetRegistrationUrl()
 
-	slog.Info("registration requested — approve in browser",
-		"url", regURL,
-		"token", regToken,
-	)
-	fmt.Printf("\n  Approve this worker at: %s\n\n", regURL)
-	logging.PrintQRCode(regURL)
+	if strings.HasPrefix(hubURL, "unix:") {
+		// Unix socket — can't construct a browser-navigable URL.
+		// Show the relative path and let the user navigate via the Hub's web UI.
+		slog.Info("registration requested — approve via Hub web UI",
+			"path", regPath,
+			"token", regToken,
+		)
+		fmt.Printf("\n  Approve this worker at the Hub's web UI: %s\n\n", regPath)
+	} else {
+		regURL := hubURL + regPath
+		slog.Info("registration requested — approve in browser",
+			"url", regURL,
+			"token", regToken,
+		)
+		fmt.Printf("\n  Approve this worker at: %s\n\n", regURL)
+		logging.PrintQRCode(regURL)
+	}
 
 	// Step 2: Long-poll until approved or expired.
 	// Each PollRegistration call blocks on the Hub side for up to 30s when pending.

@@ -6,7 +6,7 @@ import { A } from '@solidjs/router'
 import { createSignal, For, onMount, Show } from 'solid-js'
 import { useAuth } from '~/context/AuthContext'
 import { usePreferences } from '~/context/PreferencesContext'
-import { sanitizeSlug, validateName } from '~/lib/validate'
+import { sanitizeName, sanitizeSlug } from '~/lib/validate'
 import * as styles from './PreferencesPage.css'
 
 export const PreferencesPage: Component = () => {
@@ -140,22 +140,19 @@ export const PreferencesPage: Component = () => {
 
   const addFont = (list: 'ui' | 'mono') => {
     const name = list === 'ui' ? newUiFont() : newMonoFont()
-    const trimmed = name.trim()
-    if (!trimmed)
-      return
-    const err = validateName(trimmed)
-    if (err) {
-      setFontMessage({ type: 'error', text: err })
+    const { value: sanitized, error } = sanitizeName(name)
+    if (error) {
+      setFontMessage({ type: 'error', text: error })
       return
     }
     if (list === 'ui') {
-      const updated = [...uiFonts(), trimmed]
+      const updated = [...uiFonts(), sanitized]
       setUiFonts(updated)
       setNewUiFont('')
       saveAccountFonts(prefs.accountUiFontCustomEnabled(), prefs.accountMonoFontCustomEnabled(), updated, monoFonts())
     }
     else {
-      const updated = [...monoFonts(), trimmed]
+      const updated = [...monoFonts(), sanitized]
       setMonoFonts(updated)
       setNewMonoFont('')
       saveAccountFonts(prefs.accountUiFontCustomEnabled(), prefs.accountMonoFontCustomEnabled(), uiFonts(), updated)
@@ -276,10 +273,9 @@ export const PreferencesPage: Component = () => {
       editCancelled = false
       return
     }
-    const value = editingValue().trim()
-    const err = validateName(value)
-    if (err) {
-      setEditingError(err)
+    const { value, error } = sanitizeName(editingValue())
+    if (error) {
+      setEditingError(error)
       return
     }
     const fonts = list === 'ui' ? [...uiFonts()] : [...monoFonts()]
@@ -364,8 +360,9 @@ export const PreferencesPage: Component = () => {
                         type="text"
                         value={editingValue()}
                         onInput={(e) => {
-                          setEditingValue(e.currentTarget.value)
-                          setEditingError(validateName(e.currentTarget.value.trim()))
+                          const { value, error } = sanitizeName(e.currentTarget.value)
+                          setEditingValue(value)
+                          setEditingError(error)
                         }}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') {
@@ -405,7 +402,7 @@ export const PreferencesPage: Component = () => {
             type="text"
             placeholder="Font name"
             value={inputValue()}
-            onInput={e => setInputValue(e.currentTarget.value)}
+            onInput={e => setInputValue(sanitizeName(e.currentTarget.value).value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 addFont(list)
