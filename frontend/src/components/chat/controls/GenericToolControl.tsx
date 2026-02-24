@@ -49,7 +49,7 @@ export const GenericToolActions: Component<ActionsProps> = (props) => {
   return (
     <Show
       when={!props.hasEditorContent}
-      fallback={
+      fallback={(
         <button
           class="outline"
           onClick={handleDeny}
@@ -57,7 +57,7 @@ export const GenericToolActions: Component<ActionsProps> = (props) => {
         >
           Deny
         </button>
-      }
+      )}
     >
       <ButtonGroup>
         <button

@@ -1,9 +1,9 @@
+import type { AskQuestionState } from '~/components/chat/controls/types'
+import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { ExitPlanModeActions } from '~/components/chat/controls/ExitPlanModeControl'
-import type { AskQuestionState } from '~/components/chat/controls/types'
-import type { ControlRequest } from '~/stores/control.store'
 
 function makeRequest(requestId = 'req-1', agentId = 'agent-1'): ControlRequest {
   return {
