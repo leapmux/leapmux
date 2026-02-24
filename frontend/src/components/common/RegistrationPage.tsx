@@ -3,11 +3,14 @@ import type { Org } from '~/generated/leapmux/v1/org_pb'
 import type { GetRegistrationResponse } from '~/generated/leapmux/v1/worker_pb'
 import { useNavigate } from '@solidjs/router'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
+import RefreshCw from 'lucide-solid/icons/refresh-cw'
+import { generateSlug } from 'random-word-slugs'
 import { createSignal, For, onMount, Show } from 'solid-js'
 import { orgClient, workerClient } from '~/api/clients'
 import { RegistrationStatus } from '~/generated/leapmux/v1/worker_pb'
 import { validateName } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
+import { labelRow, refreshButton } from '~/styles/shared.css'
 import { NotFoundPage } from './NotFoundPage'
 import * as styles from './RegistrationPage.css'
 
@@ -28,6 +31,8 @@ export const RegistrationPage: Component<RegistrationPageProps> = (props) => {
   const [error, setError] = createSignal<string | null>(null)
   const [approved, setApproved] = createSignal(false)
   const [approvedWorkerId, setApprovedWorkerId] = createSignal<string | null>(null)
+
+  const randomName = () => generateSlug(3, { format: 'kebab' })
 
   onMount(async () => {
     try {
@@ -182,7 +187,21 @@ export const RegistrationPage: Component<RegistrationPageProps> = (props) => {
                         </select>
                       </label>
                       <label>
-                        Worker Name
+                        <div class={labelRow}>
+                          Worker Name
+                          <button
+                            type="button"
+                            class={refreshButton}
+                            onClick={() => {
+                              const slug = randomName()
+                              setName(slug)
+                              setNameError(validateName(slug))
+                            }}
+                            title="Generate random name"
+                          >
+                            <RefreshCw size={14} />
+                          </button>
+                        </div>
                         <input
                           type="text"
                           value={name()}
