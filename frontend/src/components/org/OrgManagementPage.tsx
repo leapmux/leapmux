@@ -5,6 +5,7 @@ import { A, useParams } from '@solidjs/router'
 import { createEffect, createSignal, For, Show } from 'solid-js'
 import { orgClient } from '~/api/clients'
 import { useAuth } from '~/context/AuthContext'
+import { sanitizeSlug } from '~/lib/validate'
 import { useOrg } from '~/context/OrgContext'
 import { OrgMemberRole } from '~/generated/leapmux/v1/org_pb'
 import * as styles from './OrgManagementPage.css'
@@ -71,13 +72,18 @@ export const OrgManagementPage: Component = () => {
 
   const handleSaveName = async () => {
     const id = org.orgId()
-    if (!id || !editName().trim())
+    if (!id)
       return
+    const [slug, slugErr] = sanitizeSlug('Organization name', editName())
+    if (slugErr) {
+      setNameError(slugErr)
+      return
+    }
     setSavingName(true)
     setNameError(null)
     setNameSuccess(null)
     try {
-      await orgClient.updateOrg({ orgId: id, name: editName().trim() })
+      await orgClient.updateOrg({ orgId: id, name: slug })
       setNameSuccess('Organization name updated.')
       await org.refetch()
     }
@@ -91,18 +97,23 @@ export const OrgManagementPage: Component = () => {
 
   const handleInvite = async () => {
     const id = org.orgId()
-    if (!id || !inviteUsername().trim())
+    if (!id)
       return
+    const [slug, slugErr] = sanitizeSlug('Username', inviteUsername())
+    if (slugErr) {
+      setInviteError(slugErr)
+      return
+    }
     setInviting(true)
     setInviteError(null)
     setInviteSuccess(null)
     try {
       await orgClient.inviteOrgMember({
         orgId: id,
-        username: inviteUsername().trim(),
+        username: slug,
         role: inviteRole(),
       })
-      setInviteSuccess(`Invited ${inviteUsername().trim()} as ${OrgMemberRole[inviteRole()]?.toLowerCase() ?? 'member'}.`)
+      setInviteSuccess(`Invited ${slug} as ${OrgMemberRole[inviteRole()]?.toLowerCase() ?? 'member'}.`)
       setInviteUsername('')
       await fetchMembers()
     }
@@ -144,14 +155,17 @@ export const OrgManagementPage: Component = () => {
   }
 
   const handleCreateOrg = async () => {
-    if (!newOrgName().trim())
+    const [slug, slugErr] = sanitizeSlug('Organization name', newOrgName())
+    if (slugErr) {
+      setCreateOrgError(slugErr)
       return
+    }
     setCreatingOrg(true)
     setCreateOrgError(null)
     setCreateOrgSuccess(null)
     try {
-      await orgClient.createOrg({ name: newOrgName().trim() })
-      setCreateOrgSuccess(`Organization "${newOrgName().trim()}" created.`)
+      await orgClient.createOrg({ name: slug })
+      setCreateOrgSuccess(`Organization "${slug}" created.`)
       setNewOrgName('')
       await org.refetch()
     }

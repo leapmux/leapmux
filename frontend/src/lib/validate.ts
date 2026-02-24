@@ -69,3 +69,35 @@ export function validateBranchName(name: string): string | null {
 export function isValidBranchName(name: string): boolean {
   return validateBranchName(name) === null
 }
+
+const SLUG_PATTERN = /^[a-z0-9-]+$/
+
+/**
+ * Sanitizes and validates a GitHub-style slug (username or organization name).
+ * Trims whitespace and lowercases, then validates.
+ * Rules: 1-32 chars, lowercase alphanumeric and hyphens only,
+ * no leading/trailing hyphens, no consecutive hyphens.
+ * Returns [cleanedSlug, null] on success, or ['', errorMessage] on failure.
+ */
+export function sanitizeSlug(fieldName: string, value: string): [string, string | null] {
+  const slug = value.trim().toLowerCase()
+  if (slug === '') {
+    return ['', `${fieldName} must not be empty`]
+  }
+  if (slug.length > 32) {
+    return ['', `${fieldName} must be at most 32 characters`]
+  }
+  if (!SLUG_PATTERN.test(slug)) {
+    return ['', `${fieldName} must contain only letters, numbers, and hyphens`]
+  }
+  if (slug.startsWith('-')) {
+    return ['', `${fieldName} must not start with a hyphen`]
+  }
+  if (slug.endsWith('-')) {
+    return ['', `${fieldName} must not end with a hyphen`]
+  }
+  if (slug.includes('--')) {
+    return ['', `${fieldName} must not contain consecutive hyphens`]
+  }
+  return [slug, null]
+}

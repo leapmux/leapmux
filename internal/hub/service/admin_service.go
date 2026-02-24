@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/id"
 	"github.com/leapmux/leapmux/internal/hub/timeout"
+	"github.com/leapmux/leapmux/internal/hub/validate"
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
@@ -224,11 +225,16 @@ func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leap
 		return nil, err
 	}
 
+	username, err := validate.SanitizeSlug("username", req.Msg.GetUsername())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	// Create personal org.
 	orgID := id.Generate()
 	if err := s.queries.CreateOrg(ctx, db.CreateOrgParams{
 		ID:         orgID,
-		Name:       req.Msg.GetUsername(),
+		Name:       username,
 		IsPersonal: 1,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create org: %w", err))
@@ -249,7 +255,7 @@ func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leap
 	if err := s.queries.CreateUser(ctx, db.CreateUserParams{
 		ID:           userID,
 		OrgID:        orgID,
-		Username:     req.Msg.GetUsername(),
+		Username:     username,
 		PasswordHash: string(hash),
 		DisplayName:  req.Msg.GetDisplayName(),
 		Email:        req.Msg.GetEmail(),
@@ -281,7 +287,7 @@ func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leap
 	}
 
 	return connect.NewResponse(&leapmuxv1.CreateUserResponse{
-		User: adminUserToProto(&user, req.Msg.GetUsername()),
+		User: adminUserToProto(&user, username),
 	}), nil
 }
 

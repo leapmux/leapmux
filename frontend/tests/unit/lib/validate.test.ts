@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isValidBranchName, validateBranchName } from '~/lib/validate'
+import { isValidBranchName, sanitizeSlug, validateBranchName } from '~/lib/validate'
 
 describe('validateBranchName', () => {
   describe('valid branch names', () => {
@@ -121,6 +121,142 @@ describe('validateBranchName', () => {
 
     it('rejects slash-dot (/.)', () => {
       expect(validateBranchName('foo/.bar')).toBe('Branch name must not contain /.')
+    })
+  })
+})
+
+describe('sanitizeSlug', () => {
+  describe('valid slugs', () => {
+    const cases: [string, string][] = [
+      ['a', 'a'],
+      ['myname', 'myname'],
+      ['user123', 'user123'],
+      ['my-name', 'my-name'],
+      ['a-b-c', 'a-b-c'],
+      ['a'.repeat(32), 'a'.repeat(32)],
+    ]
+
+    for (const [input, expected] of cases) {
+      it(`accepts "${input}" → "${expected}"`, () => {
+        const [slug, err] = sanitizeSlug('test', input)
+        expect(err).toBeNull()
+        expect(slug).toBe(expected)
+      })
+    }
+  })
+
+  describe('trimming and lowercasing', () => {
+    it('lowercases uppercase input', () => {
+      const [slug, err] = sanitizeSlug('test', 'MyName')
+      expect(err).toBeNull()
+      expect(slug).toBe('myname')
+    })
+
+    it('trims leading spaces', () => {
+      const [slug, err] = sanitizeSlug('test', '  hello')
+      expect(err).toBeNull()
+      expect(slug).toBe('hello')
+    })
+
+    it('trims trailing spaces', () => {
+      const [slug, err] = sanitizeSlug('test', 'hello  ')
+      expect(err).toBeNull()
+      expect(slug).toBe('hello')
+    })
+
+    it('trims and lowercases', () => {
+      const [slug, err] = sanitizeSlug('test', '  Hello  ')
+      expect(err).toBeNull()
+      expect(slug).toBe('hello')
+    })
+
+    it('lowercases with hyphens and numbers', () => {
+      const [slug, err] = sanitizeSlug('test', 'My-Org-123')
+      expect(err).toBeNull()
+      expect(slug).toBe('my-org-123')
+    })
+  })
+
+  describe('empty and length', () => {
+    it('rejects empty string', () => {
+      const [slug, err] = sanitizeSlug('Username', '')
+      expect(err).toBe('Username must not be empty')
+      expect(slug).toBe('')
+    })
+
+    it('rejects whitespace only', () => {
+      const [slug, err] = sanitizeSlug('Username', '   ')
+      expect(err).toBe('Username must not be empty')
+      expect(slug).toBe('')
+    })
+
+    it('rejects string longer than 32 characters', () => {
+      const [slug, err] = sanitizeSlug('Username', 'a'.repeat(33))
+      expect(err).toBe('Username must be at most 32 characters')
+      expect(slug).toBe('')
+    })
+
+    it('accepts exactly 32 characters', () => {
+      const [slug, err] = sanitizeSlug('test', 'a'.repeat(32))
+      expect(err).toBeNull()
+      expect(slug).toBe('a'.repeat(32))
+    })
+  })
+
+  describe('invalid characters', () => {
+    const cases: [string, string][] = [
+      ['my name', 'space in middle'],
+      ['my_name', 'underscore'],
+      ['my.name', 'dot'],
+      ['user@org', 'at sign'],
+      ['user/org', 'slash'],
+      ['caf\u00e9', 'unicode'],
+    ]
+
+    for (const [input, desc] of cases) {
+      it(`rejects "${input}" (${desc})`, () => {
+        const [slug, err] = sanitizeSlug('test', input)
+        expect(err).toBe('test must contain only letters, numbers, and hyphens')
+        expect(slug).toBe('')
+      })
+    }
+  })
+
+  describe('structural rules', () => {
+    it('rejects leading hyphen', () => {
+      const [slug, err] = sanitizeSlug('test', '-myname')
+      expect(err).toBe('test must not start with a hyphen')
+      expect(slug).toBe('')
+    })
+
+    it('rejects trailing hyphen', () => {
+      const [slug, err] = sanitizeSlug('test', 'myname-')
+      expect(err).toBe('test must not end with a hyphen')
+      expect(slug).toBe('')
+    })
+
+    it('rejects consecutive hyphens', () => {
+      const [slug, err] = sanitizeSlug('test', 'my--name')
+      expect(err).toBe('test must not contain consecutive hyphens')
+      expect(slug).toBe('')
+    })
+
+    it('rejects triple hyphens', () => {
+      const [slug, err] = sanitizeSlug('test', 'my---name')
+      expect(err).toBe('test must not contain consecutive hyphens')
+      expect(slug).toBe('')
+    })
+  })
+
+  describe('field name in error messages', () => {
+    it('includes "Username" in error', () => {
+      const [, err] = sanitizeSlug('Username', '')
+      expect(err).toContain('Username')
+    })
+
+    it('includes "Organization name" in error', () => {
+      const [, err] = sanitizeSlug('Organization name', 'bad_slug')
+      expect(err).toContain('Organization name')
     })
   })
 })

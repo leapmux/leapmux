@@ -6,7 +6,7 @@ import { A } from '@solidjs/router'
 import { createSignal, For, onMount, Show } from 'solid-js'
 import { useAuth } from '~/context/AuthContext'
 import { usePreferences } from '~/context/PreferencesContext'
-import { validateName } from '~/lib/validate'
+import { sanitizeSlug, validateName } from '~/lib/validate'
 import * as styles from './PreferencesPage.css'
 
 export const PreferencesPage: Component = () => {
@@ -59,12 +59,17 @@ export const PreferencesPage: Component = () => {
 
   // --- Profile ---
   const handleSaveProfile = async () => {
+    const [slug, slugErr] = sanitizeSlug('Username', username())
+    if (slugErr) {
+      setProfileMessage({ type: 'error', text: slugErr })
+      return
+    }
     setProfileSaving(true)
     setProfileMessage(null)
     try {
       const { updateProfile } = await import('~/api/clients').then(m => ({ updateProfile: m.userClient.updateProfile }))
       await updateProfile({
-        username: username(),
+        username: slug,
         displayName: displayName(),
         email: email(),
       })

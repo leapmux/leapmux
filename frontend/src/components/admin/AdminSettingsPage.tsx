@@ -3,6 +3,7 @@ import type { AdminUserView } from '~/generated/leapmux/v1/admin_pb'
 import { A } from '@solidjs/router'
 import { createSignal, For, onMount, Show } from 'solid-js'
 import { adminClient } from '~/api/clients'
+import { sanitizeSlug } from '~/lib/validate'
 import { loadTimeouts } from '~/api/transport'
 import { useAuth } from '~/context/AuthContext'
 import * as styles from './AdminSettingsPage.css'
@@ -210,17 +211,22 @@ export const AdminSettingsPage: Component = () => {
 
   // --- Create user ---
   const handleCreateUser = async () => {
+    const [slug, slugErr] = sanitizeSlug('Username', newUsername())
+    if (slugErr) {
+      setCreateUserMessage({ type: 'error', text: slugErr })
+      return
+    }
     setCreateUserSaving(true)
     setCreateUserMessage(null)
     try {
       await adminClient.createUser({
-        username: newUsername(),
+        username: slug,
         password: newPassword(),
         displayName: newDisplayName(),
         email: newEmail(),
         isAdmin: newIsAdmin(),
       })
-      setCreateUserMessage({ type: 'success', text: `User "${newUsername()}" created.` })
+      setCreateUserMessage({ type: 'success', text: `User "${slug}" created.` })
       setNewUsername('')
       setNewPassword('')
       setNewDisplayName('')

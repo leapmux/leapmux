@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/id"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
+	"github.com/leapmux/leapmux/internal/hub/validate"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
 
@@ -35,9 +36,9 @@ func (s *OrgService) CreateOrg(
 		return nil, err
 	}
 
-	name := req.Msg.GetName()
-	if name == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("name is required"))
+	name, err := validate.SanitizeSlug("organization name", req.Msg.GetName())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
 	orgID := id.Generate()
@@ -135,9 +136,9 @@ func (s *OrgService) UpdateOrg(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("cannot update a personal organization"))
 	}
 
-	name := req.Msg.GetName()
-	if name == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("name is required"))
+	name, err := validate.SanitizeSlug("organization name", req.Msg.GetName())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
 	if err := s.queries.UpdateOrgName(ctx, db.UpdateOrgNameParams{
@@ -224,12 +225,12 @@ func (s *OrgService) CheckOrgExists(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.CheckOrgExistsRequest],
 ) (*connect.Response[leapmuxv1.CheckOrgExistsResponse], error) {
-	name := req.Msg.GetName()
-	if name == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("name is required"))
+	name, err := validate.SanitizeSlug("organization name", req.Msg.GetName())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	_, err := s.queries.GetOrgByName(ctx, name)
+	_, err = s.queries.GetOrgByName(ctx, name)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return connect.NewResponse(&leapmuxv1.CheckOrgExistsResponse{
@@ -292,9 +293,9 @@ func (s *OrgService) InviteOrgMember(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("org_id is required"))
 	}
 
-	username := req.Msg.GetUsername()
-	if username == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("username is required"))
+	username, err := validate.SanitizeSlug("username", req.Msg.GetUsername())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
 	role := req.Msg.GetRole()
