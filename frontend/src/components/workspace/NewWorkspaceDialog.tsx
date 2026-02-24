@@ -8,7 +8,7 @@ import { workerClient, workspaceClient } from '~/api/clients'
 import { WorktreeOptions } from '~/components/shell/WorktreeOptions'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
 import { useOrg } from '~/context/OrgContext'
-import { validateName } from '~/lib/validate'
+import { sanitizeName } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
 import { dialogCompact, errorText, labelRow, refreshButton, spinning, treeContainer } from '~/styles/shared.css'
 
@@ -32,7 +32,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
   const [createWorktree, setCreateWorktree] = createSignal(false)
   const [worktreeBranch, setWorktreeBranch] = createSignal('')
   const [worktreeBranchError, setWorktreeBranchError] = createSignal<string | null>(null)
-  const titleError = createMemo(() => validateName(title()))
+  const titleError = createMemo(() => sanitizeName(title()).error)
 
   const fetchWorkers = async () => {
     try {
@@ -143,7 +143,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
               <input
                 type="text"
                 value={title()}
-                onInput={e => setTitle(e.currentTarget.value)}
+                onInput={e => setTitle(sanitizeName(e.currentTarget.value).value)}
                 placeholder="New Workspace"
               />
               <Show when={titleError()}>

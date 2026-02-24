@@ -116,11 +116,14 @@ func (s *WorkspaceService) CreateWorkspace(
 	}
 
 	workspaceID := id.Generate()
-	title := req.Msg.GetTitle()
-	if title == "" {
+	var title string
+	if req.Msg.GetTitle() == "" {
 		title = "New Workspace"
-	} else if err := validate.ValidateName(title); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid workspace title: %w", err))
+	} else {
+		var err error
+		if title, err = validate.SanitizeName(req.Msg.GetTitle()); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid workspace title: %w", err))
+		}
 	}
 
 	if err := s.queries.CreateWorkspace(ctx, db.CreateWorkspaceParams{
@@ -431,8 +434,8 @@ func (s *WorkspaceService) RenameWorkspace(
 		return nil, err
 	}
 
-	title := req.Msg.GetTitle()
-	if err := validate.ValidateName(title); err != nil {
+	title, err := validate.SanitizeName(req.Msg.GetTitle())
+	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid workspace title: %w", err))
 	}
 

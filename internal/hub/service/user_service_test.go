@@ -219,7 +219,7 @@ func TestUserService_UpdatePreferences_InvalidFontName(t *testing.T) {
 	env := setupUserTest(t)
 
 	_, err := env.client.UpdatePreferences(context.Background(), authedReq(&leapmuxv1.UpdatePreferencesRequest{
-		UiFonts: []string{`Font "With" Quotes`},
+		UiFonts: []string{"  "},
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))

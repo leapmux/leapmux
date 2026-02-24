@@ -8,7 +8,7 @@ import { generateSlug } from 'random-word-slugs'
 import { createSignal, For, onMount, Show } from 'solid-js'
 import { orgClient, workerClient } from '~/api/clients'
 import { RegistrationStatus } from '~/generated/leapmux/v1/worker_pb'
-import { validateName } from '~/lib/validate'
+import { sanitizeName } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
 import { labelRow, refreshButton } from '~/styles/shared.css'
 import { NotFoundPage } from './NotFoundPage'
@@ -48,9 +48,9 @@ export const RegistrationPage: Component<RegistrationPageProps> = (props) => {
       }
       // Auto-prefill name from hostname
       if (regResp.hostname) {
-        const prefilled = regResp.hostname.toLowerCase()
-        setName(prefilled)
-        setNameError(validateName(prefilled))
+        const { value, error } = sanitizeName(regResp.hostname.toLowerCase())
+        setName(value)
+        setNameError(error)
       }
     }
     catch (e) {
@@ -67,16 +67,17 @@ export const RegistrationPage: Component<RegistrationPageProps> = (props) => {
     }
   })
 
-  const handleNameInput = (value: string) => {
+  const handleNameInput = (raw: string) => {
+    const { value, error } = sanitizeName(raw)
     setName(value)
-    setNameError(validateName(value))
+    setNameError(error)
   }
 
   const handleApprove = async (e: Event) => {
     e.preventDefault()
-    const err = validateName(name())
-    if (err) {
-      setNameError(err)
+    const { error } = sanitizeName(name())
+    if (error) {
+      setNameError(error)
       return
     }
     setSubmitting(true)
@@ -193,9 +194,9 @@ export const RegistrationPage: Component<RegistrationPageProps> = (props) => {
                             type="button"
                             class={refreshButton}
                             onClick={() => {
-                              const slug = randomName()
-                              setName(slug)
-                              setNameError(validateName(slug))
+                              const { value, error } = sanitizeName(randomName())
+                              setName(value)
+                              setNameError(error)
                             }}
                             title="Generate random name"
                           >
