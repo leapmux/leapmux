@@ -18,7 +18,7 @@ import (
 
 func runWorker(args []string) error {
 	fs := flag.NewFlagSet("worker", flag.ExitOnError)
-	hubURL := fs.String("hub", "http://localhost:4327", "Hub server URL")
+	hubURL := fs.String("hub", "http://localhost:4327", "Hub server URL or unix:<socket-path>")
 	dataDir := fs.String("data-dir", defaultWorkerDataDir(), "data directory")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	_ = fs.Parse(args)
