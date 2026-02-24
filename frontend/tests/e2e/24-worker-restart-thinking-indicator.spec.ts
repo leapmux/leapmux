@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, loginViaToken, waitForWorkspaceReady } from './helpers'
-import { expect, restartWorker, stopWorker, waitForWorkerOffline, processTest as test } from './process-control-fixtures'
+import { expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Worker Restart Thinking Indicator', () => {
   test('should hide thinking indicator when worker goes offline during agent turn', async ({ separateHubWorker, page }) => {

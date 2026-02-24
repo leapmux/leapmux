@@ -117,18 +117,31 @@ export function createChatStore() {
       setState('messagesByAgent', agentId, (prev = []) => {
         // Check if a message with this ID already exists (thread merge:
         // parent gets updated with child content and bumped seq).
-        const existingIdx = prev.findIndex(m => m.id === message.id)
+        // Search from end — thread merges almost always affect recent messages.
+        const existingIdx = prev.findLastIndex(m => m.id === message.id)
         if (existingIdx !== -1) {
-          // Remove old and append at end (seq was bumped).
-          return [...prev.slice(0, existingIdx), ...prev.slice(existingIdx + 1), message]
+          // Update in-place to avoid advancing lastSeq past messages
+          // that haven't arrived yet (which would cause the seq-based
+          // dedup below to incorrectly drop them).
+          const updated = [...prev]
+          updated[existingIdx] = message
+          return updated
         }
 
-        // Dedup: skip if we already have this or a later seq
-        if (prev.length > 0 && message.seq <= prev[prev.length - 1].seq) {
+        // Fast path: message is in order (most common case).
+        if (prev.length === 0 || message.seq > prev[prev.length - 1].seq) {
+          return [...prev, message]
+        }
+
+        // Dedup: skip if a message with this exact seq already exists.
+        if (prev.findLastIndex(m => m.seq === message.seq) !== -1)
           return prev
-        }
 
-        return [...prev, message]
+        // Out-of-order message (e.g. catch-up replay after a thread merge
+        // advanced lastSeq): insert in sorted position by seq.
+        const insertAfter = prev.findLastIndex(m => m.seq < message.seq)
+        const insertIdx = insertAfter + 1
+        return [...prev.slice(0, insertIdx), message, ...prev.slice(insertIdx)]
       })
 
       // Track delivery errors
