@@ -6,7 +6,7 @@ import { createSignal, For, onMount, Show } from 'solid-js'
 import { orgClient, workerClient } from '~/api/clients'
 import { useOrg } from '~/context/OrgContext'
 import { ShareMode } from '~/generated/leapmux/v1/common_pb'
-import { validateName } from '~/lib/validate'
+import { sanitizeName } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
 import { dialogStandard } from '~/styles/shared.css'
 import * as styles from './WorkerSettingsDialog.css'
@@ -73,17 +73,16 @@ export const WorkerSettingsDialog: Component<WorkerSettingsDialogProps> = (props
   })
 
   const handleRename = async () => {
-    const trimmed = name().trim()
-    const validationError = validateName(trimmed)
-    if (validationError) {
-      setRenameError(validationError)
+    const { value: sanitized, error } = sanitizeName(name())
+    if (error) {
+      setRenameError(error)
       return
     }
     setRenameSaving(true)
     setRenameError(null)
     try {
-      await workerClient.renameWorker({ workerId: props.worker.id, name: trimmed })
-      props.onRenamed(trimmed)
+      await workerClient.renameWorker({ workerId: props.worker.id, name: sanitized })
+      props.onRenamed(sanitized)
     }
     catch (e) {
       setRenameError(e instanceof Error ? e.message : 'Failed to rename worker')
@@ -162,7 +161,7 @@ export const WorkerSettingsDialog: Component<WorkerSettingsDialogProps> = (props
                 }
               }}
               value={name()}
-              onInput={e => setName(e.currentTarget.value)}
+              onInput={e => setName(sanitizeName(e.currentTarget.value).value)}
               onKeyDown={handleRenameKeyDown}
               placeholder="Worker name"
               data-testid="rename-input"

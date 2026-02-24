@@ -11,7 +11,7 @@ import (
 
 // RunConfig holds configuration for running the worker as a library.
 type RunConfig struct {
-	HubURL     string       // Hub server URL (e.g. "http://localhost:4327")
+	HubURL     string       // Hub server URL (e.g. "http://localhost:4327") or "unix:<socket-path>"
 	DataDir    string       // Directory for persistent state
 	AuthToken  string       // Pre-provisioned auth token (skip registration)
 	HTTPClient *http.Client // Custom HTTP client (e.g. for Unix socket transport)

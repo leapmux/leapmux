@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/id"
+	"github.com/leapmux/leapmux/internal/hub/validate"
 )
 
 // AuthService implements the leapmux.v1.AuthService ConnectRPC handler.
@@ -81,10 +82,13 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("sign-up is disabled"))
 	}
 
-	username := req.Msg.GetUsername()
+	username, err := validate.SanitizeSlug("username", req.Msg.GetUsername())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	password := req.Msg.GetPassword()
-	if username == "" || password == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("username and password are required"))
+	if password == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("password is required"))
 	}
 
 	// Check username uniqueness.

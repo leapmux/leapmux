@@ -3,11 +3,14 @@ import type { Org } from '~/generated/leapmux/v1/org_pb'
 import type { GetRegistrationResponse } from '~/generated/leapmux/v1/worker_pb'
 import { useNavigate } from '@solidjs/router'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
+import RefreshCw from 'lucide-solid/icons/refresh-cw'
+import { generateSlug } from 'random-word-slugs'
 import { createSignal, For, onMount, Show } from 'solid-js'
 import { orgClient, workerClient } from '~/api/clients'
 import { RegistrationStatus } from '~/generated/leapmux/v1/worker_pb'
-import { validateName } from '~/lib/validate'
+import { sanitizeName } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
+import { labelRow, refreshButton } from '~/styles/shared.css'
 import { NotFoundPage } from './NotFoundPage'
 import * as styles from './RegistrationPage.css'
 
@@ -29,6 +32,8 @@ export const RegistrationPage: Component<RegistrationPageProps> = (props) => {
   const [approved, setApproved] = createSignal(false)
   const [approvedWorkerId, setApprovedWorkerId] = createSignal<string | null>(null)
 
+  const randomName = () => generateSlug(3, { format: 'kebab' })
+
   onMount(async () => {
     try {
       const [regResp, orgResp] = await Promise.all([
@@ -43,9 +48,9 @@ export const RegistrationPage: Component<RegistrationPageProps> = (props) => {
       }
       // Auto-prefill name from hostname
       if (regResp.hostname) {
-        const prefilled = regResp.hostname.toLowerCase()
-        setName(prefilled)
-        setNameError(validateName(prefilled))
+        const { value, error } = sanitizeName(regResp.hostname.toLowerCase())
+        setName(value)
+        setNameError(error)
       }
     }
     catch (e) {
@@ -62,16 +67,17 @@ export const RegistrationPage: Component<RegistrationPageProps> = (props) => {
     }
   })
 
-  const handleNameInput = (value: string) => {
+  const handleNameInput = (raw: string) => {
+    const { value, error } = sanitizeName(raw)
     setName(value)
-    setNameError(validateName(value))
+    setNameError(error)
   }
 
   const handleApprove = async (e: Event) => {
     e.preventDefault()
-    const err = validateName(name())
-    if (err) {
-      setNameError(err)
+    const { error } = sanitizeName(name())
+    if (error) {
+      setNameError(error)
       return
     }
     setSubmitting(true)
@@ -182,7 +188,21 @@ export const RegistrationPage: Component<RegistrationPageProps> = (props) => {
                         </select>
                       </label>
                       <label>
-                        Worker Name
+                        <div class={labelRow}>
+                          Worker Name
+                          <button
+                            type="button"
+                            class={refreshButton}
+                            onClick={() => {
+                              const { value, error } = sanitizeName(randomName())
+                              setName(value)
+                              setNameError(error)
+                            }}
+                            title="Generate random name"
+                          >
+                            <RefreshCw size={14} />
+                          </button>
+                        </div>
                         <input
                           type="text"
                           value={name()}

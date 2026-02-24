@@ -102,14 +102,15 @@ LeapMux is built as a single Go binary (`leapmux`) that can run in three modes:
 - Wraps Claude Code instances and provides system access
 - Manages PTY sessions for terminal access
 - Provides file system browsing capabilities
-- Communicates with Hub via standard gRPC
+- Communicates with Hub via standard gRPC (over TCP or Unix domain socket)
 - Auto-reconnects to Hub on disconnection
 
 ### Communication
 
 - **Frontend → Hub**: ConnectRPC (gRPC-compatible) for RPCs, WebSocket for event streaming
-- **Worker → Hub**: Standard gRPC with bidirectional streaming.
+- **Worker → Hub**: Standard gRPC with bidirectional streaming (over TCP or Unix domain socket).
   - Workers initiate outbound connections to the Hub, so they can run behind NATs, without requiring inbound port access.
+  - For local workers on the same machine, connect via Unix domain socket using `unix:<socket-path>` as the Hub URL.
 - **Message Format**: Protocol Buffers (defined in `/proto/leapmux/v1/`)
 
 ---

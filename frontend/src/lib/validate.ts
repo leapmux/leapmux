@@ -1,29 +1,21 @@
-const NAME_PATTERN = /^[\w .\-]+$/
+// eslint-disable-next-line no-control-regex
+const NAME_FORBIDDEN_G = /[\x00-\x1F\x7F"\\]/g
 
 /**
- * Validates a name/title string.
- * Rules: trimmed non-empty, max 64 chars, only [a-zA-Z0-9 _\-.].
- * Returns an error message string, or null if valid.
+ * Sanitizes and validates a name/title string.
+ * Forbidden characters (control characters, " and \) are silently stripped.
+ * Returns the sanitized string and an error if the result is empty or exceeds 64 characters.
  */
-export function validateName(name: string): string | null {
-  const trimmed = name.trim()
-  if (trimmed === '') {
-    return 'Name must not be empty'
+export function sanitizeName(name: string): { value: string, error: string | null } {
+  const value = name.replace(NAME_FORBIDDEN_G, '').trim()
+  let error: string | null = null
+  if (value === '') {
+    error = 'Name must not be empty'
   }
-  if (trimmed.length > 64) {
-    return 'Name must be at most 64 characters'
+  else if (value.length > 64) {
+    error = 'Name must be at most 64 characters'
   }
-  if (!NAME_PATTERN.test(trimmed)) {
-    return 'Name must contain only letters, numbers, spaces, hyphens, underscores, and dots'
-  }
-  return null
-}
-
-/**
- * Returns true if the name is valid.
- */
-export function isValidName(name: string): boolean {
-  return validateName(name) === null
+  return { value, error }
 }
 
 // Characters forbidden in git branch names: space ~ ^ : ? * [ ] \
@@ -68,4 +60,36 @@ export function validateBranchName(name: string): string | null {
  */
 export function isValidBranchName(name: string): boolean {
   return validateBranchName(name) === null
+}
+
+const SLUG_PATTERN = /^[a-z0-9-]+$/
+
+/**
+ * Sanitizes and validates a GitHub-style slug (username or organization name).
+ * Trims whitespace and lowercases, then validates.
+ * Rules: 1-32 chars, lowercase alphanumeric and hyphens only,
+ * no leading/trailing hyphens, no consecutive hyphens.
+ * Returns [cleanedSlug, null] on success, or ['', errorMessage] on failure.
+ */
+export function sanitizeSlug(fieldName: string, value: string): [string, string | null] {
+  const slug = value.trim().toLowerCase()
+  if (slug === '') {
+    return ['', `${fieldName} must not be empty`]
+  }
+  if (slug.length > 32) {
+    return ['', `${fieldName} must be at most 32 characters`]
+  }
+  if (!SLUG_PATTERN.test(slug)) {
+    return ['', `${fieldName} must contain only letters, numbers, and hyphens`]
+  }
+  if (slug.startsWith('-')) {
+    return ['', `${fieldName} must not start with a hyphen`]
+  }
+  if (slug.endsWith('-')) {
+    return ['', `${fieldName} must not end with a hyphen`]
+  }
+  if (slug.includes('--')) {
+    return ['', `${fieldName} must not contain consecutive hyphens`]
+  }
+  return [slug, null]
 }

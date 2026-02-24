@@ -59,7 +59,12 @@ type Client struct {
 
 // New creates a new Hub client with integrated lifecycle management.
 // It creates agent and terminal managers internally and loads saved terminals from dataDir.
+// If hubURL starts with "unix:", it creates a Unix domain socket transport automatically.
 func New(hubURL, dataDir string) *Client {
+	if strings.HasPrefix(hubURL, "unix:") {
+		socketPath := strings.TrimPrefix(hubURL, "unix:")
+		return NewWithHTTPClient(newUnixSocketClient(socketPath), hubURL, dataDir)
+	}
 	return NewWithHTTPClient(newH2CClient(), hubURL, dataDir)
 }
 
@@ -69,10 +74,17 @@ func New(hubURL, dataDir string) *Client {
 func NewWithHTTPClient(httpClient *http.Client, hubURL, dataDir string) *Client {
 	terminals := terminal.NewManager()
 
+	// When connecting via Unix domain socket, hubURL is "unix:<path>".
+	// ConnectRPC needs a valid HTTP base URL, so use http://localhost instead.
+	connectURL := hubURL
+	if strings.HasPrefix(hubURL, "unix:") {
+		connectURL = "http://localhost"
+	}
+
 	c := &Client{
 		connector: leapmuxv1connect.NewWorkerConnectorServiceClient(
 			httpClient,
-			hubURL,
+			connectURL,
 			connect.WithGRPC(),
 		),
 		hubURL:             hubURL,
@@ -141,6 +153,19 @@ func newH2CClient() *http.Client {
 			DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
 				var d net.Dialer
 				return d.DialContext(ctx, network, addr)
+			},
+		},
+	}
+}
+
+// newUnixSocketClient creates an h2c HTTP client that dials via a Unix domain socket.
+func newUnixSocketClient(socketPath string) *http.Client {
+	return &http.Client{
+		Transport: &http2.Transport{
+			AllowHTTP: true,
+			DialTLSContext: func(ctx context.Context, _, _ string, _ *tls.Config) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", socketPath)
 			},
 		},
 	}
