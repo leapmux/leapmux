@@ -8,11 +8,13 @@ export const RATE_LIMIT_TYPE_LABELS: Record<string, string> = {
 /** Format seconds remaining as d:hh:mm or h:mm. Returns null if remaining time <= 0. */
 export function formatCountdown(resetAtUnixSec: number): string | null {
   const remaining = resetAtUnixSec - Math.floor(Date.now() / 1000)
-  if (remaining <= 0) return null
+  if (remaining <= 0)
+    return null
   const days = Math.floor(remaining / 86400)
   const hours = Math.floor((remaining % 86400) / 3600)
   const minutes = Math.floor((remaining % 3600) / 60)
-  if (days > 0) return `${days}:${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
+  if (days > 0)
+    return `${days}:${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
   return `${hours}:${String(minutes).padStart(2, '0')}`
 }
 
@@ -33,12 +35,14 @@ export function pickUrgentRateLimit(rateLimits: Record<string, RateLimitInfo>): 
 
   for (const info of Object.values(rateLimits)) {
     const status = info.status
-    if (status === 'allowed' || !status) continue
+    if (status === 'allowed' || !status)
+      continue
     const severity = (status === 'allowed_warning') ? 1 : 2
     const resetsAt = getResetsAt(info)
     const remaining = resetsAt ? resetsAt - Math.floor(Date.now() / 1000) : Infinity
     const countdown = resetsAt ? formatCountdown(resetsAt) : null
-    if (!countdown) continue
+    if (!countdown)
+      continue
 
     if (severity > bestSeverity || (severity === bestSeverity && remaining < bestRemaining)) {
       best = info

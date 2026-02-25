@@ -78,7 +78,7 @@ export const AppShell: ParentComponent = (props) => {
   const terminalStore = createTerminalStore()
   const tabStore = createTabStore()
   const controlStore = createControlStore()
-  const agentSessionStore = createAgentContextStore()
+  const agentSessionStore = createAgentSessionStore()
   const layoutStore = createLayoutStore()
   const [fileTreePath, setFileTreePath] = createSignal('')
   const [showNewWorkspace, setShowNewWorkspace] = createSignal(false)

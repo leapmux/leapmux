@@ -9,20 +9,20 @@ export interface ContextUsageInfo {
 }
 
 export interface RateLimitInfo {
-  status?: string              // "allowed" | "allowed_warning" | "exceeded" etc.
-  resetsAt?: number            // Unix timestamp (seconds)
-  rateLimitType?: string       // "five_hour" | "seven_day" etc.
-  utilization?: number         // 0.0–1.0, current usage fraction
-  surpassedThreshold?: number  // threshold that triggered warning (e.g. 0.75)
-  overageStatus?: string       // "allowed" etc.
-  overageResetsAt?: number     // Unix timestamp (seconds)
+  status?: string // "allowed" | "allowed_warning" | "exceeded" etc.
+  resetsAt?: number // Unix timestamp (seconds)
+  rateLimitType?: string // "five_hour" | "seven_day" etc.
+  utilization?: number // 0.0–1.0, current usage fraction
+  surpassedThreshold?: number // threshold that triggered warning (e.g. 0.75)
+  overageStatus?: string // "allowed" etc.
+  overageResetsAt?: number // Unix timestamp (seconds)
   isUsingOverage?: boolean
 }
 
 export interface AgentSessionInfo {
   totalCostUsd?: number
   contextUsage?: ContextUsageInfo
-  rateLimits?: Record<string, RateLimitInfo>  // keyed by rateLimitType
+  rateLimits?: Record<string, RateLimitInfo> // keyed by rateLimitType
 }
 
 const STORAGE_KEY_PREFIX = 'leapmux-agent-session-'
@@ -76,7 +76,8 @@ export function createAgentSessionStore() {
             if (key === 'rateLimits' && typeof value === 'object') {
               // Deep-merge rateLimits: preserve existing entries, update/add new ones
               merged.rateLimits = { ...merged.rateLimits, ...value as Record<string, RateLimitInfo> }
-            } else {
+            }
+            else {
               (merged as Record<string, unknown>)[key] = value
             }
           }
