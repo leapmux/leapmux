@@ -1,6 +1,6 @@
 import type { RateLimitInfo } from '~/stores/agentSession.store'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { formatCountdown, formatRateLimitMessage, getResetsAt, pickUrgentRateLimit } from '~/lib/rateLimitUtils'
+import { formatCountdown, formatRateLimitMessage, formatRateLimitSummary, getResetsAt, pickUrgentRateLimit } from '~/lib/rateLimitUtils'
 
 describe('formatCountdown', () => {
   beforeEach(() => {
@@ -186,5 +186,56 @@ describe('formatRateLimitMessage', () => {
       utilization: 0.5,
     })
     expect(msg).toContain('resets in 2:00')
+  })
+})
+
+describe('formatRateLimitSummary', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2025-06-01T00:00:00Z'))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('renders allowed with reset time', () => {
+    const nowSec = Math.floor(Date.now() / 1000)
+    const info: RateLimitInfo = { status: 'allowed', resetsAt: nowSec + 4 * 3600 + 59 * 60 }
+    expect(formatRateLimitSummary(info)).toBe('Allowed, resets in 4:59')
+  })
+
+  it('renders allowed without reset time', () => {
+    const info: RateLimitInfo = { status: 'allowed' }
+    expect(formatRateLimitSummary(info)).toBe('Allowed')
+  })
+
+  it('renders warning with utilization and reset time', () => {
+    const nowSec = Math.floor(Date.now() / 1000)
+    const info: RateLimitInfo = { status: 'allowed_warning', utilization: 0.8, resetsAt: nowSec + 3 * 3600 + 22 * 60 }
+    expect(formatRateLimitSummary(info)).toBe('Warning, 80% used, resets in 3:22')
+  })
+
+  it('renders exceeded without utilization', () => {
+    const nowSec = Math.floor(Date.now() / 1000)
+    const info: RateLimitInfo = { status: 'exceeded', utilization: 1.0, resetsAt: nowSec + 3600 + 45 * 60 }
+    expect(formatRateLimitSummary(info)).toBe('Exceeded, resets in 1:45')
+  })
+
+  it('renders exceeded with overage', () => {
+    const nowSec = Math.floor(Date.now() / 1000)
+    const info: RateLimitInfo = { status: 'exceeded', utilization: 1.0, isUsingOverage: true, overageResetsAt: nowSec + 2 * 3600 + 15 * 60 }
+    expect(formatRateLimitSummary(info)).toBe('Exceeded, overage, resets in 2:15')
+  })
+
+  it('renders utilization only when status is missing', () => {
+    const nowSec = Math.floor(Date.now() / 1000)
+    const info: RateLimitInfo = { utilization: 0.5, resetsAt: nowSec + 3600 }
+    expect(formatRateLimitSummary(info)).toBe('50% used, resets in 1:00')
+  })
+
+  it('returns Unknown for empty info', () => {
+    const info: RateLimitInfo = {}
+    expect(formatRateLimitSummary(info)).toBe('Unknown')
   })
 })

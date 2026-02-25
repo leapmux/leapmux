@@ -86,6 +86,9 @@ export const rateLimitRenderer: MessageContentRenderer = {
     const info = parsed.rate_limit_info
     if (!isObject(info))
       return <div class={controlResponseMessage}>Rate limit update</div>
+    // Hide "allowed" status from chat — the popover still shows it.
+    if ((info as Record<string, unknown>).status === 'allowed')
+      return null
     return <div class={controlResponseMessage}>{formatRateLimitMessage(info as Record<string, unknown>)}</div>
   },
 }
@@ -307,9 +310,10 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
   if (interrupted)
     settingsParts.push('Interrupted')
 
-  // Add rate limit messages (one per rateLimitType).
+  // Add rate limit messages (one per rateLimitType), skipping "allowed" status.
   for (const info of Object.values(rateLimitByType)) {
-    settingsParts.push(formatRateLimitMessage(info))
+    if (info.status !== 'allowed')
+      settingsParts.push(formatRateLimitMessage(info))
   }
 
   const settingsLine = settingsParts.length > 0 ? settingsParts.join(', ') : null

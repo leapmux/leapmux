@@ -5,6 +5,11 @@ export const RATE_LIMIT_TYPE_LABELS: Record<string, string> = {
   seven_day: '7-day',
 }
 
+export const RATE_LIMIT_POPOVER_LABELS: Record<string, string> = {
+  five_hour: '5-Hour Rate Limit',
+  seven_day: '7-Day Rate Limit',
+}
+
 /** Format seconds remaining as d:hh:mm or h:mm. Returns null if remaining time <= 0. */
 export function formatCountdown(resetAtUnixSec: number): string | null {
   const remaining = resetAtUnixSec - Math.floor(Date.now() / 1000)
@@ -79,4 +84,38 @@ export function formatRateLimitMessage(info: Record<string, unknown>): string {
   }
 
   return parts.length > 0 ? `${prefix}: ${parts.join(' \u2014 ')}` : `${prefix} update`
+}
+
+/** Build a concise single-line summary for the popover card. */
+export function formatRateLimitSummary(info: RateLimitInfo): string {
+  const status = info.status
+  const exceeded = !!status && status !== 'allowed' && status !== 'allowed_warning'
+  const resetsAt = getResetsAt(info)
+
+  const parts: string[] = []
+
+  // Status label
+  if (status === 'allowed')
+    parts.push('Allowed')
+  else if (status === 'allowed_warning')
+    parts.push('Warning')
+  else if (exceeded)
+    parts.push('Exceeded')
+
+  // Utilization — skip when exceeded (redundant)
+  if (typeof info.utilization === 'number' && !exceeded)
+    parts.push(`${Math.round(info.utilization * 100)}% used`)
+
+  // Overage indicator
+  if (info.isUsingOverage)
+    parts.push('overage')
+
+  // Reset countdown
+  if (typeof resetsAt === 'number') {
+    const countdown = formatCountdown(resetsAt)
+    if (countdown)
+      parts.push(`resets in ${countdown}`)
+  }
+
+  return parts.length > 0 ? parts.join(', ') : 'Unknown'
 }

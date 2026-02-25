@@ -16,7 +16,7 @@ import Square from 'lucide-solid/icons/square'
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
-import { formatCountdown, getResetsAt, pickUrgentRateLimit, RATE_LIMIT_TYPE_LABELS } from '~/lib/rateLimitUtils'
+import { formatRateLimitSummary, getResetsAt, pickUrgentRateLimit, RATE_LIMIT_POPOVER_LABELS } from '~/lib/rateLimitUtils'
 import { safeGetJson, safeGetString, safeRemoveItem, safeSetJson, safeSetString } from '~/lib/safeStorage'
 import { interruptPulse, spinner } from '~/styles/animations.css'
 import { iconSize } from '~/styles/tokens'
@@ -449,27 +449,12 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       <Show when={props.agentSessionInfo?.rateLimits && Object.keys(props.agentSessionInfo!.rateLimits!).length > 0}>
         <For each={Object.values(props.agentSessionInfo!.rateLimits!)}>
           {(info) => {
-            const resetsAt = getResetsAt(info)
-            const typeLabel = RATE_LIMIT_TYPE_LABELS[info.rateLimitType ?? ''] ?? info.rateLimitType ?? 'Rate Limit'
-            const pct = info.utilization != null ? `${Math.round(info.utilization * 100)}%` : null
+            const typeLabel = RATE_LIMIT_POPOVER_LABELS[info.rateLimitType ?? ''] ?? info.rateLimitType ?? 'Rate Limit'
             return (
-              <>
-                <div class={styles.infoRow}>
-                  <span class={styles.infoLabel}>{typeLabel}</span>
-                  <span class={styles.infoValue}>
-                    {pct ? `${pct} used` : (info.status === 'allowed' || info.status === 'allowed_warning' ? 'Allowed' : 'Reached')}
-                    {info.isUsingOverage ? ' (overage)' : ''}
-                  </span>
-                </div>
-                <Show when={resetsAt}>
-                  <div class={styles.infoRow}>
-                    <span class={styles.infoLabel}>Resets In</span>
-                    <span class={styles.infoValue} title={new Date(resetsAt! * 1000).toLocaleString()}>
-                      {formatCountdown(resetsAt!) ?? 'now'}
-                    </span>
-                  </div>
-                </Show>
-              </>
+              <div class={styles.infoRow}>
+                <span class={styles.infoLabel}>{typeLabel}</span>
+                <span class={styles.infoValue}>{formatRateLimitSummary(info)}</span>
+              </div>
             )
           }}
         </For>
