@@ -32,7 +32,7 @@ import { useIsMobile } from '~/hooks/useIsMobile'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { after, mid } from '~/lib/lexorank'
 import { createAgentStore } from '~/stores/agent.store'
-import { createAgentContextStore } from '~/stores/agentContext.store'
+import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
 import { createLayoutStore } from '~/stores/layout.store'
@@ -78,7 +78,7 @@ export const AppShell: ParentComponent = (props) => {
   const terminalStore = createTerminalStore()
   const tabStore = createTabStore()
   const controlStore = createControlStore()
-  const agentContextStore = createAgentContextStore()
+  const agentSessionStore = createAgentContextStore()
   const layoutStore = createLayoutStore()
   const [fileTreePath, setFileTreePath] = createSignal('')
   const [showNewWorkspace, setShowNewWorkspace] = createSignal(false)
@@ -151,7 +151,7 @@ export const AppShell: ParentComponent = (props) => {
     terminalStore,
     tabStore,
     controlStore,
-    agentContextStore,
+    agentSessionStore,
     settingsLoading,
     getOrgId: () => org.orgId(),
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
@@ -1279,7 +1279,7 @@ export const AppShell: ParentComponent = (props) => {
         onEffortChange={v => handleModelOrEffortChange('effort', v)}
         onInterrupt={handleInterrupt}
         settingsLoading={settingsLoading.loading()}
-        agentContextInfo={agentContextStore.getInfo(agentId())}
+        agentSessionInfo={agentSessionStore.getInfo(agentId())}
         agentWorking={agentStore.state.agents.find(a => a.id === agentId())?.status === AgentStatus.ACTIVE && isAgentWorking(chatStore.getMessages(agentId()))}
         containerHeight={props.containerHeight}
       />

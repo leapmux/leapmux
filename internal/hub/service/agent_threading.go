@@ -144,7 +144,7 @@ func isNotificationThreadable(content []byte, role leapmuxv1.MessageRole) bool {
 		if json.Unmarshal(content, &msg) != nil {
 			return false
 		}
-		return msg.Type == "settings_changed" || msg.Type == "context_cleared" || msg.Type == "interrupted"
+		return msg.Type == "settings_changed" || msg.Type == "context_cleared" || msg.Type == "interrupted" || msg.Type == "rate_limit"
 
 	case leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM:
 		var msg struct {
@@ -202,6 +202,7 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 	hasInterrupted := false
 	interruptedRaw := json.RawMessage(nil)
 	var latestStatusRaw json.RawMessage
+	rateLimitByType := map[string]json.RawMessage{} // rate_limit: keep latest per rateLimitType
 	var compactionBoundaries []json.RawMessage
 
 	for _, raw := range messages {
@@ -239,6 +240,20 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 		case env.Type == "interrupted":
 			hasInterrupted = true
 			interruptedRaw = raw
+
+		case env.Type == "rate_limit":
+			var rl struct {
+				RateLimitInfo struct {
+					RateLimitType string `json:"rateLimitType"`
+				} `json:"rate_limit_info"`
+			}
+			if json.Unmarshal(raw, &rl) == nil {
+				key := rl.RateLimitInfo.RateLimitType
+				if key == "" {
+					key = "unknown"
+				}
+				rateLimitByType[key] = raw
+			}
 
 		case env.Type == "system" && env.Subtype == "status":
 			latestStatusRaw = raw
@@ -294,6 +309,11 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 	// Emit interrupted.
 	if hasInterrupted && interruptedRaw != nil {
 		result = append(result, interruptedRaw)
+	}
+
+	// Emit rate_limit entries (one per rateLimitType).
+	for _, raw := range rateLimitByType {
+		result = append(result, raw)
 	}
 
 	// Emit latest status.

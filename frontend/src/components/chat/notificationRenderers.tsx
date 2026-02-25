@@ -5,6 +5,7 @@ import type { MessageContentRenderer } from './messageRenderers'
 import ArrowDownToLine from 'lucide-solid/icons/arrow-down-to-line'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { renderMarkdown } from '~/lib/renderMarkdown'
+import { formatRateLimitMessage } from '~/lib/rateLimitUtils'
 import { spinner } from '~/styles/animations.css'
 import { EFFORT_LABELS, MODEL_LABELS, PERMISSION_MODE_LABELS } from '~/utils/controlResponse'
 import { markdownContent } from './markdownContent.css'
@@ -74,6 +75,18 @@ export const contextClearedRenderer: MessageContentRenderer = {
     if (!isObject(parsed) || parsed.type !== 'context_cleared')
       return null
     return <div class={controlResponseMessage}>Context cleared</div>
+  },
+}
+
+/** Handles rate limit notifications: {"type":"rate_limit","rate_limit_info":{...}} */
+export const rateLimitRenderer: MessageContentRenderer = {
+  render(parsed, _role, _context) {
+    if (!isObject(parsed) || parsed.type !== 'rate_limit')
+      return null
+    const info = parsed.rate_limit_info
+    if (!isObject(info))
+      return <div class={controlResponseMessage}>Rate limit update</div>
+    return <div class={controlResponseMessage}>{formatRateLimitMessage(info as Record<string, unknown>)}</div>
   },
 }
 
@@ -236,6 +249,7 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
   let microcompactLabel: string | null = null
   let microcompactPreTokens: number | undefined
   let microcompactTokensSaved: number | undefined
+  const rateLimitByType: Record<string, Record<string, unknown>> = {}
 
   for (const msg of messages) {
     if (!isObject(msg))
@@ -244,7 +258,15 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
     const t = m.type as string | undefined
     const st = m.subtype as string | undefined
 
-    if (t === 'settings_changed') {
+    if (t === 'rate_limit') {
+      const info = m.rate_limit_info
+      if (isObject(info)) {
+        const rlInfo = info as Record<string, unknown>
+        const key = (typeof rlInfo.rateLimitType === 'string' && rlInfo.rateLimitType) || 'unknown'
+        rateLimitByType[key] = rlInfo
+      }
+    }
+    else if (t === 'settings_changed') {
       const changes = m.changes as Record<string, { old: string, new: string }> | undefined
       if (changes) {
         for (const [key, val] of Object.entries(changes)) {
@@ -284,6 +306,11 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
     settingsParts.push('Context cleared')
   if (interrupted)
     settingsParts.push('Interrupted')
+
+  // Add rate limit messages (one per rateLimitType).
+  for (const info of Object.values(rateLimitByType)) {
+    settingsParts.push(formatRateLimitMessage(info))
+  }
 
   const settingsLine = settingsParts.length > 0 ? settingsParts.join(', ') : null
 

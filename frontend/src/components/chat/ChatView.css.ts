@@ -296,6 +296,13 @@ export const infoContextUsage = style({
   lineHeight: '1.4',
 })
 
+export const rateLimitCountdown = style({
+  fontSize: 'var(--text-8)',
+  color: 'var(--muted-foreground)',
+  fontFamily: 'var(--font-mono)',
+  whiteSpace: 'nowrap',
+})
+
 export const editorPanelWrapper = style({
   flexShrink: 0,
 })

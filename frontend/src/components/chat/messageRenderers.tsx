@@ -29,6 +29,7 @@ import {
   controlResponseRenderer,
   interruptedRenderer,
   microcompactBoundaryRenderer,
+  rateLimitRenderer,
   resultRenderer,
   settingsChangedRenderer,
   systemInitRenderer,
@@ -616,6 +617,7 @@ const KIND_RENDERERS: Record<string, (parsed: unknown, role: MessageRole, contex
     return settingsChangedRenderer.render(parsed, role, context)
       ?? interruptedRenderer.render(parsed, role, context)
       ?? contextClearedRenderer.render(parsed, role, context)
+      ?? rateLimitRenderer.render(parsed, role, context)
       ?? compactBoundaryRenderer.render(parsed, role, context)
       ?? microcompactBoundaryRenderer.render(parsed, role, context)
       ?? systemInitRenderer.render(parsed, role, context)
@@ -675,6 +677,7 @@ function getFallbackRenderers(): MessageContentRenderer[] {
       settingsChangedRenderer,
       interruptedRenderer,
       contextClearedRenderer,
+      rateLimitRenderer,
       compactBoundaryRenderer,
       microcompactBoundaryRenderer,
       systemInitRenderer,

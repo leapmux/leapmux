@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { ContextUsageInfo } from '~/stores/agentContext.store'
+import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import Info from 'lucide-solid/icons/info'
 import { createMemo, For, Show } from 'solid-js'
 
