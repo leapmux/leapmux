@@ -14,6 +14,7 @@ import { getTerminalInstance } from '~/components/terminal/TerminalView'
 import { AgentStatus, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { TabType, WatchEventsRequestSchema } from '~/generated/leapmux/v1/workspace_pb'
 import { decompressContentToString } from '~/lib/decompress'
+import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
 
 export interface WorkspaceConnectionParams {
   agentStore: ReturnType<typeof createAgentStore>
@@ -99,6 +100,10 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
                 const rlInfo = innerMsg.rate_limit_info as Record<string, unknown>
                 const key = (rlInfo.rateLimitType as string) || 'unknown'
                 agentSessionStore.updateInfo(agentId, { rateLimits: { [key]: rlInfo } } as Record<string, unknown>)
+              }
+              // Notify settings_changed listeners (used by ExitPlanMode bypass flow).
+              if (innerMsg.type === 'settings_changed' && innerMsg.changes && typeof innerMsg.changes === 'object') {
+                emitSettingsChanged(innerMsg.changes as { permissionMode?: { old: string, new: string } })
               }
             }
           }
