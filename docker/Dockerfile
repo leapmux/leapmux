@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# Global ARGs — versions are defined in .versions (no defaults here).
+# Global ARGs — versions are defined in versions.yaml (no defaults here).
 ARG BASE_IMAGE
 ARG BUF_VERSION
 

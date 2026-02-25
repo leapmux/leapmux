@@ -4,7 +4,17 @@ run: once
 
 vars:
   VERSION:
-    sh: cat VERSION.txt
+    sh: yq '.version' versions.yaml
+  ALPINE_IMAGE:
+    sh: yq '.alpine-image' versions.yaml
+  UBUNTU_IMAGE:
+    sh: yq '.ubuntu-image' versions.yaml
+  BUF_VERSION:
+    sh: yq '.buf-version' versions.yaml
+  SQLC_VERSION:
+    sh: yq '.sqlc-version' versions.yaml
+  S6_OVERLAY_VERSION:
+    sh: yq '.s6-overlay-version' versions.yaml
 
 # --- Code Generation ---
 
@@ -218,18 +228,17 @@ tasks:
       PLATFORM: '{{.PLATFORM | default "linux/amd64,linux/arm64"}}'
       TAG: '{{.TAG | default "leapmux:latest"}}'
     cmds:
-      - |
-        source .versions
-        docker buildx build \
-          --platform {{.PLATFORM}} \
-          --build-arg BASE_IMAGE=$ALPINE_IMAGE \
-          --build-arg BUF_VERSION=$BUF_VERSION \
-          --build-arg SQLC_VERSION=$SQLC_VERSION \
-          --build-arg S6_OVERLAY_VERSION=$S6_OVERLAY_VERSION \
-          --build-arg VERSION={{.VERSION}} \
-          -f docker/Dockerfile \
-          -t {{.TAG}} \
-          .
+      - >-
+        docker buildx build
+        --platform {{.PLATFORM}}
+        --build-arg BASE_IMAGE={{.ALPINE_IMAGE}}
+        --build-arg BUF_VERSION={{.BUF_VERSION}}
+        --build-arg SQLC_VERSION={{.SQLC_VERSION}}
+        --build-arg S6_OVERLAY_VERSION={{.S6_OVERLAY_VERSION}}
+        --build-arg VERSION={{.VERSION}}
+        -f docker/Dockerfile
+        -t {{.TAG}}
+        .
 
   docker-build-ubuntu:
     desc: Build Ubuntu Docker image
@@ -237,18 +246,17 @@ tasks:
       PLATFORM: '{{.PLATFORM | default "linux/amd64,linux/arm64"}}'
       TAG: '{{.TAG | default "leapmux:ubuntu"}}'
     cmds:
-      - |
-        source .versions
-        docker buildx build \
-          --platform {{.PLATFORM}} \
-          --build-arg BASE_IMAGE=$UBUNTU_IMAGE \
-          --build-arg BUF_VERSION=$BUF_VERSION \
-          --build-arg SQLC_VERSION=$SQLC_VERSION \
-          --build-arg S6_OVERLAY_VERSION=$S6_OVERLAY_VERSION \
-          --build-arg VERSION={{.VERSION}} \
-          -f docker/Dockerfile \
-          -t {{.TAG}} \
-          .
+      - >-
+        docker buildx build
+        --platform {{.PLATFORM}}
+        --build-arg BASE_IMAGE={{.UBUNTU_IMAGE}}
+        --build-arg BUF_VERSION={{.BUF_VERSION}}
+        --build-arg SQLC_VERSION={{.SQLC_VERSION}}
+        --build-arg S6_OVERLAY_VERSION={{.S6_OVERLAY_VERSION}}
+        --build-arg VERSION={{.VERSION}}
+        -f docker/Dockerfile
+        -t {{.TAG}}
+        .
 
   # --- Clean ---
 

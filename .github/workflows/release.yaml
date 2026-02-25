@@ -31,8 +31,8 @@ jobs:
 
       - name: Set release version
         run: |
-          echo "${{ inputs.version }}" > VERSION.txt
-          git add VERSION.txt
+          yq -i '.version = "${{ inputs.version }}"' versions.yaml
+          git add versions.yaml
           git commit -m "chore: release v${{ inputs.version }}"
 
       - name: Create tag
@@ -51,7 +51,7 @@ jobs:
 
       - name: Bump to next development version
         run: |
-          echo "${{ inputs.next_dev_version }}" > VERSION.txt
-          git add VERSION.txt
+          yq -i '.version = "${{ inputs.next_dev_version }}"' versions.yaml
+          git add versions.yaml
           git commit -m "chore: bump version to ${{ inputs.next_dev_version }}"
           git push origin HEAD

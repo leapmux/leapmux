@@ -18,10 +18,9 @@ jobs:
 
       - name: Read tool versions
         run: |
-          source .versions
-          echo "BUF_VERSION=$BUF_VERSION" >> $GITHUB_ENV
-          echo "SQLC_VERSION=$SQLC_VERSION" >> $GITHUB_ENV
-          echo "GOLANGCI_LINT_VERSION=$GOLANGCI_LINT_VERSION" >> $GITHUB_ENV
+          echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
+          echo "SQLC_VERSION=$(yq '.sqlc-version' versions.yaml)" >> $GITHUB_ENV
+          echo "GOLANGCI_LINT_VERSION=$(yq '.golangci-lint-version' versions.yaml)" >> $GITHUB_ENV
 
       - name: Setup Go
         uses: actions/setup-go@v5

@@ -34,12 +34,11 @@ jobs:
 
       - name: Read tool versions
         run: |
-          source .versions
-          echo "BUF_VERSION=$BUF_VERSION" >> $GITHUB_ENV
-          echo "SQLC_VERSION=$SQLC_VERSION" >> $GITHUB_ENV
-          echo "S6_OVERLAY_VERSION=$S6_OVERLAY_VERSION" >> $GITHUB_ENV
-          echo "ALPINE_IMAGE=$ALPINE_IMAGE" >> $GITHUB_ENV
-          echo "UBUNTU_IMAGE=$UBUNTU_IMAGE" >> $GITHUB_ENV
+          echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
+          echo "SQLC_VERSION=$(yq '.sqlc-version' versions.yaml)" >> $GITHUB_ENV
+          echo "S6_OVERLAY_VERSION=$(yq '.s6-overlay-version' versions.yaml)" >> $GITHUB_ENV
+          echo "ALPINE_IMAGE=$(yq '.alpine-image' versions.yaml)" >> $GITHUB_ENV
+          echo "UBUNTU_IMAGE=$(yq '.ubuntu-image' versions.yaml)" >> $GITHUB_ENV
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3

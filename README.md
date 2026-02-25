@@ -125,6 +125,7 @@ Before you begin, ensure you have the following installed:
 - **buf** CLI - Protocol Buffer code generation ([authentication](https://buf.build/docs/bsr/authentication/) recommended to avoid rate-limit errors)
 - **sqlc** - Type-safe SQL code generation
 - **golangci-lint** - Go linter
+- **yq** - YAML processor (used to read `versions.yaml`)
 - **SQLite** (usually pre-installed on most systems)
 - **Docker** - Required for building Docker images (on macOS, [Rancher Desktop](https://rancherdesktop.io/) is recommended)
 - **mprocs** (optional, for easier multi-process development)
@@ -136,7 +137,7 @@ Install [Bun](https://bun.sh/) by following the instructions at https://bun.sh/.
 Install the remaining dependencies with [Homebrew](https://brew.sh/):
 
 ```bash
-brew install buf go go-task golangci-lint mprocs sqlc
+brew install buf go go-task golangci-lint mprocs sqlc yq
 ```
 
 ### Operating System
@@ -296,7 +297,7 @@ Pre-built images are published to GHCR in two variants:
 | Alpine (default) | `:<version>`        | `ghcr.io/org/leapmux:1.0.0`        |
 | Ubuntu           | `:<version>-ubuntu` | `ghcr.io/org/leapmux:1.0.0-ubuntu` |
 
-Tool and base image versions are centralized in the `.versions` file at the repository root.
+Tool and base image versions are centralized in the `versions.yaml` file at the repository root.
 
 ---
 
@@ -423,8 +424,8 @@ leapmux/
 ├── buf.yaml                # Protocol Buffer linting configuration
 ├── mprocs.yaml             # Development process configuration
 ├── README.md               # This file
-├── Taskfile.yml            # Build orchestration (go-task.dev)
-└── VERSION.txt             # Version string
+├── Taskfile.yaml           # Build orchestration (go-task.dev)
+└── versions.yaml           # Version string and tool/image versions
 ```
 
 ---

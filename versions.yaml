@@ -1,0 +1,8 @@
+version: 0.0.1-dev
+
+alpine-image: alpine:3.21
+ubuntu-image: ubuntu:24.04
+buf-version: 1.65.0
+sqlc-version: 1.30.0
+golangci-lint-version: 2.10.1
+s6-overlay-version: 3.2.0.2
