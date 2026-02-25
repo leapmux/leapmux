@@ -4,11 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g. 1.0.0)'
-        required: true
-        type: string
-      next_dev_version:
-        description: 'Next development version (e.g. 1.1.0-dev)'
+        description: 'Release version (X.Y.Z format, e.g. 1.0.0)'
         required: true
         type: string
 
@@ -23,6 +19,19 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate version format
+        run: |
+          if ! echo "${{ inputs.version }}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Version must be in X.Y.Z format (e.g. 1.0.0), got '${{ inputs.version }}'"
+            exit 1
+          fi
+
+      - name: Derive next development version
+        id: next
+        run: |
+          IFS='.' read -r major minor patch <<< "${{ inputs.version }}"
+          echo "dev_version=${major}.${minor}.$((patch + 1))-dev" >> "$GITHUB_OUTPUT"
 
       - name: Configure git
         run: |
@@ -51,7 +60,7 @@ jobs:
 
       - name: Bump to next development version
         run: |
-          yq -i '.version = "${{ inputs.next_dev_version }}"' versions.yaml
+          yq -i '.version = "${{ steps.next.outputs.dev_version }}"' versions.yaml
           git add versions.yaml
-          git commit -m "chore: bump version to ${{ inputs.next_dev_version }}"
+          git commit -m "chore: bump version to ${{ steps.next.outputs.dev_version }}"
           git push origin HEAD
