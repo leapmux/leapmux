@@ -3,7 +3,9 @@ import type { ActionsProps } from './types'
 import type { ControlRequest } from '~/stores/control.store'
 
 import { Show } from 'solid-js'
+import { apiCallTimeout } from '~/api/transport'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
+import { waitForSettingsChanged } from '~/lib/settingsChangedEvent'
 import { buildAllowResponse, getToolInput } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
 import { CollapsibleList } from './CollapsibleList'
@@ -80,9 +82,25 @@ export const ExitPlanModeActions: Component<ActionsProps> = (props) => {
     sendResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId))
   }
 
-  const handleBypassPermissions = () => {
-    // Approve the current request first, then switch to bypass mode.
+  const handleBypassPermissions = async () => {
+    // Approve the current request first.
     sendResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId))
+
+    // The backend auto-sets permission mode to 'default' when ExitPlanMode
+    // is approved. Wait for that settings_changed notification before
+    // sending set_permission_mode, to avoid the race where our
+    // bypassPermissions request gets overwritten by the auto-set.
+    try {
+      await waitForSettingsChanged(
+        changes => changes.permissionMode?.old === 'plan',
+        apiCallTimeout().timeoutMs ?? 15_000,
+      )
+    }
+    catch {
+      // On timeout, proceed anyway — degrade to old behavior rather than
+      // silently dropping the user's intent.
+    }
+
     props.onPermissionModeChange?.('bypassPermissions')
   }
 
