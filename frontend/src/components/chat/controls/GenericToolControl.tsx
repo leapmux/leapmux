@@ -6,6 +6,7 @@ import { Show } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
 import { buildAllowResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
+import { CollapsibleText } from './CollapsibleText'
 import { sendResponse } from './types'
 
 export const GenericToolContent: Component<{ request: ControlRequest }> = (props) => {
@@ -26,7 +27,7 @@ export const GenericToolContent: Component<{ request: ControlRequest }> = (props
         Permission Required:
         {toolName()}
       </div>
-      <pre class={styles.toolSummary}>{inputSummary()}</pre>
+      <CollapsibleText text={inputSummary()} maxLines={6} class={styles.toolSummary} />
     </>
   )
 }

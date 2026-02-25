@@ -150,6 +150,8 @@ export const controlBanner = style({
   backgroundColor: 'var(--lm-warning-subtle)',
   borderBottom: '1px solid var(--border)',
   flexShrink: 0,
+  maxHeight: '200px',
+  overflowY: 'auto',
 })
 
 export const controlBannerTitle = style({
@@ -185,6 +187,20 @@ export const controlFooterRight = style({
   gap: spacing.xs,
   justifyContent: 'flex-end',
   gridColumn: 3,
+})
+
+export const collapsibleToggle = style({
+  'all': 'unset',
+  'display': 'inline',
+  'fontSize': 'var(--text-8)',
+  'color': 'var(--muted-foreground)',
+  'cursor': 'pointer',
+  'textDecoration': 'underline',
+  'textDecorationStyle': 'dotted',
+  'textUnderlineOffset': '2px',
+  ':hover': {
+    color: 'var(--foreground)',
+  },
 })
 
 // Apply markdown content styling inside the banner
