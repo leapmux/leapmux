@@ -3,10 +3,10 @@ import { expect, test } from './fixtures'
 test.describe('Resizable Sidebars', () => {
   test('should render left and right panels', async ({ page, authenticatedWorkspace }) => {
     // Left sidebar should be visible (use section header testid to avoid ambiguity with breadcrumbs)
-    await expect(page.locator('[data-testid="section-header-in_progress"]')).toBeVisible()
+    await expect(page.locator('[data-testid="section-header-workspaces_in_progress"]')).toBeVisible()
 
     // Right sidebar should be visible with "Files" header
-    await expect(page.getByText('Files', { exact: true })).toBeVisible()
+    await expect(page.locator('[data-testid="section-header-files-summary"]')).toBeVisible()
   })
 
   test('should show resize handles between panels', async ({ page, authenticatedWorkspace }) => {
@@ -52,7 +52,7 @@ test.describe('Resizable Sidebars', () => {
     await expect(page.getByRole('heading', { name: 'Workers' })).toBeVisible()
 
     // Right sidebar (Files) should not be visible
-    await expect(page.getByText('Files', { exact: true })).not.toBeVisible()
+    await expect(page.locator('[data-testid="section-header-files-summary"]')).not.toBeVisible()
 
     // Only 1 resize handle should exist (left|center)
     const handles = page.locator('[data-testid="resize-handle"]')
@@ -66,8 +66,8 @@ test.describe('Pane Resize Handles', () => {
    * so that a pane resize handle appears between them.
    */
   async function ensureBothSectionsExpanded(page: any) {
-    const inProgress = page.locator('[data-testid="section-header-in_progress"]')
-    const archived = page.locator('[data-testid="section-header-archived"]')
+    const inProgress = page.locator('[data-testid="section-header-workspaces_in_progress"]')
+    const archived = page.locator('[data-testid="section-header-workspaces_archived"]')
 
     await expect(inProgress).toBeVisible()
     await expect(archived).toBeVisible()
@@ -126,7 +126,7 @@ test.describe('Pane Resize Handles', () => {
     await ensureBothSectionsExpanded(page)
 
     // Collapse Archived section
-    await page.locator('[data-testid="section-header-archived"] > summary').click()
+    await page.locator('[data-testid="section-header-workspaces_archived"] > summary').click()
 
     // Pane resize handle should disappear
     await expect(page.locator('[data-testid="pane-resize-handle"]')).toHaveCount(0)
@@ -173,10 +173,10 @@ test.describe('Pane Resize Handles', () => {
     // get a resize handle. Verify by ensuring only 1 section is open and
     // confirming no pane handles exist despite user menu being present.
 
-    await expect(page.locator('[data-testid="section-header-in_progress"]')).toBeVisible()
+    await expect(page.locator('[data-testid="section-header-workspaces_in_progress"]')).toBeVisible()
 
     // Ensure Archived is collapsed so only In Progress is open
-    const archived = page.locator('[data-testid="section-header-archived"]')
+    const archived = page.locator('[data-testid="section-header-workspaces_archived"]')
     await expect(archived).toBeVisible()
     const archivedOpen = await archived.getAttribute('open')
     if (archivedOpen !== null) {

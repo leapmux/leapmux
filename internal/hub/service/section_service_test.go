@@ -90,23 +90,40 @@ func TestSectionService_ListSections_AutoInitializes(t *testing.T) {
 		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
 	require.NoError(t, err)
 
-	// Should auto-create "In progress" and "Archived" sections.
+	// Should auto-create all default sections: In progress, Shared, Archived (left), Files, To-dos (right).
 	sections := resp.Msg.GetSections()
-	require.Len(t, sections, 2)
+	require.Len(t, sections, 5)
 
-	var hasInProgress, hasArchived bool
+	var hasInProgress, hasShared, hasArchived, hasFiles, hasTodos bool
 	for _, s := range sections {
 		switch s.GetSectionType() {
-		case leapmuxv1.SectionType_SECTION_TYPE_IN_PROGRESS:
+		case leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS:
 			hasInProgress = true
 			assert.Equal(t, "In progress", s.GetName())
-		case leapmuxv1.SectionType_SECTION_TYPE_ARCHIVED:
+			assert.Equal(t, leapmuxv1.Sidebar_SIDEBAR_LEFT, s.GetSidebar())
+		case leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_SHARED:
+			hasShared = true
+			assert.Equal(t, "Shared", s.GetName())
+			assert.Equal(t, leapmuxv1.Sidebar_SIDEBAR_LEFT, s.GetSidebar())
+		case leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED:
 			hasArchived = true
 			assert.Equal(t, "Archived", s.GetName())
+			assert.Equal(t, leapmuxv1.Sidebar_SIDEBAR_LEFT, s.GetSidebar())
+		case leapmuxv1.SectionType_SECTION_TYPE_FILES:
+			hasFiles = true
+			assert.Equal(t, "Files", s.GetName())
+			assert.Equal(t, leapmuxv1.Sidebar_SIDEBAR_RIGHT, s.GetSidebar())
+		case leapmuxv1.SectionType_SECTION_TYPE_TODOS:
+			hasTodos = true
+			assert.Equal(t, "To-dos", s.GetName())
+			assert.Equal(t, leapmuxv1.Sidebar_SIDEBAR_RIGHT, s.GetSidebar())
 		}
 	}
 	assert.True(t, hasInProgress, "missing in_progress section")
+	assert.True(t, hasShared, "missing shared section")
 	assert.True(t, hasArchived, "missing archived section")
+	assert.True(t, hasFiles, "missing files section")
+	assert.True(t, hasTodos, "missing todos section")
 }
 
 func TestSectionService_CreateSection(t *testing.T) {
@@ -123,13 +140,14 @@ func TestSectionService_CreateSection(t *testing.T) {
 
 	sec := resp.Msg.GetSection()
 	assert.Equal(t, "My Custom", sec.GetName())
-	assert.Equal(t, leapmuxv1.SectionType_SECTION_TYPE_CUSTOM, sec.GetSectionType())
+	assert.Equal(t, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM, sec.GetSectionType())
+	assert.Equal(t, leapmuxv1.Sidebar_SIDEBAR_LEFT, sec.GetSidebar())
 	assert.NotEmpty(t, sec.GetId())
 
 	// Verify it appears in the list.
 	listResp, _ := env.client.ListSections(context.Background(), authedReq(
 		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
-	require.Len(t, listResp.Msg.GetSections(), 3)
+	require.Len(t, listResp.Msg.GetSections(), 6)
 }
 
 func TestSectionService_CreateSection_EmptyName(t *testing.T) {
@@ -193,10 +211,47 @@ func TestSectionService_DeleteSection(t *testing.T) {
 		&leapmuxv1.DeleteSectionRequest{SectionId: sectionID}, env.token))
 	require.NoError(t, err)
 
-	// Verify it's gone (back to 2 default sections).
+	// Verify it's gone (back to 5 default sections).
 	listResp, _ := env.client.ListSections(context.Background(), authedReq(
 		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
-	require.Len(t, listResp.Msg.GetSections(), 2)
+	require.Len(t, listResp.Msg.GetSections(), 5)
+}
+
+func TestSectionService_MoveSection(t *testing.T) {
+	env := setupSectionTest(t)
+
+	// Trigger auto-init.
+	listResp, _ := env.client.ListSections(context.Background(), authedReq(
+		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+
+	// Find the "In progress" section (should be on left sidebar).
+	var inProgressID string
+	for _, s := range listResp.Msg.GetSections() {
+		if s.GetSectionType() == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS {
+			inProgressID = s.GetId()
+			assert.Equal(t, leapmuxv1.Sidebar_SIDEBAR_LEFT, s.GetSidebar())
+		}
+	}
+	require.NotEmpty(t, inProgressID)
+
+	// Move it to the right sidebar.
+	_, err := env.client.MoveSection(context.Background(), authedReq(
+		&leapmuxv1.MoveSectionRequest{
+			SectionId: inProgressID,
+			Sidebar:   leapmuxv1.Sidebar_SIDEBAR_RIGHT,
+			Position:  "z",
+		}, env.token))
+	require.NoError(t, err)
+
+	// Verify it's now on the right sidebar.
+	listResp2, _ := env.client.ListSections(context.Background(), authedReq(
+		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+	for _, s := range listResp2.Msg.GetSections() {
+		if s.GetId() == inProgressID {
+			assert.Equal(t, leapmuxv1.Sidebar_SIDEBAR_RIGHT, s.GetSidebar())
+			assert.Equal(t, "z", s.GetPosition())
+		}
+	}
 }
 
 func TestSectionService_MoveWorkspace(t *testing.T) {
@@ -226,7 +281,7 @@ func TestSectionService_MoveWorkspace(t *testing.T) {
 
 	var archivedID string
 	for _, s := range listResp.Msg.GetSections() {
-		if s.GetSectionType() == leapmuxv1.SectionType_SECTION_TYPE_ARCHIVED {
+		if s.GetSectionType() == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED {
 			archivedID = s.GetId()
 		}
 	}

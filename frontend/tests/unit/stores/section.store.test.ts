@@ -46,8 +46,8 @@ describe('createSectionStore', () => {
     createRoot((dispose) => {
       const store = createSectionStore()
       const sections = [
-        makeSection('s1', 'In Progress', SectionType.IN_PROGRESS, 'n'),
-        makeSection('s2', 'Archived', SectionType.ARCHIVED, 'nn'),
+        makeSection('s1', 'In Progress', SectionType.WORKSPACES_IN_PROGRESS, 'n'),
+        makeSection('s2', 'Archived', SectionType.WORKSPACES_ARCHIVED, 'nn'),
       ]
       store.setSections(sections)
       expect(store.state.sections).toHaveLength(2)
@@ -72,7 +72,7 @@ describe('createSectionStore', () => {
   it('should add section', () => {
     createRoot((dispose) => {
       const store = createSectionStore()
-      store.addSection(makeSection('s1', 'Custom', SectionType.CUSTOM, 'n'))
+      store.addSection(makeSection('s1', 'Custom', SectionType.WORKSPACES_CUSTOM, 'n'))
       expect(store.state.sections).toHaveLength(1)
       expect(store.state.sections[0].name).toBe('Custom')
       dispose()
@@ -83,8 +83,8 @@ describe('createSectionStore', () => {
     createRoot((dispose) => {
       const store = createSectionStore()
       store.setSections([
-        makeSection('s1', 'In Progress', SectionType.IN_PROGRESS, 'n'),
-        makeSection('s2', 'Custom', SectionType.CUSTOM, 'nn'),
+        makeSection('s1', 'In Progress', SectionType.WORKSPACES_IN_PROGRESS, 'n'),
+        makeSection('s2', 'Custom', SectionType.WORKSPACES_CUSTOM, 'nn'),
       ])
       store.setItems([
         makeItem('w1', 's1', 'n'),
@@ -140,13 +140,13 @@ describe('createSectionStore', () => {
     createRoot((dispose) => {
       const store = createSectionStore()
       store.setSections([
-        makeSection('s1', 'In Progress', SectionType.IN_PROGRESS, 'n'),
-        makeSection('s2', 'Archived', SectionType.ARCHIVED, 'nn'),
+        makeSection('s1', 'In Progress', SectionType.WORKSPACES_IN_PROGRESS, 'n'),
+        makeSection('s2', 'Archived', SectionType.WORKSPACES_ARCHIVED, 'nn'),
       ])
 
       const section = store.getInProgressSection()
       expect(section?.id).toBe('s1')
-      expect(section?.sectionType).toBe(SectionType.IN_PROGRESS)
+      expect(section?.sectionType).toBe(SectionType.WORKSPACES_IN_PROGRESS)
       dispose()
     })
   })
@@ -155,13 +155,13 @@ describe('createSectionStore', () => {
     createRoot((dispose) => {
       const store = createSectionStore()
       store.setSections([
-        makeSection('s1', 'In Progress', SectionType.IN_PROGRESS, 'n'),
-        makeSection('s2', 'Archived', SectionType.ARCHIVED, 'nn'),
+        makeSection('s1', 'In Progress', SectionType.WORKSPACES_IN_PROGRESS, 'n'),
+        makeSection('s2', 'Archived', SectionType.WORKSPACES_ARCHIVED, 'nn'),
       ])
 
       const section = store.getArchivedSection()
       expect(section?.id).toBe('s2')
-      expect(section?.sectionType).toBe(SectionType.ARCHIVED)
+      expect(section?.sectionType).toBe(SectionType.WORKSPACES_ARCHIVED)
       dispose()
     })
   })

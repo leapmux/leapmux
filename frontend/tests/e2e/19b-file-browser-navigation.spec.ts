@@ -12,7 +12,7 @@ test.describe('File Browser Navigation', () => {
       await waitForWorkspaceReady(page)
 
       // The Files sidebar should be visible in the right panel
-      await expect(page.getByText('Files')).toBeVisible()
+      await expect(page.locator('[data-testid="section-header-files-summary"]')).toBeVisible()
 
       // Wait for file entries to load (working dir is the frontend dir)
       // package.json should exist in the frontend directory

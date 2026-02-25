@@ -2,35 +2,38 @@ import type { Component } from 'solid-js'
 import type { SidebarSectionDef } from './CollapsibleSidebar'
 import type { Section } from '~/generated/leapmux/v1/section_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
+import type { createSectionStore } from '~/stores/section.store'
 
-import { closestCenter, DragDropProvider, DragDropSensors, DragOverlay } from '@thisbeyond/solid-dnd'
 import Archive from 'lucide-solid/icons/archive'
 import CircleUser from 'lucide-solid/icons/circle-user'
 import Folder from 'lucide-solid/icons/folder'
+import FolderTree from 'lucide-solid/icons/folder-tree'
 import Layers from 'lucide-solid/icons/layers'
+import ListChecks from 'lucide-solid/icons/list-checks'
 import Plus from 'lucide-solid/icons/plus'
 import Users from 'lucide-solid/icons/users'
-import { createEffect, createMemo, createSignal, Show } from 'solid-js'
+import { createMemo, createSignal, onCleanup, Show } from 'solid-js'
 import { sectionClient, workspaceClient } from '~/api/clients'
 import { IconButton } from '~/components/common/IconButton'
 import { showToast } from '~/components/common/Toast'
-import * as wsStyles from '~/components/workspace/workspaceList.css'
+import { dragOverlay as wsDragOverlay } from '~/components/workspace/workspaceList.css'
 import { WorkspaceSectionContent } from '~/components/workspace/WorkspaceSectionContent'
 import { WorkspaceSharingDialog } from '~/components/workspace/WorkspaceSharingDialog'
 import { useAuth } from '~/context/AuthContext'
-import { useOrg } from '~/context/OrgContext'
-import { SectionType } from '~/generated/leapmux/v1/section_pb'
+import { Sidebar, SectionType } from '~/generated/leapmux/v1/section_pb'
 import { mid } from '~/lib/lexorank'
 import { sanitizeName } from '~/lib/validate'
-import { createSectionStore } from '~/stores/section.store'
 import { iconSize } from '~/styles/tokens'
 import { CollapsibleSidebar } from './CollapsibleSidebar'
+import { useSectionDrag } from './SectionDragContext'
 import * as csStyles from './CollapsibleSidebar.css'
 import { UserMenu } from './UserMenu'
 
 interface LeftSidebarProps {
   workspaces: Workspace[]
   activeWorkspaceId: string | null
+  sectionStore: ReturnType<typeof createSectionStore>
+  loadSections: () => Promise<void>
   onSelectWorkspace: (id: string) => void
   onNewWorkspace: (sectionId: string | null) => void
   onRefreshWorkspaces: () => void
@@ -46,13 +49,12 @@ interface LeftSidebarProps {
 interface SectionGroup {
   section: Section
   workspaces: Workspace[]
-  isVirtual?: boolean
 }
 
 export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
   const auth = useAuth()
-  const org = useOrg()
-  const store = createSectionStore()
+  const store = props.sectionStore
+  const { setExternalDragHandler, setExternalOverlayRenderer } = useSectionDrag()
 
   const [renamingWorkspaceId, setRenamingWorkspaceId] = createSignal<string | null>(null)
   const [renameValue, setRenameValue] = createSignal('')
@@ -89,34 +91,6 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
   }
 
   // ---------------------------------------------------------------------------
-  // Load sections
-  // ---------------------------------------------------------------------------
-
-  const loadSections = async () => {
-    const orgId = org.orgId()
-    if (!orgId)
-      return
-    store.setLoading(true)
-    try {
-      const resp = await sectionClient.listSections({ orgId })
-      store.setSections(resp.sections)
-      store.setItems(resp.items)
-    }
-    catch (err) {
-      store.setError(err instanceof Error ? err.message : 'Failed to load sections')
-    }
-    finally {
-      store.setLoading(false)
-    }
-  }
-
-  createEffect(() => {
-    if (org.orgId()) {
-      loadSections()
-    }
-  })
-
-  // ---------------------------------------------------------------------------
   // Workspace grouping
   // ---------------------------------------------------------------------------
 
@@ -129,15 +103,14 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
     props.workspaces.filter(w => w.createdBy !== currentUserId()),
   )
 
-  const sectionGroups = createMemo((): SectionGroup[] => {
-    const sections = store.state.sections
-    const groups: SectionGroup[] = []
+  /** Get sections for the left sidebar, sorted by position. */
+  const leftSections = createMemo(() =>
+    store.getSectionsForSidebar(Sidebar.LEFT),
+  )
 
-    const inProgressSection = sections.find(s => s.sectionType === SectionType.IN_PROGRESS)
-    const archivedSection = sections.find(s => s.sectionType === SectionType.ARCHIVED)
-    const customSections = sections
-      .filter(s => s.sectionType === SectionType.CUSTOM)
-      .sort((a, b) => a.position.localeCompare(b.position))
+  const sectionGroups = createMemo((): SectionGroup[] => {
+    const sections = leftSections()
+    const groups: SectionGroup[] = []
 
     const getWorkspacesForSection = (sectionId: string): Workspace[] => {
       const sectionItems = store.state.items
@@ -151,39 +124,22 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
     const assignedIds = new Set(store.state.items.map(i => i.workspaceId))
     const unassigned = ownedWorkspaces().filter(w => !assignedIds.has(w.id))
 
-    if (inProgressSection) {
-      groups.push({
-        section: inProgressSection,
-        workspaces: [...getWorkspacesForSection(inProgressSection.id), ...unassigned],
-      })
-    }
-
-    for (const section of customSections) {
-      groups.push({
-        section,
-        workspaces: getWorkspacesForSection(section.id),
-      })
-    }
-
-    const shared = sharedWorkspaces()
-    if (shared.length > 0) {
-      groups.push({
-        section: {
-          id: '__shared__',
-          name: 'Shared',
-          position: '',
-          sectionType: SectionType.UNSPECIFIED,
-        } as Section,
-        workspaces: shared,
-        isVirtual: true,
-      })
-    }
-
-    if (archivedSection) {
-      groups.push({
-        section: archivedSection,
-        workspaces: getWorkspacesForSection(archivedSection.id),
-      })
+    for (const section of sections) {
+      if (isWorkspaceSection(section.sectionType)) {
+        const sectionWorkspaces = getWorkspacesForSection(section.id)
+        groups.push({
+          section,
+          workspaces: section.sectionType === SectionType.WORKSPACES_IN_PROGRESS
+            ? [...sectionWorkspaces, ...unassigned]
+            : section.sectionType === SectionType.WORKSPACES_SHARED
+              ? sharedWorkspaces()
+              : sectionWorkspaces,
+        })
+      }
+      else {
+        // Non-workspace sections (FILES, TODOS) on the left sidebar get empty groups
+        groups.push({ section, workspaces: [] })
+      }
     }
 
     return groups
@@ -257,7 +213,7 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
 
   const findFirstNonArchivedWorkspaceId = (): string | null => {
     for (const group of sectionGroups()) {
-      if (group.section.sectionType === SectionType.ARCHIVED)
+      if (group.section.sectionType === SectionType.WORKSPACES_ARCHIVED)
         continue
       if (group.workspaces.length > 0)
         return group.workspaces[0].id
@@ -273,7 +229,7 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
     try {
       await workspaceClient.deleteWorkspace({ workspaceId })
       props.onRefreshWorkspaces()
-      await loadSections()
+      await props.loadSections()
 
       if (props.onDeleteWorkspace) {
         const nextId = findFirstNonArchivedWorkspaceId()
@@ -300,7 +256,9 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
   }
 
   const canAddToSection = (section: Section): boolean => {
-    return section.sectionType !== SectionType.ARCHIVED && section.id !== '__shared__'
+    return section.sectionType !== SectionType.WORKSPACES_ARCHIVED
+      && section.sectionType !== SectionType.WORKSPACES_SHARED
+      && isWorkspaceSection(section.sectionType)
   }
 
   // ---------------------------------------------------------------------------
@@ -342,7 +300,10 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
 
     const wsId = dragId.slice(3)
     const fromSectionId = draggable.data?.sectionId as string
-    if (fromSectionId === '__shared__')
+
+    // Don't allow dragging from the Shared section
+    const fromSection = store.state.sections.find(s => s.id === fromSectionId)
+    if (fromSection?.sectionType === SectionType.WORKSPACES_SHARED)
       return
 
     let targetSectionId: string
@@ -351,7 +312,8 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
     if (dropId.startsWith('ws-')) {
       const targetWsId = dropId.slice(3)
       targetSectionId = droppable.data?.sectionId as string
-      if (targetSectionId === '__shared__')
+      const targetSection = store.state.sections.find(s => s.id === targetSectionId)
+      if (targetSection?.sectionType === SectionType.WORKSPACES_SHARED)
         return
 
       if (fromSectionId === targetSectionId) {
@@ -367,7 +329,8 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
     }
     else if (dropId.startsWith('section-')) {
       targetSectionId = dropId.slice(8)
-      if (targetSectionId === '__shared__' || fromSectionId === targetSectionId)
+      const targetSection = store.state.sections.find(s => s.id === targetSectionId)
+      if (targetSection?.sectionType === SectionType.WORKSPACES_SHARED || fromSectionId === targetSectionId)
         return
       const items = store.getItemsForSection(targetSectionId)
       const lastItem = items[items.length - 1]
@@ -382,23 +345,48 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
     sectionClient.moveWorkspace({ workspaceId: wsId, sectionId: targetSectionId, position })
       .catch((err) => {
         showToast(err instanceof Error ? err.message : 'Failed to reorder workspace', 'danger')
-        loadSections()
+        props.loadSections()
       })
       .finally(() => done())
   }
+
+  // Register workspace DnD handlers with the unified SectionDragProvider.
+  // This allows workspace dragging to work through the shared DragDropProvider
+  // instead of requiring a separate nested provider (which would shadow section DnD).
+  setExternalDragHandler(handleDragEnd)
+  setExternalOverlayRenderer((draggable: any) => {
+    if (!draggable)
+      return <></>
+    const id = String(draggable.id)
+    if (!id.startsWith('ws-'))
+      return <></>
+    const wsId = id.slice(3)
+    const workspace = props.workspaces.find(w => w.id === wsId)
+    return workspace
+      ? <div class={wsDragOverlay}>{workspace.title || 'Untitled'}</div>
+      : <></>
+  })
+  onCleanup(() => {
+    setExternalDragHandler(null)
+    setExternalOverlayRenderer(null)
+  })
 
   // ---------------------------------------------------------------------------
   // Section icon mapping
   // ---------------------------------------------------------------------------
 
-  const getSectionIcon = (section: Section, isVirtual?: boolean) => {
-    if (isVirtual)
-      return Users
+  const getSectionIcon = (section: Section) => {
     switch (section.sectionType) {
-      case SectionType.IN_PROGRESS:
+      case SectionType.WORKSPACES_IN_PROGRESS:
         return Layers
-      case SectionType.ARCHIVED:
+      case SectionType.WORKSPACES_ARCHIVED:
         return Archive
+      case SectionType.WORKSPACES_SHARED:
+        return Users
+      case SectionType.FILES:
+        return FolderTree
+      case SectionType.TODOS:
+        return ListChecks
       default:
         return Folder
     }
@@ -406,12 +394,6 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
 
   // ---------------------------------------------------------------------------
   // Reactive helpers for content factories.
-  //
-  // Content factories are called once per section mount (see CollapsibleSidebar
-  // ID-based <For>).  SolidJS compiles JSX props as getters, so reading
-  // reactive state (sectionGroups(), currentUserId(), etc.) inside the factory
-  // keeps the component's props reactive even though the factory itself is
-  // called only once.
   // ---------------------------------------------------------------------------
 
   const getWorkspacesForGroup = (sectionId: string): Workspace[] => {
@@ -419,8 +401,9 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
     return group?.workspaces ?? []
   }
 
-  const isGroupVirtual = (sectionId: string): boolean => {
-    return sectionGroups().find(g => g.section.id === sectionId)?.isVirtual ?? false
+  const isGroupShared = (sectionId: string): boolean => {
+    const group = sectionGroups().find(g => g.section.id === sectionId)
+    return group?.section.sectionType === SectionType.WORKSPACES_SHARED
   }
 
   // ---------------------------------------------------------------------------
@@ -433,57 +416,79 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
 
     for (const group of groups) {
       const sectionId = group.section.id
+      const sectionType = group.section.sectionType
+      const isShared = sectionType === SectionType.WORKSPACES_SHARED
 
-      sections.push({
-        id: sectionId,
-        title: group.section.name,
-        railIcon: getSectionIcon(group.section, group.isVirtual),
-        railTitle: group.section.name,
-        defaultOpen: group.section.sectionType !== SectionType.ARCHIVED,
-        collapsible: true,
-        headerActions: canAddToSection(group.section)
-          ? (
-              <IconButton
-                icon={Plus}
-                iconSize={iconSize.sm}
-                size="md"
-                title={`New workspace in ${group.section.name}`}
-                data-testid={group.section.sectionType === SectionType.IN_PROGRESS ? 'sidebar-new-workspace' : undefined}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  e.preventDefault()
-                  props.onNewWorkspace(sectionId)
-                }}
-              />
-            )
-          : undefined,
-        testId: `section-header-${group.isVirtual ? 'shared' : SectionType[group.section.sectionType]?.toLowerCase() ?? group.section.sectionType}`,
-        content: () => (
-          <WorkspaceSectionContent
-            workspaces={getWorkspacesForGroup(sectionId)}
-            sectionId={sectionId}
-            activeWorkspaceId={props.activeWorkspaceId}
-            currentUserId={currentUserId()}
-            isVirtual={isGroupVirtual(sectionId)}
-            sections={store.state.sections}
-            onSelect={props.onSelectWorkspace}
-            onRename={startRename}
-            onMoveTo={moveWorkspace}
-            onShare={id => setSharingWorkspaceId(id)}
-            onArchive={archiveWorkspace}
-            onUnarchive={unarchiveWorkspace}
-            onDelete={deleteWorkspace}
-            getSectionId={getSectionId}
-            isArchived={isWorkspaceArchived}
-            renamingWorkspaceId={renamingWorkspaceId()}
-            renameValue={renameValue()}
-            onRenameInput={v => setRenameValue(sanitizeName(v).value)}
-            onRenameCommit={commitRename}
-            onRenameCancel={cancelRename}
-            isWorkspaceLoading={isWorkspaceLoading}
-          />
-        ),
-      })
+      if (isWorkspaceSection(sectionType)) {
+        sections.push({
+          id: sectionId,
+          title: group.section.name,
+          railIcon: getSectionIcon(group.section),
+          railTitle: group.section.name,
+          defaultOpen: sectionType !== SectionType.WORKSPACES_ARCHIVED,
+          collapsible: true,
+          draggable: true,
+          visible: !isShared || sharedWorkspaces().length > 0,
+          headerActions: canAddToSection(group.section)
+            ? (
+                <IconButton
+                  icon={Plus}
+                  iconSize={iconSize.sm}
+                  size="md"
+                  title={`New workspace in ${group.section.name}`}
+                  data-testid={sectionType === SectionType.WORKSPACES_IN_PROGRESS ? 'sidebar-new-workspace' : undefined}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    e.preventDefault()
+                    props.onNewWorkspace(sectionId)
+                  }}
+                />
+              )
+            : undefined,
+          testId: `section-header-${sectionTypeTestId(sectionType)}`,
+          content: () => (
+            <WorkspaceSectionContent
+              workspaces={getWorkspacesForGroup(sectionId)}
+              sectionId={sectionId}
+              activeWorkspaceId={props.activeWorkspaceId}
+              currentUserId={currentUserId()}
+              isVirtual={isGroupShared(sectionId)}
+              sections={store.state.sections}
+              onSelect={props.onSelectWorkspace}
+              onRename={startRename}
+              onMoveTo={moveWorkspace}
+              onShare={id => setSharingWorkspaceId(id)}
+              onArchive={archiveWorkspace}
+              onUnarchive={unarchiveWorkspace}
+              onDelete={deleteWorkspace}
+              getSectionId={getSectionId}
+              isArchived={isWorkspaceArchived}
+              renamingWorkspaceId={renamingWorkspaceId()}
+              renameValue={renameValue()}
+              onRenameInput={v => setRenameValue(sanitizeName(v).value)}
+              onRenameCommit={commitRename}
+              onRenameCancel={cancelRename}
+              isWorkspaceLoading={isWorkspaceLoading}
+            />
+          ),
+        })
+      }
+      else {
+        // Non-workspace sections (FILES, TODOS) rendered on the left sidebar.
+        // These are placeholder sections; the actual content is rendered by
+        // the unified builder in AppShell when moved here.
+        sections.push({
+          id: sectionId,
+          title: group.section.name,
+          railIcon: getSectionIcon(group.section),
+          railTitle: group.section.name,
+          defaultOpen: true,
+          collapsible: true,
+          draggable: true,
+          testId: `section-header-${sectionTypeTestId(sectionType)}`,
+          content: () => <></>,
+        })
+      }
     }
 
     // User Menu section (rail-only in collapsed, rendered at bottom in expanded)
@@ -520,30 +525,16 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
 
   return (
     <>
-      <DragDropProvider onDragEnd={handleDragEnd} collisionDetector={closestCenter}>
-        <DragDropSensors />
-        <CollapsibleSidebar
-          sections={sidebarSections()}
-          side="left"
-          isCollapsed={props.isCollapsed}
-          onExpand={props.onExpand}
-          onCollapse={props.onCollapse}
-          initialOpenSections={props.initialOpenSections}
-          initialSectionSizes={props.initialSectionSizes}
-          onStateChange={props.onSectionStateChange}
-        />
-        <DragOverlay>
-          {(draggable: any) => {
-            if (!draggable)
-              return <></>
-            const wsId = String(draggable.id).replace('ws-', '')
-            const workspace = props.workspaces.find(w => w.id === wsId)
-            return workspace
-              ? <div class={wsStyles.dragOverlay}>{workspace.title || 'Untitled'}</div>
-              : <></>
-          }}
-        </DragOverlay>
-      </DragDropProvider>
+      <CollapsibleSidebar
+        sections={sidebarSections()}
+        side="left"
+        isCollapsed={props.isCollapsed}
+        onExpand={props.onExpand}
+        onCollapse={props.onCollapse}
+        initialOpenSections={props.initialOpenSections}
+        initialSectionSizes={props.initialSectionSizes}
+        onStateChange={props.onSectionStateChange}
+      />
 
       <Show when={sharingWorkspaceId()}>
         {workspaceId => (
@@ -559,4 +550,25 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
       </Show>
     </>
   )
+}
+
+/** Whether the section type is a workspace section (can contain workspaces). */
+function isWorkspaceSection(sectionType: SectionType): boolean {
+  return sectionType === SectionType.WORKSPACES_IN_PROGRESS
+    || sectionType === SectionType.WORKSPACES_CUSTOM
+    || sectionType === SectionType.WORKSPACES_ARCHIVED
+    || sectionType === SectionType.WORKSPACES_SHARED
+}
+
+/** Map section type to a test ID slug. */
+function sectionTypeTestId(sectionType: SectionType): string {
+  switch (sectionType) {
+    case SectionType.WORKSPACES_IN_PROGRESS: return 'workspaces_in_progress'
+    case SectionType.WORKSPACES_CUSTOM: return 'workspaces_custom'
+    case SectionType.WORKSPACES_ARCHIVED: return 'workspaces_archived'
+    case SectionType.WORKSPACES_SHARED: return 'workspaces_shared'
+    case SectionType.FILES: return 'files'
+    case SectionType.TODOS: return 'todos'
+    default: return String(sectionType)
+  }
 }

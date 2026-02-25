@@ -186,3 +186,33 @@ export const bottomSection = style({
   alignItems: 'center',
   borderTop: '1px solid var(--border)',
 })
+
+/** Drag handle for section headers (visible on hover). */
+export const sectionDragHandle = style({
+  'display': 'flex',
+  'alignItems': 'center',
+  'justifyContent': 'center',
+  'cursor': 'grab',
+  'opacity': 0,
+  'transition': 'opacity 0.15s',
+  'marginLeft': '-6px',
+  'marginRight': '-2px',
+  'color': 'var(--muted-foreground)',
+  'flexShrink': 0,
+  ':active': {
+    cursor: 'grabbing',
+  },
+})
+
+/** Show drag handle on trigger hover. */
+globalStyle(`${collapsibleTrigger}:hover ${sectionDragHandle}`, {
+  opacity: 0.6,
+})
+globalStyle(`${collapsibleTrigger}:hover ${sectionDragHandle}:hover`, {
+  opacity: 1,
+})
+
+/** Visual state while a section is being dragged. */
+export const collapsiblePaneDragging = style({
+  opacity: 0.5,
+})

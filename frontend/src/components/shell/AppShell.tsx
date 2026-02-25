@@ -26,6 +26,7 @@ import { useOrg } from '~/context/OrgContext'
 import { usePreferences } from '~/context/PreferencesContext'
 import { useWorkspace } from '~/context/WorkspaceContext'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
+import type { Sidebar } from '~/generated/leapmux/v1/section_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { useIsMobile } from '~/hooks/useIsMobile'
@@ -36,6 +37,7 @@ import { createAgentContextStore } from '~/stores/agentContext.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
 import { createLayoutStore } from '~/stores/layout.store'
+import { createSectionStore } from '~/stores/section.store'
 import { createTabStore, tabKey } from '~/stores/tab.store'
 import { createTerminalStore } from '~/stores/terminal.store'
 import { createWorkspaceStore } from '~/stores/workspace.store'
@@ -43,6 +45,7 @@ import { dialogCompact } from '~/styles/shared.css'
 import { isAgentWorking } from '~/utils/agentState'
 import { buildInterruptRequest, buildSetPermissionModeRequest, DEFAULT_EFFORT, DEFAULT_MODEL } from '~/utils/controlResponse'
 import * as styles from './AppShell.css'
+import { SectionDragProvider } from './SectionDragContext'
 import { Tile } from './Tile'
 import { TilingLayout } from './TilingLayout'
 
@@ -73,6 +76,7 @@ export const AppShell: ParentComponent = (props) => {
   const navigate = useNavigate()
 
   const workspaceStore = createWorkspaceStore()
+  const sectionStore = createSectionStore()
   const agentStore = createAgentStore()
   const chatStore = createChatStore()
   const terminalStore = createTerminalStore()
@@ -221,6 +225,44 @@ export const AppShell: ParentComponent = (props) => {
       loadWorkspaces()
     }
   })
+
+  // Load sections on mount and when org changes
+  const loadSections = async () => {
+    const orgId = org.orgId()
+    if (!orgId)
+      return
+    sectionStore.setLoading(true)
+    try {
+      const resp = await sectionClient.listSections({ orgId })
+      sectionStore.setSections(resp.sections)
+      sectionStore.setItems(resp.items)
+    }
+    catch (err) {
+      sectionStore.setError(err instanceof Error ? err.message : 'Failed to load sections')
+    }
+    finally {
+      sectionStore.setLoading(false)
+    }
+  }
+
+  createEffect(() => {
+    if (org.orgId()) {
+      loadSections()
+    }
+  })
+
+  // Handle section moves (optimistic + server persist)
+  const handleMoveSection = (sectionId: string, sidebar: Sidebar, position: string) => {
+    sectionStore.moveSection(sectionId, sidebar, position)
+  }
+
+  const handleMoveSectionServer = (sectionId: string, sidebar: Sidebar, position: string) => {
+    sectionClient.moveSection({ sectionId, sidebar, position })
+      .catch((err) => {
+        showToast(err instanceof Error ? err.message : 'Failed to move section', 'danger')
+        loadSections()
+      })
+  }
 
   // Auto-activate workspace when navigating to org root with no workspace selected.
   // Use sessionStorage-persisted active workspace, falling back to first workspace.
@@ -1337,6 +1379,8 @@ export const AppShell: ParentComponent = (props) => {
     <LeftSidebar
       workspaces={workspaceStore.state.workspaces}
       activeWorkspaceId={workspace.activeWorkspaceId()}
+      sectionStore={sectionStore}
+      loadSections={loadSections}
       onSelectWorkspace={handleSelectWorkspace}
       onNewWorkspace={(sectionId) => {
         setNewWorkspaceTargetSectionId(sectionId)
@@ -1370,6 +1414,7 @@ export const AppShell: ParentComponent = (props) => {
       activeTodos={activeTodos()}
       fileTreePath={fileTreePath()}
       onFileSelect={setFileTreePath}
+      sectionStore={sectionStore}
       isCollapsed={opts?.isCollapsed() ?? false}
       onExpand={opts?.onExpand ?? (() => {})}
       onCollapse={opts?.onCollapse}
@@ -1466,6 +1511,11 @@ export const AppShell: ParentComponent = (props) => {
               let saveSidebarRef: (() => void) | undefined
 
               return (
+                <SectionDragProvider
+                  sections={() => sectionStore.state.sections}
+                  onMoveSection={handleMoveSection}
+                  onMoveSectionServer={handleMoveSectionServer}
+                >
                 <Resizable orientation="horizontal" class={styles.shell} onSizesChange={() => saveSidebarRef?.()}>
                   {() => {
                     const ctx = Resizable.useContext()
@@ -1638,6 +1688,7 @@ export const AppShell: ParentComponent = (props) => {
                     )
                   }}
                 </Resizable>
+                </SectionDragProvider>
               )
             })()}
           </Show>

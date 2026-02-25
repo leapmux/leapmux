@@ -1,6 +1,6 @@
 import type { Section, SectionItem } from '~/generated/leapmux/v1/section_pb'
 import { createStore } from 'solid-js/store'
-import { SectionType } from '~/generated/leapmux/v1/section_pb'
+import { Sidebar, SectionType } from '~/generated/leapmux/v1/section_pb'
 
 interface SectionStoreState {
   sections: Section[]
@@ -59,6 +59,11 @@ export function createSectionStore() {
       }
     },
 
+    /** Optimistically move a section to a new sidebar + position. */
+    moveSection(sectionId: string, sidebar: Sidebar, position: string) {
+      setState('sections', s => s.id === sectionId, { sidebar, position })
+    },
+
     /** Get the section ID for a workspace. */
     getSectionForWorkspace(workspaceId: string): string | undefined {
       return state.items.find(i => i.workspaceId === workspaceId)?.sectionId
@@ -66,12 +71,19 @@ export function createSectionStore() {
 
     /** Get the "In progress" section. */
     getInProgressSection(): Section | undefined {
-      return state.sections.find(s => s.sectionType === SectionType.IN_PROGRESS)
+      return state.sections.find(s => s.sectionType === SectionType.WORKSPACES_IN_PROGRESS)
     },
 
     /** Get the "Archived" section. */
     getArchivedSection(): Section | undefined {
-      return state.sections.find(s => s.sectionType === SectionType.ARCHIVED)
+      return state.sections.find(s => s.sectionType === SectionType.WORKSPACES_ARCHIVED)
+    },
+
+    /** Get sections for a specific sidebar, sorted by position. */
+    getSectionsForSidebar(sidebar: Sidebar): Section[] {
+      return state.sections
+        .filter(s => s.sidebar === sidebar)
+        .sort((a, b) => a.position.localeCompare(b.position))
     },
 
     /** Get items for a specific section, sorted by position. */
