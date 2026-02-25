@@ -144,6 +144,26 @@ test.describe('Responsive Tile TabBar', () => {
     }
   })
 
+  test('new tab button tooltips reflect active tab context', async ({ page, authenticatedWorkspace }) => {
+    const agentBtn = page.locator('[data-testid="new-agent-button"]')
+    const terminalBtn = page.locator('[data-testid="new-terminal-button"]')
+
+    // Workspace starts with an active tab — tooltips should indicate the working directory
+    await openAgentViaUI(page)
+    await expect(agentBtn.locator('..')).toHaveAttribute('title', 'New agent at the current working directory')
+    await expect(terminalBtn.locator('..')).toHaveAttribute('title', 'New terminal at the current working directory')
+
+    // Close all tabs to remove active tab context
+    while (await page.locator('[data-testid="tab-close"]').count() > 0) {
+      await page.locator('[data-testid="tab-close"]').first().click()
+      await page.waitForTimeout(300)
+    }
+
+    // Now tooltips should show the "..." variant
+    await expect(agentBtn.locator('..')).toHaveAttribute('title', 'New agent...')
+    await expect(terminalBtn.locator('..')).toHaveAttribute('title', 'New terminal...')
+  })
+
   test('short height: tab bar height reduced when tile is short', async ({ page, authenticatedWorkspace }) => {
     await openAgentViaUI(page)
 

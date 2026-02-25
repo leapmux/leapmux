@@ -1098,6 +1098,7 @@ export const AppShell: ParentComponent = (props) => {
           })
         }
       }}
+      hasActiveTabContext={!!getCurrentTabContext().workerId}
       isEditingRef={(fn) => { isTabEditing = fn }}
       onNewAgent={handleOpenAgent}
       onNewTerminal={handleOpenTerminal}
