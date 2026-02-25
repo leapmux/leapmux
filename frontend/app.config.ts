@@ -10,6 +10,7 @@ export default defineConfig({
   ssr: false,
   server: { static: true },
   vite: {
+    build: { sourcemap: true },
     plugins: [
       vanillaExtractPlugin({ identifiers: 'debug' }),
       {
