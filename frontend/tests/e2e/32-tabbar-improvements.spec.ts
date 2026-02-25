@@ -164,6 +164,31 @@ test.describe('TabBar Improvements', () => {
     await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(initialCount)
   })
 
+  test('should rename a tab via double-click and allow spaces in the name', async ({ page, authenticatedWorkspace }) => {
+    // Double-click the tab to start renaming
+    const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
+    await agentTab.dblclick()
+
+    // The rename input should appear and be focused
+    const editInput = agentTab.locator('input')
+    await expect(editInput).toBeVisible()
+    await expect(editInput).toBeFocused()
+
+    // Clear and type a new name that includes a space
+    await editInput.fill('')
+    await editInput.pressSequentially('My Agent')
+
+    // Verify the input value contains the space
+    await expect(editInput).toHaveValue('My Agent')
+
+    // Confirm by pressing Enter
+    await editInput.press('Enter')
+
+    // The input should disappear and the tab should show the new name
+    await expect(editInput).not.toBeVisible()
+    await expect(agentTab.locator('[class*="tabText"]')).toHaveText('My Agent')
+  })
+
   test('should create a new agent by double-clicking empty tab bar area', async ({ page, authenticatedWorkspace }) => {
     // Count initial agent tabs
     const initialCount = await page.locator('[data-testid="tab"][data-tab-type="agent"]').count()

@@ -195,6 +195,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
           value={editingValue()}
           onInput={e => setEditingValue(sanitizeName(e.currentTarget.value).value)}
           onKeyDown={(e) => {
+            e.stopPropagation()
             if (e.key === 'Enter') {
               commitEdit(tab)
             }
