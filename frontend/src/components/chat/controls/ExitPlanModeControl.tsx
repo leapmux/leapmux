@@ -2,17 +2,42 @@ import type { Component } from 'solid-js'
 import type { ActionsProps } from './types'
 import type { ControlRequest } from '~/stores/control.store'
 
-import { For, Show } from 'solid-js'
+import { Show } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
 import { buildAllowResponse, getToolInput } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
+import { CollapsibleList } from './CollapsibleList'
 import { sendResponse } from './types'
+
+interface ToolGroup {
+  tool: string
+  prompts: string[]
+}
+
+/** Group permissions by tool name so related prompts are shown together. */
+function groupByTool(prompts: Array<{ tool: string, prompt: string }>): ToolGroup[] {
+  const map = new Map<string, string[]>()
+  for (const p of prompts) {
+    const list = map.get(p.tool)
+    if (list) {
+      list.push(p.prompt)
+    }
+    else {
+      map.set(p.tool, [p.prompt])
+    }
+  }
+  return Array.from(map, ([tool, prompts]) => ({ tool, prompts }))
+}
 
 export const ExitPlanModeContent: Component<{ request: ControlRequest }> = (props) => {
   const input = () => getToolInput(props.request.payload)
   const planSummary = () => {
     const prompts = input().allowedPrompts as Array<{ tool: string, prompt: string }> | undefined
     return prompts
+  }
+  const grouped = () => {
+    const summary = planSummary()
+    return summary ? groupByTool(summary) : []
   }
 
   return (
@@ -22,16 +47,19 @@ export const ExitPlanModeContent: Component<{ request: ControlRequest }> = (prop
         <div>
           <strong>Requested permissions:</strong>
           <ul>
-            <For each={planSummary()!}>
-              {p => (
+            <CollapsibleList
+              items={grouped()}
+              maxVisible={3}
+              moreLabel={n => `Show ${n} more group${n === 1 ? '' : 's'}\u2026`}
+              renderItem={group => (
                 <li>
-                  {p.tool}
+                  {group.tool}
                   :
                   {' '}
-                  {p.prompt}
+                  {group.prompts.join(', ')}
                 </li>
               )}
-            </For>
+            />
           </ul>
         </div>
       </Show>

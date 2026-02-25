@@ -8,6 +8,7 @@ import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { spinner } from '~/styles/animations.css'
 import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
+import { CollapsibleList } from './CollapsibleList'
 import { sendResponse } from './types'
 
 // ---------------------------------------------------------------------------
@@ -169,8 +170,11 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, askSta
                     const radioName = createUniqueId()
                     return (
                       <fieldset>
-                        <For each={q().options}>
-                          {opt => (
+                        <CollapsibleList
+                          items={q().options}
+                          maxVisible={4}
+                          moreLabel={n => `Show ${n} more option${n === 1 ? '' : 's'}\u2026`}
+                          renderItem={opt => (
                             <label class={styles.optionItem} data-testid={`question-option-${opt.label}`}>
                               <input
                                 type="radio"
@@ -190,13 +194,16 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, askSta
                               </span>
                             </label>
                           )}
-                        </For>
+                        />
                       </fieldset>
                     )
                   })()}
                 >
-                  <For each={q().options}>
-                    {opt => (
+                  <CollapsibleList
+                    items={q().options}
+                    maxVisible={4}
+                    moreLabel={n => `Show ${n} more option${n === 1 ? '' : 's'}\u2026`}
+                    renderItem={opt => (
                       <label
                         class={styles.optionItem}
                         data-testid={`question-option-${opt.label}`}
@@ -215,7 +222,7 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, askSta
                         </span>
                       </label>
                     )}
-                  </For>
+                  />
                 </Show>
               </div>
             </div>
