@@ -94,6 +94,7 @@ func (s *AgentService) SendAgentMessage(
 		}
 		// Broadcast interrupt notification after successful delivery.
 		if isInterruptRequest(content) {
+			s.cancelAutoContinue(agentID)
 			s.broadcastNotification(ctx, agentID, map[string]interface{}{
 				"type": "interrupted",
 			})
@@ -107,6 +108,9 @@ func (s *AgentService) SendAgentMessage(
 		s.clearAgentContext(ctx, &agent, ws)
 		return connect.NewResponse(&leapmuxv1.SendAgentMessageResponse{}), nil
 	}
+
+	// Cancel any pending auto-continue — the user is sending their own message.
+	s.cancelAutoContinue(agentID)
 
 	// Persist the user message BEFORE attempting resume/delivery so the
 	// message appears in chat even if delivery fails.
@@ -593,6 +597,13 @@ func (s *AgentService) HandleAgentOutput(ctx context.Context, output *leapmuxv1.
 		switch envelope.Type {
 		case "assistant":
 			s.trackPlanModeToolUse(content)
+			// Schedule auto-continue on transient API errors, or reset
+			// the backoff when the agent produces a normal response.
+			if isSyntheticAPIError(content) {
+				s.scheduleAutoContinue(agentID)
+			} else {
+				s.resetAutoContinue(agentID)
+			}
 		case "user":
 			s.detectPlanModeFromToolResult(ctx, agentID, content)
 		}
