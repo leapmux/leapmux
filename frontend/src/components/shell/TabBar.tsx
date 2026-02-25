@@ -70,6 +70,7 @@ interface TabBarProps {
   newAgentLoading?: boolean
   newTerminalLoading?: boolean
   newShellLoading?: boolean
+  hasActiveTabContext?: boolean
   closingTabKeys?: Set<string>
   isEditingRef?: (fn: () => boolean) => void
   isMobile?: boolean
@@ -79,6 +80,9 @@ interface TabBarProps {
 }
 
 export const TabBar: Component<TabBarProps> = (props) => {
+  const newAgentLabel = () => props.hasActiveTabContext ? 'New agent at the current working directory' : 'New agent...'
+  const newTerminalLabel = () => props.hasActiveTabContext ? 'New terminal at the current working directory' : 'New terminal...'
+
   const [editingTabKey, setEditingTabKey] = createSignal<string | null>(null)
   const [editingValue, setEditingValue] = createSignal('')
 
@@ -307,7 +311,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
       <Show when={props.showAddButton}>
         {/* Full / Compact: individual new-tab buttons */}
         <div class={styles.newTabWrapper}>
-          <TabBarTooltip text="New agent">
+          <TabBarTooltip text={newAgentLabel()}>
             <IconButton
               icon={Bot}
               iconSize={iconSize.md}
@@ -317,7 +321,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
               onClick={() => props.onNewAgent()}
             />
           </TabBarTooltip>
-          <TabBarTooltip text="New terminal">
+          <TabBarTooltip text={newTerminalLabel()}>
             <IconButton
               icon={Terminal}
               iconSize={iconSize.md}
@@ -358,15 +362,6 @@ export const TabBar: Component<TabBarProps> = (props) => {
               />
             )}
           >
-            <button role="menuitem" onClick={() => props.onNewAgent()}>
-              <Bot size={14} />
-              {' New agent'}
-            </button>
-            <button role="menuitem" onClick={() => props.onNewTerminal()}>
-              <Terminal size={14} />
-              {' New terminal'}
-            </button>
-            <hr />
             {renderMoreMenuItems()}
           </DropdownMenu>
         </div>
@@ -384,15 +379,6 @@ export const TabBar: Component<TabBarProps> = (props) => {
               />
             )}
           >
-            <button role="menuitem" onClick={() => props.onNewAgent()}>
-              <Bot size={14} />
-              {' New agent'}
-            </button>
-            <button role="menuitem" onClick={() => props.onNewTerminal()}>
-              <Terminal size={14} />
-              {' New terminal'}
-            </button>
-            <hr />
             {renderMoreMenuItems()}
             <Show when={props.tileActions}>
               {actions => (
