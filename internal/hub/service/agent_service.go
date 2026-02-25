@@ -57,6 +57,7 @@ type AgentService struct {
 	lastAgentStatus sync.Map // agentID -> string: last status value ("" = null, non-empty = actual value)
 	gitStatus       sync.Map // agentID -> *leapmuxv1.AgentGitStatus: latest git status from worker
 	homeDir         sync.Map // agentID -> string: worker's home directory
+	autoContinue    sync.Map // agentID -> *autoContinueState: pending auto-continue on API errors
 }
 
 // RestartOptions controls behavior when an agent is restarted via the
@@ -307,6 +308,7 @@ func (s *AgentService) CloseAgent(
 	}
 
 	// Clean up in-memory per-agent state.
+	s.cleanupAutoContinue(agentID)
 	s.lastAgentStatus.Delete(agentID)
 
 	// Notify watchers of the status change.
