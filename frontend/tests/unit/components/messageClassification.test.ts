@@ -42,6 +42,11 @@ describe('classifyMessage', () => {
       expect(result.kind).toBe('notification_thread')
     })
 
+    it('classifies wrapper with rate_limit first message', () => {
+      const result = classifyMessage(undefined, wrapper({ type: 'rate_limit', rate_limit_info: {} }))
+      expect(result.kind).toBe('notification_thread')
+    })
+
     it('classifies wrapper with system (non-init, non-task_notification) first message', () => {
       const result = classifyMessage(undefined, wrapper({ type: 'system', subtype: 'compact_boundary' }))
       expect(result.kind).toBe('notification_thread')
@@ -147,6 +152,11 @@ describe('classifyMessage', () => {
 
     it('classifies settings_changed as notification', () => {
       const result = classifyMessage({ type: 'settings_changed' }, null)
+      expect(result.kind).toBe('notification')
+    })
+
+    it('classifies rate_limit as notification', () => {
+      const result = classifyMessage({ type: 'rate_limit', rate_limit_info: { rateLimitType: 'five_hour' } }, null)
       expect(result.kind).toBe('notification')
     })
   })

@@ -550,7 +550,7 @@ func (s *AgentService) HandleAgentOutput(ctx context.Context, output *leapmuxv1.
 				snapshot.mu.Unlock()
 
 				if len(info) > 0 {
-					s.broadcastAgentContextInfo(agentID, info)
+					s.broadcastAgentSessionInfo(agentID, info)
 				}
 			}
 		}
@@ -664,6 +664,41 @@ func (s *AgentService) HandleAgentOutput(ctx context.Context, output *leapmuxv1.
 			if cr.Response.Subtype == "success" && cr.Response.Response.Mode != "" {
 				s.setAgentPermissionMode(ctx, agentID, cr.Response.Response.Mode)
 			}
+		}
+
+	case "rate_limit_event":
+		var rle struct {
+			RateLimitInfo json.RawMessage `json:"rate_limit_info"`
+		}
+		if err := json.Unmarshal(content, &rle); err != nil || len(rle.RateLimitInfo) == 0 {
+			break
+		}
+
+		// Extract rateLimitType to use as key; default to "unknown".
+		var rlType struct {
+			RateLimitType string `json:"rateLimitType"`
+		}
+		_ = json.Unmarshal(rle.RateLimitInfo, &rlType)
+		if rlType.RateLimitType == "" {
+			rlType.RateLimitType = "unknown"
+		}
+
+		// Broadcast ephemeral agent_session_info so the frontend
+		// popover store gets updated in real time.
+		rateLimits := map[string]json.RawMessage{
+			rlType.RateLimitType: rle.RateLimitInfo,
+		}
+		s.broadcastAgentSessionInfo(agentID, map[string]interface{}{
+			"rateLimits": rateLimits,
+		})
+
+		// Persist as a LEAPMUX notification for the chat bubble.
+		notifContent, _ := json.Marshal(map[string]interface{}{
+			"type":            "rate_limit",
+			"rate_limit_info": rle.RateLimitInfo,
+		})
+		if err := s.persistNotificationThreaded(ctx, agentID, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, notifContent); err != nil {
+			slog.Error("persist rate_limit notification", "agent_id", agentID, "error", err)
 		}
 
 	default:
@@ -953,12 +988,12 @@ func (s *AgentService) resetUsageSnapshot(agentID string) {
 	s.contextUsage.Delete(agentID)
 }
 
-// broadcastAgentContextInfo broadcasts agent context metadata (gitBranch, cwd,
-// version, total_cost_usd) to watchers as a LEAPMUX message WITHOUT persisting
-// it. The frontend stores this info in per-agent localStorage.
-func (s *AgentService) broadcastAgentContextInfo(agentID string, info map[string]interface{}) {
+// broadcastAgentSessionInfo broadcasts agent session metadata (gitBranch, cwd,
+// version, total_cost_usd, rateLimits) to watchers as a LEAPMUX message WITHOUT
+// persisting it. The frontend stores this info in per-agent localStorage.
+func (s *AgentService) broadcastAgentSessionInfo(agentID string, info map[string]interface{}) {
 	content := map[string]interface{}{
-		"type": "agent_context_info",
+		"type": "agent_session_info",
 		"info": info,
 	}
 	contentJSON, _ := json.Marshal(content)

@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { EditorContentRef } from './ControlRequestBanner'
 import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
-import type { AgentContextInfo } from '~/stores/agentContext.store'
+import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
 import type { PermissionMode } from '~/utils/controlResponse'
 import Check from 'lucide-solid/icons/check'
@@ -13,9 +13,10 @@ import Dot from 'lucide-solid/icons/dot'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import SendHorizontal from 'lucide-solid/icons/send-horizontal'
 import Square from 'lucide-solid/icons/square'
-import { createEffect, createSignal, createUniqueId, For, on, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
+import { formatCountdown, getResetsAt, pickUrgentRateLimit, RATE_LIMIT_TYPE_LABELS } from '~/lib/rateLimitUtils'
 import { safeGetJson, safeGetString, safeRemoveItem, safeSetJson, safeSetString } from '~/lib/safeStorage'
 import { interruptPulse, spinner } from '~/styles/animations.css'
 import { iconSize } from '~/styles/tokens'
@@ -38,7 +39,7 @@ export interface AgentEditorPanelProps {
   onEffortChange?: (effort: string) => void
   onInterrupt?: () => void
   settingsLoading?: boolean
-  agentContextInfo?: AgentContextInfo
+  agentSessionInfo?: AgentSessionInfo
   agentWorking?: boolean
   /** Height of the parent container, used for max editor height calculation. */
   containerHeight?: number
@@ -328,10 +329,26 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   }
 
   const hasContextInfo = () => {
-    return props.agentContextInfo?.totalCostUsd != null || props.agentContextInfo?.contextUsage
+    return props.agentSessionInfo?.totalCostUsd != null
+      || props.agentSessionInfo?.contextUsage
+      || (props.agentSessionInfo?.rateLimits && Object.keys(props.agentSessionInfo.rateLimits).length > 0)
   }
 
   const showInfoTrigger = () => !!props.agent?.agentSessionId || hasContextInfo()
+
+  // 1-minute timer for countdown refresh
+  const [now, setNow] = createSignal(Date.now())
+  const timer = setInterval(() => setNow(Date.now()), 60_000)
+  onCleanup(() => clearInterval(timer))
+
+  // Derive urgent rate limit (re-evaluates each minute due to `now()` dependency)
+  const urgentRateLimit = createMemo(() => {
+    void now() // subscribe to timer ticks
+    const rateLimits = props.agentSessionInfo?.rateLimits
+    if (!rateLimits)
+      return null
+    return pickUrgentRateLimit(rateLimits)
+  })
 
   const infoHoverCardContent = () => (
     <>
@@ -402,9 +419,9 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           <span class={styles.infoValue}>{props.agent!.workingDir}</span>
         </div>
       </Show>
-      <Show when={props.agentContextInfo?.contextUsage}>
+      <Show when={props.agentSessionInfo?.contextUsage}>
         {(() => {
-          const usage = props.agentContextInfo!.contextUsage!
+          const usage = props.agentSessionInfo!.contextUsage!
           const ctxWindow = (usage.contextWindow && usage.contextWindow > 0) ? usage.contextWindow : 200_000
           const total = contextSize(usage)
           const pct = computePercentage(usage)
@@ -420,14 +437,42 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           )
         })()}
       </Show>
-      <Show when={props.agentContextInfo?.totalCostUsd != null}>
+      <Show when={props.agentSessionInfo?.totalCostUsd != null}>
         <div class={styles.infoRow}>
           <span class={styles.infoLabel}>Cost</span>
           <span class={styles.infoValue}>
             $
-            {props.agentContextInfo!.totalCostUsd!.toFixed(4)}
+            {props.agentSessionInfo!.totalCostUsd!.toFixed(4)}
           </span>
         </div>
+      </Show>
+      <Show when={props.agentSessionInfo?.rateLimits && Object.keys(props.agentSessionInfo!.rateLimits!).length > 0}>
+        <For each={Object.values(props.agentSessionInfo!.rateLimits!)}>
+          {(info) => {
+            const resetsAt = getResetsAt(info)
+            const typeLabel = RATE_LIMIT_TYPE_LABELS[info.rateLimitType ?? ''] ?? info.rateLimitType ?? 'Rate Limit'
+            const pct = info.utilization != null ? `${Math.round(info.utilization * 100)}%` : null
+            return (
+              <>
+                <div class={styles.infoRow}>
+                  <span class={styles.infoLabel}>{typeLabel}</span>
+                  <span class={styles.infoValue}>
+                    {pct ? `${pct} used` : (info.status === 'allowed' || info.status === 'allowed_warning' ? 'Allowed' : 'Reached')}
+                    {info.isUsingOverage ? ' (overage)' : ''}
+                  </span>
+                </div>
+                <Show when={resetsAt}>
+                  <div class={styles.infoRow}>
+                    <span class={styles.infoLabel}>Resets In</span>
+                    <span class={styles.infoValue} title={new Date(resetsAt! * 1000).toLocaleString()}>
+                      {formatCountdown(resetsAt!) ?? 'now'}
+                    </span>
+                  </div>
+                </Show>
+              </>
+            )
+          }}
+        </For>
       </Show>
     </>
   )
@@ -628,7 +673,20 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                                   data-testid="session-id-trigger"
                                   {...triggerProps}
                                 >
-                                  <ContextUsageGrid contextUsage={props.agentContextInfo?.contextUsage} size={iconSize.xs} />
+                                  <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} size={iconSize.xs} />
+                                  <Show when={urgentRateLimit()}>
+                                    {rl => (
+                                      <span
+                                        class={styles.rateLimitCountdown}
+                                        title={(() => {
+                                          const resetsAt = getResetsAt(rl().info)
+                                          return resetsAt ? `Resets at ${new Date(resetsAt * 1000).toLocaleString()}` : undefined
+                                        })()}
+                                      >
+                                        {rl().countdown}
+                                      </span>
+                                    )}
+                                  </Show>
                                 </button>
                               )}
                               class="card"
@@ -656,7 +714,20 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                               data-testid="session-id-trigger"
                               {...triggerProps}
                             >
-                              <ContextUsageGrid contextUsage={props.agentContextInfo?.contextUsage} size={iconSize.xs} />
+                              <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} size={iconSize.xs} />
+                              <Show when={urgentRateLimit()}>
+                                {rl => (
+                                  <span
+                                    class={styles.rateLimitCountdown}
+                                    title={(() => {
+                                      const resetsAt = getResetsAt(rl().info)
+                                      return resetsAt ? `Resets at ${new Date(resetsAt * 1000).toLocaleString()}` : undefined
+                                    })()}
+                                  >
+                                    {rl().countdown}
+                                  </span>
+                                )}
+                              </Show>
                             </button>
                           )}
                           class="card"

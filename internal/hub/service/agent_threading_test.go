@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 func TestExtractToolUseID(t *testing.T) {
@@ -407,4 +409,135 @@ func TestConsolidateNotificationThread_SettingsChangedWithContextCleared(t *test
 	require.NoError(t, json.Unmarshal(result[0], &entry))
 	assert.Equal(t, "settings_changed", entry.Type)
 	assert.True(t, entry.ContextCleared)
+}
+
+func TestIsNotificationThreadable_RateLimit(t *testing.T) {
+	content := []byte(`{"type":"rate_limit","rate_limit_info":{"rateLimitType":"five_hour"}}`)
+	assert.True(t, isNotificationThreadable(content, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX))
+}
+
+func TestIsNotificationThreadable_RateLimit_NonLeapmuxRole(t *testing.T) {
+	content := []byte(`{"type":"rate_limit","rate_limit_info":{"rateLimitType":"five_hour"}}`)
+	assert.False(t, isNotificationThreadable(content, leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT))
+	assert.False(t, isNotificationThreadable(content, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM))
+}
+
+func TestConsolidateNotificationThread_RateLimitSameTypeConsolidates(t *testing.T) {
+	// Two five_hour rate limits: should consolidate to one (latest wins).
+	msg1, _ := json.Marshal(map[string]interface{}{
+		"type": "rate_limit",
+		"rate_limit_info": map[string]interface{}{
+			"rateLimitType": "five_hour",
+			"utilization":   0.5,
+		},
+	})
+	msg2, _ := json.Marshal(map[string]interface{}{
+		"type": "rate_limit",
+		"rate_limit_info": map[string]interface{}{
+			"rateLimitType": "five_hour",
+			"utilization":   0.8,
+		},
+	})
+
+	result := consolidateNotificationThread([]json.RawMessage{msg1, msg2})
+	// Count rate_limit entries.
+	rlCount := 0
+	for _, r := range result {
+		var e struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(r, &e) == nil && e.Type == "rate_limit" {
+			rlCount++
+		}
+	}
+	assert.Equal(t, 1, rlCount, "expected exactly one rate_limit after consolidating same type")
+	// The kept one should be the latest (msg2 with utilization 0.8).
+	var entry struct {
+		RateLimitInfo struct {
+			Utilization float64 `json:"utilization"`
+		} `json:"rate_limit_info"`
+	}
+	for _, r := range result {
+		var e struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(r, &e) == nil && e.Type == "rate_limit" {
+			require.NoError(t, json.Unmarshal(r, &entry))
+			break
+		}
+	}
+	assert.Equal(t, 0.8, entry.RateLimitInfo.Utilization)
+}
+
+func TestConsolidateNotificationThread_RateLimitDifferentTypesCoexist(t *testing.T) {
+	// five_hour + seven_day: should keep both.
+	msg1, _ := json.Marshal(map[string]interface{}{
+		"type": "rate_limit",
+		"rate_limit_info": map[string]interface{}{
+			"rateLimitType": "five_hour",
+			"utilization":   0.5,
+		},
+	})
+	msg2, _ := json.Marshal(map[string]interface{}{
+		"type": "rate_limit",
+		"rate_limit_info": map[string]interface{}{
+			"rateLimitType": "seven_day",
+			"utilization":   0.3,
+		},
+	})
+
+	result := consolidateNotificationThread([]json.RawMessage{msg1, msg2})
+	rlCount := 0
+	for _, r := range result {
+		var e struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(r, &e) == nil && e.Type == "rate_limit" {
+			rlCount++
+		}
+	}
+	assert.Equal(t, 2, rlCount, "expected two rate_limit entries for different types")
+}
+
+func TestConsolidateNotificationThread_RateLimitMixedConsolidation(t *testing.T) {
+	// five_hour + seven_day + updated five_hour: should keep latest five_hour and seven_day.
+	msg1, _ := json.Marshal(map[string]interface{}{
+		"type": "rate_limit",
+		"rate_limit_info": map[string]interface{}{
+			"rateLimitType": "five_hour",
+			"utilization":   0.5,
+		},
+	})
+	msg2, _ := json.Marshal(map[string]interface{}{
+		"type": "rate_limit",
+		"rate_limit_info": map[string]interface{}{
+			"rateLimitType": "seven_day",
+			"utilization":   0.3,
+		},
+	})
+	msg3, _ := json.Marshal(map[string]interface{}{
+		"type": "rate_limit",
+		"rate_limit_info": map[string]interface{}{
+			"rateLimitType": "five_hour",
+			"utilization":   0.9,
+		},
+	})
+
+	result := consolidateNotificationThread([]json.RawMessage{msg1, msg2, msg3})
+	rlByType := map[string]float64{}
+	for _, r := range result {
+		var e struct {
+			Type          string `json:"type"`
+			RateLimitInfo struct {
+				RateLimitType string  `json:"rateLimitType"`
+				Utilization   float64 `json:"utilization"`
+			} `json:"rate_limit_info"`
+		}
+		if json.Unmarshal(r, &e) == nil && e.Type == "rate_limit" {
+			rlByType[e.RateLimitInfo.RateLimitType] = e.RateLimitInfo.Utilization
+		}
+	}
+	assert.Len(t, rlByType, 2)
+	assert.Equal(t, 0.9, rlByType["five_hour"], "expected latest five_hour utilization")
+	assert.Equal(t, 0.3, rlByType["seven_day"], "expected seven_day utilization preserved")
 }

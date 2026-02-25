@@ -452,6 +452,128 @@ func TestAgentService_HandleAgentOutput_PersistsNullAfterCompacting(t *testing.T
 	}
 }
 
+func TestAgentService_HandleAgentOutput_RateLimitEvent(t *testing.T) {
+	env := setupAgentTest(t)
+	workspaceID := env.createWorkspaceInDB(t, "Rate Limit Test")
+	agentID := env.createAgentInDB(t, workspaceID, "Test Agent")
+
+	watcher := env.agentMgr.Watch(agentID)
+	defer env.agentMgr.Unwatch(agentID, watcher)
+
+	// Simulate a rate_limit_event output.
+	env.agentSvc.HandleAgentOutput(context.Background(), &leapmuxv1.AgentOutput{
+		AgentId: agentID,
+		Content: []byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","rateLimitType":"five_hour","utilization":0.82,"resetsAt":1772035200}}`),
+	})
+
+	// Expect two events: ephemeral agent_session_info (seq=-1) + persisted AgentMessage (seq>0).
+	var gotEphemeral, gotPersisted bool
+	for i := 0; i < 2; i++ {
+		select {
+		case event := <-watcher.C():
+			agentMsg := event.GetAgentMessage()
+			require.NotNil(t, agentMsg, "expected AgentMessage event")
+			assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, agentMsg.GetRole())
+			if agentMsg.GetSeq() == -1 {
+				gotEphemeral = true
+				// Verify ephemeral contains agent_session_info with rateLimits.
+				data, err := msgcodec.Decompress(agentMsg.GetContent(), agentMsg.GetContentCompression())
+				require.NoError(t, err)
+				var info struct {
+					Type string `json:"type"`
+					Info struct {
+						RateLimits map[string]json.RawMessage `json:"rateLimits"`
+					} `json:"info"`
+				}
+				require.NoError(t, json.Unmarshal(data, &info))
+				assert.Equal(t, "agent_session_info", info.Type)
+				assert.Contains(t, info.Info.RateLimits, "five_hour")
+			} else {
+				gotPersisted = true
+				// Verify persisted notification content.
+				data, err := msgcodec.Decompress(agentMsg.GetContent(), agentMsg.GetContentCompression())
+				require.NoError(t, err)
+				var wrapper struct {
+					Messages []json.RawMessage `json:"messages"`
+				}
+				require.NoError(t, json.Unmarshal(data, &wrapper))
+				require.True(t, len(wrapper.Messages) >= 1)
+				var notif struct {
+					Type          string `json:"type"`
+					RateLimitInfo struct {
+						RateLimitType string  `json:"rateLimitType"`
+						Utilization   float64 `json:"utilization"`
+					} `json:"rate_limit_info"`
+				}
+				require.NoError(t, json.Unmarshal(wrapper.Messages[0], &notif))
+				assert.Equal(t, "rate_limit", notif.Type)
+				assert.Equal(t, "five_hour", notif.RateLimitInfo.RateLimitType)
+				assert.Equal(t, 0.82, notif.RateLimitInfo.Utilization)
+			}
+		case <-time.After(time.Second):
+			require.Fail(t, "timeout waiting for rate limit event %d", i)
+		}
+	}
+	assert.True(t, gotEphemeral, "expected ephemeral agent_session_info broadcast")
+	assert.True(t, gotPersisted, "expected persisted AgentMessage broadcast")
+
+	// Verify persistence in DB.
+	msgs, err := env.queries.ListMessagesByAgentID(context.Background(), gendb.ListMessagesByAgentIDParams{
+		AgentID: agentID,
+		Seq:     0,
+		Limit:   10,
+	})
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, msgs[0].Role)
+}
+
+func TestAgentService_HandleAgentOutput_RateLimitEvent_Consolidation(t *testing.T) {
+	env := setupAgentTest(t)
+	workspaceID := env.createWorkspaceInDB(t, "Rate Limit Consolidation Test")
+	agentID := env.createAgentInDB(t, workspaceID, "Test Agent")
+
+	watcher := env.agentMgr.Watch(agentID)
+	defer env.agentMgr.Unwatch(agentID, watcher)
+
+	// Send first rate_limit_event (five_hour).
+	env.agentSvc.HandleAgentOutput(context.Background(), &leapmuxv1.AgentOutput{
+		AgentId: agentID,
+		Content: []byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","rateLimitType":"five_hour","utilization":0.5}}`),
+	})
+	// Drain both events (session_info + message).
+	for i := 0; i < 2; i++ {
+		select {
+		case <-watcher.C():
+		case <-time.After(time.Second):
+			require.Fail(t, "timeout waiting for first rate_limit_event events")
+		}
+	}
+
+	// Send second rate_limit_event (also five_hour, different utilization).
+	env.agentSvc.HandleAgentOutput(context.Background(), &leapmuxv1.AgentOutput{
+		AgentId: agentID,
+		Content: []byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","rateLimitType":"five_hour","utilization":0.8}}`),
+	})
+	// Drain both events.
+	for i := 0; i < 2; i++ {
+		select {
+		case <-watcher.C():
+		case <-time.After(time.Second):
+			require.Fail(t, "timeout waiting for second rate_limit_event events")
+		}
+	}
+
+	// Verify consolidation: should be one message in DB (thread merged).
+	msgs, err := env.queries.ListMessagesByAgentID(context.Background(), gendb.ListMessagesByAgentIDParams{
+		AgentID: agentID,
+		Seq:     0,
+		Limit:   10,
+	})
+	require.NoError(t, err)
+	require.Len(t, msgs, 1, "expected one DB row after thread consolidation")
+}
+
 func TestAgentService_HandleAgentOutput_NonStatusNotificationsUnaffected(t *testing.T) {
 	env := setupAgentTest(t)
 	workspaceID := env.createWorkspaceInDB(t, "Non-Status Test")

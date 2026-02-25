@@ -1,7 +1,7 @@
 import type { AgentEvent, TerminalEvent, WatchAgentEntry, WatchTerminalEntry } from '~/generated/leapmux/v1/workspace_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { createAgentStore } from '~/stores/agent.store'
-import type { createAgentContextStore } from '~/stores/agentContext.store'
+import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
 import type { createTabStore } from '~/stores/tab.store'
@@ -21,7 +21,7 @@ export interface WorkspaceConnectionParams {
   terminalStore: ReturnType<typeof createTerminalStore>
   tabStore: ReturnType<typeof createTabStore>
   controlStore: ReturnType<typeof createControlStore>
-  agentContextStore: ReturnType<typeof createAgentContextStore>
+  agentSessionStore: ReturnType<typeof createAgentSessionStore>
   settingsLoading: ReturnType<typeof createLoadingSignal>
   getOrgId: () => string
   getActiveWorkspaceId: () => string | null
@@ -32,7 +32,7 @@ export interface WorkspaceConnectionParams {
 }
 
 export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
-  const { agentStore, chatStore, terminalStore, tabStore, controlStore, agentContextStore, settingsLoading } = params
+  const { agentStore, chatStore, terminalStore, tabStore, controlStore, agentSessionStore, settingsLoading } = params
   const [workerOnline, setWorkerOnline] = createSignal(true)
 
   // Single unified event stream abort controller.
@@ -62,8 +62,8 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       case 'agentMessage': {
         const msg = inner.value
 
-        // Intercept ephemeral agent_context_info messages (broadcast by
-        // Hub without persisting). These update the agent context store
+        // Intercept ephemeral agent_session_info messages (broadcast by
+        // Hub without persisting). These update the agent session store
         // and should not appear in chat history.
         if (msg.role === MessageRole.LEAPMUX) {
           try {
@@ -71,14 +71,16 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             if (text !== null) {
               const parsed = JSON.parse(text)
               // Ephemeral messages are not wrapped — check type directly.
-              if (parsed.type === 'agent_context_info') {
+              if (parsed.type === 'agent_session_info') {
                 const info = parsed.info as Record<string, unknown> | undefined
                 const updates: Record<string, unknown> = {}
                 if (info?.total_cost_usd !== undefined)
                   updates.totalCostUsd = info.total_cost_usd
                 if (info?.contextUsage !== undefined)
                   updates.contextUsage = info.contextUsage
-                agentContextStore.updateInfo(agentId, updates)
+                if (info?.rateLimits !== undefined)
+                  updates.rateLimits = info.rateLimits as Record<string, unknown>
+                agentSessionStore.updateInfo(agentId, updates)
                 break
               }
 
@@ -89,8 +91,14 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
               // Falls through — the message still appears in chat history.
               const innerMsg = parsed?.messages?.[0] ?? parsed
               if (innerMsg.type === 'context_cleared') {
-                agentContextStore.clearContextUsage(agentId)
+                agentSessionStore.clearContextUsage(agentId)
                 chatStore.clearTodos(agentId)
+              }
+              // Extract rate limit info from persisted messages (rehydrates on reconnect).
+              if (innerMsg.type === 'rate_limit' && innerMsg.rate_limit_info && typeof innerMsg.rate_limit_info === 'object') {
+                const rlInfo = innerMsg.rate_limit_info as Record<string, unknown>
+                const key = (rlInfo.rateLimitType as string) || 'unknown'
+                agentSessionStore.updateInfo(agentId, { rateLimits: { [key]: rlInfo } } as Record<string, unknown>)
               }
             }
           }
@@ -100,7 +108,35 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         chatStore.addMessage(agentId, msg)
         chatStore.clearStreamingText(agentId)
 
+        // Extract context usage from assistant messages (rehydrates on reconnect).
+        if (msg.role === MessageRole.ASSISTANT) {
+          try {
+            const text = decompressContentToString(msg.content, msg.contentCompression)
+            if (text !== null) {
+              const parsed = JSON.parse(text)
+              const innerMsg = parsed?.messages?.[0] ?? parsed
+              const usage = innerMsg?.message?.usage
+              if (usage) {
+                const updates: Record<string, unknown> = {}
+                if (typeof innerMsg.total_cost_usd === 'number')
+                  updates.totalCostUsd = innerMsg.total_cost_usd
+                if (typeof usage.input_tokens === 'number') {
+                  updates.contextUsage = {
+                    inputTokens: usage.input_tokens ?? 0,
+                    cacheCreationInputTokens: usage.cache_creation_input_tokens ?? 0,
+                    cacheReadInputTokens: usage.cache_read_input_tokens ?? 0,
+                  }
+                }
+                if (Object.keys(updates).length > 0)
+                  agentSessionStore.updateInfo(agentId, updates)
+              }
+            }
+          }
+          catch { /* ignore parse errors */ }
+        }
+
         // Play turn-end sound when a real RESULT (with subtype) arrives.
+        // Also extract contextWindow and total_cost_usd (rehydrates on reconnect).
         if (msg.role === MessageRole.RESULT) {
           try {
             const text = decompressContentToString(msg.content, msg.contentCompression)
@@ -111,6 +147,24 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
               if (innerMsg?.subtype) {
                 if (catchUpPhase === 'live')
                   params.onTurnEndSound?.()
+              }
+              // Extract contextWindow from modelUsage.
+              if (innerMsg?.modelUsage && typeof innerMsg.modelUsage === 'object') {
+                for (const modelData of Object.values(innerMsg.modelUsage)) {
+                  const md = modelData as Record<string, unknown> | undefined
+                  if (md && typeof md.contextWindow === 'number') {
+                    const existingUsage = agentSessionStore.getInfo(agentId).contextUsage
+                    if (existingUsage) {
+                      agentSessionStore.updateInfo(agentId, {
+                        contextUsage: { ...existingUsage, contextWindow: md.contextWindow as number },
+                      })
+                    }
+                    break
+                  }
+                }
+              }
+              if (typeof innerMsg?.total_cost_usd === 'number') {
+                agentSessionStore.updateInfo(agentId, { totalCostUsd: innerMsg.total_cost_usd })
               }
             }
           }

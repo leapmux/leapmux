@@ -8,27 +8,39 @@ export interface ContextUsageInfo {
   contextWindow?: number
 }
 
-export interface AgentContextInfo {
+export interface RateLimitInfo {
+  status?: string // "allowed" | "allowed_warning" | "exceeded" etc.
+  resetsAt?: number // Unix timestamp (seconds)
+  rateLimitType?: string // "five_hour" | "seven_day" etc.
+  utilization?: number // 0.0–1.0, current usage fraction
+  surpassedThreshold?: number // threshold that triggered warning (e.g. 0.75)
+  overageStatus?: string // "allowed" etc.
+  overageResetsAt?: number // Unix timestamp (seconds)
+  isUsingOverage?: boolean
+}
+
+export interface AgentSessionInfo {
   totalCostUsd?: number
   contextUsage?: ContextUsageInfo
+  rateLimits?: Record<string, RateLimitInfo> // keyed by rateLimitType
 }
 
-const STORAGE_KEY_PREFIX = 'leapmux-agent-context-'
+const STORAGE_KEY_PREFIX = 'leapmux-agent-session-'
 
-function loadFromStorage(agentId: string): AgentContextInfo {
-  return safeGetJson<AgentContextInfo>(`${STORAGE_KEY_PREFIX}${agentId}`) ?? {}
+function loadFromStorage(agentId: string): AgentSessionInfo {
+  return safeGetJson<AgentSessionInfo>(`${STORAGE_KEY_PREFIX}${agentId}`) ?? {}
 }
 
-function saveToStorage(agentId: string, info: AgentContextInfo) {
+function saveToStorage(agentId: string, info: AgentSessionInfo) {
   safeSetJson(`${STORAGE_KEY_PREFIX}${agentId}`, info)
 }
 
-interface AgentContextStoreState {
-  infoByAgent: Record<string, AgentContextInfo>
+interface AgentSessionStoreState {
+  infoByAgent: Record<string, AgentSessionInfo>
 }
 
-export function createAgentContextStore() {
-  const [state, setState] = createStore<AgentContextStoreState>({
+export function createAgentSessionStore() {
+  const [state, setState] = createStore<AgentSessionStoreState>({
     infoByAgent: {},
   })
 
@@ -38,7 +50,7 @@ export function createAgentContextStore() {
   return {
     state,
 
-    getInfo(agentId: string): AgentContextInfo {
+    getInfo(agentId: string): AgentSessionInfo {
       if (!loaded.has(agentId)) {
         loaded.add(agentId)
         const stored = loadFromStorage(agentId)
@@ -49,7 +61,7 @@ export function createAgentContextStore() {
       return state.infoByAgent[agentId] ?? {}
     },
 
-    updateInfo(agentId: string, partial: Partial<AgentContextInfo>) {
+    updateInfo(agentId: string, partial: Partial<AgentSessionInfo>) {
       if (!loaded.has(agentId)) {
         loaded.add(agentId)
         const stored = loadFromStorage(agentId)
@@ -61,7 +73,13 @@ export function createAgentContextStore() {
         const merged = { ...prev }
         for (const [key, value] of Object.entries(partial)) {
           if (value !== undefined && value !== null) {
-            (merged as Record<string, unknown>)[key] = value
+            if (key === 'rateLimits' && typeof value === 'object') {
+              // Deep-merge rateLimits: preserve existing entries, update/add new ones
+              merged.rateLimits = { ...merged.rateLimits, ...value as Record<string, RateLimitInfo> }
+            }
+            else {
+              (merged as Record<string, unknown>)[key] = value
+            }
           }
         }
         saveToStorage(agentId, merged)
@@ -79,7 +97,7 @@ export function createAgentContextStore() {
       const info = state.infoByAgent[agentId]
       if (info) {
         const { contextUsage: _, totalCostUsd: __, ...rest } = info
-        saveToStorage(agentId, rest as AgentContextInfo)
+        saveToStorage(agentId, rest as AgentSessionInfo)
       }
     },
   }

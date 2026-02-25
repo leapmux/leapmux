@@ -32,7 +32,7 @@ function isNotificationThreadWrapper(wrapper: { messages: unknown[] } | null): w
   const first = wrapper.messages[0] as Record<string, unknown>
   const t = first.type as string | undefined
   const st = first.subtype as string | undefined
-  return t === 'settings_changed' || t === 'context_cleared' || t === 'interrupted'
+  return t === 'settings_changed' || t === 'context_cleared' || t === 'interrupted' || t === 'rate_limit'
     || (t === 'system' && st !== 'init' && st !== 'task_notification')
 }
 
@@ -74,7 +74,7 @@ export function classifyMessage(
   }
 
   // 4b. Non-system notification types
-  if (type === 'interrupted' || type === 'context_cleared' || type === 'settings_changed')
+  if (type === 'interrupted' || type === 'context_cleared' || type === 'settings_changed' || type === 'rate_limit')
     return { kind: 'notification' }
 
   // 5. Result divider
