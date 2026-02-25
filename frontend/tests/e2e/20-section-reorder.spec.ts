@@ -14,7 +14,7 @@ function waitForMoveSection(page: import('@playwright/test').Page) {
  * Helper: get ordered section testids from a sidebar container.
  * Returns an array like ['section-header-files', 'section-header-todos'].
  */
-async function getSectionOrder(page: import('@playwright/test').Page, side: 'left' | 'right') {
+async function getSectionOrder(page: import('@playwright/test').Page) {
   // Each section has a data-testid on the <details> element (section-header-*).
   // The <summary> also has a data-testid ending with "-summary", so we
   // exclude those to avoid double-counting.
@@ -96,7 +96,7 @@ test.describe('Section Reorder & Move', () => {
     await page.waitForTimeout(500)
 
     // Verify both sections are now in the right sidebar (Archived before Files)
-    let order = await getSectionOrder(page, 'right')
+    const order = await getSectionOrder(page)
     expect(order).toContain('section-header-workspaces_archived')
     expect(order).toContain('section-header-files')
 
@@ -115,7 +115,7 @@ test.describe('Section Reorder & Move', () => {
     await expect(page.locator('[data-testid="section-header-files"]')).toBeVisible()
     await expect(page.locator('[data-testid="section-header-workspaces_archived"]')).toBeVisible()
 
-    const reloadOrder = await getSectionOrder(page, 'right')
+    const reloadOrder = await getSectionOrder(page)
     const reloadFilesIdx = reloadOrder.indexOf('section-header-files')
     const reloadArchivedIdx = reloadOrder.indexOf('section-header-workspaces_archived')
     expect(reloadFilesIdx).toBeLessThan(reloadArchivedIdx)
@@ -130,7 +130,7 @@ test.describe('Section Reorder & Move', () => {
     await expect(archived).toBeVisible()
 
     // Get initial order of left sidebar sections
-    const initialOrder = await getSectionOrder(page, 'left')
+    const initialOrder = await getSectionOrder(page)
     const ipIdx = initialOrder.indexOf('section-header-workspaces_in_progress')
     const arIdx = initialOrder.indexOf('section-header-workspaces_archived')
     expect(ipIdx).toBeGreaterThanOrEqual(0)
@@ -143,7 +143,7 @@ test.describe('Section Reorder & Move', () => {
     await saved
 
     // Verify new order: Archived before In Progress
-    const newOrder = await getSectionOrder(page, 'left')
+    const newOrder = await getSectionOrder(page)
     const newIpIdx = newOrder.indexOf('section-header-workspaces_in_progress')
     const newArIdx = newOrder.indexOf('section-header-workspaces_archived')
     expect(newArIdx).toBeLessThan(newIpIdx)
@@ -153,7 +153,7 @@ test.describe('Section Reorder & Move', () => {
     await expect(page.locator('[data-testid="section-header-workspaces_in_progress"]')).toBeVisible()
     await expect(page.locator('[data-testid="section-header-workspaces_archived"]')).toBeVisible()
 
-    const reloadOrder = await getSectionOrder(page, 'left')
+    const reloadOrder = await getSectionOrder(page)
     const reloadIpIdx = reloadOrder.indexOf('section-header-workspaces_in_progress')
     const reloadArIdx = reloadOrder.indexOf('section-header-workspaces_archived')
     expect(reloadArIdx).toBeLessThan(reloadIpIdx)
@@ -188,7 +188,7 @@ test.describe('Section Reorder & Move', () => {
     await expect(page.locator('[data-testid="section-header-files"]')).toBeVisible()
 
     // After reload, Archived and Files should be adjacent (both in right sidebar)
-    const allSections = await getSectionOrder(page, 'right')
+    const allSections = await getSectionOrder(page)
     expect(allSections).toContain('section-header-workspaces_archived')
     expect(allSections).toContain('section-header-files')
   })
@@ -211,7 +211,7 @@ test.describe('Section Reorder & Move', () => {
     await expect(page.locator('[data-testid="section-header-workspaces_in_progress"]')).toBeVisible()
 
     // After reload, Files should be adjacent to In Progress (both in left sidebar)
-    const allSections = await getSectionOrder(page, 'left')
+    const allSections = await getSectionOrder(page)
     expect(allSections).toContain('section-header-files')
     expect(allSections).toContain('section-header-workspaces_in_progress')
   })

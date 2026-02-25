@@ -1,6 +1,6 @@
-import type { Section, SectionItem } from '~/generated/leapmux/v1/section_pb'
+import type { Section, SectionItem, Sidebar } from '~/generated/leapmux/v1/section_pb'
 import { createStore } from 'solid-js/store'
-import { Sidebar, SectionType } from '~/generated/leapmux/v1/section_pb'
+import { SectionType } from '~/generated/leapmux/v1/section_pb'
 
 interface SectionStoreState {
   sections: Section[]

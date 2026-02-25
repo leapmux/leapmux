@@ -1,5 +1,5 @@
-import type { Section } from '~/generated/leapmux/v1/section_pb'
 import type { JSX } from 'solid-js'
+import type { Section } from '~/generated/leapmux/v1/section_pb'
 import { closestCenter, DragDropProvider, DragDropSensors, DragOverlay } from '@thisbeyond/solid-dnd'
 import { createContext, createSignal, useContext } from 'solid-js'
 import { Sidebar } from '~/generated/leapmux/v1/section_pb'
@@ -202,8 +202,8 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
 
   const ctxValue: SectionDragState = {
     draggedSectionId,
-    setExternalDragHandler: (h) => setExternalHandler(() => h),
-    setExternalOverlayRenderer: (r) => setExternalRenderer(() => r),
+    setExternalDragHandler: h => setExternalHandler(() => h),
+    setExternalOverlayRenderer: r => setExternalRenderer(() => r),
   }
 
   return (
@@ -238,7 +238,8 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
                   'text-transform': 'uppercase',
                   'letter-spacing': '0.5px',
                   'opacity': '0.9',
-                }}>
+                }}
+                >
                   {section.name}
                 </div>
               )

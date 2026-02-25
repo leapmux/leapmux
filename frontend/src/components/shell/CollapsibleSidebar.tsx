@@ -437,7 +437,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
   const hasDndContext = useDragDropContext() !== null
 
   // Create a droppable zone for the whole sidebar (for cross-sidebar drops).
-  // eslint-disable-next-line solid/reactivity -- side is stable for the component lifetime
+
   const sidebarDroppable = hasDndContext
     ? createDroppable(`${SIDEBAR_ZONE_PREFIX}${props.side}`)
     : null
@@ -474,11 +474,11 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
             // instead of createSortable to avoid requiring a SortableProvider
             // ancestor (reorder position logic lives in SectionDragProvider).
             // Only created when inside a DragDropProvider and section is draggable.
-            // eslint-disable-next-line solid/reactivity -- draggable is stable per section
+
             const draggable = hasDndContext && section().draggable
               ? createDraggable(`${SECTION_DRAG_PREFIX}${id}`)
               : null
-            // eslint-disable-next-line solid/reactivity -- draggable is stable per section
+
             const droppable = hasDndContext && section().draggable
               ? createDroppable(`${SECTION_DRAG_PREFIX}${id}`)
               : null
@@ -542,8 +542,10 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                   ref={(el) => {
                     detailsRef = el
                     // Attach draggable + droppable refs for DnD
-                    if (draggable) draggable.ref(el)
-                    if (droppable) (droppable as any).ref(el)
+                    if (draggable)
+                      draggable.ref(el)
+                    if (droppable)
+                      (droppable as any).ref(el)
                   }}
                   class={`${styles.collapsiblePane} ${sectionOpen() ? styles.collapsiblePaneExpanded : ''} ${draggable?.isActiveDraggable ? styles.collapsiblePaneDragging : ''}`}
                   style={flexStyle()}

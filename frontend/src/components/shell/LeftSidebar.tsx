@@ -20,13 +20,13 @@ import { dragOverlay as wsDragOverlay } from '~/components/workspace/workspaceLi
 import { WorkspaceSectionContent } from '~/components/workspace/WorkspaceSectionContent'
 import { WorkspaceSharingDialog } from '~/components/workspace/WorkspaceSharingDialog'
 import { useAuth } from '~/context/AuthContext'
-import { Sidebar, SectionType } from '~/generated/leapmux/v1/section_pb'
+import { SectionType, Sidebar } from '~/generated/leapmux/v1/section_pb'
 import { mid } from '~/lib/lexorank'
 import { sanitizeName } from '~/lib/validate'
 import { iconSize } from '~/styles/tokens'
 import { CollapsibleSidebar } from './CollapsibleSidebar'
-import { useSectionDrag } from './SectionDragContext'
 import * as csStyles from './CollapsibleSidebar.css'
+import { useSectionDrag } from './SectionDragContext'
 import { UserMenu } from './UserMenu'
 
 interface LeftSidebarProps {
