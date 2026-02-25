@@ -14,6 +14,8 @@ import (
 func init() {
 	// Ensure .webmanifest files are served with the correct MIME type.
 	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
+	// Ensure .map (source map) files are served with the correct MIME type.
+	_ = mime.AddExtensionType(".map", "application/json")
 }
 
 // Handler returns an http.Handler that serves the embedded frontend assets.
