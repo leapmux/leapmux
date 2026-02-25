@@ -61,6 +61,7 @@ func (s *SectionService) ListSections(
 			Name:        sec.Name,
 			Position:    sec.Position,
 			SectionType: sec.SectionType,
+			Sidebar:     sec.Sidebar,
 		}
 	}
 
@@ -101,10 +102,13 @@ func (s *SectionService) CreateSection(
 
 	var lastCustomPos, archivedPos string
 	for _, sec := range sections {
-		if sec.SectionType == leapmuxv1.SectionType_SECTION_TYPE_CUSTOM {
+		if sec.Sidebar != leapmuxv1.Sidebar_SIDEBAR_LEFT {
+			continue
+		}
+		if sec.SectionType == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM {
 			lastCustomPos = sec.Position
 		}
-		if sec.SectionType == leapmuxv1.SectionType_SECTION_TYPE_ARCHIVED {
+		if sec.SectionType == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED {
 			archivedPos = sec.Position
 		}
 	}
@@ -118,23 +122,25 @@ func (s *SectionService) CreateSection(
 		position = lexorank.First()
 	}
 
-	id := id.Generate()
+	sectionID := id.Generate()
 	if err := s.queries.CreateWorkspaceSection(ctx, db.CreateWorkspaceSectionParams{
-		ID:          id,
+		ID:          sectionID,
 		UserID:      user.ID,
 		Name:        name,
 		Position:    position,
-		SectionType: leapmuxv1.SectionType_SECTION_TYPE_CUSTOM,
+		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
+		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
 	return connect.NewResponse(&leapmuxv1.CreateSectionResponse{
 		Section: &leapmuxv1.Section{
-			Id:          id,
+			Id:          sectionID,
 			Name:        name,
 			Position:    position,
-			SectionType: leapmuxv1.SectionType_SECTION_TYPE_CUSTOM,
+			SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
+			Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
 		},
 	}), nil
 }
@@ -188,7 +194,7 @@ func (s *SectionService) DeleteSection(
 
 	var inProgressID string
 	for _, sec := range sections {
-		if sec.SectionType == leapmuxv1.SectionType_SECTION_TYPE_IN_PROGRESS {
+		if sec.SectionType == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS {
 			inProgressID = sec.ID
 			break
 		}
@@ -221,13 +227,18 @@ func (s *SectionService) DeleteSection(
 	return connect.NewResponse(&leapmuxv1.DeleteSectionResponse{}), nil
 }
 
-func (s *SectionService) ReorderSection(
+func (s *SectionService) MoveSection(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.ReorderSectionRequest],
-) (*connect.Response[leapmuxv1.ReorderSectionResponse], error) {
+	req *connect.Request[leapmuxv1.MoveSectionRequest],
+) (*connect.Response[leapmuxv1.MoveSectionResponse], error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	sidebar := req.Msg.GetSidebar()
+	if sidebar != leapmuxv1.Sidebar_SIDEBAR_LEFT && sidebar != leapmuxv1.Sidebar_SIDEBAR_RIGHT {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("sidebar must be LEFT or RIGHT"))
 	}
 
 	// Verify the section exists and belongs to the user.
@@ -241,11 +252,9 @@ func (s *SectionService) ReorderSection(
 	if section.UserID != user.ID {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found"))
 	}
-	if section.SectionType != leapmuxv1.SectionType_SECTION_TYPE_CUSTOM {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("cannot reorder non-custom sections"))
-	}
 
-	if err := s.queries.UpdateWorkspaceSectionPosition(ctx, db.UpdateWorkspaceSectionPositionParams{
+	if err := s.queries.UpdateWorkspaceSectionSidebarPosition(ctx, db.UpdateWorkspaceSectionSidebarPositionParams{
+		Sidebar:  sidebar,
 		Position: req.Msg.GetPosition(),
 		ID:       req.Msg.GetSectionId(),
 		UserID:   user.ID,
@@ -253,7 +262,7 @@ func (s *SectionService) ReorderSection(
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	return connect.NewResponse(&leapmuxv1.ReorderSectionResponse{}), nil
+	return connect.NewResponse(&leapmuxv1.MoveSectionResponse{}), nil
 }
 
 func (s *SectionService) MoveWorkspace(
@@ -289,17 +298,35 @@ func (s *SectionService) MoveWorkspace(
 	return connect.NewResponse(&leapmuxv1.MoveWorkspaceResponse{}), nil
 }
 
-// initDefaultSections creates the "In progress" and "Archived" sections for a user.
+// initDefaultSections creates the default sections for a user.
 func (s *SectionService) initDefaultSections(ctx context.Context, userID string) error {
+	// Left sidebar sections
 	inProgressPos := lexorank.First()
-	archivedPos := lexorank.After(inProgressPos)
+	sharedPos := lexorank.After(inProgressPos)
+	archivedPos := lexorank.After(sharedPos)
+
+	// Right sidebar sections
+	filesPos := lexorank.First()
+	todosPos := lexorank.After(filesPos)
 
 	if err := s.queries.CreateWorkspaceSection(ctx, db.CreateWorkspaceSectionParams{
 		ID:          id.Generate(),
 		UserID:      userID,
 		Name:        "In progress",
 		Position:    inProgressPos,
-		SectionType: leapmuxv1.SectionType_SECTION_TYPE_IN_PROGRESS,
+		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS,
+		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
+	}); err != nil {
+		return err
+	}
+
+	if err := s.queries.CreateWorkspaceSection(ctx, db.CreateWorkspaceSectionParams{
+		ID:          id.Generate(),
+		UserID:      userID,
+		Name:        "Shared",
+		Position:    sharedPos,
+		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_SHARED,
+		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
 	}); err != nil {
 		return err
 	}
@@ -309,7 +336,30 @@ func (s *SectionService) initDefaultSections(ctx context.Context, userID string)
 		UserID:      userID,
 		Name:        "Archived",
 		Position:    archivedPos,
-		SectionType: leapmuxv1.SectionType_SECTION_TYPE_ARCHIVED,
+		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED,
+		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
+	}); err != nil {
+		return err
+	}
+
+	if err := s.queries.CreateWorkspaceSection(ctx, db.CreateWorkspaceSectionParams{
+		ID:          id.Generate(),
+		UserID:      userID,
+		Name:        "Files",
+		Position:    filesPos,
+		SectionType: leapmuxv1.SectionType_SECTION_TYPE_FILES,
+		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_RIGHT,
+	}); err != nil {
+		return err
+	}
+
+	if err := s.queries.CreateWorkspaceSection(ctx, db.CreateWorkspaceSectionParams{
+		ID:          id.Generate(),
+		UserID:      userID,
+		Name:        "To-dos",
+		Position:    todosPos,
+		SectionType: leapmuxv1.SectionType_SECTION_TYPE_TODOS,
+		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_RIGHT,
 	}); err != nil {
 		return err
 	}

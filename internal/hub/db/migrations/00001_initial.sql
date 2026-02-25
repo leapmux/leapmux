@@ -166,13 +166,14 @@ CREATE TABLE email_verifications (
 );
 CREATE INDEX idx_email_verifications_token ON email_verifications(token);
 
--- Workspace sections (per-user organization of workspaces)
+-- Sidebar sections (per-user organization of sidebar panels)
 CREATE TABLE workspace_sections (
     id           TEXT PRIMARY KEY,
     user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name         TEXT NOT NULL,
     position     TEXT NOT NULL,
     section_type INTEGER NOT NULL DEFAULT 1,
+    sidebar      INTEGER NOT NULL DEFAULT 1,
     created_at   DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX idx_workspace_sections_user_id ON workspace_sections(user_id);

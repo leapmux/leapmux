@@ -215,7 +215,7 @@ func (s *WorkspaceService) CreateWorkspace(
 	sections, err := s.queries.ListWorkspaceSectionsByUserID(ctx, user.ID)
 	if err == nil {
 		for _, sec := range sections {
-			if sec.SectionType == leapmuxv1.SectionType_SECTION_TYPE_IN_PROGRESS {
+			if sec.SectionType == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS {
 				if err := s.queries.SetWorkspaceSectionItem(ctx, db.SetWorkspaceSectionItemParams{
 					UserID:      user.ID,
 					WorkspaceID: workspaceID,

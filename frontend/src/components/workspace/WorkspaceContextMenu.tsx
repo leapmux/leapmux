@@ -49,7 +49,7 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
             </button>
           )}
         >
-          <For each={props.sections.filter(s => s.id !== props.currentSectionId && s.sectionType !== SectionType.ARCHIVED)}>
+          <For each={props.sections.filter(s => s.id !== props.currentSectionId && s.sectionType !== SectionType.WORKSPACES_ARCHIVED)}>
             {section => (
               <button
                 role="menuitem"

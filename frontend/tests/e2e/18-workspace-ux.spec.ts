@@ -12,7 +12,7 @@ test.describe('Workspace UX Enhancements', () => {
 
       // Navigate to the org root (no workspace ID)
       await page.goto('/o/admin')
-      await expect(page.locator('[data-testid="section-header-in_progress"]')).toBeVisible()
+      await expect(page.locator('[data-testid="section-header-workspaces_in_progress"]')).toBeVisible()
 
       // Should auto-redirect to the first workspace
       await expect(page).toHaveURL(/\/workspace\//)
@@ -26,7 +26,7 @@ test.describe('Workspace UX Enhancements', () => {
     await loginViaToken(page, leapmuxServer.adminToken)
     // Navigate to org root first
     await page.goto('/o/admin')
-    await expect(page.locator('[data-testid="section-header-in_progress"]')).toBeVisible()
+    await expect(page.locator('[data-testid="section-header-workspaces_in_progress"]')).toBeVisible()
 
     // Click the sidebar + button
     await page.locator('[data-testid="sidebar-new-workspace"]').click()

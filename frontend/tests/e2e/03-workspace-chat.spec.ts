@@ -185,16 +185,16 @@ test.describe('Workspace Chat', () => {
     }
 
     // Shrink viewport so tabs must wrap.
-    // With resizable panels, center area is ~62% of viewport width.
-    // At 600px: center ~ 370px. 6 tabs * ~74px = 444px > 370px -> wraps.
-    await page.setViewportSize({ width: 600, height: 600 })
+    // With resizable panels + drag handles, center area is ~55-60% of viewport width.
+    // At 800px: center ~ 440-480px. 6 tabs * ~74px = 444px -> wraps.
+    await page.setViewportSize({ width: 800, height: 600 })
     await page.waitForTimeout(500)
 
     // The agent button should still be visible
     await expect(page.locator('[data-testid="new-agent-button"]')).toBeVisible()
 
     // The tab bar should have grown taller (multi-row) compared to single-row height
-    const tabBarHeight = await page.locator('[class*="tabBar"]').evaluate(el => el.getBoundingClientRect().height)
+    const tabBarHeight = await page.locator('[data-testid="tab-bar"]').evaluate(el => el.getBoundingClientRect().height)
     // Single row is minHeight 36px; with wrapping it should be at least that
     expect(tabBarHeight).toBeGreaterThanOrEqual(36)
   })

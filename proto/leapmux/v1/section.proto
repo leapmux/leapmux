@@ -1,7 +1,7 @@
 syntax = "proto3";
 package leapmux.v1;
 
-// SectionService manages per-user workspace sections.
+// SectionService manages per-user sidebar sections.
 // Called by Frontend on Hub via ConnectRPC.
 service SectionService {
   // List all sections and workspace assignments for the current user.
@@ -13,8 +13,8 @@ service SectionService {
   rpc RenameSection(RenameSectionRequest) returns (RenameSectionResponse);
   // Delete a custom section (moves its workspaces to "In progress").
   rpc DeleteSection(DeleteSectionRequest) returns (DeleteSectionResponse);
-  // Reorder a custom section (change its position).
-  rpc ReorderSection(ReorderSectionRequest) returns (ReorderSectionResponse);
+  // Move a section to a different sidebar and/or position.
+  rpc MoveSection(MoveSectionRequest) returns (MoveSectionResponse);
   // Move a workspace to a different section at a given position.
   rpc MoveWorkspace(MoveWorkspaceRequest) returns (MoveWorkspaceResponse);
 }
@@ -22,17 +22,28 @@ service SectionService {
 // SectionType distinguishes built-in from user-created sections.
 enum SectionType {
   SECTION_TYPE_UNSPECIFIED = 0;
-  SECTION_TYPE_CUSTOM = 1;
-  SECTION_TYPE_IN_PROGRESS = 2;
-  SECTION_TYPE_ARCHIVED = 3;
+  SECTION_TYPE_WORKSPACES_CUSTOM = 1;
+  SECTION_TYPE_WORKSPACES_IN_PROGRESS = 2;
+  SECTION_TYPE_WORKSPACES_ARCHIVED = 3;
+  SECTION_TYPE_WORKSPACES_SHARED = 4;
+  SECTION_TYPE_FILES = 5;
+  SECTION_TYPE_TODOS = 6;
 }
 
-// Section represents a user's workspace section.
+// Sidebar indicates which sidebar a section belongs to.
+enum Sidebar {
+  SIDEBAR_UNSPECIFIED = 0;
+  SIDEBAR_LEFT = 1;
+  SIDEBAR_RIGHT = 2;
+}
+
+// Section represents a user's sidebar section.
 message Section {
   string id = 1;
   string name = 2;
   string position = 3;
   SectionType section_type = 4;
+  Sidebar sidebar = 5;
 }
 
 // SectionItem represents a workspace's assignment to a section.
@@ -73,12 +84,13 @@ message DeleteSectionRequest {
 
 message DeleteSectionResponse {}
 
-message ReorderSectionRequest {
+message MoveSectionRequest {
   string section_id = 1;
-  string position = 2;
+  Sidebar sidebar = 2;
+  string position = 3;
 }
 
-message ReorderSectionResponse {}
+message MoveSectionResponse {}
 
 message MoveWorkspaceRequest {
   string workspace_id = 1;

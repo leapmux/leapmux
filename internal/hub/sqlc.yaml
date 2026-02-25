@@ -52,11 +52,15 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "ContentCompression"
-          # Workspace section enum
+          # Workspace section enums
           - column: "workspace_sections.section_type"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "SectionType"
+          - column: "workspace_sections.sidebar"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "Sidebar"
           # Workspace tab enums
           - column: "workspace_tabs.tab_type"
             go_type:

@@ -37,7 +37,7 @@ function branchExists(repoDir: string, branchName: string): boolean {
  * Unlike waitForWorkspaceReady, this works on non-workspace routes like /o/admin.
  */
 async function waitForOrgPageReady(page: Page) {
-  await expect(page.locator('[data-testid="section-header-in_progress"]')).toBeVisible({ timeout: 15_000 })
+  await expect(page.locator('[data-testid="section-header-workspaces_in_progress"]')).toBeVisible({ timeout: 15_000 })
 }
 
 /**

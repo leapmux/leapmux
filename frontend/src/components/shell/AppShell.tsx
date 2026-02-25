@@ -1,5 +1,6 @@
 import type { Component, ParentComponent } from 'solid-js'
 import type { CheckWorktreeStatusResponse } from '~/generated/leapmux/v1/git_pb'
+import type { Sidebar } from '~/generated/leapmux/v1/section_pb'
 import type { Tab } from '~/stores/tab.store'
 import type { PermissionMode } from '~/utils/controlResponse'
 import Resizable from '@corvu/resizable'
@@ -36,6 +37,7 @@ import { createAgentContextStore } from '~/stores/agentContext.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
 import { createLayoutStore } from '~/stores/layout.store'
+import { createSectionStore } from '~/stores/section.store'
 import { createTabStore, tabKey } from '~/stores/tab.store'
 import { createTerminalStore } from '~/stores/terminal.store'
 import { createWorkspaceStore } from '~/stores/workspace.store'
@@ -43,6 +45,7 @@ import { dialogCompact } from '~/styles/shared.css'
 import { isAgentWorking } from '~/utils/agentState'
 import { buildInterruptRequest, buildSetPermissionModeRequest, DEFAULT_EFFORT, DEFAULT_MODEL } from '~/utils/controlResponse'
 import * as styles from './AppShell.css'
+import { SectionDragProvider } from './SectionDragContext'
 import { Tile } from './Tile'
 import { TilingLayout } from './TilingLayout'
 
@@ -73,6 +76,7 @@ export const AppShell: ParentComponent = (props) => {
   const navigate = useNavigate()
 
   const workspaceStore = createWorkspaceStore()
+  const sectionStore = createSectionStore()
   const agentStore = createAgentStore()
   const chatStore = createChatStore()
   const terminalStore = createTerminalStore()
@@ -221,6 +225,44 @@ export const AppShell: ParentComponent = (props) => {
       loadWorkspaces()
     }
   })
+
+  // Load sections on mount and when org changes
+  const loadSections = async () => {
+    const orgId = org.orgId()
+    if (!orgId)
+      return
+    sectionStore.setLoading(true)
+    try {
+      const resp = await sectionClient.listSections({ orgId })
+      sectionStore.setSections(resp.sections)
+      sectionStore.setItems(resp.items)
+    }
+    catch (err) {
+      sectionStore.setError(err instanceof Error ? err.message : 'Failed to load sections')
+    }
+    finally {
+      sectionStore.setLoading(false)
+    }
+  }
+
+  createEffect(() => {
+    if (org.orgId()) {
+      loadSections()
+    }
+  })
+
+  // Handle section moves (optimistic + server persist)
+  const handleMoveSection = (sectionId: string, sidebar: Sidebar, position: string) => {
+    sectionStore.moveSection(sectionId, sidebar, position)
+  }
+
+  const handleMoveSectionServer = (sectionId: string, sidebar: Sidebar, position: string) => {
+    sectionClient.moveSection({ sectionId, sidebar, position })
+      .catch((err) => {
+        showToast(err instanceof Error ? err.message : 'Failed to move section', 'danger')
+        loadSections()
+      })
+  }
 
   // Auto-activate workspace when navigating to org root with no workspace selected.
   // Use sessionStorage-persisted active workspace, falling back to first workspace.
@@ -1337,6 +1379,8 @@ export const AppShell: ParentComponent = (props) => {
     <LeftSidebar
       workspaces={workspaceStore.state.workspaces}
       activeWorkspaceId={workspace.activeWorkspaceId()}
+      sectionStore={sectionStore}
+      loadSections={loadSections}
       onSelectWorkspace={handleSelectWorkspace}
       onNewWorkspace={(sectionId) => {
         setNewWorkspaceTargetSectionId(sectionId)
@@ -1370,6 +1414,7 @@ export const AppShell: ParentComponent = (props) => {
       activeTodos={activeTodos()}
       fileTreePath={fileTreePath()}
       onFileSelect={setFileTreePath}
+      sectionStore={sectionStore}
       isCollapsed={opts?.isCollapsed() ?? false}
       onExpand={opts?.onExpand ?? (() => {})}
       onCollapse={opts?.onCollapse}
@@ -1466,178 +1511,184 @@ export const AppShell: ParentComponent = (props) => {
               let saveSidebarRef: (() => void) | undefined
 
               return (
-                <Resizable orientation="horizontal" class={styles.shell} onSizesChange={() => saveSidebarRef?.()}>
-                  {() => {
-                    const ctx = Resizable.useContext()
-                    const [leftCollapsed, setLeftCollapsed] = createSignal(false)
-                    const [rightCollapsed, setRightCollapsed] = createSignal(false)
-                    let leftSizeBeforeCollapse = initLeft
-                    let rightSizeBeforeCollapse = initRight
+                <SectionDragProvider
+                  sections={() => sectionStore.state.sections}
+                  onMoveSection={handleMoveSection}
+                  onMoveSectionServer={handleMoveSectionServer}
+                >
+                  <Resizable orientation="horizontal" class={styles.shell} onSizesChange={() => saveSidebarRef?.()}>
+                    {() => {
+                      const ctx = Resizable.useContext()
+                      const [leftCollapsed, setLeftCollapsed] = createSignal(false)
+                      const [rightCollapsed, setRightCollapsed] = createSignal(false)
+                      let leftSizeBeforeCollapse = initLeft
+                      let rightSizeBeforeCollapse = initRight
 
-                    // Sidebar state persistence (immediate save + debounced variant for resize)
-                    const doSaveSidebarState = () => {
-                      const id = workspace.activeWorkspaceId()
-                      if (!id)
-                        return
-                      const sizes = ctx.sizes()
-                      const state: SidebarState = {
-                        leftSize: leftCollapsed() ? leftSizeBeforeCollapse : sizes[0],
-                        rightSize: rightCollapsed() ? rightSizeBeforeCollapse : sizes[2],
-                        leftCollapsed: leftCollapsed(),
-                        rightCollapsed: rightCollapsed(),
-                        leftOpenSections,
-                        leftSectionSizes,
-                        rightOpenSections,
-                        rightSectionSizes,
+                      // Sidebar state persistence (immediate save + debounced variant for resize)
+                      const doSaveSidebarState = () => {
+                        const id = workspace.activeWorkspaceId()
+                        if (!id)
+                          return
+                        const sizes = ctx.sizes()
+                        const state: SidebarState = {
+                          leftSize: leftCollapsed() ? leftSizeBeforeCollapse : sizes[0],
+                          rightSize: rightCollapsed() ? rightSizeBeforeCollapse : sizes[2],
+                          leftCollapsed: leftCollapsed(),
+                          rightCollapsed: rightCollapsed(),
+                          leftOpenSections,
+                          leftSectionSizes,
+                          rightOpenSections,
+                          rightSectionSizes,
+                        }
+                        sessionStorage.setItem(`leapmux:sidebar:${id}`, JSON.stringify(state))
                       }
-                      sessionStorage.setItem(`leapmux:sidebar:${id}`, JSON.stringify(state))
-                    }
-                    let sidebarSaveTimer: ReturnType<typeof setTimeout> | null = null
-                    const saveSidebarState = () => {
-                      if (sidebarSaveTimer)
-                        clearTimeout(sidebarSaveTimer)
-                      sidebarSaveTimer = setTimeout(doSaveSidebarState, 300)
-                    }
-                    saveSidebarRef = saveSidebarState
+                      let sidebarSaveTimer: ReturnType<typeof setTimeout> | null = null
+                      const saveSidebarState = () => {
+                        if (sidebarSaveTimer)
+                          clearTimeout(sidebarSaveTimer)
+                        sidebarSaveTimer = setTimeout(doSaveSidebarState, 300)
+                      }
+                      saveSidebarRef = saveSidebarState
 
-                    const collapseLeft = () => {
-                      leftSizeBeforeCollapse = ctx.sizes()[0] ?? initLeft
-                      ctx.collapse(0)
-                    }
-                    const expandLeft = () => {
-                      ctx.expand(0)
-                      ctx.resize(0, leftSizeBeforeCollapse)
-                    }
-                    const collapseRight = () => {
-                      rightSizeBeforeCollapse = ctx.sizes()[2] ?? initRight
-                      ctx.collapse(2)
-                    }
-                    const expandRight = () => {
-                      ctx.expand(2)
-                      ctx.resize(2, rightSizeBeforeCollapse)
-                    }
+                      const collapseLeft = () => {
+                        leftSizeBeforeCollapse = ctx.sizes()[0] ?? initLeft
+                        ctx.collapse(0)
+                      }
+                      const expandLeft = () => {
+                        ctx.expand(0)
+                        ctx.resize(0, leftSizeBeforeCollapse)
+                      }
+                      const collapseRight = () => {
+                        rightSizeBeforeCollapse = ctx.sizes()[2] ?? initRight
+                        ctx.collapse(2)
+                      }
+                      const expandRight = () => {
+                        ctx.expand(2)
+                        ctx.resize(2, rightSizeBeforeCollapse)
+                      }
 
-                    // Restore collapsed state after initial render
-                    if (savedSidebar?.leftCollapsed)
-                      queueMicrotask(() => collapseLeft())
-                    if (savedSidebar?.rightCollapsed)
-                      queueMicrotask(() => collapseRight())
+                      // Restore collapsed state after initial render
+                      if (savedSidebar?.leftCollapsed)
+                        queueMicrotask(() => collapseLeft())
+                      if (savedSidebar?.rightCollapsed)
+                        queueMicrotask(() => collapseRight())
 
-                    return (
-                      <>
-                        {/* Left sidebar - Workspaces */}
-                        <Resizable.Panel
-                          initialSize={initLeft}
-                          minSize={0.10}
-                          collapsible
-                          collapsedSize="45px"
-                          collapseThreshold={0.05}
-                          class={styles.sidebar}
-                          onCollapse={() => {
-                            setLeftCollapsed(true)
-                            saveSidebarState()
-                          }}
-                          onExpand={() => {
-                            setLeftCollapsed(false)
-                            saveSidebarState()
-                          }}
-                        >
-                          {leftSidebarElement({
-                            isCollapsed: leftCollapsed,
-                            onExpand: expandLeft,
-                            onCollapse: collapseLeft,
-                            saveSidebarState,
-                            initialOpenSections: savedSidebar?.leftOpenSections,
-                            initialSectionSizes: savedSidebar?.leftSectionSizes,
-                            onLeftStateChange: (open, sizes) => {
-                              leftOpenSections = open
-                              leftSectionSizes = sizes
-                              doSaveSidebarState()
-                            },
-                          })}
-                        </Resizable.Panel>
-
-                        <Resizable.Handle class={styles.resizeHandle} data-testid="resize-handle" />
-
-                        {/* Center area */}
-                        <Resizable.Panel
-                          initialSize={initCenter}
-                          class={styles.center}
-                          ref={(el: HTMLElement) => {
-                            const observer = new ResizeObserver((entries) => {
-                              for (const entry of entries)
-                                setCenterPanelHeight(entry.contentRect.height)
-                            })
-                            observer.observe(el)
-                          }}
-                        >
-                          <Show
-                            when={activeWorkspace() && !workspaceLoading()}
-                            fallback={(
-                              <Show when={!activeWorkspace() && !workspace.activeWorkspaceId()}>
-                                <div class={styles.placeholder}>
-                                  No workspaces yet. Click + to create one.
-                                </div>
-                              </Show>
-                            )}
+                      return (
+                        <>
+                          {/* Left sidebar - Workspaces */}
+                          <Resizable.Panel
+                            initialSize={initLeft}
+                            minSize={0.10}
+                            collapsible
+                            collapsedSize="45px"
+                            collapseThreshold={0.05}
+                            class={styles.sidebar}
+                            onCollapse={() => {
+                              setLeftCollapsed(true)
+                              saveSidebarState()
+                            }}
+                            onExpand={() => {
+                              setLeftCollapsed(false)
+                              saveSidebarState()
+                            }}
                           >
-                            <CrossTileDragProvider
-                              onIntraTileReorder={handleIntraTileReorder}
-                              onCrossTileMove={handleCrossTileMove}
-                              lookupTileIdForTab={lookupTileIdForTab}
-                              renderDragOverlay={renderDragOverlay}
-                            >
-                              <TilingLayout
-                                root={layoutStore.state.root}
-                                renderTile={renderTile}
-                                onRatioChange={(splitId, ratios) => {
-                                  layoutStore.updateRatios(splitId, ratios)
-                                  persistLayout()
-                                }}
-                              />
-                            </CrossTileDragProvider>
-                            <Show when={focusedAgentId()}>
-                              <FocusedAgentEditorPanel containerHeight={centerPanelHeight()} />
-                            </Show>
-                          </Show>
-                        </Resizable.Panel>
+                            {leftSidebarElement({
+                              isCollapsed: leftCollapsed,
+                              onExpand: expandLeft,
+                              onCollapse: collapseLeft,
+                              saveSidebarState,
+                              initialOpenSections: savedSidebar?.leftOpenSections,
+                              initialSectionSizes: savedSidebar?.leftSectionSizes,
+                              onLeftStateChange: (open, sizes) => {
+                                leftOpenSections = open
+                                leftSectionSizes = sizes
+                                doSaveSidebarState()
+                              },
+                            })}
+                          </Resizable.Panel>
 
-                        {/* Right sidebar - Files + To-dos */}
-                        <Resizable.Handle class={styles.resizeHandle} data-testid="resize-handle" />
-                        <Resizable.Panel
-                          initialSize={initRight}
-                          minSize={0.10}
-                          collapsible
-                          collapsedSize="45px"
-                          collapseThreshold={0.05}
-                          class={styles.rightPanel}
-                          onCollapse={() => {
-                            setRightCollapsed(true)
-                            saveSidebarState()
-                          }}
-                          onExpand={() => {
-                            setRightCollapsed(false)
-                            saveSidebarState()
-                          }}
-                        >
-                          {rightSidebarElement({
-                            isCollapsed: rightCollapsed,
-                            onExpand: expandRight,
-                            onCollapse: collapseRight,
-                            saveSidebarState,
-                            initialOpenSections: savedSidebar?.rightOpenSections,
-                            initialSectionSizes: savedSidebar?.rightSectionSizes,
-                            onRightStateChange: (open, sizes) => {
-                              rightOpenSections = open
-                              rightSectionSizes = sizes
-                              doSaveSidebarState()
-                            },
-                          })}
-                        </Resizable.Panel>
-                      </>
-                    )
-                  }}
-                </Resizable>
+                          <Resizable.Handle class={styles.resizeHandle} data-testid="resize-handle" />
+
+                          {/* Center area */}
+                          <Resizable.Panel
+                            initialSize={initCenter}
+                            class={styles.center}
+                            ref={(el: HTMLElement) => {
+                              const observer = new ResizeObserver((entries) => {
+                                for (const entry of entries)
+                                  setCenterPanelHeight(entry.contentRect.height)
+                              })
+                              observer.observe(el)
+                            }}
+                          >
+                            <Show
+                              when={activeWorkspace() && !workspaceLoading()}
+                              fallback={(
+                                <Show when={!activeWorkspace() && !workspace.activeWorkspaceId()}>
+                                  <div class={styles.placeholder}>
+                                    No workspaces yet. Click + to create one.
+                                  </div>
+                                </Show>
+                              )}
+                            >
+                              <CrossTileDragProvider
+                                onIntraTileReorder={handleIntraTileReorder}
+                                onCrossTileMove={handleCrossTileMove}
+                                lookupTileIdForTab={lookupTileIdForTab}
+                                renderDragOverlay={renderDragOverlay}
+                              >
+                                <TilingLayout
+                                  root={layoutStore.state.root}
+                                  renderTile={renderTile}
+                                  onRatioChange={(splitId, ratios) => {
+                                    layoutStore.updateRatios(splitId, ratios)
+                                    persistLayout()
+                                  }}
+                                />
+                              </CrossTileDragProvider>
+                              <Show when={focusedAgentId()}>
+                                <FocusedAgentEditorPanel containerHeight={centerPanelHeight()} />
+                              </Show>
+                            </Show>
+                          </Resizable.Panel>
+
+                          {/* Right sidebar - Files + To-dos */}
+                          <Resizable.Handle class={styles.resizeHandle} data-testid="resize-handle" />
+                          <Resizable.Panel
+                            initialSize={initRight}
+                            minSize={0.10}
+                            collapsible
+                            collapsedSize="45px"
+                            collapseThreshold={0.05}
+                            class={styles.rightPanel}
+                            onCollapse={() => {
+                              setRightCollapsed(true)
+                              saveSidebarState()
+                            }}
+                            onExpand={() => {
+                              setRightCollapsed(false)
+                              saveSidebarState()
+                            }}
+                          >
+                            {rightSidebarElement({
+                              isCollapsed: rightCollapsed,
+                              onExpand: expandRight,
+                              onCollapse: collapseRight,
+                              saveSidebarState,
+                              initialOpenSections: savedSidebar?.rightOpenSections,
+                              initialSectionSizes: savedSidebar?.rightSectionSizes,
+                              onRightStateChange: (open, sizes) => {
+                                rightOpenSections = open
+                                rightSectionSizes = sizes
+                                doSaveSidebarState()
+                              },
+                            })}
+                          </Resizable.Panel>
+                        </>
+                      )
+                    }}
+                  </Resizable>
+                </SectionDragProvider>
               )
             })()}
           </Show>

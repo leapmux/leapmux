@@ -1,5 +1,7 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { Component, JSX } from 'solid-js'
+import { createDraggable, createDroppable, useDragDropContext } from '@thisbeyond/solid-dnd'
+import GripVertical from 'lucide-solid/icons/grip-vertical'
 import PanelLeftClose from 'lucide-solid/icons/panel-left-close'
 import PanelLeftOpen from 'lucide-solid/icons/panel-left-open'
 import PanelRightClose from 'lucide-solid/icons/panel-right-close'
@@ -8,6 +10,7 @@ import { createEffect, createMemo, createSignal, For, on, Show } from 'solid-js'
 import { IconButton } from '~/components/common/IconButton'
 import { iconSize } from '~/styles/tokens'
 import * as styles from './CollapsibleSidebar.css'
+import { SECTION_DRAG_PREFIX, SIDEBAR_ZONE_PREFIX } from './SectionDragContext'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -47,6 +50,8 @@ export interface SidebarSectionDef {
   railPosition?: 'top' | 'bottom'
   /** data-testid for the section details element. */
   testId?: string
+  /** Whether the section can be dragged/reordered. Default: false. */
+  draggable?: boolean
 }
 
 export interface CollapsibleSidebarProps {
@@ -426,9 +431,28 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
   // Main render
   // ---------------------------------------------------------------------------
 
+  // Check if we're inside a DragDropProvider (true in real app, false in unit tests).
+  // This is safer than checking props.sections for draggable flags, since sections
+  // may load asynchronously after the component mounts.
+  const hasDndContext = useDragDropContext() !== null
+
+  // Create a droppable zone for the whole sidebar (for cross-sidebar drops).
+
+  const sidebarDroppable = hasDndContext
+    ? createDroppable(`${SIDEBAR_ZONE_PREFIX}${props.side}`)
+    : null
+
   return (
     <Show when={!props.isCollapsed} fallback={renderRail()}>
-      <div class={styles.sidebarInner} ref={containerRef}>
+      <div
+        class={styles.sidebarInner}
+        ref={(el) => {
+          containerRef = el
+          // Attach the droppable ref to the container
+          if (sidebarDroppable)
+            (sidebarDroppable as any).ref(el)
+        }}
+      >
         {/*
           Iterate over section IDs (stable strings) so that <For> callbacks
           persist across reactive updates.  Content factories are called once
@@ -443,6 +467,21 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
 
             const sectionOpen = () => isOpen(id)
             const isStatic = () => section().collapsible === false
+            const isDraggable = () => section().draggable === true
+
+            // Create draggable + droppable for the section header (used for
+            // DnD reordering).  We use createDraggable + createDroppable
+            // instead of createSortable to avoid requiring a SortableProvider
+            // ancestor (reorder position logic lives in SectionDragProvider).
+            // Only created when inside a DragDropProvider and section is draggable.
+
+            const draggable = hasDndContext && section().draggable
+              ? createDraggable(`${SECTION_DRAG_PREFIX}${id}`)
+              : null
+
+            const droppable = hasDndContext && section().draggable
+              ? createDroppable(`${SECTION_DRAG_PREFIX}${id}`)
+              : null
 
             // Whether this section can currently be collapsed.
             // False when marked non-collapsible OR when it's the only section.
@@ -500,13 +539,21 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                 </Show>
 
                 <details
-                  ref={detailsRef}
-                  class={`${styles.collapsiblePane} ${sectionOpen() ? styles.collapsiblePaneExpanded : ''}`}
+                  ref={(el) => {
+                    detailsRef = el
+                    // Attach draggable + droppable refs for DnD
+                    if (draggable)
+                      draggable.ref(el)
+                    if (droppable)
+                      (droppable as any).ref(el)
+                  }}
+                  class={`${styles.collapsiblePane} ${sectionOpen() ? styles.collapsiblePaneExpanded : ''} ${draggable?.isActiveDraggable ? styles.collapsiblePaneDragging : ''}`}
                   style={flexStyle()}
                   data-testid={section().testId}
                 >
                   <summary
                     class={`${styles.collapsibleTrigger} ${isStatic() || !canCollapse() ? styles.collapsibleTriggerStatic : ''}`}
+                    data-testid={section().testId ? `${section().testId}-summary` : undefined}
                     onClick={(e) => {
                       // Prevent native <details> toggle — we control state
                       // entirely via signals to avoid browser auto-restoration
@@ -517,7 +564,22 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                       handleToggle(id, section().collapsible, !sectionOpen())
                     }}
                   >
-                    <Show when={index() === 0 && props.onCollapse && props.side === 'left'}>
+                    <Show when={isDraggable()}>
+                      <div
+                        class={styles.sectionDragHandle}
+                        data-testid={`section-drag-handle-${id}`}
+                        onMouseDown={(e) => {
+                          // Prevent the summary click from toggling open/close
+                          e.stopPropagation()
+                          e.preventDefault()
+                        }}
+                        // Use the draggable's activators for the drag handle only
+                        {...(draggable?.dragActivators ?? {})}
+                      >
+                        <GripVertical size={14} />
+                      </div>
+                    </Show>
+                    <Show when={index() === 0 && props.onCollapse && props.side === 'left' && !isDraggable()}>
                       <IconButton
                         icon={CollapseIcon}
                         iconSize={iconSize.lg}
@@ -535,7 +597,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                     <div class={styles.sidebarHeaderActions}>
                       {section().headerActions}
                     </div>
-                    <Show when={index() === 0 && props.onCollapse && props.side === 'right'}>
+                    <Show when={index() === 0 && props.onCollapse && props.side === 'right' && !isDraggable()}>
                       <IconButton
                         icon={CollapseIcon}
                         iconSize={iconSize.lg}

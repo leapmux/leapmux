@@ -54,8 +54,8 @@ test.describe('Workspace Lifecycle', () => {
     // text matches in context menus or other UI elements.
     await expect(
       page.getByText('No workspaces yet')
-        .or(page.locator('[data-testid="section-header-in_progress"]'))
-        .or(page.locator('[data-testid="section-header-archived"]')),
+        .or(page.locator('[data-testid="section-header-workspaces_in_progress"]'))
+        .or(page.locator('[data-testid="section-header-workspaces_archived"]')),
     ).toBeVisible()
   })
 })
