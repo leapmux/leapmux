@@ -217,28 +217,6 @@ globalStyle(`${editorWrapper} .ProseMirror pre .code-lang-label:hover`, {
   color: 'var(--muted-foreground)',
 })
 
-// Clickable "+" area after code blocks to insert a paragraph
-globalStyle(`${editorWrapper} .ProseMirror .code-block-add-para`, {
-  height: '8px',
-  marginTop: '-4px',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  cursor: 'pointer',
-  userSelect: 'none',
-  color: 'var(--faint-foreground)',
-  fontSize: 'var(--text-7)',
-  lineHeight: '1',
-  opacity: 0.4,
-  transition: 'opacity 0.15s',
-})
-
-globalStyle(`${editorWrapper} .ProseMirror .code-block-add-para:hover`, {
-  opacity: 1,
-  backgroundColor: 'var(--card)',
-  borderRadius: 'var(--radius-small)',
-})
-
 // Shiki syntax highlighting in editor code blocks (via prosemirror-highlight)
 // Light theme: use --shiki-light CSS variables from inline decorations
 globalStyle(`${editorWrapper} .ProseMirror pre .shiki`, {

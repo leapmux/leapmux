@@ -21,6 +21,7 @@ import { createBulletListAfterHardBreakInputRule, createCodeBlockInputRule, crea
 import {
   createBlockquoteBackspacePlugin,
   createCodeBlockBackspacePlugin,
+  createCodeBlockEnterPlugin,
   createCodeBlockEscapePlugin,
   createCodeSpanEscapePlugin,
   createLinkBoundaryPlugin,
@@ -280,6 +281,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         onShiftTabInParagraph: () => onTogglePlanModeRef?.(),
       })
       const codeBlockBackspacePlugin = createCodeBlockBackspacePlugin()
+      const codeBlockEnterPlugin = createCodeBlockEnterPlugin()
       const codeBlockEscapePlugin = createCodeBlockEscapePlugin()
       const suppressTextSubstitutionPlugin = createSuppressTextSubstitutionPlugin()
       const listItemEnterPlugin = createListItemEnterPlugin(pluginRefs)
@@ -365,6 +367,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         .use(codeBlockEscapePlugin)
         .use(codeSpanEscapePlugin)
         .use(sendPlugin)
+        .use(codeBlockEnterPlugin)
         .use(codeBlockBackspacePlugin)
         .use(blockquoteBackspacePlugin)
         .use(suppressTextSubstitutionPlugin)

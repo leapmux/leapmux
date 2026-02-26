@@ -347,7 +347,7 @@ export function createCodeBlockEscapePlugin() {
           const afterCodeBlock = $from.after($from.depth)
           const para = state.schema.nodes.paragraph.create()
           const tr = state.tr.insert(afterCodeBlock, para)
-          tr.setSelection(TextSelection.create(tr.doc, afterCodeBlock + 1))
+          tr.setSelection(TextSelection.create(tr.doc, afterCodeBlock + 1)).scrollIntoView()
           view.dispatch(tr)
           return true
         },
@@ -692,6 +692,7 @@ export function createCodeSpanEscapePlugin() {
             // create a virtual stop and toggle to inside code.
             const isAtLeftBoundaryFromPlain = isCodeLeftBoundary(pos)
               && !$from.marks().some(m => m.type.name === 'inlineCode')
+              && !state.storedMarks?.some(m => m.type.name === 'inlineCode')
             if (isAtLeftBoundaryFromPlain) {
               event.preventDefault()
               const tr = state.tr
@@ -779,6 +780,33 @@ export function createCodeSpanEscapePlugin() {
           }
 
           return false
+        },
+      },
+    })
+  })
+}
+
+/**
+ * Intercept Enter in code_block nodes and insert '\n'.
+ * Prevents Milkdown's listItemKeymap (splitListItem) from
+ * exiting the code block when it's inside a list item.
+ */
+export function createCodeBlockEnterPlugin() {
+  return $prose(() => {
+    return new Plugin({
+      key: new PluginKey('code-block-enter'),
+      props: {
+        handleKeyDown: (view, event) => {
+          if (event.key !== 'Enter')
+            return false
+          if (event.shiftKey || event.metaKey || event.ctrlKey || event.altKey)
+            return false
+          const { state } = view
+          const { $from, empty } = state.selection
+          if (!empty || $from.parent.type.name !== 'code_block')
+            return false
+          view.dispatch(state.tr.insertText('\n').scrollIntoView())
+          return true
         },
       },
     })

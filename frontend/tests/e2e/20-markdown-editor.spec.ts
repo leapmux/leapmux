@@ -1455,3 +1455,187 @@ test.describe('Enter Sends Message', () => {
     expect(textAfterSecondSend?.trim()).toBe('')
   })
 })
+
+test.describe('Code Block Enter in List Items', () => {
+  test('Enter at end of code block inside list item inserts newline', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // Create a bullet list item by typing "- " (triggers input rule)
+    await page.keyboard.type('- List item', { delay: 100 })
+    await expect(editor.locator('ul > li')).toBeVisible()
+
+    // Press Enter to create new line in list, then type ``` to trigger code block
+    await page.keyboard.press('Shift+Enter')
+    await page.keyboard.type('```', { delay: 30 })
+
+    // Verify code block was created inside the list item
+    await expect(editor.locator('ul > li pre')).toBeVisible()
+
+    // Type some code
+    await page.keyboard.type('line1', { delay: 100 })
+
+    // Press Enter — should insert a newline, NOT exit the code block
+    await page.keyboard.press('Enter')
+    await page.waitForTimeout(100)
+
+    // Type more text on the new line
+    await page.keyboard.type('line2', { delay: 100 })
+
+    // Verify both lines are in the code block
+    const codeText = await editor.locator('ul > li pre code').evaluate((el) => {
+      const clone = el.cloneNode(true) as HTMLElement
+      clone.querySelectorAll('.code-lang-label').forEach(s => s.remove())
+      return clone.textContent
+    })
+    expect(codeText).toContain('line1')
+    expect(codeText).toContain('line2')
+    expect(codeText).toContain('\n')
+
+    // Verify we're still inside one list item (not two)
+    await expect(editor.locator('ul > li')).toHaveCount(1)
+  })
+
+  test('Enter in middle of code block inside list item inserts newline', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // Create a bullet list item
+    await page.keyboard.type('- List item', { delay: 100 })
+    await expect(editor.locator('ul > li')).toBeVisible()
+
+    // Create code block inside list item
+    await page.keyboard.press('Shift+Enter')
+    await page.keyboard.type('```', { delay: 30 })
+    await expect(editor.locator('ul > li pre')).toBeVisible()
+
+    // Type text
+    await page.keyboard.type('ab', { delay: 100 })
+
+    // Move cursor to the middle (between a and b)
+    await page.keyboard.press('ArrowLeft')
+    await page.waitForTimeout(100)
+
+    // Press Enter — should split with newline
+    await page.keyboard.press('Enter')
+    await page.waitForTimeout(100)
+
+    // Verify the code block content has both parts with a newline
+    const codeText = await editor.locator('ul > li pre code').evaluate((el) => {
+      const clone = el.cloneNode(true) as HTMLElement
+      clone.querySelectorAll('.code-lang-label').forEach(s => s.remove())
+      return clone.textContent
+    })
+    expect(codeText).toBe('a\nb')
+
+    // Verify still one list item
+    await expect(editor.locator('ul > li')).toHaveCount(1)
+  })
+
+  test('Enter in standalone code block still works', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // Create a standalone code block via toolbar button
+    const codeBlockBtn = page.locator('[data-testid="toolbar-codeblock"]')
+    await codeBlockBtn.click()
+    await expect(editor.locator('pre')).toBeVisible()
+
+    // Type some text
+    await page.keyboard.type('hello', { delay: 100 })
+
+    // Press Enter — should insert newline
+    await page.keyboard.press('Enter')
+    await page.waitForTimeout(100)
+    await page.keyboard.type('world', { delay: 100 })
+
+    // Verify code block has both lines
+    const codeText = await editor.locator('pre code').evaluate((el) => {
+      const clone = el.cloneNode(true) as HTMLElement
+      clone.querySelectorAll('.code-lang-label').forEach(s => s.remove())
+      return clone.textContent
+    })
+    expect(codeText).toContain('hello')
+    expect(codeText).toContain('world')
+    expect(codeText).toContain('\n')
+  })
+})
+
+test.describe('ArrowRight Plain-to-Code Boundary', () => {
+  test('ArrowRight from plain text enters code span without getting stuck', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // Build a|bc|d
+    await page.keyboard.type('a`bc`', { delay: 100 })
+    await expect(editor.locator('code')).toHaveText('bc')
+    // After input rule, storedMarks = [] so typing 'd' produces plain text
+    await page.keyboard.type('d', { delay: 100 })
+    await expect(editor.locator('code')).toHaveText('bc')
+
+    // Move cursor to start
+    await page.keyboard.press('Home')
+    await page.waitForTimeout(100)
+
+    // Press ArrowRight 3 times: from ^a|bc|d → a^|bc|d → a|^bc|d → a|b^c|d
+    await page.keyboard.press('ArrowRight')
+    await page.waitForTimeout(100)
+    await page.keyboard.press('ArrowRight')
+    await page.waitForTimeout(100)
+    await page.keyboard.press('ArrowRight')
+    await page.waitForTimeout(100)
+
+    // Type X — should be inside the code span after 'b'
+    await page.keyboard.type('X', { delay: 100 })
+
+    // Verify: code span should now be 'bXc'
+    await expect(editor.locator('code')).toHaveText('bXc')
+  })
+})
+
+test.describe('ArrowDown Code Block Scroll', () => {
+  test('ArrowDown from code block scrolls new paragraph into view', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // Create a code block with many lines to push it near the bottom
+    const codeBlockBtn = page.locator('[data-testid="toolbar-codeblock"]')
+    await codeBlockBtn.click()
+    await expect(editor.locator('pre')).toBeVisible()
+
+    // Type many lines to fill the code block and cause scrolling
+    for (let i = 0; i < 30; i++) {
+      await page.keyboard.type(`line ${i}`, { delay: 10 })
+      if (i < 29) {
+        await page.keyboard.press('Enter')
+      }
+    }
+    await page.waitForTimeout(200)
+
+    // Press ArrowDown to escape the code block
+    await page.keyboard.press('ArrowDown')
+    await page.waitForTimeout(300)
+
+    // A new paragraph should exist after the code block
+    const paragraphs = editor.locator('p')
+    await expect(paragraphs).toHaveCount(1)
+
+    // The new paragraph should be visible in the editor wrapper's viewport
+    const editorWrapper = page.locator('[data-testid="chat-editor"]')
+    const wrapperBox = await editorWrapper.boundingBox()
+    const paraBox = await paragraphs.first().boundingBox()
+
+    expect(wrapperBox).toBeTruthy()
+    expect(paraBox).toBeTruthy()
+    if (wrapperBox && paraBox) {
+      // The paragraph's top should be within the visible area of the wrapper
+      expect(paraBox.y).toBeGreaterThanOrEqual(wrapperBox.y)
+      expect(paraBox.y).toBeLessThanOrEqual(wrapperBox.y + wrapperBox.height)
+    }
+  })
+})
