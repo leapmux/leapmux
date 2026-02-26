@@ -78,16 +78,6 @@ export const contextClearedRenderer: MessageContentRenderer = {
   },
 }
 
-/** Handles plan execution notifications: {"type":"plan_execution","message":"..."} */
-export const planExecutionRenderer: MessageContentRenderer = {
-  render(parsed, _role, _context) {
-    if (!isObject(parsed) || parsed.type !== 'plan_execution')
-      return null
-    const message = (parsed as Record<string, unknown>).message
-    return <div class={controlResponseMessage}>{typeof message === 'string' ? message : 'Executing plan'}</div>
-  },
-}
-
 /** Handles rate limit notifications: {"type":"rate_limit","rate_limit_info":{...}} */
 export const rateLimitRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
@@ -254,6 +244,7 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
   // Accumulate state across all messages in the thread.
   const settingsParts: string[] = []
   let contextCleared = false
+  let planExecContextCleared = false
   let interrupted = false
   let compacting = false
   let compactLabel: string | null = null
@@ -294,8 +285,13 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
       contextCleared = true
     }
     else if (t === 'plan_execution') {
-      const planMsg = typeof m.message === 'string' ? m.message : 'Executing plan'
-      settingsParts.push(planMsg)
+      if (m.context_cleared === true) {
+        planExecContextCleared = true
+        settingsParts.push('Executing plan with clean context')
+      }
+      else {
+        settingsParts.push('Executing plan retaining context')
+      }
     }
     else if (t === 'interrupted') {
       interrupted = true
@@ -319,7 +315,7 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
     }
   }
 
-  if (contextCleared)
+  if (contextCleared && !planExecContextCleared)
     settingsParts.push('Context cleared')
   if (interrupted)
     settingsParts.push('Interrupted')

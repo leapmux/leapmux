@@ -1120,7 +1120,8 @@ func (s *AgentService) clearAgentContextForPlanExecution(ctx context.Context, ag
 	opts := &RestartOptions{
 		ClearSession:         true,
 		SyntheticUserMessage: "Execute the following plan:\n\n---\n\n" + planContent,
-		Notification:         "Executing plan with clean context",
+		PlanExec:             true,
+		PlanFilePath:         agent.PlanFilePath,
 	}
 
 	// If the agent is active and the worker is connected, stop it and
@@ -1152,8 +1153,9 @@ func (s *AgentService) clearAgentContextForPlanExecution(ctx context.Context, ag
 		"type": "context_cleared",
 	})
 	s.broadcastNotification(ctx, agent.ID, map[string]interface{}{
-		"type":    "plan_execution",
-		"message": opts.Notification,
+		"type":            "plan_execution",
+		"context_cleared": true,
+		"plan_file_path":  opts.PlanFilePath,
 	})
 }
 
@@ -1376,9 +1378,16 @@ func (s *AgentService) detectPlanModeFromToolResult(ctx context.Context, agentID
 			} else {
 				slog.Warn("plan execution: no plan content found, continuing with retained context",
 					"agent_id", agentID, "tool_use_id", block.ToolUseID)
+				planFilePath := filePath
+				if planFilePath == "" {
+					if a, err := s.queries.GetAgentByID(ctx, agentID); err == nil {
+						planFilePath = a.PlanFilePath
+					}
+				}
 				s.broadcastNotification(ctx, agentID, map[string]interface{}{
-					"type":    "plan_execution",
-					"message": "Executing plan with retained context",
+					"type":            "plan_execution",
+					"context_cleared": false,
+					"plan_file_path":  planFilePath,
 				})
 			}
 			continue

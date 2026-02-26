@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	db "github.com/leapmux/leapmux/internal/hub/generated/db"
 )
 
 func TestExtractToolUseID(t *testing.T) {
@@ -544,6 +545,98 @@ func TestConsolidateNotificationThread_RateLimitMixedConsolidation(t *testing.T)
 	assert.Equal(t, 0.3, rlByType["seven_day"], "expected seven_day utilization preserved")
 }
 
+func TestConsolidateNotificationThread_PlanExecKeepsLatest(t *testing.T) {
+	msg1, _ := json.Marshal(map[string]interface{}{
+		"type":            "plan_execution",
+		"context_cleared": false,
+		"plan_file_path":  "/old/path/plan.md",
+	})
+	msg2, _ := json.Marshal(map[string]interface{}{
+		"type":            "plan_execution",
+		"context_cleared": true,
+		"plan_file_path":  "/new/path/plan.md",
+	})
+
+	result := consolidateNotificationThread([]json.RawMessage{msg1, msg2})
+	peCount := 0
+	var kept struct {
+		ContextCleared bool   `json:"context_cleared"`
+		PlanFilePath   string `json:"plan_file_path"`
+	}
+	for _, r := range result {
+		var e struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(r, &e) == nil && e.Type == "plan_execution" {
+			peCount++
+			require.NoError(t, json.Unmarshal(r, &kept))
+		}
+	}
+	assert.Equal(t, 1, peCount, "expected exactly one plan_execution")
+	assert.True(t, kept.ContextCleared, "expected latest plan_execution")
+	assert.Equal(t, "/new/path/plan.md", kept.PlanFilePath)
+}
+
+func TestConsolidateNotificationThread_PlanExecSubsumesContextCleared(t *testing.T) {
+	// When plan_execution carries context_cleared: true, the separate
+	// context_cleared message should be subsumed.
+	ccMsg, _ := json.Marshal(map[string]interface{}{"type": "context_cleared"})
+	peMsg, _ := json.Marshal(map[string]interface{}{
+		"type":            "plan_execution",
+		"context_cleared": true,
+		"plan_file_path":  "/path/plan.md",
+	})
+
+	result := consolidateNotificationThread([]json.RawMessage{ccMsg, peMsg})
+	ccCount := 0
+	peCount := 0
+	for _, r := range result {
+		var e struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(r, &e) == nil {
+			if e.Type == "context_cleared" {
+				ccCount++
+			}
+			if e.Type == "plan_execution" {
+				peCount++
+			}
+		}
+	}
+	assert.Equal(t, 0, ccCount, "context_cleared should be subsumed by plan_execution")
+	assert.Equal(t, 1, peCount, "expected plan_execution to be present")
+}
+
+func TestConsolidateNotificationThread_PlanExecRetainedDoesNotSubsumeContextCleared(t *testing.T) {
+	// When plan_execution carries context_cleared: false, the separate
+	// context_cleared message should remain.
+	ccMsg, _ := json.Marshal(map[string]interface{}{"type": "context_cleared"})
+	peMsg, _ := json.Marshal(map[string]interface{}{
+		"type":            "plan_execution",
+		"context_cleared": false,
+		"plan_file_path":  "",
+	})
+
+	result := consolidateNotificationThread([]json.RawMessage{ccMsg, peMsg})
+	ccCount := 0
+	peCount := 0
+	for _, r := range result {
+		var e struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(r, &e) == nil {
+			if e.Type == "context_cleared" {
+				ccCount++
+			}
+			if e.Type == "plan_execution" {
+				peCount++
+			}
+		}
+	}
+	assert.Equal(t, 1, ccCount, "context_cleared should remain when plan_execution has context_cleared: false")
+	assert.Equal(t, 1, peCount, "expected plan_execution to be present")
+}
+
 func TestNotifMutex_SameAgent(t *testing.T) {
 	svc := &AgentService{}
 	mu1 := svc.notifMutex("agent-1")
@@ -595,4 +688,29 @@ func TestNotifMutex_SerializesConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 	assert.Equal(t, 100, counter, "all increments should be serialized")
+}
+
+func TestAgentToProto_WorkerName(t *testing.T) {
+	agent := &db.Agent{
+		ID:          "agent-1",
+		WorkspaceID: "ws-1",
+		WorkerID:    "worker-1",
+		WorkingDir:  "/home/user/project",
+		HomeDir:     "/home/user",
+		Title:       "Test Agent",
+		Model:       "claude-sonnet-4-6",
+		Status:      leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE,
+		CreatedAt:   time.Now(),
+	}
+
+	proto := agentToProto(agent, "my-worker")
+	assert.Equal(t, "agent-1", proto.Id)
+	assert.Equal(t, "worker-1", proto.WorkerId)
+	assert.Equal(t, "my-worker", proto.WorkerName)
+	assert.Equal(t, "/home/user/project", proto.WorkingDir)
+	assert.Equal(t, "/home/user", proto.HomeDir)
+
+	// Empty worker name should produce empty proto field.
+	proto2 := agentToProto(agent, "")
+	assert.Equal(t, "", proto2.WorkerName)
 }

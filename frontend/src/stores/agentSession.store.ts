@@ -23,6 +23,7 @@ export interface AgentSessionInfo {
   totalCostUsd?: number
   contextUsage?: ContextUsageInfo
   rateLimits?: Record<string, RateLimitInfo> // keyed by rateLimitType
+  planFilePath?: string
 }
 
 const STORAGE_KEY_PREFIX = 'leapmux-agent-session-'

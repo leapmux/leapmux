@@ -502,8 +502,9 @@ func (s *AgentService) planExecTimeout(agentID, toolUseID string, config *PlanEx
 			slog.Warn("plan exec timeout: no plan content found, continuing with retained context",
 				"agent_id", agentID)
 			s.broadcastNotification(ctx, agentID, map[string]interface{}{
-				"type":    "plan_execution",
-				"message": "Executing plan with retained context",
+				"type":            "plan_execution",
+				"context_cleared": false,
+				"plan_file_path":  agent.PlanFilePath,
 			})
 			return
 		}

@@ -67,7 +67,8 @@ type AgentService struct {
 type RestartOptions struct {
 	ClearSession         bool   // when true, clear agent session ID before restart and broadcast context_cleared
 	SyntheticUserMessage string // hidden user message to send after restart (empty = none)
-	Notification         string // system notification to broadcast after restart (empty = none)
+	PlanExec             bool   // broadcast plan_execution notification after restart
+	PlanFilePath         string // plan file path for plan_execution notification
 }
 
 // PlanExecConfig holds pending plan execution state, set after an
@@ -252,8 +253,13 @@ func (s *AgentService) OpenAgent(
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
+	var workerName string
+	if worker, err := s.queries.GetWorkerByIDInternal(ctx, agent.WorkerID); err == nil {
+		workerName = worker.Name
+	}
+
 	return connect.NewResponse(&leapmuxv1.OpenAgentResponse{
-		Agent: agentToProto(&agent),
+		Agent: agentToProto(&agent, workerName),
 	}), nil
 }
 
@@ -379,9 +385,23 @@ func (s *AgentService) ListAgents(
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
+	// Collect unique worker IDs and batch-fetch worker names.
+	workerNameByID := map[string]string{}
+	for i := range agents {
+		wid := agents[i].WorkerID
+		if _, exists := workerNameByID[wid]; !exists {
+			workerNameByID[wid] = "" // placeholder
+		}
+	}
+	for wid := range workerNameByID {
+		if w, err := s.queries.GetWorkerByIDInternal(ctx, wid); err == nil {
+			workerNameByID[wid] = w.Name
+		}
+	}
+
 	protoAgents := make([]*leapmuxv1.AgentInfo, len(agents))
 	for i := range agents {
-		protoAgents[i] = agentToProto(&agents[i])
+		protoAgents[i] = agentToProto(&agents[i], workerNameByID[agents[i].WorkerID])
 	}
 
 	return connect.NewResponse(&leapmuxv1.ListAgentsResponse{
@@ -549,11 +569,12 @@ func (s *AgentService) getVisibleWorkspace(ctx context.Context, user *auth.UserI
 	return getVisibleWorkspace(ctx, s.queries, user, orgID, workspaceID)
 }
 
-func agentToProto(a *db.Agent) *leapmuxv1.AgentInfo {
+func agentToProto(a *db.Agent, workerName string) *leapmuxv1.AgentInfo {
 	pa := &leapmuxv1.AgentInfo{
 		Id:             a.ID,
 		WorkspaceId:    a.WorkspaceID,
 		WorkerId:       a.WorkerID,
+		WorkerName:     workerName,
 		WorkingDir:     a.WorkingDir,
 		HomeDir:        a.HomeDir,
 		Title:          a.Title,

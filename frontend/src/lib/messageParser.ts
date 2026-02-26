@@ -217,3 +217,20 @@ export function extractSettingsChanges(parsed: ParsedMessageContent): {
     return null
   return changes as { permissionMode?: { old: string, new: string } }
 }
+
+/** Extract plan file path from a plan_execution message (wrapped or unwrapped). */
+export function extractPlanFilePath(parsed: ParsedMessageContent): string | undefined {
+  // Check all messages in the wrapper (or the top-level object).
+  const messagesToCheck: unknown[] = parsed.wrapper
+    ? parsed.wrapper.messages
+    : parsed.topLevel ? [parsed.topLevel] : []
+  for (const msg of messagesToCheck) {
+    if (typeof msg === 'object' && msg !== null) {
+      const m = msg as Record<string, unknown>
+      if (m.type === 'plan_execution' && typeof m.plan_file_path === 'string' && m.plan_file_path !== '') {
+        return m.plan_file_path as string
+      }
+    }
+  }
+  return undefined
+}

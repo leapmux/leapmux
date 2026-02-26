@@ -420,10 +420,11 @@ func (s *WorkerConnectorService) processWorkerMessage(
 					}
 
 					// Broadcast plan execution notification.
-					if opts.Notification != "" {
+					if opts.PlanExec {
 						s.agentSvc.broadcastNotification(bgCtx, agentID, map[string]interface{}{
-							"type":    "plan_execution",
-							"message": opts.Notification,
+							"type":            "plan_execution",
+							"context_cleared": opts.ClearSession,
+							"plan_file_path":  opts.PlanFilePath,
 						})
 					}
 
