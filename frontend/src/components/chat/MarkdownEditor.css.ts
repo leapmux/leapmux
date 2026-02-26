@@ -122,7 +122,7 @@ export const linkPopoverInput = style({
 export const codeLangPopoverContent = style({
   display: 'flex',
   flexDirection: 'column',
-  backgroundColor: 'var(--card)',
+  backgroundColor: 'var(--background)',
   border: '1px solid var(--border)',
   borderRadius: 'var(--radius-medium)',
   boxShadow: 'var(--shadow-large)',

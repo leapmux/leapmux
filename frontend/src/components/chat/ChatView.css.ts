@@ -167,10 +167,10 @@ export const settingsTrigger = style({
 })
 
 export const settingsMenu = style({
-  backgroundColor: 'var(--card)',
+  backgroundColor: 'var(--background)',
   border: '1px solid var(--border)',
   borderRadius: 'var(--radius-medium)',
-  padding: `${spacing.xs} 0`,
+  padding: `${spacing.xs} ${spacing.lg} 0 ${spacing.lg}`,
   zIndex: 300,
   minWidth: '180px',
   boxShadow: 'var(--shadow-large)',
@@ -199,12 +199,6 @@ export const settingsRadioItem = style({
   ':hover': {
     backgroundColor: 'var(--card)',
   },
-})
-
-export const settingsSeparator = style({
-  height: '1px',
-  backgroundColor: 'var(--border)',
-  margin: `${spacing.xs} 0`,
 })
 
 export const footerBarRight = style({
