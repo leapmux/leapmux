@@ -30,7 +30,7 @@ interface LeftSidebarProps {
   loadSections: () => Promise<void>
   onSelectWorkspace: (id: string) => void
   onNewWorkspace: (sectionId: string | null) => void
-  onRefreshWorkspaces: () => void
+  onRefreshWorkspaces: () => void | Promise<void>
   onDeleteWorkspace: (deletedId: string, nextWorkspaceId: string | null) => void
   isCollapsed: boolean
   onExpand: () => void

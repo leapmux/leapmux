@@ -195,8 +195,8 @@ test.describe('Workspace Chat', () => {
 
     // The tab bar should have grown taller (multi-row) compared to single-row height
     const tabBarHeight = await page.locator('[data-testid="tab-bar"]').evaluate(el => el.getBoundingClientRect().height)
-    // Single row is minHeight 36px; with wrapping it should be at least that
-    expect(tabBarHeight).toBeGreaterThanOrEqual(36)
+    // Single row is minHeight 35px (headerHeightPx - 1); with wrapping it should be at least that
+    expect(tabBarHeight).toBeGreaterThanOrEqual(35)
   })
 
   test('should allow double-click rename on a non-active tab', async ({ page, authenticatedWorkspace }) => {
