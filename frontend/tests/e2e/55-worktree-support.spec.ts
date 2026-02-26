@@ -464,6 +464,9 @@ test.describe('Worktree Support', () => {
 
     await createBtn.click()
 
+    // Wait for the dialog to close first — this signals the API call
+    // (including the git worktree creation) has completed.
+    await expect(page.getByRole('dialog')).not.toBeVisible({ timeout: 30000 })
     await expect(page).toHaveURL(/\/workspace\//, { timeout: 30000 })
     await waitForWorkspaceReady(page)
 

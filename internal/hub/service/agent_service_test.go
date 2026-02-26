@@ -1708,9 +1708,9 @@ func TestSendControlResponse_ExitPlanMode_SetsAcceptEditsMode(t *testing.T) {
 	crPayload, _ := json.Marshal(map[string]interface{}{
 		"request_id": requestID,
 		"request": map[string]interface{}{
-			"tool_name":  "ExitPlanMode",
+			"tool_name":   "ExitPlanMode",
 			"tool_use_id": toolUseID,
-			"input":      map[string]interface{}{},
+			"input":       map[string]interface{}{},
 		},
 	})
 	err = env.queries.CreateControlRequest(context.Background(), gendb.CreateControlRequestParams{
@@ -1764,9 +1764,9 @@ func TestSendControlResponse_ExitPlanMode_SetsBypassPermissionsMode(t *testing.T
 	crPayload, _ := json.Marshal(map[string]interface{}{
 		"request_id": requestID,
 		"request": map[string]interface{}{
-			"tool_name":  "ExitPlanMode",
+			"tool_name":   "ExitPlanMode",
 			"tool_use_id": toolUseID,
-			"input":      map[string]interface{}{},
+			"input":       map[string]interface{}{},
 		},
 	})
 	err = env.queries.CreateControlRequest(context.Background(), gendb.CreateControlRequestParams{
@@ -1823,9 +1823,9 @@ func TestHandleAgentOutput_PlanExecPending_ToolResultTriggersRestart(t *testing.
 	crPayload, _ := json.Marshal(map[string]interface{}{
 		"request_id": requestID,
 		"request": map[string]interface{}{
-			"tool_name":  "ExitPlanMode",
+			"tool_name":   "ExitPlanMode",
 			"tool_use_id": toolUseID,
-			"input":      map[string]interface{}{},
+			"input":       map[string]interface{}{},
 		},
 	})
 	err = env.queries.CreateControlRequest(context.Background(), gendb.CreateControlRequestParams{
@@ -1866,7 +1866,7 @@ func TestHandleAgentOutput_PlanExecPending_ToolResultTriggersRestart(t *testing.
 		"message": map[string]interface{}{
 			"content": []interface{}{
 				map[string]interface{}{
-					"type":       "tool_result",
+					"type":        "tool_result",
 					"tool_use_id": toolUseID,
 				},
 			},
@@ -1915,7 +1915,6 @@ func TestHandleAgentOutput_PlanExecPending_ToolResultTriggersRestart(t *testing.
 		case <-deadline:
 			// The notification may not arrive in test env since worker doesn't actually restart.
 			// This is expected — the key test is that planExecPending was consumed.
-			break
 		}
 		if !found {
 			break
@@ -1961,9 +1960,9 @@ func TestHandleAgentOutput_PlanExecPending_FallbackToDBContent(t *testing.T) {
 	crPayload, _ := json.Marshal(map[string]interface{}{
 		"request_id": requestID,
 		"request": map[string]interface{}{
-			"tool_name":  "ExitPlanMode",
+			"tool_name":   "ExitPlanMode",
 			"tool_use_id": toolUseID,
-			"input":      map[string]interface{}{},
+			"input":       map[string]interface{}{},
 		},
 	})
 	err = env.queries.CreateControlRequest(context.Background(), gendb.CreateControlRequestParams{
@@ -1997,7 +1996,7 @@ func TestHandleAgentOutput_PlanExecPending_FallbackToDBContent(t *testing.T) {
 		"message": map[string]interface{}{
 			"content": []interface{}{
 				map[string]interface{}{
-					"type":       "tool_result",
+					"type":        "tool_result",
 					"tool_use_id": toolUseID,
 				},
 			},
