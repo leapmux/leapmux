@@ -104,6 +104,19 @@ function markdownClass(_role: MessageRole): string {
   return markdownContent
 }
 
+/** Replace a home-directory prefix with ~ */
+export function tildify(absPath: string, homeDir?: string): string {
+  if (!homeDir)
+    return absPath
+  const homeNorm = homeDir.endsWith('/') ? homeDir.slice(0, -1) : homeDir
+  if (absPath === homeNorm)
+    return '~'
+  const homeBase = `${homeNorm}/`
+  if (absPath.startsWith(homeBase))
+    return `~/${absPath.slice(homeBase.length)}`
+  return absPath
+}
+
 /** Relativize an absolute path against the workspace working directory. */
 export function relativizePath(absPath: string, workingDir?: string, homeDir?: string): string {
   if (!workingDir)
@@ -125,20 +138,13 @@ export function relativizePath(absPath: string, workingDir?: string, homeDir?: s
   const dotRel = '../'.repeat(ups) + absParts.slice(common).join('/')
 
   // Candidate 3: ~/... tilde path
-  let tildePath: string | undefined
-  if (homeDir) {
-    const homeBase = homeDir.endsWith('/') ? homeDir : `${homeDir}/`
-    if (absPath === homeDir)
-      tildePath = '~'
-    else if (absPath.startsWith(homeBase))
-      tildePath = `~/${absPath.slice(homeBase.length)}`
-  }
+  const tildePath = tildify(absPath, homeDir)
 
   // Pick shortest
   let best = absPath
   if (dotRel.length < best.length)
     best = dotRel
-  if (tildePath !== undefined && tildePath.length < best.length)
+  if (tildePath !== absPath && tildePath.length < best.length)
     best = tildePath
   return best
 }

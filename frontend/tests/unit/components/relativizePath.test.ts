@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { relativizePath } from '~/components/chat/messageRenderers'
+import { relativizePath, tildify } from '~/components/chat/messageRenderers'
 
 describe('relativizePath', () => {
   // --- Existing behavior (no homeDir) ---
@@ -70,5 +70,31 @@ describe('relativizePath', () => {
   it('handles empty homeDir gracefully', () => {
     expect(relativizePath('/home/user/foo', '/home/user/bar/baz/qux', ''))
       .toBe('../../../foo')
+  })
+})
+
+describe('tildify', () => {
+  it('returns absPath when no homeDir', () => {
+    expect(tildify('/home/user/project')).toBe('/home/user/project')
+    expect(tildify('/home/user/project', undefined)).toBe('/home/user/project')
+    expect(tildify('/home/user/project', '')).toBe('/home/user/project')
+  })
+
+  it('returns ~ for exact home directory', () => {
+    expect(tildify('/home/user', '/home/user')).toBe('~')
+  })
+
+  it('returns ~/... for sub-path under home', () => {
+    expect(tildify('/home/user/project', '/home/user')).toBe('~/project')
+    expect(tildify('/home/user/a/b/c', '/home/user')).toBe('~/a/b/c')
+  })
+
+  it('returns absPath when path is not under home', () => {
+    expect(tildify('/opt/data/file.txt', '/home/user')).toBe('/opt/data/file.txt')
+  })
+
+  it('handles homeDir with trailing slash', () => {
+    expect(tildify('/home/user/project', '/home/user/')).toBe('~/project')
+    expect(tildify('/home/user', '/home/user/')).toBe('~')
   })
 })
