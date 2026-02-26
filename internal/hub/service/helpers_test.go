@@ -173,6 +173,17 @@ func TestValidateBranchName(t *testing.T) {
 	}
 }
 
+func TestBuildPlanExecMessage_WithFilePath(t *testing.T) {
+	msg := buildPlanExecMessage("/home/user/.claude/plans/plan.md", "step 1\nstep 2")
+	expected := "Execute the following plan:\n\n---\n\nstep 1\nstep 2\n\n---\n\nThe above plan has been written to /home/user/.claude/plans/plan.md — re-read it if needed."
+	assert.Equal(t, expected, msg)
+}
+
+func TestBuildPlanExecMessage_WithoutFilePath(t *testing.T) {
+	msg := buildPlanExecMessage("", "step 1\nstep 2")
+	assert.Equal(t, "Execute the following plan:\n\n---\n\nstep 1\nstep 2", msg)
+}
+
 func TestClampInt32(t *testing.T) {
 	tests := []struct {
 		name     string
