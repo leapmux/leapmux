@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import type { RenderContext } from './messageRenderers'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
+import type { ParsedMessageContent } from '~/lib/messageParser'
 
 import { Formatter, FracturedJsonOptions } from 'fracturedjsonjs'
 import Check from 'lucide-solid/icons/check'
@@ -10,7 +11,7 @@ import { render } from 'solid-js/web'
 import { IconButton } from '~/components/common/IconButton'
 import { usePreferences } from '~/context/PreferencesContext'
 import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
-import { decompressContentToString } from '~/lib/decompress'
+import { parseMessageContent } from '~/lib/messageParser'
 import * as styles from './MessageBubble.css'
 import { classifyMessage, messageBubbleClass, messageRowClass } from './messageClassification'
 import { renderMessageContent, ToolHeaderActions } from './messageRenderers'
@@ -103,52 +104,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   let contentRef: HTMLDivElement | undefined
 
   // Consolidated message parsing: decompress and parse once, derive everything from this memo.
-  interface ParsedMessage {
-    /** The wrapper envelope, or null if content is not wrapped. */
-    wrapper: { old_seqs: number[], messages: unknown[] } | null
-    /** The first (parent) message as a parsed object. */
-    parentObject: Record<string, unknown> | undefined
-    /** The raw decompressed text (for "Copy Raw JSON" feature). */
-    rawText: string
-    /** Thread children (messages after the first). */
-    children: unknown[]
-  }
-
-  const parsed = createMemo((): ParsedMessage => {
-    const text = decompressContentToString(props.message.content, props.message.contentCompression)
-    if (text === null)
-      return { wrapper: null, parentObject: undefined, rawText: '', children: [] }
-
-    try {
-      const obj = JSON.parse(text)
-      if (obj?.messages && Array.isArray(obj.messages)) {
-        // Wrapped format: {"old_seqs": [...], "messages": [{...}, ...]}
-        // An empty messages array can occur when notification consolidation
-        // cancels out all changes (e.g. plan mode toggled back).
-        if (obj.messages.length === 0) {
-          return { wrapper: obj, parentObject: undefined, rawText: text, children: [] }
-        }
-        const first = obj.messages[0]
-        const parent = (typeof first === 'object' && first !== null && !Array.isArray(first))
-          ? first as Record<string, unknown>
-          : undefined
-        return {
-          wrapper: obj,
-          parentObject: parent,
-          rawText: text,
-          children: obj.messages.length > 1 ? obj.messages.slice(1) : [],
-        }
-      }
-      // Not wrapped — treat the parsed object as the parent directly.
-      const parent = (typeof obj === 'object' && obj !== null && !Array.isArray(obj))
-        ? obj as Record<string, unknown>
-        : undefined
-      return { wrapper: null, parentObject: parent, rawText: text, children: [] }
-    }
-    catch {
-      return { wrapper: null, parentObject: undefined, rawText: text, children: [] }
-    }
-  })
+  const parsed = createMemo((): ParsedMessageContent => parseMessageContent(props.message))
 
   // Single-pass classification: replaces ~15 individual boolean flags.
   const category = createMemo(() => classifyMessage(parsed().parentObject, parsed().wrapper))
