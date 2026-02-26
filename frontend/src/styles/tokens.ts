@@ -20,7 +20,8 @@ export const iconSize = {
   },
 }
 
-export const headerHeight = '36px'
+export const headerHeightPx = 36
+export const headerHeight = `${headerHeightPx}px`
 
 export const breakpoints = {
   mobile: 768, // px — below this width, use mobile layout

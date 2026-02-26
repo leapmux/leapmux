@@ -10,7 +10,8 @@ import { createEffect, createMemo, createSignal, For, on, Show } from 'solid-js'
 import { IconButton } from '~/components/common/IconButton'
 import { iconSize } from '~/styles/tokens'
 import * as styles from './CollapsibleSidebar.css'
-import { SECTION_DRAG_PREFIX, SIDEBAR_ZONE_PREFIX } from './SectionDragContext'
+import { useOptionalSectionDrag } from './SectionDragContext'
+import { SECTION_DRAG_PREFIX, SIDEBAR_ZONE_PREFIX } from './sectionDragUtils'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -165,6 +166,21 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
           }
           return changed ? next : prev
         })
+
+        // Redistribute sizes equally so new sections get a fair share.
+        // Without this, normalization in expandedSizes would squeeze
+        // the new section because existing sections keep their old
+        // absolute sizes.
+        const expanded = expandableSectionIds().filter(sid => isOpen(sid))
+        if (expanded.length >= 2) {
+          const equalSize = 1 / expanded.length
+          setSectionSizes((prev) => {
+            const next = { ...prev }
+            for (const eid of expanded) next[eid] = equalSize
+            return next
+          })
+        }
+
         notifyStateChange()
       }
 
@@ -436,16 +452,21 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
   // may load asynchronously after the component mounts.
   const hasDndContext = useDragDropContext() !== null
 
+  // Access section drag context for drop indicator (non-throwing: safe in tests).
+  const sectionDrag = useOptionalSectionDrag()
+  const currentDropIndicator = () => sectionDrag?.dropIndicator() ?? null
+
   // Create a droppable zone for the whole sidebar (for cross-sidebar drops).
 
   const sidebarDroppable = hasDndContext
-    ? createDroppable(`${SIDEBAR_ZONE_PREFIX}${props.side}`)
+    ? createDroppable(`${SIDEBAR_ZONE_PREFIX}${props.side}`) // eslint-disable-line solid/reactivity -- side is stable for the component lifetime
     : null
 
   return (
     <Show when={!props.isCollapsed} fallback={renderRail()}>
       <div
         class={styles.sidebarInner}
+        data-testid={`sidebar-${props.side}`}
         ref={(el) => {
           containerRef = el
           // Attach the droppable ref to the container
@@ -496,11 +517,19 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
               return true
             }
 
-            const showResizeHandle = () =>
-              index() > 0
-              && expandedCount() >= 2
-              && sectionOpen()
-              && expandableSectionIds().slice(0, index()).some(sid => isOpen(sid))
+            // Show the resize handle on the first section whose previous
+            // section is expanded, as long as at least one expanded section
+            // exists at or after this index.  This places the handle right
+            // after expanded content — even when the current section is
+            // collapsed — avoiding an unnatural gap.
+            const showResizeHandle = () => {
+              if (index() === 0 || expandedCount() < 2)
+                return false
+              const ids = expandableSectionIds()
+              if (!isOpen(ids[index() - 1]))
+                return false
+              return ids.slice(index()).some(sid => isOpen(sid))
+            }
 
             const flexStyle = () => {
               if (expandedCount() < 2 || !sectionOpen())
@@ -511,10 +540,18 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
               return undefined
             }
 
-            // Compute which handle index this is (position among expanded sections)
+            // Compute which handle index this is (position among expanded
+            // sections).  Find the last expanded section *before* this one
+            // and return its index in the expanded list — that identifies
+            // the pair being resized.
             const handleIdx = () => {
-              const expandedIds = expandableSectionIds().filter(sid => isOpen(sid))
-              return expandedIds.indexOf(id) - 1
+              const ids = expandableSectionIds()
+              const expandedIds = ids.filter(sid => isOpen(sid))
+              for (let i = index() - 1; i >= 0; i--) {
+                if (isOpen(ids[i]))
+                  return expandedIds.indexOf(ids[i])
+              }
+              return -1
             }
 
             // Use a ref + createEffect to fully control the <details> open
@@ -538,6 +575,11 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                   />
                 </Show>
 
+                {/* Drop indicator: before this section */}
+                <Show when={currentDropIndicator()?.targetSectionId === id && currentDropIndicator()?.position === 'before'}>
+                  <div class={styles.dropIndicatorLine} data-testid="drop-indicator" />
+                </Show>
+
                 <details
                   ref={(el) => {
                     detailsRef = el
@@ -552,7 +594,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                   data-testid={section().testId}
                 >
                   <summary
-                    class={`${styles.collapsibleTrigger} ${isStatic() || !canCollapse() ? styles.collapsibleTriggerStatic : ''}`}
+                    class={`${styles.collapsibleTrigger} ${isStatic() || !canCollapse() ? styles.collapsibleTriggerStatic : ''} ${index() === 0 && props.side === 'right' ? styles.collapsibleTriggerNoChevron : ''}`}
                     data-testid={section().testId ? `${section().testId}-summary` : undefined}
                     onClick={(e) => {
                       // Prevent native <details> toggle — we control state
@@ -576,10 +618,10 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                         // Use the draggable's activators for the drag handle only
                         {...(draggable?.dragActivators ?? {})}
                       >
-                        <GripVertical size={14} />
+                        <GripVertical size={12} />
                       </div>
                     </Show>
-                    <Show when={index() === 0 && props.onCollapse && props.side === 'left' && !isDraggable()}>
+                    <Show when={index() === 0 && props.onCollapse && props.side === 'left'}>
                       <IconButton
                         icon={CollapseIcon}
                         iconSize={iconSize.lg}
@@ -597,7 +639,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                     <div class={styles.sidebarHeaderActions}>
                       {section().headerActions}
                     </div>
-                    <Show when={index() === 0 && props.onCollapse && props.side === 'right' && !isDraggable()}>
+                    <Show when={index() === 0 && props.onCollapse && props.side === 'right'}>
                       <IconButton
                         icon={CollapseIcon}
                         iconSize={iconSize.lg}
@@ -618,10 +660,32 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                     </div>
                   </div>
                 </details>
+
+                {/* Drop indicator: after this section */}
+                <Show when={currentDropIndicator()?.targetSectionId === id && currentDropIndicator()?.position === 'after'}>
+                  <div class={styles.dropIndicatorLine} data-testid="drop-indicator" />
+                </Show>
               </>
             )
           }}
         </For>
+
+        {/* Drop indicator for sidebar zone (empty sidebar or append at end) */}
+        <Show when={currentDropIndicator()?.targetSectionId === `__zone_${props.side}__`}>
+          <div class={styles.dropIndicatorLine} data-testid="drop-indicator" />
+        </Show>
+
+        {/* Empty drop zone shown when sidebar has no sections */}
+        <Show when={expandableSectionIds().length === 0 && hasDndContext}>
+          <div class={`${styles.emptyDropZone} ${sectionDrag?.draggedSectionId() ? styles.emptyDropZoneActive : ''}`} data-testid={`empty-drop-zone-${props.side}`}>
+            <Show
+              when={sectionDrag?.draggedSectionId()}
+              fallback={<span>No sections</span>}
+            >
+              <span>Drop section here</span>
+            </Show>
+          </div>
+        </Show>
 
         {/* Rail-only sections rendered at the bottom of the expanded sidebar */}
         <For each={railOnlySectionIds()}>

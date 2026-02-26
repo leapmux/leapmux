@@ -1394,6 +1394,12 @@ export const AppShell: ParentComponent = (props) => {
       initialOpenSections={opts?.initialOpenSections}
       initialSectionSizes={opts?.initialSectionSizes}
       onSectionStateChange={opts?.onLeftStateChange}
+      workerId={getCurrentTabContext().workerId}
+      workingDir={getCurrentTabContext().workingDir}
+      fileTreePath={fileTreePath()}
+      onFileSelect={setFileTreePath}
+      showTodos={showTodos()}
+      activeTodos={activeTodos()}
     />
   )
 
@@ -1421,6 +1427,16 @@ export const AppShell: ParentComponent = (props) => {
       initialOpenSections={opts?.initialOpenSections}
       initialSectionSizes={opts?.initialSectionSizes}
       onSectionStateChange={opts?.onRightStateChange}
+      workspaces={workspaceStore.state.workspaces}
+      activeWorkspaceId={workspace.activeWorkspaceId()}
+      loadSections={loadSections}
+      onSelectWorkspace={handleSelectWorkspace}
+      onNewWorkspace={(sectionId) => {
+        setNewWorkspaceTargetSectionId(sectionId)
+        setShowNewWorkspace(true)
+      }}
+      onRefreshWorkspaces={() => loadWorkspaces()}
+      onDeleteWorkspace={handleDeleteWorkspace}
     />
   )
 
