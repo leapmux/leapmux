@@ -2,9 +2,8 @@ import type { AskQuestionState } from '~/components/chat/controls/types'
 import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { ExitPlanModeActions } from '~/components/chat/controls/ExitPlanModeControl'
-import { _resetListeners, emitSettingsChanged } from '~/lib/settingsChangedEvent'
 
 function makeRequest(requestId = 'req-1', agentId = 'agent-1'): ControlRequest {
   return {
@@ -24,10 +23,6 @@ function makeAskState(): AskQuestionState {
 }
 
 describe('exitPlanModeActions', () => {
-  beforeEach(() => {
-    _resetListeners()
-  })
-
   it('shows Reject, Approve and Bypass Permissions when no editor content', () => {
     render(() => (
       <ExitPlanModeActions
@@ -36,7 +31,6 @@ describe('exitPlanModeActions', () => {
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        onPermissionModeChange={vi.fn()}
       />
     ))
 
@@ -53,7 +47,6 @@ describe('exitPlanModeActions', () => {
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={true}
         onTriggerSend={() => {}}
-        onPermissionModeChange={vi.fn()}
       />
     ))
 
@@ -62,9 +55,8 @@ describe('exitPlanModeActions', () => {
     expect(screen.queryByTestId('control-bypass-btn')).toBeNull()
   })
 
-  it('sends allow response and waits for settings_changed before changing permission mode', async () => {
+  it('sends allow response with permissionMode in the control response', () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
-    const onPermissionModeChange = vi.fn()
     const request = makeRequest('req-99', 'agent-3')
 
     render(() => (
@@ -74,39 +66,24 @@ describe('exitPlanModeActions', () => {
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        onPermissionModeChange={onPermissionModeChange}
       />
     ))
 
     fireEvent.click(screen.getByTestId('control-bypass-btn'))
 
-    // Verify allow response was sent immediately
+    // Verify allow response was sent with permissionMode included
     expect(onRespond).toHaveBeenCalledOnce()
     const [agentId, bytes] = onRespond.mock.calls[0]
     expect(agentId).toBe('agent-3')
     const decoded = JSON.parse(new TextDecoder().decode(bytes))
     expect(decoded.response.request_id).toBe('req-99')
     expect(decoded.response.response.behavior).toBe('allow')
-
-    // Permission mode change should NOT have been called yet
-    expect(onPermissionModeChange).not.toHaveBeenCalled()
-
-    // Simulate the backend's settings_changed notification
-    emitSettingsChanged({ permissionMode: { old: 'plan', new: 'default' } })
-
-    // Allow microtasks to flush
-    await new Promise(r => setTimeout(r, 0))
-
-    // Now it should have been called
-    expect(onPermissionModeChange).toHaveBeenCalledOnce()
-    expect(onPermissionModeChange).toHaveBeenCalledWith('bypassPermissions')
+    expect(decoded.permissionMode).toBe('bypassPermissions')
   })
 
-  it('falls back to changing permission mode on timeout', async () => {
-    vi.useFakeTimers()
+  it('sends allow response without permissionMode for normal approve', () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
-    const onPermissionModeChange = vi.fn()
-    const request = makeRequest('req-99', 'agent-3')
+    const request = makeRequest('req-42', 'agent-5')
 
     render(() => (
       <ExitPlanModeActions
@@ -115,23 +92,18 @@ describe('exitPlanModeActions', () => {
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        onPermissionModeChange={onPermissionModeChange}
       />
     ))
 
-    fireEvent.click(screen.getByTestId('control-bypass-btn'))
+    fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
     expect(onRespond).toHaveBeenCalledOnce()
-    expect(onPermissionModeChange).not.toHaveBeenCalled()
-
-    // Advance past the API timeout
-    vi.advanceTimersByTime(20_000)
-    await vi.runAllTimersAsync()
-
-    // Should have fallen back to calling onPermissionModeChange
-    expect(onPermissionModeChange).toHaveBeenCalledOnce()
-    expect(onPermissionModeChange).toHaveBeenCalledWith('bypassPermissions')
-    vi.useRealTimers()
+    const [agentId, bytes] = onRespond.mock.calls[0]
+    expect(agentId).toBe('agent-5')
+    const decoded = JSON.parse(new TextDecoder().decode(bytes))
+    expect(decoded.response.request_id).toBe('req-42')
+    expect(decoded.response.response.behavior).toBe('allow')
+    expect(decoded.permissionMode).toBeUndefined()
   })
 
   it('has a tooltip on the bypass button', () => {
@@ -142,7 +114,6 @@ describe('exitPlanModeActions', () => {
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        onPermissionModeChange={vi.fn()}
       />
     ))
 
