@@ -353,6 +353,12 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
 
   const infoHoverCardContent = () => (
     <>
+      <Show when={props.agent?.workerName}>
+        <div class={styles.infoRow} data-testid="info-row-worker">
+          <span class={styles.infoLabel}>Worker</span>
+          <span class={styles.infoValue}>{props.agent!.workerName}</span>
+        </div>
+      </Show>
       <Show when={props.agent?.agentSessionId}>
         <div class={styles.infoRow}>
           <span class={styles.infoLabel}>Session ID</span>
@@ -415,9 +421,17 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         })()}
       </Show>
       <Show when={props.agent?.workingDir}>
-        <div class={styles.infoRow}>
+        <div class={styles.infoRow} data-testid="info-row-directory">
           <span class={styles.infoLabel}>Directory</span>
           <span class={styles.infoValue}>{tildify(props.agent!.workingDir!, props.agent!.homeDir)}</span>
+        </div>
+      </Show>
+      <Show when={props.agentSessionInfo?.planFilePath}>
+        <div class={styles.infoRow} data-testid="info-row-plan-file">
+          <span class={styles.infoLabel}>Plan File</span>
+          <span class={styles.infoValue}>
+            {tildify(props.agentSessionInfo!.planFilePath!, props.agent?.homeDir)}
+          </span>
         </div>
       </Show>
       <Show when={props.agentSessionInfo?.contextUsage}>

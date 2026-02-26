@@ -204,6 +204,7 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 	var latestStatusRaw json.RawMessage
 	rateLimitByType := map[string]json.RawMessage{} // rate_limit: keep latest per rateLimitType
 	var compactionBoundaries []json.RawMessage
+	var planExecRaw json.RawMessage
 
 	for _, raw := range messages {
 		var env envelope
@@ -236,6 +237,9 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 		case env.Type == "context_cleared":
 			hasContextCleared = true
 			contextClearedRaw = raw
+
+		case env.Type == "plan_execution":
+			planExecRaw = raw
 
 		case env.Type == "interrupted":
 			hasInterrupted = true
@@ -304,6 +308,38 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 	// Emit context_cleared if not already part of settings_changed.
 	if hasContextCleared && contextClearedRaw != nil {
 		result = append(result, contextClearedRaw)
+	}
+
+	// Emit plan_execution (keep latest). When plan_execution carries
+	// context_cleared: true, the separate context_cleared message is
+	// redundant — remove it from the result.
+	if planExecRaw != nil {
+		var pe struct {
+			ContextCleared bool `json:"context_cleared"`
+		}
+		if json.Unmarshal(planExecRaw, &pe) == nil && pe.ContextCleared {
+			// Remove the context_cleared entry we may have just emitted.
+			filtered := result[:0]
+			for _, r := range result {
+				var e envelope
+				if json.Unmarshal(r, &e) == nil && e.Type == "context_cleared" {
+					continue
+				}
+				// Also strip contextCleared from settings_changed if present.
+				if json.Unmarshal(r, &e) == nil && e.Type == "settings_changed" {
+					var sc map[string]interface{}
+					if json.Unmarshal(r, &sc) == nil {
+						delete(sc, "contextCleared")
+						if data, err := json.Marshal(sc); err == nil {
+							r = data
+						}
+					}
+				}
+				filtered = append(filtered, r)
+			}
+			result = filtered
+		}
+		result = append(result, planExecRaw)
 	}
 
 	// Emit interrupted.

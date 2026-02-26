@@ -107,9 +107,10 @@ message AgentInfo {
   string permission_mode = 9;
   string effort = 10;
   string worker_id = 11;        // Worker this agent runs on
-  string working_dir = 12;      // Working directory on the worker
-  AgentGitStatus git_status = 13; // Git status for the agent's working directory
-  string home_dir = 14;         // Worker's home directory for tilde path display
+  string worker_name = 12;      // Human-readable worker name
+  string working_dir = 13;      // Working directory on the worker
+  AgentGitStatus git_status = 14; // Git status for the agent's working directory
+  string home_dir = 15;         // Worker's home directory for tilde path display
 }
 
 // --- Agent Messaging ---

@@ -155,4 +155,26 @@ describe('createAgentSessionStore', () => {
       dispose()
     })
   })
+
+  it('should store and retrieve planFilePath', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      store.updateInfo('agent-1', { planFilePath: '/home/user/.claude/plans/plan.md' })
+      const info = store.getInfo('agent-1')
+      expect(info.planFilePath).toBe('/home/user/.claude/plans/plan.md')
+      dispose()
+    })
+  })
+
+  it('should update planFilePath without affecting other fields', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      store.updateInfo('agent-1', { totalCostUsd: 2.0 })
+      store.updateInfo('agent-1', { planFilePath: '/path/plan.md' })
+      const info = store.getInfo('agent-1')
+      expect(info.totalCostUsd).toBe(2.0)
+      expect(info.planFilePath).toBe('/path/plan.md')
+      dispose()
+    })
+  })
 })

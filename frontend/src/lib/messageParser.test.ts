@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import {
   extractAssistantUsage,
+  extractPlanFilePath,
   extractRateLimitInfo,
   extractResultMetadata,
   extractSettingsChanges,
@@ -440,5 +441,58 @@ describe('extractSettingsChanges', () => {
     const content = { type: 'settings_changed' }
     const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
     expect(extractSettingsChanges(parseMessageContent(msg))).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// extractPlanFilePath
+// ---------------------------------------------------------------------------
+
+describe('extractPlanFilePath', () => {
+  it('extracts plan file path from wrapped plan_execution message', () => {
+    const content = {
+      type: 'plan_execution',
+      context_cleared: true,
+      plan_file_path: '/home/user/.claude/plans/plan.md',
+    }
+    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    expect(extractPlanFilePath(parseMessageContent(msg))).toBe('/home/user/.claude/plans/plan.md')
+  })
+
+  it('extracts plan file path from wrapped thread with multiple messages', () => {
+    const ccMsg = { type: 'context_cleared' }
+    const peMsg = {
+      type: 'plan_execution',
+      context_cleared: true,
+      plan_file_path: '/path/to/plan.md',
+    }
+    const msg = makeMsg(MessageRole.LEAPMUX, wrap(ccMsg, peMsg))
+    expect(extractPlanFilePath(parseMessageContent(msg))).toBe('/path/to/plan.md')
+  })
+
+  it('extracts plan file path from unwrapped plan_execution message', () => {
+    const content = {
+      type: 'plan_execution',
+      context_cleared: false,
+      plan_file_path: '/path/plan.md',
+    }
+    const msg = makeMsg(MessageRole.LEAPMUX, content)
+    expect(extractPlanFilePath(parseMessageContent(msg))).toBe('/path/plan.md')
+  })
+
+  it('returns undefined when plan_file_path is empty', () => {
+    const content = {
+      type: 'plan_execution',
+      context_cleared: false,
+      plan_file_path: '',
+    }
+    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    expect(extractPlanFilePath(parseMessageContent(msg))).toBeUndefined()
+  })
+
+  it('returns undefined for non-plan_execution messages', () => {
+    const content = { type: 'context_cleared' }
+    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    expect(extractPlanFilePath(parseMessageContent(msg))).toBeUndefined()
   })
 })

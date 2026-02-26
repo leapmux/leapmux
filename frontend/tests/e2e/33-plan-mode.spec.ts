@@ -78,5 +78,13 @@ test.describe('Plan Mode', () => {
 
     // Verify dropdown switches to Accept Edits (plan approval sets acceptEdits mode)
     await expect(trigger).toContainText('Accept Edits')
+
+    // ── Step 5: Verify Plan File is shown in the popover ──
+    const infoTrigger = page.locator('[data-testid="session-id-trigger"]')
+    await expect(infoTrigger).toBeVisible({ timeout: 30_000 })
+    await infoTrigger.click()
+    const popover = page.locator('[data-testid="session-id-popover"]')
+    await expect(popover).toBeVisible()
+    await expect(popover.locator('[data-testid="info-row-plan-file"]')).toBeVisible()
   })
 })

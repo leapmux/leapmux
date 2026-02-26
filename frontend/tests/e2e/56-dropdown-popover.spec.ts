@@ -38,6 +38,10 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     const popover = page.locator('[data-testid="session-id-popover"]')
     await expect(popover).toBeVisible()
 
+    // Verify worker name and directory are shown in the popover
+    await expect(popover.locator('[data-testid="info-row-worker"]')).toBeVisible()
+    await expect(popover.locator('[data-testid="info-row-directory"]')).toBeVisible()
+
     // Now click the editor text input area — this should light-dismiss the
     // popover and leave focus in the editor.
     // The popover may be positioned above the trigger (data-flipped), so
