@@ -1,60 +1,12 @@
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import { createStore } from 'solid-js/store'
 import { agentClient } from '~/api/clients'
-import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
-import { decompressContentToString } from '~/lib/decompress'
+import { extractTodos, findLatestTodos, parseMessageContent } from '~/lib/messageParser'
 
 export interface TodoItem {
   content: string
   status: 'pending' | 'in_progress' | 'completed'
   activeForm: string
-}
-
-/**
- * Parse the thread wrapper envelope from message content.
- * Returns the first raw message object, or null on failure.
- * Wrapper format: {"old_seqs": [...], "messages": [{...}, ...]}
- */
-function unwrapFirstMessage(message: AgentChatMessage): Record<string, unknown> | null {
-  try {
-    const text = decompressContentToString(message.content, message.contentCompression)
-    if (text === null)
-      return null
-    const wrapper = JSON.parse(text)
-    const firstMsg = wrapper?.messages?.[0]
-    if (typeof firstMsg === 'object' && firstMsg !== null)
-      return firstMsg
-  }
-  catch { /* ignore */ }
-  return null
-}
-
-/** Extract TodoWrite todos from a single message, or null if not a TodoWrite. */
-function extractTodos(message: AgentChatMessage): TodoItem[] | null {
-  if (message.role !== MessageRole.ASSISTANT)
-    return null
-  try {
-    const parsed = unwrapFirstMessage(message)
-    if (!parsed || parsed.type !== 'assistant')
-      return null
-    const msg = parsed.message as Record<string, unknown> | undefined
-    const content = msg?.content
-    if (!Array.isArray(content))
-      return null
-    const toolUse = content.find(
-      (c: Record<string, unknown>) => typeof c === 'object' && c !== null && c.type === 'tool_use' && c.name === 'TodoWrite',
-    )
-    if (!toolUse?.input?.todos || !Array.isArray(toolUse.input.todos))
-      return null
-    return toolUse.input.todos.map((t: Record<string, unknown>) => ({
-      content: String(t.content || ''),
-      status: t.status === 'in_progress' ? 'in_progress' as const : t.status === 'completed' ? 'completed' as const : 'pending' as const,
-      activeForm: String(t.activeForm || ''),
-    }))
-  }
-  catch {
-    return null
-  }
 }
 
 interface ChatStoreState {
@@ -87,6 +39,23 @@ export function createChatStore() {
     initialLoadComplete: {},
   })
 
+  /** Shared implementation for setMessages / loadInitialMessages. */
+  function applyMessages(agentId: string, messages: AgentChatMessage[], hasMore: boolean) {
+    setState('messagesByAgent', agentId, messages)
+    setState('hasMoreOlder', agentId, hasMore)
+    setState('initialLoadComplete', agentId, true)
+    for (const msg of messages) {
+      if (msg.deliveryError) {
+        setState('messageErrors', msg.id, msg.deliveryError)
+      }
+    }
+    // Extract todos from the last TodoWrite message in the loaded history.
+    const todos = findLatestTodos(messages)
+    if (todos) {
+      setState('todosByAgent', agentId, todos)
+    }
+  }
+
   return {
     state,
 
@@ -95,22 +64,7 @@ export function createChatStore() {
     },
 
     setMessages(agentId: string, messages: AgentChatMessage[], hasMore = false) {
-      setState('messagesByAgent', agentId, messages)
-      setState('hasMoreOlder', agentId, hasMore)
-      setState('initialLoadComplete', agentId, true)
-      for (const msg of messages) {
-        if (msg.deliveryError) {
-          setState('messageErrors', msg.id, msg.deliveryError)
-        }
-      }
-      // Extract todos from the last TodoWrite message in the loaded history.
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const todos = extractTodos(messages[i])
-        if (todos) {
-          setState('todosByAgent', agentId, todos)
-          break
-        }
-      }
+      applyMessages(agentId, messages, hasMore)
     },
 
     addMessage(agentId: string, message: AgentChatMessage) {
@@ -150,7 +104,8 @@ export function createChatStore() {
       }
 
       // Track latest TodoWrite
-      const todos = extractTodos(message)
+      const parsed = parseMessageContent(message)
+      const todos = extractTodos(message, parsed)
       if (todos) {
         setState('todosByAgent', agentId, todos)
       }
@@ -210,14 +165,7 @@ export function createChatStore() {
           agentId,
           limit: 50,
         })
-        setState('messagesByAgent', agentId, resp.messages)
-        setState('hasMoreOlder', agentId, resp.hasMore)
-        setState('initialLoadComplete', agentId, true)
-        for (const msg of resp.messages) {
-          if (msg.deliveryError) {
-            setState('messageErrors', msg.id, msg.deliveryError)
-          }
-        }
+        applyMessages(agentId, resp.messages, resp.hasMore)
       }
       finally {
         setState('fetchingOlder', agentId, false)
@@ -248,6 +196,13 @@ export function createChatStore() {
             const newMsgs = resp.messages.filter(m => !existingSeqs.has(m.seq))
             return [...newMsgs, ...prev]
           })
+          // Extract todos from older messages if none found yet.
+          if (!state.todosByAgent[agentId] || state.todosByAgent[agentId].length === 0) {
+            const todos = findLatestTodos(resp.messages)
+            if (todos) {
+              setState('todosByAgent', agentId, todos)
+            }
+          }
         }
         setState('hasMoreOlder', agentId, resp.hasMore)
       }
