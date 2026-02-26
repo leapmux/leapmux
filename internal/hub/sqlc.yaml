@@ -38,11 +38,15 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "ShareMode"
-          # Agent enum
+          # Agent enums
           - column: "agents.status"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "AgentStatus"
+          - column: "agents.plan_content_compression"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "ContentCompression"
           # Message enums
           - column: "messages.role"
             go_type:

@@ -49,3 +49,9 @@ UPDATE agents SET model = ?, effort = ? WHERE id = ?;
 
 -- name: UpdateAgentHomeDir :exec
 UPDATE agents SET home_dir = ? WHERE id = ?;
+
+-- name: UpdateAgentPlanFilePath :exec
+UPDATE agents SET plan_file_path = ? WHERE id = ?;
+
+-- name: UpdateAgentPlanContent :exec
+UPDATE agents SET plan_content = ?, plan_content_compression = ? WHERE id = ?;

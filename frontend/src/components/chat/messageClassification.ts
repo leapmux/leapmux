@@ -32,7 +32,7 @@ function isNotificationThreadWrapper(wrapper: { messages: unknown[] } | null): w
   const first = wrapper.messages[0] as Record<string, unknown>
   const t = first.type as string | undefined
   const st = first.subtype as string | undefined
-  return t === 'settings_changed' || t === 'context_cleared' || t === 'interrupted' || t === 'rate_limit'
+  return t === 'settings_changed' || t === 'context_cleared' || t === 'interrupted' || t === 'rate_limit' || t === 'plan_execution'
     || (t === 'system' && st !== 'init' && st !== 'task_notification')
 }
 
@@ -139,9 +139,12 @@ export function classifyMessage(
     return { kind: 'unknown' }
   }
 
-  // 11. Plain object with string .content and no .type → user_content
-  if (!type && typeof parentObject.content === 'string')
+  // 11. Plain object with string .content and no .type → user_content (hidden if flagged)
+  if (!type && typeof parentObject.content === 'string') {
+    if (parentObject.hidden === true)
+      return { kind: 'hidden' }
     return { kind: 'user_content' }
+  }
 
   // 12. Fallback
   return { kind: 'unknown' }

@@ -449,3 +449,97 @@ func TestUpdateAgentHomeDir(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "/home/alice", agent.HomeDir)
 }
+
+func TestUpdateAgentPlanFilePath(t *testing.T) {
+	q := newTestQueries(t)
+	ctx := context.Background()
+
+	orgID := makeID()
+	userID := makeID()
+	_ = q.CreateOrg(ctx, gendb.CreateOrgParams{ID: orgID, Name: "plan-file-org"})
+	_ = q.CreateUser(ctx, gendb.CreateUserParams{
+		ID: userID, OrgID: orgID, Username: "u",
+		PasswordHash: "h", DisplayName: "U", IsAdmin: 1,
+	})
+	workerID := makeID()
+	_ = q.CreateWorker(ctx, gendb.CreateWorkerParams{
+		ID: workerID, OrgID: orgID, Name: "w",
+		AuthToken: makeID(), RegisteredBy: userID,
+	})
+	wsID := makeID()
+	_ = q.CreateWorkspace(ctx, gendb.CreateWorkspaceParams{
+		ID: wsID, OrgID: orgID,
+		CreatedBy: userID, Title: "w",
+	})
+	agentID := makeID()
+	_ = q.CreateAgent(ctx, gendb.CreateAgentParams{
+		ID: agentID, WorkspaceID: wsID, WorkerID: workerID,
+		Title: "agent", Model: "haiku", SystemPrompt: "",
+	})
+
+	// Verify defaults.
+	agent, err := q.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	require.Empty(t, agent.PlanFilePath)
+
+	// Update plan_file_path.
+	err = q.UpdateAgentPlanFilePath(ctx, gendb.UpdateAgentPlanFilePathParams{
+		PlanFilePath: "/home/alice/.claude/plans/my-plan.md",
+		ID:           agentID,
+	})
+	require.NoError(t, err)
+
+	agent, err = q.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	require.Equal(t, "/home/alice/.claude/plans/my-plan.md", agent.PlanFilePath)
+}
+
+func TestUpdateAgentPlanContent(t *testing.T) {
+	q := newTestQueries(t)
+	ctx := context.Background()
+
+	orgID := makeID()
+	userID := makeID()
+	_ = q.CreateOrg(ctx, gendb.CreateOrgParams{ID: orgID, Name: "plan-content-org"})
+	_ = q.CreateUser(ctx, gendb.CreateUserParams{
+		ID: userID, OrgID: orgID, Username: "u",
+		PasswordHash: "h", DisplayName: "U", IsAdmin: 1,
+	})
+	workerID := makeID()
+	_ = q.CreateWorker(ctx, gendb.CreateWorkerParams{
+		ID: workerID, OrgID: orgID, Name: "w",
+		AuthToken: makeID(), RegisteredBy: userID,
+	})
+	wsID := makeID()
+	_ = q.CreateWorkspace(ctx, gendb.CreateWorkspaceParams{
+		ID: wsID, OrgID: orgID,
+		CreatedBy: userID, Title: "w",
+	})
+	agentID := makeID()
+	_ = q.CreateAgent(ctx, gendb.CreateAgentParams{
+		ID: agentID, WorkspaceID: wsID, WorkerID: workerID,
+		Title: "agent", Model: "haiku", SystemPrompt: "",
+	})
+
+	// Verify defaults.
+	agent, err := q.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	require.Empty(t, agent.PlanContent)
+	require.Equal(t, leapmuxv1.ContentCompression(0), agent.PlanContentCompression)
+
+	// Update plan content with compression.
+	planContent := []byte("compressed plan data")
+	compression := leapmuxv1.ContentCompression_CONTENT_COMPRESSION_ZSTD
+	err = q.UpdateAgentPlanContent(ctx, gendb.UpdateAgentPlanContentParams{
+		PlanContent:            planContent,
+		PlanContentCompression: compression,
+		ID:                     agentID,
+	})
+	require.NoError(t, err)
+
+	// Verify round-trip.
+	agent, err = q.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	require.Equal(t, planContent, agent.PlanContent)
+	require.Equal(t, compression, agent.PlanContentCompression)
+}

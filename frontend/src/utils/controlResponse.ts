@@ -16,9 +16,11 @@ export function getToolInput(payload: Record<string, unknown>): Record<string, u
 export function buildAllowResponse(
   requestId: string,
   updatedInput?: Record<string, unknown>,
+  permissionMode?: PermissionMode,
 ): Record<string, unknown> {
   return {
     type: 'control_response',
+    permissionMode, // optional, consumed by hub for ExitPlanMode
     response: {
       subtype: 'success',
       request_id: requestId,

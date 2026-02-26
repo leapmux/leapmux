@@ -78,6 +78,16 @@ export const contextClearedRenderer: MessageContentRenderer = {
   },
 }
 
+/** Handles plan execution notifications: {"type":"plan_execution","message":"..."} */
+export const planExecutionRenderer: MessageContentRenderer = {
+  render(parsed, _role, _context) {
+    if (!isObject(parsed) || parsed.type !== 'plan_execution')
+      return null
+    const message = (parsed as Record<string, unknown>).message
+    return <div class={controlResponseMessage}>{typeof message === 'string' ? message : 'Executing plan'}</div>
+  },
+}
+
 /** Handles rate limit notifications: {"type":"rate_limit","rate_limit_info":{...}} */
 export const rateLimitRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
@@ -282,6 +292,10 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
     }
     else if (t === 'context_cleared') {
       contextCleared = true
+    }
+    else if (t === 'plan_execution') {
+      const planMsg = typeof m.message === 'string' ? m.message : 'Executing plan'
+      settingsParts.push(planMsg)
     }
     else if (t === 'interrupted') {
       interrupted = true

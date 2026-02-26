@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -626,6 +627,7 @@ func (s *AgentService) HandleAgentOutput(ctx context.Context, output *leapmuxv1.
 		switch envelope.Type {
 		case "assistant":
 			s.trackPlanModeToolUse(content)
+			s.trackPlanFilePath(ctx, agentID, content)
 			// Schedule auto-continue on transient API errors, or reset
 			// the backoff when the agent produces a normal response.
 			if isSyntheticAPIError(content) {
@@ -1109,6 +1111,111 @@ func (s *AgentService) clearAgentContext(ctx context.Context, agent *db.Agent, w
 	})
 }
 
+// clearAgentContextForPlanExecution clears the agent's context and queues a
+// synthetic user message containing the plan content to be sent after restart.
+func (s *AgentService) clearAgentContextForPlanExecution(ctx context.Context, agent *db.Agent, ws *db.Workspace, planContent string) {
+	s.resetUsageSnapshot(agent.ID)
+	s.lastAgentStatus.Delete(agent.ID)
+
+	opts := &RestartOptions{
+		ClearSession:         true,
+		SyntheticUserMessage: "Execute the following plan:\n\n---\n\n" + planContent,
+		Notification:         "Executing plan with clean context",
+	}
+
+	// If the agent is active and the worker is connected, stop it and
+	// let the restart cycle handle the rest.
+	if agent.Status == leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE {
+		if conn := s.workerMgr.Get(agent.WorkerID); conn != nil {
+			s.restartPending.Store(agent.ID, opts)
+			_ = conn.Send(&leapmuxv1.ConnectResponse{
+				Payload: &leapmuxv1.ConnectResponse_AgentStop{
+					AgentStop: &leapmuxv1.AgentStopRequest{
+						WorkspaceId: agent.WorkspaceID,
+						AgentId:     agent.ID,
+					},
+				},
+			})
+			return
+		}
+	}
+
+	// Agent is not running or worker is disconnected — clear session ID
+	// directly and notify.
+	if err := s.queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
+		AgentSessionID: "",
+		ID:             agent.ID,
+	}); err != nil {
+		slog.Warn("failed to clear agent session ID", "agent_id", agent.ID, "error", err)
+	}
+	s.broadcastNotification(ctx, agent.ID, map[string]interface{}{
+		"type": "context_cleared",
+	})
+	s.broadcastNotification(ctx, agent.ID, map[string]interface{}{
+		"type":    "plan_execution",
+		"message": opts.Notification,
+	})
+}
+
+// sendSyntheticUserMessage persists a hidden user message (not displayed in
+// chat) and delivers it to the worker. Used to inject plan content after a
+// context-clearing restart.
+func (s *AgentService) sendSyntheticUserMessage(ctx context.Context, agentID string, content string) error {
+	agent, err := s.queries.GetAgentByID(ctx, agentID)
+	if err != nil {
+		return fmt.Errorf("get agent: %w", err)
+	}
+
+	// Build hidden message content.
+	contentJSON, _ := json.Marshal(map[string]interface{}{
+		"content": content,
+		"hidden":  true,
+	})
+	wrapped := wrapContent(contentJSON)
+	compressed, compressionType := msgcodec.Compress(wrapped)
+	msgID := id.Generate()
+	now := time.Now()
+
+	seq, err := s.queries.CreateMessage(ctx, db.CreateMessageParams{
+		ID:                 msgID,
+		AgentID:            agentID,
+		Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
+		Content:            compressed,
+		ContentCompression: compressionType,
+		ThreadID:           "",
+		CreatedAt:          now,
+	})
+	if err != nil {
+		return fmt.Errorf("persist synthetic message: %w", err)
+	}
+
+	// Broadcast to watchers (frontend checks hidden flag and skips rendering).
+	s.broadcastMessage(agentID, &leapmuxv1.AgentChatMessage{
+		Id:                 msgID,
+		Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
+		Content:            compressed,
+		ContentCompression: compressionType,
+		Seq:                seq,
+		CreatedAt:          timefmt.Format(now),
+	})
+
+	// Deliver to worker.
+	msgCtx, msgCancel := context.WithTimeout(ctx, s.timeoutCfg.APITimeout())
+	defer msgCancel()
+
+	agentNotFound, deliveryErr := s.deliverMessageToWorker(msgCtx, agent.WorkerID, agent.WorkspaceID, agentID, content)
+	if agentNotFound {
+		slog.Warn("synthetic message: agent not found on worker", "agent_id", agentID)
+		return fmt.Errorf("agent not found on worker")
+	}
+	if deliveryErr != nil {
+		s.setDeliveryError(ctx, agentID, msgID, deliveryErr.Error())
+		return deliveryErr
+	}
+
+	return nil
+}
+
 // trackPlanModeToolUse inspects an assistant message for EnterPlanMode or
 // ExitPlanMode tool_use blocks and records the tool_use_id for later matching
 // against the tool_result confirmation.
@@ -1138,10 +1245,80 @@ func (s *AgentService) trackPlanModeToolUse(content []byte) {
 	}
 }
 
+// trackPlanFilePath inspects an assistant message for Write or Edit tool_use
+// blocks whose file_path targets the agent's ~/.claude/plans/ directory,
+// and persists the plan file path and compressed plan content to the DB.
+func (s *AgentService) trackPlanFilePath(ctx context.Context, agentID string, content []byte) {
+	var msg struct {
+		Message struct {
+			Content []struct {
+				Type  string `json:"type"`
+				Name  string `json:"name"`
+				Input struct {
+					FilePath string `json:"file_path"`
+				} `json:"input"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(content, &msg); err != nil {
+		return
+	}
+
+	for _, block := range msg.Message.Content {
+		if block.Type != "tool_use" {
+			continue
+		}
+		if block.Name != "Write" && block.Name != "Edit" {
+			continue
+		}
+		filePath := block.Input.FilePath
+		if filePath == "" {
+			continue
+		}
+
+		agent, err := s.queries.GetAgentByID(ctx, agentID)
+		if err != nil || agent.HomeDir == "" {
+			continue
+		}
+
+		planDir := agent.HomeDir + "/.claude/plans/"
+		if !strings.HasPrefix(filePath, planDir) {
+			continue
+		}
+
+		// Persist plan file path.
+		if err := s.queries.UpdateAgentPlanFilePath(ctx, db.UpdateAgentPlanFilePathParams{
+			PlanFilePath: filePath,
+			ID:           agentID,
+		}); err != nil {
+			slog.Warn("failed to update agent plan file path", "agent_id", agentID, "error", err)
+			continue
+		}
+
+		// Read and persist compressed plan content.
+		data, err := os.ReadFile(filePath)
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		compressed, compression := msgcodec.Compress(data)
+		if err := s.queries.UpdateAgentPlanContent(ctx, db.UpdateAgentPlanContentParams{
+			PlanContent:            compressed,
+			PlanContentCompression: compression,
+			ID:                     agentID,
+		}); err != nil {
+			slog.Warn("failed to update agent plan content", "agent_id", agentID, "error", err)
+		}
+
+		// Only track the first matching plan file per message.
+		return
+	}
+}
+
 // detectPlanModeFromToolResult inspects a user message (tool_result) for
 // confirmation of a previously tracked EnterPlanMode or ExitPlanMode tool_use.
 // When a match is found, it calls setAgentPermissionMode to update the DB and
-// broadcast a notification.
+// broadcast a notification. It also intercepts ExitPlanMode tool_results that
+// have a pending plan execution (set by SendControlResponse on approval).
 func (s *AgentService) detectPlanModeFromToolResult(ctx context.Context, agentID string, content []byte) {
 	var msg struct {
 		Message struct {
@@ -1151,7 +1328,9 @@ func (s *AgentService) detectPlanModeFromToolResult(ctx context.Context, agentID
 			} `json:"content"`
 		} `json:"message"`
 		ToolUseResult *struct {
-			Message string `json:"message"`
+			Message  string `json:"message"`
+			Plan     string `json:"plan"`
+			FilePath string `json:"filePath"`
 		} `json:"tool_use_result"`
 	}
 	if err := json.Unmarshal(content, &msg); err != nil {
@@ -1160,6 +1339,48 @@ func (s *AgentService) detectPlanModeFromToolResult(ctx context.Context, agentID
 
 	for _, block := range msg.Message.Content {
 		if block.Type != "tool_result" || block.ToolUseID == "" {
+			continue
+		}
+
+		// Check for plan execution pending (takes priority over planModeToolUse).
+		if val, ok := s.planExecPending.LoadAndDelete(block.ToolUseID); ok {
+			config := val.(*PlanExecConfig)
+			close(config.Done) // cancel the timeout goroutine
+
+			// Parse plan content from tool_use_result.
+			planContent, filePath := extractPlanFromToolUseResult(msg.ToolUseResult)
+
+			// Fallback 1: DB-persisted compressed plan content.
+			if planContent == "" {
+				if agent, err := s.queries.GetAgentByID(ctx, agentID); err == nil {
+					if len(agent.PlanContent) > 0 {
+						if decompressed, err := msgcodec.Decompress(agent.PlanContent, agent.PlanContentCompression); err == nil {
+							planContent = string(decompressed)
+						}
+					}
+					if planContent == "" && filePath == "" {
+						filePath = agent.PlanFilePath
+					}
+				}
+			}
+
+			// Fallback 2: Read plan file from disk.
+			if planContent == "" && filePath != "" {
+				if data, err := os.ReadFile(filePath); err == nil && len(data) > 0 {
+					planContent = string(data)
+				}
+			}
+
+			if planContent != "" {
+				s.initiatePlanExecRestart(ctx, agentID, planContent)
+			} else {
+				slog.Warn("plan execution: no plan content found, continuing with retained context",
+					"agent_id", agentID, "tool_use_id", block.ToolUseID)
+				s.broadcastNotification(ctx, agentID, map[string]interface{}{
+					"type":    "plan_execution",
+					"message": "Executing plan with retained context",
+				})
+			}
 			continue
 		}
 
@@ -1200,6 +1421,35 @@ func (s *AgentService) detectPlanModeFromToolResult(ctx context.Context, agentID
 				"result_text", truncated)
 		}
 	}
+}
+
+// extractPlanFromToolUseResult extracts plan content and file path from the
+// ExitPlanMode tool_use_result.
+func extractPlanFromToolUseResult(result *struct {
+	Message  string `json:"message"`
+	Plan     string `json:"plan"`
+	FilePath string `json:"filePath"`
+}) (plan, filePath string) {
+	if result == nil {
+		return "", ""
+	}
+	return result.Plan, result.FilePath
+}
+
+// initiatePlanExecRestart looks up the agent and workspace, then initiates a
+// context-clearing restart with the plan content as a synthetic user message.
+func (s *AgentService) initiatePlanExecRestart(ctx context.Context, agentID string, planContent string) {
+	agent, err := s.queries.GetAgentByID(ctx, agentID)
+	if err != nil {
+		slog.Error("plan exec restart: get agent", "agent_id", agentID, "error", err)
+		return
+	}
+	ws, err := s.queries.GetWorkspaceByIDInternal(ctx, agent.WorkspaceID)
+	if err != nil {
+		slog.Error("plan exec restart: get workspace", "agent_id", agentID, "error", err)
+		return
+	}
+	s.clearAgentContextForPlanExecution(ctx, &agent, &ws, planContent)
 }
 
 // isControlRequest checks if the content is a control_request JSON message

@@ -23,7 +23,7 @@ export interface UseWorkspaceOperationsProps {
   loadSections: () => Promise<void>
   onSelectWorkspace: (id: string) => void
   onNewWorkspace: (sectionId: string | null) => void
-  onRefreshWorkspaces: () => void
+  onRefreshWorkspaces: () => void | Promise<void>
   onDeleteWorkspace: (deletedId: string, nextWorkspaceId: string | null) => void
 }
 
@@ -207,8 +207,7 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     const done = startWorkspaceLoading(workspaceId)
     try {
       await workspaceClient.deleteWorkspace({ workspaceId })
-      props.onRefreshWorkspaces()
-      await props.loadSections()
+      await Promise.all([props.onRefreshWorkspaces(), props.loadSections()])
 
       if (props.onDeleteWorkspace) {
         const nextId = findFirstNonArchivedWorkspaceId()
