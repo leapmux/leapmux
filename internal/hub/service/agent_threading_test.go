@@ -665,6 +665,38 @@ func TestSoftClearNotifThread_SetsTimestamp(t *testing.T) {
 	assert.False(t, ref.softClear.After(after), "softClear should be <= after")
 }
 
+func TestSoftClearNotifThread_DoesNotRefreshTimestamp(t *testing.T) {
+	svc := &AgentService{}
+	ref := &notifThreadRef{msgID: "msg-1", seq: 10}
+	svc.lastNotifThread.Store("agent-1", ref)
+
+	// First soft-clear sets the timestamp.
+	svc.softClearNotifThread("agent-1")
+	firstClear := ref.softClear
+	assert.False(t, firstClear.IsZero(), "softClear should be set after first call")
+
+	// Small delay so a refreshed timestamp would differ.
+	time.Sleep(2 * time.Millisecond)
+
+	// Second soft-clear should NOT update the timestamp.
+	svc.softClearNotifThread("agent-1")
+	assert.Equal(t, firstClear, ref.softClear, "softClear should not be refreshed on second call")
+}
+
+func TestSoftClearNotifThread_FreshOnNewThread(t *testing.T) {
+	svc := &AgentService{}
+	// Simulate createNotificationStandalone: store a new notifThreadRef.
+	ref := &notifThreadRef{msgID: "msg-new", seq: 20}
+	svc.lastNotifThread.Store("agent-1", ref)
+
+	// A fresh thread should have zero softClear.
+	assert.True(t, ref.softClear.IsZero(), "new thread should have zero softClear")
+
+	// First soft-clear sets the timestamp.
+	svc.softClearNotifThread("agent-1")
+	assert.False(t, ref.softClear.IsZero(), "softClear should be set after first call on new thread")
+}
+
 func TestSoftClearNotifThread_NoOpWhenNoThread(t *testing.T) {
 	svc := &AgentService{}
 	// Should not panic when no thread exists.
