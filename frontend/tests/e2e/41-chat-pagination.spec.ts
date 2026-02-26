@@ -98,7 +98,7 @@ test.describe('Chat Pagination & Scroll', () => {
       const els = document.querySelectorAll<HTMLElement>('[class*="messageList"]')
       for (const el of els) {
         if (getComputedStyle(el).overflowY === 'auto') {
-          return el.scrollHeight - el.scrollTop - el.clientHeight < 16
+          return el.scrollHeight - el.scrollTop - el.clientHeight < 32
         }
       }
       return true

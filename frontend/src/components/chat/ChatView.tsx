@@ -40,6 +40,8 @@ interface ChatViewProps {
   onClearSavedViewportScroll?: () => void
   /** Ref to expose the getScrollState function for viewport save on tab switch. */
   scrollStateRef?: (fn: () => { distFromBottom: number, atBottom: boolean } | undefined) => void
+  /** Ref to expose a function that forces an immediate scroll-to-bottom (e.g. when sending a message). */
+  scrollToBottomRef?: (fn: () => void) => void
 }
 
 export const ChatView: Component<ChatViewProps> = (props) => {
@@ -73,6 +75,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
 
   let containerRef: HTMLDivElement | undefined
   let messageListRef: HTMLDivElement | undefined
+  let contentRef: HTMLDivElement | undefined
   const [atBottom, setAtBottom] = createSignal(true)
   let scrollAnimationId: number | null = null
   let autoScrollPending = false
@@ -87,7 +90,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   const checkAtBottom = () => {
     if (!messageListRef || scrollAnimationId !== null || autoScrollPending)
       return
-    setAtBottom(messageListRef.scrollHeight - messageListRef.scrollTop - messageListRef.clientHeight < 16)
+    setAtBottom(messageListRef.scrollHeight - messageListRef.scrollTop - messageListRef.clientHeight < 32)
   }
 
   const handleScroll = () => {
@@ -132,8 +135,16 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     }
   }
 
+  const forceScrollToBottom = () => {
+    cancelScrollAnimation()
+    if (messageListRef)
+      messageListRef.scrollTop = messageListRef.scrollHeight
+    setAtBottom(true)
+  }
+
   onMount(() => {
     props.scrollStateRef?.(getScrollState)
+    props.scrollToBottomRef?.(forceScrollToBottom)
   })
 
   const scrollToBottom = () => {
@@ -220,6 +231,27 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     })
   })
 
+  // Observe size changes on both the scroll container (editor/window resize)
+  // and the content wrapper (silent DOM mutations like expand/collapse).
+  onMount(() => {
+    const handleResize = () => {
+      if (!messageListRef || scrollAnimationId !== null || autoScrollPending)
+        return
+      if (atBottom()) {
+        messageListRef.scrollTop = messageListRef.scrollHeight
+      }
+      else {
+        checkAtBottom()
+      }
+    }
+    const observer = new ResizeObserver(handleResize)
+    if (messageListRef)
+      observer.observe(messageListRef)
+    if (contentRef)
+      observer.observe(contentRef)
+    onCleanup(() => observer.disconnect())
+  })
+
   return (
     <div ref={containerRef} class={styles.container} data-testid="chat-container">
       <div class={styles.messageListWrapper}>
@@ -235,29 +267,31 @@ export const ChatView: Component<ChatViewProps> = (props) => {
               </div>
             </Show>
             <div class={styles.messageListSpacer} />
-            <For each={props.messages}>
-              {msg => (
-                <div data-seq={msg.seq.toString()}>
-                  <MessageBubble
-                    message={msg}
-                    error={props.messageErrors?.[msg.id]}
-                    onRetry={() => props.onRetryMessage?.(msg.id)}
-                    onDelete={() => props.onDeleteMessage?.(msg.id)}
-                    workingDir={props.workingDir}
-                    homeDir={props.homeDir}
-                  />
+            <div ref={contentRef} class={styles.messageListContent}>
+              <For each={props.messages}>
+                {msg => (
+                  <div data-seq={msg.seq.toString()}>
+                    <MessageBubble
+                      message={msg}
+                      error={props.messageErrors?.[msg.id]}
+                      onRetry={() => props.onRetryMessage?.(msg.id)}
+                      onDelete={() => props.onDeleteMessage?.(msg.id)}
+                      workingDir={props.workingDir}
+                      homeDir={props.homeDir}
+                    />
+                  </div>
+                )}
+              </For>
+              <Show when={props.streamingText}>
+                <div class={assistantMessage}>
+                  {/* eslint-disable-next-line solid/no-innerhtml -- streaming text rendered via remark */}
+                  <div class={markdownContent} innerHTML={renderedStreamHtml()} />
                 </div>
-              )}
-            </For>
-            <Show when={props.streamingText}>
-              <div class={assistantMessage}>
-                {/* eslint-disable-next-line solid/no-innerhtml -- streaming text rendered via remark */}
-                <div class={markdownContent} innerHTML={renderedStreamHtml()} />
-              </div>
-            </Show>
-            <Show when={props.agentWorking && !props.streamingText}>
-              <ThinkingIndicator />
-            </Show>
+              </Show>
+              <Show when={props.agentWorking && !props.streamingText}>
+                <ThinkingIndicator />
+              </Show>
+            </div>
           </Show>
         </div>
         <Show when={!atBottom()}>
