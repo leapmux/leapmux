@@ -13,7 +13,6 @@ globalStyle(`${markdownContent} pre`, {
 // Shiki dual-theme support via CSS variables
 globalStyle(`${markdownContent} pre.shiki`, {
   color: 'var(--shiki-light)',
-  backgroundColor: 'var(--shiki-light-bg)',
 })
 
 globalStyle(`${markdownContent} pre.shiki span`, {
@@ -22,7 +21,6 @@ globalStyle(`${markdownContent} pre.shiki span`, {
 
 globalStyle(`html[data-theme="dark"] ${markdownContent} pre.shiki`, {
   color: 'var(--shiki-dark)',
-  backgroundColor: 'var(--shiki-dark-bg)',
 })
 
 globalStyle(`html[data-theme="dark"] ${markdownContent} pre.shiki span`, {
