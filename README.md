@@ -155,7 +155,10 @@ Get LeapMux running locally:
 git clone https://github.com/leapmux/leapmux.git
 cd leapmux
 
-# 2. Start all services (requires mprocs)
+# 2. Generate code (protobuf and sqlc — not checked into git)
+task generate
+
+# 3. Start all services (requires mprocs)
 task dev
 ```
 
@@ -365,7 +368,7 @@ leapmux/
 │   │   ├── api/            # ConnectRPC client setup
 │   │   ├── components/     # UI components (chat, terminal, filebrowser, shell, etc.)
 │   │   ├── context/        # Auth, Org, Workspace, and Preferences providers
-│   │   ├── generated/      # Generated TypeScript protobuf code
+│   │   ├── generated/      # Generated TypeScript protobuf code (gitignored)
 │   │   ├── hooks/          # Custom hooks
 │   │   ├── lib/            # Utility libraries
 │   │   ├── routes/         # Route definitions
@@ -375,7 +378,7 @@ leapmux/
 │   │   └── utils/          # Shared utility functions
 │   └── tests/              # Unit tests (Vitest) and E2E tests (Playwright)
 │
-├── generated/proto/        # Generated Go protobuf code
+├── generated/proto/        # Generated Go protobuf code (gitignored)
 │
 ├── hub/                    # Hub public API (thin wrapper)
 │   └── server.go           # NewServer(), Serve(), RegisterBackend(), etc.
@@ -388,10 +391,10 @@ leapmux/
 │   │   ├── auth/           # Session-based authentication
 │   │   ├── bootstrap/      # Database initialization and seeding
 │   │   ├── config/         # Hub configuration
-│   │   ├── db/             # Database migrations, queries, and sqlc-generated code
+│   │   ├── db/             # Database driver, migrations, and queries
 │   │   ├── email/          # Email sending
 │   │   ├── frontend/       # Frontend asset embedding and dev proxy
-│   │   ├── generated/      # sqlc-generated code
+│   │   ├── generated/      # sqlc-generated code (gitignored)
 │   │   ├── id/             # Unique ID generation
 │   │   ├── layout/         # Workspace tiling layout management
 │   │   ├── lexorank/       # LexoRank ordering for sections
@@ -399,6 +402,7 @@ leapmux/
 │   │   ├── notifier/       # Worker notification queue (persistent delivery with retries)
 │   │   ├── service/        # RPC service implementations
 │   │   ├── terminalmgr/    # Terminal session management
+│   │   ├── timeout/        # Timeout configuration
 │   │   ├── validate/       # Input validation
 │   │   └── workermgr/      # Worker connection registry and pending approvals
 │   │
@@ -470,7 +474,7 @@ task test-e2e
 
 When you modify Protocol Buffer definitions or SQL queries:
 1. Run `task generate-proto` for `.proto` changes, `task generate-sqlc` for `.sql` changes, or `task generate` for both
-2. Commit both the source changes and generated code
+2. Generated code is `.gitignore`'d and should not be committed — only commit the source changes
 3. Ensure tests still pass after regeneration
 
 ---
