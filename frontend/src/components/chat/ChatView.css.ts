@@ -201,7 +201,6 @@ export const settingsRadioItem = style({
   },
 })
 
-
 export const footerBarRight = style({
   display: 'flex',
   alignItems: 'center',
