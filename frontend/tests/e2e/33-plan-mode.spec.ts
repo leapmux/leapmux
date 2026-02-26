@@ -76,7 +76,7 @@ test.describe('Plan Mode', () => {
     await expect(approveBtn).toBeEnabled()
     await approveBtn.click()
 
-    // Verify dropdown switches back to Default
-    await expect(trigger).toContainText('Default')
+    // Verify dropdown switches to Accept Edits (plan approval sets acceptEdits mode)
+    await expect(trigger).toContainText('Accept Edits')
   })
 })

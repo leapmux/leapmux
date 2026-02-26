@@ -59,12 +59,23 @@ type AgentService struct {
 	lastAgentStatus sync.Map // agentID -> string: last status value ("" = null, non-empty = actual value)
 	gitStatus       sync.Map // agentID -> *leapmuxv1.AgentGitStatus: latest git status from worker
 	autoContinue    sync.Map // agentID -> *autoContinueState: pending auto-continue on API errors
+	planExecPending sync.Map // tool_use_id (string) -> *PlanExecConfig: pending ExitPlanMode plan executions
 }
 
 // RestartOptions controls behavior when an agent is restarted via the
 // AgentStopped → re-launch cycle (e.g. settings change or /clear).
 type RestartOptions struct {
-	ClearSession bool // when true, clear agent session ID before restart and broadcast context_cleared
+	ClearSession         bool   // when true, clear agent session ID before restart and broadcast context_cleared
+	SyntheticUserMessage string // hidden user message to send after restart (empty = none)
+	Notification         string // system notification to broadcast after restart (empty = none)
+}
+
+// PlanExecConfig holds pending plan execution state, set after an
+// ExitPlanMode approval to intercept the follow-up tool_result.
+type PlanExecConfig struct {
+	AgentID    string
+	TargetMode string
+	Done       chan struct{} // closed when tool_result is received; signals timeout goroutine to stop
 }
 
 // NewAgentService creates a new AgentService.

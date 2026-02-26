@@ -3,7 +3,7 @@ import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { getInnerMessageType, parseMessageContent } from '~/lib/messageParser'
 
 /** RESULT-role messages with these inner types are mid-turn notifications, not turn ends. */
-const NOTIFICATION_TYPES = new Set(['settings_changed', 'context_cleared'])
+const NOTIFICATION_TYPES = new Set(['settings_changed', 'context_cleared', 'plan_execution'])
 
 /**
  * Whether the agent is still working — the last meaningful (non-notification)

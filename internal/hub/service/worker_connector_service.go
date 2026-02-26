@@ -418,6 +418,22 @@ func (s *WorkerConnectorService) processWorkerMessage(
 							"type": "context_cleared",
 						})
 					}
+
+					// Broadcast plan execution notification.
+					if opts.Notification != "" {
+						s.agentSvc.broadcastNotification(bgCtx, agentID, map[string]interface{}{
+							"type":    "plan_execution",
+							"message": opts.Notification,
+						})
+					}
+
+					// Send synthetic user message after plan execution restart.
+					if opts.SyntheticUserMessage != "" {
+						if err := s.agentSvc.sendSyntheticUserMessage(bgCtx, agentID, opts.SyntheticUserMessage); err != nil {
+							slog.Error("send synthetic user message after plan restart",
+								"agent_id", agentID, "error", err)
+						}
+					}
 				}()
 			}
 		}

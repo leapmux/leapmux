@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"time"
 
 	"connectrpc.com/connect"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/msgcodec"
 )
 
 func (s *AgentService) SendControlResponse(
@@ -118,7 +121,24 @@ func (s *AgentService) SendControlResponse(
 				case "EnterPlanMode":
 					s.setAgentPermissionMode(ctx, agentID, "plan")
 				case "ExitPlanMode":
-					s.setAgentPermissionMode(ctx, agentID, "default")
+					// Determine target permission mode from control_response.
+					targetMode := "acceptEdits"
+					if explicitMode := extractPermissionMode(content); explicitMode != "" {
+						targetMode = explicitMode
+					}
+					s.setAgentPermissionMode(ctx, agentID, targetMode)
+
+					// Set up plan execution: forward approval, then intercept tool_result.
+					s.planModeToolUse.Delete(toolUseID)
+					config := &PlanExecConfig{
+						AgentID:    agentID,
+						TargetMode: targetMode,
+						Done:       make(chan struct{}),
+					}
+					s.planExecPending.Store(toolUseID, config)
+
+					// Timeout: if tool_result doesn't arrive, fall back.
+					go s.planExecTimeout(agentID, toolUseID, config)
 				}
 			}
 
@@ -428,4 +448,66 @@ func (s *AgentService) ConsumeRestartPending(agentID string) *RestartOptions {
 		return nil
 	}
 	return v.(*RestartOptions)
+}
+
+// extractPermissionMode parses the permissionMode field from a control_response
+// JSON envelope. Returns empty string if not present.
+func extractPermissionMode(content []byte) string {
+	var envelope struct {
+		PermissionMode string `json:"permissionMode"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		return ""
+	}
+	return envelope.PermissionMode
+}
+
+// planExecTimeout waits for the ExitPlanMode tool_result or a timeout. If the
+// tool_result doesn't arrive, it falls back to DB-persisted plan content or
+// the tracked plan file path.
+func (s *AgentService) planExecTimeout(agentID, toolUseID string, config *PlanExecConfig) {
+	select {
+	case <-config.Done:
+		return // tool_result received in time
+	case <-time.After(s.timeoutCfg.APITimeout()):
+		if _, ok := s.planExecPending.LoadAndDelete(toolUseID); !ok {
+			return // already consumed
+		}
+		slog.Warn("plan exec timeout: tool_result not received, falling back",
+			"agent_id", agentID, "tool_use_id", toolUseID)
+
+		ctx := context.Background()
+
+		// Fallback 1: DB-persisted compressed plan content.
+		agent, err := s.queries.GetAgentByID(ctx, agentID)
+		if err != nil {
+			slog.Error("plan exec timeout: get agent", "agent_id", agentID, "error", err)
+			return
+		}
+		var planContent string
+		if len(agent.PlanContent) > 0 {
+			if decompressed, err := msgcodec.Decompress(agent.PlanContent, agent.PlanContentCompression); err == nil {
+				planContent = string(decompressed)
+			}
+		}
+
+		// Fallback 2: Read plan file from disk.
+		if planContent == "" && agent.PlanFilePath != "" {
+			if data, err := os.ReadFile(agent.PlanFilePath); err == nil && len(data) > 0 {
+				planContent = string(data)
+			}
+		}
+
+		if planContent == "" {
+			slog.Warn("plan exec timeout: no plan content found, continuing with retained context",
+				"agent_id", agentID)
+			s.broadcastNotification(ctx, agentID, map[string]interface{}{
+				"type":    "plan_execution",
+				"message": "Executing plan with retained context",
+			})
+			return
+		}
+
+		s.initiatePlanExecRestart(ctx, agentID, planContent)
+	}
 }
