@@ -254,6 +254,9 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
   let microcompactPreTokens: number | undefined
   let microcompactTokensSaved: number | undefined
   const rateLimitByType: Record<string, Record<string, unknown>> = {}
+  // Track whether the most recent context-affecting event is compaction or context_cleared.
+  // true = compaction came last, false = context_cleared came last.
+  let lastContextEventIsCompaction = false
 
   for (const msg of messages) {
     if (!isObject(msg))
@@ -278,11 +281,14 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
             settingsParts.push(`${displayLabel(key)} (${displayValue(key, val.old)} → ${displayValue(key, val.new)})`)
         }
       }
-      if (m.contextCleared)
+      if (m.contextCleared) {
         contextCleared = true
+        lastContextEventIsCompaction = false
+      }
     }
     else if (t === 'context_cleared') {
       contextCleared = true
+      lastContextEventIsCompaction = false
     }
     else if (t === 'plan_execution') {
       if (m.context_cleared === true) {
@@ -298,9 +304,12 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
     }
     else if (t === 'system' && st === 'status') {
       compacting = m.status === 'compacting'
+      if (compacting)
+        lastContextEventIsCompaction = true
     }
     else if (t === 'system' && st === 'compact_boundary') {
       compacting = false
+      lastContextEventIsCompaction = true
       const meta = (isObject(m.compact_metadata) ? m.compact_metadata : m.compactMetadata) as Record<string, unknown> | undefined
       compactPreTokens = (typeof meta?.pre_tokens === 'number' ? meta.pre_tokens : meta?.preTokens) as number | undefined
       compactTokensSaved = (typeof meta?.tokens_saved === 'number' ? meta.tokens_saved : meta?.tokensSaved) as number | undefined
@@ -308,6 +317,7 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
     }
     else if (t === 'system' && st === 'microcompact_boundary') {
       compacting = false
+      lastContextEventIsCompaction = true
       const meta = (isObject(m.microcompactMetadata) ? m.microcompactMetadata : m.microcompact_metadata) as Record<string, unknown> | undefined
       microcompactPreTokens = (typeof meta?.preTokens === 'number' ? meta.preTokens : meta?.pre_tokens) as number | undefined
       microcompactTokensSaved = (typeof meta?.tokensSaved === 'number' ? meta.tokensSaved : meta?.tokens_saved) as number | undefined
@@ -315,7 +325,7 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
     }
   }
 
-  if (contextCleared && !planExecContextCleared)
+  if (contextCleared && !planExecContextCleared && !lastContextEventIsCompaction)
     settingsParts.push('Context cleared')
   if (interrupted)
     settingsParts.push('Interrupted')
@@ -328,8 +338,8 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
 
   const settingsLine = settingsParts.length > 0 ? settingsParts.join(', ') : null
 
-  // If context was cleared, compaction info is irrelevant (context is now empty).
-  const showCompaction = !contextCleared
+  // Show compaction when there's no context_cleared, or when compaction came after context_cleared.
+  const showCompaction = !contextCleared || lastContextEventIsCompaction
 
   const elements: JSXElement[] = []
 

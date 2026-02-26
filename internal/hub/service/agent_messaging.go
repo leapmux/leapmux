@@ -44,7 +44,10 @@ func (s *AgentService) softClearNotifThread(agentID string) {
 	mu.Lock()
 	defer mu.Unlock()
 	if ref, ok := s.lastNotifThread.Load(agentID); ok {
-		ref.(*notifThreadRef).softClear = time.Now()
+		threadRef := ref.(*notifThreadRef)
+		if threadRef.softClear.IsZero() {
+			threadRef.softClear = time.Now()
+		}
 	}
 }
 
@@ -913,7 +916,6 @@ func (s *AgentService) persistNotificationThreaded(ctx context.Context, agentID 
 		threadRef := ref.(*notifThreadRef)
 		if threadRef.softClear.IsZero() || time.Since(threadRef.softClear) < notifThreadGracePeriod {
 			if err := s.appendToNotificationThread(ctx, agentID, threadRef, role, contentJSON); err == nil {
-				threadRef.softClear = time.Time{} // revive
 				return nil
 			}
 			// Merge failed — fall through to standalone insert.
