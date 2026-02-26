@@ -18,9 +18,6 @@ async function waitForControlBanner(page: Page) {
 }
 
 test.describe('Control Request Draft Persistence', () => {
-  // LLM-dependent: the first test relies on the agent calling ExitPlanMode
-  test.describe.configure({ retries: 2 })
-
   test('ExitPlanMode draft survives page reload', async ({ page, authenticatedWorkspace }) => {
     // Trigger EnterPlanMode then ExitPlanMode (ExitPlanMode produces a control banner).
     await sendMessage(

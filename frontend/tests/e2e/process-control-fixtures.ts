@@ -105,6 +105,32 @@ export async function waitForWorkerOffline(hubUrl: string, adminToken: string, t
 }
 
 /**
+ * Ensure the worker is online, restarting it if needed.
+ * Lightweight when the worker is already online (single HTTP request).
+ */
+export async function ensureWorkerOnline(serverInfo: SeparateServerInfo) {
+  try {
+    const res = await fetch(`${serverInfo.hubUrl}/leapmux.v1.WorkerManagementService/ListWorkers`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${serverInfo.adminToken}`,
+      },
+      body: JSON.stringify({}),
+    })
+    if (res.ok) {
+      const data = await res.json() as { workers: Array<{ id: string, online: boolean }> }
+      if (data.workers.some(w => w.id === serverInfo.workerId && w.online))
+        return
+    }
+  }
+  catch {
+    // Hub might be unresponsive; fall through to restart
+  }
+  await restartWorker(serverInfo)
+}
+
+/**
  * Restart the worker process.
  */
 export async function restartWorker(serverInfo: SeparateServerInfo) {
@@ -177,7 +203,7 @@ export async function restartHub(serverInfo: SeparateServerInfo) {
     hubDataDir,
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'haiku' },
+    env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet' },
   })
 
   hubProc.stdout?.resume()
@@ -238,7 +264,7 @@ export const processTest = base.extend<
       hubDataDir,
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'haiku' },
+      env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet' },
     })
     hubProc.stdout?.resume()
     hubProc.stderr?.resume()
@@ -409,7 +435,7 @@ export const processTest = base.extend<
 
   // Workspace fixture — ensure worker is online before creating workspace
   workspace: async ({ separateHubWorker }, use) => {
-    await restartWorker(separateHubWorker)
+    await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(
       hubUrl,

@@ -1,8 +1,9 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, loginViaToken, waitForWorkspaceReady } from './helpers'
-import { expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
+import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Agent Session Resume', () => {
   test('should resume agent session after worker restart', async ({ separateHubWorker, page }) => {
+    await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Resume Test', adminOrgId)
     try {
@@ -55,6 +56,7 @@ test.describe('Agent Session Resume', () => {
   })
 
   test('should deliver control request after worker restart', async ({ separateHubWorker, page }) => {
+    await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Control Request Restart', adminOrgId)
     try {
@@ -100,6 +102,7 @@ test.describe('Agent Session Resume', () => {
   })
 
   test('should handle interrupt after worker restart', async ({ separateHubWorker, page }) => {
+    await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Interrupt Restart', adminOrgId)
     try {

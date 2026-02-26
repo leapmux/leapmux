@@ -40,11 +40,18 @@ func (c *Client) handleGitInfo(requestID string, req *leapmuxv1.GitInfoRequest) 
 }
 
 func (c *Client) handleGitWorktreeCreate(requestID string, req *leapmuxv1.GitWorktreeCreateRequest) {
+	slog.Info("creating worktree",
+		"repo_root", req.GetRepoRoot(), "worktree_path", req.GetWorktreePath(),
+		"branch_name", req.GetBranchName(), "start_point", req.GetStartPoint())
+
 	err := gitutil.CreateWorktree(req.GetRepoRoot(), req.GetWorktreePath(), req.GetBranchName(), req.GetStartPoint())
 	resp := &leapmuxv1.GitWorktreeCreateResponse{WorktreePath: req.GetWorktreePath()}
 
 	if err != nil {
+		slog.Warn("worktree creation failed", "worktree_path", req.GetWorktreePath(), "error", err)
 		resp.Error = err.Error()
+	} else {
+		slog.Info("worktree created successfully", "worktree_path", req.GetWorktreePath())
 	}
 
 	_ = c.Send(&leapmuxv1.ConnectRequest{
@@ -56,6 +63,10 @@ func (c *Client) handleGitWorktreeCreate(requestID string, req *leapmuxv1.GitWor
 }
 
 func (c *Client) handleGitWorktreeRemove(requestID string, req *leapmuxv1.GitWorktreeRemoveRequest) {
+	slog.Info("handling worktree remove request",
+		"worktree_path", req.GetWorktreePath(), "check_only", req.GetCheckOnly(),
+		"force", req.GetForce(), "branch_name", req.GetBranchName())
+
 	resp := &leapmuxv1.GitWorktreeRemoveResponse{WorktreePath: req.GetWorktreePath()}
 
 	if req.GetCheckOnly() {
@@ -82,9 +93,15 @@ func (c *Client) handleGitWorktreeRemove(requestID string, req *leapmuxv1.GitWor
 			} else if !info.IsGitRepo {
 				resp.Error = "not a git repository"
 			} else {
+				slog.Info("removing worktree",
+					"repo_root", info.RepoRoot, "worktree_path", req.GetWorktreePath())
 				if err := gitutil.RemoveWorktree(info.RepoRoot, req.GetWorktreePath()); err != nil {
+					slog.Warn("worktree removal failed",
+						"worktree_path", req.GetWorktreePath(), "error", err)
 					resp.Error = err.Error()
 				} else {
+					slog.Info("worktree removed successfully",
+						"worktree_path", req.GetWorktreePath())
 					resp.IsClean = clean
 					// Best-effort: delete the branch if it's no longer in use.
 					branchName := req.GetBranchName()
@@ -93,9 +110,15 @@ func (c *Client) handleGitWorktreeRemove(requestID string, req *leapmuxv1.GitWor
 						if err != nil {
 							slog.Warn("failed to check if branch is in use", "branch", branchName, "error", err)
 						} else if !inUse {
+							slog.Info("deleting branch after worktree removal",
+								"branch", branchName, "repo_root", info.RepoRoot)
 							if err := gitutil.DeleteBranch(info.RepoRoot, branchName); err != nil {
 								slog.Warn("failed to delete branch after worktree removal", "branch", branchName, "error", err)
+							} else {
+								slog.Info("branch deleted successfully", "branch", branchName)
 							}
+						} else {
+							slog.Info("branch still in use, not deleting", "branch", branchName)
 						}
 					}
 				}

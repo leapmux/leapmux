@@ -28,9 +28,6 @@ async function allowToolExecutionIfNeeded(page: Page) {
 }
 
 test.describe('ANSI Escape Sequence Rendering', () => {
-  // LLM-dependent: the agent may not reliably call the Bash tool as instructed
-  test.describe.configure({ retries: 2 })
-
   test('should render ANSI colored output from Bash tool as styled HTML', async ({ page, authenticatedWorkspace }) => {
     // Ask Claude to run `ls --color=always /` which produces ANSI colored output.
     // Directories and symlinks get colored by ls, and --color=always forces

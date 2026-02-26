@@ -97,7 +97,12 @@ func (s *GitService) CheckWorktreeStatus(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("tab_id is required"))
 	}
 
+	slog.Info("checking worktree status for tab", "tab_type", tabType, "tab_id", tabID)
 	result := s.worktreeHelper.CheckTabWorktreeStatus(ctx, tabType, tabID)
+	slog.Info("worktree status check complete",
+		"tab_id", tabID, "has_worktree", result.HasWorktree,
+		"is_last_tab", result.IsLastTab, "is_dirty", result.IsDirty,
+		"worktree_path", result.WorktreePath, "branch_name", result.BranchName)
 
 	return connect.NewResponse(&leapmuxv1.CheckWorktreeStatusResponse{
 		HasWorktree:  result.HasWorktree,
@@ -123,6 +128,7 @@ func (s *GitService) ForceRemoveWorktree(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worktree_id is required"))
 	}
 
+	slog.Info("force-removing worktree", "worktree_id", worktreeID)
 	wt, err := s.queries.GetWorktreeByID(ctx, worktreeID)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -130,6 +136,10 @@ func (s *GitService) ForceRemoveWorktree(
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+
+	slog.Info("force-removing worktree: deleting DB record",
+		"worktree_id", worktreeID, "worktree_path", wt.WorktreePath,
+		"branch_name", wt.BranchName, "worker_id", wt.WorkerID)
 
 	// Delete DB record first — this is the authoritative state.
 	if err := s.queries.DeleteWorktree(ctx, worktreeID); err != nil {
@@ -140,6 +150,8 @@ func (s *GitService) ForceRemoveWorktree(
 	// Worktree deletion is best-effort; the caller shouldn't wait for it.
 	conn := s.workerMgr.Get(wt.WorkerID)
 	if conn != nil {
+		slog.Info("force-removing worktree: sending removal to worker",
+			"worktree_id", worktreeID, "worker_id", wt.WorkerID)
 		go func() {
 			if err := conn.Send(&leapmuxv1.ConnectResponse{
 				Payload: &leapmuxv1.ConnectResponse_GitWorktreeRemove{
@@ -174,6 +186,7 @@ func (s *GitService) KeepWorktree(
 	}
 
 	// Just delete the DB record — leave the worktree on disk.
+	slog.Info("keeping worktree: deleting DB record only", "worktree_id", worktreeID)
 	if err := s.queries.DeleteWorktree(ctx, worktreeID); err != nil {
 		if err == sql.ErrNoRows {
 			// Already gone, that's fine.

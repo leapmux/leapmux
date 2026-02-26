@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, loginViaToken, waitForWorkspaceReady } from './helpers'
-import { expect, stopWorker, processTest as test } from './process-control-fixtures'
+import { ensureWorkerOnline, expect, stopWorker, processTest as test } from './process-control-fixtures'
 
 /** Read terminal text content from the active xterm's buffer. */
 async function getTerminalText(page: Page): Promise<string> {
@@ -22,6 +22,7 @@ async function getTerminalText(page: Page): Promise<string> {
 
 test.describe('Terminal Disconnection', () => {
   test('should mark terminal as disconnected when worker stops', async ({ separateHubWorker, page }) => {
+    await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Terminal Disconnect Test', adminOrgId)
     try {

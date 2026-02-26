@@ -1,12 +1,9 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, loginViaToken, waitForWorkspaceReady } from './helpers'
-import { expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
+import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Worker Restart Thinking Indicator', () => {
-  // Infrastructure-dependent: timing between agent processing and worker stop
-  // can vary under heavy load when 4 parallel workers share system resources.
-  test.describe.configure({ retries: 1 })
-
   test('should hide thinking indicator when worker goes offline during agent turn', async ({ separateHubWorker, page }) => {
+    await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Thinking Indicator Test', adminOrgId)
     try {
@@ -47,6 +44,7 @@ test.describe('Worker Restart Thinking Indicator', () => {
   })
 
   test('should resume agent after worker restart and new message', async ({ separateHubWorker, page }) => {
+    await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Agent Resume Test', adminOrgId)
     try {

@@ -18,9 +18,6 @@ async function waitForControlBanner(page: Page) {
 }
 
 test.describe('Plan Mode', () => {
-  // LLM-dependent: the agent may not reliably call EnterPlanMode/ExitPlanMode
-  test.describe.configure({ retries: 2 })
-
   test('enter plan mode, reject exit, then approve exit', async ({ page, authenticatedWorkspace }) => {
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     await expect(trigger).toBeVisible()
@@ -57,17 +54,24 @@ test.describe('Plan Mode', () => {
     // Wait for the control banner to disappear (rejection was processed)
     await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
 
-    // Wait for the agent to finish its turn after the rejection
-    // (it may respond with text before we can send the next message)
-    await page.waitForTimeout(5_000)
+    // Wait for the agent to finish its turn after the rejection.
+    // Brief delay to let the agent's resumed turn become visible,
+    // then wait for the thinking indicator to disappear.
+    await page.waitForTimeout(1000)
+    await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible({ timeout: 60_000 })
 
-    // ── Step 3: Ask agent to exit plan mode again ──
-    await sendMessage(
-      page,
-      'Exit plan mode now by calling ExitPlanMode. Keep the plan empty.',
-    )
+    // ── Step 3: Get to ExitPlanMode banner ──
+    // The agent might call ExitPlanMode again on its own after rejection
+    // (e.g. after writing a plan file), or we may need to ask it explicitly.
+    const bannerAlreadyVisible = await page.locator('[data-testid="control-banner"]').isVisible()
+    if (!bannerAlreadyVisible) {
+      await sendMessage(
+        page,
+        'Exit plan mode now by calling ExitPlanMode. Keep the plan empty.',
+      )
+    }
 
-    // Wait for the next ExitPlanMode control_request
+    // Wait for the ExitPlanMode control_request
     const exitBanner2 = await waitForControlBanner(page)
     await expect(exitBanner2.getByText('Plan Ready for Review')).toBeVisible()
 

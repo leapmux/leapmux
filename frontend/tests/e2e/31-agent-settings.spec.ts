@@ -28,9 +28,9 @@ test.describe('Agent Settings', () => {
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     await expect(trigger).toBeVisible()
 
-    // Default: Haiku model (overridden via LEAPMUX_DEFAULT_MODEL in e2e), Default permission mode
+    // Default: Sonnet model (overridden via LEAPMUX_DEFAULT_MODEL in e2e), Default permission mode
     const text = await getTriggerText(page)
-    expect(text).toContain('Haiku')
+    expect(text).toContain('Sonnet')
     expect(text).toContain('Default')
   })
 
@@ -66,10 +66,10 @@ test.describe('Agent Settings', () => {
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     await expect(trigger).toBeVisible()
 
-    // Change model to Sonnet (default is Haiku, dropdown auto-closes on select)
+    // Change model to Haiku (default is Sonnet, dropdown auto-closes on select)
     await openSettingsMenu(page)
-    await page.locator('[data-testid="model-sonnet"]').click()
-    await expect(trigger).toContainText('Sonnet')
+    await page.locator('[data-testid="model-haiku"]').click()
+    await expect(trigger).toContainText('Haiku')
   })
 
   test('switch effort', async ({ authenticatedWorkspace, page }) => {
@@ -114,10 +114,10 @@ test.describe('Agent Settings', () => {
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     await expect(trigger).toBeVisible()
 
-    // Change model to Sonnet (default is Haiku, dropdown auto-closes on select)
+    // Change model to Haiku (default is Sonnet, dropdown auto-closes on select)
     await openSettingsMenu(page)
-    await page.locator('[data-testid="model-sonnet"]').click()
-    await expect(trigger).toContainText('Sonnet')
+    await page.locator('[data-testid="model-haiku"]').click()
+    await expect(trigger).toContainText('Haiku')
 
     // Wait for restart to complete
     await page.waitForTimeout(5000)
@@ -125,10 +125,10 @@ test.describe('Agent Settings', () => {
     // Refresh the page
     await page.reload()
 
-    // Verify Sonnet is still selected after refresh
+    // Verify Haiku is still selected after refresh
     const triggerAfter = page.locator('[data-testid="agent-settings-trigger"]')
     await expect(triggerAfter).toBeVisible()
-    await expect(triggerAfter).toContainText('Sonnet')
+    await expect(triggerAfter).toContainText('Haiku')
   })
 
   test('focus returns to editor after mode change', async ({ authenticatedWorkspace, page }) => {
@@ -256,13 +256,13 @@ test.describe('Agent Settings', () => {
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     await expect(trigger).toBeVisible()
 
-    // Change model to Sonnet (default is Haiku) — should produce a notification
+    // Change model to Haiku (default is Sonnet) — should produce a notification
     await openSettingsMenu(page)
-    await page.locator('[data-testid="model-sonnet"]').click()
-    await expect(trigger).toContainText('Sonnet')
+    await page.locator('[data-testid="model-haiku"]').click()
+    await expect(trigger).toContainText('Haiku')
 
     // Verify the notification bubble appears in chat
-    await expect(page.getByText('Model (Haiku \u2192 Sonnet)')).toBeVisible()
+    await expect(page.getByText('Model (Sonnet \u2192 Haiku)')).toBeVisible()
   })
 
   test('permission mode change notification appears in chat', async ({ authenticatedWorkspace, page }) => {
@@ -282,9 +282,9 @@ test.describe('Agent Settings', () => {
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     await expect(trigger).toBeVisible()
 
-    // Change model to Sonnet (default is Haiku) — trigger should show spinner briefly
+    // Change model to Haiku (default is Sonnet) — trigger should show spinner briefly
     await openSettingsMenu(page)
-    await page.locator('[data-testid="model-sonnet"]').click()
+    await page.locator('[data-testid="model-haiku"]').click()
 
     // The trigger should show a loading spinner
     const loadingSpinner = page.locator('[data-testid="settings-loading-spinner"]')
@@ -292,6 +292,6 @@ test.describe('Agent Settings', () => {
 
     // Eventually the spinner disappears after statusChange arrives
     await expect(loadingSpinner).not.toBeVisible()
-    await expect(trigger).toContainText('Sonnet')
+    await expect(trigger).toContainText('Haiku')
   })
 })
