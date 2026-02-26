@@ -15,7 +15,7 @@ export const X_TOLERANCE = 4
  * When the cursor is in this gap, we still attribute it to the nearest section
  * rather than letting the sidebar zone win the distance comparison.
  */
-export const INTER_SECTION_GAP = 8
+export const INTER_SECTION_GAP = 2
 
 /** Extra buffer above/below the header for proximity activation. */
 export const PROXIMITY_BUFFER = Math.round(headerHeightPx / 2)

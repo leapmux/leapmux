@@ -28,14 +28,17 @@ export const tileResizeHandle = style({
   borderRadius: 0,
   position: 'relative',
   flexShrink: 0,
+  zIndex: 5,
   selectors: {
     '&[data-direction="horizontal"]': {
-      width: '6px',
+      width: '4px',
       cursor: 'col-resize',
+      margin: '0 -2px',
     },
     '&[data-direction="vertical"]': {
-      height: '6px',
+      height: '4px',
       cursor: 'row-resize',
+      margin: '-2px 0',
     },
     '&::before': {
       content: '""',
@@ -57,11 +60,21 @@ export const tileResizeHandle = style({
       height: '1px',
       transform: 'translateY(-50%)',
     },
-    '&:hover::before': {
-      background: 'var(--primary)',
+    '&[data-direction="horizontal"]:hover::before': {
+      background: 'var(--border)',
+      width: '4px',
     },
-    '&:active::before': {
+    '&[data-direction="vertical"]:hover::before': {
+      background: 'var(--border)',
+      height: '4px',
+    },
+    '&[data-direction="horizontal"]:active::before': {
       background: 'var(--primary)',
+      width: '1px',
+    },
+    '&[data-direction="vertical"]:active::before': {
+      background: 'var(--primary)',
+      height: '1px',
     },
   },
 })

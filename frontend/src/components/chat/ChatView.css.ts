@@ -2,25 +2,32 @@ import { style } from '@vanilla-extract/css'
 import { spacing } from '~/styles/tokens'
 
 export const editorResizeHandle = style({
-  height: '8px',
+  height: '4px',
   flexShrink: 0,
   cursor: 'row-resize',
   position: 'relative',
   userSelect: 'none',
+  margin: '-2px 0',
+  zIndex: 5,
   selectors: {
     '&::before': {
       content: '""',
       position: 'absolute',
-      left: '0',
-      right: '0',
+      left: 0,
+      right: 0,
       top: '50%',
-      height: '1px',
+      height: '2px',
       transform: 'translateY(-50%)',
       background: 'transparent',
       transition: 'background 0.15s',
     },
     '&:hover::before': {
       background: 'var(--border)',
+      height: '4px',
+    },
+    '&:active::before': {
+      background: 'var(--primary)',
+      height: '1px',
     },
   },
 })
@@ -29,6 +36,7 @@ export const editorResizeHandleActive = style({
   selectors: {
     '&::before': {
       background: 'var(--primary) !important',
+      height: '1px !important',
     },
   },
 })

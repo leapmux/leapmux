@@ -669,13 +669,15 @@ test.describe('Section Reorder & Move', () => {
       const handleCount = await handles.count()
       expect(handleCount).toBe(1)
 
-      // The resize handle should be between Files bottom and Archived top
+      // The resize handle takes 0 layout space (negative margins) but its
+      // center should be at the boundary between Files and Archived.
       const filesBox = (await filesSection.boundingBox())!
       const archivedBox = (await archivedSection.boundingBox())!
       const handleBox = (await handles.first().boundingBox())!
+      const handleCenter = handleBox.y + handleBox.height / 2
 
-      expect(handleBox.y).toBeGreaterThanOrEqual(filesBox.y + filesBox.height - 1)
-      expect(handleBox.y + handleBox.height).toBeLessThanOrEqual(archivedBox.y + 1)
+      expect(handleCenter).toBeGreaterThanOrEqual(filesBox.y + filesBox.height - 1)
+      expect(handleCenter).toBeLessThanOrEqual(archivedBox.y + 1)
     }
   })
 })

@@ -88,47 +88,43 @@ describe('findClosestSectionDroppable', () => {
   })
 
   describe('gap containment', () => {
-    // Two sections with an 8px gap between them (resize handle).
+    // Two sections with a ~1px gap between them (borderTop only,
+    // since the resize handle now takes 0 layout space).
     const sA = section('a', 0, 200, 0, 200)
-    const sB = section('b', 208, 408, 0, 200)
-    const sideZone = zone('left', 0, 408)
+    const sB = section('b', 201, 401, 0, 200)
+    const sideZone = zone('left', 0, 401)
 
-    it('should prefer the nearest section edge in the inter-section gap', () => {
-      // Cursor at y=202, which is 2px below A's bottom edge
-      const result = findClosestSectionDroppable(dragId, [sA, sB, sideZone], { x: 100, y: 202 })
-      expect(String(result!.id)).toBe(`${SECTION_DRAG_PREFIX}a`)
-    })
-
-    it('should prefer the closer section when cursor is in the middle of the gap', () => {
-      // Cursor at y=204 (midpoint of gap: 200..208)
-      const result = findClosestSectionDroppable(dragId, [sA, sB, sideZone], { x: 100, y: 204 })
-      // Both are 4px away; last one wins in tie → B
-      expect(String(result!.id)).toMatch(/^sidebar-section:/)
-    })
-
-    it('should prefer section B when cursor is closer to B top', () => {
-      // Cursor at y=206, 6px from A bottom, 2px from B top
-      const result = findClosestSectionDroppable(dragId, [sA, sB, sideZone], { x: 100, y: 206 })
+    it('should prefer the nearest section edge when cursor is at boundary', () => {
+      // Cursor at y=201, which is 1px below A's bottom edge and on B's top edge
+      // Exact containment for B fires (201 >= 201), so B wins
+      const result = findClosestSectionDroppable(dragId, [sA, sB, sideZone], { x: 100, y: 201 })
       expect(String(result!.id)).toBe(`${SECTION_DRAG_PREFIX}b`)
     })
 
-    it('should win over zone even when zone center is closer', () => {
-      // The zone center is at y=204, exactly where the gap is.
-      // Without gap containment, the zone would win the distance comparison.
-      const result = findClosestSectionDroppable(dragId, [sA, sB, sideZone], { x: 100, y: 204 })
+    it('should prefer section A when cursor is just below A bottom', () => {
+      // Cursor at y=200.5 — outside A (200) and outside B (201).
+      // Gap containment: edgeDist to A = 0.5, edgeDist to B = 0.5
+      // Both within INTER_SECTION_GAP (2), A checked first so A wins (lower edgeDist tie)
+      const result = findClosestSectionDroppable(dragId, [sA, sB, sideZone], { x: 100, y: 200 })
+      expect(String(result!.id)).toBe(`${SECTION_DRAG_PREFIX}a`)
+    })
+
+    it('should win over zone when cursor is at boundary', () => {
+      // Without gap containment, the zone might win the distance comparison.
+      const result = findClosestSectionDroppable(dragId, [sA, sB, sideZone], { x: 100, y: 200 })
       expect(String(result!.id)).not.toContain(SIDEBAR_ZONE_PREFIX)
     })
 
     it('should require cursor to be within X bounds (+ tolerance)', () => {
       // Cursor is outside the section X bounds by more than X_TOLERANCE
-      const result = findClosestSectionDroppable(dragId, [sA, sB, sideZone], { x: 200 + X_TOLERANCE + 1, y: 204 })
+      const result = findClosestSectionDroppable(dragId, [sA, sB, sideZone], { x: 200 + X_TOLERANCE + 1, y: 200 })
       // Gap check fails, falls to distance comparison
       expect(String(result!.id)).not.toBe(`${SECTION_DRAG_PREFIX}a`)
     })
 
     it('should allow cursor on the sidebar resize handle (within X tolerance)', () => {
       // Cursor is just outside X bounds but within tolerance
-      const result = findClosestSectionDroppable(dragId, [sA, sB, sideZone], { x: 200 + X_TOLERANCE, y: 202 })
+      const result = findClosestSectionDroppable(dragId, [sA, sB, sideZone], { x: 200 + X_TOLERANCE, y: 200 })
       expect(String(result!.id)).toBe(`${SECTION_DRAG_PREFIX}a`)
     })
   })

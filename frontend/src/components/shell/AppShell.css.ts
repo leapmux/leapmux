@@ -17,18 +17,36 @@ export const sidebar = style({
 })
 
 export const resizeHandle = style({
-  'all': 'unset',
-  'boxSizing': 'border-box',
-  'width': '4px',
-  'background': 'transparent',
-  'borderRadius': 0,
-  'position': 'relative',
-  'flexShrink': 0,
-  ':hover': {
-    background: 'var(--secondary)',
-  },
-  ':active': {
-    background: 'var(--secondary)',
+  all: 'unset',
+  boxSizing: 'border-box',
+  width: '4px',
+  background: 'transparent',
+  borderRadius: 0,
+  position: 'relative',
+  flexShrink: 0,
+  margin: '0 -2px',
+  zIndex: 5,
+  cursor: 'col-resize',
+  selectors: {
+    '&::before': {
+      content: '""',
+      position: 'absolute',
+      top: 0,
+      bottom: 0,
+      left: '50%',
+      width: '2px',
+      transform: 'translateX(-50%)',
+      background: 'transparent',
+      transition: 'background 0.15s',
+    },
+    '&:hover::before': {
+      background: 'var(--border)',
+      width: '4px',
+    },
+    '&:active::before': {
+      background: 'var(--primary)',
+      width: '1px',
+    },
   },
 })
 

@@ -1,5 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { headerHeight, spacing } from '~/styles/tokens'
+import { headerHeightPx, spacing } from '~/styles/tokens'
 
 export const tooltipTrigger = style({
   display: 'inline-flex',
@@ -12,7 +12,7 @@ export const tabBar = style({
   padding: `0 ${spacing.sm}`,
   backgroundColor: 'var(--background)',
   flexShrink: 0,
-  minHeight: headerHeight,
+  minHeight: `${headerHeightPx - 1}px`,
 })
 
 export const tabList = style({
