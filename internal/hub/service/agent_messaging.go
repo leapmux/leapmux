@@ -1113,6 +1113,18 @@ func (s *AgentService) clearAgentContext(ctx context.Context, agent *db.Agent, w
 	})
 }
 
+// buildPlanExecMessage constructs the synthetic user message sent to the agent
+// after a context-clearing restart for plan execution. It includes the plan
+// file path (when available) so the agent can re-read the plan if its context
+// is later compressed.
+func buildPlanExecMessage(planFilePath, planContent string) string {
+	msg := "Execute the following plan:\n\n---\n\n" + planContent
+	if planFilePath != "" {
+		msg += "\n\n---\n\nThe above plan has been written to " + planFilePath + " — re-read it if needed."
+	}
+	return msg
+}
+
 // clearAgentContextForPlanExecution clears the agent's context and queues a
 // synthetic user message containing the plan content to be sent after restart.
 func (s *AgentService) clearAgentContextForPlanExecution(ctx context.Context, agent *db.Agent, ws *db.Workspace, planContent string) {
@@ -1121,7 +1133,7 @@ func (s *AgentService) clearAgentContextForPlanExecution(ctx context.Context, ag
 
 	opts := &RestartOptions{
 		ClearSession:         true,
-		SyntheticUserMessage: "Execute the following plan:\n\n---\n\n" + planContent,
+		SyntheticUserMessage: buildPlanExecMessage(agent.PlanFilePath, planContent),
 		PlanExec:             true,
 		PlanFilePath:         agent.PlanFilePath,
 	}
