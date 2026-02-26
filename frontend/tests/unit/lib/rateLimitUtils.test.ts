@@ -151,6 +151,11 @@ describe('formatRateLimitMessage', () => {
     expect(msg).toContain('5-hour')
   })
 
+  it('includes raw type in parentheses for unknown types', () => {
+    const msg = formatRateLimitMessage({ rateLimitType: 'unknown_type', utilization: 0.5 })
+    expect(msg).toMatch(/^Rate limit \(unknown_type\):/)
+  })
+
   it('includes utilization as percentage', () => {
     const msg = formatRateLimitMessage({ utilization: 0.82 })
     expect(msg).toContain('82% used')
