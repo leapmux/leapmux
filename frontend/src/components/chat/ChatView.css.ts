@@ -40,6 +40,12 @@ export const messageListSpacer = style({
   flex: 1,
 })
 
+export const messageListContent = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: spacing.md,
+})
+
 export const messageList = style({
   flex: 1,
   overflowX: 'hidden',

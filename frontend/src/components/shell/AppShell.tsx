@@ -393,6 +393,9 @@ export const AppShell: ParentComponent = (props) => {
   // Ref for retrieving the first visible message seq from ChatView (for viewport save on tab switch).
   let getScrollState: (() => { distFromBottom: number, atBottom: boolean } | undefined) | undefined
 
+  // Ref for forcing a scroll-to-bottom in ChatView (e.g. on send message / control response).
+  let forceScrollToBottom: (() => void) | undefined
+
   // Container height for the center panel (used for max editor height calculation)
   const [centerPanelHeight, setCenterPanelHeight] = createSignal(0)
 
@@ -707,6 +710,7 @@ export const AppShell: ParentComponent = (props) => {
 
   // Handle control responses (permission grant/deny) for agent prompts
   const handleControlResponse = async (agentId: string, content: Uint8Array) => {
+    forceScrollToBottom?.()
     try {
       const agent = agentStore.state.agents.find(a => a.id === agentId)
       const isActive = agent?.status === AgentStatus.ACTIVE
@@ -1245,6 +1249,7 @@ export const AppShell: ParentComponent = (props) => {
                     savedViewportScroll={chatStore.getSavedViewportScroll(agentId)}
                     onClearSavedViewportScroll={() => chatStore.clearSavedViewportScroll(agentId)}
                     scrollStateRef={(fn) => { getScrollState = fn }}
+                    scrollToBottomRef={(fn) => { forceScrollToBottom = fn }}
                   />
                 </Show>
               </div>
@@ -1304,6 +1309,7 @@ export const AppShell: ParentComponent = (props) => {
           const id = focusedAgentId()
           if (!id)
             return
+          forceScrollToBottom?.()
           try {
             const sendAgent = agentStore.state.agents.find(a => a.id === id)
             await agentClient.sendAgentMessage({ agentId: id, content }, agentCallTimeout(sendAgent?.status === AgentStatus.ACTIVE))
