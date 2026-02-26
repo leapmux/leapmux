@@ -1,6 +1,6 @@
 import type { HighlighterCore } from 'shiki/core'
 import type { Setter } from 'solid-js'
-import { Plugin, PluginKey, TextSelection } from '@milkdown/prose/state'
+import { Plugin, PluginKey } from '@milkdown/prose/state'
 import { Decoration, DecorationSet } from '@milkdown/prose/view'
 import { $prose } from '@milkdown/utils'
 
@@ -179,29 +179,6 @@ export function createCodeLangPlugin(handlers: CodeLangHandlers) {
                   })
                   return span
                 }, { side: -1, key: `lang-${pos}-${lang}` }),
-              )
-              // "+" area after code block to insert a paragraph
-              decorations.push(
-                Decoration.widget(pos + node.nodeSize, (_view, getPos) => {
-                  const div = document.createElement('div')
-                  div.className = 'code-block-add-para'
-                  div.setAttribute('contenteditable', 'false')
-                  div.textContent = '+'
-                  div.addEventListener('mousedown', (e) => {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    const insertPos = getPos()
-                    if (insertPos == null)
-                      return
-                    const { state: currentState } = _view
-                    const para = currentState.schema.nodes.paragraph.create()
-                    const tr = currentState.tr.insert(insertPos, para)
-                    tr.setSelection(TextSelection.create(tr.doc, insertPos + 1))
-                    _view.dispatch(tr)
-                    _view.focus()
-                  })
-                  return div
-                }, { side: -1, key: `add-para-${pos}`, stopEvent: () => true }),
               )
             }
           })
