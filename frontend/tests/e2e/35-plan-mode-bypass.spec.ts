@@ -23,9 +23,6 @@ async function waitForSettingsIdle(page: Page) {
 }
 
 test.describe('Plan Mode - Bypass Permissions', () => {
-  // LLM-dependent: the agent may not reliably call EnterPlanMode/ExitPlanMode
-  test.describe.configure({ retries: 2 })
-
   test('bypass permissions from ExitPlanMode banner', async ({ page, authenticatedWorkspace }) => {
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     await expect(trigger).toBeVisible()

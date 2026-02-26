@@ -870,13 +870,12 @@ test.describe('Worktree Support', () => {
     await expect(page.getByRole('heading', { name: 'Dirty Worktree' })).not.toBeVisible()
     await expect(agentTab).not.toBeVisible({ timeout: 5000 })
 
-    // Worktree should be removed from disk
+    // Worktree directory and branch are deleted in the background by
+    // the worker after ForceRemoveWorktree returns, so poll for completion.
     await expect(async () => {
       expect(existsSync(worktreeDir)).toBe(false)
-    }).toPass({ timeout: 5000 })
-
-    // Branch should also be deleted
-    expect(branchExists(repoDir, 'dialog-branch')).toBe(false)
+      expect(branchExists(repoDir, 'dialog-branch')).toBe(false)
+    }).toPass({ timeout: 10_000 })
   })
 
   test('dirty worktree confirmation dialog: keep closes tab but preserves worktree', async ({

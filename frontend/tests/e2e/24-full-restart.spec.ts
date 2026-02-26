@@ -1,12 +1,9 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, loginViaToken, waitForWorkspaceReady } from './helpers'
-import { expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
+import { ensureWorkerOnline, expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Full Hub+Worker Restart', () => {
-  // Infrastructure-dependent: timing between agent processing and shutdown
-  // can vary under heavy load when parallel workers share system resources.
-  test.describe.configure({ retries: 1 })
-
   test('should preserve chat history after hub and worker restart', async ({ separateHubWorker, page }) => {
+    await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Full Restart Test', adminOrgId)
     try {
@@ -123,6 +120,7 @@ test.describe('Full Hub+Worker Restart', () => {
   })
 
   test('should not show thinking indicator after full restart during active turn', async ({ separateHubWorker, page }) => {
+    await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Restart Thinking Test', adminOrgId)
     try {

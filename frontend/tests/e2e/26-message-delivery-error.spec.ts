@@ -1,10 +1,9 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, loginViaToken, loginViaUI, waitForWorkspaceReady } from './helpers'
-import { expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
+import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Message Delivery Error', () => {
   test('should show delivery error when worker is offline and retry on reconnect', async ({ separateHubWorker, page }) => {
-    // Previous test file may have stopped the worker without restarting
-    await restartWorker(separateHubWorker)
+    await ensureWorkerOnline(separateHubWorker)
 
     const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Delivery Error Test', adminOrgId)
@@ -67,6 +66,7 @@ test.describe('Message Delivery Error', () => {
   })
 
   test('should persist delivery error across page refresh', async ({ separateHubWorker, page }) => {
+    await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Persist Error Test', adminOrgId)
     try {
@@ -118,8 +118,7 @@ test.describe('Message Delivery Error', () => {
   })
 
   test('should delete failed message', async ({ separateHubWorker, page }) => {
-    // Previous test may have stopped the worker without restarting
-    await restartWorker(separateHubWorker)
+    await ensureWorkerOnline(separateHubWorker)
 
     const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Delete Error Test', adminOrgId)

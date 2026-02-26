@@ -1,10 +1,9 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, loginViaToken, waitForWorkspaceReady } from './helpers'
-import { expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
+import { ensureWorkerOnline, expect, restartHub, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Settings and /clear without Worker', () => {
   test('should handle /clear and settings changes without worker', async ({ separateHubWorker, page }) => {
-    // Previous test file may have stopped the worker without restarting
-    await restartWorker(separateHubWorker)
+    await ensureWorkerOnline(separateHubWorker)
 
     const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'No Worker Settings Test', adminOrgId)
@@ -92,11 +91,11 @@ test.describe('Settings and /clear without Worker', () => {
       await waitForNotification('Mode (Default \u2192 Plan Mode)')
       await waitForSettingsIdle()
 
-      // Step 5: Change model (Haiku → Sonnet)
+      // Step 5: Change model (Sonnet → Haiku)
       await openSettingsMenu()
-      await page.locator('[data-testid="model-sonnet"]').click()
+      await page.locator('[data-testid="model-haiku"]').click()
 
-      await waitForNotification('Model (Haiku \u2192 Sonnet)')
+      await waitForNotification('Model (Sonnet \u2192 Haiku)')
       await waitForSettingsIdle()
 
       // Step 6: Change effort (High → Medium)

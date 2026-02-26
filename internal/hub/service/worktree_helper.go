@@ -48,6 +48,9 @@ func (h *WorktreeHelper) CreateWorktreeIfRequested(
 		return workingDir, "", nil
 	}
 
+	slog.Info("creating worktree requested",
+		"worker_id", workerID, "working_dir", workingDir, "branch_name", branchName)
+
 	if err := ValidateBranchName(branchName); err != nil {
 		return "", "", fmt.Errorf("invalid branch name: %w", err)
 	}
@@ -105,6 +108,8 @@ func (h *WorktreeHelper) CreateWorktreeIfRequested(
 	})
 	if err == nil {
 		// Reuse existing worktree record.
+		slog.Info("reusing existing worktree",
+			"worktree_id", existing.ID, "worktree_path", worktreePath)
 		return worktreePath, existing.ID, nil
 	}
 	if err != sql.ErrNoRows {
@@ -134,6 +139,8 @@ func (h *WorktreeHelper) CreateWorktreeIfRequested(
 		return "", "", fmt.Errorf("create worktree: %s", wtResp.GetError())
 	}
 
+	slog.Info("worktree created on worker", "worktree_path", worktreePath, "branch_name", branchName)
+
 	// Track in DB.
 	wtID := id.Generate()
 	if err := h.queries.CreateWorktree(ctx, db.CreateWorktreeParams{
@@ -146,6 +153,7 @@ func (h *WorktreeHelper) CreateWorktreeIfRequested(
 		return "", "", fmt.Errorf("save worktree record: %w", err)
 	}
 
+	slog.Info("worktree record saved", "worktree_id", wtID, "worktree_path", worktreePath)
 	return worktreePath, wtID, nil
 }
 
@@ -169,6 +177,9 @@ func (h *WorktreeHelper) RegisterTabForWorktree(ctx context.Context, worktreeID 
 	if worktreeID == "" {
 		return
 	}
+
+	slog.Info("registering tab for worktree",
+		"worktree_id", worktreeID, "tab_type", tabType, "tab_id", tabID)
 
 	if err := h.queries.AddWorktreeTab(ctx, db.AddWorktreeTabParams{
 		WorktreeID: worktreeID,
@@ -265,6 +276,9 @@ func (h *WorktreeHelper) CheckTabWorktreeStatus(ctx context.Context, tabType lea
 // the worktree if it was the last tab. Returns cleanup result indicating if
 // user confirmation is needed (dirty worktree).
 func (h *WorktreeHelper) UnregisterTabAndCleanup(ctx context.Context, tabType leapmuxv1.TabType, tabID string) WorktreeCleanupResult {
+	slog.Info("unregistering tab and cleaning up worktree",
+		"tab_type", tabType, "tab_id", tabID)
+
 	// Find the worktree for this tab.
 	wt, err := h.queries.GetWorktreeForTab(ctx, db.GetWorktreeForTabParams{
 		TabType: tabType,
@@ -292,10 +306,14 @@ func (h *WorktreeHelper) UnregisterTabAndCleanup(ctx context.Context, tabType le
 		return WorktreeCleanupResult{}
 	}
 	if count > 0 {
+		slog.Info("other tabs still using worktree, skipping cleanup",
+			"worktree_id", wt.ID, "remaining_tabs", count)
 		return WorktreeCleanupResult{} // Other tabs still using it.
 	}
 
 	// Last tab closed — try to remove the worktree.
+	slog.Info("last tab closed, attempting worktree cleanup",
+		"worktree_id", wt.ID, "worktree_path", wt.WorktreePath, "worker_id", wt.WorkerID)
 	conn := h.workerMgr.Get(wt.WorkerID)
 	if conn == nil {
 		// Worker offline — clean up DB, leave worktree on disk.
