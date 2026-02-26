@@ -511,33 +511,31 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       class={styles.settingsMenu}
       data-testid="agent-settings-menu"
     >
-      {/* Permission Mode */}
+      {/* Effort */}
       <fieldset>
-        <legend class={styles.settingsGroupLabel}>Permission Mode</legend>
-        <For each={PERMISSION_MODES}>
-          {mode => (
+        <legend class={styles.settingsGroupLabel}>Effort</legend>
+        <For each={EFFORTS}>
+          {effort => (
             <label
               role="menuitemradio"
               class={styles.settingsRadioItem}
-              data-testid={`permission-mode-${mode.value}`}
+              data-testid={`effort-${effort.value}`}
             >
               <input
                 type="radio"
-                name={`${menuId}-mode`}
-                value={mode.value}
-                checked={currentMode() === mode.value}
+                name={`${menuId}-effort`}
+                value={effort.value}
+                checked={currentEffort() === effort.value}
                 onChange={() => {
-                  props.onPermissionModeChange?.(mode.value as PermissionMode)
+                  props.onEffortChange?.(effort.value)
                   settingsPopoverEl?.hidePopover()
                 }}
               />
-              {mode.label}
+              {effort.label}
             </label>
           )}
         </For>
       </fieldset>
-
-      <hr class={styles.settingsSeparator} />
 
       {/* Model */}
       <fieldset>
@@ -565,29 +563,27 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         </For>
       </fieldset>
 
-      <hr class={styles.settingsSeparator} />
-
-      {/* Effort */}
+      {/* Permission Mode */}
       <fieldset>
-        <legend class={styles.settingsGroupLabel}>Effort</legend>
-        <For each={EFFORTS}>
-          {effort => (
+        <legend class={styles.settingsGroupLabel}>Permission Mode</legend>
+        <For each={PERMISSION_MODES}>
+          {mode => (
             <label
               role="menuitemradio"
               class={styles.settingsRadioItem}
-              data-testid={`effort-${effort.value}`}
+              data-testid={`permission-mode-${mode.value}`}
             >
               <input
                 type="radio"
-                name={`${menuId}-effort`}
-                value={effort.value}
-                checked={currentEffort() === effort.value}
+                name={`${menuId}-mode`}
+                value={mode.value}
+                checked={currentMode() === mode.value}
                 onChange={() => {
-                  props.onEffortChange?.(effort.value)
+                  props.onPermissionModeChange?.(mode.value as PermissionMode)
                   settingsPopoverEl?.hidePopover()
                 }}
               />
-              {effort.label}
+              {mode.label}
             </label>
           )}
         </For>
