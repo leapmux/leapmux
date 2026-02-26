@@ -38,8 +38,9 @@ type contextUsageSnapshot struct {
 // Used by persistNotificationThreaded to append consecutive notifications
 // into a single DB row.
 type notifThreadRef struct {
-	msgID string
-	seq   int64
+	msgID     string
+	seq       int64
+	softClear time.Time // set by non-notif messages; zero = thread is live
 }
 
 // AgentService implements the AgentServiceHandler interface.
@@ -54,6 +55,7 @@ type AgentService struct {
 	planModeToolUse sync.Map // tool_use_id (string) -> targetMode (string): pending EnterPlanMode/ExitPlanMode tool uses
 	contextUsage    sync.Map // agentID -> *contextUsageSnapshot: latest token usage
 	lastNotifThread sync.Map // agentID -> *notifThreadRef: current notification thread
+	notifMu         sync.Map // agentID -> *sync.Mutex: serializes notification threading
 	lastAgentStatus sync.Map // agentID -> string: last status value ("" = null, non-empty = actual value)
 	gitStatus       sync.Map // agentID -> *leapmuxv1.AgentGitStatus: latest git status from worker
 	homeDir         sync.Map // agentID -> string: worker's home directory

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -19,6 +20,32 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
+
+// notifThreadGracePeriod is how long a soft-cleared notification thread
+// remains eligible for merging. Rapid-fire notifications (e.g. plan→default
+// then default→bypassPermissions) interleaved with non-notification messages
+// can still be consolidated within this window.
+const notifThreadGracePeriod = time.Second
+
+// notifMutex returns a per-agent mutex that serializes notification threading
+// operations, preventing races between concurrent persistNotificationThreaded
+// and softClearNotifThread calls.
+func (s *AgentService) notifMutex(agentID string) *sync.Mutex {
+	v, _ := s.notifMu.LoadOrStore(agentID, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
+
+// softClearNotifThread marks the current notification thread as soft-cleared.
+// A subsequent notification arriving within notifThreadGracePeriod can still
+// merge into the thread.
+func (s *AgentService) softClearNotifThread(agentID string) {
+	mu := s.notifMutex(agentID)
+	mu.Lock()
+	defer mu.Unlock()
+	if ref, ok := s.lastNotifThread.Load(agentID); ok {
+		ref.(*notifThreadRef).softClear = time.Now()
+	}
+}
 
 func (s *AgentService) SendAgentMessage(
 	ctx context.Context,
@@ -461,8 +488,10 @@ func (s *AgentService) HandleAgentOutput(ctx context.Context, output *leapmuxv1.
 			return
 		}
 
-		// Non-notification messages clear the notification thread reference.
-		s.lastNotifThread.Delete(agentID)
+		// Non-notification messages soft-clear the notification thread so that
+		// rapid-fire notifications (e.g. plan→default→bypass within milliseconds)
+		// can still merge within the grace period.
+		s.softClearNotifThread(agentID)
 
 		// Extract agent context metadata (total_cost_usd, token usage)
 		// from assistant and result messages. These fields are optional and may be
@@ -866,15 +895,28 @@ func (s *AgentService) broadcastNotification(ctx context.Context, agentID string
 // the current notification thread if one exists. If no thread exists or the
 // merge fails, creates a new standalone message. The thread is consolidated
 // after each append to keep it bounded.
+//
+// A per-agent mutex serializes calls so that concurrent notifications (e.g.
+// from the gRPC handler and the worker stream) don't race on the thread ref.
 func (s *AgentService) persistNotificationThreaded(ctx context.Context, agentID string, role leapmuxv1.MessageRole, contentJSON []byte) error {
+	mu := s.notifMutex(agentID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	// Check if there's an existing notification thread to append to.
+	// A soft-cleared thread is still eligible within the grace period so that
+	// rapid-fire notifications interleaved with non-notification messages
+	// (e.g. plan→default, assistant msg, default→bypass) get consolidated.
 	if ref, ok := s.lastNotifThread.Load(agentID); ok {
 		threadRef := ref.(*notifThreadRef)
-		if err := s.appendToNotificationThread(ctx, agentID, threadRef, role, contentJSON); err == nil {
-			return nil
+		if threadRef.softClear.IsZero() || time.Since(threadRef.softClear) < notifThreadGracePeriod {
+			if err := s.appendToNotificationThread(ctx, agentID, threadRef, role, contentJSON); err == nil {
+				threadRef.softClear = time.Time{} // revive
+				return nil
+			}
+			// Merge failed — fall through to standalone insert.
+			slog.Debug("notification thread merge failed, creating standalone", "agent_id", agentID)
 		}
-		// Merge failed — fall through to standalone insert.
-		slog.Debug("notification thread merge failed, creating standalone", "agent_id", agentID)
 	}
 
 	// Create a new standalone notification message.
