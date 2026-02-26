@@ -403,3 +403,49 @@ func TestUserSessions_Expired(t *testing.T) {
 	err = q.DeleteExpiredUserSessions(ctx)
 	require.NoError(t, err)
 }
+
+func TestUpdateAgentHomeDir(t *testing.T) {
+	q := newTestQueries(t)
+	ctx := context.Background()
+
+	// Set up prerequisite data.
+	orgID := makeID()
+	_ = q.CreateOrg(ctx, gendb.CreateOrgParams{ID: orgID, Name: "org"})
+	userID := makeID()
+	_ = q.CreateUser(ctx, gendb.CreateUserParams{
+		ID: userID, OrgID: orgID, Username: "u",
+		PasswordHash: "h", DisplayName: "U", IsAdmin: 0,
+	})
+	workerID := makeID()
+	_ = q.CreateWorker(ctx, gendb.CreateWorkerParams{
+		ID: workerID, OrgID: orgID, Name: "b",
+		AuthToken: makeID(), RegisteredBy: userID,
+	})
+	wsID := makeID()
+	_ = q.CreateWorkspace(ctx, gendb.CreateWorkspaceParams{
+		ID: wsID, OrgID: orgID,
+		CreatedBy: userID, Title: "w",
+	})
+	agentID := makeID()
+	_ = q.CreateAgent(ctx, gendb.CreateAgentParams{
+		ID: agentID, WorkspaceID: wsID, WorkerID: workerID,
+		Title: "agent", Model: "haiku", SystemPrompt: "",
+	})
+
+	// Verify home_dir defaults to empty.
+	agent, err := q.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	require.Empty(t, agent.HomeDir)
+
+	// Update home_dir.
+	err = q.UpdateAgentHomeDir(ctx, gendb.UpdateAgentHomeDirParams{
+		HomeDir: "/home/alice",
+		ID:      agentID,
+	})
+	require.NoError(t, err)
+
+	// Verify it was persisted.
+	agent, err = q.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	require.Equal(t, "/home/alice", agent.HomeDir)
+}

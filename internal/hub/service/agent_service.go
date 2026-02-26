@@ -58,7 +58,6 @@ type AgentService struct {
 	notifMu         sync.Map // agentID -> *sync.Mutex: serializes notification threading
 	lastAgentStatus sync.Map // agentID -> string: last status value ("" = null, non-empty = actual value)
 	gitStatus       sync.Map // agentID -> *leapmuxv1.AgentGitStatus: latest git status from worker
-	homeDir         sync.Map // agentID -> string: worker's home directory
 	autoContinue    sync.Map // agentID -> *autoContinueState: pending auto-continue on API errors
 }
 
@@ -227,19 +226,23 @@ func (s *AgentService) OpenAgent(
 		}
 	}
 
-	// Cache and surface the worker's home directory.
-	agentHomeDir := resp.GetAgentStarted().GetHomeDir()
-	s.StoreHomeDir(agentID, agentHomeDir)
+	// Persist the worker's home directory.
+	if agentHomeDir := resp.GetAgentStarted().GetHomeDir(); agentHomeDir != "" {
+		if err := s.queries.UpdateAgentHomeDir(ctx, db.UpdateAgentHomeDirParams{
+			HomeDir: agentHomeDir,
+			ID:      agentID,
+		}); err != nil {
+			slog.Warn("failed to store agent home dir", "agent_id", agentID, "error", err)
+		}
+	}
 
 	agent, err := s.queries.GetAgentByID(ctx, agentID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	agentProto := agentToProto(&agent)
-	agentProto.HomeDir = agentHomeDir
 	return connect.NewResponse(&leapmuxv1.OpenAgentResponse{
-		Agent: agentProto,
+		Agent: agentToProto(&agent),
 	}), nil
 }
 
@@ -368,7 +371,6 @@ func (s *AgentService) ListAgents(
 	protoAgents := make([]*leapmuxv1.AgentInfo, len(agents))
 	for i := range agents {
 		protoAgents[i] = agentToProto(&agents[i])
-		protoAgents[i].HomeDir = s.GetHomeDir(agents[i].ID)
 	}
 
 	return connect.NewResponse(&leapmuxv1.ListAgentsResponse{
@@ -542,6 +544,7 @@ func agentToProto(a *db.Agent) *leapmuxv1.AgentInfo {
 		WorkspaceId:    a.WorkspaceID,
 		WorkerId:       a.WorkerID,
 		WorkingDir:     a.WorkingDir,
+		HomeDir:        a.HomeDir,
 		Title:          a.Title,
 		Model:          a.Model,
 		Status:         a.Status,
@@ -581,21 +584,6 @@ func (s *AgentService) GetGitStatus(agentID string) *leapmuxv1.AgentGitStatus {
 func (s *AgentService) StoreGitStatus(agentID string, status *leapmuxv1.AgentGitStatus) {
 	if status != nil {
 		s.gitStatus.Store(agentID, status)
-	}
-}
-
-// GetHomeDir returns the cached home directory for an agent's worker, or empty string if not available.
-func (s *AgentService) GetHomeDir(agentID string) string {
-	if v, ok := s.homeDir.Load(agentID); ok {
-		return v.(string)
-	}
-	return ""
-}
-
-// StoreHomeDir caches the worker's home directory for an agent.
-func (s *AgentService) StoreHomeDir(agentID string, dir string) {
-	if dir != "" {
-		s.homeDir.Store(agentID, dir)
 	}
 }
 
