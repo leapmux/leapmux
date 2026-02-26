@@ -7,7 +7,6 @@ import { iconSize } from '~/styles/tokens'
 
 interface WorkerContextMenuProps {
   onRename: () => void
-  onSharing: () => void
   onDeregister: () => void
 }
 
@@ -20,9 +19,6 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
     >
       <button role="menuitem" onClick={() => props.onRename()}>
         Rename
-      </button>
-      <button role="menuitem" onClick={() => props.onSharing()}>
-        Sharing
       </button>
       <hr />
       <button role="menuitem" class={dangerMenuItem} onClick={() => props.onDeregister()}>

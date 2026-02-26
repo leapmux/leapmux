@@ -189,7 +189,7 @@ func (s *FileService) getWorkerConn(ctx context.Context, user *auth.UserInfo, wo
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	_, err = s.queries.GetVisibleWorker(ctx, db.GetVisibleWorkerParams{
+	_, err = s.queries.GetOwnedWorker(ctx, db.GetOwnedWorkerParams{
 		UserID:   user.ID,
 		WorkerID: worker.ID,
 		OrgID:    worker.OrgID,

@@ -475,28 +475,6 @@ export async function inviteToOrgViaAPI(
 }
 
 /**
- * Update worker sharing via the Connect API.
- */
-export async function shareWorkerViaAPI(
-  hubUrl: string,
-  token: string,
-  workerId: string,
-  shareMode: 'SHARE_MODE_PRIVATE' | 'SHARE_MODE_ORG' | 'SHARE_MODE_MEMBERS',
-): Promise<void> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.WorkerManagementService/UpdateWorkerSharing`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body: JSON.stringify({ workerId, shareMode }),
-  })
-  if (!res.ok) {
-    throw new Error(`shareWorkerViaAPI failed: ${res.status}`)
-  }
-}
-
-/**
  * Create a workspace via the Connect API. Returns the workspace ID.
  */
 export async function createWorkspaceViaAPI(

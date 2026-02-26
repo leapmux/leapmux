@@ -30,10 +30,6 @@ service WorkerManagementService {
   rpc DeregisterWorker(DeregisterWorkerRequest) returns (DeregisterWorkerResponse);
   // Get pending registration details (shown on approval page).
   rpc GetRegistration(GetRegistrationRequest) returns (GetRegistrationResponse);
-  // Update worker sharing settings.
-  rpc UpdateWorkerSharing(UpdateWorkerSharingRequest) returns (UpdateWorkerSharingResponse);
-  // List users a worker is shared with.
-  rpc ListWorkerShares(ListWorkerSharesRequest) returns (ListWorkerSharesResponse);
 }
 
 // --- Registration messages ---
@@ -146,31 +142,6 @@ message GetRegistrationResponse {
   RegistrationStatus status = 6;
 }
 
-// --- Worker Sharing ---
-
-message UpdateWorkerSharingRequest {
-  string worker_id = 1;
-  ShareMode share_mode = 2;
-  repeated string user_ids = 3; // Only used when share_mode = "members"
-}
-
-message UpdateWorkerSharingResponse {}
-
-message ListWorkerSharesRequest {
-  string worker_id = 1;
-}
-
-message ListWorkerSharesResponse {
-  ShareMode share_mode = 1;
-  repeated ShareMember members = 2; // Only populated when share_mode = "members"
-}
-
-message ShareMember {
-  string user_id = 1;
-  string username = 2;
-  string display_name = 3;
-}
-
 message Worker {
   string id = 1;
   string org_id = 2;
@@ -182,7 +153,6 @@ message Worker {
   string created_at = 8;
   string last_seen_at = 9;
   string registered_by = 10;
-  ShareMode share_mode = 11;
 }
 
 // --- Bidirectional stream envelope messages ---

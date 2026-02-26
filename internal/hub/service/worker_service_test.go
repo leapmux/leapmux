@@ -524,48 +524,6 @@ func (e *workerTestEnv) createAndApproveWorker(t *testing.T, token, name string)
 	return approveResp.Msg.GetWorkerId()
 }
 
-func TestWorkerManagement_ListWorkerShares_NotVisible(t *testing.T) {
-	env := setupWorkerTestServer(t)
-	ctx := context.Background()
-	adminToken := env.adminToken(t)
-
-	// Admin creates a worker (private by default).
-	workerID := env.createAndApproveWorker(t, adminToken, "private-worker")
-
-	// Create a second non-admin user in the same org.
-	_, user2Token := env.createSecondUser(t)
-
-	// user2 tries to list shares of admin's private worker — should get NotFound.
-	req := authedReq(&leapmuxv1.ListWorkerSharesRequest{WorkerId: workerID}, user2Token)
-	_, err := env.mgmtClient.ListWorkerShares(ctx, req)
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
-}
-
-func TestWorkerManagement_ListWorkerShares_Visible(t *testing.T) {
-	env := setupWorkerTestServer(t)
-	ctx := context.Background()
-	adminToken := env.adminToken(t)
-
-	// Admin creates a worker and shares it to org.
-	workerID := env.createAndApproveWorker(t, adminToken, "org-shared-worker")
-	shareReq := authedReq(&leapmuxv1.UpdateWorkerSharingRequest{
-		WorkerId:  workerID,
-		ShareMode: leapmuxv1.ShareMode_SHARE_MODE_ORG,
-	}, adminToken)
-	_, err := env.mgmtClient.UpdateWorkerSharing(ctx, shareReq)
-	require.NoError(t, err)
-
-	// Create a second non-admin user in the same org.
-	_, user2Token := env.createSecondUser(t)
-
-	// user2 lists shares — should succeed.
-	listReq := authedReq(&leapmuxv1.ListWorkerSharesRequest{WorkerId: workerID}, user2Token)
-	listResp, err := env.mgmtClient.ListWorkerShares(ctx, listReq)
-	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.ShareMode_SHARE_MODE_ORG, listResp.Msg.GetShareMode())
-}
-
 func TestWorkerManagement_Deregister_Nonexistent(t *testing.T) {
 	env := setupWorkerTestServer(t)
 	ctx := context.Background()
@@ -576,27 +534,6 @@ func TestWorkerManagement_Deregister_Nonexistent(t *testing.T) {
 	_, err := env.mgmtClient.DeregisterWorker(ctx, deregReq)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
-}
-
-func TestWorkerManagement_UpdateWorkerSharing_NotOwner(t *testing.T) {
-	env := setupWorkerTestServer(t)
-	ctx := context.Background()
-	adminToken := env.adminToken(t)
-
-	// Admin creates a worker.
-	workerID := env.createAndApproveWorker(t, adminToken, "sharing-test-worker")
-
-	// Create a second non-admin user in the same org.
-	_, user2Token := env.createSecondUser(t)
-
-	// user2 tries to update sharing on admin's worker — should get PermissionDenied.
-	shareReq := authedReq(&leapmuxv1.UpdateWorkerSharingRequest{
-		WorkerId:  workerID,
-		ShareMode: leapmuxv1.ShareMode_SHARE_MODE_ORG,
-	}, user2Token)
-	_, err := env.mgmtClient.UpdateWorkerSharing(ctx, shareReq)
-	require.Error(t, err)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
 
 func TestWorkerService_ListWorkers_Empty(t *testing.T) {

@@ -11,10 +11,6 @@ sql:
         emit_empty_slices: true
         overrides:
           # Worker enums
-          - column: "workers.share_mode"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "ShareMode"
           - column: "workers.status"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"

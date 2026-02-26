@@ -53,22 +53,12 @@ CREATE TABLE workers (
     arch          TEXT NOT NULL DEFAULT '',
     auth_token    TEXT NOT NULL UNIQUE,
     registered_by TEXT NOT NULL REFERENCES users(id),
-    share_mode    INTEGER NOT NULL DEFAULT 1,
     status        INTEGER NOT NULL DEFAULT 1,
     created_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     last_seen_at  DATETIME,
     UNIQUE(org_id, name)
 );
 CREATE INDEX idx_workers_org_id ON workers(org_id);
-
--- Worker shares (for share_mode = 'members')
-CREATE TABLE worker_shares (
-    worker_id  TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
-    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    PRIMARY KEY (worker_id, user_id)
-);
-CREATE INDEX idx_worker_shares_user_id ON worker_shares(user_id);
 
 -- Worker notifications (persistent queue for reliable delivery)
 CREATE TABLE worker_notifications (
@@ -302,7 +292,6 @@ DROP TABLE IF EXISTS workspace_shares;
 DROP TABLE IF EXISTS workspaces;
 DROP TABLE IF EXISTS worker_registrations;
 DROP TABLE IF EXISTS worker_notifications;
-DROP TABLE IF EXISTS worker_shares;
 DROP TABLE IF EXISTS workers;
 DROP TABLE IF EXISTS user_sessions;
 DROP TABLE IF EXISTS org_members;
