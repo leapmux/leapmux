@@ -67,8 +67,10 @@ export function formatRateLimitMessage(info: Record<string, unknown>): string {
   const isUsingOverage = info.isUsingOverage as boolean | undefined
   const resetsAt = (isUsingOverage ? info.overageResetsAt : info.resetsAt) as number | undefined
 
-  const typeLabel = RATE_LIMIT_TYPE_LABELS[rateLimitType ?? ''] ?? rateLimitType ?? ''
-  const prefix = typeLabel ? `${typeLabel} rate limit` : 'Rate limit'
+  const knownLabel = RATE_LIMIT_TYPE_LABELS[rateLimitType ?? '']
+  const prefix = knownLabel
+    ? `${knownLabel} rate limit`
+    : rateLimitType ? `Rate limit (${rateLimitType})` : 'Rate limit'
 
   const parts: string[] = []
   if (status && status !== 'allowed' && status !== 'allowed_warning')

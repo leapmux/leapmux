@@ -450,7 +450,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       <Show when={props.agentSessionInfo?.rateLimits && Object.keys(props.agentSessionInfo!.rateLimits!).length > 0}>
         <For each={Object.values(props.agentSessionInfo!.rateLimits!)}>
           {(info) => {
-            const typeLabel = RATE_LIMIT_POPOVER_LABELS[info.rateLimitType ?? ''] ?? info.rateLimitType ?? 'Rate Limit'
+            const typeLabel = RATE_LIMIT_POPOVER_LABELS[info.rateLimitType ?? '']
+              ?? (info.rateLimitType ? `Rate Limit (${info.rateLimitType})` : 'Rate Limit')
             return (
               <div class={styles.infoRow}>
                 <span class={styles.infoLabel}>{typeLabel}</span>
