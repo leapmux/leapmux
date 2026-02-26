@@ -230,6 +230,26 @@ func TestAgentService_ListAgents(t *testing.T) {
 	assert.Len(t, resp.Msg.GetAgents(), 3)
 }
 
+func TestAgentService_ListAgents_IncludesHomeDir(t *testing.T) {
+	env := setupAgentTest(t)
+	workspaceID := env.createWorkspaceInDB(t, "Test Workspace")
+	agentID := env.createAgentInDB(t, workspaceID, "Agent")
+
+	// Simulate homeDir being set after agent start (as UpdateAgentHomeDir does).
+	err := env.queries.UpdateAgentHomeDir(context.Background(), gendb.UpdateAgentHomeDirParams{
+		HomeDir: "/home/alice",
+		ID:      agentID,
+	})
+	require.NoError(t, err)
+
+	resp, err := env.client.ListAgents(context.Background(), authedReq(&leapmuxv1.ListAgentsRequest{
+		WorkspaceId: workspaceID,
+	}, env.token))
+	require.NoError(t, err)
+	require.Len(t, resp.Msg.GetAgents(), 1)
+	assert.Equal(t, "/home/alice", resp.Msg.GetAgents()[0].GetHomeDir())
+}
+
 func TestAgentService_RenameAgent(t *testing.T) {
 	env := setupAgentTest(t)
 	workspaceID := env.createWorkspaceInDB(t, "Test Workspace")

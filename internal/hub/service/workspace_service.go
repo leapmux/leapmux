@@ -187,12 +187,22 @@ func (s *WorkspaceService) CreateWorkspace(
 					slog.Warn("failed to close orphaned initial agent", "agent_id", agentID, "error", closeErr)
 				}
 				agentID = ""
-			} else if confirmedMode := resp.GetAgentStarted().GetPermissionMode(); confirmedMode != "" {
-				if err := s.queries.SetAgentPermissionMode(ctx, db.SetAgentPermissionModeParams{
-					PermissionMode: confirmedMode,
-					ID:             agentID,
-				}); err != nil {
-					slog.Warn("failed to set initial agent permission mode", "agent_id", agentID, "error", err)
+			} else {
+				if confirmedMode := resp.GetAgentStarted().GetPermissionMode(); confirmedMode != "" {
+					if err := s.queries.SetAgentPermissionMode(ctx, db.SetAgentPermissionModeParams{
+						PermissionMode: confirmedMode,
+						ID:             agentID,
+					}); err != nil {
+						slog.Warn("failed to set initial agent permission mode", "agent_id", agentID, "error", err)
+					}
+				}
+				if homeDir := resp.GetAgentStarted().GetHomeDir(); homeDir != "" {
+					if err := s.queries.UpdateAgentHomeDir(ctx, db.UpdateAgentHomeDirParams{
+						HomeDir: homeDir,
+						ID:      agentID,
+					}); err != nil {
+						slog.Warn("failed to store initial agent home dir", "agent_id", agentID, "error", err)
+					}
 				}
 			}
 		}

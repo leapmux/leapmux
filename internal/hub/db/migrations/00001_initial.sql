@@ -127,6 +127,7 @@ CREATE TABLE agents (
     workspace_id     TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     worker_id        TEXT NOT NULL REFERENCES workers(id),
     working_dir      TEXT NOT NULL DEFAULT '',
+    home_dir         TEXT NOT NULL DEFAULT '',
     title            TEXT NOT NULL DEFAULT '',
     model            TEXT NOT NULL DEFAULT 'opus',
     system_prompt    TEXT NOT NULL DEFAULT '',
