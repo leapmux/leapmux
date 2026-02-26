@@ -25,6 +25,7 @@ import * as styles from './ChatView.css'
 import { computePercentage, contextSize, ContextUsageGrid, DEFAULT_BUFFER_PCT } from './ContextUsageGrid'
 import { ControlRequestActions, ControlRequestContent, trySubmitAskUserQuestion } from './ControlRequestBanner'
 import { clearDraft, MarkdownEditor } from './MarkdownEditor'
+import { tildify } from './messageRenderers'
 
 export interface AgentEditorPanelProps {
   agentId: string
@@ -416,7 +417,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       <Show when={props.agent?.workingDir}>
         <div class={styles.infoRow}>
           <span class={styles.infoLabel}>Directory</span>
-          <span class={styles.infoValue}>{props.agent!.workingDir}</span>
+          <span class={styles.infoValue}>{tildify(props.agent!.workingDir!, props.agent!.homeDir)}</span>
         </div>
       </Show>
       <Show when={props.agentSessionInfo?.contextUsage}>
