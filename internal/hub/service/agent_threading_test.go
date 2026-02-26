@@ -2,7 +2,9 @@ package service
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -540,4 +542,57 @@ func TestConsolidateNotificationThread_RateLimitMixedConsolidation(t *testing.T)
 	assert.Len(t, rlByType, 2)
 	assert.Equal(t, 0.9, rlByType["five_hour"], "expected latest five_hour utilization")
 	assert.Equal(t, 0.3, rlByType["seven_day"], "expected seven_day utilization preserved")
+}
+
+func TestNotifMutex_SameAgent(t *testing.T) {
+	svc := &AgentService{}
+	mu1 := svc.notifMutex("agent-1")
+	mu2 := svc.notifMutex("agent-1")
+	assert.Same(t, mu1, mu2, "same agentID should return the same mutex")
+}
+
+func TestNotifMutex_DifferentAgents(t *testing.T) {
+	svc := &AgentService{}
+	mu1 := svc.notifMutex("agent-1")
+	mu2 := svc.notifMutex("agent-2")
+	assert.NotSame(t, mu1, mu2, "different agentIDs should return different mutexes")
+}
+
+func TestSoftClearNotifThread_SetsTimestamp(t *testing.T) {
+	svc := &AgentService{}
+	ref := &notifThreadRef{msgID: "msg-1", seq: 10}
+	svc.lastNotifThread.Store("agent-1", ref)
+
+	before := time.Now()
+	svc.softClearNotifThread("agent-1")
+	after := time.Now()
+
+	assert.False(t, ref.softClear.IsZero(), "softClear should be set")
+	assert.False(t, ref.softClear.Before(before), "softClear should be >= before")
+	assert.False(t, ref.softClear.After(after), "softClear should be <= after")
+}
+
+func TestSoftClearNotifThread_NoOpWhenNoThread(t *testing.T) {
+	svc := &AgentService{}
+	// Should not panic when no thread exists.
+	svc.softClearNotifThread("nonexistent-agent")
+}
+
+func TestNotifMutex_SerializesConcurrentAccess(t *testing.T) {
+	svc := &AgentService{}
+	mu := svc.notifMutex("agent-1")
+
+	var counter int
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			mu.Lock()
+			defer mu.Unlock()
+			counter++
+		}()
+	}
+	wg.Wait()
+	assert.Equal(t, 100, counter, "all increments should be serialized")
 }
