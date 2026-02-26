@@ -51,11 +51,14 @@ test.describe('Clear Command – Context Usage Reset', () => {
     await page.keyboard.type('/clear')
     await page.keyboard.press('Meta+Enter')
 
-    // Wait for the "Context cleared" notification
+    // Wait for the "Context cleared" notification — this confirms the
+    // backend processed the clear and context_cleared event was received.
     await expect(page.getByText('Context cleared')).toBeVisible()
 
-    // After /clear, the info trigger (and its HoverCard) should no longer
-    // be visible because context usage and cost have been cleared.
-    await expect(infoTrigger).not.toBeVisible()
+    // After /clear, context usage is cleared. The ContextUsageGrid replaces
+    // the 3x3 grid with an Info icon fallback when contextUsage is undefined.
+    // The info trigger itself remains visible (session is still active).
+    await expect(infoTrigger).toBeVisible()
+    await expect(contextGrid).not.toBeVisible({ timeout: 10_000 })
   })
 })

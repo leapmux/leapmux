@@ -1,5 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { headerHeight, iconSize, spacing } from '~/styles/tokens'
+import { headerHeight, iconSize, resizeHandleSelectors, spacing } from '~/styles/tokens'
 
 /** Inner flex-column wrapper for the expanded sidebar. */
 export const sidebarInner = style({
@@ -71,6 +71,7 @@ export const collapsibleTrigger = style({
   'minHeight': headerHeight,
   'borderBottom': '1px solid var(--border)',
   'flexShrink': 0,
+  'position': 'relative',
   ':hover': {
     backgroundColor: 'var(--card)',
   },
@@ -82,6 +83,13 @@ export const collapsibleTriggerStatic = style({
   ':hover': {
     backgroundColor: 'unset',
   },
+  '::after': {
+    display: 'none',
+  },
+})
+
+/** Hide the OAT accordion chevron on a section header (e.g. first right-sidebar section). */
+export const collapsibleTriggerNoChevron = style({
   '::after': {
     display: 'none',
   },
@@ -103,33 +111,21 @@ globalStyle(`${collapsiblePane} ~ ${collapsiblePane} > ${collapsibleTrigger}`, {
 })
 
 export const paneResizeHandle = style({
-  height: '8px',
+  height: '4px',
   flexShrink: 0,
   cursor: 'row-resize',
   position: 'relative',
   userSelect: 'none',
-  selectors: {
-    '&::before': {
-      content: '""',
-      position: 'absolute',
-      left: '0',
-      right: '0',
-      top: '50%',
-      height: '1px',
-      transform: 'translateY(-50%)',
-      background: 'transparent',
-      transition: 'background 0.15s',
-    },
-    '&:hover::before': {
-      background: 'var(--border)',
-    },
-  },
+  margin: '-2px 0',
+  zIndex: 5,
+  selectors: resizeHandleSelectors('vertical'),
 })
 
 export const paneResizeHandleActive = style({
   selectors: {
     '&::before': {
       background: 'var(--primary) !important',
+      height: '1px !important',
     },
   },
 })
@@ -187,18 +183,21 @@ export const bottomSection = style({
   borderTop: '1px solid var(--border)',
 })
 
-/** Drag handle for section headers (visible on hover). */
+/** Drag handle for section headers (visible on hover, absolutely positioned). */
 export const sectionDragHandle = style({
+  'position': 'absolute',
+  'left': 0,
+  'top': 0,
+  'bottom': 0,
+  'width': spacing.lg,
   'display': 'flex',
   'alignItems': 'center',
   'justifyContent': 'center',
   'cursor': 'grab',
   'opacity': 0,
   'transition': 'opacity 0.15s',
-  'marginLeft': '-6px',
-  'marginRight': '-2px',
   'color': 'var(--muted-foreground)',
-  'flexShrink': 0,
+  'zIndex': 1,
   ':active': {
     cursor: 'grabbing',
   },
@@ -215,4 +214,38 @@ globalStyle(`${collapsibleTrigger}:hover ${sectionDragHandle}:hover`, {
 /** Visual state while a section is being dragged. */
 export const collapsiblePaneDragging = style({
   opacity: 0.5,
+})
+
+/** Horizontal line indicating where a dragged section will be inserted. */
+export const dropIndicatorLine = style({
+  height: '2px',
+  backgroundColor: 'var(--primary)',
+  flexShrink: 0,
+  borderRadius: '1px',
+  margin: '-1px 0',
+  position: 'relative',
+  zIndex: 10,
+  pointerEvents: 'none',
+})
+
+/** Placeholder shown when a sidebar has no sections. */
+export const emptyDropZone = style({
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  flex: 1,
+  minHeight: '60px',
+  color: 'var(--faint-foreground)',
+  fontSize: 'var(--text-7)',
+  fontStyle: 'italic',
+  border: '2px dashed var(--border)',
+  borderRadius: '4px',
+  margin: spacing.sm,
+})
+
+/** Active state when a section drag is in progress over an empty sidebar. */
+export const emptyDropZoneActive = style({
+  borderColor: 'var(--primary)',
+  color: 'var(--muted-foreground)',
+  backgroundColor: 'color-mix(in srgb, var(--primary) 5%, transparent)',
 })

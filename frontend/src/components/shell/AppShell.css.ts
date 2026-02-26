@@ -1,5 +1,5 @@
 import { style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
+import { resizeHandleSelectors, spacing } from '~/styles/tokens'
 
 export const shell = style({
   height: '100%',
@@ -17,19 +17,17 @@ export const sidebar = style({
 })
 
 export const resizeHandle = style({
-  'all': 'unset',
-  'boxSizing': 'border-box',
-  'width': '4px',
-  'background': 'transparent',
-  'borderRadius': 0,
-  'position': 'relative',
-  'flexShrink': 0,
-  ':hover': {
-    background: 'var(--secondary)',
-  },
-  ':active': {
-    background: 'var(--secondary)',
-  },
+  all: 'unset',
+  boxSizing: 'border-box',
+  width: '4px',
+  background: 'transparent',
+  borderRadius: 0,
+  position: 'relative',
+  flexShrink: 0,
+  margin: '0 -2px',
+  zIndex: 5,
+  cursor: 'col-resize',
+  selectors: resizeHandleSelectors('horizontal'),
 })
 
 export const center = style({
