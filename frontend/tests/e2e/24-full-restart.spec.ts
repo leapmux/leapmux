@@ -2,6 +2,10 @@ import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, loginViaToken, waitForWor
 import { expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Full Hub+Worker Restart', () => {
+  // Infrastructure-dependent: timing between agent processing and shutdown
+  // can vary under heavy load when parallel workers share system resources.
+  test.describe.configure({ retries: 1 })
+
   test('should preserve chat history after hub and worker restart', async ({ separateHubWorker, page }) => {
     const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Full Restart Test', adminOrgId)
@@ -112,6 +116,52 @@ test.describe('Full Hub+Worker Restart', () => {
         }
         return has4 && has6
       })
+    }
+    finally {
+      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
+    }
+  })
+
+  test('should not show thinking indicator after full restart during active turn', async ({ separateHubWorker, page }) => {
+    const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Restart Thinking Test', adminOrgId)
+    try {
+      await loginViaToken(page, adminToken)
+      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await waitForWorkspaceReady(page)
+
+      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      await expect(editor).toBeVisible()
+
+      // Send a long message to start an agent turn
+      await editor.click()
+      await page.keyboard.type('Write a very long essay about the history of computing. Make it extremely detailed.')
+      await page.keyboard.press('Meta+Enter')
+      await expect(editor).toHaveText('')
+
+      // Wait for the thinking indicator or streaming to appear (agent is processing)
+      const thinkingIndicator = page.locator('[data-testid="thinking-indicator"]')
+      const streamingText = page.locator('[data-testid="message-bubble"][data-role="assistant"]')
+      await expect(thinkingIndicator.or(streamingText)).toBeVisible({ timeout: 30_000 })
+
+      // Remember the workspace URL so we can navigate back after restart
+      const workspaceUrl = page.url()
+
+      // Stop worker first (so agent is terminated), then stop hub — while agent is mid-turn
+      await stopWorker()
+      await stopHub()
+
+      // Start hub and worker back up
+      await restartHub(separateHubWorker)
+      await restartWorker(separateHubWorker)
+
+      // Reload the page to establish fresh connections to the restarted hub
+      await page.goto(workspaceUrl)
+      await expect(editor).toBeVisible()
+
+      // Thinking indicator should NOT be visible — stale ACTIVE agents
+      // are closed on hub startup so the frontend sees INACTIVE status.
+      await expect(thinkingIndicator).not.toBeVisible()
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

@@ -28,6 +28,10 @@ WHERE workspace_id = ? AND status = 1;
 UPDATE agents SET status = 2, closed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE worker_id = ? AND status = 1;
 
+-- name: CloseAllActiveAgents :exec
+UPDATE agents SET status = 2, closed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE status = 1;
+
 -- name: RenameAgent :execresult
 UPDATE agents SET title = ? WHERE id = ?;
 
