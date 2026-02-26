@@ -84,6 +84,15 @@ func NewServer(sc ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("bootstrap: %w", err)
 	}
 
+	// No agent process can be running when the hub just started, so mark
+	// all ACTIVE agents as INACTIVE.  This handles the case where the hub
+	// was shut down while agents were mid-turn — cleanupWorker skips DB
+	// writes during shutdown, leaving stale ACTIVE status in the database.
+	if err := queries.CloseAllActiveAgents(context.Background()); err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("close stale agents: %w", err)
+	}
+
 	timeoutCfg, err := timeout.NewFromDB(queries)
 	if err != nil {
 		_ = sqlDB.Close()
