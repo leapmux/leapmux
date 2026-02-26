@@ -1,5 +1,5 @@
 import { style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
+import { resizeHandleSelectors, spacing } from '~/styles/tokens'
 
 export const shell = style({
   height: '100%',
@@ -27,27 +27,7 @@ export const resizeHandle = style({
   margin: '0 -2px',
   zIndex: 5,
   cursor: 'col-resize',
-  selectors: {
-    '&::before': {
-      content: '""',
-      position: 'absolute',
-      top: 0,
-      bottom: 0,
-      left: '50%',
-      width: '2px',
-      transform: 'translateX(-50%)',
-      background: 'transparent',
-      transition: 'background 0.15s',
-    },
-    '&:hover::before': {
-      background: 'var(--border)',
-      width: '4px',
-    },
-    '&:active::before': {
-      background: 'var(--primary)',
-      width: '1px',
-    },
-  },
+  selectors: resizeHandleSelectors('horizontal'),
 })
 
 export const center = style({

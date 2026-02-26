@@ -1,4 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import { resizeHandleSelectors } from '~/styles/tokens'
 
 export const tilingRoot = style({
   flex: 1,
@@ -40,41 +41,7 @@ export const tileResizeHandle = style({
       cursor: 'row-resize',
       margin: '-2px 0',
     },
-    '&::before': {
-      content: '""',
-      position: 'absolute',
-      background: 'var(--border)',
-      transition: 'background 0.15s',
-    },
-    '&[data-direction="horizontal"]::before': {
-      top: 0,
-      bottom: 0,
-      left: '50%',
-      width: '1px',
-      transform: 'translateX(-50%)',
-    },
-    '&[data-direction="vertical"]::before': {
-      left: 0,
-      right: 0,
-      top: '50%',
-      height: '1px',
-      transform: 'translateY(-50%)',
-    },
-    '&[data-direction="horizontal"]:hover::before': {
-      background: 'var(--border)',
-      width: '4px',
-    },
-    '&[data-direction="vertical"]:hover::before': {
-      background: 'var(--border)',
-      height: '4px',
-    },
-    '&[data-direction="horizontal"]:active::before': {
-      background: 'var(--primary)',
-      width: '1px',
-    },
-    '&[data-direction="vertical"]:active::before': {
-      background: 'var(--primary)',
-      height: '1px',
-    },
+    ...resizeHandleSelectors('horizontal', 'var(--border)', '&[data-direction="horizontal"]'),
+    ...resizeHandleSelectors('vertical', 'var(--border)', '&[data-direction="vertical"]'),
   },
 })

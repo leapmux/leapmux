@@ -1,5 +1,5 @@
 import { style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
+import { resizeHandleSelectors, spacing } from '~/styles/tokens'
 
 export const editorResizeHandle = style({
   height: '4px',
@@ -9,27 +9,7 @@ export const editorResizeHandle = style({
   userSelect: 'none',
   margin: '-2px 0',
   zIndex: 5,
-  selectors: {
-    '&::before': {
-      content: '""',
-      position: 'absolute',
-      left: 0,
-      right: 0,
-      top: '50%',
-      height: '2px',
-      transform: 'translateY(-50%)',
-      background: 'transparent',
-      transition: 'background 0.15s',
-    },
-    '&:hover::before': {
-      background: 'var(--border)',
-      height: '4px',
-    },
-    '&:active::before': {
-      background: 'var(--primary)',
-      height: '1px',
-    },
-  },
+  selectors: resizeHandleSelectors('vertical'),
 })
 
 export const editorResizeHandleActive = style({

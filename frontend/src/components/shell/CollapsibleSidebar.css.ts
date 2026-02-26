@@ -1,5 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { headerHeight, iconSize, spacing } from '~/styles/tokens'
+import { headerHeight, iconSize, resizeHandleSelectors, spacing } from '~/styles/tokens'
 
 /** Inner flex-column wrapper for the expanded sidebar. */
 export const sidebarInner = style({
@@ -118,27 +118,7 @@ export const paneResizeHandle = style({
   userSelect: 'none',
   margin: '-2px 0',
   zIndex: 5,
-  selectors: {
-    '&::before': {
-      content: '""',
-      position: 'absolute',
-      left: 0,
-      right: 0,
-      top: '50%',
-      height: '2px',
-      transform: 'translateY(-50%)',
-      background: 'transparent',
-      transition: 'background 0.15s',
-    },
-    '&:hover::before': {
-      background: 'var(--border)',
-      height: '4px',
-    },
-    '&:active::before': {
-      background: 'var(--primary)',
-      height: '1px',
-    },
-  },
+  selectors: resizeHandleSelectors('vertical'),
 })
 
 export const paneResizeHandleActive = style({
