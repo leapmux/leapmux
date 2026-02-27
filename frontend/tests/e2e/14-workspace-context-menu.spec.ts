@@ -79,12 +79,16 @@ test.describe('Workspace Context Menu', () => {
     await page.goto('/o/admin')
     await expect(page.getByText(workspaceName!.trim())).toBeVisible()
 
-    // Set up dialog handler for the confirm prompt
-    page.on('dialog', dialog => dialog.accept())
-
     // Open context menu and click Delete
     await openWorkspaceContextMenu(page, workspaceName!.trim())
     await page.getByRole('menuitem', { name: 'Delete' }).click()
+
+    // ConfirmDialog should appear
+    const dialog = page.locator('dialog')
+    await expect(dialog).toBeVisible()
+    // Click the danger confirm button (two-step: arm then confirm)
+    await dialog.getByRole('button', { name: 'Delete' }).click()
+    await dialog.getByRole('button', { name: 'Confirm?' }).click()
 
     // Workspace should be gone
     await expect(page.getByText(workspaceName!.trim())).not.toBeVisible()

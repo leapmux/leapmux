@@ -4,7 +4,7 @@ import ChevronRight from 'lucide-solid/icons/chevron-right'
 import MoreHorizontal from 'lucide-solid/icons/more-horizontal'
 import { For, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
-import { SectionType } from '~/generated/leapmux/v1/section_pb'
+import { isMoveTargetSection } from '~/components/shell/sectionUtils'
 import { dangerMenuItem } from '~/styles/shared.css'
 import * as listStyles from './workspaceList.css'
 
@@ -49,7 +49,7 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
             </button>
           )}
         >
-          <For each={props.sections.filter(s => s.id !== props.currentSectionId && s.sectionType !== SectionType.WORKSPACES_ARCHIVED)}>
+          <For each={props.sections.filter(s => s.id !== props.currentSectionId && isMoveTargetSection(s.sectionType))}>
             {section => (
               <button
                 role="menuitem"

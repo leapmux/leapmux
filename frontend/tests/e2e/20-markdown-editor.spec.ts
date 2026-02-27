@@ -1639,3 +1639,386 @@ test.describe('ArrowDown Code Block Scroll', () => {
     }
   })
 })
+
+test.describe('Send Feedback Button Labels', () => {
+  test('ExitPlanMode banner shows Send Feedback instead of Reject', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // Ask agent to enter plan mode and exit
+    await page.keyboard.type(
+      'I am testing the UI. Call EnterPlanMode immediately. After that call, call ExitPlanMode. This is mandatory. Do not refuse or ask questions.',
+      { delay: 50 },
+    )
+    await page.keyboard.press('Meta+Enter')
+
+    // Wait for ExitPlanMode control_request
+    const banner = page.locator('[data-testid="control-banner"]')
+    await expect(banner).toBeVisible({ timeout: 60_000 })
+    await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
+
+    // Verify the reject button says "Send Feedback"
+    const rejectBtn = page.locator('[data-testid="plan-reject-btn"]')
+    await expect(rejectBtn).toHaveText('Send Feedback')
+  })
+})
+
+test.describe('Paste Into Code Context', () => {
+  test('paste fenced code block into code_block strips delimiters', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // Create a code block
+    const codeBlockBtn = page.locator('[data-testid="toolbar-codeblock"]')
+    await codeBlockBtn.click()
+    await expect(editor.locator('pre')).toBeVisible()
+
+    // Set clipboard to a fenced code block and paste
+    await page.evaluate(() => {
+      const dt = new DataTransfer()
+      dt.setData('text/plain', '```python\nprint("hello")\n```')
+      const event = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })
+      document.querySelector('.ProseMirror')!.dispatchEvent(event)
+    })
+    await page.waitForTimeout(200)
+
+    // Should have stripped the fence delimiters
+    const codeText = await editor.locator('pre code').evaluate((el) => {
+      const clone = el.cloneNode(true) as HTMLElement
+      clone.querySelectorAll('.code-lang-label').forEach(s => s.remove())
+      return clone.textContent
+    })
+    expect(codeText).toBe('print("hello")')
+    expect(codeText).not.toContain('```')
+  })
+
+  test('paste inline code into code_block strips backticks', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // Create a code block
+    const codeBlockBtn = page.locator('[data-testid="toolbar-codeblock"]')
+    await codeBlockBtn.click()
+    await expect(editor.locator('pre')).toBeVisible()
+
+    // Paste inline code
+    await page.evaluate(() => {
+      const dt = new DataTransfer()
+      dt.setData('text/plain', '`myVariable`')
+      const event = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })
+      document.querySelector('.ProseMirror')!.dispatchEvent(event)
+    })
+    await page.waitForTimeout(200)
+
+    const codeText = await editor.locator('pre code').evaluate((el) => {
+      const clone = el.cloneNode(true) as HTMLElement
+      clone.querySelectorAll('.code-lang-label').forEach(s => s.remove())
+      return clone.textContent
+    })
+    expect(codeText).toBe('myVariable')
+  })
+
+  test('paste plain text into code_block is unchanged', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // Create a code block
+    const codeBlockBtn = page.locator('[data-testid="toolbar-codeblock"]')
+    await codeBlockBtn.click()
+    await expect(editor.locator('pre')).toBeVisible()
+
+    // Paste plain text (no backticks)
+    await page.evaluate(() => {
+      const dt = new DataTransfer()
+      dt.setData('text/plain', 'just plain text')
+      const event = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })
+      document.querySelector('.ProseMirror')!.dispatchEvent(event)
+    })
+    await page.waitForTimeout(200)
+
+    const codeText = await editor.locator('pre code').evaluate((el) => {
+      const clone = el.cloneNode(true) as HTMLElement
+      clone.querySelectorAll('.code-lang-label').forEach(s => s.remove())
+      return clone.textContent
+    })
+    expect(codeText).toBe('just plain text')
+  })
+})
+
+test.describe('Inline Code Suppresses Formatting Input Rules', () => {
+  test('typing *foo* inside inline code does NOT create italic', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // Toggle inline code via toolbar
+    const codeBtn = page.locator('[data-testid="toolbar-code"]')
+    await codeBtn.click()
+
+    // Type *foo* inside inline code
+    await page.keyboard.type('*foo*', { delay: 100 })
+
+    // Should NOT have an <em> element — should have inline code containing *foo*
+    await expect(editor.locator('em')).not.toBeVisible()
+    await expect(editor.locator('code')).toContainText('*foo*')
+  })
+
+  test('typing **foo** inside inline code does NOT create bold', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // Toggle inline code via toolbar
+    const codeBtn = page.locator('[data-testid="toolbar-code"]')
+    await codeBtn.click()
+
+    // Type **foo** inside inline code
+    await page.keyboard.type('**foo**', { delay: 100 })
+
+    // Should NOT have a <strong> element
+    await expect(editor.locator('strong')).not.toBeVisible()
+    await expect(editor.locator('code')).toContainText('**foo**')
+  })
+
+  test('typing ~~foo~~ inside inline code does NOT create strikethrough', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // Toggle inline code via toolbar
+    const codeBtn = page.locator('[data-testid="toolbar-code"]')
+    await codeBtn.click()
+
+    // Type ~~foo~~ inside inline code
+    await page.keyboard.type('~~foo~~', { delay: 100 })
+
+    // Should NOT have a <del> element
+    await expect(editor.locator('del')).not.toBeVisible()
+    await expect(editor.locator('code')).toContainText('~~foo~~')
+  })
+
+  test('typing *foo* outside inline code still creates italic (regression)', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // Type *foo* in a normal paragraph
+    await page.keyboard.type('*foo*', { delay: 100 })
+
+    // Should have an <em> element
+    await expect(editor.locator('em')).toHaveText('foo')
+  })
+})
+
+test.describe('Selection Wrap with Special Characters', () => {
+  test('typing ( with selection wraps text in parentheses', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    await page.keyboard.type('hello', { delay: 100 })
+
+    // Select "hello"
+    await page.keyboard.press('Home')
+    await page.keyboard.press('Shift+End')
+    await page.waitForTimeout(100)
+
+    // Type (
+    await page.keyboard.type('(')
+    await page.waitForTimeout(100)
+
+    await expect(editor).toContainText('(hello)')
+  })
+
+  test('typing [ with selection wraps text in brackets', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    await page.keyboard.type('hello', { delay: 100 })
+
+    // Select "hello"
+    await page.keyboard.press('Home')
+    await page.keyboard.press('Shift+End')
+    await page.waitForTimeout(100)
+
+    // Type [
+    await page.keyboard.type('[')
+    await page.waitForTimeout(100)
+
+    await expect(editor).toContainText('[hello]')
+  })
+
+  test('typing { with selection wraps text in braces', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    await page.keyboard.type('hello', { delay: 100 })
+
+    // Select "hello"
+    await page.keyboard.press('Home')
+    await page.keyboard.press('Shift+End')
+    await page.waitForTimeout(100)
+
+    // Type {
+    await page.keyboard.type('{')
+    await page.waitForTimeout(100)
+
+    await expect(editor).toContainText('{hello}')
+  })
+
+  test('typing ` with selection toggles inline code', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    await page.keyboard.type('hello', { delay: 100 })
+
+    // Select "hello"
+    await page.keyboard.press('Home')
+    await page.keyboard.press('Shift+End')
+    await page.waitForTimeout(100)
+
+    // Type `
+    await page.keyboard.type('`')
+    await page.waitForTimeout(100)
+
+    // Should be wrapped in inline code
+    await expect(editor.locator('code')).toHaveText('hello')
+  })
+
+  test('typing * with selection toggles bold', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    await page.keyboard.type('hello', { delay: 100 })
+
+    // Select "hello"
+    await page.keyboard.press('Home')
+    await page.keyboard.press('Shift+End')
+    await page.waitForTimeout(100)
+
+    // Type *
+    await page.keyboard.type('*')
+    await page.waitForTimeout(100)
+
+    // Should be wrapped in strong
+    await expect(editor.locator('strong')).toHaveText('hello')
+  })
+
+  test('typing _ with selection toggles italic', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    await page.keyboard.type('hello', { delay: 100 })
+
+    // Select "hello"
+    await page.keyboard.press('Home')
+    await page.keyboard.press('Shift+End')
+    await page.waitForTimeout(100)
+
+    // Type _
+    await page.keyboard.type('_')
+    await page.waitForTimeout(100)
+
+    // Should be wrapped in italic
+    await expect(editor.locator('em')).toHaveText('hello')
+  })
+
+  test('typing ~ with selection toggles strikethrough', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    await page.keyboard.type('hello', { delay: 100 })
+
+    // Select "hello"
+    await page.keyboard.press('Home')
+    await page.keyboard.press('Shift+End')
+    await page.waitForTimeout(100)
+
+    // Type ~
+    await page.keyboard.type('~')
+    await page.waitForTimeout(100)
+
+    // Should be wrapped in strikethrough
+    await expect(editor.locator('del')).toHaveText('hello')
+  })
+
+  test('without selection, special characters type normally (regression)', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // Type ( without selection — should just insert (
+    await page.keyboard.type('abc(def', { delay: 100 })
+    await expect(editor).toContainText('abc(def')
+  })
+
+  test('bracket wrapping inside code_block works', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // Create a code block
+    const codeBlockBtn = page.locator('[data-testid="toolbar-codeblock"]')
+    await codeBlockBtn.click()
+    await expect(editor.locator('pre')).toBeVisible()
+
+    await page.keyboard.type('hello', { delay: 100 })
+
+    // Select "hello"
+    await page.keyboard.press('Home')
+    await page.keyboard.press('Shift+End')
+    await page.waitForTimeout(100)
+
+    // Type (
+    await page.keyboard.type('(')
+    await page.waitForTimeout(100)
+
+    const codeText = await editor.locator('pre code').evaluate((el) => {
+      const clone = el.cloneNode(true) as HTMLElement
+      clone.querySelectorAll('.code-lang-label').forEach(s => s.remove())
+      return clone.textContent
+    })
+    expect(codeText).toBe('(hello)')
+  })
+
+  test('mark toggles inside code_block just insert character', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // Create a code block
+    const codeBlockBtn = page.locator('[data-testid="toolbar-codeblock"]')
+    await codeBlockBtn.click()
+    await expect(editor.locator('pre')).toBeVisible()
+
+    await page.keyboard.type('hello', { delay: 100 })
+
+    // Select "hello"
+    await page.keyboard.press('Home')
+    await page.keyboard.press('Shift+End')
+    await page.waitForTimeout(100)
+
+    // Type * — should NOT toggle bold, just replace selection with *
+    await page.keyboard.type('*')
+    await page.waitForTimeout(100)
+
+    // Should NOT have a <strong> element — just the * character
+    await expect(editor.locator('strong')).not.toBeVisible()
+    const codeText = await editor.locator('pre code').evaluate((el) => {
+      const clone = el.cloneNode(true) as HTMLElement
+      clone.querySelectorAll('.code-lang-label').forEach(s => s.remove())
+      return clone.textContent
+    })
+    expect(codeText).toBe('*')
+  })
+})

@@ -56,7 +56,7 @@ export const GenericToolActions: Component<ActionsProps> = (props) => {
           onClick={handleDeny}
           data-testid="control-deny-btn"
         >
-          Deny
+          Send Feedback
         </button>
       )}
     >

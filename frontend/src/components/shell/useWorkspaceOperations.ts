@@ -25,6 +25,9 @@ export interface UseWorkspaceOperationsProps {
   onNewWorkspace: (sectionId: string | null) => void
   onRefreshWorkspaces: () => void | Promise<void>
   onDeleteWorkspace: (deletedId: string, nextWorkspaceId: string | null) => void
+  onConfirmDelete?: (workspaceId: string) => Promise<boolean>
+  onConfirmArchive?: (workspaceId: string) => Promise<boolean>
+  onPostArchiveWorkspace?: (workspaceId: string) => void
 }
 
 export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
@@ -173,7 +176,13 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     const archivedSection = store.getArchivedSection()
     if (!archivedSection)
       return
+    if (props.onConfirmArchive) {
+      const confirmed = await props.onConfirmArchive(workspaceId)
+      if (!confirmed)
+        return
+    }
     await moveWorkspace(workspaceId, archivedSection.id)
+    props.onPostArchiveWorkspace?.(workspaceId)
   }
 
   const unarchiveWorkspace = async (workspaceId: string) => {
@@ -201,9 +210,11 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
   }
 
   const deleteWorkspace = async (workspaceId: string) => {
-    // eslint-disable-next-line no-alert
-    if (!confirm('Are you sure you want to delete this workspace? This cannot be undone.'))
-      return
+    if (props.onConfirmDelete) {
+      const confirmed = await props.onConfirmDelete(workspaceId)
+      if (!confirmed)
+        return
+    }
     const done = startWorkspaceLoading(workspaceId)
     try {
       await workspaceClient.deleteWorkspace({ workspaceId })
@@ -315,6 +326,13 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
       position = lastItem ? mid(lastItem.position, '') : mid('', '')
     }
     else {
+      return
+    }
+
+    // If dragging to the archived section, use the archive flow with confirmation
+    const resolvedTargetSection = store.state.sections.find(s => s.id === targetSectionId)
+    if (resolvedTargetSection?.sectionType === SectionType.WORKSPACES_ARCHIVED) {
+      archiveWorkspace(wsId)
       return
     }
 
