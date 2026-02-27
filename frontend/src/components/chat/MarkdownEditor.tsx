@@ -10,14 +10,18 @@ import {
   commonmark,
   createCodeBlockCommand,
   createCodeBlockInputRule as milkdownCreateCodeBlockInputRule,
+  emphasisStarInputRule as milkdownEmphasisStarInputRule,
+  emphasisUnderscoreInputRule as milkdownEmphasisUnderscoreInputRule,
+  inlineCodeInputRule as milkdownInlineCodeInputRule,
   insertHrInputRule as milkdownInsertHrInputRule,
+  strongInputRule as milkdownStrongInputRule,
   toggleInlineCodeCommand,
 } from '@milkdown/preset-commonmark'
-import { gfm } from '@milkdown/preset-gfm'
+import { gfm, strikethroughInputRule as milkdownStrikethroughInputRule } from '@milkdown/preset-gfm'
 import { TextSelection } from '@milkdown/prose/state'
 import { callCommand, replaceAll } from '@milkdown/utils'
 import { createEffect, createSignal, on, onCleanup, onMount } from 'solid-js'
-import { createBulletListAfterHardBreakInputRule, createCodeBlockInputRule, createHrInputRule, createLinkInputRule, createOrderedListAfterHardBreakInputRule } from '~/lib/editor/inputRules'
+import { createBulletListAfterHardBreakInputRule, createCodeBlockInputRule, createEmphasisStarInputRule, createEmphasisUnderscoreInputRule, createHrInputRule, createInlineCodeInputRule, createLinkInputRule, createOrderedListAfterHardBreakInputRule, createStrikethroughInputRule, createStrongInputRule } from '~/lib/editor/inputRules'
 import {
   createBlockquoteBackspacePlugin,
   createCodeBlockBackspacePlugin,
@@ -29,6 +33,7 @@ import {
   createListItemEnterPlugin,
   createMarkdownPastePlugin,
   createPlaceholderPlugin,
+  createSelectionWrapPlugin,
   createSendOnEnterPlugin,
   createSuppressTextSubstitutionPlugin,
   createTabKeyPlugin,
@@ -307,11 +312,17 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       const codeSpanEscapePlugin = createCodeSpanEscapePlugin()
       const markdownPastePlugin = createMarkdownPastePlugin()
       const linkBoundaryPlugin = createLinkBoundaryPlugin()
+      const selectionWrapPlugin = createSelectionWrapPlugin()
       const linkInputRule = createLinkInputRule()
       const codeBlockInputRule = createCodeBlockInputRule()
       const hrInputRule = createHrInputRule()
       const bulletListAfterHardBreakRule = createBulletListAfterHardBreakInputRule()
       const orderedListAfterHardBreakRule = createOrderedListAfterHardBreakInputRule()
+      const strongInputRule = createStrongInputRule()
+      const emphasisStarInputRule = createEmphasisStarInputRule()
+      const emphasisUnderscoreInputRule = createEmphasisUnderscoreInputRule()
+      const inlineCodeInputRule = createInlineCodeInputRule()
+      const strikethroughInputRule = createStrikethroughInputRule()
 
       const shikiParser = createShikiParser(shikiHighlighter, {
         themes: { light: 'github-light', dark: 'github-dark' },
@@ -353,8 +364,16 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
             }
           })
         })
-        .use(commonmark.filter(p => p !== milkdownInsertHrInputRule && p !== milkdownCreateCodeBlockInputRule))
-        .use(gfm)
+        .use(selectionWrapPlugin)
+        .use(commonmark.filter(p =>
+          p !== milkdownInsertHrInputRule
+          && p !== milkdownCreateCodeBlockInputRule
+          && p !== milkdownStrongInputRule
+          && p !== milkdownEmphasisStarInputRule
+          && p !== milkdownEmphasisUnderscoreInputRule
+          && p !== milkdownInlineCodeInputRule,
+        ))
+        .use(gfm.filter(p => p !== milkdownStrikethroughInputRule))
         .use(history)
         .use(markdownPastePlugin)
         .use(clipboard)
@@ -379,6 +398,11 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         .use(bulletListAfterHardBreakRule)
         .use(orderedListAfterHardBreakRule)
         .use(codeBlockInputRule)
+        .use(strongInputRule)
+        .use(emphasisStarInputRule)
+        .use(emphasisUnderscoreInputRule)
+        .use(inlineCodeInputRule)
+        .use(strikethroughInputRule)
         .create()
     }
 

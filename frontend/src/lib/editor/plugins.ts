@@ -813,6 +813,115 @@ export function createCodeBlockEnterPlugin() {
   })
 }
 
+/** Bracket pair map: opening → closing, closing → opening (for wrap detection). */
+const BRACKET_PAIRS: Record<string, string> = {
+  '(': ')',
+  ')': '(',
+  '[': ']',
+  ']': '[',
+  '{': '}',
+  '}': '{',
+}
+
+/** Characters that toggle marks when typed with a selection (outside code_block). */
+const MARK_TOGGLE_CHARS: Record<string, string> = {
+  '`': 'inlineCode',
+  '*': 'strong',
+  '_': 'emphasis',
+  '~': 'strike_through',
+}
+
+/**
+ * When text is selected and the user types a bracket or mark-toggle character,
+ * wrap the selection with brackets or toggle the corresponding mark.
+ */
+export function createSelectionWrapPlugin() {
+  return $prose(() => {
+    return new Plugin({
+      key: new PluginKey('selection-wrap'),
+      props: {
+        handleTextInput(view, _from, _to, text) {
+          const { state } = view
+          const { from, to, empty } = state.selection
+          if (empty)
+            return false
+
+          const inCodeBlock = state.selection.$from.parent.type.name === 'code_block'
+
+          // Bracket wrapping — works everywhere including code blocks
+          if (BRACKET_PAIRS[text]) {
+            const open = text === ')' || text === ']' || text === '}' ? BRACKET_PAIRS[text] : text
+            const close = BRACKET_PAIRS[open]
+            // Insert close bracket first (higher pos) to avoid mapping issues
+            const tr = state.tr
+            tr.insertText(close, to)
+            tr.insertText(open, from)
+            // Select the original text between the brackets
+            tr.setSelection(TextSelection.create(tr.doc, from + 1, to + 1))
+            view.dispatch(tr)
+            return true
+          }
+
+          // Mark toggles — do NOT work inside code blocks
+          const markName = MARK_TOGGLE_CHARS[text]
+          if (markName && !inCodeBlock) {
+            const markType = state.schema.marks[markName]
+            if (!markType)
+              return false
+
+            const hasMark = state.doc.rangeHasMark(from, to, markType)
+            const tr = state.tr
+            if (hasMark) {
+              tr.removeMark(from, to, markType)
+            }
+            else {
+              // For inline code, remove other marks first (matches toggleInlineCodeCommand)
+              if (markName === 'inlineCode') {
+                for (const name of Object.keys(state.schema.marks)) {
+                  if (name !== 'inlineCode') {
+                    tr.removeMark(from, to, state.schema.marks[name])
+                  }
+                }
+              }
+              tr.addMark(from, to, markType.create())
+            }
+            // Keep selection on the text
+            tr.setSelection(TextSelection.create(tr.doc, from, to))
+            view.dispatch(tr)
+            return true
+          }
+
+          return false
+        },
+      },
+    })
+  })
+}
+
+/**
+ * Strip code delimiters (fenced code blocks, inline backticks, surrounding `<br />` tags)
+ * from pasted text so that raw content can be inserted into code contexts.
+ */
+function stripCodeDelimiters(text: string): string {
+  let result = text
+
+  // Strip leading <br />\n and trailing \n<br />
+  result = result.replace(/^<br \/>\n/, '').replace(/\n<br \/>$/, '')
+
+  // Strip fenced code blocks: ```lang\n...\n``` → content between fences
+  // Handle multiple fences by replacing each pair
+  result = result.replace(/^```[^\n]*\n([\s\S]*?)```$/gm, '$1')
+  // Trim trailing newline left by fence stripping
+  if (result !== text) {
+    result = result.replace(/\n$/, '')
+  }
+
+  // Strip inline backtick pairs: `content` → content (including double-backtick syntax)
+  result = result.replace(/``([^`].*?)``|`([^`]+)`/g, (_m, g1, g2) => g1 ?? g2)
+
+  return result
+}
+
 /**
  * Override paste to always parse plain text as markdown.
  * Milkdown's clipboard plugin only uses its markdown parser when
@@ -847,10 +956,23 @@ export function createMarkdownPastePlugin() {
           if (!editable)
             return false
 
-          // Don't handle paste inside code blocks
-          const currentNode = view.state.selection.$from.node()
-          if (currentNode.type.spec.code)
-            return false
+          // Inside code blocks or inline code: strip code delimiters from pasted text
+          const { $from } = view.state.selection
+          const inCodeBlock = $from.parent.type.spec.code
+          const codeMarkType = schema.marks.inlineCode
+          const inInlineCode = codeMarkType
+            && ((view.state.storedMarks ?? $from.marks()).some(m => m.type === codeMarkType))
+          if (inCodeBlock || inInlineCode) {
+            const plain = clipboardData.getData('text/plain')
+            if (!plain)
+              return false
+            const stripped = stripCodeDelimiters(plain)
+            if (stripped === plain)
+              return false
+            event.preventDefault()
+            view.dispatch(view.state.tr.insertText(stripped))
+            return true
+          }
 
           const text = clipboardData.getData('text/plain')
           if (!text)
