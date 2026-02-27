@@ -205,9 +205,18 @@ task test-integration   # Integration tests
 task test-e2e           # End-to-end tests (Playwright)
 ```
 
-Run a specific E2E test file:
+Run specific tests by passing arguments after `--`:
 ```bash
-cd frontend && bun run test:e2e tests/e2e/25-chat-message-rendering.spec.ts
+# Go tests: -run <regex> <packages>
+task test-backend -- -run TestMyFunction ./internal/hub/...
+task test-integration -- -run TestMyFunction ./internal/hub/...
+
+# Frontend unit tests: pass a file path to Vitest
+task test-frontend -- src/lib/validate.test.ts
+
+# E2E tests: pass a file path or --grep <pattern> to Playwright
+task test-e2e -- tests/e2e/25-chat-message-rendering.spec.ts
+task test-e2e -- --grep "should persist theme"
 ```
 
 ### Linting
