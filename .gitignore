@@ -19,6 +19,7 @@ node_modules/
 .output/
 frontend/dist/
 frontend/public/leapmux-service-worker-*
+frontend/app.config.timestamp_*
 
 # IDE
 .idea/
