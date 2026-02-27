@@ -78,6 +78,23 @@ export const contextClearedRenderer: MessageContentRenderer = {
   },
 }
 
+/** Handles agent renamed notifications: {"type":"agent_renamed","title":"..."} */
+export const agentRenamedRenderer: MessageContentRenderer = {
+  render(parsed, _role, _context) {
+    if (!isObject(parsed) || parsed.type !== 'agent_renamed')
+      return null
+    const title = typeof parsed.title === 'string' ? parsed.title : ''
+    if (!title)
+      return null
+    return (
+      <div class={controlResponseMessage}>
+        {'Renamed to '}
+        {title}
+      </div>
+    )
+  },
+}
+
 /** Handles rate limit notifications: {"type":"rate_limit","rate_limit_info":{...}} */
 export const rateLimitRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
@@ -301,6 +318,11 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
     }
     else if (t === 'interrupted') {
       interrupted = true
+    }
+    else if (t === 'agent_renamed') {
+      const title = typeof m.title === 'string' ? m.title : ''
+      if (title)
+        settingsParts.push(`Renamed to ${title}`)
     }
     else if (t === 'system' && st === 'status') {
       compacting = m.status === 'compacting'

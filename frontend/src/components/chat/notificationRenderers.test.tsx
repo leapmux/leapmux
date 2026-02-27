@@ -104,3 +104,40 @@ describe('renderNotificationThread: compaction vs context_cleared ordering', () 
     expect(text).toContain('Model')
   })
 })
+
+describe('renderNotificationThread: agent_renamed', () => {
+  it('standalone agent_renamed shows "Renamed to <title>"', () => {
+    const messages = [{ type: 'agent_renamed', title: 'My Plan' }]
+    expect(renderText(messages)).toBe('Renamed to My Plan')
+  })
+
+  it('agent_renamed with empty title renders nothing', () => {
+    const messages = [{ type: 'agent_renamed', title: '' }]
+    expect(renderText(messages)).toBe('')
+  })
+
+  it('agent_renamed with missing title renders nothing', () => {
+    const messages = [{ type: 'agent_renamed' }]
+    expect(renderText(messages)).toBe('')
+  })
+
+  it('agent_renamed combined with settings_changed in thread', () => {
+    const messages = [
+      { type: 'settings_changed', changes: { model: { old: 'A', new: 'B' } } },
+      { type: 'agent_renamed', title: 'Debug Session' },
+    ]
+    const text = renderText(messages)
+    expect(text).toContain('Model')
+    expect(text).toContain('Renamed to Debug Session')
+  })
+
+  it('agent_renamed combined with interrupted in thread', () => {
+    const messages = [
+      { type: 'agent_renamed', title: 'Test Plan' },
+      { type: 'interrupted' },
+    ]
+    const text = renderText(messages)
+    expect(text).toContain('Renamed to Test Plan')
+    expect(text).toContain('Interrupted')
+  })
+})
