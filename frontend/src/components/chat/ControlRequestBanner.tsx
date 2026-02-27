@@ -7,10 +7,6 @@ import { AskUserQuestionActions, AskUserQuestionContent } from './controls/AskUs
 import { ExitPlanModeActions, ExitPlanModeContent } from './controls/ExitPlanModeControl'
 import { GenericToolActions, GenericToolContent } from './controls/GenericToolControl'
 
-export { trySubmitAskUserQuestion } from './controls/AskUserQuestionControl'
-// Re-export types and functions used by ChatView
-export type { AskQuestionState, EditorContentRef } from './controls/types'
-
 /** Renders control request content only (title + details), for the banner slot. */
 export const ControlRequestContent: Component<ContentProps> = (props) => {
   const toolName = () => props.request?.payload ? getToolName(props.request.payload) : ''

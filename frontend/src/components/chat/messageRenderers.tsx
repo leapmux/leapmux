@@ -51,8 +51,6 @@ import {
   toolUseIcon,
 } from './toolStyles.css'
 
-// Re-export for external consumers
-export { getAssistantContent, isObject, relativizePath, tildify } from './messageUtils'
 export { ToolHeaderActions }
 
 /** Context passed to renderers from MessageBubble. */
