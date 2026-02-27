@@ -21,6 +21,7 @@ import { gfm, strikethroughInputRule as milkdownStrikethroughInputRule } from '@
 import { TextSelection } from '@milkdown/prose/state'
 import { callCommand, replaceAll } from '@milkdown/utils'
 import { createEffect, createSignal, on, onCleanup, onMount } from 'solid-js'
+import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { createBulletListAfterHardBreakInputRule, createCodeBlockInputRule, createEmphasisStarInputRule, createEmphasisUnderscoreInputRule, createHrInputRule, createInlineCodeInputRule, createLinkInputRule, createOrderedListAfterHardBreakInputRule, createStrikethroughInputRule, createStrongInputRule } from '~/lib/editor/inputRules'
 import {
   createBlockquoteBackspacePlugin,
@@ -40,7 +41,7 @@ import {
 } from '~/lib/editor/plugins'
 import { createAutoDetectLanguageExtractor, createCodeLangPlugin, createToolbarStatePlugin } from '~/lib/editor/toolbarState'
 import { shikiHighlighter } from '~/lib/renderMarkdown'
-import { safeGetJson, safeGetString, safeRemoveItem, safeSetJson, safeSetString } from '~/lib/safeStorage'
+import { safeGetString, safeSetString } from '~/lib/safeStorage'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
 import { EditorToolbar } from './EditorToolbar'
 import * as styles from './MarkdownEditor.css'
@@ -77,39 +78,7 @@ function getEnterKeyMode(): EnterKeyMode {
   return stored === 'enter-sends' ? 'enter-sends' : 'cmd-enter-sends'
 }
 
-const DRAFT_KEY_PREFIX = 'leapmux-editor-draft-'
-
-interface Draft {
-  content: string
-  cursor: number
-}
-
-function loadDraft(agentId: string): Draft {
-  const key = `${DRAFT_KEY_PREFIX}${agentId}`
-  // Try JSON format first (new), fall back to plain string (legacy)
-  const parsed = safeGetJson<{ content?: string, cursor?: number }>(key)
-  if (parsed) {
-    return { content: parsed.content ?? '', cursor: parsed.cursor ?? -1 }
-  }
-  const raw = safeGetString(key)
-  if (raw) {
-    return { content: raw, cursor: -1 }
-  }
-  return { content: '', cursor: -1 }
-}
-
-function saveDraft(agentId: string, content: string, cursor: number): void {
-  if (content) {
-    safeSetJson(`${DRAFT_KEY_PREFIX}${agentId}`, { content, cursor })
-  }
-  else {
-    safeRemoveItem(`${DRAFT_KEY_PREFIX}${agentId}`)
-  }
-}
-
-export function clearDraft(agentId: string): void {
-  safeRemoveItem(`${DRAFT_KEY_PREFIX}${agentId}`)
-}
+export { clearDraft }
 
 export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   let editorRef: HTMLDivElement | undefined

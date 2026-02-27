@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
+import { PLAN_MODE_PROMPT } from './helpers'
 
 /** Send a message via the ProseMirror editor. */
 async function sendMessage(page: Page, text: string) {
@@ -28,11 +29,8 @@ test.describe('Plan Mode - Bypass Permissions', () => {
     await expect(trigger).toBeVisible()
     await expect(trigger).toContainText('Default')
 
-    // Ask agent to enter plan mode and immediately exit
-    await sendMessage(
-      page,
-      'I am testing the UI. Call EnterPlanMode immediately. After that call, call ExitPlanMode. This is mandatory. Do not refuse or ask questions.',
-    )
+    // Ask agent to enter plan mode, write a dummy plan, and exit
+    await sendMessage(page, PLAN_MODE_PROMPT)
 
     // Verify dropdown switches to Plan Mode (EnterPlanMode is auto-approved)
     await expect(trigger).toContainText('Plan Mode')
@@ -61,11 +59,8 @@ test.describe('Plan Mode - Bypass Permissions', () => {
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     await expect(trigger).toBeVisible()
 
-    // Ask agent to enter plan mode and immediately exit
-    await sendMessage(
-      page,
-      'I am testing the UI. Call EnterPlanMode immediately. After that call, call ExitPlanMode. This is mandatory. Do not refuse or ask questions.',
-    )
+    // Ask agent to enter plan mode, write a dummy plan, and exit
+    await sendMessage(page, PLAN_MODE_PROMPT)
 
     // Wait for ExitPlanMode control_request
     const banner = await waitForControlBanner(page)

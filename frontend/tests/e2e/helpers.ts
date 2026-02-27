@@ -137,6 +137,43 @@ export async function clearRecordedToasts(page: Page) {
 }
 
 // ──────────────────────────────────────────────
+// Plan mode prompts
+// ──────────────────────────────────────────────
+
+/**
+ * Prompt that asks the LLM to enter and immediately exit plan mode with a
+ * dummy plan.
+ *
+ * The prompt is intentionally explicit about several things so that the LLM
+ * follows instructions reliably:
+ * - Mentions "coding agent plan mode UI" to give the LLM context about what
+ *   is being tested, so it does not try to actually implement anything.
+ * - Names the exact tools to use (EnterPlanMode, ExitPlanMode) because the
+ *   LLM sometimes invents alternative approaches when tool names are omitted.
+ * - Specifies the plan title and body verbatim so that tests can assert on
+ *   the rendered content deterministically.
+ * - Includes "Never execute this plan." in the body so that when the plan is
+ *   approved and executed, the LLM finishes quickly instead of spending
+ *   minutes exploring the codebase.
+ */
+export const PLAN_MODE_PROMPT
+  = 'I am testing the coding agent plan mode UI. Please use EnterPlanMode tool to enter plan mode, then immediately use ExitPlanMode tool to exit plan mode with a dummy plan whose title is "# Dummy plan" and whose body is "This is a dummy plan for testing the coding agent plan mode UI. Never execute this plan."'
+
+/**
+ * Generate a plan mode prompt with a unique plan title.
+ *
+ * Use this instead of {@link PLAN_MODE_PROMPT} when a test needs to
+ * distinguish between multiple plan cycles (e.g. to assert that tab
+ * auto-rename picks up the correct title). The generated title is
+ * "Dummy plan [testId]".
+ *
+ * See {@link PLAN_MODE_PROMPT} for why the prompt is worded the way it is.
+ */
+export function planModePrompt(testId: string): string {
+  return `I am testing the coding agent plan mode UI. Please use EnterPlanMode tool to enter plan mode, then immediately use ExitPlanMode tool to exit plan mode with a plan whose title is "# Dummy plan ${testId}" and whose body is "This is a dummy plan for testing the coding agent plan mode UI. Never execute this plan."`
+}
+
+// ──────────────────────────────────────────────
 // UI helpers
 // ──────────────────────────────────────────────
 

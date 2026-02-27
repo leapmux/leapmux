@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
+import { planModePrompt } from './helpers'
 
 /** Send a message via the ProseMirror editor. */
 async function sendMessage(page: Page, text: string) {
@@ -25,27 +26,26 @@ test.describe('Plan Mode Tab Auto-Naming', () => {
     await expect(agentTab).toBeVisible()
     await expect(agentTab).toContainText('Agent')
 
-    // ── Step 2: Enter plan mode and write a plan file ──
-    // Ask the agent to enter plan mode, write a plan, then exit plan mode.
-    await sendMessage(
-      page,
-      'I am testing the UI. Call EnterPlanMode immediately. Then write a plan file to ~/.claude/plans/ with the heading "# Add dark mode toggle". Then call ExitPlanMode. This is mandatory. Do not refuse or ask questions.',
-    )
+    // ── Step 2: Enter plan mode and exit with a plan ──
+    // The plan body includes "Never execute this plan." so that after
+    // approval the plan execution restart finishes quickly instead of
+    // the agent spending minutes exploring the codebase.
+    await sendMessage(page, planModePrompt('first'))
 
     // Wait for the tab title to update from "Agent 1" to the plan's heading.
-    // The title should contain the plan heading (extracted from the first line).
-    await expect(agentTab).toContainText('Add dark mode toggle', { timeout: 60_000 })
+    await expect(agentTab).toContainText('Dummy plan first', { timeout: 60_000 })
 
-    // ── Step 3: Approve the plan so the agent finishes ──
+    // ── Step 3: Approve the plan ──
     const exitBanner = await waitForControlBanner(page)
     await expect(exitBanner.getByText('Plan Ready for Review')).toBeVisible()
     const approveBtn = page.locator('[data-testid="plan-approve-btn"]')
     await expect(approveBtn).toBeEnabled()
     await approveBtn.click()
 
-    // Wait for the agent to finish its turn.
-    await page.waitForTimeout(1000)
-    await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible({ timeout: 60_000 })
+    // Wait for plan execution to start and then finish. The agent sees
+    // "Never execute this plan." in the plan content and finishes quickly.
+    await expect(page.getByText('Executing plan')).toBeVisible({ timeout: 30_000 })
+    await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible({ timeout: 120_000 })
 
     // ── Step 4: Manually rename the tab ──
     await agentTab.dblclick()
@@ -57,19 +57,16 @@ test.describe('Plan Mode Tab Auto-Naming', () => {
     // Verify manual rename took effect.
     await expect(agentTab).toContainText('My Custom Name')
 
-    // ── Step 5: Send another message that updates the plan file ──
-    await sendMessage(
-      page,
-      'I am testing the UI. Call EnterPlanMode. Then update the plan file heading to "# Implement dark mode". Then call ExitPlanMode. This is mandatory. Do not refuse or ask questions.',
-    )
+    // ── Step 5: Enter plan mode again with a different plan heading ──
+    await sendMessage(page, planModePrompt('second'))
 
     // Wait for ExitPlanMode banner so we know the plan file was written.
     const exitBanner2 = await waitForControlBanner(page)
     await expect(exitBanner2.getByText('Plan Ready for Review')).toBeVisible()
 
     // ── Step 6: Verify the tab title did NOT change ──
-    // Manual rename should be respected.
+    // Manual rename should be respected; auto-rename is skipped.
     await expect(agentTab).toContainText('My Custom Name')
-    await expect(agentTab).not.toContainText('Implement dark mode')
+    await expect(agentTab).not.toContainText('Dummy plan second')
   })
 })

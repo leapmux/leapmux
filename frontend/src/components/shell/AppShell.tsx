@@ -1,8 +1,6 @@
 import type { Component, ParentComponent } from 'solid-js'
 import type { CheckWorktreeStatusResponse } from '~/generated/leapmux/v1/git_pb'
 import type { Sidebar } from '~/generated/leapmux/v1/section_pb'
-import type { Tab } from '~/stores/tab.store'
-import type { PermissionMode } from '~/utils/controlResponse'
 import Resizable from '@corvu/resizable'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
 import Bot from 'lucide-solid/icons/bot'
@@ -49,27 +47,12 @@ import { createTerminalStore } from '~/stores/terminal.store'
 import { createWorkspaceStore } from '~/stores/workspace.store'
 import { dialogCompact } from '~/styles/shared.css'
 import { isAgentWorking } from '~/utils/agentState'
-import { buildInterruptRequest, buildSetPermissionModeRequest, DEFAULT_EFFORT, DEFAULT_MODEL } from '~/utils/controlResponse'
 import * as styles from './AppShell.css'
 import { SectionDragProvider } from './SectionDragContext'
 import { Tile } from './Tile'
 import { TilingLayout } from './TilingLayout'
-
-/** Find the smallest unused number for auto-naming tabs (gap-filling). */
-function nextTabNumber(tabs: Tab[], type: TabType, prefix: string): number {
-  const used = new Set<number>()
-  for (const tab of tabs) {
-    if (tab.type === type && tab.title) {
-      const match = tab.title.match(new RegExp(`^${prefix} (\\d+)$`))
-      if (match)
-        used.add(Number(match[1]))
-    }
-  }
-  let n = 1
-  while (used.has(n))
-    n++
-  return n
-}
+import { nextTabNumber, useAgentOperations } from './useAgentOperations'
+import { useTerminalOperations } from './useTerminalOperations'
 
 export const AppShell: ParentComponent = (props) => {
   const auth = useAuth()
@@ -95,8 +78,6 @@ export const AppShell: ParentComponent = (props) => {
   const [preselectedWorkerId, setPreselectedWorkerId] = createSignal<string | undefined>(undefined)
   const [newWorkspaceTargetSectionId, setNewWorkspaceTargetSectionId] = createSignal<string | null>(null)
   const [workspaceLoading, setWorkspaceLoading] = createSignal(false)
-  const [availableShells, setAvailableShells] = createSignal<string[]>([])
-  const [defaultShell, setDefaultShell] = createSignal('')
   const [showResumeDialog, setShowResumeDialog] = createSignal(false)
   const [showNewAgentDialog, setShowNewAgentDialog] = createSignal(false)
   const [showNewTerminalDialog, setShowNewTerminalDialog] = createSignal(false)
@@ -384,28 +365,6 @@ export const AppShell: ParentComponent = (props) => {
     }
   }
 
-  // Load available shells when active tab's worker changes
-  createEffect(() => {
-    const ws = activeWorkspace()
-    if (!ws)
-      return
-    const ctx = getCurrentTabContext()
-    if (!ctx.workerId) {
-      setAvailableShells([])
-      setDefaultShell('')
-      return
-    }
-    terminalClient.listAvailableShells({ orgId: org.orgId(), workspaceId: ws.id, workerId: ctx.workerId })
-      .then((resp) => {
-        setAvailableShells(resp.shells)
-        setDefaultShell(resp.defaultShell)
-      })
-      .catch(() => {
-        setAvailableShells([])
-        setDefaultShell('')
-      })
-  })
-
   // Focus callback for the markdown editor (shared editor panel)
   let focusEditor: (() => void) | undefined
 
@@ -418,119 +377,42 @@ export const AppShell: ParentComponent = (props) => {
   // Container height for the center panel (used for max editor height calculation)
   const [centerPanelHeight, setCenterPanelHeight] = createSignal(0)
 
-  // Open a new agent in the given workspace
-  const openAgentInWorkspace = async (workspaceId: string, workerId: string, workingDir: string, sessionId?: string) => {
-    try {
-      const title = `Agent ${nextTabNumber(tabStore.state.tabs, TabType.AGENT, 'Agent')}`
-      const resp = await agentClient.openAgent({
-        workspaceId,
-        model: DEFAULT_MODEL,
-        title,
-        systemPrompt: '',
-        workerId,
-        workingDir,
-        ...(sessionId ? { agentSessionId: sessionId } : {}),
-      }, agentCallTimeout(false))
-      if (resp.agent) {
-        const tileId = layoutStore.focusedTileId()
-        agentStore.addAgent(resp.agent)
-        tabStore.addTab({
-          type: TabType.AGENT,
-          id: resp.agent.id,
-          title,
-          tileId,
-          workerId: resp.agent.workerId,
-          workingDir: resp.agent.workingDir,
-        })
-        tabStore.setActiveTabForTile(tileId, TabType.AGENT, resp.agent.id)
-        persistLayout()
-        // Focus the editor after the reactive updates propagate to the DOM.
-        requestAnimationFrame(() => focusEditor?.())
-      }
-    }
-    catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to open agent', 'danger')
-    }
-  }
+  // Agent operations hook
+  const agentOps = useAgentOperations({
+    agentStore,
+    chatStore,
+    controlStore,
+    tabStore,
+    layoutStore,
+    settingsLoading,
+    isActiveWorkspaceMutatable,
+    activeWorkspace,
+    getCurrentTabContext,
+    pendingWorktreeChoice: () => pendingWorktreeChoice,
+    setShowNewAgentDialog,
+    setNewAgentLoading,
+    setShowResumeDialog,
+    persistLayout,
+    focusEditor: () => focusEditor?.(),
+    forceScrollToBottom: () => forceScrollToBottom?.(),
+  })
 
-  // Open a new agent in the active workspace (for click handlers)
-  const handleOpenAgent = async () => {
-    if (!isActiveWorkspaceMutatable())
-      return
-    const ws = activeWorkspace()
-    if (!ws)
-      return
-    const ctx = getCurrentTabContext()
-    if (!ctx.workerId) {
-      setShowNewAgentDialog(true)
-      return
-    }
-    setNewAgentLoading(true)
-    try {
-      await openAgentInWorkspace(ws.id, ctx.workerId, ctx.workingDir)
-    }
-    finally {
-      setNewAgentLoading(false)
-    }
-  }
-
-  // Open a terminal with a specific shell
-  const handleOpenTerminalWithShell = async (shell: string) => {
-    if (!isActiveWorkspaceMutatable())
-      return
-    const ws = activeWorkspace()
-    if (!ws)
-      return
-    const ctx = getCurrentTabContext()
-    if (!ctx.workerId) {
-      setShowNewTerminalDialog(true)
-      return
-    }
-    setNewShellLoading(true)
-    try {
-      const title = `Terminal ${nextTabNumber(tabStore.state.tabs, TabType.TERMINAL, 'Terminal')}`
-      const resp = await terminalClient.openTerminal({
-        orgId: org.orgId(),
-        workspaceId: ws.id,
-        cols: 80,
-        rows: 24,
-        workingDir: ctx.workingDir,
-        shell,
-        workerId: ctx.workerId,
-      })
-
-      const tileId = layoutStore.focusedTileId()
-      terminalStore.addTerminal({ id: resp.terminalId, workspaceId: ws.id, workerId: ctx.workerId, workingDir: ctx.workingDir })
-      tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir })
-      tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, resp.terminalId)
-      persistLayout()
-    }
-    catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to open terminal', 'danger')
-    }
-    finally {
-      setNewShellLoading(false)
-    }
-  }
-
-  // Resume an agent from an existing session ID
-  const handleResumeAgent = async (sessionId: string, workerId: string) => {
-    if (!isActiveWorkspaceMutatable())
-      return
-    const ws = activeWorkspace()
-    if (!ws)
-      return
-    try {
-      const ctx = getCurrentTabContext()
-      await openAgentInWorkspace(ws.id, workerId, ctx.workingDir || '~', sessionId)
-    }
-    catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to resume session', 'danger')
-    }
-    finally {
-      setShowResumeDialog(false)
-    }
-  }
+  // Terminal operations hook
+  const termOps = useTerminalOperations({
+    org,
+    tabStore,
+    terminalStore,
+    layoutStore,
+    activeWorkspace,
+    isActiveWorkspaceMutatable,
+    getCurrentTabContext,
+    setShowNewTerminalDialog,
+    setNewTerminalLoading,
+    setNewShellLoading,
+    pendingWorktreeChoice: () => pendingWorktreeChoice,
+    persistLayout,
+    apiCallTimeout,
+  })
 
   // Load agents and set up watchers when active workspace changes.
   // Use `on()` to explicitly track only `activeWorkspaceId` and `orgId` —
@@ -733,141 +615,6 @@ export const AppShell: ParentComponent = (props) => {
 
   const showTodos = createMemo(() => activeTabType() === TabType.AGENT && activeTodos().length > 0)
 
-  // Handle control responses (permission grant/deny) for agent prompts
-  const handleControlResponse = async (agentId: string, content: Uint8Array) => {
-    forceScrollToBottom?.()
-    try {
-      const agent = agentStore.state.agents.find(a => a.id === agentId)
-      const isActive = agent?.status === AgentStatus.ACTIVE
-      await agentClient.sendControlResponse({ agentId, content }, agentCallTimeout(isActive))
-      // Remove from pending after successful send.
-      const parsed = JSON.parse(new TextDecoder().decode(content))
-      const requestId = parsed?.response?.request_id
-      if (requestId) {
-        controlStore.removeRequest(agentId, requestId)
-      }
-    }
-    catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to send response', 'danger')
-    }
-  }
-
-  // Change model or effort for the active agent (requires agent restart)
-  const handleModelOrEffortChange = async (field: 'model' | 'effort', value: string) => {
-    const agentId = agentStore.state.activeAgentId
-    if (!agentId)
-      return
-    const agent = agentStore.state.agents.find(a => a.id === agentId)
-    if (!agent)
-      return
-    const previous = agent[field] || (field === 'model' ? DEFAULT_MODEL : DEFAULT_EFFORT)
-    // Optimistic update
-    agentStore.updateAgent(agentId, { [field]: value })
-    settingsLoading.start()
-    try {
-      await agentClient.updateAgentSettings({
-        agentId,
-        model: field === 'model' ? value : '',
-        effort: field === 'effort' ? value : '',
-      }, agentCallTimeout(agent.status === AgentStatus.ACTIVE))
-      settingsLoading.stop()
-    }
-    catch (err) {
-      agentStore.updateAgent(agentId, { [field]: previous })
-      settingsLoading.stop()
-      showToast(err instanceof Error ? err.message : `Failed to change ${field}`, 'danger')
-    }
-  }
-
-  // Interrupt the active agent's current turn
-  const handleInterrupt = async () => {
-    const agentId = agentStore.state.activeAgentId
-    if (!agentId)
-      return
-    try {
-      await agentClient.sendAgentMessage({
-        agentId,
-        content: buildInterruptRequest(),
-      }, agentCallTimeout(true))
-    }
-    catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to interrupt', 'danger')
-    }
-  }
-
-  // Change permission mode for the active agent
-  const handlePermissionModeChange = async (mode: PermissionMode) => {
-    const agentId = agentStore.state.activeAgentId
-    if (!agentId)
-      return
-    const agent = agentStore.state.agents.find(a => a.id === agentId)
-    if (!agent)
-      return
-    const previousMode = (agent.permissionMode || 'default') as PermissionMode
-    // Optimistic update
-    agentStore.updateAgent(agentId, { permissionMode: mode })
-    settingsLoading.start()
-    try {
-      await agentClient.sendAgentMessage({
-        agentId,
-        content: buildSetPermissionModeRequest(mode),
-      }, agentCallTimeout(agent.status === AgentStatus.ACTIVE))
-      settingsLoading.stop()
-    }
-    catch (err) {
-      // Revert on failure
-      agentStore.updateAgent(agentId, { permissionMode: previousMode })
-      settingsLoading.stop()
-      showToast(err instanceof Error ? err.message : 'Failed to change permission mode', 'danger')
-    }
-  }
-
-  // Retry a failed message delivery
-  const handleRetryMessage = async (agentId: string, messageId: string) => {
-    try {
-      const retryAgent = agentStore.state.agents.find(a => a.id === agentId)
-      await agentClient.retryAgentMessage({ agentId, messageId }, agentCallTimeout(retryAgent?.status === AgentStatus.ACTIVE))
-      chatStore.clearMessageError(messageId)
-    }
-    catch (err) {
-      showToast(err instanceof Error ? err.message : 'Retry failed', 'danger')
-    }
-  }
-
-  // Delete a failed message
-  const handleDeleteMessage = async (agentId: string, messageId: string) => {
-    try {
-      await agentClient.deleteAgentMessage({ agentId, messageId })
-      chatStore.removeMessage(agentId, messageId)
-    }
-    catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to delete message', 'danger')
-    }
-  }
-
-  // Close an agent
-  const handleCloseAgent = async (agentId: string) => {
-    try {
-      controlStore.clearAgent(agentId)
-      const resp = await agentClient.closeAgent({ agentId })
-      agentStore.removeAgent(agentId)
-      tabStore.removeTab(TabType.AGENT, agentId)
-      // Auto-handle worktree cleanup if the pre-close check stored a choice.
-      if (resp.worktreeCleanupPending && resp.worktreeId) {
-        if (pendingWorktreeChoice === 'remove') {
-          gitClient.forceRemoveWorktree({ worktreeId: resp.worktreeId }, apiCallTimeout()).catch(() => {})
-        }
-        else {
-          // Default to keep (if somehow no choice was stored)
-          gitClient.keepWorktree({ worktreeId: resp.worktreeId }).catch(() => {})
-        }
-      }
-    }
-    catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to close agent', 'danger')
-    }
-  }
-
   // Workspace selection navigates to URL
   const handleSelectWorkspace = (id: string) => {
     closeAllSidebars()
@@ -905,108 +652,6 @@ export const AppShell: ParentComponent = (props) => {
       agentStore.clear()
       terminalStore.setTerminals([])
       tabStore.clear()
-    }
-  }
-
-  // Terminal handlers
-  const handleTerminalInput = async (terminalId: string, data: Uint8Array) => {
-    try {
-      const ws = activeWorkspace()
-      if (!ws || !terminalStore.hasTerminal(terminalId) || terminalStore.isExited(terminalId))
-        return
-      await terminalClient.sendInput({ orgId: org.orgId(), workspaceId: ws.id, terminalId, data })
-    }
-    catch {
-      // ignore input errors
-    }
-  }
-
-  const handleTerminalTitleChange = (terminalId: string, title: string) => {
-    terminalStore.updateTerminalTitle(terminalId, title)
-    tabStore.updateTabTitle(TabType.TERMINAL, terminalId, title)
-  }
-
-  const handleTerminalBell = (terminalId: string) => {
-    // Only notify if this terminal's tab is not active
-    const activeKey = tabStore.state.activeTabKey
-    const bellKey = `terminal:${terminalId}`
-    if (activeKey !== bellKey) {
-      tabStore.setNotification(TabType.TERMINAL, terminalId, true)
-    }
-  }
-
-  const handleTerminalResize = async (terminalId: string, cols: number, rows: number) => {
-    try {
-      const ws = activeWorkspace()
-      if (!ws || !terminalStore.hasTerminal(terminalId) || terminalStore.isExited(terminalId))
-        return
-      await terminalClient.resizeTerminal({ orgId: org.orgId(), workspaceId: ws.id, terminalId, cols, rows })
-    }
-    catch {
-      // ignore resize errors
-    }
-  }
-
-  const handleTerminalClose = async (terminalId: string) => {
-    try {
-      const ws = activeWorkspace()
-      if (!ws)
-        return
-      const resp = await terminalClient.closeTerminal({ orgId: org.orgId(), workspaceId: ws.id, terminalId })
-      // Auto-handle worktree cleanup if the pre-close check stored a choice.
-      if (resp.worktreeCleanupPending && resp.worktreeId) {
-        if (pendingWorktreeChoice === 'remove') {
-          gitClient.forceRemoveWorktree({ worktreeId: resp.worktreeId }, apiCallTimeout()).catch(() => {})
-        }
-        else {
-          gitClient.keepWorktree({ worktreeId: resp.worktreeId }).catch(() => {})
-        }
-      }
-    }
-    catch {
-      // Ignore errors (e.g. terminal already exited or not tracked by worker)
-    }
-    finally {
-      terminalStore.removeTerminal(terminalId)
-      tabStore.removeTab(TabType.TERMINAL, terminalId)
-    }
-  }
-
-  const handleOpenTerminal = async () => {
-    if (!isActiveWorkspaceMutatable())
-      return
-    const ws = activeWorkspace()
-    if (!ws)
-      return
-    const ctx = getCurrentTabContext()
-    if (!ctx.workerId) {
-      setShowNewTerminalDialog(true)
-      return
-    }
-    setNewTerminalLoading(true)
-    try {
-      const title = `Terminal ${nextTabNumber(tabStore.state.tabs, TabType.TERMINAL, 'Terminal')}`
-      const resp = await terminalClient.openTerminal({
-        orgId: org.orgId(),
-        workspaceId: ws.id,
-        cols: 80,
-        rows: 24,
-        workingDir: ctx.workingDir,
-        shell: '',
-        workerId: ctx.workerId,
-      })
-
-      const tileId = layoutStore.focusedTileId()
-      terminalStore.addTerminal({ id: resp.terminalId, workspaceId: ws.id, workerId: ctx.workerId, workingDir: ctx.workingDir })
-      tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir })
-      tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, resp.terminalId)
-      persistLayout()
-    }
-    catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to open terminal', 'danger')
-    }
-    finally {
-      setNewTerminalLoading(false)
     }
   }
 
@@ -1079,7 +724,7 @@ export const AppShell: ParentComponent = (props) => {
     addClosingTabKey(key)
     try {
       if (tab.type === TabType.AGENT) {
-        await handleCloseAgent(tab.id)
+        await agentOps.handleCloseAgent(tab.id)
       }
       else {
         // Clean up the terminal instance
@@ -1087,7 +732,7 @@ export const AppShell: ParentComponent = (props) => {
         if (instance) {
           instance.dispose()
         }
-        await handleTerminalClose(tab.id)
+        await termOps.handleTerminalClose(tab.id)
       }
     }
     finally {
@@ -1194,11 +839,11 @@ export const AppShell: ParentComponent = (props) => {
       }}
       hasActiveTabContext={!!getCurrentTabContext().workerId}
       isEditingRef={(fn) => { isTabEditing = fn }}
-      onNewAgent={handleOpenAgent}
-      onNewTerminal={handleOpenTerminal}
-      availableShells={availableShells()}
-      defaultShell={defaultShell()}
-      onNewTerminalWithShell={handleOpenTerminalWithShell}
+      onNewAgent={agentOps.handleOpenAgent}
+      onNewTerminal={termOps.handleOpenTerminal}
+      availableShells={termOps.availableShells()}
+      defaultShell={termOps.defaultShell()}
+      onNewTerminalWithShell={termOps.handleOpenTerminalWithShell}
       onResumeSession={() => setShowResumeDialog(true)}
       onNewAgentAdvanced={() => setShowNewAgentDialog(true)}
       onNewTerminalAdvanced={() => setShowNewTerminalDialog(true)}
@@ -1286,8 +931,8 @@ export const AppShell: ParentComponent = (props) => {
                     streamingText={chatStore.state.streamingText[agentId] ?? ''}
                     agentWorking={agentStore.state.agents.find(a => a.id === agentId)?.status === AgentStatus.ACTIVE && isAgentWorking(chatStore.getMessages(agentId)) && controlStore.getRequests(agentId).length === 0}
                     messageErrors={chatStore.state.messageErrors}
-                    onRetryMessage={messageId => handleRetryMessage(agentId, messageId)}
-                    onDeleteMessage={messageId => handleDeleteMessage(agentId, messageId)}
+                    onRetryMessage={messageId => agentOps.handleRetryMessage(agentId, messageId)}
+                    onDeleteMessage={messageId => agentOps.handleDeleteMessage(agentId, messageId)}
                     workingDir={agentStore.state.agents.find(a => a.id === agentId)?.workingDir}
                     homeDir={agentStore.state.agents.find(a => a.id === agentId)?.homeDir}
                     hasOlderMessages={chatStore.hasOlderMessages(agentId)}
@@ -1316,10 +961,10 @@ export const AppShell: ParentComponent = (props) => {
               terminals={tileTerminals()}
               activeTerminalId={terminalTab()?.id ?? null}
               visible={!!terminalTab()}
-              onInput={handleTerminalInput}
-              onResize={handleTerminalResize}
-              onTitleChange={handleTerminalTitleChange}
-              onBell={handleTerminalBell}
+              onInput={termOps.handleTerminalInput}
+              onResize={termOps.handleTerminalResize}
+              onTitleChange={termOps.handleTerminalTitleChange}
+              onBell={termOps.handleTerminalBell}
             />
           </div>
         </Show>
@@ -1348,7 +993,7 @@ export const AppShell: ParentComponent = (props) => {
                   data-testid="empty-tile-open-agent"
                   onClick={() => {
                     layoutStore.setFocusedTile(tileId)
-                    handleOpenAgent()
+                    agentOps.handleOpenAgent()
                   }}
                 >
                   <Bot size={14} />
@@ -1360,7 +1005,7 @@ export const AppShell: ParentComponent = (props) => {
                   data-testid="empty-tile-open-terminal"
                   onClick={() => {
                     layoutStore.setFocusedTile(tileId)
-                    handleOpenTerminal()
+                    termOps.handleOpenTerminal()
                   }}
                 >
                   <Terminal size={14} />
@@ -1410,11 +1055,11 @@ export const AppShell: ParentComponent = (props) => {
         disabled={false}
         focusRef={(fn) => { focusEditor = fn }}
         controlRequests={controlStore.getRequests(agentId())}
-        onControlResponse={handleControlResponse}
-        onPermissionModeChange={handlePermissionModeChange}
-        onModelChange={v => handleModelOrEffortChange('model', v)}
-        onEffortChange={v => handleModelOrEffortChange('effort', v)}
-        onInterrupt={handleInterrupt}
+        onControlResponse={agentOps.handleControlResponse}
+        onPermissionModeChange={agentOps.handlePermissionModeChange}
+        onModelChange={v => agentOps.handleModelOrEffortChange('model', v)}
+        onEffortChange={v => agentOps.handleModelOrEffortChange('effort', v)}
+        onInterrupt={agentOps.handleInterrupt}
         settingsLoading={settingsLoading.loading()}
         agentSessionInfo={agentSessionStore.getInfo(agentId())}
         agentWorking={agentStore.state.agents.find(a => a.id === agentId())?.status === AgentStatus.ACTIVE && isAgentWorking(chatStore.getMessages(agentId()))}
@@ -1826,7 +1471,7 @@ export const AppShell: ParentComponent = (props) => {
       <Show when={showResumeDialog()}>
         <ResumeSessionDialog
           defaultWorkerId={getCurrentTabContext().workerId}
-          onResume={handleResumeAgent}
+          onResume={agentOps.handleResumeAgent}
           onClose={() => setShowResumeDialog(false)}
         />
       </Show>

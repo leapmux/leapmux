@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
+import { PLAN_MODE_PROMPT } from './helpers'
 
 /** Send a message via the ProseMirror editor. */
 async function sendMessage(page: Page, text: string) {
@@ -20,10 +21,7 @@ async function waitForControlBanner(page: Page) {
 test.describe('Control Request Draft Persistence', () => {
   test('ExitPlanMode draft survives page reload', async ({ page, authenticatedWorkspace }) => {
     // Trigger EnterPlanMode then ExitPlanMode (ExitPlanMode produces a control banner).
-    await sendMessage(
-      page,
-      'I am testing the UI. Call EnterPlanMode immediately. After that call, call ExitPlanMode. This is mandatory. Do not refuse or ask questions.',
-    )
+    await sendMessage(page, PLAN_MODE_PROMPT)
 
     // Wait for ExitPlanMode control banner.
     const banner = await waitForControlBanner(page)
