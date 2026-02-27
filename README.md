@@ -206,7 +206,7 @@ task test-e2e           # End-to-end tests (Playwright)
 
 Run specific tests by passing arguments after `--`:
 ```bash
-# Go tests: -run <regex> <packages>
+# Backend tests: -run <regex> <packages>
 task test-backend -- -run TestMyFunction ./internal/hub/...
 
 # Frontend unit tests: pass a file path to Vitest
