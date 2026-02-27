@@ -140,25 +140,25 @@ tasks:
     desc: Run Go tests
     deps: [lint-backend]
     cmds:
-      - go test ./...
+      - go test {{.CLI_ARGS | default "./..."}}
 
   test-frontend:
     desc: Run frontend unit tests
     deps: [lint-frontend]
     cmds:
-      - cd frontend && bun run test
+      - cd frontend && bun run test {{.CLI_ARGS}}
 
   test-integration:
     desc: Run integration tests
     deps: [lint-backend]
     cmds:
-      - go test -tags integration ./...
+      - go test -tags integration {{.CLI_ARGS | default "./..."}}
 
   test-e2e:
     desc: Run end-to-end tests
     deps: [lint-frontend]
     cmds:
-      - cd frontend && bun run test:e2e
+      - cd frontend && bun run test:e2e {{.CLI_ARGS}}
 
   # --- Linting ---
 
