@@ -192,24 +192,22 @@ The `leapmux` binary is output to the project root.
 
 ### Testing
 
-Run all tests:
+Run all tests (except E2E):
 ```bash
 task test
 ```
 
 Run specific test suites:
 ```bash
-task test-backend       # Go unit tests (hub + worker)
-task test-frontend      # Frontend unit tests (Vitest)
-task test-integration   # Integration tests
+task test-backend       # Backend tests
+task test-frontend      # Frontend tests (Vitest)
 task test-e2e           # End-to-end tests (Playwright)
 ```
 
 Run specific tests by passing arguments after `--`:
 ```bash
-# Go tests: -run <regex> <packages>
+# Backend tests: -run <regex> <packages>
 task test-backend -- -run TestMyFunction ./internal/hub/...
-task test-integration -- -run TestMyFunction ./internal/hub/...
 
 # Frontend unit tests: pass a file path to Vitest
 task test-frontend -- src/lib/validate.test.ts
@@ -475,7 +473,6 @@ Ensure all linters and tests pass before submitting:
 ```bash
 task lint
 task test
-task test-integration
 task test-e2e
 ```
 
