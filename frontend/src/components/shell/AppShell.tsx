@@ -5,6 +5,9 @@ import type { Tab } from '~/stores/tab.store'
 import type { PermissionMode } from '~/utils/controlResponse'
 import Resizable from '@corvu/resizable'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
+import Bot from 'lucide-solid/icons/bot'
+import Plus from 'lucide-solid/icons/plus'
+import Terminal from 'lucide-solid/icons/terminal'
 import { createEffect, createMemo, createSignal, on, onMount, Show } from 'solid-js'
 import { agentClient, gitClient, sectionClient, terminalClient, workspaceClient } from '~/api/clients'
 import { agentCallTimeout, agentLoadingTimeoutMs, apiCallTimeout } from '~/api/transport'
@@ -1278,9 +1281,41 @@ export const AppShell: ParentComponent = (props) => {
 
         {/* Fallback when no tabs exist */}
         <Show when={!tab() && activeWorkspace()}>
-          <div class={styles.placeholder}>
-            No tabs in this tile. Click + to open an agent or terminal.
-          </div>
+          <Show
+            when={!hasMultipleTiles() || layoutStore.focusedTileId() === tileId}
+            fallback={(
+              <div class={styles.emptyTileHint} data-testid="empty-tile-hint">
+                No tabs in this tile.
+              </div>
+            )}
+          >
+            <div class={styles.emptyTileActions} data-testid="empty-tile-actions">
+              <button
+                class="outline"
+                data-testid="empty-tile-open-agent"
+                onClick={() => {
+                  layoutStore.setFocusedTile(tileId)
+                  handleOpenAgent()
+                }}
+              >
+                <Bot size={14} />
+                {' '}
+                Open a new agent tab...
+              </button>
+              <button
+                class="outline"
+                data-testid="empty-tile-open-terminal"
+                onClick={() => {
+                  layoutStore.setFocusedTile(tileId)
+                  handleOpenTerminal()
+                }}
+              >
+                <Terminal size={14} />
+                {' '}
+                Open a new terminal tab...
+              </button>
+            </div>
+          </Show>
         </Show>
       </>
     )
@@ -1647,8 +1682,19 @@ export const AppShell: ParentComponent = (props) => {
                               when={activeWorkspace() && !workspaceLoading()}
                               fallback={(
                                 <Show when={!activeWorkspace() && !workspace.activeWorkspaceId()}>
-                                  <div class={styles.placeholder}>
-                                    No workspaces yet. Click + to create one.
+                                  <div class={styles.emptyTileActions} data-testid="no-workspace-empty-state">
+                                    <button
+                                      class="outline"
+                                      data-testid="create-workspace-button"
+                                      onClick={() => {
+                                        setNewWorkspaceTargetSectionId(sectionStore.getInProgressSection()?.id ?? null)
+                                        setShowNewWorkspace(true)
+                                      }}
+                                    >
+                                      <Plus size={14} />
+                                      {' '}
+                                      Create a new workspace...
+                                    </button>
                                   </div>
                                 </Show>
                               )}

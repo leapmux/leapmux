@@ -53,7 +53,7 @@ test.describe('Workspace Lifecycle', () => {
     // Use data-testid selectors to avoid strict mode violations from
     // text matches in context menus or other UI elements.
     await expect(
-      page.getByText('No workspaces yet')
+      page.locator('[data-testid="create-workspace-button"]')
         .or(page.locator('[data-testid="section-header-workspaces_in_progress"]'))
         .or(page.locator('[data-testid="section-header-workspaces_archived"]')),
     ).toBeVisible()

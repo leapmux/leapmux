@@ -61,8 +61,8 @@ test.describe('Workspace UX Enhancements', () => {
       // Verify all tabs are actually closed
       await expect(page.locator('[data-testid="tab"]')).toHaveCount(0)
 
-      // Empty state message should be visible
-      await expect(page.getByText('No tabs in this tile')).toBeVisible()
+      // Empty state actions should be visible
+      await expect(page.locator('[data-testid="empty-tile-actions"]')).toBeVisible()
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
