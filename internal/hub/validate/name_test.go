@@ -1,6 +1,7 @@
 package validate
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -30,7 +31,7 @@ func TestSanitizeName(t *testing.T) {
 			{"special chars %", "100%", "100%"},
 			{"unicode", "café", "café"},
 			{"emoji", "hello\U0001F600", "hello\U0001F600"},
-			{"64 chars", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			{"128 chars", strings.Repeat("a", 128), strings.Repeat("a", 128)},
 			{"trims leading/trailing spaces", "  hello  ", "hello"},
 			// Forbidden chars are silently stripped
 			{"strips double quotes", `name"quoted`, "namequoted"},
@@ -58,7 +59,7 @@ func TestSanitizeName(t *testing.T) {
 		}{
 			{"empty", ""},
 			{"whitespace only", "   "},
-			{"too long", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, // 65 chars
+			{"too long", strings.Repeat("a", 129)},
 			{"only forbidden chars", string(make([]byte, 64))},
 		}
 

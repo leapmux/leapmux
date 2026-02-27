@@ -4,7 +4,7 @@ const NAME_FORBIDDEN_G = /[\x00-\x1F\x7F"\\]/g
 /**
  * Sanitizes and validates a name/title string.
  * Forbidden characters (control characters, " and \) are silently stripped.
- * Returns the sanitized string and an error if the result is empty or exceeds 64 characters.
+ * Returns the sanitized string and an error if the result is empty or exceeds 128 characters.
  */
 export function sanitizeName(name: string): { value: string, error: string | null } {
   const value = name.replace(NAME_FORBIDDEN_G, '').trim()
@@ -12,8 +12,8 @@ export function sanitizeName(name: string): { value: string, error: string | nul
   if (value === '') {
     error = 'Name must not be empty'
   }
-  else if (value.length > 64) {
-    error = 'Name must be at most 64 characters'
+  else if (value.length > 128) {
+    error = 'Name must be at most 128 characters'
   }
   return { value, error }
 }
