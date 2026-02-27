@@ -4,6 +4,7 @@ import { A } from '@solidjs/router'
 import { createSignal, For, onMount, Show } from 'solid-js'
 import { adminClient } from '~/api/clients'
 import { loadTimeouts } from '~/api/transport'
+import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { useAuth } from '~/context/AuthContext'
 import { sanitizeSlug } from '~/lib/validate'
 import * as styles from './AdminSettingsPage.css'
@@ -35,6 +36,9 @@ export const AdminSettingsPage: Component = () => {
   const [resetPasswordUserId, setResetPasswordUserId] = createSignal<string | null>(null)
   const [resetPasswordValue, setResetPasswordValue] = createSignal('')
   const [resetPasswordMessage, setResetPasswordMessage] = createSignal<{ type: 'success' | 'error', text: string } | null>(null)
+
+  // Confirm dialog state
+  const [confirmDeleteUser, setConfirmDeleteUser] = createSignal<AdminUserView | null>(null)
 
   // --- Log Level state ---
   const logLevels = ['DEBUG', 'INFO', 'WARN', 'ERROR']
@@ -179,13 +183,13 @@ export const AdminSettingsPage: Component = () => {
     }
   }
 
-  const handleDeleteUser = async (user: AdminUserView) => {
-    // eslint-disable-next-line no-alert
-    if (!confirm(`Delete user "${user.username}"? This cannot be undone.`)) {
-      return
-    }
+  const handleDeleteUser = (user: AdminUserView) => {
+    setConfirmDeleteUser(user)
+  }
+
+  const doDeleteUser = async (userId: string) => {
     try {
-      await adminClient.deleteUser({ userId: user.id })
+      await adminClient.deleteUser({ userId })
       await loadUsers()
     }
     catch (e) {
@@ -553,6 +557,27 @@ export const AdminSettingsPage: Component = () => {
           </button>
         </div>
       </div>
+
+      <Show when={confirmDeleteUser()}>
+        {user => (
+          <ConfirmDialog
+            title="Delete User"
+            confirmLabel="Delete"
+            danger
+            onConfirm={() => {
+              doDeleteUser(user().id)
+              setConfirmDeleteUser(null)
+            }}
+            onCancel={() => setConfirmDeleteUser(null)}
+          >
+            <p>
+              Delete user "
+              {user().username}
+              "? This cannot be undone.
+            </p>
+          </ConfirmDialog>
+        )}
+      </Show>
     </div>
   )
 }

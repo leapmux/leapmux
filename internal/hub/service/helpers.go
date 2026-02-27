@@ -59,6 +59,26 @@ func getVisibleWorkspace(ctx context.Context, queries *db.Queries, user *auth.Us
 	return &ws, nil
 }
 
+// getVisibleNonArchivedWorkspace combines visibility and archived checks.
+// It verifies the user can see the workspace and that it is not in an archived section.
+func getVisibleNonArchivedWorkspace(ctx context.Context, queries *db.Queries, user *auth.UserInfo, orgID, workspaceID string) (*db.Workspace, error) {
+	ws, err := getVisibleWorkspace(ctx, queries, user, orgID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	archived, err := queries.IsWorkspaceInArchivedSection(ctx, db.IsWorkspaceInArchivedSectionParams{
+		UserID:      user.ID,
+		WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("check archived: %w", err))
+	}
+	if archived {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("workspace is archived"))
+	}
+	return ws, nil
+}
+
 // sanitizeGitStatus validates and sanitizes git status data received from a worker.
 // Defends against malicious or buggy worker implementations sending bad values.
 func sanitizeGitStatus(gs *leapmuxv1.AgentGitStatus) *leapmuxv1.AgentGitStatus {

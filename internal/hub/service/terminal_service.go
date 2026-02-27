@@ -57,6 +57,15 @@ func (s *TerminalService) verifyWorkspaceOwnership(ctx context.Context, user *au
 	return getVisibleWorkspace(ctx, s.queries, user, orgID, workspaceID)
 }
 
+// verifyNonArchivedWorkspaceOwnership checks visibility and that the workspace is not archived.
+func (s *TerminalService) verifyNonArchivedWorkspaceOwnership(ctx context.Context, user *auth.UserInfo, orgID, workspaceID string) (*db.Workspace, error) {
+	if workspaceID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("workspace_id is required"))
+	}
+
+	return getVisibleNonArchivedWorkspace(ctx, s.queries, user, orgID, workspaceID)
+}
+
 // getTerminalConn looks up the worker for a tracked terminal and returns its connection.
 func (s *TerminalService) getTerminalConn(terminalID string) (*workermgr.Conn, error) {
 	s.mu.RLock()
@@ -84,7 +93,7 @@ func (s *TerminalService) OpenTerminal(
 		return nil, err
 	}
 
-	_, err = s.verifyWorkspaceOwnership(ctx, user, req.Msg.GetOrgId(), req.Msg.GetWorkspaceId())
+	_, err = s.verifyNonArchivedWorkspaceOwnership(ctx, user, req.Msg.GetOrgId(), req.Msg.GetWorkspaceId())
 	if err != nil {
 		return nil, err
 	}
@@ -262,7 +271,7 @@ func (s *TerminalService) SendInput(
 		return nil, err
 	}
 
-	_, err = s.verifyWorkspaceOwnership(ctx, user, req.Msg.GetOrgId(), req.Msg.GetWorkspaceId())
+	_, err = s.verifyNonArchivedWorkspaceOwnership(ctx, user, req.Msg.GetOrgId(), req.Msg.GetWorkspaceId())
 	if err != nil {
 		return nil, err
 	}

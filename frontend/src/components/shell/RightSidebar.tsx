@@ -42,6 +42,9 @@ interface RightSidebarProps {
   onNewWorkspace: (sectionId: string | null) => void
   onRefreshWorkspaces: () => void | Promise<void>
   onDeleteWorkspace: (deletedId: string, nextWorkspaceId: string | null) => void
+  onConfirmDelete?: (workspaceId: string) => Promise<boolean>
+  onConfirmArchive?: (workspaceId: string) => Promise<boolean>
+  onPostArchiveWorkspace?: (workspaceId: string) => void
 }
 
 export const RightSidebar: Component<RightSidebarProps> = (props) => {
@@ -58,6 +61,9 @@ export const RightSidebar: Component<RightSidebarProps> = (props) => {
     onNewWorkspace: props.onNewWorkspace,
     onRefreshWorkspaces: props.onRefreshWorkspaces,
     onDeleteWorkspace: props.onDeleteWorkspace,
+    onConfirmDelete: props.onConfirmDelete,
+    onConfirmArchive: props.onConfirmArchive,
+    onPostArchiveWorkspace: props.onPostArchiveWorkspace,
   })
   /* eslint-enable solid/reactivity */
 

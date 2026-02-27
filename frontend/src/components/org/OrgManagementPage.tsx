@@ -4,6 +4,7 @@ import type { OrgMember } from '~/generated/leapmux/v1/org_pb'
 import { A, useParams } from '@solidjs/router'
 import { createEffect, createSignal, For, Show } from 'solid-js'
 import { orgClient } from '~/api/clients'
+import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { useAuth } from '~/context/AuthContext'
 import { useOrg } from '~/context/OrgContext'
 import { OrgMemberRole } from '~/generated/leapmux/v1/org_pb'
@@ -42,6 +43,10 @@ export const OrgManagementPage: Component = () => {
   // Delete org
   const [deletingOrg, setDeletingOrg] = createSignal(false)
   const [deleteError, setDeleteError] = createSignal<string | null>(null)
+
+  // Confirm dialog state
+  const [confirmRemoveMember, setConfirmRemoveMember] = createSignal<{ userId: string, username: string } | null>(null)
+  const [confirmDeleteOrg, setConfirmDeleteOrg] = createSignal(false)
 
   const fetchMembers = async () => {
     const id = org.orgId()
@@ -125,12 +130,13 @@ export const OrgManagementPage: Component = () => {
     }
   }
 
-  const handleRemoveMember = async (userId: string, username: string) => {
+  const handleRemoveMember = (userId: string, username: string) => {
+    setConfirmRemoveMember({ userId, username })
+  }
+
+  const doRemoveMember = async (userId: string) => {
     const id = org.orgId()
     if (!id)
-      return
-    // eslint-disable-next-line no-alert
-    if (!window.confirm(`Remove ${username} from this organization?`))
       return
     try {
       await orgClient.removeOrgMember({ orgId: id, userId })
@@ -177,13 +183,13 @@ export const OrgManagementPage: Component = () => {
     }
   }
 
-  const handleDeleteOrg = async () => {
+  const handleDeleteOrg = () => {
+    setConfirmDeleteOrg(true)
+  }
+
+  const doDeleteOrg = async () => {
     const id = org.orgId()
-    const current = org.org()
-    if (!id || !current)
-      return
-    // eslint-disable-next-line no-alert
-    if (!window.confirm(`Are you sure you want to delete "${current.name}"? This cannot be undone.`))
+    if (!id)
       return
     setDeletingOrg(true)
     setDeleteError(null)
@@ -390,6 +396,47 @@ export const OrgManagementPage: Component = () => {
             <div class={styles.errorText}>{deleteError()}</div>
           </Show>
         </div>
+      </Show>
+
+      <Show when={confirmRemoveMember()}>
+        {member => (
+          <ConfirmDialog
+            title="Remove Member"
+            confirmLabel="Remove"
+            danger
+            onConfirm={() => {
+              doRemoveMember(member().userId)
+              setConfirmRemoveMember(null)
+            }}
+            onCancel={() => setConfirmRemoveMember(null)}
+          >
+            <p>
+              Remove
+              {member().username}
+              {' '}
+              from this organization?
+            </p>
+          </ConfirmDialog>
+        )}
+      </Show>
+
+      <Show when={confirmDeleteOrg()}>
+        <ConfirmDialog
+          title="Delete Organization"
+          confirmLabel="Delete"
+          danger
+          onConfirm={() => {
+            setConfirmDeleteOrg(false)
+            doDeleteOrg()
+          }}
+          onCancel={() => setConfirmDeleteOrg(false)}
+        >
+          <p>
+            Are you sure you want to delete "
+            {org.org()?.name}
+            "? This cannot be undone.
+          </p>
+        </ConfirmDialog>
       </Show>
     </div>
   )
