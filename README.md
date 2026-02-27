@@ -199,7 +199,7 @@ task test
 
 Run specific test suites:
 ```bash
-task test-backend       # Go tests including integration (hub + worker)
+task test-backend       # Backend tests
 task test-frontend      # Frontend unit tests (Vitest)
 task test-e2e           # End-to-end tests (Playwright)
 ```
