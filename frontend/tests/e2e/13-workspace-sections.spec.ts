@@ -42,6 +42,11 @@ test.describe('Workspace Sections', () => {
     // Click "Archive"
     await page.getByRole('menuitem', { name: 'Archive' }).click()
 
+    // Confirm the archive in the ConfirmDialog
+    const dialog = page.locator('dialog')
+    await expect(dialog).toBeVisible()
+    await dialog.getByRole('button', { name: 'Archive' }).click()
+
     // Archived section header should appear
     await expect(page.locator('[data-testid="section-header-workspaces_archived"]')).toBeVisible()
 
