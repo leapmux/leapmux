@@ -622,11 +622,12 @@ export function waitForLayoutSave(page: Page) {
 
 /**
  * Wait for a workspace page to be fully loaded.
- * Waits for either a tab or the "No tabs in this tile" empty state.
+ * Waits for either a tab or the empty tile actions/hint.
  */
 export async function waitForWorkspaceReady(page: Page) {
   await page.locator('[data-testid="tab"]')
-    .or(page.getByText('No tabs in this tile'))
+    .or(page.locator('[data-testid="empty-tile-actions"]'))
+    .or(page.locator('[data-testid="empty-tile-hint"]'))
     .first()
     .waitFor({ timeout: 15_000 })
 }

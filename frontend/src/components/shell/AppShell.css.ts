@@ -73,6 +73,26 @@ export const placeholder = style({
   padding: `0 ${spacing.xl}`,
 })
 
+export const emptyTileActions = style({
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: spacing.md,
+  flex: 1,
+})
+
+export const emptyTileHint = style({
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  flex: 1,
+  color: 'var(--faint-foreground)',
+  textAlign: 'center',
+  padding: `0 ${spacing.xl}`,
+  cursor: 'default',
+})
+
 // --- Mobile layout styles ---
 
 export const mobileShell = style({
