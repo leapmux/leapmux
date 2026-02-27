@@ -55,3 +55,9 @@ UPDATE agents SET plan_file_path = ? WHERE id = ?;
 
 -- name: UpdateAgentPlanContent :exec
 UPDATE agents SET plan_content = ?, plan_content_compression = ? WHERE id = ?;
+
+-- name: UpdateAgentPlan :exec
+UPDATE agents SET plan_file_path = ?, plan_content = ?, plan_content_compression = ?, plan_title = ? WHERE id = ?;
+
+-- name: UpdateAgentPlanAndTitle :exec
+UPDATE agents SET plan_file_path = ?, plan_content = ?, plan_content_compression = ?, plan_title = ?, title = ? WHERE id = ?;

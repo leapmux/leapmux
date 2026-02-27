@@ -218,6 +218,22 @@ export function extractSettingsChanges(parsed: ParsedMessageContent): {
   return changes as { permissionMode?: { old: string, new: string } }
 }
 
+/** Extract renamed title from an agent_renamed notification (wrapped or unwrapped). */
+export function extractAgentRenamed(parsed: ParsedMessageContent): string | undefined {
+  const messagesToCheck: unknown[] = parsed.wrapper
+    ? parsed.wrapper.messages
+    : parsed.topLevel ? [parsed.topLevel] : []
+  for (const msg of messagesToCheck) {
+    if (typeof msg === 'object' && msg !== null) {
+      const m = msg as Record<string, unknown>
+      if (m.type === 'agent_renamed' && typeof m.title === 'string' && m.title !== '') {
+        return m.title as string
+      }
+    }
+  }
+  return undefined
+}
+
 /** Extract plan file path from a plan_execution message (wrapped or unwrapped). */
 export function extractPlanFilePath(parsed: ParsedMessageContent): string | undefined {
   // Check all messages in the wrapper (or the top-level object).

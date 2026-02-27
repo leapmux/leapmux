@@ -31,8 +31,8 @@ describe('sanitizeName', () => {
     expect(sanitizeName('hello\u{1F600}').error).toBeNull()
   })
 
-  it('accepts names at max length (64 chars)', () => {
-    expect(sanitizeName('a'.repeat(64)).error).toBeNull()
+  it('accepts names at max length (128 chars)', () => {
+    expect(sanitizeName('a'.repeat(128)).error).toBeNull()
   })
 
   it('trims whitespace in returned value', () => {
@@ -64,8 +64,8 @@ describe('sanitizeName', () => {
     expect(sanitizeName('   ').error).not.toBeNull()
   })
 
-  it('returns error for names exceeding 64 characters', () => {
-    expect(sanitizeName('a'.repeat(65)).error).not.toBeNull()
+  it('returns error for names exceeding 128 characters', () => {
+    expect(sanitizeName('a'.repeat(129)).error).not.toBeNull()
   })
 
   it('returns error when only forbidden characters remain', () => {

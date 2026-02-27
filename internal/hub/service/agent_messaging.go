@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -1271,7 +1272,10 @@ func (s *AgentService) trackPlanFilePath(ctx context.Context, agentID string, co
 				Type  string `json:"type"`
 				Name  string `json:"name"`
 				Input struct {
-					FilePath string `json:"file_path"`
+					FilePath  string `json:"file_path"`
+					Content   string `json:"content"`
+					OldString string `json:"old_string"`
+					NewString string `json:"new_string"`
 				} `json:"input"`
 			} `json:"content"`
 		} `json:"message"`
@@ -1302,27 +1306,68 @@ func (s *AgentService) trackPlanFilePath(ctx context.Context, agentID string, co
 			continue
 		}
 
-		// Persist plan file path.
-		if err := s.queries.UpdateAgentPlanFilePath(ctx, db.UpdateAgentPlanFilePathParams{
-			PlanFilePath: filePath,
-			ID:           agentID,
-		}); err != nil {
-			slog.Warn("failed to update agent plan file path", "agent_id", agentID, "error", err)
-			continue
+		// Resolve plan content.
+		// For Write, use the content from the tool_use input (available
+		// immediately, before the tool executes and writes to disk).
+		// For Edit, read from disk and apply the substitution.
+		var planContentStr string
+		if block.Name == "Write" && block.Input.Content != "" {
+			planContentStr = block.Input.Content
+		} else {
+			data, readErr := os.ReadFile(filePath)
+			if readErr == nil && len(data) > 0 {
+				if block.Name == "Edit" {
+					planContentStr = strings.Replace(string(data), block.Input.OldString, block.Input.NewString, 1)
+				} else {
+					planContentStr = string(data)
+				}
+			}
 		}
 
-		// Read and persist compressed plan content.
-		data, err := os.ReadFile(filePath)
-		if err != nil || len(data) == 0 {
-			continue
+		// Compress content and extract title.
+		var compressed []byte
+		var compression leapmuxv1.ContentCompression
+		if planContentStr != "" {
+			compressed, compression = msgcodec.Compress([]byte(planContentStr))
 		}
-		compressed, compression := msgcodec.Compress(data)
-		if err := s.queries.UpdateAgentPlanContent(ctx, db.UpdateAgentPlanContentParams{
-			PlanContent:            compressed,
-			PlanContentCompression: compression,
-			ID:                     agentID,
-		}); err != nil {
-			slog.Warn("failed to update agent plan content", "agent_id", agentID, "error", err)
+		newPlanTitle := extractPlanTitle(planContentStr)
+		// Preserve existing plan_title when the new content yields no title.
+		if newPlanTitle == "" {
+			newPlanTitle = agent.PlanTitle
+		}
+
+		// Persist plan file path, content, and title in a single UPDATE.
+		// If the title changed and auto-rename applies, also update the
+		// agent's display title atomically.
+		shouldAutoRename := newPlanTitle != "" &&
+			(agent.Title == agent.PlanTitle ||
+				regexp.MustCompile(`^Agent \d+$`).MatchString(agent.Title))
+		if shouldAutoRename {
+			if err := s.queries.UpdateAgentPlanAndTitle(ctx, db.UpdateAgentPlanAndTitleParams{
+				PlanFilePath:           filePath,
+				PlanContent:            compressed,
+				PlanContentCompression: compression,
+				PlanTitle:              newPlanTitle,
+				Title:                  newPlanTitle,
+				ID:                     agentID,
+			}); err != nil {
+				slog.Warn("failed to update agent plan", "agent_id", agentID, "error", err)
+			} else {
+				s.broadcastNotification(ctx, agentID, map[string]interface{}{
+					"type":  "agent_renamed",
+					"title": newPlanTitle,
+				})
+			}
+		} else {
+			if err := s.queries.UpdateAgentPlan(ctx, db.UpdateAgentPlanParams{
+				PlanFilePath:           filePath,
+				PlanContent:            compressed,
+				PlanContentCompression: compression,
+				PlanTitle:              newPlanTitle,
+				ID:                     agentID,
+			}); err != nil {
+				slog.Warn("failed to update agent plan", "agent_id", agentID, "error", err)
+			}
 		}
 
 		// Only track the first matching plan file per message.

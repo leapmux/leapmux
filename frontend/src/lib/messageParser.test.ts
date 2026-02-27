@@ -2,6 +2,7 @@ import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import { describe, expect, it } from 'vitest'
 import { ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import {
+  extractAgentRenamed,
   extractAssistantUsage,
   extractPlanFilePath,
   extractRateLimitInfo,
@@ -441,6 +442,49 @@ describe('extractSettingsChanges', () => {
     const content = { type: 'settings_changed' }
     const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
     expect(extractSettingsChanges(parseMessageContent(msg))).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// extractAgentRenamed
+// ---------------------------------------------------------------------------
+
+describe('extractAgentRenamed', () => {
+  it('extracts title from wrapped agent_renamed message', () => {
+    const content = { type: 'agent_renamed', title: 'Add authentication' }
+    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    expect(extractAgentRenamed(parseMessageContent(msg))).toBe('Add authentication')
+  })
+
+  it('extracts title from wrapped thread with multiple messages', () => {
+    const otherMsg = { type: 'settings_changed' }
+    const renameMsg = { type: 'agent_renamed', title: 'My Plan Title' }
+    const msg = makeMsg(MessageRole.LEAPMUX, wrap(otherMsg, renameMsg))
+    expect(extractAgentRenamed(parseMessageContent(msg))).toBe('My Plan Title')
+  })
+
+  it('extracts title from unwrapped agent_renamed message', () => {
+    const content = { type: 'agent_renamed', title: 'Unwrapped Title' }
+    const msg = makeMsg(MessageRole.LEAPMUX, content)
+    expect(extractAgentRenamed(parseMessageContent(msg))).toBe('Unwrapped Title')
+  })
+
+  it('returns undefined when title is empty', () => {
+    const content = { type: 'agent_renamed', title: '' }
+    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    expect(extractAgentRenamed(parseMessageContent(msg))).toBeUndefined()
+  })
+
+  it('returns undefined for non-agent_renamed messages', () => {
+    const content = { type: 'settings_changed', title: 'Not a rename' }
+    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    expect(extractAgentRenamed(parseMessageContent(msg))).toBeUndefined()
+  })
+
+  it('returns undefined when title is missing', () => {
+    const content = { type: 'agent_renamed' }
+    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    expect(extractAgentRenamed(parseMessageContent(msg))).toBeUndefined()
   })
 })
 

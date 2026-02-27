@@ -13,7 +13,7 @@ import { watchEventsViaWebSocket } from '~/api/wsWatchEvents'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
 import { AgentStatus, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { TabType, WatchEventsRequestSchema } from '~/generated/leapmux/v1/workspace_pb'
-import { extractAssistantUsage, extractPlanFilePath, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessageType, parseMessageContent } from '~/lib/messageParser'
+import { extractAgentRenamed, extractAssistantUsage, extractPlanFilePath, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessageType, parseMessageContent } from '~/lib/messageParser'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
 
 export interface WorkspaceConnectionParams {
@@ -103,6 +103,10 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             const planFile = extractPlanFilePath(parsed)
             if (planFile) {
               agentSessionStore.updateInfo(agentId, { planFilePath: planFile })
+            }
+            const renamedTitle = extractAgentRenamed(parsed)
+            if (renamedTitle) {
+              tabStore.updateTabTitle(TabType.AGENT, agentId, renamedTitle)
             }
           }
           catch { /* ignore parse errors */ }

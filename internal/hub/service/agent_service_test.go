@@ -1687,6 +1687,352 @@ func TestHandleAgentOutput_TrackPlanFilePath_IgnoresNonPlanFiles(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Plan mode: trackPlanFilePath plan title extraction
+// ---------------------------------------------------------------------------
+
+func TestTrackPlanFilePath_ExtractsPlanTitle(t *testing.T) {
+	env := setupAgentTest(t)
+	workspaceID := env.createWorkspaceInDB(t, "Plan Title Test")
+	agentID := env.createAgentInDB(t, workspaceID, "Agent 1")
+
+	homeDir := t.TempDir()
+	err := env.queries.UpdateAgentHomeDir(context.Background(), gendb.UpdateAgentHomeDirParams{
+		HomeDir: homeDir,
+		ID:      agentID,
+	})
+	require.NoError(t, err)
+
+	planDir := filepath.Join(homeDir, ".claude", "plans")
+	require.NoError(t, os.MkdirAll(planDir, 0o755))
+	planPath := filepath.Join(planDir, "test-plan.md")
+	planContent := "# Add authentication to API\n\n## Overview\nImplement OAuth2."
+	require.NoError(t, os.WriteFile(planPath, []byte(planContent), 0o644))
+
+	writeMsg := map[string]interface{}{
+		"type": "assistant",
+		"message": map[string]interface{}{
+			"content": []interface{}{
+				map[string]interface{}{
+					"type": "tool_use",
+					"id":   "tu_plan_title_1",
+					"name": "Write",
+					"input": map[string]string{
+						"file_path": planPath,
+						"content":   planContent,
+					},
+				},
+			},
+		},
+	}
+	writeMsgJSON, _ := json.Marshal(writeMsg)
+
+	env.agentSvc.HandleAgentOutput(context.Background(), &leapmuxv1.AgentOutput{
+		AgentId: agentID,
+		Content: writeMsgJSON,
+	})
+
+	agent, err := env.queries.GetAgentByID(context.Background(), agentID)
+	require.NoError(t, err)
+	assert.Equal(t, "Add authentication to API", agent.PlanTitle)
+	// Agent title should also be auto-updated (was "Agent 1" matching the default pattern).
+	assert.Equal(t, "Add authentication to API", agent.Title)
+}
+
+func TestTrackPlanFilePath_EditUpdatesPlanTitle(t *testing.T) {
+	env := setupAgentTest(t)
+	workspaceID := env.createWorkspaceInDB(t, "Plan Title Edit Test")
+	agentID := env.createAgentInDB(t, workspaceID, "Agent 2")
+
+	homeDir := t.TempDir()
+	err := env.queries.UpdateAgentHomeDir(context.Background(), gendb.UpdateAgentHomeDirParams{
+		HomeDir: homeDir,
+		ID:      agentID,
+	})
+	require.NoError(t, err)
+
+	planDir := filepath.Join(homeDir, ".claude", "plans")
+	require.NoError(t, os.MkdirAll(planDir, 0o755))
+	planPath := filepath.Join(planDir, "edit-plan.md")
+	// File on disk has the OLD title.
+	oldContent := "# Old Title\n\nSome content."
+	require.NoError(t, os.WriteFile(planPath, []byte(oldContent), 0o644))
+
+	editMsg := map[string]interface{}{
+		"type": "assistant",
+		"message": map[string]interface{}{
+			"content": []interface{}{
+				map[string]interface{}{
+					"type": "tool_use",
+					"id":   "tu_plan_title_2",
+					"name": "Edit",
+					"input": map[string]string{
+						"file_path":  planPath,
+						"old_string": "# Old Title",
+						"new_string": "# New Title After Edit",
+					},
+				},
+			},
+		},
+	}
+	editMsgJSON, _ := json.Marshal(editMsg)
+
+	env.agentSvc.HandleAgentOutput(context.Background(), &leapmuxv1.AgentOutput{
+		AgentId: agentID,
+		Content: editMsgJSON,
+	})
+
+	agent, err := env.queries.GetAgentByID(context.Background(), agentID)
+	require.NoError(t, err)
+	assert.Equal(t, "New Title After Edit", agent.PlanTitle)
+	// Agent title should also be auto-updated (was "Agent 2" matching the default pattern).
+	assert.Equal(t, "New Title After Edit", agent.Title)
+}
+
+func TestTrackPlanFilePath_SkipsAutoRenameWhenManuallyRenamed(t *testing.T) {
+	env := setupAgentTest(t)
+	workspaceID := env.createWorkspaceInDB(t, "Manual Rename Test")
+	agentID := env.createAgentInDB(t, workspaceID, "My Custom Name")
+
+	homeDir := t.TempDir()
+	err := env.queries.UpdateAgentHomeDir(context.Background(), gendb.UpdateAgentHomeDirParams{
+		HomeDir: homeDir,
+		ID:      agentID,
+	})
+	require.NoError(t, err)
+
+	planDir := filepath.Join(homeDir, ".claude", "plans")
+	require.NoError(t, os.MkdirAll(planDir, 0o755))
+	planPath := filepath.Join(planDir, "manual-plan.md")
+	planContent := "# Plan Title From File\n\nDetails."
+	require.NoError(t, os.WriteFile(planPath, []byte(planContent), 0o644))
+
+	writeMsg := map[string]interface{}{
+		"type": "assistant",
+		"message": map[string]interface{}{
+			"content": []interface{}{
+				map[string]interface{}{
+					"type": "tool_use",
+					"id":   "tu_plan_title_3",
+					"name": "Write",
+					"input": map[string]string{
+						"file_path": planPath,
+						"content":   planContent,
+					},
+				},
+			},
+		},
+	}
+	writeMsgJSON, _ := json.Marshal(writeMsg)
+
+	env.agentSvc.HandleAgentOutput(context.Background(), &leapmuxv1.AgentOutput{
+		AgentId: agentID,
+		Content: writeMsgJSON,
+	})
+
+	agent, err := env.queries.GetAgentByID(context.Background(), agentID)
+	require.NoError(t, err)
+	// plan_title should be updated.
+	assert.Equal(t, "Plan Title From File", agent.PlanTitle)
+	// But agent title should NOT be changed (manually renamed).
+	assert.Equal(t, "My Custom Name", agent.Title)
+}
+
+func TestTrackPlanFilePath_AutoRenamesFromPlanTitle(t *testing.T) {
+	env := setupAgentTest(t)
+	workspaceID := env.createWorkspaceInDB(t, "Auto Rename Sync Test")
+	agentID := env.createAgentInDB(t, workspaceID, "Agent 1")
+
+	homeDir := t.TempDir()
+	err := env.queries.UpdateAgentHomeDir(context.Background(), gendb.UpdateAgentHomeDirParams{
+		HomeDir: homeDir,
+		ID:      agentID,
+	})
+	require.NoError(t, err)
+
+	planDir := filepath.Join(homeDir, ".claude", "plans")
+	require.NoError(t, os.MkdirAll(planDir, 0o755))
+	planPath := filepath.Join(planDir, "sync-plan.md")
+
+	// First write: sets both plan_title and title.
+	planContent1 := "# First Plan Title\n\nContent."
+	require.NoError(t, os.WriteFile(planPath, []byte(planContent1), 0o644))
+
+	writeMsg1 := map[string]interface{}{
+		"type": "assistant",
+		"message": map[string]interface{}{
+			"content": []interface{}{
+				map[string]interface{}{
+					"type": "tool_use",
+					"id":   "tu_plan_title_4a",
+					"name": "Write",
+					"input": map[string]string{
+						"file_path": planPath,
+						"content":   planContent1,
+					},
+				},
+			},
+		},
+	}
+	writeMsg1JSON, _ := json.Marshal(writeMsg1)
+	env.agentSvc.HandleAgentOutput(context.Background(), &leapmuxv1.AgentOutput{
+		AgentId: agentID,
+		Content: writeMsg1JSON,
+	})
+
+	agent1, err := env.queries.GetAgentByID(context.Background(), agentID)
+	require.NoError(t, err)
+	assert.Equal(t, "First Plan Title", agent1.PlanTitle)
+	assert.Equal(t, "First Plan Title", agent1.Title)
+
+	// Second write: title == plan_title, so should sync to new plan title.
+	planContent2 := "# Updated Plan Title\n\nNew content."
+	require.NoError(t, os.WriteFile(planPath, []byte(planContent2), 0o644))
+
+	writeMsg2 := map[string]interface{}{
+		"type": "assistant",
+		"message": map[string]interface{}{
+			"content": []interface{}{
+				map[string]interface{}{
+					"type": "tool_use",
+					"id":   "tu_plan_title_4b",
+					"name": "Write",
+					"input": map[string]string{
+						"file_path": planPath,
+						"content":   planContent2,
+					},
+				},
+			},
+		},
+	}
+	writeMsg2JSON, _ := json.Marshal(writeMsg2)
+	env.agentSvc.HandleAgentOutput(context.Background(), &leapmuxv1.AgentOutput{
+		AgentId: agentID,
+		Content: writeMsg2JSON,
+	})
+
+	agent2, err := env.queries.GetAgentByID(context.Background(), agentID)
+	require.NoError(t, err)
+	assert.Equal(t, "Updated Plan Title", agent2.PlanTitle)
+	assert.Equal(t, "Updated Plan Title", agent2.Title)
+}
+
+func TestTrackPlanFilePath_EmptyTitleDoesNotClear(t *testing.T) {
+	env := setupAgentTest(t)
+	workspaceID := env.createWorkspaceInDB(t, "Empty Title Test")
+	agentID := env.createAgentInDB(t, workspaceID, "Agent 1")
+
+	homeDir := t.TempDir()
+	err := env.queries.UpdateAgentHomeDir(context.Background(), gendb.UpdateAgentHomeDirParams{
+		HomeDir: homeDir,
+		ID:      agentID,
+	})
+	require.NoError(t, err)
+
+	// First, set plan_title and title to something meaningful.
+	err = env.queries.UpdateAgentPlanAndTitle(context.Background(), gendb.UpdateAgentPlanAndTitleParams{
+		PlanFilePath: "/dummy/path",
+		PlanContent:  []byte(""),
+		PlanTitle:    "Existing Title",
+		Title:        "Existing Title",
+		ID:           agentID,
+	})
+	require.NoError(t, err)
+
+	planDir := filepath.Join(homeDir, ".claude", "plans")
+	require.NoError(t, os.MkdirAll(planDir, 0o755))
+	planPath := filepath.Join(planDir, "empty-plan.md")
+	// Write a plan file with only whitespace (no meaningful title).
+	planContent := "\n\n   \n"
+	require.NoError(t, os.WriteFile(planPath, []byte(planContent), 0o644))
+
+	writeMsg := map[string]interface{}{
+		"type": "assistant",
+		"message": map[string]interface{}{
+			"content": []interface{}{
+				map[string]interface{}{
+					"type": "tool_use",
+					"id":   "tu_plan_title_5",
+					"name": "Write",
+					"input": map[string]string{
+						"file_path": planPath,
+						"content":   planContent,
+					},
+				},
+			},
+		},
+	}
+	writeMsgJSON, _ := json.Marshal(writeMsg)
+
+	env.agentSvc.HandleAgentOutput(context.Background(), &leapmuxv1.AgentOutput{
+		AgentId: agentID,
+		Content: writeMsgJSON,
+	})
+
+	agent, err := env.queries.GetAgentByID(context.Background(), agentID)
+	require.NoError(t, err)
+	// Existing title should NOT be cleared.
+	assert.Equal(t, "Existing Title", agent.PlanTitle)
+	assert.Equal(t, "Existing Title", agent.Title)
+}
+
+func TestTrackPlanFilePath_WriteExtractsTitleWithoutFileOnDisk(t *testing.T) {
+	env := setupAgentTest(t)
+	workspaceID := env.createWorkspaceInDB(t, "Write No Disk Test")
+	agentID := env.createAgentInDB(t, workspaceID, "Agent 1")
+
+	homeDir := t.TempDir()
+	err := env.queries.UpdateAgentHomeDir(context.Background(), gendb.UpdateAgentHomeDirParams{
+		HomeDir: homeDir,
+		ID:      agentID,
+	})
+	require.NoError(t, err)
+
+	// Create the plans directory but do NOT create the file on disk.
+	// This simulates the real flow where the assistant message arrives
+	// before the worker writes the file.
+	planDir := filepath.Join(homeDir, ".claude", "plans")
+	require.NoError(t, os.MkdirAll(planDir, 0o755))
+	planPath := filepath.Join(planDir, "new-plan.md")
+	planContent := "# Plan without disk file\n\nDetails here."
+
+	writeMsg := map[string]interface{}{
+		"type": "assistant",
+		"message": map[string]interface{}{
+			"content": []interface{}{
+				map[string]interface{}{
+					"type": "tool_use",
+					"id":   "tu_no_disk",
+					"name": "Write",
+					"input": map[string]string{
+						"file_path": planPath,
+						"content":   planContent,
+					},
+				},
+			},
+		},
+	}
+	writeMsgJSON, _ := json.Marshal(writeMsg)
+
+	env.agentSvc.HandleAgentOutput(context.Background(), &leapmuxv1.AgentOutput{
+		AgentId: agentID,
+		Content: writeMsgJSON,
+	})
+
+	agent, err := env.queries.GetAgentByID(context.Background(), agentID)
+	require.NoError(t, err)
+	// Plan title should be extracted from the Write input content.
+	assert.Equal(t, "Plan without disk file", agent.PlanTitle)
+	// Agent title should also be auto-updated.
+	assert.Equal(t, "Plan without disk file", agent.Title)
+	// Plan file path should be persisted.
+	assert.Equal(t, planPath, agent.PlanFilePath)
+	// Plan content should be persisted from the Write input.
+	decompressed, decompErr := msgcodec.Decompress(agent.PlanContent, agent.PlanContentCompression)
+	require.NoError(t, decompErr)
+	assert.Equal(t, planContent, string(decompressed))
+}
+
+// ---------------------------------------------------------------------------
 // Plan mode: ExitPlanMode control_response sets permission mode and pending
 // ---------------------------------------------------------------------------
 
