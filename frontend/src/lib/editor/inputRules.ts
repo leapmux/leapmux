@@ -1,3 +1,7 @@
+import type { Attrs, Mark, MarkType } from '@milkdown/prose/model'
+import type { EditorState, Transaction } from '@milkdown/prose/state'
+
+import { schemaCtx } from '@milkdown/core'
 import { InputRule } from '@milkdown/prose/inputrules'
 import { TextSelection } from '@milkdown/prose/state'
 import { $inputRule } from '@milkdown/utils'
@@ -244,6 +248,166 @@ export function createCodeBlockInputRule() {
         tr.setBlockType(start, start, state.schema.nodes.code_block)
         return tr
       },
+    )
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Code-aware mark input rules
+//
+// These re-implement Milkdown's built-in mark input rules with an inline-code
+// guard prepended so that typing e.g. `*foo*` inside an inline code span does
+// NOT trigger formatting.
+// ---------------------------------------------------------------------------
+
+interface CapturedMarkRule {
+  group: string | undefined
+  fullMatch: string
+  start: number
+  end: number
+}
+
+interface MarkRuleOptions {
+  getAttr?: (match: RegExpMatchArray) => Attrs
+  updateCaptured?: (captured: CapturedMarkRule) => Partial<CapturedMarkRule>
+  beforeDispatch?: (options: { match: RegExpMatchArray, start: number, end: number, tr: Transaction }) => void
+}
+
+/**
+ * Like `markRule` from `@milkdown/prose` but with an inline-code guard:
+ * if the matched range has an `inlineCode` mark (either via storedMarks or
+ * on document nodes), the rule returns `null` so the text is left as-is.
+ */
+function codeAwareMarkRule(
+  regexp: RegExp,
+  markType: MarkType,
+  options: MarkRuleOptions = {},
+): InputRule {
+  return new InputRule(regexp, (state: EditorState, match: RegExpMatchArray, start: number, end: number) => {
+    // Guard: do not fire inside inline code
+    const inlineCodeMark = state.schema.marks.inlineCode
+    if (inlineCodeMark) {
+      if (state.storedMarks?.some(m => m.type === inlineCodeMark))
+        return null
+      let hasCodeMark = false
+      state.doc.nodesBetween(start, end, (node) => {
+        if (node.isInline && node.marks.some(m => m.type === inlineCodeMark))
+          hasCodeMark = true
+      })
+      if (hasCodeMark)
+        return null
+    }
+
+    // --- markRule logic (reimplemented from @milkdown/prose) ---
+    const { tr } = state
+    const matchLength = match.length
+
+    let group = match[matchLength - 1]
+    let fullMatch = match[0]
+    let initialStoredMarks: readonly Mark[] = []
+
+    const captured: CapturedMarkRule = { group, fullMatch, start, end }
+    const result = options.updateCaptured?.(captured)
+    Object.assign(captured, result)
+    ;({ group, fullMatch, start, end } = captured)
+
+    if (fullMatch === null)
+      return null
+    if (group?.trim() === '')
+      return null
+
+    if (group) {
+      const startSpaces = fullMatch.search(/\S/)
+      const textStart = start + fullMatch.indexOf(group)
+      const textEnd = textStart + group.length
+
+      initialStoredMarks = tr.storedMarks ?? []
+
+      if (textEnd < end)
+        tr.delete(textEnd, end)
+      if (textStart > start)
+        tr.delete(start + startSpaces, textStart)
+
+      const markEnd = start + startSpaces + group.length
+      const attrs = options.getAttr?.(match)
+      tr.addMark(start, markEnd, markType.create(attrs))
+      tr.setStoredMarks(initialStoredMarks)
+
+      options.beforeDispatch?.({ match, start, end, tr })
+    }
+
+    return tr
+  })
+}
+
+/** Code-aware replacement for Milkdown's `strongInputRule`. */
+export function createStrongInputRule() {
+  return $inputRule((ctx) => {
+    return codeAwareMarkRule(
+      // eslint-disable-next-line regexp/no-useless-lazy,regexp/no-useless-assertions -- mirrors Milkdown's original regex
+      /(?<![\w:/])(?:\*\*|__)([^*_]+?)(?:\*\*|__)(?![\w/])$/,
+      ctx.get(schemaCtx).marks.strong,
+      {
+        getAttr: match => ({
+          marker: match[0].startsWith('*') ? '*' : '_',
+        }),
+      },
+    )
+  })
+}
+
+/** Code-aware replacement for Milkdown's `emphasisStarInputRule`. */
+export function createEmphasisStarInputRule() {
+  return $inputRule((ctx) => {
+    return codeAwareMarkRule(
+      /(?:^|[^*])\*([^*]+)\*$/,
+      ctx.get(schemaCtx).marks.emphasis,
+      {
+        getAttr: () => ({ marker: '*' }),
+        updateCaptured: ({ fullMatch, start }) =>
+          !fullMatch.startsWith('*')
+            ? { fullMatch: fullMatch.slice(1), start: start + 1 }
+            : {},
+      },
+    )
+  })
+}
+
+/** Code-aware replacement for Milkdown's `emphasisUnderscoreInputRule`. */
+export function createEmphasisUnderscoreInputRule() {
+  return $inputRule((ctx) => {
+    return codeAwareMarkRule(
+      /\b_(?![_\s])(.*?[^_\s])_\b/,
+      ctx.get(schemaCtx).marks.emphasis,
+      {
+        getAttr: () => ({ marker: '_' }),
+        updateCaptured: ({ fullMatch, start }) =>
+          !fullMatch.startsWith('_')
+            ? { fullMatch: fullMatch.slice(1), start: start + 1 }
+            : {},
+      },
+    )
+  })
+}
+
+/** Code-aware replacement for Milkdown's `inlineCodeInputRule`. */
+export function createInlineCodeInputRule() {
+  return $inputRule((ctx) => {
+    return codeAwareMarkRule(
+      // eslint-disable-next-line regexp/no-useless-non-capturing-group -- mirrors Milkdown's original regex
+      /(?:`)([^`]+)(?:`)$/,
+      ctx.get(schemaCtx).marks.inlineCode,
+    )
+  })
+}
+
+/** Code-aware replacement for Milkdown's `strikethroughInputRule`. */
+export function createStrikethroughInputRule() {
+  return $inputRule((ctx) => {
+    return codeAwareMarkRule(
+      // eslint-disable-next-line regexp/no-misleading-capturing-group -- mirrors Milkdown's original regex
+      /(?<![\w:/])(~{1,2})(.+?)\1(?!\w|\/)/,
+      ctx.get(schemaCtx).marks.strike_through,
     )
   })
 }
