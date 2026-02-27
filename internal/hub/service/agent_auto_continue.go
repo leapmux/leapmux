@@ -101,6 +101,12 @@ func (s *AgentService) scheduleAutoContinue(agentID string) {
 			return
 		case <-time.After(interval):
 		}
+		// Re-check cancellation after the timer fires: when both channels
+		// are ready simultaneously, Go's select picks one at random, so
+		// the timer branch may win even though the context was cancelled.
+		if ctx.Err() != nil {
+			return
+		}
 		s.sendAutoContinueMessage(ctx, agentID)
 	}()
 }
