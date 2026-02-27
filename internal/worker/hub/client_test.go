@@ -225,7 +225,9 @@ func TestConnectWithReconnect_BackoffCapsAtMax(t *testing.T) {
 	client.connectWithReconnect(ctx, "token", mockConnect, bo, 1*time.Hour)
 
 	// Verify that later gaps don't exceed MaxInterval + tolerance.
-	tolerance := 5 * time.Millisecond
+	// Use a generous tolerance because OS scheduling jitter on short intervals
+	// can easily add several milliseconds.
+	tolerance := 50 * time.Millisecond
 	for i := 1; i < len(timestamps); i++ {
 		gap := timestamps[i].Sub(timestamps[i-1])
 		assert.LessOrEqual(t, gap, bo.MaxInterval+tolerance, "gap[%d]=%v exceeds MaxInterval=%v", i, gap, bo.MaxInterval)

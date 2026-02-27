@@ -93,16 +93,26 @@ func (c *Client) handleGitWorktreeRemove(requestID string, req *leapmuxv1.GitWor
 			} else if !info.IsGitRepo {
 				resp.Error = "not a git repository"
 			} else {
-				slog.Info("removing worktree",
-					"repo_root", info.RepoRoot, "worktree_path", req.GetWorktreePath())
-				if err := gitutil.RemoveWorktree(info.RepoRoot, req.GetWorktreePath()); err != nil {
-					slog.Warn("worktree removal failed",
-						"worktree_path", req.GetWorktreePath(), "error", err)
-					resp.Error = err.Error()
-				} else {
+				// Respond immediately so the Hub doesn't time out, then
+				// perform the actual removal asynchronously.
+				resp.IsClean = clean
+				_ = c.Send(&leapmuxv1.ConnectRequest{
+					RequestId: requestID,
+					Payload: &leapmuxv1.ConnectRequest_GitWorktreeRemoveResp{
+						GitWorktreeRemoveResp: resp,
+					},
+				})
+
+				go func() {
+					slog.Info("removing worktree",
+						"repo_root", info.RepoRoot, "worktree_path", req.GetWorktreePath())
+					if err := gitutil.RemoveWorktree(info.RepoRoot, req.GetWorktreePath()); err != nil {
+						slog.Warn("worktree removal failed",
+							"worktree_path", req.GetWorktreePath(), "error", err)
+						return
+					}
 					slog.Info("worktree removed successfully",
 						"worktree_path", req.GetWorktreePath())
-					resp.IsClean = clean
 					// Best-effort: delete the branch if it's no longer in use.
 					branchName := req.GetBranchName()
 					if branchName != "" {
@@ -121,7 +131,8 @@ func (c *Client) handleGitWorktreeRemove(requestID string, req *leapmuxv1.GitWor
 							slog.Info("branch still in use, not deleting", "branch", branchName)
 						}
 					}
-				}
+				}()
+				return
 			}
 		}
 	}

@@ -198,10 +198,14 @@ export async function createWorkspaceViaUI(page: Page, title: string, workingDir
   await page.getByTitle(/New workspace/).first().click()
   await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
+  // Scope to the dialog to avoid strict-mode violations with the sidebar
+  // "Create a new workspace..." button.
+  const dialog = page.getByRole('dialog')
+  const createBtn = dialog.getByRole('button', { name: 'Create', exact: true })
+  const refreshBtn = dialog.getByTitle('Refresh workers')
+
   // Wait for the initial fetch to find an online worker.
   // If not found, retry by clicking the refresh button (worker may be reconnecting).
-  const createBtn = page.getByRole('button', { name: 'Create' })
-  const refreshBtn = page.getByTitle('Refresh workers')
   for (let attempt = 0; attempt < 6; attempt++) {
     try {
       await expect(createBtn).toBeEnabled()
@@ -222,14 +226,13 @@ export async function createWorkspaceViaUI(page: Page, title: string, workingDir
   // Set working directory via the DirectoryTree path input (scoped to dialog
   // to avoid ambiguity with the sidebar DirectoryTree)
   if (workingDir) {
-    const dialog = page.getByRole('dialog')
     const pathInput = dialog.getByPlaceholder('Enter path...')
     await pathInput.fill(workingDir)
     await pathInput.press('Enter')
   }
 
   // Click Create
-  await page.getByRole('button', { name: 'Create' }).click()
+  await createBtn.click()
 
   // Wait for navigation to the new workspace page (uses unique workspace ID in URL).
   // This avoids strict-mode issues with duplicate workspace titles on retries.
@@ -238,7 +241,6 @@ export async function createWorkspaceViaUI(page: Page, title: string, workingDir
   // Wait for the dialog to fully close. With many workspaces in the sidebar,
   // the UI re-render after workspace creation can delay dialog removal.
   // If the dialog is still visible after a short wait, press Escape to force-close.
-  const dialog = page.locator('[role="dialog"]')
   try {
     await expect(dialog).not.toBeVisible()
   }
@@ -434,22 +436,29 @@ export async function getAdminOrgId(hubUrl: string, token: string): Promise<stri
  * Get the first worker ID from the ListWorkers API.
  */
 export async function getWorkerId(hubUrl: string, token: string): Promise<string> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.WorkerManagementService/ListWorkers`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body: JSON.stringify({}),
-  })
-  if (!res.ok) {
-    throw new Error(`getWorkerId failed: ${res.status}`)
+  const deadline = Date.now() + 30_000
+  while (true) {
+    const res = await fetch(`${hubUrl}/leapmux.v1.WorkerManagementService/ListWorkers`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({}),
+    })
+    if (!res.ok) {
+      throw new Error(`getWorkerId failed: ${res.status}`)
+    }
+    const data = await res.json() as { workers: Array<{ id: string, online: boolean }> }
+    // Wait until the worker is registered in the DB and its bidi-stream is connected.
+    if (data.workers?.length && data.workers[0].online) {
+      return data.workers[0].id
+    }
+    if (Date.now() >= deadline) {
+      throw new Error('Worker never came online within 30s')
+    }
+    await new Promise(r => setTimeout(r, 500))
   }
-  const data = await res.json() as { workers: Array<{ id: string }> }
-  if (!data.workers?.length) {
-    throw new Error('No workers found')
-  }
-  return data.workers[0].id
 }
 
 /**

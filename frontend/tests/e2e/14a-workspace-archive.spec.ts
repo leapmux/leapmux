@@ -72,8 +72,8 @@ test.describe('Workspace Archive', () => {
     await workspaceItem.locator('button').first().click()
     await page.getByRole('menuitem', { name: 'Unarchive' }).click()
 
-    // Archived empty state should be gone
-    await expect(page.locator('[data-testid="tile-empty-state"]')).toContainText('Click + to open')
+    // Archived empty state should be gone, replaced by interactive action buttons
+    await expect(page.locator('[data-testid="empty-tile-actions"]')).toBeVisible()
   })
 
   test('should only show In Progress and Custom sections in Move-to menu', async ({ page, authenticatedWorkspace }) => {

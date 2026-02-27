@@ -33,6 +33,18 @@ function branchExists(repoDir: string, branchName: string): boolean {
 }
 
 /**
+ * Poll until a path no longer exists on disk (worktree removal is async).
+ */
+async function waitForPathDeleted(path: string, timeoutMs = 10_000, intervalMs = 200): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (existsSync(path)) {
+    if (Date.now() >= deadline)
+      throw new Error(`Path still exists after ${timeoutMs}ms: ${path}`)
+    await new Promise(r => setTimeout(r, intervalMs))
+  }
+}
+
+/**
  * Wait for the org landing page to be ready (sidebar sections loaded).
  * Unlike waitForWorkspaceReady, this works on non-workspace routes like /o/admin.
  */
@@ -233,11 +245,10 @@ async function keepWorktreeViaAPI(
 }
 
 /** Wait for a worker to be available (retry with backoff). */
-async function waitForWorker(
-  page: Page,
-  createBtn: ReturnType<Page['getByRole']>,
-  refreshBtn: ReturnType<Page['getByTitle']>,
-) {
+async function waitForWorker(page: Page) {
+  const dialog = page.getByRole('dialog')
+  const createBtn = dialog.getByRole('button', { name: 'Create', exact: true })
+  const refreshBtn = dialog.getByTitle('Refresh workers')
   for (let attempt = 0; attempt < 6; attempt++) {
     try {
       await expect(createBtn).toBeEnabled()
@@ -272,9 +283,7 @@ test.describe('Worktree Support', () => {
     await page.locator('[data-testid="sidebar-new-workspace"]').click()
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
-    const createBtn = page.getByRole('button', { name: 'Create' })
-    const refreshBtn = page.getByTitle('Refresh workers')
-    await waitForWorker(page, createBtn, refreshBtn)
+    await waitForWorker(page)
 
     // Set working directory to a known non-git directory
     const dialog = page.getByRole('dialog')
@@ -309,9 +318,7 @@ test.describe('Worktree Support', () => {
     await page.locator('[data-testid="sidebar-new-workspace"]').click()
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
-    const createBtn = page.getByRole('button', { name: 'Create' })
-    const refreshBtn = page.getByTitle('Refresh workers')
-    await waitForWorker(page, createBtn, refreshBtn)
+    await waitForWorker(page)
 
     // Set working directory to a subdirectory of the git repo
     const dialog = page.getByRole('dialog')
@@ -342,9 +349,7 @@ test.describe('Worktree Support', () => {
     await page.locator('[data-testid="sidebar-new-workspace"]').click()
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
-    const createBtn = page.getByRole('button', { name: 'Create' })
-    const refreshBtn = page.getByTitle('Refresh workers')
-    await waitForWorker(page, createBtn, refreshBtn)
+    await waitForWorker(page)
 
     // Set working directory to the git repo
     const dialog = page.getByRole('dialog')
@@ -380,9 +385,7 @@ test.describe('Worktree Support', () => {
 
     await expect(page.getByRole('heading', { name: 'New Agent' })).toBeVisible()
 
-    const createBtn = page.getByRole('button', { name: 'Create' })
-    const refreshBtn = page.getByTitle('Refresh workers')
-    await waitForWorker(page, createBtn, refreshBtn)
+    await waitForWorker(page)
 
     const dialog = page.getByRole('dialog')
     const pathInput = dialog.getByPlaceholder('Enter path...')
@@ -412,9 +415,7 @@ test.describe('Worktree Support', () => {
 
     await expect(page.getByRole('heading', { name: 'New Terminal' })).toBeVisible()
 
-    const createBtn = page.getByRole('button', { name: 'Create' })
-    const refreshBtn = page.getByTitle('Refresh workers')
-    await waitForWorker(page, createBtn, refreshBtn)
+    await waitForWorker(page)
 
     const dialog = page.getByRole('dialog')
     const pathInput = dialog.getByPlaceholder('Enter path...')
@@ -442,9 +443,7 @@ test.describe('Worktree Support', () => {
     await page.locator('[data-testid="sidebar-new-workspace"]').click()
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
-    const createBtn = page.getByRole('button', { name: 'Create' })
-    const refreshBtn = page.getByTitle('Refresh workers')
-    await waitForWorker(page, createBtn, refreshBtn)
+    await waitForWorker(page)
 
     await page.getByPlaceholder('New Workspace').fill('Worktree Test WS')
 
@@ -462,7 +461,7 @@ test.describe('Worktree Support', () => {
 
     await expect(page.getByText('e2e-test-branch')).toBeVisible()
 
-    await createBtn.click()
+    await dialog.getByRole('button', { name: 'Create', exact: true }).click()
 
     // Wait for the dialog to close first — this signals the API call
     // (including the git worktree creation) has completed.
@@ -510,9 +509,11 @@ test.describe('Worktree Support', () => {
 
     // Worktree should be clean, so it should have been auto-deleted
     expect(resp.worktreeCleanupPending).toBeFalsy()
-    expect(existsSync(worktreeDir)).toBe(false)
+    // Worktree removal happens asynchronously; wait for it to complete.
+    await waitForPathDeleted(worktreeDir)
 
-    // Branch should also be deleted
+    // Branch should also be deleted (async, along with worktree removal)
+    await waitForPathDeleted(join(repoDir, '.git', 'refs', 'heads', 'autoclean-branch'))
     expect(branchExists(repoDir, 'autoclean-branch')).toBe(false)
   })
 
@@ -559,9 +560,11 @@ test.describe('Worktree Support', () => {
 
     // Clean worktree should now be auto-deleted
     expect(agentResp.worktreeCleanupPending).toBeFalsy()
-    expect(existsSync(worktreeDir)).toBe(false)
+    // Worktree removal happens asynchronously; wait for it to complete.
+    await waitForPathDeleted(worktreeDir)
 
-    // Branch should also be deleted
+    // Branch should also be deleted (async, along with worktree removal)
+    await waitForPathDeleted(join(repoDir, '.git', 'refs', 'heads', 'shared-branch'))
     expect(branchExists(repoDir, 'shared-branch')).toBe(false)
   })
 
@@ -950,9 +953,7 @@ test.describe('Worktree Support', () => {
     await page.locator('[data-testid="sidebar-new-workspace"]').click()
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
-    const createBtn = page.getByRole('button', { name: 'Create' })
-    const refreshBtn = page.getByTitle('Refresh workers')
-    await waitForWorker(page, createBtn, refreshBtn)
+    await waitForWorker(page)
 
     // Set working directory to the worktree root
     const dialog = page.getByRole('dialog')
@@ -983,9 +984,7 @@ test.describe('Worktree Support', () => {
     await page.locator('[data-testid="sidebar-new-workspace"]').click()
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
-    const createBtn = page.getByRole('button', { name: 'Create' })
-    const refreshBtn = page.getByTitle('Refresh workers')
-    await waitForWorker(page, createBtn, refreshBtn)
+    await waitForWorker(page)
 
     const dialog = page.getByRole('dialog')
     const pathInput = dialog.getByPlaceholder('Enter path...')
@@ -1062,9 +1061,7 @@ test.describe('Worktree Support', () => {
     await page.locator('[data-testid="sidebar-new-workspace"]').click()
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
-    const createBtn = page.getByRole('button', { name: 'Create' })
-    const refreshBtn = page.getByTitle('Refresh workers')
-    await waitForWorker(page, createBtn, refreshBtn)
+    await waitForWorker(page)
 
     await page.getByPlaceholder('New Workspace').fill('Error Test WS')
 
@@ -1077,6 +1074,7 @@ test.describe('Worktree Support', () => {
     await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
 
     const branchInput = dialog.locator('input[type="text"][placeholder="feature-branch"]')
+    const createBtn = dialog.getByRole('button', { name: 'Create', exact: true })
 
     // The default random branch name should be valid — Create button enabled
     await expect(createBtn).toBeEnabled()
@@ -1120,9 +1118,7 @@ test.describe('Worktree Support', () => {
     await page.locator('[data-testid="sidebar-new-workspace"]').click()
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
-    const createBtn = page.getByRole('button', { name: 'Create' })
-    const refreshBtn = page.getByTitle('Refresh workers')
-    await waitForWorker(page, createBtn, refreshBtn)
+    await waitForWorker(page)
 
     const dialog = page.getByRole('dialog')
     const pathInput = dialog.getByPlaceholder('Enter path...')

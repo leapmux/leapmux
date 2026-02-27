@@ -158,12 +158,15 @@ test.describe('Workspace UX Enhancements', () => {
       await expect(page.locator('[data-testid^="workspace-item-"]').filter({ hasText: 'Delete Target WS' })).toBeVisible()
       await expect(page.locator('[data-testid^="workspace-item-"]').filter({ hasText: 'Next WS' })).toBeVisible()
 
-      // Set up dialog handler for the confirm prompt
-      page.on('dialog', dialog => dialog.accept())
-
       // Delete the active workspace
       await openWorkspaceContextMenu(page, 'Delete Target WS')
       await page.getByRole('menuitem', { name: 'Delete' }).click()
+
+      // Confirm the delete via ConfirmDialog (danger mode: arm then confirm)
+      const dialog = page.locator('dialog')
+      await expect(dialog).toBeVisible()
+      await dialog.getByRole('button', { name: 'Delete' }).click()
+      await dialog.getByRole('button', { name: 'Confirm?' }).click()
 
       // The deleted workspace should be gone from sidebar
       await expect(page.locator('[data-testid^="workspace-item-"]').filter({ hasText: 'Delete Target WS' })).not.toBeVisible()
