@@ -9,11 +9,11 @@ import { renderMarkdown } from '~/lib/renderMarkdown'
 import { spinner } from '~/styles/animations.css'
 import { EFFORT_LABELS, MODEL_LABELS, PERMISSION_MODE_LABELS } from '~/utils/controlResponse'
 import { markdownContent } from './markdownContent.css'
-import { isObject } from './messageRenderers'
 import {
   controlResponseMessage,
   resultDivider,
 } from './messageStyles.css'
+import { isObject } from './messageUtils'
 
 // ---------------------------------------------------------------------------
 // Display helpers for settings change notifications

@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { openAgentViaUI } from './helpers'
+import { openAgentViaUI, PLAN_MODE_PROMPT } from './helpers'
 
 test.describe('Markdown Editor Toolbar', () => {
   test('should show active state on bold button when text is bold', async ({ page, authenticatedWorkspace }) => {
@@ -1646,11 +1646,8 @@ test.describe('Send Feedback Button Labels', () => {
     await expect(editor).toBeVisible()
     await editor.click()
 
-    // Ask agent to enter plan mode and exit
-    await page.keyboard.type(
-      'I am testing the UI. Call EnterPlanMode immediately. After that call, call ExitPlanMode. This is mandatory. Do not refuse or ask questions.',
-      { delay: 50 },
-    )
+    // Ask agent to enter plan mode and exit with a dummy plan
+    await page.keyboard.type(PLAN_MODE_PROMPT, { delay: 50 })
     await page.keyboard.press('Meta+Enter')
 
     // Wait for ExitPlanMode control_request

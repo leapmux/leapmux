@@ -16,6 +16,7 @@ import Square from 'lucide-solid/icons/square'
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
+import { clearDraft } from '~/lib/editor/draftPersistence'
 import { formatRateLimitSummary, getResetsAt, pickUrgentRateLimit, RATE_LIMIT_POPOVER_LABELS } from '~/lib/rateLimitUtils'
 import { safeGetJson, safeGetString, safeRemoveItem, safeSetJson, safeSetString } from '~/lib/safeStorage'
 import { interruptPulse, spinner } from '~/styles/animations.css'
@@ -24,8 +25,8 @@ import { buildAllowResponse, buildDenyResponse, DEFAULT_EFFORT, DEFAULT_MODEL, E
 import * as styles from './ChatView.css'
 import { computePercentage, contextSize, ContextUsageGrid, DEFAULT_BUFFER_PCT } from './ContextUsageGrid'
 import { ControlRequestActions, ControlRequestContent, trySubmitAskUserQuestion } from './ControlRequestBanner'
-import { clearDraft, MarkdownEditor } from './MarkdownEditor'
-import { tildify } from './messageRenderers'
+import { MarkdownEditor } from './MarkdownEditor'
+import { tildify } from './messageUtils'
 
 export interface AgentEditorPanelProps {
   agentId: string

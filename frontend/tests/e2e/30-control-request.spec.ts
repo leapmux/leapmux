@@ -14,7 +14,7 @@ async function sendMessage(page: Page, text: string) {
 /** Wait for the control request banner to appear and return a scoped locator. */
 async function waitForControlBanner(page: Page) {
   const banner = page.locator('[data-testid="control-banner"]')
-  await expect(banner).toBeVisible()
+  await expect(banner).toBeVisible({ timeout: 60_000 })
   return banner
 }
 

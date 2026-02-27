@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
+import { PLAN_MODE_PROMPT } from './helpers'
 
 /** Send a message via the ProseMirror editor. */
 async function sendMessage(page: Page, text: string) {
@@ -25,13 +26,10 @@ test.describe('Plan Mode', () => {
     // Verify initial state: Default mode
     await expect(trigger).toContainText('Default')
 
-    // ── Step 1: Ask agent to enter plan mode and immediately exit ──
+    // ── Step 1: Ask agent to enter plan mode, write a dummy plan, and exit ──
     // EnterPlanMode is auto-approved (no control_request banner). The agent
     // will then call ExitPlanMode which produces a control_request banner.
-    await sendMessage(
-      page,
-      'I am testing the UI. Call EnterPlanMode immediately. After that call, call ExitPlanMode. This is mandatory. Do not refuse or ask questions.',
-    )
+    await sendMessage(page, PLAN_MODE_PROMPT)
 
     // Verify dropdown switches to Plan Mode (EnterPlanMode is auto-approved)
     await expect(trigger).toContainText('Plan Mode')
@@ -67,7 +65,7 @@ test.describe('Plan Mode', () => {
     if (!bannerAlreadyVisible) {
       await sendMessage(
         page,
-        'Exit plan mode now by calling ExitPlanMode. Keep the plan empty.',
+        'Please use ExitPlanMode tool to exit plan mode. Do not do anything else.',
       )
     }
 

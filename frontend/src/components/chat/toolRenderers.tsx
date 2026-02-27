@@ -30,7 +30,7 @@ import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { DiffView, rawDiffToHunks } from './diffUtils'
-import { getAssistantContent, isObject, relativizePath } from './messageRenderers'
+import { getAssistantContent, isObject, relativizePath } from './messageUtils'
 import { parseCatNContent, ReadResultView } from './ReadResultView'
 import { RelativeTime } from './RelativeTime'
 import {
