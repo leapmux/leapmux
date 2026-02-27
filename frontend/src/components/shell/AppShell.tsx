@@ -11,6 +11,7 @@ import { agentCallTimeout, agentLoadingTimeoutMs, apiCallTimeout } from '~/api/t
 import { AgentEditorPanel } from '~/components/chat/AgentEditorPanel'
 import { ChatView } from '~/components/chat/ChatView'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
+import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { NotFoundPage } from '~/components/common/NotFoundPage'
 import { showToast } from '~/components/common/Toast'
 import { CrossTileDragProvider } from '~/components/shell/CrossTileDragContext'
@@ -19,6 +20,7 @@ import { NewAgentDialog } from '~/components/shell/NewAgentDialog'
 import { NewTerminalDialog } from '~/components/shell/NewTerminalDialog'
 import { ResumeSessionDialog } from '~/components/shell/ResumeSessionDialog'
 import { RightSidebar } from '~/components/shell/RightSidebar'
+import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
 import { TabBar } from '~/components/shell/TabBar'
 import { getTerminalInstance, TerminalView } from '~/components/terminal/TerminalView'
 import { NewWorkspaceDialog } from '~/components/workspace/NewWorkspaceDialog'
@@ -27,6 +29,7 @@ import { useOrg } from '~/context/OrgContext'
 import { usePreferences } from '~/context/PreferencesContext'
 import { useWorkspace } from '~/context/WorkspaceContext'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
+import { SectionType } from '~/generated/leapmux/v1/section_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { useIsMobile } from '~/hooks/useIsMobile'
@@ -337,13 +340,26 @@ export const AppShell: ParentComponent = (props) => {
     }, 500)
   }
 
-  // Whether the current user owns the active workspace
-  const isWorkspaceOwner = createMemo(() => {
-    const ws = activeWorkspace()
-    if (!ws)
+  // Whether the active workspace is in an archived section
+  const isActiveWorkspaceArchived = createMemo(() => {
+    const wsId = workspace.activeWorkspaceId()
+    if (!wsId)
       return false
-    return ws.createdBy === auth.user()?.id
+    const sectionId = sectionStore.getSectionForWorkspace(wsId)
+    if (!sectionId)
+      return false
+    const section = sectionStore.state.sections.find(s => s.id === sectionId)
+    return section?.sectionType === SectionType.WORKSPACES_ARCHIVED
   })
+
+  // Whether the active workspace can be mutated (create agents/terminals, etc.)
+  const isActiveWorkspaceMutatable = createMemo(() =>
+    isWorkspaceMutatable(activeWorkspace(), auth.user()?.id ?? '', isActiveWorkspaceArchived()),
+  )
+
+  // Confirmation dialog states
+  const [confirmDeleteWs, setConfirmDeleteWs] = createSignal<{ workspaceId: string, resolve: (confirmed: boolean) => void } | null>(null)
+  const [confirmArchiveWs, setConfirmArchiveWs] = createSignal<{ workspaceId: string, resolve: (confirmed: boolean) => void } | null>(null)
 
   // Active tab derived state
   const activeTab = createMemo(() => tabStore.activeTab())
@@ -436,6 +452,8 @@ export const AppShell: ParentComponent = (props) => {
 
   // Open a new agent in the active workspace (for click handlers)
   const handleOpenAgent = async () => {
+    if (!isActiveWorkspaceMutatable())
+      return
     const ws = activeWorkspace()
     if (!ws)
       return
@@ -455,6 +473,8 @@ export const AppShell: ParentComponent = (props) => {
 
   // Open a terminal with a specific shell
   const handleOpenTerminalWithShell = async (shell: string) => {
+    if (!isActiveWorkspaceMutatable())
+      return
     const ws = activeWorkspace()
     if (!ws)
       return
@@ -492,6 +512,8 @@ export const AppShell: ParentComponent = (props) => {
 
   // Resume an agent from an existing session ID
   const handleResumeAgent = async (sessionId: string, workerId: string) => {
+    if (!isActiveWorkspaceMutatable())
+      return
     const ws = activeWorkspace()
     if (!ws)
       return
@@ -862,6 +884,27 @@ export const AppShell: ParentComponent = (props) => {
     }
   }
 
+  // Promise-based confirmation callbacks for workspace operations
+  const handleConfirmDeleteWorkspace = (workspaceId: string): Promise<boolean> =>
+    new Promise((resolve) => {
+      setConfirmDeleteWs({ workspaceId, resolve })
+    })
+
+  const handleConfirmArchiveWorkspace = (workspaceId: string): Promise<boolean> =>
+    new Promise((resolve) => {
+      setConfirmArchiveWs({ workspaceId, resolve })
+    })
+
+  // Post-archive cleanup: clear local agent/terminal/tab state if the archived workspace is active
+  const handlePostArchiveWorkspace = (workspaceId: string) => {
+    if (workspace.activeWorkspaceId() === workspaceId) {
+      for (const agent of agentStore.state.agents) controlStore.clearAgent(agent.id)
+      agentStore.clear()
+      terminalStore.setTerminals([])
+      tabStore.clear()
+    }
+  }
+
   // Terminal handlers
   const handleTerminalInput = async (terminalId: string, data: Uint8Array) => {
     try {
@@ -927,6 +970,8 @@ export const AppShell: ParentComponent = (props) => {
   }
 
   const handleOpenTerminal = async () => {
+    if (!isActiveWorkspaceMutatable())
+      return
     const ws = activeWorkspace()
     if (!ws)
       return
@@ -1129,7 +1174,7 @@ export const AppShell: ParentComponent = (props) => {
       tileId={tileId}
       tabs={tabStore.getTabsForTile(tileId)}
       activeTabKey={tabStore.getActiveTabKeyForTile(tileId)}
-      showAddButton={isWorkspaceRoute() && !!activeWorkspace() && isWorkspaceOwner()}
+      showAddButton={isActiveWorkspaceMutatable()}
       onSelect={(tab) => {
         layoutStore.setFocusedTile(tileId)
         handleTabSelect(tab)
@@ -1278,8 +1323,13 @@ export const AppShell: ParentComponent = (props) => {
 
         {/* Fallback when no tabs exist */}
         <Show when={!tab() && activeWorkspace()}>
-          <div class={styles.placeholder}>
-            No tabs in this tile. Click + to open an agent or terminal.
+          <div class={styles.placeholder} data-testid="tile-empty-state">
+            <Show
+              when={!isActiveWorkspaceArchived()}
+              fallback="This workspace is archived. Unarchive it to create new agents or terminals."
+            >
+              No tabs in this tile. Click + to open an agent or terminal.
+            </Show>
           </div>
         </Show>
       </>
@@ -1394,6 +1444,9 @@ export const AppShell: ParentComponent = (props) => {
       }}
       onRefreshWorkspaces={() => loadWorkspaces()}
       onDeleteWorkspace={handleDeleteWorkspace}
+      onConfirmDelete={handleConfirmDeleteWorkspace}
+      onConfirmArchive={handleConfirmArchiveWorkspace}
+      onPostArchiveWorkspace={handlePostArchiveWorkspace}
       isCollapsed={opts?.isCollapsed() ?? false}
       onExpand={opts?.onExpand ?? (() => {})}
       onCollapse={opts?.onCollapse}
@@ -1443,6 +1496,9 @@ export const AppShell: ParentComponent = (props) => {
       }}
       onRefreshWorkspaces={() => loadWorkspaces()}
       onDeleteWorkspace={handleDeleteWorkspace}
+      onConfirmDelete={handleConfirmDeleteWorkspace}
+      onConfirmArchive={handleConfirmArchiveWorkspace}
+      onPostArchiveWorkspace={handlePostArchiveWorkspace}
     />
   )
 
@@ -1490,7 +1546,7 @@ export const AppShell: ParentComponent = (props) => {
                 <div class={styles.mobileCenter}>
                   {tabBarElement()}
                   {renderTileContent(layoutStore.focusedTileId())}
-                  <Show when={focusedAgentId()}>
+                  <Show when={focusedAgentId() && !isActiveWorkspaceArchived()}>
                     <FocusedAgentEditorPanel containerHeight={0} />
                   </Show>
                 </div>
@@ -1668,7 +1724,7 @@ export const AppShell: ParentComponent = (props) => {
                                   }}
                                 />
                               </CrossTileDragProvider>
-                              <Show when={focusedAgentId()}>
+                              <Show when={focusedAgentId() && !isActiveWorkspaceArchived()}>
                                 <FocusedAgentEditorPanel containerHeight={centerPanelHeight()} />
                               </Show>
                             </Show>
@@ -1801,6 +1857,45 @@ export const AppShell: ParentComponent = (props) => {
             setNewWorkspaceTargetSectionId(null)
           }}
         />
+      </Show>
+
+      <Show when={confirmDeleteWs()}>
+        {state => (
+          <ConfirmDialog
+            title="Delete Workspace"
+            confirmLabel="Delete"
+            danger
+            onConfirm={() => {
+              state().resolve(true)
+              setConfirmDeleteWs(null)
+            }}
+            onCancel={() => {
+              state().resolve(false)
+              setConfirmDeleteWs(null)
+            }}
+          >
+            <p>Are you sure you want to delete this workspace? This cannot be undone.</p>
+          </ConfirmDialog>
+        )}
+      </Show>
+
+      <Show when={confirmArchiveWs()}>
+        {state => (
+          <ConfirmDialog
+            title="Archive Workspace"
+            confirmLabel="Archive"
+            onConfirm={() => {
+              state().resolve(true)
+              setConfirmArchiveWs(null)
+            }}
+            onCancel={() => {
+              state().resolve(false)
+              setConfirmArchiveWs(null)
+            }}
+          >
+            <p>Are you sure you want to archive this workspace? All active agents and terminals will be stopped.</p>
+          </ConfirmDialog>
+        )}
       </Show>
 
       <Show when={worktreeConfirm()}>

@@ -26,3 +26,8 @@ WHERE section_id = ?;
 -- name: MoveWorkspaceSectionItemsToSection :exec
 UPDATE workspace_section_items SET section_id = ?
 WHERE section_id = ?;
+
+-- name: IsWorkspaceInArchivedSection :one
+SELECT COUNT(*) > 0 AS is_archived FROM workspace_section_items wsi
+JOIN workspace_sections ws ON wsi.section_id = ws.id
+WHERE wsi.user_id = ? AND wsi.workspace_id = ? AND ws.section_type = 3;

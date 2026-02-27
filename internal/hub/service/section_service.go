@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 
 	"connectrpc.com/connect"
 
@@ -12,16 +13,30 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/id"
 	"github.com/leapmux/leapmux/internal/hub/lexorank"
+	"github.com/leapmux/leapmux/internal/hub/workermgr"
 )
 
 // SectionService implements the SectionServiceHandler interface.
 type SectionService struct {
-	queries *db.Queries
+	queries     *db.Queries
+	workerMgr   *workermgr.Manager
+	agentSvc    *AgentService
+	terminalSvc *TerminalService
 }
 
 // NewSectionService creates a new SectionService.
-func NewSectionService(q *db.Queries) *SectionService {
-	return &SectionService{queries: q}
+func NewSectionService(q *db.Queries, wm *workermgr.Manager) *SectionService {
+	return &SectionService{queries: q, workerMgr: wm}
+}
+
+// SetAgentService sets the agent service reference (breaks circular dependency).
+func (s *SectionService) SetAgentService(a *AgentService) {
+	s.agentSvc = a
+}
+
+// SetTerminalService sets the terminal service reference (breaks circular dependency).
+func (s *SectionService) SetTerminalService(t *TerminalService) {
+	s.terminalSvc = t
 }
 
 func (s *SectionService) ListSections(
@@ -274,6 +289,20 @@ func (s *SectionService) MoveWorkspace(
 		return nil, err
 	}
 
+	workspaceID := req.Msg.GetWorkspaceId()
+
+	// Verify the user can access the workspace being moved.
+	wsInternal, err := s.queries.GetWorkspaceByIDInternal(ctx, workspaceID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if _, err := getVisibleWorkspace(ctx, s.queries, user, wsInternal.OrgID, workspaceID); err != nil {
+		return nil, err
+	}
+
 	// Verify the target section exists and belongs to the user.
 	section, err := s.queries.GetWorkspaceSectionByID(ctx, req.Msg.GetSectionId())
 	if err != nil {
@@ -288,14 +317,57 @@ func (s *SectionService) MoveWorkspace(
 
 	if err := s.queries.SetWorkspaceSectionItem(ctx, db.SetWorkspaceSectionItemParams{
 		UserID:      user.ID,
-		WorkspaceID: req.Msg.GetWorkspaceId(),
+		WorkspaceID: workspaceID,
 		SectionID:   req.Msg.GetSectionId(),
 		Position:    req.Msg.GetPosition(),
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
+	// If moving to the archived section, stop all active agents and terminals.
+	if section.SectionType == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED {
+		s.cleanupArchivedWorkspace(ctx, workspaceID)
+	}
+
 	return connect.NewResponse(&leapmuxv1.MoveWorkspaceResponse{}), nil
+}
+
+// cleanupArchivedWorkspace stops all active agents and terminals for a workspace
+// that was just moved to the archived section.
+func (s *SectionService) cleanupArchivedWorkspace(ctx context.Context, workspaceID string) {
+	// Close all active agents, sending stop to each agent's worker.
+	agents, err := s.queries.ListAgentsByWorkspaceID(ctx, workspaceID)
+	if err != nil {
+		slog.Error("failed to list agents for archive cleanup", "workspace_id", workspaceID, "error", err)
+	} else {
+		for i := range agents {
+			if agents[i].Status != leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE {
+				continue
+			}
+			conn := s.workerMgr.Get(agents[i].WorkerID)
+			if conn != nil {
+				if sendErr := conn.Send(&leapmuxv1.ConnectResponse{
+					Payload: &leapmuxv1.ConnectResponse_AgentStop{
+						AgentStop: &leapmuxv1.AgentStopRequest{
+							WorkspaceId: workspaceID,
+							AgentId:     agents[i].ID,
+						},
+					},
+				}); sendErr != nil {
+					slog.Warn("failed to send agent stop for archive", "agent_id", agents[i].ID, "error", sendErr)
+				}
+			}
+		}
+	}
+
+	if err := s.queries.CloseActiveAgentsByWorkspace(ctx, workspaceID); err != nil {
+		slog.Error("failed to close agents for archived workspace", "workspace_id", workspaceID, "error", err)
+	}
+
+	// Close all terminals belonging to this workspace.
+	if s.terminalSvc != nil {
+		s.terminalSvc.CleanupTerminalsByWorkspaces([]string{workspaceID})
+	}
 }
 
 // initDefaultSections creates the default sections for a user.

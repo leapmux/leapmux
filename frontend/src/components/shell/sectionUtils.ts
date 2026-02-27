@@ -29,6 +29,26 @@ export function sectionTypeTestId(sectionType: SectionType): string {
   }
 }
 
+/** Whether the section type is a valid "Move to" target for workspaces. */
+export function isMoveTargetSection(sectionType: SectionType): boolean {
+  return isWorkspaceSection(sectionType)
+    && sectionType !== SectionType.WORKSPACES_ARCHIVED
+    && sectionType !== SectionType.WORKSPACES_SHARED
+}
+
+/** Whether a workspace can be mutated (create agents/terminals, rename, etc.). */
+export function isWorkspaceMutatable(
+  workspace: { createdBy: string } | undefined,
+  currentUserId: string,
+  isArchived: boolean,
+): boolean {
+  if (!workspace)
+    return false
+  if (workspace.createdBy !== currentUserId)
+    return false
+  return !isArchived
+}
+
 /** Map section to its icon. */
 export function getSectionIcon(section: Section): LucideIcon {
   switch (section.sectionType) {

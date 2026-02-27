@@ -167,7 +167,9 @@ func NewServer(sc ServerConfig) (*Server, error) {
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(userPath, userHandler)
 
-	sectionSvc := service.NewSectionService(queries)
+	sectionSvc := service.NewSectionService(queries, wMgr)
+	sectionSvc.SetAgentService(agentSvc)
+	sectionSvc.SetTerminalService(terminalSvc)
 	sectionPath, sectionHandler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, opts)
 	mux.Handle(sectionPath, sectionHandler)
 

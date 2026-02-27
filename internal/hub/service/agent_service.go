@@ -107,7 +107,7 @@ func (s *AgentService) OpenAgent(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("working_dir is required"))
 	}
 
-	// Verify the user can see the workspace.
+	// Verify the user can see the workspace and it is not archived.
 	wsInternal, err := s.queries.GetWorkspaceByIDInternal(ctx, workspaceID)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -115,7 +115,7 @@ func (s *AgentService) OpenAgent(
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if _, err := s.getVisibleWorkspace(ctx, user, wsInternal.OrgID, workspaceID); err != nil {
+	if _, err := getVisibleNonArchivedWorkspace(ctx, s.queries, user, wsInternal.OrgID, workspaceID); err != nil {
 		return nil, err
 	}
 
@@ -550,7 +550,7 @@ func (s *AgentService) RenameAgent(
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if _, err := s.getVisibleWorkspace(ctx, user, wsInternal.OrgID, agent.WorkspaceID); err != nil {
+	if _, err := getVisibleNonArchivedWorkspace(ctx, s.queries, user, wsInternal.OrgID, agent.WorkspaceID); err != nil {
 		return nil, err
 	}
 
