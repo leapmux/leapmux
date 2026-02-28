@@ -367,7 +367,8 @@ export const AppShell: ParentComponent = (props) => {
       return { workerId: agent?.workerId ?? '', workingDir: agent?.workingDir ?? '', homeDir: agent?.homeDir ?? '' }
     }
     else if (tab.type === TabType.FILE) {
-      const dir = tab.filePath ? tab.filePath.substring(0, tab.filePath.lastIndexOf('/')) || '/' : ''
+      // Use the stored working directory from the originating tab, not the file's directory.
+      const dir = tab.workingDir || (tab.filePath ? tab.filePath.substring(0, tab.filePath.lastIndexOf('/')) || '/' : '')
       // Find homeDir from any agent on the same worker
       const homeDir = agentStore.state.agents.find(a => a.workerId === tab.workerId)?.homeDir ?? ''
       return { workerId: tab.workerId ?? '', workingDir: dir, homeDir }
@@ -855,6 +856,7 @@ export const AppShell: ParentComponent = (props) => {
       id: tabId,
       filePath: path,
       workerId: ctx.workerId,
+      workingDir: ctx.workingDir,
       title: fileName,
       tileId,
     })
