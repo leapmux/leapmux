@@ -22,6 +22,7 @@ import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import Quote from 'lucide-solid/icons/quote'
 import Rows2 from 'lucide-solid/icons/rows-2'
 import Search from 'lucide-solid/icons/search'
+import SquareTerminal from 'lucide-solid/icons/square-terminal'
 import Terminal from 'lucide-solid/icons/terminal'
 import TicketsPlane from 'lucide-solid/icons/tickets-plane'
 import Toolbox from 'lucide-solid/icons/toolbox'
@@ -88,6 +89,7 @@ export function toolIcon(name: string, size: number): JSX.Element {
     case 'EnterPlanMode': return <TicketsPlane size={size} class={toolUseIcon} />
     case 'ExitPlanMode': return <PlaneTakeoff size={size} class={toolUseIcon} />
     case 'AskUserQuestion': return <Vote size={size} class={toolUseIcon} />
+    case 'TaskOutput': return <SquareTerminal size={size} class={toolUseIcon} />
     case 'Skill': return <Toolbox size={size} class={toolUseIcon} />
     default: return <ChevronsRight size={size} class={toolUseIcon} />
   }
@@ -501,7 +503,7 @@ function ToolResultMessage(props: {
           when={hasDiff()}
           fallback={
             props.isPreText
-              ? (props.toolName === 'Bash' && containsAnsi(props.resultContent))
+              ? ((props.toolName === 'Bash' || props.toolName === 'TaskOutput') && containsAnsi(props.resultContent))
                   /* eslint-disable-next-line solid/no-innerhtml -- HTML from renderAnsi, not user input */
                   ? <div class={toolResultContentAnsi} innerHTML={renderAnsi(props.resultContent)} />
                   : renderReadOrPre(props.toolName, props.resultContent, props.context)

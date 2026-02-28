@@ -13,6 +13,7 @@ import ChevronRight from 'lucide-solid/icons/chevron-right'
 import Hand from 'lucide-solid/icons/hand'
 import ListTodo from 'lucide-solid/icons/list-todo'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
+import SquareTerminal from 'lucide-solid/icons/square-terminal'
 import Stamp from 'lucide-solid/icons/stamp'
 import Terminal from 'lucide-solid/icons/terminal'
 import TicketsPlane from 'lucide-solid/icons/tickets-plane'
@@ -20,6 +21,7 @@ import Toolbox from 'lucide-solid/icons/toolbox'
 import Vote from 'lucide-solid/icons/vote'
 import { createSignal, For, Show } from 'solid-js'
 import { TodoList } from '~/components/todo/TodoList'
+import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { markdownContent } from './markdownContent.css'
@@ -47,7 +49,10 @@ import {
   answerText,
   toolInputDetail,
   toolInputSubDetail,
+  toolInputSubDetailExpanded,
   toolMessage,
+  toolResultContentAnsi,
+  toolResultContentPre,
   toolUseHeader,
   toolUseIcon,
 } from './toolStyles.css'
@@ -89,6 +94,15 @@ export interface RenderContext {
   childResultContent?: string
   /** Whether the child tool_result has is_error=true (for fallback rejection detection). */
   childResultIsError?: boolean
+  /** Task data from child tool_result (for TaskOutput renderer). */
+  childTask?: {
+    task_id?: string
+    task_type?: string
+    status?: string
+    description?: string
+    output?: string
+    exitCode?: number
+  }
   /** Control response (approval/rejection) threaded into this tool_use. */
   childControlResponse?: { action: string, comment: string }
 }
@@ -334,6 +348,92 @@ function renderAskUserQuestion(toolUse: Record<string, unknown>, context?: Rende
   )
 }
 
+/** Format task status for display. */
+export function formatTaskStatus(status?: string): string {
+  if (!status)
+    return 'Pending'
+  if (status === 'completed')
+    return 'Complete'
+  if (status === 'failed')
+    return 'Failed'
+  return status.charAt(0).toUpperCase() + status.slice(1)
+}
+
+/** Return the first non-empty trimmed line from text, or null. */
+export function firstNonEmptyLine(text?: string): string | null {
+  if (!text)
+    return null
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed)
+      return trimmed
+  }
+  return null
+}
+
+/** Render TaskOutput tool_use with task status, description, and output. */
+function renderTaskOutput(toolUse: Record<string, unknown>, context?: RenderContext): JSX.Element {
+  const task = context?.childTask
+  const status = formatTaskStatus(task?.status)
+  const description = task?.description
+  const output = task?.output
+  const firstLine = firstNonEmptyLine(output)
+  const expanded = context?.threadExpanded ?? false
+
+  return (
+    <div class={toolMessage}>
+      <div class={toolUseHeader}>
+        <span class={inlineFlex} title="TaskOutput">
+          <SquareTerminal size={16} class={toolUseIcon} />
+        </span>
+        <span class={toolInputDetail}>
+          {status}
+          {description ? ` - ${description}` : ''}
+        </span>
+        <ControlResponseTag response={context?.childControlResponse} />
+        <Show when={context}>
+          <ToolHeaderActions
+            createdAt={context!.createdAt}
+            updatedAt={context!.updatedAt}
+            threadCount={context!.threadChildCount ?? 0}
+            threadExpanded={context!.threadExpanded ?? false}
+            onToggleThread={context!.onToggleThread ?? (() => {})}
+            onCopyJson={context!.onCopyJson ?? (() => {})}
+            jsonCopied={context!.jsonCopied ?? false}
+          />
+        </Show>
+      </div>
+      <Show when={!expanded && firstLine}>
+        <div class={toolInputSubDetail}>{firstLine}</div>
+      </Show>
+      <Show when={expanded}>
+        <div class={toolInputSubDetailExpanded}>
+          <Show when={task?.task_id}>
+            {`task_id: ${task!.task_id}`}
+          </Show>
+          <Show when={task?.task_type}>
+            {`\ntask_type: ${task!.task_type}`}
+          </Show>
+          <Show when={task?.status}>
+            {`\nstatus: ${task!.status}`}
+          </Show>
+          <Show when={description}>
+            {`\ndescription: ${description}`}
+          </Show>
+          <Show when={task?.exitCode !== undefined}>
+            {`\nexitCode: ${task!.exitCode}`}
+          </Show>
+        </div>
+        <Show when={output}>
+          {containsAnsi(output!)
+            ? <div class={toolResultContentAnsi} innerHTML={renderAnsi(output!)} />
+            : <div class={toolResultContentPre}>{output}</div>}
+        </Show>
+      </Show>
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // MessageContentRenderer wrappers (used by getFallbackRenderers linear scan)
 // ---------------------------------------------------------------------------
@@ -395,6 +495,18 @@ const askUserQuestionRenderer: MessageContentRenderer = {
     if (!toolUse)
       return null
     return renderAskUserQuestion(toolUse as Record<string, unknown>, context)
+  },
+}
+
+const taskOutputRenderer: MessageContentRenderer = {
+  render(parsed, _role, context) {
+    const content = getAssistantContent(parsed)
+    if (!content)
+      return null
+    const toolUse = content.find(c => isObject(c) && c.type === 'tool_use' && c.name === 'TaskOutput')
+    if (!toolUse)
+      return null
+    return renderTaskOutput(toolUse as Record<string, unknown>, context)
   },
 }
 
@@ -570,6 +682,7 @@ const SPECIALIZED_TOOL_RENDERERS: Record<string, (toolUse: Record<string, unknow
   ExitPlanMode: renderExitPlanMode,
   TodoWrite: renderTodoWrite,
   AskUserQuestion: renderAskUserQuestion,
+  TaskOutput: renderTaskOutput,
   Skill: renderSkill,
 }
 
@@ -656,6 +769,7 @@ function getFallbackRenderers(): MessageContentRenderer[] {
       skillRenderer,
       todoWriteRenderer,
       askUserQuestionRenderer,
+      taskOutputRenderer,
       toolUseRenderer,
       toolResultRenderer,
       userTextContentRenderer,
