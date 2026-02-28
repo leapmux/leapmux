@@ -285,6 +285,7 @@ func (s *AgentService) trackPlanFilePath(ctx context.Context, agentID string, co
 		// If the title changed and auto-rename applies, also update the
 		// agent's display title atomically.
 		shouldAutoRename := newPlanTitle != "" &&
+			newPlanTitle != agent.Title &&
 			(agent.Title == agent.PlanTitle ||
 				regexp.MustCompile(`^Agent \d+$`).MatchString(agent.Title))
 		if shouldAutoRename {
