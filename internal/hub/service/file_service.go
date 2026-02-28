@@ -9,6 +9,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/validate"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 )
 
@@ -35,15 +36,21 @@ func (s *FileService) ListDirectory(
 	}
 
 	workerID := req.Msg.GetWorkerId()
-	conn, err := s.getWorkerConn(ctx, user, workerID, req.Msg.GetOrgId())
+	conn, workerHomeDir, err := s.getWorkerConn(ctx, user, workerID, req.Msg.GetOrgId())
 	if err != nil {
 		return nil, err
+	}
+
+	browsePath := validate.SanitizePath(req.Msg.GetPath(), workerHomeDir)
+	if browsePath == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid path"))
 	}
 
 	resp, err := s.pending.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{
 		Payload: &leapmuxv1.ConnectResponse_FileBrowse{
 			FileBrowse: &leapmuxv1.FileBrowseRequest{
-				Path: req.Msg.GetPath(),
+				Path:     browsePath,
+				MaxDepth: req.Msg.GetMaxDepth(),
 			},
 		},
 	})
@@ -88,15 +95,20 @@ func (s *FileService) ReadFile(
 	}
 
 	workerID := req.Msg.GetWorkerId()
-	conn, err := s.getWorkerConn(ctx, user, workerID, req.Msg.GetOrgId())
+	conn, workerHomeDir, err := s.getWorkerConn(ctx, user, workerID, req.Msg.GetOrgId())
 	if err != nil {
 		return nil, err
+	}
+
+	readPath := validate.SanitizePath(req.Msg.GetPath(), workerHomeDir)
+	if readPath == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid path"))
 	}
 
 	resp, err := s.pending.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{
 		Payload: &leapmuxv1.ConnectResponse_FileRead{
 			FileRead: &leapmuxv1.FileReadRequest{
-				Path:   req.Msg.GetPath(),
+				Path:   readPath,
 				Offset: req.Msg.GetOffset(),
 				Limit:  req.Msg.GetLimit(),
 			},
@@ -132,15 +144,20 @@ func (s *FileService) StatFile(
 	}
 
 	workerID := req.Msg.GetWorkerId()
-	conn, err := s.getWorkerConn(ctx, user, workerID, req.Msg.GetOrgId())
+	conn, workerHomeDir, err := s.getWorkerConn(ctx, user, workerID, req.Msg.GetOrgId())
 	if err != nil {
 		return nil, err
+	}
+
+	statPath := validate.SanitizePath(req.Msg.GetPath(), workerHomeDir)
+	if statPath == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid path"))
 	}
 
 	resp, err := s.pending.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{
 		Payload: &leapmuxv1.ConnectResponse_FileStat{
 			FileStat: &leapmuxv1.FileStatRequest{
-				Path: req.Msg.GetPath(),
+				Path: statPath,
 			},
 		},
 	})
@@ -175,18 +192,18 @@ func (s *FileService) StatFile(
 	}), nil
 }
 
-func (s *FileService) getWorkerConn(ctx context.Context, user *auth.UserInfo, workerID, requestedOrgID string) (*workermgr.Conn, error) {
+func (s *FileService) getWorkerConn(ctx context.Context, user *auth.UserInfo, workerID, requestedOrgID string) (*workermgr.Conn, string, error) {
 	if workerID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))
+		return nil, "", connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))
 	}
 
 	// Verify the worker exists and the user can see it.
 	worker, err := s.queries.GetWorkerByIDInternal(ctx, workerID)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
+			return nil, "", connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, "", connect.NewError(connect.CodeInternal, err)
 	}
 
 	_, err = s.queries.GetOwnedWorker(ctx, db.GetOwnedWorkerParams{
@@ -196,15 +213,15 @@ func (s *FileService) getWorkerConn(ctx context.Context, user *auth.UserInfo, wo
 	})
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
+			return nil, "", connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, "", connect.NewError(connect.CodeInternal, err)
 	}
 
 	conn := s.workerMgr.Get(workerID)
 	if conn == nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker is offline"))
+		return nil, "", connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker is offline"))
 	}
 
-	return conn, nil
+	return conn, worker.HomeDir, nil
 }

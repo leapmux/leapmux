@@ -1,6 +1,6 @@
 -- name: CreateWorker :exec
-INSERT INTO workers (id, org_id, name, hostname, os, arch, auth_token, registered_by)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO workers (id, org_id, name, hostname, os, arch, auth_token, registered_by, home_dir)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetWorkerByID :one
 SELECT * FROM workers WHERE id = ? AND org_id = ?;
@@ -63,3 +63,6 @@ WHERE w.org_id = ? AND w.created_by = ? AND w.is_deleted = 0;
 
 -- name: UpdateWorkerLastSeen :exec
 UPDATE workers SET last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?;
+
+-- name: UpdateWorkerHomeDir :exec
+UPDATE workers SET home_dir = ? WHERE id = ? AND home_dir != ?;

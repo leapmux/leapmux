@@ -3,6 +3,7 @@ import RefreshCw from 'lucide-solid/icons/refresh-cw'
 import { generateSlug } from 'random-word-slugs'
 import { createEffect, createMemo, createSignal, on, Show } from 'solid-js'
 import { gitClient } from '~/api/clients'
+import { tildify } from '~/components/chat/messageUtils'
 import { useOrg } from '~/context/OrgContext'
 import { validateBranchName } from '~/lib/validate'
 import { checkboxRow, errorText, labelRow, pathPreview, refreshButton, warningText } from '~/styles/shared.css'
@@ -10,6 +11,7 @@ import { checkboxRow, errorText, labelRow, pathPreview, refreshButton, warningTe
 interface WorktreeOptionsProps {
   workerId: string
   selectedPath: string
+  homeDir?: string
   onWorktreeChange: (create: boolean, branch: string, branchError: string | null) => void
 }
 
@@ -130,7 +132,7 @@ export const WorktreeOptions: Component<WorktreeOptionsProps> = (props) => {
           <div class={pathPreview}>
             Worktree path:
             {' '}
-            <code>{worktreePath()}</code>
+            <code title={worktreePath()}>{tildify(worktreePath(), props.homeDir)}</code>
           </div>
         </Show>
       </Show>

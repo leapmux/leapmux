@@ -5,6 +5,7 @@ import Bot from 'lucide-solid/icons/bot'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
 import Columns2 from 'lucide-solid/icons/columns-2'
 import Ellipsis from 'lucide-solid/icons/ellipsis'
+import FileText from 'lucide-solid/icons/file-text'
 import Menu from 'lucide-solid/icons/menu'
 import PanelRight from 'lucide-solid/icons/panel-right'
 import Plus from 'lucide-solid/icons/plus'
@@ -39,6 +40,7 @@ function tabTypeLabel(type: TabType): string {
   switch (type) {
     case TabType.AGENT: return 'agent'
     case TabType.TERMINAL: return 'terminal'
+    case TabType.FILE: return 'file'
     default: return 'unknown'
   }
 }
@@ -111,6 +113,8 @@ export const TabBar: Component<TabBarProps> = (props) => {
   const tabLabel = (tab: Tab): string => {
     if (tab.title)
       return tab.title
+    if (tab.type === TabType.FILE)
+      return tab.filePath?.split('/').pop() ?? 'File'
     return tab.type === TabType.AGENT ? 'Agent' : 'Terminal'
   }
 
@@ -183,11 +187,12 @@ export const TabBar: Component<TabBarProps> = (props) => {
       onDblClick={(e: MouseEvent) => {
         e.preventDefault()
         e.stopPropagation()
-        startEditing(tab)
+        if (tab.type !== TabType.FILE)
+          startEditing(tab)
       }}
     >
       <span class={styles.tabIcon}>
-        {tab.type === TabType.AGENT ? <Bot size={14} /> : <Terminal size={14} />}
+        {tab.type === TabType.AGENT ? <Bot size={14} /> : tab.type === TabType.FILE ? <FileText size={14} /> : <Terminal size={14} />}
       </span>
       <Show
         when={editingTabKey() === tabKey(tab)}

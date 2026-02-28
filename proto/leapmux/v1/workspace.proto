@@ -36,6 +36,7 @@ enum TabType {
   TAB_TYPE_UNSPECIFIED = 0;
   TAB_TYPE_AGENT = 1;
   TAB_TYPE_TERMINAL = 2;
+  TAB_TYPE_FILE = 3; // Ephemeral file viewer tab (not persisted to backend)
 }
 
 // --- Workspace CRUD ---

@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/timeout"
+	"github.com/leapmux/leapmux/internal/hub/validate"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 )
 
@@ -45,15 +46,20 @@ func (s *GitService) GetGitInfo(
 	}
 
 	workerID := req.Msg.GetWorkerId()
-	conn, err := s.getWorkerConn(ctx, user, workerID, req.Msg.GetOrgId())
+	conn, workerHomeDir, err := s.getWorkerConn(ctx, user, workerID, req.Msg.GetOrgId())
 	if err != nil {
 		return nil, err
+	}
+
+	gitPath := validate.SanitizePath(req.Msg.GetPath(), workerHomeDir)
+	if gitPath == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid path"))
 	}
 
 	resp, err := s.pending.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{
 		Payload: &leapmuxv1.ConnectResponse_GitInfo{
 			GitInfo: &leapmuxv1.GitInfoRequest{
-				Path: req.Msg.GetPath(),
+				Path: gitPath,
 			},
 		},
 	})
@@ -198,17 +204,17 @@ func (s *GitService) KeepWorktree(
 	return connect.NewResponse(&leapmuxv1.KeepWorktreeResponse{}), nil
 }
 
-func (s *GitService) getWorkerConn(ctx context.Context, user *auth.UserInfo, workerID, requestedOrgID string) (*workermgr.Conn, error) {
+func (s *GitService) getWorkerConn(ctx context.Context, user *auth.UserInfo, workerID, requestedOrgID string) (*workermgr.Conn, string, error) {
 	if workerID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))
+		return nil, "", connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))
 	}
 
 	worker, err := s.queries.GetWorkerByIDInternal(ctx, workerID)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
+			return nil, "", connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, "", connect.NewError(connect.CodeInternal, err)
 	}
 
 	_, err = s.queries.GetOwnedWorker(ctx, db.GetOwnedWorkerParams{
@@ -218,15 +224,15 @@ func (s *GitService) getWorkerConn(ctx context.Context, user *auth.UserInfo, wor
 	})
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
+			return nil, "", connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, "", connect.NewError(connect.CodeInternal, err)
 	}
 
 	conn := s.workerMgr.Get(workerID)
 	if conn == nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker is offline"))
+		return nil, "", connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker is offline"))
 	}
 
-	return conn, nil
+	return conn, worker.HomeDir, nil
 }

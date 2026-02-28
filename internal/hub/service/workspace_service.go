@@ -96,9 +96,9 @@ func (s *WorkspaceService) CreateWorkspace(
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker is being deregistered"))
 	}
 
-	workingDir := req.Msg.GetWorkingDir()
+	workingDir := validate.SanitizePath(req.Msg.GetWorkingDir(), worker.HomeDir)
 	if workingDir == "" {
-		workingDir = "."
+		workingDir = validate.SanitizePath("~", worker.HomeDir)
 	}
 
 	// Create worktree if requested (before workspace DB insert so failures are clean).
@@ -194,7 +194,7 @@ func (s *WorkspaceService) CreateWorkspace(
 						slog.Warn("failed to set initial agent permission mode", "agent_id", agentID, "error", err)
 					}
 				}
-				if homeDir := resp.GetAgentStarted().GetHomeDir(); homeDir != "" {
+				if homeDir := validate.SanitizePath(resp.GetAgentStarted().GetHomeDir(), ""); homeDir != "" {
 					if err := s.queries.UpdateAgentHomeDir(ctx, db.UpdateAgentHomeDirParams{
 						HomeDir: homeDir,
 						ID:      agentID,

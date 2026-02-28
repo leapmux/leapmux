@@ -5,10 +5,17 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"github.com/leapmux/leapmux/internal/hub/validate"
 )
 
 const defaultReadLimit = 64 * 1024 // 64KB
+
+// userHomeDir returns the current user's home directory, or "" on failure.
+func userHomeDir() string {
+	home, _ := os.UserHomeDir()
+	return home
+}
 
 // FileEntry represents a file or directory.
 type FileEntry struct {
@@ -20,10 +27,12 @@ type FileEntry struct {
 }
 
 // ListDirectory lists entries in a directory. The path must be absolute.
-func ListDirectory(path string) (string, []FileEntry, error) {
-	absPath, err := securePath(path)
-	if err != nil {
-		return "", nil, err
+// When maxDepth > 0, single-child directory entries are merged server-side
+// (e.g. "a/b/c") to reduce round-trip RPC calls from the frontend.
+func ListDirectory(path string, maxDepth int) (string, []FileEntry, error) {
+	absPath := validate.SanitizePath(path, userHomeDir())
+	if absPath == "" {
+		return "", nil, fmt.Errorf("invalid path")
 	}
 
 	entries, err := os.ReadDir(absPath)
@@ -37,23 +46,56 @@ func ListDirectory(path string) (string, []FileEntry, error) {
 		if err != nil {
 			continue
 		}
-		result = append(result, FileEntry{
+		entry := FileEntry{
 			Name:        e.Name(),
 			IsDir:       e.IsDir(),
 			Size:        info.Size(),
 			ModTime:     info.ModTime().UTC().Format("2006-01-02T15:04:05.000Z"),
 			Permissions: info.Mode().String(),
-		})
+		}
+		if e.IsDir() && maxDepth > 0 {
+			entry = mergeEntry(filepath.Join(absPath, e.Name()), entry, maxDepth)
+		}
+		result = append(result, entry)
 	}
 
 	return absPath, result, nil
 }
 
+// mergeEntry recursively merges single-child directories into the entry name.
+// For example, if "src" contains only "components" which contains only "shell",
+// the returned entry will have Name "src/components/shell".
+func mergeEntry(dirPath string, entry FileEntry, remaining int) FileEntry {
+	if remaining <= 0 {
+		return entry
+	}
+	children, err := os.ReadDir(dirPath)
+	if err != nil {
+		return entry
+	}
+	if len(children) != 1 || !children[0].IsDir() {
+		return entry
+	}
+	child := children[0]
+	childInfo, err := child.Info()
+	if err != nil {
+		return entry
+	}
+	merged := FileEntry{
+		Name:        entry.Name + "/" + child.Name(),
+		IsDir:       true,
+		Size:        childInfo.Size(),
+		ModTime:     childInfo.ModTime().UTC().Format("2006-01-02T15:04:05.000Z"),
+		Permissions: childInfo.Mode().String(),
+	}
+	return mergeEntry(filepath.Join(dirPath, child.Name()), merged, remaining-1)
+}
+
 // ReadFile reads file content with offset and limit. The path must be absolute.
 func ReadFile(path string, offset, limit int64) (string, []byte, int64, error) {
-	absPath, err := securePath(path)
-	if err != nil {
-		return "", nil, 0, err
+	absPath := validate.SanitizePath(path, userHomeDir())
+	if absPath == "" {
+		return "", nil, 0, fmt.Errorf("invalid path")
 	}
 
 	info, err := os.Stat(absPath)
@@ -92,9 +134,9 @@ func ReadFile(path string, offset, limit int64) (string, []byte, int64, error) {
 
 // StatFile returns information about a file or directory. The path must be absolute.
 func StatFile(path string) (string, *FileEntry, error) {
-	absPath, err := securePath(path)
-	if err != nil {
-		return "", nil, err
+	absPath := validate.SanitizePath(path, userHomeDir())
+	if absPath == "" {
+		return "", nil, fmt.Errorf("invalid path")
 	}
 
 	info, err := os.Stat(absPath)
@@ -109,41 +151,4 @@ func StatFile(path string) (string, *FileEntry, error) {
 		ModTime:     info.ModTime().UTC().Format("2006-01-02T15:04:05.000Z"),
 		Permissions: info.Mode().String(),
 	}, nil
-}
-
-// securePath validates and resolves a path, preventing directory traversal.
-// Expands ~ and ~/ to the current user's home directory.
-func securePath(path string) (string, error) {
-	if path == "" {
-		return "", fmt.Errorf("path is required")
-	}
-
-	// Reject paths with suspicious patterns.
-	if strings.Contains(path, "\x00") {
-		return "", fmt.Errorf("path contains null byte")
-	}
-
-	// Expand ~ to home directory.
-	if path == "~" || strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home directory: %w", err)
-		}
-		if path == "~" {
-			path = home
-		} else {
-			path = filepath.Join(home, path[2:])
-		}
-	}
-
-	// Resolve to absolute path.
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("resolve path: %w", err)
-	}
-
-	// Clean the path to resolve .. and .
-	absPath = filepath.Clean(absPath)
-
-	return absPath, nil
 }

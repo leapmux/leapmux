@@ -13,6 +13,8 @@ export interface Tab {
   tileId?: string
   workerId?: string
   workingDir?: string
+  filePath?: string
+  displayMode?: string
 }
 
 export function tabKey(tab: Tab): string {
@@ -48,11 +50,25 @@ export function createTabStore() {
         const lastTab = state.tabs[state.tabs.length - 1]
         tab = { ...tab, position: lastTab?.position ? after(lastTab.position) : first() }
       }
+      const key = tabKey(tab)
       setState('tabs', prev => [...prev, tab])
       if (activate) {
-        const key = tabKey(tab)
         setState('activeTabKey', key)
         setState('mruOrder', prev => [key, ...prev.filter(k => k !== key)])
+      }
+      else {
+        // Still track in MRU (at end) so closing the active tab can fall back
+        setState('mruOrder', prev => [...prev.filter(k => k !== key), key])
+      }
+      // Track in per-tile MRU if the tab has a tile
+      if (tab.tileId) {
+        if (activate) {
+          setState('tileActiveTabKeys', tab.tileId, key)
+          setState('tileMruOrder', tab.tileId, prev => [key, ...(prev ?? []).filter(k => k !== key)])
+        }
+        else {
+          setState('tileMruOrder', tab.tileId, prev => [...(prev ?? []).filter(k => k !== key), key])
+        }
       }
     },
 
@@ -182,6 +198,12 @@ export function createTabStore() {
     /** Set the position of a tab by key. */
     setTabPosition(key: string, position: string) {
       setState('tabs', t => tabKey(t) === key, 'position', position)
+    },
+
+    /** Set the display mode (render/source/split) for a file tab. */
+    setTabDisplayMode(type: TabType, id: string, displayMode: string) {
+      const key = tabKey({ type, id })
+      setState('tabs', t => tabKey(t) === key, 'displayMode', displayMode)
     },
 
     /** Move a tab to a different tile, cleaning up source tile state. */

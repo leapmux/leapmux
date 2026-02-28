@@ -56,6 +56,7 @@ CREATE TABLE workers (
     status        INTEGER NOT NULL DEFAULT 1,
     created_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     last_seen_at  DATETIME,
+    home_dir      TEXT NOT NULL DEFAULT '',
     UNIQUE(org_id, name)
 );
 CREATE INDEX idx_workers_org_id ON workers(org_id);
@@ -81,6 +82,7 @@ CREATE TABLE worker_registrations (
     os          TEXT NOT NULL DEFAULT '',
     arch        TEXT NOT NULL DEFAULT '',
     version     TEXT NOT NULL DEFAULT '',
+    home_dir    TEXT NOT NULL DEFAULT '',
     status      INTEGER NOT NULL DEFAULT 1,
     worker_id   TEXT REFERENCES workers(id) ON DELETE SET NULL,
     approved_by TEXT REFERENCES users(id),

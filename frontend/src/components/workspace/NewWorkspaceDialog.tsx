@@ -159,6 +159,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
                     selectedPath={workingDir()}
                     onSelect={setWorkingDir}
                     rootPath="~"
+                    homeDir={workers().find(w => w.id === workerId())?.homeDir}
                   />
                 </div>
               </Show>
@@ -167,6 +168,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
               <WorktreeOptions
                 workerId={workerId()}
                 selectedPath={workingDir()}
+                homeDir={workers().find(w => w.id === workerId())?.homeDir}
                 onWorktreeChange={(create, branch, branchError) => {
                   setCreateWorktree(create)
                   setWorktreeBranch(branch)

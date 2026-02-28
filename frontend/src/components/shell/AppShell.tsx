@@ -15,6 +15,7 @@ import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { NotFoundPage } from '~/components/common/NotFoundPage'
 import { showToast } from '~/components/common/Toast'
+import { FileViewer } from '~/components/fileviewer/FileViewer'
 import { CrossTileDragProvider } from '~/components/shell/CrossTileDragContext'
 import { LeftSidebar } from '~/components/shell/LeftSidebar'
 import { NewAgentDialog } from '~/components/shell/NewAgentDialog'
@@ -77,7 +78,7 @@ export const AppShell: ParentComponent = (props) => {
   const [showNewWorkspace, setShowNewWorkspace] = createSignal(false)
   const [preselectedWorkerId, setPreselectedWorkerId] = createSignal<string | undefined>(undefined)
   const [newWorkspaceTargetSectionId, setNewWorkspaceTargetSectionId] = createSignal<string | null>(null)
-  const [workspaceLoading, setWorkspaceLoading] = createSignal(false)
+  const [workspaceLoading, setWorkspaceLoading] = createSignal(true)
   const [showResumeDialog, setShowResumeDialog] = createSignal(false)
   const [showNewAgentDialog, setShowNewAgentDialog] = createSignal(false)
   const [showNewTerminalDialog, setShowNewTerminalDialog] = createSignal(false)
@@ -304,15 +305,21 @@ export const AppShell: ParentComponent = (props) => {
         if (!activeKey)
           return null
         const parts = activeKey.split(':')
-        return { tileId, tabType: Number(parts[0]) as TabType, tabId: parts[1] }
+        const tabType = Number(parts[0]) as TabType
+        // Skip ephemeral tab types (e.g. FILE) from backend persistence
+        if (tabType === TabType.FILE)
+          return null
+        return { tileId, tabType, tabId: parts[1] }
       }).filter(Boolean) as Array<{ tileId: string, tabType: TabType, tabId: string }>
 
-      const tabs = tabStore.state.tabs.map(t => ({
-        tabType: t.type,
-        tabId: t.id,
-        position: t.position ?? '',
-        tileId: t.tileId ?? '',
-      }))
+      const tabs = tabStore.state.tabs
+        .filter(t => t.type !== TabType.FILE)
+        .map(t => ({
+          tabType: t.type,
+          tabId: t.id,
+          position: t.position ?? '',
+          tileId: t.tileId ?? '',
+        }))
 
       workspaceClient.saveLayout({
         orgId: org.orgId(),
@@ -349,19 +356,28 @@ export const AppShell: ParentComponent = (props) => {
   const activeTab = createMemo(() => tabStore.activeTab())
   const activeTabType = createMemo(() => activeTab()?.type ?? null)
 
-  // Get worker and working directory from the currently active tab.
+  // Get worker, working directory, and home directory from the currently active tab.
   // Agent tabs carry these from the proto; terminal tabs carry them from the store.
-  const getCurrentTabContext = (): { workerId: string, workingDir: string } => {
+  const getCurrentTabContext = (): { workerId: string, workingDir: string, homeDir: string } => {
     const tab = activeTab()
     if (!tab)
-      return { workerId: '', workingDir: '' }
+      return { workerId: '', workingDir: '', homeDir: '' }
     if (tab.type === TabType.AGENT) {
       const agent = agentStore.state.agents.find(a => a.id === tab.id)
-      return { workerId: agent?.workerId ?? '', workingDir: agent?.workingDir ?? '' }
+      return { workerId: agent?.workerId ?? '', workingDir: agent?.workingDir ?? '', homeDir: agent?.homeDir ?? '' }
+    }
+    else if (tab.type === TabType.FILE) {
+      const dir = tab.filePath ? tab.filePath.substring(0, tab.filePath.lastIndexOf('/')) || '/' : ''
+      // Find homeDir from any agent on the same worker
+      const homeDir = agentStore.state.agents.find(a => a.workerId === tab.workerId)?.homeDir ?? ''
+      return { workerId: tab.workerId ?? '', workingDir: dir, homeDir }
     }
     else {
       const terminal = terminalStore.state.terminals.find(t => t.id === tab.id)
-      return { workerId: terminal?.workerId ?? '', workingDir: terminal?.workingDir ?? '' }
+      const workerId = terminal?.workerId ?? ''
+      // Find homeDir from any agent on the same worker
+      const homeDir = agentStore.state.agents.find(a => a.workerId === workerId)?.homeDir ?? ''
+      return { workerId, workingDir: terminal?.workingDir ?? '', homeDir }
     }
   }
 
@@ -544,6 +560,41 @@ export const AppShell: ParentComponent = (props) => {
         tabStore.sortByPositions(posMap)
       }
 
+      // Restore ephemeral (local) tabs from sessionStorage
+      try {
+        const localTabsJson = sessionStorage.getItem(`leapmux:localTabs:${activeId}`)
+        if (localTabsJson) {
+          const localTabs = JSON.parse(localTabsJson) as Array<{
+            type: number
+            id: string
+            filePath?: string
+            workerId?: string
+            position?: string
+            tileId?: string
+            title?: string
+            displayMode?: string
+          }>
+          for (const lt of localTabs) {
+            let tileId = lt.tileId ?? defaultTileId
+            if (!validTileIds.has(tileId))
+              tileId = defaultTileId
+            tabStore.addTab({
+              type: lt.type as TabType,
+              id: lt.id,
+              filePath: lt.filePath,
+              workerId: lt.workerId,
+              position: lt.position,
+              tileId,
+              title: lt.title,
+              displayMode: lt.displayMode,
+            }, false)
+          }
+        }
+      }
+      catch {
+        // Ignore corrupt sessionStorage data
+      }
+
       // Restore per-tile active tabs from layout response
       if (layoutResp?.activeTabs && layoutResp.activeTabs.length > 0) {
         for (const at of layoutResp.activeTabs) {
@@ -566,9 +617,10 @@ export const AppShell: ParentComponent = (props) => {
         if (tabType === TabType.AGENT) {
           agentStore.setActiveAgent(tabId)
         }
-        else {
+        else if (tabType === TabType.TERMINAL) {
           terminalStore.setActiveTerminal(tabId)
         }
+        // FILE tabs: no extra store update needed
       }
       else if (tabStore.state.tabs.length > 0) {
         // Activate first tab if no saved state
@@ -594,6 +646,32 @@ export const AppShell: ParentComponent = (props) => {
     const wsId = workspace.activeWorkspaceId()
     if (wsId && activeKey && !workspaceLoading()) {
       sessionStorage.setItem(`leapmux:activeTab:${wsId}`, activeKey)
+    }
+  })
+
+  // Persist ephemeral (local) tabs to sessionStorage so they survive page refresh.
+  createEffect(() => {
+    const wsId = workspace.activeWorkspaceId()
+    const tabs = tabStore.state.tabs
+    if (!wsId || workspaceLoading())
+      return
+    const localTabs = tabs
+      .filter(t => t.type === TabType.FILE)
+      .map(t => ({
+        type: t.type,
+        id: t.id,
+        filePath: t.filePath,
+        workerId: t.workerId,
+        position: t.position,
+        tileId: t.tileId,
+        title: t.title,
+        displayMode: t.displayMode,
+      }))
+    if (localTabs.length > 0) {
+      sessionStorage.setItem(`leapmux:localTabs:${wsId}`, JSON.stringify(localTabs))
+    }
+    else {
+      sessionStorage.removeItem(`leapmux:localTabs:${wsId}`)
     }
   })
 
@@ -678,7 +756,7 @@ export const AppShell: ParentComponent = (props) => {
         focusEditor?.()
       })
     }
-    else {
+    else if (tab.type === TabType.TERMINAL) {
       terminalStore.setActiveTerminal(tab.id)
       requestAnimationFrame(() => {
         if (isTabEditing())
@@ -687,6 +765,7 @@ export const AppShell: ParentComponent = (props) => {
         instance?.terminal.focus()
       })
     }
+    // FILE tabs: no extra store update needed
   }
 
   // Show the worktree confirmation dialog and wait for the user's choice.
@@ -704,6 +783,13 @@ export const AppShell: ParentComponent = (props) => {
 
   // Handle tab close from the tab bar
   const handleTabClose = async (tab: Tab) => {
+    // FILE tabs are ephemeral — just remove directly, no worktree check needed
+    if (tab.type === TabType.FILE) {
+      tabStore.removeTabFromTile(tab.type, tab.id, tab.tileId ?? '')
+      persistLayout()
+      return
+    }
+
     // Pre-close check: does this tab have a dirty worktree?
     try {
       const tabType = tab.type === TabType.AGENT ? TabType.AGENT : TabType.TERMINAL
@@ -739,6 +825,41 @@ export const AppShell: ParentComponent = (props) => {
       removeClosingTabKey(key)
       pendingWorktreeChoice = null
     }
+  }
+
+  // Handle opening a file from the directory tree
+  let fileTabCounter = 0
+  const handleFileOpen = (path: string) => {
+    const ctx = getCurrentTabContext()
+    if (!ctx.workerId)
+      return
+
+    // Check if a FILE tab with same workerId and filePath already exists
+    const existingTab = tabStore.state.tabs.find(
+      t => t.type === TabType.FILE && t.filePath === path && t.workerId === ctx.workerId,
+    )
+    if (existingTab) {
+      // Activate existing tab
+      tabStore.setActiveTab(existingTab.type, existingTab.id)
+      if (existingTab.tileId) {
+        tabStore.setActiveTabForTile(existingTab.tileId, existingTab.type, existingTab.id)
+      }
+      return
+    }
+
+    const fileName = path.split('/').pop() ?? path
+    const tileId = layoutStore.focusedTileId()
+    const tabId = `file-${++fileTabCounter}-${Date.now()}`
+    tabStore.addTab({
+      type: TabType.FILE,
+      id: tabId,
+      filePath: path,
+      workerId: ctx.workerId,
+      title: fileName,
+      tileId,
+    })
+    tabStore.setActiveTabForTile(tileId, TabType.FILE, tabId)
+    persistLayout()
   }
 
   // Reset file tree selection when active tab changes
@@ -808,7 +929,7 @@ export const AppShell: ParentComponent = (props) => {
     const tab = tabStore.state.tabs.find(t => tabKey(t) === key)
     if (!tab)
       return <></>
-    const label = tab.title || (tab.type === TabType.AGENT ? 'Agent' : 'Terminal')
+    const label = tab.title || (tab.type === TabType.AGENT ? 'Agent' : tab.type === TabType.FILE ? (tab.filePath?.split('/').pop() ?? 'File') : 'Terminal')
     // Import inline to avoid circular deps — using the CSS class from TabBar.css
     return (
       <div class={styles.dragPreviewTooltip}>
@@ -897,6 +1018,10 @@ export const AppShell: ParentComponent = (props) => {
       const t = tab()
       return t?.type === TabType.TERMINAL ? t : null
     }
+    const fileTab = () => {
+      const t = tab()
+      return t?.type === TabType.FILE ? t : null
+    }
     const tileTerminalIds = () => new Set(
       tabStore.getTabsForTile(tileId)
         .filter(t => t.type === TabType.TERMINAL)
@@ -967,6 +1092,20 @@ export const AppShell: ParentComponent = (props) => {
               onBell={termOps.handleTerminalBell}
             />
           </div>
+        </Show>
+
+        {/* File viewer content — mounted/unmounted with the active file tab */}
+        <Show when={fileTab()} keyed>
+          {ft => (
+            <div class={styles.centerContent}>
+              <FileViewer
+                workerId={ft.workerId ?? ''}
+                filePath={ft.filePath ?? ''}
+                displayMode={ft.displayMode}
+                onDisplayModeChange={mode => tabStore.setTabDisplayMode(ft.type, ft.id, mode)}
+              />
+            </div>
+          )}
         </Show>
 
         {/* Fallback when no tabs exist */}
@@ -1085,9 +1224,10 @@ export const AppShell: ParentComponent = (props) => {
           if (tab.type === TabType.AGENT) {
             agentStore.setActiveAgent(tab.id)
           }
-          else {
+          else if (tab.type === TabType.TERMINAL) {
             terminalStore.setActiveTerminal(tab.id)
           }
+          // FILE tabs: no extra store update needed
         }
       }}
       onSplitHorizontal={() => {
@@ -1139,8 +1279,10 @@ export const AppShell: ParentComponent = (props) => {
       onSectionStateChange={opts?.onLeftStateChange}
       workerId={getCurrentTabContext().workerId}
       workingDir={getCurrentTabContext().workingDir}
+      homeDir={getCurrentTabContext().homeDir}
       fileTreePath={fileTreePath()}
       onFileSelect={setFileTreePath}
+      onFileOpen={handleFileOpen}
       showTodos={showTodos()}
       activeTodos={activeTodos()}
     />
@@ -1159,10 +1301,12 @@ export const AppShell: ParentComponent = (props) => {
       workspaceId={workspace.activeWorkspaceId() ?? ''}
       workerId={getCurrentTabContext().workerId}
       workingDir={getCurrentTabContext().workingDir}
+      homeDir={getCurrentTabContext().homeDir}
       showTodos={showTodos()}
       activeTodos={activeTodos()}
       fileTreePath={fileTreePath()}
       onFileSelect={setFileTreePath}
+      onFileOpen={handleFileOpen}
       sectionStore={sectionStore}
       isCollapsed={opts?.isCollapsed() ?? false}
       onExpand={opts?.onExpand ?? (() => {})}

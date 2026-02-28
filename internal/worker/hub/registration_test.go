@@ -64,7 +64,7 @@ func TestRegisterWithClient_RetriesUntilHubAvailable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result, err := registerWithClient(ctx, mock, "http://localhost:0", "test-host", "linux", "amd64", "0.0.1", newFastBackoff())
+	result, err := registerWithClient(ctx, mock, "http://localhost:0", "test-host", "linux", "amd64", "0.0.1", "/home/test", newFastBackoff())
 	require.NoError(t, err, "registerWithClient failed")
 
 	assert.Equal(t, int32(failCount+1), attempts.Load(), "RequestRegistration call count")
@@ -91,7 +91,7 @@ func TestRegisterWithClient_StopsOnContextCancel(t *testing.T) {
 		cancel()
 	}()
 
-	_, err := registerWithClient(ctx, mock, "http://localhost:0", "test-host", "linux", "amd64", "0.0.1", newFastBackoff())
+	_, err := registerWithClient(ctx, mock, "http://localhost:0", "test-host", "linux", "amd64", "0.0.1", "/home/test", newFastBackoff())
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.GreaterOrEqual(t, attempts.Load(), int32(1), "expected at least 1 attempt")
 }
@@ -128,7 +128,7 @@ func TestRegisterWithClient_BackoffIncreases(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := registerWithClient(ctx, mock, "http://localhost:0", "h", "linux", "amd64", "0.0.1", bo)
+	_, err := registerWithClient(ctx, mock, "http://localhost:0", "h", "linux", "amd64", "0.0.1", "/home/test", bo)
 	require.NoError(t, err, "registerWithClient failed")
 
 	// Verify gaps between retries are increasing.
@@ -169,7 +169,7 @@ func TestRegisterWithClient_LongPollPendingThenApproved(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result, err := registerWithClient(ctx, mock, "http://localhost:0", "h", "linux", "amd64", "0.0.1", newFastBackoff())
+	result, err := registerWithClient(ctx, mock, "http://localhost:0", "h", "linux", "amd64", "0.0.1", "/home/test", newFastBackoff())
 	require.NoError(t, err, "registerWithClient failed")
 
 	assert.Equal(t, int32(3), pollCount.Load(), "PollRegistration call count")
@@ -205,7 +205,7 @@ func TestRegisterWithClient_PollErrorRetries(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result, err := registerWithClient(ctx, mock, "http://localhost:0", "h", "linux", "amd64", "0.0.1", newFastBackoff())
+	result, err := registerWithClient(ctx, mock, "http://localhost:0", "h", "linux", "amd64", "0.0.1", "/home/test", newFastBackoff())
 	require.NoError(t, err, "registerWithClient failed")
 
 	assert.Equal(t, int32(2), pollCount.Load(), "PollRegistration call count")

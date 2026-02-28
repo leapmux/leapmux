@@ -17,6 +17,7 @@ message ListDirectoryRequest {
   string worker_id = 1;
   string path = 2;
   string org_id = 3;
+  int32 max_depth = 4; // When > 0, merge single-child directories server-side up to this depth
 }
 
 message ListDirectoryResponse {

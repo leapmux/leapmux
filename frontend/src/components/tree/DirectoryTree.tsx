@@ -6,6 +6,7 @@ import File from 'lucide-solid/icons/file'
 import Folder from 'lucide-solid/icons/folder'
 import { createEffect, createSignal, For, Show, untrack } from 'solid-js'
 import { fileClient } from '~/api/clients'
+import { tildify } from '~/components/chat/messageUtils'
 import * as styles from './DirectoryTree.css'
 
 export interface DirectoryTreeProps {
@@ -13,7 +14,9 @@ export interface DirectoryTreeProps {
   showFiles?: boolean
   selectedPath: string
   onSelect: (path: string) => void
+  onFileOpen?: (path: string) => void
   rootPath?: string
+  homeDir?: string
 }
 
 interface TreeNodeData {
@@ -29,63 +32,21 @@ function sortEntries(a: FileInfo, b: FileInfo): number {
   return a.name.localeCompare(b.name)
 }
 
-async function tryMerge(
-  workerId: string,
-  name: string,
-  path: string,
-  dirOnly: boolean,
-  depth: number,
-): Promise<TreeNodeData> {
-  if (depth >= 5) {
-    return { path, displayName: name, isDir: true, size: 0n }
-  }
-  try {
-    const resp = await fileClient.listDirectory({ workerId, path })
-    const children = dirOnly
-      ? resp.entries.filter(e => e.isDir)
-      : [...resp.entries]
-    if (children.length === 1 && children[0].isDir) {
-      return tryMerge(
-        workerId,
-        `${name}/${children[0].name}`,
-        children[0].path,
-        dirOnly,
-        depth + 1,
-      )
-    }
-  }
-  catch {
-    // Can't load, return unmerged
-  }
-  return { path, displayName: name, isDir: true, size: 0n }
-}
-
 async function loadChildren(
   workerId: string,
   dirPath: string,
   showFiles: boolean,
 ): Promise<TreeNodeData[]> {
-  const resp = await fileClient.listDirectory({ workerId, path: dirPath })
+  const resp = await fileClient.listDirectory({ workerId, path: dirPath, maxDepth: 5 })
   const entries = [...resp.entries].sort(sortEntries)
-  const dirOnly = !showFiles
-  const filtered = dirOnly ? entries.filter(e => e.isDir) : entries
+  const filtered = showFiles ? entries : entries.filter(e => e.isDir)
 
-  const result: TreeNodeData[] = []
-  for (const entry of filtered) {
-    if (entry.isDir) {
-      const merged = await tryMerge(workerId, entry.name, entry.path, dirOnly, 0)
-      result.push(merged)
-    }
-    else {
-      result.push({
-        path: entry.path,
-        displayName: entry.name,
-        isDir: false,
-        size: entry.size,
-      })
-    }
-  }
-  return result
+  return filtered.map(entry => ({
+    path: entry.path,
+    displayName: entry.name,
+    isDir: entry.isDir,
+    size: entry.size,
+  }))
 }
 
 const TreeNode: Component<{
@@ -94,6 +55,7 @@ const TreeNode: Component<{
   showFiles: boolean
   selectedPath: string
   onSelect: (path: string) => void
+  onFileOpen?: (path: string) => void
   depth: number
   scrollContainer?: HTMLDivElement
 }> = (props) => {
@@ -138,6 +100,7 @@ const TreeNode: Component<{
   const toggle = async () => {
     if (!props.node.isDir) {
       props.onSelect(props.node.path)
+      props.onFileOpen?.(props.node.path)
       return
     }
     props.onSelect(props.node.path)
@@ -237,6 +200,7 @@ const TreeNode: Component<{
               showFiles={props.showFiles}
               selectedPath={props.selectedPath}
               onSelect={props.onSelect}
+              onFileOpen={props.onFileOpen}
               depth={props.depth + 1}
               scrollContainer={props.scrollContainer}
             />
@@ -260,9 +224,9 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   let loadVersion = 0
   let treeRef!: HTMLDivElement
 
-  // Sync external selectedPath to input
+  // Sync external selectedPath to input (tildified for display)
   createEffect(() => {
-    setInputValue(props.selectedPath)
+    setInputValue(tildify(props.selectedPath, props.homeDir))
   })
 
   // Load root children when workerId or rootPath changes
@@ -315,6 +279,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
           class={styles.pathInputField}
           type="text"
           value={inputValue()}
+          title={props.selectedPath}
           onInput={e => setInputValue(e.currentTarget.value)}
           onKeyDown={handlePathKeyDown}
           onBlur={handlePathBlur}
@@ -341,6 +306,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
                   showFiles={props.showFiles ?? false}
                   selectedPath={props.selectedPath}
                   onSelect={props.onSelect}
+                  onFileOpen={props.onFileOpen}
                   depth={0}
                   scrollContainer={treeRef}
                 />

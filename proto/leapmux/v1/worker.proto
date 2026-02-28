@@ -39,6 +39,7 @@ message RequestRegistrationRequest {
   string os = 2;
   string arch = 3;
   string version = 4;
+  string home_dir = 5;
 }
 
 message RequestRegistrationResponse {
@@ -153,6 +154,7 @@ message Worker {
   string created_at = 8;
   string last_seen_at = 9;
   string registered_by = 10;
+  string home_dir = 11;          // Worker's home directory for tilde path display
 }
 
 // --- Bidirectional stream envelope messages ---
@@ -360,6 +362,7 @@ message ShellListResponse {
 
 message FileBrowseRequest {
   string path = 1;
+  int32 max_depth = 2; // When > 0, merge single-child directories server-side up to this depth
 }
 
 message FileBrowseResponse {
@@ -471,4 +474,5 @@ message HubShuttingDownNotification {
 
 message Heartbeat {
   int64 timestamp_ms = 1;
+  string home_dir = 2;           // Worker's home directory (sent with first heartbeat)
 }

@@ -6,7 +6,7 @@ import (
 )
 
 func (c *Client) handleFileBrowse(requestID string, req *leapmuxv1.FileBrowseRequest) {
-	path, entries, err := filebrowser.ListDirectory(req.GetPath())
+	path, entries, err := filebrowser.ListDirectory(req.GetPath(), int(req.GetMaxDepth()))
 	resp := &leapmuxv1.FileBrowseResponse{Path: path}
 
 	if err != nil {

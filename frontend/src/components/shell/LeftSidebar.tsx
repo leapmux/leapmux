@@ -44,8 +44,10 @@ interface LeftSidebarProps {
   // File/todo props for rendering FILES/TODOS sections moved to this sidebar
   workerId: string
   workingDir: string
+  homeDir: string
   fileTreePath: string
   onFileSelect: (path: string) => void
+  onFileOpen?: (path: string) => void
   showTodos: boolean
   activeTodos: TodoItem[]
 }
@@ -209,7 +211,9 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
                 showFiles
                 selectedPath={props.fileTreePath}
                 onSelect={props.onFileSelect}
+                onFileOpen={props.onFileOpen}
                 rootPath={props.workingDir || '~'}
+                homeDir={props.homeDir}
               />
             </Show>
           ),

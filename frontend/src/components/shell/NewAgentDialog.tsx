@@ -162,6 +162,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
                     selectedPath={workingDir()}
                     onSelect={setWorkingDir}
                     rootPath="~"
+                    homeDir={workers().find(w => w.id === workerId())?.homeDir}
                   />
                 </div>
               </Show>
@@ -170,6 +171,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
               <WorktreeOptions
                 workerId={workerId()}
                 selectedPath={workingDir()}
+                homeDir={workers().find(w => w.id === workerId())?.homeDir}
                 onWorktreeChange={(create, branch, branchError) => {
                   setCreateWorktree(create)
                   setWorktreeBranch(branch)
