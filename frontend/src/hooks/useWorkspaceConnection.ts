@@ -45,6 +45,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   const handleAgentEvent = (
     agentEvent: AgentEvent,
     catchUpPhases: Map<string, 'messages' | 'controlRequests' | 'live'>,
+    signal?: AbortSignal,
   ) => {
     const agentId = agentEvent.agentId
     const inner = agentEvent.event
@@ -189,6 +190,13 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // The initial statusChange marks the end of the message
         // replay; subsequent events are pending controlRequests
         // (still suppressed) or live events.
+        // Fetch remaining messages the server didn't replay (limit of 50 per stream).
+        if (catchUpPhase === 'messages') {
+          const replayEndSeq = chatStore.getLastSeq(agentId)
+          if (replayEndSeq > 0n) {
+            void chatStore.loadNewerMessages(agentId, replayEndSeq, signal)
+          }
+        }
         catchUpPhases.set(agentId, 'controlRequests')
         break
       }
@@ -311,7 +319,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           backoff = 1000
           switch (response.event.case) {
             case 'agentEvent':
-              handleAgentEvent(response.event.value, catchUpPhases)
+              handleAgentEvent(response.event.value, catchUpPhases, signal)
               break
             case 'terminalEvent':
               handleTerminalEvent(response.event.value)

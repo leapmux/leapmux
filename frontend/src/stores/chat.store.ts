@@ -211,6 +211,27 @@ export function createChatStore() {
       }
     },
 
+    /**
+     * Fetch messages forward from a given seq, looping until all are retrieved.
+     * Used after WatchEvents catch-up replay to fill any gap beyond the 50-message replay limit.
+     */
+    async loadNewerMessages(agentId: string, afterSeq: bigint, signal?: AbortSignal): Promise<void> {
+      let cursor = afterSeq
+      while (!signal?.aborted) {
+        const resp = await agentClient.listAgentMessages({
+          agentId,
+          afterSeq: cursor,
+          limit: 50,
+        })
+        for (const msg of resp.messages) {
+          this.addMessage(agentId, msg)
+        }
+        if (!resp.hasMore || resp.messages.length === 0)
+          break
+        cursor = resp.messages[resp.messages.length - 1].seq
+      }
+    },
+
     /** Trim oldest messages when total exceeds threshold. Sets hasMoreOlder=true. */
     trimOldMessages(agentId: string, maxCount: number) {
       setState('messagesByAgent', agentId, (prev = []) => {
