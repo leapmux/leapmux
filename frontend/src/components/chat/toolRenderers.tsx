@@ -25,6 +25,7 @@ import Search from 'lucide-solid/icons/search'
 import SquareTerminal from 'lucide-solid/icons/square-terminal'
 import Terminal from 'lucide-solid/icons/terminal'
 import TicketsPlane from 'lucide-solid/icons/tickets-plane'
+import Toolbox from 'lucide-solid/icons/toolbox'
 import UnfoldVertical from 'lucide-solid/icons/unfold-vertical'
 import Vote from 'lucide-solid/icons/vote'
 import { createSignal, Show } from 'solid-js'
@@ -89,6 +90,7 @@ export function toolIcon(name: string, size: number): JSX.Element {
     case 'ExitPlanMode': return <PlaneTakeoff size={size} class={toolUseIcon} />
     case 'AskUserQuestion': return <Vote size={size} class={toolUseIcon} />
     case 'TaskOutput': return <SquareTerminal size={size} class={toolUseIcon} />
+    case 'Skill': return <Toolbox size={size} class={toolUseIcon} />
     default: return <ChevronsRight size={size} class={toolUseIcon} />
   }
 }
