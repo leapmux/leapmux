@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { openAgentViaUI, PLAN_MODE_PROMPT } from './helpers'
+import { enterAndExitPlanMode, openAgentViaUI } from './helpers'
 
 test.describe('Markdown Editor Toolbar', () => {
   test('should show active state on bold button when text is bold', async ({ page, authenticatedWorkspace }) => {
@@ -1642,17 +1642,8 @@ test.describe('ArrowDown Code Block Scroll', () => {
 
 test.describe('Send Feedback Button Labels', () => {
   test('ExitPlanMode banner shows Send Feedback instead of Reject', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    await editor.click()
-
-    // Ask agent to enter plan mode and exit with a dummy plan
-    await page.keyboard.type(PLAN_MODE_PROMPT, { delay: 50 })
-    await page.keyboard.press('Meta+Enter')
-
-    // Wait for ExitPlanMode control_request
-    const banner = page.locator('[data-testid="control-banner"]')
-    await expect(banner).toBeVisible({ timeout: 60_000 })
+    // Enter plan mode, write a dummy plan, and exit
+    const banner = await enterAndExitPlanMode(page)
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
     // Verify the reject button says "Send Feedback"

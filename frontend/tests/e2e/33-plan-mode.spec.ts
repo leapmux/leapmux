@@ -1,22 +1,11 @@
-import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { PLAN_MODE_PROMPT } from './helpers'
-
-/** Send a message via the ProseMirror editor. */
-async function sendMessage(page: Page, text: string) {
-  const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
-  await expect(editor).toBeVisible()
-  await editor.click()
-  await page.keyboard.type(text, { delay: 100 })
-  await page.keyboard.press('Meta+Enter')
-}
-
-/** Wait for the control request banner to appear. */
-async function waitForControlBanner(page: Page) {
-  const banner = page.locator('[data-testid="control-banner"]')
-  await expect(banner).toBeVisible({ timeout: 60_000 })
-  return banner
-}
+import {
+  enterPlanPrompt,
+  EXIT_PLAN_PROMPT,
+  sendMessage,
+  waitForAgentIdle,
+  waitForControlBanner,
+} from './helpers'
 
 test.describe('Plan Mode', () => {
   test('enter plan mode, reject exit, then approve exit', async ({ page, authenticatedWorkspace }) => {
@@ -26,19 +15,20 @@ test.describe('Plan Mode', () => {
     // Verify initial state: Default mode
     await expect(trigger).toContainText('Default')
 
-    // ── Step 1: Ask agent to enter plan mode, write a dummy plan, and exit ──
-    // EnterPlanMode is auto-approved (no control_request banner). The agent
-    // will then call ExitPlanMode which produces a control_request banner.
-    await sendMessage(page, PLAN_MODE_PROMPT)
+    // ── Step 1: Enter plan mode and write a dummy plan ──
+    await sendMessage(page, enterPlanPrompt('plan-mode'))
 
     // Verify dropdown switches to Plan Mode (EnterPlanMode is auto-approved)
     await expect(trigger).toContainText('Plan Mode')
+    await waitForAgentIdle(page)
 
-    // Wait for ExitPlanMode control_request (shows "Plan Ready for Review")
+    // ── Step 2: Exit plan mode (produces control_request banner) ──
+    await sendMessage(page, EXIT_PLAN_PROMPT)
+
     const exitBanner1 = await waitForControlBanner(page)
     await expect(exitBanner1.getByText('Plan Ready for Review')).toBeVisible()
 
-    // ── Step 2: Reject the plan with a comment ──
+    // ── Step 3: Reject the plan with a comment ──
     const editorForReject = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await editorForReject.click()
     await page.keyboard.type('not ready yet', { delay: 100 })
@@ -53,27 +43,20 @@ test.describe('Plan Mode', () => {
     await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
 
     // Wait for the agent to finish its turn after the rejection.
-    // Brief delay to let the agent's resumed turn become visible,
-    // then wait for the thinking indicator to disappear.
-    await page.waitForTimeout(1000)
-    await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible({ timeout: 60_000 })
+    await waitForAgentIdle(page, 60_000)
 
-    // ── Step 3: Get to ExitPlanMode banner ──
-    // The agent might call ExitPlanMode again on its own after rejection
-    // (e.g. after writing a plan file), or we may need to ask it explicitly.
+    // ── Step 4: Exit plan mode again ──
+    // The agent might call ExitPlanMode again on its own after rejection,
+    // or we may need to ask it explicitly.
     const bannerAlreadyVisible = await page.locator('[data-testid="control-banner"]').isVisible()
     if (!bannerAlreadyVisible) {
-      await sendMessage(
-        page,
-        'Please use ExitPlanMode tool to exit plan mode. Do not do anything else.',
-      )
+      await sendMessage(page, EXIT_PLAN_PROMPT)
     }
 
-    // Wait for the ExitPlanMode control_request
     const exitBanner2 = await waitForControlBanner(page)
     await expect(exitBanner2.getByText('Plan Ready for Review')).toBeVisible()
 
-    // ── Step 4: Approve the plan this time ──
+    // ── Step 5: Approve the plan this time ──
     const approveBtn = page.locator('[data-testid="plan-approve-btn"]')
     await expect(approveBtn).toBeEnabled()
     await approveBtn.click()
@@ -81,7 +64,7 @@ test.describe('Plan Mode', () => {
     // Verify dropdown switches to Accept Edits (plan approval sets acceptEdits mode)
     await expect(trigger).toContainText('Accept Edits')
 
-    // ── Step 5: Verify Plan File is shown in the popover ──
+    // ── Step 6: Verify Plan File is shown in the popover ──
     const infoTrigger = page.locator('[data-testid="session-id-trigger"]')
     await expect(infoTrigger).toBeVisible({ timeout: 30_000 })
     await infoTrigger.click()
