@@ -5,6 +5,7 @@ import { createMemo, createSignal, For, onMount, Show } from 'solid-js'
 import { workerClient } from '~/api/clients'
 import { agentLoadingTimeoutMs } from '~/api/transport'
 import { Dialog } from '~/components/common/Dialog'
+import { Icon } from '~/components/common/Icon'
 import { useOrg } from '~/context/OrgContext'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { spinner } from '~/styles/animations.css'
@@ -96,7 +97,7 @@ export const ResumeSessionDialog: Component<ResumeSessionDialogProps> = (props) 
                   disabled={refreshing()}
                   title="Refresh workers"
                 >
-                  <RefreshCw size={14} class={refreshing() ? spinning : ''} />
+                  <Icon icon={RefreshCw} size="sm" class={refreshing() ? spinning : ''} />
                 </button>
               </div>
               <select
@@ -141,7 +142,7 @@ export const ResumeSessionDialog: Component<ResumeSessionDialogProps> = (props) 
             data-testid="resume-session-submit"
           >
             <Show when={submitting.loading()}>
-              <LoaderCircle size={14} class={spinner} />
+              <Icon icon={LoaderCircle} size="sm" class={spinner} />
             </Show>
             Resume
           </button>

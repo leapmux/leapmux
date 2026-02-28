@@ -30,6 +30,7 @@ import Strikethrough from 'lucide-solid/icons/strikethrough'
 import TextQuote from 'lucide-solid/icons/text-quote'
 import { createUniqueId, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
+import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { positionPopoverAbove } from '~/lib/popoverPosition'
 import * as styles from './MarkdownEditor.css'
@@ -288,7 +289,7 @@ export const EditorToolbar: Component<EditorToolbarProps> = (props) => {
             data-testid="toolbar-heading"
             {...triggerProps}
           >
-            <ChevronDown size={10} />
+            <Icon icon={ChevronDown} size="xxs" />
           </IconButton>
         )}
         popoverRef={(el) => { headingMenuRef = el }}
@@ -503,8 +504,8 @@ export const EditorToolbar: Component<EditorToolbarProps> = (props) => {
             fallback={(
               <>
                 {isMac
-                  ? <Command size={10} class={styles.iconNudge} />
-                  : <ChevronUp size={10} class={styles.iconNudge} />}
+                  ? <Icon icon={Command} size="xxs" class={styles.iconNudge} />
+                  : <Icon icon={ChevronUp} size="xxs" class={styles.iconNudge} />}
                 <span>Enter sends</span>
               </>
             )}

@@ -13,7 +13,6 @@ import * as swlStyles from '~/components/workspace/workspaceList.css'
 import { WorkspaceSectionContent } from '~/components/workspace/WorkspaceSectionContent'
 import { WorkspaceSharingDialog } from '~/components/workspace/WorkspaceSharingDialog'
 import { SectionType, Sidebar } from '~/generated/leapmux/v1/section_pb'
-import { iconSize } from '~/styles/tokens'
 import { CollapsibleSidebar } from './CollapsibleSidebar'
 import * as csStyles from './CollapsibleSidebar.css'
 import { getSectionIcon, isWorkspaceSection, sectionTypeTestId } from './sectionUtils'
@@ -167,7 +166,7 @@ export const RightSidebar: Component<RightSidebarProps> = (props) => {
             ? (
                 <IconButton
                   icon={Plus}
-                  iconSize={iconSize.sm}
+                  iconSize="sm"
                   size="md"
                   title={`New workspace in ${section.name}`}
                   data-testid={sectionType === SectionType.WORKSPACES_IN_PROGRESS ? 'sidebar-new-workspace' : undefined}

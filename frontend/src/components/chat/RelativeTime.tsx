@@ -13,7 +13,7 @@ import Clock10 from 'lucide-solid/icons/clock-10'
 import Clock11 from 'lucide-solid/icons/clock-11'
 import Clock12 from 'lucide-solid/icons/clock-12'
 import { createSignal, onCleanup, onMount, Show } from 'solid-js'
-import { iconSize } from '~/styles/tokens'
+import { Icon } from '~/components/common/Icon'
 
 const clockIcons: Component<{ size: number }>[] = [
   Clock12,
@@ -85,8 +85,8 @@ export function RelativeTime(props: RelativeTimeProps) {
   })
 
   const ClockIcon = () => {
-    const Icon = clockIcons[hour12()]
-    return <Icon size={iconSize.xs} />
+    const ClockFace = clockIcons[hour12()]
+    return <Icon icon={ClockFace} size="xs" />
   }
 
   return (

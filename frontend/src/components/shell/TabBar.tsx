@@ -14,11 +14,11 @@ import Terminal from 'lucide-solid/icons/terminal'
 import X from 'lucide-solid/icons/x'
 import { createSignal, ErrorBoundary, For, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
+import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { sanitizeName } from '~/lib/validate'
 import { tabKey, TabType } from '~/stores/tab.store'
 import { menuSectionHeader, monoFont } from '~/styles/shared.css'
-import { iconSize } from '~/styles/tokens'
 import { TABBAR_ZONE_PREFIX, useCrossTileDrag } from './CrossTileDragContext'
 import * as styles from './TabBar.css'
 
@@ -193,7 +193,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
       }}
     >
       <span class={styles.tabIcon}>
-        {tab.type === TabType.AGENT ? <Bot size={14} /> : tab.type === TabType.FILE ? <FileText size={14} /> : <Terminal size={14} />}
+        {tab.type === TabType.AGENT ? <Icon icon={Bot} size="sm" /> : tab.type === TabType.FILE ? <Icon icon={FileText} size="sm" /> : <Icon icon={Terminal} size="sm" />}
       </span>
       <Show
         when={editingTabKey() === tabKey(tab)}
@@ -277,7 +277,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
       <Show when={props.isMobile}>
         <IconButton
           icon={Menu}
-          iconSize={iconSize.lg}
+          iconSize="lg"
           size="xl"
           aria-label="Toggle workspaces"
           onClick={() => props.onToggleLeftSidebar?.()}
@@ -322,7 +322,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
           <TabBarTooltip text={newAgentLabel()}>
             <IconButton
               icon={Bot}
-              iconSize={iconSize.md}
+              iconSize="md"
               size="md"
               state={props.newAgentLoading ? IconButtonState.Loading : IconButtonState.Enabled}
               data-testid="new-agent-button"
@@ -332,7 +332,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
           <TabBarTooltip text={newTerminalLabel()}>
             <IconButton
               icon={Terminal}
-              iconSize={iconSize.md}
+              iconSize="md"
               size="md"
               state={props.newTerminalLoading ? IconButtonState.Loading : IconButtonState.Enabled}
               data-testid="new-terminal-button"
@@ -344,7 +344,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
               <TabBarTooltip text="More options">
                 <IconButton
                   icon={ChevronDown}
-                  iconSize={iconSize.md}
+                  iconSize="md"
                   size="md"
                   state={props.newShellLoading ? IconButtonState.Loading : IconButtonState.Enabled}
                   data-testid="tab-more-menu"
@@ -363,7 +363,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
             trigger={triggerProps => (
               <IconButton
                 icon={Plus}
-                iconSize={iconSize.md}
+                iconSize="md"
                 size="md"
                 data-testid="collapsed-new-tab-button"
                 {...triggerProps}
@@ -380,7 +380,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
             trigger={triggerProps => (
               <IconButton
                 icon={Ellipsis}
-                iconSize={iconSize.md}
+                iconSize="md"
                 size="md"
                 data-testid="collapsed-overflow-button"
                 {...triggerProps}
@@ -398,14 +398,14 @@ export const TabBar: Component<TabBarProps> = (props) => {
                       role="menuitem"
                       onClick={() => actions().onSplitHorizontal()}
                     >
-                      <Columns2 size={14} />
+                      <Icon icon={Columns2} size="sm" />
                       {' Split vertical'}
                     </button>
                     <button
                       role="menuitem"
                       onClick={() => actions().onSplitVertical()}
                     >
-                      <Rows2 size={14} />
+                      <Icon icon={Rows2} size="sm" />
                       {' Split horizontal'}
                     </button>
                   </Show>
@@ -414,7 +414,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
                       role="menuitem"
                       onClick={() => actions().onClose()}
                     >
-                      <X size={14} />
+                      <Icon icon={X} size="sm" />
                       {' Close tile'}
                     </button>
                   </Show>
@@ -427,7 +427,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
       <Show when={props.isMobile}>
         <IconButton
           icon={PanelRight}
-          iconSize={iconSize.lg}
+          iconSize="lg"
           size="xl"
           aria-label="Toggle files"
           onClick={() => props.onToggleRightSidebar?.()}

@@ -5,9 +5,9 @@ import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import { createDroppable, createSortable, SortableProvider, transformStyle } from '@thisbeyond/solid-dnd'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createEffect, createMemo, For, Show } from 'solid-js'
+import { Icon } from '~/components/common/Icon'
 import { ShareMode } from '~/generated/leapmux/v1/common_pb'
 import { spinner } from '~/styles/animations.css'
-import { iconSize } from '~/styles/tokens'
 import { WorkspaceContextMenu } from './WorkspaceContextMenu'
 import * as styles from './workspaceList.css'
 
@@ -152,7 +152,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
 
                   <Show
                     when={!isLoading()}
-                    fallback={<LoaderCircle size={iconSize.xs} class={spinner} style={{ 'flex-shrink': '0' }} />}
+                    fallback={<Icon icon={LoaderCircle} size="xs" class={spinner} style={{ 'flex-shrink': '0' }} />}
                   >
                     <Show when={!isRenaming() && !props.isVirtual}>
                       <WorkspaceContextMenu

@@ -4,6 +4,7 @@ import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createSignal, onMount, Show } from 'solid-js'
 import { workerClient } from '~/api/clients'
 import { Dialog } from '~/components/common/Dialog'
+import { Icon } from '~/components/common/Icon'
 import { sanitizeName } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
 import * as styles from './WorkerSettingsDialog.css'
@@ -112,7 +113,7 @@ export const WorkerSettingsDialog: Component<WorkerSettingsDialogProps> = (props
             </Show>
             <footer>
               <button onClick={() => handleRename()} disabled={renameSaving()}>
-                <Show when={renameSaving()}><LoaderCircle size={14} class={spinner} /></Show>
+                <Show when={renameSaving()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
                 {renameSaving() ? 'Saving...' : 'Save'}
               </button>
             </footer>
@@ -140,7 +141,7 @@ export const WorkerSettingsDialog: Component<WorkerSettingsDialogProps> = (props
               Cancel
             </button>
             <button data-variant="danger" onClick={() => handleDeregister()} disabled={deregisterLoading()} data-testid="deregister-confirm">
-              <Show when={deregisterLoading()}><LoaderCircle size={14} class={spinner} /></Show>
+              <Show when={deregisterLoading()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
               {deregisterLoading() ? 'Deregistering...' : 'Deregister'}
             </button>
           </footer>

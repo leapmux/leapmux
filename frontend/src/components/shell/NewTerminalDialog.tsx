@@ -5,6 +5,7 @@ import { createEffect, createSignal, For, on, onMount, Show } from 'solid-js'
 import { gitClient, terminalClient, workerClient } from '~/api/clients'
 import { apiLoadingTimeoutMs } from '~/api/transport'
 import { Dialog } from '~/components/common/Dialog'
+import { Icon } from '~/components/common/Icon'
 import { WorktreeOptions } from '~/components/shell/WorktreeOptions'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
 import { useOrg } from '~/context/OrgContext'
@@ -158,7 +159,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
                   disabled={refreshing()}
                   title="Refresh workers"
                 >
-                  <RefreshCw size={14} class={refreshing() ? spinning : ''} />
+                  <Icon icon={RefreshCw} size="sm" class={refreshing() ? spinning : ''} />
                 </button>
               </div>
               <select
@@ -230,7 +231,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
             type="submit"
             disabled={submitting.loading() || !workerId() || !shell() || (createWorktree() && !!worktreeBranchError())}
           >
-            <Show when={submitting.loading()}><LoaderCircle size={14} class={spinner} /></Show>
+            <Show when={submitting.loading()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
             {submitting.loading() ? 'Creating...' : 'Create'}
           </button>
         </footer>

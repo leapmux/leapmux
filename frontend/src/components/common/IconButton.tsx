@@ -1,8 +1,10 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { Component, ComponentProps, JSX } from 'solid-js'
+import type { IconSizeName } from './Icon'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { Show, splitProps } from 'solid-js'
 import { spinner } from '~/styles/animations.css'
+import { Icon } from './Icon'
 import * as styles from './IconButton.css'
 
 // ---------------------------------------------------------------------------
@@ -26,8 +28,8 @@ type ButtonHtmlAttributes = Omit<
 export interface IconButtonProps extends ButtonHtmlAttributes {
   /** The lucide-solid icon component to render. */
   icon: LucideIcon
-  /** Icon size in pixels. Default: 14 */
-  iconSize?: number
+  /** Icon size token name. Default: 'sm' */
+  iconSize?: IconSizeName
   /** Container size token. Default: none (intrinsic sizing). */
   size?: IconButtonSize
   /** Button state. Default: Enabled */
@@ -66,10 +68,11 @@ export const IconButton: Component<IconButtonProps> = (props) => {
   ])
 
   const state = () => local.state ?? IconButtonState.Enabled
-  const iconPx = () => local.iconSize ?? 14
+  const iconSz = () => local.iconSize ?? 'sm'
   const isDisabled = () =>
     state() === IconButtonState.Disabled || state() === IconButtonState.Loading
   const isLoading = () => state() === IconButtonState.Loading
+
   const isActive = () => state() === IconButtonState.Active
 
   const classes = () => {
@@ -93,8 +96,8 @@ export const IconButton: Component<IconButtonProps> = (props) => {
       onClick={local.onClick}
       {...rest}
     >
-      <Show when={isLoading()} fallback={<local.icon size={iconPx()} />}>
-        <LoaderCircle size={iconPx()} class={spinner} />
+      <Show when={isLoading()} fallback={<Icon icon={local.icon} size={iconSz()} />}>
+        <Icon icon={LoaderCircle} size={iconSz()} class={spinner} />
       </Show>
       {local.children}
     </button>

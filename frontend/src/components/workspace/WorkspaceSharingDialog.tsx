@@ -4,6 +4,7 @@ import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createSignal, For, onMount, Show } from 'solid-js'
 import { orgClient, workspaceClient } from '~/api/clients'
 import { Dialog } from '~/components/common/Dialog'
+import { Icon } from '~/components/common/Icon'
 import { useOrg } from '~/context/OrgContext'
 import { ShareMode } from '~/generated/leapmux/v1/common_pb'
 import { spinner } from '~/styles/animations.css'
@@ -114,7 +115,7 @@ export const WorkspaceSharingDialog: Component<WorkspaceSharingDialogProps> = (p
             Cancel
           </button>
           <button onClick={() => handleSave()} disabled={saving()}>
-            <Show when={saving()}><LoaderCircle size={14} class={spinner} /></Show>
+            <Show when={saving()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
             {saving() ? 'Saving...' : 'Save'}
           </button>
         </footer>

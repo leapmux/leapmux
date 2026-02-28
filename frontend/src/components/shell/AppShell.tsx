@@ -14,6 +14,7 @@ import { ChatView } from '~/components/chat/ChatView'
 import { relativizePath } from '~/components/chat/messageUtils'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
+import { Icon } from '~/components/common/Icon'
 import { NotFoundPage } from '~/components/common/NotFoundPage'
 import { showToast } from '~/components/common/Toast'
 import { FileViewer } from '~/components/fileviewer/FileViewer'
@@ -1194,7 +1195,7 @@ export const AppShell: ParentComponent = (props) => {
                     agentOps.handleOpenAgent()
                   }}
                 >
-                  <Bot size={14} />
+                  <Icon icon={Bot} size="sm" />
                   {' '}
                   Open a new agent tab...
                 </button>
@@ -1206,7 +1207,7 @@ export const AppShell: ParentComponent = (props) => {
                     termOps.handleOpenTerminal()
                   }}
                 >
-                  <Terminal size={14} />
+                  <Icon icon={Terminal} size="sm" />
                   {' '}
                   Open a new terminal tab...
                 </button>
@@ -1625,7 +1626,7 @@ export const AppShell: ParentComponent = (props) => {
                                         setShowNewWorkspace(true)
                                       }}
                                     >
-                                      <Plus size={14} />
+                                      <Icon icon={Plus} size="sm" />
                                       {' '}
                                       Create a new workspace...
                                     </button>

@@ -88,12 +88,13 @@ export const authCardXWide = style({
 // Dialog sizes
 
 export const dialogStandard = style({
+  'position': 'relative',
   'minWidth': '360px',
-  'maxWidth': '480px',
+  'maxWidth': '640px',
   'display': 'flex',
   'flexDirection': 'column',
   '@media': {
-    '(max-width: 479px)': {
+    '(max-width: 639px)': {
       minWidth: 'unset',
       maxWidth: '100vw',
       width: '100vw',
@@ -112,12 +113,21 @@ export const dialogTall = style({
 
 export const dialogHeader = style({
   display: 'flex',
+  flexDirection: 'row',
   alignItems: 'center',
   justifyContent: 'space-between',
+  gap: 0,
+  padding: 0,
 })
 
 export const dialogCloseButton = style({
-  flexShrink: 0,
+  position: 'absolute',
+  top: spacing.md,
+  right: spacing.md,
+})
+
+globalStyle(`${dialogHeader} > h2`, {
+  margin: 0,
 })
 
 // Make dialog forms use flex layout so the tree container can fill remaining space.

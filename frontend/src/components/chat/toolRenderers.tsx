@@ -2,6 +2,7 @@
 import type { JSX } from 'solid-js'
 import type { StructuredPatchHunk } from './diffUtils'
 import type { MessageContentRenderer, RenderContext } from './messageRenderers'
+import type { IconSizeName } from '~/components/common/Icon'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, TaskInput, WebFetchInput, WebSearchInput, WriteInput } from '~/types/toolMessages'
 import { diffLines } from 'diff'
@@ -29,6 +30,7 @@ import Toolbox from 'lucide-solid/icons/toolbox'
 import UnfoldVertical from 'lucide-solid/icons/unfold-vertical'
 import Vote from 'lucide-solid/icons/vote'
 import { createSignal, Show } from 'solid-js'
+import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
 import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
 import { renderMarkdown } from '~/lib/renderMarkdown'
@@ -74,24 +76,24 @@ export function ControlResponseTag(props: { response?: { action: string, comment
 }
 
 /** Map tool name to its icon component. */
-export function toolIcon(name: string, size: number): JSX.Element {
+export function toolIcon(name: string, size: IconSizeName): JSX.Element {
   switch (name) {
-    case 'Bash': return <Terminal size={size} class={toolUseIcon} />
-    case 'Read': return <FileText size={size} class={toolUseIcon} />
-    case 'Write': return <FilePlus size={size} class={toolUseIcon} />
-    case 'Edit': return <FilePen size={size} class={toolUseIcon} />
-    case 'Grep': return <Search size={size} class={toolUseIcon} />
-    case 'Glob': return <FolderSearch size={size} class={toolUseIcon} />
-    case 'Task': return <Bot size={size} class={toolUseIcon} />
-    case 'WebFetch': return <Globe size={size} class={toolUseIcon} />
-    case 'WebSearch': return <Globe size={size} class={toolUseIcon} />
-    case 'TodoWrite': return <ListTodo size={size} class={toolUseIcon} />
-    case 'EnterPlanMode': return <TicketsPlane size={size} class={toolUseIcon} />
-    case 'ExitPlanMode': return <PlaneTakeoff size={size} class={toolUseIcon} />
-    case 'AskUserQuestion': return <Vote size={size} class={toolUseIcon} />
-    case 'TaskOutput': return <SquareTerminal size={size} class={toolUseIcon} />
-    case 'Skill': return <Toolbox size={size} class={toolUseIcon} />
-    default: return <ChevronsRight size={size} class={toolUseIcon} />
+    case 'Bash': return <Icon icon={Terminal} size={size} class={toolUseIcon} />
+    case 'Read': return <Icon icon={FileText} size={size} class={toolUseIcon} />
+    case 'Write': return <Icon icon={FilePlus} size={size} class={toolUseIcon} />
+    case 'Edit': return <Icon icon={FilePen} size={size} class={toolUseIcon} />
+    case 'Grep': return <Icon icon={Search} size={size} class={toolUseIcon} />
+    case 'Glob': return <Icon icon={FolderSearch} size={size} class={toolUseIcon} />
+    case 'Task': return <Icon icon={Bot} size={size} class={toolUseIcon} />
+    case 'WebFetch': return <Icon icon={Globe} size={size} class={toolUseIcon} />
+    case 'WebSearch': return <Icon icon={Globe} size={size} class={toolUseIcon} />
+    case 'TodoWrite': return <Icon icon={ListTodo} size={size} class={toolUseIcon} />
+    case 'EnterPlanMode': return <Icon icon={TicketsPlane} size={size} class={toolUseIcon} />
+    case 'ExitPlanMode': return <Icon icon={PlaneTakeoff} size={size} class={toolUseIcon} />
+    case 'AskUserQuestion': return <Icon icon={Vote} size={size} class={toolUseIcon} />
+    case 'TaskOutput': return <Icon icon={SquareTerminal} size={size} class={toolUseIcon} />
+    case 'Skill': return <Icon icon={Toolbox} size={size} class={toolUseIcon} />
+    default: return <Icon icon={ChevronsRight} size={size} class={toolUseIcon} />
   }
 }
 
@@ -364,7 +366,7 @@ function ToolUseMessage(props: {
     <div class={toolMessage}>
       <div class={toolUseHeader}>
         <span class={inlineFlex} title={props.toolName}>
-          {toolIcon(props.toolName, 16)}
+          {toolIcon(props.toolName, 'md')}
         </span>
         <span>
           {props.detail ?? props.toolName}

@@ -3,6 +3,7 @@ import type { ParsedCatLine } from '~/components/chat/ReadResultView'
 import AtSign from 'lucide-solid/icons/at-sign'
 import { createMemo, Show } from 'solid-js'
 import { ReadResultView } from '~/components/chat/ReadResultView'
+import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
 import * as styles from './FileViewer.css'
 
@@ -37,7 +38,7 @@ export function TextFileView(props: {
             title="Mention in the chat"
             data-testid="file-mention-button"
           >
-            <AtSign size={14} />
+            <Icon icon={AtSign} size="sm" />
           </button>
         </div>
       </Show>

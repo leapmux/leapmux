@@ -4,6 +4,7 @@ import Code from 'lucide-solid/icons/code'
 import Columns2 from 'lucide-solid/icons/columns-2'
 import Eye from 'lucide-solid/icons/eye'
 import { Show } from 'solid-js'
+import { Icon } from '~/components/common/Icon'
 import * as styles from './FileViewer.css'
 
 export type ViewMode = 'render' | 'source' | 'split'
@@ -22,7 +23,7 @@ export function ViewToggle(props: {
         onClick={() => props.onToggle('render')}
         title="Rendered view"
       >
-        <Eye size={14} />
+        <Icon icon={Eye} size="sm" />
       </button>
       <Show when={props.showSplit}>
         <button
@@ -31,7 +32,7 @@ export function ViewToggle(props: {
           onClick={() => props.onToggle('split')}
           title="Side-by-side view"
         >
-          <Columns2 size={14} />
+          <Icon icon={Columns2} size="sm" />
         </button>
       </Show>
       <button
@@ -40,7 +41,7 @@ export function ViewToggle(props: {
         onClick={() => props.onToggle('source')}
         title="Source view"
       >
-        <Code size={14} />
+        <Icon icon={Code} size="sm" />
       </button>
       <Show when={props.onMention}>
         <div style={{ 'border-left': '1px solid var(--border)' }} />
@@ -50,7 +51,7 @@ export function ViewToggle(props: {
           title="Mention in the chat"
           data-testid="file-mention-button"
         >
-          <AtSign size={14} />
+          <Icon icon={AtSign} size="sm" />
         </button>
       </Show>
     </div>

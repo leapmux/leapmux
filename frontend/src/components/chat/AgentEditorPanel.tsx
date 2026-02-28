@@ -15,6 +15,7 @@ import SendHorizontal from 'lucide-solid/icons/send-horizontal'
 import Square from 'lucide-solid/icons/square'
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, onMount, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
+import { Icon } from '~/components/common/Icon'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { clearDraft } from '~/lib/editor/draftPersistence'
 import { formatRateLimitSummary, getResetsAt, pickUrgentRateLimit, RATE_LIMIT_POPOVER_LABELS } from '~/lib/rateLimitUtils'
@@ -414,8 +415,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             title="Copy session ID"
             data-testid="session-id-copy"
           >
-            <Show when={sessionIdCopied()} fallback={<Copy size={iconSize.xs} />}>
-              <Check size={iconSize.xs} />
+            <Show when={sessionIdCopied()} fallback={<Icon icon={Copy} size="xs" />}>
+              <Icon icon={Check} size="xs" />
             </Show>
           </button>
         </div>
@@ -529,9 +530,9 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
 
   const effortIcon = () => {
     switch (currentEffort()) {
-      case 'low': return <ChevronsDown size={iconSize.xs} />
-      case 'high': return <ChevronsUp size={iconSize.xs} />
-      default: return <Dot size={iconSize.xs} />
+      case 'low': return <Icon icon={ChevronsDown} size="xs" />
+      case 'high': return <Icon icon={ChevronsUp} size="xs" />
+      default: return <Icon icon={Dot} size="xs" />
     }
   }
 
@@ -547,8 +548,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           {modelLabel(currentModel())}
           {effortIcon()}
           {modeLabel(currentMode())}
-          <Show when={props.settingsLoading} fallback={<ChevronDown size={iconSize.xs} />}>
-            <LoaderCircle size={iconSize.xs} class={spinner} data-testid="settings-loading-spinner" />
+          <Show when={props.settingsLoading} fallback={<Icon icon={ChevronDown} size="xs" />}>
+            <Icon icon={LoaderCircle} size="xs" class={spinner} />
           </Show>
         </button>
       )}
@@ -799,8 +800,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                           disabled={interruptLoading.loading()}
                           data-testid="interrupt-button"
                         >
-                          <Show when={interruptLoading.loading()} fallback={<Square size={iconSize.sm} />}>
-                            <LoaderCircle size={iconSize.sm} class={spinner} />
+                          <Show when={interruptLoading.loading()} fallback={<Icon icon={Square} size="sm" />}>
+                            <Icon icon={LoaderCircle} size="sm" class={spinner} />
                           </Show>
                           {interruptLoading.loading() ? 'Interrupting...' : 'Interrupt'}
                         </button>
@@ -815,8 +816,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                         }}
                         data-testid="send-button"
                       >
-                        <Show when={sending()} fallback={<SendHorizontal size={iconSize.sm} />}>
-                          <LoaderCircle size={iconSize.sm} class={spinner} />
+                        <Show when={sending()} fallback={<Icon icon={SendHorizontal} size="sm" />}>
+                          <Icon icon={LoaderCircle} size="sm" class={spinner} />
                         </Show>
                         Send
                       </button>

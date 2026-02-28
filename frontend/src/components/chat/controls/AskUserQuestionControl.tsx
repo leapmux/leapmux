@@ -4,6 +4,7 @@ import type { ControlRequest } from '~/stores/control.store'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createUniqueId, For, Show } from 'solid-js'
 import { agentLoadingTimeoutMs, apiLoadingTimeoutMs } from '~/api/transport'
+import { Icon } from '~/components/common/Icon'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { spinner } from '~/styles/animations.css'
 import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
@@ -340,7 +341,7 @@ export const AskUserQuestionActions: Component<ActionsProps> = (props) => {
           disabled={stopping()}
           data-testid="control-stop-btn"
         >
-          <Show when={stopping()}><LoaderCircle size={14} class={spinner} /></Show>
+          <Show when={stopping()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
           {stopping() ? 'Stopping...' : 'Stop'}
         </button>
         <button
@@ -379,7 +380,7 @@ export const AskUserQuestionActions: Component<ActionsProps> = (props) => {
           disabled={!allAnswered() || submitting()}
           data-testid="control-submit-btn"
         >
-          <Show when={submitting()}><LoaderCircle size={14} class={spinner} /></Show>
+          <Show when={submitting()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
           {submitting() ? 'Submitting...' : 'Submit'}
         </button>
       </div>
