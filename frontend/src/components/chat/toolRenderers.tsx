@@ -10,6 +10,7 @@ import Braces from 'lucide-solid/icons/braces'
 import Check from 'lucide-solid/icons/check'
 import ChevronsRight from 'lucide-solid/icons/chevrons-right'
 import Columns2 from 'lucide-solid/icons/columns-2'
+import Copy from 'lucide-solid/icons/copy'
 import FilePen from 'lucide-solid/icons/file-pen'
 import FilePlus from 'lucide-solid/icons/file-plus'
 import FileText from 'lucide-solid/icons/file-text'
@@ -18,6 +19,7 @@ import FolderSearch from 'lucide-solid/icons/folder-search'
 import Globe from 'lucide-solid/icons/globe'
 import ListTodo from 'lucide-solid/icons/list-todo'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
+import Quote from 'lucide-solid/icons/quote'
 import Rows2 from 'lucide-solid/icons/rows-2'
 import Search from 'lucide-solid/icons/search'
 import Terminal from 'lucide-solid/icons/terminal'
@@ -36,7 +38,7 @@ import { RelativeTime } from './RelativeTime'
 import {
   controlResponseTag,
   toolHeaderActions,
-  toolHeaderButtonHidden,
+
   toolHeaderTimestamp,
   toolInputCode,
   toolInputDetail,
@@ -252,7 +254,7 @@ export function renderToolSubDetail(toolName: string, input: Record<string, unkn
   }
 }
 
-/** Actions area in tool header: Raw JSON copy + diff toggle + thread expander, all with tooltips. */
+/** Actions area in tool header: Reply + Raw JSON copy + diff toggle + thread expander, all with tooltips. */
 export function ToolHeaderActions(props: {
   /** ISO timestamp for relative time display. */
   createdAt?: string
@@ -269,21 +271,43 @@ export function ToolHeaderActions(props: {
   diffView?: DiffViewPreference
   /** Toggle diff view between unified and split. */
   onToggleDiffView?: () => void
+  /** Reply callback — when provided, shows a reply button. */
+  onReply?: () => void
+  /** Copy markdown callback — when provided, shows a copy markdown button. */
+  onCopyMarkdown?: () => void
+  markdownCopied?: boolean
 }): JSX.Element {
   const timestamp = () => props.updatedAt || props.createdAt
   return (
     <div class={toolHeaderActions} data-testid="message-toolbar">
+      <Show when={props.onReply}>
+        <IconButton
+          icon={Quote}
+          size="sm"
+          data-testid="message-quote"
+          onClick={() => props.onReply?.()}
+          title="Quote"
+        />
+      </Show>
       <Show when={timestamp()}>
         <RelativeTime
           timestamp={timestamp()!}
-          class={`${toolHeaderButtonHidden} ${toolHeaderTimestamp}`}
+          class={toolHeaderTimestamp}
+        />
+      </Show>
+      <Show when={props.onCopyMarkdown}>
+        <IconButton
+          icon={props.markdownCopied ? Check : Copy}
+          size="sm"
+          data-testid="message-copy-markdown"
+          onClick={() => props.onCopyMarkdown?.()}
+          title={props.markdownCopied ? 'Copied' : 'Copy Markdown'}
         />
       </Show>
       <Show when={props.onCopyJson}>
         <IconButton
           icon={props.jsonCopied ? Check : Braces}
           size="sm"
-          class={toolHeaderButtonHidden}
           data-testid="message-copy-json"
           onClick={() => props.onCopyJson?.()}
           title={props.jsonCopied ? 'Copied' : 'Copy Raw JSON'}

@@ -52,23 +52,23 @@ test.describe('Chat Message Rendering', () => {
 
     const bubble = page.locator('[data-testid="message-bubble"]').first()
     const row = bubble.locator('..') // parent messageRow div
-    // Check the copy-JSON button (which has opacity:0 by default via toolHeaderButtonHidden).
+    // The toolbar has opacity:0 by default and is revealed on hover via toolHeaderActions.
     // Playwright's toBeVisible() does not consider opacity:0 as hidden, so we check CSS directly.
-    const copyButton = row.locator('[data-testid="message-copy-json"]')
+    const toolbar = row.locator('[data-testid="message-toolbar"]')
 
     // Move mouse away first to ensure no hover state
     await page.mouse.move(0, 0)
 
-    // Hidden toolbar button should have opacity 0 initially
-    await expect(copyButton).toHaveCSS('opacity', '0')
+    // Toolbar should have opacity 0 initially
+    await expect(toolbar).toHaveCSS('opacity', '0')
 
-    // Hover over the bubble — row hover rule reveals hidden buttons
+    // Hover over the bubble — row hover rule reveals the toolbar
     await bubble.hover()
-    await expect(copyButton).toHaveCSS('opacity', '1')
+    await expect(toolbar).toHaveCSS('opacity', '1')
 
     // Move mouse away
     await page.mouse.move(0, 0)
-    await expect(copyButton).toHaveCSS('opacity', '0')
+    await expect(toolbar).toHaveCSS('opacity', '0')
   })
 
   test('should copy Raw JSON to clipboard on button click', async ({ page, context, authenticatedWorkspace }) => {

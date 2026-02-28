@@ -10,7 +10,7 @@ import { DirectoryTree } from '~/components/tree/DirectoryTree'
 import { useOrg } from '~/context/OrgContext'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { spinner } from '~/styles/animations.css'
-import { dialogCompact, errorText, labelRow, refreshButton, spinning, treeContainer } from '~/styles/shared.css'
+import { dialogStandard, dialogWithTree, errorText, labelRow, refreshButton, spinning, treeContainer } from '~/styles/shared.css'
 
 interface NewAgentDialogProps {
   workspaceId: string
@@ -123,7 +123,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
   }
 
   return (
-    <dialog ref={dialogRef} class={dialogCompact} onClose={() => props.onClose()}>
+    <dialog ref={dialogRef} class={`${dialogStandard} ${dialogWithTree}`} onClose={() => props.onClose()}>
       <header><h2>New Agent</h2></header>
       <form onSubmit={handleSubmit}>
         <section>

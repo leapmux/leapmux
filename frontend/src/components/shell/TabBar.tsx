@@ -79,6 +79,7 @@ interface TabBarProps {
   onToggleLeftSidebar?: () => void
   onToggleRightSidebar?: () => void
   tileActions?: TileActions
+  readOnly?: boolean
 }
 
 export const TabBar: Component<TabBarProps> = (props) => {
@@ -179,7 +180,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
       onAuxClick={(e: MouseEvent) => {
         if (e.button === 1) {
           e.preventDefault()
-          if (props.closingTabKeys?.has(tabKey(tab)))
+          if ((props.readOnly && tab.type !== TabType.FILE) || props.closingTabKeys?.has(tabKey(tab)))
             return
           props.onClose(tab)
         }
@@ -187,7 +188,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
       onDblClick={(e: MouseEvent) => {
         e.preventDefault()
         e.stopPropagation()
-        if (tab.type !== TabType.FILE)
+        if (tab.type !== TabType.FILE && !props.readOnly)
           startEditing(tab)
       }}
     >
@@ -225,19 +226,21 @@ export const TabBar: Component<TabBarProps> = (props) => {
       <Show when={tab.hasNotification}>
         <span class={styles.tabNotification} data-testid="tab-notification" />
       </Show>
-      <IconButton
-        icon={X}
-        class={styles.tabClose}
-        state={props.closingTabKeys?.has(tabKey(tab)) ? IconButtonState.Loading : IconButtonState.Enabled}
-        data-testid="tab-close"
-        onPointerDown={e => e.stopPropagation()}
-        onClick={(e) => {
-          e.stopPropagation()
-          if (props.closingTabKeys?.has(tabKey(tab)))
-            return
-          props.onClose(tab)
-        }}
-      />
+      <Show when={!props.readOnly || tab.type === TabType.FILE}>
+        <IconButton
+          icon={X}
+          class={styles.tabClose}
+          state={props.closingTabKeys?.has(tabKey(tab)) ? IconButtonState.Loading : IconButtonState.Enabled}
+          data-testid="tab-close"
+          onPointerDown={e => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation()
+            if (props.closingTabKeys?.has(tabKey(tab)))
+              return
+            props.onClose(tab)
+          }}
+        />
+      </Show>
     </div>
   )
 

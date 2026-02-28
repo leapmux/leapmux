@@ -90,15 +90,16 @@ export const authCardXWide = style({
 export const dialogStandard = style({
   minWidth: '360px',
   maxWidth: '480px',
+  display: 'flex',
+  flexDirection: 'column',
 })
 
-export const dialogCompact = style({
-  maxWidth: '400px',
+export const dialogWithTree = style({
   height: '80vh',
 })
 
 // Make dialog forms use flex layout so the tree container can fill remaining space.
-globalStyle(`${dialogCompact} > form`, {
+globalStyle(`${dialogStandard} > form`, {
   display: 'flex',
   flexDirection: 'column',
   overflow: 'hidden',
@@ -106,14 +107,14 @@ globalStyle(`${dialogCompact} > form`, {
   minHeight: 0,
 })
 
-globalStyle(`${dialogCompact} > form > section`, {
+globalStyle(`${dialogStandard} > form > section`, {
   display: 'flex',
   flexDirection: 'column',
   flex: 1,
   minHeight: 0,
 })
 
-globalStyle(`${dialogCompact} > form > section > .vstack`, {
+globalStyle(`${dialogStandard} > form > section > .vstack`, {
   flex: 1,
   minHeight: 0,
 })
@@ -158,7 +159,7 @@ export const treeContainer = style({
 })
 
 // The label wrapping the DirectoryTree needs to grow and use flex layout.
-globalStyle(`${dialogCompact} > form > section > .vstack > label:has(.${treeContainer})`, {
+globalStyle(`${dialogStandard} > form > section > .vstack > label:has(.${treeContainer})`, {
   display: 'flex',
   flexDirection: 'column',
   flex: 1,

@@ -1,6 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import { onMount, Show } from 'solid-js'
-import { dialogCompact } from '~/styles/shared.css'
+import { dialogStandard } from '~/styles/shared.css'
 import { ConfirmButton } from './ConfirmButton'
 
 interface ConfirmDialogProps {
@@ -19,7 +19,7 @@ export const ConfirmDialog: Component<ConfirmDialogProps> = (props) => {
   onMount(() => dlgRef.showModal())
 
   return (
-    <dialog ref={dlgRef} class={dialogCompact} closedby="any" onClose={() => props.onCancel()}>
+    <dialog ref={dlgRef} class={dialogStandard} closedby="any" onClose={() => props.onCancel()}>
       <header><h2>{props.title}</h2></header>
       <section>{props.children}</section>
       <footer>

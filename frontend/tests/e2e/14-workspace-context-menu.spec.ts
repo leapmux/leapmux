@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { openWorkspaceContextMenu } from './helpers'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openWorkspaceContextMenu, waitForWorkspaceReady } from './helpers'
 
 test.describe('Workspace Context Menu', () => {
   test('should show context menu options for owned workspace', async ({ page, authenticatedWorkspace }) => {
@@ -10,9 +10,11 @@ test.describe('Workspace Context Menu', () => {
 
     // Should show all options for owner
     await expect(page.getByRole('menuitem', { name: 'Rename' })).toBeVisible()
-    await expect(page.getByRole('menuitem', { name: 'Move to' })).toBeVisible()
-    await expect(page.getByRole('menuitem', { name: 'Share' })).toBeVisible()
+    await expect(page.getByRole('menuitem', { name: 'Share...' })).toBeVisible()
+    await expect(page.getByRole('menuitem', { name: 'Archive' })).toBeVisible()
     await expect(page.getByRole('menuitem', { name: 'Delete' })).toBeVisible()
+    // "Move to" is hidden when there is only one target section (In Progress)
+    await expect(page.getByRole('menuitem', { name: 'Move to' })).not.toBeVisible()
   })
 
   test('should rename workspace via context menu', async ({ page, authenticatedWorkspace }) => {
@@ -68,6 +70,83 @@ test.describe('Workspace Context Menu', () => {
     // Original name should still be there
     await expect(workspaceItem).toBeVisible()
     await expect(page.getByText('Should Not Save')).not.toBeVisible()
+  })
+
+  test('should not activate unfocused workspace when opening context menu', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+    // Create a second workspace via API (no navigation)
+    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
+    const secondWorkspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Unfocused WS', adminOrgId)
+    try {
+      // Navigate to the SECOND workspace so it becomes active, making the first inactive
+      await page.goto(`/o/admin/workspace/${secondWorkspaceId}`)
+      await waitForWorkspaceReady(page)
+
+      // The first workspace should appear as inactive in the sidebar
+      const firstWorkspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
+      await expect(firstWorkspaceItem).toBeVisible()
+      await expect(firstWorkspaceItem).not.toHaveClass(/itemActive/)
+
+      // Record URL before opening the context menu
+      const urlBefore = page.url()
+
+      // Open context menu on the first (non-active) workspace
+      const firstName = await firstWorkspaceItem.textContent()
+      await openWorkspaceContextMenu(page, firstName!.trim())
+
+      // Menu should appear
+      await expect(page.getByRole('menuitem', { name: 'Rename' })).toBeVisible()
+
+      // URL should not have changed (workspace NOT activated)
+      expect(page.url()).toBe(urlBefore)
+
+      // Close the menu
+      await page.keyboard.press('Escape')
+
+      // The first workspace should still be inactive
+      await expect(firstWorkspaceItem).not.toHaveClass(/itemActive/)
+    }
+    finally {
+      await deleteWorkspaceViaAPI(hubUrl, adminToken, secondWorkspaceId).catch(() => {})
+    }
+  })
+
+  test('should not activate unfocused workspace when clicking a menu action', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+    // Create a second workspace via API (no navigation)
+    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
+    const secondWorkspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Action WS', adminOrgId)
+    try {
+      // Navigate to the SECOND workspace so it becomes active, making the first inactive
+      await page.goto(`/o/admin/workspace/${secondWorkspaceId}`)
+      await waitForWorkspaceReady(page)
+
+      const firstWorkspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
+      await expect(firstWorkspaceItem).toBeVisible()
+      await expect(firstWorkspaceItem).not.toHaveClass(/itemActive/)
+
+      // Record URL before the action
+      const urlBefore = page.url()
+
+      // Open context menu and click Archive on the non-active workspace
+      const firstName = await firstWorkspaceItem.textContent()
+      await openWorkspaceContextMenu(page, firstName!.trim())
+      await page.getByRole('menuitem', { name: 'Archive' }).click()
+
+      // Archive confirmation dialog should appear
+      const dialog = page.locator('dialog')
+      await expect(dialog).toBeVisible()
+
+      // URL should not have changed (workspace NOT activated)
+      expect(page.url()).toBe(urlBefore)
+
+      // The first workspace should still be inactive
+      await expect(firstWorkspaceItem).not.toHaveClass(/itemActive/)
+
+      // Cancel the archive
+      await dialog.getByRole('button', { name: 'Cancel' }).click()
+    }
+    finally {
+      await deleteWorkspaceViaAPI(hubUrl, adminToken, secondWorkspaceId).catch(() => {})
+    }
   })
 
   test('should delete workspace via context menu', async ({ page, authenticatedWorkspace }) => {

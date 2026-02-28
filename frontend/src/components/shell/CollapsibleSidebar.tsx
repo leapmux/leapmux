@@ -72,6 +72,8 @@ export interface CollapsibleSidebarProps {
   initialSectionSizes?: Record<string, number>
   /** Called whenever open sections or section sizes change. */
   onStateChange?: (openSections: Record<string, boolean>, sectionSizes: Record<string, number>) => void
+  /** Ref callback that exposes the expand-section function to the parent. */
+  expandSectionRef?: (expand: (sectionId: string) => void) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +103,13 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
   const notifyStateChange = () => {
     props.onStateChange?.(openSections(), sectionSizes())
   }
+
+  // Expose expand-section function to the parent via ref callback.
+  // eslint-disable-next-line solid/reactivity -- ref callback is called once during setup
+  props.expandSectionRef?.((sectionId: string) => {
+    setOpenSections(prev => ({ ...prev, [sectionId]: true }))
+    notifyStateChange()
+  })
 
   /** Quick lookup for the latest section definition by ID. */
   const sectionById = createMemo(() => {

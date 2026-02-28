@@ -166,13 +166,8 @@ export const toolHeaderActions = style({
   display: 'flex',
   alignItems: 'center',
   gap: '2px',
-  marginLeft: 'auto',
-  paddingLeft: spacing.md,
-})
-
-// Hidden variant: invisible by default, visible on hover (for advanced-user actions like Copy Raw JSON)
-export const toolHeaderButtonHidden = style({
   opacity: 0,
+  transition: 'opacity 0.15s',
 })
 
 // Timestamp text in tool header actions (muted, small)
@@ -184,9 +179,9 @@ export const toolHeaderTimestamp = style({
   lineHeight: 1,
 })
 
-// When hovering the actions area, reveal hidden buttons
-globalStyle(`${toolHeaderActions}:hover .${toolHeaderButtonHidden}`, {
-  opacity: 1,
+// Inside tool-use headers, right-align the actions area
+globalStyle(`${toolUseHeader} .${toolHeaderActions}`, {
+  marginLeft: 'auto',
 })
 
 // Inline control response tag in tool header (approved/rejected indicator)

@@ -1,14 +1,14 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import { codeBlockCode, codeBlockPre } from '~/styles/codeBlock'
 import { iconSize, spacing } from '~/styles/tokens'
 
 export const markdownContent = style({
   wordBreak: 'break-word',
 })
 
-// Code blocks need relative positioning for the copy button
-globalStyle(`${markdownContent} pre`, {
-  position: 'relative',
-})
+// Code blocks: move scroll to <code> so the copy button stays fixed.
+globalStyle(`${markdownContent} pre`, codeBlockPre('hidden'))
+globalStyle(`${markdownContent} pre code`, codeBlockCode)
 
 // Shiki dual-theme support via CSS variables
 globalStyle(`${markdownContent} pre.shiki`, {

@@ -104,6 +104,18 @@ export const emptyInline = style({
   padding: `2px ${spacing.sm}`,
 })
 
+export const nodeActions = style({
+  display: 'flex',
+  alignItems: 'center',
+  marginLeft: 'auto',
+  flexShrink: 0,
+  opacity: 0,
+  transition: 'opacity 0.15s',
+  selectors: {
+    [`${node}:hover &`]: { opacity: 1 },
+  },
+})
+
 export const pathInput = style({
   display: 'flex',
   alignItems: 'center',

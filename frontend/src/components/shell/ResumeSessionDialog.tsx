@@ -7,7 +7,7 @@ import { agentLoadingTimeoutMs } from '~/api/transport'
 import { useOrg } from '~/context/OrgContext'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { spinner } from '~/styles/animations.css'
-import { dialogCompact, errorText, labelRow, refreshButton, spinning } from '~/styles/shared.css'
+import { dialogStandard, errorText, labelRow, refreshButton, spinning } from '~/styles/shared.css'
 
 interface ResumeSessionDialogProps {
   defaultWorkerId?: string
@@ -83,7 +83,7 @@ export const ResumeSessionDialog: Component<ResumeSessionDialogProps> = (props) 
   }
 
   return (
-    <dialog ref={dialogRef} class={dialogCompact} onClose={() => props.onClose()}>
+    <dialog ref={dialogRef} class={dialogStandard} onClose={() => props.onClose()}>
       <header><h2>Resume an existing session</h2></header>
       <form onSubmit={handleSubmit}>
         <section>

@@ -142,26 +142,13 @@ export const itemRenameInput = style({
 })
 
 export const itemMenuTrigger = style({
-  'all': 'unset',
-  'display': 'flex',
-  'alignItems': 'center',
-  'justifyContent': 'center',
-  'width': iconSize.container.sm,
-  'height': iconSize.container.sm,
-  'borderRadius': '3px',
-  'flexShrink': 0,
-  'color': 'var(--faint-foreground)',
-  'cursor': 'pointer',
-  'opacity': 0,
-  'transition': 'opacity 0.15s',
-  ':hover': {
-    color: 'var(--foreground)',
-  },
-  'selectors': {
+  opacity: 0,
+  transition: 'opacity 0.15s',
+  selectors: {
     [`${item}:hover &`]: {
       opacity: 1,
     },
-    '&[data-expanded]': {
+    '&[aria-expanded="true"]': {
       opacity: 1,
     },
   },

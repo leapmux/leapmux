@@ -680,6 +680,43 @@ export async function deleteWorkspaceViaAPI(
 }
 
 /**
+ * List all workspaces in an org via the Connect API.
+ */
+export async function listWorkspacesViaAPI(
+  hubUrl: string,
+  token: string,
+  orgId: string,
+): Promise<{ id: string }[]> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/ListWorkspaces`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({ orgId }),
+  })
+  if (!res.ok) {
+    throw new Error(`listWorkspacesViaAPI failed: ${res.status}`)
+  }
+  const data = await res.json() as { workspaces: { id: string }[] }
+  return data.workspaces ?? []
+}
+
+/**
+ * Delete all workspaces in an org via the Connect API (best effort).
+ */
+export async function deleteAllWorkspacesViaAPI(
+  hubUrl: string,
+  token: string,
+  orgId: string,
+): Promise<void> {
+  const workspaces = await listWorkspacesViaAPI(hubUrl, token, orgId)
+  for (const ws of workspaces) {
+    await deleteWorkspaceViaAPI(hubUrl, token, ws.id).catch(() => {})
+  }
+}
+
+/**
  * Inject auth token into localStorage before navigation.
  * Uses addInitScript so the token is set before any page scripts run.
  * Must be called **before** any page.goto() calls.

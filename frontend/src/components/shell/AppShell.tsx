@@ -11,6 +11,7 @@ import { agentClient, gitClient, sectionClient, terminalClient, workspaceClient 
 import { agentCallTimeout, agentLoadingTimeoutMs, apiCallTimeout } from '~/api/transport'
 import { AgentEditorPanel } from '~/components/chat/AgentEditorPanel'
 import { ChatView } from '~/components/chat/ChatView'
+import { relativizePath } from '~/components/chat/messageUtils'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { NotFoundPage } from '~/components/common/NotFoundPage'
@@ -37,16 +38,18 @@ import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { useIsMobile } from '~/hooks/useIsMobile'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { after, mid } from '~/lib/lexorank'
+import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { createAgentStore } from '~/stores/agent.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
+import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { createLayoutStore } from '~/stores/layout.store'
 import { createSectionStore } from '~/stores/section.store'
 import { createTabStore, tabKey } from '~/stores/tab.store'
 import { createTerminalStore } from '~/stores/terminal.store'
 import { createWorkspaceStore } from '~/stores/workspace.store'
-import { dialogCompact } from '~/styles/shared.css'
+import { dialogStandard } from '~/styles/shared.css'
 import { isAgentWorking } from '~/utils/agentState'
 import * as styles from './AppShell.css'
 import { SectionDragProvider } from './SectionDragContext'
@@ -380,6 +383,18 @@ export const AppShell: ParentComponent = (props) => {
       const homeDir = agentStore.state.agents.find(a => a.workerId === workerId)?.homeDir ?? ''
       return { workerId, workingDir: terminal?.workingDir ?? '', homeDir }
     }
+  }
+
+  // Get working directory and home directory from the MRU agent tab.
+  // Used for relativizing file paths in mentions and quotes from non-agent tabs.
+  const getMruAgentContext = (): { workingDir: string, homeDir: string } => {
+    const agentPrefix = `${TabType.AGENT}:`
+    const mruKey = tabStore.state.mruOrder.find(k => k.startsWith(agentPrefix))
+    if (!mruKey)
+      return { workingDir: '', homeDir: '' }
+    const agentId = mruKey.slice(agentPrefix.length)
+    const agent = agentStore.state.agents.find(a => a.id === agentId)
+    return { workingDir: agent?.workingDir ?? '', homeDir: agent?.homeDir ?? '' }
   }
 
   // Focus callback for the markdown editor (shared editor panel)
@@ -724,13 +739,10 @@ export const AppShell: ParentComponent = (props) => {
       setConfirmArchiveWs({ workspaceId, resolve })
     })
 
-  // Post-archive cleanup: clear local agent/terminal/tab state if the archived workspace is active
+  // Post-archive cleanup: dismiss pending control requests but keep tabs visible (read-only)
   const handlePostArchiveWorkspace = (workspaceId: string) => {
     if (workspace.activeWorkspaceId() === workspaceId) {
       for (const agent of agentStore.state.agents) controlStore.clearAgent(agent.id)
-      agentStore.clear()
-      terminalStore.setTerminals([])
-      tabStore.clear()
     }
   }
 
@@ -946,6 +958,7 @@ export const AppShell: ParentComponent = (props) => {
       tabs={tabStore.getTabsForTile(tileId)}
       activeTabKey={tabStore.getActiveTabKeyForTile(tileId)}
       showAddButton={isActiveWorkspaceMutatable()}
+      readOnly={isActiveWorkspaceArchived()}
       onSelect={(tab) => {
         layoutStore.setFocusedTile(tileId)
         handleTabSelect(tab)
@@ -1070,6 +1083,18 @@ export const AppShell: ParentComponent = (props) => {
                     onClearSavedViewportScroll={() => chatStore.clearSavedViewportScroll(agentId)}
                     scrollStateRef={(fn) => { getScrollState = fn }}
                     scrollToBottomRef={(fn) => { forceScrollToBottom = fn }}
+                    onQuote={isActiveWorkspaceArchived()
+                      ? undefined
+                      : (text) => {
+                          appendText(agentId, text)
+                          focusEditor?.()
+                        }}
+                    onReply={isActiveWorkspaceArchived()
+                      ? undefined
+                      : (text) => {
+                          appendText(agentId, text)
+                          focusEditor?.()
+                        }}
                   />
                 </Show>
               </div>
@@ -1098,16 +1123,36 @@ export const AppShell: ParentComponent = (props) => {
 
         {/* File viewer content — mounted/unmounted with the active file tab */}
         <Show when={fileTab()} keyed>
-          {ft => (
-            <div class={styles.centerContent}>
-              <FileViewer
-                workerId={ft.workerId ?? ''}
-                filePath={ft.filePath ?? ''}
-                displayMode={ft.displayMode}
-                onDisplayModeChange={mode => tabStore.setTabDisplayMode(ft.type, ft.id, mode)}
-              />
-            </div>
-          )}
+          {(ft) => {
+            // Relativize the file path using the MRU agent tab's working directory
+            // so that mentions and quotes use the correct base path.
+            const fileRelPath = () => {
+              const ctx = getMruAgentContext()
+              return relativizePath(ft.filePath ?? '', ctx.workingDir, ctx.homeDir)
+            }
+            return (
+              <div class={styles.centerContent}>
+                <FileViewer
+                  workerId={ft.workerId ?? ''}
+                  filePath={ft.filePath ?? ''}
+                  displayMode={ft.displayMode}
+                  onDisplayModeChange={mode => tabStore.setTabDisplayMode(ft.type, ft.id, mode)}
+                  onQuote={isActiveWorkspaceArchived()
+                    ? undefined
+                    : (text, startLine, endLine) => {
+                        if (startLine != null && endLine != null) {
+                          insertIntoMruAgentEditor(tabStore, formatFileQuote(fileRelPath(), startLine, endLine, text))
+                        }
+                      }}
+                  onMention={isActiveWorkspaceArchived()
+                    ? undefined
+                    : () => {
+                        insertIntoMruAgentEditor(tabStore, formatFileMention(fileRelPath()), 'inline')
+                      }}
+                />
+              </div>
+            )
+          }}
         </Show>
 
         {/* Fallback when no tabs exist */}
@@ -1285,6 +1330,12 @@ export const AppShell: ParentComponent = (props) => {
       fileTreePath={fileTreePath()}
       onFileSelect={setFileTreePath}
       onFileOpen={handleFileOpen}
+      onFileMention={isActiveWorkspaceArchived()
+        ? undefined
+        : (path) => {
+            const ctx = getMruAgentContext()
+            insertIntoMruAgentEditor(tabStore, formatFileMention(relativizePath(path, ctx.workingDir, ctx.homeDir)), 'inline')
+          }}
       showTodos={showTodos()}
       activeTodos={activeTodos()}
     />
@@ -1309,6 +1360,12 @@ export const AppShell: ParentComponent = (props) => {
       fileTreePath={fileTreePath()}
       onFileSelect={setFileTreePath}
       onFileOpen={handleFileOpen}
+      onFileMention={isActiveWorkspaceArchived()
+        ? undefined
+        : (path) => {
+            const ctx = getMruAgentContext()
+            insertIntoMruAgentEditor(tabStore, formatFileMention(relativizePath(path, ctx.workingDir, ctx.homeDir)), 'inline')
+          }}
       sectionStore={sectionStore}
       isCollapsed={opts?.isCollapsed() ?? false}
       onExpand={opts?.onExpand ?? (() => {})}
@@ -1756,7 +1813,7 @@ export const AppShell: ParentComponent = (props) => {
             setWorktreeConfirm(null)
           }
           return (
-            <dialog ref={dlgRef} class={dialogCompact} onClose={handleCancel}>
+            <dialog ref={dlgRef} class={dialogStandard} onClose={handleCancel}>
               <header><h2>Dirty Worktree</h2></header>
               <section>
                 <p>The worktree has uncommitted changes or unpushed commits:</p>

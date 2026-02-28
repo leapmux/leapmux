@@ -383,7 +383,6 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     unarchiveWorkspace,
     deleteWorkspace,
     canAddToSection,
-    getSectionId,
     isWorkspaceArchived,
     isWorkspaceLoading,
     onRenameInput: (v: string) => setRenameValue(sanitizeName(v).value),

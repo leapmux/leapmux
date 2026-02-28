@@ -48,6 +48,7 @@ interface LeftSidebarProps {
   fileTreePath: string
   onFileSelect: (path: string) => void
   onFileOpen?: (path: string) => void
+  onFileMention?: (path: string) => void
   showTodos: boolean
   activeTodos: TodoItem[]
 }
@@ -57,6 +58,9 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
   // eslint-disable-next-line solid/reactivity -- stable store reference for component lifetime
   const store = props.sectionStore
   const { setExternalDragHandler, setExternalOverlayRenderer } = useSectionDrag()
+
+  // Captured from CollapsibleSidebar's expandSectionRef callback.
+  let expandSection: ((sectionId: string) => void) | undefined
 
   /* eslint-disable solid/reactivity -- callbacks are stable references */
   const wsOps = useWorkspaceOperations({
@@ -70,7 +74,12 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
     onDeleteWorkspace: props.onDeleteWorkspace,
     onConfirmDelete: props.onConfirmDelete,
     onConfirmArchive: props.onConfirmArchive,
-    onPostArchiveWorkspace: props.onPostArchiveWorkspace,
+    onPostArchiveWorkspace: (workspaceId) => {
+      const archivedSection = store.getArchivedSection()
+      if (archivedSection && expandSection)
+        expandSection(archivedSection.id)
+      props.onPostArchiveWorkspace?.(workspaceId)
+    },
   })
   /* eslint-enable solid/reactivity */
 
@@ -178,7 +187,6 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
               onArchive={wsOps.archiveWorkspace}
               onUnarchive={wsOps.unarchiveWorkspace}
               onDelete={wsOps.deleteWorkspace}
-              getSectionId={wsOps.getSectionId}
               isArchived={wsOps.isWorkspaceArchived}
               renamingWorkspaceId={wsOps.renamingWorkspaceId()}
               renameValue={wsOps.renameValue()}
@@ -212,6 +220,7 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
                 selectedPath={props.fileTreePath}
                 onSelect={props.onFileSelect}
                 onFileOpen={props.onFileOpen}
+                onMention={props.onFileMention}
                 rootPath={props.workingDir || '~'}
                 homeDir={props.homeDir}
               />
@@ -284,6 +293,7 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
         initialOpenSections={props.initialOpenSections}
         initialSectionSizes={props.initialSectionSizes}
         onStateChange={props.onSectionStateChange}
+        expandSectionRef={fn => expandSection = fn}
       />
 
       <Show when={wsOps.sharingWorkspaceId()}>

@@ -13,12 +13,13 @@ import Dot from 'lucide-solid/icons/dot'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import SendHorizontal from 'lucide-solid/icons/send-horizontal'
 import Square from 'lucide-solid/icons/square'
-import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, onMount, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { clearDraft } from '~/lib/editor/draftPersistence'
 import { formatRateLimitSummary, getResetsAt, pickUrgentRateLimit, RATE_LIMIT_POPOVER_LABELS } from '~/lib/rateLimitUtils'
 import { safeGetJson, safeGetString, safeRemoveItem, safeSetJson, safeSetString } from '~/lib/safeStorage'
+import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store'
 import { interruptPulse, spinner } from '~/styles/animations.css'
 import { iconSize } from '~/styles/tokens'
 import { buildAllowResponse, buildDenyResponse, DEFAULT_EFFORT, DEFAULT_MODEL, EFFORT_LABELS, getToolName, MODEL_LABELS, PERMISSION_MODE_LABELS } from '~/utils/controlResponse'
@@ -131,6 +132,41 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
 
   // Editor content ref for programmatic get/set of editor markdown.
   let editorContentRef: EditorContentRef | undefined
+  let editorFocusFn: (() => void) | undefined
+  // Whether the MarkdownEditor has fully initialized (draft loaded, cursor restored).
+  let editorReady = false
+
+  // Track the agent ID for which the editor ref is registered.  props.agentId
+  // is a reactive getter that may return null/undefined at cleanup time (e.g.
+  // when the <Show> that controls this component unmounts because the focused
+  // agent changed), so we must track the registered ID non-reactively.
+  let registeredAgentId: string | null = null
+
+  /** Register the editor ref if the editor is ready and both refs are available. */
+  const tryRegisterEditorRef = (agentId: string) => {
+    if (editorReady && editorContentRef && editorFocusFn) {
+      registerEditorRef(agentId, { get: editorContentRef.get, set: editorContentRef.set, focus: editorFocusFn })
+      registeredAgentId = agentId
+    }
+  }
+
+  // Register/unregister editor refs with the global registry.
+  onMount(() => {
+    onCleanup(() => {
+      if (registeredAgentId) {
+        unregisterEditorRef(registeredAgentId)
+        registeredAgentId = null
+      }
+    })
+  })
+  createEffect(on(() => props.agentId, (agentId, prevAgentId) => {
+    if (prevAgentId) {
+      unregisterEditorRef(prevAgentId)
+      if (registeredAgentId === prevAgentId)
+        registeredAgentId = null
+    }
+    tryRegisterEditorRef(agentId)
+  }))
 
   // Track previous non-plan mode for Shift+Tab toggling.
   let previousNonPlanMode: PermissionMode = 'default'
@@ -635,9 +671,16 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           }}
           sendRef={(fn) => { triggerSend = fn }}
           focusRef={(fn) => {
+            editorFocusFn = fn
             props.focusRef?.(fn)
           }}
-          contentRef={(get, set) => { editorContentRef = { get, set } }}
+          contentRef={(get, set) => {
+            editorContentRef = { get, set }
+          }}
+          onReady={() => {
+            editorReady = true
+            tryRegisterEditorRef(props.agentId)
+          }}
           placeholder={isAskUserQuestion() ? 'Type a custom answer...' : activeControlRequest() ? 'Type a rejection reason...' : undefined}
           allowEmptySend={!!activeControlRequest() && !isAskUserQuestion()}
           banner={

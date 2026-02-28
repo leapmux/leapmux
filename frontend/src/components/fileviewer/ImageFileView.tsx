@@ -1,7 +1,8 @@
 import type { JSX } from 'solid-js'
 import type { ZoomMode } from './ImageToolbar'
 import type { ViewMode } from './ViewToggle'
-import { createEffect, createMemo, createSignal, Match, onCleanup, Switch, untrack } from 'solid-js'
+import AtSign from 'lucide-solid/icons/at-sign'
+import { createEffect, createMemo, createSignal, Match, onCleanup, Show, Switch, untrack } from 'solid-js'
 import { isSvgExtension } from '~/lib/fileType'
 import * as styles from './FileViewer.css'
 import { ImageToolbar, ZOOM_MAX, ZOOM_MIN } from './ImageToolbar'
@@ -178,6 +179,8 @@ export function ImageFileView(props: {
   totalSize?: number
   displayMode?: string
   onDisplayModeChange?: (mode: string) => void
+  onQuote?: (text: string, startLine?: number, endLine?: number) => void
+  onMention?: () => void
 }): JSX.Element {
   const isSvg = () => isSvgExtension(props.filePath)
   const [mode, setMode] = createSignal<ViewMode>(untrack(() => props.displayMode as ViewMode) || 'render')
@@ -200,11 +203,25 @@ export function ImageFileView(props: {
   return (
     <Switch>
       <Match when={!isSvg()}>
-        {renderImage()}
+        <div style={{ position: 'relative', height: '100%' }}>
+          <Show when={props.onMention}>
+            <div class={styles.viewToggle}>
+              <button
+                class={styles.viewToggleButton}
+                onClick={() => props.onMention?.()}
+                title="Mention in the chat"
+                data-testid="file-mention-button"
+              >
+                <AtSign size={14} />
+              </button>
+            </div>
+          </Show>
+          {renderImage()}
+        </div>
       </Match>
       <Match when={isSvg()}>
         <div class={styles.toggleViewContainer}>
-          <ViewToggle mode={mode()} onToggle={handleModeChange} showSplit />
+          <ViewToggle mode={mode()} onToggle={handleModeChange} showSplit onMention={props.onMention} />
           <Switch>
             <Match when={mode() === 'render'}>
               {renderImage()}
@@ -220,6 +237,7 @@ export function ImageFileView(props: {
                     content={props.content}
                     filePath={props.filePath}
                     totalSize={props.totalSize ?? props.content.length}
+                    onQuote={props.onQuote}
                   />
                 </div>
               </div>
@@ -229,6 +247,7 @@ export function ImageFileView(props: {
                 content={props.content}
                 filePath={props.filePath}
                 totalSize={props.totalSize ?? props.content.length}
+                onQuote={props.onQuote}
               />
             </Match>
           </Switch>

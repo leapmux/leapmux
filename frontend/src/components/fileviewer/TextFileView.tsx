@@ -1,14 +1,19 @@
 import type { JSX } from 'solid-js'
 import type { ParsedCatLine } from '~/components/chat/ReadResultView'
-import { createMemo } from 'solid-js'
+import AtSign from 'lucide-solid/icons/at-sign'
+import { createMemo, Show } from 'solid-js'
 import { ReadResultView } from '~/components/chat/ReadResultView'
+import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
 import * as styles from './FileViewer.css'
 
 export function TextFileView(props: {
   content: Uint8Array
   filePath: string
   totalSize: number
+  onQuote?: (text: string, startLine?: number, endLine?: number) => void
+  onMention?: () => void
 }): JSX.Element {
+  let containerRef: HTMLDivElement | undefined
   const text = createMemo(() => new TextDecoder().decode(props.content))
 
   const lines = createMemo((): ParsedCatLine[] => {
@@ -23,8 +28,25 @@ export function TextFileView(props: {
   })
 
   return (
-    <div class={styles.textViewContainer}>
-      <ReadResultView lines={lines()} filePath={props.filePath} />
+    <div ref={containerRef} class={styles.textViewContainer} style={{ position: 'relative' }}>
+      <Show when={props.onMention}>
+        <div class={styles.viewToggle}>
+          <button
+            class={styles.viewToggleButton}
+            onClick={() => props.onMention?.()}
+            title="Mention in the chat"
+            data-testid="file-mention-button"
+          >
+            <AtSign size={14} />
+          </button>
+        </div>
+      </Show>
+      <SelectionQuotePopover
+        containerRef={containerRef}
+        onQuote={(text, startLine, endLine) => props.onQuote?.(text, startLine, endLine)}
+      >
+        <ReadResultView lines={lines()} filePath={props.filePath} />
+      </SelectionQuotePopover>
     </div>
   )
 }
