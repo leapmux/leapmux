@@ -8,7 +8,7 @@ import { SectionSchema, SectionType, Sidebar } from '~/generated/leapmux/v1/sect
 vi.mock('~/components/common/DropdownMenu', () => ({
   DropdownMenu(props: any) {
     // Render trigger (if function, call with dummy props) and children
-    const trigger = typeof props.trigger === 'function'
+    const trigger = () => typeof props.trigger === 'function'
       ? props.trigger({
           'aria-expanded': true,
           'ref': () => {},
@@ -18,7 +18,7 @@ vi.mock('~/components/common/DropdownMenu', () => ({
       : props.trigger
     return (
       <>
-        {trigger}
+        {trigger()}
         {props.children}
       </>
     )

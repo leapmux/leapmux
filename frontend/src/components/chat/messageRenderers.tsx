@@ -5,29 +5,18 @@ import type { StructuredPatchHunk } from './diffUtils'
 import type { MessageCategory } from './messageClassification'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
-import type { TodoItem } from '~/stores/chat.store'
 import Bot from 'lucide-solid/icons/bot'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
-import Hand from 'lucide-solid/icons/hand'
-import ListTodo from 'lucide-solid/icons/list-todo'
-import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
-import SquareTerminal from 'lucide-solid/icons/square-terminal'
-import Stamp from 'lucide-solid/icons/stamp'
-import Terminal from 'lucide-solid/icons/terminal'
-import TicketsPlane from 'lucide-solid/icons/tickets-plane'
 import Toolbox from 'lucide-solid/icons/toolbox'
-import Vote from 'lucide-solid/icons/vote'
-import { createSignal, For, Show } from 'solid-js'
+import { createSignal, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
-import { TodoList } from '~/components/todo/TodoList'
-import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { markdownContent } from './markdownContent.css'
 import { thinkingContent, thinkingHeader } from './messageStyles.css'
-import { getAssistantContent, isObject, relativizePath } from './messageUtils'
+import { getAssistantContent, isObject } from './messageUtils'
 import {
   agentRenamedRenderer,
   compactBoundaryRenderer,
@@ -40,6 +29,16 @@ import {
   settingsChangedRenderer,
   systemInitRenderer,
 } from './notificationRenderers'
+import { enterPlanModeRenderer, exitPlanModeRenderer, renderEnterPlanMode, renderExitPlanMode } from './planModeRenderers'
+import {
+  askUserQuestionRenderer,
+  renderAskUserQuestion,
+  renderTaskOutput,
+  renderTodoWrite,
+  taskNotificationRenderer,
+  taskOutputRenderer,
+  todoWriteRenderer,
+} from './taskRenderers'
 import {
   ControlResponseTag,
   ToolHeaderActions,
@@ -47,18 +46,14 @@ import {
   toolUseRenderer,
 } from './toolRenderers'
 import {
-  answerText,
   toolInputDetail,
-  toolInputSubDetail,
-  toolInputSubDetailExpanded,
   toolMessage,
-  toolResultContentAnsi,
-  toolResultContentPre,
   toolUseHeader,
   toolUseIcon,
 } from './toolStyles.css'
 
 export { ToolHeaderActions }
+export { firstNonEmptyLine, formatTaskStatus } from './rendererUtils'
 
 /** Context passed to renderers from MessageBubble. */
 export interface RenderContext {
@@ -121,33 +116,6 @@ function markdownClass(_role: MessageRole): string {
 // Specialized tool render functions (accept pre-extracted tool_use data)
 // ---------------------------------------------------------------------------
 
-/** Render EnterPlanMode tool_use as a simple "Entering Plan Mode" text line. */
-function renderEnterPlanMode(toolUse: Record<string, unknown>, context?: RenderContext): JSX.Element {
-  void toolUse
-  return (
-    <div class={toolMessage}>
-      <div class={toolUseHeader}>
-        <span class={inlineFlex} title="EnterPlanMode">
-          <Icon icon={TicketsPlane} size="md" class={toolUseIcon} />
-        </span>
-        <span class={toolInputDetail}>Entering Plan Mode</span>
-        <ControlResponseTag response={context?.childControlResponse} />
-        <Show when={context}>
-          <ToolHeaderActions
-            createdAt={context!.createdAt}
-            updatedAt={context!.updatedAt}
-            threadCount={context!.threadChildCount ?? 0}
-            threadExpanded={context!.threadExpanded ?? false}
-            onToggleThread={context!.onToggleThread ?? (() => {})}
-            onCopyJson={context!.onCopyJson ?? (() => {})}
-            jsonCopied={context!.jsonCopied ?? false}
-          />
-        </Show>
-      </div>
-    </div>
-  )
-}
-
 /** Render Skill tool_use as "Skill: /<skill name>". */
 function renderSkill(toolUse: Record<string, unknown>, context?: RenderContext): JSX.Element {
   const input = toolUse.input
@@ -177,279 +145,9 @@ function renderSkill(toolUse: Record<string, unknown>, context?: RenderContext):
   )
 }
 
-/** Render ExitPlanMode tool_use with the plan from input.plan as a markdown document. */
-function renderExitPlanMode(toolUse: Record<string, unknown>, context?: RenderContext): JSX.Element {
-  const input = toolUse.input
-  const planText = isObject(input) ? String((input as Record<string, unknown>).plan || '') : ''
-
-  // Derive effective control response: prefer the explicit controlResponse
-  // threaded by the backend; fall back to tool_result-based detection for
-  // data where the controlResponse was lost to the pre-fix race condition.
-  const effectiveCr = (): { action: string, comment: string } | undefined => {
-    if (context?.childControlResponse)
-      return context.childControlResponse
-    const resultContent = context?.childResultContent
-    if (!resultContent)
-      return undefined
-    if (context?.childResultIsError === true)
-      return { action: 'rejected', comment: resultContent }
-    if (context?.childResultIsError === false || resultContent.toLowerCase().includes('approved your plan'))
-      return { action: 'approved', comment: '' }
-    return { action: 'rejected', comment: resultContent }
-  }
-
-  return (
-    <div class={toolMessage}>
-      <div class={toolUseHeader}>
-        <span class={inlineFlex} title="ExitPlanMode">
-          <Icon icon={PlaneTakeoff} size="md" class={toolUseIcon} />
-        </span>
-        <span class={toolInputDetail}>Leaving Plan Mode</span>
-        <Show when={context}>
-          <ToolHeaderActions
-            createdAt={context!.createdAt}
-            updatedAt={context!.updatedAt}
-            threadCount={context!.threadChildCount ?? 0}
-            threadExpanded={context!.threadExpanded ?? false}
-            onToggleThread={context!.onToggleThread ?? (() => {})}
-            onCopyJson={context!.onCopyJson ?? (() => {})}
-            jsonCopied={context!.jsonCopied ?? false}
-          />
-        </Show>
-      </div>
-      <Show when={context?.childFilePath}>
-        <div class={toolInputSubDetail}>
-          {relativizePath(context!.childFilePath!, context?.workingDir, context?.homeDir)}
-        </div>
-      </Show>
-      <Show when={planText}>
-        <hr />
-        <div class={markdownContent} innerHTML={renderMarkdown(planText)} />
-      </Show>
-      <Show when={effectiveCr()}>
-        {cr => (
-          <>
-            <hr />
-            <div class={toolUseHeader}>
-              <span class={inlineFlex}>
-                {cr().action === 'approved'
-                  ? <Icon icon={Stamp} size="md" class={toolUseIcon} />
-                  : <Icon icon={Hand} size="md" class={toolUseIcon} />}
-              </span>
-              <span class={toolInputDetail}>
-                {cr().action === 'approved' ? 'Approved' : cr().comment ? 'Sent feedback' : 'Rejected'}
-              </span>
-            </div>
-            <Show when={cr().action !== 'approved' && cr().comment}>
-              <div class={markdownContent} innerHTML={renderMarkdown(cr().comment)} />
-            </Show>
-          </>
-        )}
-      </Show>
-    </div>
-  )
-}
-
-/** Render TodoWrite tool_use with a visual todo list. Returns null if input is invalid. */
-function renderTodoWrite(toolUse: Record<string, unknown>, context?: RenderContext): JSX.Element | null {
-  const input = toolUse.input
-  if (!isObject(input) || !Array.isArray((input as Record<string, unknown>).todos))
-    return null
-
-  const todos: TodoItem[] = ((input as Record<string, unknown>).todos as Array<Record<string, unknown>>).map(t => ({
-    content: String(t.content || ''),
-    status: (t.status === 'in_progress' ? 'in_progress' : t.status === 'completed' ? 'completed' : 'pending') as TodoItem['status'],
-    activeForm: String(t.activeForm || ''),
-  }))
-
-  const count = todos.length
-  const label = `${count} task${count === 1 ? '' : 's'}`
-
-  return (
-    <div class={toolMessage}>
-      <div class={toolUseHeader}>
-        <span class={inlineFlex} title="TodoWrite">
-          <Icon icon={ListTodo} size="md" class={toolUseIcon} />
-        </span>
-        <span class={toolInputDetail}>{label}</span>
-        <ControlResponseTag response={context?.childControlResponse} />
-        <Show when={context}>
-          <ToolHeaderActions
-            createdAt={context!.createdAt}
-            updatedAt={context!.updatedAt}
-            threadCount={context!.threadChildCount ?? 0}
-            threadExpanded={context!.threadExpanded ?? false}
-            onToggleThread={context!.onToggleThread ?? (() => {})}
-            onCopyJson={context!.onCopyJson ?? (() => {})}
-            jsonCopied={context!.jsonCopied ?? false}
-          />
-        </Show>
-      </div>
-      <TodoList todos={todos} />
-    </div>
-  )
-}
-
-/** Render AskUserQuestion tool_use with questions and inline answers. Returns null if input is invalid. */
-function renderAskUserQuestion(toolUse: Record<string, unknown>, context?: RenderContext): JSX.Element | null {
-  const input = toolUse.input
-  if (!isObject(input))
-    return null
-
-  const questions = (input as Record<string, unknown>).questions as Array<Record<string, unknown>> | undefined
-  if (!Array.isArray(questions) || questions.length === 0)
-    return null
-
-  const answers = context?.childAnswers
-  const hasAnswers = !!answers && Object.keys(answers).length > 0
-  const hasChild = (context?.threadChildCount ?? 0) > 0
-  const statusText = hasAnswers
-    ? 'Submitted answers'
-    : (hasChild && context?.childResultContent)
-        ? context.childResultContent
-        : 'Waiting for answers'
-
-  return (
-    <div class={toolMessage}>
-      <div class={toolUseHeader}>
-        <span class={inlineFlex} title="AskUserQuestion">
-          <Icon icon={Vote} size="md" class={toolUseIcon} />
-        </span>
-        <span class={toolInputDetail}>{statusText}</span>
-        <ControlResponseTag response={context?.childControlResponse} />
-        <Show when={context}>
-          <ToolHeaderActions
-            createdAt={context!.createdAt}
-            updatedAt={context!.updatedAt}
-            threadCount={context!.threadChildCount ?? 0}
-            threadExpanded={context!.threadExpanded ?? false}
-            onToggleThread={context!.onToggleThread ?? (() => {})}
-            onCopyJson={context!.onCopyJson ?? (() => {})}
-            jsonCopied={context!.jsonCopied ?? false}
-          />
-        </Show>
-      </div>
-      <ul style={{ 'padding-left': '20px', 'margin': '4px 0 0' }}>
-        <For each={questions}>
-          {(q) => {
-            const header = String(q.header || '')
-            const answer = answers?.[header]
-            return (
-              <li>
-                <strong>{`${header}: `}</strong>
-                <Show when={answer} fallback={<em>Not answered</em>}>
-                  <div class={`${answerText} ${markdownContent}`} innerHTML={renderMarkdown(answer!)} />
-                </Show>
-              </li>
-            )
-          }}
-        </For>
-      </ul>
-    </div>
-  )
-}
-
-/** Format task status for display. */
-export function formatTaskStatus(status?: string): string {
-  if (!status)
-    return 'Pending'
-  if (status === 'completed')
-    return 'Complete'
-  if (status === 'failed')
-    return 'Failed'
-  return status.charAt(0).toUpperCase() + status.slice(1)
-}
-
-/** Return the first non-empty trimmed line from text, or null. */
-export function firstNonEmptyLine(text?: string): string | null {
-  if (!text)
-    return null
-  for (const line of text.split('\n')) {
-    const trimmed = line.trim()
-    if (trimmed)
-      return trimmed
-  }
-  return null
-}
-
-/** Render TaskOutput tool_use with task status, description, and output. */
-function renderTaskOutput(toolUse: Record<string, unknown>, context?: RenderContext): JSX.Element {
-  const task = context?.childTask
-  const status = formatTaskStatus(task?.status)
-  const description = task?.description
-  const output = task?.output
-  const firstLine = firstNonEmptyLine(output)
-  const expanded = context?.threadExpanded ?? false
-
-  return (
-    <div class={toolMessage}>
-      <div class={toolUseHeader}>
-        <span class={inlineFlex} title="TaskOutput">
-          <Icon icon={SquareTerminal} size="md" class={toolUseIcon} />
-        </span>
-        <span class={toolInputDetail}>
-          {status}
-          {description ? ` - ${description}` : ''}
-        </span>
-        <ControlResponseTag response={context?.childControlResponse} />
-        <Show when={context}>
-          <ToolHeaderActions
-            createdAt={context!.createdAt}
-            updatedAt={context!.updatedAt}
-            threadCount={context!.threadChildCount ?? 0}
-            threadExpanded={context!.threadExpanded ?? false}
-            onToggleThread={context!.onToggleThread ?? (() => {})}
-            onCopyJson={context!.onCopyJson ?? (() => {})}
-            jsonCopied={context!.jsonCopied ?? false}
-          />
-        </Show>
-      </div>
-      <Show when={!expanded && firstLine}>
-        <div class={toolInputSubDetail}>{firstLine}</div>
-      </Show>
-      <Show when={expanded}>
-        <div class={toolInputSubDetailExpanded}>
-          <Show when={task?.task_id}>
-            {`task_id: ${task!.task_id}`}
-          </Show>
-          <Show when={task?.task_type}>
-            {`\ntask_type: ${task!.task_type}`}
-          </Show>
-          <Show when={task?.status}>
-            {`\nstatus: ${task!.status}`}
-          </Show>
-          <Show when={description}>
-            {`\ndescription: ${description}`}
-          </Show>
-          <Show when={task?.exitCode !== undefined}>
-            {`\nexitCode: ${task!.exitCode}`}
-          </Show>
-        </div>
-        <Show when={output}>
-          {containsAnsi(output!)
-            ? <div class={toolResultContentAnsi} innerHTML={renderAnsi(output!)} />
-            : <div class={toolResultContentPre}>{output}</div>}
-        </Show>
-      </Show>
-    </div>
-  )
-}
-
 // ---------------------------------------------------------------------------
 // MessageContentRenderer wrappers (used by getFallbackRenderers linear scan)
 // ---------------------------------------------------------------------------
-
-const enterPlanModeRenderer: MessageContentRenderer = {
-  render(parsed, _role, context) {
-    const content = getAssistantContent(parsed)
-    if (!content)
-      return null
-    const toolUse = content.find(c => isObject(c) && c.type === 'tool_use' && c.name === 'EnterPlanMode')
-    if (!toolUse)
-      return null
-    return renderEnterPlanMode(toolUse as Record<string, unknown>, context)
-  },
-}
 
 const skillRenderer: MessageContentRenderer = {
   render(parsed, _role, context) {
@@ -460,88 +158,6 @@ const skillRenderer: MessageContentRenderer = {
     if (!toolUse)
       return null
     return renderSkill(toolUse as Record<string, unknown>, context)
-  },
-}
-
-const exitPlanModeRenderer: MessageContentRenderer = {
-  render(parsed, _role, context) {
-    const content = getAssistantContent(parsed)
-    if (!content)
-      return null
-    const toolUse = content.find(c => isObject(c) && c.type === 'tool_use' && c.name === 'ExitPlanMode')
-    if (!toolUse)
-      return null
-    return renderExitPlanMode(toolUse as Record<string, unknown>, context)
-  },
-}
-
-const todoWriteRenderer: MessageContentRenderer = {
-  render(parsed, _role, context) {
-    const content = getAssistantContent(parsed)
-    if (!content)
-      return null
-    const toolUse = content.find(c => isObject(c) && c.type === 'tool_use' && c.name === 'TodoWrite')
-    if (!toolUse)
-      return null
-    return renderTodoWrite(toolUse as Record<string, unknown>, context)
-  },
-}
-
-const askUserQuestionRenderer: MessageContentRenderer = {
-  render(parsed, _role, context) {
-    const content = getAssistantContent(parsed)
-    if (!content)
-      return null
-    const toolUse = content.find(c => isObject(c) && c.type === 'tool_use' && c.name === 'AskUserQuestion')
-    if (!toolUse)
-      return null
-    return renderAskUserQuestion(toolUse as Record<string, unknown>, context)
-  },
-}
-
-const taskOutputRenderer: MessageContentRenderer = {
-  render(parsed, _role, context) {
-    const content = getAssistantContent(parsed)
-    if (!content)
-      return null
-    const toolUse = content.find(c => isObject(c) && c.type === 'tool_use' && c.name === 'TaskOutput')
-    if (!toolUse)
-      return null
-    return renderTaskOutput(toolUse as Record<string, unknown>, context)
-  },
-}
-
-/** Renders task_notification system messages as a tool-use-style block with Terminal icon. */
-const taskNotificationRenderer: MessageContentRenderer = {
-  render(parsed, _role, context) {
-    if (!isObject(parsed) || parsed.type !== 'system' || parsed.subtype !== 'task_notification')
-      return null
-
-    const summary = typeof parsed.summary === 'string' ? parsed.summary : 'Task notification'
-    const outputFile = typeof parsed.output_file === 'string' ? parsed.output_file : null
-
-    return (
-      <div class={toolMessage}>
-        <div class={toolUseHeader}>
-          <span class={inlineFlex} title="Task Notification">
-            <Icon icon={Terminal} size="md" class={toolUseIcon} />
-          </span>
-          <span class={toolInputDetail}>{summary}</span>
-          <Show when={context}>
-            <ToolHeaderActions
-              threadCount={context!.threadChildCount ?? 0}
-              threadExpanded={context!.threadExpanded ?? false}
-              onToggleThread={context!.onToggleThread ?? (() => {})}
-              onCopyJson={context!.onCopyJson ?? (() => {})}
-              jsonCopied={context!.jsonCopied ?? false}
-            />
-          </Show>
-        </div>
-        <Show when={outputFile}>
-          <div class={toolInputSubDetail}>{outputFile}</div>
-        </Show>
-      </div>
-    )
   },
 }
 
