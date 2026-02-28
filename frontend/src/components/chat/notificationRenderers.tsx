@@ -226,7 +226,7 @@ export const controlResponseRenderer: MessageContentRenderer = {
       return (
         <div class={controlResponseMessage}>
           <div>
-            <div>Rejected:</div>
+            <div>Sent feedback:</div>
             <div class={markdownContent} innerHTML={renderMarkdown(comment)} />
           </div>
         </div>

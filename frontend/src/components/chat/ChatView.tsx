@@ -239,23 +239,32 @@ export const ChatView: Component<ChatViewProps> = (props) => {
 
   // Observe size changes on both the scroll container (editor/window resize)
   // and the content wrapper (silent DOM mutations like expand/collapse).
+  // Defer scroll adjustments to a rAF to avoid "ResizeObserver loop completed
+  // with undelivered notifications" errors when collapsing large elements.
   onMount(() => {
+    let resizeRafId = 0
     const handleResize = () => {
-      if (!messageListRef || scrollAnimationId !== null || autoScrollPending)
-        return
-      if (atBottom()) {
-        messageListRef.scrollTop = messageListRef.scrollHeight
-      }
-      else {
-        checkAtBottom()
-      }
+      cancelAnimationFrame(resizeRafId)
+      resizeRafId = requestAnimationFrame(() => {
+        if (!messageListRef || scrollAnimationId !== null || autoScrollPending)
+          return
+        if (atBottom()) {
+          messageListRef.scrollTop = messageListRef.scrollHeight
+        }
+        else {
+          checkAtBottom()
+        }
+      })
     }
     const observer = new ResizeObserver(handleResize)
     if (messageListRef)
       observer.observe(messageListRef)
     if (contentRef)
       observer.observe(contentRef)
-    onCleanup(() => observer.disconnect())
+    onCleanup(() => {
+      cancelAnimationFrame(resizeRafId)
+      observer.disconnect()
+    })
   })
 
   return (

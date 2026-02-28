@@ -203,7 +203,7 @@ export async function restartHub(serverInfo: SeparateServerInfo) {
     hubDataDir,
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet' },
+    env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low' },
   })
 
   hubProc.stdout?.resume()
@@ -264,7 +264,7 @@ export const processTest = base.extend<
       hubDataDir,
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet' },
+      env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low' },
     })
     hubProc.stdout?.resume()
     hubProc.stderr?.resume()

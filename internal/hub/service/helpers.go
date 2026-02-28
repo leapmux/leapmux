@@ -19,10 +19,9 @@ import (
 // Configurable via LEAPMUX_DEFAULT_MODEL environment variable.
 var DefaultModel = getEnvOrDefault("LEAPMUX_DEFAULT_MODEL", "opus")
 
-const (
-	// DefaultEffort is the effort level used when none is specified.
-	DefaultEffort = "high"
-)
+// DefaultEffort is the effort level used when none is specified.
+// Configurable via LEAPMUX_DEFAULT_EFFORT environment variable.
+var DefaultEffort = getEnvOrDefault("LEAPMUX_DEFAULT_EFFORT", "high")
 
 func getEnvOrDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {

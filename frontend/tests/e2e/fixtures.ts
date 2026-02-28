@@ -65,7 +65,7 @@ export const test = base.extend<
       dataDir,
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet' },
+      env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low' },
     })
 
     // Drain stdout/stderr

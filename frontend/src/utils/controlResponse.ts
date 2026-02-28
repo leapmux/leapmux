@@ -64,7 +64,7 @@ export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermiss
 
 /** Default model and effort level for new agents. */
 export const DEFAULT_MODEL = import.meta.env.LEAPMUX_DEFAULT_MODEL || 'opus'
-export const DEFAULT_EFFORT = 'high'
+export const DEFAULT_EFFORT = import.meta.env.LEAPMUX_DEFAULT_EFFORT || 'high'
 
 /** Display labels for permission modes, models, and effort levels. */
 export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
