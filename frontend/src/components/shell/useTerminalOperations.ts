@@ -54,7 +54,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       })
   })
 
-  const handleOpenTerminal = async () => {
+  const handleOpenTerminal = async (shellStartDir?: string) => {
     if (!props.isActiveWorkspaceMutatable())
       return
     const ws = props.activeWorkspace()
@@ -76,10 +76,11 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
         workingDir: ctx.workingDir,
         shell: '',
         workerId: ctx.workerId,
+        shellStartDir: shellStartDir ?? '',
       })
 
       const tileId = props.layoutStore.focusedTileId()
-      props.terminalStore.addTerminal({ id: resp.terminalId, workspaceId: ws.id, workerId: ctx.workerId, workingDir: ctx.workingDir })
+      props.terminalStore.addTerminal({ id: resp.terminalId, workspaceId: ws.id, workerId: ctx.workerId, workingDir: ctx.workingDir, shellStartDir: shellStartDir ?? ctx.workingDir })
       props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir })
       props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, resp.terminalId)
       props.persistLayout?.()

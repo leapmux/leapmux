@@ -1,13 +1,18 @@
-import type { Component } from 'solid-js'
+import type { Component, JSX } from 'solid-js'
 import type { FileInfo } from '~/generated/leapmux/v1/file_pb'
 import AtSign from 'lucide-solid/icons/at-sign'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
+import ClipboardCopy from 'lucide-solid/icons/clipboard-copy'
+import Copy from 'lucide-solid/icons/copy'
 import File from 'lucide-solid/icons/file'
 import Folder from 'lucide-solid/icons/folder'
+import MoreHorizontal from 'lucide-solid/icons/more-horizontal'
+import TerminalIcon from 'lucide-solid/icons/terminal'
 import { createEffect, createSignal, For, Show, untrack } from 'solid-js'
 import { fileClient } from '~/api/clients'
-import { tildify } from '~/components/chat/messageUtils'
+import { relativizePath, tildify } from '~/components/chat/messageUtils'
+import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { IconButton } from '~/components/common/IconButton'
 import * as styles from './DirectoryTree.css'
 
@@ -18,6 +23,7 @@ export interface DirectoryTreeProps {
   onSelect: (path: string) => void
   onFileOpen?: (path: string) => void
   onMention?: (path: string) => void
+  onOpenTerminal?: (dirPath: string) => void
   rootPath?: string
   homeDir?: string
 }
@@ -52,6 +58,96 @@ async function loadChildren(
   }))
 }
 
+/** Renders the three-dot context menu for a tree node (file or directory). */
+function renderTreeContextMenu(menuProps: {
+  path: string
+  isDir: boolean
+  rootPath: string
+  homeDir?: string
+  onMention?: (path: string) => void
+  onOpenTerminal?: (dirPath: string) => void
+}): JSX.Element {
+  let popoverRef: HTMLElement | undefined
+  const closeMenu = () => popoverRef?.hidePopover()
+
+  return (
+    <DropdownMenu
+      trigger={triggerProps => (
+        <IconButton
+          icon={MoreHorizontal}
+          iconSize={12}
+          size="sm"
+          class={styles.nodeMenuTrigger}
+          onClick={(e: MouseEvent) => {
+            e.stopPropagation()
+            triggerProps.onClick()
+          }}
+          ref={triggerProps.ref}
+          onPointerDown={(e: PointerEvent) => {
+            e.stopPropagation()
+            triggerProps.onPointerDown(e)
+          }}
+          aria-expanded={triggerProps['aria-expanded']}
+          data-testid="tree-context-button"
+        />
+      )}
+      popoverRef={(el) => { popoverRef = el }}
+    >
+      <Show when={menuProps.onMention}>
+        <button
+          role="menuitem"
+          data-testid="tree-mention-button"
+          onClick={() => {
+            menuProps.onMention?.(menuProps.path)
+            closeMenu()
+          }}
+        >
+          <AtSign size={14} />
+          Mention in chat
+        </button>
+      </Show>
+      <Show when={menuProps.isDir && menuProps.onOpenTerminal}>
+        <button
+          role="menuitem"
+          data-testid="tree-open-terminal-button"
+          onClick={() => {
+            menuProps.onOpenTerminal?.(menuProps.path)
+            closeMenu()
+          }}
+        >
+          <TerminalIcon size={14} />
+          Open a terminal tab here
+        </button>
+      </Show>
+      <button
+        role="menuitem"
+        data-testid="tree-copy-path-button"
+        onClick={() => {
+          navigator.clipboard.writeText(menuProps.path)
+          closeMenu()
+        }}
+      >
+        <Copy size={14} />
+        Copy path
+      </button>
+      <button
+        role="menuitem"
+        data-testid="tree-copy-relative-path-button"
+        onClick={() => {
+          const rel = menuProps.path === menuProps.rootPath
+            ? '.'
+            : relativizePath(menuProps.path, menuProps.rootPath, menuProps.homeDir)
+          navigator.clipboard.writeText(rel)
+          closeMenu()
+        }}
+      >
+        <ClipboardCopy size={14} />
+        Copy relative path
+      </button>
+    </DropdownMenu>
+  )
+}
+
 const TreeNode: Component<{
   node: TreeNodeData
   workerId: string
@@ -60,15 +156,20 @@ const TreeNode: Component<{
   onSelect: (path: string) => void
   onFileOpen?: (path: string) => void
   onMention?: (path: string) => void
+  onOpenTerminal?: (dirPath: string) => void
   depth: number
   scrollContainer?: HTMLDivElement
+  rootPath: string
+  homeDir?: string
+  isNodeExpanded: (path: string) => boolean
+  setNodeExpanded: (path: string, expanded: boolean) => void
 }> = (props) => {
-  const [expanded, setExpanded] = createSignal(false)
   const [children, setChildren] = createSignal<TreeNodeData[]>([])
   const [loading, setLoading] = createSignal(false)
   const [loaded, setLoaded] = createSignal(false)
   let wrapperRef!: HTMLDivElement
 
+  const expanded = () => props.isNodeExpanded(props.node.path)
   const isSelected = () => props.selectedPath === props.node.path
 
   const scrollIntoViewIfNeeded = () => {
@@ -110,7 +211,7 @@ const TreeNode: Component<{
     props.onSelect(props.node.path)
     await doLoad()
     const willExpand = !expanded()
-    setExpanded(willExpand)
+    props.setNodeExpanded(props.node.path, willExpand)
     if (willExpand) {
       scrollIntoViewIfNeeded()
     }
@@ -129,7 +230,7 @@ const TreeNode: Component<{
     if (!loaded()) {
       untrack(() => {
         doLoad().then(() => { // eslint-disable-line solid/reactivity -- one-shot async load inside untrack
-          setExpanded(true)
+          props.setNodeExpanded(props.node.path, true)
           // Scroll into view for the deepest auto-expanded node.
           // Only scroll if this is the closest ancestor (children will handle deeper).
           const hasMatchingChild = children().some(
@@ -142,7 +243,7 @@ const TreeNode: Component<{
       })
     }
     else if (!expanded()) {
-      setExpanded(true)
+      props.setNodeExpanded(props.node.path, true)
     }
   })
 
@@ -189,21 +290,16 @@ const TreeNode: Component<{
           <Folder size={14} class={styles.folderIcon} />
         </Show>
         <span class={styles.nodeName}>{props.node.displayName}</span>
-        <Show when={props.onMention}>
-          <div class={styles.nodeActions}>
-            <IconButton
-              icon={AtSign}
-              iconSize={12}
-              size="sm"
-              onClick={(e) => {
-                e.stopPropagation()
-                props.onMention?.(props.node.path)
-              }}
-              title="Mention in the chat"
-              data-testid="tree-mention-button"
-            />
-          </div>
-        </Show>
+        <div class={styles.nodeActions}>
+          {renderTreeContextMenu({
+            path: props.node.path,
+            isDir: props.node.isDir,
+            rootPath: props.rootPath,
+            homeDir: props.homeDir,
+            onMention: props.onMention,
+            onOpenTerminal: props.onOpenTerminal,
+          })}
+        </div>
       </div>
       <Show when={loading()}>
         <div class={styles.loadingInline} style={{ 'padding-left': `${8 + (props.depth + 1) * 16}px` }}>
@@ -221,8 +317,13 @@ const TreeNode: Component<{
               onSelect={props.onSelect}
               onFileOpen={props.onFileOpen}
               onMention={props.onMention}
+              onOpenTerminal={props.onOpenTerminal}
               depth={props.depth + 1}
               scrollContainer={props.scrollContainer}
+              rootPath={props.rootPath}
+              homeDir={props.homeDir}
+              isNodeExpanded={props.isNodeExpanded}
+              setNodeExpanded={props.setNodeExpanded}
             />
           )}
         </For>
@@ -243,6 +344,58 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   const [inputValue, setInputValue] = createSignal('')
   let loadVersion = 0
   let treeRef!: HTMLDivElement
+
+  // -------------------------------------------------------------------------
+  // Expand/collapse state persistence via sessionStorage
+  // -------------------------------------------------------------------------
+  const storageKey = () => `directoryTree:expanded:${props.rootPath ?? '~'}`
+
+  const [expandedPaths, setExpandedPaths] = createSignal<Set<string>>(new Set())
+
+  // Load persisted state on mount / when rootPath changes
+  createEffect(() => {
+    const key = storageKey()
+    try {
+      const stored = sessionStorage.getItem(key)
+      if (stored) {
+        setExpandedPaths(new Set(JSON.parse(stored)))
+        return
+      }
+    }
+    catch { /* ignore corrupt data */ }
+    // Default: root is expanded
+    setExpandedPaths(new Set([props.rootPath ?? '~']))
+  })
+
+  // Persist whenever expanded set changes
+  createEffect(() => {
+    const paths = expandedPaths()
+    try {
+      sessionStorage.setItem(storageKey(), JSON.stringify([...paths]))
+    }
+    catch { /* quota exceeded — ignore */ }
+  })
+
+  const isNodeExpanded = (path: string) => expandedPaths().has(path)
+  const setNodeExpanded = (path: string, expanded: boolean) => {
+    setExpandedPaths((prev) => {
+      const next = new Set(prev)
+      if (expanded) {
+        next.add(path)
+      }
+      else {
+        next.delete(path)
+      }
+      return next
+    })
+  }
+
+  const rootPath = () => props.rootPath ?? '~'
+  const rootExpanded = () => isNodeExpanded(rootPath())
+  const rootDisplayName = () => {
+    const rp = rootPath()
+    return rp.split('/').pop() || rp
+  }
 
   // Sync external selectedPath to input (tildified for display)
   createEffect(() => {
@@ -292,6 +445,10 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     }
   }
 
+  const toggleRoot = () => {
+    setNodeExpanded(rootPath(), !rootExpanded())
+  }
+
   return (
     <div class={styles.container}>
       <div class={styles.pathInput}>
@@ -314,25 +471,58 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
           <div class={styles.loadingState}>Loading...</div>
         </Show>
         <Show when={!loading() && !error()}>
-          <Show
-            when={rootChildren().length > 0}
-            fallback={<div class={styles.emptyState}>Empty directory</div>}
+          {/* Root directory row */}
+          <div
+            class={styles.node}
+            style={{ 'padding-left': '8px' }}
+            onClick={toggleRoot}
+            data-testid="tree-root-node"
           >
-            <For each={rootChildren()}>
-              {node => (
-                <TreeNode
-                  node={node}
-                  workerId={props.workerId}
-                  showFiles={props.showFiles ?? false}
-                  selectedPath={props.selectedPath}
-                  onSelect={props.onSelect}
-                  onFileOpen={props.onFileOpen}
-                  onMention={props.onMention}
-                  depth={0}
-                  scrollContainer={treeRef}
-                />
-              )}
-            </For>
+            <Show
+              when={rootExpanded()}
+              fallback={<ChevronRight size={16} class={styles.chevron} />}
+            >
+              <ChevronDown size={16} class={styles.chevron} />
+            </Show>
+            <Folder size={14} class={styles.folderIcon} />
+            <span class={styles.nodeName}>{rootDisplayName()}</span>
+            <div class={styles.nodeActions}>
+              {renderTreeContextMenu({
+                path: rootPath(),
+                isDir: true,
+                rootPath: rootPath(),
+                homeDir: props.homeDir,
+                onMention: props.onMention,
+                onOpenTerminal: props.onOpenTerminal,
+              })}
+            </div>
+          </div>
+          <Show when={rootExpanded()}>
+            <Show
+              when={rootChildren().length > 0}
+              fallback={<div class={styles.emptyState}>Empty directory</div>}
+            >
+              <For each={rootChildren()}>
+                {node => (
+                  <TreeNode
+                    node={node}
+                    workerId={props.workerId}
+                    showFiles={props.showFiles ?? false}
+                    selectedPath={props.selectedPath}
+                    onSelect={props.onSelect}
+                    onFileOpen={props.onFileOpen}
+                    onMention={props.onMention}
+                    onOpenTerminal={props.onOpenTerminal}
+                    depth={1}
+                    scrollContainer={treeRef}
+                    rootPath={rootPath()}
+                    homeDir={props.homeDir}
+                    isNodeExpanded={isNodeExpanded}
+                    setNodeExpanded={setNodeExpanded}
+                  />
+                )}
+              </For>
+            </Show>
           </Show>
         </Show>
       </div>

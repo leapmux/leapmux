@@ -134,7 +134,7 @@ test.describe('Quote and Mention', () => {
     await expect(editor.locator('blockquote')).toBeVisible()
   })
 
-  test('AtSign mention button in DirectoryTree hover', async ({ page, leapmuxServer }) => {
+  test('AtSign mention button in DirectoryTree context menu', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Tree Mention Test', adminOrgId, process.cwd())
     try {
@@ -153,9 +153,14 @@ test.describe('Quote and Mention', () => {
       const packageJsonNode = page.getByText('package.json')
       await packageJsonNode.hover()
 
-      // Click the mention button that appears within the same tree node row
+      // Click the context menu button (three dots) that appears on hover
       const treeRow = packageJsonNode.locator('..')
-      const mentionButton = treeRow.locator('[data-testid="tree-mention-button"]')
+      const contextButton = treeRow.locator('[data-testid="tree-context-button"]')
+      await expect(contextButton).toBeVisible()
+      await contextButton.click()
+
+      // Click "Mention in chat" from the visible dropdown
+      const mentionButton = page.locator('[data-testid="tree-mention-button"]:visible')
       await expect(mentionButton).toBeVisible()
       await mentionButton.click()
 
@@ -278,20 +283,29 @@ test.describe('Quote and Mention', () => {
       // Wait for the file tree to load — package.json should be visible
       await expect(page.getByText('package.json')).toBeVisible({ timeout: 15_000 })
 
-      // First mention: hover and click package.json
+      // First mention: hover, open context menu, and click mention for package.json
       const packageJsonNode = page.getByText('package.json')
       await packageJsonNode.hover()
       const treeRow1 = packageJsonNode.locator('..')
-      const mentionButton1 = treeRow1.locator('[data-testid="tree-mention-button"]')
+      const contextButton1 = treeRow1.locator('[data-testid="tree-context-button"]')
+      await expect(contextButton1).toBeVisible()
+      await contextButton1.click()
+      const mentionButton1 = page.locator('[data-testid="tree-mention-button"]:visible')
       await expect(mentionButton1).toBeVisible()
       await mentionButton1.click()
       await expect(editor).toContainText('@package.json')
 
-      // Second mention: hover and click tsconfig.json (or another file)
+      // Wait for the first context menu to fully close before interacting with the next node
+      await expect(page.locator('[data-testid="tree-mention-button"]:visible')).toHaveCount(0)
+
+      // Second mention: hover, open context menu, and click mention for tsconfig.json
       const tsconfigNode = page.getByText('tsconfig.json')
       await tsconfigNode.hover()
       const treeRow2 = tsconfigNode.locator('..')
-      const mentionButton2 = treeRow2.locator('[data-testid="tree-mention-button"]')
+      const contextButton2 = treeRow2.locator('[data-testid="tree-context-button"]')
+      await expect(contextButton2).toBeVisible()
+      await contextButton2.click()
+      const mentionButton2 = page.locator('[data-testid="tree-mention-button"]:visible')
       await expect(mentionButton2).toBeVisible()
       await mentionButton2.click()
 

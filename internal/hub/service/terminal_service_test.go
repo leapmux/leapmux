@@ -433,6 +433,114 @@ func TestTerminalService_ListTerminals_WrongOrgID(t *testing.T) {
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
 
+func TestTerminalService_OpenTerminal_ShellStartDir(t *testing.T) {
+	env := setupTerminalTest(t)
+	workspaceID := env.createWorkspaceInDB(t, "ShellStartDir Workspace")
+
+	conn := env.workerMgr.Get(env.workerID)
+	var capturedWorkingDir string
+	conn.SendFn = func(msg *leapmuxv1.ConnectResponse) error {
+		requestID := msg.GetRequestId()
+		if ts := msg.GetTerminalStart(); ts != nil {
+			capturedWorkingDir = ts.GetWorkingDir()
+		}
+		go func() {
+			env.pending.Complete(requestID, &leapmuxv1.ConnectRequest{
+				RequestId: requestID,
+				Payload: &leapmuxv1.ConnectRequest_TerminalStarted{
+					TerminalStarted: &leapmuxv1.TerminalStarted{},
+				},
+			})
+		}()
+		return nil
+	}
+
+	// With explicit shell_start_dir: worker should receive it as WorkingDir.
+	_, err := env.client.OpenTerminal(context.Background(), authedReq(&leapmuxv1.OpenTerminalRequest{
+		OrgId:         env.orgID,
+		WorkspaceId:   workspaceID,
+		WorkerId:      env.workerID,
+		Cols:          80,
+		Rows:          24,
+		WorkingDir:    "/home/user",
+		ShellStartDir: "/home/user/subdir",
+	}, env.token))
+	require.NoError(t, err)
+	assert.Equal(t, "/home/user/subdir", capturedWorkingDir)
+}
+
+func TestTerminalService_OpenTerminal_ShellStartDirDefaultsToWorkingDir(t *testing.T) {
+	env := setupTerminalTest(t)
+	workspaceID := env.createWorkspaceInDB(t, "Default ShellStartDir")
+
+	conn := env.workerMgr.Get(env.workerID)
+	var capturedWorkingDir string
+	conn.SendFn = func(msg *leapmuxv1.ConnectResponse) error {
+		requestID := msg.GetRequestId()
+		if ts := msg.GetTerminalStart(); ts != nil {
+			capturedWorkingDir = ts.GetWorkingDir()
+		}
+		go func() {
+			env.pending.Complete(requestID, &leapmuxv1.ConnectRequest{
+				RequestId: requestID,
+				Payload: &leapmuxv1.ConnectRequest_TerminalStarted{
+					TerminalStarted: &leapmuxv1.TerminalStarted{},
+				},
+			})
+		}()
+		return nil
+	}
+
+	// Without shell_start_dir: worker should receive working_dir as WorkingDir.
+	_, err := env.client.OpenTerminal(context.Background(), authedReq(&leapmuxv1.OpenTerminalRequest{
+		OrgId:       env.orgID,
+		WorkspaceId: workspaceID,
+		WorkerId:    env.workerID,
+		Cols:        80,
+		Rows:        24,
+		WorkingDir:  "/home/user",
+	}, env.token))
+	require.NoError(t, err)
+	assert.Equal(t, "/home/user", capturedWorkingDir)
+}
+
+func TestTerminalService_ListTerminals_ReturnsDirs(t *testing.T) {
+	env := setupTerminalTest(t)
+	workspaceID := env.createWorkspaceInDB(t, "ListTerminals Dirs")
+	terminalID := "list-dirs-term"
+
+	// Track with specific dirs.
+	env.terminalSvc.TrackTerminalWithDirs(terminalID, workspaceID, env.workerID, "/home/user", "/home/user/project")
+
+	// Set up SendFn for ListTerminals worker call.
+	conn := env.workerMgr.Get(env.workerID)
+	conn.SendFn = func(msg *leapmuxv1.ConnectResponse) error {
+		requestID := msg.GetRequestId()
+		go func() {
+			env.pending.Complete(requestID, &leapmuxv1.ConnectRequest{
+				RequestId: requestID,
+				Payload: &leapmuxv1.ConnectRequest_TerminalListResp{
+					TerminalListResp: &leapmuxv1.TerminalListResponse{
+						Terminals: []*leapmuxv1.TerminalListEntry{
+							{TerminalId: terminalID, Cols: 80, Rows: 24},
+						},
+					},
+				},
+			})
+		}()
+		return nil
+	}
+
+	resp, err := env.client.ListTerminals(context.Background(), authedReq(&leapmuxv1.ListTerminalsRequest{
+		OrgId:       env.orgID,
+		WorkspaceId: workspaceID,
+	}, env.token))
+	require.NoError(t, err)
+	require.Len(t, resp.Msg.GetTerminals(), 1)
+	assert.Equal(t, "/home/user", resp.Msg.GetTerminals()[0].GetWorkingDir())
+	assert.Equal(t, "/home/user/project", resp.Msg.GetTerminals()[0].GetShellStartDir())
+}
+
 func TestTerminalService_Unauthenticated(t *testing.T) {
 	env := setupTerminalTest(t)
 

@@ -5,6 +5,7 @@ export interface TerminalInfo {
   workspaceId: string
   workerId?: string
   workingDir?: string
+  shellStartDir?: string
   screen?: Uint8Array
   cols?: number
   rows?: number

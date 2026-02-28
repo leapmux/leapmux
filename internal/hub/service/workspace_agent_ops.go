@@ -81,11 +81,13 @@ func (s *WorkspaceService) SaveLayout(
 		}
 		for _, tab := range tabs {
 			if err := s.queries.UpsertWorkspaceTab(ctx, db.UpsertWorkspaceTabParams{
-				WorkspaceID: workspaceID,
-				TabType:     tab.GetTabType(),
-				TabID:       tab.GetTabId(),
-				Position:    tab.GetPosition(),
-				TileID:      tab.GetTileId(),
+				WorkspaceID:   workspaceID,
+				TabType:       tab.GetTabType(),
+				TabID:         tab.GetTabId(),
+				Position:      tab.GetPosition(),
+				TileID:        tab.GetTileId(),
+				WorkingDir:    tab.GetWorkingDir(),
+				ShellStartDir: tab.GetShellStartDir(),
 			}); err != nil {
 				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save workspace tab: %w", err))
 			}

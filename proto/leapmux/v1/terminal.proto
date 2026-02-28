@@ -29,6 +29,7 @@ message OpenTerminalRequest {
   string worker_id = 6;         // Target worker (required)
   bool create_worktree = 7;     // If true, create a git worktree before starting
   string worktree_branch = 8;   // Branch name for the worktree
+  string shell_start_dir = 10;  // Where the shell starts (defaults to working_dir if empty)
 }
 
 message OpenTerminalResponse {
@@ -81,6 +82,8 @@ message TerminalInfo {
   uint32 rows = 3;
   bytes screen = 4;
   bool exited = 5;
+  string working_dir = 6;       // Tab's working directory context
+  string shell_start_dir = 7;   // Where the shell started
 }
 
 message TerminalData {

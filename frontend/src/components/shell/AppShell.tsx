@@ -328,6 +328,10 @@ export const AppShell: ParentComponent = (props) => {
           tabId: t.id,
           position: t.position ?? '',
           tileId: t.tileId ?? '',
+          workingDir: t.workingDir ?? '',
+          shellStartDir: t.type === TabType.TERMINAL
+            ? (terminalStore.state.terminals.find(term => term.id === t.id)?.shellStartDir ?? '')
+            : '',
         }))
 
       workspaceClient.saveLayout({
@@ -492,6 +496,8 @@ export const AppShell: ParentComponent = (props) => {
           terminalStore.addTerminal({
             id: t.terminalId,
             workspaceId: activeId,
+            workingDir: t.workingDir || undefined,
+            shellStartDir: t.shellStartDir || undefined,
             screen: t.screen.length > 0 ? t.screen : undefined,
             cols: t.cols || undefined,
             rows: t.rows || undefined,
@@ -569,7 +575,7 @@ export const AppShell: ParentComponent = (props) => {
           let tileId = tabTileMap.get(key) ?? defaultTileId
           if (!validTileIds.has(tileId))
             tileId = defaultTileId
-          tabStore.addTab({ type: TabType.TERMINAL, id: t.id, tileId }, false)
+          tabStore.addTab({ type: TabType.TERMINAL, id: t.id, tileId, workerId: t.workerId, workingDir: t.workingDir }, false)
         }
       }
 
@@ -1342,6 +1348,9 @@ export const AppShell: ParentComponent = (props) => {
             const ctx = getMruAgentContext()
             insertIntoMruAgentEditor(tabStore, formatFileMention(relativizePath(path, ctx.workingDir, ctx.homeDir)), 'inline')
           }}
+      onOpenTerminal={isActiveWorkspaceArchived()
+        ? undefined
+        : dirPath => termOps.handleOpenTerminal(dirPath)}
       showTodos={showTodos()}
       activeTodos={activeTodos()}
     />
@@ -1372,6 +1381,9 @@ export const AppShell: ParentComponent = (props) => {
             const ctx = getMruAgentContext()
             insertIntoMruAgentEditor(tabStore, formatFileMention(relativizePath(path, ctx.workingDir, ctx.homeDir)), 'inline')
           }}
+      onOpenTerminal={isActiveWorkspaceArchived()
+        ? undefined
+        : dirPath => termOps.handleOpenTerminal(dirPath)}
       sectionStore={sectionStore}
       isCollapsed={opts?.isCollapsed() ?? false}
       onExpand={opts?.onExpand ?? (() => {})}
