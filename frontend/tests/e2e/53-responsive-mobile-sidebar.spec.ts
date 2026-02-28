@@ -52,8 +52,8 @@ test.describe('Responsive Mobile Sidebar', () => {
     const overlay = page.locator('[class*="mobileOverlay"]')
     await expect(overlay).toBeVisible()
 
-    // Click the overlay to close the sidebar
-    await overlay.click()
+    // Click the uncovered strip of the overlay (right edge, outside the 80%-wide sidebar)
+    await overlay.click({ position: { x: 350, y: 333 } })
 
     // Left sidebar should be off-screen again
     await expect(leftSidebar).not.toBeInViewport()
@@ -84,8 +84,8 @@ test.describe('Responsive Mobile Sidebar', () => {
     const overlay = page.locator('[class*="mobileOverlay"]')
     await expect(overlay).toBeVisible()
 
-    // Click the overlay to close the sidebar
-    await overlay.click()
+    // Click the uncovered strip of the overlay (left edge, outside the 80%-wide sidebar)
+    await overlay.click({ position: { x: 25, y: 333 } })
 
     // Right sidebar should be off-screen again
     await expect(rightSidebar).not.toBeInViewport()

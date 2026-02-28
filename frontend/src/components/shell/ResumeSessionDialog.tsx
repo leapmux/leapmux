@@ -4,10 +4,11 @@ import RefreshCw from 'lucide-solid/icons/refresh-cw'
 import { createMemo, createSignal, For, onMount, Show } from 'solid-js'
 import { workerClient } from '~/api/clients'
 import { agentLoadingTimeoutMs } from '~/api/transport'
+import { Dialog } from '~/components/common/Dialog'
 import { useOrg } from '~/context/OrgContext'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { spinner } from '~/styles/animations.css'
-import { dialogStandard, errorText, labelRow, refreshButton, spinning } from '~/styles/shared.css'
+import { errorText, labelRow, refreshButton, spinning } from '~/styles/shared.css'
 
 interface ResumeSessionDialogProps {
   defaultWorkerId?: string
@@ -18,7 +19,6 @@ interface ResumeSessionDialogProps {
 const SESSION_ID_PATTERN = /^[\w-]+$/
 
 export const ResumeSessionDialog: Component<ResumeSessionDialogProps> = (props) => {
-  let dialogRef!: HTMLDialogElement
   const org = useOrg()
   const [workers, setWorkers] = createSignal<import('~/generated/leapmux/v1/worker_pb').Worker[]>([])
   const [workerId, setWorkerId] = createSignal('')
@@ -56,7 +56,6 @@ export const ResumeSessionDialog: Component<ResumeSessionDialogProps> = (props) 
   }
 
   onMount(async () => {
-    dialogRef.showModal()
     await fetchWorkers()
     // Pre-select worker if specified and online
     if (props.defaultWorkerId) {
@@ -83,8 +82,7 @@ export const ResumeSessionDialog: Component<ResumeSessionDialogProps> = (props) 
   }
 
   return (
-    <dialog ref={dialogRef} class={dialogStandard} onClose={() => props.onClose()}>
-      <header><h2>Resume an existing session</h2></header>
+    <Dialog title="Resume an existing session" onClose={() => props.onClose()}>
       <form onSubmit={handleSubmit}>
         <section>
           <div class="vstack gap-4">
@@ -149,6 +147,6 @@ export const ResumeSessionDialog: Component<ResumeSessionDialogProps> = (props) 
           </button>
         </footer>
       </form>
-    </dialog>
+    </Dialog>
   )
 }
