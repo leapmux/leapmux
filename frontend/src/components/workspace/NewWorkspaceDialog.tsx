@@ -10,7 +10,7 @@ import { DirectoryTree } from '~/components/tree/DirectoryTree'
 import { useOrg } from '~/context/OrgContext'
 import { sanitizeName } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
-import { dialogCompact, dialogWithTree, errorText, labelRow, refreshButton, spinning, treeContainer } from '~/styles/shared.css'
+import { dialogStandard, dialogWithTree, errorText, labelRow, refreshButton, spinning, treeContainer } from '~/styles/shared.css'
 
 interface NewWorkspaceDialogProps {
   onCreated: (workspace: Workspace) => void
@@ -98,7 +98,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
   }
 
   return (
-    <dialog ref={dialogRef} class={`${dialogCompact} ${dialogWithTree}`} onClose={() => props.onClose()}>
+    <dialog ref={dialogRef} class={`${dialogStandard} ${dialogWithTree}`} onClose={() => props.onClose()}>
       <header><h2>New Workspace</h2></header>
       <form onSubmit={handleSubmit}>
         <section>

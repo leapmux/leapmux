@@ -49,7 +49,7 @@ import { createSectionStore } from '~/stores/section.store'
 import { createTabStore, tabKey } from '~/stores/tab.store'
 import { createTerminalStore } from '~/stores/terminal.store'
 import { createWorkspaceStore } from '~/stores/workspace.store'
-import { dialogCompact } from '~/styles/shared.css'
+import { dialogStandard } from '~/styles/shared.css'
 import { isAgentWorking } from '~/utils/agentState'
 import * as styles from './AppShell.css'
 import { SectionDragProvider } from './SectionDragContext'
@@ -1813,7 +1813,7 @@ export const AppShell: ParentComponent = (props) => {
             setWorktreeConfirm(null)
           }
           return (
-            <dialog ref={dlgRef} class={dialogCompact} onClose={handleCancel}>
+            <dialog ref={dlgRef} class={dialogStandard} onClose={handleCancel}>
               <header><h2>Dirty Worktree</h2></header>
               <section>
                 <p>The worktree has uncommitted changes or unpushed commits:</p>
