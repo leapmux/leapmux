@@ -73,20 +73,6 @@ export const imageSizeError = style({
   textAlign: 'center',
 })
 
-export const imageContainer = style({
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  padding: spacing.lg,
-  height: '100%',
-})
-
-export const image = style({
-  maxWidth: '100%',
-  maxHeight: '100%',
-  objectFit: 'contain',
-})
-
 export const hexScroll = style({
   height: '100%',
   overflow: 'auto',
@@ -223,4 +209,108 @@ globalStyle(`${splitPane} ${codeViewContainer}`, {
   marginTop: 0,
   overflow: 'visible',
   paddingBlock: spacing.sm,
+})
+
+// Floating toolbar for image zoom controls (top-left)
+export const imageToolbar = style({
+  'position': 'absolute',
+  'top': spacing.sm,
+  'left': spacing.md,
+  'zIndex': 10,
+  'display': 'flex',
+  'alignItems': 'center',
+  'borderRadius': 'var(--radius-small)',
+  'border': '1px solid var(--border)',
+  'backgroundColor': 'var(--card)',
+  'opacity': 0.8,
+  'transition': 'opacity 0.15s',
+  ':hover': {
+    opacity: 1,
+  },
+})
+
+export const imageToolbarButton = style({
+  all: 'unset',
+  boxSizing: 'border-box',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: '28px',
+  height: '28px',
+  cursor: 'pointer',
+  color: 'var(--muted-foreground)',
+  transition: 'color 0.1s, background-color 0.1s',
+  selectors: {
+    '&:first-child': {
+      borderRadius: 'var(--radius-small) 0 0 var(--radius-small)',
+    },
+    '&:last-child': {
+      borderRadius: '0 var(--radius-small) var(--radius-small) 0',
+    },
+    '&:hover': {
+      color: 'var(--foreground)',
+    },
+  },
+})
+
+export const imageToolbarLabel = style({
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: '48px',
+  height: '28px',
+  fontSize: 'var(--text-8)',
+  color: 'var(--muted-foreground)',
+  userSelect: 'none',
+  whiteSpace: 'nowrap',
+})
+
+export const imageToolbarTextButton = style({
+  all: 'unset',
+  boxSizing: 'border-box',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  height: '28px',
+  paddingInline: spacing.xs,
+  cursor: 'pointer',
+  color: 'var(--muted-foreground)',
+  fontSize: 'var(--text-8)',
+  transition: 'color 0.1s, background-color 0.1s',
+  borderRadius: '0 var(--radius-small) var(--radius-small) 0',
+  selectors: {
+    '&:hover': {
+      color: 'var(--foreground)',
+    },
+  },
+})
+
+// Outer wrapper for image render area (toolbar + scroll container)
+export const imageRenderContainer = style({
+  position: 'relative',
+  height: '100%',
+})
+
+// Scrollable wrapper for zoomed images
+export const imageScrollContainer = style({
+  overflow: 'auto',
+  height: '100%',
+})
+
+// Centering wrapper for image (fit and zoomed)
+export const imageZoomWrapper = style({
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  minWidth: '100%',
+  minHeight: '100%',
+  width: 'max-content',
+  padding: spacing.lg,
+})
+
+// Checkerboard transparency pattern + border for images
+export const imageCheckerboard = style({
+  backgroundImage: 'repeating-conic-gradient(rgba(128,128,128,0.15) 0% 25%, transparent 0% 50%)',
+  backgroundSize: '16px 16px',
+  border: '1px solid var(--border)',
 })
