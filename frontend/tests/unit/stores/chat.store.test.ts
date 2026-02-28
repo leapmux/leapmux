@@ -404,6 +404,116 @@ describe('createChatStore', () => {
         })
       })
     })
+
+    describe('loadNewerMessages', () => {
+      it('should fetch a single batch of newer messages', async () => {
+        await createRoot(async (dispose) => {
+          const store = createChatStore()
+          // Pre-load messages seq 1-50
+          const initial = Array.from({ length: 50 }, (_, i) =>
+            makeMessage(`m${i + 1}`, BigInt(i + 1)))
+          store.setMessages('a1', initial)
+
+          // Mock returns seq 51-75 with hasMore: false
+          const newer = Array.from({ length: 25 }, (_, i) =>
+            makeMessage(`m${i + 51}`, BigInt(i + 51)))
+          mockListAgentMessages.mockResolvedValueOnce({ messages: newer, hasMore: false })
+
+          await store.loadNewerMessages('a1', 50n)
+          const msgs = store.getMessages('a1')
+          expect(msgs).toHaveLength(75)
+          expect(msgs[0].seq).toBe(1n)
+          expect(msgs[74].seq).toBe(75n)
+          expect(mockListAgentMessages).toHaveBeenLastCalledWith({
+            agentId: 'a1',
+            afterSeq: 50n,
+            limit: 50,
+          })
+          dispose()
+        })
+      })
+
+      it('should fetch multiple batches until hasMore is false', async () => {
+        await createRoot(async (dispose) => {
+          mockListAgentMessages.mockClear()
+          const store = createChatStore()
+          // Pre-load messages seq 1-50
+          const initial = Array.from({ length: 50 }, (_, i) =>
+            makeMessage(`m${i + 1}`, BigInt(i + 1)))
+          store.setMessages('a1', initial)
+
+          // First batch: seq 51-100, hasMore: true
+          const batch1 = Array.from({ length: 50 }, (_, i) =>
+            makeMessage(`m${i + 51}`, BigInt(i + 51)))
+          mockListAgentMessages.mockResolvedValueOnce({ messages: batch1, hasMore: true })
+
+          // Second batch: seq 101-120, hasMore: false
+          const batch2 = Array.from({ length: 20 }, (_, i) =>
+            makeMessage(`m${i + 101}`, BigInt(i + 101)))
+          mockListAgentMessages.mockResolvedValueOnce({ messages: batch2, hasMore: false })
+
+          await store.loadNewerMessages('a1', 50n)
+          const msgs = store.getMessages('a1')
+          expect(msgs).toHaveLength(120)
+          expect(msgs[0].seq).toBe(1n)
+          expect(msgs[119].seq).toBe(120n)
+
+          // Verify two calls with correct cursors
+          expect(mockListAgentMessages).toHaveBeenCalledTimes(2)
+          expect(mockListAgentMessages).toHaveBeenNthCalledWith(1, {
+            agentId: 'a1',
+            afterSeq: 50n,
+            limit: 50,
+          })
+          expect(mockListAgentMessages).toHaveBeenNthCalledWith(2, {
+            agentId: 'a1',
+            afterSeq: 100n,
+            limit: 50,
+          })
+          dispose()
+        })
+      })
+
+      it('should stop when abort signal is triggered', async () => {
+        await createRoot(async (dispose) => {
+          mockListAgentMessages.mockClear()
+          const store = createChatStore()
+          store.setMessages('a1', [makeMessage('m1', 1n)])
+
+          const controller = new AbortController()
+
+          // First batch returns hasMore: true but we abort before the second
+          const batch1 = Array.from({ length: 50 }, (_, i) =>
+            makeMessage(`m${i + 2}`, BigInt(i + 2)))
+          mockListAgentMessages.mockImplementation(async () => {
+            // Abort after the first call completes
+            controller.abort()
+            return { messages: batch1, hasMore: true }
+          })
+
+          await store.loadNewerMessages('a1', 1n, controller.signal)
+
+          // Should have made only one call because signal was aborted
+          expect(mockListAgentMessages).toHaveBeenCalledTimes(1)
+          dispose()
+        })
+      })
+
+      it('should handle no new messages', async () => {
+        await createRoot(async (dispose) => {
+          mockListAgentMessages.mockClear()
+          const store = createChatStore()
+          store.setMessages('a1', [makeMessage('m1', 1n)])
+
+          mockListAgentMessages.mockResolvedValueOnce({ messages: [], hasMore: false })
+
+          await store.loadNewerMessages('a1', 1n)
+          expect(store.getMessages('a1')).toHaveLength(1)
+          expect(mockListAgentMessages).toHaveBeenCalledTimes(1)
+          dispose()
+        })
+      })
+    })
   })
 
   describe('todo extraction', () => {
