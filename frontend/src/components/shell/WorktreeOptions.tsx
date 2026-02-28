@@ -4,6 +4,7 @@ import { generateSlug } from 'random-word-slugs'
 import { createEffect, createMemo, createSignal, on, Show } from 'solid-js'
 import { gitClient } from '~/api/clients'
 import { tildify } from '~/components/chat/messageUtils'
+import { Icon } from '~/components/common/Icon'
 import { useOrg } from '~/context/OrgContext'
 import { validateBranchName } from '~/lib/validate'
 import { checkboxRow, errorText, labelRow, pathPreview, refreshButton, warningText } from '~/styles/shared.css'
@@ -115,7 +116,7 @@ export const WorktreeOptions: Component<WorktreeOptionsProps> = (props) => {
               onClick={randomizeBranch}
               title="Generate random name"
             >
-              <RefreshCw size={14} />
+              <Icon icon={RefreshCw} size="sm" />
             </button>
           </div>
           <input

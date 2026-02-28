@@ -2,7 +2,7 @@ import type { JSX } from 'solid-js'
 import Maximize2 from 'lucide-solid/icons/maximize-2'
 import ZoomIn from 'lucide-solid/icons/zoom-in'
 import ZoomOut from 'lucide-solid/icons/zoom-out'
-import { iconSize } from '~/styles/tokens'
+import { Icon } from '~/components/common/Icon'
 import * as styles from './FileViewer.css'
 
 export type ZoomMode = 'fit' | 'actual' | number
@@ -50,7 +50,7 @@ export function ImageToolbar(props: {
         onClick={() => props.onZoomChange(zoomOut(props.zoom, props.fitScale))}
         title="Zoom out"
       >
-        <ZoomOut size={iconSize.sm} />
+        <Icon icon={ZoomOut} size="sm" />
       </button>
       <span class={styles.imageToolbarLabel}>{zoomLabel(props.zoom, props.fitScale)}</span>
       <button
@@ -58,14 +58,14 @@ export function ImageToolbar(props: {
         onClick={() => props.onZoomChange(zoomIn(props.zoom, props.fitScale))}
         title="Zoom in"
       >
-        <ZoomIn size={iconSize.sm} />
+        <Icon icon={ZoomIn} size="sm" />
       </button>
       <button
         class={styles.imageToolbarButton}
         onClick={() => props.onZoomChange('fit')}
         title="Fit to view"
       >
-        <Maximize2 size={iconSize.sm} />
+        <Icon icon={Maximize2} size="sm" />
       </button>
       <button
         class={styles.imageToolbarTextButton}

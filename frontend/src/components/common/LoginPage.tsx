@@ -4,6 +4,7 @@ import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createSignal, onMount, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
+import { Icon } from '~/components/common/Icon'
 import { useAuth } from '~/context/AuthContext'
 import { spinner } from '~/styles/animations.css'
 import * as styles from './LoginPage.css'
@@ -93,7 +94,7 @@ export const LoginPage: Component = () => {
             type="submit"
             disabled={submitting() || !username() || !password()}
           >
-            <Show when={submitting()}><LoaderCircle size={14} class={spinner} /></Show>
+            <Show when={submitting()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
             {submitting() ? 'Signing in...' : 'Sign in'}
           </button>
         </form>

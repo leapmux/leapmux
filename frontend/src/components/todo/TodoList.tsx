@@ -4,6 +4,7 @@ import Check from 'lucide-solid/icons/check'
 import Circle from 'lucide-solid/icons/circle'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { For, Match, Switch } from 'solid-js'
+import { Icon } from '~/components/common/Icon'
 import { spinner } from '~/styles/animations.css'
 import * as styles from './TodoList.css'
 
@@ -20,13 +21,13 @@ export const TodoList: Component<TodoListProps> = (props) => {
             <div class={styles.todoIcon}>
               <Switch>
                 <Match when={todo.status === 'completed'}>
-                  <Check size={14} class={styles.checkIcon} />
+                  <Icon icon={Check} size="sm" class={styles.checkIcon} />
                 </Match>
                 <Match when={todo.status === 'in_progress'}>
-                  <LoaderCircle size={14} class={`${styles.spinnerIcon} ${spinner}`} />
+                  <Icon icon={LoaderCircle} size="sm" class={`${styles.spinnerIcon} ${spinner}`} />
                 </Match>
                 <Match when={todo.status === 'pending'}>
-                  <Circle size={14} class={styles.pendingIcon} />
+                  <Icon icon={Circle} size="sm" class={styles.pendingIcon} />
                 </Match>
               </Switch>
             </div>

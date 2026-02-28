@@ -3,6 +3,7 @@ import type { ZoomMode } from './ImageToolbar'
 import type { ViewMode } from './ViewToggle'
 import AtSign from 'lucide-solid/icons/at-sign'
 import { createEffect, createMemo, createSignal, Match, onCleanup, Show, Switch, untrack } from 'solid-js'
+import { Icon } from '~/components/common/Icon'
 import { isSvgExtension } from '~/lib/fileType'
 import * as styles from './FileViewer.css'
 import { ImageToolbar, ZOOM_MAX, ZOOM_MIN } from './ImageToolbar'
@@ -212,7 +213,7 @@ export function ImageFileView(props: {
                 title="Mention in the chat"
                 data-testid="file-mention-button"
               >
-                <AtSign size={14} />
+                <Icon icon={AtSign} size="sm" />
               </button>
             </div>
           </Show>

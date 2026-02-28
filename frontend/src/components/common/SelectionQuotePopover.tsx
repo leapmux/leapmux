@@ -2,6 +2,7 @@ import type { JSX } from 'solid-js'
 import Copy from 'lucide-solid/icons/copy'
 import Quote from 'lucide-solid/icons/quote'
 import { createSignal, onCleanup, onMount, Show } from 'solid-js'
+import { Icon } from '~/components/common/Icon'
 import { extractLineRange, extractSelectionMarkdown } from '~/lib/quoteUtils'
 import * as styles from './SelectionQuotePopover.css'
 
@@ -115,7 +116,7 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
             onClick={handleQuoteClick}
             data-testid="quote-selection-button"
           >
-            <Quote size={14} />
+            <Icon icon={Quote} size="sm" />
             Quote
           </button>
           <button
@@ -123,7 +124,7 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
             onClick={handleCopyClick}
             data-testid="copy-selection-button"
           >
-            <Copy size={14} />
+            <Icon icon={Copy} size="sm" />
             Copy
           </button>
         </div>

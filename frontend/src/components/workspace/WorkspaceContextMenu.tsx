@@ -4,6 +4,7 @@ import ChevronRight from 'lucide-solid/icons/chevron-right'
 import MoreHorizontal from 'lucide-solid/icons/more-horizontal'
 import { For, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
+import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
 import { isMoveTargetSection } from '~/components/shell/sectionUtils'
 import { dangerMenuItem } from '~/styles/shared.css'
@@ -54,7 +55,7 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
           trigger={triggerProps => (
             <button role="menuitem" class="sub-trigger" {...triggerProps}>
               Move to
-              <ChevronRight size={12} />
+              <Icon icon={ChevronRight} size="xs" />
             </button>
           )}
         >

@@ -6,6 +6,7 @@ import { generateSlug } from 'random-word-slugs'
 import { createMemo, createSignal, For, onMount, Show } from 'solid-js'
 import { workerClient, workspaceClient } from '~/api/clients'
 import { Dialog } from '~/components/common/Dialog'
+import { Icon } from '~/components/common/Icon'
 import { WorktreeOptions } from '~/components/shell/WorktreeOptions'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
 import { useOrg } from '~/context/OrgContext'
@@ -111,7 +112,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
                   disabled={refreshing()}
                   title="Refresh workers"
                 >
-                  <RefreshCw size={14} class={refreshing() ? spinning : ''} />
+                  <Icon icon={RefreshCw} size="sm" class={refreshing() ? spinning : ''} />
                 </button>
               </div>
               <select
@@ -135,7 +136,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
                   onClick={() => setTitle(randomTitle())}
                   title="Generate random name"
                 >
-                  <RefreshCw size={14} />
+                  <Icon icon={RefreshCw} size="sm" />
                 </button>
               </div>
               <input
@@ -187,7 +188,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
             type="submit"
             disabled={submitting() || !workerId() || !!titleError() || (createWorktree() && !!worktreeBranchError())}
           >
-            <Show when={submitting()}><LoaderCircle size={14} class={spinner} /></Show>
+            <Show when={submitting()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
             {submitting() ? 'Creating...' : 'Create'}
           </button>
         </footer>

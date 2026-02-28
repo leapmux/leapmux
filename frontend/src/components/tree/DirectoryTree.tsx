@@ -10,9 +10,11 @@ import Folder from 'lucide-solid/icons/folder'
 import MoreHorizontal from 'lucide-solid/icons/more-horizontal'
 import TerminalIcon from 'lucide-solid/icons/terminal'
 import { createEffect, createSignal, For, Show, untrack } from 'solid-js'
+import { createStore, produce } from 'solid-js/store'
 import { fileClient } from '~/api/clients'
 import { relativizePath, tildify } from '~/components/chat/messageUtils'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
+import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
 import * as styles from './DirectoryTree.css'
 
@@ -34,6 +36,71 @@ interface TreeNodeData {
   isDir: boolean
   size: bigint
 }
+
+// -------------------------------------------------------------------------
+// Serialization helpers for sessionStorage (BigInt ↔ string)
+// -------------------------------------------------------------------------
+
+interface TreeNodeDataJSON {
+  path: string
+  displayName: string
+  isDir: boolean
+  size: string
+}
+
+interface DirectoryTreeStateJSON {
+  expandedPaths: Record<string, boolean>
+  childrenCache: Record<string, TreeNodeDataJSON[]>
+}
+
+function serializeState(
+  expandedPaths: Record<string, boolean>,
+  childrenCache: Record<string, TreeNodeData[]>,
+): string {
+  const json: DirectoryTreeStateJSON = {
+    expandedPaths,
+    childrenCache: {},
+  }
+  for (const [key, nodes] of Object.entries(childrenCache)) {
+    json.childrenCache[key] = nodes.map(n => ({
+      path: n.path,
+      displayName: n.displayName,
+      isDir: n.isDir,
+      size: n.size.toString(),
+    }))
+  }
+  return JSON.stringify(json)
+}
+
+function deserializeState(raw: string): { expandedPaths: Record<string, boolean>, childrenCache: Record<string, TreeNodeData[]> } | null {
+  try {
+    const json: DirectoryTreeStateJSON = JSON.parse(raw)
+    if (!json || typeof json !== 'object')
+      return null
+    const childrenCache: Record<string, TreeNodeData[]> = {}
+    if (json.childrenCache) {
+      for (const [key, nodes] of Object.entries(json.childrenCache)) {
+        childrenCache[key] = nodes.map(n => ({
+          path: n.path,
+          displayName: n.displayName,
+          isDir: n.isDir,
+          size: BigInt(n.size),
+        }))
+      }
+    }
+    return {
+      expandedPaths: json.expandedPaths ?? {},
+      childrenCache,
+    }
+  }
+  catch {
+    return null
+  }
+}
+
+// -------------------------------------------------------------------------
+// File listing
+// -------------------------------------------------------------------------
 
 function sortEntries(a: FileInfo, b: FileInfo): number {
   if (a.isDir !== b.isDir)
@@ -75,7 +142,7 @@ function renderTreeContextMenu(menuProps: {
       trigger={triggerProps => (
         <IconButton
           icon={MoreHorizontal}
-          iconSize={12}
+          iconSize="xs"
           size="sm"
           class={styles.nodeMenuTrigger}
           onClick={(e: MouseEvent) => {
@@ -102,7 +169,7 @@ function renderTreeContextMenu(menuProps: {
             closeMenu()
           }}
         >
-          <AtSign size={14} />
+          <Icon icon={AtSign} size="sm" />
           Mention in chat
         </button>
       </Show>
@@ -115,7 +182,7 @@ function renderTreeContextMenu(menuProps: {
             closeMenu()
           }}
         >
-          <TerminalIcon size={14} />
+          <Icon icon={TerminalIcon} size="sm" />
           Open a terminal tab here
         </button>
       </Show>
@@ -127,7 +194,7 @@ function renderTreeContextMenu(menuProps: {
           closeMenu()
         }}
       >
-        <Copy size={14} />
+        <Icon icon={Copy} size="sm" />
         Copy path
       </button>
       <button
@@ -141,7 +208,7 @@ function renderTreeContextMenu(menuProps: {
           closeMenu()
         }}
       >
-        <ClipboardCopy size={14} />
+        <Icon icon={ClipboardCopy} size="sm" />
         Copy relative path
       </button>
     </DropdownMenu>
@@ -163,14 +230,16 @@ const TreeNode: Component<{
   homeDir?: string
   isNodeExpanded: (path: string) => boolean
   setNodeExpanded: (path: string, expanded: boolean) => void
+  getChildren: (path: string) => TreeNodeData[] | undefined
+  setChildren: (path: string, data: TreeNodeData[]) => void
 }> = (props) => {
-  const [children, setChildren] = createSignal<TreeNodeData[]>([])
   const [loading, setLoading] = createSignal(false)
-  const [loaded, setLoaded] = createSignal(false)
   let wrapperRef!: HTMLDivElement
 
   const expanded = () => props.isNodeExpanded(props.node.path)
   const isSelected = () => props.selectedPath === props.node.path
+  const children = () => props.getChildren(props.node.path) ?? []
+  const loaded = () => props.getChildren(props.node.path) !== undefined
 
   const scrollIntoViewIfNeeded = () => {
     const container = props.scrollContainer
@@ -191,8 +260,7 @@ const TreeNode: Component<{
     setLoading(true)
     try {
       const result = await loadChildren(props.workerId, props.node.path, props.showFiles)
-      setChildren(result)
-      setLoaded(true)
+      props.setChildren(props.node.path, result)
     }
     catch {
       // ignore load errors
@@ -278,16 +346,16 @@ const TreeNode: Component<{
         >
           <Show
             when={expanded()}
-            fallback={<ChevronRight size={16} class={styles.chevron} />}
+            fallback={<Icon icon={ChevronRight} size="md" class={styles.chevron} />}
           >
-            <ChevronDown size={16} class={styles.chevron} />
+            <Icon icon={ChevronDown} size="md" class={styles.chevron} />
           </Show>
         </Show>
         <Show
           when={props.node.isDir}
-          fallback={<File size={14} class={styles.fileIcon} />}
+          fallback={<Icon icon={File} size="sm" class={styles.fileIcon} />}
         >
-          <Folder size={14} class={styles.folderIcon} />
+          <Icon icon={Folder} size="sm" class={styles.folderIcon} />
         </Show>
         <span class={styles.nodeName}>{props.node.displayName}</span>
         <div class={styles.nodeActions}>
@@ -324,6 +392,8 @@ const TreeNode: Component<{
               homeDir={props.homeDir}
               isNodeExpanded={props.isNodeExpanded}
               setNodeExpanded={props.setNodeExpanded}
+              getChildren={props.getChildren}
+              setChildren={props.setChildren}
             />
           )}
         </For>
@@ -338,7 +408,6 @@ const TreeNode: Component<{
 }
 
 export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
-  const [rootChildren, setRootChildren] = createSignal<TreeNodeData[]>([])
   const [loading, setLoading] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
   const [inputValue, setInputValue] = createSignal('')
@@ -346,48 +415,67 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   let treeRef!: HTMLDivElement
 
   // -------------------------------------------------------------------------
-  // Expand/collapse state persistence via sessionStorage
+  // Centralized tree state: expanded paths + children cache
   // -------------------------------------------------------------------------
-  const storageKey = () => `directoryTree:expanded:${props.rootPath ?? '~'}`
+  const [state, setState] = createStore<{
+    expandedPaths: Record<string, boolean>
+    childrenCache: Record<string, TreeNodeData[]>
+  }>({
+    expandedPaths: {},
+    childrenCache: {},
+  })
 
-  const [expandedPaths, setExpandedPaths] = createSignal<Set<string>>(new Set())
+  const storageKey = () => `directoryTree:state:${props.rootPath ?? '~'}`
 
-  // Load persisted state on mount / when rootPath changes
+  // Restore state from sessionStorage when rootPath changes
   createEffect(() => {
     const key = storageKey()
     try {
       const stored = sessionStorage.getItem(key)
       if (stored) {
-        setExpandedPaths(new Set(JSON.parse(stored)))
-        return
+        const restored = deserializeState(stored)
+        if (restored) {
+          setState(restored)
+          return
+        }
       }
     }
     catch { /* ignore corrupt data */ }
     // Default: root is expanded
-    setExpandedPaths(new Set([props.rootPath ?? '~']))
+    setState({
+      expandedPaths: { [props.rootPath ?? '~']: true },
+      childrenCache: {},
+    })
   })
 
-  // Persist whenever expanded set changes
+  // Persist state whenever it changes
   createEffect(() => {
-    const paths = expandedPaths()
+    // Read both to subscribe
+    const expanded = state.expandedPaths
+    const cache = state.childrenCache
     try {
-      sessionStorage.setItem(storageKey(), JSON.stringify([...paths]))
+      sessionStorage.setItem(storageKey(), serializeState(expanded, cache))
     }
     catch { /* quota exceeded — ignore */ }
   })
 
-  const isNodeExpanded = (path: string) => expandedPaths().has(path)
+  const isNodeExpanded = (path: string) => !!state.expandedPaths[path]
   const setNodeExpanded = (path: string, expanded: boolean) => {
-    setExpandedPaths((prev) => {
-      const next = new Set(prev)
+    setState(produce((s) => {
       if (expanded) {
-        next.add(path)
+        s.expandedPaths[path] = true
       }
       else {
-        next.delete(path)
+        delete s.expandedPaths[path]
       }
-      return next
-    })
+    }))
+  }
+
+  const getChildren = (path: string): TreeNodeData[] | undefined => state.childrenCache[path]
+  const setChildrenInStore = (path: string, data: TreeNodeData[]) => {
+    setState(produce((s) => {
+      s.childrenCache[path] = data
+    }))
   }
 
   const rootPath = () => props.rootPath ?? '~'
@@ -396,6 +484,9 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     const rp = rootPath()
     return rp.split('/').pop() || rp
   }
+
+  // Root children derived from the centralized cache
+  const rootChildren = () => getChildren(rootPath())
 
   // Sync external selectedPath to input (tildified for display)
   createEffect(() => {
@@ -409,15 +500,19 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     if (!workerId)
       return
 
+    // If we already have cached children (from sessionStorage or previous
+    // load), skip fetching — this eliminates flicker on tab switches.
+    if (getChildren(root) !== undefined)
+      return
+
     const version = ++loadVersion
     setLoading(true)
     setError(null)
-    setRootChildren([])
     loadChildren(workerId, root, props.showFiles ?? false)
       .then((children) => {
         if (version !== loadVersion)
           return
-        setRootChildren(children)
+        setChildrenInStore(root, children)
         setLoading(false)
       })
       .catch((err) => {
@@ -480,11 +575,11 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
           >
             <Show
               when={rootExpanded()}
-              fallback={<ChevronRight size={16} class={styles.chevron} />}
+              fallback={<Icon icon={ChevronRight} size="md" class={styles.chevron} />}
             >
-              <ChevronDown size={16} class={styles.chevron} />
+              <Icon icon={ChevronDown} size="md" class={styles.chevron} />
             </Show>
-            <Folder size={14} class={styles.folderIcon} />
+            <Icon icon={Folder} size="sm" class={styles.folderIcon} />
             <span class={styles.nodeName}>{rootDisplayName()}</span>
             <div class={styles.nodeActions}>
               {renderTreeContextMenu({
@@ -499,8 +594,12 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
           </div>
           <Show when={rootExpanded()}>
             <Show
-              when={rootChildren().length > 0}
-              fallback={<div class={styles.emptyState}>Empty directory</div>}
+              when={rootChildren() !== undefined && rootChildren()!.length > 0}
+              fallback={(
+                <Show when={rootChildren() !== undefined}>
+                  <div class={styles.emptyState}>Empty directory</div>
+                </Show>
+              )}
             >
               <For each={rootChildren()}>
                 {node => (
@@ -519,6 +618,8 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
                     homeDir={props.homeDir}
                     isNodeExpanded={isNodeExpanded}
                     setNodeExpanded={setNodeExpanded}
+                    getChildren={getChildren}
+                    setChildren={setChildrenInStore}
                   />
                 )}
               </For>

@@ -7,6 +7,7 @@ import RefreshCw from 'lucide-solid/icons/refresh-cw'
 import { generateSlug } from 'random-word-slugs'
 import { createSignal, For, onMount, Show } from 'solid-js'
 import { orgClient, workerClient } from '~/api/clients'
+import { Icon } from '~/components/common/Icon'
 import { RegistrationStatus } from '~/generated/leapmux/v1/worker_pb'
 import { sanitizeName } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
@@ -200,7 +201,7 @@ export const RegistrationPage: Component<RegistrationPageProps> = (props) => {
                             }}
                             title="Generate random name"
                           >
-                            <RefreshCw size={14} />
+                            <Icon icon={RefreshCw} size="sm" />
                           </button>
                         </div>
                         <input
@@ -220,7 +221,7 @@ export const RegistrationPage: Component<RegistrationPageProps> = (props) => {
                         type="submit"
                         disabled={submitting() || !name() || !!nameError() || !selectedOrgId()}
                       >
-                        <Show when={submitting()}><LoaderCircle size={14} class={spinner} /></Show>
+                        <Show when={submitting()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
                         {submitting() ? 'Approving...' : 'Approve'}
                       </button>
                     </form>

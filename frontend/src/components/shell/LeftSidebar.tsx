@@ -15,7 +15,6 @@ import { WorkspaceSectionContent } from '~/components/workspace/WorkspaceSection
 import { WorkspaceSharingDialog } from '~/components/workspace/WorkspaceSharingDialog'
 import { useAuth } from '~/context/AuthContext'
 import { SectionType, Sidebar } from '~/generated/leapmux/v1/section_pb'
-import { iconSize } from '~/styles/tokens'
 import { CollapsibleSidebar } from './CollapsibleSidebar'
 import * as csStyles from './CollapsibleSidebar.css'
 import { useSectionDrag } from './SectionDragContext'
@@ -160,7 +159,7 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
             ? (
                 <IconButton
                   icon={Plus}
-                  iconSize={iconSize.sm}
+                  iconSize="sm"
                   size="md"
                   title={`New workspace in ${group.section.name}`}
                   data-testid={sectionType === SectionType.WORKSPACES_IN_PROGRESS ? 'sidebar-new-workspace' : undefined}
@@ -263,7 +262,7 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
       railTitle: 'User menu',
       railElement: (
         <UserMenu
-          trigger={<IconButton icon={CircleUser} iconSize={iconSize.lg} size="lg" title="User menu" data-testid="user-menu-trigger" />}
+          trigger={<IconButton icon={CircleUser} iconSize="lg" size="lg" title="User menu" data-testid="user-menu-trigger" />}
         />
       ),
       content: () => (

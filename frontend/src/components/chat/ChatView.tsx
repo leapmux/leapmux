@@ -4,12 +4,12 @@ import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import ArrowDown from 'lucide-solid/icons/arrow-down'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createEffect, createSignal, For, on, onCleanup, onMount, Show, untrack } from 'solid-js'
+import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { spinner } from '~/styles/animations.css'
-import { iconSize } from '~/styles/tokens'
 import * as styles from './ChatView.css'
 import { markdownContent } from './markdownContent.css'
 import { MessageBubble } from './MessageBubble'
@@ -277,7 +277,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
           >
             <Show when={props.fetchingOlder}>
               <div class={styles.loadingOlderIndicator}>
-                <LoaderCircle size={iconSize.sm} class={spinner} />
+                <Icon icon={LoaderCircle} size="sm" class={spinner} />
                 Loading older messages...
               </div>
             </Show>
@@ -318,7 +318,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         <Show when={!atBottom()}>
           <IconButton
             icon={ArrowDown}
-            iconSize={iconSize.md}
+            iconSize="md"
             onClick={scrollToBottom}
           />
         </Show>

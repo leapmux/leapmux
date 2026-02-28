@@ -4,6 +4,7 @@ import type { JSXElement } from 'solid-js'
 import type { MessageContentRenderer } from './messageRenderers'
 import ArrowDownToLine from 'lucide-solid/icons/arrow-down-to-line'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
+import { Icon } from '~/components/common/Icon'
 import { formatRateLimitMessage } from '~/lib/rateLimitUtils'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { spinner } from '~/styles/animations.css'
@@ -369,7 +370,7 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
   if (showCompaction && compacting && !compactLabel && !microcompactLabel) {
     elements.push(
       <div class={resultDivider}>
-        <LoaderCircle size={14} class={spinner} />
+        <Icon icon={LoaderCircle} size="sm" class={spinner} />
         {' Compacting context...'}
       </div>,
     )
@@ -379,7 +380,7 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
   if (showCompaction && compactLabel) {
     elements.push(
       <div class={resultDivider}>
-        <ArrowDownToLine size={14} />
+        <Icon icon={ArrowDownToLine} size="sm" />
         {` ${compactLabel}`}
       </div>,
     )
@@ -389,7 +390,7 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
   if (showCompaction && microcompactLabel) {
     elements.push(
       <div class={resultDivider}>
-        <ArrowDownToLine size={14} />
+        <Icon icon={ArrowDownToLine} size="sm" />
         {` ${microcompactLabel}`}
       </div>,
     )

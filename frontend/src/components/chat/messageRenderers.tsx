@@ -20,6 +20,7 @@ import TicketsPlane from 'lucide-solid/icons/tickets-plane'
 import Toolbox from 'lucide-solid/icons/toolbox'
 import Vote from 'lucide-solid/icons/vote'
 import { createSignal, For, Show } from 'solid-js'
+import { Icon } from '~/components/common/Icon'
 import { TodoList } from '~/components/todo/TodoList'
 import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
 import { renderMarkdown } from '~/lib/renderMarkdown'
@@ -127,7 +128,7 @@ function renderEnterPlanMode(toolUse: Record<string, unknown>, context?: RenderC
     <div class={toolMessage}>
       <div class={toolUseHeader}>
         <span class={inlineFlex} title="EnterPlanMode">
-          <TicketsPlane size={16} class={toolUseIcon} />
+          <Icon icon={TicketsPlane} size="md" class={toolUseIcon} />
         </span>
         <span class={toolInputDetail}>Entering Plan Mode</span>
         <ControlResponseTag response={context?.childControlResponse} />
@@ -156,7 +157,7 @@ function renderSkill(toolUse: Record<string, unknown>, context?: RenderContext):
     <div class={toolMessage}>
       <div class={toolUseHeader}>
         <span class={inlineFlex} title="Skill">
-          <Toolbox size={16} class={toolUseIcon} />
+          <Icon icon={Toolbox} size="md" class={toolUseIcon} />
         </span>
         <span class={toolInputDetail}>{`Skill: /${skillName}`}</span>
         <ControlResponseTag response={context?.childControlResponse} />
@@ -201,7 +202,7 @@ function renderExitPlanMode(toolUse: Record<string, unknown>, context?: RenderCo
     <div class={toolMessage}>
       <div class={toolUseHeader}>
         <span class={inlineFlex} title="ExitPlanMode">
-          <PlaneTakeoff size={16} class={toolUseIcon} />
+          <Icon icon={PlaneTakeoff} size="md" class={toolUseIcon} />
         </span>
         <span class={toolInputDetail}>Leaving Plan Mode</span>
         <Show when={context}>
@@ -232,8 +233,8 @@ function renderExitPlanMode(toolUse: Record<string, unknown>, context?: RenderCo
             <div class={toolUseHeader}>
               <span class={inlineFlex}>
                 {cr().action === 'approved'
-                  ? <Stamp size={16} class={toolUseIcon} />
-                  : <Hand size={16} class={toolUseIcon} />}
+                  ? <Icon icon={Stamp} size="md" class={toolUseIcon} />
+                  : <Icon icon={Hand} size="md" class={toolUseIcon} />}
               </span>
               <span class={toolInputDetail}>
                 {cr().action === 'approved' ? 'Approved' : cr().comment ? 'Sent feedback' : 'Rejected'}
@@ -268,7 +269,7 @@ function renderTodoWrite(toolUse: Record<string, unknown>, context?: RenderConte
     <div class={toolMessage}>
       <div class={toolUseHeader}>
         <span class={inlineFlex} title="TodoWrite">
-          <ListTodo size={16} class={toolUseIcon} />
+          <Icon icon={ListTodo} size="md" class={toolUseIcon} />
         </span>
         <span class={toolInputDetail}>{label}</span>
         <ControlResponseTag response={context?.childControlResponse} />
@@ -312,7 +313,7 @@ function renderAskUserQuestion(toolUse: Record<string, unknown>, context?: Rende
     <div class={toolMessage}>
       <div class={toolUseHeader}>
         <span class={inlineFlex} title="AskUserQuestion">
-          <Vote size={16} class={toolUseIcon} />
+          <Icon icon={Vote} size="md" class={toolUseIcon} />
         </span>
         <span class={toolInputDetail}>{statusText}</span>
         <ControlResponseTag response={context?.childControlResponse} />
@@ -384,7 +385,7 @@ function renderTaskOutput(toolUse: Record<string, unknown>, context?: RenderCont
     <div class={toolMessage}>
       <div class={toolUseHeader}>
         <span class={inlineFlex} title="TaskOutput">
-          <SquareTerminal size={16} class={toolUseIcon} />
+          <Icon icon={SquareTerminal} size="md" class={toolUseIcon} />
         </span>
         <span class={toolInputDetail}>
           {status}
@@ -523,7 +524,7 @@ const taskNotificationRenderer: MessageContentRenderer = {
       <div class={toolMessage}>
         <div class={toolUseHeader}>
           <span class={inlineFlex} title="Task Notification">
-            <Terminal size={16} class={toolUseIcon} />
+            <Icon icon={Terminal} size="md" class={toolUseIcon} />
           </span>
           <span class={toolInputDetail}>{summary}</span>
           <Show when={context}>
@@ -570,13 +571,13 @@ function ThinkingMessage(props: { text: string, context?: RenderContext }): JSX.
     <>
       <div class={thinkingHeader} onClick={() => setExpanded(prev => !prev)}>
         <span class={inlineFlex} title="Thinking">
-          <Brain size={16} class={toolUseIcon} />
+          <Icon icon={Brain} size="md" class={toolUseIcon} />
         </span>
         <span class={toolInputDetail}>Thinking</span>
         <span class={inlineFlex}>
           {expanded()
-            ? <ChevronDown size={14} class={toolUseIcon} />
-            : <ChevronRight size={14} class={toolUseIcon} />}
+            ? <Icon icon={ChevronDown} size="sm" class={toolUseIcon} />
+            : <Icon icon={ChevronRight} size="sm" class={toolUseIcon} />}
         </span>
       </div>
       <Show when={expanded()}>
@@ -618,7 +619,7 @@ const taskStartedRenderer: MessageContentRenderer = {
       <div class={toolMessage}>
         <div class={toolUseHeader}>
           <span class={inlineFlex} title="Task Started">
-            <Bot size={16} class={toolUseIcon} />
+            <Icon icon={Bot} size="md" class={toolUseIcon} />
           </span>
           <span class={toolInputDetail}>Task started</span>
         </div>

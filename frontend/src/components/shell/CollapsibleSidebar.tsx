@@ -7,8 +7,8 @@ import PanelLeftOpen from 'lucide-solid/icons/panel-left-open'
 import PanelRightClose from 'lucide-solid/icons/panel-right-close'
 import PanelRightOpen from 'lucide-solid/icons/panel-right-open'
 import { createEffect, createMemo, createSignal, For, on, Show } from 'solid-js'
+import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
-import { iconSize } from '~/styles/tokens'
 import * as styles from './CollapsibleSidebar.css'
 import { useOptionalSectionDrag } from './SectionDragContext'
 import { SECTION_DRAG_PREFIX, SIDEBAR_ZONE_PREFIX } from './sectionDragUtils'
@@ -383,7 +383,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
     return (
       <div class={`${styles.sidebarRail} ${railVariant}`}>
         {/* Expand button */}
-        <IconButton icon={ExpandIcon} iconSize={iconSize.lg} size="lg" title={`Expand ${props.side} sidebar`} onClick={() => props.onExpand()} />
+        <IconButton icon={ExpandIcon} iconSize="lg" size="lg" title={`Expand ${props.side} sidebar`} onClick={() => props.onExpand()} />
 
         {/* Top-positioned section icons + badges */}
         <For each={topSections}>
@@ -391,7 +391,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
             <>
               <IconButton
                 icon={section.railIcon}
-                iconSize={iconSize.lg}
+                iconSize="lg"
                 size="lg"
                 title={section.railTitle ?? section.title}
                 onClick={() => {
@@ -412,7 +412,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
           {section => (
             <Show
               when={section.railElement}
-              fallback={<IconButton icon={section.railIcon} iconSize={iconSize.lg} size="lg" title={section.railTitle ?? section.title} />}
+              fallback={<IconButton icon={section.railIcon} iconSize="lg" size="lg" title={section.railTitle ?? section.title} />}
             >
               {section.railElement}
             </Show>
@@ -429,7 +429,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                   fallback={(
                     <IconButton
                       icon={section.railIcon}
-                      iconSize={iconSize.lg}
+                      iconSize="lg"
                       size="lg"
                       title={section.railTitle ?? section.title}
                       onClick={() => {
@@ -627,13 +627,13 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                         // Use the draggable's activators for the drag handle only
                         {...(draggable?.dragActivators ?? {})}
                       >
-                        <GripVertical size={12} />
+                        <Icon icon={GripVertical} size="xs" />
                       </div>
                     </Show>
                     <Show when={index() === 0 && props.onCollapse && props.side === 'left'}>
                       <IconButton
                         icon={CollapseIcon}
-                        iconSize={iconSize.lg}
+                        iconSize="lg"
                         size="md"
                         style={{ 'margin-left': '-6px' }}
                         title="Collapse sidebar"
@@ -651,7 +651,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                     <Show when={index() === 0 && props.onCollapse && props.side === 'right'}>
                       <IconButton
                         icon={CollapseIcon}
-                        iconSize={iconSize.lg}
+                        iconSize="lg"
                         size="md"
                         style={{ 'margin-right': '-6px' }}
                         title="Collapse sidebar"
