@@ -1,4 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import { codeBlockCode, codeBlockPre } from '~/styles/codeBlock'
 import { iconSize, spacing } from '~/styles/tokens'
 
 export const headingPreviewItem = style({
@@ -192,17 +193,9 @@ globalStyle(`${editorWrapper} .ProseMirror`, {
   wordWrap: 'break-word',
 })
 
-// Code blocks: move horizontal scroll from <pre> to <code> so the
-// language label can be absolutely positioned without scrolling away.
-globalStyle(`${editorWrapper} .ProseMirror pre`, {
-  position: 'relative',
-  overflowX: 'visible',
-})
-
-globalStyle(`${editorWrapper} .ProseMirror pre code`, {
-  display: 'block',
-  overflowX: 'auto',
-})
+// Code blocks: move scroll to <code> so the language label stays fixed.
+globalStyle(`${editorWrapper} .ProseMirror pre`, codeBlockPre('visible'))
+globalStyle(`${editorWrapper} .ProseMirror pre code`, codeBlockCode)
 
 // Code block language label -- absolutely positioned at top-right of <pre>
 globalStyle(`${editorWrapper} .ProseMirror pre .code-lang-label`, {
