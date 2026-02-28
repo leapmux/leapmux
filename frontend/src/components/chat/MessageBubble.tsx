@@ -314,6 +314,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
         : undefined,
       childResultContent: extractChildResultContent(),
       childResultIsError: extractChildResultIsError(),
+      childTask: (typeof tur?.task === 'object' && tur.task !== null && !Array.isArray(tur.task))
+        ? tur.task as RenderContext['childTask']
+        : undefined,
       childControlResponse: childControlResponse(),
     }
   }

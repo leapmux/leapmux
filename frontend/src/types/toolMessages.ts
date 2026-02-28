@@ -63,6 +63,12 @@ export interface TodoWriteInput {
   }>
 }
 
+export interface TaskOutputInput {
+  task_id?: string
+  block?: boolean
+  timeout?: number
+}
+
 export interface AskUserQuestionInput {
   questions?: Array<{
     question?: string
@@ -87,6 +93,7 @@ export type KnownToolInput
     | { toolName: 'WebFetch', input: WebFetchInput }
     | { toolName: 'WebSearch', input: WebSearchInput }
     | { toolName: 'TodoWrite', input: TodoWriteInput }
+    | { toolName: 'TaskOutput', input: TaskOutputInput }
     | { toolName: 'AskUserQuestion', input: AskUserQuestionInput }
 
 /** All known tool names. */
@@ -102,6 +109,7 @@ const KNOWN_TOOLS = new Set<string>([
   'Task',
   'WebFetch',
   'WebSearch',
+  'TaskOutput',
   'TodoWrite',
   'AskUserQuestion',
 ])
