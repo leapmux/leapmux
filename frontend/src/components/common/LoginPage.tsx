@@ -16,8 +16,18 @@ export const LoginPage: Component = () => {
   const [password, setPassword] = createSignal('')
   const [submitting, setSubmitting] = createSignal(false)
   const [signupEnabled, setSignupEnabled] = createSignal(false)
+  let usernameRef!: HTMLInputElement
+  let passwordRef!: HTMLInputElement
 
   onMount(async () => {
+    // Focus the first empty input field (username if both empty).
+    if (!usernameRef.value) {
+      usernameRef.focus()
+    }
+    else if (!passwordRef.value) {
+      passwordRef.focus()
+    }
+
     try {
       const resp = await authClient.getSystemInfo({})
       setSignupEnabled(resp.signupEnabled)
@@ -59,6 +69,7 @@ export const LoginPage: Component = () => {
           <label>
             Username
             <input
+              ref={usernameRef}
               type="text"
               value={username()}
               onInput={e => setUsername(e.currentTarget.value)}
@@ -68,6 +79,7 @@ export const LoginPage: Component = () => {
           <label>
             Password
             <input
+              ref={passwordRef}
               type="password"
               value={password()}
               onInput={e => setPassword(e.currentTarget.value)}

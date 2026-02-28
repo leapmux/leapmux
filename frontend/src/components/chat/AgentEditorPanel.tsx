@@ -177,9 +177,16 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     }
   }))
 
+  // Memoize the active request ID so that the effect below only fires when
+  // the value actually changes. Without this, reactive store updates
+  // (e.g. controlStore.clearAgent during WebSocket reconnect) re-trigger the
+  // deps function even when the result is the same `undefined`, causing
+  // hasContent to be reset and disabling the send button after page refresh.
+  const activeRequestId = createMemo(() => activeControlRequest()?.requestId)
+
   // Reset AskUserQuestion state when the active request changes.
   createEffect(on(
-    () => activeControlRequest()?.requestId,
+    activeRequestId,
     (requestId) => {
       if (requestId && props.agentId) {
         const key = `leapmux-ask-state-${props.agentId}-${requestId}`

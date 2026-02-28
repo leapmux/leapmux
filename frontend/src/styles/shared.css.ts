@@ -1,4 +1,4 @@
-import { style } from '@vanilla-extract/css'
+import { globalStyle, style } from '@vanilla-extract/css'
 import { spin } from '~/styles/animations.css'
 import { spacing } from '~/styles/tokens'
 
@@ -94,6 +94,28 @@ export const dialogStandard = style({
 
 export const dialogCompact = style({
   maxWidth: '400px',
+  height: '80vh',
+})
+
+// Make dialog forms use flex layout so the tree container can fill remaining space.
+globalStyle(`${dialogCompact} > form`, {
+  display: 'flex',
+  flexDirection: 'column',
+  overflow: 'hidden',
+  flex: 1,
+  minHeight: 0,
+})
+
+globalStyle(`${dialogCompact} > form > section`, {
+  display: 'flex',
+  flexDirection: 'column',
+  flex: 1,
+  minHeight: 0,
+})
+
+globalStyle(`${dialogCompact} > form > section > .vstack`, {
+  flex: 1,
+  minHeight: 0,
 })
 
 // Dialog form utilities
@@ -128,10 +150,19 @@ export const spinning = style({
 })
 
 export const treeContainer = style({
-  height: '250px',
+  flex: 1,
+  minHeight: 0,
   border: '1px solid var(--border)',
   borderRadius: 'var(--radius-medium)',
   overflow: 'hidden',
+})
+
+// The label wrapping the DirectoryTree needs to grow and use flex layout.
+globalStyle(`${dialogCompact} > form > section > .vstack > label:has(.${treeContainer})`, {
+  display: 'flex',
+  flexDirection: 'column',
+  flex: 1,
+  minHeight: 0,
 })
 
 // Worktree options

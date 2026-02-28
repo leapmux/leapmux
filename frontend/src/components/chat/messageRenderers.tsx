@@ -192,7 +192,7 @@ function renderExitPlanMode(toolUse: Record<string, unknown>, context?: RenderCo
                   : <Hand size={16} class={toolUseIcon} />}
               </span>
               <span class={toolInputDetail}>
-                {cr().action === 'approved' ? 'Approved' : 'Rejected'}
+                {cr().action === 'approved' ? 'Approved' : cr().comment ? 'Sent feedback' : 'Rejected'}
               </span>
             </div>
             <Show when={cr().action !== 'approved' && cr().comment}>

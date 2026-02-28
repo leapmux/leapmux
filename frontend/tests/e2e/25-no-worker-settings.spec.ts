@@ -98,11 +98,11 @@ test.describe('Settings and /clear without Worker', () => {
       await waitForNotification('Model (Sonnet \u2192 Haiku)')
       await waitForSettingsIdle()
 
-      // Step 6: Change effort (High → Medium)
+      // Step 6: Change effort (Low → Medium, default overridden via LEAPMUX_DEFAULT_EFFORT in e2e)
       await openSettingsMenu()
       await page.locator('[data-testid="effort-medium"]').click()
 
-      await waitForNotification('Effort (High \u2192 Medium)')
+      await waitForNotification('Effort (Low \u2192 Medium)')
 
       // Step 7: Send /clear
       await editor.click()

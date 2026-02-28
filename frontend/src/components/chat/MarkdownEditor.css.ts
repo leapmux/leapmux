@@ -192,23 +192,29 @@ globalStyle(`${editorWrapper} .ProseMirror`, {
   wordWrap: 'break-word',
 })
 
-// Code blocks need relative positioning for the language label
+// Code blocks: move horizontal scroll from <pre> to <code> so the
+// language label can be absolutely positioned without scrolling away.
 globalStyle(`${editorWrapper} .ProseMirror pre`, {
   position: 'relative',
+  overflowX: 'visible',
 })
 
-// Code block language label -- uses sticky + float to stay at top-right during horizontal scroll
+globalStyle(`${editorWrapper} .ProseMirror pre code`, {
+  display: 'block',
+  overflowX: 'auto',
+})
+
+// Code block language label -- absolutely positioned at top-right of <pre>
 globalStyle(`${editorWrapper} .ProseMirror pre .code-lang-label`, {
-  position: 'sticky',
-  float: 'right',
+  position: 'absolute',
   right: '4px',
+  top: '4px',
   fontSize: 'var(--text-8)',
   color: 'var(--faint-foreground)',
   cursor: 'pointer',
   padding: '1px 4px',
   borderRadius: 'var(--radius-small)',
   userSelect: 'none',
-  marginBottom: '-1.5em',
   zIndex: 1,
 })
 

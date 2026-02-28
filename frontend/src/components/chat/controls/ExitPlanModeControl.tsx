@@ -99,7 +99,7 @@ export const ExitPlanModeActions: Component<ActionsProps> = (props) => {
           onClick={handleReject}
           data-testid="plan-reject-btn"
         >
-          Send Feedback
+          {props.hasEditorContent ? 'Send Feedback' : 'Reject'}
         </button>
         <Show when={!props.hasEditorContent}>
           <ButtonGroup>

@@ -332,6 +332,23 @@ describe('extractAssistantUsage', () => {
     const msg = makeMsg(MessageRole.ASSISTANT, wrap(content))
     expect(extractAssistantUsage(parseMessageContent(msg))).toBeNull()
   })
+
+  it('returns null for subagent messages with parent_tool_use_id', () => {
+    const content = {
+      type: 'assistant',
+      parent_tool_use_id: 'toolu_abc123',
+      total_cost_usd: 0.03,
+      message: {
+        usage: {
+          input_tokens: 500,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 100,
+        },
+      },
+    }
+    const msg = makeMsg(MessageRole.ASSISTANT, wrap(content))
+    expect(extractAssistantUsage(parseMessageContent(msg))).toBeNull()
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -367,6 +384,20 @@ describe('extractResultMetadata', () => {
     const content = { type: 'result', subtype: 'turn_end' }
     const msg = makeMsg(MessageRole.RESULT, wrap(content))
     expect(extractResultMetadata(parseMessageContent(msg))).toEqual({ subtype: 'turn_end' })
+  })
+
+  it('returns null for subagent results with parent_tool_use_id', () => {
+    const content = {
+      type: 'result',
+      subtype: 'turn_end',
+      parent_tool_use_id: 'toolu_abc123',
+      total_cost_usd: 0.05,
+      modelUsage: {
+        'claude-sonnet': { contextWindow: 200000 },
+      },
+    }
+    const msg = makeMsg(MessageRole.RESULT, wrap(content))
+    expect(extractResultMetadata(parseMessageContent(msg))).toBeNull()
   })
 })
 
