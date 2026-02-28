@@ -1,7 +1,7 @@
 import type { Component, JSX } from 'solid-js'
-import { onMount, Show } from 'solid-js'
-import { dialogStandard } from '~/styles/shared.css'
+import { Show } from 'solid-js'
 import { ConfirmButton } from './ConfirmButton'
+import { Dialog } from './Dialog'
 
 interface ConfirmDialogProps {
   title: string
@@ -14,13 +14,8 @@ interface ConfirmDialogProps {
 }
 
 export const ConfirmDialog: Component<ConfirmDialogProps> = (props) => {
-  let dlgRef!: HTMLDialogElement
-
-  onMount(() => dlgRef.showModal())
-
   return (
-    <dialog ref={dlgRef} class={dialogStandard} closedby="any" onClose={() => props.onCancel()}>
-      <header><h2>{props.title}</h2></header>
+    <Dialog title={props.title} onClose={() => props.onCancel()}>
       <section>{props.children}</section>
       <footer>
         <button type="button" class="outline" onClick={() => props.onCancel()}>
@@ -39,6 +34,6 @@ export const ConfirmDialog: Component<ConfirmDialogProps> = (props) => {
           </ConfirmButton>
         </Show>
       </footer>
-    </dialog>
+    </Dialog>
   )
 }

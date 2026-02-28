@@ -3,9 +3,9 @@ import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createSignal, onMount, Show } from 'solid-js'
 import { workerClient } from '~/api/clients'
+import { Dialog } from '~/components/common/Dialog'
 import { sanitizeName } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
-import { dialogStandard } from '~/styles/shared.css'
 import * as styles from './WorkerSettingsDialog.css'
 
 export type WorkerSettingsTab = 'general' | 'deregister'
@@ -19,8 +19,6 @@ interface WorkerSettingsDialogProps {
 }
 
 export const WorkerSettingsDialog: Component<WorkerSettingsDialogProps> = (props) => {
-  let dialogRef!: HTMLDialogElement
-
   // General tab state
   // eslint-disable-next-line solid/reactivity -- intentionally capture initial value
   const [name, setName] = createSignal(props.worker.name)
@@ -34,7 +32,6 @@ export const WorkerSettingsDialog: Component<WorkerSettingsDialogProps> = (props
   let tabsRef!: HTMLElement
 
   onMount(() => {
-    dialogRef.showModal()
     // Activate the correct tab based on initialTab prop
     if (props.initialTab && props.initialTab !== 'general' && tabsRef) {
       const tabIndex = props.initialTab === 'deregister' ? 1 : 0
@@ -85,9 +82,7 @@ export const WorkerSettingsDialog: Component<WorkerSettingsDialogProps> = (props
   }
 
   return (
-    <dialog ref={dialogRef} class={dialogStandard} data-testid="worker-settings-dialog" onClose={() => props.onClose()}>
-      <header><h2>Worker Settings</h2></header>
-
+    <Dialog title="Worker Settings" data-testid="worker-settings-dialog" onClose={() => props.onClose()}>
       <ot-tabs ref={tabsRef}>
         <nav role="tablist">
           <button role="tab">General</button>
@@ -151,6 +146,6 @@ export const WorkerSettingsDialog: Component<WorkerSettingsDialogProps> = (props
           </footer>
         </div>
       </ot-tabs>
-    </dialog>
+    </Dialog>
   )
 }

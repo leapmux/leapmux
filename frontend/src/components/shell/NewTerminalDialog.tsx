@@ -4,12 +4,13 @@ import RefreshCw from 'lucide-solid/icons/refresh-cw'
 import { createEffect, createSignal, For, on, onMount, Show } from 'solid-js'
 import { gitClient, terminalClient, workerClient } from '~/api/clients'
 import { apiLoadingTimeoutMs } from '~/api/transport'
+import { Dialog } from '~/components/common/Dialog'
 import { WorktreeOptions } from '~/components/shell/WorktreeOptions'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
 import { useOrg } from '~/context/OrgContext'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { spinner } from '~/styles/animations.css'
-import { dialogStandard, dialogWithTree, errorText, labelRow, refreshButton, spinning, treeContainer } from '~/styles/shared.css'
+import { errorText, labelRow, refreshButton, spinning, treeContainer } from '~/styles/shared.css'
 
 interface NewTerminalDialogProps {
   workspaceId: string
@@ -20,7 +21,6 @@ interface NewTerminalDialogProps {
 }
 
 export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
-  let dialogRef!: HTMLDialogElement
   const org = useOrg()
   const [workers, setWorkers] = createSignal<import('~/generated/leapmux/v1/worker_pb').Worker[]>([])
   const [workerId, setWorkerId] = createSignal('')
@@ -53,7 +53,6 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
 
   // Fetch on mount only
   onMount(async () => {
-    dialogRef.showModal()
     await fetchWorkers()
     // Pre-select worker if specified and online
     if (props.defaultWorkerId) {
@@ -145,8 +144,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
   }
 
   return (
-    <dialog ref={dialogRef} class={`${dialogStandard} ${dialogWithTree}`} onClose={() => props.onClose()}>
-      <header><h2>New Terminal</h2></header>
+    <Dialog title="New Terminal" tall onClose={() => props.onClose()}>
       <form onSubmit={handleSubmit}>
         <section>
           <div class="vstack gap-4">
@@ -237,6 +235,6 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
           </button>
         </footer>
       </form>
-    </dialog>
+    </Dialog>
   )
 }

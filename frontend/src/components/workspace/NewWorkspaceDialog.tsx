@@ -5,12 +5,13 @@ import RefreshCw from 'lucide-solid/icons/refresh-cw'
 import { generateSlug } from 'random-word-slugs'
 import { createMemo, createSignal, For, onMount, Show } from 'solid-js'
 import { workerClient, workspaceClient } from '~/api/clients'
+import { Dialog } from '~/components/common/Dialog'
 import { WorktreeOptions } from '~/components/shell/WorktreeOptions'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
 import { useOrg } from '~/context/OrgContext'
 import { sanitizeName } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
-import { dialogStandard, dialogWithTree, errorText, labelRow, refreshButton, spinning, treeContainer } from '~/styles/shared.css'
+import { errorText, labelRow, refreshButton, spinning, treeContainer } from '~/styles/shared.css'
 
 interface NewWorkspaceDialogProps {
   onCreated: (workspace: Workspace) => void
@@ -19,7 +20,6 @@ interface NewWorkspaceDialogProps {
 }
 
 export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) => {
-  let dialogRef!: HTMLDialogElement
   const org = useOrg()
   const [workers, setWorkers] = createSignal<import('~/generated/leapmux/v1/worker_pb').Worker[]>([])
   const [workerId, setWorkerId] = createSignal('')
@@ -52,7 +52,6 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
 
   // Fetch on mount only
   onMount(async () => {
-    dialogRef.showModal()
     await fetchWorkers()
     // Pre-select worker if specified and online
     if (props.preselectedWorkerId) {
@@ -98,8 +97,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
   }
 
   return (
-    <dialog ref={dialogRef} class={`${dialogStandard} ${dialogWithTree}`} onClose={() => props.onClose()}>
-      <header><h2>New Workspace</h2></header>
+    <Dialog title="New Workspace" tall onClose={() => props.onClose()}>
       <form onSubmit={handleSubmit}>
         <section>
           <div class="vstack gap-4">
@@ -194,6 +192,6 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
           </button>
         </footer>
       </form>
-    </dialog>
+    </Dialog>
   )
 }

@@ -3,10 +3,10 @@ import type { OrgMember } from '~/generated/leapmux/v1/org_pb'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createSignal, For, onMount, Show } from 'solid-js'
 import { orgClient, workspaceClient } from '~/api/clients'
+import { Dialog } from '~/components/common/Dialog'
 import { useOrg } from '~/context/OrgContext'
 import { ShareMode } from '~/generated/leapmux/v1/common_pb'
 import { spinner } from '~/styles/animations.css'
-import { dialogStandard } from '~/styles/shared.css'
 import * as styles from './WorkspaceSharingDialog.css'
 
 interface WorkspaceSharingDialogProps {
@@ -16,7 +16,6 @@ interface WorkspaceSharingDialogProps {
 }
 
 export const WorkspaceSharingDialog: Component<WorkspaceSharingDialogProps> = (props) => {
-  let dialogRef!: HTMLDialogElement
   const org = useOrg()
   const [shareMode, setShareMode] = createSignal<ShareMode>(ShareMode.PRIVATE)
   const [selectedUserIds, setSelectedUserIds] = createSignal<string[]>([])
@@ -26,7 +25,6 @@ export const WorkspaceSharingDialog: Component<WorkspaceSharingDialogProps> = (p
   const [error, setError] = createSignal<string | null>(null)
 
   onMount(async () => {
-    dialogRef.showModal()
     try {
       const [sharesResp, membersResp] = await Promise.all([
         workspaceClient.listWorkspaceShares({ workspaceId: props.workspaceId }),
@@ -70,8 +68,7 @@ export const WorkspaceSharingDialog: Component<WorkspaceSharingDialogProps> = (p
   }
 
   return (
-    <dialog ref={dialogRef} class={dialogStandard} onClose={() => props.onClose()}>
-      <header><h2>Workspace Sharing</h2></header>
+    <Dialog title="Workspace Sharing" onClose={() => props.onClose()}>
       <Show when={!loading()} fallback={<div>Loading...</div>}>
         <section>
           <div class="vstack gap-4">
@@ -122,6 +119,6 @@ export const WorkspaceSharingDialog: Component<WorkspaceSharingDialogProps> = (p
           </button>
         </footer>
       </Show>
-    </dialog>
+    </Dialog>
   )
 }
