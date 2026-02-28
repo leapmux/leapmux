@@ -36,10 +36,7 @@ test.describe('Workspace Sections', () => {
     const workspaceName = await wsItem.textContent()
     await openWorkspaceContextMenu(page, workspaceName!.trim())
 
-    // Click "Move to" submenu trigger to open the sub-menu (uses popovertarget)
-    await page.getByRole('menuitem', { name: 'Move to' }).click()
-
-    // Click "Archive"
+    // Click "Archive" (top-level menu item)
     await page.getByRole('menuitem', { name: 'Archive' }).click()
 
     // Confirm the archive in the ConfirmDialog
@@ -47,11 +44,8 @@ test.describe('Workspace Sections', () => {
     await expect(dialog).toBeVisible()
     await dialog.getByRole('button', { name: 'Archive' }).click()
 
-    // Archived section header should appear
+    // Archived section header should appear and be auto-expanded
     await expect(page.locator('[data-testid="section-header-workspaces_archived"]')).toBeVisible()
-
-    // Archived section is collapsed by default — expand it to see the workspace
-    await page.locator('[data-testid="section-header-workspaces_archived"]').click()
     await expect(wsItem).toBeVisible()
   })
 

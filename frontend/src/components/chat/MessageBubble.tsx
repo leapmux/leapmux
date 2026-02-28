@@ -332,8 +332,28 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       .trim() || null
   }
 
+  // Extract user text for the quote button.
+  const extractUserText = (): string | null => {
+    const cat = category()
+    if (cat.kind !== 'user_text' && cat.kind !== 'user_content')
+      return null
+    const obj = parsed().parentObject
+    if (!obj)
+      return null
+    if (cat.kind === 'user_text') {
+      const msg = obj.message as Record<string, unknown> | undefined
+      if (typeof msg?.content === 'string')
+        return msg.content.trim() || null
+    }
+    if (cat.kind === 'user_content' && typeof obj.content === 'string')
+      return (obj.content as string).trim() || null
+    return null
+  }
+
+  const extractQuotableText = () => extractAssistantText() ?? extractUserText()
+
   const handleReply = () => {
-    const text = extractAssistantText()
+    const text = extractQuotableText()
     if (text && props.onReply) {
       props.onReply(formatChatQuote(text))
     }
@@ -376,7 +396,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
               onToggleThread={() => setThreadExpanded(prev => !prev)}
               onCopyJson={copyJson}
               jsonCopied={jsonCopied()}
-              onReply={extractAssistantText() ? handleReply : undefined}
+              onReply={extractQuotableText() ? handleReply : undefined}
             />
           </Show>
         </div>

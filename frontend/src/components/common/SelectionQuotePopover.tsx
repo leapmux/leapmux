@@ -1,7 +1,7 @@
 import type { JSX } from 'solid-js'
 import Quote from 'lucide-solid/icons/quote'
 import { createSignal, onCleanup, onMount, Show } from 'solid-js'
-import { extractLineRange } from '~/lib/quoteUtils'
+import { extractLineRange, extractSelectionMarkdown } from '~/lib/quoteUtils'
 import * as styles from './SelectionQuotePopover.css'
 
 interface SelectionQuotePopoverProps {
@@ -19,9 +19,12 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
   const hidePopover = () => setVisible(false)
 
   const handleMouseDown = (e: MouseEvent) => {
-    // Don't hide the popover when clicking the popover itself (Quote button)
-    if (popoverRef?.contains(e.target as Node))
+    // Don't hide the popover when clicking the popover itself (Quote button),
+    // and prevent the browser from clearing the text selection before click fires.
+    if (popoverRef?.contains(e.target as Node)) {
+      e.preventDefault()
       return
+    }
     hidePopover()
   }
 
@@ -64,8 +67,9 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
     if (!selection || selection.isCollapsed)
       return
 
-    const text = selection.toString()
     const lineRange = extractLineRange(selection)
+    // Use plain text for file view quotes (with line ranges), markdown for chat quotes
+    const text = lineRange ? selection.toString() : extractSelectionMarkdown(selection)
     props.onQuote(text, lineRange?.startLine, lineRange?.endLine)
     selection.removeAllRanges()
     hidePopover()

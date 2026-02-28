@@ -8,19 +8,35 @@ export interface EditorRef {
 }
 
 const registry = new Map<string, EditorRef>()
-/** Pending text to insert when an editor ref is registered. */
-const pendingInserts = new Map<string, string>()
+/** Pending inserts to flush when an editor ref is registered. */
+const pendingInserts = new Map<string, Array<{ text: string, mode: 'block' | 'inline' }>>()
+
+/** Compute the separator to join `text` after `current` content. */
+export function computeSeparator(current: string, mode: 'block' | 'inline'): string {
+  if (!current)
+    return ''
+  if (mode === 'block')
+    return '\n\n'
+  return current.endsWith('\n') ? '' : ' '
+}
 
 export function registerEditorRef(agentId: string, ref: EditorRef): void {
   registry.set(agentId, ref)
-  // Flush any pending insert that was queued before the component mounted.
+  // Flush any pending inserts that were queued before the component mounted.
   // Milkdown's ProseMirror view may silently reject replaceAll if it isn't
   // fully initialized, so we retry a few times with increasing delays.
   const pending = pendingInserts.get(agentId)
   if (pending != null) {
     pendingInserts.delete(agentId)
     const tryFlush = (attempt: number) => {
-      ref.set(pending)
+      // Read existing content at flush time (not registration time) so draft
+      // content loaded by Milkdown is preserved.
+      let combined = ref.get()
+      for (const { text, mode } of pending) {
+        const sep = computeSeparator(combined, mode)
+        combined = combined ? `${combined}${sep}${text}` : text
+      }
+      ref.set(combined)
       // Verify the text was actually inserted (ref.set may silently fail).
       if (ref.get().length === 0 && attempt < 10) {
         setTimeout(() => tryFlush(attempt + 1), 50)
@@ -63,6 +79,7 @@ export function insertIntoMruAgentEditor(
     setActiveTabForTile: (tileId: string, type: TabType, id: string) => void
   },
   text: string,
+  mode: 'block' | 'inline' = 'block',
 ): void {
   const agentPrefix = `${TabType.AGENT}:`
   const mruKey = tabStore.state.mruOrder.find(k => k.startsWith(agentPrefix))
@@ -74,13 +91,15 @@ export function insertIntoMruAgentEditor(
   const ref = registry.get(agentId)
   if (ref) {
     const current = ref.get()
-    ref.set(current ? `${current}\n\n${text}` : text)
+    const sep = computeSeparator(current, mode)
+    ref.set(current ? `${current}${sep}${text}` : text)
     ref.focus()
   }
   else {
     // Editor is not mounted yet — queue text for when it registers.
-    const existing = pendingInserts.get(agentId)
-    pendingInserts.set(agentId, existing ? `${existing}\n\n${text}` : text)
+    const existing = pendingInserts.get(agentId) ?? []
+    existing.push({ text, mode })
+    pendingInserts.set(agentId, existing)
   }
 
   // Activate the agent tab (global + per-tile).

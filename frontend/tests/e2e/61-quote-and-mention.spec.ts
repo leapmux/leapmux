@@ -28,7 +28,7 @@ test.describe('Quote and Mention', () => {
     await messageRow.hover()
 
     // The reply button should become visible
-    const replyButton = messageRow.locator('[data-testid="message-reply"]')
+    const replyButton = messageRow.locator('[data-testid="message-quote"]')
     await expect(replyButton).toBeVisible()
 
     // Click the reply button
@@ -36,6 +36,36 @@ test.describe('Quote and Mention', () => {
 
     // Verify the editor now contains a blockquote (Milkdown renders > text as <blockquote>)
     await expect(editor.locator('blockquote')).toBeVisible()
+  })
+
+  test('cursor lands outside blockquote after quoting', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+
+    // Send a message and wait for the assistant to reply
+    await sendMessage(page, 'Say exactly: Hello world')
+    await waitForAgentIdle(page)
+
+    // Find an assistant bubble and click the quote button
+    const assistantBubble = page.locator('[data-testid="message-bubble"][data-role="assistant"]').first()
+    await expect(assistantBubble).toBeVisible()
+    const messageRow = assistantBubble.locator('..')
+    await messageRow.hover()
+    const quoteButton = messageRow.locator('[data-testid="message-quote"]')
+    await expect(quoteButton).toBeVisible()
+    await quoteButton.click()
+
+    // Verify the blockquote was inserted
+    await expect(editor.locator('blockquote')).toBeVisible()
+
+    // Type some text — it should appear OUTSIDE the blockquote (in a new paragraph)
+    await page.keyboard.type('my follow-up')
+
+    // The typed text should not be inside the blockquote
+    const blockquoteText = await editor.locator('blockquote').textContent()
+    const editorText = await editor.textContent()
+    expect(editorText).toContain('my follow-up')
+    expect(blockquoteText).not.toContain('my follow-up')
   })
 
   test('text selection in chat message shows quote popover', async ({ page, authenticatedWorkspace }) => {
@@ -150,6 +180,94 @@ test.describe('Quote and Mention', () => {
     }
   })
 
+  test('file view mention preserves existing editor draft', async ({ page, leapmuxServer }) => {
+    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Mention Preserve Test', adminOrgId, process.cwd())
+    try {
+      await loginViaToken(page, adminToken)
+      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await waitForWorkspaceReady(page)
+
+      // Ensure an agent tab exists and click it to populate MRU
+      const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]')
+      await expect(agentTab).toBeVisible()
+      await agentTab.click()
+
+      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      await expect(editor).toBeVisible()
+
+      // Type some draft text into the editor
+      await editor.click()
+      await editor.pressSequentially('my draft text')
+
+      // Wait for the file tree to load
+      await expect(page.getByText('package.json')).toBeVisible({ timeout: 15_000 })
+
+      // Click on package.json to open it as a file tab
+      await page.getByText('package.json').click()
+
+      const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
+      await expect(fileTab).toBeVisible({ timeout: 10_000 })
+      await page.waitForTimeout(1000)
+
+      // Click the mention button in the file view toolbar
+      const mentionButton = page.locator('[data-testid="file-mention-button"]')
+      await expect(mentionButton).toBeVisible({ timeout: 5_000 })
+      await mentionButton.click()
+
+      // Wait for the agent tab to become active
+      await expect(page.locator('[data-testid="tab"][data-tab-type="agent"][aria-selected="true"]'))
+        .toBeVisible({ timeout: 5_000 })
+
+      // Verify the editor still contains the draft text AND the mention
+      await expect(editor).toContainText('my draft text')
+      await expect(editor).toContainText('@package.json')
+    }
+    finally {
+      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
+    }
+  })
+
+  test('multiple tree mentions are space-separated', async ({ page, leapmuxServer }) => {
+    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Multi Mention Test', adminOrgId, process.cwd())
+    try {
+      await loginViaToken(page, adminToken)
+      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await waitForWorkspaceReady(page)
+
+      // Ensure an agent tab exists and the editor is ready
+      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      await expect(editor).toBeVisible()
+
+      // Wait for the file tree to load — package.json should be visible
+      await expect(page.getByText('package.json')).toBeVisible({ timeout: 15_000 })
+
+      // First mention: hover and click package.json
+      const packageJsonNode = page.getByText('package.json')
+      await packageJsonNode.hover()
+      const treeRow1 = packageJsonNode.locator('..')
+      const mentionButton1 = treeRow1.locator('[data-testid="tree-mention-button"]')
+      await expect(mentionButton1).toBeVisible()
+      await mentionButton1.click()
+      await expect(editor).toContainText('@package.json')
+
+      // Second mention: hover and click tsconfig.json (or another file)
+      const tsconfigNode = page.getByText('tsconfig.json')
+      await tsconfigNode.hover()
+      const treeRow2 = tsconfigNode.locator('..')
+      const mentionButton2 = treeRow2.locator('[data-testid="tree-mention-button"]')
+      await expect(mentionButton2).toBeVisible()
+      await mentionButton2.click()
+
+      // Both mentions should be present and space-separated (not double-newline separated)
+      await expect(editor).toContainText('@package.json @tsconfig.json')
+    }
+    finally {
+      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
+    }
+  })
+
   test('text selection quote in file view inserts with file path and line numbers', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'File Quote Test', adminOrgId, process.cwd())
@@ -196,8 +314,8 @@ test.describe('Quote and Mention', () => {
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"][aria-selected="true"]'))
         .toBeVisible({ timeout: 5_000 })
 
-      // Verify the editor contains the expected format with "At" and the path
-      await expect(editor).toContainText('At')
+      // Verify the editor contains the expected format with "From @" and the path
+      await expect(editor).toContainText('From')
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

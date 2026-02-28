@@ -385,6 +385,18 @@ export const AppShell: ParentComponent = (props) => {
     }
   }
 
+  // Get working directory and home directory from the MRU agent tab.
+  // Used for relativizing file paths in mentions and quotes from non-agent tabs.
+  const getMruAgentContext = (): { workingDir: string, homeDir: string } => {
+    const agentPrefix = `${TabType.AGENT}:`
+    const mruKey = tabStore.state.mruOrder.find(k => k.startsWith(agentPrefix))
+    if (!mruKey)
+      return { workingDir: '', homeDir: '' }
+    const agentId = mruKey.slice(agentPrefix.length)
+    const agent = agentStore.state.agents.find(a => a.id === agentId)
+    return { workingDir: agent?.workingDir ?? '', homeDir: agent?.homeDir ?? '' }
+  }
+
   // Focus callback for the markdown editor (shared editor panel)
   let focusEditor: (() => void) | undefined
 
@@ -727,13 +739,10 @@ export const AppShell: ParentComponent = (props) => {
       setConfirmArchiveWs({ workspaceId, resolve })
     })
 
-  // Post-archive cleanup: clear local agent/terminal/tab state if the archived workspace is active
+  // Post-archive cleanup: dismiss pending control requests but keep tabs visible (read-only)
   const handlePostArchiveWorkspace = (workspaceId: string) => {
     if (workspace.activeWorkspaceId() === workspaceId) {
       for (const agent of agentStore.state.agents) controlStore.clearAgent(agent.id)
-      agentStore.clear()
-      terminalStore.setTerminals([])
-      tabStore.clear()
     }
   }
 
@@ -949,6 +958,7 @@ export const AppShell: ParentComponent = (props) => {
       tabs={tabStore.getTabsForTile(tileId)}
       activeTabKey={tabStore.getActiveTabKeyForTile(tileId)}
       showAddButton={isActiveWorkspaceMutatable()}
+      readOnly={isActiveWorkspaceArchived()}
       onSelect={(tab) => {
         layoutStore.setFocusedTile(tileId)
         handleTabSelect(tab)
@@ -1073,14 +1083,18 @@ export const AppShell: ParentComponent = (props) => {
                     onClearSavedViewportScroll={() => chatStore.clearSavedViewportScroll(agentId)}
                     scrollStateRef={(fn) => { getScrollState = fn }}
                     scrollToBottomRef={(fn) => { forceScrollToBottom = fn }}
-                    onQuote={(text) => {
-                      appendText(agentId, text)
-                      focusEditor?.()
-                    }}
-                    onReply={(text) => {
-                      appendText(agentId, text)
-                      focusEditor?.()
-                    }}
+                    onQuote={isActiveWorkspaceArchived()
+                      ? undefined
+                      : (text) => {
+                          appendText(agentId, text)
+                          focusEditor?.()
+                        }}
+                    onReply={isActiveWorkspaceArchived()
+                      ? undefined
+                      : (text) => {
+                          appendText(agentId, text)
+                          focusEditor?.()
+                        }}
                   />
                 </Show>
               </div>
@@ -1110,8 +1124,12 @@ export const AppShell: ParentComponent = (props) => {
         {/* File viewer content — mounted/unmounted with the active file tab */}
         <Show when={fileTab()} keyed>
           {(ft) => {
-            const fileHomeDir = agentStore.state.agents.find(a => a.workerId === ft.workerId)?.homeDir ?? ''
-            const fileRelPath = () => relativizePath(ft.filePath ?? '', agentStore.state.agents.find(a => a.workerId === ft.workerId)?.workingDir, fileHomeDir)
+            // Relativize the file path using the MRU agent tab's working directory
+            // so that mentions and quotes use the correct base path.
+            const fileRelPath = () => {
+              const ctx = getMruAgentContext()
+              return relativizePath(ft.filePath ?? '', ctx.workingDir, ctx.homeDir)
+            }
             return (
               <div class={styles.centerContent}>
                 <FileViewer
@@ -1119,14 +1137,18 @@ export const AppShell: ParentComponent = (props) => {
                   filePath={ft.filePath ?? ''}
                   displayMode={ft.displayMode}
                   onDisplayModeChange={mode => tabStore.setTabDisplayMode(ft.type, ft.id, mode)}
-                  onQuote={(text, startLine, endLine) => {
-                    if (startLine != null && endLine != null) {
-                      insertIntoMruAgentEditor(tabStore, formatFileQuote(fileRelPath(), startLine, endLine, text))
-                    }
-                  }}
-                  onMention={() => {
-                    insertIntoMruAgentEditor(tabStore, formatFileMention(fileRelPath()))
-                  }}
+                  onQuote={isActiveWorkspaceArchived()
+                    ? undefined
+                    : (text, startLine, endLine) => {
+                        if (startLine != null && endLine != null) {
+                          insertIntoMruAgentEditor(tabStore, formatFileQuote(fileRelPath(), startLine, endLine, text))
+                        }
+                      }}
+                  onMention={isActiveWorkspaceArchived()
+                    ? undefined
+                    : () => {
+                        insertIntoMruAgentEditor(tabStore, formatFileMention(fileRelPath()), 'inline')
+                      }}
                 />
               </div>
             )
@@ -1308,10 +1330,12 @@ export const AppShell: ParentComponent = (props) => {
       fileTreePath={fileTreePath()}
       onFileSelect={setFileTreePath}
       onFileOpen={handleFileOpen}
-      onFileMention={(path) => {
-        const ctx = getCurrentTabContext()
-        insertIntoMruAgentEditor(tabStore, formatFileMention(relativizePath(path, ctx.workingDir, ctx.homeDir)))
-      }}
+      onFileMention={isActiveWorkspaceArchived()
+        ? undefined
+        : (path) => {
+            const ctx = getMruAgentContext()
+            insertIntoMruAgentEditor(tabStore, formatFileMention(relativizePath(path, ctx.workingDir, ctx.homeDir)), 'inline')
+          }}
       showTodos={showTodos()}
       activeTodos={activeTodos()}
     />
@@ -1336,10 +1360,12 @@ export const AppShell: ParentComponent = (props) => {
       fileTreePath={fileTreePath()}
       onFileSelect={setFileTreePath}
       onFileOpen={handleFileOpen}
-      onFileMention={(path) => {
-        const ctx = getCurrentTabContext()
-        insertIntoMruAgentEditor(tabStore, formatFileMention(relativizePath(path, ctx.workingDir, ctx.homeDir)))
-      }}
+      onFileMention={isActiveWorkspaceArchived()
+        ? undefined
+        : (path) => {
+            const ctx = getMruAgentContext()
+            insertIntoMruAgentEditor(tabStore, formatFileMention(relativizePath(path, ctx.workingDir, ctx.homeDir)), 'inline')
+          }}
       sectionStore={sectionStore}
       isCollapsed={opts?.isCollapsed() ?? false}
       onExpand={opts?.onExpand ?? (() => {})}

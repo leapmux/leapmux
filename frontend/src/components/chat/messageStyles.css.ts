@@ -1,6 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { spacing } from '~/styles/tokens'
-import { toolHeaderActions, toolHeaderButtonHidden } from './toolStyles.css'
+import { toolHeaderActions, toolHeaderHiddenGroup } from './toolStyles.css'
 
 export const messageBubble = style({
   position: 'relative',
@@ -155,8 +155,8 @@ globalStyle(`${messageRowCenter} > .${toolHeaderActions}`, {
   paddingLeft: 0,
 })
 
-// When hovering a message row, reveal hidden toolbar buttons
-globalStyle(`${messageRow}:hover .${toolHeaderButtonHidden}, ${messageRowEnd}:hover .${toolHeaderButtonHidden}, ${messageRowCenter}:hover .${toolHeaderButtonHidden}`, {
+// When hovering a message row, reveal the hidden button group
+globalStyle(`${messageRow}:hover .${toolHeaderHiddenGroup}, ${messageRowEnd}:hover .${toolHeaderHiddenGroup}, ${messageRowCenter}:hover .${toolHeaderHiddenGroup}`, {
   opacity: 1,
 })
 

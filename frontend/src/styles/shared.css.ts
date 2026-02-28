@@ -94,6 +94,11 @@ export const dialogStandard = style({
 
 export const dialogCompact = style({
   maxWidth: '400px',
+  display: 'flex',
+  flexDirection: 'column',
+})
+
+export const dialogWithTree = style({
   height: '80vh',
 })
 

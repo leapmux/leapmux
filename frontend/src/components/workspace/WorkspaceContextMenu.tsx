@@ -4,6 +4,7 @@ import ChevronRight from 'lucide-solid/icons/chevron-right'
 import MoreHorizontal from 'lucide-solid/icons/more-horizontal'
 import { For, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
+import { IconButton } from '~/components/common/IconButton'
 import { isMoveTargetSection } from '~/components/shell/sectionUtils'
 import { dangerMenuItem } from '~/styles/shared.css'
 import * as listStyles from './workspaceList.css'
@@ -25,13 +26,21 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
   return (
     <DropdownMenu
       trigger={triggerProps => (
-        <button
+        <IconButton
+          icon={MoreHorizontal}
+          size="sm"
           class={listStyles.itemMenuTrigger}
-          onClick={(e: MouseEvent) => e.stopPropagation()}
-          {...triggerProps}
-        >
-          <MoreHorizontal size={14} />
-        </button>
+          onClick={(e: MouseEvent) => {
+            e.stopPropagation()
+            triggerProps.onClick()
+          }}
+          ref={triggerProps.ref}
+          onPointerDown={(e: PointerEvent) => {
+            e.stopPropagation()
+            triggerProps.onPointerDown(e)
+          }}
+          aria-expanded={triggerProps['aria-expanded']}
+        />
       )}
     >
       <Show when={props.isOwner}>
@@ -40,7 +49,7 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
         </button>
       </Show>
 
-      <Show when={!props.isArchived}>
+      <Show when={!props.isArchived && props.sections.some(s => s.id !== props.currentSectionId && isMoveTargetSection(s.sectionType))}>
         <DropdownMenu
           trigger={triggerProps => (
             <button role="menuitem" class="sub-trigger" {...triggerProps}>
@@ -59,25 +68,24 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
               </button>
             )}
           </For>
-          <hr />
-          <button
-            role="menuitem"
-            onClick={() => props.onArchive()}
-          >
-            Archive
-          </button>
         </DropdownMenu>
+      </Show>
+
+      <Show when={props.isOwner}>
+        <button role="menuitem" onClick={() => props.onShare()}>
+          Share...
+        </button>
+      </Show>
+
+      <Show when={!props.isArchived}>
+        <button role="menuitem" onClick={() => props.onArchive()}>
+          Archive
+        </button>
       </Show>
 
       <Show when={props.isArchived}>
         <button role="menuitem" onClick={() => props.onUnarchive()}>
           Unarchive
-        </button>
-      </Show>
-
-      <Show when={props.isOwner}>
-        <button role="menuitem" onClick={() => props.onShare()}>
-          Share
         </button>
       </Show>
 

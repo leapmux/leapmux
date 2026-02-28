@@ -54,6 +54,9 @@ export const RightSidebar: Component<RightSidebarProps> = (props) => {
   // eslint-disable-next-line solid/reactivity -- stable store reference for component lifetime
   const store = props.sectionStore
 
+  // Captured from CollapsibleSidebar's expandSectionRef callback.
+  let expandSection: ((sectionId: string) => void) | undefined
+
   /* eslint-disable solid/reactivity -- callbacks are stable references */
   const wsOps = useWorkspaceOperations({
     workspaces: () => props.workspaces,
@@ -66,7 +69,12 @@ export const RightSidebar: Component<RightSidebarProps> = (props) => {
     onDeleteWorkspace: props.onDeleteWorkspace,
     onConfirmDelete: props.onConfirmDelete,
     onConfirmArchive: props.onConfirmArchive,
-    onPostArchiveWorkspace: props.onPostArchiveWorkspace,
+    onPostArchiveWorkspace: (workspaceId) => {
+      const archivedSection = store.getArchivedSection()
+      if (archivedSection && expandSection)
+        expandSection(archivedSection.id)
+      props.onPostArchiveWorkspace?.(workspaceId)
+    },
   })
   /* eslint-enable solid/reactivity */
 
@@ -184,7 +192,6 @@ export const RightSidebar: Component<RightSidebarProps> = (props) => {
               onArchive={wsOps.archiveWorkspace}
               onUnarchive={wsOps.unarchiveWorkspace}
               onDelete={wsOps.deleteWorkspace}
-              getSectionId={wsOps.getSectionId}
               isArchived={wsOps.isWorkspaceArchived}
               renamingWorkspaceId={wsOps.renamingWorkspaceId()}
               renameValue={wsOps.renameValue()}
@@ -222,6 +229,7 @@ export const RightSidebar: Component<RightSidebarProps> = (props) => {
         initialOpenSections={props.initialOpenSections}
         initialSectionSizes={props.initialSectionSizes}
         onStateChange={props.onSectionStateChange}
+        expandSectionRef={fn => expandSection = fn}
       />
 
       <Show when={wsOps.sharingWorkspaceId()}>

@@ -9,7 +9,7 @@ import { DirectoryTree } from '~/components/tree/DirectoryTree'
 import { useOrg } from '~/context/OrgContext'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { spinner } from '~/styles/animations.css'
-import { dialogCompact, errorText, labelRow, refreshButton, spinning, treeContainer } from '~/styles/shared.css'
+import { dialogCompact, dialogWithTree, errorText, labelRow, refreshButton, spinning, treeContainer } from '~/styles/shared.css'
 
 interface NewTerminalDialogProps {
   workspaceId: string
@@ -145,7 +145,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
   }
 
   return (
-    <dialog ref={dialogRef} class={dialogCompact} onClose={() => props.onClose()}>
+    <dialog ref={dialogRef} class={`${dialogCompact} ${dialogWithTree}`} onClose={() => props.onClose()}>
       <header><h2>New Terminal</h2></header>
       <form onSubmit={handleSubmit}>
         <section>

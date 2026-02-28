@@ -1,5 +1,5 @@
 import { style } from '@vanilla-extract/css'
-import { iconSize, spacing } from '~/styles/tokens'
+import { spacing } from '~/styles/tokens'
 
 export const container = style({
   display: 'flex',
@@ -114,20 +114,6 @@ export const nodeActions = style({
   selectors: {
     [`${node}:hover &`]: { opacity: 1 },
   },
-})
-
-export const nodeActionButton = style({
-  'all': 'unset',
-  'display': 'flex',
-  'alignItems': 'center',
-  'justifyContent': 'center',
-  'width': iconSize.container.sm,
-  'height': iconSize.container.sm,
-  'borderRadius': '3px',
-  'flexShrink': 0,
-  'color': 'var(--faint-foreground)',
-  'cursor': 'pointer',
-  ':hover': { color: 'var(--foreground)' },
 })
 
 export const pathInput = style({

@@ -4,7 +4,7 @@ import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 
 import { createDroppable, createSortable, SortableProvider, transformStyle } from '@thisbeyond/solid-dnd'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
-import { createMemo, For, Show } from 'solid-js'
+import { createEffect, createMemo, For, Show } from 'solid-js'
 import { ShareMode } from '~/generated/leapmux/v1/common_pb'
 import { spinner } from '~/styles/animations.css'
 import { iconSize } from '~/styles/tokens'
@@ -25,7 +25,6 @@ export interface WorkspaceSectionContentProps {
   onArchive: (workspaceId: string) => void
   onUnarchive: (workspaceId: string) => void
   onDelete: (workspaceId: string) => void
-  getSectionId: (workspaceId: string) => string | undefined
   isArchived: (workspaceId: string) => boolean
   renamingWorkspaceId: string | null
   renameValue: string
@@ -89,6 +88,14 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
               const isRenaming = () => props.renamingWorkspaceId === id
               const isLoading = () => props.isWorkspaceLoading(id)
 
+              // Track whether the item was dragged so we can suppress the click
+              // that fires on mouseup after a drag-and-drop operation.
+              let wasDragging = false
+              createEffect(() => {
+                if (sortable.isActiveDraggable)
+                  wasDragging = true
+              })
+
               return (
                 <div
                   ref={sortable}
@@ -98,7 +105,13 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                     [styles.itemDragging]: sortable.isActiveDraggable,
                   }}
                   style={transformStyle(sortable.transform)}
-                  onClick={() => props.onSelect(id)}
+                  onClick={() => {
+                    if (wasDragging) {
+                      wasDragging = false
+                      return
+                    }
+                    props.onSelect(id)
+                  }}
                   onDblClick={() => {
                     if (isOwner())
                       props.onRename(workspace())
@@ -146,7 +159,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                         isOwner={isOwner()}
                         isArchived={props.isArchived(id)}
                         sections={props.sections}
-                        currentSectionId={props.getSectionId(id)}
+                        currentSectionId={props.sectionId}
                         onRename={() => props.onRename(workspace())}
                         onMoveTo={targetSectionId => props.onMoveTo(id, targetSectionId)}
                         onShare={() => props.onShare(id)}

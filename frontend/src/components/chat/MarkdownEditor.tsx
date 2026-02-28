@@ -64,6 +64,8 @@ interface MarkdownEditorProps {
   banner?: JSX.Element
   footer?: JSX.Element
   contentRef?: (get: () => string, set: (text: string) => void) => void
+  /** Called once the editor is fully initialized with draft content. */
+  onReady?: () => void
   placeholder?: string
   /** When true, pressing Enter with an empty editor calls onSend('') instead of doing nothing. */
   allowEmptySend?: boolean
@@ -79,6 +81,50 @@ function getEnterKeyMode(): EnterKeyMode {
 }
 
 export { clearDraft }
+
+/**
+ * Restore a saved cursor position in a ProseMirror editor view.  If the saved
+ * position is beyond the document (e.g. the cursor was in a trailing empty
+ * paragraph that the markdown parser didn't recreate), re-insert an empty
+ * paragraph after a trailing blockquote so the cursor lands outside it.
+ */
+function restoreCursor(editor: Editor, savedCursor: number): void {
+  editor.action((ctx: Ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const { doc, schema } = view.state
+    const maxPos = doc.content.size - 1
+
+    if (savedCursor > maxPos && doc.lastChild?.type.name === 'blockquote') {
+      const insertPos = doc.content.size
+      const paragraph = schema.nodes.paragraph.create()
+      const tr = view.state.tr.insert(insertPos, paragraph)
+      tr.setSelection(TextSelection.create(tr.doc, insertPos + 1))
+      view.dispatch(tr)
+      return
+    }
+
+    const pos = savedCursor >= 0 ? Math.min(savedCursor, maxPos) : maxPos
+    if (pos > 0) {
+      const tr = view.state.tr.setSelection(TextSelection.create(doc, pos))
+      view.dispatch(tr)
+    }
+  })
+}
+
+/**
+ * Serialize the current ProseMirror document and save it as a draft.
+ * The saved cursor position allows {@link restoreCursor} to reconstruct
+ * trailing empty paragraphs that the markdown parser strips.
+ */
+function saveDraftFromEditor(editor: Editor, draftKey: string): void {
+  editor.action((ctx: Ctx) => {
+    const serializer = ctx.get(serializerCtx)
+    const view = ctx.get(editorViewCtx)
+    const text = serializer(view.state.doc).trim()
+    const cursor = view.state.selection.from
+    saveDraft(draftKey, text, cursor)
+  })
+}
 
 export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   let editorRef: HTMLDivElement | undefined
@@ -232,6 +278,14 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   }
 
   let draftSaveTimeout: ReturnType<typeof setTimeout> | undefined
+  // Track the last valid draft key so onCleanup can save the draft even when
+  // reactive getters (props.agentId) return null during unmount.
+  let latestDraftKey: string | undefined
+  createEffect(() => {
+    const key = getDraftKey()
+    if (key)
+      latestDraftKey = key
+  })
 
   onMount(async () => {
     if (!editorRef)
@@ -415,16 +469,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     if (initialDraftKey && initialDraft.content) {
       props.onContentChange?.(true)
       try {
-        editor.action((ctx: Ctx) => {
-          const view = ctx.get(editorViewCtx)
-          const { doc } = view.state
-          const maxPos = doc.content.size - 1
-          const pos = initialDraft.cursor >= 0 ? Math.min(initialDraft.cursor, maxPos) : maxPos
-          if (pos > 0) {
-            const tr = view.state.tr.setSelection(TextSelection.create(doc, pos))
-            view.dispatch(tr)
-          }
-        })
+        restoreCursor(editor, initialDraft.cursor)
       }
       catch { /* editor may not be ready */ }
     }
@@ -446,6 +491,28 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       (text: string) => {
         try {
           editor.action(replaceAll(text))
+          // If the document ends with a blockquote, insert an empty paragraph
+          // after it so the cursor lands outside the blockquote.  ProseMirror
+          // does not create a trailing paragraph from trailing \n\n in markdown.
+          editor.action((ctx: Ctx) => {
+            const view = ctx.get(editorViewCtx)
+            const { doc, schema } = view.state
+            const lastChild = doc.lastChild
+            if (lastChild && lastChild.type.name === 'blockquote') {
+              const insertPos = doc.content.size
+              const paragraph = schema.nodes.paragraph.create()
+              const tr = view.state.tr.insert(insertPos, paragraph)
+              tr.setSelection(TextSelection.create(tr.doc, insertPos + 1))
+              view.dispatch(tr)
+            }
+            else {
+              const endPos = doc.content.size - 1
+              if (endPos > 0) {
+                const tr = view.state.tr.setSelection(TextSelection.create(doc, endPos))
+                view.dispatch(tr)
+              }
+            }
+          })
           setMarkdown(text)
           props.onContentChange?.(text.trim().length > 0)
         }
@@ -463,21 +530,20 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       }
       catch { /* editor may not be ready */ }
     })
+    // Signal that the editor is fully initialized with draft content.
+    props.onReady?.()
   })
 
   onCleanup(() => {
     clearTimeout(draftSaveTimeout)
-    // Save draft for the current agent/control-request before cleanup
-    const cleanupKey = getDraftKey()
+    // Save draft for the current agent/control-request before cleanup.
+    // getDraftKey() may return undefined during unmount (reactive getters
+    // can return null when the parent <Show> disposes), so fall back to
+    // the last known valid key.
+    const cleanupKey = getDraftKey() ?? latestDraftKey
     if (editorInstance && cleanupKey) {
       try {
-        editorInstance.action((ctx: Ctx) => {
-          const serializer = ctx.get(serializerCtx)
-          const view = ctx.get(editorViewCtx)
-          const text = serializer(view.state.doc).trim()
-          const cursor = view.state.selection.from
-          saveDraft(cleanupKey, text, cursor)
-        })
+        saveDraftFromEditor(editorInstance, cleanupKey)
       }
       catch { /* editor may not be ready */ }
     }
@@ -512,13 +578,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
           ? `${prevAgentId}-ctrl-${prevCtrlReqIdForAgentSwap}`
           : prevAgentId
         try {
-          editorInstance.action((ctx: Ctx) => {
-            const serializer = ctx.get(serializerCtx)
-            const view = ctx.get(editorViewCtx)
-            const text = serializer(view.state.doc).trim()
-            const cursor = view.state.selection.from
-            saveDraft(oldKey, text, cursor)
-          })
+          saveDraftFromEditor(editorInstance, oldKey)
         }
         catch { /* editor may not be ready */ }
       }
@@ -528,17 +588,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       const draft = newKey ? loadDraft(newKey) : { content: '', cursor: -1 }
       try {
         editorInstance.action(replaceAll(draft.content))
-        // Restore cursor position
-        editorInstance.action((ctx: Ctx) => {
-          const view = ctx.get(editorViewCtx)
-          const { doc } = view.state
-          const maxPos = doc.content.size - 1
-          const pos = draft.cursor >= 0 ? Math.min(draft.cursor, maxPos) : maxPos
-          if (pos > 0) {
-            const tr = view.state.tr.setSelection(TextSelection.create(doc, pos))
-            view.dispatch(tr)
-          }
-        })
+        restoreCursor(editorInstance, draft.cursor)
         setMarkdown(draft.content)
         props.onContentChange?.(draft.content.trim().length > 0)
       }
@@ -570,13 +620,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         ? `${props.agentId}-ctrl-${prevControlRequestId}`
         : props.agentId
       try {
-        editorInstance.action((ctx: Ctx) => {
-          const serializer = ctx.get(serializerCtx)
-          const view = ctx.get(editorViewCtx)
-          const text = serializer(view.state.doc).trim()
-          const cursor = view.state.selection.from
-          saveDraft(oldKey, text, cursor)
-        })
+        saveDraftFromEditor(editorInstance, oldKey)
       }
       catch { /* editor may not be ready */ }
 
@@ -587,16 +631,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       const draft = loadDraft(newKey)
       try {
         editorInstance.action(replaceAll(draft.content))
-        editorInstance.action((ctx: Ctx) => {
-          const view = ctx.get(editorViewCtx)
-          const { doc } = view.state
-          const maxPos = doc.content.size - 1
-          const pos = draft.cursor >= 0 ? Math.min(draft.cursor, maxPos) : maxPos
-          if (pos > 0) {
-            const tr = view.state.tr.setSelection(TextSelection.create(doc, pos))
-            view.dispatch(tr)
-          }
-        })
+        restoreCursor(editorInstance, draft.cursor)
         setMarkdown(draft.content)
         props.onContentChange?.(draft.content.trim().length > 0)
       }

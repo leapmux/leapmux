@@ -133,12 +133,22 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // Editor content ref for programmatic get/set of editor markdown.
   let editorContentRef: EditorContentRef | undefined
   let editorFocusFn: (() => void) | undefined
+  // Whether the MarkdownEditor has fully initialized (draft loaded, cursor restored).
+  let editorReady = false
 
   // Track the agent ID for which the editor ref is registered.  props.agentId
   // is a reactive getter that may return null/undefined at cleanup time (e.g.
   // when the <Show> that controls this component unmounts because the focused
   // agent changed), so we must track the registered ID non-reactively.
   let registeredAgentId: string | null = null
+
+  /** Register the editor ref if the editor is ready and both refs are available. */
+  const tryRegisterEditorRef = (agentId: string) => {
+    if (editorReady && editorContentRef && editorFocusFn) {
+      registerEditorRef(agentId, { get: editorContentRef.get, set: editorContentRef.set, focus: editorFocusFn })
+      registeredAgentId = agentId
+    }
+  }
 
   // Register/unregister editor refs with the global registry.
   onMount(() => {
@@ -155,10 +165,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       if (registeredAgentId === prevAgentId)
         registeredAgentId = null
     }
-    if (editorContentRef && editorFocusFn) {
-      registerEditorRef(agentId, { get: editorContentRef.get, set: editorContentRef.set, focus: editorFocusFn })
-      registeredAgentId = agentId
-    }
+    tryRegisterEditorRef(agentId)
   }))
 
   // Track previous non-plan mode for Shift+Tab toggling.
@@ -666,17 +673,13 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           focusRef={(fn) => {
             editorFocusFn = fn
             props.focusRef?.(fn)
-            if (editorContentRef) {
-              registerEditorRef(props.agentId, { get: editorContentRef.get, set: editorContentRef.set, focus: fn })
-              registeredAgentId = props.agentId
-            }
           }}
           contentRef={(get, set) => {
             editorContentRef = { get, set }
-            if (editorFocusFn) {
-              registerEditorRef(props.agentId, { get, set, focus: editorFocusFn })
-              registeredAgentId = props.agentId
-            }
+          }}
+          onReady={() => {
+            editorReady = true
+            tryRegisterEditorRef(props.agentId)
           }}
           placeholder={isAskUserQuestion() ? 'Type a custom answer...' : activeControlRequest() ? 'Type a rejection reason...' : undefined}
           allowEmptySend={!!activeControlRequest() && !isAskUserQuestion()}

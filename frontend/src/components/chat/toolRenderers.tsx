@@ -5,7 +5,6 @@ import type { MessageContentRenderer, RenderContext } from './messageRenderers'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, TaskInput, WebFetchInput, WebSearchInput, WriteInput } from '~/types/toolMessages'
 import { diffLines } from 'diff'
-import ArrowUpLeft from 'lucide-solid/icons/arrow-up-left'
 import Bot from 'lucide-solid/icons/bot'
 import Braces from 'lucide-solid/icons/braces'
 import Check from 'lucide-solid/icons/check'
@@ -19,6 +18,7 @@ import FolderSearch from 'lucide-solid/icons/folder-search'
 import Globe from 'lucide-solid/icons/globe'
 import ListTodo from 'lucide-solid/icons/list-todo'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
+import Quote from 'lucide-solid/icons/quote'
 import Rows2 from 'lucide-solid/icons/rows-2'
 import Search from 'lucide-solid/icons/search'
 import Terminal from 'lucide-solid/icons/terminal'
@@ -37,7 +37,7 @@ import { RelativeTime } from './RelativeTime'
 import {
   controlResponseTag,
   toolHeaderActions,
-  toolHeaderButtonHidden,
+  toolHeaderHiddenGroup,
   toolHeaderTimestamp,
   toolInputCode,
   toolInputDetail,
@@ -276,30 +276,30 @@ export function ToolHeaderActions(props: {
   const timestamp = () => props.updatedAt || props.createdAt
   return (
     <div class={toolHeaderActions} data-testid="message-toolbar">
-      <Show when={timestamp()}>
-        <RelativeTime
-          timestamp={timestamp()!}
-          class={`${toolHeaderButtonHidden} ${toolHeaderTimestamp}`}
-        />
-      </Show>
+      <div class={toolHeaderHiddenGroup}>
+        <Show when={timestamp()}>
+          <RelativeTime
+            timestamp={timestamp()!}
+            class={toolHeaderTimestamp}
+          />
+        </Show>
+        <Show when={props.onCopyJson}>
+          <IconButton
+            icon={props.jsonCopied ? Check : Braces}
+            size="sm"
+            data-testid="message-copy-json"
+            onClick={() => props.onCopyJson?.()}
+            title={props.jsonCopied ? 'Copied' : 'Copy Raw JSON'}
+          />
+        </Show>
+      </div>
       <Show when={props.onReply}>
         <IconButton
-          icon={ArrowUpLeft}
+          icon={Quote}
           size="sm"
-          class={toolHeaderButtonHidden}
-          data-testid="message-reply"
+          data-testid="message-quote"
           onClick={() => props.onReply?.()}
-          title="Reply"
-        />
-      </Show>
-      <Show when={props.onCopyJson}>
-        <IconButton
-          icon={props.jsonCopied ? Check : Braces}
-          size="sm"
-          class={toolHeaderButtonHidden}
-          data-testid="message-copy-json"
-          onClick={() => props.onCopyJson?.()}
-          title={props.jsonCopied ? 'Copied' : 'Copy Raw JSON'}
+          title="Quote"
         />
       </Show>
       <Show when={props.hasDiff && props.onToggleDiffView}>

@@ -8,6 +8,7 @@ import Folder from 'lucide-solid/icons/folder'
 import { createEffect, createSignal, For, Show, untrack } from 'solid-js'
 import { fileClient } from '~/api/clients'
 import { tildify } from '~/components/chat/messageUtils'
+import { IconButton } from '~/components/common/IconButton'
 import * as styles from './DirectoryTree.css'
 
 export interface DirectoryTreeProps {
@@ -190,17 +191,17 @@ const TreeNode: Component<{
         <span class={styles.nodeName}>{props.node.displayName}</span>
         <Show when={props.onMention}>
           <div class={styles.nodeActions}>
-            <button
-              class={styles.nodeActionButton}
+            <IconButton
+              icon={AtSign}
+              iconSize={12}
+              size="sm"
               onClick={(e) => {
                 e.stopPropagation()
                 props.onMention?.(props.node.path)
               }}
               title="Mention in the chat"
               data-testid="tree-mention-button"
-            >
-              <AtSign size={12} />
-            </button>
+            />
           </div>
         </Show>
       </div>
