@@ -48,34 +48,32 @@ export const GenericToolActions: Component<ActionsProps> = (props) => {
   }
 
   return (
-    <Show
-      when={!props.hasEditorContent}
-      fallback={(
-        <button
-          class="outline"
-          onClick={handleDeny}
-          data-testid="control-deny-btn"
-        >
-          Send Feedback
-        </button>
-      )}
-    >
-      <ButtonGroup>
-        <button
-          onClick={handleAllow}
-          data-testid="control-allow-btn"
-        >
-          Allow
-        </button>
-        <button
-          data-variant="secondary"
-          onClick={handleBypassPermissions}
-          data-testid="control-bypass-btn"
-          title="Allow this request and stop asking for permissions"
-        >
-          & Bypass Permissions
-        </button>
-      </ButtonGroup>
-    </Show>
+    <>
+      <button
+        class="outline"
+        onClick={handleDeny}
+        data-testid="control-deny-btn"
+      >
+        {props.hasEditorContent ? 'Send Feedback' : 'Reject'}
+      </button>
+      <Show when={!props.hasEditorContent}>
+        <ButtonGroup>
+          <button
+            onClick={handleAllow}
+            data-testid="control-allow-btn"
+          >
+            Allow
+          </button>
+          <button
+            data-variant="secondary"
+            onClick={handleBypassPermissions}
+            data-testid="control-bypass-btn"
+            title="Allow this request and stop asking for permissions"
+          >
+            & Bypass Permissions
+          </button>
+        </ButtonGroup>
+      </Show>
+    </>
   )
 }
