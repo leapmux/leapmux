@@ -23,7 +23,7 @@ function makeAskState(): AskQuestionState {
 }
 
 describe('genericToolActions', () => {
-  it('shows Allow and Bypass Permissions when no editor content', () => {
+  it('shows Reject, Allow, and Bypass Permissions when no editor content', () => {
     render(() => (
       <GenericToolActions
         request={makeRequest()}
@@ -35,12 +35,13 @@ describe('genericToolActions', () => {
       />
     ))
 
+    expect(screen.getByTestId('control-deny-btn')).toBeTruthy()
+    expect(screen.getByTestId('control-deny-btn').textContent).toBe('Reject')
     expect(screen.getByTestId('control-allow-btn')).toBeTruthy()
     expect(screen.getByTestId('control-bypass-btn')).toBeTruthy()
-    expect(screen.queryByTestId('control-deny-btn')).toBeNull()
   })
 
-  it('shows only Deny when editor has content', () => {
+  it('shows only Send Feedback when editor has content', () => {
     render(() => (
       <GenericToolActions
         request={makeRequest()}
@@ -53,6 +54,7 @@ describe('genericToolActions', () => {
     ))
 
     expect(screen.getByTestId('control-deny-btn')).toBeTruthy()
+    expect(screen.getByTestId('control-deny-btn').textContent).toBe('Send Feedback')
     expect(screen.queryByTestId('control-allow-btn')).toBeNull()
     expect(screen.queryByTestId('control-bypass-btn')).toBeNull()
   })
