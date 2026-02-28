@@ -118,14 +118,6 @@ globalStyle(`${dialogCompact} > form > section > .vstack`, {
   minHeight: 0,
 })
 
-// The label wrapping the DirectoryTree needs to grow and use flex layout.
-globalStyle(`${dialogCompact} > form > section > .vstack > label:has(.${treeContainer})`, {
-  display: 'flex',
-  flexDirection: 'column',
-  flex: 1,
-  minHeight: 0,
-})
-
 // Dialog form utilities
 
 export const labelRow = style({
@@ -163,6 +155,14 @@ export const treeContainer = style({
   border: '1px solid var(--border)',
   borderRadius: 'var(--radius-medium)',
   overflow: 'hidden',
+})
+
+// The label wrapping the DirectoryTree needs to grow and use flex layout.
+globalStyle(`${dialogCompact} > form > section > .vstack > label:has(.${treeContainer})`, {
+  display: 'flex',
+  flexDirection: 'column',
+  flex: 1,
+  minHeight: 0,
 })
 
 // Worktree options
