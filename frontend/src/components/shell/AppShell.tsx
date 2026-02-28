@@ -106,8 +106,14 @@ export const AppShell: ParentComponent = (props) => {
   const isMobile = useIsMobile()
   const [leftSidebarOpen, setLeftSidebarOpen] = createSignal(false)
   const [rightSidebarOpen, setRightSidebarOpen] = createSignal(false)
-  const toggleLeftSidebar = () => setLeftSidebarOpen(prev => !prev)
-  const toggleRightSidebar = () => setRightSidebarOpen(prev => !prev)
+  const toggleLeftSidebar = () => {
+    setLeftSidebarOpen(prev => !prev)
+    setRightSidebarOpen(false)
+  }
+  const toggleRightSidebar = () => {
+    setRightSidebarOpen(prev => !prev)
+    setLeftSidebarOpen(false)
+  }
   const closeAllSidebars = () => {
     setLeftSidebarOpen(false)
     setRightSidebarOpen(false)
@@ -1407,37 +1413,45 @@ export const AppShell: ParentComponent = (props) => {
             when={!isMobile()}
             fallback={(
               /* ---- Mobile layout ---- */
-              <div class={styles.mobileShell}>
-                {/* Overlay backdrop */}
-                <Show when={leftSidebarOpen() || rightSidebarOpen()}>
-                  <div class={styles.mobileOverlay} onClick={closeAllSidebars} />
-                </Show>
-
-                {/* Left sidebar overlay */}
-                <div
-                  class={styles.mobileSidebar}
-                  classList={{ [styles.mobileSidebarOpen]: leftSidebarOpen() }}
-                >
-                  {leftSidebarElement()}
-                </div>
-
-                {/* Right sidebar overlay */}
-                <div
-                  class={`${styles.mobileSidebar} ${styles.mobileSidebarRight}`}
-                  classList={{ [styles.mobileSidebarOpen]: rightSidebarOpen() }}
-                >
-                  {rightSidebarElement()}
-                </div>
-
-                {/* Center content - single tile on mobile */}
-                <div class={styles.mobileCenter}>
-                  {tabBarElement()}
-                  {renderTileContent(layoutStore.focusedTileId())}
-                  <Show when={focusedAgentId() && !isActiveWorkspaceArchived()}>
-                    <FocusedAgentEditorPanel containerHeight={0} />
+              <SectionDragProvider
+                sections={() => sectionStore.state.sections}
+                onMoveSection={handleMoveSection}
+                onMoveSectionServer={handleMoveSectionServer}
+              >
+                <div class={styles.mobileShell}>
+                  {/* Overlay backdrop */}
+                  <Show when={leftSidebarOpen() || rightSidebarOpen()}>
+                    <div class={styles.mobileOverlay} onClick={closeAllSidebars} />
                   </Show>
+
+                  {/* Left sidebar overlay */}
+                  <div
+                    class={styles.mobileSidebar}
+                    classList={{ [styles.mobileSidebarOpen]: leftSidebarOpen() }}
+                  >
+                    {leftSidebarElement()}
+                  </div>
+
+                  {/* Right sidebar overlay */}
+                  <div
+                    class={`${styles.mobileSidebar} ${styles.mobileSidebarRight}`}
+                    classList={{ [styles.mobileSidebarOpen]: rightSidebarOpen() }}
+                  >
+                    {rightSidebarElement()}
+                  </div>
+
+                  {/* Center content - single tile on mobile */}
+                  <div class={styles.mobileCenter}>
+                    <div class={styles.mobileTabBar}>
+                      {tabBarElement()}
+                    </div>
+                    {renderTileContent(layoutStore.focusedTileId())}
+                    <Show when={focusedAgentId() && !isActiveWorkspaceArchived()}>
+                      <FocusedAgentEditorPanel containerHeight={0} />
+                    </Show>
+                  </div>
                 </div>
-              </div>
+              </SectionDragProvider>
             )}
           >
             {/* ---- Desktop layout ---- */}
