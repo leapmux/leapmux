@@ -2,7 +2,8 @@ import type { Buffer } from 'node:buffer'
 import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { approveRegistrationViaAPI, deregisterWorkerViaAPI, loginViaUI } from './helpers'
+import { approveRegistrationViaAPI, deregisterWorkerViaAPI } from './helpers/api'
+import { loginViaUI } from './helpers/ui'
 import { expect, processTest as test } from './process-control-fixtures'
 
 // This file spawns its own temporary worker so that deregistering it

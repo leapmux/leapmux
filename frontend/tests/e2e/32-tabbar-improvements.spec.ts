@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { openAgentViaUI } from './helpers'
+import { openAgentViaUI } from './helpers/ui'
 
 test.describe('TabBar Improvements', () => {
   test('should create a new agent via the agent button', async ({ page, authenticatedWorkspace }) => {

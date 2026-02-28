@@ -1,5 +1,7 @@
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, getRecordedToasts, loginViaToken, openWorkspaceContextMenu, waitForWorkspaceReady } from './helpers'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
+import { getRecordedToasts } from './helpers/toast'
+import { loginViaToken, openWorkspaceContextMenu, waitForWorkspaceReady } from './helpers/ui'
 
 test.describe('Workspace UX Enhancements', () => {
   test('should auto-activate first workspace on org root', async ({ page, leapmuxServer }) => {

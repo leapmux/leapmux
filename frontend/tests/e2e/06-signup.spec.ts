@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { signUpViaUI } from './helpers'
+import { signUpViaUI } from './helpers/ui'
 
 test.describe('Sign Up', () => {
   test('should sign up with valid credentials and redirect', async ({ page }) => {

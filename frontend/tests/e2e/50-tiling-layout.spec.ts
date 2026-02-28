@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { waitForLayoutSave } from './helpers'
+import { waitForLayoutSave } from './helpers/ui'
 
 /** Open a new agent via the tab bar add menu. */
 async function openAgentViaUI(page: import('@playwright/test').Page) {

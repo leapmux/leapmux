@@ -1,6 +1,7 @@
 import process from 'node:process'
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, loginViaToken, waitForWorkspaceReady } from './helpers'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
+import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
 test.describe('File Browser Navigation', () => {
   test('should open file browser tab and show files', async ({ page, leapmuxServer }) => {

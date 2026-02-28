@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { loginViaUI } from './helpers'
+import { loginViaUI } from './helpers/ui'
 
 test.describe('Worker Management', () => {
   test('should show Workers link in user menu and navigate to page', async ({ page }) => {

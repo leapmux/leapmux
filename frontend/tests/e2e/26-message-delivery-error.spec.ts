@@ -1,4 +1,5 @@
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, loginViaToken, loginViaUI, waitForWorkspaceReady } from './helpers'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
+import { loginViaToken, loginViaUI, waitForWorkspaceReady } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Message Delivery Error', () => {

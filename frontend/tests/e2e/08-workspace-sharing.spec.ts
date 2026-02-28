@@ -1,5 +1,6 @@
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, inviteToOrgViaAPI, loginViaToken, loginViaUI, openWorkspaceContextMenu, shareWorkspaceViaAPI, waitForWorkspaceReady } from './helpers'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, inviteToOrgViaAPI, shareWorkspaceViaAPI } from './helpers/api'
+import { loginViaToken, loginViaUI, openWorkspaceContextMenu, waitForWorkspaceReady } from './helpers/ui'
 
 test.describe('Workspace Sharing', () => {
   // Ensure newuser is invited to admin's org before any test in this file.

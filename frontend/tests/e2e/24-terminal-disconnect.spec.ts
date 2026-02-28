@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, loginViaToken, waitForWorkspaceReady } from './helpers'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
+import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 import { ensureWorkerOnline, expect, stopWorker, processTest as test } from './process-control-fixtures'
 
 /** Read terminal text content from the active xterm's buffer. */

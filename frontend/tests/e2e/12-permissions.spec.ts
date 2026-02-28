@@ -1,5 +1,6 @@
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, inviteToOrgViaAPI, loginViaToken, loginViaUI, shareWorkspaceViaAPI } from './helpers'
+import { createWorkspaceViaAPI, inviteToOrgViaAPI, shareWorkspaceViaAPI } from './helpers/api'
+import { loginViaToken, loginViaUI } from './helpers/ui'
 
 test.describe('Permissions', () => {
   let sharedWorkspaceId: string

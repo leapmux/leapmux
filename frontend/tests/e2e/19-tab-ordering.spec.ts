@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { waitForLayoutSave } from './helpers'
+import { waitForLayoutSave } from './helpers/ui'
 
 test.describe('Tab Ordering Persistence', () => {
   test('should persist tab order after drag-drop reorder and page refresh', async ({ page, authenticatedWorkspace }) => {

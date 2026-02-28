@@ -1,6 +1,7 @@
 import process from 'node:process'
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, loginViaToken, waitForWorkspaceReady } from './helpers'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
+import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
 test.describe('File Browser', () => {
   test('should display file entries when workspace is active', async ({ page, leapmuxServer }) => {

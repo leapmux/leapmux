@@ -1,5 +1,6 @@
 import { expect, test } from './fixtures'
-import { deleteAllWorkspacesViaAPI, loginViaToken } from './helpers'
+import { deleteAllWorkspacesViaAPI } from './helpers/api'
+import { loginViaToken } from './helpers/ui'
 
 /** Close all tabs in the workspace by clicking close buttons. */
 async function closeAllTabs(page: import('@playwright/test').Page) {

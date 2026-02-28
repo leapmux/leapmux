@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { loginViaUI } from './helpers'
+import { loginViaUI } from './helpers/ui'
 
 test.describe('Admin Settings', () => {
   test('should access admin page as admin user', async ({ page }) => {

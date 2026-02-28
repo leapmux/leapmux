@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { enterAndExitPlanMode } from './helpers'
+import { enterAndExitPlanMode } from './helpers/plan-mode'
 
 test.describe('Plan Mode Tab Auto-Naming', () => {
   test('auto-names tab from plan title, respects manual rename', async ({ page, authenticatedWorkspace }) => {

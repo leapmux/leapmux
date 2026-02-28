@@ -3,11 +3,8 @@ import { execSync } from 'node:child_process'
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test } from './fixtures'
-import {
-  createWorkspaceViaAPI,
-  loginViaToken,
-  waitForWorkspaceReady,
-} from './helpers'
+import { createWorkspaceViaAPI } from './helpers/api'
+import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
 /**
  * Create a git repo inside the server's data directory so the worker can access it.

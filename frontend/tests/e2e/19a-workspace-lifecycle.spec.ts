@@ -1,5 +1,6 @@
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, loginViaToken, waitForWorkspaceReady } from './helpers'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
+import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
 test.describe('Workspace Lifecycle', () => {
   test('should create multiple workspaces and show all in sidebar', async ({ page, leapmuxServer }) => {

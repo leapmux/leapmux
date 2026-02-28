@@ -1,5 +1,6 @@
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openWorkspaceContextMenu, waitForWorkspaceReady } from './helpers'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
+import { openWorkspaceContextMenu, waitForWorkspaceReady } from './helpers/ui'
 
 test.describe('Workspace Context Menu', () => {
   test('should show context menu options for owned workspace', async ({ page, authenticatedWorkspace }) => {

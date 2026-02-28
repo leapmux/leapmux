@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { waitForLayoutSave } from './helpers'
+import { waitForLayoutSave } from './helpers/ui'
 
 /** Read terminal text content from the active xterm's buffer (WebGL renderer makes DOM rows empty). */
 async function getTerminalText(page: Page): Promise<string> {

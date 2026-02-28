@@ -1,13 +1,7 @@
 import process from 'node:process'
 import { expect, test } from './fixtures'
-import {
-  createWorkspaceViaAPI,
-  deleteWorkspaceViaAPI,
-  loginViaToken,
-  sendMessage,
-  waitForAgentIdle,
-  waitForWorkspaceReady,
-} from './helpers'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
+import { loginViaToken, sendMessage, waitForAgentIdle, waitForWorkspaceReady } from './helpers/ui'
 
 test.describe('Quote and Mention', () => {
   test('reply button on assistant message inserts quoted text into editor', async ({ page, authenticatedWorkspace }) => {

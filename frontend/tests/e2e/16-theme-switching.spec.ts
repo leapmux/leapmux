@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { loginViaUI, setInitialTheme } from './helpers'
+import { loginViaUI, setInitialTheme } from './helpers/ui'
 
 test.describe('Theme Switching', () => {
   test('should show theme options on preferences page', async ({ page }) => {

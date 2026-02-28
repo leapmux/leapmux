@@ -1,6 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { waitForLayoutSave } from './helpers'
+import { waitForLayoutSave } from './helpers/ui'
 
 /** Wait for the workspace to be fully loaded with its initial agent tab. */
 async function waitForInitialAgent(page: Page) {
