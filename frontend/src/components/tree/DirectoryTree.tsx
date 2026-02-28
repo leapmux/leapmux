@@ -430,22 +430,6 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   // Restore state from sessionStorage when rootPath changes
   createEffect(() => {
     const key = storageKey()
-
-    // Migrate old expand-only keys
-    const oldKey = `directoryTree:expanded:${props.rootPath ?? '~'}`
-    try {
-      const oldData = sessionStorage.getItem(oldKey)
-      if (oldData) {
-        sessionStorage.removeItem(oldKey)
-        const paths: string[] = JSON.parse(oldData)
-        const expanded: Record<string, boolean> = {}
-        for (const p of paths) expanded[p] = true
-        setState({ expandedPaths: expanded, childrenCache: {} })
-        return
-      }
-    }
-    catch { /* ignore */ }
-
     try {
       const stored = sessionStorage.getItem(key)
       if (stored) {
