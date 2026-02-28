@@ -1641,13 +1641,20 @@ test.describe('ArrowDown Code Block Scroll', () => {
 })
 
 test.describe('Send Feedback Button Labels', () => {
-  test('ExitPlanMode banner shows Send Feedback instead of Reject', async ({ page, authenticatedWorkspace }) => {
+  test('ExitPlanMode banner shows Reject when editor is empty, Send Feedback when typing', async ({ page, authenticatedWorkspace }) => {
     // Enter plan mode, write a dummy plan, and exit
     const banner = await enterAndExitPlanMode(page)
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
-    // Verify the reject button says "Send Feedback"
     const rejectBtn = page.locator('[data-testid="plan-reject-btn"]')
+
+    // With empty editor, button should say "Reject"
+    await expect(rejectBtn).toHaveText('Reject')
+
+    // Type feedback into the editor — button should switch to "Send Feedback"
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await editor.click()
+    await page.keyboard.type('Please reconsider this approach')
     await expect(rejectBtn).toHaveText('Send Feedback')
   })
 })

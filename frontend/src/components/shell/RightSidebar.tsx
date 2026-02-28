@@ -168,6 +168,7 @@ export const RightSidebar: Component<RightSidebarProps> = (props) => {
                   iconSize={iconSize.sm}
                   size="md"
                   title={`New workspace in ${section.name}`}
+                  data-testid={sectionType === SectionType.WORKSPACES_IN_PROGRESS ? 'sidebar-new-workspace' : undefined}
                   onClick={(e) => {
                     e.stopPropagation()
                     e.preventDefault()

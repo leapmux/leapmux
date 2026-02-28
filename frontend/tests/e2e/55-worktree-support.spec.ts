@@ -60,7 +60,8 @@ async function waitForOrgPageReady(page: Page) {
 async function openNewWorkspaceDialog(page: Page) {
   const sidebarBtn = page.locator('[data-testid="sidebar-new-workspace"]')
   const createBtn = page.locator('[data-testid="create-workspace-button"]')
-  await expect(sidebarBtn.or(createBtn)).toBeVisible()
+  // Use .first() to avoid strict mode violation when both buttons are visible
+  await expect(sidebarBtn.or(createBtn).first()).toBeVisible()
   if (await sidebarBtn.isVisible())
     await sidebarBtn.click()
   else
