@@ -209,6 +209,59 @@ describe('askUserQuestion thread rendering', () => {
 // rawJson (Copy Raw JSON feature)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Thinking message toolbar buttons (Quote / Copy Markdown)
+// ---------------------------------------------------------------------------
+
+describe('thinking message toolbar buttons', () => {
+  it('shows Quote and Copy Markdown buttons for thinking messages', () => {
+    const innerMsg = {
+      type: 'assistant',
+      message: { content: [{ type: 'thinking', thinking: 'Let me think about this...' }] },
+    }
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([innerMsg]),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} onReply={() => {}} />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.queryByTestId('message-quote')).not.toBeNull()
+    expect(screen.queryByTestId('message-copy-markdown')).not.toBeNull()
+  })
+
+  it('copies thinking content to clipboard via Copy Markdown', async () => {
+    const thinkingText = 'Let me think step by step about this problem.'
+    const innerMsg = {
+      type: 'assistant',
+      message: { content: [{ type: 'thinking', thinking: thinkingText }] },
+    }
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([innerMsg]),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} onReply={() => {}} />
+      </PreferencesProvider>
+    ))
+
+    const copyBtn = screen.getByTestId('message-copy-markdown')
+    fireEvent.click(copyBtn)
+    await waitFor(() => expect(clipboardContent).not.toBeNull())
+    expect(clipboardContent).toBe(thinkingText)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rawJson (Copy Raw JSON feature)
+// ---------------------------------------------------------------------------
+
 describe('messageBubble rawJson', () => {
   it('includes metadata fields', async () => {
     const innerMsg = {

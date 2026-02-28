@@ -328,7 +328,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       return null
     return content
       .filter(c => c.type === 'text' || c.type === 'thinking')
-      .map(c => String(c.text || ''))
+      .map(c => String(c.type === 'thinking' ? (c as Record<string, unknown>).thinking || '' : c.text || ''))
       .join('\n')
       .trim() || null
   }
