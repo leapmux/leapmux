@@ -5,6 +5,8 @@ import ArrowDown from 'lucide-solid/icons/arrow-down'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createEffect, createSignal, For, on, onCleanup, onMount, Show, untrack } from 'solid-js'
 import { IconButton } from '~/components/common/IconButton'
+import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
+import { formatChatQuote } from '~/lib/quoteUtils'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { spinner } from '~/styles/animations.css'
 import { iconSize } from '~/styles/tokens'
@@ -42,6 +44,10 @@ interface ChatViewProps {
   scrollStateRef?: (fn: () => { distFromBottom: number, atBottom: boolean } | undefined) => void
   /** Ref to expose a function that forces an immediate scroll-to-bottom (e.g. when sending a message). */
   scrollToBottomRef?: (fn: () => void) => void
+  /** Called when the user quotes selected text in a chat message. */
+  onQuote?: (text: string) => void
+  /** Called when the user clicks the reply button on an assistant message. */
+  onReply?: (quotedText: string) => void
 }
 
 export const ChatView: Component<ChatViewProps> = (props) => {
@@ -267,31 +273,37 @@ export const ChatView: Component<ChatViewProps> = (props) => {
               </div>
             </Show>
             <div class={styles.messageListSpacer} />
-            <div ref={contentRef} class={styles.messageListContent}>
-              <For each={props.messages}>
-                {msg => (
-                  <div data-seq={msg.seq.toString()}>
-                    <MessageBubble
-                      message={msg}
-                      error={props.messageErrors?.[msg.id]}
-                      onRetry={() => props.onRetryMessage?.(msg.id)}
-                      onDelete={() => props.onDeleteMessage?.(msg.id)}
-                      workingDir={props.workingDir}
-                      homeDir={props.homeDir}
-                    />
+            <SelectionQuotePopover
+              containerRef={contentRef}
+              onQuote={text => props.onQuote?.(formatChatQuote(text))}
+            >
+              <div ref={contentRef} class={styles.messageListContent}>
+                <For each={props.messages}>
+                  {msg => (
+                    <div data-seq={msg.seq.toString()}>
+                      <MessageBubble
+                        message={msg}
+                        error={props.messageErrors?.[msg.id]}
+                        onRetry={() => props.onRetryMessage?.(msg.id)}
+                        onDelete={() => props.onDeleteMessage?.(msg.id)}
+                        workingDir={props.workingDir}
+                        homeDir={props.homeDir}
+                        onReply={props.onReply}
+                      />
+                    </div>
+                  )}
+                </For>
+                <Show when={props.streamingText}>
+                  <div class={assistantMessage}>
+                    {/* eslint-disable-next-line solid/no-innerhtml -- streaming text rendered via remark */}
+                    <div class={markdownContent} innerHTML={renderedStreamHtml()} />
                   </div>
-                )}
-              </For>
-              <Show when={props.streamingText}>
-                <div class={assistantMessage}>
-                  {/* eslint-disable-next-line solid/no-innerhtml -- streaming text rendered via remark */}
-                  <div class={markdownContent} innerHTML={renderedStreamHtml()} />
-                </div>
-              </Show>
-              <Show when={props.agentWorking && !props.streamingText}>
-                <ThinkingIndicator />
-              </Show>
-            </div>
+                </Show>
+                <Show when={props.agentWorking && !props.streamingText}>
+                  <ThinkingIndicator />
+                </Show>
+              </div>
+            </SelectionQuotePopover>
           </Show>
         </div>
         <Show when={!atBottom()}>

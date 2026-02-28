@@ -12,10 +12,12 @@ import { IconButton } from '~/components/common/IconButton'
 import { usePreferences } from '~/context/PreferencesContext'
 import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
+import { formatChatQuote } from '~/lib/quoteUtils'
 import * as styles from './MessageBubble.css'
 import { classifyMessage, messageBubbleClass, messageRowClass } from './messageClassification'
 import { renderMessageContent, ToolHeaderActions } from './messageRenderers'
 import * as chatStyles from './messageStyles.css'
+import { getAssistantContent } from './messageUtils'
 import { renderNotificationThread } from './notificationRenderers'
 
 function roleLabel(role: MessageRole): string {
@@ -95,6 +97,7 @@ interface MessageBubbleProps {
   onDelete?: () => void
   workingDir?: string
   homeDir?: string
+  onReply?: (quotedText: string) => void
 }
 
 export const MessageBubble: Component<MessageBubbleProps> = (props) => {
@@ -314,6 +317,28 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     }
   }
 
+  // Extract assistant text for the reply button.
+  const extractAssistantText = (): string | null => {
+    const cat = category()
+    if (cat.kind !== 'assistant_text' && cat.kind !== 'assistant_thinking')
+      return null
+    const content = getAssistantContent(parsed().parentObject)
+    if (!content)
+      return null
+    return content
+      .filter(c => c.type === 'text' || c.type === 'thinking')
+      .map(c => String(c.text || ''))
+      .join('\n')
+      .trim() || null
+  }
+
+  const handleReply = () => {
+    const text = extractAssistantText()
+    if (text && props.onReply) {
+      props.onReply(formatChatQuote(text))
+    }
+  }
+
   const rowClass = () => messageRowClass(category().kind, props.message.role)
   const bubbleClass = () => messageBubbleClass(category().kind, props.message.role)
 
@@ -351,6 +376,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
               onToggleThread={() => setThreadExpanded(prev => !prev)}
               onCopyJson={copyJson}
               jsonCopied={jsonCopied()}
+              onReply={extractAssistantText() ? handleReply : undefined}
             />
           </Show>
         </div>

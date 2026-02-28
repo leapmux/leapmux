@@ -48,6 +48,7 @@ interface LeftSidebarProps {
   fileTreePath: string
   onFileSelect: (path: string) => void
   onFileOpen?: (path: string) => void
+  onFileMention?: (path: string) => void
   showTodos: boolean
   activeTodos: TodoItem[]
 }
@@ -212,6 +213,7 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
                 selectedPath={props.fileTreePath}
                 onSelect={props.onFileSelect}
                 onFileOpen={props.onFileOpen}
+                onMention={props.onFileMention}
                 rootPath={props.workingDir || '~'}
                 homeDir={props.homeDir}
               />

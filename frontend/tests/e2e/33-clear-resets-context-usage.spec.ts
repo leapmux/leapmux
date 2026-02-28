@@ -21,20 +21,14 @@ test.describe('Clear Command – Context Usage Reset', () => {
     const contextGrid = infoTrigger.locator('svg[viewBox="0 0 11 11"]')
     await expect(contextGrid).toBeVisible({ timeout: 60_000 })
 
-    // Verify the grid currently has at least one filled (active) square
-    // by checking that not all rects share the same computed fill color.
-    // Active squares use currentColor (or the warning variable) while
-    // inactive squares use --context-grid-inactive.
-    const getDistinctFillColors = () => contextGrid.evaluate((svg) => {
-      const rects = svg.querySelectorAll('rect')
-      const colors = new Set<string>()
-      for (const r of rects) {
-        colors.add(window.getComputedStyle(r).fill)
-      }
-      return [...colors]
+    // Record the pre-clear context percentage from the grid's aria-label.
+    const getContextPercentage = () => contextGrid.evaluate((svg) => {
+      const label = svg.getAttribute('aria-label')
+      const match = label?.match(/(\d+)%/)
+      return match ? Number(match[1]) : null
     })
-    const colorsBefore = await getDistinctFillColors()
-    expect(colorsBefore.length).toBeGreaterThan(1)
+    const percentBefore = await getContextPercentage()
+    expect(percentBefore).toBeGreaterThan(0)
 
     // Click the trigger to open the popover and verify it shows
     // the structured context usage info with the "Context" label.
@@ -42,8 +36,9 @@ test.describe('Clear Command – Context Usage Reset', () => {
     const popover = page.locator('[data-testid="session-id-popover"]')
     await expect(popover).toBeVisible()
     await expect(popover.getByText('Context')).toBeVisible()
-    // Click trigger again to close the popover.
-    await infoTrigger.click()
+    // Dismiss the popover with Escape (clicking the trigger may be
+    // intercepted by the popover overlay).
+    await page.keyboard.press('Escape')
     await expect(popover).not.toBeVisible()
 
     // Send /clear to reset the session
@@ -55,10 +50,19 @@ test.describe('Clear Command – Context Usage Reset', () => {
     // backend processed the clear and context_cleared event was received.
     await expect(page.getByText('Context cleared')).toBeVisible()
 
-    // After /clear, context usage is cleared. The ContextUsageGrid replaces
-    // the 3x3 grid with an Info icon fallback when contextUsage is undefined.
-    // The info trigger itself remains visible (session is still active).
+    // After /clear, the store clears contextUsage (grid briefly hidden),
+    // but the agent immediately sends a fresh agent_session_info with the
+    // new session's base context (system prompt), so the grid reappears
+    // with a much lower percentage. Verify the percentage dropped.
     await expect(infoTrigger).toBeVisible()
-    await expect(contextGrid).not.toBeVisible({ timeout: 10_000 })
+    await expect(async () => {
+      const count = await contextGrid.count()
+      if (count === 0)
+        return // Grid gone — clear worked
+      const pct = await getContextPercentage()
+      if (pct === null)
+        return // No percentage — clear worked
+      expect(pct).toBeLessThan(percentBefore!)
+    }).toPass({ timeout: 15_000 })
   })
 })

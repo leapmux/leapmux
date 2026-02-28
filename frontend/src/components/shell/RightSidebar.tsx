@@ -29,6 +29,7 @@ interface RightSidebarProps {
   fileTreePath: string
   onFileSelect: (path: string) => void
   onFileOpen?: (path: string) => void
+  onFileMention?: (path: string) => void
   sectionStore: ReturnType<typeof createSectionStore>
   isCollapsed: boolean
   onExpand: () => void
@@ -110,6 +111,7 @@ export const RightSidebar: Component<RightSidebarProps> = (props) => {
                 selectedPath={props.fileTreePath}
                 onSelect={props.onFileSelect}
                 onFileOpen={props.onFileOpen}
+                onMention={props.onFileMention}
                 rootPath={props.workingDir || '~'}
                 homeDir={props.homeDir}
               />

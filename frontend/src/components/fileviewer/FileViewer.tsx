@@ -26,6 +26,8 @@ export const FileViewer: Component<{
   filePath: string
   displayMode?: string
   onDisplayModeChange?: (mode: string) => void
+  onQuote?: (text: string, startLine?: number, endLine?: number) => void
+  onMention?: () => void
 }> = (props) => {
   const [loading, setLoading] = createSignal(true)
   const [error, setError] = createSignal<string | null>(null)
@@ -100,6 +102,8 @@ export const FileViewer: Component<{
               content={content()!}
               filePath={props.filePath}
               totalSize={totalSize()}
+              onQuote={props.onQuote}
+              onMention={props.onMention}
             />
           </Show>
           <Show when={viewMode() === 'markdown' && content()}>
@@ -109,6 +113,8 @@ export const FileViewer: Component<{
               totalSize={totalSize()}
               displayMode={props.displayMode}
               onDisplayModeChange={props.onDisplayModeChange}
+              onQuote={props.onQuote}
+              onMention={props.onMention}
             />
           </Show>
           <Show when={viewMode() === 'image' && content() && !imageTooLarge()}>
@@ -118,6 +124,8 @@ export const FileViewer: Component<{
               totalSize={totalSize()}
               displayMode={props.displayMode}
               onDisplayModeChange={props.onDisplayModeChange}
+              onQuote={props.onQuote}
+              onMention={props.onMention}
             />
           </Show>
           <Show when={viewMode() === 'binary' && content()}>

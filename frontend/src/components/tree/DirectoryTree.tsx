@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import type { FileInfo } from '~/generated/leapmux/v1/file_pb'
+import AtSign from 'lucide-solid/icons/at-sign'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import File from 'lucide-solid/icons/file'
@@ -15,6 +16,7 @@ export interface DirectoryTreeProps {
   selectedPath: string
   onSelect: (path: string) => void
   onFileOpen?: (path: string) => void
+  onMention?: (path: string) => void
   rootPath?: string
   homeDir?: string
 }
@@ -56,6 +58,7 @@ const TreeNode: Component<{
   selectedPath: string
   onSelect: (path: string) => void
   onFileOpen?: (path: string) => void
+  onMention?: (path: string) => void
   depth: number
   scrollContainer?: HTMLDivElement
 }> = (props) => {
@@ -185,6 +188,21 @@ const TreeNode: Component<{
           <Folder size={14} class={styles.folderIcon} />
         </Show>
         <span class={styles.nodeName}>{props.node.displayName}</span>
+        <Show when={props.onMention}>
+          <div class={styles.nodeActions}>
+            <button
+              class={styles.nodeActionButton}
+              onClick={(e) => {
+                e.stopPropagation()
+                props.onMention?.(props.node.path)
+              }}
+              title="Mention in the chat"
+              data-testid="tree-mention-button"
+            >
+              <AtSign size={12} />
+            </button>
+          </div>
+        </Show>
       </div>
       <Show when={loading()}>
         <div class={styles.loadingInline} style={{ 'padding-left': `${8 + (props.depth + 1) * 16}px` }}>
@@ -201,6 +219,7 @@ const TreeNode: Component<{
               selectedPath={props.selectedPath}
               onSelect={props.onSelect}
               onFileOpen={props.onFileOpen}
+              onMention={props.onMention}
               depth={props.depth + 1}
               scrollContainer={props.scrollContainer}
             />
@@ -307,6 +326,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
                   selectedPath={props.selectedPath}
                   onSelect={props.onSelect}
                   onFileOpen={props.onFileOpen}
+                  onMention={props.onMention}
                   depth={0}
                   scrollContainer={treeRef}
                 />

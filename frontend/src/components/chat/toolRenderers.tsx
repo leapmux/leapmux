@@ -5,6 +5,7 @@ import type { MessageContentRenderer, RenderContext } from './messageRenderers'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, TaskInput, WebFetchInput, WebSearchInput, WriteInput } from '~/types/toolMessages'
 import { diffLines } from 'diff'
+import ArrowUpLeft from 'lucide-solid/icons/arrow-up-left'
 import Bot from 'lucide-solid/icons/bot'
 import Braces from 'lucide-solid/icons/braces'
 import Check from 'lucide-solid/icons/check'
@@ -252,7 +253,7 @@ export function renderToolSubDetail(toolName: string, input: Record<string, unkn
   }
 }
 
-/** Actions area in tool header: Raw JSON copy + diff toggle + thread expander, all with tooltips. */
+/** Actions area in tool header: Reply + Raw JSON copy + diff toggle + thread expander, all with tooltips. */
 export function ToolHeaderActions(props: {
   /** ISO timestamp for relative time display. */
   createdAt?: string
@@ -269,6 +270,8 @@ export function ToolHeaderActions(props: {
   diffView?: DiffViewPreference
   /** Toggle diff view between unified and split. */
   onToggleDiffView?: () => void
+  /** Reply callback — when provided, shows a reply button. */
+  onReply?: () => void
 }): JSX.Element {
   const timestamp = () => props.updatedAt || props.createdAt
   return (
@@ -277,6 +280,16 @@ export function ToolHeaderActions(props: {
         <RelativeTime
           timestamp={timestamp()!}
           class={`${toolHeaderButtonHidden} ${toolHeaderTimestamp}`}
+        />
+      </Show>
+      <Show when={props.onReply}>
+        <IconButton
+          icon={ArrowUpLeft}
+          size="sm"
+          class={toolHeaderButtonHidden}
+          data-testid="message-reply"
+          onClick={() => props.onReply?.()}
+          title="Reply"
         />
       </Show>
       <Show when={props.onCopyJson}>

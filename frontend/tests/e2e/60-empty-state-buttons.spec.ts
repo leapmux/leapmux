@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { loginViaToken } from './helpers'
+import { deleteAllWorkspacesViaAPI, loginViaToken } from './helpers'
 
 /** Close all tabs in the workspace by clicking close buttons. */
 async function closeAllTabs(page: import('@playwright/test').Page) {
@@ -81,26 +81,20 @@ test.describe('Empty State Buttons', () => {
   })
 
   test('no-workspace state shows create workspace button', async ({ page, leapmuxServer }) => {
-    const { adminToken } = leapmuxServer
+    const { hubUrl, adminToken, adminOrgId } = leapmuxServer
 
-    // Log in and navigate to org root — other tests may have created workspaces
-    // which triggers auto-redirect. Only assert if the empty state is reachable.
+    // Delete all existing workspaces so the empty state is guaranteed.
+    await deleteAllWorkspacesViaAPI(hubUrl, adminToken, adminOrgId)
+
     await loginViaToken(page, adminToken)
     await page.goto('/o/admin')
 
-    // Wait for page to settle
     const createBtn = page.locator('[data-testid="create-workspace-button"]')
-    const sectionHeader = page.locator('[data-testid="section-header-workspaces_in_progress"]')
-      .or(page.locator('[data-testid="section-header-workspaces_archived"]'))
+    await expect(createBtn).toBeVisible()
+    await expect(createBtn).toHaveText(/Create a new workspace/)
 
-    await expect(createBtn.or(sectionHeader)).toBeVisible()
-
-    // Only test the button behavior if the empty state is visible
-    if (await createBtn.isVisible()) {
-      await expect(createBtn).toHaveText(/Create a new workspace/)
-      await createBtn.click()
-      await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
-      await page.keyboard.press('Escape')
-    }
+    await createBtn.click()
+    await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
+    await page.keyboard.press('Escape')
   })
 })

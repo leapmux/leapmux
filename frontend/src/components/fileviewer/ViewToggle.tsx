@@ -1,4 +1,5 @@
 import type { JSX } from 'solid-js'
+import AtSign from 'lucide-solid/icons/at-sign'
 import Code from 'lucide-solid/icons/code'
 import Columns2 from 'lucide-solid/icons/columns-2'
 import Eye from 'lucide-solid/icons/eye'
@@ -11,6 +12,7 @@ export function ViewToggle(props: {
   mode: ViewMode
   onToggle: (mode: ViewMode) => void
   showSplit?: boolean
+  onMention?: () => void
 }): JSX.Element {
   return (
     <div class={styles.viewToggle}>
@@ -40,6 +42,17 @@ export function ViewToggle(props: {
       >
         <Code size={14} />
       </button>
+      <Show when={props.onMention}>
+        <div style={{ 'border-left': '1px solid var(--border)' }} />
+        <button
+          class={styles.viewToggleButton}
+          onClick={() => props.onMention?.()}
+          title="Mention in the chat"
+          data-testid="file-mention-button"
+        >
+          <AtSign size={14} />
+        </button>
+      </Show>
     </div>
   )
 }

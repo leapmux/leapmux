@@ -4,6 +4,7 @@ import type { ParsedCatLine } from '~/components/chat/ReadResultView'
 import { createMemo, createSignal, Show, untrack } from 'solid-js'
 import { markdownContent } from '~/components/chat/markdownContent.css'
 import { ReadResultView } from '~/components/chat/ReadResultView'
+import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import * as styles from './FileViewer.css'
 import { TextFileView } from './TextFileView'
@@ -15,6 +16,8 @@ export function MarkdownFileView(props: {
   totalSize: number
   displayMode?: string
   onDisplayModeChange?: (mode: string) => void
+  onQuote?: (text: string, startLine?: number, endLine?: number) => void
+  onMention?: () => void
 }): JSX.Element {
   const [mode, setMode] = createSignal<ViewMode>(untrack(() => props.displayMode as ViewMode) || 'render')
 
@@ -39,6 +42,7 @@ export function MarkdownFileView(props: {
   // Proportional scroll sync for side-by-side view
   let leftRef!: HTMLDivElement
   let rightRef!: HTMLDivElement
+  let rightSourceRef: HTMLDivElement | undefined
   let ignoreScroll = false
 
   const syncScroll = (source: HTMLDivElement, target: HTMLDivElement) => {
@@ -55,7 +59,7 @@ export function MarkdownFileView(props: {
 
   return (
     <div class={styles.toggleViewContainer}>
-      <ViewToggle mode={mode()} onToggle={handleModeChange} showSplit />
+      <ViewToggle mode={mode()} onToggle={handleModeChange} showSplit onMention={props.onMention} />
       <Show when={mode() === 'render'}>
         <div class={styles.markdownContainer}>
           {/* eslint-disable-next-line solid/no-innerhtml -- intentional: rendered markdown */}
@@ -78,7 +82,14 @@ export function MarkdownFileView(props: {
             ref={rightRef}
             onScroll={() => syncScroll(rightRef, leftRef)}
           >
-            <ReadResultView lines={lines()} filePath={props.filePath} />
+            <SelectionQuotePopover
+              containerRef={rightSourceRef}
+              onQuote={(text, startLine, endLine) => props.onQuote?.(text, startLine, endLine)}
+            >
+              <div ref={rightSourceRef}>
+                <ReadResultView lines={lines()} filePath={props.filePath} />
+              </div>
+            </SelectionQuotePopover>
           </div>
         </div>
       </Show>
@@ -87,6 +98,7 @@ export function MarkdownFileView(props: {
           content={props.content}
           filePath={props.filePath}
           totalSize={props.totalSize}
+          onQuote={props.onQuote}
         />
       </Show>
     </div>

@@ -11,6 +11,7 @@ import { agentClient, gitClient, sectionClient, terminalClient, workspaceClient 
 import { agentCallTimeout, agentLoadingTimeoutMs, apiCallTimeout } from '~/api/transport'
 import { AgentEditorPanel } from '~/components/chat/AgentEditorPanel'
 import { ChatView } from '~/components/chat/ChatView'
+import { relativizePath } from '~/components/chat/messageUtils'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { NotFoundPage } from '~/components/common/NotFoundPage'
@@ -37,10 +38,12 @@ import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { useIsMobile } from '~/hooks/useIsMobile'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { after, mid } from '~/lib/lexorank'
+import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { createAgentStore } from '~/stores/agent.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
+import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { createLayoutStore } from '~/stores/layout.store'
 import { createSectionStore } from '~/stores/section.store'
 import { createTabStore, tabKey } from '~/stores/tab.store'
@@ -1068,6 +1071,14 @@ export const AppShell: ParentComponent = (props) => {
                     onClearSavedViewportScroll={() => chatStore.clearSavedViewportScroll(agentId)}
                     scrollStateRef={(fn) => { getScrollState = fn }}
                     scrollToBottomRef={(fn) => { forceScrollToBottom = fn }}
+                    onQuote={(text) => {
+                      appendText(agentId, text)
+                      focusEditor?.()
+                    }}
+                    onReply={(text) => {
+                      appendText(agentId, text)
+                      focusEditor?.()
+                    }}
                   />
                 </Show>
               </div>
@@ -1096,16 +1107,28 @@ export const AppShell: ParentComponent = (props) => {
 
         {/* File viewer content — mounted/unmounted with the active file tab */}
         <Show when={fileTab()} keyed>
-          {ft => (
-            <div class={styles.centerContent}>
-              <FileViewer
-                workerId={ft.workerId ?? ''}
-                filePath={ft.filePath ?? ''}
-                displayMode={ft.displayMode}
-                onDisplayModeChange={mode => tabStore.setTabDisplayMode(ft.type, ft.id, mode)}
-              />
-            </div>
-          )}
+          {(ft) => {
+            const fileHomeDir = agentStore.state.agents.find(a => a.workerId === ft.workerId)?.homeDir ?? ''
+            const fileRelPath = () => relativizePath(ft.filePath ?? '', agentStore.state.agents.find(a => a.workerId === ft.workerId)?.workingDir, fileHomeDir)
+            return (
+              <div class={styles.centerContent}>
+                <FileViewer
+                  workerId={ft.workerId ?? ''}
+                  filePath={ft.filePath ?? ''}
+                  displayMode={ft.displayMode}
+                  onDisplayModeChange={mode => tabStore.setTabDisplayMode(ft.type, ft.id, mode)}
+                  onQuote={(text, startLine, endLine) => {
+                    if (startLine != null && endLine != null) {
+                      insertIntoMruAgentEditor(tabStore, formatFileQuote(fileRelPath(), startLine, endLine, text))
+                    }
+                  }}
+                  onMention={() => {
+                    insertIntoMruAgentEditor(tabStore, formatFileMention(fileRelPath()))
+                  }}
+                />
+              </div>
+            )
+          }}
         </Show>
 
         {/* Fallback when no tabs exist */}
@@ -1283,6 +1306,10 @@ export const AppShell: ParentComponent = (props) => {
       fileTreePath={fileTreePath()}
       onFileSelect={setFileTreePath}
       onFileOpen={handleFileOpen}
+      onFileMention={(path) => {
+        const ctx = getCurrentTabContext()
+        insertIntoMruAgentEditor(tabStore, formatFileMention(relativizePath(path, ctx.workingDir, ctx.homeDir)))
+      }}
       showTodos={showTodos()}
       activeTodos={activeTodos()}
     />
@@ -1307,6 +1334,10 @@ export const AppShell: ParentComponent = (props) => {
       fileTreePath={fileTreePath()}
       onFileSelect={setFileTreePath}
       onFileOpen={handleFileOpen}
+      onFileMention={(path) => {
+        const ctx = getCurrentTabContext()
+        insertIntoMruAgentEditor(tabStore, formatFileMention(relativizePath(path, ctx.workingDir, ctx.homeDir)))
+      }}
       sectionStore={sectionStore}
       isCollapsed={opts?.isCollapsed() ?? false}
       onExpand={opts?.onExpand ?? (() => {})}

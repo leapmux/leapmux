@@ -109,7 +109,7 @@ export function ReadResultView(props: {
             return t?.[index()] ?? null
           }
           return (
-            <div class={codeViewLine}>
+            <div class={codeViewLine} data-line-num={line.num}>
               <span
                 class={codeViewLineNumber}
                 style={{ width: lineNumWidth() }}

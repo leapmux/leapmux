@@ -32,12 +32,20 @@ async function clickOption(page: Page, label: string) {
   await option.click()
 }
 
+// AskUserQuestion requires `description` for every option. Include it in all
+// test payloads so the tool call passes validation regardless of whether the
+// LLM copies the JSON literally or rewrites it.
+
+const COLOR_Q_3 = '{"question":"Pick a color","header":"Color","multiSelect":false,"options":[{"label":"Red","description":"Red color"},{"label":"Blue","description":"Blue color"},{"label":"Green","description":"Green color"}]}'
+const COLOR_Q_2 = '{"question":"Pick a color","header":"Color","multiSelect":false,"options":[{"label":"Red","description":"Red color"},{"label":"Blue","description":"Blue color"}]}'
+const SIZE_Q = '{"question":"Pick a size","header":"Size","multiSelect":false,"options":[{"label":"Small","description":"Small size"},{"label":"Large","description":"Large size"}]}'
+
 test.describe('Control Request - AskUserQuestion', () => {
   test('single question - select an option and submit', async ({ page, authenticatedWorkspace }) => {
     // Send a message that triggers AskUserQuestion
     await sendMessage(
       page,
-      'Use AskUserQuestion and tell me what I answered: {"questions":[{"question":"Pick a color","header":"Color","multiSelect":false,"options":[{"label":"Red"},{"label":"Blue"},{"label":"Green"}]}]}',
+      `Use AskUserQuestion and tell me what I answered: {"questions":[${COLOR_Q_3}]}`,
     )
 
     // Wait for the control banner
@@ -72,7 +80,7 @@ test.describe('Control Request - AskUserQuestion', () => {
     // Send a message with 2 questions
     await sendMessage(
       page,
-      'Use AskUserQuestion and tell me what I answered: {"questions":[{"question":"Pick a color","header":"Color","multiSelect":false,"options":[{"label":"Red"},{"label":"Blue"}]},{"question":"Pick a size","header":"Size","multiSelect":false,"options":[{"label":"Small"},{"label":"Large"}]}]}',
+      `Use AskUserQuestion and tell me what I answered: {"questions":[${COLOR_Q_2},${SIZE_Q}]}`,
     )
 
     const banner = await waitForControlBanner(page)
@@ -112,7 +120,7 @@ test.describe('Control Request - AskUserQuestion', () => {
   test('multi-question - option click auto-advances to next page', async ({ page, authenticatedWorkspace }) => {
     await sendMessage(
       page,
-      'Use AskUserQuestion and tell me what I answered: {"questions":[{"question":"Pick a color","header":"Color","multiSelect":false,"options":[{"label":"Red"},{"label":"Blue"}]},{"question":"Pick a size","header":"Size","multiSelect":false,"options":[{"label":"Small"},{"label":"Large"}]}]}',
+      `Use AskUserQuestion and tell me what I answered: {"questions":[${COLOR_Q_2},${SIZE_Q}]}`,
     )
 
     const banner = await waitForControlBanner(page)
@@ -145,7 +153,7 @@ test.describe('Control Request - AskUserQuestion', () => {
   test('YOLO button fills unanswered questions', async ({ page, authenticatedWorkspace }) => {
     await sendMessage(
       page,
-      'Use AskUserQuestion and tell me what I answered: {"questions":[{"question":"Pick a color","header":"Color","multiSelect":false,"options":[{"label":"Red"},{"label":"Blue"}]},{"question":"Pick a size","header":"Size","multiSelect":false,"options":[{"label":"Small"},{"label":"Large"}]}]}',
+      `Use AskUserQuestion and tell me what I answered: {"questions":[${COLOR_Q_2},${SIZE_Q}]}`,
     )
 
     await waitForControlBanner(page)
@@ -170,7 +178,7 @@ test.describe('Control Request - AskUserQuestion', () => {
   test('Stop button rejects the request', async ({ page, authenticatedWorkspace }) => {
     await sendMessage(
       page,
-      'Use AskUserQuestion and tell me what I answered: {"questions":[{"question":"Pick a color","header":"Color","multiSelect":false,"options":[{"label":"Red"},{"label":"Blue"}]}]}',
+      `Use AskUserQuestion and tell me what I answered: {"questions":[${COLOR_Q_2}]}`,
     )
 
     await waitForControlBanner(page)

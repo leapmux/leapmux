@@ -53,6 +53,22 @@ async function waitForOrgPageReady(page: Page) {
 }
 
 /**
+ * Open the "New Workspace" dialog by clicking whichever button is available.
+ * The left sidebar may be collapsed (rail mode), hiding `sidebar-new-workspace`.
+ * Fall back to the empty-state `create-workspace-button` in the main area.
+ */
+async function openNewWorkspaceDialog(page: Page) {
+  const sidebarBtn = page.locator('[data-testid="sidebar-new-workspace"]')
+  const createBtn = page.locator('[data-testid="create-workspace-button"]')
+  await expect(sidebarBtn.or(createBtn)).toBeVisible()
+  if (await sidebarBtn.isVisible())
+    await sidebarBtn.click()
+  else
+    await createBtn.click()
+  await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
+}
+
+/**
  * Create a workspace with a worktree enabled via the ConnectRPC API.
  * Returns the workspace ID.
  */
@@ -280,8 +296,7 @@ test.describe('Worktree Support', () => {
     await waitForOrgPageReady(page)
 
     // Open new workspace dialog via sidebar button
-    await page.locator('[data-testid="sidebar-new-workspace"]').click()
-    await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
+    await openNewWorkspaceDialog(page)
 
     await waitForWorker(page)
 
@@ -315,8 +330,7 @@ test.describe('Worktree Support', () => {
     await page.goto('/o/admin')
     await waitForOrgPageReady(page)
 
-    await page.locator('[data-testid="sidebar-new-workspace"]').click()
-    await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
+    await openNewWorkspaceDialog(page)
 
     await waitForWorker(page)
 
@@ -346,8 +360,7 @@ test.describe('Worktree Support', () => {
     await page.goto('/o/admin')
     await waitForOrgPageReady(page)
 
-    await page.locator('[data-testid="sidebar-new-workspace"]').click()
-    await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
+    await openNewWorkspaceDialog(page)
 
     await waitForWorker(page)
 
@@ -440,8 +453,7 @@ test.describe('Worktree Support', () => {
     await page.goto('/o/admin')
     await waitForOrgPageReady(page)
 
-    await page.locator('[data-testid="sidebar-new-workspace"]').click()
-    await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
+    await openNewWorkspaceDialog(page)
 
     await waitForWorker(page)
 
@@ -950,8 +962,7 @@ test.describe('Worktree Support', () => {
     await page.goto('/o/admin')
     await waitForOrgPageReady(page)
 
-    await page.locator('[data-testid="sidebar-new-workspace"]').click()
-    await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
+    await openNewWorkspaceDialog(page)
 
     await waitForWorker(page)
 
@@ -981,8 +992,7 @@ test.describe('Worktree Support', () => {
     await page.goto('/o/admin')
     await waitForOrgPageReady(page)
 
-    await page.locator('[data-testid="sidebar-new-workspace"]').click()
-    await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
+    await openNewWorkspaceDialog(page)
 
     await waitForWorker(page)
 
@@ -1058,8 +1068,7 @@ test.describe('Worktree Support', () => {
     await page.goto('/o/admin')
     await waitForOrgPageReady(page)
 
-    await page.locator('[data-testid="sidebar-new-workspace"]').click()
-    await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
+    await openNewWorkspaceDialog(page)
 
     await waitForWorker(page)
 
@@ -1115,8 +1124,7 @@ test.describe('Worktree Support', () => {
     await page.goto('/o/admin')
     await waitForOrgPageReady(page)
 
-    await page.locator('[data-testid="sidebar-new-workspace"]').click()
-    await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
+    await openNewWorkspaceDialog(page)
 
     await waitForWorker(page)
 
