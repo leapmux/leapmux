@@ -141,6 +141,9 @@ export function extractAssistantUsage(parsed: ParsedMessageContent): {
   const inner = getInnerMessage(parsed)
   if (!inner)
     return null
+  // Skip subagent messages — their usage is already included in the parent's totals.
+  if (inner.parent_tool_use_id)
+    return null
   const usage = (inner.message as Record<string, unknown> | undefined)?.usage as
     Record<string, unknown> | undefined
   if (!usage)
@@ -167,6 +170,9 @@ export function extractResultMetadata(parsed: ParsedMessageContent): {
 } | null {
   const inner = getInnerMessage(parsed)
   if (!inner)
+    return null
+  // Skip subagent messages — their usage is already included in the parent's totals.
+  if (inner.parent_tool_use_id)
     return null
 
   const result: { subtype?: string, contextWindow?: number, totalCostUsd?: number } = {}
