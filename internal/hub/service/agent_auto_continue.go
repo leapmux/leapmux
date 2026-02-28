@@ -20,9 +20,21 @@ import (
 // autoContinueState tracks backoff and cancellation for auto-continue
 // retries on a single agent.
 type autoContinueState struct {
-	mu      sync.Mutex
-	backoff *backoff.ExponentialBackOff
-	cancel  context.CancelFunc // cancels the pending goroutine; nil if none
+	mu         sync.Mutex
+	backoff    *backoff.ExponentialBackOff
+	cancel     context.CancelFunc // cancels the pending goroutine; nil if none
+	generation uint64             // incremented on each invalidation; stale goroutines bail
+}
+
+// invalidate cancels any pending goroutine and advances the generation so
+// a goroutine that already passed the timer can detect it is stale.
+// Must be called while holding s.mu.
+func (s *autoContinueState) invalidate() {
+	if s.cancel != nil {
+		s.cancel()
+		s.cancel = nil
+	}
+	s.generation++
 }
 
 // newAutoContinueBackoff creates an exponential backoff for auto-continue:
@@ -82,10 +94,8 @@ func (s *AgentService) scheduleAutoContinue(agentID string) {
 	state := v.(*autoContinueState)
 
 	state.mu.Lock()
-	// Cancel any existing pending auto-continue.
-	if state.cancel != nil {
-		state.cancel()
-	}
+	state.invalidate()
+	gen := state.generation
 	interval := state.backoff.NextBackOff()
 	ctx, cancel := context.WithCancel(context.Background())
 	state.cancel = cancel
@@ -98,15 +108,17 @@ func (s *AgentService) scheduleAutoContinue(agentID string) {
 	go func() {
 		select {
 		case <-ctx.Done():
-			return
 		case <-time.After(interval):
 		}
-		// Re-check cancellation after the timer fires: when both channels
-		// are ready simultaneously, Go's select picks one at random, so
-		// the timer branch may win even though the context was cancelled.
-		if ctx.Err() != nil {
+		// Verify this goroutine is still the active one. A newer
+		// scheduleAutoContinue / cancel / reset / cleanup call
+		// increments generation, making older goroutines stale.
+		state.mu.Lock()
+		if state.generation != gen {
+			state.mu.Unlock()
 			return
 		}
+		state.mu.Unlock()
 		s.sendAutoContinueMessage(ctx, agentID)
 	}()
 }
@@ -120,10 +132,7 @@ func (s *AgentService) cancelAutoContinue(agentID string) {
 	}
 	state := v.(*autoContinueState)
 	state.mu.Lock()
-	if state.cancel != nil {
-		state.cancel()
-		state.cancel = nil
-	}
+	state.invalidate()
 	state.mu.Unlock()
 }
 
@@ -137,10 +146,7 @@ func (s *AgentService) resetAutoContinue(agentID string) {
 	}
 	state := v.(*autoContinueState)
 	state.mu.Lock()
-	if state.cancel != nil {
-		state.cancel()
-		state.cancel = nil
-	}
+	state.invalidate()
 	state.backoff.Reset()
 	state.mu.Unlock()
 }
@@ -154,10 +160,7 @@ func (s *AgentService) cleanupAutoContinue(agentID string) {
 	}
 	state := v.(*autoContinueState)
 	state.mu.Lock()
-	if state.cancel != nil {
-		state.cancel()
-		state.cancel = nil
-	}
+	state.invalidate()
 	state.mu.Unlock()
 }
 
