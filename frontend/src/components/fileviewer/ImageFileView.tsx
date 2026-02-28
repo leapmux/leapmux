@@ -4,7 +4,7 @@ import type { ViewMode } from './ViewToggle'
 import { createEffect, createMemo, createSignal, Match, onCleanup, Switch, untrack } from 'solid-js'
 import { isSvgExtension } from '~/lib/fileType'
 import * as styles from './FileViewer.css'
-import { ImageToolbar } from './ImageToolbar'
+import { ImageToolbar, ZOOM_MAX, ZOOM_MIN } from './ImageToolbar'
 import { TextFileView } from './TextFileView'
 import { ViewToggle } from './ViewToggle'
 
@@ -34,6 +34,8 @@ function ImageRender(props: {
   onZoomChange: (mode: ZoomMode) => void
 }): JSX.Element {
   let containerRef!: HTMLDivElement
+  let scrollRef!: HTMLDivElement
+  let imgRef!: HTMLImageElement
   const [naturalSize, setNaturalSize] = createSignal<{ w: number, h: number } | null>(null)
   const [containerSize, setContainerSize] = createSignal({ w: 0, h: 0 })
 
@@ -67,6 +69,59 @@ function ImageRender(props: {
     return Math.min(availW / ns.w, availH / ns.h)
   })
 
+  // Trackpad pinch-to-zoom: ctrlKey+wheel events zoom toward cursor position
+  createEffect(() => {
+    const el = scrollRef
+    if (!el)
+      return
+
+    const handleWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey)
+        return
+      e.preventDefault()
+
+      const ns = naturalSize()
+      if (!ns)
+        return
+
+      const currentZoom = props.zoom
+      const oldScale = currentZoom === 'fit'
+        ? (fitScale() ?? 1)
+        : currentZoom === 'actual' ? 1 : currentZoom
+
+      const newScale = Math.min(
+        ZOOM_MAX,
+        Math.max(ZOOM_MIN, oldScale * (1 + -e.deltaY * 0.01)),
+      )
+
+      // Cursor position as a fraction of the image
+      const imgRect = imgRef.getBoundingClientRect()
+      const fracX = (e.clientX - imgRect.left) / imgRect.width
+      const fracY = (e.clientY - imgRect.top) / imgRect.height
+
+      // Cursor position within the scroll viewport
+      const scrollRect = el.getBoundingClientRect()
+      const viewX = e.clientX - scrollRect.left
+      const viewY = e.clientY - scrollRect.top
+
+      // SolidJS updates DOM synchronously
+      props.onZoomChange(newScale)
+
+      // Compute new scroll position to keep the point under cursor stable
+      const newImgW = ns.w * newScale
+      const newImgH = ns.h * newScale
+      const contentW = Math.max(el.clientWidth, newImgW + WRAPPER_PADDING * 2)
+      const contentH = Math.max(el.clientHeight, newImgH + WRAPPER_PADDING * 2)
+      const imgOffsetX = (contentW - newImgW) / 2
+      const imgOffsetY = (contentH - newImgH) / 2
+      el.scrollLeft = imgOffsetX + fracX * newImgW - viewX + e.deltaX
+      el.scrollTop = imgOffsetY + fracY * newImgH - viewY
+    }
+
+    el.addEventListener('wheel', handleWheel, { passive: false })
+    onCleanup(() => el.removeEventListener('wheel', handleWheel))
+  })
+
   const displaySize = createMemo(() => {
     const ns = naturalSize()
     if (!ns)
@@ -92,9 +147,10 @@ function ImageRender(props: {
   return (
     <div ref={containerRef} class={styles.imageRenderContainer}>
       <ImageToolbar zoom={props.zoom} fitScale={fitScale()} onZoomChange={props.onZoomChange} />
-      <div class={styles.imageScrollContainer}>
+      <div ref={scrollRef} class={styles.imageScrollContainer}>
         <div class={styles.imageZoomWrapper}>
           <img
+            ref={imgRef}
             src={blobUrl()}
             alt={alt()}
             class={styles.imageCheckerboard}
