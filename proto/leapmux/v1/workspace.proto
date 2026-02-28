@@ -135,6 +135,8 @@ message WorkspaceTab {
   string tab_id = 2;
   string position = 3;
   string tile_id = 4;
+  string working_dir = 5;        // Tab's working directory context
+  string shell_start_dir = 6;    // Where the shell started (terminal tabs only)
 }
 
 message ListTabsRequest {

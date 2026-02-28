@@ -109,10 +109,14 @@ export const nodeActions = style({
   alignItems: 'center',
   marginLeft: 'auto',
   flexShrink: 0,
+})
+
+export const nodeMenuTrigger = style({
   opacity: 0,
   transition: 'opacity 0.15s',
   selectors: {
     [`${node}:hover &`]: { opacity: 1 },
+    '&[aria-expanded="true"]': { opacity: 1 },
   },
 })
 

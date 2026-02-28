@@ -187,11 +187,13 @@ CREATE INDEX idx_workspace_section_items_section ON workspace_section_items(sect
 
 -- Workspace tabs (unified ordering for agents + terminals)
 CREATE TABLE workspace_tabs (
-    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    tab_type     INTEGER NOT NULL,
-    tab_id       TEXT NOT NULL,
-    position     TEXT NOT NULL,
-    tile_id      TEXT NOT NULL DEFAULT '',
+    workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    tab_type        INTEGER NOT NULL,
+    tab_id          TEXT NOT NULL,
+    position        TEXT NOT NULL,
+    tile_id         TEXT NOT NULL DEFAULT '',
+    working_dir     TEXT NOT NULL DEFAULT '',
+    shell_start_dir TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (workspace_id, tab_type, tab_id)
 );
 CREATE INDEX idx_workspace_tabs_workspace ON workspace_tabs(workspace_id);

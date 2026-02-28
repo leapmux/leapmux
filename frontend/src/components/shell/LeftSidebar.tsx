@@ -49,6 +49,7 @@ interface LeftSidebarProps {
   onFileSelect: (path: string) => void
   onFileOpen?: (path: string) => void
   onFileMention?: (path: string) => void
+  onOpenTerminal?: (dirPath: string) => void
   showTodos: boolean
   activeTodos: TodoItem[]
 }
@@ -221,6 +222,7 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
                 onSelect={props.onFileSelect}
                 onFileOpen={props.onFileOpen}
                 onMention={props.onFileMention}
+                onOpenTerminal={props.onOpenTerminal}
                 rootPath={props.workingDir || '~'}
                 homeDir={props.homeDir}
               />

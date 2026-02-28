@@ -209,11 +209,13 @@ func (s *WorkspaceService) CreateWorkspace(
 	// Create initial tab entry for the agent.
 	if agentID != "" {
 		if err := s.queries.UpsertWorkspaceTab(ctx, db.UpsertWorkspaceTabParams{
-			WorkspaceID: workspaceID,
-			TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-			TabID:       agentID,
-			Position:    lexorank.First(),
-			TileID:      "",
+			WorkspaceID:   workspaceID,
+			TabType:       leapmuxv1.TabType_TAB_TYPE_AGENT,
+			TabID:         agentID,
+			Position:      lexorank.First(),
+			TileID:        "",
+			WorkingDir:    workingDir,
+			ShellStartDir: "",
 		}); err != nil {
 			slog.Warn("failed to create initial workspace tab", "workspace_id", workspaceID, "agent_id", agentID, "error", err)
 		}
@@ -562,10 +564,12 @@ func (s *WorkspaceService) ListTabs(
 	protoTabs := make([]*leapmuxv1.WorkspaceTab, len(tabs))
 	for i, tab := range tabs {
 		protoTabs[i] = &leapmuxv1.WorkspaceTab{
-			TabType:  tab.TabType,
-			TabId:    tab.TabID,
-			Position: tab.Position,
-			TileId:   tab.TileID,
+			TabType:       tab.TabType,
+			TabId:         tab.TabID,
+			Position:      tab.Position,
+			TileId:        tab.TileID,
+			WorkingDir:    tab.WorkingDir,
+			ShellStartDir: tab.ShellStartDir,
 		}
 	}
 

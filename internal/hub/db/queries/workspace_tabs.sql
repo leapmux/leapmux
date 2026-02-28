@@ -1,9 +1,11 @@
 -- name: UpsertWorkspaceTab :exec
-INSERT INTO workspace_tabs (workspace_id, tab_type, tab_id, position, tile_id)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO workspace_tabs (workspace_id, tab_type, tab_id, position, tile_id, working_dir, shell_start_dir)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (workspace_id, tab_type, tab_id) DO UPDATE SET
   position = excluded.position,
-  tile_id = excluded.tile_id;
+  tile_id = excluded.tile_id,
+  working_dir = excluded.working_dir,
+  shell_start_dir = excluded.shell_start_dir;
 
 -- name: ListWorkspaceTabsByWorkspace :many
 SELECT * FROM workspace_tabs

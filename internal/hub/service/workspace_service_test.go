@@ -942,6 +942,40 @@ func TestWorkspaceService_SaveLayout_CrossTileTabMove(t *testing.T) {
 	assert.Equal(t, "tile-1", tabMap["term-1"])
 }
 
+func TestWorkspaceService_SaveLayout_TabDirs(t *testing.T) {
+	env := setupWorkspaceTest(t)
+	workspaceID := env.createWorkspaceInDB(t, "SaveLayout Tab Dirs")
+	ctx := context.Background()
+
+	_, err := env.client.SaveLayout(ctx, authedReq(&leapmuxv1.SaveLayoutRequest{
+		OrgId:       env.orgID,
+		WorkspaceId: workspaceID,
+		Layout:      singleTileLayout("tile-1"),
+		Tabs: []*leapmuxv1.WorkspaceTab{
+			{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "term-1", Position: "a", TileId: "tile-1", WorkingDir: "/home/user", ShellStartDir: "/home/user/project"},
+			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1", Position: "b", TileId: "tile-1", WorkingDir: "/workspace"},
+		},
+	}, env.token))
+	require.NoError(t, err)
+
+	resp, err := env.client.ListTabs(ctx, authedReq(&leapmuxv1.ListTabsRequest{
+		OrgId:       env.orgID,
+		WorkspaceId: workspaceID,
+	}, env.token))
+	require.NoError(t, err)
+	require.Len(t, resp.Msg.GetTabs(), 2)
+
+	tabMap := map[string]*leapmuxv1.WorkspaceTab{}
+	for _, tab := range resp.Msg.GetTabs() {
+		tabMap[tab.GetTabId()] = tab
+	}
+
+	assert.Equal(t, "/home/user", tabMap["term-1"].GetWorkingDir())
+	assert.Equal(t, "/home/user/project", tabMap["term-1"].GetShellStartDir())
+	assert.Equal(t, "/workspace", tabMap["agent-1"].GetWorkingDir())
+	assert.Equal(t, "", tabMap["agent-1"].GetShellStartDir())
+}
+
 func TestWorkspaceService_GetWorkspace_WrongOrgID(t *testing.T) {
 	env := setupWorkspaceTest(t)
 	workspaceID := env.createWorkspaceInDB(t, "Org Mismatch")

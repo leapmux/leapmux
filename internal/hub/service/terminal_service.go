@@ -20,8 +20,10 @@ import (
 
 // terminalInfo holds the routing info for a single terminal.
 type terminalInfo struct {
-	workspaceID string
-	workerID    string
+	workspaceID   string
+	workerID      string
+	workingDir    string
+	shellStartDir string
 }
 
 // TerminalService implements the TerminalServiceHandler interface.
@@ -126,6 +128,18 @@ func (s *TerminalService) OpenTerminal(
 	if workingDir == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid working directory"))
 	}
+
+	// Resolve shell start directory: if provided, validate it; otherwise default to workingDir.
+	shellStartDir := req.Msg.GetShellStartDir()
+	if shellStartDir != "" {
+		shellStartDir = validate.SanitizePath(shellStartDir, worker.HomeDir)
+		if shellStartDir == "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid shell start directory"))
+		}
+	} else {
+		shellStartDir = workingDir
+	}
+
 	var worktreeID string
 	if req.Msg.GetCreateWorktree() {
 		var wtErr error
@@ -164,7 +178,7 @@ func (s *TerminalService) OpenTerminal(
 				TerminalId:  terminalID,
 				Cols:        cols,
 				Rows:        rows,
-				WorkingDir:  workingDir,
+				WorkingDir:  shellStartDir,
 				Shell:       req.Msg.GetShell(),
 				WorkspaceId: req.Msg.GetWorkspaceId(),
 			},
@@ -181,7 +195,7 @@ func (s *TerminalService) OpenTerminal(
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%s", errMsg))
 	}
 
-	s.trackTerminal(terminalID, req.Msg.GetWorkspaceId(), workerID)
+	s.trackTerminal(terminalID, req.Msg.GetWorkspaceId(), workerID, workingDir, shellStartDir)
 
 	return connect.NewResponse(&leapmuxv1.OpenTerminalResponse{
 		TerminalId: terminalID,
@@ -387,13 +401,21 @@ func (s *TerminalService) ListTerminals(
 		termResp := resp.GetTerminalListResp()
 		if termResp != nil {
 			for _, t := range termResp.GetTerminals() {
-				allTerminals = append(allTerminals, &leapmuxv1.TerminalInfo{
+				info := &leapmuxv1.TerminalInfo{
 					TerminalId: t.GetTerminalId(),
 					Cols:       t.GetCols(),
 					Rows:       t.GetRows(),
 					Screen:     t.GetScreen(),
 					Exited:     t.GetExited(),
-				})
+				}
+				// Enrich with routing info (working_dir, shell_start_dir).
+				s.mu.RLock()
+				if ri, ok := s.terminalRoutes[t.GetTerminalId()]; ok {
+					info.WorkingDir = ri.workingDir
+					info.ShellStartDir = ri.shellStartDir
+				}
+				s.mu.RUnlock()
+				allTerminals = append(allTerminals, info)
 			}
 		}
 	}
@@ -474,15 +496,25 @@ func (s *TerminalService) HandleTerminalExited(exited *leapmuxv1.TerminalExited)
 	})
 }
 
-func (s *TerminalService) trackTerminal(terminalID, workspaceID, workerID string) {
+func (s *TerminalService) trackTerminal(terminalID, workspaceID, workerID, workingDir, shellStartDir string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.terminalRoutes[terminalID] = terminalInfo{workspaceID: workspaceID, workerID: workerID}
+	s.terminalRoutes[terminalID] = terminalInfo{
+		workspaceID:   workspaceID,
+		workerID:      workerID,
+		workingDir:    workingDir,
+		shellStartDir: shellStartDir,
+	}
 }
 
 // TrackTerminal registers a terminal in the routing table. Exported for testing.
 func (s *TerminalService) TrackTerminal(terminalID, workspaceID, workerID string) {
-	s.trackTerminal(terminalID, workspaceID, workerID)
+	s.trackTerminal(terminalID, workspaceID, workerID, "", "")
+}
+
+// TrackTerminalWithDirs registers a terminal with explicit directory info. Exported for testing.
+func (s *TerminalService) TrackTerminalWithDirs(terminalID, workspaceID, workerID, workingDir, shellStartDir string) {
+	s.trackTerminal(terminalID, workspaceID, workerID, workingDir, shellStartDir)
 }
 
 func (s *TerminalService) untrackTerminal(terminalID string) {

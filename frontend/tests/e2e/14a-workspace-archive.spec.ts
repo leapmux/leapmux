@@ -206,13 +206,18 @@ test.describe('Workspace Archive', () => {
       const packageJsonNode = page.getByText('package.json')
       await expect(packageJsonNode).toBeVisible({ timeout: 15_000 })
 
-      // Verify mention button IS visible before archive
+      // Verify mention button IS visible before archive (via context menu)
       await packageJsonNode.hover()
       const treeRow = packageJsonNode.locator('..')
-      const mentionButton = treeRow.locator('[data-testid="tree-mention-button"]')
+      const contextButton = treeRow.locator('[data-testid="tree-context-button"]')
+      await expect(contextButton).toBeVisible()
+      await contextButton.click()
+      const mentionButton = page.locator('[data-testid="tree-mention-button"]:visible')
       await expect(mentionButton).toBeVisible()
+      // Close menu by pressing Escape
+      await page.keyboard.press('Escape')
 
-      // Move mouse away to close the hover
+      // Move mouse away
       await page.mouse.move(0, 0)
 
       // Archive the workspace
@@ -223,8 +228,9 @@ test.describe('Workspace Archive', () => {
       // Wait for archived section
       await expect(page.locator('[data-testid="section-header-workspaces_archived"]')).toBeVisible()
 
-      // Hover over tree node — mention button should NOT be visible
+      // Hover over tree node — open context menu, mention button should NOT be there
       await packageJsonNode.hover()
+      await contextButton.click()
       await expect(mentionButton).not.toBeVisible()
     }
     finally {
