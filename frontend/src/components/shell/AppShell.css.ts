@@ -147,6 +147,11 @@ export const mobileOverlay = style({
   zIndex: 99,
 })
 
+export const mobileTabBar = style({
+  position: 'relative',
+  zIndex: 100,
+})
+
 // --- End mobile layout styles ---
 
 export const dragPreviewTooltip = style({
