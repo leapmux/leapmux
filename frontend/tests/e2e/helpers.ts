@@ -137,40 +137,83 @@ export async function clearRecordedToasts(page: Page) {
 }
 
 // ──────────────────────────────────────────────
-// Plan mode prompts
+// Common UI interaction helpers
 // ──────────────────────────────────────────────
 
-/**
- * Prompt that asks the LLM to enter and immediately exit plan mode with a
- * dummy plan.
- *
- * The prompt is intentionally explicit about several things so that the LLM
- * follows instructions reliably:
- * - Mentions "coding agent plan mode UI" to give the LLM context about what
- *   is being tested, so it does not try to actually implement anything.
- * - Names the exact tools to use (EnterPlanMode, ExitPlanMode) because the
- *   LLM sometimes invents alternative approaches when tool names are omitted.
- * - Specifies the plan title and body verbatim so that tests can assert on
- *   the rendered content deterministically.
- * - Includes "Never execute this plan." in the body so that when the plan is
- *   approved and executed, the LLM finishes quickly instead of spending
- *   minutes exploring the codebase.
- */
-export const PLAN_MODE_PROMPT
-  = 'I am testing the coding agent plan mode UI. Please use EnterPlanMode tool to enter plan mode, then immediately use ExitPlanMode tool to exit plan mode with a dummy plan whose title is "# Dummy plan" and whose body is "This is a dummy plan for testing the coding agent plan mode UI. Never execute this plan."'
+/** Send a message via the ProseMirror editor. */
+export async function sendMessage(page: Page, text: string) {
+  const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+  await expect(editor).toBeVisible()
+  await editor.click()
+  await page.keyboard.type(text, { delay: 100 })
+  await page.keyboard.press('Meta+Enter')
+}
+
+/** Wait for the control request banner to appear and return a scoped locator. */
+export async function waitForControlBanner(page: Page) {
+  const banner = page.locator('[data-testid="control-banner"]')
+  await expect(banner).toBeVisible({ timeout: 60_000 })
+  return banner
+}
+
+/** Wait for the agent to finish its current turn (thinking indicator gone). */
+export async function waitForAgentIdle(page: Page, timeoutMs = 120_000) {
+  // Brief delay so the thinking indicator has time to appear before we
+  // wait for it to disappear.
+  await page.waitForTimeout(2000)
+  await expect(page.locator('[data-testid="thinking-indicator"]'))
+    .not
+    .toBeVisible({ timeout: timeoutMs })
+}
+
+// ──────────────────────────────────────────────
+// Plan mode helpers
+// ──────────────────────────────────────────────
+//
+// Plan mode prompts are split into two steps so that each LLM invocation
+// has a single, deterministic task.  Combining EnterPlanMode + Write +
+// ExitPlanMode in one prompt caused flakiness because the LLM occasionally
+// skipped ExitPlanMode.
+
+const PLAN_BODY = 'This is a dummy plan for testing the coding agent plan mode UI. Never execute this plan.'
 
 /**
- * Generate a plan mode prompt with a unique plan title.
- *
- * Use this instead of {@link PLAN_MODE_PROMPT} when a test needs to
- * distinguish between multiple plan cycles (e.g. to assert that tab
- * auto-rename picks up the correct title). The generated title is
- * "Dummy plan [testId]".
- *
- * See {@link PLAN_MODE_PROMPT} for why the prompt is worded the way it is.
+ * Prompt for entering plan mode and writing a plan file.
+ * Does NOT call ExitPlanMode — use {@link EXIT_PLAN_PROMPT} for that.
  */
-export function planModePrompt(testId: string): string {
-  return `I am testing the coding agent plan mode UI. Please use EnterPlanMode tool to enter plan mode, then immediately use ExitPlanMode tool to exit plan mode with a plan whose title is "# Dummy plan ${testId}" and whose body is "This is a dummy plan for testing the coding agent plan mode UI. Never execute this plan."`
+export const ENTER_PLAN_PROMPT
+  = `I am testing the coding agent plan mode UI. Please use EnterPlanMode tool to enter plan mode, then write a plan file whose title is "# Dummy plan" and whose body is "${PLAN_BODY}" Do not call ExitPlanMode yet.`
+
+/**
+ * Generate an enter-plan prompt with a unique plan title.
+ * See {@link ENTER_PLAN_PROMPT} for the default version.
+ */
+export function enterPlanPrompt(testId: string): string {
+  return `I am testing the coding agent plan mode UI. Please use EnterPlanMode tool to enter plan mode, then write a plan file whose title is "# Dummy plan ${testId}" and whose body is "${PLAN_BODY}" Do not call ExitPlanMode yet.`
+}
+
+/** Prompt for exiting plan mode. Produces an ExitPlanMode control request. */
+export const EXIT_PLAN_PROMPT
+  = 'Please use ExitPlanMode tool to exit plan mode. Do not do anything else.'
+
+/**
+ * Enter plan mode, write a plan file, and exit.
+ * Returns the ExitPlanMode control-request banner so the caller can
+ * approve or reject it.
+ *
+ * @param page — Playwright page
+ * @param testId — Optional unique ID embedded in the plan title
+ *   (e.g. "first" → title "Dummy plan first").
+ */
+export async function enterAndExitPlanMode(page: Page, testId?: string) {
+  // Step 1: Enter plan mode and write the plan file.
+  const prompt = testId ? enterPlanPrompt(testId) : ENTER_PLAN_PROMPT
+  await sendMessage(page, prompt)
+  await waitForAgentIdle(page)
+
+  // Step 2: Exit plan mode (produces control_request banner).
+  await sendMessage(page, EXIT_PLAN_PROMPT)
+  return waitForControlBanner(page)
 }
 
 // ──────────────────────────────────────────────

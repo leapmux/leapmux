@@ -230,9 +230,10 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 
 	// Send an initial heartbeat to trigger the Hub's bidi stream handler.
 	// ConnectRPC with gRPC protocol only sends HTTP/2 headers on the first Send().
+	homeDir, _ := os.UserHomeDir()
 	if err := stream.Send(&leapmuxv1.ConnectRequest{
 		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
-			Heartbeat: &leapmuxv1.Heartbeat{},
+			Heartbeat: &leapmuxv1.Heartbeat{HomeDir: homeDir},
 		},
 	}); err != nil {
 		return fmt.Errorf("initial heartbeat: %w", err)

@@ -536,6 +536,89 @@ func TestWorkerManagement_Deregister_Nonexistent(t *testing.T) {
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
 
+func TestWorkerManagement_HomeDirInProto(t *testing.T) {
+	env := setupWorkerTestServer(t)
+	ctx := context.Background()
+	token := env.adminToken(t)
+
+	// Register a worker with home_dir in the registration request.
+	regResp, err := env.connectorClient.RequestRegistration(ctx, connect.NewRequest(
+		&leapmuxv1.RequestRegistrationRequest{
+			Hostname: "h1",
+			Os:       "linux",
+			Arch:     "amd64",
+			Version:  "0.1",
+			HomeDir:  "/home/testuser",
+		},
+	))
+	require.NoError(t, err)
+
+	// Approve the registration.
+	approveReq := connect.NewRequest(&leapmuxv1.ApproveRegistrationRequest{
+		RegistrationToken: regResp.Msg.GetRegistrationToken(),
+		Name:              "homedir-test",
+	})
+	approveReq.Header().Set("Authorization", "Bearer "+token)
+	approveResp, err := env.mgmtClient.ApproveRegistration(ctx, approveReq)
+	require.NoError(t, err)
+	workerID := approveResp.Msg.GetWorkerId()
+
+	// home_dir should be available immediately after approval (no heartbeat needed).
+	getResp, err := env.mgmtClient.GetWorker(ctx, authedReq(&leapmuxv1.GetWorkerRequest{WorkerId: workerID}, token))
+	require.NoError(t, err)
+	assert.Equal(t, "/home/testuser", getResp.Msg.GetWorker().GetHomeDir())
+
+	// ListWorkers should also include home_dir.
+	listResp, err := env.mgmtClient.ListWorkers(ctx, authedReq(&leapmuxv1.ListWorkersRequest{}, token))
+	require.NoError(t, err)
+	require.Len(t, listResp.Msg.GetWorkers(), 1)
+	assert.Equal(t, "/home/testuser", listResp.Msg.GetWorkers()[0].GetHomeDir())
+}
+
+func TestUpdateWorkerHomeDir_SkipsWhenSame(t *testing.T) {
+	env := setupWorkerTestServer(t)
+	ctx := context.Background()
+	token := env.adminToken(t)
+
+	workerID := env.createAndApproveWorker(t, token, "homedir-skip")
+
+	// Set initial home dir.
+	err := env.queries.UpdateWorkerHomeDir(ctx, gendb.UpdateWorkerHomeDirParams{
+		HomeDir:   "/home/user1",
+		ID:        workerID,
+		HomeDir_2: "/home/user1",
+	})
+	require.NoError(t, err)
+
+	// Verify it was set.
+	w, err := env.queries.GetWorkerByIDInternal(ctx, workerID)
+	require.NoError(t, err)
+	assert.Equal(t, "/home/user1", w.HomeDir)
+
+	// Call with the same value — should be a no-op (WHERE home_dir != ?).
+	err = env.queries.UpdateWorkerHomeDir(ctx, gendb.UpdateWorkerHomeDirParams{
+		HomeDir:   "/home/user1",
+		ID:        workerID,
+		HomeDir_2: "/home/user1",
+	})
+	require.NoError(t, err)
+	// Value should remain the same.
+	w2, err := env.queries.GetWorkerByIDInternal(ctx, workerID)
+	require.NoError(t, err)
+	assert.Equal(t, "/home/user1", w2.HomeDir)
+
+	// Update to a different value — should change.
+	err = env.queries.UpdateWorkerHomeDir(ctx, gendb.UpdateWorkerHomeDirParams{
+		HomeDir:   "/home/user2",
+		ID:        workerID,
+		HomeDir_2: "/home/user2",
+	})
+	require.NoError(t, err)
+	w3, err := env.queries.GetWorkerByIDInternal(ctx, workerID)
+	require.NoError(t, err)
+	assert.Equal(t, "/home/user2", w3.HomeDir)
+}
+
 func TestWorkerService_ListWorkers_Empty(t *testing.T) {
 	env := setupWorkerTestServer(t)
 	ctx := context.Background()

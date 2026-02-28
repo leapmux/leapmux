@@ -440,6 +440,43 @@ describe('createTabStore', () => {
     })
   })
 
+  it('should set display mode on a file tab', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      store.addTab({ type: TabType.FILE, id: 'f1', filePath: '/home/user/readme.md' })
+      store.setTabDisplayMode(TabType.FILE, 'f1', 'source')
+      expect(store.state.tabs[0].displayMode).toBe('source')
+      dispose()
+    })
+  })
+
+  it('should update display mode on an existing tab', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      store.addTab({ type: TabType.FILE, id: 'f1', filePath: '/home/user/readme.md' })
+      store.setTabDisplayMode(TabType.FILE, 'f1', 'render')
+      expect(store.state.tabs[0].displayMode).toBe('render')
+      store.setTabDisplayMode(TabType.FILE, 'f1', 'split')
+      expect(store.state.tabs[0].displayMode).toBe('split')
+      dispose()
+    })
+  })
+
+  it('should preserve display mode across other tab operations', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      store.addTab({ type: TabType.FILE, id: 'f1', filePath: '/home/user/readme.md' })
+      store.setTabDisplayMode(TabType.FILE, 'f1', 'split')
+      // Add another tab — f1 display mode should persist
+      store.addTab({ type: TabType.AGENT, id: 'a1' })
+      expect(store.state.tabs[0].displayMode).toBe('split')
+      // Update title — display mode should persist
+      store.updateTabTitle(TabType.FILE, 'f1', 'renamed')
+      expect(store.state.tabs[0].displayMode).toBe('split')
+      dispose()
+    })
+  })
+
   it('moveTabToTile with only one tab in source tile should set active to null', () => {
     createRoot((dispose) => {
       const store = createTabStore()

@@ -18,8 +18,11 @@ async function sendMessage(page: Page, text: string) {
  */
 async function allowToolExecutionIfNeeded(page: Page) {
   const allowBtn = page.locator('[data-testid="control-allow-btn"]')
+  // Use a short timeout so the test doesn't block for 30s when the tool
+  // is auto-approved (no banner). The banner typically appears within a
+  // few seconds if it's going to appear at all.
   try {
-    await expect(allowBtn).toBeVisible()
+    await expect(allowBtn).toBeVisible({ timeout: 10_000 })
     await allowBtn.click()
   }
   catch {
@@ -52,10 +55,12 @@ test.describe('ANSI Escape Sequence Rendering', () => {
     // The ANSI-rendered content will have a pre.shiki element inside the thread child bubble
     // (tool results render outside [data-testid="message-content"]).
     // If the tool output doesn't contain ANSI codes, it may render as a plain <code> element instead.
+    // Use a combined locator to wait for whichever element appears first, avoiding
+    // a racy one-shot check that can select the wrong locator before rendering finishes.
     const shikiPre = page.locator('[data-testid="thread-child-bubble"] pre.shiki')
     const plainCode = page.locator('[data-testid="thread-child-bubble"] code')
-    const outputElement = await shikiPre.isVisible().catch(() => false) ? shikiPre : plainCode
-    await expect(outputElement.first()).toBeVisible({ timeout: 10_000 })
+    const outputElement = shikiPre.or(plainCode)
+    await expect(outputElement.first()).toBeVisible({ timeout: 30_000 })
 
     // Verify some well-known root directories are present
     const textContent = await outputElement.first().textContent()

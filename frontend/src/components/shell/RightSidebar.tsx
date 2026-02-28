@@ -23,10 +23,12 @@ interface RightSidebarProps {
   workspaceId: string
   workerId: string
   workingDir: string
+  homeDir: string
   showTodos: boolean
   activeTodos: TodoItem[]
   fileTreePath: string
   onFileSelect: (path: string) => void
+  onFileOpen?: (path: string) => void
   sectionStore: ReturnType<typeof createSectionStore>
   isCollapsed: boolean
   onExpand: () => void
@@ -107,7 +109,9 @@ export const RightSidebar: Component<RightSidebarProps> = (props) => {
                 showFiles
                 selectedPath={props.fileTreePath}
                 onSelect={props.onFileSelect}
+                onFileOpen={props.onFileOpen}
                 rootPath={props.workingDir || '~'}
+                homeDir={props.homeDir}
               />
             </Show>
           ),

@@ -1,30 +1,10 @@
-import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { PLAN_MODE_PROMPT } from './helpers'
-
-/** Send a message via the ProseMirror editor. */
-async function sendMessage(page: Page, text: string) {
-  const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
-  await expect(editor).toBeVisible()
-  await editor.click()
-  await page.keyboard.type(text, { delay: 100 })
-  await page.keyboard.press('Meta+Enter')
-}
-
-/** Wait for the control request banner to appear and return a scoped locator. */
-async function waitForControlBanner(page: Page) {
-  const banner = page.locator('[data-testid="control-banner"]')
-  await expect(banner).toBeVisible({ timeout: 60_000 })
-  return banner
-}
+import { enterAndExitPlanMode, sendMessage, waitForControlBanner } from './helpers'
 
 test.describe('Control Request Draft Persistence', () => {
   test('ExitPlanMode draft survives page reload', async ({ page, authenticatedWorkspace }) => {
-    // Trigger EnterPlanMode then ExitPlanMode (ExitPlanMode produces a control banner).
-    await sendMessage(page, PLAN_MODE_PROMPT)
-
-    // Wait for ExitPlanMode control banner.
-    const banner = await waitForControlBanner(page)
+    // Enter plan mode, write a dummy plan, and exit.
+    const banner = await enterAndExitPlanMode(page)
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
     // Type a rejection reason in the editor.

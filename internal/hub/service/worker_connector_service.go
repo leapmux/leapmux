@@ -97,12 +97,15 @@ func (s *WorkerConnectorService) RequestRegistration(
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	homeDir := validate.SanitizePath(req.Msg.GetHomeDir(), "")
+
 	if err := s.queries.CreateRegistration(ctx, db.CreateRegistrationParams{
 		ID:        regID,
 		Hostname:  hostname,
 		Os:        osName,
 		Arch:      arch,
 		Version:   version,
+		HomeDir:   homeDir,
 		ExpiresAt: expiresAt,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create registration: %w", err))
@@ -304,9 +307,19 @@ func (s *WorkerConnectorService) processWorkerMessage(
 	msg *leapmuxv1.ConnectRequest,
 ) {
 	// Update last seen periodically on heartbeats.
-	if msg.GetHeartbeat() != nil {
+	if hb := msg.GetHeartbeat(); hb != nil {
 		if err := s.queries.UpdateWorkerLastSeen(ctx, workerID); err != nil {
 			slog.Warn("failed to update worker last seen on heartbeat", "worker_id", workerID, "error", err)
+		}
+		// Persist worker's home directory if provided (sent with the initial heartbeat).
+		if homeDir := validate.SanitizePath(hb.HomeDir, ""); homeDir != "" {
+			if err := s.queries.UpdateWorkerHomeDir(ctx, db.UpdateWorkerHomeDirParams{
+				HomeDir:   homeDir,
+				ID:        workerID,
+				HomeDir_2: homeDir,
+			}); err != nil {
+				slog.Warn("failed to update worker home dir", "worker_id", workerID, "error", err)
+			}
 		}
 		// Send heartbeat response.
 		if err := stream.Send(&leapmuxv1.ConnectResponse{
@@ -365,7 +378,7 @@ func (s *WorkerConnectorService) processWorkerMessage(
 			s.agentSvc.StoreGitStatus(agentID, gs)
 		}
 		// Persist worker home directory for tilde path display.
-		if homeDir := payload.AgentStarted.GetHomeDir(); homeDir != "" && agentID != "" {
+		if homeDir := validate.SanitizePath(payload.AgentStarted.GetHomeDir(), ""); homeDir != "" && agentID != "" {
 			if err := s.queries.UpdateAgentHomeDir(ctx, db.UpdateAgentHomeDirParams{
 				HomeDir: homeDir,
 				ID:      agentID,

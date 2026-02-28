@@ -1,22 +1,13 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { PLAN_MODE_PROMPT } from './helpers'
-
-/** Send a message via the ProseMirror editor. */
-async function sendMessage(page: Page, text: string) {
-  const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
-  await expect(editor).toBeVisible()
-  await editor.click()
-  await page.keyboard.type(text, { delay: 100 })
-  await page.keyboard.press('Meta+Enter')
-}
-
-/** Wait for the control request banner to appear. */
-async function waitForControlBanner(page: Page) {
-  const banner = page.locator('[data-testid="control-banner"]')
-  await expect(banner).toBeVisible({ timeout: 60_000 })
-  return banner
-}
+import {
+  ENTER_PLAN_PROMPT,
+  enterAndExitPlanMode,
+  EXIT_PLAN_PROMPT,
+  sendMessage,
+  waitForAgentIdle,
+  waitForControlBanner,
+} from './helpers'
 
 /** Wait for the settings loading spinner to disappear. */
 async function waitForSettingsIdle(page: Page) {
@@ -29,13 +20,15 @@ test.describe('Plan Mode - Bypass Permissions', () => {
     await expect(trigger).toBeVisible()
     await expect(trigger).toContainText('Default')
 
-    // Ask agent to enter plan mode, write a dummy plan, and exit
-    await sendMessage(page, PLAN_MODE_PROMPT)
+    // Step 1: Enter plan mode and write a dummy plan
+    await sendMessage(page, ENTER_PLAN_PROMPT)
 
     // Verify dropdown switches to Plan Mode (EnterPlanMode is auto-approved)
     await expect(trigger).toContainText('Plan Mode')
+    await waitForAgentIdle(page)
 
-    // Wait for ExitPlanMode control_request
+    // Step 2: Exit plan mode (produces control_request banner)
+    await sendMessage(page, EXIT_PLAN_PROMPT)
     const banner = await waitForControlBanner(page)
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
@@ -56,14 +49,8 @@ test.describe('Plan Mode - Bypass Permissions', () => {
   })
 
   test('approve and bypass buttons toggle with reject on editor content', async ({ page, authenticatedWorkspace }) => {
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
-    await expect(trigger).toBeVisible()
-
-    // Ask agent to enter plan mode, write a dummy plan, and exit
-    await sendMessage(page, PLAN_MODE_PROMPT)
-
-    // Wait for ExitPlanMode control_request
-    const banner = await waitForControlBanner(page)
+    // Enter plan mode, write a dummy plan, and exit
+    const banner = await enterAndExitPlanMode(page)
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
     // With empty editor: Reject, Approve and Bypass all visible

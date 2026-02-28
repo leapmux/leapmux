@@ -102,7 +102,16 @@ func (s *AgentService) OpenAgent(
 	if workerID == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))
 	}
-	workingDir := req.Msg.GetWorkingDir()
+
+	worker, err := s.queries.GetWorkerByIDInternal(ctx, workerID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	workingDir := validate.SanitizePath(req.Msg.GetWorkingDir(), worker.HomeDir)
 	if workingDir == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("working_dir is required"))
 	}
@@ -239,7 +248,7 @@ func (s *AgentService) OpenAgent(
 	}
 
 	// Persist the worker's home directory.
-	if agentHomeDir := resp.GetAgentStarted().GetHomeDir(); agentHomeDir != "" {
+	if agentHomeDir := validate.SanitizePath(resp.GetAgentStarted().GetHomeDir(), ""); agentHomeDir != "" {
 		if err := s.queries.UpdateAgentHomeDir(ctx, db.UpdateAgentHomeDirParams{
 			HomeDir: agentHomeDir,
 			ID:      agentID,

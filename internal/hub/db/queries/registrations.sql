@@ -1,6 +1,6 @@
 -- name: CreateRegistration :exec
-INSERT INTO worker_registrations (id, hostname, os, arch, version, expires_at)
-VALUES (?, ?, ?, ?, ?, ?);
+INSERT INTO worker_registrations (id, hostname, os, arch, version, home_dir, expires_at)
+VALUES (?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetRegistrationByID :one
 SELECT * FROM worker_registrations WHERE id = ?;

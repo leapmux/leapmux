@@ -51,7 +51,8 @@ func runWorker(args []string) error {
 	if state == nil || state.AuthToken == "" {
 		// No saved credentials — need to register.
 		hostname, _ := os.Hostname()
-		result, err := hub.Register(ctx, cfg.HubURL, hostname, runtime.GOOS, runtime.GOARCH, version)
+		homeDir, _ := os.UserHomeDir()
+		result, err := hub.Register(ctx, cfg.HubURL, hostname, runtime.GOOS, runtime.GOARCH, version, homeDir)
 		if err != nil {
 			return fmt.Errorf("registration: %w", err)
 		}

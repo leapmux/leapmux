@@ -1,22 +1,5 @@
-import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { planModePrompt } from './helpers'
-
-/** Send a message via the ProseMirror editor. */
-async function sendMessage(page: Page, text: string) {
-  const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
-  await expect(editor).toBeVisible()
-  await editor.click()
-  await page.keyboard.type(text, { delay: 100 })
-  await page.keyboard.press('Meta+Enter')
-}
-
-/** Wait for the control request banner to appear. */
-async function waitForControlBanner(page: Page) {
-  const banner = page.locator('[data-testid="control-banner"]')
-  await expect(banner).toBeVisible({ timeout: 60_000 })
-  return banner
-}
+import { enterAndExitPlanMode } from './helpers'
 
 test.describe('Plan Mode Tab Auto-Naming', () => {
   test('auto-names tab from plan title, respects manual rename', async ({ page, authenticatedWorkspace }) => {
@@ -26,17 +9,16 @@ test.describe('Plan Mode Tab Auto-Naming', () => {
     await expect(agentTab).toBeVisible()
     await expect(agentTab).toContainText('Agent')
 
-    // ── Step 2: Enter plan mode and exit with a plan ──
+    // ── Step 2: Enter plan mode, write the plan file, and exit ──
     // The plan body includes "Never execute this plan." so that after
     // approval the plan execution restart finishes quickly instead of
     // the agent spending minutes exploring the codebase.
-    await sendMessage(page, planModePrompt('first'))
+    const exitBanner = await enterAndExitPlanMode(page, 'first')
 
-    // Wait for the tab title to update from "Agent 1" to the plan's heading.
-    await expect(agentTab).toContainText('Dummy plan first', { timeout: 60_000 })
+    // Tab should be renamed by now (agent_renamed fires on Write).
+    await expect(agentTab).toContainText('Dummy plan first', { timeout: 10_000 })
 
     // ── Step 3: Approve the plan ──
-    const exitBanner = await waitForControlBanner(page)
     await expect(exitBanner.getByText('Plan Ready for Review')).toBeVisible()
     const approveBtn = page.locator('[data-testid="plan-approve-btn"]')
     await expect(approveBtn).toBeEnabled()
@@ -58,10 +40,7 @@ test.describe('Plan Mode Tab Auto-Naming', () => {
     await expect(agentTab).toContainText('My Custom Name')
 
     // ── Step 5: Enter plan mode again with a different plan heading ──
-    await sendMessage(page, planModePrompt('second'))
-
-    // Wait for ExitPlanMode banner so we know the plan file was written.
-    const exitBanner2 = await waitForControlBanner(page)
+    const exitBanner2 = await enterAndExitPlanMode(page, 'second')
     await expect(exitBanner2.getByText('Plan Ready for Review')).toBeVisible()
 
     // ── Step 6: Verify the tab title did NOT change ──

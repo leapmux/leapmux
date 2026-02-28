@@ -17,7 +17,7 @@ func TestListDirectory(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "file2.txt"), []byte("world"), 0o644))
 	require.NoError(t, os.Mkdir(filepath.Join(dir, "subdir"), 0o755))
 
-	absPath, entries, err := ListDirectory(dir)
+	absPath, entries, err := ListDirectory(dir, 0)
 	require.NoError(t, err, "ListDirectory")
 
 	assert.Equal(t, dir, absPath)
@@ -34,8 +34,73 @@ func TestListDirectory(t *testing.T) {
 }
 
 func TestListDirectory_NotExists(t *testing.T) {
-	_, _, err := ListDirectory("/nonexistent/path/xyz")
+	_, _, err := ListDirectory("/nonexistent/path/xyz", 0)
 	assert.Error(t, err, "expected error for nonexistent path")
+}
+
+func TestListDirectory_MergeSingleChild(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a chain: dir/a/b/c/ with a file in c
+	chain := filepath.Join(dir, "a", "b", "c")
+	require.NoError(t, os.MkdirAll(chain, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(chain, "file.txt"), []byte("hello"), 0o644))
+
+	// Without merging (maxDepth=0), should return just "a"
+	_, entries, err := ListDirectory(dir, 0)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "a", entries[0].Name)
+	assert.True(t, entries[0].IsDir)
+
+	// With merging (maxDepth=5), should return "a/b/c"
+	_, entries, err = ListDirectory(dir, 5)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "a/b/c", entries[0].Name)
+	assert.True(t, entries[0].IsDir)
+}
+
+func TestListDirectory_MergeStopsAtMultipleChildren(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create: dir/a/b1/ and dir/a/b2/
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "a", "b1"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "a", "b2"), 0o755))
+
+	// Merging should stop at "a" since it has two children
+	_, entries, err := ListDirectory(dir, 5)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "a", entries[0].Name)
+}
+
+func TestListDirectory_MergeRespectsMaxDepth(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a deep chain: dir/a/b/c/d/e/f/
+	chain := filepath.Join(dir, "a", "b", "c", "d", "e", "f")
+	require.NoError(t, os.MkdirAll(chain, 0o755))
+
+	// With maxDepth=2, should merge up to 2 levels: "a/b/c"
+	_, entries, err := ListDirectory(dir, 2)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "a/b/c", entries[0].Name)
+}
+
+func TestListDirectory_MergeIgnoresFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create: dir/a/ with a file (not a directory) as single child
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "a"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a", "file.txt"), []byte("hi"), 0o644))
+
+	// Merging should NOT merge file children — "a" stays as "a"
+	_, entries, err := ListDirectory(dir, 5)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "a", entries[0].Name)
 }
 
 func TestReadFile(t *testing.T) {
@@ -88,22 +153,6 @@ func TestStatFile_Directory(t *testing.T) {
 	assert.True(t, entry.IsDir, "expected IsDir = true")
 }
 
-func TestSecurePath_TildeExpansion(t *testing.T) {
-	home, err := os.UserHomeDir()
-	require.NoError(t, err, "UserHomeDir")
-
-	// ~ alone should resolve to home directory.
-	path, err := securePath("~")
-	require.NoError(t, err, "securePath(~)")
-	assert.Equal(t, home, path)
-
-	// ~/subdir should resolve to home + subdir.
-	path, err = securePath("~/Documents")
-	require.NoError(t, err, "securePath(~/Documents)")
-	want := filepath.Join(home, "Documents")
-	assert.Equal(t, want, path)
-}
-
 func TestReadFile_EmptyFile(t *testing.T) {
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "empty.txt")
@@ -121,19 +170,33 @@ func TestStatFile_NonExistent(t *testing.T) {
 	assert.Error(t, err, "expected error for non-existent path")
 }
 
-func TestSecurePath_NullByte(t *testing.T) {
-	_, err := securePath("/tmp/foo\x00bar")
-	assert.Error(t, err, "expected error for null byte in path")
+func TestTildeExpansion(t *testing.T) {
+	home, err := os.UserHomeDir()
+	require.NoError(t, err, "UserHomeDir")
+
+	// ~ alone should resolve to home directory via StatFile.
+	absPath, _, err := StatFile("~")
+	require.NoError(t, err, "StatFile(~)")
+	assert.Equal(t, home, absPath)
+
+	// ~/Documents should resolve to home + Documents.
+	// The directory may not exist, so just check that the error is NOT "invalid path".
+	absPath, _, err = StatFile("~/Documents")
+	if err != nil {
+		assert.NotContains(t, err.Error(), "invalid path", "tilde should be expanded, not rejected")
+	} else {
+		assert.Equal(t, filepath.Join(home, "Documents"), absPath)
+	}
 }
 
-func TestSecurePath_Empty(t *testing.T) {
-	_, err := securePath("")
+func TestEmptyPath(t *testing.T) {
+	_, _, err := StatFile("")
 	assert.Error(t, err, "expected error for empty path")
+	assert.Contains(t, err.Error(), "invalid path")
 }
 
-func TestSecurePath_Traversal(t *testing.T) {
-	// The path gets cleaned but is still resolved to absolute.
-	path, err := securePath("/tmp/../etc/passwd")
-	require.NoError(t, err, "securePath")
-	assert.Equal(t, "/etc/passwd", path)
+func TestPathTraversal_Rejected(t *testing.T) {
+	_, _, err := StatFile("/tmp/../etc/passwd")
+	assert.Error(t, err, "expected error for path traversal")
+	assert.Contains(t, err.Error(), "invalid path")
 }

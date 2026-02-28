@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/id"
 	"github.com/leapmux/leapmux/internal/hub/terminalmgr"
+	"github.com/leapmux/leapmux/internal/hub/validate"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 )
 
@@ -103,6 +105,14 @@ func (s *TerminalService) OpenTerminal(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))
 	}
 
+	worker, err := s.queries.GetWorkerByIDInternal(ctx, workerID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
 	conn := s.workerMgr.Get(workerID)
 	if conn == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker is offline"))
@@ -112,7 +122,10 @@ func (s *TerminalService) OpenTerminal(
 	}
 
 	// Create worktree if requested (before terminal start so failures are clean).
-	workingDir := req.Msg.GetWorkingDir()
+	workingDir := validate.SanitizePath(req.Msg.GetWorkingDir(), worker.HomeDir)
+	if workingDir == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid working directory"))
+	}
 	var worktreeID string
 	if req.Msg.GetCreateWorktree() {
 		var wtErr error

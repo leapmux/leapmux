@@ -81,6 +81,7 @@ func (s *WorkerManagementService) ApproveRegistration(
 		Arch:         reg.Arch,
 		AuthToken:    authToken,
 		RegisteredBy: user.ID,
+		HomeDir:      reg.HomeDir,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create worker: %w", err))
 	}
@@ -303,5 +304,6 @@ func (s *WorkerManagementService) workerToProto(b *db.Worker) *leapmuxv1.Worker 
 		CreatedAt:    timefmt.Format(b.CreatedAt),
 		LastSeenAt:   lastSeen,
 		RegisteredBy: b.RegisteredBy,
+		HomeDir:      b.HomeDir,
 	}
 }
