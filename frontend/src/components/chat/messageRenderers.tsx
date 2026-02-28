@@ -16,6 +16,7 @@ import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import Stamp from 'lucide-solid/icons/stamp'
 import Terminal from 'lucide-solid/icons/terminal'
 import TicketsPlane from 'lucide-solid/icons/tickets-plane'
+import Toolbox from 'lucide-solid/icons/toolbox'
 import Vote from 'lucide-solid/icons/vote'
 import { createSignal, For, Show } from 'solid-js'
 import { TodoList } from '~/components/todo/TodoList'
@@ -115,6 +116,35 @@ function renderEnterPlanMode(toolUse: Record<string, unknown>, context?: RenderC
           <TicketsPlane size={16} class={toolUseIcon} />
         </span>
         <span class={toolInputDetail}>Entering Plan Mode</span>
+        <ControlResponseTag response={context?.childControlResponse} />
+        <Show when={context}>
+          <ToolHeaderActions
+            createdAt={context!.createdAt}
+            updatedAt={context!.updatedAt}
+            threadCount={context!.threadChildCount ?? 0}
+            threadExpanded={context!.threadExpanded ?? false}
+            onToggleThread={context!.onToggleThread ?? (() => {})}
+            onCopyJson={context!.onCopyJson ?? (() => {})}
+            jsonCopied={context!.jsonCopied ?? false}
+          />
+        </Show>
+      </div>
+    </div>
+  )
+}
+
+/** Render Skill tool_use as "Skill: /<skill name>". */
+function renderSkill(toolUse: Record<string, unknown>, context?: RenderContext): JSX.Element {
+  const input = toolUse.input
+  const skillName = isObject(input) ? String((input as Record<string, unknown>).skill || '') : ''
+
+  return (
+    <div class={toolMessage}>
+      <div class={toolUseHeader}>
+        <span class={inlineFlex} title="Skill">
+          <Toolbox size={16} class={toolUseIcon} />
+        </span>
+        <span class={toolInputDetail}>{`Skill: /${skillName}`}</span>
         <ControlResponseTag response={context?.childControlResponse} />
         <Show when={context}>
           <ToolHeaderActions
@@ -317,6 +347,18 @@ const enterPlanModeRenderer: MessageContentRenderer = {
     if (!toolUse)
       return null
     return renderEnterPlanMode(toolUse as Record<string, unknown>, context)
+  },
+}
+
+const skillRenderer: MessageContentRenderer = {
+  render(parsed, _role, context) {
+    const content = getAssistantContent(parsed)
+    if (!content)
+      return null
+    const toolUse = content.find(c => isObject(c) && c.type === 'tool_use' && c.name === 'Skill')
+    if (!toolUse)
+      return null
+    return renderSkill(toolUse as Record<string, unknown>, context)
   },
 }
 
@@ -528,6 +570,7 @@ const SPECIALIZED_TOOL_RENDERERS: Record<string, (toolUse: Record<string, unknow
   ExitPlanMode: renderExitPlanMode,
   TodoWrite: renderTodoWrite,
   AskUserQuestion: renderAskUserQuestion,
+  Skill: renderSkill,
 }
 
 /** Dispatch rendering for a tool_use category: try specialized renderer first, then generic. */
@@ -610,6 +653,7 @@ function getFallbackRenderers(): MessageContentRenderer[] {
     _fallbackRenderers = [
       exitPlanModeRenderer,
       enterPlanModeRenderer,
+      skillRenderer,
       todoWriteRenderer,
       askUserQuestionRenderer,
       toolUseRenderer,
