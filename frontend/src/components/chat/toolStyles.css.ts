@@ -166,16 +166,6 @@ export const toolHeaderActions = style({
   display: 'flex',
   alignItems: 'center',
   gap: '2px',
-  marginLeft: 'auto',
-  paddingLeft: spacing.md,
-})
-
-// Group wrapper for buttons hidden by default and revealed on hover.
-// Animates as a single unit so all hidden buttons fade in/out together.
-export const toolHeaderHiddenGroup = style({
-  display: 'flex',
-  alignItems: 'center',
-  gap: '2px',
   opacity: 0,
   transition: 'opacity 0.15s',
 })
@@ -189,9 +179,9 @@ export const toolHeaderTimestamp = style({
   lineHeight: 1,
 })
 
-// When hovering the actions area, reveal the hidden group
-globalStyle(`${toolHeaderActions}:hover .${toolHeaderHiddenGroup}`, {
-  opacity: 1,
+// Inside tool-use headers, right-align the actions area
+globalStyle(`${toolUseHeader} .${toolHeaderActions}`, {
+  marginLeft: 'auto',
 })
 
 // Inline control response tag in tool header (approved/rejected indicator)

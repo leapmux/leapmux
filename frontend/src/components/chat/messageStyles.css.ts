@@ -1,6 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { spacing } from '~/styles/tokens'
-import { toolHeaderActions, toolHeaderHiddenGroup } from './toolStyles.css'
+import { toolHeaderActions, toolHeaderTimestamp } from './toolStyles.css'
 
 export const messageBubble = style({
   position: 'relative',
@@ -136,14 +136,35 @@ globalStyle(`${messageRow}:has(.${resultDivider}) > .${toolHeaderActions}`, {
   position: 'absolute',
   right: 0,
   marginLeft: 0,
-  paddingLeft: 0,
 })
 
-// Inside messageRowEnd, place actions to the left of the bubble
+// Inside messageRowEnd, place actions to the left of the bubble in a 2-column grid (mirrored via RTL)
 globalStyle(`${messageRowEnd} > .${toolHeaderActions}`, {
   order: -1,
-  marginLeft: 0,
-  paddingLeft: 0,
+  paddingRight: spacing.xs,
+  display: 'grid',
+  gridTemplateColumns: 'auto auto',
+  direction: 'rtl',
+})
+
+// Reset direction on children so text inside buttons renders LTR
+globalStyle(`${messageRowEnd} > .${toolHeaderActions} > *`, {
+  direction: 'ltr',
+})
+
+// 2-column grid layout for assistant/thinking bubble actions so primary actions sit adjacent to the bubble
+globalStyle(`${messageRow}:has(> .${assistantMessage}) > .${toolHeaderActions}, ${messageRow}:has(> .${thinkingMessage}) > .${toolHeaderActions}`, {
+  display: 'grid',
+  gridTemplateColumns: 'auto auto',
+})
+
+// Add left padding to timestamps in assistant grid so they align with the icon button below
+globalStyle(`${messageRow}:has(> .${assistantMessage}) > .${toolHeaderActions} .${toolHeaderTimestamp}, ${messageRow}:has(> .${thinkingMessage}) > .${toolHeaderActions} .${toolHeaderTimestamp}`, {
+  paddingLeft: spacing.xs,
+})
+
+// Add right padding to timestamps in user grid (mirrored) so they align with the icon button below
+globalStyle(`${messageRowEnd} > .${toolHeaderActions} .${toolHeaderTimestamp}`, {
   paddingRight: spacing.xs,
 })
 
@@ -152,11 +173,10 @@ globalStyle(`${messageRowCenter} > .${toolHeaderActions}`, {
   position: 'absolute',
   right: 0,
   marginLeft: 0,
-  paddingLeft: 0,
 })
 
-// When hovering a message row, reveal the hidden button group
-globalStyle(`${messageRow}:hover .${toolHeaderHiddenGroup}, ${messageRowEnd}:hover .${toolHeaderHiddenGroup}, ${messageRowCenter}:hover .${toolHeaderHiddenGroup}`, {
+// When hovering a message row, reveal the actions
+globalStyle(`${messageRow}:hover .${toolHeaderActions}, ${messageRowEnd}:hover .${toolHeaderActions}, ${messageRowCenter}:hover .${toolHeaderActions}`, {
   opacity: 1,
 })
 

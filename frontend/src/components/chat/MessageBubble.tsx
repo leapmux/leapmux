@@ -103,6 +103,7 @@ interface MessageBubbleProps {
 export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const prefs = usePreferences()
   const [jsonCopied, setJsonCopied] = createSignal(false)
+  const [markdownCopied, setMarkdownCopied] = createSignal(false)
   const [threadExpandedManual, setThreadExpandedManual] = createSignal<boolean | null>(null)
   let contentRef: HTMLDivElement | undefined
 
@@ -359,6 +360,15 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     }
   }
 
+  const copyMarkdown = async () => {
+    const text = extractQuotableText()
+    if (!text)
+      return
+    await navigator.clipboard.writeText(text)
+    setMarkdownCopied(true)
+    setTimeout(() => setMarkdownCopied(false), 2000)
+  }
+
   const rowClass = () => messageRowClass(category().kind, props.message.role)
   const bubbleClass = () => messageBubbleClass(category().kind, props.message.role)
 
@@ -397,6 +407,8 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
               onCopyJson={copyJson}
               jsonCopied={jsonCopied()}
               onReply={extractQuotableText() ? handleReply : undefined}
+              onCopyMarkdown={extractQuotableText() ? copyMarkdown : undefined}
+              markdownCopied={markdownCopied()}
             />
           </Show>
         </div>

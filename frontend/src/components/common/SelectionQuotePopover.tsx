@@ -1,4 +1,5 @@
 import type { JSX } from 'solid-js'
+import Copy from 'lucide-solid/icons/copy'
 import Quote from 'lucide-solid/icons/quote'
 import { createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { extractLineRange, extractSelectionMarkdown } from '~/lib/quoteUtils'
@@ -60,6 +61,20 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
     })
   }
 
+  const handleCopyClick = (e: MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const selection = window.getSelection()
+    if (!selection || selection.isCollapsed)
+      return
+
+    const lineRange = extractLineRange(selection)
+    const text = lineRange ? selection.toString() : extractSelectionMarkdown(selection)
+    void navigator.clipboard.writeText(text)
+    selection.removeAllRanges()
+    hidePopover()
+  }
+
   const handleQuoteClick = (e: MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
@@ -102,6 +117,14 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
           >
             <Quote size={14} />
             Quote
+          </button>
+          <button
+            class={styles.quoteButton}
+            onClick={handleCopyClick}
+            data-testid="copy-selection-button"
+          >
+            <Copy size={14} />
+            Copy
           </button>
         </div>
       </Show>

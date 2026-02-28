@@ -68,6 +68,41 @@ test.describe('Quote and Mention', () => {
     expect(blockquoteText).not.toContain('my follow-up')
   })
 
+  test('text selection copy button copies to clipboard', async ({ page, context, authenticatedWorkspace }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+
+    // Send a message and wait for the assistant to reply
+    await sendMessage(page, 'Say exactly: The quick brown fox jumps over the lazy dog')
+    await waitForAgentIdle(page)
+
+    // Find the assistant message content
+    const assistantBubble = page.locator('[data-testid="message-bubble"][data-role="assistant"]').first()
+    await expect(assistantBubble).toBeVisible()
+
+    const messageContent = assistantBubble.locator('[data-testid="message-content"]')
+
+    // Triple-click to select a paragraph of text
+    await messageContent.click({ clickCount: 3 })
+
+    // Wait for the popover to appear
+    await page.waitForTimeout(500)
+
+    // The copy button should appear
+    const copyButton = page.locator('[data-testid="copy-selection-button"]')
+    await expect(copyButton).toBeVisible({ timeout: 5_000 })
+
+    // Click the copy button
+    await copyButton.click()
+
+    // Clipboard should contain the selected text
+    const clipboardText = await page.evaluate(() => navigator.clipboard.readText())
+    expect(clipboardText).toBeTruthy()
+    expect(clipboardText.length).toBeGreaterThan(0)
+  })
+
   test('text selection in chat message shows quote popover', async ({ page, authenticatedWorkspace }) => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()

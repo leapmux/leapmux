@@ -1,4 +1,4 @@
-import { style } from '@vanilla-extract/css'
+import { globalStyle, style } from '@vanilla-extract/css'
 import { spacing } from '~/styles/tokens'
 
 export const popover = style({
@@ -35,4 +35,9 @@ export const quoteButton = style({
       color: 'var(--foreground)',
     },
   },
+})
+
+// Separator between adjacent buttons
+globalStyle(`${quoteButton} + .${quoteButton}`, {
+  borderLeft: '1px solid var(--border)',
 })

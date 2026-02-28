@@ -10,6 +10,7 @@ import Braces from 'lucide-solid/icons/braces'
 import Check from 'lucide-solid/icons/check'
 import ChevronsRight from 'lucide-solid/icons/chevrons-right'
 import Columns2 from 'lucide-solid/icons/columns-2'
+import Copy from 'lucide-solid/icons/copy'
 import FilePen from 'lucide-solid/icons/file-pen'
 import FilePlus from 'lucide-solid/icons/file-plus'
 import FileText from 'lucide-solid/icons/file-text'
@@ -37,7 +38,7 @@ import { RelativeTime } from './RelativeTime'
 import {
   controlResponseTag,
   toolHeaderActions,
-  toolHeaderHiddenGroup,
+
   toolHeaderTimestamp,
   toolInputCode,
   toolInputDetail,
@@ -272,27 +273,13 @@ export function ToolHeaderActions(props: {
   onToggleDiffView?: () => void
   /** Reply callback — when provided, shows a reply button. */
   onReply?: () => void
+  /** Copy markdown callback — when provided, shows a copy markdown button. */
+  onCopyMarkdown?: () => void
+  markdownCopied?: boolean
 }): JSX.Element {
   const timestamp = () => props.updatedAt || props.createdAt
   return (
     <div class={toolHeaderActions} data-testid="message-toolbar">
-      <div class={toolHeaderHiddenGroup}>
-        <Show when={timestamp()}>
-          <RelativeTime
-            timestamp={timestamp()!}
-            class={toolHeaderTimestamp}
-          />
-        </Show>
-        <Show when={props.onCopyJson}>
-          <IconButton
-            icon={props.jsonCopied ? Check : Braces}
-            size="sm"
-            data-testid="message-copy-json"
-            onClick={() => props.onCopyJson?.()}
-            title={props.jsonCopied ? 'Copied' : 'Copy Raw JSON'}
-          />
-        </Show>
-      </div>
       <Show when={props.onReply}>
         <IconButton
           icon={Quote}
@@ -300,6 +287,30 @@ export function ToolHeaderActions(props: {
           data-testid="message-quote"
           onClick={() => props.onReply?.()}
           title="Quote"
+        />
+      </Show>
+      <Show when={timestamp()}>
+        <RelativeTime
+          timestamp={timestamp()!}
+          class={toolHeaderTimestamp}
+        />
+      </Show>
+      <Show when={props.onCopyMarkdown}>
+        <IconButton
+          icon={props.markdownCopied ? Check : Copy}
+          size="sm"
+          data-testid="message-copy-markdown"
+          onClick={() => props.onCopyMarkdown?.()}
+          title={props.markdownCopied ? 'Copied' : 'Copy Markdown'}
+        />
+      </Show>
+      <Show when={props.onCopyJson}>
+        <IconButton
+          icon={props.jsonCopied ? Check : Braces}
+          size="sm"
+          data-testid="message-copy-json"
+          onClick={() => props.onCopyJson?.()}
+          title={props.jsonCopied ? 'Copied' : 'Copy Raw JSON'}
         />
       </Show>
       <Show when={props.hasDiff && props.onToggleDiffView}>
