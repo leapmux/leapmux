@@ -234,8 +234,8 @@ describe('collapsibleSidebar', () => {
       />
     ))
 
-    // Section header should not be visible in rail
-    expect(screen.queryByText('Section A')).toBeNull()
+    // Sidebar inner container should be hidden (content stays mounted)
+    expect(screen.getByTestId('sidebar-left').style.display).toBe('none')
     // Expand button should be visible
     expect(screen.getByTitle('Expand left sidebar')).toBeTruthy()
   })
