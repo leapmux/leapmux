@@ -1,4 +1,5 @@
 import type { ParentComponent } from 'solid-js'
+import type { SidebarElementsOpts } from './SidebarElements'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createSignal, Show } from 'solid-js'
 import { agentLoadingTimeoutMs, apiCallTimeout } from '~/api/transport'
@@ -427,9 +428,11 @@ export const AppShell: ParentComponent = (props) => {
   })
 
   // Sidebar element factories
-  const sidebarOpts = () => ({
-    workspaces: workspaceStore.state.workspaces,
-    activeWorkspaceId: workspace.activeWorkspaceId(),
+  // Use getters for reactive values so that LeftSidebar/RightSidebar props
+  // remain reactive when accessed through the intermediate opts object.
+  const sidebarOpts = (): SidebarElementsOpts => ({
+    get workspaces() { return workspaceStore.state.workspaces },
+    get activeWorkspaceId() { return workspace.activeWorkspaceId() },
     sectionStore,
     tabStore,
     loadSections,
@@ -445,12 +448,12 @@ export const AppShell: ParentComponent = (props) => {
     onPostArchiveWorkspace: handlePostArchiveWorkspace,
     getCurrentTabContext,
     getMruAgentContext,
-    fileTreePath: fileTreePath(),
+    get fileTreePath() { return fileTreePath() },
     onFileSelect: setFileTreePath,
     onFileOpen: tabOps.handleFileOpen,
-    isActiveWorkspaceArchived: isActiveWorkspaceArchived(),
-    showTodos: showTodos(),
-    activeTodos: activeTodos(),
+    get isActiveWorkspaceArchived() { return isActiveWorkspaceArchived() },
+    get showTodos() { return showTodos() },
+    get activeTodos() { return activeTodos() },
     termOps,
   })
 

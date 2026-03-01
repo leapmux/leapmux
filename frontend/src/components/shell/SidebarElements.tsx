@@ -10,7 +10,7 @@ import { RightSidebar } from '~/components/shell/RightSidebar'
 import { formatFileMention } from '~/lib/quoteUtils'
 import { insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 
-interface SidebarElementsOpts {
+export interface SidebarElementsOpts {
   workspaces: Workspace[]
   activeWorkspaceId: string | null | undefined
   sectionStore: ReturnType<typeof createSectionStore>

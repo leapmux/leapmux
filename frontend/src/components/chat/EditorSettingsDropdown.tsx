@@ -64,7 +64,7 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
           {effortIcon()}
           {modeLabel(currentMode())}
           <Show when={props.settingsLoading} fallback={<Icon icon={ChevronDown} size="xs" />}>
-            <Icon icon={LoaderCircle} size="xs" class={spinner} />
+            <Icon icon={LoaderCircle} size="xs" class={spinner} data-testid="settings-loading-spinner" />
           </Show>
         </button>
       )}

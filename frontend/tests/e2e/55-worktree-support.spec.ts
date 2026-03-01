@@ -812,7 +812,7 @@ test.describe('Worktree Support', () => {
     await expect(page.getByRole('heading', { name: 'Dirty Worktree' })).toBeVisible({ timeout: 10000 })
 
     // Dialog should show the branch name
-    await expect(page.getByText('cancel-branch', { exact: true })).toBeVisible()
+    await expect(page.getByRole('dialog').getByText('cancel-branch', { exact: true })).toBeVisible()
 
     // Click "Remove" once — should arm the button (show "Confirm?"), not remove
     await page.getByRole('button', { name: 'Remove' }).click()
@@ -870,7 +870,7 @@ test.describe('Worktree Support', () => {
     await expect(page.getByText('test-repo-dialog-worktrees/dialog-branch')).toBeVisible()
 
     // Dialog should show the branch name
-    await expect(page.getByText('dialog-branch', { exact: true })).toBeVisible()
+    await expect(page.getByRole('dialog').getByText('dialog-branch', { exact: true })).toBeVisible()
 
     // Click "Remove" once — should arm the button (show "Confirm?")
     await page.getByRole('button', { name: 'Remove' }).click()
@@ -925,7 +925,7 @@ test.describe('Worktree Support', () => {
     await expect(page.getByRole('heading', { name: 'Dirty Worktree' })).toBeVisible({ timeout: 10000 })
 
     // Dialog should show the branch name
-    await expect(page.getByText('keep-branch', { exact: true })).toBeVisible()
+    await expect(page.getByRole('dialog').getByText('keep-branch', { exact: true })).toBeVisible()
 
     // Click "Keep"
     await page.getByRole('button', { name: 'Keep' }).click()

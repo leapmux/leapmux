@@ -1,17 +1,16 @@
-import type { LucideIcon } from 'lucide-solid'
-import type { JSX } from 'solid-js'
+import type { LucideIcon, LucideProps } from 'lucide-solid'
+import { splitProps } from 'solid-js'
 import { iconSize } from '~/styles/tokens'
 
 export type IconSizeName = 'xxs' | 'xs' | 'sm' | 'md' | 'lg' | 'xl'
 
-export interface IconProps {
+export interface IconProps extends Omit<LucideProps, 'size'> {
   icon: LucideIcon
   size: IconSizeName
-  class?: string
-  style?: JSX.CSSProperties
 }
 
 export function Icon(props: IconProps) {
-  const px = () => iconSize[props.size]
-  return <props.icon size={px()} class={props.class} style={props.style} />
+  const [local, rest] = splitProps(props, ['icon', 'size'])
+  const px = () => iconSize[local.size]
+  return <local.icon size={px()} {...rest} />
 }
