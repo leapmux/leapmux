@@ -29,10 +29,8 @@ export const collapsiblePaneExpanded = style({
 
 /** Content wrapper inside each collapsible pane. */
 export const collapsibleContent = style({
-  display: 'flex',
-  flexDirection: 'column',
-  overflow: 'hidden',
-  flex: 1,
+  display: 'grid',
+  gridTemplateRows: '0fr',
   minHeight: 0,
   padding: 0,
   selectors: {
@@ -40,6 +38,20 @@ export const collapsibleContent = style({
       flex: '0 0 0px',
     },
   },
+})
+
+/** Expanded content — grid row grows to fill available space. */
+export const collapsibleContentExpanded = style({
+  gridTemplateRows: '1fr',
+  flex: 1,
+})
+
+/** Inner flex wrapper preserving the original content layout. */
+export const collapsibleContentInner = style({
+  display: 'flex',
+  flexDirection: 'column',
+  overflow: 'hidden',
+  minHeight: 0,
 })
 
 export const sidebarTitle = style({

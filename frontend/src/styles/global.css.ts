@@ -152,3 +152,18 @@ globalStyle('pre code, pre pre, code pre, code code', {
 globalStyle('blockquote', {
   fontStyle: 'normal',
 })
+
+// Enable native width/height: auto transitions (progressive enhancement).
+globalStyle(':root', {
+  interpolateSize: 'allow-keywords',
+} as any)
+
+// Extend Oat button transitions to include color, border-color, and width.
+globalStyle('button, [role="button"]', {
+  'transition': 'background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), opacity var(--transition-fast), transform var(--transition-fast), width var(--transition-fast)',
+  '@media': {
+    '(prefers-reduced-motion: reduce)': {
+      transition: 'none',
+    },
+  },
+})
