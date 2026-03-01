@@ -103,24 +103,25 @@ export const toolResultPrompt = style({
   marginBottom: 'var(--space-1)',
 })
 
-// Tool sub-detail line (monospace, aligned with description: icon 16px + gap 4px = 20px indent)
-const toolInputSubDetailBase = {
+// Tool summary line (monospace, aligned with description: icon 16px + gap 4px = 20px indent)
+const toolInputSummaryBase = {
   fontFamily: 'var(--font-mono)',
   fontVariantLigatures: 'none' as const,
   fontSize: 'var(--text-8)',
-  color: 'var(--faint-foreground)',
+  color: 'var(--muted-foreground)',
   paddingLeft: '20px',
 }
 
-export const toolInputSubDetail = style({
-  ...toolInputSubDetailBase,
+export const toolInputSummary = style({
+  ...toolInputSummaryBase,
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
 })
 
-export const toolInputSubDetailExpanded = style({
-  ...toolInputSubDetailBase,
+export const toolInputSummaryExpanded = style({
+  ...toolInputSummaryBase,
+  paddingLeft: 0,
   whiteSpace: 'pre-wrap',
   wordBreak: 'break-all',
 })

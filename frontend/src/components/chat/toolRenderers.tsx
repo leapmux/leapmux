@@ -46,8 +46,8 @@ import {
   toolHeaderActions,
   toolHeaderTimestamp,
   toolInputPath,
-  toolInputSubDetail,
-  toolInputSubDetailExpanded,
+  toolInputSummary,
+  toolInputSummaryExpanded,
   toolInputText,
   toolMessage,
   toolResultContent,
@@ -253,6 +253,8 @@ function ToolUseMessage(props: {
   oldStr: string
   newStr: string
   filePath: string
+  /** Original file content before edit (for expandable context lines). */
+  originalFile?: string
   context?: RenderContext
 }): JSX.Element {
   const [localDiffView, setLocalDiffView] = createSignal<DiffViewPreference | null>(null)
@@ -277,6 +279,7 @@ function ToolUseMessage(props: {
           hunks={props.context?.childStructuredPatch ?? rawDiffToHunks(props.oldStr, props.newStr)}
           view={diffView()}
           filePath={props.filePath}
+          originalFile={props.originalFile}
         />
       </Show>
     </ToolUseLayout>
@@ -286,7 +289,7 @@ function ToolUseMessage(props: {
 /** Derive a summary element for a generic tool_use (Bash command, Grep/Glob result counts). */
 function deriveToolSummary(toolName: string, input: Record<string, unknown>, context?: RenderContext): JSX.Element | undefined {
   const expanded = context?.threadExpanded ?? false
-  const cls = expanded ? toolInputSubDetailExpanded : toolInputSubDetail
+  const cls = expanded ? toolInputSummaryExpanded : toolInputSummary
   const content = context?.childResultContent
 
   switch (toolName) {
@@ -310,8 +313,8 @@ function deriveToolSummary(toolName: string, input: Record<string, unknown>, con
         return undefined
       return (
         <>
-          {pathLine && <div class={toolInputSubDetail}>{pathLine}</div>}
-          {resultLine && <div class={toolInputSubDetail}>{resultLine}</div>}
+          {pathLine && <div class={toolInputSummary}>{pathLine}</div>}
+          {resultLine && <div class={toolInputSummary}>{resultLine}</div>}
         </>
       )
     }
@@ -319,9 +322,9 @@ function deriveToolSummary(toolName: string, input: Record<string, unknown>, con
       if (!content)
         return undefined
       if (content === 'No files found')
-        return <div class={toolInputSubDetail}>No files found</div>
+        return <div class={toolInputSummary}>No files found</div>
       const count = content.split('\n').filter(l => l.trim()).length
-      return <div class={toolInputSubDetail}>{`${count} file${count === 1 ? '' : 's'}`}</div>
+      return <div class={toolInputSummary}>{`${count} file${count === 1 ? '' : 's'}`}</div>
     }
     default:
       return undefined
@@ -364,6 +367,7 @@ export const toolUseRenderer: MessageContentRenderer = {
         oldStr={oldStr}
         newStr={newStr}
         filePath={filePath}
+        originalFile={context?.childOriginalFile}
         context={context}
       />
     )
@@ -504,19 +508,26 @@ export const toolResultRenderer: MessageContentRenderer = {
       ? String(context.parentToolInput.prompt || '')
       : ''
 
-    // Extract structuredPatch from tool_use_result for Edit/Write diffs
+    // Extract structuredPatch from tool_use_result for Edit/Write diffs.
+    // When rendered as a child of an Edit/Write tool_use, the parent already
+    // shows the diff — skip extraction to avoid a duplicate.
     const isEditOrWrite = toolName === 'Edit' || toolName === 'Write'
-    const structuredPatch = isEditOrWrite && Array.isArray(toolUseResult?.structuredPatch)
+    const parentShowsDiff = context?.parentToolName === 'Edit' || context?.parentToolName === 'Write'
+    const structuredPatch = isEditOrWrite && !parentShowsDiff && Array.isArray(toolUseResult?.structuredPatch)
       ? (toolUseResult!.structuredPatch as StructuredPatchHunk[])
       : null
-    const filePath = isEditOrWrite ? String(toolUseResult?.filePath || '') : ''
-    const oldStr = isEditOrWrite ? String(toolUseResult?.oldString || '') : ''
-    const newStr = isEditOrWrite ? String(toolUseResult?.newString || '') : ''
+    const filePath = isEditOrWrite && !parentShowsDiff ? String(toolUseResult?.filePath || '') : ''
+    const oldStr = isEditOrWrite && !parentShowsDiff ? String(toolUseResult?.oldString || '') : ''
+    const newStr = isEditOrWrite && !parentShowsDiff ? String(toolUseResult?.newString || '') : ''
+
+    // When the parent tool_use already shows the diff, hide the redundant
+    // success message (e.g. "The file … has been updated successfully.").
+    const hideContent = parentShowsDiff
 
     return (
       <ToolResultMessage
         toolName={toolName}
-        resultContent={resultContent}
+        resultContent={hideContent ? '' : resultContent}
         isPreText={isPreText}
         webFetchPrompt={webFetchPrompt}
         structuredPatch={structuredPatch}

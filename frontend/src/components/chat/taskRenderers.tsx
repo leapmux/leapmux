@@ -18,8 +18,8 @@ import { firstNonEmptyLine, formatDuration, formatNumber, formatTaskStatus } fro
 import { ToolUseLayout } from './toolRenderers'
 import {
   answerText,
-  toolInputSubDetail,
-  toolInputSubDetailExpanded,
+  toolInputSummary,
+  toolInputSummaryExpanded,
   toolResultContentAnsi,
   toolResultContentPre,
 } from './toolStyles.css'
@@ -42,7 +42,7 @@ export function renderTodoWrite(toolUse: Record<string, unknown>, context?: Rend
   const inProgressTask = todos.find(t => t.status === 'in_progress')
 
   const summary = (
-    <div class={toolInputSubDetail}>
+    <div class={toolInputSummary}>
       {inProgressTask ? `${inProgressTask.activeForm} \u00B7 ` : ''}
       {`${completedCount}/${count} completed`}
     </div>
@@ -118,7 +118,7 @@ export function renderTaskOutput(toolUse: Record<string, unknown>, context?: Ren
   const firstLine = firstNonEmptyLine(output)
 
   const title = `${status}${description ? ` - ${description}` : ''}`
-  const summary = firstLine ? <div class={toolInputSubDetail}>{firstLine}</div> : undefined
+  const summary = firstLine ? <div class={toolInputSummary}>{firstLine}</div> : undefined
 
   return (
     <ToolUseLayout
@@ -129,7 +129,7 @@ export function renderTaskOutput(toolUse: Record<string, unknown>, context?: Ren
       context={context}
     >
       <>
-        <div class={toolInputSubDetailExpanded}>
+        <div class={toolInputSummaryExpanded}>
           <Show when={task?.task_id}>
             {`task_id: ${task!.task_id}`}
           </Show>
@@ -222,7 +222,7 @@ export function renderAgentOrTask(toolUse: Record<string, unknown>, context?: Re
   if (toolUses !== undefined)
     parts.push(`${toolUses} tool use${toolUses === 1 ? '' : 's'}`)
   const summary = parts.length > 0
-    ? <div class={toolInputSubDetail}>{parts.join(' \u00B7 ')}</div>
+    ? <div class={toolInputSummary}>{parts.join(' \u00B7 ')}</div>
     : undefined
 
   return (
@@ -256,7 +256,7 @@ export const taskNotificationRenderer: MessageContentRenderer = {
 
     const summaryText = typeof parsed.summary === 'string' ? parsed.summary : 'Task notification'
     const outputFile = typeof parsed.output_file === 'string' ? parsed.output_file : null
-    const summary = outputFile ? <div class={toolInputSubDetail}>{outputFile}</div> : undefined
+    const summary = outputFile ? <div class={toolInputSummary}>{outputFile}</div> : undefined
 
     return (
       <ToolUseLayout

@@ -159,7 +159,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   }
 
   /** Tools whose single-line results should be auto-expanded. */
-  const AUTO_EXPAND_TOOLS = new Set(['Bash', 'Grep', 'Read', 'Write', 'Glob'])
+  const AUTO_EXPAND_TOOLS = new Set(['Bash', 'Edit', 'Grep', 'Read', 'Write', 'Glob'])
 
   // Check if the tool result content is short enough to auto-expand (single line).
   const shouldAutoExpand = (): boolean => {
@@ -322,6 +322,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       childTotalTokens: typeof tur?.totalTokens === 'number' ? tur.totalTokens : undefined,
       childTotalToolUseCount: typeof tur?.totalToolUseCount === 'number' ? tur.totalToolUseCount : undefined,
       childControlResponse: childControlResponse(),
+      childOriginalFile: typeof tur?.originalFile === 'string' ? tur.originalFile : undefined,
     }
   }
 

@@ -110,6 +110,8 @@ export interface RenderContext {
   childTotalToolUseCount?: number
   /** Control response (approval/rejection) threaded into this tool_use. */
   childControlResponse?: { action: string, comment: string }
+  /** Original file content before edit (for expandable context lines in diffs). */
+  childOriginalFile?: string
 }
 
 export interface MessageContentRenderer {

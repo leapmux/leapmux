@@ -2,6 +2,7 @@ import { globalStyle, style } from '@vanilla-extract/css'
 
 // Diff container
 export const diffContainer = style({
+  position: 'relative',
   fontFamily: 'var(--font-mono)',
   fontVariantLigatures: 'none',
   fontSize: 'var(--text-8)',
@@ -87,6 +88,7 @@ globalStyle(`html[data-theme="dark"] ${diffContainer} span[style]`, {
 
 // Split diff container (two columns side by side)
 export const diffSplitContainer = style({
+  position: 'relative',
   display: 'grid',
   gridTemplateColumns: '1fr 1fr',
   fontFamily: 'var(--font-mono)',
@@ -107,6 +109,61 @@ globalStyle(`${diffSplitContainer} span[style]`, {
 globalStyle(`html[data-theme="dark"] ${diffSplitContainer} span[style]`, {
   color: 'var(--shiki-dark)',
   backgroundColor: 'var(--shiki-dark-bg, transparent)',
+})
+
+// Gap separator row between hunks (shows hidden line count + expand buttons)
+export const diffGapSeparator = style({
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 'var(--space-4)',
+  padding: 'var(--space-1) var(--space-2)',
+  fontFamily: 'var(--font-sans)',
+  fontSize: 'var(--text-8)',
+  color: 'var(--muted-foreground)',
+  backgroundColor: 'color-mix(in srgb, var(--info) 6%, transparent)',
+  userSelect: 'none',
+  borderTop: '1px dashed var(--border)',
+  borderBottom: '1px dashed var(--border)',
+})
+
+// Clickable expand button inside the gap separator
+export const diffGapExpandButton = style({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 'var(--space-0-5)',
+  cursor: 'pointer',
+  color: 'var(--muted-foreground)',
+  selectors: {
+    '&:hover': {
+      color: 'var(--foreground)',
+    },
+  },
+})
+
+// Clickable variant of gap separator (small gaps that expand all at once)
+export const diffGapSeparatorClickable = style({
+  cursor: 'pointer',
+  selectors: {
+    '&:hover': {
+      color: 'var(--foreground)',
+    },
+  },
+})
+
+// Remove top border when gap separator is the first element in the container
+export const diffGapSeparatorFirst = style({
+  borderTop: 'none',
+})
+
+// Remove bottom border when gap separator is the last element in the container
+export const diffGapSeparatorLast = style({
+  borderBottom: 'none',
+})
+
+// Gap separator spanning full width in split view grid
+export const diffGapSeparatorSplit = style({
+  gridColumn: '1 / -1',
 })
 
 export const diffSplitColumn = style({

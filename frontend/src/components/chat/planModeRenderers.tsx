@@ -13,7 +13,7 @@ import { markdownContent } from './markdownContent.css'
 import { getAssistantContent, isObject, relativizePath } from './messageUtils'
 import { ToolUseLayout } from './toolRenderers'
 import {
-  toolInputSubDetail,
+  toolInputSummary,
   toolInputText,
   toolUseHeader,
   toolUseIcon,
@@ -54,7 +54,7 @@ export function renderExitPlanMode(toolUse: Record<string, unknown>, context?: R
   }
 
   const summary = context?.childFilePath
-    ? <div class={toolInputSubDetail}>{relativizePath(context.childFilePath, context?.workingDir, context?.homeDir)}</div>
+    ? <div class={toolInputSummary}>{relativizePath(context.childFilePath, context?.workingDir, context?.homeDir)}</div>
     : undefined
 
   return (
