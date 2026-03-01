@@ -89,12 +89,13 @@ describe('agent/task renderer', () => {
     expect(text).not.toContain('Complete')
   })
 
-  it('renders description + status + subagent_type together', () => {
+  it('renders description + subagent_type in title, status in summary', () => {
     const text = renderToolUseText('Agent', { description: 'Fix bug', subagent_type: 'code' }, {
       threadChildCount: 2,
       childToolResultStatus: 'completed',
     })
-    expect(text).toContain('Fix bug - Complete (code)')
+    expect(text).toContain('Fix bug (code)')
+    expect(text).toContain('Complete')
   })
 
   it('formats title as "SubAgent: rest" when description starts with subagent name', () => {

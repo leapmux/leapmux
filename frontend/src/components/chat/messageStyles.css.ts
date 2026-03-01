@@ -155,6 +155,8 @@ globalStyle(`${messageRow}:has(.${resultDivider}) > .${toolHeaderActions}`, {
 globalStyle(`${messageRowEnd} > .${toolHeaderActions}`, {
   order: -1,
   paddingRight: 'var(--space-1)',
+  paddingTop: 'var(--space-1)',
+  paddingBottom: 'var(--space-1)',
   display: 'grid',
   gridTemplateColumns: 'auto auto',
   direction: 'rtl',
@@ -167,6 +169,8 @@ globalStyle(`${messageRowEnd} > .${toolHeaderActions} > *`, {
 
 // 2-column grid layout for assistant/thinking bubble actions so primary actions sit adjacent to the bubble
 globalStyle(`${messageRow}:has(> .${assistantMessage}) > .${toolHeaderActions}, ${messageRow}:has(> .${thinkingMessage}) > .${toolHeaderActions}`, {
+  paddingTop: 'var(--space-1)',
+  paddingBottom: 'var(--space-1)',
   display: 'grid',
   gridTemplateColumns: 'auto auto',
 })

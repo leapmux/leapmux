@@ -100,6 +100,26 @@ describe('createChatStore', () => {
     })
   })
 
+  it('should update message in-place on thread merge (same ID)', () => {
+    createRoot((dispose) => {
+      const store = createChatStore()
+      store.addMessage('agent1', makeMessage('msg1', 1n))
+      store.addMessage('agent1', makeMessage('msg2', 2n))
+
+      // Thread merge: same ID as msg1, bumped seq
+      const merged = makeMessage('msg1', 3n)
+      store.addMessage('agent1', merged)
+
+      const msgs = store.getMessages('agent1')
+      expect(msgs).toHaveLength(2)
+      // The merged message should be at its original position with updated seq
+      expect(msgs[0].id).toBe('msg1')
+      expect(msgs[0].seq).toBe(3n)
+      expect(msgs[1].id).toBe('msg2')
+      dispose()
+    })
+  })
+
   it('should not set error for message without deliveryError', () => {
     createRoot((dispose) => {
       const store = createChatStore()
@@ -601,6 +621,65 @@ describe('createChatStore', () => {
         const store = createChatStore()
         store.setMessages('a1', [makeMessage('m1', 1n)])
         expect(store.getTodos('a1')).toEqual([])
+        dispose()
+      })
+    })
+  })
+
+  describe('messageVersion', () => {
+    it('should return 0 for unknown agent', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        expect(store.getMessageVersion('unknown')).toBe(0)
+        dispose()
+      })
+    })
+
+    it('should increment on addMessage with a new message', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        expect(store.getMessageVersion('a1')).toBe(0)
+
+        store.addMessage('a1', makeMessage('m1', 1n))
+        expect(store.getMessageVersion('a1')).toBe(1)
+
+        store.addMessage('a1', makeMessage('m2', 2n))
+        expect(store.getMessageVersion('a1')).toBe(2)
+        dispose()
+      })
+    })
+
+    it('should increment on thread merge (same ID, updated content)', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        store.addMessage('a1', makeMessage('m1', 1n))
+        expect(store.getMessageVersion('a1')).toBe(1)
+
+        // Thread merge: same ID as m1, bumped seq
+        store.addMessage('a1', makeMessage('m1', 3n))
+        expect(store.getMessageVersion('a1')).toBe(2)
+        dispose()
+      })
+    })
+
+    it('should not increment on setMessages', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m2', 2n)])
+        expect(store.getMessageVersion('a1')).toBe(0)
+        dispose()
+      })
+    })
+
+    it('should track versions independently per agent', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        store.addMessage('a1', makeMessage('m1', 1n))
+        store.addMessage('a2', makeMessage('m2', 2n))
+        store.addMessage('a1', makeMessage('m3', 3n))
+
+        expect(store.getMessageVersion('a1')).toBe(2)
+        expect(store.getMessageVersion('a2')).toBe(1)
         dispose()
       })
     })

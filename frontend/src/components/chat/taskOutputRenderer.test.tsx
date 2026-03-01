@@ -39,14 +39,6 @@ function renderText(context?: RenderContext): string {
   return container.textContent?.trim() ?? ''
 }
 
-/** Render a TaskOutput message with the given context and return the container innerHTML. */
-function renderHtml(context?: RenderContext): string {
-  const msg = makeTaskOutputMessage()
-  const result = renderMessageContent(msg, 2 /* ASSISTANT */, context)
-  const { container } = render(() => result)
-  return container.innerHTML
-}
-
 describe('formatTaskStatus', () => {
   it('"completed" → "Complete"', () => {
     expect(formatTaskStatus('completed')).toBe('Complete')
@@ -80,7 +72,7 @@ describe('firstNonEmptyLine', () => {
 })
 
 describe('renderTaskOutput', () => {
-  it('all properties present: shows status and description', () => {
+  it('all properties present: shows description only when completed', () => {
     const text = renderText({
       childTask: {
         task_id: 'abc',
@@ -91,8 +83,8 @@ describe('renderTaskOutput', () => {
         exitCode: 0,
       },
     })
-    expect(text).toContain('Complete')
     expect(text).toContain('Build project')
+    expect(text).not.toContain('Complete')
   })
 
   it('missing status: shows "Pending"', () => {
@@ -114,54 +106,32 @@ describe('renderTaskOutput', () => {
     expect(text).not.toContain(' - ')
   })
 
-  it('collapsed with output: first line shown as subdetail', () => {
+  it('collapsed with exitCode and task_id: shows summary line', () => {
     const text = renderText({
       childTask: {
+        task_id: 'abc',
         status: 'completed',
         description: 'Test run',
         output: 'All tests passed\n42 tests total',
+        exitCode: 0,
       },
     })
-    expect(text).toContain('All tests passed')
+    expect(text).toContain('Exit code 0')
+    expect(text).toContain('Task ID abc')
   })
 
-  it('expanded shows property labels', () => {
+  it('expanded shows summary (output rendered via thread child)', () => {
     const text = renderText({
       threadExpanded: true,
       childTask: {
         task_id: 'xyz',
-        task_type: 'shell',
         status: 'completed',
         description: 'Run tests',
-        output: 'ok',
         exitCode: 0,
       },
     })
-    expect(text).toContain('task_id:')
-    expect(text).toContain('task_type:')
-    expect(text).toContain('exitCode:')
-  })
-
-  it('expanded with ANSI output: rendered HTML contains shiki class', () => {
-    const html = renderHtml({
-      threadExpanded: true,
-      childTask: {
-        status: 'completed',
-        output: '\x1B[32mgreen text\x1B[0m',
-      },
-    })
-    expect(html).toContain('shiki')
-  })
-
-  it('expanded with plain output: text content includes the output', () => {
-    const text = renderText({
-      threadExpanded: true,
-      childTask: {
-        status: 'completed',
-        output: 'plain output text',
-      },
-    })
-    expect(text).toContain('plain output text')
+    expect(text).toContain('Exit code 0')
+    expect(text).toContain('Task ID xyz')
   })
 
   it('all childTask properties missing (undefined): graceful "Pending" fallback', () => {

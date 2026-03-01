@@ -3,25 +3,18 @@
 import type { JSX } from 'solid-js'
 import type { MessageContentRenderer, RenderContext } from './messageRenderers'
 import type { TodoItem } from '~/stores/chat.store'
-import Bot from 'lucide-solid/icons/bot'
 import ListTodo from 'lucide-solid/icons/list-todo'
-import SquareTerminal from 'lucide-solid/icons/square-terminal'
 import Terminal from 'lucide-solid/icons/terminal'
 import Vote from 'lucide-solid/icons/vote'
 import { For, Show } from 'solid-js'
 import { TodoList } from '~/components/todo/TodoList'
-import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { markdownContent } from './markdownContent.css'
 import { getAssistantContent, isObject } from './messageUtils'
-import { firstNonEmptyLine, formatDuration, formatNumber, formatTaskStatus } from './rendererUtils'
 import { ToolUseLayout } from './toolRenderers'
 import {
   answerText,
-  toolInputSubDetail,
-  toolInputSubDetailExpanded,
-  toolResultContentAnsi,
-  toolResultContentPre,
+  toolInputSummary,
 } from './toolStyles.css'
 
 /** Render TodoWrite tool_use with a visual todo list. Returns null if input is invalid. */
@@ -38,22 +31,13 @@ export function renderTodoWrite(toolUse: Record<string, unknown>, context?: Rend
 
   const count = todos.length
   const label = `${count} task${count === 1 ? '' : 's'}`
-  const completedCount = todos.filter(t => t.status === 'completed').length
-  const inProgressTask = todos.find(t => t.status === 'in_progress')
-
-  const summary = (
-    <div class={toolInputSubDetail}>
-      {inProgressTask ? `${inProgressTask.activeForm} \u00B7 ` : ''}
-      {`${completedCount}/${count} completed`}
-    </div>
-  )
 
   return (
     <ToolUseLayout
       icon={ListTodo}
       toolName="TodoWrite"
       title={label}
-      summary={summary}
+      alwaysVisible={true}
       context={context}
     >
       <TodoList todos={todos} />
@@ -108,48 +92,6 @@ export function renderAskUserQuestion(toolUse: Record<string, unknown>, context?
   )
 }
 
-/** Render TaskOutput tool_use with task status, description, and output. */
-export function renderTaskOutput(toolUse: Record<string, unknown>, context?: RenderContext): JSX.Element {
-  void toolUse
-  const task = context?.childTask
-  const status = formatTaskStatus(task?.status)
-  const description = task?.description
-  const output = task?.output
-  const firstLine = firstNonEmptyLine(output)
-
-  const title = `${status}${description ? ` - ${description}` : ''}`
-  const summary = firstLine ? <div class={toolInputSubDetail}>{firstLine}</div> : undefined
-
-  return (
-    <ToolUseLayout
-      icon={SquareTerminal}
-      toolName="TaskOutput"
-      title={title}
-      summary={summary}
-      context={context}
-    >
-      <>
-        <div class={toolInputSubDetailExpanded}>
-          <Show when={task?.task_id}>
-            {`task_id: ${task!.task_id}`}
-          </Show>
-          <Show when={task?.task_type}>
-            {`\ntask_type: ${task!.task_type}`}
-          </Show>
-          <Show when={task?.exitCode !== undefined}>
-            {`\nexitCode: ${task!.exitCode}`}
-          </Show>
-        </div>
-        <Show when={output}>
-          {containsAnsi(output!)
-            ? <div class={toolResultContentAnsi} innerHTML={renderAnsi(output!)} />
-            : <div class={toolResultContentPre}>{output}</div>}
-        </Show>
-      </>
-    </ToolUseLayout>
-  )
-}
-
 export const todoWriteRenderer: MessageContentRenderer = {
   render(parsed, _role, context) {
     const content = getAssistantContent(parsed)
@@ -174,80 +116,6 @@ export const askUserQuestionRenderer: MessageContentRenderer = {
   },
 }
 
-export const taskOutputRenderer: MessageContentRenderer = {
-  render(parsed, _role, context) {
-    const content = getAssistantContent(parsed)
-    if (!content)
-      return null
-    const toolUse = content.find(c => isObject(c) && c.type === 'tool_use' && c.name === 'TaskOutput')
-    if (!toolUse)
-      return null
-    return renderTaskOutput(toolUse as Record<string, unknown>, context)
-  },
-}
-
-/** Render Agent or Task tool_use with description, status, and subagent type. */
-export function renderAgentOrTask(toolUse: Record<string, unknown>, context?: RenderContext): JSX.Element {
-  const input = isObject(toolUse.input) ? toolUse.input as Record<string, unknown> : {}
-  const toolName = String(toolUse.name || 'Agent')
-  const description = String(input.description || toolName)
-  const subagentType = input.subagent_type ? String(input.subagent_type) : null
-
-  // Format title: if description starts with subagent name, use "SubAgent: rest" format
-  let titleDesc = description
-  if (subagentType) {
-    const prefix = subagentType.toLowerCase()
-    const descLower = description.toLowerCase()
-    if (descLower.startsWith(`${prefix} `))
-      titleDesc = `${subagentType}: ${description.slice(subagentType.length + 1)}`
-  }
-
-  const status = context?.childToolResultStatus
-  const hasChildren = (context?.threadChildCount ?? 0) > 0
-  const displayStatus = status
-    ? formatTaskStatus(status)
-    : (hasChildren ? 'Running' : null)
-
-  const title = `${titleDesc}${displayStatus ? ` - ${displayStatus}` : ''}${subagentType ? ` (${subagentType})` : ''}`
-
-  // Stats summary from child tool_use_result
-  const duration = context?.childTotalDurationMs
-  const tokens = context?.childTotalTokens
-  const toolUses = context?.childTotalToolUseCount
-  const parts: string[] = []
-  if (duration !== undefined)
-    parts.push(formatDuration(duration))
-  if (tokens !== undefined)
-    parts.push(`${formatNumber(tokens)} tokens`)
-  if (toolUses !== undefined)
-    parts.push(`${toolUses} tool use${toolUses === 1 ? '' : 's'}`)
-  const summary = parts.length > 0
-    ? <div class={toolInputSubDetail}>{parts.join(' \u00B7 ')}</div>
-    : undefined
-
-  return (
-    <ToolUseLayout
-      icon={Bot}
-      toolName={toolName}
-      title={title}
-      summary={summary}
-      context={context}
-    />
-  )
-}
-
-export const agentOrTaskRenderer: MessageContentRenderer = {
-  render(parsed, _role, context) {
-    const content = getAssistantContent(parsed)
-    if (!content)
-      return null
-    const toolUse = content.find(c => isObject(c) && c.type === 'tool_use' && (c.name === 'Agent' || c.name === 'Task'))
-    if (!toolUse)
-      return null
-    return renderAgentOrTask(toolUse as Record<string, unknown>, context)
-  },
-}
-
 /** Renders task_notification system messages as a tool-use-style block with Terminal icon. */
 export const taskNotificationRenderer: MessageContentRenderer = {
   render(parsed, _role, context) {
@@ -256,7 +124,7 @@ export const taskNotificationRenderer: MessageContentRenderer = {
 
     const summaryText = typeof parsed.summary === 'string' ? parsed.summary : 'Task notification'
     const outputFile = typeof parsed.output_file === 'string' ? parsed.output_file : null
-    const summary = outputFile ? <div class={toolInputSubDetail}>{outputFile}</div> : undefined
+    const summary = outputFile ? <div class={toolInputSummary}>{outputFile}</div> : undefined
 
     return (
       <ToolUseLayout

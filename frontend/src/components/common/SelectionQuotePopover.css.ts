@@ -1,8 +1,8 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 
 export const popover = style({
-  'position': 'absolute',
-  'zIndex': 20,
+  'position': 'fixed',
+  'zIndex': 200,
   'display': 'flex',
   'borderRadius': 'var(--radius-small)',
   'border': '1px solid var(--border)',

@@ -6,13 +6,22 @@ import { toolBodyContent } from '~/components/chat/toolStyles.css'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 
-// jsdom does not provide ResizeObserver
+// jsdom does not provide ResizeObserver or Worker
 beforeAll(() => {
   globalThis.ResizeObserver ??= class {
     observe() {}
     unobserve() {}
     disconnect() {}
   } as unknown as typeof ResizeObserver
+  globalThis.Worker ??= class {
+    onmessage: ((e: MessageEvent) => void) | null = null
+    onerror: ((e: ErrorEvent) => void) | null = null
+    postMessage() {}
+    terminate() {}
+    addEventListener() {}
+    removeEventListener() {}
+    dispatchEvent() { return false }
+  } as unknown as typeof Worker
 })
 
 // Track clipboard writes for assertions.
@@ -427,7 +436,7 @@ describe('todoWrite collapse/expand', () => {
     expect(bubble.textContent).toContain('3 tasks')
   })
 
-  it('hides TodoList when collapsed', () => {
+  it('always shows TodoList (alwaysVisible)', () => {
     const parent = todoWriteToolUse([
       { content: 'Task A', status: 'pending', activeForm: 'Working on A' },
       { content: 'Task B', status: 'pending', activeForm: 'Working on B' },
@@ -444,12 +453,12 @@ describe('todoWrite collapse/expand', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    // Task content should NOT be visible when collapsed
-    expect(bubble.textContent).not.toContain('Task A')
-    expect(bubble.textContent).not.toContain('Task B')
+    // Tasks are always visible (alwaysVisible=true)
+    expect(bubble.textContent).toContain('Task A')
+    expect(bubble.textContent).toContain('Task B')
   })
 
-  it('shows summary with in-progress task and progress', () => {
+  it('shows all task statuses in TodoList', () => {
     const parent = todoWriteToolUse([
       { content: 'Task A', status: 'completed', activeForm: 'Working on A' },
       { content: 'Task B', status: 'in_progress', activeForm: 'Running tests' },
@@ -467,11 +476,12 @@ describe('todoWrite collapse/expand', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
+    expect(bubble.textContent).toContain('Task A')
     expect(bubble.textContent).toContain('Running tests')
-    expect(bubble.textContent).toContain('1/3 completed')
+    expect(bubble.textContent).toContain('Task C')
   })
 
-  it('shows TodoList when expanded', () => {
+  it('hides expand/collapse button (alwaysVisible)', () => {
     const parent = todoWriteToolUse([
       { content: 'Task A', status: 'completed', activeForm: 'Working on A' },
       { content: 'Task B', status: 'in_progress', activeForm: 'Running tests' },
@@ -487,17 +497,11 @@ describe('todoWrite collapse/expand', () => {
       </PreferencesProvider>
     ))
 
-    // Click the expand button
-    const expandBtn = screen.getByTitle('Expand 1 tool result')
-    fireEvent.click(expandBtn)
-
-    const bubble = screen.getByTestId('message-content')
-    // Task content should be visible when expanded
-    expect(bubble.textContent).toContain('Task A')
-    expect(bubble.textContent).toContain('Running tests')
+    // Expand button should not exist since alwaysVisible hides it
+    expect(screen.queryByTitle('Expand 1 tool result')).toBeNull()
   })
 
-  it('body has left border when expanded', () => {
+  it('body has left border (always visible)', () => {
     const parent = todoWriteToolUse([
       { content: 'Task A', status: 'pending', activeForm: 'Working on A' },
     ])
@@ -512,10 +516,7 @@ describe('todoWrite collapse/expand', () => {
       </PreferencesProvider>
     ))
 
-    // Click the expand button
-    const expandBtn = screen.getByTitle('Expand 1 tool result')
-    fireEvent.click(expandBtn)
-
+    // Body should have left border without needing to expand
     const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
     expect(bodyWrapper).not.toBeNull()
   })
@@ -558,7 +559,7 @@ function taskOutputResult(task: Record<string, unknown>) {
 // ---------------------------------------------------------------------------
 
 describe('taskOutput rendering', () => {
-  it('shows status in header when collapsed', () => {
+  it('shows description only when completed', () => {
     const parent = taskOutputToolUse()
     const result = taskOutputResult({
       task_id: 'task-123',
@@ -579,8 +580,8 @@ describe('taskOutput rendering', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('Complete')
     expect(bubble.textContent).toContain('Build')
+    expect(bubble.textContent).not.toContain('Complete')
   })
 
   it('hides metadata when collapsed', () => {
@@ -661,9 +662,9 @@ describe('taskOutput rendering', () => {
     fireEvent.click(expandBtn)
 
     const bubble = screen.getByTestId('message-content')
-    // Should show task_id and exitCode in metadata
-    expect(bubble.textContent).toContain('task_id: task-123')
-    expect(bubble.textContent).toContain('exitCode: 0')
+    // Should show exit code and task ID in summary
+    expect(bubble.textContent).toContain('Exit code 0')
+    expect(bubble.textContent).toContain('Task ID task-123')
     // Should NOT show status: or description: in metadata (they're already in header)
     expect(bubble.textContent).not.toContain('status: completed')
     expect(bubble.textContent).not.toContain('description: Build')
@@ -870,7 +871,7 @@ describe('glob result summary', () => {
           tool_use_id: 'toolu_glob_1',
         }],
       },
-      tool_use_result: { tool_name: 'Glob' },
+      tool_use_result: { tool_name: 'Glob', numFiles: 5 },
     }
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
@@ -884,7 +885,7 @@ describe('glob result summary', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('5 files')
+    expect(bubble.textContent).toContain('Found 5 files')
   })
 })
 
@@ -974,5 +975,132 @@ describe('agent stats summary', () => {
 
     const bubble = screen.getByTestId('message-content')
     expect(bubble.textContent).toContain('Explore: message classification')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Helper: build Edit/Write tool_use messages
+// ---------------------------------------------------------------------------
+
+function editToolUse(oldString: string, newString: string, filePath = '/src/app.ts') {
+  return {
+    type: 'assistant',
+    message: {
+      content: [{
+        type: 'tool_use',
+        id: 'toolu_edit_1',
+        name: 'Edit',
+        input: { file_path: filePath, old_string: oldString, new_string: newString },
+      }],
+    },
+  }
+}
+
+function editToolResult() {
+  return {
+    type: 'user',
+    message: {
+      content: [{
+        type: 'tool_result',
+        content: 'The file has been edited successfully.',
+        tool_use_id: 'toolu_edit_1',
+      }],
+    },
+    tool_use_result: { tool_name: 'Edit', structuredPatch: [], filePath: '/src/app.ts', oldString: '', newString: '' },
+  }
+}
+
+function writeToolUse(content: string, filePath = '/src/new-file.ts') {
+  return {
+    type: 'assistant',
+    message: {
+      content: [{
+        type: 'tool_use',
+        id: 'toolu_write_1',
+        name: 'Write',
+        input: { file_path: filePath, content },
+      }],
+    },
+  }
+}
+
+function writeToolResult() {
+  return {
+    type: 'user',
+    message: {
+      content: [{
+        type: 'tool_result',
+        content: 'File written successfully.',
+        tool_use_id: 'toolu_write_1',
+      }],
+    },
+    tool_use_result: { tool_name: 'Write', structuredPatch: [], filePath: '/src/new-file.ts', oldString: '', newString: '' },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Edit/Write always visible
+// ---------------------------------------------------------------------------
+
+describe('edit/write alwaysVisible', () => {
+  it('edit body is visible without expanding', () => {
+    const parent = editToolUse('const a = 1', 'const a = 2')
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([parent, editToolResult()]),
+    })
+
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    // Body should be visible without clicking expand
+    const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
+    expect(bodyWrapper).not.toBeNull()
+    // Expand button should not exist since alwaysVisible hides it
+    expect(screen.queryByTitle('Expand 1 tool result')).toBeNull()
+  })
+
+  it('write body is visible without expanding and shows additions diff', () => {
+    const parent = writeToolUse('export const hello = "world"')
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([parent, writeToolResult()]),
+    })
+
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    // Body should be visible without clicking expand
+    const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
+    expect(bodyWrapper).not.toBeNull()
+    // Expand button should not exist since alwaysVisible hides it
+    expect(screen.queryByTitle('Expand 1 tool result')).toBeNull()
+    // Should show the file content as an additions diff
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble.textContent).toContain('hello')
+  })
+
+  it('write with empty content does not show diff', () => {
+    const parent = writeToolUse('')
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([parent, writeToolResult()]),
+    })
+
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    // No diff view should be rendered for empty content
+    const diffView = container.querySelector('[data-diff-view]')
+    expect(diffView).toBeNull()
   })
 })

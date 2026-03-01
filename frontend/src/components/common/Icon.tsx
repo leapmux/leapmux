@@ -12,5 +12,5 @@ export interface IconProps extends Omit<LucideProps, 'size'> {
 export function Icon(props: IconProps) {
   const [local, rest] = splitProps(props, ['icon', 'size'])
   const px = () => iconSize[local.size]
-  return <local.icon size={px()} {...rest} />
+  return <local.icon size={px()} style={{ 'flex-shrink': '0', 'min-width': `${px()}px`, 'min-height': `${px()}px` }} {...rest} />
 }

@@ -3,6 +3,7 @@ import type { RenderContext } from './messageRenderers'
 import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, WebFetchInput, WebSearchInput, WriteInput } from '~/types/toolMessages'
 import { diffLines } from 'diff'
 import { relativizePath } from './messageUtils'
+import { formatTaskStatus } from './rendererUtils'
 import {
   toolInputCode,
   toolInputPath,
@@ -120,6 +121,42 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
     case 'WebSearch': {
       const { query } = input as WebSearchInput
       return query ? <span class={toolInputText}>{query}</span> : null
+    }
+    case 'TaskOutput': {
+      const task = context?.childTask
+      const description = task?.description
+      if (description && task?.status === 'completed')
+        return <span class={toolInputText}>{description}</span>
+      const status = formatTaskStatus(task?.status)
+      const title = `${status}${description ? ` - ${description}` : ''}`
+      return <span class={toolInputText}>{title}</span>
+    }
+    case 'EnterPlanMode':
+      return <span class={toolInputText}>Entering Plan Mode</span>
+    case 'Skill': {
+      const skillName = String(input.skill || '')
+      return <span class={toolInputText}>{`Skill: /${skillName}`}</span>
+    }
+    case 'Agent':
+    case 'Task': {
+      const description = String(input.description || toolName)
+      const subagentType = input.subagent_type ? String(input.subagent_type) : null
+
+      // If description starts with subagent name, use "SubAgent: rest" format;
+      // also suppress the trailing "(SubAgent)" suffix since it's already in the title.
+      let titleDesc = description
+      let showSuffix = true
+      if (subagentType) {
+        const prefix = subagentType.toLowerCase()
+        const descLower = description.toLowerCase()
+        if (descLower.startsWith(`${prefix} `)) {
+          titleDesc = `${subagentType}: ${description.slice(subagentType.length + 1)}`
+          showSuffix = false
+        }
+      }
+
+      const title = `${titleDesc}${showSuffix && subagentType ? ` (${subagentType})` : ''}`
+      return <span class={toolInputText}>{title}</span>
     }
     default:
       return null

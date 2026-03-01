@@ -470,7 +470,7 @@ export const AppShell: ParentComponent = (props) => {
         when={isWorkspaceRoute() && !workspaceNotFound()}
         fallback={<Show when={!workspaceNotFound()}><div class={styles.fullWindow}>{props.children}</div></Show>}
       >
-        <div style={{ '--mono-font-family': preferences.monoFontFamily(), 'display': 'contents' }}>
+        <div style={{ '--mono-font-family': preferences.monoFontFamily(), '--ui-font-family': preferences.uiFontFamily(), 'display': 'contents' }}>
           <Show
             when={!isMobile()}
             fallback={(

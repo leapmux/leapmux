@@ -52,13 +52,28 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
         return
 
       const lastRect = rects[rects.length - 1]
-      const containerRect = wrapperRef.getBoundingClientRect()
 
-      setPosition({
-        top: lastRect.top - containerRect.top - 34,
-        left: lastRect.right - containerRect.left,
-      })
+      // Place at the end of the selection, then clamp so it stays on-screen.
+      let left = lastRect.right
+      let top = lastRect.top - 34
+      setPosition({ top, left })
       setVisible(true)
+
+      // After the popover renders, clamp to viewport bounds.
+      requestAnimationFrame(() => {
+        if (!popoverRef)
+          return
+        const rect = popoverRef.getBoundingClientRect()
+        const vw = window.innerWidth
+        const vh = window.innerHeight
+        if (rect.right > vw)
+          left = Math.max(0, vw - rect.width)
+        if (top < 0)
+          top = lastRect.bottom + 4
+        if (top + rect.height > vh)
+          top = Math.max(0, vh - rect.height)
+        setPosition({ top, left })
+      })
     })
   }
 
@@ -91,18 +106,29 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
     hidePopover()
   }
 
+  // Hide the popover when the selection is cleared (e.g. by focusing another input).
+  const handleSelectionChange = () => {
+    if (!visible())
+      return
+    const selection = window.getSelection()
+    if (!selection || selection.isCollapsed)
+      hidePopover()
+  }
+
   onMount(() => {
     const el = wrapperRef
     el.addEventListener('mousedown', handleMouseDown)
     el.addEventListener('mouseup', handleMouseUp)
+    document.addEventListener('selectionchange', handleSelectionChange)
     onCleanup(() => {
       el.removeEventListener('mousedown', handleMouseDown)
       el.removeEventListener('mouseup', handleMouseUp)
+      document.removeEventListener('selectionchange', handleSelectionChange)
     })
   })
 
   return (
-    <div ref={wrapperRef} style={{ position: 'relative' }}>
+    <div ref={wrapperRef}>
       {props.children}
       <Show when={visible()}>
         <div

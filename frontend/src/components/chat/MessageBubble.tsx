@@ -158,43 +158,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     }
   }
 
-  /** Tools whose single-line results should be auto-expanded. */
-  const AUTO_EXPAND_TOOLS = new Set(['Bash', 'Grep', 'Read', 'Write', 'Glob'])
-
-  // Check if the tool result content is short enough to auto-expand (single line).
-  const shouldAutoExpand = (): boolean => {
-    const children = parsed().children
-    if (children.length !== 1)
-      return false
-    // Only auto-expand for specific tool types
-    const toolInfo = parentToolInfo()
-    if (!toolInfo || !AUTO_EXPAND_TOOLS.has(toolInfo.name))
-      return false
-    try {
-      const child = children[0] as Record<string, unknown>
-      if (child?.type !== 'user')
-        return false
-      const msg = child.message as Record<string, unknown>
-      if (!msg?.content || !Array.isArray(msg.content))
-        return false
-      const toolResult = (msg.content as Array<Record<string, unknown>>).find(c => c.type === 'tool_result')
-      if (!toolResult)
-        return false
-      const resultData = toolResult as Record<string, unknown>
-      const resultContent = Array.isArray(resultData.content)
-        ? (resultData.content as Array<Record<string, unknown>>)
-            .filter(c => c.type === 'text')
-            .map(c => c.text)
-            .join('')
-        : String(resultData.content || '')
-      // Auto-expand if the result is a single line (no newlines) and short
-      return !resultContent.includes('\n') && resultContent.length > 0
-    }
-    catch { return false }
-  }
-
-  // Effective expanded state: manual toggle overrides auto-expand default.
-  const threadExpanded = () => threadExpandedManual() ?? shouldAutoExpand()
+  const threadExpanded = () => threadExpandedManual() ?? false
   const setThreadExpanded = (updater: boolean | ((prev: boolean) => boolean)) => {
     const current = threadExpanded()
     const next = typeof updater === 'function' ? updater(current) : updater
@@ -322,6 +286,12 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       childTotalTokens: typeof tur?.totalTokens === 'number' ? tur.totalTokens : undefined,
       childTotalToolUseCount: typeof tur?.totalToolUseCount === 'number' ? tur.totalToolUseCount : undefined,
       childControlResponse: childControlResponse(),
+      childOriginalFile: typeof tur?.originalFile === 'string' ? tur.originalFile : undefined,
+      childGrepNumFiles: typeof tur?.numFiles === 'number' ? tur.numFiles : undefined,
+      childGrepNumLines: typeof tur?.numLines === 'number' ? tur.numLines : undefined,
+      childGlobNumFiles: typeof tur?.numFiles === 'number' ? tur.numFiles : undefined,
+      childGlobDurationMs: typeof tur?.durationMs === 'number' ? tur.durationMs : undefined,
+      childGlobTruncated: typeof tur?.truncated === 'boolean' ? tur.truncated : undefined,
     }
   }
 

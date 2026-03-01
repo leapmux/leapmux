@@ -71,7 +71,8 @@ globalStyle(':root', {
     '--warning': 'rgb(245 158 11)',
     '--warning-foreground': 'rgb(34 32 30)',
 
-    // Typography — wire user-configurable mono font into Oat's variable
+    // Typography — wire user-configurable fonts into Oat's variables
+    '--font-sans': `var(--ui-font-family, system-ui, sans-serif)`,
     '--font-mono': `var(--mono-font-family, "Hack NF", Hack, "SF Mono", Consolas, monospace)`,
 
     // Borders and interactive

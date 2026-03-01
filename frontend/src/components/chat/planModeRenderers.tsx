@@ -4,7 +4,6 @@ import type { MessageContentRenderer, RenderContext } from './messageRenderers'
 import Hand from 'lucide-solid/icons/hand'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import Stamp from 'lucide-solid/icons/stamp'
-import TicketsPlane from 'lucide-solid/icons/tickets-plane'
 import { Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { renderMarkdown } from '~/lib/renderMarkdown'
@@ -13,24 +12,11 @@ import { markdownContent } from './markdownContent.css'
 import { getAssistantContent, isObject, relativizePath } from './messageUtils'
 import { ToolUseLayout } from './toolRenderers'
 import {
-  toolInputSubDetail,
+  toolInputSummary,
   toolInputText,
   toolUseHeader,
   toolUseIcon,
 } from './toolStyles.css'
-
-/** Render EnterPlanMode tool_use as a simple "Entering Plan Mode" text line. */
-export function renderEnterPlanMode(toolUse: Record<string, unknown>, context?: RenderContext): JSX.Element {
-  void toolUse
-  return (
-    <ToolUseLayout
-      icon={TicketsPlane}
-      toolName="EnterPlanMode"
-      title="Entering Plan Mode"
-      context={context}
-    />
-  )
-}
 
 /** Render ExitPlanMode tool_use with the plan from input.plan as a markdown document. */
 export function renderExitPlanMode(toolUse: Record<string, unknown>, context?: RenderContext): JSX.Element {
@@ -54,7 +40,7 @@ export function renderExitPlanMode(toolUse: Record<string, unknown>, context?: R
   }
 
   const summary = context?.childFilePath
-    ? <div class={toolInputSubDetail}>{relativizePath(context.childFilePath, context?.workingDir, context?.homeDir)}</div>
+    ? <div class={toolInputSummary}>{relativizePath(context.childFilePath, context?.workingDir, context?.homeDir)}</div>
     : undefined
 
   return (
@@ -95,18 +81,6 @@ export function renderExitPlanMode(toolUse: Record<string, unknown>, context?: R
       </>
     </ToolUseLayout>
   )
-}
-
-export const enterPlanModeRenderer: MessageContentRenderer = {
-  render(parsed, _role, context) {
-    const content = getAssistantContent(parsed)
-    if (!content)
-      return null
-    const toolUse = content.find(c => isObject(c) && c.type === 'tool_use' && c.name === 'EnterPlanMode')
-    if (!toolUse)
-      return null
-    return renderEnterPlanMode(toolUse as Record<string, unknown>, context)
-  },
 }
 
 export const exitPlanModeRenderer: MessageContentRenderer = {

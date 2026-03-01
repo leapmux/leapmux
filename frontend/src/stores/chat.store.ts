@@ -24,6 +24,8 @@ interface ChatStoreState {
   savedViewportScroll: Record<string, { distFromBottom: number, atBottom: boolean }>
   /** Whether initial load has completed for an agent. */
   initialLoadComplete: Record<string, boolean>
+  /** Monotonic counter incremented on every addMessage (including thread merges). */
+  messageVersion: Record<string, number>
 }
 
 export function createChatStore() {
@@ -37,6 +39,7 @@ export function createChatStore() {
     fetchingOlder: {},
     savedViewportScroll: {},
     initialLoadComplete: {},
+    messageVersion: {},
   })
 
   /** Shared implementation for setMessages / loadInitialMessages. */
@@ -68,35 +71,34 @@ export function createChatStore() {
     },
 
     addMessage(agentId: string, message: AgentChatMessage) {
-      setState('messagesByAgent', agentId, (prev = []) => {
-        // Check if a message with this ID already exists (thread merge:
-        // parent gets updated with child content and bumped seq).
-        // Search from end — thread merges almost always affect recent messages.
-        const existingIdx = prev.findLastIndex(m => m.id === message.id)
-        if (existingIdx !== -1) {
-          // Update in-place to avoid advancing lastSeq past messages
-          // that haven't arrived yet (which would cause the seq-based
-          // dedup below to incorrectly drop them).
-          const updated = [...prev]
-          updated[existingIdx] = message
-          return updated
-        }
+      // Thread merge: check if a message with this ID already exists.
+      // Search from end — thread merges almost always affect recent messages.
+      const messages = state.messagesByAgent[agentId]
+      const existingIdx = messages?.findLastIndex(m => m.id === message.id) ?? -1
 
-        // Fast path: message is in order (most common case).
-        if (prev.length === 0 || message.seq > prev[prev.length - 1].seq) {
-          return [...prev, message]
-        }
+      if (existingIdx !== -1) {
+        // Shallow-merge via path setter: preserves the store proxy reference
+        // so <For> keeps the existing MessageBubble (local UI state survives).
+        setState('messagesByAgent', agentId, existingIdx, message)
+      }
+      else {
+        setState('messagesByAgent', agentId, (prev = []) => {
+          // Fast path: message is in order (most common case).
+          if (prev.length === 0 || message.seq > prev[prev.length - 1].seq) {
+            return [...prev, message]
+          }
 
-        // Dedup: skip if a message with this exact seq already exists.
-        if (prev.findLastIndex(m => m.seq === message.seq) !== -1)
-          return prev
+          // Dedup: skip if a message with this exact seq already exists.
+          if (prev.findLastIndex(m => m.seq === message.seq) !== -1)
+            return prev
 
-        // Out-of-order message (e.g. catch-up replay after a thread merge
-        // advanced lastSeq): insert in sorted position by seq.
-        const insertAfter = prev.findLastIndex(m => m.seq < message.seq)
-        const insertIdx = insertAfter + 1
-        return [...prev.slice(0, insertIdx), message, ...prev.slice(insertIdx)]
-      })
+          // Out-of-order message (e.g. catch-up replay after a thread merge
+          // advanced lastSeq): insert in sorted position by seq.
+          const insertAfter = prev.findLastIndex(m => m.seq < message.seq)
+          const insertIdx = insertAfter + 1
+          return [...prev.slice(0, insertIdx), message, ...prev.slice(insertIdx)]
+        })
+      }
 
       // Track delivery errors
       if (message.deliveryError) {
@@ -109,6 +111,10 @@ export function createChatStore() {
       if (todos) {
         setState('todosByAgent', agentId, todos)
       }
+
+      // Bump version so auto-scroll effects can detect thread merges
+      // (which don't change messages.length).
+      setState('messageVersion', agentId, (prev = 0) => prev + 1)
     },
 
     getLastSeq(agentId: string): bigint {
@@ -260,6 +266,10 @@ export function createChatStore() {
 
     isInitialLoadComplete(agentId: string): boolean {
       return state.initialLoadComplete[agentId] ?? false
+    },
+
+    getMessageVersion(agentId: string): number {
+      return state.messageVersion[agentId] ?? 0
     },
 
     /** Save scroll state for viewport restoration on tab switch. */
