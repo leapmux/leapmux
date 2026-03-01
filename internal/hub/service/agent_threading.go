@@ -362,12 +362,8 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 
 	if len(result) == 0 {
 		// Everything consolidated away (e.g. settings toggled back and forth).
-		// Return a no-op settings_changed that renders as invisible on the frontend.
-		data, _ := json.Marshal(map[string]interface{}{
-			"type":    "settings_changed",
-			"changes": map[string]interface{}{},
-		})
-		return []json.RawMessage{data}
+		// Return an empty slice; the frontend treats empty wrappers as hidden.
+		return []json.RawMessage{}
 	}
 
 	return result
