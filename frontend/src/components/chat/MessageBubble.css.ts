@@ -1,10 +1,9 @@
 import { style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
 
 export const floatingToolbar = style({
   position: 'absolute',
-  top: spacing.xs,
-  right: spacing.xs,
+  top: 'var(--space-1)',
+  right: 'var(--space-1)',
   display: 'flex',
   gap: '2px',
   zIndex: 10,
@@ -13,7 +12,7 @@ export const floatingToolbar = style({
 export const metaFloatingToolbar = style({
   position: 'absolute',
   top: '50%',
-  right: spacing.xs,
+  right: 'var(--space-1)',
   transform: 'translateY(-50%)',
   display: 'flex',
   gap: '2px',
@@ -22,8 +21,8 @@ export const metaFloatingToolbar = style({
 
 export const threadChildren = style({
   marginLeft: '6px',
-  paddingLeft: spacing.md,
-  paddingRight: spacing.md,
+  paddingLeft: 'var(--space-3)',
+  paddingRight: 'var(--space-3)',
   borderLeft: '2px solid var(--border)',
 })
 
@@ -38,7 +37,7 @@ export const messageWithError = style({
 export const messageError = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.xs,
+  gap: 'var(--space-1)',
   paddingTop: '2px',
   fontSize: 'var(--text-8)',
   color: 'var(--danger)',

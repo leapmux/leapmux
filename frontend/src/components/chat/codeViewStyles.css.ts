@@ -1,5 +1,4 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
 
 // Code view container (used by Read tool result with syntax highlighting)
 export const codeViewContainer = style({
@@ -10,12 +9,12 @@ export const codeViewContainer = style({
   overflow: 'auto',
   borderRadius: 'var(--radius-small)',
   border: '1px solid var(--border)',
-  marginTop: spacing.xs,
+  marginTop: 'var(--space-1)',
 })
 
 export const codeViewLine = style({
   display: 'flex',
-  padding: `0 ${spacing.sm}`,
+  padding: '0 var(--space-2)',
   whiteSpace: 'pre-wrap',
   wordBreak: 'break-all',
 })
@@ -27,7 +26,7 @@ export const codeViewLineNumber = style({
   textAlign: 'right',
   color: 'var(--faint-foreground)',
   whiteSpace: 'nowrap',
-  marginRight: spacing.sm,
+  marginRight: 'var(--space-2)',
 })
 
 export const codeViewContent = style({

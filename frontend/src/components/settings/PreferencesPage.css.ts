@@ -1,18 +1,17 @@
 import { style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
 
 export { backLink, errorText, successText, warningText } from '~/styles/shared.css'
 
 export const container = style({
   maxWidth: '600px',
   margin: '0 auto',
-  padding: spacing.xxl,
+  padding: 'var(--space-8)',
 })
 
 export const section = style({
-  marginBottom: spacing.xl,
+  marginBottom: 'var(--space-6)',
   borderBottom: '1px solid var(--border)',
-  paddingBottom: spacing.xl,
+  paddingBottom: 'var(--space-6)',
   selectors: {
     '&:last-child': {
       borderBottom: 'none',
@@ -24,7 +23,7 @@ export const section = style({
 export const fieldLabel = style({
   display: 'flex',
   flexDirection: 'column',
-  gap: spacing.xs,
+  gap: 'var(--space-1)',
   fontSize: 'var(--text-7)',
   fontWeight: 400,
   color: 'var(--muted-foreground)',
@@ -33,11 +32,11 @@ export const fieldLabel = style({
 export const pillGroup = style({
   display: 'flex',
   flexDirection: 'row',
-  gap: spacing.sm,
+  gap: 'var(--space-2)',
 })
 
 export const pillOption = style({
-  'padding': `${spacing.sm} ${spacing.lg}`,
+  'padding': 'var(--space-2) var(--space-4)',
   'backgroundColor': 'var(--card)',
   'color': 'var(--muted-foreground)',
   'border': '1px solid var(--border)',
@@ -51,7 +50,7 @@ export const pillOption = style({
 })
 
 export const pillOptionActive = style({
-  padding: `${spacing.sm} ${spacing.lg}`,
+  padding: 'var(--space-2) var(--space-4)',
   backgroundColor: 'var(--primary)',
   color: '#ffffff',
   border: '1px solid var(--primary)',
@@ -73,7 +72,7 @@ export const fontListHeader = style({
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
-  marginTop: spacing.md,
+  marginTop: 'var(--space-3)',
 })
 
 export const fontList = style({
@@ -88,8 +87,8 @@ export const fontList = style({
 export const fontListItem = style({
   'display': 'flex',
   'alignItems': 'center',
-  'gap': spacing.sm,
-  'padding': `${spacing.sm} ${spacing.md}`,
+  'gap': 'var(--space-2)',
+  'padding': 'var(--space-2) var(--space-3)',
   'backgroundColor': 'var(--card)',
   'cursor': 'grab',
   ':hover': {
@@ -158,27 +157,27 @@ export const fontEditError = style({
 export const fontListEmpty = style({
   fontSize: 'var(--text-7)',
   color: 'var(--faint-foreground)',
-  padding: `${spacing.sm} 0`,
+  padding: 'var(--space-2) 0',
   fontStyle: 'italic',
 })
 
 export const fontAddRow = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.sm,
+  gap: 'var(--space-2)',
 })
 
 export const sliderGroup = style({
   display: 'flex',
   flexDirection: 'column',
-  gap: spacing.sm,
-  marginTop: spacing.md,
+  gap: 'var(--space-2)',
+  marginTop: 'var(--space-3)',
 })
 
 export const sliderRow = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.md,
+  gap: 'var(--space-3)',
 })
 
 export const sliderValue = style({
@@ -192,5 +191,5 @@ export const volumeOverrideRow = style({
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
-  gap: spacing.md,
+  gap: 'var(--space-3)',
 })

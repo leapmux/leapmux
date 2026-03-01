@@ -22,7 +22,7 @@ const MIME_MAP: Record<string, string> = {
   avif: 'image/avif',
 }
 
-const WRAPPER_PADDING = 16 // matches spacing.lg used in imageZoomWrapper
+const WRAPPER_PADDING = 16 // matches var(--space-4) used in imageZoomWrapper
 
 function getMimeType(path: string): string {
   const ext = path.split('.').pop()?.toLowerCase() ?? ''

@@ -3,7 +3,7 @@ import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount } f
 import * as styles from './FileViewer.css'
 
 const FALLBACK_ROW_HEIGHT = 20
-const BASE_VPAD = 4 // matches spacing.xs
+const BASE_VPAD = 4 // matches var(--space-1)
 const OVERSCAN = 20
 
 /** Format a single hex row: offset | hex bytes | ASCII */

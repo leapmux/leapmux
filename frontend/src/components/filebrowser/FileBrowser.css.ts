@@ -1,5 +1,4 @@
 import { style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
 
 export const container = style({
   display: 'flex',
@@ -11,8 +10,8 @@ export const container = style({
 export const pathBar = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.xs,
-  padding: `${spacing.sm} ${spacing.md}`,
+  gap: 'var(--space-1)',
+  padding: 'var(--space-2) var(--space-3)',
   borderBottom: '1px solid var(--border)',
   flexShrink: 0,
   minHeight: '32px',
@@ -21,7 +20,7 @@ export const pathBar = style({
 export const breadcrumbList = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.xs,
+  gap: 'var(--space-1)',
   listStyle: 'none',
   margin: 0,
   padding: 0,
@@ -45,14 +44,14 @@ export const pathSeparator = style({
 export const fileList = style({
   flex: 1,
   overflow: 'auto',
-  padding: `${spacing.xs} 0`,
+  padding: 'var(--space-1) 0',
 })
 
 export const fileItem = style({
   'display': 'flex',
   'alignItems': 'center',
-  'gap': spacing.sm,
-  'padding': `${spacing.xs} ${spacing.md}`,
+  'gap': 'var(--space-2)',
+  'padding': 'var(--space-1) var(--space-3)',
   'cursor': 'pointer',
   'fontSize': 'var(--text-7)',
   'color': 'var(--foreground)',
@@ -92,7 +91,7 @@ export const loadingState = style({
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  padding: spacing.xl,
+  padding: 'var(--space-6)',
   color: 'var(--faint-foreground)',
   fontSize: 'var(--text-7)',
 })
@@ -101,7 +100,7 @@ export const errorState = style({
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  padding: spacing.xl,
+  padding: 'var(--space-6)',
   color: 'var(--danger)',
   fontSize: 'var(--text-7)',
 })
@@ -110,7 +109,7 @@ export const emptyState = style({
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  padding: spacing.xl,
+  padding: 'var(--space-6)',
   color: 'var(--faint-foreground)',
   fontSize: 'var(--text-7)',
 })

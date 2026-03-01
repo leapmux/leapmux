@@ -1,10 +1,9 @@
 import { style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
 
 export const container = style({
   position: 'relative',
   borderTop: '1px solid var(--border)',
-  padding: spacing.sm,
+  padding: 'var(--space-2)',
   flexShrink: 0,
 })
 
@@ -13,7 +12,7 @@ export const trigger = style({
   'display': 'flex',
   'alignItems': 'center',
   'width': '100%',
-  'padding': `${spacing.sm} ${spacing.md}`,
+  'padding': 'var(--space-2) var(--space-3)',
   'borderRadius': 'var(--radius-medium)',
   'color': 'var(--foreground)',
   'fontSize': 'var(--text-7)',
@@ -36,7 +35,7 @@ export const orgItem = style({
   display: 'flex',
   alignItems: 'center',
   width: '100%',
-  padding: `${spacing.sm} ${spacing.md}`,
+  padding: 'var(--space-2) var(--space-3)',
   borderRadius: 'var(--radius-small)',
   color: 'var(--foreground)',
   fontSize: 'var(--text-7)',
@@ -55,7 +54,7 @@ export const orgItemActive = style({
   display: 'flex',
   alignItems: 'center',
   width: '100%',
-  padding: `${spacing.sm} ${spacing.md}`,
+  padding: 'var(--space-2) var(--space-3)',
   borderRadius: 'var(--radius-small)',
   color: 'var(--primary)',
   fontSize: 'var(--text-7)',

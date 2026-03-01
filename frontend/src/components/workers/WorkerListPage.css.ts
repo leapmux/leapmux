@@ -1,10 +1,9 @@
 import { style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
 
 export { backLink, emptyState, errorText } from '~/styles/shared.css'
 
 export const container = style({
-  padding: spacing.xl,
+  padding: 'var(--space-6)',
 })
 
 export const workerCard = style({
@@ -14,9 +13,9 @@ export const workerCard = style({
 export const sectionHeader = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.sm,
-  marginTop: spacing.xl,
-  marginBottom: spacing.md,
+  gap: 'var(--space-2)',
+  marginTop: 'var(--space-6)',
+  marginBottom: 'var(--space-3)',
 })
 
 export const sectionName = style({
@@ -35,13 +34,13 @@ export const sectionCount = style({
 export const cardGrid = style({
   display: 'flex',
   flexDirection: 'column',
-  gap: spacing.sm,
+  gap: 'var(--space-2)',
 })
 
 export const cardInfo = style({
   display: 'flex',
   flexDirection: 'column',
-  gap: spacing.xs,
+  gap: 'var(--space-1)',
   minWidth: 0,
   flex: 1,
 })
@@ -70,13 +69,13 @@ export const cardMeta = style({
 export const cardRight = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.sm,
+  gap: 'var(--space-2)',
   flexShrink: 0,
-  marginLeft: spacing.md,
+  marginLeft: 'var(--space-3)',
 })
 
 export const emptySection = style({
-  padding: spacing.lg,
+  padding: 'var(--space-4)',
   color: 'var(--faint-foreground)',
   fontSize: 'var(--text-7)',
   textAlign: 'center',

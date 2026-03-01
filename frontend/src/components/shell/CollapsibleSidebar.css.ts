@@ -1,5 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { headerHeight, iconSize, resizeHandleSelectors, spacing } from '~/styles/tokens'
+import { headerHeight, iconSize, resizeHandleSelectors } from '~/styles/tokens'
 
 /** Inner flex-column wrapper for the expanded sidebar. */
 export const sidebarInner = style({
@@ -59,15 +59,15 @@ export const sidebarContent = style({
 export const sidebarHeaderActions = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.xs,
+  gap: 'var(--space-1)',
   marginRight: '-4px',
 })
 
 export const collapsibleTrigger = style({
   'display': 'flex',
   'alignItems': 'center',
-  'gap': spacing.xs,
-  'padding': `0 ${spacing.lg}`,
+  'gap': 'var(--space-1)',
+  'padding': '0 var(--space-4)',
   'minHeight': headerHeight,
   'borderBottom': '1px solid var(--border)',
   'flexShrink': 0,
@@ -135,8 +135,8 @@ export const sidebarRail = style({
   display: 'flex',
   flexDirection: 'column',
   alignItems: 'center',
-  gap: spacing.xs,
-  padding: `${spacing.xs} 0 ${spacing.sm}`,
+  gap: 'var(--space-1)',
+  padding: 'var(--space-1) 0 var(--space-2)',
   width: '100%',
   height: '100%',
   backgroundColor: 'var(--card)',
@@ -176,7 +176,7 @@ export const marginTopAuto = style({
 export const bottomSection = style({
   marginTop: 'auto',
   flexShrink: 0,
-  padding: `0 ${spacing.lg}`,
+  padding: '0 var(--space-4)',
   minHeight: headerHeight,
   display: 'flex',
   alignItems: 'center',
@@ -189,7 +189,7 @@ export const sectionDragHandle = style({
   'left': 0,
   'top': 0,
   'bottom': 0,
-  'width': spacing.lg,
+  'width': 'var(--space-4)',
   'display': 'flex',
   'alignItems': 'center',
   'justifyContent': 'center',
@@ -240,7 +240,7 @@ export const emptyDropZone = style({
   fontStyle: 'italic',
   border: '2px dashed var(--border)',
   borderRadius: '4px',
-  margin: spacing.sm,
+  margin: 'var(--space-2)',
 })
 
 /** Active state when a section drag is in progress over an empty sidebar. */

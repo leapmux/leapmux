@@ -1,6 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { codeBlockCode, codeBlockPre } from '~/styles/codeBlock'
-import { iconSize, spacing } from '~/styles/tokens'
+import { iconSize } from '~/styles/tokens'
 
 export const markdownContent = style({
   wordBreak: 'break-word',
@@ -29,7 +29,7 @@ globalStyle(`html[data-theme="dark"] ${markdownContent} pre.shiki span`, {
 
 // Task list checkboxes
 globalStyle(`${markdownContent} li > input[type="checkbox"]`, {
-  marginRight: spacing.xs,
+  marginRight: 'var(--space-1)',
   verticalAlign: 'middle',
   pointerEvents: 'none',
 })
@@ -39,8 +39,8 @@ globalStyle(`${markdownContent} pre .copy-code-button`, {
   all: 'unset',
   boxSizing: 'border-box',
   position: 'absolute',
-  top: spacing.xs,
-  right: spacing.xs,
+  top: 'var(--space-1)',
+  right: 'var(--space-1)',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',

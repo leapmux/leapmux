@@ -1,5 +1,4 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
 
 export const terminalInner = style({
   flex: 1,
@@ -25,5 +24,5 @@ export const terminalWrapper = style({
 // Apply padding to the xterm element rather than the wrapper so that
 // FitAddon correctly accounts for it when calculating rows/cols.
 globalStyle(`${terminalWrapper} .xterm`, {
-  padding: spacing.xs,
+  padding: 'var(--space-1)',
 })

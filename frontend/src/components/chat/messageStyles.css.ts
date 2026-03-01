@@ -1,10 +1,9 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
 import { toolHeaderActions, toolHeaderTimestamp } from './toolStyles.css'
 
 export const messageBubble = style({
   position: 'relative',
-  padding: `${spacing.md} ${spacing.lg}`,
+  padding: 'var(--space-3) var(--space-4)',
   borderRadius: 'var(--radius-medium)',
   lineHeight: 1.6,
   maxWidth: '85%',
@@ -35,14 +34,14 @@ export const thinkingMessage = style([messageBubble, {
 export const thinkingHeader = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.xs,
+  gap: 'var(--space-1)',
   color: 'var(--muted-foreground)',
   cursor: 'pointer',
   userSelect: 'none',
 })
 
 export const thinkingContent = style({
-  marginTop: spacing.sm,
+  marginTop: 'var(--space-2)',
 })
 
 export const systemMessage = style([messageBubble, {
@@ -61,7 +60,7 @@ export const metaMessage = style({
 export const resultDivider = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.sm,
+  gap: 'var(--space-2)',
   color: 'var(--muted-foreground)',
   fontSize: 'var(--text-7)',
   selectors: {
@@ -84,7 +83,7 @@ export const resultDivider = style({
 export const controlResponseMessage = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.sm,
+  gap: 'var(--space-2)',
   color: 'var(--foreground)',
   fontSize: 'var(--text-7)',
   alignSelf: 'stretch',
@@ -117,8 +116,8 @@ export const messageRowCenter = style({
 
 // Extra vertical spacing for user, assistant, and notification message rows
 globalStyle(`${messageRow}:has(> .${assistantMessage}), ${messageRow}:has(> .${thinkingMessage}), ${messageRowEnd}, ${messageRowCenter}`, {
-  marginTop: spacing.xs,
-  marginBottom: spacing.xs,
+  marginTop: 'var(--space-1)',
+  marginBottom: 'var(--space-1)',
 })
 
 // Inside messageRow, stretch meta messages (tools, result dividers) to fill available space
@@ -141,7 +140,7 @@ globalStyle(`${messageRow}:has(.${resultDivider}) > .${toolHeaderActions}`, {
 // Inside messageRowEnd, place actions to the left of the bubble in a 2-column grid (mirrored via RTL)
 globalStyle(`${messageRowEnd} > .${toolHeaderActions}`, {
   order: -1,
-  paddingRight: spacing.xs,
+  paddingRight: 'var(--space-1)',
   display: 'grid',
   gridTemplateColumns: 'auto auto',
   direction: 'rtl',
@@ -160,12 +159,12 @@ globalStyle(`${messageRow}:has(> .${assistantMessage}) > .${toolHeaderActions}, 
 
 // Add left padding to timestamps in assistant grid so they align with the icon button below
 globalStyle(`${messageRow}:has(> .${assistantMessage}) > .${toolHeaderActions} .${toolHeaderTimestamp}, ${messageRow}:has(> .${thinkingMessage}) > .${toolHeaderActions} .${toolHeaderTimestamp}`, {
-  paddingLeft: spacing.xs,
+  paddingLeft: 'var(--space-1)',
 })
 
 // Add right padding to timestamps in user grid (mirrored) so they align with the icon button below
 globalStyle(`${messageRowEnd} > .${toolHeaderActions} .${toolHeaderTimestamp}`, {
-  paddingRight: spacing.xs,
+  paddingRight: 'var(--space-1)',
 })
 
 // Inside messageRowCenter, position actions at the right edge absolutely

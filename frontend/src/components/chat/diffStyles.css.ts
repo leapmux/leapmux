@@ -1,5 +1,4 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
 
 // Diff container
 export const diffContainer = style({
@@ -10,7 +9,7 @@ export const diffContainer = style({
   overflow: 'auto',
   borderRadius: 'var(--radius-small)',
   border: '1px solid var(--border)',
-  marginTop: spacing.xs,
+  marginTop: 'var(--space-1)',
 })
 
 export const diffRemoved = style({
@@ -35,7 +34,7 @@ export const diffAddedInline = style({
 
 export const diffLine = style({
   display: 'flex',
-  padding: `0 ${spacing.sm}`,
+  padding: '0 var(--space-2)',
   whiteSpace: 'pre-wrap',
   wordBreak: 'break-all',
 })
@@ -59,8 +58,8 @@ export const diffLineNumberNew = style({
   textAlign: 'right',
   color: 'var(--faint-foreground)',
   whiteSpace: 'nowrap',
-  marginLeft: spacing.xs,
-  marginRight: spacing.xs,
+  marginLeft: 'var(--space-1)',
+  marginRight: 'var(--space-1)',
 })
 
 export const diffPrefix = style({
@@ -97,7 +96,7 @@ export const diffSplitContainer = style({
   overflow: 'auto',
   borderRadius: 'var(--radius-small)',
   border: '1px solid var(--border)',
-  marginTop: spacing.xs,
+  marginTop: 'var(--space-1)',
 })
 
 globalStyle(`${diffSplitContainer} span[style]`, {

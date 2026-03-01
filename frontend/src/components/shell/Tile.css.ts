@@ -1,5 +1,4 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
 
 export const tabBarRow = style({
   display: 'flex',
@@ -42,9 +41,9 @@ export const splitActions = style({
   display: 'flex',
   alignItems: 'center',
   gap: '2px',
-  marginLeft: spacing.xs,
-  paddingLeft: spacing.xs,
-  paddingRight: spacing.xs,
+  marginLeft: 'var(--space-1)',
+  paddingLeft: 'var(--space-1)',
+  paddingRight: 'var(--space-1)',
   borderLeft: '1px solid var(--border)',
 })
 

@@ -1,5 +1,4 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
 
 // Tool use/result messages - document-style, no bubble
 export const toolMessage = style({
@@ -12,7 +11,7 @@ export const toolMessage = style({
 export const toolUseHeader = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.xs,
+  gap: 'var(--space-1)',
   color: 'var(--muted-foreground)',
 })
 
@@ -20,8 +19,8 @@ export const toolUseHeader = style({
 export const toolResultHeader = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.xs,
-  marginBottom: spacing.xs,
+  gap: 'var(--space-1)',
+  marginBottom: 'var(--space-1)',
   color: 'var(--muted-foreground)',
 })
 
@@ -101,7 +100,7 @@ globalStyle(`html[data-theme="dark"] ${toolResultContentAnsi} pre.shiki span`, {
 // Prompt label shown above WebFetch tool result
 export const toolResultPrompt = style({
   color: 'var(--muted-foreground)',
-  marginBottom: spacing.xs,
+  marginBottom: 'var(--space-1)',
 })
 
 // Tool sub-detail line (monospace, aligned with description: icon 16px + gap 4px = 20px indent)
@@ -194,7 +193,7 @@ export const controlResponseTag = style({
 // AskUserQuestion: question item container
 export const questionItem = style({
   paddingLeft: '20px',
-  marginTop: spacing.xs,
+  marginTop: 'var(--space-1)',
 })
 
 // AskUserQuestion: question header label (bold)
