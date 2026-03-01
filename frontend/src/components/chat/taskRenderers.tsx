@@ -9,25 +9,19 @@ import SquareTerminal from 'lucide-solid/icons/square-terminal'
 import Terminal from 'lucide-solid/icons/terminal'
 import Vote from 'lucide-solid/icons/vote'
 import { For, Show } from 'solid-js'
-import { Icon } from '~/components/common/Icon'
 import { TodoList } from '~/components/todo/TodoList'
 import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
 import { renderMarkdown } from '~/lib/renderMarkdown'
-import { inlineFlex } from '~/styles/shared.css'
 import { markdownContent } from './markdownContent.css'
 import { getAssistantContent, isObject } from './messageUtils'
-import { firstNonEmptyLine, formatTaskStatus } from './rendererUtils'
-import { ControlResponseTag, ToolHeaderActions } from './toolRenderers'
+import { firstNonEmptyLine, formatDuration, formatNumber, formatTaskStatus } from './rendererUtils'
+import { ToolUseLayout } from './toolRenderers'
 import {
   answerText,
-  toolInputDetail,
   toolInputSubDetail,
   toolInputSubDetailExpanded,
-  toolMessage,
   toolResultContentAnsi,
   toolResultContentPre,
-  toolUseHeader,
-  toolUseIcon,
 } from './toolStyles.css'
 
 /** Render TodoWrite tool_use with a visual todo list. Returns null if input is invalid. */
@@ -44,29 +38,26 @@ export function renderTodoWrite(toolUse: Record<string, unknown>, context?: Rend
 
   const count = todos.length
   const label = `${count} task${count === 1 ? '' : 's'}`
+  const completedCount = todos.filter(t => t.status === 'completed').length
+  const inProgressTask = todos.find(t => t.status === 'in_progress')
+
+  const summary = (
+    <div class={toolInputSubDetail}>
+      {inProgressTask ? `${inProgressTask.activeForm} \u00B7 ` : ''}
+      {`${completedCount}/${count} completed`}
+    </div>
+  )
 
   return (
-    <div class={toolMessage}>
-      <div class={toolUseHeader}>
-        <span class={inlineFlex} title="TodoWrite">
-          <Icon icon={ListTodo} size="md" class={toolUseIcon} />
-        </span>
-        <span class={toolInputDetail}>{label}</span>
-        <ControlResponseTag response={context?.childControlResponse} />
-        <Show when={context}>
-          <ToolHeaderActions
-            createdAt={context!.createdAt}
-            updatedAt={context!.updatedAt}
-            threadCount={context!.threadChildCount ?? 0}
-            threadExpanded={context!.threadExpanded ?? false}
-            onToggleThread={context!.onToggleThread ?? (() => {})}
-            onCopyJson={context!.onCopyJson ?? (() => {})}
-            jsonCopied={context!.jsonCopied ?? false}
-          />
-        </Show>
-      </div>
+    <ToolUseLayout
+      icon={ListTodo}
+      toolName="TodoWrite"
+      title={label}
+      summary={summary}
+      context={context}
+    >
       <TodoList todos={todos} />
-    </div>
+    </ToolUseLayout>
   )
 }
 
@@ -90,25 +81,13 @@ export function renderAskUserQuestion(toolUse: Record<string, unknown>, context?
         : 'Waiting for answers'
 
   return (
-    <div class={toolMessage}>
-      <div class={toolUseHeader}>
-        <span class={inlineFlex} title="AskUserQuestion">
-          <Icon icon={Vote} size="md" class={toolUseIcon} />
-        </span>
-        <span class={toolInputDetail}>{statusText}</span>
-        <ControlResponseTag response={context?.childControlResponse} />
-        <Show when={context}>
-          <ToolHeaderActions
-            createdAt={context!.createdAt}
-            updatedAt={context!.updatedAt}
-            threadCount={context!.threadChildCount ?? 0}
-            threadExpanded={context!.threadExpanded ?? false}
-            onToggleThread={context!.onToggleThread ?? (() => {})}
-            onCopyJson={context!.onCopyJson ?? (() => {})}
-            jsonCopied={context!.jsonCopied ?? false}
-          />
-        </Show>
-      </div>
+    <ToolUseLayout
+      icon={Vote}
+      toolName="AskUserQuestion"
+      title={statusText}
+      alwaysVisible={true}
+      context={context}
+    >
       <ul style={{ 'padding-left': '20px', 'margin': '4px 0 0' }}>
         <For each={questions}>
           {(q) => {
@@ -125,7 +104,7 @@ export function renderAskUserQuestion(toolUse: Record<string, unknown>, context?
           }}
         </For>
       </ul>
-    </div>
+    </ToolUseLayout>
   )
 }
 
@@ -137,47 +116,25 @@ export function renderTaskOutput(toolUse: Record<string, unknown>, context?: Ren
   const description = task?.description
   const output = task?.output
   const firstLine = firstNonEmptyLine(output)
-  const expanded = context?.threadExpanded ?? false
+
+  const title = `${status}${description ? ` - ${description}` : ''}`
+  const summary = firstLine ? <div class={toolInputSubDetail}>{firstLine}</div> : undefined
 
   return (
-    <div class={toolMessage}>
-      <div class={toolUseHeader}>
-        <span class={inlineFlex} title="TaskOutput">
-          <Icon icon={SquareTerminal} size="md" class={toolUseIcon} />
-        </span>
-        <span class={toolInputDetail}>
-          {status}
-          {description ? ` - ${description}` : ''}
-        </span>
-        <ControlResponseTag response={context?.childControlResponse} />
-        <Show when={context}>
-          <ToolHeaderActions
-            createdAt={context!.createdAt}
-            updatedAt={context!.updatedAt}
-            threadCount={context!.threadChildCount ?? 0}
-            threadExpanded={context!.threadExpanded ?? false}
-            onToggleThread={context!.onToggleThread ?? (() => {})}
-            onCopyJson={context!.onCopyJson ?? (() => {})}
-            jsonCopied={context!.jsonCopied ?? false}
-          />
-        </Show>
-      </div>
-      <Show when={!expanded && firstLine}>
-        <div class={toolInputSubDetail}>{firstLine}</div>
-      </Show>
-      <Show when={expanded}>
+    <ToolUseLayout
+      icon={SquareTerminal}
+      toolName="TaskOutput"
+      title={title}
+      summary={summary}
+      context={context}
+    >
+      <>
         <div class={toolInputSubDetailExpanded}>
           <Show when={task?.task_id}>
             {`task_id: ${task!.task_id}`}
           </Show>
           <Show when={task?.task_type}>
             {`\ntask_type: ${task!.task_type}`}
-          </Show>
-          <Show when={task?.status}>
-            {`\nstatus: ${task!.status}`}
-          </Show>
-          <Show when={description}>
-            {`\ndescription: ${description}`}
           </Show>
           <Show when={task?.exitCode !== undefined}>
             {`\nexitCode: ${task!.exitCode}`}
@@ -188,8 +145,8 @@ export function renderTaskOutput(toolUse: Record<string, unknown>, context?: Ren
             ? <div class={toolResultContentAnsi} innerHTML={renderAnsi(output!)} />
             : <div class={toolResultContentPre}>{output}</div>}
         </Show>
-      </Show>
-    </div>
+      </>
+    </ToolUseLayout>
   )
 }
 
@@ -236,37 +193,46 @@ export function renderAgentOrTask(toolUse: Record<string, unknown>, context?: Re
   const description = String(input.description || toolName)
   const subagentType = input.subagent_type ? String(input.subagent_type) : null
 
+  // Format title: if description starts with subagent name, use "SubAgent: rest" format
+  let titleDesc = description
+  if (subagentType) {
+    const prefix = subagentType.toLowerCase()
+    const descLower = description.toLowerCase()
+    if (descLower.startsWith(`${prefix} `))
+      titleDesc = `${subagentType}: ${description.slice(subagentType.length + 1)}`
+  }
+
   const status = context?.childToolResultStatus
   const hasChildren = (context?.threadChildCount ?? 0) > 0
   const displayStatus = status
     ? formatTaskStatus(status)
     : (hasChildren ? 'Running' : null)
 
+  const title = `${titleDesc}${displayStatus ? ` - ${displayStatus}` : ''}${subagentType ? ` (${subagentType})` : ''}`
+
+  // Stats summary from child tool_use_result
+  const duration = context?.childTotalDurationMs
+  const tokens = context?.childTotalTokens
+  const toolUses = context?.childTotalToolUseCount
+  const parts: string[] = []
+  if (duration !== undefined)
+    parts.push(formatDuration(duration))
+  if (tokens !== undefined)
+    parts.push(`${formatNumber(tokens)} tokens`)
+  if (toolUses !== undefined)
+    parts.push(`${toolUses} tool use${toolUses === 1 ? '' : 's'}`)
+  const summary = parts.length > 0
+    ? <div class={toolInputSubDetail}>{parts.join(' \u00B7 ')}</div>
+    : undefined
+
   return (
-    <div class={toolMessage}>
-      <div class={toolUseHeader}>
-        <span class={inlineFlex} title={toolName}>
-          <Icon icon={Bot} size="md" class={toolUseIcon} />
-        </span>
-        <span class={toolInputDetail}>
-          {description}
-          {displayStatus ? ` - ${displayStatus}` : ''}
-          {subagentType ? ` (${subagentType})` : ''}
-        </span>
-        <ControlResponseTag response={context?.childControlResponse} />
-        <Show when={context}>
-          <ToolHeaderActions
-            createdAt={context!.createdAt}
-            updatedAt={context!.updatedAt}
-            threadCount={context!.threadChildCount ?? 0}
-            threadExpanded={context!.threadExpanded ?? false}
-            onToggleThread={context!.onToggleThread ?? (() => {})}
-            onCopyJson={context!.onCopyJson ?? (() => {})}
-            jsonCopied={context!.jsonCopied ?? false}
-          />
-        </Show>
-      </div>
-    </div>
+    <ToolUseLayout
+      icon={Bot}
+      toolName={toolName}
+      title={title}
+      summary={summary}
+      context={context}
+    />
   )
 }
 
@@ -288,30 +254,18 @@ export const taskNotificationRenderer: MessageContentRenderer = {
     if (!isObject(parsed) || parsed.type !== 'system' || parsed.subtype !== 'task_notification')
       return null
 
-    const summary = typeof parsed.summary === 'string' ? parsed.summary : 'Task notification'
+    const summaryText = typeof parsed.summary === 'string' ? parsed.summary : 'Task notification'
     const outputFile = typeof parsed.output_file === 'string' ? parsed.output_file : null
+    const summary = outputFile ? <div class={toolInputSubDetail}>{outputFile}</div> : undefined
 
     return (
-      <div class={toolMessage}>
-        <div class={toolUseHeader}>
-          <span class={inlineFlex} title="Task Notification">
-            <Icon icon={Terminal} size="md" class={toolUseIcon} />
-          </span>
-          <span class={toolInputDetail}>{summary}</span>
-          <Show when={context}>
-            <ToolHeaderActions
-              threadCount={context!.threadChildCount ?? 0}
-              threadExpanded={context!.threadExpanded ?? false}
-              onToggleThread={context!.onToggleThread ?? (() => {})}
-              onCopyJson={context!.onCopyJson ?? (() => {})}
-              jsonCopied={context!.jsonCopied ?? false}
-            />
-          </Show>
-        </div>
-        <Show when={outputFile}>
-          <div class={toolInputSubDetail}>{outputFile}</div>
-        </Show>
-      </div>
+      <ToolUseLayout
+        icon={Terminal}
+        toolName="Task Notification"
+        title={summaryText}
+        summary={summary}
+        context={context}
+      />
     )
   },
 }

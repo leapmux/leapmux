@@ -96,4 +96,28 @@ describe('agent/task renderer', () => {
     })
     expect(text).toContain('Fix bug - Complete (code)')
   })
+
+  it('formats title as "SubAgent: rest" when description starts with subagent name', () => {
+    const text = renderToolUseText('Agent', { description: 'Explore message classification', subagent_type: 'Explore' })
+    expect(text).toContain('Explore: message classification')
+  })
+
+  it('does not format title when description does not start with subagent name', () => {
+    const text = renderToolUseText('Agent', { description: 'Search codebase', subagent_type: 'Explore' })
+    expect(text).toContain('Search codebase')
+    expect(text).not.toContain('Explore:')
+  })
+
+  it('shows stats summary when stats are provided', () => {
+    const text = renderToolUseText('Agent', { description: 'Search' }, {
+      threadChildCount: 1,
+      childToolResultStatus: 'completed',
+      childTotalDurationMs: 30000,
+      childTotalTokens: 500,
+      childTotalToolUseCount: 3,
+    })
+    expect(text).toContain('30s')
+    expect(text).toContain('500 tokens')
+    expect(text).toContain('3 tool uses')
+  })
 })

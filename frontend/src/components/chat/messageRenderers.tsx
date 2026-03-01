@@ -41,13 +41,13 @@ import {
   todoWriteRenderer,
 } from './taskRenderers'
 import {
-  ControlResponseTag,
   ToolHeaderActions,
   toolResultRenderer,
+  ToolUseLayout,
   toolUseRenderer,
 } from './toolRenderers'
 import {
-  toolInputDetail,
+  toolInputText,
   toolMessage,
   toolUseHeader,
   toolUseIcon,
@@ -102,6 +102,12 @@ export interface RenderContext {
   }
   /** Status from child tool_use_result (for Agent/Task status display). */
   childToolResultStatus?: string
+  /** Total duration in ms from child tool_use_result (for Agent/Task stats). */
+  childTotalDurationMs?: number
+  /** Total tokens from child tool_use_result (for Agent/Task stats). */
+  childTotalTokens?: number
+  /** Total tool use count from child tool_use_result (for Agent/Task stats). */
+  childTotalToolUseCount?: number
   /** Control response (approval/rejection) threaded into this tool_use. */
   childControlResponse?: { action: string, comment: string }
 }
@@ -125,26 +131,12 @@ function renderSkill(toolUse: Record<string, unknown>, context?: RenderContext):
   const skillName = isObject(input) ? String((input as Record<string, unknown>).skill || '') : ''
 
   return (
-    <div class={toolMessage}>
-      <div class={toolUseHeader}>
-        <span class={inlineFlex} title="Skill">
-          <Icon icon={Toolbox} size="md" class={toolUseIcon} />
-        </span>
-        <span class={toolInputDetail}>{`Skill: /${skillName}`}</span>
-        <ControlResponseTag response={context?.childControlResponse} />
-        <Show when={context}>
-          <ToolHeaderActions
-            createdAt={context!.createdAt}
-            updatedAt={context!.updatedAt}
-            threadCount={context!.threadChildCount ?? 0}
-            threadExpanded={context!.threadExpanded ?? false}
-            onToggleThread={context!.onToggleThread ?? (() => {})}
-            onCopyJson={context!.onCopyJson ?? (() => {})}
-            jsonCopied={context!.jsonCopied ?? false}
-          />
-        </Show>
-      </div>
-    </div>
+    <ToolUseLayout
+      icon={Toolbox}
+      toolName="Skill"
+      title={`Skill: /${skillName}`}
+      context={context}
+    />
   )
 }
 
@@ -192,7 +184,7 @@ function ThinkingMessage(props: { text: string, context?: RenderContext }): JSX.
         <span class={inlineFlex} title="Thinking">
           <Icon icon={Brain} size="md" class={toolUseIcon} />
         </span>
-        <span class={toolInputDetail}>Thinking</span>
+        <span class={toolInputText}>Thinking</span>
         <span class={`${inlineFlex} ${thinkingChevron}${expanded() ? ` ${thinkingChevronExpanded}` : ''}`}>
           <Icon icon={ChevronRight} size="sm" class={toolUseIcon} />
         </span>
@@ -238,7 +230,7 @@ const taskStartedRenderer: MessageContentRenderer = {
           <span class={inlineFlex} title="Task Started">
             <Icon icon={Bot} size="md" class={toolUseIcon} />
           </span>
-          <span class={toolInputDetail}>Task started</span>
+          <span class={toolInputText}>Task started</span>
         </div>
       </div>
     )

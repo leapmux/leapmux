@@ -126,7 +126,7 @@ export const toolInputSubDetailExpanded = style({
 })
 
 // Tool input detail text (natural language: descriptions, URLs, queries)
-export const toolInputDetail = style({
+export const toolInputText = style({
   color: 'var(--foreground)',
   overflow: 'hidden',
   textOverflow: 'ellipsis',
@@ -188,6 +188,14 @@ export const controlResponseTag = style({
   color: 'var(--muted-foreground)',
   fontSize: 'var(--text-7)',
   flexShrink: 0,
+})
+
+// Body content area for tool_use renderers (expand-gated body below header)
+export const toolBodyContent = style({
+  marginLeft: '6px',
+  paddingLeft: 'var(--space-3)',
+  paddingRight: 'var(--space-3)',
+  borderLeft: '2px solid var(--border)',
 })
 
 // AskUserQuestion: question item container

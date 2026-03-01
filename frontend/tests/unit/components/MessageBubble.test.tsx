@@ -2,6 +2,7 @@ import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MessageBubble } from '~/components/chat/MessageBubble'
+import { toolBodyContent } from '~/components/chat/toolStyles.css'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 
@@ -366,5 +367,612 @@ describe('messageBubble rawJson', () => {
     const envelope = await copyRawJson()
     expect(envelope.old_seqs).toEqual([5, 8])
     expect((envelope.messages as unknown[]).length).toBe(2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Helper: build TodoWrite tool_use message
+// ---------------------------------------------------------------------------
+
+function todoWriteToolUse(todos: Array<{ content: string, status: string, activeForm: string }>) {
+  return {
+    type: 'assistant',
+    message: {
+      content: [{
+        type: 'tool_use',
+        id: 'toolu_todo_1',
+        name: 'TodoWrite',
+        input: { todos },
+      }],
+    },
+  }
+}
+
+function todoToolResult() {
+  return {
+    type: 'user',
+    message: {
+      content: [{
+        type: 'tool_result',
+        content: 'Todos have been modified successfully.',
+        tool_use_id: 'toolu_todo_1',
+      }],
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// TodoWrite collapse/expand
+// ---------------------------------------------------------------------------
+
+describe('todoWrite collapse/expand', () => {
+  it('shows title with task count when collapsed', () => {
+    const parent = todoWriteToolUse([
+      { content: 'Task A', status: 'pending', activeForm: 'Working on A' },
+      { content: 'Task B', status: 'pending', activeForm: 'Working on B' },
+      { content: 'Task C', status: 'pending', activeForm: 'Working on C' },
+    ])
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([parent, todoToolResult()]),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble.textContent).toContain('3 tasks')
+  })
+
+  it('hides TodoList when collapsed', () => {
+    const parent = todoWriteToolUse([
+      { content: 'Task A', status: 'pending', activeForm: 'Working on A' },
+      { content: 'Task B', status: 'pending', activeForm: 'Working on B' },
+    ])
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([parent, todoToolResult()]),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    // Task content should NOT be visible when collapsed
+    expect(bubble.textContent).not.toContain('Task A')
+    expect(bubble.textContent).not.toContain('Task B')
+  })
+
+  it('shows summary with in-progress task and progress', () => {
+    const parent = todoWriteToolUse([
+      { content: 'Task A', status: 'completed', activeForm: 'Working on A' },
+      { content: 'Task B', status: 'in_progress', activeForm: 'Running tests' },
+      { content: 'Task C', status: 'pending', activeForm: 'Working on C' },
+    ])
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([parent, todoToolResult()]),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble.textContent).toContain('Running tests')
+    expect(bubble.textContent).toContain('1/3 completed')
+  })
+
+  it('shows TodoList when expanded', () => {
+    const parent = todoWriteToolUse([
+      { content: 'Task A', status: 'completed', activeForm: 'Working on A' },
+      { content: 'Task B', status: 'in_progress', activeForm: 'Running tests' },
+    ])
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([parent, todoToolResult()]),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    // Click the expand button
+    const expandBtn = screen.getByTitle('Expand 1 tool result')
+    fireEvent.click(expandBtn)
+
+    const bubble = screen.getByTestId('message-content')
+    // Task content should be visible when expanded
+    expect(bubble.textContent).toContain('Task A')
+    expect(bubble.textContent).toContain('Running tests')
+  })
+
+  it('body has left border when expanded', () => {
+    const parent = todoWriteToolUse([
+      { content: 'Task A', status: 'pending', activeForm: 'Working on A' },
+    ])
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([parent, todoToolResult()]),
+    })
+
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    // Click the expand button
+    const expandBtn = screen.getByTitle('Expand 1 tool result')
+    fireEvent.click(expandBtn)
+
+    const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
+    expect(bodyWrapper).not.toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Helper: build TaskOutput tool_use message
+// ---------------------------------------------------------------------------
+
+function taskOutputToolUse() {
+  return {
+    type: 'assistant',
+    message: {
+      content: [{
+        type: 'tool_use',
+        id: 'toolu_task_1',
+        name: 'TaskOutput',
+        input: { task_id: 'task-123', block: true, timeout: 30000 },
+      }],
+    },
+  }
+}
+
+function taskOutputResult(task: Record<string, unknown>) {
+  return {
+    type: 'user',
+    message: {
+      content: [{
+        type: 'tool_result',
+        content: task.output || '',
+        tool_use_id: 'toolu_task_1',
+      }],
+    },
+    tool_use_result: { task },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// TaskOutput rendering
+// ---------------------------------------------------------------------------
+
+describe('taskOutput rendering', () => {
+  it('shows status in header when collapsed', () => {
+    const parent = taskOutputToolUse()
+    const result = taskOutputResult({
+      task_id: 'task-123',
+      task_type: 'shell',
+      status: 'completed',
+      description: 'Build',
+      output: 'Build succeeded',
+    })
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([parent, result]),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble.textContent).toContain('Complete')
+    expect(bubble.textContent).toContain('Build')
+  })
+
+  it('hides metadata when collapsed', () => {
+    const parent = taskOutputToolUse()
+    const result = taskOutputResult({
+      task_id: 'task-123',
+      task_type: 'shell',
+      status: 'completed',
+      description: 'Build',
+      output: 'Build succeeded',
+    })
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([parent, result]),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble.textContent).not.toContain('task_id:')
+  })
+
+  it('body has left border when expanded', () => {
+    const parent = taskOutputToolUse()
+    const result = taskOutputResult({
+      task_id: 'task-123',
+      task_type: 'shell',
+      status: 'completed',
+      description: 'Build',
+      output: 'Build succeeded',
+    })
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([parent, result]),
+    })
+
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    // Click the expand button
+    const expandBtn = screen.getByTitle('Expand 1 tool result')
+    fireEvent.click(expandBtn)
+
+    const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
+    expect(bodyWrapper).not.toBeNull()
+  })
+
+  it('expanded metadata omits duplicate status and description', () => {
+    const parent = taskOutputToolUse()
+    const result = taskOutputResult({
+      task_id: 'task-123',
+      task_type: 'shell',
+      status: 'completed',
+      description: 'Build',
+      output: 'Build succeeded',
+      exitCode: 0,
+    })
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([parent, result]),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    // Click the expand button
+    const expandBtn = screen.getByTitle('Expand 1 tool result')
+    fireEvent.click(expandBtn)
+
+    const bubble = screen.getByTestId('message-content')
+    // Should show task_id and exitCode in metadata
+    expect(bubble.textContent).toContain('task_id: task-123')
+    expect(bubble.textContent).toContain('exitCode: 0')
+    // Should NOT show status: or description: in metadata (they're already in header)
+    expect(bubble.textContent).not.toContain('status: completed')
+    expect(bubble.textContent).not.toContain('description: Build')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// AskUserQuestion left border
+// ---------------------------------------------------------------------------
+
+describe('askUserQuestion left border', () => {
+  it('body has left border', () => {
+    const parent = askUserQuestionToolUse([{ header: 'Auth' }])
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([
+        parent,
+        controlResponse(),
+        toolResultWithAnswers({ Auth: 'OAuth' }),
+      ]),
+    })
+
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
+    expect(bodyWrapper).not.toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Header-only renderers (regression)
+// ---------------------------------------------------------------------------
+
+describe('header-only renderers', () => {
+  it('enterPlanMode renders header only', () => {
+    const innerMsg = {
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          id: 'toolu_plan_1',
+          name: 'EnterPlanMode',
+          input: {},
+        }],
+      },
+    }
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([innerMsg]),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble.textContent).toContain('Entering Plan Mode')
+  })
+
+  it('skill renders header only', () => {
+    const innerMsg = {
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          id: 'toolu_skill_1',
+          name: 'Skill',
+          input: { skill: 'commit' },
+        }],
+      },
+    }
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([innerMsg]),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble.textContent).toContain('Skill: /commit')
+  })
+
+  it('agent renders header with description and status', () => {
+    const innerMsg = {
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          id: 'toolu_agent_1',
+          name: 'Agent',
+          input: { description: 'Search codebase', subagent_type: 'Explore', prompt: 'Find auth files' },
+        }],
+      },
+    }
+    const result = {
+      type: 'user',
+      message: {
+        content: [{
+          type: 'tool_result',
+          content: 'Found 3 files',
+          tool_use_id: 'toolu_agent_1',
+        }],
+      },
+      tool_use_result: { status: 'completed' },
+    }
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([innerMsg, result]),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble.textContent).toContain('Search codebase')
+    expect(bubble.textContent).toContain('Complete')
+    expect(bubble.textContent).toContain('Explore')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Grep result summary
+// ---------------------------------------------------------------------------
+
+describe('grep result summary', () => {
+  it('shows result summary line from tool result', () => {
+    const innerMsg = {
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          id: 'toolu_grep_1',
+          name: 'Grep',
+          input: { pattern: 'TODO', path: '/home/user/project' },
+        }],
+      },
+    }
+    const result = {
+      type: 'user',
+      message: {
+        content: [{
+          type: 'tool_result',
+          content: 'Found 10 files',
+          tool_use_id: 'toolu_grep_1',
+        }],
+      },
+      tool_use_result: { tool_name: 'Grep' },
+    }
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([innerMsg, result]),
+    })
+
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble.textContent).toContain('Found 10 files')
+    // Summary should be inside a bordered area
+    const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
+    expect(bodyWrapper).not.toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Glob result summary
+// ---------------------------------------------------------------------------
+
+describe('glob result summary', () => {
+  it('shows file count summary', () => {
+    const innerMsg = {
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          id: 'toolu_glob_1',
+          name: 'Glob',
+          input: { pattern: '**/*.tsx' },
+        }],
+      },
+    }
+    const result = {
+      type: 'user',
+      message: {
+        content: [{
+          type: 'tool_result',
+          content: 'src/a.tsx\nsrc/b.tsx\nsrc/c.tsx\nsrc/d.tsx\nsrc/e.tsx',
+          tool_use_id: 'toolu_glob_1',
+        }],
+      },
+      tool_use_result: { tool_name: 'Glob' },
+    }
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([innerMsg, result]),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble.textContent).toContain('5 files')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Agent stats summary
+// ---------------------------------------------------------------------------
+
+describe('agent stats summary', () => {
+  it('shows stats summary when completed', () => {
+    const innerMsg = {
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          id: 'toolu_agent_2',
+          name: 'Agent',
+          input: { description: 'Search files', subagent_type: 'Explore', prompt: 'Find auth' },
+        }],
+      },
+    }
+    const result = {
+      type: 'user',
+      message: {
+        content: [{
+          type: 'tool_result',
+          content: 'Done',
+          tool_use_id: 'toolu_agent_2',
+        }],
+      },
+      tool_use_result: {
+        status: 'completed',
+        totalDurationMs: 65000,
+        totalTokens: 1234,
+        totalToolUseCount: 5,
+      },
+    }
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([innerMsg, result]),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble.textContent).toContain('1m 5s')
+    expect(bubble.textContent).toContain('1,234 tokens')
+    expect(bubble.textContent).toContain('5 tool uses')
+  })
+
+  it('formats title with subagent prefix', () => {
+    const innerMsg = {
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          id: 'toolu_agent_3',
+          name: 'Agent',
+          input: { description: 'Explore message classification', subagent_type: 'Explore', prompt: 'Find classifiers' },
+        }],
+      },
+    }
+    const result = {
+      type: 'user',
+      message: {
+        content: [{
+          type: 'tool_result',
+          content: 'Done',
+          tool_use_id: 'toolu_agent_3',
+        }],
+      },
+      tool_use_result: { status: 'completed' },
+    }
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: wrapContent([innerMsg, result]),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble.textContent).toContain('Explore: message classification')
   })
 })

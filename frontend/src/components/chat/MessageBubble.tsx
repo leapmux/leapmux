@@ -318,6 +318,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
         ? tur.task as RenderContext['childTask']
         : undefined,
       childToolResultStatus: typeof tur?.status === 'string' ? tur.status as string : undefined,
+      childTotalDurationMs: typeof tur?.totalDurationMs === 'number' ? tur.totalDurationMs : undefined,
+      childTotalTokens: typeof tur?.totalTokens === 'number' ? tur.totalTokens : undefined,
+      childTotalToolUseCount: typeof tur?.totalToolUseCount === 'number' ? tur.totalToolUseCount : undefined,
       childControlResponse: childControlResponse(),
     }
   }
