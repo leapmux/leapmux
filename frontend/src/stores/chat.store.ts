@@ -24,6 +24,8 @@ interface ChatStoreState {
   savedViewportScroll: Record<string, { distFromBottom: number, atBottom: boolean }>
   /** Whether initial load has completed for an agent. */
   initialLoadComplete: Record<string, boolean>
+  /** Monotonic counter incremented on every addMessage (including thread merges). */
+  messageVersion: Record<string, number>
 }
 
 export function createChatStore() {
@@ -37,6 +39,7 @@ export function createChatStore() {
     fetchingOlder: {},
     savedViewportScroll: {},
     initialLoadComplete: {},
+    messageVersion: {},
   })
 
   /** Shared implementation for setMessages / loadInitialMessages. */
@@ -108,6 +111,10 @@ export function createChatStore() {
       if (todos) {
         setState('todosByAgent', agentId, todos)
       }
+
+      // Bump version so auto-scroll effects can detect thread merges
+      // (which don't change messages.length).
+      setState('messageVersion', agentId, (prev = 0) => prev + 1)
     },
 
     getLastSeq(agentId: string): bigint {
@@ -259,6 +266,10 @@ export function createChatStore() {
 
     isInitialLoadComplete(agentId: string): boolean {
       return state.initialLoadComplete[agentId] ?? false
+    },
+
+    getMessageVersion(agentId: string): number {
+      return state.messageVersion[agentId] ?? 0
     },
 
     /** Save scroll state for viewport restoration on tab switch. */

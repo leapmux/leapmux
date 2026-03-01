@@ -44,6 +44,8 @@ interface ChatViewProps {
   scrollStateRef?: (fn: () => { distFromBottom: number, atBottom: boolean } | undefined) => void
   /** Ref to expose a function that forces an immediate scroll-to-bottom (e.g. when sending a message). */
   scrollToBottomRef?: (fn: () => void) => void
+  /** Monotonic counter that increments on every addMessage (including thread merges). */
+  messageVersion?: number
   /** Called when the user quotes selected text in a chat message. */
   onQuote?: (text: string) => void
   /** Called when the user clicks the reply button on an assistant message. */
@@ -180,8 +182,11 @@ export const ChatView: Component<ChatViewProps> = (props) => {
 
   // Auto-scroll the message list to the bottom when new content arrives
   // and the user is already at (or near) the bottom.
+  // messageVersion covers thread merges (tool_use_result merged into an
+  // existing tool_use) which don't change messages.length.
   createEffect(() => {
     void props.messages.length
+    void props.messageVersion
     void props.streamingText
     void props.agentWorking
     if (untrack(atBottom) && messageListRef) {

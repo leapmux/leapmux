@@ -209,6 +209,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                 >
                   <ChatView
                     messages={chatStore.getMessages(agentId)}
+                    messageVersion={chatStore.getMessageVersion(agentId)}
                     streamingText={chatStore.state.streamingText[agentId] ?? ''}
                     agentWorking={agentStore.state.agents.find(a => a.id === agentId)?.status === AgentStatus.ACTIVE && isAgentWorking(chatStore.getMessages(agentId)) && controlStore.getRequests(agentId).length === 0}
                     messageErrors={chatStore.state.messageErrors}

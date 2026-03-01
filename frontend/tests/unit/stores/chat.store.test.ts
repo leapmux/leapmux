@@ -625,4 +625,63 @@ describe('createChatStore', () => {
       })
     })
   })
+
+  describe('messageVersion', () => {
+    it('should return 0 for unknown agent', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        expect(store.getMessageVersion('unknown')).toBe(0)
+        dispose()
+      })
+    })
+
+    it('should increment on addMessage with a new message', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        expect(store.getMessageVersion('a1')).toBe(0)
+
+        store.addMessage('a1', makeMessage('m1', 1n))
+        expect(store.getMessageVersion('a1')).toBe(1)
+
+        store.addMessage('a1', makeMessage('m2', 2n))
+        expect(store.getMessageVersion('a1')).toBe(2)
+        dispose()
+      })
+    })
+
+    it('should increment on thread merge (same ID, updated content)', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        store.addMessage('a1', makeMessage('m1', 1n))
+        expect(store.getMessageVersion('a1')).toBe(1)
+
+        // Thread merge: same ID as m1, bumped seq
+        store.addMessage('a1', makeMessage('m1', 3n))
+        expect(store.getMessageVersion('a1')).toBe(2)
+        dispose()
+      })
+    })
+
+    it('should not increment on setMessages', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m2', 2n)])
+        expect(store.getMessageVersion('a1')).toBe(0)
+        dispose()
+      })
+    })
+
+    it('should track versions independently per agent', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        store.addMessage('a1', makeMessage('m1', 1n))
+        store.addMessage('a2', makeMessage('m2', 2n))
+        store.addMessage('a1', makeMessage('m3', 3n))
+
+        expect(store.getMessageVersion('a1')).toBe(2)
+        expect(store.getMessageVersion('a2')).toBe(1)
+        dispose()
+      })
+    })
+  })
 })
