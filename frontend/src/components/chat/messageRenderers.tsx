@@ -30,7 +30,9 @@ import {
 } from './notificationRenderers'
 import { enterPlanModeRenderer, exitPlanModeRenderer, renderEnterPlanMode, renderExitPlanMode } from './planModeRenderers'
 import {
+  agentOrTaskRenderer,
   askUserQuestionRenderer,
+  renderAgentOrTask,
   renderAskUserQuestion,
   renderTaskOutput,
   renderTodoWrite,
@@ -98,6 +100,8 @@ export interface RenderContext {
     output?: string
     exitCode?: number
   }
+  /** Status from child tool_use_result (for Agent/Task status display). */
+  childToolResultStatus?: string
   /** Control response (approval/rejection) threaded into this tool_use. */
   childControlResponse?: { action: string, comment: string }
 }
@@ -298,6 +302,8 @@ const SPECIALIZED_TOOL_RENDERERS: Record<string, (toolUse: Record<string, unknow
   AskUserQuestion: renderAskUserQuestion,
   TaskOutput: renderTaskOutput,
   Skill: renderSkill,
+  Agent: renderAgentOrTask,
+  Task: renderAgentOrTask,
 }
 
 /** Dispatch rendering for a tool_use category: try specialized renderer first, then generic. */
@@ -384,6 +390,7 @@ function getFallbackRenderers(): MessageContentRenderer[] {
       todoWriteRenderer,
       askUserQuestionRenderer,
       taskOutputRenderer,
+      agentOrTaskRenderer,
       toolUseRenderer,
       toolResultRenderer,
       userTextContentRenderer,

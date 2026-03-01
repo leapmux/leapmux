@@ -46,6 +46,12 @@ export interface TaskInput {
   subagent_type?: string
 }
 
+export interface AgentInput {
+  description?: string
+  prompt?: string
+  subagent_type?: string
+}
+
 export interface WebFetchInput {
   url?: string
   prompt?: string
@@ -90,6 +96,7 @@ export type KnownToolInput
     | { toolName: 'Grep', input: GrepInput }
     | { toolName: 'Glob', input: GlobInput }
     | { toolName: 'Task', input: TaskInput }
+    | { toolName: 'Agent', input: AgentInput }
     | { toolName: 'WebFetch', input: WebFetchInput }
     | { toolName: 'WebSearch', input: WebSearchInput }
     | { toolName: 'TodoWrite', input: TodoWriteInput }
@@ -107,6 +114,7 @@ const KNOWN_TOOLS = new Set<string>([
   'Grep',
   'Glob',
   'Task',
+  'Agent',
   'WebFetch',
   'WebSearch',
   'TaskOutput',
