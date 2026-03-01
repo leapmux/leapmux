@@ -20,7 +20,7 @@ import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
 import { createLayoutStore } from '~/stores/layout.store'
 import { createSectionStore } from '~/stores/section.store'
-import { createTabStore } from '~/stores/tab.store'
+import { createTabStore, tabKey } from '~/stores/tab.store'
 import { createTerminalStore } from '~/stores/terminal.store'
 import { createWorkspaceStore } from '~/stores/workspace.store'
 import * as styles from './AppShell.css'
@@ -91,7 +91,11 @@ export const AppShell: ParentComponent = (props) => {
   // Debounced turn-end sound playback
   const TURN_END_SOUND_COOLDOWN_MS = 10_000
   let lastSoundPlayedAt = 0
-  const playTurnEndSound = () => {
+  // Late-bound ref: set once useTabOperations is initialized (after useWorkspaceConnection).
+  let isAgentClosing: (agentId: string) => boolean = () => false
+  const playTurnEndSound = (agentId: string) => {
+    if (isAgentClosing(agentId))
+      return
     const now = Date.now()
     if (now - lastSoundPlayedAt < TURN_END_SOUND_COOLDOWN_MS)
       return
@@ -328,6 +332,9 @@ export const AppShell: ParentComponent = (props) => {
     setFileTreePath,
     pendingWorktreeChoiceRef,
   })
+  // Bind the closing-agent check now that tabOps is available.
+  isAgentClosing = (agentId: string) =>
+    tabOps.closingTabKeys().has(tabKey({ type: TabType.AGENT, id: agentId }))
 
   // Workspace restore (load agents/terminals/tabs/layout on workspace change)
   useWorkspaceRestore({

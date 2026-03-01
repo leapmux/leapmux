@@ -29,7 +29,7 @@ export interface WorkspaceConnectionParams {
   /** Returns the set of per-tile active tab keys that need connections. */
   getTileActiveTabKeys?: () => string[]
   /** Called when a turn-end sound should play (turn completed or control request received). */
-  onTurnEndSound?: () => void
+  onTurnEndSound?: (agentId: string) => void
 }
 
 export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
@@ -134,7 +134,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             const meta = extractResultMetadata(parseMessageContent(msg))
             if (meta) {
               if (meta.subtype && catchUpPhase === 'live')
-                params.onTurnEndSound?.()
+                params.onTurnEndSound?.(agentId)
               if (meta.contextWindow !== undefined) {
                 const existingUsage = agentSessionStore.getInfo(agentId).contextUsage
                 if (existingUsage) {
@@ -176,8 +176,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         })
         settingsLoading.stop()
         if (sc.status === AgentStatus.INACTIVE) {
-          if (catchUpPhase === 'live' && sc.agentSessionId) {
-            params.onTurnEndSound?.()
+          if (
+            catchUpPhase === 'live'
+            && sc.agentSessionId
+            && agentStore.state.agents.some(a => a.id === agentId)
+          ) {
+            params.onTurnEndSound?.(agentId)
           }
           if (!sc.agentSessionId) {
             const hasMessages = chatStore.getMessages(sc.agentId).length > 0
@@ -209,7 +213,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           payload,
         })
         if (catchUpPhase === 'live')
-          params.onTurnEndSound?.()
+          params.onTurnEndSound?.(agentId)
         break
       }
       case 'controlCancel': {
