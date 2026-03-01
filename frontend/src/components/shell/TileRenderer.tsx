@@ -6,6 +6,7 @@ import type { createAgentStore } from '~/stores/agent.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
+import type { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { createTerminalStore } from '~/stores/terminal.store'
@@ -22,6 +23,7 @@ import { showToast } from '~/components/common/Toast'
 import { FileViewer } from '~/components/fileviewer/FileViewer'
 import { TerminalView } from '~/components/terminal/TerminalView'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
+import { GitFileStatusCode } from '~/generated/leapmux/v1/git_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
@@ -65,6 +67,7 @@ interface TileRendererOpts {
   focusEditorRef: { current: (() => void) | undefined }
   getScrollStateRef: { current: (() => { distFromBottom: number, atBottom: boolean } | undefined) | undefined }
   forceScrollToBottomRef: { current: (() => void) | undefined }
+  gitFileStatusStore?: ReturnType<typeof createGitFileStatusStore>
 }
 
 export function createTileRenderer(opts: TileRendererOpts) {
@@ -286,6 +289,20 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     : () => {
                         insertIntoMruAgentEditor(tabStore, formatFileMention(fileRelPath()), 'inline')
                       }}
+                  fileViewMode={ft.fileViewMode}
+                  fileDiffBase={ft.fileDiffBase}
+                  hasStagedAndUnstaged={(() => {
+                    const store = opts.gitFileStatusStore
+                    if (!store)
+                      return false
+                    const entry = store.getFileStatus(ft.filePath ?? '')
+                    if (!entry)
+                      return false
+                    return entry.stagedStatus !== GitFileStatusCode.UNSPECIFIED
+                      && entry.unstagedStatus !== GitFileStatusCode.UNSPECIFIED
+                  })()}
+                  onFileViewModeChange={mode => tabStore.setTabFileViewMode(ft.type, ft.id, mode)}
+                  onFileDiffBaseChange={base => tabStore.setTabFileDiffBase(ft.type, ft.id, base)}
                 />
               </div>
             )

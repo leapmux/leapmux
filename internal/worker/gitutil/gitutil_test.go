@@ -659,3 +659,174 @@ func TestGetGitStatus_Stash(t *testing.T) {
 	require.NotNil(t, status)
 	assert.True(t, status.Stashed)
 }
+
+// --- Tests for GetPerFileStatus ---
+
+func TestGetPerFileStatus_MixedChanges(t *testing.T) {
+	dir := resolvedTempDir(t)
+	initGitRepo(t, dir)
+
+	// Create committed file, then modify it (unstaged).
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("modified content\nline2\n"), 0o644))
+
+	// Stage a new file.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "staged.txt"), []byte("staged"), 0o644))
+	run(t, dir, "git", "add", "staged.txt")
+
+	// Create an untracked file.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("untracked"), 0o644))
+
+	files, err := GetPerFileStatus(dir)
+	require.NoError(t, err)
+	require.NotNil(t, files)
+
+	// Build a map for easy lookup.
+	fileMap := make(map[string]*FileStatus, len(files))
+	for i := range files {
+		fileMap[files[i].Path] = &files[i]
+	}
+
+	// README.md should be unstaged modified.
+	readme, ok := fileMap["README.md"]
+	require.True(t, ok, "README.md should be in status")
+	assert.Equal(t, byte('.'), readme.StagedStatus)
+	assert.Equal(t, byte('M'), readme.UnstagedStatus)
+	assert.Greater(t, readme.LinesAdded, 0, "Should have lines added")
+
+	// staged.txt should be staged added.
+	staged, ok := fileMap["staged.txt"]
+	require.True(t, ok, "staged.txt should be in status")
+	assert.Equal(t, byte('A'), staged.StagedStatus)
+	assert.Equal(t, byte('.'), staged.UnstagedStatus)
+
+	// untracked.txt should be untracked.
+	untracked, ok := fileMap["untracked.txt"]
+	require.True(t, ok, "untracked.txt should be in status")
+	assert.Equal(t, byte('.'), untracked.StagedStatus)
+	assert.Equal(t, byte('?'), untracked.UnstagedStatus)
+}
+
+func TestGetPerFileStatus_EmptyRepo(t *testing.T) {
+	dir := resolvedTempDir(t)
+	initGitRepo(t, dir)
+
+	// Clean repo — no changes.
+	files, err := GetPerFileStatus(dir)
+	require.NoError(t, err)
+	assert.Nil(t, files, "clean repo should return nil")
+}
+
+func TestGetPerFileStatus_NotGitRepo(t *testing.T) {
+	dir := resolvedTempDir(t)
+
+	files, err := GetPerFileStatus(dir)
+	require.NoError(t, err)
+	assert.Nil(t, files, "non-git directory should return nil")
+}
+
+func TestGetPerFileStatus_DeletedFile(t *testing.T) {
+	dir := resolvedTempDir(t)
+	initGitRepo(t, dir)
+
+	// Delete a tracked file.
+	require.NoError(t, os.Remove(filepath.Join(dir, "README.md")))
+
+	files, err := GetPerFileStatus(dir)
+	require.NoError(t, err)
+	require.NotNil(t, files)
+
+	found := false
+	for _, f := range files {
+		if f.Path == "README.md" {
+			assert.Equal(t, byte('D'), f.UnstagedStatus)
+			found = true
+		}
+	}
+	assert.True(t, found, "README.md should appear as deleted")
+}
+
+func TestGetPerFileStatus_StagedAndUnstaged(t *testing.T) {
+	dir := resolvedTempDir(t)
+	initGitRepo(t, dir)
+
+	// Stage a modification.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("staged change"), 0o644))
+	run(t, dir, "git", "add", "README.md")
+
+	// Make another modification (unstaged).
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("staged change + more"), 0o644))
+
+	files, err := GetPerFileStatus(dir)
+	require.NoError(t, err)
+	require.NotNil(t, files)
+
+	for _, f := range files {
+		if f.Path == "README.md" {
+			assert.Equal(t, byte('M'), f.StagedStatus, "Should be staged modified")
+			assert.Equal(t, byte('M'), f.UnstagedStatus, "Should be unstaged modified")
+			assert.Greater(t, f.StagedLinesAdded+f.StagedLinesDeleted, 0, "Should have staged diff stats")
+			assert.Greater(t, f.LinesAdded+f.LinesDeleted, 0, "Should have unstaged diff stats")
+		}
+	}
+}
+
+// --- Tests for ReadFileAtRef ---
+
+func TestReadFileAtRef_HEAD(t *testing.T) {
+	dir := resolvedTempDir(t)
+	initGitRepo(t, dir)
+
+	// Modify the file in the working tree.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("modified"), 0o644))
+
+	// Read HEAD version — should return original content.
+	content, exists, err := ReadFileAtRef(dir, "README.md", "HEAD")
+	require.NoError(t, err)
+	assert.True(t, exists)
+	assert.Equal(t, "hello", string(content))
+}
+
+func TestReadFileAtRef_Staged(t *testing.T) {
+	dir := resolvedTempDir(t)
+	initGitRepo(t, dir)
+
+	// Stage a modification.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("staged content"), 0o644))
+	run(t, dir, "git", "add", "README.md")
+
+	// Read staged version.
+	content, exists, err := ReadFileAtRef(dir, "README.md", "STAGED")
+	require.NoError(t, err)
+	assert.True(t, exists)
+	assert.Equal(t, "staged content", string(content))
+}
+
+func TestReadFileAtRef_NonexistentFile(t *testing.T) {
+	dir := resolvedTempDir(t)
+	initGitRepo(t, dir)
+
+	content, exists, err := ReadFileAtRef(dir, "nonexistent.txt", "HEAD")
+	require.NoError(t, err)
+	assert.False(t, exists)
+	assert.Nil(t, content)
+}
+
+func TestReadFileAtRef_NewStagedFile(t *testing.T) {
+	dir := resolvedTempDir(t)
+	initGitRepo(t, dir)
+
+	// Stage a new file.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "new.txt"), []byte("new file"), 0o644))
+	run(t, dir, "git", "add", "new.txt")
+
+	// HEAD should not have it.
+	_, exists, err := ReadFileAtRef(dir, "new.txt", "HEAD")
+	require.NoError(t, err)
+	assert.False(t, exists)
+
+	// Staged should have it.
+	content, exists, err := ReadFileAtRef(dir, "new.txt", "STAGED")
+	require.NoError(t, err)
+	assert.True(t, exists)
+	assert.Equal(t, "new file", string(content))
+}

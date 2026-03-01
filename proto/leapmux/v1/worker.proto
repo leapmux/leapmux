@@ -3,6 +3,7 @@ package leapmux.v1;
 
 import "leapmux/v1/agent.proto";
 import "leapmux/v1/common.proto";
+import "leapmux/v1/git.proto";
 
 // WorkerConnectorService is called BY Worker instances on Hub via gRPC.
 // Handles registration and the main bidirectional communication stream.
@@ -177,6 +178,8 @@ message ConnectRequest {
     GitInfoResponse git_info_resp = 33;
     GitWorktreeCreateResponse git_worktree_create_resp = 34;
     GitWorktreeRemoveResponse git_worktree_remove_resp = 35;
+    GitFileStatusResponse git_file_status_resp = 36;
+    GitFileReadResponse git_file_read_resp = 37;
     AgentInputAck agent_input_ack = 13;
     AgentGitInfo agent_git_info = 14;
     DeregisterAck deregister_ack = 40;
@@ -205,6 +208,8 @@ message ConnectResponse {
     GitInfoRequest git_info = 33;
     GitWorktreeCreateRequest git_worktree_create = 34;
     GitWorktreeRemoveRequest git_worktree_remove = 35;
+    GitFileStatusRequest git_file_status = 36;
+    GitFileReadRequest git_file_read = 37;
     DeregisterNotification deregister = 40;
     TerminateWorkspacesNotification terminate_workspaces = 41;
     HubShuttingDownNotification hub_shutting_down = 50;
@@ -444,6 +449,30 @@ message GitWorktreeRemoveResponse {
   string worktree_path = 1;
   bool is_clean = 2;          // False if uncommitted changes or unpushed commits
   string error = 3;
+}
+
+// --- Git file messages (used in bidi stream) ---
+
+message GitFileStatusRequest {
+  string path = 1;  // Working directory path (worker resolves to repo root)
+}
+
+message GitFileStatusResponse {
+  string repo_root = 1;
+  repeated GitFileStatusEntry files = 2;  // Uses GitFileStatusEntry from git.proto
+  string error = 3;
+}
+
+message GitFileReadRequest {
+  string path = 1;       // Absolute path to the file
+  GitFileRef ref = 2;    // Uses GitFileRef from git.proto
+}
+
+message GitFileReadResponse {
+  string path = 1;
+  bytes content = 2;
+  bool exists = 3;
+  string error = 4;
 }
 
 // --- Notification messages (used in bidi stream) ---

@@ -18,6 +18,7 @@ import { createAgentStore } from '~/stores/agent.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
+import { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
 import { createLayoutStore } from '~/stores/layout.store'
 import { createSectionStore } from '~/stores/section.store'
 import { createTabStore } from '~/stores/tab.store'
@@ -56,6 +57,7 @@ export const AppShell: ParentComponent = (props) => {
   const controlStore = createControlStore()
   const agentSessionStore = createAgentSessionStore()
   const layoutStore = createLayoutStore()
+  const gitFileStatusStore = createGitFileStatusStore()
   const [fileTreePath, setFileTreePath] = createSignal('')
   const [showNewWorkspace, setShowNewWorkspace] = createSignal(false)
   const [preselectedWorkerId, setPreselectedWorkerId] = createSignal<string | undefined>(undefined)
@@ -425,6 +427,7 @@ export const AppShell: ParentComponent = (props) => {
     focusEditorRef,
     getScrollStateRef,
     forceScrollToBottomRef,
+    gitFileStatusStore,
   })
 
   // Sidebar element factories
@@ -455,6 +458,26 @@ export const AppShell: ParentComponent = (props) => {
     get showTodos() { return showTodos() },
     get activeTodos() { return activeTodos() },
     termOps,
+    gitStatusStore: gitFileStatusStore,
+    get activeFilePath() {
+      const active = tabStore.activeTab()
+      return active?.type === TabType.FILE ? active.filePath : undefined
+    },
+    get hasActiveFileTab() {
+      const active = tabStore.activeTab()
+      return active?.type === TabType.FILE
+    },
+  })
+
+  // Refresh git status when the workspace/worker context changes.
+  createEffect(() => {
+    const ctx = getCurrentTabContext()
+    if (ctx.workerId && ctx.workingDir) {
+      gitFileStatusStore.refresh(ctx.workerId, ctx.workingDir)
+    }
+    else {
+      gitFileStatusStore.clear()
+    }
   })
 
   return (

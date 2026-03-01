@@ -204,6 +204,115 @@ func (s *GitService) KeepWorktree(
 	return connect.NewResponse(&leapmuxv1.KeepWorktreeResponse{}), nil
 }
 
+func (s *GitService) GetGitFileStatus(
+	ctx context.Context,
+	req *connect.Request[leapmuxv1.GetGitFileStatusRequest],
+) (*connect.Response[leapmuxv1.GetGitFileStatusResponse], error) {
+	user, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workerID := req.Msg.GetWorkerId()
+	conn, workerHomeDir, err := s.getWorkerConn(ctx, user, workerID, req.Msg.GetOrgId())
+	if err != nil {
+		return nil, err
+	}
+
+	gitPath := validate.SanitizePath(req.Msg.GetPath(), workerHomeDir)
+	if gitPath == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid path"))
+	}
+
+	resp, err := s.pending.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{
+		Payload: &leapmuxv1.ConnectResponse_GitFileStatus{
+			GitFileStatus: &leapmuxv1.GitFileStatusRequest{
+				Path: gitPath,
+			},
+		},
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	statusResp := resp.GetGitFileStatusResp()
+	if statusResp == nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unexpected response type"))
+	}
+
+	if statusResp.GetError() != "" {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("%s", statusResp.GetError()))
+	}
+
+	// Map worker bidi stream response to the RPC response type.
+	rpcFiles := make([]*leapmuxv1.GitFileStatusEntry, len(statusResp.GetFiles()))
+	for i, f := range statusResp.GetFiles() {
+		rpcFiles[i] = &leapmuxv1.GitFileStatusEntry{
+			Path:               f.GetPath(),
+			StagedStatus:       f.GetStagedStatus(),
+			UnstagedStatus:     f.GetUnstagedStatus(),
+			LinesAdded:         f.GetLinesAdded(),
+			LinesDeleted:       f.GetLinesDeleted(),
+			StagedLinesAdded:   f.GetStagedLinesAdded(),
+			StagedLinesDeleted: f.GetStagedLinesDeleted(),
+			OldPath:            f.GetOldPath(),
+		}
+	}
+
+	return connect.NewResponse(&leapmuxv1.GetGitFileStatusResponse{
+		RepoRoot: statusResp.GetRepoRoot(),
+		Files:    rpcFiles,
+	}), nil
+}
+
+func (s *GitService) ReadGitFile(
+	ctx context.Context,
+	req *connect.Request[leapmuxv1.ReadGitFileRequest],
+) (*connect.Response[leapmuxv1.ReadGitFileResponse], error) {
+	user, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workerID := req.Msg.GetWorkerId()
+	conn, workerHomeDir, err := s.getWorkerConn(ctx, user, workerID, req.Msg.GetOrgId())
+	if err != nil {
+		return nil, err
+	}
+
+	filePath := validate.SanitizePath(req.Msg.GetPath(), workerHomeDir)
+	if filePath == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid path"))
+	}
+
+	resp, err := s.pending.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{
+		Payload: &leapmuxv1.ConnectResponse_GitFileRead{
+			GitFileRead: &leapmuxv1.GitFileReadRequest{
+				Path: filePath,
+				Ref:  req.Msg.GetRef(),
+			},
+		},
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	readResp := resp.GetGitFileReadResp()
+	if readResp == nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unexpected response type"))
+	}
+
+	if readResp.GetError() != "" {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("%s", readResp.GetError()))
+	}
+
+	return connect.NewResponse(&leapmuxv1.ReadGitFileResponse{
+		Path:    readResp.GetPath(),
+		Content: readResp.GetContent(),
+		Exists:  readResp.GetExists(),
+	}), nil
+}
+
 func (s *GitService) getWorkerConn(ctx context.Context, user *auth.UserInfo, workerID, requestedOrgID string) (*workermgr.Conn, string, error) {
 	if workerID == "" {
 		return nil, "", connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))

@@ -1,5 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import type { FileInfo } from '~/generated/leapmux/v1/file_pb'
+import type { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
 import AtSign from 'lucide-solid/icons/at-sign'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import ClipboardCopy from 'lucide-solid/icons/clipboard-copy'
@@ -16,7 +17,13 @@ import { relativizePath, tildify } from '~/components/chat/messageUtils'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
+import { GitFileStatusCode } from '~/generated/leapmux/v1/git_pb'
 import * as styles from './DirectoryTree.css'
+import * as fsStyles from './FilesSection.css'
+
+export interface DirectoryTreeHandle {
+  collapseAll: () => void
+}
 
 export interface DirectoryTreeProps {
   workerId: string
@@ -28,6 +35,11 @@ export interface DirectoryTreeProps {
   onOpenTerminal?: (dirPath: string) => void
   rootPath?: string
   homeDir?: string
+  gitStatusStore?: ReturnType<typeof createGitFileStatusStore>
+  /** When set, only show nodes whose paths are in this set. */
+  visiblePaths?: Set<string>
+  /** Ref callback for imperative actions (collapse all, etc.). */
+  ref?: (handle: DirectoryTreeHandle) => void
 }
 
 interface TreeNodeData {
@@ -215,6 +227,68 @@ function renderTreeContextMenu(menuProps: {
   )
 }
 
+/** Render git status indicator for a tree node (file or directory). */
+function renderNodeGitStatus(
+  node: TreeNodeData,
+  gitStatusStore?: ReturnType<typeof createGitFileStatusStore>,
+): JSX.Element {
+  if (!gitStatusStore)
+    return <></>
+  if (node.isDir) {
+    // Show a small dot if any descendant has changes.
+    const hasChanges = gitStatusStore.hasChanges(node.path)
+    return (
+      <Show when={hasChanges}>
+        <span class={fsStyles.dirChangeIndicator} />
+      </Show>
+    )
+  }
+  // File: show status indicator + diff stats.
+  const entry = gitStatusStore.getFileStatus(node.path)
+  if (!entry)
+    return <></>
+  return (
+    <span class={fsStyles.statusGroup}>
+      <span
+        class={`${fsStyles.statusIndicator} ${
+          entry.unstagedStatus === GitFileStatusCode.UNMERGED || entry.stagedStatus === GitFileStatusCode.UNMERGED
+            ? fsStyles.statusConflict
+            : entry.unstagedStatus === GitFileStatusCode.UNTRACKED
+              ? fsStyles.statusUntracked
+              : entry.stagedStatus !== GitFileStatusCode.UNSPECIFIED && entry.unstagedStatus === GitFileStatusCode.UNSPECIFIED
+                ? fsStyles.statusStaged
+                : fsStyles.statusUnstaged
+        }`}
+        data-testid={
+          entry.stagedStatus !== GitFileStatusCode.UNSPECIFIED
+          && entry.unstagedStatus === GitFileStatusCode.UNSPECIFIED
+            ? 'git-status-staged'
+            : entry.unstagedStatus === GitFileStatusCode.UNTRACKED
+              ? 'git-status-untracked'
+              : 'git-status-unstaged'
+        }
+      />
+      <Show when={entry.linesAdded + entry.stagedLinesAdded > 0 || entry.linesDeleted + entry.stagedLinesDeleted > 0}>
+        <span class={fsStyles.diffStats} data-testid="git-diff-stats">
+          <Show when={entry.linesAdded + entry.stagedLinesAdded > 0}>
+            <span class={fsStyles.diffStatsAdded}>
+              +
+              {entry.linesAdded + entry.stagedLinesAdded}
+            </span>
+          </Show>
+          {(entry.linesAdded + entry.stagedLinesAdded > 0 && entry.linesDeleted + entry.stagedLinesDeleted > 0) ? ' ' : ''}
+          <Show when={entry.linesDeleted + entry.stagedLinesDeleted > 0}>
+            <span class={fsStyles.diffStatsDeleted}>
+              -
+              {entry.linesDeleted + entry.stagedLinesDeleted}
+            </span>
+          </Show>
+        </span>
+      </Show>
+    </span>
+  )
+}
+
 const TreeNode: Component<{
   node: TreeNodeData
   workerId: string
@@ -232,13 +306,21 @@ const TreeNode: Component<{
   setNodeExpanded: (path: string, expanded: boolean) => void
   getChildren: (path: string) => TreeNodeData[] | undefined
   setChildren: (path: string, data: TreeNodeData[]) => void
+  gitStatusStore?: ReturnType<typeof createGitFileStatusStore>
+  visiblePaths?: Set<string>
 }> = (props) => {
   const [loading, setLoading] = createSignal(false)
   let wrapperRef!: HTMLDivElement
 
   const expanded = () => props.isNodeExpanded(props.node.path)
   const isSelected = () => props.selectedPath === props.node.path
-  const children = () => props.getChildren(props.node.path) ?? []
+  const allChildren = () => props.getChildren(props.node.path) ?? []
+  const children = () => {
+    const visible = props.visiblePaths
+    if (!visible)
+      return allChildren()
+    return allChildren().filter(c => visible.has(c.path))
+  }
   const loaded = () => props.getChildren(props.node.path) !== undefined
 
   const scrollIntoViewIfNeeded = () => {
@@ -358,6 +440,7 @@ const TreeNode: Component<{
           </Show>
         </Show>
         <span class={styles.nodeName}>{props.node.displayName}</span>
+        {renderNodeGitStatus(props.node, props.gitStatusStore)}
         <div class={styles.nodeActions}>
           {renderTreeContextMenu({
             path: props.node.path,
@@ -396,6 +479,8 @@ const TreeNode: Component<{
                   setNodeExpanded={props.setNodeExpanded}
                   getChildren={props.getChildren}
                   setChildren={props.setChildren}
+                  gitStatusStore={props.gitStatusStore}
+                  visiblePaths={props.visiblePaths}
                 />
               )}
             </For>
@@ -427,6 +512,21 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   }>({
     expandedPaths: {},
     childrenCache: {},
+  })
+
+  // Expose imperative handle via ref callback.
+  createEffect(() => {
+    props.ref?.({
+      collapseAll: () => {
+        setState(produce((s) => {
+          const rp = props.rootPath ?? '~'
+          for (const key of Object.keys(s.expandedPaths)) {
+            if (key !== rp)
+              delete s.expandedPaths[key]
+          }
+        }))
+      },
+    })
   })
 
   const storageKey = () => `directoryTree:state:${props.rootPath ?? '~'}`
@@ -489,8 +589,16 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     return rp.split('/').pop() || rp
   }
 
-  // Root children derived from the centralized cache
-  const rootChildren = () => getChildren(rootPath())
+  // Root children derived from the centralized cache, optionally filtered.
+  const rootChildren = () => {
+    const all = getChildren(rootPath())
+    if (!all)
+      return undefined
+    const visible = props.visiblePaths
+    if (!visible)
+      return all
+    return all.filter(c => visible.has(c.path))
+  }
 
   // Sync external selectedPath to input (tildified for display)
   createEffect(() => {
@@ -623,6 +731,8 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
                           setNodeExpanded={setNodeExpanded}
                           getChildren={getChildren}
                           setChildren={setChildrenInStore}
+                          gitStatusStore={props.gitStatusStore}
+                          visiblePaths={props.visiblePaths}
                         />
                       )}
                     </For>
