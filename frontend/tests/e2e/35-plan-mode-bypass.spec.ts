@@ -1,13 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import {
-  ENTER_PLAN_PROMPT,
-  enterAndExitPlanMode,
-  EXIT_PLAN_PROMPT,
-  sendMessage,
-  waitForAgentIdle,
-  waitForControlBanner,
-} from './helpers'
+import { ENTER_PLAN_PROMPT, enterAndExitPlanMode, EXIT_PLAN_PROMPT } from './helpers/plan-mode'
+import { sendMessage, waitForAgentIdle, waitForControlBanner } from './helpers/ui'
 
 /** Wait for the settings loading spinner to disappear. */
 async function waitForSettingsIdle(page: Page) {

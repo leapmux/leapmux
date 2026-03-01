@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { loginViaToken } from './helpers'
+import { loginViaToken } from './helpers/ui'
 
 test.describe('Page Titles', () => {
   test('should show login page title', async ({ page }) => {

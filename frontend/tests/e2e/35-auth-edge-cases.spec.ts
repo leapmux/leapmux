@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { loginViaUI, logoutViaUI } from './helpers'
+import { loginViaUI, logoutViaUI } from './helpers/ui'
 
 test.describe('Auth Edge Cases', () => {
   test('should disable sign in button with empty username', async ({ page }) => {

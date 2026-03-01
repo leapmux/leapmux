@@ -1,52 +1,21 @@
+import type { Editor } from '@milkdown/core'
 import type { Ctx } from '@milkdown/ctx'
 import type { Component, JSX } from 'solid-js'
-import { defaultValueCtx, Editor, editorViewCtx, editorViewOptionsCtx, rootCtx, serializerCtx } from '@milkdown/core'
-import { clipboard } from '@milkdown/plugin-clipboard'
-import { highlight, highlightPluginConfig } from '@milkdown/plugin-highlight'
-import { createParser as createShikiParser } from '@milkdown/plugin-highlight/shiki'
-import { history } from '@milkdown/plugin-history'
-import { listener, listenerCtx } from '@milkdown/plugin-listener'
-import {
-  commonmark,
-  createCodeBlockCommand,
-  createCodeBlockInputRule as milkdownCreateCodeBlockInputRule,
-  emphasisStarInputRule as milkdownEmphasisStarInputRule,
-  emphasisUnderscoreInputRule as milkdownEmphasisUnderscoreInputRule,
-  inlineCodeInputRule as milkdownInlineCodeInputRule,
-  insertHrInputRule as milkdownInsertHrInputRule,
-  strongInputRule as milkdownStrongInputRule,
-  toggleInlineCodeCommand,
-} from '@milkdown/preset-commonmark'
-import { gfm, strikethroughInputRule as milkdownStrikethroughInputRule } from '@milkdown/preset-gfm'
+import type { EnterKeyMode } from './draftManagement'
+import { editorViewCtx, serializerCtx } from '@milkdown/core'
+import { createCodeBlockCommand, toggleInlineCodeCommand } from '@milkdown/preset-commonmark'
 import { TextSelection } from '@milkdown/prose/state'
 import { callCommand, replaceAll } from '@milkdown/utils'
 import { createEffect, createSignal, on, onCleanup, onMount } from 'solid-js'
-import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
-import { createBulletListAfterHardBreakInputRule, createCodeBlockInputRule, createEmphasisStarInputRule, createEmphasisUnderscoreInputRule, createHrInputRule, createInlineCodeInputRule, createLinkInputRule, createOrderedListAfterHardBreakInputRule, createStrikethroughInputRule, createStrongInputRule } from '~/lib/editor/inputRules'
-import {
-  createBlockquoteBackspacePlugin,
-  createCodeBlockBackspacePlugin,
-  createCodeBlockEnterPlugin,
-  createCodeBlockEscapePlugin,
-  createCodeSpanEscapePlugin,
-  createLinkBoundaryPlugin,
-  createListDeleteFixPlugin,
-  createListItemEnterPlugin,
-  createMarkdownPastePlugin,
-  createPlaceholderPlugin,
-  createSelectionWrapPlugin,
-  createSendOnEnterPlugin,
-  createSuppressTextSubstitutionPlugin,
-  createTabKeyPlugin,
-} from '~/lib/editor/plugins'
-import { createAutoDetectLanguageExtractor, createCodeLangPlugin, createToolbarStatePlugin } from '~/lib/editor/toolbarState'
-import { shikiHighlighter } from '~/lib/renderMarkdown'
-import { safeGetString, safeSetString } from '~/lib/safeStorage'
+import { loadDraft } from '~/lib/editor/draftPersistence'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
+import { clearDraft, getEnterKeyMode, restoreCursor, saveDraftFromEditor, setEnterKeyMode } from './draftManagement'
+import { setupEditorRefHandlers } from './editorRefHandlers'
+import { buildEditor } from './editorSetup'
 import { EditorToolbar } from './EditorToolbar'
 import * as styles from './MarkdownEditor.css'
 
-type EnterKeyMode = 'enter-sends' | 'cmd-enter-sends'
+export { clearDraft }
 
 interface MarkdownEditorProps {
   /** Agent ID for per-tab draft persistence. */
@@ -71,59 +40,6 @@ interface MarkdownEditorProps {
   allowEmptySend?: boolean
   /** Called when Shift+Tab is pressed in a plain paragraph (indent level 0). */
   onTogglePlanMode?: () => void
-}
-
-const ENTER_KEY_MODE_KEY = 'leapmux-enter-key-mode'
-
-function getEnterKeyMode(): EnterKeyMode {
-  const stored = safeGetString(ENTER_KEY_MODE_KEY)
-  return stored === 'enter-sends' ? 'enter-sends' : 'cmd-enter-sends'
-}
-
-export { clearDraft }
-
-/**
- * Restore a saved cursor position in a ProseMirror editor view.  If the saved
- * position is beyond the document (e.g. the cursor was in a trailing empty
- * paragraph that the markdown parser didn't recreate), re-insert an empty
- * paragraph after a trailing blockquote so the cursor lands outside it.
- */
-function restoreCursor(editor: Editor, savedCursor: number): void {
-  editor.action((ctx: Ctx) => {
-    const view = ctx.get(editorViewCtx)
-    const { doc, schema } = view.state
-    const maxPos = doc.content.size - 1
-
-    if (savedCursor > maxPos && doc.lastChild?.type.name === 'blockquote') {
-      const insertPos = doc.content.size
-      const paragraph = schema.nodes.paragraph.create()
-      const tr = view.state.tr.insert(insertPos, paragraph)
-      tr.setSelection(TextSelection.create(tr.doc, insertPos + 1))
-      view.dispatch(tr)
-      return
-    }
-
-    const pos = savedCursor >= 0 ? Math.min(savedCursor, maxPos) : maxPos
-    if (pos > 0) {
-      const tr = view.state.tr.setSelection(TextSelection.create(doc, pos))
-      view.dispatch(tr)
-    }
-  })
-}
-
-/**
- * Serialize the current ProseMirror document and save it as a draft.
- * The saved cursor position allows {@link restoreCursor} to reconstruct
- * trailing empty paragraphs that the markdown parser strips.
- */
-function saveDraftFromEditor(editor: Editor, draftKey: string): void {
-  editor.action((ctx: Ctx) => {
-    const serializer = ctx.get(serializerCtx)
-    const view = ctx.get(editorViewCtx)
-    const text = serializer(view.state.doc).trim()
-    const cursor = view.state.selection.from
-    saveDraft(draftKey, text, cursor)
-  })
 }
 
 export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
@@ -168,7 +84,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   const toggleEnterMode = () => {
     const next = enterMode() === 'enter-sends' ? 'cmd-enter-sends' : 'enter-sends'
     setEnterMode(next)
-    safeSetString(ENTER_KEY_MODE_KEY, next)
+    setEnterKeyMode(next)
   }
 
   const focusEditor = () => {
@@ -277,7 +193,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     }
   }
 
-  let draftSaveTimeout: ReturnType<typeof setTimeout> | undefined
+  const draftSaveTimer: { current: ReturnType<typeof setTimeout> | undefined } = { current: undefined }
   // Track the last valid draft key so onCleanup can save the draft even when
   // reactive getters (props.agentId) return null during unmount.
   let latestDraftKey: string | undefined
@@ -294,26 +210,17 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     const initialDraftKey = getDraftKey()
     const initialDraft = initialDraftKey ? loadDraft(initialDraftKey) : { content: '', cursor: -1 }
 
-    const createEditor = () => {
-      const pluginRefs = {
+    const editor = await buildEditor({
+      editorRoot: editorRef,
+      initialContent: initialDraft.content,
+      pluginRefs: {
         getDisabled: () => disabledRef,
         getEnterMode: () => enterModeRef,
         getPlaceholder: () => placeholderRef,
         onSend: handleSend,
-      }
-
-      const placeholderPlugin = createPlaceholderPlugin(pluginRefs)
-      const sendPlugin = createSendOnEnterPlugin(pluginRefs)
-      const blockquoteBackspacePlugin = createBlockquoteBackspacePlugin()
-      const tabKeyPlugin = createTabKeyPlugin({
-        onShiftTabInParagraph: () => onTogglePlanModeRef?.(),
-      })
-      const codeBlockBackspacePlugin = createCodeBlockBackspacePlugin()
-      const codeBlockEnterPlugin = createCodeBlockEnterPlugin()
-      const codeBlockEscapePlugin = createCodeBlockEscapePlugin()
-      const suppressTextSubstitutionPlugin = createSuppressTextSubstitutionPlugin()
-      const listItemEnterPlugin = createListItemEnterPlugin(pluginRefs)
-      const toolbarStatePlugin = createToolbarStatePlugin({
+      },
+      getOnTogglePlanMode: () => onTogglePlanModeRef,
+      toolbarSetters: {
         setActiveBold,
         setActiveItalic,
         setActiveStrikethrough,
@@ -325,111 +232,19 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         setActiveBulletList,
         setActiveOrderedList,
         setActiveTaskList,
-      })
-      const codeLangPlugin = createCodeLangPlugin({
+      },
+      codeLangSetters: {
         setCodeLangNodePos,
         setCodeLangAnchorEl,
         setCodeLangPopoverOpen,
-      })
-      const listDeleteFixPlugin = createListDeleteFixPlugin()
-      const codeSpanEscapePlugin = createCodeSpanEscapePlugin()
-      const markdownPastePlugin = createMarkdownPastePlugin()
-      const linkBoundaryPlugin = createLinkBoundaryPlugin()
-      const selectionWrapPlugin = createSelectionWrapPlugin()
-      const linkInputRule = createLinkInputRule()
-      const codeBlockInputRule = createCodeBlockInputRule()
-      const hrInputRule = createHrInputRule()
-      const bulletListAfterHardBreakRule = createBulletListAfterHardBreakInputRule()
-      const orderedListAfterHardBreakRule = createOrderedListAfterHardBreakInputRule()
-      const strongInputRule = createStrongInputRule()
-      const emphasisStarInputRule = createEmphasisStarInputRule()
-      const emphasisUnderscoreInputRule = createEmphasisUnderscoreInputRule()
-      const inlineCodeInputRule = createInlineCodeInputRule()
-      const strikethroughInputRule = createStrikethroughInputRule()
+      },
+      setMarkdown,
+      onContentChange: hasContent => props.onContentChange?.(hasContent),
+      getDraftKey,
+      draftSaveTimer,
+      getEditorInstance: () => editorInstance,
+    })
 
-      const shikiParser = createShikiParser(shikiHighlighter, {
-        themes: { light: 'github-light', dark: 'github-dark' },
-        defaultColor: false,
-      })
-      const languageExtractor = createAutoDetectLanguageExtractor(shikiHighlighter)
-
-      return Editor.make()
-        .config((ctx: Ctx) => {
-          ctx.set(rootCtx, editorRef!)
-          ctx.set(defaultValueCtx, initialDraft.content)
-          ctx.set(highlightPluginConfig.key, { parser: shikiParser, languageExtractor })
-          ctx.update(editorViewOptionsCtx, prev => ({
-            ...prev,
-            attributes: {
-              spellcheck: 'false',
-              autocorrect: 'off',
-              autocapitalize: 'off',
-            },
-          }))
-          // eslint-disable-next-line solid/reactivity -- callback invoked from Milkdown listener, not a tracked scope
-          ctx.get(listenerCtx).markdownUpdated((_ctx, md) => {
-            setMarkdown(md)
-            props.onContentChange?.(md.trim().length > 0)
-            // Debounced draft save
-            const draftKey = getDraftKey()
-            if (draftKey) {
-              clearTimeout(draftSaveTimeout)
-              draftSaveTimeout = setTimeout(() => {
-                let cursor = -1
-                try {
-                  editorInstance?.action((c: Ctx) => {
-                    cursor = c.get(editorViewCtx).state.selection.from
-                  })
-                }
-                catch { /* ignore */ }
-                saveDraft(draftKey, md.trim(), cursor)
-              }, 500)
-            }
-          })
-        })
-        .use(selectionWrapPlugin)
-        .use(commonmark.filter(p =>
-          p !== milkdownInsertHrInputRule
-          && p !== milkdownCreateCodeBlockInputRule
-          && p !== milkdownStrongInputRule
-          && p !== milkdownEmphasisStarInputRule
-          && p !== milkdownEmphasisUnderscoreInputRule
-          && p !== milkdownInlineCodeInputRule,
-        ))
-        .use(gfm.filter(p => p !== milkdownStrikethroughInputRule))
-        .use(history)
-        .use(markdownPastePlugin)
-        .use(clipboard)
-        .use(highlight)
-        .use(listener)
-        .use(placeholderPlugin)
-        .use(listItemEnterPlugin)
-        .use(listDeleteFixPlugin)
-        .use(tabKeyPlugin)
-        .use(codeBlockEscapePlugin)
-        .use(codeSpanEscapePlugin)
-        .use(sendPlugin)
-        .use(codeBlockEnterPlugin)
-        .use(codeBlockBackspacePlugin)
-        .use(blockquoteBackspacePlugin)
-        .use(suppressTextSubstitutionPlugin)
-        .use(toolbarStatePlugin)
-        .use(codeLangPlugin)
-        .use(linkBoundaryPlugin)
-        .use(linkInputRule)
-        .use(hrInputRule)
-        .use(bulletListAfterHardBreakRule)
-        .use(orderedListAfterHardBreakRule)
-        .use(codeBlockInputRule)
-        .use(strongInputRule)
-        .use(emphasisStarInputRule)
-        .use(emphasisUnderscoreInputRule)
-        .use(inlineCodeInputRule)
-        .use(strikethroughInputRule)
-        .create()
-    }
-
-    const editor = await createEditor()
     editorInstance = editor
     // Apply editable state and auto-focus — the createEffect on `disabled`
     // may have fired before the editor was created, so set it explicitly.
@@ -473,69 +288,23 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       }
       catch { /* editor may not be ready */ }
     }
-    // Expose get/set content functions to parent component (e.g. for save/restore per-question text)
-    props.contentRef?.(
-      () => {
-        let text = ''
-        try {
-          editor.action((ctx: Ctx) => {
-            const serializer = ctx.get(serializerCtx)
-            const view = ctx.get(editorViewCtx)
-            text = serializer(view.state.doc).trim()
-          })
-        }
-        catch { /* editor may not be ready */ }
-        return text
-      },
-      // eslint-disable-next-line solid/reactivity -- setter is invoked from event handlers, not tracked scopes
-      (text: string) => {
-        try {
-          editor.action(replaceAll(text))
-          // If the document ends with a blockquote, insert an empty paragraph
-          // after it so the cursor lands outside the blockquote.  ProseMirror
-          // does not create a trailing paragraph from trailing \n\n in markdown.
-          editor.action((ctx: Ctx) => {
-            const view = ctx.get(editorViewCtx)
-            const { doc, schema } = view.state
-            const lastChild = doc.lastChild
-            if (lastChild && lastChild.type.name === 'blockquote') {
-              const insertPos = doc.content.size
-              const paragraph = schema.nodes.paragraph.create()
-              const tr = view.state.tr.insert(insertPos, paragraph)
-              tr.setSelection(TextSelection.create(tr.doc, insertPos + 1))
-              view.dispatch(tr)
-            }
-            else {
-              const endPos = doc.content.size - 1
-              if (endPos > 0) {
-                const tr = view.state.tr.setSelection(TextSelection.create(doc, endPos))
-                view.dispatch(tr)
-              }
-            }
-          })
-          setMarkdown(text)
-          props.onContentChange?.(text.trim().length > 0)
-        }
-        catch { /* editor may not be ready */ }
-      },
-    )
-    // Expose handleSend to parent component (e.g. for external send button)
-    props.sendRef?.(handleSend)
-    // Expose focus function to parent component (e.g. for tab selection)
-    props.focusRef?.(() => {
-      try {
-        editor.action((ctx: Ctx) => {
-          ctx.get(editorViewCtx).focus()
-        })
-      }
-      catch { /* editor may not be ready */ }
+
+    setupEditorRefHandlers({
+      editor,
+      setMarkdown,
+      onContentChange: hasContent => props.onContentChange?.(hasContent),
+      sendRef: props.sendRef,
+      focusRef: props.focusRef,
+      contentRef: props.contentRef,
+      handleSend,
     })
+
     // Signal that the editor is fully initialized with draft content.
     props.onReady?.()
   })
 
   onCleanup(() => {
-    clearTimeout(draftSaveTimeout)
+    clearTimeout(draftSaveTimer.current)
     // Save draft for the current agent/control-request before cleanup.
     // getDraftKey() may return undefined during unmount (reactive getters
     // can return null when the parent <Show> disposes), so fall back to

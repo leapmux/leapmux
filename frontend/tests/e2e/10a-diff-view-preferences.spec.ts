@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { loginViaUI } from './helpers'
+import { loginViaUI } from './helpers/ui'
 
 test.describe('Diff View Preferences', () => {
   test('should show Diff View section in This Browser tab with correct options', async ({ page }) => {

@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { openAgentViaUI } from './helpers'
+import { openAgentViaUI } from './helpers/ui'
 
 test.describe('DropdownMenu Popover – Focus and Positioning', () => {
   /**

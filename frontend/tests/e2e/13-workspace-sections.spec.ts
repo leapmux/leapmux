@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { openWorkspaceContextMenu } from './helpers'
+import { openWorkspaceContextMenu } from './helpers/ui'
 
 test.describe('Workspace Sections', () => {
   test('should show default sections on first load', async ({ page, authenticatedWorkspace }) => {

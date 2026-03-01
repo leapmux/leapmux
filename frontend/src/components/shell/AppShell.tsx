@@ -1,63 +1,41 @@
-import type { Component, ParentComponent } from 'solid-js'
-import type { CheckWorktreeStatusResponse } from '~/generated/leapmux/v1/git_pb'
-import type { Sidebar } from '~/generated/leapmux/v1/section_pb'
-import Resizable from '@corvu/resizable'
+import type { ParentComponent } from 'solid-js'
+import type { SidebarElementsOpts } from './SidebarElements'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
-import Bot from 'lucide-solid/icons/bot'
-import Plus from 'lucide-solid/icons/plus'
-import Terminal from 'lucide-solid/icons/terminal'
-import { createEffect, createMemo, createSignal, on, onMount, Show } from 'solid-js'
-import { agentClient, gitClient, sectionClient, terminalClient, workspaceClient } from '~/api/clients'
-import { agentCallTimeout, agentLoadingTimeoutMs, apiCallTimeout } from '~/api/transport'
-import { AgentEditorPanel } from '~/components/chat/AgentEditorPanel'
-import { ChatView } from '~/components/chat/ChatView'
-import { relativizePath } from '~/components/chat/messageUtils'
-import { ConfirmButton } from '~/components/common/ConfirmButton'
-import { ConfirmDialog } from '~/components/common/ConfirmDialog'
-import { Icon } from '~/components/common/Icon'
+import { createEffect, createMemo, createSignal, Show } from 'solid-js'
+import { agentLoadingTimeoutMs, apiCallTimeout } from '~/api/transport'
 import { NotFoundPage } from '~/components/common/NotFoundPage'
-import { showToast } from '~/components/common/Toast'
-import { FileViewer } from '~/components/fileviewer/FileViewer'
-import { CrossTileDragProvider } from '~/components/shell/CrossTileDragContext'
-import { LeftSidebar } from '~/components/shell/LeftSidebar'
-import { NewAgentDialog } from '~/components/shell/NewAgentDialog'
-import { NewTerminalDialog } from '~/components/shell/NewTerminalDialog'
-import { ResumeSessionDialog } from '~/components/shell/ResumeSessionDialog'
-import { RightSidebar } from '~/components/shell/RightSidebar'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
-import { TabBar } from '~/components/shell/TabBar'
-import { getTerminalInstance, TerminalView } from '~/components/terminal/TerminalView'
-import { NewWorkspaceDialog } from '~/components/workspace/NewWorkspaceDialog'
 import { useAuth } from '~/context/AuthContext'
 import { useOrg } from '~/context/OrgContext'
 import { usePreferences } from '~/context/PreferencesContext'
 import { useWorkspace } from '~/context/WorkspaceContext'
-import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { useIsMobile } from '~/hooks/useIsMobile'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
-import { after, mid } from '~/lib/lexorank'
-import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { createAgentStore } from '~/stores/agent.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
-import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { createLayoutStore } from '~/stores/layout.store'
 import { createSectionStore } from '~/stores/section.store'
-import { createTabStore, tabKey } from '~/stores/tab.store'
+import { createTabStore } from '~/stores/tab.store'
 import { createTerminalStore } from '~/stores/terminal.store'
 import { createWorkspaceStore } from '~/stores/workspace.store'
-import { dialogStandard } from '~/styles/shared.css'
-import { isAgentWorking } from '~/utils/agentState'
 import * as styles from './AppShell.css'
-import { SectionDragProvider } from './SectionDragContext'
-import { Tile } from './Tile'
-import { TilingLayout } from './TilingLayout'
-import { nextTabNumber, useAgentOperations } from './useAgentOperations'
+import { AppShellDialogs } from './AppShellDialogs'
+import { DesktopLayout } from './DesktopLayout'
+import { MobileLayout } from './MobileLayout'
+import { createLeftSidebarElement, createRightSidebarElement } from './SidebarElements'
+import { createTileRenderer } from './TileRenderer'
+import { useAgentOperations } from './useAgentOperations'
+import { useTabOperations } from './useTabOperations'
+import { useTabPersistence } from './useTabPersistence'
 import { useTerminalOperations } from './useTerminalOperations'
+import { useTileDragDrop } from './useTileDragDrop'
+import { useWorkspaceLoader } from './useWorkspaceLoader'
+import { useWorkspaceRestore } from './useWorkspaceRestore'
 
 export const AppShell: ParentComponent = (props) => {
   const auth = useAuth()
@@ -89,19 +67,9 @@ export const AppShell: ParentComponent = (props) => {
   const [newAgentLoading, setNewAgentLoading] = createSignal(false)
   const [newTerminalLoading, setNewTerminalLoading] = createSignal(false)
   const [newShellLoading, setNewShellLoading] = createSignal(false)
-  const [closingTabKeys, setClosingTabKeys] = createSignal<Set<string>>(new Set())
-  // Pre-close worktree confirmation dialog state.
-  // When set, shows a dialog asking the user what to do with a dirty worktree
-  // BEFORE the tab is closed. The resolve callback communicates the user's choice.
-  const [worktreeConfirm, setWorktreeConfirm] = createSignal<{
-    path: string
-    id: string
-    branchName: string
-    resolve: (choice: 'cancel' | 'keep' | 'remove') => void
-  } | null>(null)
-  // Stores the user's worktree choice so close handlers can auto-resolve cleanup.
-  let pendingWorktreeChoice: 'keep' | 'remove' | null = null
   const settingsLoading = createLoadingSignal(agentLoadingTimeoutMs(true))
+  const [confirmDeleteWs, setConfirmDeleteWs] = createSignal<{ workspaceId: string, resolve: (confirmed: boolean) => void } | null>(null)
+  const [confirmArchiveWs, setConfirmArchiveWs] = createSignal<{ workspaceId: string, resolve: (confirmed: boolean) => void } | null>(null)
 
   // Mobile layout state
   const isMobile = useIsMobile()
@@ -120,16 +88,7 @@ export const AppShell: ParentComponent = (props) => {
     setRightSidebarOpen(false)
   }
 
-  const addClosingTabKey = (key: string) =>
-    setClosingTabKeys(prev => new Set([...prev, key]))
-  const removeClosingTabKey = (key: string) =>
-    setClosingTabKeys((prev) => {
-      const next = new Set(prev)
-      next.delete(key)
-      return next
-    })
-
-  // Debounced turn-end sound playback (cooldown prevents rapid repeated sounds).
+  // Debounced turn-end sound playback
   const TURN_END_SOUND_COOLDOWN_MS = 10_000
   let lastSoundPlayedAt = 0
   const playTurnEndSound = () => {
@@ -145,8 +104,7 @@ export const AppShell: ParentComponent = (props) => {
     }
   }
 
-  // Streaming connection management (watchEvents, workerOnline)
-
+  // Streaming connection management
   useWorkspaceConnection({
     agentStore,
     chatStore,
@@ -166,13 +124,11 @@ export const AppShell: ParentComponent = (props) => {
     onTurnEndSound: playTurnEndSound,
   })
 
-  // Auto-open new workspace dialog from URL search params (e.g. after worker registration)
+  // Auto-open new workspace dialog from URL search params
   createEffect(() => {
     if (searchParams.newWorkspace === 'true') {
-      // Save the worker ID before clearing search params
       setPreselectedWorkerId(searchParams.workerId as string | undefined)
       setShowNewWorkspace(true)
-      // Clear the search params so it doesn't re-trigger
       setSearchParams({ newWorkspace: undefined, workerId: undefined }, { replace: true })
     }
   })
@@ -184,7 +140,7 @@ export const AppShell: ParentComponent = (props) => {
     return path === orgPrefix || path === `${orgPrefix}/` || path.startsWith(`${orgPrefix}/workspace/`)
   })
 
-  // True when the URL has a workspace ID but it doesn't exist in the loaded list.
+  // True when the URL has a workspace ID but it doesn't exist in the loaded list
   const workspaceNotFound = createMemo(() => {
     if (!params.workspaceId)
       return false
@@ -200,70 +156,14 @@ export const AppShell: ParentComponent = (props) => {
     workspace.setActiveWorkspaceId(params.workspaceId ?? null)
   })
 
-  // Load workspaces on mount and when org changes
-  const loadWorkspaces = async () => {
-    const orgId = org.orgId()
-    if (!orgId)
-      return
-    workspaceStore.setLoading(true)
-    try {
-      const resp = await workspaceClient.listWorkspaces({ orgId })
-      workspaceStore.setWorkspaces(resp.workspaces)
-    }
-    catch (err) {
-      workspaceStore.setError(String(err))
-    }
-    finally {
-      workspaceStore.setLoading(false)
-    }
-  }
-
-  createEffect(() => {
-    if (org.orgId()) {
-      loadWorkspaces()
-    }
+  // Workspace & section loading
+  const { loadWorkspaces, loadSections, handleMoveSection, handleMoveSectionServer } = useWorkspaceLoader({
+    getOrgId: () => org.orgId(),
+    workspaceStore,
+    sectionStore,
   })
 
-  // Load sections on mount and when org changes
-  const loadSections = async () => {
-    const orgId = org.orgId()
-    if (!orgId)
-      return
-    sectionStore.setLoading(true)
-    try {
-      const resp = await sectionClient.listSections({ orgId })
-      sectionStore.setSections(resp.sections)
-      sectionStore.setItems(resp.items)
-    }
-    catch (err) {
-      sectionStore.setError(err instanceof Error ? err.message : 'Failed to load sections')
-    }
-    finally {
-      sectionStore.setLoading(false)
-    }
-  }
-
-  createEffect(() => {
-    if (org.orgId()) {
-      loadSections()
-    }
-  })
-
-  // Handle section moves (optimistic + server persist)
-  const handleMoveSection = (sectionId: string, sidebar: Sidebar, position: string) => {
-    sectionStore.moveSection(sectionId, sidebar, position)
-  }
-
-  const handleMoveSectionServer = (sectionId: string, sidebar: Sidebar, position: string) => {
-    sectionClient.moveSection({ sectionId, sidebar, position })
-      .catch((err) => {
-        showToast(err instanceof Error ? err.message : 'Failed to move section', 'danger')
-        loadSections()
-      })
-  }
-
-  // Auto-activate workspace when navigating to org root with no workspace selected.
-  // Use sessionStorage-persisted active workspace, falling back to first workspace.
+  // Auto-activate workspace when navigating to org root with no workspace selected
   createEffect(() => {
     if (!isWorkspaceRoute())
       return
@@ -279,7 +179,7 @@ export const AppShell: ParentComponent = (props) => {
     navigate(`/o/${params.orgSlug}/workspace/${target}`, { replace: true })
   })
 
-  // Dynamic page title (only on workspace-related routes; other routes set their own titles)
+  // Dynamic page title
   createEffect(() => {
     if (!isWorkspaceRoute())
       return
@@ -300,51 +200,6 @@ export const AppShell: ParentComponent = (props) => {
     return workspaceStore.state.workspaces.find(s => s.id === id) ?? null
   })
 
-  // Debounced layout + tab persistence
-  let layoutSaveTimer: ReturnType<typeof setTimeout> | null = null
-  const persistLayout = () => {
-    const ws = activeWorkspace()
-    if (!ws || workspaceLoading())
-      return
-    if (layoutSaveTimer)
-      clearTimeout(layoutSaveTimer)
-    layoutSaveTimer = setTimeout(() => {
-      const tileIds = layoutStore.getAllTileIds()
-      const activeTabs = tileIds.map((tileId) => {
-        const activeKey = tabStore.getActiveTabKeyForTile(tileId)
-        if (!activeKey)
-          return null
-        const parts = activeKey.split(':')
-        const tabType = Number(parts[0]) as TabType
-        // Skip ephemeral tab types (e.g. FILE) from backend persistence
-        if (tabType === TabType.FILE)
-          return null
-        return { tileId, tabType, tabId: parts[1] }
-      }).filter(Boolean) as Array<{ tileId: string, tabType: TabType, tabId: string }>
-
-      const tabs = tabStore.state.tabs
-        .filter(t => t.type !== TabType.FILE)
-        .map(t => ({
-          tabType: t.type,
-          tabId: t.id,
-          position: t.position ?? '',
-          tileId: t.tileId ?? '',
-          workingDir: t.workingDir ?? '',
-          shellStartDir: t.type === TabType.TERMINAL
-            ? (terminalStore.state.terminals.find(term => term.id === t.id)?.shellStartDir ?? '')
-            : '',
-        }))
-
-      workspaceClient.saveLayout({
-        orgId: org.orgId(),
-        workspaceId: ws.id,
-        layout: layoutStore.toProto(),
-        activeTabs,
-        tabs,
-      }).catch(() => {})
-    }, 500)
-  }
-
   // Whether the active workspace is in an archived section
   const isActiveWorkspaceArchived = createMemo(() => {
     const wsId = workspace.activeWorkspaceId()
@@ -357,21 +212,16 @@ export const AppShell: ParentComponent = (props) => {
     return section?.sectionType === SectionType.WORKSPACES_ARCHIVED
   })
 
-  // Whether the active workspace can be mutated (create agents/terminals, etc.)
+  // Whether the active workspace can be mutated
   const isActiveWorkspaceMutatable = createMemo(() =>
     isWorkspaceMutatable(activeWorkspace(), auth.user()?.id ?? '', isActiveWorkspaceArchived()),
   )
-
-  // Confirmation dialog states
-  const [confirmDeleteWs, setConfirmDeleteWs] = createSignal<{ workspaceId: string, resolve: (confirmed: boolean) => void } | null>(null)
-  const [confirmArchiveWs, setConfirmArchiveWs] = createSignal<{ workspaceId: string, resolve: (confirmed: boolean) => void } | null>(null)
 
   // Active tab derived state
   const activeTab = createMemo(() => tabStore.activeTab())
   const activeTabType = createMemo(() => activeTab()?.type ?? null)
 
-  // Get worker, working directory, and home directory from the currently active tab.
-  // Agent tabs carry these from the proto; terminal tabs carry them from the store.
+  // Get worker, working directory, and home directory from the currently active tab
   const getCurrentTabContext = (): { workerId: string, workingDir: string, homeDir: string } => {
     const tab = activeTab()
     if (!tab)
@@ -381,23 +231,19 @@ export const AppShell: ParentComponent = (props) => {
       return { workerId: agent?.workerId ?? '', workingDir: agent?.workingDir ?? '', homeDir: agent?.homeDir ?? '' }
     }
     else if (tab.type === TabType.FILE) {
-      // Use the stored working directory from the originating tab, not the file's directory.
       const dir = tab.workingDir || (tab.filePath ? tab.filePath.substring(0, tab.filePath.lastIndexOf('/')) || '/' : '')
-      // Find homeDir from any agent on the same worker
       const homeDir = agentStore.state.agents.find(a => a.workerId === tab.workerId)?.homeDir ?? ''
       return { workerId: tab.workerId ?? '', workingDir: dir, homeDir }
     }
     else {
       const terminal = terminalStore.state.terminals.find(t => t.id === tab.id)
       const workerId = terminal?.workerId ?? ''
-      // Find homeDir from any agent on the same worker
       const homeDir = agentStore.state.agents.find(a => a.workerId === workerId)?.homeDir ?? ''
       return { workerId, workingDir: terminal?.workingDir ?? '', homeDir }
     }
   }
 
-  // Get working directory and home directory from the MRU agent tab.
-  // Used for relativizing file paths in mentions and quotes from non-agent tabs.
+  // Get working directory and home directory from the MRU agent tab
   const getMruAgentContext = (): { workingDir: string, homeDir: string } => {
     const agentPrefix = `${TabType.AGENT}:`
     const mruKey = tabStore.state.mruOrder.find(k => k.startsWith(agentPrefix))
@@ -408,17 +254,25 @@ export const AppShell: ParentComponent = (props) => {
     return { workingDir: agent?.workingDir ?? '', homeDir: agent?.homeDir ?? '' }
   }
 
-  // Focus callback for the markdown editor (shared editor panel)
-  let focusEditor: (() => void) | undefined
-
-  // Ref for retrieving the first visible message seq from ChatView (for viewport save on tab switch).
-  let getScrollState: (() => { distFromBottom: number, atBottom: boolean } | undefined) | undefined
-
-  // Ref for forcing a scroll-to-bottom in ChatView (e.g. on send message / control response).
-  let forceScrollToBottom: (() => void) | undefined
-
-  // Container height for the center panel (used for max editor height calculation)
+  // Mutable refs for editor/scroll callbacks
+  const focusEditorRef: { current: (() => void) | undefined } = { current: undefined }
+  const getScrollStateRef: { current: (() => { distFromBottom: number, atBottom: boolean } | undefined) | undefined } = { current: undefined }
+  const forceScrollToBottomRef: { current: (() => void) | undefined } = { current: undefined }
   const [centerPanelHeight, setCenterPanelHeight] = createSignal(0)
+
+  // Tab persistence (layout save, sessionStorage effects)
+  const { persistLayout } = useTabPersistence({
+    tabStore,
+    terminalStore,
+    layoutStore,
+    getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
+    getOrgId: () => org.orgId(),
+    activeWorkspace,
+    workspaceLoading,
+  })
+
+  // Shared pending worktree choice (used by agentOps, termOps, and tabOps)
+  const pendingWorktreeChoiceRef: { current: 'keep' | 'remove' | null } = { current: null }
 
   // Agent operations hook
   const agentOps = useAgentOperations({
@@ -431,13 +285,13 @@ export const AppShell: ParentComponent = (props) => {
     isActiveWorkspaceMutatable,
     activeWorkspace,
     getCurrentTabContext,
-    pendingWorktreeChoice: () => pendingWorktreeChoice,
+    pendingWorktreeChoice: () => pendingWorktreeChoiceRef.current,
     setShowNewAgentDialog,
     setNewAgentLoading,
     setShowResumeDialog,
     persistLayout,
-    focusEditor: () => focusEditor?.(),
-    forceScrollToBottom: () => forceScrollToBottom?.(),
+    focusEditor: () => focusEditorRef.current?.(),
+    forceScrollToBottom: () => forceScrollToBottomRef.current?.(),
   })
 
   // Terminal operations hook
@@ -452,265 +306,42 @@ export const AppShell: ParentComponent = (props) => {
     setShowNewTerminalDialog,
     setNewTerminalLoading,
     setNewShellLoading,
-    pendingWorktreeChoice: () => pendingWorktreeChoice,
+    pendingWorktreeChoice: () => pendingWorktreeChoiceRef.current,
     persistLayout,
     apiCallTimeout,
   })
 
-  // Load agents and set up watchers when active workspace changes.
-  // Use `on()` to explicitly track only `activeWorkspaceId` and `orgId` —
-  // without it, SolidJS could track other reactive reads in the effect body
-  // and re-run the effect spuriously, creating duplicate async chains.
-  // Both are tracked because after page reload, orgId resolves asynchronously
-  // and must be available before API calls that require it (listTabs, getLayout).
-  let loadGeneration = 0
-  createEffect(on([workspace.activeWorkspaceId, org.orgId], ([activeId, currentOrgId]) => {
-    if (!activeId || !currentOrgId)
-      return
-
-    // Bump generation so stale Promise.all callbacks are discarded.
-    const gen = ++loadGeneration
-
-    // Clear tabs from previous workspace
-    setWorkspaceLoading(true)
-    tabStore.clear()
-
-    // Load agents for this workspace.
-    // Guard async callbacks: if the user navigated away before the response
-    // arrives, the workspace ID will have changed and we must discard the result.
-    const agentsLoaded = agentClient.listAgents({ workspaceId: activeId })
-      .then((resp) => {
-        if (gen !== loadGeneration)
-          return
-        agentStore.setAgents(resp.agents)
-      })
-      .catch(() => {})
-
-    // Restore terminals from server
-    const terminalsLoaded = terminalClient.listTerminals({ orgId: currentOrgId, workspaceId: activeId })
-      .then((resp) => {
-        if (gen !== loadGeneration)
-          return
-        // Clear existing terminals for this workspace
-        terminalStore.setTerminals([])
-        for (const t of resp.terminals) {
-          terminalStore.addTerminal({
-            id: t.terminalId,
-            workspaceId: activeId,
-            workingDir: t.workingDir || undefined,
-            shellStartDir: t.shellStartDir || undefined,
-            screen: t.screen.length > 0 ? t.screen : undefined,
-            cols: t.cols || undefined,
-            rows: t.rows || undefined,
-          })
-          if (t.exited) {
-            terminalStore.markExited(t.terminalId)
-          }
-        }
-      })
-      .catch(() => {})
-
-    // Load persisted tab ordering
-    const tabsLoaded = workspaceClient.listTabs({ orgId: currentOrgId, workspaceId: activeId })
-      .catch(() => null)
-
-    // Load tiling layout
-    const layoutLoaded = workspaceClient.getLayout({ orgId: currentOrgId, workspaceId: activeId })
-      .catch(() => null)
-
-    // After everything loads, create tabs, apply ordering, and restore active tab.
-    // Tabs are created here (not in individual handlers) so we can use the
-    // persisted workspace_tabs to determine which closed agents/terminals
-    // should have tabs (user-closed tabs are removed from workspace_tabs).
-    Promise.all([agentsLoaded, terminalsLoaded, tabsLoaded, layoutLoaded]).then(([, , tabsResp, layoutResp]) => {
-      // Discard stale callbacks from previous loads or duplicate effect runs.
-      if (gen !== loadGeneration)
-        return
-
-      // Clear tabs to ensure idempotency if this callback runs more than
-      // once (e.g. due to the effect re-running for the same workspace).
-      tabStore.clear()
-
-      // Restore tiling layout
-      if (layoutResp?.layout) {
-        layoutStore.fromProto(layoutResp.layout)
-      }
-      else {
-        layoutStore.initSingleTile()
-      }
-
-      // Build map of persisted tab keys -> tileIds
-      const persistedKeys = new Set<string>()
-      const tabTileMap = new Map<string, string>()
-      if (tabsResp?.tabs) {
-        for (const t of tabsResp.tabs) {
-          const key = `${t.tabType}:${t.tabId}`
-          persistedKeys.add(key)
-          if (t.tileId) {
-            tabTileMap.set(key, t.tileId)
-          }
-        }
-      }
-
-      // Get the list of valid tile IDs from the layout
-      const validTileIds = new Set(layoutStore.getAllTileIds())
-      const defaultTileId = layoutStore.focusedTileId()
-
-      // Create agent tabs: always for ACTIVE agents, otherwise only if
-      // the tab is in workspace_tabs (i.e. the user hasn't closed it).
-      for (const a of agentStore.state.agents) {
-        if (a.status === AgentStatus.ACTIVE || persistedKeys.has(`${TabType.AGENT}:${a.id}`)) {
-          const key = `${TabType.AGENT}:${a.id}`
-          let tileId = tabTileMap.get(key) ?? defaultTileId
-          if (!validTileIds.has(tileId))
-            tileId = defaultTileId
-          tabStore.addTab({ type: TabType.AGENT, id: a.id, title: a.title || undefined, tileId, workerId: a.workerId, workingDir: a.workingDir }, false)
-        }
-      }
-
-      // Create terminal tabs: always for non-exited terminals, otherwise
-      // only if the tab is in workspace_tabs.
-      for (const t of terminalStore.state.terminals) {
-        if (!terminalStore.isExited(t.id) || persistedKeys.has(`${TabType.TERMINAL}:${t.id}`)) {
-          const key = `${TabType.TERMINAL}:${t.id}`
-          let tileId = tabTileMap.get(key) ?? defaultTileId
-          if (!validTileIds.has(tileId))
-            tileId = defaultTileId
-          tabStore.addTab({ type: TabType.TERMINAL, id: t.id, tileId, workerId: t.workerId, workingDir: t.workingDir }, false)
-        }
-      }
-
-      // Apply persisted tab positions
-      if (tabsResp && tabsResp.tabs.length > 0) {
-        const posMap = new Map<string, string>()
-        for (const t of tabsResp.tabs) {
-          posMap.set(`${t.tabType}:${t.tabId}`, t.position)
-        }
-        tabStore.sortByPositions(posMap)
-      }
-
-      // Restore ephemeral (local) tabs from sessionStorage
-      try {
-        const localTabsJson = sessionStorage.getItem(`leapmux:localTabs:${activeId}`)
-        if (localTabsJson) {
-          const localTabs = JSON.parse(localTabsJson) as Array<{
-            type: number
-            id: string
-            filePath?: string
-            workerId?: string
-            position?: string
-            tileId?: string
-            title?: string
-            displayMode?: string
-          }>
-          for (const lt of localTabs) {
-            let tileId = lt.tileId ?? defaultTileId
-            if (!validTileIds.has(tileId))
-              tileId = defaultTileId
-            tabStore.addTab({
-              type: lt.type as TabType,
-              id: lt.id,
-              filePath: lt.filePath,
-              workerId: lt.workerId,
-              position: lt.position,
-              tileId,
-              title: lt.title,
-              displayMode: lt.displayMode,
-            }, false)
-          }
-        }
-      }
-      catch {
-        // Ignore corrupt sessionStorage data
-      }
-
-      // Restore per-tile active tabs from layout response
-      if (layoutResp?.activeTabs && layoutResp.activeTabs.length > 0) {
-        for (const at of layoutResp.activeTabs) {
-          tabStore.setActiveTabForTile(at.tileId, at.tabType, at.tabId)
-        }
-      }
-
-      // Restore active tab from sessionStorage (per-browser-tab state)
-      const savedKey = sessionStorage.getItem(`leapmux:activeTab:${activeId}`)
-      if (savedKey && tabStore.state.tabs.some(t => tabKey(t) === savedKey)) {
-        const parts = savedKey.split(':')
-        const tabType = Number(parts[0]) as TabType
-        const tabId = parts[1]
-        tabStore.setActiveTab(tabType, tabId)
-        // Also set per-tile active tab so the tile renders the tab content
-        const restoredTab = tabStore.state.tabs.find(t => tabKey(t) === savedKey)
-        if (restoredTab?.tileId) {
-          tabStore.setActiveTabForTile(restoredTab.tileId, tabType, tabId)
-        }
-        if (tabType === TabType.AGENT) {
-          agentStore.setActiveAgent(tabId)
-        }
-        else if (tabType === TabType.TERMINAL) {
-          terminalStore.setActiveTerminal(tabId)
-        }
-        // FILE tabs: no extra store update needed
-      }
-      else if (tabStore.state.tabs.length > 0) {
-        // Activate first tab if no saved state
-        const firstTab = tabStore.state.tabs[0]
-        tabStore.setActiveTab(firstTab.type, firstTab.id)
-        // Also set per-tile active tab so the tile renders the tab content
-        if (firstTab.tileId) {
-          tabStore.setActiveTabForTile(firstTab.tileId, firstTab.type, firstTab.id)
-        }
-        if (firstTab.type === TabType.AGENT) {
-          agentStore.setActiveAgent(firstTab.id)
-        }
-      }
-
-      setWorkspaceLoading(false)
-    })
-  }))
-
-  // Persist active tab to sessionStorage (per-browser-tab state).
-  // Skip while loading to prevent intermediate state from overwriting.
-  createEffect(() => {
-    const activeKey = tabStore.state.activeTabKey
-    const wsId = workspace.activeWorkspaceId()
-    if (wsId && activeKey && !workspaceLoading()) {
-      sessionStorage.setItem(`leapmux:activeTab:${wsId}`, activeKey)
-    }
+  // Tab operations (select, close, file open, worktree confirm)
+  const tabOps = useTabOperations({
+    tabStore,
+    agentStore,
+    terminalStore,
+    chatStore,
+    layoutStore,
+    agentOps,
+    termOps,
+    activeTab,
+    getCurrentTabContext,
+    persistLayout,
+    focusEditor: () => focusEditorRef.current?.(),
+    getScrollState: () => getScrollStateRef.current?.(),
+    setFileTreePath,
+    pendingWorktreeChoiceRef,
   })
 
-  // Persist ephemeral (local) tabs to sessionStorage so they survive page refresh.
-  createEffect(() => {
-    const wsId = workspace.activeWorkspaceId()
-    const tabs = tabStore.state.tabs
-    if (!wsId || workspaceLoading())
-      return
-    const localTabs = tabs
-      .filter(t => t.type === TabType.FILE)
-      .map(t => ({
-        type: t.type,
-        id: t.id,
-        filePath: t.filePath,
-        workerId: t.workerId,
-        position: t.position,
-        tileId: t.tileId,
-        title: t.title,
-        displayMode: t.displayMode,
-      }))
-    if (localTabs.length > 0) {
-      sessionStorage.setItem(`leapmux:localTabs:${wsId}`, JSON.stringify(localTabs))
-    }
-    else {
-      sessionStorage.removeItem(`leapmux:localTabs:${wsId}`)
-    }
+  // Workspace restore (load agents/terminals/tabs/layout on workspace change)
+  useWorkspaceRestore({
+    getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
+    getOrgId: () => org.orgId(),
+    agentStore,
+    terminalStore,
+    tabStore,
+    layoutStore,
+    setWorkspaceLoading,
   })
 
-  // Persist active workspace to sessionStorage (per-browser-tab state).
-  createEffect(() => {
-    const wsId = workspace.activeWorkspaceId()
-    if (wsId && !workspaceLoading()) {
-      sessionStorage.setItem('leapmux:activeWorkspace', wsId)
-    }
-  })
+  // Tile drag-and-drop
+  const tileDrag = useTileDragDrop({ tabStore, layoutStore, persistLayout })
 
   // Active agent todos (for right sidebar To-dos pane)
   const activeTodos = createMemo(() => {
@@ -728,7 +359,7 @@ export const AppShell: ParentComponent = (props) => {
     navigate(`/o/${params.orgSlug}/workspace/${id}`)
   }
 
-  // Handle workspace deletion — activate the next workspace or go to dashboard
+  // Handle workspace deletion
   const handleDeleteWorkspace = (deletedId: string, nextWorkspaceId: string | null) => {
     if (workspace.activeWorkspaceId() !== deletedId)
       return
@@ -752,661 +383,79 @@ export const AppShell: ParentComponent = (props) => {
       setConfirmArchiveWs({ workspaceId, resolve })
     })
 
-  // Post-archive cleanup: dismiss pending control requests but keep tabs visible (read-only)
+  // Post-archive cleanup
   const handlePostArchiveWorkspace = (workspaceId: string) => {
     if (workspace.activeWorkspaceId() === workspaceId) {
       for (const agent of agentStore.state.agents) controlStore.clearAgent(agent.id)
     }
   }
 
-  // Tracks whether a tab is being renamed (to avoid stealing focus)
-  let isTabEditing: () => boolean = () => false
-
-  // Handle tab selection from the tab bar
-  const handleTabSelect = (tab: Tab) => {
-    // Save viewport scroll state before switching away from an agent tab.
-    const prevAgentId = agentStore.state.activeAgentId
-    if (prevAgentId) {
-      const scrollState = getScrollState?.()
-      if (scrollState !== undefined) {
-        chatStore.saveViewportScroll(prevAgentId, scrollState.distFromBottom, scrollState.atBottom)
-      }
-    }
-
-    tabStore.setActiveTab(tab.type, tab.id)
-    if (tab.type === TabType.AGENT) {
-      agentStore.setActiveAgent(tab.id)
-      requestAnimationFrame(() => {
-        if (isTabEditing())
-          return
-        focusEditor?.()
-      })
-    }
-    else if (tab.type === TabType.TERMINAL) {
-      terminalStore.setActiveTerminal(tab.id)
-      requestAnimationFrame(() => {
-        if (isTabEditing())
-          return
-        const instance = getTerminalInstance(tab.id)
-        instance?.terminal.focus()
-      })
-    }
-    // FILE tabs: no extra store update needed
-  }
-
-  // Show the worktree confirmation dialog and wait for the user's choice.
-  // Returns 'cancel', 'keep', or 'remove'.
-  const askWorktreeConfirmation = (status: CheckWorktreeStatusResponse): Promise<'cancel' | 'keep' | 'remove'> => {
-    return new Promise((resolve) => {
-      setWorktreeConfirm({
-        path: status.worktreePath,
-        id: status.worktreeId,
-        branchName: status.branchName,
-        resolve,
-      })
-    })
-  }
-
-  // Handle tab close from the tab bar
-  const handleTabClose = async (tab: Tab) => {
-    // FILE tabs are ephemeral — just remove directly, no worktree check needed
-    if (tab.type === TabType.FILE) {
-      tabStore.removeTabFromTile(tab.type, tab.id, tab.tileId ?? '')
-      persistLayout()
-      return
-    }
-
-    // Pre-close check: does this tab have a dirty worktree?
-    try {
-      const tabType = tab.type === TabType.AGENT ? TabType.AGENT : TabType.TERMINAL
-      const status = await gitClient.checkWorktreeStatus({ tabType, tabId: tab.id }, apiCallTimeout())
-      if (status.hasWorktree && status.isLastTab && status.isDirty) {
-        const choice = await askWorktreeConfirmation(status)
-        if (choice === 'cancel') {
-          return // User cancelled — don't close the tab
-        }
-        pendingWorktreeChoice = choice
-      }
-    }
-    catch {
-      // If the pre-check fails, proceed with close (best-effort).
-    }
-
-    const key = tabKey(tab)
-    addClosingTabKey(key)
-    try {
-      if (tab.type === TabType.AGENT) {
-        await agentOps.handleCloseAgent(tab.id)
-      }
-      else {
-        // Clean up the terminal instance
-        const instance = getTerminalInstance(tab.id)
-        if (instance) {
-          instance.dispose()
-        }
-        await termOps.handleTerminalClose(tab.id)
-      }
-    }
-    finally {
-      removeClosingTabKey(key)
-      pendingWorktreeChoice = null
-    }
-  }
-
-  // Handle opening a file from the directory tree
-  let fileTabCounter = 0
-  const handleFileOpen = (path: string) => {
-    const ctx = getCurrentTabContext()
-    if (!ctx.workerId)
-      return
-
-    // Check if a FILE tab with same workerId and filePath already exists
-    const existingTab = tabStore.state.tabs.find(
-      t => t.type === TabType.FILE && t.filePath === path && t.workerId === ctx.workerId,
-    )
-    if (existingTab) {
-      // Activate existing tab
-      tabStore.setActiveTab(existingTab.type, existingTab.id)
-      if (existingTab.tileId) {
-        tabStore.setActiveTabForTile(existingTab.tileId, existingTab.type, existingTab.id)
-      }
-      return
-    }
-
-    const fileName = path.split('/').pop() ?? path
-    const tileId = layoutStore.focusedTileId()
-    const tabId = `file-${++fileTabCounter}-${Date.now()}`
-    tabStore.addTab({
-      type: TabType.FILE,
-      id: tabId,
-      filePath: path,
-      workerId: ctx.workerId,
-      workingDir: ctx.workingDir,
-      title: fileName,
-      tileId,
-    })
-    tabStore.setActiveTabForTile(tileId, TabType.FILE, tabId)
-    persistLayout()
-  }
-
-  // Reset file tree selection when active tab changes
-  createEffect(() => {
-    // Track active tab to trigger on tab change
-    const _tab = activeTab()
-    const ctx = getCurrentTabContext()
-    setFileTreePath(ctx.workingDir || '~')
+  // Tile renderer (tab bars, tile content, editor panel)
+  const tileRenderer = createTileRenderer({
+    tabStore,
+    agentStore,
+    chatStore,
+    terminalStore,
+    controlStore,
+    layoutStore,
+    agentSessionStore,
+    settingsLoading,
+    agentOps,
+    termOps,
+    hasMultipleTiles: tileDrag.hasMultipleTiles,
+    isActiveWorkspaceMutatable,
+    isActiveWorkspaceArchived,
+    activeWorkspace,
+    getCurrentTabContext,
+    getMruAgentContext,
+    handleTabSelect: tabOps.handleTabSelect,
+    handleTabClose: tabOps.handleTabClose,
+    setIsTabEditing: tabOps.setIsTabEditing,
+    persistLayout,
+    closingTabKeys: tabOps.closingTabKeys,
+    newAgentLoading,
+    newTerminalLoading,
+    newShellLoading,
+    isMobile,
+    toggleLeftSidebar,
+    toggleRightSidebar,
+    setShowResumeDialog,
+    setShowNewAgentDialog,
+    setShowNewTerminalDialog,
+    focusEditorRef,
+    getScrollStateRef,
+    forceScrollToBottomRef,
   })
 
-  // --- Shared sub-components rendered in both desktop and mobile layouts ---
-
-  const hasMultipleTiles = createMemo(() => layoutStore.getAllTileIds().length > 1)
-
-  // Handle intra-tile tab reorder (from CrossTileDragProvider)
-  const handleIntraTileReorder = (tileId: string, fromKey: string, toKey: string) => {
-    tabStore.reorderTabs(fromKey, toKey)
-    persistLayout()
-  }
-
-  // Handle cross-tile tab move (from CrossTileDragProvider)
-  const handleCrossTileMove = (fromTileId: string, toTileId: string, draggedTabKey: string, nearTabKey: string | null) => {
-    // Move the tab to the target tile
-    tabStore.moveTabToTile(draggedTabKey, toTileId)
-
-    // Calculate new LexoRank position
-    const targetTabs = tabStore.getTabsForTile(toTileId)
-    let newPosition: string
-    if (nearTabKey) {
-      // Insert near the specified tab
-      const nearIdx = targetTabs.findIndex(t => tabKey(t) === nearTabKey)
-      if (nearIdx >= 0) {
-        const prevPos = nearIdx > 0 ? targetTabs[nearIdx - 1]?.position ?? '' : ''
-        const nextPos = targetTabs[nearIdx]?.position ?? ''
-        newPosition = mid(prevPos, nextPos)
-      }
-      else {
-        // Fallback: append at end
-        const lastTab = targetTabs[targetTabs.length - 1]
-        newPosition = lastTab?.position ? after(lastTab.position) : 'a'
-      }
-    }
-    else {
-      // Append at end
-      const lastTab = targetTabs[targetTabs.length - 1]
-      newPosition = lastTab?.position ? after(lastTab.position) : 'a'
-    }
-    tabStore.setTabPosition(draggedTabKey, newPosition)
-
-    // Activate the moved tab in the target tile
-    const parts = draggedTabKey.split(':')
-    if (parts.length === 2) {
-      tabStore.setActiveTabForTile(toTileId, Number(parts[0]) as TabType, parts[1])
-    }
-
-    persistLayout()
-  }
-
-  // Look up which tile a tab belongs to (for CrossTileDragProvider)
-  const lookupTileIdForTab = (key: string): string | undefined => {
-    const tab = tabStore.state.tabs.find(t => tabKey(t) === key)
-    return tab?.tileId
-  }
-
-  // Render drag overlay for a tab (for CrossTileDragProvider)
-  const renderDragOverlay = (key: string) => {
-    const tab = tabStore.state.tabs.find(t => tabKey(t) === key)
-    if (!tab)
-      return <></>
-    const label = tab.title || (tab.type === TabType.AGENT ? 'Agent' : tab.type === TabType.FILE ? (tab.filePath?.split('/').pop() ?? 'File') : 'Terminal')
-    // Import inline to avoid circular deps — using the CSS class from TabBar.css
-    return (
-      <div class={styles.dragPreviewTooltip}>
-        <span>{label}</span>
-      </div>
-    )
-  }
-
-  const createTabBarForTile = (tileId: string) => (
-    <TabBar
-      tileId={tileId}
-      tabs={tabStore.getTabsForTile(tileId)}
-      activeTabKey={tabStore.getActiveTabKeyForTile(tileId)}
-      showAddButton={isActiveWorkspaceMutatable()}
-      readOnly={isActiveWorkspaceArchived()}
-      onSelect={(tab) => {
-        layoutStore.setFocusedTile(tileId)
-        handleTabSelect(tab)
-        tabStore.setActiveTabForTile(tileId, tab.type, tab.id)
-      }}
-      onClose={handleTabClose}
-      onRename={(tab, title) => {
-        tabStore.updateTabTitle(tab.type, tab.id, title)
-        if (tab.type === TabType.AGENT) {
-          agentClient.renameAgent({ agentId: tab.id, title }).catch((err) => {
-            showToast(err instanceof Error ? err.message : 'Failed to rename agent', 'danger')
-          })
-        }
-      }}
-      hasActiveTabContext={!!getCurrentTabContext().workerId}
-      isEditingRef={(fn) => { isTabEditing = fn }}
-      onNewAgent={agentOps.handleOpenAgent}
-      onNewTerminal={termOps.handleOpenTerminal}
-      availableShells={termOps.availableShells()}
-      defaultShell={termOps.defaultShell()}
-      onNewTerminalWithShell={termOps.handleOpenTerminalWithShell}
-      onResumeSession={() => setShowResumeDialog(true)}
-      onNewAgentAdvanced={() => setShowNewAgentDialog(true)}
-      onNewTerminalAdvanced={() => setShowNewTerminalDialog(true)}
-      newAgentLoading={newAgentLoading()}
-      newTerminalLoading={newTerminalLoading()}
-      newShellLoading={newShellLoading()}
-      closingTabKeys={closingTabKeys()}
-      isMobile={isMobile()}
-      onToggleLeftSidebar={toggleLeftSidebar}
-      onToggleRightSidebar={toggleRightSidebar}
-      tileActions={{
-        canSplit: layoutStore.canSplitTile(tileId),
-        canClose: hasMultipleTiles(),
-        onSplitHorizontal: () => {
-          layoutStore.splitTileHorizontal(tileId)
-          persistLayout()
-        },
-        onSplitVertical: () => {
-          layoutStore.splitTileVertical(tileId)
-          persistLayout()
-        },
-        onClose: () => {
-          layoutStore.closeTile(tileId)
-          persistLayout()
-        },
-      }}
-    />
-  )
-
-  // Legacy single-tile tab bar (used on mobile)
-  const tabBarElement = () => createTabBarForTile(layoutStore.focusedTileId())
-
-  // Resolve the active tab for a specific tile (reactive)
-  const getActiveTabForTile = (tileId: string): Tab | null => {
-    const key = tabStore.getActiveTabKeyForTile(tileId)
-    if (!key)
-      return null
-    return tabStore.state.tabs.find(t => tabKey(t) === key) ?? null
-  }
-
-  // Render the content for a specific tile based on its active tab.
-  // Agent and terminal panes are rendered side-by-side so that xterm.js
-  // instances survive tab switches; CSS hides the inactive pane.
-  const renderTileContent = (tileId: string) => {
-    const tab = () => getActiveTabForTile(tileId)
-    const agentTab = () => {
-      const t = tab()
-      return t?.type === TabType.AGENT ? t : null
-    }
-    const terminalTab = () => {
-      const t = tab()
-      return t?.type === TabType.TERMINAL ? t : null
-    }
-    const fileTab = () => {
-      const t = tab()
-      return t?.type === TabType.FILE ? t : null
-    }
-    const tileTerminalIds = () => new Set(
-      tabStore.getTabsForTile(tileId)
-        .filter(t => t.type === TabType.TERMINAL)
-        .map(t => t.id),
-    )
-    const hasTerminals = () => tileTerminalIds().size > 0
-    // Only pass terminals that belong to this tile so that each tile's
-    // TerminalView creates xterm.js instances exclusively for its own
-    // terminals. Without this filter, every tile would mount containers
-    // for ALL terminals and the duplicate `terminal.open(ref)` calls
-    // would steal xterm.js instances from other tiles, leaving them blank.
-    const tileTerminals = () => {
-      const ids = tileTerminalIds()
-      return terminalStore.state.terminals.filter(t => ids.has(t.id))
-    }
-
-    return (
-      <>
-        {/* Agent content — mounted/unmounted with the active agent tab */}
-        <Show when={agentTab()} keyed>
-          {(at) => {
-            const agentId = at.id
-            const agent = () => agentStore.state.agents.find(a => a.id === agentId)
-            return (
-              <div class={styles.centerContent}>
-                <Show
-                  when={agent()}
-                  fallback={<div class={styles.placeholder}>Agent not found.</div>}
-                >
-                  <ChatView
-                    messages={chatStore.getMessages(agentId)}
-                    streamingText={chatStore.state.streamingText[agentId] ?? ''}
-                    agentWorking={agentStore.state.agents.find(a => a.id === agentId)?.status === AgentStatus.ACTIVE && isAgentWorking(chatStore.getMessages(agentId)) && controlStore.getRequests(agentId).length === 0}
-                    messageErrors={chatStore.state.messageErrors}
-                    onRetryMessage={messageId => agentOps.handleRetryMessage(agentId, messageId)}
-                    onDeleteMessage={messageId => agentOps.handleDeleteMessage(agentId, messageId)}
-                    workingDir={agentStore.state.agents.find(a => a.id === agentId)?.workingDir}
-                    homeDir={agentStore.state.agents.find(a => a.id === agentId)?.homeDir}
-                    hasOlderMessages={chatStore.hasOlderMessages(agentId)}
-                    fetchingOlder={chatStore.isFetchingOlder(agentId)}
-                    onLoadOlderMessages={() => chatStore.loadOlderMessages(agentId)}
-                    onTrimOldMessages={() => chatStore.trimOldMessages(agentId, 150)}
-                    savedViewportScroll={chatStore.getSavedViewportScroll(agentId)}
-                    onClearSavedViewportScroll={() => chatStore.clearSavedViewportScroll(agentId)}
-                    scrollStateRef={(fn) => { getScrollState = fn }}
-                    scrollToBottomRef={(fn) => { forceScrollToBottom = fn }}
-                    onQuote={isActiveWorkspaceArchived()
-                      ? undefined
-                      : (text) => {
-                          appendText(agentId, text)
-                          focusEditor?.()
-                        }}
-                    onReply={isActiveWorkspaceArchived()
-                      ? undefined
-                      : (text) => {
-                          appendText(agentId, text)
-                          focusEditor?.()
-                        }}
-                  />
-                </Show>
-              </div>
-            )
-          }}
-        </Show>
-
-        {/* Terminal content — stays mounted while terminal tabs exist so
-            that xterm.js instances are preserved across tab switches. */}
-        <Show when={hasTerminals()}>
-          <div
-            class={styles.centerContent}
-            classList={{ [styles.layoutHidden]: !terminalTab() }}
-          >
-            <TerminalView
-              terminals={tileTerminals()}
-              activeTerminalId={terminalTab()?.id ?? null}
-              visible={!!terminalTab()}
-              onInput={termOps.handleTerminalInput}
-              onResize={termOps.handleTerminalResize}
-              onTitleChange={termOps.handleTerminalTitleChange}
-              onBell={termOps.handleTerminalBell}
-            />
-          </div>
-        </Show>
-
-        {/* File viewer content — mounted/unmounted with the active file tab */}
-        <Show when={fileTab()} keyed>
-          {(ft) => {
-            // Relativize the file path using the MRU agent tab's working directory
-            // so that mentions and quotes use the correct base path.
-            const fileRelPath = () => {
-              const ctx = getMruAgentContext()
-              return relativizePath(ft.filePath ?? '', ctx.workingDir, ctx.homeDir)
-            }
-            return (
-              <div class={styles.centerContent}>
-                <FileViewer
-                  workerId={ft.workerId ?? ''}
-                  filePath={ft.filePath ?? ''}
-                  displayMode={ft.displayMode}
-                  onDisplayModeChange={mode => tabStore.setTabDisplayMode(ft.type, ft.id, mode)}
-                  onQuote={isActiveWorkspaceArchived()
-                    ? undefined
-                    : (text, startLine, endLine) => {
-                        if (startLine != null && endLine != null) {
-                          insertIntoMruAgentEditor(tabStore, formatFileQuote(fileRelPath(), startLine, endLine, text))
-                        }
-                      }}
-                  onMention={isActiveWorkspaceArchived()
-                    ? undefined
-                    : () => {
-                        insertIntoMruAgentEditor(tabStore, formatFileMention(fileRelPath()), 'inline')
-                      }}
-                />
-              </div>
-            )
-          }}
-        </Show>
-
-        {/* Fallback when no tabs exist */}
-        <Show when={!tab() && activeWorkspace()}>
-          <Show
-            when={!isActiveWorkspaceArchived()}
-            fallback={(
-              <div class={styles.placeholder} data-testid="tile-empty-state">
-                This workspace is archived. Unarchive it to create new agents or terminals.
-              </div>
-            )}
-          >
-            <Show
-              when={!hasMultipleTiles() || layoutStore.focusedTileId() === tileId}
-              fallback={(
-                <div class={styles.emptyTileHint} data-testid="empty-tile-hint">
-                  No tabs in this tile.
-                </div>
-              )}
-            >
-              <div class={styles.emptyTileActions} data-testid="empty-tile-actions">
-                <button
-                  class="outline"
-                  data-testid="empty-tile-open-agent"
-                  onClick={() => {
-                    layoutStore.setFocusedTile(tileId)
-                    agentOps.handleOpenAgent()
-                  }}
-                >
-                  <Icon icon={Bot} size="sm" />
-                  {' '}
-                  Open a new agent tab...
-                </button>
-                <button
-                  class="outline"
-                  data-testid="empty-tile-open-terminal"
-                  onClick={() => {
-                    layoutStore.setFocusedTile(tileId)
-                    termOps.handleOpenTerminal()
-                  }}
-                >
-                  <Icon icon={Terminal} size="sm" />
-                  {' '}
-                  Open a new terminal tab...
-                </button>
-              </div>
-            </Show>
-          </Show>
-        </Show>
-      </>
-    )
-  }
-
-  // Focused tile's active agent ID (stable string for keyed <Show>).
-  const focusedAgentId = createMemo(() => {
-    const tileId = layoutStore.focusedTileId()
-    const tab = getActiveTabForTile(tileId)
-    if (!tab || tab.type !== TabType.AGENT)
-      return null
-    return tab.id
+  // Sidebar element factories
+  // Use getters for reactive values so that LeftSidebar/RightSidebar props
+  // remain reactive when accessed through the intermediate opts object.
+  const sidebarOpts = (): SidebarElementsOpts => ({
+    get workspaces() { return workspaceStore.state.workspaces },
+    get activeWorkspaceId() { return workspace.activeWorkspaceId() },
+    sectionStore,
+    tabStore,
+    loadSections,
+    onSelectWorkspace: handleSelectWorkspace,
+    onNewWorkspace: (sectionId: string | null) => {
+      setNewWorkspaceTargetSectionId(sectionId)
+      setShowNewWorkspace(true)
+    },
+    onRefreshWorkspaces: () => loadWorkspaces(),
+    onDeleteWorkspace: handleDeleteWorkspace,
+    onConfirmDelete: handleConfirmDeleteWorkspace,
+    onConfirmArchive: handleConfirmArchiveWorkspace,
+    onPostArchiveWorkspace: handlePostArchiveWorkspace,
+    getCurrentTabContext,
+    getMruAgentContext,
+    get fileTreePath() { return fileTreePath() },
+    onFileSelect: setFileTreePath,
+    onFileOpen: tabOps.handleFileOpen,
+    get isActiveWorkspaceArchived() { return isActiveWorkspaceArchived() },
+    get showTodos() { return showTodos() },
+    get activeTodos() { return activeTodos() },
+    termOps,
   })
-
-  // Renders the AgentEditorPanel for the focused agent. Reads
-  // focusedAgentId() from the closure (not from a keyed <Show> accessor)
-  // to avoid stale accessor warnings during unmount.
-  const FocusedAgentEditorPanel: Component<{ containerHeight: number }> = (props) => {
-    const agentId = () => focusedAgentId()!
-    return (
-      <AgentEditorPanel
-        agentId={agentId()}
-        agent={agentStore.state.agents.find(a => a.id === agentId())}
-        // eslint-disable-next-line solid/reactivity -- event handler, not a tracked scope
-        onSendMessage={async (content) => {
-          const id = focusedAgentId()
-          if (!id)
-            return
-          forceScrollToBottom?.()
-          try {
-            const sendAgent = agentStore.state.agents.find(a => a.id === id)
-            await agentClient.sendAgentMessage({ agentId: id, content }, agentCallTimeout(sendAgent?.status === AgentStatus.ACTIVE))
-          }
-          catch (err) {
-            showToast(err instanceof Error ? err.message : 'Failed to send message', 'danger')
-          }
-        }}
-        disabled={false}
-        focusRef={(fn) => { focusEditor = fn }}
-        controlRequests={controlStore.getRequests(agentId())}
-        onControlResponse={agentOps.handleControlResponse}
-        onPermissionModeChange={agentOps.handlePermissionModeChange}
-        onModelChange={v => agentOps.handleModelOrEffortChange('model', v)}
-        onEffortChange={v => agentOps.handleModelOrEffortChange('effort', v)}
-        onInterrupt={agentOps.handleInterrupt}
-        settingsLoading={settingsLoading.loading()}
-        agentSessionInfo={agentSessionStore.getInfo(agentId())}
-        agentWorking={agentStore.state.agents.find(a => a.id === agentId())?.status === AgentStatus.ACTIVE && isAgentWorking(chatStore.getMessages(agentId()))}
-        containerHeight={props.containerHeight}
-      />
-    )
-  }
-
-  // Render a complete tile (tab bar + content) for the TilingLayout
-  const renderTile = (tileId: string) => (
-    <Tile
-      tileId={tileId}
-      isFocused={layoutStore.focusedTileId() === tileId}
-      canClose={hasMultipleTiles()}
-      canSplit={layoutStore.canSplitTile(tileId)}
-      tabBar={createTabBarForTile(tileId)}
-      onFocus={() => {
-        layoutStore.setFocusedTile(tileId)
-        // Sync global active tab to this tile's active tab
-        const tab = getActiveTabForTile(tileId)
-        if (tab) {
-          tabStore.setActiveTab(tab.type, tab.id)
-          if (tab.type === TabType.AGENT) {
-            agentStore.setActiveAgent(tab.id)
-          }
-          else if (tab.type === TabType.TERMINAL) {
-            terminalStore.setActiveTerminal(tab.id)
-          }
-          // FILE tabs: no extra store update needed
-        }
-      }}
-      onSplitHorizontal={() => {
-        layoutStore.splitTileHorizontal(tileId)
-        persistLayout()
-      }}
-      onSplitVertical={() => {
-        layoutStore.splitTileVertical(tileId)
-        persistLayout()
-      }}
-      onClose={() => {
-        layoutStore.closeTile(tileId)
-        persistLayout()
-      }}
-    >
-      {renderTileContent(tileId)}
-    </Tile>
-  )
-
-  const leftSidebarElement = (opts?: {
-    isCollapsed: () => boolean
-    onExpand: () => void
-    onCollapse: () => void
-    saveSidebarState?: () => void
-    initialOpenSections?: Record<string, boolean>
-    initialSectionSizes?: Record<string, number>
-    onLeftStateChange?: (open: Record<string, boolean>, sizes: Record<string, number>) => void
-  }) => (
-    <LeftSidebar
-      workspaces={workspaceStore.state.workspaces}
-      activeWorkspaceId={workspace.activeWorkspaceId()}
-      sectionStore={sectionStore}
-      loadSections={loadSections}
-      onSelectWorkspace={handleSelectWorkspace}
-      onNewWorkspace={(sectionId) => {
-        setNewWorkspaceTargetSectionId(sectionId)
-        setShowNewWorkspace(true)
-      }}
-      onRefreshWorkspaces={() => loadWorkspaces()}
-      onDeleteWorkspace={handleDeleteWorkspace}
-      onConfirmDelete={handleConfirmDeleteWorkspace}
-      onConfirmArchive={handleConfirmArchiveWorkspace}
-      onPostArchiveWorkspace={handlePostArchiveWorkspace}
-      isCollapsed={opts?.isCollapsed() ?? false}
-      onExpand={opts?.onExpand ?? (() => {})}
-      onCollapse={opts?.onCollapse}
-      initialOpenSections={opts?.initialOpenSections}
-      initialSectionSizes={opts?.initialSectionSizes}
-      onSectionStateChange={opts?.onLeftStateChange}
-      workerId={getCurrentTabContext().workerId}
-      workingDir={getCurrentTabContext().workingDir}
-      homeDir={getCurrentTabContext().homeDir}
-      fileTreePath={fileTreePath()}
-      onFileSelect={setFileTreePath}
-      onFileOpen={handleFileOpen}
-      onFileMention={isActiveWorkspaceArchived()
-        ? undefined
-        : (path) => {
-            const ctx = getMruAgentContext()
-            insertIntoMruAgentEditor(tabStore, formatFileMention(relativizePath(path, ctx.workingDir, ctx.homeDir)), 'inline')
-          }}
-      onOpenTerminal={isActiveWorkspaceArchived()
-        ? undefined
-        : dirPath => termOps.handleOpenTerminal(dirPath)}
-      showTodos={showTodos()}
-      activeTodos={activeTodos()}
-    />
-  )
-
-  const rightSidebarElement = (opts?: {
-    isCollapsed: () => boolean
-    onExpand: () => void
-    onCollapse: () => void
-    saveSidebarState?: () => void
-    initialOpenSections?: Record<string, boolean>
-    initialSectionSizes?: Record<string, number>
-    onRightStateChange?: (open: Record<string, boolean>, sizes: Record<string, number>) => void
-  }) => (
-    <RightSidebar
-      workspaceId={workspace.activeWorkspaceId() ?? ''}
-      workerId={getCurrentTabContext().workerId}
-      workingDir={getCurrentTabContext().workingDir}
-      homeDir={getCurrentTabContext().homeDir}
-      showTodos={showTodos()}
-      activeTodos={activeTodos()}
-      fileTreePath={fileTreePath()}
-      onFileSelect={setFileTreePath}
-      onFileOpen={handleFileOpen}
-      onFileMention={isActiveWorkspaceArchived()
-        ? undefined
-        : (path) => {
-            const ctx = getMruAgentContext()
-            insertIntoMruAgentEditor(tabStore, formatFileMention(relativizePath(path, ctx.workingDir, ctx.homeDir)), 'inline')
-          }}
-      onOpenTerminal={isActiveWorkspaceArchived()
-        ? undefined
-        : dirPath => termOps.handleOpenTerminal(dirPath)}
-      sectionStore={sectionStore}
-      isCollapsed={opts?.isCollapsed() ?? false}
-      onExpand={opts?.onExpand ?? (() => {})}
-      onCollapse={opts?.onCollapse}
-      initialOpenSections={opts?.initialOpenSections}
-      initialSectionSizes={opts?.initialSectionSizes}
-      onSectionStateChange={opts?.onRightStateChange}
-      workspaces={workspaceStore.state.workspaces}
-      activeWorkspaceId={workspace.activeWorkspaceId()}
-      loadSections={loadSections}
-      onSelectWorkspace={handleSelectWorkspace}
-      onNewWorkspace={(sectionId) => {
-        setNewWorkspaceTargetSectionId(sectionId)
-        setShowNewWorkspace(true)
-      }}
-      onRefreshWorkspaces={() => loadWorkspaces()}
-      onDeleteWorkspace={handleDeleteWorkspace}
-      onConfirmDelete={handleConfirmDeleteWorkspace}
-      onConfirmArchive={handleConfirmArchiveWorkspace}
-      onPostArchiveWorkspace={handlePostArchiveWorkspace}
-    />
-  )
 
   return (
     <>
@@ -1425,448 +474,91 @@ export const AppShell: ParentComponent = (props) => {
           <Show
             when={!isMobile()}
             fallback={(
-              /* ---- Mobile layout ---- */
-              <SectionDragProvider
-                sections={() => sectionStore.state.sections}
+              <MobileLayout
+                sectionStore={sectionStore}
                 onMoveSection={handleMoveSection}
                 onMoveSectionServer={handleMoveSectionServer}
-              >
-                <div class={styles.mobileShell}>
-                  {/* Overlay backdrop */}
-                  <Show when={leftSidebarOpen() || rightSidebarOpen()}>
-                    <div class={styles.mobileOverlay} onClick={closeAllSidebars} />
-                  </Show>
-
-                  {/* Left sidebar overlay */}
-                  <div
-                    class={styles.mobileSidebar}
-                    classList={{ [styles.mobileSidebarOpen]: leftSidebarOpen() }}
-                  >
-                    {leftSidebarElement()}
-                  </div>
-
-                  {/* Right sidebar overlay */}
-                  <div
-                    class={`${styles.mobileSidebar} ${styles.mobileSidebarRight}`}
-                    classList={{ [styles.mobileSidebarOpen]: rightSidebarOpen() }}
-                  >
-                    {rightSidebarElement()}
-                  </div>
-
-                  {/* Center content - single tile on mobile */}
-                  <div class={styles.mobileCenter}>
-                    <div class={styles.mobileTabBar}>
-                      {tabBarElement()}
-                    </div>
-                    {renderTileContent(layoutStore.focusedTileId())}
-                    <Show when={focusedAgentId() && !isActiveWorkspaceArchived()}>
-                      <FocusedAgentEditorPanel containerHeight={0} />
-                    </Show>
-                  </div>
-                </div>
-              </SectionDragProvider>
+                leftSidebarOpen={leftSidebarOpen()}
+                rightSidebarOpen={rightSidebarOpen()}
+                closeAllSidebars={closeAllSidebars}
+                leftSidebarElement={createLeftSidebarElement(sidebarOpts())}
+                rightSidebarElement={createRightSidebarElement(sidebarOpts())}
+                tabBarElement={tileRenderer.tabBarElement()}
+                tileContent={tileRenderer.renderTileContent(layoutStore.focusedTileId())}
+                editorPanel={
+                  tileRenderer.focusedAgentId() && !isActiveWorkspaceArchived()
+                  && <tileRenderer.FocusedAgentEditorPanel containerHeight={0} />
+                }
+              />
             )}
           >
-            {/* ---- Desktop layout ---- */}
-            {(() => {
-              // Read saved sidebar state before Resizable mounts (initialSize is read-once)
-              const wsId = workspace.activeWorkspaceId()
-              interface SidebarState {
-                leftSize?: number
-                rightSize?: number
-                leftCollapsed?: boolean
-                rightCollapsed?: boolean
-                leftOpenSections?: Record<string, boolean>
-                leftSectionSizes?: Record<string, number>
-                rightOpenSections?: Record<string, boolean>
-                rightSectionSizes?: Record<string, number>
+            <DesktopLayout
+              sectionStore={sectionStore}
+              layoutStore={layoutStore}
+              onMoveSection={handleMoveSection}
+              onMoveSectionServer={handleMoveSectionServer}
+              activeWorkspaceId={workspace.activeWorkspaceId()}
+              activeWorkspace={activeWorkspace}
+              workspaceLoading={workspaceLoading()}
+              getInProgressSectionId={() => sectionStore.getInProgressSection()?.id ?? null}
+              onNewWorkspace={() => {
+                setNewWorkspaceTargetSectionId(sectionStore.getInProgressSection()?.id ?? null)
+                setShowNewWorkspace(true)
+              }}
+              setCenterPanelHeight={setCenterPanelHeight}
+              onIntraTileReorder={tileDrag.handleIntraTileReorder}
+              onCrossTileMove={tileDrag.handleCrossTileMove}
+              lookupTileIdForTab={tileDrag.lookupTileIdForTab}
+              renderDragOverlay={tileDrag.renderDragOverlay}
+              renderTile={tileRenderer.renderTile}
+              onRatioChange={(splitId, ratios) => {
+                layoutStore.updateRatios(splitId, ratios)
+                persistLayout()
+              }}
+              createLeftSidebar={displayOpts => createLeftSidebarElement(sidebarOpts(), displayOpts)}
+              createRightSidebar={displayOpts => createRightSidebarElement(sidebarOpts(), displayOpts)}
+              editorPanel={
+                tileRenderer.focusedAgentId() && !isActiveWorkspaceArchived()
+                && <tileRenderer.FocusedAgentEditorPanel containerHeight={centerPanelHeight()} />
               }
-              const savedSidebar: SidebarState | null = (() => {
-                if (!wsId)
-                  return null
-                try {
-                  return JSON.parse(sessionStorage.getItem(`leapmux:sidebar:${wsId}`) ?? '')
-                }
-                catch { return null }
-              })()
-              const initLeft = savedSidebar?.leftSize ?? 0.18
-              const initRight = savedSidebar?.rightSize ?? 0.20
-              const initCenter = 1 - initLeft - initRight
-
-              // Track inner section state for persistence
-              let leftOpenSections: Record<string, boolean> = savedSidebar?.leftOpenSections ?? {}
-              let leftSectionSizes: Record<string, number> = savedSidebar?.leftSectionSizes ?? {}
-              let rightOpenSections: Record<string, boolean> = savedSidebar?.rightOpenSections ?? {}
-              let rightSectionSizes: Record<string, number> = savedSidebar?.rightSectionSizes ?? {}
-
-              // Ref to forward saveSidebarState into Resizable's onSizesChange
-              let saveSidebarRef: (() => void) | undefined
-
-              return (
-                <SectionDragProvider
-                  sections={() => sectionStore.state.sections}
-                  onMoveSection={handleMoveSection}
-                  onMoveSectionServer={handleMoveSectionServer}
-                >
-                  <Resizable orientation="horizontal" class={styles.shell} onSizesChange={() => saveSidebarRef?.()}>
-                    {() => {
-                      const ctx = Resizable.useContext()
-                      const [leftCollapsed, setLeftCollapsed] = createSignal(false)
-                      const [rightCollapsed, setRightCollapsed] = createSignal(false)
-                      let leftSizeBeforeCollapse = initLeft
-                      let rightSizeBeforeCollapse = initRight
-
-                      // Sidebar state persistence (immediate save + debounced variant for resize)
-                      const doSaveSidebarState = () => {
-                        const id = workspace.activeWorkspaceId()
-                        if (!id)
-                          return
-                        const sizes = ctx.sizes()
-                        const state: SidebarState = {
-                          leftSize: leftCollapsed() ? leftSizeBeforeCollapse : sizes[0],
-                          rightSize: rightCollapsed() ? rightSizeBeforeCollapse : sizes[2],
-                          leftCollapsed: leftCollapsed(),
-                          rightCollapsed: rightCollapsed(),
-                          leftOpenSections,
-                          leftSectionSizes,
-                          rightOpenSections,
-                          rightSectionSizes,
-                        }
-                        sessionStorage.setItem(`leapmux:sidebar:${id}`, JSON.stringify(state))
-                      }
-                      let sidebarSaveTimer: ReturnType<typeof setTimeout> | null = null
-                      const saveSidebarState = () => {
-                        if (sidebarSaveTimer)
-                          clearTimeout(sidebarSaveTimer)
-                        sidebarSaveTimer = setTimeout(doSaveSidebarState, 300)
-                      }
-                      saveSidebarRef = saveSidebarState
-
-                      const collapseLeft = () => {
-                        leftSizeBeforeCollapse = ctx.sizes()[0] ?? initLeft
-                        ctx.collapse(0)
-                      }
-                      const expandLeft = () => {
-                        ctx.expand(0)
-                        ctx.resize(0, leftSizeBeforeCollapse)
-                      }
-                      const collapseRight = () => {
-                        rightSizeBeforeCollapse = ctx.sizes()[2] ?? initRight
-                        ctx.collapse(2)
-                      }
-                      const expandRight = () => {
-                        ctx.expand(2)
-                        ctx.resize(2, rightSizeBeforeCollapse)
-                      }
-
-                      // Restore collapsed state after initial render
-                      if (savedSidebar?.leftCollapsed)
-                        queueMicrotask(() => collapseLeft())
-                      if (savedSidebar?.rightCollapsed)
-                        queueMicrotask(() => collapseRight())
-
-                      return (
-                        <>
-                          {/* Left sidebar - Workspaces */}
-                          <Resizable.Panel
-                            initialSize={initLeft}
-                            minSize={0.10}
-                            collapsible
-                            collapsedSize="45px"
-                            collapseThreshold={0.05}
-                            class={styles.sidebar}
-                            onCollapse={() => {
-                              setLeftCollapsed(true)
-                              saveSidebarState()
-                            }}
-                            onExpand={() => {
-                              setLeftCollapsed(false)
-                              saveSidebarState()
-                            }}
-                          >
-                            {leftSidebarElement({
-                              isCollapsed: leftCollapsed,
-                              onExpand: expandLeft,
-                              onCollapse: collapseLeft,
-                              saveSidebarState,
-                              initialOpenSections: savedSidebar?.leftOpenSections,
-                              initialSectionSizes: savedSidebar?.leftSectionSizes,
-                              onLeftStateChange: (open, sizes) => {
-                                leftOpenSections = open
-                                leftSectionSizes = sizes
-                                doSaveSidebarState()
-                              },
-                            })}
-                          </Resizable.Panel>
-
-                          <Resizable.Handle class={styles.resizeHandle} data-testid="resize-handle" />
-
-                          {/* Center area */}
-                          <Resizable.Panel
-                            initialSize={initCenter}
-                            class={styles.center}
-                            ref={(el: HTMLElement) => {
-                              const observer = new ResizeObserver((entries) => {
-                                for (const entry of entries)
-                                  setCenterPanelHeight(entry.contentRect.height)
-                              })
-                              observer.observe(el)
-                            }}
-                          >
-                            <Show
-                              when={activeWorkspace() && !workspaceLoading()}
-                              fallback={(
-                                <Show when={!activeWorkspace() && !workspace.activeWorkspaceId()}>
-                                  <div class={styles.emptyTileActions} data-testid="no-workspace-empty-state">
-                                    <button
-                                      class="outline"
-                                      data-testid="create-workspace-button"
-                                      onClick={() => {
-                                        setNewWorkspaceTargetSectionId(sectionStore.getInProgressSection()?.id ?? null)
-                                        setShowNewWorkspace(true)
-                                      }}
-                                    >
-                                      <Icon icon={Plus} size="sm" />
-                                      {' '}
-                                      Create a new workspace...
-                                    </button>
-                                  </div>
-                                </Show>
-                              )}
-                            >
-                              <CrossTileDragProvider
-                                onIntraTileReorder={handleIntraTileReorder}
-                                onCrossTileMove={handleCrossTileMove}
-                                lookupTileIdForTab={lookupTileIdForTab}
-                                renderDragOverlay={renderDragOverlay}
-                              >
-                                <TilingLayout
-                                  root={layoutStore.state.root}
-                                  renderTile={renderTile}
-                                  onRatioChange={(splitId, ratios) => {
-                                    layoutStore.updateRatios(splitId, ratios)
-                                    persistLayout()
-                                  }}
-                                />
-                              </CrossTileDragProvider>
-                              <Show when={focusedAgentId() && !isActiveWorkspaceArchived()}>
-                                <FocusedAgentEditorPanel containerHeight={centerPanelHeight()} />
-                              </Show>
-                            </Show>
-                          </Resizable.Panel>
-
-                          {/* Right sidebar - Files + To-dos */}
-                          <Resizable.Handle class={styles.resizeHandle} data-testid="resize-handle" />
-                          <Resizable.Panel
-                            initialSize={initRight}
-                            minSize={0.10}
-                            collapsible
-                            collapsedSize="45px"
-                            collapseThreshold={0.05}
-                            class={styles.rightPanel}
-                            onCollapse={() => {
-                              setRightCollapsed(true)
-                              saveSidebarState()
-                            }}
-                            onExpand={() => {
-                              setRightCollapsed(false)
-                              saveSidebarState()
-                            }}
-                          >
-                            {rightSidebarElement({
-                              isCollapsed: rightCollapsed,
-                              onExpand: expandRight,
-                              onCollapse: collapseRight,
-                              saveSidebarState,
-                              initialOpenSections: savedSidebar?.rightOpenSections,
-                              initialSectionSizes: savedSidebar?.rightSectionSizes,
-                              onRightStateChange: (open, sizes) => {
-                                rightOpenSections = open
-                                rightSectionSizes = sizes
-                                doSaveSidebarState()
-                              },
-                            })}
-                          </Resizable.Panel>
-                        </>
-                      )
-                    }}
-                  </Resizable>
-                </SectionDragProvider>
-              )
-            })()}
+            />
           </Show>
         </div>
       </Show>
 
-      <Show when={showResumeDialog()}>
-        <ResumeSessionDialog
-          defaultWorkerId={getCurrentTabContext().workerId}
-          onResume={agentOps.handleResumeAgent}
-          onClose={() => setShowResumeDialog(false)}
-        />
-      </Show>
-
-      <Show when={showNewAgentDialog()}>
-        <NewAgentDialog
-          workspaceId={activeWorkspace()?.id ?? ''}
-          defaultWorkerId={getCurrentTabContext().workerId}
-          defaultWorkingDir={getCurrentTabContext().workingDir}
-          defaultTitle={`Agent ${nextTabNumber(tabStore.state.tabs, TabType.AGENT, 'Agent')}`}
-          onCreated={(agent) => {
-            setShowNewAgentDialog(false)
-            const tileId = layoutStore.focusedTileId()
-            agentStore.addAgent(agent)
-            tabStore.addTab({
-              type: TabType.AGENT,
-              id: agent.id,
-              title: agent.title || undefined,
-              tileId,
-              workerId: agent.workerId,
-              workingDir: agent.workingDir,
-            })
-            tabStore.setActiveTabForTile(tileId, TabType.AGENT, agent.id)
-            persistLayout()
-            requestAnimationFrame(() => focusEditor?.())
-          }}
-          onClose={() => setShowNewAgentDialog(false)}
-        />
-      </Show>
-
-      <Show when={showNewTerminalDialog()}>
-        <NewTerminalDialog
-          workspaceId={activeWorkspace()?.id ?? ''}
-          defaultWorkerId={getCurrentTabContext().workerId}
-          defaultWorkingDir={getCurrentTabContext().workingDir}
-          onCreated={(terminalId, workerId, workingDir) => {
-            setShowNewTerminalDialog(false)
-            const ws = activeWorkspace()
-            if (!ws)
-              return
-            const title = `Terminal ${nextTabNumber(tabStore.state.tabs, TabType.TERMINAL, 'Terminal')}`
-            const tileId = layoutStore.focusedTileId()
-            terminalStore.addTerminal({ id: terminalId, workspaceId: ws.id, workerId, workingDir })
-            tabStore.addTab({ type: TabType.TERMINAL, id: terminalId, title, tileId, workerId, workingDir })
-            tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, terminalId)
-            persistLayout()
-          }}
-          onClose={() => setShowNewTerminalDialog(false)}
-        />
-      </Show>
-
-      <Show when={showNewWorkspace()}>
-        <NewWorkspaceDialog
-          preselectedWorkerId={preselectedWorkerId()}
-          onCreated={(ws) => {
-            workspaceStore.addWorkspace(ws)
-            setShowNewWorkspace(false)
-            setPreselectedWorkerId(undefined)
-            const targetSectionId = newWorkspaceTargetSectionId()
-            if (targetSectionId) {
-              sectionClient.moveWorkspace({
-                workspaceId: ws.id,
-                sectionId: targetSectionId,
-                position: 'N',
-              }).catch(() => {}).finally(() => {
-                setNewWorkspaceTargetSectionId(null)
-                loadWorkspaces()
-              })
-            }
-            else {
-              loadWorkspaces()
-            }
-            navigate(`/o/${params.orgSlug}/workspace/${ws.id}`)
-          }}
-          onClose={() => {
-            setShowNewWorkspace(false)
-            setPreselectedWorkerId(undefined)
-            setNewWorkspaceTargetSectionId(null)
-          }}
-        />
-      </Show>
-
-      <Show when={confirmDeleteWs()}>
-        {state => (
-          <ConfirmDialog
-            title="Delete Workspace"
-            confirmLabel="Delete"
-            danger
-            onConfirm={() => {
-              state().resolve(true)
-              setConfirmDeleteWs(null)
-            }}
-            onCancel={() => {
-              state().resolve(false)
-              setConfirmDeleteWs(null)
-            }}
-          >
-            <p>Are you sure you want to delete this workspace? This cannot be undone.</p>
-          </ConfirmDialog>
-        )}
-      </Show>
-
-      <Show when={confirmArchiveWs()}>
-        {state => (
-          <ConfirmDialog
-            title="Archive Workspace"
-            confirmLabel="Archive"
-            onConfirm={() => {
-              state().resolve(true)
-              setConfirmArchiveWs(null)
-            }}
-            onCancel={() => {
-              state().resolve(false)
-              setConfirmArchiveWs(null)
-            }}
-          >
-            <p>Are you sure you want to archive this workspace? All active agents and terminals will be stopped.</p>
-          </ConfirmDialog>
-        )}
-      </Show>
-
-      <Show when={worktreeConfirm()}>
-        {(confirm) => {
-          let dlgRef!: HTMLDialogElement
-          onMount(() => dlgRef.showModal())
-          const handleCancel = () => {
-            confirm().resolve('cancel')
-            setWorktreeConfirm(null)
-          }
-          const handleKeep = () => {
-            confirm().resolve('keep')
-            setWorktreeConfirm(null)
-          }
-          const handleRemove = () => {
-            confirm().resolve('remove')
-            setWorktreeConfirm(null)
-          }
-          return (
-            <dialog ref={dlgRef} class={dialogStandard} onClose={handleCancel}>
-              <header><h2>Dirty Worktree</h2></header>
-              <section>
-                <p>The worktree has uncommitted changes or unpushed commits:</p>
-                <p><code>{confirm().path}</code></p>
-                <p>
-                  Both the worktree and its branch
-                  <code>{confirm().branchName}</code>
-                  {' '}
-                  will be deleted. Keep them on disk, or cancel?
-                </p>
-              </section>
-              <footer>
-                <button type="button" class="outline" onClick={handleCancel}>
-                  Cancel
-                </button>
-                <button type="button" onClick={handleKeep}>
-                  Keep
-                </button>
-                <ConfirmButton class="danger" onClick={handleRemove}>
-                  Remove
-                </ConfirmButton>
-              </footer>
-            </dialog>
-          )
-        }}
-      </Show>
+      <AppShellDialogs
+        showResumeDialog={showResumeDialog()}
+        setShowResumeDialog={setShowResumeDialog}
+        showNewAgentDialog={showNewAgentDialog()}
+        setShowNewAgentDialog={setShowNewAgentDialog}
+        showNewTerminalDialog={showNewTerminalDialog()}
+        setShowNewTerminalDialog={setShowNewTerminalDialog}
+        showNewWorkspace={showNewWorkspace()}
+        setShowNewWorkspace={setShowNewWorkspace}
+        preselectedWorkerId={preselectedWorkerId()}
+        setPreselectedWorkerId={setPreselectedWorkerId}
+        newWorkspaceTargetSectionId={newWorkspaceTargetSectionId()}
+        setNewWorkspaceTargetSectionId={setNewWorkspaceTargetSectionId}
+        confirmDeleteWs={confirmDeleteWs()}
+        setConfirmDeleteWs={setConfirmDeleteWs}
+        confirmArchiveWs={confirmArchiveWs()}
+        setConfirmArchiveWs={setConfirmArchiveWs}
+        worktreeConfirm={tabOps.worktreeConfirm()}
+        setWorktreeConfirm={tabOps.setWorktreeConfirm}
+        activeWorkspace={activeWorkspace}
+        getCurrentTabContext={getCurrentTabContext}
+        agentOps={agentOps}
+        agentStore={agentStore}
+        tabStore={tabStore}
+        terminalStore={terminalStore}
+        layoutStore={layoutStore}
+        workspaceStore={workspaceStore}
+        persistLayout={persistLayout}
+        focusEditor={() => focusEditorRef.current?.()}
+        orgSlug={params.orgSlug}
+        loadWorkspaces={loadWorkspaces}
+        navigate={path => navigate(path)}
+      />
     </>
   )
 }

@@ -3,15 +3,16 @@ import type { Component, JSX } from 'solid-js'
 import { createDraggable, createDroppable, useDragDropContext } from '@thisbeyond/solid-dnd'
 import GripVertical from 'lucide-solid/icons/grip-vertical'
 import PanelLeftClose from 'lucide-solid/icons/panel-left-close'
-import PanelLeftOpen from 'lucide-solid/icons/panel-left-open'
 import PanelRightClose from 'lucide-solid/icons/panel-right-close'
-import PanelRightOpen from 'lucide-solid/icons/panel-right-open'
-import { createEffect, createMemo, createSignal, For, on, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
 import * as styles from './CollapsibleSidebar.css'
 import { useOptionalSectionDrag } from './SectionDragContext'
 import { SECTION_DRAG_PREFIX, SIDEBAR_ZONE_PREFIX } from './sectionDragUtils'
+import { SidebarRail } from './SidebarRail'
+import { useResizeHandle } from './useResizeHandle'
+import { useSectionToggle } from './useSectionToggle'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -100,17 +101,6 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
   const [draggingHandleIndex, setDraggingHandleIndex] = createSignal<number | null>(null)
   let containerRef: HTMLDivElement | undefined
 
-  const notifyStateChange = () => {
-    props.onStateChange?.(openSections(), sectionSizes())
-  }
-
-  // Expose expand-section function to the parent via ref callback.
-  // eslint-disable-next-line solid/reactivity -- ref callback is called once during setup
-  props.expandSectionRef?.((sectionId: string) => {
-    setOpenSections(prev => ({ ...prev, [sectionId]: true }))
-    notifyStateChange()
-  })
-
   /** Quick lookup for the latest section definition by ID. */
   const sectionById = createMemo(() => {
     const map = new Map<string, SidebarSectionDef>()
@@ -128,328 +118,66 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
     return section?.defaultOpen ?? true
   }
 
-  // Visible, non-railOnly sections that participate in the collapsible layout
-  const expandableSections = () =>
-    props.sections.filter(s => s.visible !== false && !s.railOnly)
-
   // ---------------------------------------------------------------------------
-  // Stable ID lists for <For> iteration.
-  //
-  // SolidJS's <For> compares items by strict equality (===).  Strings with the
-  // same value are ===, so iterating over ID strings keeps <For> callbacks
-  // stable across reactive re-evaluations — DOM is preserved, DnD primitives
-  // inside content() are created once and never orphaned.
+  // Section toggle hook
   // ---------------------------------------------------------------------------
 
-  const expandableSectionIds = createMemo(() =>
-    props.sections.filter(s => s.visible !== false && !s.railOnly).map(s => s.id),
-  )
-
-  const railOnlySectionIds = createMemo(() =>
-    props.sections.filter(s => s.visible !== false && s.railOnly).map(s => s.id),
-  )
-
-  // When visible sections change, ensure at least one is open (enforceOneOpen)
-  // and open newly-visible sections.
-  createEffect(on(
-    () => expandableSections().map(s => s.id).join(','),
-    (currentIds, prevIds) => {
-      if (prevIds === undefined)
-        return // Skip initial run
-      const currentSet = new Set(currentIds.split(',').filter(Boolean))
-      const prevSet = new Set((prevIds ?? '').split(',').filter(Boolean))
-
-      // Populate state for newly visible sections, respecting saved preferences
-      // and defaultOpen.  Only sections without an existing preference are added.
-      const newlyVisible = [...currentSet].filter(id => !prevSet.has(id))
-      if (newlyVisible.length > 0) {
-        setOpenSections((prev) => {
-          const next = { ...prev }
-          let changed = false
-          for (const id of newlyVisible) {
-            if (!(id in next)) {
-              const section = sectionById().get(id)
-              next[id] = section?.defaultOpen ?? true
-              changed = true
-            }
-          }
-          return changed ? next : prev
-        })
-
-        // Redistribute sizes equally so new sections get a fair share.
-        // Without this, normalization in expandedSizes would squeeze
-        // the new section because existing sections keep their old
-        // absolute sizes.
-        const expanded = expandableSectionIds().filter(sid => isOpen(sid))
-        if (expanded.length >= 2) {
-          const equalSize = 1 / expanded.length
-          setSectionSizes((prev) => {
-            const next = { ...prev }
-            for (const eid of expanded) next[eid] = equalSize
-            return next
-          })
-        }
-
-        notifyStateChange()
-      }
-
-      // Ensure at least one section is always open, but only when sections
-      // were removed — not when new sections appear from async loading.
-      // This preserves the user's saved collapsed preference on page reload.
-      const removedSections = [...prevSet].filter(id => !currentSet.has(id))
-      if (removedSections.length > 0) {
-        const ids = expandableSectionIds()
-        const anyOpen = ids.some(id => isOpen(id))
-        if (!anyOpen && ids.length > 0) {
-          setOpenSections(prev => ({ ...prev, [ids[0]]: true }))
-          notifyStateChange()
-        }
-      }
-    },
-  ))
-
-  // ---------------------------------------------------------------------------
-  // Toggle logic
-  // ---------------------------------------------------------------------------
-
-  const handleToggle = (sectionId: string, collapsible: boolean | undefined, open: boolean) => {
-    if (collapsible === false)
-      return
-
-    // Enforce at least one section always stays open.
-    if (!open) {
-      const ids = expandableSectionIds()
-
-      // Only one section — prevent collapsing entirely.
-      if (ids.length <= 1)
-        return
-
-      // If this is the last open section, expand the adjacent one.
-      const othersOpen = ids.some(id => id !== sectionId && isOpen(id))
-      if (!othersOpen) {
-        const currentIdx = ids.indexOf(sectionId)
-        const adjacentId = ids[currentIdx > 0 ? currentIdx - 1 : currentIdx + 1]
-        if (adjacentId) {
-          setOpenSections(prev => ({ ...prev, [sectionId]: false, [adjacentId]: true }))
-          notifyStateChange()
-          return
-        }
-      }
-    }
-
-    setOpenSections(prev => ({ ...prev, [sectionId]: open }))
-    notifyStateChange()
-  }
-
-  // ---------------------------------------------------------------------------
-  // Resize handle between panes (N-section support)
-  // ---------------------------------------------------------------------------
-
-  // Count how many expandable sections are currently expanded
-  const expandedCount = () => {
-    let count = 0
-    for (const id of expandableSectionIds()) {
-      if (isOpen(id))
-        count++
-    }
-    return count
-  }
-
-  // Compute normalized fractional sizes for currently expanded sections
-  const expandedSizes = createMemo(() => {
-    const expandedIds = expandableSectionIds().filter(sid => isOpen(sid))
-    if (expandedIds.length <= 1)
-      return new Map<string, number>()
-
-    const sizes = sectionSizes()
-    const result = new Map<string, number>()
-    let total = 0
-
-    for (const id of expandedIds) {
-      const size = sizes[id] ?? (1 / expandedIds.length)
-      result.set(id, size)
-      total += size
-    }
-
-    // Normalize to sum to 1.0
-    if (total > 0 && Math.abs(total - 1) > 0.001) {
-      for (const [id, size] of result) {
-        result.set(id, size / total)
-      }
-    }
-
-    return result
+  const {
+    expandableSectionIds,
+    handleToggle,
+    notifyStateChange,
+    railOnlySectionIds,
+  } = useSectionToggle({
+    sections: () => props.sections,
+    openSections,
+    setOpenSections,
+    setSectionSizes,
+    onStateChange: (...args) => props.onStateChange?.(...args),
+    sectionSizes,
+    sectionById,
+    isOpen,
   })
 
-  const MIN_FRACTION = 0.15
-
-  /**
-   * Start dragging a resize handle between two adjacent expanded sections.
-   * handleIndex: 0-based index among expanded sections — handle sits between
-   * expandedIds[handleIndex] and expandedIds[handleIndex + 1].
-   */
-  const handleResizeStart = (handleIndex: number, e: MouseEvent) => {
-    e.preventDefault()
-    if (!containerRef)
-      return
-    setDraggingHandleIndex(handleIndex)
-    document.body.style.cursor = 'row-resize'
-
-    const expandedIds = expandableSectionIds().filter(sid => isOpen(sid))
-    const currentSizes = expandedSizes()
-
-    const aboveId = expandedIds[handleIndex]
-    const belowId = expandedIds[handleIndex + 1]
-    const aboveSize = currentSizes.get(aboveId) ?? 0
-    const belowSize = currentSizes.get(belowId) ?? 0
-    const pairTotal = aboveSize + belowSize
-
-    const startY = e.clientY
-    const startAboveSize = aboveSize
-    const containerHeight = containerRef.getBoundingClientRect().height
-
-    const onMouseMove = (moveEvent: MouseEvent) => {
-      const deltaY = moveEvent.clientY - startY
-      const deltaFraction = deltaY / containerHeight
-
-      const newAboveSize = Math.max(
-        MIN_FRACTION * pairTotal,
-        Math.min(
-          (1 - MIN_FRACTION) * pairTotal,
-          startAboveSize + deltaFraction,
-        ),
-      )
-      const newBelowSize = pairTotal - newAboveSize
-
-      setSectionSizes(prev => ({
-        ...prev,
-        [aboveId]: newAboveSize,
-        [belowId]: newBelowSize,
-      }))
-    }
-
-    const onMouseUp = () => {
-      setDraggingHandleIndex(null)
-      document.body.style.cursor = ''
-      document.removeEventListener('mousemove', onMouseMove)
-      document.removeEventListener('mouseup', onMouseUp)
-      notifyStateChange()
-    }
-
-    document.addEventListener('mousemove', onMouseMove)
-    document.addEventListener('mouseup', onMouseUp)
-  }
-
-  /** Reset all expanded sections to equal sizes. */
-  const handleResetSplit = () => {
-    const expandedIds = expandableSectionIds().filter(sid => isOpen(sid))
-    if (expandedIds.length < 2)
-      return
-    const equalSize = 1 / expandedIds.length
-    setSectionSizes((prev) => {
-      const next = { ...prev }
-      for (const eid of expandedIds)
-        next[eid] = equalSize
-      return next
-    })
+  // Expose expand-section function to the parent via ref callback.
+  // eslint-disable-next-line solid/reactivity -- ref callback is called once during setup
+  props.expandSectionRef?.((sectionId: string) => {
+    setOpenSections(prev => ({ ...prev, [sectionId]: true }))
     notifyStateChange()
-  }
+  })
 
   // ---------------------------------------------------------------------------
-  // Collapse icon (stable — side doesn't change during component lifetime)
+  // Resize handle hook
+  // ---------------------------------------------------------------------------
+
+  const {
+    expandedCount,
+    expandedSizes,
+    handleResetSplit,
+    handleResizeStart,
+  } = useResizeHandle({
+    expandableSectionIds,
+    isOpen,
+    sectionSizes,
+    setSectionSizes,
+    setDraggingHandleIndex,
+    containerRef: () => containerRef,
+    notifyStateChange,
+  })
+
+  // ---------------------------------------------------------------------------
+  // Collapse icon (stable -- side doesn't change during component lifetime)
   // ---------------------------------------------------------------------------
 
   // eslint-disable-next-line solid/reactivity -- side is stable for the component lifetime
   const CollapseIcon = props.side === 'left' ? PanelLeftClose : PanelRightClose
 
   // ---------------------------------------------------------------------------
-  // Rail (collapsed) rendering
+  // Rail expand-section helper
   // ---------------------------------------------------------------------------
 
-  const renderRail = () => {
-    const ExpandIcon = props.side === 'left' ? PanelLeftOpen : PanelRightOpen
-    const railVariant = props.side === 'left' ? styles.sidebarRailLeft : styles.sidebarRailRight
-
-    const topSections = props.sections.filter(
-      s => s.visible !== false && (s.railPosition ?? 'top') === 'top' && !s.railOnly,
-    )
-    const bottomSections = props.sections.filter(
-      s => s.visible !== false && s.railPosition === 'bottom',
-    )
-    const railOnlyTop = props.sections.filter(
-      s => s.visible !== false && s.railOnly && (s.railPosition ?? 'top') === 'top',
-    )
-
-    return (
-      <div class={`${styles.sidebarRail} ${railVariant}`}>
-        {/* Expand button */}
-        <IconButton icon={ExpandIcon} iconSize="lg" size="lg" title={`Expand ${props.side} sidebar`} onClick={() => props.onExpand()} />
-
-        {/* Top-positioned section icons + badges */}
-        <For each={topSections}>
-          {section => (
-            <>
-              <IconButton
-                icon={section.railIcon}
-                iconSize="lg"
-                size="lg"
-                title={section.railTitle ?? section.title}
-                onClick={() => {
-                  setOpenSections(prev => ({ ...prev, [section.id]: true }))
-                  notifyStateChange()
-                  props.onExpand()
-                }}
-              />
-              <Show when={section.railBadge}>
-                {section.railBadge?.()}
-              </Show>
-            </>
-          )}
-        </For>
-
-        {/* Rail-only top sections */}
-        <For each={railOnlyTop}>
-          {section => (
-            <Show
-              when={section.railElement}
-              fallback={<IconButton icon={section.railIcon} iconSize="lg" size="lg" title={section.railTitle ?? section.title} />}
-            >
-              {section.railElement}
-            </Show>
-          )}
-        </For>
-
-        {/* Bottom-positioned sections (pushed to bottom) */}
-        <Show when={bottomSections.length > 0}>
-          <div class={styles.marginTopAuto}>
-            <For each={bottomSections}>
-              {section => (
-                <Show
-                  when={section.railElement}
-                  fallback={(
-                    <IconButton
-                      icon={section.railIcon}
-                      iconSize="lg"
-                      size="lg"
-                      title={section.railTitle ?? section.title}
-                      onClick={() => {
-                        if (!section.railOnly) {
-                          setOpenSections(prev => ({ ...prev, [section.id]: true }))
-                          notifyStateChange()
-                        }
-                        props.onExpand()
-                      }}
-                    />
-                  )}
-                >
-                  {section.railElement}
-                </Show>
-              )}
-            </For>
-          </div>
-        </Show>
-      </div>
-    )
+  const handleExpandSection = (sectionId: string) => {
+    setOpenSections(prev => ({ ...prev, [sectionId]: true }))
+    notifyStateChange()
   }
 
   // ---------------------------------------------------------------------------
@@ -472,7 +200,17 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
     : null
 
   return (
-    <Show when={!props.isCollapsed} fallback={renderRail()}>
+    <Show
+      when={!props.isCollapsed}
+      fallback={(
+        <SidebarRail
+          sections={props.sections}
+          side={props.side}
+          onExpand={props.onExpand}
+          onExpandSection={handleExpandSection}
+        />
+      )}
+    >
       <div
         class={styles.sidebarInner}
         data-testid={`sidebar-${props.side}`}
@@ -529,8 +267,8 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
             // Show the resize handle on the first section whose previous
             // section is expanded, as long as at least one expanded section
             // exists at or after this index.  This places the handle right
-            // after expanded content — even when the current section is
-            // collapsed — avoiding an unnatural gap.
+            // after expanded content -- even when the current section is
+            // collapsed -- avoiding an unnatural gap.
             const showResizeHandle = () => {
               if (index() === 0 || expandedCount() < 2)
                 return false
@@ -551,7 +289,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
 
             // Compute which handle index this is (position among expanded
             // sections).  Find the last expanded section *before* this one
-            // and return its index in the expanded list — that identifies
+            // and return its index in the expanded list -- that identifies
             // the pair being resized.
             const handleIdx = () => {
               const ids = expandableSectionIds()
@@ -606,7 +344,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                     class={`${styles.collapsibleTrigger} ${isStatic() || !canCollapse() ? styles.collapsibleTriggerStatic : ''} ${index() === 0 && props.side === 'right' ? styles.collapsibleTriggerNoChevron : ''}`}
                     data-testid={section().testId ? `${section().testId}-summary` : undefined}
                     onClick={(e) => {
-                      // Prevent native <details> toggle — we control state
+                      // Prevent native <details> toggle -- we control state
                       // entirely via signals to avoid browser auto-restoration
                       // issues on page reload.
                       e.preventDefault()

@@ -1,12 +1,7 @@
 import process from 'node:process'
 import { expect, test } from './fixtures'
-import {
-  createWorkspaceViaAPI,
-  deleteWorkspaceViaAPI,
-  loginViaToken,
-  openWorkspaceContextMenu,
-  waitForWorkspaceReady,
-} from './helpers'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
+import { loginViaToken, openWorkspaceContextMenu, waitForWorkspaceReady } from './helpers/ui'
 
 test.describe('Workspace Archive', () => {
   test('should archive workspace via context menu with confirmation dialog', async ({ page, authenticatedWorkspace }) => {

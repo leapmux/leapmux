@@ -1,5 +1,6 @@
 import { expect, test } from './fixtures'
-import { enterAndExitPlanMode, sendMessage, waitForControlBanner } from './helpers'
+import { enterAndExitPlanMode } from './helpers/plan-mode'
+import { sendMessage, waitForControlBanner } from './helpers/ui'
 
 test.describe('Control Request Draft Persistence', () => {
   test('ExitPlanMode draft survives page reload', async ({ page, authenticatedWorkspace }) => {

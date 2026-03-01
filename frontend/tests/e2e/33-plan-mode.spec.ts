@@ -1,11 +1,6 @@
 import { expect, test } from './fixtures'
-import {
-  enterPlanPrompt,
-  EXIT_PLAN_PROMPT,
-  sendMessage,
-  waitForAgentIdle,
-  waitForControlBanner,
-} from './helpers'
+import { enterPlanPrompt, EXIT_PLAN_PROMPT } from './helpers/plan-mode'
+import { sendMessage, waitForAgentIdle, waitForControlBanner } from './helpers/ui'
 
 test.describe('Plan Mode', () => {
   test('enter plan mode, reject exit, then approve exit', async ({ page, authenticatedWorkspace }) => {

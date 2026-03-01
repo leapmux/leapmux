@@ -4,32 +4,25 @@ import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
 import type { PermissionMode } from '~/utils/controlResponse'
-import Check from 'lucide-solid/icons/check'
-import ChevronDown from 'lucide-solid/icons/chevron-down'
-import ChevronsDown from 'lucide-solid/icons/chevrons-down'
-import ChevronsUp from 'lucide-solid/icons/chevrons-up'
-import Copy from 'lucide-solid/icons/copy'
-import Dot from 'lucide-solid/icons/dot'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import SendHorizontal from 'lucide-solid/icons/send-horizontal'
 import Square from 'lucide-solid/icons/square'
-import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, onMount, Show } from 'solid-js'
+import { createEffect, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
-import { clearDraft } from '~/lib/editor/draftPersistence'
-import { formatRateLimitSummary, getResetsAt, pickUrgentRateLimit, RATE_LIMIT_POPOVER_LABELS } from '~/lib/rateLimitUtils'
-import { safeGetJson, safeGetString, safeRemoveItem, safeSetJson, safeSetString } from '~/lib/safeStorage'
+import { getResetsAt } from '~/lib/rateLimitUtils'
+import { safeGetString, safeRemoveItem, safeSetString } from '~/lib/safeStorage'
 import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store'
 import { interruptPulse, spinner } from '~/styles/animations.css'
 import { iconSize } from '~/styles/tokens'
-import { buildAllowResponse, buildDenyResponse, DEFAULT_EFFORT, DEFAULT_MODEL, EFFORT_LABELS, getToolName, MODEL_LABELS, PERMISSION_MODE_LABELS } from '~/utils/controlResponse'
+import { useAgentInfoCard } from './AgentInfoCard'
 import * as styles from './ChatView.css'
-import { computePercentage, contextSize, ContextUsageGrid, DEFAULT_BUFFER_PCT } from './ContextUsageGrid'
+import { ContextUsageGrid } from './ContextUsageGrid'
 import { ControlRequestActions, ControlRequestContent } from './ControlRequestBanner'
-import { trySubmitAskUserQuestion } from './controls/AskUserQuestionControl'
+import { useControlResponseHandling } from './controlResponseHandling'
+import { EditorSettingsDropdown } from './EditorSettingsDropdown'
 import { MarkdownEditor } from './MarkdownEditor'
-import { tildify } from './messageUtils'
 
 export interface AgentEditorPanelProps {
   agentId: string
@@ -50,20 +43,8 @@ export interface AgentEditorPanelProps {
   containerHeight?: number
 }
 
-const PERMISSION_MODES = Object.entries(PERMISSION_MODE_LABELS).map(([value, label]) => ({ value, label }))
-const MODELS = Object.entries(MODEL_LABELS).map(([value, label]) => ({ value, label }))
-const EFFORTS = Object.entries(EFFORT_LABELS).map(([value, label]) => ({ value, label }))
-
-function modeLabel(mode: string): string {
-  return PERMISSION_MODE_LABELS[mode as keyof typeof PERMISSION_MODE_LABELS] ?? 'Default'
-}
-
-function modelLabel(model: string): string {
-  return MODELS.find(m => m.value === model)?.label ?? 'Sonnet'
-}
-
 // Per-agent editor height state
-const EDITOR_MIN_HEIGHT = 38 // px – minimum height of the markdown editor wrapper
+const EDITOR_MIN_HEIGHT = 38 // px - minimum height of the markdown editor wrapper
 const EDITOR_MIN_HEIGHT_KEY_PREFIX = 'leapmux-editor-min-height-'
 
 function editorMinHeightKey(agentId: string): string {
@@ -83,18 +64,8 @@ function getStoredEditorMinHeight(agentId: string): number | undefined {
 // In-memory cache of per-agent heights (avoids localStorage reads on every render).
 const editorMinHeightCache = new Map<string, number | undefined>()
 
-function formatTokenCount(tokens: number): string {
-  if (tokens >= 1_000_000)
-    return `${(tokens / 1_000_000).toFixed(1)}M`
-  if (tokens >= 1_000)
-    return `${(tokens / 1_000).toFixed(1)}k`
-  return String(tokens)
-}
-
 export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   let panelRef: HTMLDivElement | undefined
-  let settingsPopoverEl: HTMLElement | undefined
-  const menuId = createUniqueId()
   const [isDragging, setIsDragging] = createSignal(false)
   const [_editorContentHeight, setEditorContentHeight] = createSignal(0)
   const [hasContent, setHasContent] = createSignal(false)
@@ -169,92 +140,30 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     tryRegisterEditorRef(agentId)
   }))
 
-  // Track previous non-plan mode for Shift+Tab toggling.
-  let previousNonPlanMode: PermissionMode = 'default'
-  createEffect(() => {
-    const mode = (props.agent?.permissionMode || 'default') as PermissionMode
-    if (mode !== 'plan') {
-      previousNonPlanMode = mode
-    }
-  })
-  const togglePlanMode = () => {
-    if (props.settingsLoading)
-      return
-    const currentMode = (props.agent?.permissionMode || 'default') as PermissionMode
-    if (currentMode === 'plan') {
-      props.onPermissionModeChange?.(previousNonPlanMode)
-    }
-    else {
-      previousNonPlanMode = currentMode
-      props.onPermissionModeChange?.('plan')
-    }
+  const resetEditorHeight = () => {
+    setEditorMinHeight(undefined)
+    if (props.agentId)
+      safeRemoveItem(editorMinHeightKey(props.agentId))
   }
 
-  // The first pending control request (if any).
-  const activeControlRequest = () => {
-    const reqs = props.controlRequests
-    return reqs && reqs.length > 0 ? reqs[0] : null
-  }
-
-  const isAskUserQuestion = () => {
-    const req = activeControlRequest()
-    if (!req)
-      return false
-    const tool = getToolName(req.payload)
-    return tool === 'AskUserQuestion' || tool === 'request_user_input'
-  }
-
-  // Whether the Interrupt button should be shown.
-  const showInterrupt = () => !!props.agentWorking && !activeControlRequest()
+  // Control response handling (extracted module)
+  const ctrl = useControlResponseHandling(
+    props,
+    askState,
+    () => editorContentRef,
+    setHasContent,
+    resetEditorHeight,
+  )
 
   // Clear interrupt loading when the button hides.
-  createEffect(on(showInterrupt, (show) => {
+  createEffect(on(ctrl.showInterrupt, (show) => {
     if (!show) {
       interruptLoading.stop()
     }
   }))
 
-  // Memoize the active request ID so that the effect below only fires when
-  // the value actually changes. Without this, reactive store updates
-  // (e.g. controlStore.clearAgent during WebSocket reconnect) re-trigger the
-  // deps function even when the result is the same `undefined`, causing
-  // hasContent to be reset and disabling the send button after page refresh.
-  const activeRequestId = createMemo(() => activeControlRequest()?.requestId)
-
-  // Reset AskUserQuestion state when the active request changes.
-  createEffect(on(
-    activeRequestId,
-    (requestId) => {
-      if (requestId && props.agentId) {
-        const key = `leapmux-ask-state-${props.agentId}-${requestId}`
-        const saved = safeGetJson<{ selections?: Record<number, string[]>, customTexts?: Record<number, string>, currentPage?: number }>(key)
-        if (saved) {
-          setAskSelections(saved.selections ?? {})
-          setAskCustomTexts(saved.customTexts ?? {})
-          setAskCurrentPage(saved.currentPage ?? 0)
-          setHasContent(false)
-          return
-        }
-      }
-      setAskSelections({})
-      setAskCustomTexts({})
-      setAskCurrentPage(0)
-      setHasContent(false)
-    },
-  ))
-
-  // Persist AskUserQuestion selections to localStorage.
-  createEffect(() => {
-    const req = activeControlRequest()
-    if (!req || !props.agentId || !isAskUserQuestion())
-      return
-    const key = `leapmux-ask-state-${props.agentId}-${req.requestId}`
-    safeSetJson(key, {
-      selections: askSelections(),
-      customTexts: askCustomTexts(),
-      currentPage: askCurrentPage(),
-    })
-  })
+  // Agent info card (extracted module)
+  const info = useAgentInfoCard(props)
 
   let triggerSend: (() => void) | undefined
 
@@ -308,335 +217,6 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       safeRemoveItem(editorMinHeightKey(props.agentId))
   }
 
-  // Handles editor text for control requests.
-  const sendControlResponse = (agentId: string, bytes: Uint8Array): Promise<void> => {
-    return props.onControlResponse?.(agentId, bytes) ?? Promise.resolve()
-  }
-
-  const cleanupControlRequestDrafts = (requestId: string) => {
-    if (!props.agentId)
-      return
-    clearDraft(`${props.agentId}-ctrl-${requestId}`)
-    safeRemoveItem(`leapmux-ask-state-${props.agentId}-${requestId}`)
-  }
-
-  const resetEditorHeight = () => {
-    setEditorMinHeight(undefined)
-    if (props.agentId)
-      safeRemoveItem(editorMinHeightKey(props.agentId))
-  }
-
-  const handleControlSend = (content: string): boolean | void => {
-    const req = activeControlRequest()
-    if (!req)
-      return
-    if (isAskUserQuestion()) {
-      const submitted = trySubmitAskUserQuestion(
-        askState,
-        req,
-        content,
-        sendControlResponse,
-        editorContentRef,
-      )
-      if (!submitted)
-        return false
-      cleanupControlRequestDrafts(req.requestId)
-      resetEditorHeight()
-      return
-    }
-    const toolName = getToolName(req.payload)
-    const response = (content || toolName === 'ExitPlanMode')
-      ? buildDenyResponse(req.requestId, content)
-      : buildAllowResponse(req.requestId)
-    const bytes = new TextEncoder().encode(JSON.stringify(response))
-    sendControlResponse(req.agentId, bytes)
-    cleanupControlRequestDrafts(req.requestId)
-    resetEditorHeight()
-  }
-
-  const handleSend = (content: string) => {
-    props.onSendMessage(content)
-    resetEditorHeight()
-  }
-
-  const [sessionIdCopied, setSessionIdCopied] = createSignal(false)
-
-  const handleCopySessionId = async () => {
-    const sid = props.agent?.agentSessionId
-    if (!sid)
-      return
-    try {
-      await navigator.clipboard.writeText(sid)
-      setSessionIdCopied(true)
-      setTimeout(() => setSessionIdCopied(false), 2000)
-    }
-    catch {
-      // ignore clipboard errors
-    }
-  }
-
-  const hasContextInfo = () => {
-    return props.agentSessionInfo?.totalCostUsd != null
-      || props.agentSessionInfo?.contextUsage
-      || (props.agentSessionInfo?.rateLimits && Object.keys(props.agentSessionInfo.rateLimits).length > 0)
-  }
-
-  const showInfoTrigger = () => !!props.agent?.agentSessionId || hasContextInfo()
-
-  // 1-minute timer for countdown refresh
-  const [now, setNow] = createSignal(Date.now())
-  const timer = setInterval(() => setNow(Date.now()), 60_000)
-  onCleanup(() => clearInterval(timer))
-
-  // Derive urgent rate limit (re-evaluates each minute due to `now()` dependency)
-  const urgentRateLimit = createMemo(() => {
-    void now() // subscribe to timer ticks
-    const rateLimits = props.agentSessionInfo?.rateLimits
-    if (!rateLimits)
-      return null
-    return pickUrgentRateLimit(rateLimits)
-  })
-
-  const infoHoverCardContent = () => (
-    <>
-      <Show when={props.agent?.workerName}>
-        <div class={styles.infoRow} data-testid="info-row-worker">
-          <span class={styles.infoLabel}>Worker</span>
-          <span class={styles.infoValue}>{props.agent!.workerName}</span>
-        </div>
-      </Show>
-      <Show when={props.agent?.agentSessionId}>
-        <div class={styles.infoRow}>
-          <span class={styles.infoLabel}>Session ID</span>
-          <span class={styles.infoValue} data-testid="session-id-value">{props.agent?.agentSessionId}</span>
-          <button
-            class={styles.infoCopyButton}
-            onClick={handleCopySessionId}
-            title="Copy session ID"
-            data-testid="session-id-copy"
-          >
-            <Show when={sessionIdCopied()} fallback={<Icon icon={Copy} size="xs" />}>
-              <Icon icon={Check} size="xs" />
-            </Show>
-          </button>
-        </div>
-      </Show>
-      <Show when={props.agent?.gitStatus?.branch}>
-        <div class={styles.infoRow}>
-          <span class={styles.infoLabel}>Branch</span>
-          <span class={styles.infoValue}>
-            {props.agent!.gitStatus!.branch}
-            {(() => {
-              const gs = props.agent!.gitStatus!
-              const parts: string[] = []
-              if (gs.ahead)
-                parts.push(`+${gs.ahead}`)
-              if (gs.behind)
-                parts.push(`-${gs.behind}`)
-              return parts.length > 0 ? ` [${parts.join(' ')}]` : ''
-            })()}
-          </span>
-        </div>
-        {(() => {
-          const gs = props.agent!.gitStatus!
-          const flags: string[] = []
-          if (gs.conflicted)
-            flags.push('Conflicted')
-          if (gs.stashed)
-            flags.push('Stashed')
-          if (gs.modified)
-            flags.push('Modified')
-          if (gs.added)
-            flags.push('Added')
-          if (gs.deleted)
-            flags.push('Deleted')
-          if (gs.renamed)
-            flags.push('Renamed')
-          if (gs.typeChanged)
-            flags.push('Type-changed')
-          if (gs.untracked)
-            flags.push('Untracked')
-          return (
-            <Show when={flags.length > 0}>
-              <div class={styles.infoRow}>
-                <span class={styles.infoLabel}>Status</span>
-                <span class={styles.infoValue}>{flags.join(', ')}</span>
-              </div>
-            </Show>
-          )
-        })()}
-      </Show>
-      <Show when={props.agent?.workingDir}>
-        <div class={styles.infoRow} data-testid="info-row-directory">
-          <span class={styles.infoLabel}>Directory</span>
-          <span class={styles.infoValue}>{tildify(props.agent!.workingDir!, props.agent!.homeDir)}</span>
-        </div>
-      </Show>
-      <Show when={props.agentSessionInfo?.planFilePath}>
-        <div class={styles.infoRow} data-testid="info-row-plan-file">
-          <span class={styles.infoLabel}>Plan File</span>
-          <span class={styles.infoValue}>
-            {tildify(props.agentSessionInfo!.planFilePath!, props.agent?.homeDir)}
-          </span>
-        </div>
-      </Show>
-      <Show when={props.agentSessionInfo?.contextUsage}>
-        {(() => {
-          const usage = props.agentSessionInfo!.contextUsage!
-          const ctxWindow = (usage.contextWindow && usage.contextWindow > 0) ? usage.contextWindow : 200_000
-          const total = contextSize(usage)
-          const pct = computePercentage(usage)
-          return (
-            <div class={styles.infoRow}>
-              <span class={styles.infoLabel}>Context</span>
-              <span class={styles.infoValue}>
-                {formatTokenCount(total)}
-                {` / ${formatTokenCount(ctxWindow)}`}
-                {pct != null ? ` (${Math.round(pct)}% with ${DEFAULT_BUFFER_PCT}% buffer)` : ''}
-              </span>
-            </div>
-          )
-        })()}
-      </Show>
-      <Show when={props.agentSessionInfo?.totalCostUsd != null}>
-        <div class={styles.infoRow}>
-          <span class={styles.infoLabel}>Cost</span>
-          <span class={styles.infoValue}>
-            $
-            {props.agentSessionInfo!.totalCostUsd!.toFixed(4)}
-          </span>
-        </div>
-      </Show>
-      <Show when={props.agentSessionInfo?.rateLimits && Object.keys(props.agentSessionInfo!.rateLimits!).length > 0}>
-        <For each={Object.values(props.agentSessionInfo!.rateLimits!)}>
-          {(info) => {
-            const typeLabel = RATE_LIMIT_POPOVER_LABELS[info.rateLimitType ?? '']
-              ?? (info.rateLimitType ? `Rate Limit (${info.rateLimitType})` : 'Rate Limit')
-            return (
-              <div class={styles.infoRow}>
-                <span class={styles.infoLabel}>{typeLabel}</span>
-                <span class={styles.infoValue}>{formatRateLimitSummary(info)}</span>
-              </div>
-            )
-          }}
-        </For>
-      </Show>
-    </>
-  )
-
-  const currentModel = () => props.agent?.model || DEFAULT_MODEL
-  const currentEffort = () => props.agent?.effort || DEFAULT_EFFORT
-  const currentMode = () => props.agent?.permissionMode || 'default'
-
-  const effortIcon = () => {
-    switch (currentEffort()) {
-      case 'low': return <Icon icon={ChevronsDown} size="xs" />
-      case 'high': return <Icon icon={ChevronsUp} size="xs" />
-      default: return <Icon icon={Dot} size="xs" />
-    }
-  }
-
-  const settingsDropdown = () => (
-    <DropdownMenu
-      trigger={triggerProps => (
-        <button
-          class={styles.settingsTrigger}
-          data-testid="agent-settings-trigger"
-          disabled={props.disabled}
-          {...triggerProps}
-        >
-          {modelLabel(currentModel())}
-          {effortIcon()}
-          {modeLabel(currentMode())}
-          <Show when={props.settingsLoading} fallback={<Icon icon={ChevronDown} size="xs" />}>
-            <Icon icon={LoaderCircle} size="xs" class={spinner} />
-          </Show>
-        </button>
-      )}
-      popoverRef={(el) => { settingsPopoverEl = el }}
-      class={styles.settingsMenu}
-      data-testid="agent-settings-menu"
-    >
-      {/* Effort */}
-      <fieldset>
-        <legend class={styles.settingsGroupLabel}>Effort</legend>
-        <For each={EFFORTS}>
-          {effort => (
-            <label
-              role="menuitemradio"
-              class={styles.settingsRadioItem}
-              data-testid={`effort-${effort.value}`}
-            >
-              <input
-                type="radio"
-                name={`${menuId}-effort`}
-                value={effort.value}
-                checked={currentEffort() === effort.value}
-                onChange={() => {
-                  props.onEffortChange?.(effort.value)
-                  settingsPopoverEl?.hidePopover()
-                }}
-              />
-              {effort.label}
-            </label>
-          )}
-        </For>
-      </fieldset>
-
-      {/* Model */}
-      <fieldset>
-        <legend class={styles.settingsGroupLabel}>Model</legend>
-        <For each={MODELS}>
-          {model => (
-            <label
-              role="menuitemradio"
-              class={styles.settingsRadioItem}
-              data-testid={`model-${model.value}`}
-            >
-              <input
-                type="radio"
-                name={`${menuId}-model`}
-                value={model.value}
-                checked={currentModel() === model.value}
-                onChange={() => {
-                  props.onModelChange?.(model.value)
-                  settingsPopoverEl?.hidePopover()
-                }}
-              />
-              {model.label}
-            </label>
-          )}
-        </For>
-      </fieldset>
-
-      {/* Permission Mode */}
-      <fieldset>
-        <legend class={styles.settingsGroupLabel}>Permission Mode</legend>
-        <For each={PERMISSION_MODES}>
-          {mode => (
-            <label
-              role="menuitemradio"
-              class={styles.settingsRadioItem}
-              data-testid={`permission-mode-${mode.value}`}
-            >
-              <input
-                type="radio"
-                name={`${menuId}-mode`}
-                value={mode.value}
-                checked={currentMode() === mode.value}
-                onChange={() => {
-                  props.onPermissionModeChange?.(mode.value as PermissionMode)
-                  settingsPopoverEl?.hidePopover()
-                }}
-              />
-              {mode.label}
-            </label>
-          )}
-        </For>
-      </fieldset>
-    </DropdownMenu>
-  )
-
   return (
     <div ref={panelRef} class={styles.editorPanelWrapper} data-testid="agent-editor-panel">
       <div
@@ -648,10 +228,10 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       <div class={styles.inputArea}>
         <MarkdownEditor
           agentId={props.agentId}
-          controlRequestId={activeControlRequest()?.requestId}
-          onSend={activeControlRequest() ? handleControlSend : handleSend}
+          controlRequestId={ctrl.activeControlRequest()?.requestId}
+          onSend={ctrl.activeControlRequest() ? ctrl.handleControlSend : ctrl.handleSend}
           disabled={props.disabled}
-          onTogglePlanMode={togglePlanMode}
+          onTogglePlanMode={ctrl.togglePlanMode}
           requestedHeight={editorMinHeightSignal()}
           maxHeight={maxEditorHeight()}
           onContentHeightChange={setEditorContentHeight}
@@ -665,7 +245,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               if (h !== undefined && h <= EDITOR_MIN_HEIGHT)
                 resetEditorHeight()
             }
-            if (has && isAskUserQuestion()) {
+            if (has && ctrl.isAskUserQuestion()) {
               const page = askCurrentPage()
               setAskSelections(prev => (prev[page] ?? []).length > 0 ? { ...prev, [page]: [] } : prev)
             }
@@ -682,13 +262,13 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             editorReady = true
             tryRegisterEditorRef(props.agentId)
           }}
-          placeholder={isAskUserQuestion() ? 'Type a custom answer...' : activeControlRequest() ? 'Type a rejection reason...' : undefined}
-          allowEmptySend={!!activeControlRequest() && !isAskUserQuestion()}
+          placeholder={ctrl.isAskUserQuestion() ? 'Type a custom answer...' : ctrl.activeControlRequest() ? 'Type a rejection reason...' : undefined}
+          allowEmptySend={!!ctrl.activeControlRequest() && !ctrl.isAskUserQuestion()}
           banner={
-            activeControlRequest()
+            ctrl.activeControlRequest()
               ? (
                   <ControlRequestContent
-                    request={activeControlRequest()!}
+                    request={ctrl.activeControlRequest()!}
                     askState={askState}
                     optionsDisabled={hasContent()}
                   />
@@ -696,15 +276,15 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               : undefined
           }
           footer={
-            activeControlRequest()
+            ctrl.activeControlRequest()
               ? (
                   <ControlRequestActions
-                    request={activeControlRequest()!}
+                    request={ctrl.activeControlRequest()!}
                     askState={askState}
                     onRespond={(agentId, content) => {
-                      const reqId = activeControlRequest()?.requestId
+                      const reqId = ctrl.activeControlRequest()?.requestId
                       if (reqId)
-                        cleanupControlRequestDrafts(reqId)
+                        ctrl.cleanupControlRequestDrafts(reqId)
                       resetEditorHeight()
                       return props.onControlResponse?.(agentId, content) ?? Promise.resolve()
                     }}
@@ -713,7 +293,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                     editorContentRef={editorContentRef}
                     onPermissionModeChange={props.onPermissionModeChange}
                     infoTrigger={
-                      showInfoTrigger()
+                      info.showInfoTrigger()
                         ? (
                             <DropdownMenu
                               as="div"
@@ -724,7 +304,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                                   {...triggerProps}
                                 >
                                   <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} size={iconSize.xs} />
-                                  <Show when={urgentRateLimit()}>
+                                  <Show when={info.urgentRateLimit()}>
                                     {rl => (
                                       <span
                                         class={styles.rateLimitCountdown}
@@ -743,7 +323,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                               data-testid="session-id-popover"
                             >
                               <div class={styles.infoRows}>
-                                {infoHoverCardContent()}
+                                {info.infoHoverCardContent()}
                               </div>
                             </DropdownMenu>
                           )
@@ -754,8 +334,17 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               : (
                   <div class={styles.footerBar}>
                     <div class={styles.footerBarLeft}>
-                      {settingsDropdown()}
-                      <Show when={showInfoTrigger()}>
+                      <EditorSettingsDropdown
+                        disabled={props.disabled}
+                        settingsLoading={props.settingsLoading}
+                        model={props.agent?.model}
+                        effort={props.agent?.effort}
+                        permissionMode={props.agent?.permissionMode}
+                        onModelChange={props.onModelChange}
+                        onEffortChange={props.onEffortChange}
+                        onPermissionModeChange={props.onPermissionModeChange}
+                      />
+                      <Show when={info.showInfoTrigger()}>
                         <DropdownMenu
                           as="div"
                           trigger={triggerProps => (
@@ -765,7 +354,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                               {...triggerProps}
                             >
                               <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} size={iconSize.xs} />
-                              <Show when={urgentRateLimit()}>
+                              <Show when={info.urgentRateLimit()}>
                                 {rl => (
                                   <span
                                     class={styles.rateLimitCountdown}
@@ -784,13 +373,13 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                           data-testid="session-id-popover"
                         >
                           <div class={styles.infoRows}>
-                            {infoHoverCardContent()}
+                            {info.infoHoverCardContent()}
                           </div>
                         </DropdownMenu>
                       </Show>
                     </div>
                     <div class={styles.footerBarRight}>
-                      <Show when={showInterrupt()}>
+                      <Show when={ctrl.showInterrupt()}>
                         <button
                           class={`${styles.interruptButton} ${interruptLoading.loading() ? '' : interruptPulse}`}
                           onClick={() => {

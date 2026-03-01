@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { loginViaUI, logoutViaUI } from './helpers'
+import { loginViaUI, logoutViaUI } from './helpers/ui'
 
 test.describe('Authentication', () => {
   test('should login with valid credentials', async ({ page }) => {

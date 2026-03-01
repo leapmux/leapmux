@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { waitForWorkspaceReady } from './helpers'
+import { waitForWorkspaceReady } from './helpers/ui'
 
 /** Switch to a smartphone-sized viewport, reload, and wait for the mobile layout. */
 async function switchToMobile(page: Page) {

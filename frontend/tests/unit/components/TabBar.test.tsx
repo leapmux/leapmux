@@ -7,7 +7,7 @@ import { TabType } from '~/stores/tab.store'
 vi.mock('@thisbeyond/solid-dnd', () => ({
   createSortable: () => ({}),
   createDroppable: () => () => {},
-  SortableProvider: (props: any) => props.children,
+  SortableProvider: (props: any) => <>{props.children}</>,
   transformStyle: () => undefined,
 }))
 
@@ -22,7 +22,7 @@ vi.mock('~/components/shell/CrossTileDragContext', () => ({
 // Mock DropdownMenu to render children directly (jsdom lacks popover API)
 vi.mock('~/components/common/DropdownMenu', () => ({
   DropdownMenu(props: any) {
-    const trigger = typeof props.trigger === 'function'
+    const trigger = () => typeof props.trigger === 'function'
       ? props.trigger({
           'aria-expanded': false,
           'ref': () => {},
@@ -32,7 +32,7 @@ vi.mock('~/components/common/DropdownMenu', () => ({
       : props.trigger
     return (
       <>
-        {trigger}
+        {trigger()}
         {props.children}
       </>
     )

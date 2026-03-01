@@ -12,17 +12,13 @@ import {
   createWorkspaceViaAPI,
   deleteWorkspaceViaAPI,
   enableSignupViaAPI,
-  findFreePort,
   getAdminOrgId,
-  getGlobalState,
-  getRecordedToasts,
-  installToastRecorder,
   loginViaAPI,
-  loginViaToken,
   signUpViaAPI,
-  waitForServer,
-  waitForWorkspaceReady,
-} from './helpers'
+} from './helpers/api'
+import { findFreePort, getGlobalState, waitForServer } from './helpers/server'
+import { getRecordedToasts, installToastRecorder } from './helpers/toast'
+import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
 export interface SeparateServerInfo {
   hubUrl: string

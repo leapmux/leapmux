@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { loginViaUI } from './helpers'
+import { loginViaUI } from './helpers/ui'
 
 test.describe('Worker Registration', () => {
   // In standalone mode, the worker is auto-registered with name "Local".

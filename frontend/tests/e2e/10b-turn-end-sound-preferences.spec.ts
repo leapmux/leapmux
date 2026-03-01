@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { loginViaToken, openAgentViaUI, waitForWorkspaceReady } from './helpers'
+import { loginViaToken, openAgentViaUI, waitForWorkspaceReady } from './helpers/ui'
 
 test.describe('Turn End Sound Preferences', () => {
   test('should show Turn End Sound section in This Browser tab', async ({ page, leapmuxServer }) => {
