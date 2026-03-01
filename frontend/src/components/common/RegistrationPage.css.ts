@@ -1,5 +1,4 @@
 import { style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
 
 export { authCardXWide, errorText } from '~/styles/shared.css'
 
@@ -14,8 +13,8 @@ export const container = style({
 export const infoGrid = style({
   display: 'grid',
   gridTemplateColumns: 'auto 1fr',
-  gap: `${spacing.xs} ${spacing.md}`,
-  marginBottom: spacing.xl,
+  gap: 'var(--space-1) var(--space-3)',
+  marginBottom: 'var(--space-6)',
 })
 
 export const infoLabel = style({
@@ -48,8 +47,8 @@ export const linkSecondary = style({
 })
 
 export const warningBox = style({
-  padding: spacing.md,
-  marginBottom: spacing.lg,
+  padding: 'var(--space-3)',
+  marginBottom: 'var(--space-4)',
   backgroundColor: 'var(--lm-warning-subtle)',
   border: '1px solid var(--warning)',
   borderRadius: 'var(--radius-medium)',
@@ -61,8 +60,8 @@ export const warningBox = style({
 export const actionRow = style({
   display: 'flex',
   justifyContent: 'center',
-  gap: spacing.lg,
-  marginTop: spacing.lg,
+  gap: 'var(--space-4)',
+  marginTop: 'var(--space-4)',
 })
 
 export const fieldError = style({

@@ -1,5 +1,4 @@
 import { style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
 
 export { authCard, errorText } from '~/styles/shared.css'
 
@@ -12,15 +11,15 @@ export const container = style({
 })
 
 export const authFooter = style({
-  marginTop: spacing.lg,
+  marginTop: 'var(--space-4)',
   fontSize: 'var(--text-8)',
 })
 
 export const verificationMessage = style({
-  padding: `${spacing.lg} 0`,
+  padding: 'var(--space-4) 0',
 })
 
 export const inlineLink = style({
-  marginTop: spacing.sm,
+  marginTop: 'var(--space-2)',
   display: 'inline-block',
 })

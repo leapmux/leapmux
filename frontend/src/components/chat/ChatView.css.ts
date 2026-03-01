@@ -1,5 +1,5 @@
 import { style } from '@vanilla-extract/css'
-import { resizeHandleSelectors, spacing } from '~/styles/tokens'
+import { resizeHandleSelectors } from '~/styles/resizeHandle'
 
 export const editorResizeHandle = style({
   height: '4px',
@@ -43,7 +43,7 @@ export const messageListSpacer = style({
 export const messageListContent = style({
   display: 'flex',
   flexDirection: 'column',
-  gap: spacing.md,
+  gap: 'var(--space-3)',
 })
 
 export const messageList = style({
@@ -51,24 +51,24 @@ export const messageList = style({
   overflowX: 'hidden',
   overflowY: 'auto',
   overflowAnchor: 'none',
-  padding: `${spacing.lg} ${spacing.lg} ${spacing.lg} ${spacing.xl}`,
+  padding: 'var(--space-4) var(--space-4) var(--space-4) var(--space-6)',
   display: 'flex',
   flexDirection: 'column',
-  gap: spacing.md,
+  gap: 'var(--space-3)',
 })
 
 export const loadingOlderIndicator = style({
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  gap: spacing.sm,
-  padding: spacing.md,
+  gap: 'var(--space-2)',
+  padding: 'var(--space-3)',
   color: 'var(--muted-foreground)',
   fontSize: 'var(--text-7)',
 })
 
 export const inputArea = style({
-  padding: `${spacing.xs} ${spacing.md} ${spacing.md}`,
+  padding: 'var(--space-1) var(--space-3) var(--space-3)',
   flexShrink: 0,
 })
 
@@ -76,7 +76,7 @@ export const footerBar = style({
   display: 'flex',
   justifyContent: 'space-between',
   alignItems: 'center',
-  padding: `${spacing.xs} ${spacing.sm}`,
+  padding: 'var(--space-1) var(--space-2)',
   backgroundColor: 'var(--background)',
   flexShrink: 0,
 })
@@ -92,8 +92,8 @@ export const sendButton = style({
   'display': 'flex',
   'alignItems': 'center',
   'justifyContent': 'center',
-  'gap': spacing.xs,
-  'padding': `${spacing.xs} ${spacing.sm}`,
+  'gap': 'var(--space-1)',
+  'padding': 'var(--space-1) var(--space-2)',
   'fontSize': 'var(--text-7)',
   'fontWeight': 400,
   'borderRadius': 'var(--radius-small)',
@@ -129,8 +129,8 @@ export const interruptButton = style({
   'boxSizing': 'border-box',
   'display': 'flex',
   'alignItems': 'center',
-  'gap': spacing.xs,
-  'padding': `${spacing.xs} ${spacing.sm}`,
+  'gap': 'var(--space-1)',
+  'padding': 'var(--space-1) var(--space-2)',
   'fontSize': 'var(--text-7)',
   'fontWeight': 400,
   'borderRadius': 'var(--radius-small)',
@@ -151,8 +151,8 @@ export const settingsTrigger = style({
   boxSizing: 'border-box',
   display: 'inline-flex',
   alignItems: 'center',
-  gap: spacing.xs,
-  padding: `2px ${spacing.xs}`,
+  gap: 'var(--space-1)',
+  padding: '2px var(--space-1)',
   marginBottom: '3px',
   fontSize: 'var(--text-8)',
   color: 'var(--faint-foreground)',
@@ -170,14 +170,14 @@ export const settingsMenu = style({
   backgroundColor: 'var(--background)',
   border: '1px solid var(--border)',
   borderRadius: 'var(--radius-medium)',
-  padding: `${spacing.xs} ${spacing.lg} 0 ${spacing.lg}`,
+  padding: 'var(--space-1) var(--space-4) 0 var(--space-4)',
   zIndex: 300,
   minWidth: '180px',
   boxShadow: 'var(--shadow-large)',
 })
 
 export const settingsGroupLabel = style({
-  padding: `${spacing.xs} ${spacing.sm}`,
+  padding: 'var(--space-1) var(--space-2)',
   fontSize: 'var(--text-8)',
   fontWeight: 600,
   color: 'var(--muted-foreground)',
@@ -190,8 +190,8 @@ export const settingsRadioItem = style({
   'boxSizing': 'border-box',
   'display': 'flex',
   'alignItems': 'center',
-  'gap': spacing.sm,
-  'padding': `3px ${spacing.sm}`,
+  'gap': 'var(--space-2)',
+  'padding': '3px var(--space-2)',
   'fontSize': 'var(--text-8)',
   'color': 'var(--foreground)',
   'cursor': 'pointer',
@@ -204,7 +204,7 @@ export const settingsRadioItem = style({
 export const footerBarRight = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.xs,
+  gap: 'var(--space-1)',
 })
 
 export const infoTrigger = style({
@@ -230,7 +230,7 @@ export const infoTrigger = style({
 export const infoRow = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.sm,
+  gap: 'var(--space-2)',
 })
 
 export const infoLabel = style({
@@ -267,13 +267,13 @@ export const infoCopyButton = style({
 export const infoRows = style({
   display: 'flex',
   flexDirection: 'column',
-  gap: spacing.xs,
+  gap: 'var(--space-1)',
 })
 
 export const infoSeparator = style({
   height: '1px',
   backgroundColor: 'var(--border)',
-  margin: `${spacing.xs} 0`,
+  margin: 'var(--space-1) 0',
 })
 
 export const infoContextUsage = style({

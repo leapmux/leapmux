@@ -1,5 +1,4 @@
 import { style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
 
 export const container = style({
   display: 'flex',
@@ -11,14 +10,14 @@ export const container = style({
 export const tree = style({
   flex: 1,
   overflow: 'auto',
-  padding: `${spacing.xs} 0`,
+  padding: 'var(--space-1) 0',
 })
 
 export const node = style({
   'display': 'flex',
   'alignItems': 'center',
   'gap': '4px',
-  'padding': `2px ${spacing.sm}`,
+  'padding': '2px var(--space-2)',
   'cursor': 'pointer',
   'fontSize': 'var(--text-7)',
   'color': 'var(--foreground)',
@@ -69,7 +68,7 @@ export const loadingState = style({
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  padding: spacing.xl,
+  padding: 'var(--space-6)',
   color: 'var(--faint-foreground)',
   fontSize: 'var(--text-7)',
 })
@@ -77,14 +76,14 @@ export const loadingState = style({
 export const loadingInline = style({
   fontSize: 'var(--text-7)',
   color: 'var(--faint-foreground)',
-  padding: `2px ${spacing.sm}`,
+  padding: '2px var(--space-2)',
 })
 
 export const errorState = style({
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  padding: spacing.xl,
+  padding: 'var(--space-6)',
   color: 'var(--danger)',
   fontSize: 'var(--text-7)',
 })
@@ -93,7 +92,7 @@ export const emptyState = style({
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  padding: spacing.xl,
+  padding: 'var(--space-6)',
   color: 'var(--faint-foreground)',
   fontSize: 'var(--text-7)',
 })
@@ -101,7 +100,7 @@ export const emptyState = style({
 export const emptyInline = style({
   fontSize: 'var(--text-7)',
   color: 'var(--faint-foreground)',
-  padding: `2px ${spacing.sm}`,
+  padding: '2px var(--space-2)',
 })
 
 export const nodeActions = style({
@@ -123,7 +122,7 @@ export const nodeMenuTrigger = style({
 export const pathInput = style({
   display: 'flex',
   alignItems: 'center',
-  padding: `${spacing.xs} ${spacing.sm}`,
+  padding: 'var(--space-1) var(--space-2)',
   borderBottom: '1px solid var(--border)',
   flexShrink: 0,
 })
@@ -134,7 +133,7 @@ export const pathInputField = style({
   'fontSize': 'var(--text-7)',
   'color': 'var(--foreground)',
   'fontFamily': 'var(--font-mono)',
-  'padding': `${spacing.xs} ${spacing.sm}`,
+  'padding': 'var(--space-1) var(--space-2)',
   'borderRadius': 'var(--radius-small)',
   'backgroundColor': 'var(--background)',
   'border': '1px solid var(--border)',

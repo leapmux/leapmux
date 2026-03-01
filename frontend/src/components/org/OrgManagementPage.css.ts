@@ -1,18 +1,17 @@
 import { style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
 
 export { backLink, emptyState, errorText, successText } from '~/styles/shared.css'
 
 export const container = style({
-  padding: spacing.xl,
+  padding: 'var(--space-6)',
   maxWidth: '800px',
 })
 
 export const infoRow = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.md,
-  marginBottom: spacing.md,
+  gap: 'var(--space-3)',
+  marginBottom: 'var(--space-3)',
 })
 
 export const infoLabel = style({
@@ -28,13 +27,13 @@ export const infoValue = style({
 export const inviteForm = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.sm,
-  marginBottom: spacing.lg,
+  gap: 'var(--space-2)',
+  marginBottom: 'var(--space-4)',
 })
 
 export const deleteSection = style({
-  marginBottom: spacing.xxl,
-  padding: spacing.xl,
+  marginBottom: 'var(--space-8)',
+  padding: 'var(--space-6)',
   backgroundColor: 'var(--card)',
   border: '1px solid var(--danger)',
   borderRadius: 'var(--radius-medium)',
@@ -42,5 +41,5 @@ export const deleteSection = style({
 
 export const deleteDescription = style({
   color: 'var(--muted-foreground)',
-  marginBottom: spacing.lg,
+  marginBottom: 'var(--space-4)',
 })

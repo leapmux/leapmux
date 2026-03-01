@@ -1,5 +1,4 @@
 import { style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
 
 export { errorText } from '~/styles/shared.css'
 
@@ -8,9 +7,9 @@ export const memberList = style({
   overflowY: 'auto',
   display: 'flex',
   flexDirection: 'column',
-  gap: spacing.xs,
-  marginBottom: spacing.lg,
-  padding: spacing.sm,
+  gap: 'var(--space-1)',
+  marginBottom: 'var(--space-4)',
+  padding: 'var(--space-2)',
   backgroundColor: 'var(--background)',
   border: '1px solid var(--border)',
   borderRadius: 'var(--radius-medium)',
@@ -19,8 +18,8 @@ export const memberList = style({
 export const memberItem = style({
   'display': 'flex',
   'alignItems': 'center',
-  'gap': spacing.sm,
-  'padding': `${spacing.xs} ${spacing.sm}`,
+  'gap': 'var(--space-2)',
+  'padding': 'var(--space-1) var(--space-2)',
   'borderRadius': 'var(--radius-small)',
   'color': 'var(--foreground)',
   'cursor': 'pointer',

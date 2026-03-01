@@ -1,17 +1,16 @@
 import { style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
 
 export const todoList = style({
   display: 'flex',
   flexDirection: 'column',
   gap: '2px',
-  padding: `${spacing.xs} ${spacing.sm}`,
+  padding: 'var(--space-1) var(--space-2)',
 })
 
 export const todoItem = style({
   display: 'flex',
   alignItems: 'flex-start',
-  gap: spacing.sm,
+  gap: 'var(--space-2)',
   padding: '3px 0',
   fontSize: 'var(--text-7)',
   lineHeight: 1.4,

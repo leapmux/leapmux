@@ -1,17 +1,17 @@
 import { style } from '@vanilla-extract/css'
-import { iconSize, spacing } from '~/styles/tokens'
+import { iconSize } from '~/styles/tokens'
 
 export const list = style({
   display: 'flex',
   flexDirection: 'column',
-  padding: `${spacing.xs} 0`,
+  padding: 'var(--space-1) 0',
 })
 
 export const sectionHeader = style({
   'display': 'flex',
   'alignItems': 'center',
-  'gap': spacing.xs,
-  'padding': `${spacing.xs} ${spacing.md}`,
+  'gap': 'var(--space-1)',
+  'padding': 'var(--space-1) var(--space-3)',
   'cursor': 'pointer',
   'userSelect': 'none',
   ':hover': {
@@ -99,10 +99,10 @@ export const sectionItems = style({
 export const item = style({
   'display': 'flex',
   'alignItems': 'center',
-  'padding': `${spacing.xs} ${spacing.md}`,
-  'paddingLeft': spacing.lg,
+  'padding': 'var(--space-1) var(--space-3)',
+  'paddingLeft': 'var(--space-4)',
   'cursor': 'pointer',
-  'gap': spacing.xs,
+  'gap': 'var(--space-1)',
   'borderRight': '2px solid transparent',
   ':hover': {
     backgroundColor: 'var(--card)',
@@ -133,7 +133,7 @@ export const itemRenameInput = style({
   'backgroundColor': 'var(--background)',
   'border': '1px solid var(--ring)',
   'borderRadius': 'var(--radius-small)',
-  'padding': `0 ${spacing.xs}`,
+  'padding': '0 var(--space-1)',
   'outline': 'none',
   'minWidth': 0,
   ':focus': {
@@ -162,8 +162,8 @@ export const sharedBadge = style({
 })
 
 export const emptySection = style({
-  padding: `${spacing.sm} ${spacing.lg}`,
-  paddingLeft: spacing.lg,
+  padding: 'var(--space-2) var(--space-4)',
+  paddingLeft: 'var(--space-4)',
   fontSize: 'var(--text-7)',
   color: 'var(--faint-foreground)',
   fontStyle: 'italic',
@@ -178,8 +178,8 @@ export const sectionHeaderDropTarget = style({
 })
 
 export const dragOverlay = style({
-  padding: `${spacing.xs} ${spacing.md}`,
-  paddingLeft: spacing.lg,
+  padding: 'var(--space-1) var(--space-3)',
+  paddingLeft: 'var(--space-4)',
   fontSize: 'var(--text-7)',
   fontWeight: 400,
   color: 'var(--foreground)',

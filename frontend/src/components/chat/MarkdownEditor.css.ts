@@ -1,6 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { codeBlockCode, codeBlockPre } from '~/styles/codeBlock'
-import { iconSize, spacing } from '~/styles/tokens'
+import { iconSize } from '~/styles/tokens'
 
 export const headingPreviewItem = style({
   margin: 0,
@@ -36,8 +36,8 @@ export const container = style({
 export const toolbar = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.xs,
-  padding: `${spacing.xs} ${spacing.sm}`,
+  gap: 'var(--space-1)',
+  padding: 'var(--space-1) var(--space-2)',
   borderBottom: '1px solid var(--border)',
   backgroundColor: 'var(--card)',
   flexShrink: 0,
@@ -82,7 +82,7 @@ export const linkPopover = style({
   backgroundColor: 'var(--card)',
   border: '1px solid var(--border)',
   borderRadius: 'var(--radius-medium)',
-  padding: spacing.xs,
+  padding: 'var(--space-1)',
   boxShadow: 'var(--shadow-large)',
   // Opacity animation matching OAT dropdown pattern
   opacity: 0,
@@ -99,14 +99,14 @@ export const linkPopover = style({
 
 export const linkPopoverForm = style({
   display: 'flex',
-  gap: spacing.xs,
+  gap: 'var(--space-1)',
   alignItems: 'center',
 })
 
 export const linkPopoverInput = style({
   'all': 'unset',
   'fontSize': 'var(--text-7)',
-  'padding': `${spacing.xs} ${spacing.sm}`,
+  'padding': 'var(--space-1) var(--space-2)',
   'border': '1px solid var(--border)',
   'borderRadius': 'var(--radius-small)',
   'backgroundColor': 'var(--background)',
@@ -133,7 +133,7 @@ export const codeLangPopoverContent = style({
 export const comboboxControl = style({
   display: 'flex',
   alignItems: 'center',
-  padding: `${spacing.xs} ${spacing.sm}`,
+  padding: 'var(--space-1) var(--space-2)',
   borderTop: '1px solid var(--border)',
 })
 
@@ -150,15 +150,15 @@ export const comboboxInput = style({
 export const comboboxListbox = style({
   maxHeight: '200px',
   overflowY: 'auto',
-  padding: spacing.xs,
+  padding: 'var(--space-1)',
 })
 
 export const comboboxItem = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.xs,
+  gap: 'var(--space-1)',
   fontSize: 'var(--text-7)',
-  padding: `${spacing.xs} ${spacing.sm}`,
+  padding: 'var(--space-1) var(--space-2)',
   cursor: 'pointer',
   color: 'var(--foreground)',
   borderRadius: 'var(--radius-small)',
@@ -186,7 +186,7 @@ export const editorWrapper = style({
 
 // ProseMirror editor layout
 globalStyle(`${editorWrapper} .ProseMirror`, {
-  padding: `${spacing.sm} ${spacing.md}`,
+  padding: 'var(--space-2) var(--space-3)',
   outline: 'none',
   minHeight: '20px',
   whiteSpace: 'pre-wrap',

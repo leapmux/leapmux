@@ -1,5 +1,4 @@
 import { style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
 
 export const container = style({
   display: 'flex',
@@ -11,7 +10,7 @@ export const container = style({
 
 export const message = style({
   color: 'var(--muted-foreground)',
-  marginBottom: spacing.xl,
+  marginBottom: 'var(--space-6)',
   lineHeight: 1.5,
 })
 

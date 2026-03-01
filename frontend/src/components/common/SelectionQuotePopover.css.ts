@@ -1,5 +1,4 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
 
 export const popover = style({
   'position': 'absolute',
@@ -24,7 +23,7 @@ export const quoteButton = style({
   justifyContent: 'center',
   gap: '4px',
   height: '28px',
-  paddingInline: spacing.sm,
+  paddingInline: 'var(--space-2)',
   cursor: 'pointer',
   color: 'var(--muted-foreground)',
   fontSize: 'var(--text-8)',

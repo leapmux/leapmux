@@ -1,6 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { spin } from '~/styles/animations.css'
-import { spacing } from '~/styles/tokens'
 
 export const errorText = style({
   color: 'var(--danger)',
@@ -21,13 +20,13 @@ export const emptyState = style({
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  padding: spacing.xl,
+  padding: 'var(--space-6)',
   color: 'var(--faint-foreground)',
 })
 
 export const backLink = style({
   'display': 'inline-block',
-  'marginBottom': spacing.lg,
+  'marginBottom': 'var(--space-4)',
   'color': 'var(--primary)',
   'textDecoration': 'none',
   ':hover': {
@@ -51,7 +50,7 @@ export const menuSectionHeader = style({
   fontWeight: 600,
   color: 'var(--muted-foreground)',
   textTransform: 'uppercase',
-  padding: `${spacing.xs} ${spacing.md}`,
+  padding: 'var(--space-1) var(--space-3)',
 })
 
 // Layout utilities
@@ -117,13 +116,13 @@ export const dialogHeader = style({
   alignItems: 'center',
   justifyContent: 'space-between',
   gap: 0,
-  padding: 0,
+  padding: 'var(--space-6) var(--space-6) 0',
 })
 
 export const dialogCloseButton = style({
   position: 'absolute',
-  top: spacing.md,
-  right: spacing.md,
+  top: 'var(--space-6)',
+  right: 'var(--space-6)',
 })
 
 globalStyle(`${dialogHeader} > h2`, {
@@ -203,7 +202,7 @@ globalStyle(`${dialogStandard} > form > section > .vstack > label:has(.${treeCon
 export const checkboxRow = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.sm,
+  gap: 'var(--space-2)',
   cursor: 'pointer',
 })
 

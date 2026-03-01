@@ -1,6 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { codeViewContainer } from '~/components/chat/codeViewStyles.css'
-import { spacing } from '~/styles/tokens'
 
 export const container = style({
   display: 'flex',
@@ -18,12 +17,12 @@ export const content = style({
 
 export const statusBar = style({
   position: 'absolute',
-  bottom: spacing.sm,
-  right: spacing.md,
+  bottom: 'var(--space-2)',
+  right: 'var(--space-3)',
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.sm,
-  padding: `${spacing.xs} ${spacing.sm}`,
+  gap: 'var(--space-2)',
+  padding: 'var(--space-1) var(--space-2)',
   borderRadius: 'var(--radius-small)',
   backgroundColor: 'var(--card)',
   border: '1px solid var(--border)',
@@ -58,7 +57,7 @@ export const errorState = style({
   height: '100%',
   color: 'var(--danger)',
   fontSize: 'var(--text-7)',
-  padding: spacing.lg,
+  padding: 'var(--space-4)',
   textAlign: 'center',
 })
 
@@ -69,7 +68,7 @@ export const imageSizeError = style({
   height: '100%',
   color: 'var(--muted-foreground)',
   fontSize: 'var(--text-7)',
-  padding: spacing.lg,
+  padding: 'var(--space-4)',
   textAlign: 'center',
 })
 
@@ -83,7 +82,7 @@ export const hexContainer = style({
   fontVariantLigatures: 'none',
   fontSize: 'var(--text-8)',
   lineHeight: 1.5,
-  paddingInline: spacing.sm,
+  paddingInline: 'var(--space-2)',
   whiteSpace: 'pre',
   width: 'max-content',
   marginInline: 'auto',
@@ -115,7 +114,7 @@ globalStyle(`${textViewContainer} ${codeViewContainer}`, {
   borderRadius: 0,
   marginTop: 0,
   overflow: 'visible',
-  paddingBlock: spacing.sm,
+  paddingBlock: 'var(--space-2)',
 })
 
 // Container for views that have a render/source toggle (markdown, SVG)
@@ -128,8 +127,8 @@ export const toggleViewContainer = style({
 // Floating segmented toggle button at top-right
 export const viewToggle = style({
   'position': 'absolute',
-  'top': spacing.sm,
-  'right': spacing.md,
+  'top': 'var(--space-2)',
+  'right': 'var(--space-3)',
   'zIndex': 10,
   'display': 'flex',
   'borderRadius': 'var(--radius-small)',
@@ -172,7 +171,7 @@ export const viewToggleActive = style({
 })
 
 export const markdownContainer = style({
-  padding: spacing.lg,
+  padding: 'var(--space-4)',
   overflow: 'auto',
   height: '100%',
 })
@@ -196,7 +195,7 @@ export const splitDivider = style({
 })
 
 export const splitPaneMarkdown = style({
-  padding: spacing.lg,
+  padding: 'var(--space-4)',
 })
 
 export const splitPaneSource = style({})
@@ -208,14 +207,14 @@ globalStyle(`${splitPane} ${codeViewContainer}`, {
   borderRadius: 0,
   marginTop: 0,
   overflow: 'visible',
-  paddingBlock: spacing.sm,
+  paddingBlock: 'var(--space-2)',
 })
 
 // Floating toolbar for image zoom controls (top-left)
 export const imageToolbar = style({
   'position': 'absolute',
-  'top': spacing.sm,
-  'left': spacing.md,
+  'top': 'var(--space-2)',
+  'left': 'var(--space-3)',
   'zIndex': 10,
   'display': 'flex',
   'alignItems': 'center',
@@ -272,7 +271,7 @@ export const imageToolbarTextButton = style({
   alignItems: 'center',
   justifyContent: 'center',
   height: '28px',
-  paddingInline: spacing.xs,
+  paddingInline: 'var(--space-1)',
   cursor: 'pointer',
   color: 'var(--muted-foreground)',
   fontSize: 'var(--text-8)',
@@ -305,7 +304,7 @@ export const imageZoomWrapper = style({
   minWidth: '100%',
   minHeight: '100%',
   width: 'max-content',
-  padding: spacing.lg,
+  padding: 'var(--space-4)',
 })
 
 // Checkerboard transparency pattern + border for images

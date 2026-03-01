@@ -1,5 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { headerHeightPx, spacing } from '~/styles/tokens'
+import { headerHeightPx } from '~/styles/tokens'
 
 export const tooltipTrigger = style({
   display: 'inline-flex',
@@ -9,7 +9,7 @@ export const tabBar = style({
   display: 'flex',
   alignItems: 'stretch',
   gap: '1px',
-  padding: `0 ${spacing.sm}`,
+  padding: '0 var(--space-2)',
   backgroundColor: 'var(--background)',
   flexShrink: 0,
   minHeight: `${headerHeightPx - 1}px`,
@@ -19,7 +19,7 @@ export const tabList = style({
   position: 'relative',
   display: 'flex',
   alignItems: 'stretch',
-  gap: spacing.sm,
+  gap: 'var(--space-2)',
   flex: 1,
   overflowX: 'auto',
   scrollbarWidth: 'none',
@@ -33,7 +33,7 @@ export const tab = style({
   'display': 'flex',
   'alignItems': 'center',
   'gap': '6px',
-  'padding': `${spacing.xs} ${spacing.xs} ${spacing.xs} ${spacing.sm}`,
+  'padding': 'var(--space-1) var(--space-1) var(--space-1) var(--space-2)',
   'fontSize': 'var(--text-7)',
   'color': 'var(--muted-foreground)',
   'cursor': 'pointer',
@@ -67,7 +67,7 @@ export const newTabWrapper = style({
   position: 'relative',
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.xs,
+  gap: 'var(--space-1)',
 })
 
 export const tabNotification = style({
@@ -105,7 +105,7 @@ export const tabDragOverlay = style({
   display: 'flex',
   alignItems: 'center',
   gap: '6px',
-  padding: `${spacing.xs} 6px`,
+  padding: 'var(--space-1) 6px',
   fontSize: 'var(--text-7)',
   color: 'var(--foreground)',
   backgroundColor: 'var(--card)',
@@ -126,7 +126,7 @@ export const tabListDropTarget = style({
 })
 
 export const shellDefault = style({
-  marginLeft: spacing.xs,
+  marginLeft: 'var(--space-1)',
   fontSize: 'var(--text-8)',
   color: 'var(--muted-foreground)',
 })
@@ -164,13 +164,13 @@ export const collapsedOverflow = style({
 
 // --- Compact (240-359px): icon-only tabs, hide close unless hovered ---
 globalStyle(`[data-tile-size="compact"] ${tabBar}`, {
-  padding: `0 ${spacing.xs}`,
+  padding: '0 var(--space-1)',
   gap: '0',
 })
 
 globalStyle(`[data-tile-size="compact"] ${tab}`, {
   gap: '4px',
-  padding: `${spacing.xs}`,
+  padding: 'var(--space-1)',
   maxWidth: 'unset',
 })
 
@@ -188,13 +188,13 @@ globalStyle(`[data-tile-size="compact"] ${tab}:hover ${tabClose}`, {
 
 // --- Minimal (140-239px): also icon-only tabs + collapse new-tab buttons ---
 globalStyle(`[data-tile-size="minimal"] ${tabBar}`, {
-  padding: `0 ${spacing.xs}`,
+  padding: '0 var(--space-1)',
   gap: '0',
 })
 
 globalStyle(`[data-tile-size="minimal"] ${tab}`, {
   gap: '4px',
-  padding: `${spacing.xs}`,
+  padding: 'var(--space-1)',
   maxWidth: 'unset',
 })
 
@@ -226,7 +226,7 @@ globalStyle(`[data-tile-size="micro"] ${tabBar}`, {
 
 globalStyle(`[data-tile-size="micro"] ${tab}`, {
   gap: '4px',
-  padding: `${spacing.xs} 2px`,
+  padding: 'var(--space-1) 2px',
   maxWidth: 'unset',
 })
 

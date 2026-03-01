@@ -1,5 +1,5 @@
 import { style } from '@vanilla-extract/css'
-import { resizeHandleSelectors, spacing } from '~/styles/tokens'
+import { resizeHandleSelectors } from '~/styles/resizeHandle'
 
 export const shell = style({
   height: '100%',
@@ -70,7 +70,7 @@ export const placeholder = style({
   flex: 1,
   color: 'var(--faint-foreground)',
   textAlign: 'center',
-  padding: `0 ${spacing.xl}`,
+  padding: '0 var(--space-6)',
 })
 
 export const emptyTileActions = style({
@@ -78,7 +78,7 @@ export const emptyTileActions = style({
   flexDirection: 'column',
   alignItems: 'center',
   justifyContent: 'center',
-  gap: spacing.md,
+  gap: 'var(--space-3)',
   flex: 1,
 })
 
@@ -89,7 +89,7 @@ export const emptyTileHint = style({
   flex: 1,
   color: 'var(--faint-foreground)',
   textAlign: 'center',
-  padding: `0 ${spacing.xl}`,
+  padding: '0 var(--space-6)',
   cursor: 'default',
 })
 

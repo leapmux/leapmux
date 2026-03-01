@@ -1,9 +1,8 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { spacing } from '~/styles/tokens'
 
 export const banner = style({
   position: 'relative',
-  padding: spacing.lg,
+  padding: 'var(--space-4)',
   borderRadius: 'var(--radius-medium)',
   border: '1px solid var(--border)',
   borderLeft: '3px solid var(--warning)',
@@ -15,46 +14,46 @@ export const bannerTitle = style({
   fontSize: 'var(--text-7)',
   fontWeight: 600,
   color: 'var(--foreground)',
-  marginBottom: spacing.sm,
+  marginBottom: 'var(--space-2)',
 })
 
 export const bannerContent = style({
   fontSize: 'var(--text-7)',
   color: 'var(--foreground)',
   lineHeight: 1.6,
-  marginBottom: spacing.md,
+  marginBottom: 'var(--space-3)',
   maxHeight: '300px',
   overflowY: 'auto',
 })
 
 export const bannerActions = style({
   display: 'flex',
-  gap: spacing.sm,
+  gap: 'var(--space-2)',
   justifyContent: 'flex-end',
 })
 
 export const questionGroup = style({
-  marginBottom: spacing.md,
+  marginBottom: 'var(--space-3)',
 })
 
 export const questionLabel = style({
   fontSize: 'var(--text-7)',
   fontWeight: 400,
   color: 'var(--foreground)',
-  marginBottom: spacing.xs,
+  marginBottom: 'var(--space-1)',
 })
 
 export const optionList = style({
   display: 'flex',
   flexDirection: 'column',
-  gap: spacing.xs,
+  gap: 'var(--space-1)',
 })
 
 export const optionItem = style({
   display: 'flex',
   alignItems: 'flex-start',
-  gap: spacing.sm,
-  padding: spacing.xs,
+  gap: 'var(--space-2)',
+  padding: 'var(--space-1)',
   borderRadius: 'var(--radius-small)',
   cursor: 'pointer',
   fontSize: 'var(--text-7)',
@@ -140,12 +139,12 @@ export const paginationItemAnswered = style({
 export const questionPageHeader = style({
   fontSize: 'var(--text-8)',
   color: 'var(--muted-foreground)',
-  marginBottom: spacing.xs,
+  marginBottom: 'var(--space-1)',
 })
 
 // Control request content in MarkdownEditor banner slot
 export const controlBanner = style({
-  padding: `${spacing.sm} ${spacing.md}`,
+  padding: 'var(--space-2) var(--space-3)',
   fontSize: 'var(--text-7)',
   backgroundColor: 'var(--lm-warning-subtle)',
   borderBottom: '1px solid var(--border)',
@@ -158,7 +157,7 @@ export const controlBannerTitle = style({
   fontSize: 'var(--text-7)',
   fontWeight: 600,
   color: 'var(--foreground)',
-  marginBottom: spacing.xs,
+  marginBottom: 'var(--space-1)',
 })
 
 // Multi-question footer layout: [Stop] [YOLO]  [Pagination]  [Submit]
@@ -166,8 +165,8 @@ export const controlFooter = style({
   display: 'grid',
   gridTemplateColumns: '1fr auto 1fr',
   alignItems: 'center',
-  gap: spacing.xs,
-  padding: `${spacing.xs} ${spacing.sm}`,
+  gap: 'var(--space-1)',
+  padding: 'var(--space-1) var(--space-2)',
   backgroundColor: 'var(--background)',
   flexShrink: 0,
   flex: 1,
@@ -177,14 +176,14 @@ export const controlFooter = style({
 export const controlFooterLeft = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.xs,
+  gap: 'var(--space-1)',
   justifyContent: 'flex-start',
 })
 
 export const controlFooterRight = style({
   display: 'flex',
   alignItems: 'center',
-  gap: spacing.xs,
+  gap: 'var(--space-1)',
   justifyContent: 'flex-end',
   gridColumn: 3,
 })
