@@ -3,6 +3,7 @@
 import type { JSX } from 'solid-js'
 import type { MessageContentRenderer, RenderContext } from './messageRenderers'
 import type { TodoItem } from '~/stores/chat.store'
+import Bot from 'lucide-solid/icons/bot'
 import ListTodo from 'lucide-solid/icons/list-todo'
 import SquareTerminal from 'lucide-solid/icons/square-terminal'
 import Terminal from 'lucide-solid/icons/terminal'
@@ -225,6 +226,59 @@ export const taskOutputRenderer: MessageContentRenderer = {
     if (!toolUse)
       return null
     return renderTaskOutput(toolUse as Record<string, unknown>, context)
+  },
+}
+
+/** Render Agent or Task tool_use with description, status, and subagent type. */
+export function renderAgentOrTask(toolUse: Record<string, unknown>, context?: RenderContext): JSX.Element {
+  const input = isObject(toolUse.input) ? toolUse.input as Record<string, unknown> : {}
+  const toolName = String(toolUse.name || 'Agent')
+  const description = String(input.description || toolName)
+  const subagentType = input.subagent_type ? String(input.subagent_type) : null
+
+  const status = context?.childToolResultStatus
+  const hasChildren = (context?.threadChildCount ?? 0) > 0
+  const displayStatus = status
+    ? formatTaskStatus(status)
+    : (hasChildren ? 'Running' : null)
+
+  return (
+    <div class={toolMessage}>
+      <div class={toolUseHeader}>
+        <span class={inlineFlex} title={toolName}>
+          <Icon icon={Bot} size="md" class={toolUseIcon} />
+        </span>
+        <span class={toolInputDetail}>
+          {description}
+          {displayStatus ? ` - ${displayStatus}` : ''}
+          {subagentType ? ` (${subagentType})` : ''}
+        </span>
+        <ControlResponseTag response={context?.childControlResponse} />
+        <Show when={context}>
+          <ToolHeaderActions
+            createdAt={context!.createdAt}
+            updatedAt={context!.updatedAt}
+            threadCount={context!.threadChildCount ?? 0}
+            threadExpanded={context!.threadExpanded ?? false}
+            onToggleThread={context!.onToggleThread ?? (() => {})}
+            onCopyJson={context!.onCopyJson ?? (() => {})}
+            jsonCopied={context!.jsonCopied ?? false}
+          />
+        </Show>
+      </div>
+    </div>
+  )
+}
+
+export const agentOrTaskRenderer: MessageContentRenderer = {
+  render(parsed, _role, context) {
+    const content = getAssistantContent(parsed)
+    if (!content)
+      return null
+    const toolUse = content.find(c => isObject(c) && c.type === 'tool_use' && (c.name === 'Agent' || c.name === 'Task'))
+    if (!toolUse)
+      return null
+    return renderAgentOrTask(toolUse as Record<string, unknown>, context)
   },
 }
 

@@ -79,6 +79,7 @@ export function toolIcon(name: string, size: IconSizeName): JSX.Element {
     case 'Grep': return <Icon icon={Search} size={size} class={toolUseIcon} />
     case 'Glob': return <Icon icon={FolderSearch} size={size} class={toolUseIcon} />
     case 'Task': return <Icon icon={Bot} size={size} class={toolUseIcon} />
+    case 'Agent': return <Icon icon={Bot} size={size} class={toolUseIcon} />
     case 'WebFetch': return <Icon icon={Globe} size={size} class={toolUseIcon} />
     case 'WebSearch': return <Icon icon={Globe} size={size} class={toolUseIcon} />
     case 'TodoWrite': return <Icon icon={ListTodo} size={size} class={toolUseIcon} />

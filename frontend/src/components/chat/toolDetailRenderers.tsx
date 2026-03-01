@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from './messageRenderers'
-import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, TaskInput, WebFetchInput, WebSearchInput, WriteInput } from '~/types/toolMessages'
+import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, WebFetchInput, WebSearchInput, WriteInput } from '~/types/toolMessages'
 import { diffLines } from 'diff'
 import { relativizePath } from './messageUtils'
 import {
@@ -108,15 +108,6 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
         <span class={toolInputCode}>
           {displayPattern}
           {path ? ` ${relativizePath(path, cwd, homeDir)}` : ''}
-        </span>
-      )
-    }
-    case 'Task': {
-      const { description: desc, subagent_type: subagentType } = input as TaskInput
-      return (
-        <span class={toolInputDetail}>
-          {desc || 'Task'}
-          {subagentType ? ` (${subagentType})` : ''}
         </span>
       )
     }
