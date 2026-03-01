@@ -15,6 +15,24 @@ export default defineConfig({
     plugins: [
       vanillaExtractPlugin({ identifiers: 'debug' }),
       {
+        // Suppress "didn't resolve at build time" warnings for public/ assets
+        // referenced in the SSR bundle (which Vinxi always builds even with
+        // ssr: false). These font URLs resolve correctly at runtime in the browser.
+        name: 'suppress-public-asset-warnings',
+        configResolved(config) {
+          const isPublicAssetWarning = (msg: string) =>
+            /\/fonts\/\S+ referenced in .+ didn't resolve at build time/.test(msg)
+          for (const method of ['warn', 'warnOnce'] as const) {
+            const original = config.logger[method].bind(config.logger)
+            config.logger[method] = (msg: string, options?: any) => {
+              if (isPublicAssetWarning(msg))
+                return
+              original(msg, options)
+            }
+          }
+        },
+      },
+      {
         // Workaround: vinxi leaks absolute paths into $component.src in the
         // client bundle, but window.manifest keys are relative. Strip the
         // absolute prefix so asset preloading can match manifest entries.
