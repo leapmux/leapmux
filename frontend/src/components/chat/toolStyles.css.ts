@@ -1,4 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import { todoList } from '~/components/todo/TodoList.css'
 
 // Tool use/result messages - document-style, no bubble
 export const toolMessage = style({
@@ -8,31 +9,20 @@ export const toolMessage = style({
 })
 
 // Tool use header: "» ToolName(...)"
+// Uses flex-start so multi-line titles keep icon + actions on the first line.
 export const toolUseHeader = style({
   display: 'flex',
-  alignItems: 'center',
+  alignItems: 'flex-start',
   gap: 'var(--space-1)',
   color: 'var(--muted-foreground)',
 })
 
-// Tool result header: "« ToolName"
-export const toolResultHeader = style({
-  display: 'flex',
-  alignItems: 'center',
-  gap: 'var(--space-1)',
-  marginBottom: 'var(--space-1)',
-  color: 'var(--muted-foreground)',
-})
-
-// Icon styling
+// Icon styling — also used on the wrapper <span> so it acts as a flex-start-aligned
+// line-height box, keeping the icon vertically centred on the first text line.
 export const toolUseIcon = style({
   color: 'var(--muted-foreground)',
-  flexShrink: 0,
-})
-
-export const toolResultIcon = style({
-  color: 'var(--success)',
-  flexShrink: 0,
+  height: '1lh',
+  alignItems: 'center',
 })
 
 // Tool result content area (markdown)
@@ -103,13 +93,12 @@ export const toolResultPrompt = style({
   marginBottom: 'var(--space-1)',
 })
 
-// Tool summary line (monospace, aligned with description: icon 16px + gap 4px = 20px indent)
+// Tool summary line (monospace)
 const toolInputSummaryBase = {
   fontFamily: 'var(--font-mono)',
   fontVariantLigatures: 'none' as const,
   fontSize: 'var(--text-8)',
   color: 'var(--muted-foreground)',
-  paddingLeft: '20px',
 }
 
 export const toolInputSummary = style({
@@ -121,7 +110,6 @@ export const toolInputSummary = style({
 
 export const toolInputSummaryExpanded = style({
   ...toolInputSummaryBase,
-  paddingLeft: 0,
   whiteSpace: 'pre-wrap',
   wordBreak: 'break-all',
 })
@@ -132,6 +120,7 @@ export const toolInputText = style({
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
+  minWidth: 0,
 })
 
 // Tool input code text (commands, patterns — monospaced)
@@ -142,6 +131,7 @@ export const toolInputCode = style({
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
+  minWidth: 0,
 })
 
 // Diff stat: added lines count (green)
@@ -165,7 +155,9 @@ export const toolInputPath = style({
 export const toolHeaderActions = style({
   display: 'flex',
   alignItems: 'center',
+  height: '1lh',
   gap: '2px',
+  flexShrink: 0,
   opacity: 0,
   transition: 'opacity 0.15s',
 })
@@ -199,21 +191,17 @@ export const toolBodyContent = style({
   borderLeft: '2px solid var(--border)',
 })
 
-// AskUserQuestion: question item container
-export const questionItem = style({
+// TodoList inside tool body: remove horizontal padding (toolBodyContent already provides it)
+globalStyle(`${toolBodyContent} > .${todoList}`, {
+  paddingLeft: 0,
+  paddingRight: 0,
+})
+
+// File list in Grep/Glob tool results
+export const toolFileList = style({
   paddingLeft: '20px',
-  marginTop: 'var(--space-1)',
-})
-
-// AskUserQuestion: question header label (bold)
-export const questionHeader = style({
-  fontWeight: 600,
-  color: 'var(--foreground)',
-})
-
-// AskUserQuestion: question text
-export const questionText = style({
-  color: 'var(--muted-foreground)',
+  margin: '4px 0',
+  fontSize: 'var(--text-8)',
 })
 
 // AskUserQuestion: answer text

@@ -8,14 +8,13 @@ import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import Bot from 'lucide-solid/icons/bot'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
-import Toolbox from 'lucide-solid/icons/toolbox'
 import { createSignal, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { markdownContent } from './markdownContent.css'
 import { thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
-import { getAssistantContent, isObject } from './messageUtils'
+import { isObject } from './messageUtils'
 import {
   agentRenamedRenderer,
   compactBoundaryRenderer,
@@ -28,22 +27,17 @@ import {
   settingsChangedRenderer,
   systemInitRenderer,
 } from './notificationRenderers'
-import { enterPlanModeRenderer, exitPlanModeRenderer, renderEnterPlanMode, renderExitPlanMode } from './planModeRenderers'
+import { exitPlanModeRenderer, renderExitPlanMode } from './planModeRenderers'
 import {
-  agentOrTaskRenderer,
   askUserQuestionRenderer,
-  renderAgentOrTask,
   renderAskUserQuestion,
-  renderTaskOutput,
   renderTodoWrite,
   taskNotificationRenderer,
-  taskOutputRenderer,
   todoWriteRenderer,
 } from './taskRenderers'
 import {
   ToolHeaderActions,
   toolResultRenderer,
-  ToolUseLayout,
   toolUseRenderer,
 } from './toolRenderers'
 import {
@@ -112,6 +106,16 @@ export interface RenderContext {
   childControlResponse?: { action: string, comment: string }
   /** Original file content before edit (for expandable context lines in diffs). */
   childOriginalFile?: string
+  /** Grep result: number of matched files from child tool_use_result. */
+  childGrepNumFiles?: number
+  /** Grep result: number of matched lines from child tool_use_result. */
+  childGrepNumLines?: number
+  /** Glob result: number of matched files from child tool_use_result. */
+  childGlobNumFiles?: number
+  /** Glob result: duration in ms from child tool_use_result. */
+  childGlobDurationMs?: number
+  /** Glob result: whether results were truncated from child tool_use_result. */
+  childGlobTruncated?: boolean
 }
 
 export interface MessageContentRenderer {
@@ -126,37 +130,6 @@ function markdownClass(_role: MessageRole): string {
 // ---------------------------------------------------------------------------
 // Specialized tool render functions (accept pre-extracted tool_use data)
 // ---------------------------------------------------------------------------
-
-/** Render Skill tool_use as "Skill: /<skill name>". */
-function renderSkill(toolUse: Record<string, unknown>, context?: RenderContext): JSX.Element {
-  const input = toolUse.input
-  const skillName = isObject(input) ? String((input as Record<string, unknown>).skill || '') : ''
-
-  return (
-    <ToolUseLayout
-      icon={Toolbox}
-      toolName="Skill"
-      title={`Skill: /${skillName}`}
-      context={context}
-    />
-  )
-}
-
-// ---------------------------------------------------------------------------
-// MessageContentRenderer wrappers (used by getFallbackRenderers linear scan)
-// ---------------------------------------------------------------------------
-
-const skillRenderer: MessageContentRenderer = {
-  render(parsed, _role, context) {
-    const content = getAssistantContent(parsed)
-    if (!content)
-      return null
-    const toolUse = content.find(c => isObject(c) && c.type === 'tool_use' && c.name === 'Skill')
-    if (!toolUse)
-      return null
-    return renderSkill(toolUse as Record<string, unknown>, context)
-  },
-}
 
 /** Handles assistant messages: {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}} */
 const assistantTextRenderer: MessageContentRenderer = {
@@ -290,14 +263,9 @@ const userContentRenderer: MessageContentRenderer = {
 
 /** Specialized tool renderers keyed by tool name. */
 const SPECIALIZED_TOOL_RENDERERS: Record<string, (toolUse: Record<string, unknown>, context?: RenderContext) => JSX.Element | null> = {
-  EnterPlanMode: renderEnterPlanMode,
   ExitPlanMode: renderExitPlanMode,
   TodoWrite: renderTodoWrite,
   AskUserQuestion: renderAskUserQuestion,
-  TaskOutput: renderTaskOutput,
-  Skill: renderSkill,
-  Agent: renderAgentOrTask,
-  Task: renderAgentOrTask,
 }
 
 /** Dispatch rendering for a tool_use category: try specialized renderer first, then generic. */
@@ -379,12 +347,8 @@ function getFallbackRenderers(): MessageContentRenderer[] {
   if (!_fallbackRenderers) {
     _fallbackRenderers = [
       exitPlanModeRenderer,
-      enterPlanModeRenderer,
-      skillRenderer,
       todoWriteRenderer,
       askUserQuestionRenderer,
-      taskOutputRenderer,
-      agentOrTaskRenderer,
       toolUseRenderer,
       toolResultRenderer,
       userTextContentRenderer,

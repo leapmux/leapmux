@@ -100,6 +100,26 @@ describe('createChatStore', () => {
     })
   })
 
+  it('should update message in-place on thread merge (same ID)', () => {
+    createRoot((dispose) => {
+      const store = createChatStore()
+      store.addMessage('agent1', makeMessage('msg1', 1n))
+      store.addMessage('agent1', makeMessage('msg2', 2n))
+
+      // Thread merge: same ID as msg1, bumped seq
+      const merged = makeMessage('msg1', 3n)
+      store.addMessage('agent1', merged)
+
+      const msgs = store.getMessages('agent1')
+      expect(msgs).toHaveLength(2)
+      // The merged message should be at its original position with updated seq
+      expect(msgs[0].id).toBe('msg1')
+      expect(msgs[0].seq).toBe(3n)
+      expect(msgs[1].id).toBe('msg2')
+      dispose()
+    })
+  })
+
   it('should not set error for message without deliveryError', () => {
     createRoot((dispose) => {
       const store = createChatStore()
