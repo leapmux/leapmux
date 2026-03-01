@@ -51,8 +51,19 @@ export function classifyMessage(
     return { kind: 'hidden' }
 
   // 1. Notification thread (wrapper with notification-type first message)
-  if (isNotificationThreadWrapper(wrapper))
-    return { kind: 'notification_thread', messages: wrapper.messages }
+  if (isNotificationThreadWrapper(wrapper)) {
+    // Filter out "allowed" rate limit messages — they are informational only
+    // and the popover already shows them.
+    const msgs = wrapper.messages.filter((m) => {
+      if (!isObj(m))
+        return true
+      return !(m.type === 'rate_limit' && isObj(m.rate_limit_info)
+        && (m.rate_limit_info as Record<string, unknown>).status === 'allowed')
+    })
+    if (msgs.length === 0)
+      return { kind: 'hidden' }
+    return { kind: 'notification_thread', messages: msgs }
+  }
 
   if (!parentObject)
     return { kind: 'unknown' }
@@ -74,7 +85,13 @@ export function classifyMessage(
   }
 
   // 4b. Non-system notification types
-  if (type === 'interrupted' || type === 'context_cleared' || type === 'settings_changed' || type === 'rate_limit' || type === 'agent_renamed')
+  if (type === 'rate_limit') {
+    if (isObj(parentObject.rate_limit_info) && (parentObject.rate_limit_info as Record<string, unknown>).status === 'allowed') {
+      return { kind: 'hidden' }
+    }
+    return { kind: 'notification' }
+  }
+  if (type === 'interrupted' || type === 'context_cleared' || type === 'settings_changed' || type === 'agent_renamed')
     return { kind: 'notification' }
 
   // 5. Result divider

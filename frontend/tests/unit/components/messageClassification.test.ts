@@ -42,9 +42,27 @@ describe('classifyMessage', () => {
       expect(result.kind).toBe('notification_thread')
     })
 
-    it('classifies wrapper with rate_limit first message', () => {
-      const result = classifyMessage(undefined, wrapper({ type: 'rate_limit', rate_limit_info: {} }))
+    it('classifies wrapper with non-allowed rate_limit as notification_thread', () => {
+      const result = classifyMessage(undefined, wrapper({ type: 'rate_limit', rate_limit_info: { status: 'rate_limited' } }))
       expect(result.kind).toBe('notification_thread')
+    })
+
+    it('classifies wrapper with only allowed rate_limit as hidden', () => {
+      const result = classifyMessage(undefined, wrapper({ type: 'rate_limit', rate_limit_info: { status: 'allowed' } }))
+      expect(result.kind).toBe('hidden')
+    })
+
+    it('filters allowed rate_limit from mixed notification thread', () => {
+      const msgs = [
+        { type: 'settings_changed', changes: {} },
+        { type: 'rate_limit', rate_limit_info: { status: 'allowed' } },
+      ]
+      const result = classifyMessage(undefined, { old_seqs: [], messages: msgs })
+      expect(result.kind).toBe('notification_thread')
+      if (result.kind === 'notification_thread') {
+        expect(result.messages).toHaveLength(1)
+        expect((result.messages[0] as Record<string, unknown>).type).toBe('settings_changed')
+      }
     })
 
     it('classifies wrapper with system (non-init, non-task_notification) first message', () => {
@@ -80,7 +98,7 @@ describe('classifyMessage', () => {
       const result = classifyMessage(undefined, { old_seqs: [], messages: msgs })
       expect(result.kind).toBe('notification_thread')
       if (result.kind === 'notification_thread') {
-        expect(result.messages).toBe(msgs)
+        expect(result.messages).toStrictEqual(msgs)
       }
     })
   })
@@ -155,9 +173,14 @@ describe('classifyMessage', () => {
       expect(result.kind).toBe('notification')
     })
 
-    it('classifies rate_limit as notification', () => {
-      const result = classifyMessage({ type: 'rate_limit', rate_limit_info: { rateLimitType: 'five_hour' } }, null)
+    it('classifies non-allowed rate_limit as notification', () => {
+      const result = classifyMessage({ type: 'rate_limit', rate_limit_info: { rateLimitType: 'five_hour', status: 'rate_limited' } }, null)
       expect(result.kind).toBe('notification')
+    })
+
+    it('classifies allowed rate_limit as hidden', () => {
+      const result = classifyMessage({ type: 'rate_limit', rate_limit_info: { status: 'allowed' } }, null)
+      expect(result.kind).toBe('hidden')
     })
   })
 
