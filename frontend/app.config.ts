@@ -3,6 +3,7 @@ import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from '@solidjs/start/config'
 import { vanillaExtractPlugin } from '@vanilla-extract/vite-plugin'
+import MagicString from 'magic-string'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 
@@ -20,10 +21,15 @@ export default defineConfig({
         name: 'strip-absolute-paths',
         renderChunk(code: string) {
           const prefix = `${process.cwd()}/`
-          if (code.includes(prefix)) {
-            return code.replaceAll(prefix, '')
+          if (!code.includes(prefix))
+            return null
+          const s = new MagicString(code)
+          let idx = code.indexOf(prefix)
+          while (idx !== -1) {
+            s.overwrite(idx, idx + prefix.length, '')
+            idx = code.indexOf(prefix, idx + 1)
           }
-          return null
+          return { code: s.toString(), map: s.generateMap({ hires: true }) }
         },
       },
     ],

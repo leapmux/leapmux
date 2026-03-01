@@ -1,4 +1,4 @@
-import { style } from '@vanilla-extract/css'
+import { globalStyle, style } from '@vanilla-extract/css'
 
 export const container = style({
   display: 'flex',
@@ -11,6 +11,12 @@ export const tree = style({
   flex: 1,
   overflow: 'auto',
   padding: 'var(--space-1) 0',
+})
+
+/** Inner wrapper that sizes to the widest node, enabling horizontal scroll. */
+export const treeInner = style({
+  minWidth: '100%',
+  width: 'max-content',
 })
 
 export const node = style({
@@ -38,8 +44,18 @@ export const nodeSelected = style({
 })
 
 export const chevron = style({
-  flexShrink: 0,
-  color: 'var(--muted-foreground)',
+  'flexShrink': 0,
+  'color': 'var(--muted-foreground)',
+  'transition': 'transform 150ms cubic-bezier(0.4, 0, 0.2, 1)',
+  '@media': {
+    '(prefers-reduced-motion: reduce)': {
+      transition: 'none',
+    },
+  },
+})
+
+export const chevronExpanded = style({
+  transform: 'rotate(90deg)',
 })
 
 export const chevronPlaceholder = style({
@@ -58,10 +74,7 @@ export const fileIcon = style({
 })
 
 export const nodeName = style({
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
-  flex: 1,
 })
 
 export const loadingState = style({
@@ -108,6 +121,8 @@ export const nodeActions = style({
   alignItems: 'center',
   marginLeft: 'auto',
   flexShrink: 0,
+  position: 'sticky',
+  right: 'var(--space-2)',
 })
 
 export const nodeMenuTrigger = style({
@@ -119,12 +134,49 @@ export const nodeMenuTrigger = style({
   },
 })
 
+/** Give nodeActions a background on hover so it covers scrolled text underneath. */
+globalStyle(`${node}:hover ${nodeActions}`, {
+  backgroundColor: 'var(--card)',
+})
+
+/** Match selected node background. */
+globalStyle(`${node}${nodeSelected} ${nodeActions}`, {
+  backgroundColor: 'var(--secondary)',
+})
+
+/** Match selected + hover node background. */
+globalStyle(`${node}${nodeSelected}:hover ${nodeActions}`, {
+  backgroundColor: 'var(--muted)',
+})
+
 export const pathInput = style({
   display: 'flex',
   alignItems: 'center',
   padding: 'var(--space-1) var(--space-2)',
   borderBottom: '1px solid var(--border)',
   flexShrink: 0,
+})
+
+export const childrenWrapper = style({
+  'display': 'grid',
+  'gridTemplateRows': '0fr',
+  'visibility': 'hidden',
+  'transition': 'grid-template-rows 150ms cubic-bezier(0.4, 0, 0.2, 1), visibility 150ms',
+  '@media': {
+    '(prefers-reduced-motion: reduce)': {
+      transition: 'none',
+    },
+  },
+})
+
+export const childrenWrapperExpanded = style({
+  gridTemplateRows: '1fr',
+  visibility: 'visible',
+})
+
+export const childrenInner = style({
+  overflow: 'clip',
+  minHeight: 0,
 })
 
 export const pathInputField = style({

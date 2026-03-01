@@ -50,7 +50,8 @@ export const ConfirmButton: Component<ConfirmButtonProps> = (props) => {
     <button
       {...buttonProps}
       type="button"
-      class={`${armed() ? 'danger' : ''} ${buttonProps.class ?? ''}`}
+      class={buttonProps.class ?? ''}
+      {...(armed() ? { 'data-variant': 'danger' } : {})}
       data-armed={armed() || undefined}
       onClick={handleClick}
       onBlur={reset}

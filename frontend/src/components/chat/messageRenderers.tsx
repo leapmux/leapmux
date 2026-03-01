@@ -7,7 +7,6 @@ import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import Bot from 'lucide-solid/icons/bot'
 import Brain from 'lucide-solid/icons/brain'
-import ChevronDown from 'lucide-solid/icons/chevron-down'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import Toolbox from 'lucide-solid/icons/toolbox'
 import { createSignal, Show } from 'solid-js'
@@ -15,7 +14,7 @@ import { Icon } from '~/components/common/Icon'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { markdownContent } from './markdownContent.css'
-import { thinkingContent, thinkingHeader } from './messageStyles.css'
+import { thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
 import { getAssistantContent, isObject } from './messageUtils'
 import {
   agentRenamedRenderer,
@@ -185,15 +184,13 @@ function ThinkingMessage(props: { text: string, context?: RenderContext }): JSX.
 
   return (
     <>
-      <div class={thinkingHeader} onClick={() => setExpanded(prev => !prev)}>
+      <div class={thinkingHeader} onClick={() => setExpanded(v => !v)}>
         <span class={inlineFlex} title="Thinking">
           <Icon icon={Brain} size="md" class={toolUseIcon} />
         </span>
         <span class={toolInputDetail}>Thinking</span>
-        <span class={inlineFlex}>
-          {expanded()
-            ? <Icon icon={ChevronDown} size="sm" class={toolUseIcon} />
-            : <Icon icon={ChevronRight} size="sm" class={toolUseIcon} />}
+        <span class={`${inlineFlex} ${thinkingChevron}${expanded() ? ` ${thinkingChevronExpanded}` : ''}`}>
+          <Icon icon={ChevronRight} size="sm" class={toolUseIcon} />
         </span>
       </div>
       <Show when={expanded()}>

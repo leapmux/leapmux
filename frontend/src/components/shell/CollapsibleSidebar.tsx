@@ -200,19 +200,10 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
     : null
 
   return (
-    <Show
-      when={!props.isCollapsed}
-      fallback={(
-        <SidebarRail
-          sections={props.sections}
-          side={props.side}
-          onExpand={props.onExpand}
-          onExpandSection={handleExpandSection}
-        />
-      )}
-    >
+    <>
       <div
         class={styles.sidebarInner}
+        style={{ display: props.isCollapsed ? 'none' : undefined }}
         data-testid={`sidebar-${props.side}`}
         ref={(el) => {
           containerRef = el
@@ -234,6 +225,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
             const renderedContent = section().content()
 
             const sectionOpen = () => isOpen(id)
+
             const isStatic = () => section().collapsible === false
             const isDraggable = () => section().draggable === true
 
@@ -401,9 +393,11 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                       />
                     </Show>
                   </summary>
-                  <div class={styles.collapsibleContent}>
-                    <div class={styles.sidebarContent}>
-                      {renderedContent}
+                  <div class={`${styles.collapsibleContent}${sectionOpen() ? ` ${styles.collapsibleContentExpanded}` : ''}`}>
+                    <div class={styles.collapsibleContentInner}>
+                      <div class={styles.sidebarContent}>
+                        {renderedContent}
+                      </div>
                     </div>
                   </div>
                 </details>
@@ -446,6 +440,14 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
           }}
         </For>
       </div>
-    </Show>
+      <Show when={props.isCollapsed}>
+        <SidebarRail
+          sections={props.sections}
+          side={props.side}
+          onExpand={props.onExpand}
+          onExpandSection={handleExpandSection}
+        />
+      </Show>
+    </>
   )
 }

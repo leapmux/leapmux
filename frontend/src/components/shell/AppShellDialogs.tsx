@@ -224,7 +224,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
                 <button type="button" onClick={handleKeep}>
                   Keep
                 </button>
-                <ConfirmButton class="danger" onClick={handleRemove}>
+                <ConfirmButton data-variant="danger" onClick={handleRemove}>
                   Remove
                 </ConfirmButton>
               </footer>

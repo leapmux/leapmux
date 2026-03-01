@@ -1,12 +1,12 @@
 import type { Component, JSX } from 'solid-js'
 import type { FileInfo } from '~/generated/leapmux/v1/file_pb'
 import AtSign from 'lucide-solid/icons/at-sign'
-import ChevronDown from 'lucide-solid/icons/chevron-down'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import ClipboardCopy from 'lucide-solid/icons/clipboard-copy'
 import Copy from 'lucide-solid/icons/copy'
 import File from 'lucide-solid/icons/file'
-import Folder from 'lucide-solid/icons/folder'
+import FolderClosed from 'lucide-solid/icons/folder-closed'
+import FolderOpen from 'lucide-solid/icons/folder-open'
 import MoreHorizontal from 'lucide-solid/icons/more-horizontal'
 import TerminalIcon from 'lucide-solid/icons/terminal'
 import { createEffect, createSignal, For, Show, untrack } from 'solid-js'
@@ -344,18 +344,18 @@ const TreeNode: Component<{
           when={props.node.isDir}
           fallback={<span class={styles.chevronPlaceholder} />}
         >
-          <Show
-            when={expanded()}
-            fallback={<Icon icon={ChevronRight} size="md" class={styles.chevron} />}
-          >
-            <Icon icon={ChevronDown} size="md" class={styles.chevron} />
-          </Show>
+          <Icon icon={ChevronRight} size="md" class={`${styles.chevron}${expanded() ? ` ${styles.chevronExpanded}` : ''}`} />
         </Show>
         <Show
           when={props.node.isDir}
           fallback={<Icon icon={File} size="sm" class={styles.fileIcon} />}
         >
-          <Icon icon={Folder} size="sm" class={styles.folderIcon} />
+          <Show
+            when={expanded()}
+            fallback={<Icon icon={FolderClosed} size="sm" class={styles.folderIcon} />}
+          >
+            <Icon icon={FolderOpen} size="sm" class={styles.folderIcon} />
+          </Show>
         </Show>
         <span class={styles.nodeName}>{props.node.displayName}</span>
         <div class={styles.nodeActions}>
@@ -374,34 +374,38 @@ const TreeNode: Component<{
           Loading...
         </div>
       </Show>
-      <Show when={expanded() && !loading()}>
-        <For each={children()}>
-          {child => (
-            <TreeNode
-              node={child}
-              workerId={props.workerId}
-              showFiles={props.showFiles}
-              selectedPath={props.selectedPath}
-              onSelect={props.onSelect}
-              onFileOpen={props.onFileOpen}
-              onMention={props.onMention}
-              onOpenTerminal={props.onOpenTerminal}
-              depth={props.depth + 1}
-              scrollContainer={props.scrollContainer}
-              rootPath={props.rootPath}
-              homeDir={props.homeDir}
-              isNodeExpanded={props.isNodeExpanded}
-              setNodeExpanded={props.setNodeExpanded}
-              getChildren={props.getChildren}
-              setChildren={props.setChildren}
-            />
-          )}
-        </For>
-        <Show when={children().length === 0 && loaded()}>
-          <div class={styles.emptyInline} style={{ 'padding-left': `${8 + (props.depth + 1) * 16}px` }}>
-            Empty
+      <Show when={loaded()}>
+        <div class={`${styles.childrenWrapper}${expanded() && !loading() ? ` ${styles.childrenWrapperExpanded}` : ''}`}>
+          <div class={styles.childrenInner}>
+            <For each={children()}>
+              {child => (
+                <TreeNode
+                  node={child}
+                  workerId={props.workerId}
+                  showFiles={props.showFiles}
+                  selectedPath={props.selectedPath}
+                  onSelect={props.onSelect}
+                  onFileOpen={props.onFileOpen}
+                  onMention={props.onMention}
+                  onOpenTerminal={props.onOpenTerminal}
+                  depth={props.depth + 1}
+                  scrollContainer={props.scrollContainer}
+                  rootPath={props.rootPath}
+                  homeDir={props.homeDir}
+                  isNodeExpanded={props.isNodeExpanded}
+                  setNodeExpanded={props.setNodeExpanded}
+                  getChildren={props.getChildren}
+                  setChildren={props.setChildren}
+                />
+              )}
+            </For>
+            <Show when={children().length === 0}>
+              <div class={styles.emptyInline} style={{ 'padding-left': `${8 + (props.depth + 1) * 16}px` }}>
+                Empty
+              </div>
+            </Show>
           </div>
-        </Show>
+        </div>
       </Show>
     </div>
   )
@@ -566,65 +570,67 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
           <div class={styles.loadingState}>Loading...</div>
         </Show>
         <Show when={!loading() && !error()}>
-          {/* Root directory row */}
-          <div
-            class={styles.node}
-            style={{ 'padding-left': '8px' }}
-            onClick={toggleRoot}
-            data-testid="tree-root-node"
-          >
-            <Show
-              when={rootExpanded()}
-              fallback={<Icon icon={ChevronRight} size="md" class={styles.chevron} />}
+          <div class={styles.treeInner}>
+            {/* Root directory row */}
+            <div
+              class={styles.node}
+              style={{ 'padding-left': '8px' }}
+              onClick={toggleRoot}
+              data-testid="tree-root-node"
             >
-              <Icon icon={ChevronDown} size="md" class={styles.chevron} />
-            </Show>
-            <Icon icon={Folder} size="sm" class={styles.folderIcon} />
-            <span class={styles.nodeName}>{rootDisplayName()}</span>
-            <div class={styles.nodeActions}>
-              {renderTreeContextMenu({
-                path: rootPath(),
-                isDir: true,
-                rootPath: rootPath(),
-                homeDir: props.homeDir,
-                onMention: props.onMention,
-                onOpenTerminal: props.onOpenTerminal,
-              })}
+              <Icon icon={ChevronRight} size="md" class={`${styles.chevron}${rootExpanded() ? ` ${styles.chevronExpanded}` : ''}`} />
+              <Show
+                when={rootExpanded()}
+                fallback={<Icon icon={FolderClosed} size="sm" class={styles.folderIcon} />}
+              >
+                <Icon icon={FolderOpen} size="sm" class={styles.folderIcon} />
+              </Show>
+              <span class={styles.nodeName}>{rootDisplayName()}</span>
+              <div class={styles.nodeActions}>
+                {renderTreeContextMenu({
+                  path: rootPath(),
+                  isDir: true,
+                  rootPath: rootPath(),
+                  homeDir: props.homeDir,
+                  onMention: props.onMention,
+                  onOpenTerminal: props.onOpenTerminal,
+                })}
+              </div>
             </div>
-          </div>
-          <Show when={rootExpanded()}>
-            <Show
-              when={rootChildren() !== undefined && rootChildren()!.length > 0}
-              fallback={(
-                <Show when={rootChildren() !== undefined}>
-                  <div class={styles.emptyState}>Empty directory</div>
-                </Show>
-              )}
-            >
-              <For each={rootChildren()}>
-                {node => (
-                  <TreeNode
-                    node={node}
-                    workerId={props.workerId}
-                    showFiles={props.showFiles ?? false}
-                    selectedPath={props.selectedPath}
-                    onSelect={props.onSelect}
-                    onFileOpen={props.onFileOpen}
-                    onMention={props.onMention}
-                    onOpenTerminal={props.onOpenTerminal}
-                    depth={1}
-                    scrollContainer={treeRef}
-                    rootPath={rootPath()}
-                    homeDir={props.homeDir}
-                    isNodeExpanded={isNodeExpanded}
-                    setNodeExpanded={setNodeExpanded}
-                    getChildren={getChildren}
-                    setChildren={setChildrenInStore}
-                  />
-                )}
-              </For>
+            <Show when={rootChildren() !== undefined}>
+              <div class={`${styles.childrenWrapper}${rootExpanded() ? ` ${styles.childrenWrapperExpanded}` : ''}`}>
+                <div class={styles.childrenInner}>
+                  <Show
+                    when={rootChildren()!.length > 0}
+                    fallback={<div class={styles.emptyState}>Empty directory</div>}
+                  >
+                    <For each={rootChildren()}>
+                      {node => (
+                        <TreeNode
+                          node={node}
+                          workerId={props.workerId}
+                          showFiles={props.showFiles ?? false}
+                          selectedPath={props.selectedPath}
+                          onSelect={props.onSelect}
+                          onFileOpen={props.onFileOpen}
+                          onMention={props.onMention}
+                          onOpenTerminal={props.onOpenTerminal}
+                          depth={1}
+                          scrollContainer={treeRef}
+                          rootPath={rootPath()}
+                          homeDir={props.homeDir}
+                          isNodeExpanded={isNodeExpanded}
+                          setNodeExpanded={setNodeExpanded}
+                          getChildren={getChildren}
+                          setChildren={setChildrenInStore}
+                        />
+                      )}
+                    </For>
+                  </Show>
+                </div>
+              </div>
             </Show>
-          </Show>
+          </div>
         </Show>
       </div>
     </div>

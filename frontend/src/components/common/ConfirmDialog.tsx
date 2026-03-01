@@ -29,7 +29,7 @@ export const ConfirmDialog: Component<ConfirmDialogProps> = (props) => {
             </button>
           )}
         >
-          <ConfirmButton class="danger" onClick={() => props.onConfirm()}>
+          <ConfirmButton data-variant="danger" onClick={() => props.onConfirm()}>
             {props.confirmLabel ?? 'OK'}
           </ConfirmButton>
         </Show>

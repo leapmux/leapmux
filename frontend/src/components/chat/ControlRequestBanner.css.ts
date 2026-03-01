@@ -117,8 +117,14 @@ export const paginationItem = style({
   'border': `1px solid transparent`,
   'color': 'var(--muted-foreground)',
   'backgroundColor': 'transparent',
+  'transition': 'color var(--transition-fast), border-color var(--transition-fast), background-color var(--transition-fast)',
   ':hover': {
     backgroundColor: 'var(--card)',
+  },
+  '@media': {
+    '(prefers-reduced-motion: reduce)': {
+      transition: 'none',
+    },
   },
 })
 
