@@ -1,10 +1,10 @@
 /* eslint-disable solid/components-return-once -- render methods are not Solid components */
+import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
 import type { StructuredPatchHunk } from './diffUtils'
 import type { MessageContentRenderer, RenderContext } from './messageRenderers'
-import type { IconSizeName } from '~/components/common/Icon'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
-import type { EditInput } from '~/types/toolMessages'
+import type { BashInput, EditInput, GrepInput } from '~/types/toolMessages'
 import Bot from 'lucide-solid/icons/bot'
 import Braces from 'lucide-solid/icons/braces'
 import Check from 'lucide-solid/icons/check'
@@ -38,13 +38,17 @@ import { DiffView, rawDiffToHunks } from './diffUtils'
 import { getAssistantContent, isObject, relativizePath } from './messageUtils'
 import { parseCatNContent, ReadResultView } from './ReadResultView'
 import { RelativeTime } from './RelativeTime'
-import { formatToolInput } from './rendererUtils'
-import { renderToolDetail, renderToolSubDetail } from './toolDetailRenderers'
+import { firstNonEmptyLine, formatToolInput } from './rendererUtils'
+import { renderToolDetail } from './toolDetailRenderers'
 import {
   controlResponseTag,
+  toolBodyContent,
   toolHeaderActions,
   toolHeaderTimestamp,
   toolInputPath,
+  toolInputSubDetail,
+  toolInputSubDetailExpanded,
+  toolInputText,
   toolMessage,
   toolResultContent,
   toolResultContentAnsi,
@@ -69,26 +73,90 @@ export function ControlResponseTag(props: { response?: { action: string, comment
   )
 }
 
-/** Map tool name to its icon component. */
-export function toolIcon(name: string, size: IconSizeName): JSX.Element {
+/** Shared layout for tool_use messages. Renders header boilerplate and optional body. */
+export function ToolUseLayout(props: {
+  /** Lucide icon component (e.g. ListTodo, Vote, SquareTerminal). */
+  icon: LucideIcon
+  /** Tool name, used as the title attribute on the icon. */
+  toolName: string
+  /** Primary title shown in the header. String auto-wraps in toolInputText; JSX renders as-is. */
+  title: string | JSX.Element
+  /** Summary line shown below header inside the bordered area, always visible even when collapsed. */
+  summary?: JSX.Element
+  /** Body content shown below the header. */
+  children?: JSX.Element
+  /** If true, body is always visible (not gated by expand). Default: false. */
+  alwaysVisible?: boolean
+  /** If true, body gets left border. Default: true. */
+  bordered?: boolean
+  /** Whether this tool has a diff to show (Edit tool). */
+  hasDiff?: boolean
+  /** Current diff view mode. */
+  diffView?: DiffViewPreference
+  /** Toggle diff view between unified and split. */
+  onDiffViewChange?: (view: DiffViewPreference) => void
+  context?: RenderContext
+}): JSX.Element {
+  const expanded = () => props.context?.threadExpanded ?? false
+  const hasThread = () => (props.context?.threadChildCount ?? 0) > 0
+  const hasActions = () => hasThread() || !!props.context?.onCopyJson || !!props.hasDiff
+  return (
+    <div class={toolMessage}>
+      <div class={toolUseHeader}>
+        <span class={inlineFlex} title={props.toolName}>
+          <Icon icon={props.icon} size="md" class={toolUseIcon} />
+        </span>
+        {typeof props.title === 'string'
+          ? <span class={toolInputText}>{props.title}</span>
+          : props.title}
+        <ControlResponseTag response={props.context?.childControlResponse} />
+        <Show when={props.context && hasActions()}>
+          <ToolHeaderActions
+            createdAt={props.context!.createdAt}
+            updatedAt={props.context!.updatedAt}
+            threadCount={props.context!.threadChildCount ?? 0}
+            threadExpanded={expanded()}
+            onToggleThread={props.context!.onToggleThread ?? (() => {})}
+            onCopyJson={props.context!.onCopyJson}
+            jsonCopied={props.context!.jsonCopied ?? false}
+            hasDiff={props.hasDiff}
+            diffView={props.diffView}
+            onToggleDiffView={props.onDiffViewChange ? () => props.onDiffViewChange!(props.diffView === 'unified' ? 'split' : 'unified') : undefined}
+          />
+        </Show>
+      </div>
+      <Show when={props.summary || (props.children && (props.alwaysVisible || expanded()))}>
+        <div class={props.bordered !== false ? toolBodyContent : undefined}>
+          <Show when={props.summary}>{props.summary}</Show>
+          <Show when={props.children && (props.alwaysVisible || expanded())}>
+            {props.children}
+          </Show>
+        </div>
+      </Show>
+    </div>
+  )
+}
+
+/** Map tool name to its Lucide icon component. */
+export function toolIconFor(name: string): LucideIcon {
   switch (name) {
-    case 'Bash': return <Icon icon={Terminal} size={size} class={toolUseIcon} />
-    case 'Read': return <Icon icon={FileText} size={size} class={toolUseIcon} />
-    case 'Write': return <Icon icon={FilePlus} size={size} class={toolUseIcon} />
-    case 'Edit': return <Icon icon={FilePen} size={size} class={toolUseIcon} />
-    case 'Grep': return <Icon icon={Search} size={size} class={toolUseIcon} />
-    case 'Glob': return <Icon icon={FolderSearch} size={size} class={toolUseIcon} />
-    case 'Task': return <Icon icon={Bot} size={size} class={toolUseIcon} />
-    case 'Agent': return <Icon icon={Bot} size={size} class={toolUseIcon} />
-    case 'WebFetch': return <Icon icon={Globe} size={size} class={toolUseIcon} />
-    case 'WebSearch': return <Icon icon={Globe} size={size} class={toolUseIcon} />
-    case 'TodoWrite': return <Icon icon={ListTodo} size={size} class={toolUseIcon} />
-    case 'EnterPlanMode': return <Icon icon={TicketsPlane} size={size} class={toolUseIcon} />
-    case 'ExitPlanMode': return <Icon icon={PlaneTakeoff} size={size} class={toolUseIcon} />
-    case 'AskUserQuestion': return <Icon icon={Vote} size={size} class={toolUseIcon} />
-    case 'TaskOutput': return <Icon icon={SquareTerminal} size={size} class={toolUseIcon} />
-    case 'Skill': return <Icon icon={Toolbox} size={size} class={toolUseIcon} />
-    default: return <Icon icon={ChevronsRight} size={size} class={toolUseIcon} />
+    case 'Bash': return Terminal
+    case 'Read': return FileText
+    case 'Write': return FilePlus
+    case 'Edit': return FilePen
+    case 'Grep': return Search
+    case 'Glob': return FolderSearch
+    case 'Task': return Bot
+    case 'Agent': return Bot
+    case 'WebFetch': return Globe
+    case 'WebSearch': return Globe
+    case 'TodoWrite': return ListTodo
+    case 'EnterPlanMode': return TicketsPlane
+    case 'ExitPlanMode': return PlaneTakeoff
+    case 'AskUserQuestion': return Vote
+    case 'TaskOutput': return SquareTerminal
+    case 'Skill': return Toolbox
+    default: return ChevronsRight
   }
 }
 
@@ -178,8 +246,8 @@ export function ToolHeaderActions(props: {
 function ToolUseMessage(props: {
   toolName: string
   detail: JSX.Element | null
-  /** Optional secondary detail shown below the header line (e.g. Bash command). */
-  subDetail?: JSX.Element | null
+  /** Summary shown below header inside the bordered area (e.g. Bash command, Grep result count). */
+  summary?: JSX.Element | null
   fallbackDisplay: string | null
   hasDiff: boolean
   oldStr: string
@@ -191,38 +259,19 @@ function ToolUseMessage(props: {
   const diffView = () => localDiffView() ?? props.context?.diffView ?? 'unified'
   const toggleDiffView = () => setLocalDiffView(diffView() === 'unified' ? 'split' : 'unified')
 
-  const hasThread = () => (props.context?.threadChildCount ?? 0) > 0
-  const hasActions = () => hasThread() || !!props.context?.onCopyJson || props.hasDiff
+  const title = () => props.detail ?? `${props.toolName}${props.fallbackDisplay || ''}`
 
   return (
-    <div class={toolMessage}>
-      <div class={toolUseHeader}>
-        <span class={inlineFlex} title={props.toolName}>
-          {toolIcon(props.toolName, 'md')}
-        </span>
-        <span>
-          {props.detail ?? props.toolName}
-          {props.fallbackDisplay && <>{props.fallbackDisplay}</>}
-        </span>
-        <ControlResponseTag response={props.context?.childControlResponse} />
-        <Show when={hasActions()}>
-          <ToolHeaderActions
-            createdAt={props.context?.createdAt}
-            updatedAt={props.context?.updatedAt}
-            threadCount={props.context?.threadChildCount ?? 0}
-            threadExpanded={props.context?.threadExpanded ?? false}
-            onToggleThread={props.context?.onToggleThread ?? (() => {})}
-            onCopyJson={props.context?.onCopyJson}
-            jsonCopied={props.context?.jsonCopied}
-            hasDiff={props.hasDiff}
-            diffView={diffView()}
-            onToggleDiffView={toggleDiffView}
-          />
-        </Show>
-      </div>
-      <Show when={props.subDetail}>
-        {props.subDetail}
-      </Show>
+    <ToolUseLayout
+      icon={toolIconFor(props.toolName)}
+      toolName={props.toolName}
+      title={title()}
+      summary={props.summary}
+      hasDiff={props.hasDiff}
+      diffView={diffView()}
+      onDiffViewChange={toggleDiffView}
+      context={props.context}
+    >
       <Show when={props.hasDiff}>
         <DiffView
           hunks={props.context?.childStructuredPatch ?? rawDiffToHunks(props.oldStr, props.newStr)}
@@ -230,8 +279,53 @@ function ToolUseMessage(props: {
           filePath={props.filePath}
         />
       </Show>
-    </div>
+    </ToolUseLayout>
   )
+}
+
+/** Derive a summary element for a generic tool_use (Bash command, Grep/Glob result counts). */
+function deriveToolSummary(toolName: string, input: Record<string, unknown>, context?: RenderContext): JSX.Element | undefined {
+  const expanded = context?.threadExpanded ?? false
+  const cls = expanded ? toolInputSubDetailExpanded : toolInputSubDetail
+  const content = context?.childResultContent
+
+  switch (toolName) {
+    case 'Bash': {
+      const cmd = (input as BashInput).command
+      if (!cmd)
+        return undefined
+      if (expanded)
+        return <div class={cls}>{cmd}</div>
+      const firstLine = cmd.split('\n')[0]
+      const truncated = firstLine.length > 120 ? `${firstLine.slice(0, 120)}\u2026` : firstLine
+      return <div class={cls}>{truncated}</div>
+    }
+    case 'Grep': {
+      const path = (input as GrepInput).path
+      const pathLine = path
+        ? relativizePath(path, context?.workingDir, context?.homeDir)
+        : null
+      const resultLine = content ? firstNonEmptyLine(content) : null
+      if (!pathLine && !resultLine)
+        return undefined
+      return (
+        <>
+          {pathLine && <div class={toolInputSubDetail}>{pathLine}</div>}
+          {resultLine && <div class={toolInputSubDetail}>{resultLine}</div>}
+        </>
+      )
+    }
+    case 'Glob': {
+      if (!content)
+        return undefined
+      if (content === 'No files found')
+        return <div class={toolInputSubDetail}>No files found</div>
+      const count = content.split('\n').filter(l => l.trim()).length
+      return <div class={toolInputSubDetail}>{`${count} file${count === 1 ? '' : 's'}`}</div>
+    }
+    default:
+      return undefined
+  }
 }
 
 /** Handles tool_use messages in assistant content array with per-tool icons and rich display. */
@@ -249,7 +343,7 @@ export const toolUseRenderer: MessageContentRenderer = {
     const toolName = String(toolData.name || 'Unknown')
     const input = isObject(toolData.input) ? toolData.input as Record<string, unknown> : {}
     const detail = renderToolDetail(toolName, input, context)
-    const subDetail = renderToolSubDetail(toolName, input, context)
+    const summary = deriveToolSummary(toolName, input, context)
     const fallbackDisplay = detail ? null : formatToolInput(toolData.input)
 
     // Edit tool: show diff view
@@ -264,7 +358,7 @@ export const toolUseRenderer: MessageContentRenderer = {
       <ToolUseMessage
         toolName={toolName}
         detail={detail}
-        subDetail={subDetail}
+        summary={summary}
         fallbackDisplay={fallbackDisplay}
         hasDiff={hasDiff}
         oldStr={oldStr}

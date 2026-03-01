@@ -23,6 +23,21 @@ export function firstNonEmptyLine(text?: string): string | null {
   return null
 }
 
+/** Format a duration in milliseconds as a human-readable string (e.g. "5s", "2m 30s"). */
+export function formatDuration(ms: number): string {
+  const totalSec = Math.round(ms / 1000)
+  if (totalSec < 60)
+    return `${totalSec}s`
+  const min = Math.floor(totalSec / 60)
+  const sec = totalSec % 60
+  return sec > 0 ? `${min}m ${sec}s` : `${min}m`
+}
+
+/** Format a number with locale-aware separators (e.g. 1,234). */
+export function formatNumber(n: number): string {
+  return n.toLocaleString('en-US')
+}
+
 /** Helper: format tool input for compact display (fallback for unknown tools) */
 export function formatToolInput(input: unknown): string {
   if (input === null || input === undefined || JSON.stringify(input) === '{}') {

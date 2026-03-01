@@ -11,11 +11,10 @@ import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { markdownContent } from './markdownContent.css'
 import { getAssistantContent, isObject, relativizePath } from './messageUtils'
-import { ControlResponseTag, ToolHeaderActions } from './toolRenderers'
+import { ToolUseLayout } from './toolRenderers'
 import {
-  toolInputDetail,
   toolInputSubDetail,
-  toolMessage,
+  toolInputText,
   toolUseHeader,
   toolUseIcon,
 } from './toolStyles.css'
@@ -24,26 +23,12 @@ import {
 export function renderEnterPlanMode(toolUse: Record<string, unknown>, context?: RenderContext): JSX.Element {
   void toolUse
   return (
-    <div class={toolMessage}>
-      <div class={toolUseHeader}>
-        <span class={inlineFlex} title="EnterPlanMode">
-          <Icon icon={TicketsPlane} size="md" class={toolUseIcon} />
-        </span>
-        <span class={toolInputDetail}>Entering Plan Mode</span>
-        <ControlResponseTag response={context?.childControlResponse} />
-        <Show when={context}>
-          <ToolHeaderActions
-            createdAt={context!.createdAt}
-            updatedAt={context!.updatedAt}
-            threadCount={context!.threadChildCount ?? 0}
-            threadExpanded={context!.threadExpanded ?? false}
-            onToggleThread={context!.onToggleThread ?? (() => {})}
-            onCopyJson={context!.onCopyJson ?? (() => {})}
-            jsonCopied={context!.jsonCopied ?? false}
-          />
-        </Show>
-      </div>
-    </div>
+    <ToolUseLayout
+      icon={TicketsPlane}
+      toolName="EnterPlanMode"
+      title="Entering Plan Mode"
+      context={context}
+    />
   )
 }
 
@@ -68,55 +53,47 @@ export function renderExitPlanMode(toolUse: Record<string, unknown>, context?: R
     return { action: 'rejected', comment: resultContent }
   }
 
+  const summary = context?.childFilePath
+    ? <div class={toolInputSubDetail}>{relativizePath(context.childFilePath, context?.workingDir, context?.homeDir)}</div>
+    : undefined
+
   return (
-    <div class={toolMessage}>
-      <div class={toolUseHeader}>
-        <span class={inlineFlex} title="ExitPlanMode">
-          <Icon icon={PlaneTakeoff} size="md" class={toolUseIcon} />
-        </span>
-        <span class={toolInputDetail}>Leaving Plan Mode</span>
-        <Show when={context}>
-          <ToolHeaderActions
-            createdAt={context!.createdAt}
-            updatedAt={context!.updatedAt}
-            threadCount={context!.threadChildCount ?? 0}
-            threadExpanded={context!.threadExpanded ?? false}
-            onToggleThread={context!.onToggleThread ?? (() => {})}
-            onCopyJson={context!.onCopyJson ?? (() => {})}
-            jsonCopied={context!.jsonCopied ?? false}
-          />
+    <ToolUseLayout
+      icon={PlaneTakeoff}
+      toolName="ExitPlanMode"
+      title="Leaving Plan Mode"
+      summary={summary}
+      alwaysVisible={true}
+      bordered={false}
+      context={context}
+    >
+      <>
+        <Show when={planText}>
+          <hr />
+          <div class={markdownContent} innerHTML={renderMarkdown(planText)} />
         </Show>
-      </div>
-      <Show when={context?.childFilePath}>
-        <div class={toolInputSubDetail}>
-          {relativizePath(context!.childFilePath!, context?.workingDir, context?.homeDir)}
-        </div>
-      </Show>
-      <Show when={planText}>
-        <hr />
-        <div class={markdownContent} innerHTML={renderMarkdown(planText)} />
-      </Show>
-      <Show when={effectiveCr()}>
-        {cr => (
-          <>
-            <hr />
-            <div class={toolUseHeader}>
-              <span class={inlineFlex}>
-                {cr().action === 'approved'
-                  ? <Icon icon={Stamp} size="md" class={toolUseIcon} />
-                  : <Icon icon={Hand} size="md" class={toolUseIcon} />}
-              </span>
-              <span class={toolInputDetail}>
-                {cr().action === 'approved' ? 'Approved' : cr().comment ? 'Sent feedback' : 'Rejected'}
-              </span>
-            </div>
-            <Show when={cr().action !== 'approved' && cr().comment}>
-              <div class={markdownContent} innerHTML={renderMarkdown(cr().comment)} />
-            </Show>
-          </>
-        )}
-      </Show>
-    </div>
+        <Show when={effectiveCr()}>
+          {cr => (
+            <>
+              <hr />
+              <div class={toolUseHeader}>
+                <span class={inlineFlex}>
+                  {cr().action === 'approved'
+                    ? <Icon icon={Stamp} size="md" class={toolUseIcon} />
+                    : <Icon icon={Hand} size="md" class={toolUseIcon} />}
+                </span>
+                <span class={toolInputText}>
+                  {cr().action === 'approved' ? 'Approved' : cr().comment ? 'Sent feedback' : 'Rejected'}
+                </span>
+              </div>
+              <Show when={cr().action !== 'approved' && cr().comment}>
+                <div class={markdownContent} innerHTML={renderMarkdown(cr().comment)} />
+              </Show>
+            </>
+          )}
+        </Show>
+      </>
+    </ToolUseLayout>
   )
 }
 

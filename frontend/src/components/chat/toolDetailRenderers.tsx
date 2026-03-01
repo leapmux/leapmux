@@ -5,12 +5,10 @@ import { diffLines } from 'diff'
 import { relativizePath } from './messageUtils'
 import {
   toolInputCode,
-  toolInputDetail,
   toolInputPath,
   toolInputStatAdded,
   toolInputStatRemoved,
-  toolInputSubDetail,
-  toolInputSubDetailExpanded,
+  toolInputText,
 } from './toolStyles.css'
 
 /** Render per-tool compact display for a tool_use block. */
@@ -24,7 +22,7 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
       if (!desc && !cmd)
         return null
       const descText = desc ? (desc.length > 100 ? `${desc.slice(0, 100)}…` : desc) : ''
-      return <span class={toolInputDetail}>{descText || 'Run command'}</span>
+      return <span class={toolInputText}>{descText || 'Run command'}</span>
     }
     case 'Read': {
       const { file_path: path, offset, limit } = input as ReadInput
@@ -40,7 +38,7 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
       return (
         <>
           <span class={toolInputPath}>{relativizePath(path, cwd, homeDir)}</span>
-          <span class={toolInputDetail}>{rangeStr}</span>
+          <span class={toolInputText}>{rangeStr}</span>
         </>
       )
     }
@@ -53,7 +51,7 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
       return (
         <>
           <span class={toolInputPath}>{relativizePath(path, cwd, homeDir)}</span>
-          <span class={toolInputDetail}>{lineStr}</span>
+          <span class={toolInputText}>{lineStr}</span>
         </>
       )
     }
@@ -78,7 +76,7 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
         <>
           <span class={toolInputPath}>{relativizePath(path, cwd, homeDir)}</span>
           {hasStats && (
-            <span class={toolInputDetail}>
+            <span class={toolInputText}>
               {' '}
               <span class={toolInputStatAdded}>
                 {`+${added}`}
@@ -116,39 +114,12 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
       if (!url)
         return null
       return url.startsWith('https://')
-        ? <span class={toolInputDetail}><a href={url} target="_blank" rel="noopener noreferrer nofollow">{url}</a></span>
-        : <span class={toolInputDetail}>{url}</span>
+        ? <span class={toolInputText}><a href={url} target="_blank" rel="noopener noreferrer nofollow">{url}</a></span>
+        : <span class={toolInputText}>{url}</span>
     }
     case 'WebSearch': {
       const { query } = input as WebSearchInput
-      return query ? <span class={toolInputDetail}>{query}</span> : null
-    }
-    default:
-      return null
-  }
-}
-
-/** Render an optional sub-detail line below the tool header (e.g. Bash command, Grep path). */
-export function renderToolSubDetail(toolName: string, input: Record<string, unknown>, context?: RenderContext): JSX.Element | null {
-  const expanded = context?.threadExpanded
-  const cls = expanded ? toolInputSubDetailExpanded : toolInputSubDetail
-  switch (toolName) {
-    case 'Bash': {
-      const { command: cmd } = input as BashInput
-      if (!cmd)
-        return null
-      if (expanded) {
-        return <div class={cls}>{cmd}</div>
-      }
-      const firstLine = cmd.split('\n')[0]
-      const truncated = firstLine.length > 120 ? `${firstLine.slice(0, 120)}…` : firstLine
-      return <div class={cls}>{truncated}</div>
-    }
-    case 'Grep': {
-      const { path } = input as GrepInput
-      if (!path)
-        return null
-      return <div class={cls}>{relativizePath(path, context?.workingDir, context?.homeDir)}</div>
+      return query ? <span class={toolInputText}>{query}</span> : null
     }
     default:
       return null
