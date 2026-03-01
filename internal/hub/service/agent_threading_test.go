@@ -290,15 +290,8 @@ func TestConsolidateNotificationThread_SettingsChangedNoOp(t *testing.T) {
 	})
 
 	result := consolidateNotificationThread([]json.RawMessage{msg1, msg2})
-	// No effective changes → no-op settings_changed fallback.
-	require.Len(t, result, 1)
-	var entry struct {
-		Type    string                 `json:"type"`
-		Changes map[string]interface{} `json:"changes"`
-	}
-	require.NoError(t, json.Unmarshal(result[0], &entry))
-	assert.Equal(t, "settings_changed", entry.Type)
-	assert.Empty(t, entry.Changes, "expected empty changes for no-op consolidation")
+	// No effective changes → empty slice (frontend treats as hidden).
+	require.Empty(t, result, "expected empty slice for no-op consolidation")
 }
 
 func TestConsolidateNotificationThread_ContextClearedDedup(t *testing.T) {
