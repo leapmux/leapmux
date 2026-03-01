@@ -1,5 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { headerHeight, iconSize, resizeHandleSelectors } from '~/styles/tokens'
+import { resizeHandleSelectors } from '~/styles/resizeHandle'
+import { headerHeight, iconSize } from '~/styles/tokens'
 
 /** Inner flex-column wrapper for the expanded sidebar. */
 export const sidebarInner = style({

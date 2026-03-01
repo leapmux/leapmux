@@ -1,5 +1,5 @@
 import { style } from '@vanilla-extract/css'
-import { resizeHandleSelectors } from '~/styles/tokens'
+import { resizeHandleSelectors } from '~/styles/resizeHandle'
 
 export const editorResizeHandle = style({
   height: '4px',
