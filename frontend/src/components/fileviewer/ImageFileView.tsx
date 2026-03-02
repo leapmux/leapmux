@@ -1,9 +1,7 @@
 import type { JSX } from 'solid-js'
 import type { ZoomMode } from './ImageToolbar'
 import type { ViewMode } from './ViewToggle'
-import AtSign from 'lucide-solid/icons/at-sign'
-import { createEffect, createMemo, createSignal, Match, onCleanup, Show, Switch, untrack } from 'solid-js'
-import { Icon } from '~/components/common/Icon'
+import { createEffect, createMemo, createSignal, Match, onCleanup, Switch, untrack } from 'solid-js'
 import { isSvgExtension } from '~/lib/fileType'
 import * as styles from './FileViewer.css'
 import { ImageToolbar, ZOOM_MAX, ZOOM_MIN } from './ImageToolbar'
@@ -204,21 +202,7 @@ export function ImageFileView(props: {
   return (
     <Switch>
       <Match when={!isSvg()}>
-        <div style={{ position: 'relative', height: '100%' }}>
-          <Show when={props.onMention}>
-            <div class={styles.viewToggle}>
-              <button
-                class={styles.viewToggleButton}
-                onClick={() => props.onMention?.()}
-                title="Mention in the chat"
-                data-testid="file-mention-button"
-              >
-                <Icon icon={AtSign} size="sm" />
-              </button>
-            </div>
-          </Show>
-          {renderImage()}
-        </div>
+        {renderImage()}
       </Match>
       <Match when={isSvg()}>
         <div class={styles.toggleViewContainer}>

@@ -169,6 +169,14 @@ export const FileViewer: Component<{
 
   const showToolbar = () => props.fileViewMode !== undefined
 
+  // Show the outer (floating) mention button for all modes except when
+  // ViewToggle handles it (markdown and SVG image views have the mention
+  // button integrated into their toggle control which already floats).
+  const hasViewToggle = () =>
+    !isDiffMode() && !isRefMode()
+    && (viewMode() === 'markdown' || (viewMode() === 'image' && props.filePath.toLowerCase().endsWith('.svg')))
+  const showOuterMention = () => !!props.onMention && !hasViewToggle()
+
   const diffHunks = createMemo(() => {
     const old = diffOldContent()
     const nw = diffNewContent()
@@ -264,7 +272,7 @@ export const FileViewer: Component<{
           onDiffBaseChange={base => props.onFileDiffBaseChange?.(base)}
         />
       </Show>
-      <Show when={(isDiffMode() || isRefMode()) && props.onMention}>
+      <Show when={showOuterMention()}>
         <div class={styles.viewToggle}>
           <button
             class={styles.viewToggleButton}
@@ -291,7 +299,6 @@ export const FileViewer: Component<{
               filePath={props.filePath}
               totalSize={diffOldContent()!.length}
               onQuote={props.onQuote}
-              onMention={props.onMention}
             />
           </Show>
           <Show when={isRefMode() && !diffLoading() && diffOldContent() === null}>
@@ -321,7 +328,6 @@ export const FileViewer: Component<{
                 filePath={props.filePath}
                 totalSize={totalSize()}
                 onQuote={props.onQuote}
-                onMention={props.onMention}
               />
             </Show>
             <Show when={viewMode() === 'markdown' && content()}>
