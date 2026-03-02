@@ -2,6 +2,7 @@ import type { Accessor, JSX } from 'solid-js'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { Todo } from '~/stores/chat.store'
+import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
 import type { createTabStore } from '~/stores/tab.store'
 import { relativizePath } from '~/components/chat/messageUtils'
@@ -27,8 +28,11 @@ export interface SidebarElementsOpts {
   getMruAgentContext: () => { workingDir: string, homeDir: string }
   fileTreePath: string
   onFileSelect: (path: string) => void
-  onFileOpen: (path: string) => void
+  onFileOpen: (path: string, openSource?: GitFilterTab) => void
   isActiveWorkspaceArchived: boolean
+  gitStatusStore: ReturnType<typeof createGitFileStatusStore>
+  activeFilePath?: string
+  hasActiveFileTab: boolean
   showTodos: boolean
   activeTodos: Todo[]
   termOps: ReturnType<typeof useTerminalOperations>
@@ -81,6 +85,9 @@ export function createLeftSidebarElement(opts: SidebarElementsOpts, display?: Si
         : dirPath => opts.termOps.handleOpenTerminal(dirPath)}
       showTodos={opts.showTodos}
       activeTodos={opts.activeTodos}
+      gitStatusStore={opts.gitStatusStore}
+      activeFilePath={opts.activeFilePath}
+      hasActiveFileTab={opts.hasActiveFileTab}
     />
   )
 }
@@ -123,6 +130,9 @@ export function createRightSidebarElement(opts: SidebarElementsOpts, display?: S
       onConfirmDelete={opts.onConfirmDelete}
       onConfirmArchive={opts.onConfirmArchive}
       onPostArchiveWorkspace={opts.onPostArchiveWorkspace}
+      gitStatusStore={opts.gitStatusStore}
+      activeFilePath={opts.activeFilePath}
+      hasActiveFileTab={opts.hasActiveFileTab}
     />
   )
 }

@@ -1,6 +1,6 @@
 import type { createAgentStore } from '~/stores/agent.store'
 import type { createLayoutStore } from '~/stores/layout.store'
-import type { createTabStore } from '~/stores/tab.store'
+import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { createTerminalStore } from '~/stores/terminal.store'
 import { createEffect, on } from 'solid-js'
 import { agentClient, terminalClient, workspaceClient } from '~/api/clients'
@@ -146,6 +146,8 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
             tileId?: string
             title?: string
             displayMode?: string
+            fileViewMode?: string
+            fileDiffBase?: string
           }>
           for (const lt of localTabs) {
             let tileId = lt.tileId ?? defaultTileId
@@ -160,6 +162,8 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
               tileId,
               title: lt.title,
               displayMode: lt.displayMode,
+              fileViewMode: lt.fileViewMode as Tab['fileViewMode'],
+              fileDiffBase: lt.fileDiffBase as Tab['fileDiffBase'],
             }, false)
           }
         }

@@ -141,8 +141,9 @@ test.describe('Chat Pagination & Scroll', () => {
     await waitForAssistantReply(page)
     await waitForTurnComplete(page)
 
-    // Verify message is visible
-    const chatContainer = page.locator('[data-testid="chat-container"]')
+    // Verify message is visible (use .first() because all agent tabs stay
+    // mounted and the locator may resolve to multiple elements)
+    const chatContainer = page.locator('[data-testid="chat-container"]').first()
     await expect(chatContainer).toContainText('First Agent Reply', { timeout: 30_000 })
 
     // Create a second agent tab
@@ -153,7 +154,7 @@ test.describe('Chat Pagination & Scroll', () => {
     const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
     await agentTabs.first().click()
 
-    // Wait for messages to load (initial load happens on tab switch)
+    // Wait for messages to load (tab content stays mounted across switches)
     await expect(chatContainer).toContainText('First Agent Reply', { timeout: 15_000 })
   })
 

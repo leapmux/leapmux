@@ -3,7 +3,7 @@
 /** Format task status for display. */
 export function formatTaskStatus(status?: string): string {
   if (!status)
-    return 'Pending'
+    return 'Waiting for output'
   if (status === 'completed')
     return 'Complete'
   if (status === 'failed')

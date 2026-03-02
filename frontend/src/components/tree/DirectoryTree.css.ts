@@ -73,6 +73,13 @@ export const fileIcon = style({
   color: 'var(--muted-foreground)',
 })
 
+// Git-status icon color overrides (applied to folder/file icons).
+export const iconStaged = style({ color: 'var(--success)' })
+export const iconUnstaged = style({ color: 'var(--warning)' })
+export const iconUntracked = style({ color: 'var(--success)' })
+export const iconConflict = style({ color: 'var(--danger)' })
+export const iconDirChanged = style({ color: 'var(--warning)', opacity: 0.85 })
+
 export const nodeName = style({
   whiteSpace: 'nowrap',
 })

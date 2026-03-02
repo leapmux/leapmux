@@ -1,5 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { codeViewContainer } from '~/components/chat/codeViewStyles.css'
+import { diffContainer, diffSplitContainer } from '~/components/chat/diffStyles.css'
 
 export const container = style({
   display: 'flex',
@@ -13,6 +14,13 @@ export const content = style({
   flex: 1,
   overflow: 'auto',
   minHeight: 0,
+})
+
+// Remove border/margin from diff views when used inside the file viewer.
+globalStyle(`${content} ${diffContainer}, ${content} ${diffSplitContainer}`, {
+  border: 'none',
+  borderRadius: 0,
+  marginTop: 0,
 })
 
 export const statusBar = style({

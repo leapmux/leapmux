@@ -15,6 +15,10 @@ service GitService {
   rpc ForceRemoveWorktree(ForceRemoveWorktreeRequest) returns (ForceRemoveWorktreeResponse);
   // Keep a dirty worktree on disk (stop tracking it).
   rpc KeepWorktree(KeepWorktreeRequest) returns (KeepWorktreeResponse);
+  // Get per-file git status (staged/unstaged changes, diff stats).
+  rpc GetGitFileStatus(GetGitFileStatusRequest) returns (GetGitFileStatusResponse);
+  // Read a file at a specific git ref (HEAD or staged).
+  rpc ReadGitFile(ReadGitFileRequest) returns (ReadGitFileResponse);
 }
 
 message GetGitInfoRequest {
@@ -59,3 +63,60 @@ message KeepWorktreeRequest {
 }
 
 message KeepWorktreeResponse {}
+
+// --- Per-file git status ---
+
+// GitFileStatusCode describes the status of a file in the index or working tree.
+enum GitFileStatusCode {
+  GIT_FILE_STATUS_CODE_UNSPECIFIED = 0;
+  GIT_FILE_STATUS_CODE_MODIFIED = 1;
+  GIT_FILE_STATUS_CODE_ADDED = 2;
+  GIT_FILE_STATUS_CODE_DELETED = 3;
+  GIT_FILE_STATUS_CODE_RENAMED = 4;
+  GIT_FILE_STATUS_CODE_COPIED = 5;
+  GIT_FILE_STATUS_CODE_TYPE_CHANGED = 6;
+  GIT_FILE_STATUS_CODE_UNTRACKED = 7;
+  GIT_FILE_STATUS_CODE_UNMERGED = 8;
+}
+
+message GitFileStatusEntry {
+  string path = 1;                              // Path relative to repo root
+  GitFileStatusCode staged_status = 2;          // Status in the index (staged)
+  GitFileStatusCode unstaged_status = 3;        // Status in the working tree (unstaged)
+  int32 lines_added = 4;                        // Unstaged lines added
+  int32 lines_deleted = 5;                      // Unstaged lines deleted
+  int32 staged_lines_added = 6;                 // Staged lines added
+  int32 staged_lines_deleted = 7;               // Staged lines deleted
+  string old_path = 8;                          // Previous path (for renames/copies)
+}
+
+message GetGitFileStatusRequest {
+  string worker_id = 1;
+  string path = 2;       // Working directory (worker resolves to repo root)
+  string org_id = 3;
+}
+
+message GetGitFileStatusResponse {
+  string repo_root = 1;
+  repeated GitFileStatusEntry files = 2;  // Paths are relative to repo root
+}
+
+// GitFileRef specifies which version of a file to read.
+enum GitFileRef {
+  GIT_FILE_REF_UNSPECIFIED = 0;
+  GIT_FILE_REF_HEAD = 1;
+  GIT_FILE_REF_STAGED = 2;
+}
+
+message ReadGitFileRequest {
+  string worker_id = 1;
+  string path = 2;       // Absolute path to the file
+  GitFileRef ref = 3;
+  string org_id = 4;
+}
+
+message ReadGitFileResponse {
+  string path = 1;
+  bytes content = 2;
+  bool exists = 3;
+}

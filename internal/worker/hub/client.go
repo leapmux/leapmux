@@ -308,6 +308,12 @@ func (c *Client) handleMessage(ctx context.Context, msg *leapmuxv1.ConnectRespon
 	case *leapmuxv1.ConnectResponse_GitWorktreeRemove:
 		c.handleGitWorktreeRemove(msg.GetRequestId(), payload.GitWorktreeRemove)
 
+	case *leapmuxv1.ConnectResponse_GitFileStatus:
+		c.handleGitFileStatus(msg.GetRequestId(), payload.GitFileStatus)
+
+	case *leapmuxv1.ConnectResponse_GitFileRead:
+		c.handleGitFileRead(msg.GetRequestId(), payload.GitFileRead)
+
 	case *leapmuxv1.ConnectResponse_Deregister:
 		c.handleDeregister(msg.GetRequestId(), payload.Deregister)
 

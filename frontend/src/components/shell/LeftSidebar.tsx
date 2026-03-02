@@ -1,15 +1,17 @@
 import type { Component } from 'solid-js'
 import type { SidebarSectionDef } from './CollapsibleSidebar'
+import type { FilesSectionHandle } from '~/components/tree/FilesSection'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { TodoItem } from '~/stores/chat.store'
+import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
 
 import CircleUser from 'lucide-solid/icons/circle-user'
 import Plus from 'lucide-solid/icons/plus'
-import { createMemo, onCleanup, Show } from 'solid-js'
+import { createMemo, createSignal, onCleanup, Show } from 'solid-js'
 import { IconButton } from '~/components/common/IconButton'
 import { TodoList } from '~/components/todo/TodoList'
-import { DirectoryTree } from '~/components/tree/DirectoryTree'
+import { FilesSection, FilesSectionHeaderActions } from '~/components/tree/FilesSection'
 import { emptySection as emptySectionStyle, dragOverlay as wsDragOverlay } from '~/components/workspace/workspaceList.css'
 import { WorkspaceSectionContent } from '~/components/workspace/WorkspaceSectionContent'
 import { WorkspaceSharingDialog } from '~/components/workspace/WorkspaceSharingDialog'
@@ -46,9 +48,12 @@ interface LeftSidebarProps {
   homeDir: string
   fileTreePath: string
   onFileSelect: (path: string) => void
-  onFileOpen?: (path: string) => void
+  onFileOpen?: (path: string, openSource?: GitFilterTab) => void
   onFileMention?: (path: string) => void
   onOpenTerminal?: (dirPath: string) => void
+  gitStatusStore?: ReturnType<typeof createGitFileStatusStore>
+  activeFilePath?: string
+  hasActiveFileTab?: boolean
   showTodos: boolean
   activeTodos: TodoItem[]
 }
@@ -61,6 +66,11 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
 
   // Captured from CollapsibleSidebar's expandSectionRef callback.
   let expandSection: ((sectionId: string) => void) | undefined
+
+  // Handle for the FilesSection imperative API (e.g., collapseAll).
+  // Declared as a signal so reactive reads (e.g., isFiltered in header
+  // actions) re-evaluate when the handle is assigned after FilesSection mounts.
+  const [filesSectionHandle, setFilesSectionHandle] = createSignal<FilesSectionHandle | undefined>()
 
   /* eslint-disable solid/reactivity -- callbacks are stable references */
   const wsOps = useWorkspaceOperations({
@@ -199,7 +209,7 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
         })
       }
       else if (sectionType === SectionType.FILES) {
-        // FILES section moved to the left sidebar — render DirectoryTree
+        // FILES section moved to the left sidebar — render FilesSection
         sections.push({
           id: sectionId,
           title: group.section.name,
@@ -209,21 +219,41 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
           collapsible: true,
           draggable: true,
           testId: `section-header-${sectionTypeTestId(sectionType)}`,
+          headerActions: (
+            <FilesSectionHeaderActions
+              onCollapseAll={() => filesSectionHandle()?.collapseAll()}
+              onLocateFile={() => {
+                if (props.activeFilePath)
+                  props.onFileSelect(props.activeFilePath)
+              }}
+              onRefresh={() => {
+                if (props.workerId && props.workingDir)
+                  props.gitStatusStore?.refresh(props.workerId, props.workingDir)
+              }}
+              hasActiveFileTab={props.hasActiveFileTab ?? false}
+              isFiltered={() => filesSectionHandle()?.isFiltered() ?? false}
+              flatListMode={() => filesSectionHandle()?.flatListMode() ?? false}
+              onToggleFlatList={() => filesSectionHandle()?.toggleFlatListMode()}
+            />
+          ),
           content: () => (
             <Show
               when={props.workerId}
               fallback={<div class={emptySectionStyle}>No tab selected</div>}
             >
-              <DirectoryTree
+              <FilesSection
                 workerId={props.workerId}
-                showFiles
-                selectedPath={props.fileTreePath}
-                onSelect={props.onFileSelect}
+                workingDir={props.workingDir}
+                homeDir={props.homeDir}
+                fileTreePath={props.fileTreePath}
+                onFileSelect={props.onFileSelect}
                 onFileOpen={props.onFileOpen}
                 onMention={props.onFileMention}
                 onOpenTerminal={props.onOpenTerminal}
-                rootPath={props.workingDir || '~'}
-                homeDir={props.homeDir}
+                gitStatusStore={props.gitStatusStore!}
+                activeFilePath={props.activeFilePath}
+                hasActiveFileTab={props.hasActiveFileTab ?? false}
+                ref={setFilesSectionHandle}
               />
             </Show>
           ),

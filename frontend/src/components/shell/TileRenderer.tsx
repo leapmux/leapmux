@@ -6,12 +6,13 @@ import type { createAgentStore } from '~/stores/agent.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
+import type { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { createTerminalStore } from '~/stores/terminal.store'
 import Bot from 'lucide-solid/icons/bot'
 import Terminal from 'lucide-solid/icons/terminal'
-import { createMemo, Show } from 'solid-js'
+import { createEffect, createMemo, For, onCleanup, Show } from 'solid-js'
 import { agentClient } from '~/api/clients'
 import { agentCallTimeout } from '~/api/transport'
 import { AgentEditorPanel } from '~/components/chat/AgentEditorPanel'
@@ -22,6 +23,7 @@ import { showToast } from '~/components/common/Toast'
 import { FileViewer } from '~/components/fileviewer/FileViewer'
 import { TerminalView } from '~/components/terminal/TerminalView'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
+import { GitFileStatusCode } from '~/generated/leapmux/v1/git_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
@@ -65,6 +67,7 @@ interface TileRendererOpts {
   focusEditorRef: { current: (() => void) | undefined }
   getScrollStateRef: { current: (() => { distFromBottom: number, atBottom: boolean } | undefined) | undefined }
   forceScrollToBottomRef: { current: (() => void) | undefined }
+  gitFileStatusStore?: ReturnType<typeof createGitFileStatusStore>
 }
 
 export function createTileRenderer(opts: TileRendererOpts) {
@@ -184,6 +187,17 @@ export function createTileRenderer(opts: TileRendererOpts) {
       const t = tab()
       return t?.type === TabType.FILE ? t : null
     }
+    const tileAgentTabs = () => tabStore.getTabsForTile(tileId).filter(t => t.type === TabType.AGENT)
+    const tileFileTabs = () => tabStore.getTabsForTile(tileId).filter(t => t.type === TabType.FILE)
+    const agentScrollStates = new Map<string, () => { distFromBottom: number, atBottom: boolean } | undefined>()
+    const agentScrollToBottoms = new Map<string, () => void>()
+    createEffect(() => {
+      const activeId = agentTab()?.id
+      if (activeId) {
+        getScrollStateRef.current = agentScrollStates.get(activeId)
+        forceScrollToBottomRef.current = agentScrollToBottoms.get(activeId)
+      }
+    })
     const tileTerminalIds = () => new Set(
       tabStore.getTabsForTile(tileId)
         .filter(t => t.type === TabType.TERMINAL)
@@ -197,12 +211,16 @@ export function createTileRenderer(opts: TileRendererOpts) {
 
     return (
       <>
-        <Show when={agentTab()} keyed>
+        <For each={tileAgentTabs()}>
           {(at) => {
             const agentId = at.id
             const agent = () => agentStore.state.agents.find(a => a.id === agentId)
+            onCleanup(() => {
+              agentScrollStates.delete(agentId)
+              agentScrollToBottoms.delete(agentId)
+            })
             return (
-              <div class={styles.centerContent}>
+              <div class={styles.centerContent} classList={{ [styles.layoutHidden]: agentTab()?.id !== at.id }}>
                 <Show
                   when={agent()}
                   fallback={<div class={styles.placeholder}>Agent not found.</div>}
@@ -223,8 +241,16 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     onTrimOldMessages={() => chatStore.trimOldMessages(agentId, 150)}
                     savedViewportScroll={chatStore.getSavedViewportScroll(agentId)}
                     onClearSavedViewportScroll={() => chatStore.clearSavedViewportScroll(agentId)}
-                    scrollStateRef={(fn) => { getScrollStateRef.current = fn }}
-                    scrollToBottomRef={(fn) => { forceScrollToBottomRef.current = fn }}
+                    scrollStateRef={(fn) => {
+                      agentScrollStates.set(agentId, fn)
+                      if (agentTab()?.id === at.id)
+                        getScrollStateRef.current = fn
+                    }}
+                    scrollToBottomRef={(fn) => {
+                      agentScrollToBottoms.set(agentId, fn)
+                      if (agentTab()?.id === at.id)
+                        forceScrollToBottomRef.current = fn
+                    }}
                     onQuote={isActiveWorkspaceArchived()
                       ? undefined
                       : (text) => {
@@ -242,7 +268,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
               </div>
             )
           }}
-        </Show>
+        </For>
 
         <Show when={hasTerminals()}>
           <div
@@ -261,14 +287,14 @@ export function createTileRenderer(opts: TileRendererOpts) {
           </div>
         </Show>
 
-        <Show when={fileTab()} keyed>
+        <For each={tileFileTabs()}>
           {(ft) => {
             const fileRelPath = () => {
               const ctx = getMruAgentContext()
               return relativizePath(ft.filePath ?? '', ctx.workingDir, ctx.homeDir)
             }
             return (
-              <div class={styles.centerContent}>
+              <div class={styles.centerContent} classList={{ [styles.layoutHidden]: fileTab()?.id !== ft.id }}>
                 <FileViewer
                   workerId={ft.workerId ?? ''}
                   filePath={ft.filePath ?? ''}
@@ -286,11 +312,25 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     : () => {
                         insertIntoMruAgentEditor(tabStore, formatFileMention(fileRelPath()), 'inline')
                       }}
+                  fileViewMode={ft.fileViewMode}
+                  fileDiffBase={ft.fileDiffBase}
+                  hasStagedAndUnstaged={(() => {
+                    const store = opts.gitFileStatusStore
+                    if (!store)
+                      return false
+                    const entry = store.getFileStatus(ft.filePath ?? '')
+                    if (!entry)
+                      return false
+                    return entry.stagedStatus !== GitFileStatusCode.UNSPECIFIED
+                      && entry.unstagedStatus !== GitFileStatusCode.UNSPECIFIED
+                  })()}
+                  onFileViewModeChange={mode => tabStore.setTabFileViewMode(ft.type, ft.id, mode)}
+                  onFileDiffBaseChange={base => tabStore.setTabFileDiffBase(ft.type, ft.id, base)}
                 />
               </div>
             )
           }}
-        </Show>
+        </For>
 
         <Show when={!tab() && activeWorkspace()}>
           <Show

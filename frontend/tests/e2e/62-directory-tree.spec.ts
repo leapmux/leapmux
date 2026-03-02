@@ -4,7 +4,7 @@ import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
 test.describe('DirectoryTree', () => {
-  test('root directory is visible and collapsible', async ({ page, leapmuxServer }) => {
+  test('root directory is always visible and expanded', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Tree Root Test', adminOrgId, process.cwd())
     try {
@@ -16,19 +16,11 @@ test.describe('DirectoryTree', () => {
       const rootNode = page.locator('[data-testid="tree-root-node"]')
       await expect(rootNode).toBeVisible({ timeout: 15_000 })
 
-      // Children should be visible (root starts expanded)
+      // Children should be visible (root is always expanded)
       await expect(page.getByText('package.json')).toBeVisible({ timeout: 15_000 })
 
-      // Click root to collapse
+      // Clicking root should NOT collapse it (root is uncollapsible)
       await rootNode.click()
-
-      // Children should be hidden
-      await expect(page.getByText('package.json')).not.toBeVisible()
-
-      // Click root to expand again
-      await rootNode.click()
-
-      // Children should reappear
       await expect(page.getByText('package.json')).toBeVisible()
     }
     finally {
@@ -162,6 +154,134 @@ test.describe('DirectoryTree', () => {
     }
   })
 
+  test('collapsing a directory does not scroll the tree', async ({ page, leapmuxServer }) => {
+    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Collapse Scroll Test', adminOrgId, process.cwd())
+    try {
+      await loginViaToken(page, adminToken)
+      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await waitForWorkspaceReady(page)
+
+      // Wait for tree to load
+      const rootNode = page.locator('[data-testid="tree-root-node"]')
+      await expect(rootNode).toBeVisible({ timeout: 15_000 })
+      await expect(page.getByText('package.json')).toBeVisible({ timeout: 15_000 })
+
+      // Expand "src" to add more items to the tree
+      const srcNode = page.locator('span:text-is("src")').first()
+      await expect(srcNode).toBeVisible({ timeout: 5_000 })
+      await srcNode.click()
+      await page.waitForTimeout(500)
+
+      // Select a file to change selectedPath away from "src".
+      // This is needed because clicking src again to collapse only triggers
+      // the scroll-on-select effect when selectedPath actually changes.
+      const fileNode = page.getByText('package.json')
+      await fileNode.click()
+      await page.waitForTimeout(200)
+
+      // Find the tree scroll container (first ancestor with overflow: auto)
+      // and constrain its height to force it to be scrollable.
+      const scrollContainerHandle = await page.evaluateHandle(() => {
+        const node = document.querySelector('[data-testid="tree-root-node"]')
+        if (!node)
+          return null
+        let el: Element | null = node.parentElement
+        while (el) {
+          const style = window.getComputedStyle(el)
+          if (style.overflow === 'auto' || style.overflowY === 'auto')
+            return el
+          el = el.parentElement
+        }
+        return null
+      })
+
+      const isNull = await scrollContainerHandle.evaluate(el => el === null)
+      expect(isNull).toBe(false)
+
+      // Force the container to a small fixed height so tree content overflows
+      await scrollContainerHandle.evaluate((el) => {
+        if (el)
+          (el as HTMLElement).style.maxHeight = '150px'
+      })
+      await page.waitForTimeout(100)
+
+      // Verify the container is now scrollable
+      const scrollable = await scrollContainerHandle.evaluate(
+        el => el ? el.scrollHeight > el.clientHeight : false,
+      )
+      expect(scrollable).toBe(true)
+
+      // Scroll down so "src" is partially visible near the bottom
+      await scrollContainerHandle.evaluate((el) => {
+        if (el)
+          (el as HTMLElement).scrollTop = Math.min(50, el.scrollHeight - el.clientHeight)
+      })
+      await page.waitForTimeout(100)
+
+      const scrollTopBefore = await scrollContainerHandle.evaluate(
+        el => el ? (el as HTMLElement).scrollTop : 0,
+      )
+      expect(scrollTopBefore).toBeGreaterThan(0)
+
+      // Collapse "src" — should NOT change scroll position.
+      // selectedPath changes from the file to src, which would trigger
+      // the scroll-on-select effect without the fix.
+      await srcNode.click()
+      // Wait for rAF (the scroll-on-select effect fires in requestAnimationFrame)
+      await page.waitForTimeout(300)
+
+      const scrollTopAfter = await scrollContainerHandle.evaluate(
+        el => el ? (el as HTMLElement).scrollTop : 0,
+      )
+      expect(scrollTopAfter).toBe(scrollTopBefore)
+    }
+    finally {
+      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
+    }
+  })
+
+  test('collapse all collapses every expanded directory', async ({ page, leapmuxServer }) => {
+    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
+    // process.cwd() is the frontend directory in the test runner
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Collapse All Test', adminOrgId, process.cwd())
+    try {
+      await loginViaToken(page, adminToken)
+      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await waitForWorkspaceReady(page)
+
+      // Wait for tree to load — root is expanded by default
+      const rootNode = page.locator('[data-testid="tree-root-node"]')
+      await expect(rootNode).toBeVisible({ timeout: 15_000 })
+      await expect(page.getByText('package.json')).toBeVisible({ timeout: 15_000 })
+
+      // Expand "src" directory (child of root = frontend/)
+      const srcNode = page.locator('span:text-is("src")').first()
+      await expect(srcNode).toBeVisible({ timeout: 5_000 })
+      await srcNode.click()
+      await page.waitForTimeout(500)
+
+      // "components" should now be visible (child of src)
+      const componentsNode = page.locator('span:text-is("components")').first()
+      await expect(componentsNode).toBeVisible({ timeout: 5_000 })
+
+      // Click collapse all button
+      await page.locator('[data-testid="files-collapse-all"]').click()
+      // Wait for collapse animation (150ms transition)
+      await page.waitForTimeout(300)
+
+      // Root should still be expanded — root-level items still visible
+      await expect(page.getByText('package.json')).toBeVisible()
+      // "src" is a root child, so it should still be visible
+      await expect(srcNode).toBeVisible()
+      // But "components" (child of src) should be hidden because src is collapsed
+      await expect(componentsNode).not.toBeVisible()
+    }
+    finally {
+      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
+    }
+  })
+
   test('expand state persists across tab switches', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'State Persist Test', adminOrgId, process.cwd())
@@ -170,14 +290,24 @@ test.describe('DirectoryTree', () => {
       await page.goto(`/o/admin/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
-      // Wait for tree to load and ensure root is expanded (default)
+      // Wait for tree to load
       const rootNode = page.locator('[data-testid="tree-root-node"]')
       await expect(rootNode).toBeVisible({ timeout: 15_000 })
       await expect(page.getByText('package.json')).toBeVisible({ timeout: 15_000 })
 
-      // Collapse the root
-      await rootNode.click()
-      await expect(page.getByText('package.json')).not.toBeVisible()
+      // Expand "src" directory
+      const srcNode = page.locator('span:text-is("src")').first()
+      await expect(srcNode).toBeVisible({ timeout: 5_000 })
+      await srcNode.click()
+      await page.waitForTimeout(500)
+
+      // "components" should now be visible (child of src)
+      const componentsNode = page.locator('span:text-is("components")').first()
+      await expect(componentsNode).toBeVisible({ timeout: 5_000 })
+
+      // Collapse "src"
+      await srcNode.click()
+      await expect(componentsNode).not.toBeVisible()
 
       // Switch to a terminal tab (if exists) or create one
       const terminalTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
@@ -191,9 +321,9 @@ test.describe('DirectoryTree', () => {
       await agentTab.first().click()
       await page.waitForTimeout(500)
 
-      // Root should still be collapsed (state persisted via sessionStorage)
-      await expect(rootNode).toBeVisible()
-      await expect(page.getByText('package.json')).not.toBeVisible()
+      // "src" should still be collapsed (state persisted via sessionStorage)
+      await expect(srcNode).toBeVisible()
+      await expect(componentsNode).not.toBeVisible()
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

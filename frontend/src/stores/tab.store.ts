@@ -4,6 +4,10 @@ import { after, first, mid } from '~/lib/lexorank'
 
 export { TabType }
 
+export type FileViewMode = 'working' | 'head' | 'staged' | 'unified-diff' | 'split-diff'
+export type FileDiffBase = 'head-vs-working' | 'head-vs-staged'
+export type FileOpenSource = 'all' | 'changed' | 'staged' | 'unstaged'
+
 export interface Tab {
   type: TabType
   id: string
@@ -15,6 +19,9 @@ export interface Tab {
   workingDir?: string
   filePath?: string
   displayMode?: string
+  fileViewMode?: FileViewMode
+  fileDiffBase?: FileDiffBase
+  fileOpenSource?: FileOpenSource
 }
 
 export function tabKey(tab: Tab): string {
@@ -204,6 +211,18 @@ export function createTabStore() {
     setTabDisplayMode(type: TabType, id: string, displayMode: string) {
       const key = tabKey({ type, id })
       setState('tabs', t => tabKey(t) === key, 'displayMode', displayMode)
+    },
+
+    /** Set the file view mode for a file tab. */
+    setTabFileViewMode(type: TabType, id: string, mode: FileViewMode) {
+      const key = tabKey({ type, id })
+      setState('tabs', t => tabKey(t) === key, 'fileViewMode', mode)
+    },
+
+    /** Set the file diff base for a file tab. */
+    setTabFileDiffBase(type: TabType, id: string, base: FileDiffBase) {
+      const key = tabKey({ type, id })
+      setState('tabs', t => tabKey(t) === key, 'fileDiffBase', base)
     },
 
     /** Move a tab to a different tile, cleaning up source tile state. */

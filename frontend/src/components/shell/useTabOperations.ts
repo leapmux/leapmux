@@ -4,7 +4,7 @@ import type { CheckWorktreeStatusResponse } from '~/generated/leapmux/v1/git_pb'
 import type { createAgentStore } from '~/stores/agent.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createLayoutStore } from '~/stores/layout.store'
-import type { createTabStore, Tab } from '~/stores/tab.store'
+import type { createTabStore, FileOpenSource, Tab } from '~/stores/tab.store'
 import type { createTerminalStore } from '~/stores/terminal.store'
 import { createEffect, createSignal } from 'solid-js'
 import { gitClient } from '~/api/clients'
@@ -23,7 +23,6 @@ interface UseTabOperationsOpts {
   termOps: ReturnType<typeof useTerminalOperations>
   activeTab: () => Tab | undefined
   getCurrentTabContext: () => { workerId: string, workingDir: string, homeDir: string }
-  persistLayout: () => void
   focusEditor: () => void
   getScrollState: () => { distFromBottom: number, atBottom: boolean } | undefined
   setFileTreePath: (path: string) => void
@@ -41,7 +40,6 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     termOps,
     activeTab,
     getCurrentTabContext,
-    persistLayout,
     focusEditor,
     getScrollState,
     setFileTreePath,
@@ -112,7 +110,6 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
   const handleTabClose = async (tab: Tab) => {
     if (tab.type === TabType.FILE) {
       tabStore.removeTabFromTile(tab.type, tab.id, tab.tileId ?? '')
-      persistLayout()
       return
     }
 
@@ -152,7 +149,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
   }
 
   let fileTabCounter = 0
-  const handleFileOpen = (path: string) => {
+  const handleFileOpen = (path: string, openSource?: FileOpenSource) => {
     const ctx = getCurrentTabContext()
     if (!ctx.workerId)
       return
@@ -168,6 +165,18 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       return
     }
 
+    // Determine initial view mode based on open source.
+    let fileViewMode: Tab['fileViewMode'] = 'working'
+    let fileDiffBase: Tab['fileDiffBase']
+    if (openSource === 'staged') {
+      fileViewMode = 'unified-diff'
+      fileDiffBase = 'head-vs-staged'
+    }
+    else if (openSource === 'changed' || openSource === 'unstaged') {
+      fileViewMode = 'unified-diff'
+      fileDiffBase = 'head-vs-working'
+    }
+
     const fileName = path.split('/').pop() ?? path
     const tileId = layoutStore.focusedTileId()
     const tabId = `file-${++fileTabCounter}-${Date.now()}`
@@ -179,9 +188,11 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       workingDir: ctx.workingDir,
       title: fileName,
       tileId,
+      fileViewMode,
+      fileDiffBase,
+      fileOpenSource: openSource,
     })
     tabStore.setActiveTabForTile(tileId, TabType.FILE, tabId)
-    persistLayout()
   }
 
   // Reset file tree selection when active tab changes

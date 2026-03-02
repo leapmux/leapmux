@@ -341,8 +341,9 @@ test.describe('Quote and Mention', () => {
       const lineElements = page.locator('[data-line-num]')
       await expect(lineElements.first()).toBeVisible({ timeout: 10_000 })
 
-      // Triple-click on a line to select text within the file view
-      await lineElements.first().click({ clickCount: 3 })
+      // Triple-click on a line to select text within the file view.
+      // Use nth(2) to avoid the floating DiffModeToolbar at the top.
+      await lineElements.nth(2).click({ clickCount: 3 })
 
       // Wait for the quote popover to appear
       await page.waitForTimeout(500)

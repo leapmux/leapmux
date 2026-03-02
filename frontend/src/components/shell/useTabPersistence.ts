@@ -97,6 +97,8 @@ export function useTabPersistence(opts: UseTabPersistenceOpts) {
         tileId: t.tileId,
         title: t.title,
         displayMode: t.displayMode,
+        fileViewMode: t.fileViewMode,
+        fileDiffBase: t.fileDiffBase,
       }))
     if (localTabs.length > 0) {
       sessionStorage.setItem(`leapmux:localTabs:${wsId}`, JSON.stringify(localTabs))

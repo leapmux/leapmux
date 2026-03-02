@@ -5,7 +5,7 @@ import { diffLines, diffWordsWithSpace } from 'diff'
 import ArrowDownFromLine from 'lucide-solid/icons/arrow-down-from-line'
 import ArrowUpFromLine from 'lucide-solid/icons/arrow-up-from-line'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
-import { createEffect, createSignal, For, on, onCleanup, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { guessLanguage } from '~/lib/languageMap'
 import { tokenizeAsync } from '~/lib/shikiWorkerClient'
@@ -738,9 +738,16 @@ function UnifiedDiffLine(props: { line: DiffLineEntry }): JSX.Element {
 /** Render a unified diff view from hunks. */
 function UnifiedDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string, originalFile?: string }): JSX.Element {
   const { oldTokens, newTokens } = useDiffTokens(() => props.hunks, () => props.filePath)
-  const lines = () => buildUnifiedLines(props.hunks, oldTokens(), newTokens())
+  const lines = createMemo(() => buildUnifiedLines(props.hunks, oldTokens(), newTokens()))
 
-  const originalFileLines = () => props.originalFile?.split('\n')
+  const originalFileLines = () => {
+    if (!props.originalFile)
+      return undefined
+    const lines = props.originalFile.split('\n')
+    if (lines.length > 0 && lines[lines.length - 1] === '')
+      lines.pop()
+    return lines
+  }
   const gapData = () => {
     const ofl = originalFileLines()
     if (!ofl)
@@ -859,9 +866,16 @@ function SplitDiffRow(props: { left: SplitLineEntry, right: SplitLineEntry }): J
 /** Render a split diff view from hunks (removed on left, added on right). */
 function SplitDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string, originalFile?: string }): JSX.Element {
   const { oldTokens, newTokens } = useDiffTokens(() => props.hunks, () => props.filePath)
-  const splitLines = () => buildSplitLines(props.hunks, oldTokens(), newTokens())
+  const splitLines = createMemo(() => buildSplitLines(props.hunks, oldTokens(), newTokens()))
 
-  const originalFileLines = () => props.originalFile?.split('\n')
+  const originalFileLines = () => {
+    if (!props.originalFile)
+      return undefined
+    const lines = props.originalFile.split('\n')
+    if (lines.length > 0 && lines[lines.length - 1] === '')
+      lines.pop()
+    return lines
+  }
   const gapData = () => {
     const ofl = originalFileLines()
     if (!ofl)
