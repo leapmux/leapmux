@@ -140,6 +140,27 @@ Install the remaining dependencies with [Homebrew](https://brew.sh/):
 brew install buf go go-task golangci-lint mprocs sqlc yq
 ```
 
+### Arch Linux
+
+Install the official repository packages with [pacman](https://wiki.archlinux.org/title/Pacman):
+
+```bash
+sudo pacman -S buf bun go go-task go-yq golangci-lint sqlc
+```
+
+The Arch `go-task` package installs the binary as `go-task`. Add a shell alias so that `task` works:
+
+```bash
+# Add to your ~/.bashrc or ~/.zshrc
+alias task=go-task
+```
+
+Install the remaining dependencies from the [AUR](https://wiki.archlinux.org/title/Arch_User_Repository) (using [yay](https://github.com/Jguer/yay) or your preferred AUR helper):
+
+```bash
+yay -S mprocs-bin
+```
+
 ### Operating System
 
 LeapMux is developed and tested on macOS and Linux. Windows support may require WSL.
