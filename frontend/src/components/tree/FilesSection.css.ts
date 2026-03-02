@@ -15,7 +15,7 @@ export const tabBar = style({
   borderBottom: '1px solid var(--border)',
   flexShrink: 0,
   fontSize: 'var(--text-8)',
-  backgroundColor: 'var(--background)',
+  backgroundColor: 'inherit',
 })
 
 export const tabButton = style({
@@ -83,38 +83,13 @@ export const flatListItemSelected = style({
   },
 })
 
-export const statusIndicator = style({
-  display: 'inline-flex',
-  alignItems: 'center',
-  flexShrink: 0,
-  width: '8px',
-  height: '8px',
-  borderRadius: '50%',
-})
-
-export const statusStaged = style({
-  backgroundColor: 'var(--success)',
-})
-
-export const statusUnstaged = style({
-  backgroundColor: 'var(--warning)',
-})
-
-export const statusUntracked = style({
-  backgroundColor: 'var(--muted-foreground)',
-})
-
-export const statusConflict = style({
-  backgroundColor: 'var(--danger)',
-})
-
 export const diffStats = style({
   fontSize: 'var(--text-8)',
   color: 'var(--muted-foreground)',
-  marginLeft: 'auto',
+  marginLeft: '4px',
+  paddingRight: 'var(--space-1)',
   flexShrink: 0,
   whiteSpace: 'nowrap',
-  paddingRight: 'var(--space-2)',
 })
 
 export const diffStatsAdded = style({
@@ -123,22 +98,4 @@ export const diffStatsAdded = style({
 
 export const diffStatsDeleted = style({
   color: 'var(--danger)',
-})
-
-export const statusGroup = style({
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: '4px',
-  marginLeft: '4px',
-  flexShrink: 0,
-})
-
-// Dot indicator for directories with changed descendants.
-export const dirChangeIndicator = style({
-  width: '6px',
-  height: '6px',
-  borderRadius: '50%',
-  backgroundColor: 'var(--warning)',
-  opacity: 0.7,
-  flexShrink: 0,
 })

@@ -1,10 +1,18 @@
 import { style } from '@vanilla-extract/css'
 
+// Wrapper positioned absolutely to center the toolbar without affecting layout.
+export const toolbarWrapper = style({
+  position: 'absolute',
+  top: 'var(--space-2)',
+  left: 0,
+  right: 0,
+  display: 'flex',
+  justifyContent: 'center',
+  zIndex: 10,
+  pointerEvents: 'none',
+})
+
 export const toolbar = style({
-  'position': 'absolute',
-  'top': 'var(--space-2)',
-  'right': 'var(--space-3)',
-  'zIndex': 10,
   'display': 'flex',
   'gap': '1px',
   'borderRadius': 'var(--radius-small)',
@@ -12,6 +20,7 @@ export const toolbar = style({
   'backgroundColor': 'var(--card)',
   'opacity': 0.8,
   'transition': 'opacity 0.15s',
+  'pointerEvents': 'auto',
   ':hover': {
     opacity: 1,
   },

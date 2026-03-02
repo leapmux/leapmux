@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import type { SidebarSectionDef } from './CollapsibleSidebar'
+import type { FilesSectionHandle } from '~/components/tree/FilesSection'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { TodoItem } from '~/stores/chat.store'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
@@ -7,10 +8,10 @@ import type { createSectionStore } from '~/stores/section.store'
 
 import CircleUser from 'lucide-solid/icons/circle-user'
 import Plus from 'lucide-solid/icons/plus'
-import { createMemo, onCleanup, Show } from 'solid-js'
+import { createMemo, createSignal, onCleanup, Show } from 'solid-js'
 import { IconButton } from '~/components/common/IconButton'
 import { TodoList } from '~/components/todo/TodoList'
-import { FilesSection } from '~/components/tree/FilesSection'
+import { FilesSection, FilesSectionHeaderActions } from '~/components/tree/FilesSection'
 import { emptySection as emptySectionStyle, dragOverlay as wsDragOverlay } from '~/components/workspace/workspaceList.css'
 import { WorkspaceSectionContent } from '~/components/workspace/WorkspaceSectionContent'
 import { WorkspaceSharingDialog } from '~/components/workspace/WorkspaceSharingDialog'
@@ -65,6 +66,11 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
 
   // Captured from CollapsibleSidebar's expandSectionRef callback.
   let expandSection: ((sectionId: string) => void) | undefined
+
+  // Handle for the FilesSection imperative API (e.g., collapseAll).
+  // Declared as a signal so reactive reads (e.g., isFiltered in header
+  // actions) re-evaluate when the handle is assigned after FilesSection mounts.
+  const [filesSectionHandle, setFilesSectionHandle] = createSignal<FilesSectionHandle | undefined>()
 
   /* eslint-disable solid/reactivity -- callbacks are stable references */
   const wsOps = useWorkspaceOperations({
@@ -213,6 +219,23 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
           collapsible: true,
           draggable: true,
           testId: `section-header-${sectionTypeTestId(sectionType)}`,
+          headerActions: (
+            <FilesSectionHeaderActions
+              onCollapseAll={() => filesSectionHandle()?.collapseAll()}
+              onLocateFile={() => {
+                if (props.activeFilePath)
+                  props.onFileSelect(props.activeFilePath)
+              }}
+              onRefresh={() => {
+                if (props.workerId && props.workingDir)
+                  props.gitStatusStore?.refresh(props.workerId, props.workingDir)
+              }}
+              hasActiveFileTab={props.hasActiveFileTab ?? false}
+              isFiltered={() => filesSectionHandle()?.isFiltered() ?? false}
+              flatListMode={() => filesSectionHandle()?.flatListMode() ?? false}
+              onToggleFlatList={() => filesSectionHandle()?.toggleFlatListMode()}
+            />
+          ),
           content: () => (
             <Show
               when={props.workerId}
@@ -230,6 +253,7 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
                 gitStatusStore={props.gitStatusStore!}
                 activeFilePath={props.activeFilePath}
                 hasActiveFileTab={props.hasActiveFileTab ?? false}
+                ref={setFilesSectionHandle}
               />
             </Show>
           ),

@@ -2,10 +2,13 @@ import type { Component } from 'solid-js'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { FileViewMode } from '~/lib/fileType'
 import type { FileDiffBase, FileViewMode as TabFileViewMode } from '~/stores/tab.store'
-import { createEffect, createSignal, on, Show } from 'solid-js'
+import AtSign from 'lucide-solid/icons/at-sign'
+import { createEffect, createMemo, createSignal, on, onCleanup, Show } from 'solid-js'
 import { fileClient, gitClient } from '~/api/clients'
 import { apiCallTimeout } from '~/api/transport'
+import { diffAdded, diffRemoved } from '~/components/chat/diffStyles.css'
 import { DiffView, rawDiffToHunks } from '~/components/chat/diffUtils'
+import { Icon } from '~/components/common/Icon'
 import { GitFileRef } from '~/generated/leapmux/v1/git_pb'
 import { detectFileViewMode, isImageExtension } from '~/lib/fileType'
 import { DiffModeToolbar } from './DiffModeToolbar'
@@ -140,9 +143,14 @@ export const FileViewer: Component<{
             setDiffNewContent(stagedResp.exists ? new TextDecoder().decode(stagedResp.content) : '')
           }
           else {
-            // head-vs-working: use the working copy content already loaded.
-            const bytes = content()
-            setDiffNewContent(bytes ? new TextDecoder().decode(bytes) : '')
+            // head-vs-working: read working copy from disk to avoid race
+            // with the content-loading effect that runs concurrently.
+            const workingResp = await fileClient.readFile({
+              workerId,
+              path: filePath,
+              limit: BigInt(MAX_FILE_SIZE),
+            })
+            setDiffNewContent(new TextDecoder().decode(workingResp.content))
           }
         }
       }
@@ -161,16 +169,89 @@ export const FileViewer: Component<{
 
   const showToolbar = () => props.fileViewMode !== undefined
 
-  const diffHunks = () => {
+  const diffHunks = createMemo(() => {
     const old = diffOldContent()
     const nw = diffNewContent()
     if (old === null || nw === null)
       return []
     return rawDiffToHunks(old, nw)
-  }
+  })
 
   const diffViewPref = (): DiffViewPreference =>
     props.fileViewMode === 'split-diff' ? 'split' : 'unified'
+
+  let contentRef: HTMLDivElement | undefined
+
+  // Include the view mode in the scroll key so each mode has independent scroll.
+  // eslint-disable-next-line solid/reactivity
+  const scrollStoragePrefix = `leapmux:fileScroll:${props.workerId}:${props.filePath}`
+  const scrollStorageKey = () => `${scrollStoragePrefix}:${props.fileViewMode ?? 'working'}`
+
+  // Save scroll position when the view mode changes or on unmount.
+  let lastSavedKey: string | undefined
+  const saveScrollPosition = () => {
+    const key = lastSavedKey ?? scrollStorageKey()
+    if (contentRef && contentRef.scrollTop > 0) {
+      sessionStorage.setItem(key, String(contentRef.scrollTop))
+    }
+    else {
+      sessionStorage.removeItem(key)
+    }
+  }
+  onCleanup(saveScrollPosition)
+
+  // Restore saved scroll position or scroll to first diff entry.
+  createEffect(on(
+    () => [loading(), diffLoading(), isDiffMode(), diffHunks().length, props.fileViewMode] as const,
+    ([fileLoading, dLoading, diffMode, hunkCount, _fvMode]) => {
+      if (fileLoading || dLoading || !contentRef)
+        return
+
+      // Save scroll for the previous mode before switching.
+      if (lastSavedKey && lastSavedKey !== scrollStorageKey())
+        saveScrollPosition()
+      lastSavedKey = scrollStorageKey()
+
+      const savedStr = sessionStorage.getItem(scrollStorageKey())
+      if (savedStr != null) {
+        const scrollTop = Number(savedStr)
+        sessionStorage.removeItem(scrollStorageKey())
+        requestAnimationFrame(() => {
+          if (contentRef)
+            contentRef.scrollTop = scrollTop
+        })
+        return
+      }
+
+      if (!diffMode || hunkCount === 0)
+        return
+
+      requestAnimationFrame(() => {
+        const container = contentRef!
+        const diffElements = container.querySelectorAll(`.${diffAdded}, .${diffRemoved}`)
+        if (diffElements.length === 0)
+          return
+
+        const firstEl = diffElements[0] as HTMLElement
+        const lastEl = diffElements[diffElements.length - 1] as HTMLElement
+        const containerRect = container.getBoundingClientRect()
+        const firstRect = firstEl.getBoundingClientRect()
+        const lastRect = lastEl.getBoundingClientRect()
+
+        // Calculate the midpoint of the diff area relative to scroll.
+        const diffTop = firstRect.top - containerRect.top + container.scrollTop
+        const diffBottom = lastRect.bottom - containerRect.top + container.scrollTop
+        const diffMid = (diffTop + diffBottom) / 2
+        const viewportHeight = container.clientHeight
+
+        // Center the midpoint, but ensure the first diff line stays visible.
+        let targetScroll = diffMid - viewportHeight / 2
+        targetScroll = Math.min(targetScroll, diffTop)
+        targetScroll = Math.max(0, targetScroll)
+        container.scrollTop = targetScroll
+      })
+    },
+  ))
 
   return (
     <div class={styles.container}>
@@ -183,7 +264,19 @@ export const FileViewer: Component<{
           onDiffBaseChange={base => props.onFileDiffBaseChange?.(base)}
         />
       </Show>
-      <div class={styles.content}>
+      <Show when={(isDiffMode() || isRefMode()) && props.onMention}>
+        <div class={styles.viewToggle}>
+          <button
+            class={styles.viewToggleButton}
+            onClick={() => props.onMention?.()}
+            title="Mention in the chat"
+            data-testid="file-mention-button"
+          >
+            <Icon icon={AtSign} size="sm" />
+          </button>
+        </div>
+      </Show>
+      <div class={styles.content} ref={contentRef}>
         <Show when={loading() || diffLoading()}>
           <div class={styles.loadingState}>Loading...</div>
         </Show>

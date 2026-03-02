@@ -23,7 +23,6 @@ interface UseTabOperationsOpts {
   termOps: ReturnType<typeof useTerminalOperations>
   activeTab: () => Tab | undefined
   getCurrentTabContext: () => { workerId: string, workingDir: string, homeDir: string }
-  persistLayout: () => void
   focusEditor: () => void
   getScrollState: () => { distFromBottom: number, atBottom: boolean } | undefined
   setFileTreePath: (path: string) => void
@@ -41,7 +40,6 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     termOps,
     activeTab,
     getCurrentTabContext,
-    persistLayout,
     focusEditor,
     getScrollState,
     setFileTreePath,
@@ -112,7 +110,6 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
   const handleTabClose = async (tab: Tab) => {
     if (tab.type === TabType.FILE) {
       tabStore.removeTabFromTile(tab.type, tab.id, tab.tileId ?? '')
-      persistLayout()
       return
     }
 
@@ -169,7 +166,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     }
 
     // Determine initial view mode based on open source.
-    let fileViewMode: Tab['fileViewMode']
+    let fileViewMode: Tab['fileViewMode'] = 'working'
     let fileDiffBase: Tab['fileDiffBase']
     if (openSource === 'staged') {
       fileViewMode = 'unified-diff'
@@ -196,7 +193,6 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       fileOpenSource: openSource,
     })
     tabStore.setActiveTabForTile(tileId, TabType.FILE, tabId)
-    persistLayout()
   }
 
   // Reset file tree selection when active tab changes

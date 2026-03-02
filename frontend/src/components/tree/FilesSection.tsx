@@ -3,15 +3,25 @@ import type { DirectoryTreeHandle } from './DirectoryTree'
 import type { GitFileStatusEntry } from '~/generated/leapmux/v1/git_pb'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import ChevronsDownUp from 'lucide-solid/icons/chevrons-down-up'
+import FileIcon from 'lucide-solid/icons/file'
 import FolderTree from 'lucide-solid/icons/folder-tree'
 import List from 'lucide-solid/icons/list'
 import LocateFixed from 'lucide-solid/icons/locate-fixed'
 import RefreshCw from 'lucide-solid/icons/refresh-cw'
-import { createSignal, For, Show } from 'solid-js'
+import { createEffect, createSignal, For, Show } from 'solid-js'
+import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/git_pb'
 import { DirectoryTree } from './DirectoryTree'
+import * as dtStyles from './DirectoryTree.css'
 import * as styles from './FilesSection.css'
+
+export interface FilesSectionHandle {
+  collapseAll: () => void
+  isFiltered: () => boolean
+  flatListMode: () => boolean
+  toggleFlatListMode: () => void
+}
 
 export interface FilesSectionProps {
   workerId: string
@@ -27,6 +37,18 @@ export interface FilesSectionProps {
   activeFilePath?: string
   /** Whether the active tab is a file tab (for locate button enabled state). */
   hasActiveFileTab: boolean
+  /** Ref callback for imperative actions (collapse all). */
+  ref?: (handle: FilesSectionHandle) => void
+}
+
+export interface FilesSectionHeaderActionsProps {
+  onCollapseAll: () => void
+  onLocateFile: () => void
+  onRefresh: () => void
+  hasActiveFileTab: boolean
+  isFiltered?: () => boolean
+  flatListMode?: () => boolean
+  onToggleFlatList?: () => void
 }
 
 const FILTER_TABS: { key: GitFilterTab, label: string }[] = [
@@ -36,39 +58,29 @@ const FILTER_TABS: { key: GitFilterTab, label: string }[] = [
   { key: 'unstaged', label: 'Unstaged' },
 ]
 
-/** Status indicator dot for a file entry. */
-export const FileStatusIndicator: Component<{ entry: GitFileStatusEntry }> = (props) => {
-  const statusClass = () => {
+/** Colored file icon for a git file entry. */
+export const FileStatusIcon: Component<{ entry: GitFileStatusEntry }> = (props) => {
+  const iconClass = () => {
     const e = props.entry
-    if (e.unstagedStatus === GitFileStatusCode.UNMERGED || e.stagedStatus === GitFileStatusCode.UNMERGED) {
-      return styles.statusConflict
-    }
-    if (e.unstagedStatus === GitFileStatusCode.UNTRACKED) {
-      return styles.statusUntracked
-    }
-    if (e.stagedStatus !== GitFileStatusCode.UNSPECIFIED && e.unstagedStatus !== GitFileStatusCode.UNSPECIFIED) {
-      // Both staged and unstaged changes — show unstaged color.
-      return styles.statusUnstaged
-    }
-    if (e.stagedStatus !== GitFileStatusCode.UNSPECIFIED) {
-      return styles.statusStaged
-    }
-    return styles.statusUnstaged
+    if (e.unstagedStatus === GitFileStatusCode.UNMERGED || e.stagedStatus === GitFileStatusCode.UNMERGED)
+      return dtStyles.iconConflict
+    if (e.unstagedStatus === GitFileStatusCode.UNTRACKED)
+      return dtStyles.iconUntracked
+    if (e.stagedStatus !== GitFileStatusCode.UNSPECIFIED && e.unstagedStatus === GitFileStatusCode.UNSPECIFIED)
+      return dtStyles.iconStaged
+    return dtStyles.iconUnstaged
   }
 
-  return (
-    <span
-      class={`${styles.statusIndicator} ${statusClass()}`}
-      data-testid={
-        props.entry.stagedStatus !== GitFileStatusCode.UNSPECIFIED
-        && props.entry.unstagedStatus === GitFileStatusCode.UNSPECIFIED
-          ? 'git-status-staged'
-          : props.entry.unstagedStatus === GitFileStatusCode.UNTRACKED
-            ? 'git-status-untracked'
-            : 'git-status-unstaged'
-      }
-    />
-  )
+  const testId = () => {
+    const e = props.entry
+    if (e.stagedStatus !== GitFileStatusCode.UNSPECIFIED && e.unstagedStatus === GitFileStatusCode.UNSPECIFIED)
+      return 'git-status-staged'
+    if (e.unstagedStatus === GitFileStatusCode.UNTRACKED)
+      return 'git-status-untracked'
+    return 'git-status-unstaged'
+  }
+
+  return <Icon icon={FileIcon} size="sm" class={iconClass()} data-testid={testId()} />
 }
 
 /** Diff stats badge showing +N -M. */
@@ -97,6 +109,51 @@ export const DiffStatsBadge: Component<{ entry: GitFileStatusEntry }> = (props) 
   )
 }
 
+/** Toolbar buttons rendered in the section header. */
+export const FilesSectionHeaderActions: Component<FilesSectionHeaderActionsProps> = (props) => {
+  return (
+    <>
+      <Show when={props.isFiltered?.()}>
+        <IconButton
+          icon={props.flatListMode?.() ? FolderTree : List}
+          iconSize="xs"
+          size="sm"
+          title={props.flatListMode?.() ? 'Tree view' : 'Flat list'}
+          state={props.flatListMode?.() ? IconButtonState.Active : IconButtonState.Enabled}
+          onClick={() => props.onToggleFlatList?.()}
+          data-testid="files-flat-list-toggle"
+        />
+      </Show>
+      <Show when={props.hasActiveFileTab}>
+        <IconButton
+          icon={LocateFixed}
+          iconSize="xs"
+          size="sm"
+          title="Locate active file"
+          onClick={() => props.onLocateFile()}
+          data-testid="files-locate-file"
+        />
+      </Show>
+      <IconButton
+        icon={ChevronsDownUp}
+        iconSize="xs"
+        size="sm"
+        title="Collapse all"
+        onClick={() => props.onCollapseAll()}
+        data-testid="files-collapse-all"
+      />
+      <IconButton
+        icon={RefreshCw}
+        iconSize="xs"
+        size="sm"
+        title="Refresh git status"
+        onClick={() => props.onRefresh()}
+        data-testid="files-refresh-git"
+      />
+    </>
+  )
+}
+
 export const FilesSection: Component<FilesSectionProps> = (props) => {
   const [activeFilter, setActiveFilter] = createSignal<GitFilterTab>('all')
   const [flatListMode, setFlatListMode] = createSignal(false)
@@ -104,24 +161,17 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
 
   const isFiltered = () => activeFilter() !== 'all'
 
+  // Expose imperative handle via ref callback.
+  createEffect(() => {
+    props.ref?.({
+      collapseAll: () => treeHandle?.collapseAll(),
+      isFiltered,
+      flatListMode,
+      toggleFlatListMode: () => setFlatListMode(prev => !prev),
+    })
+  })
+
   const changedFiles = () => props.gitStatusStore.getChangedFiles(activeFilter())
-
-  const handleRefresh = () => {
-    if (props.workerId && props.workingDir) {
-      props.gitStatusStore.refresh(props.workerId, props.workingDir)
-    }
-  }
-
-  const handleCollapseAll = () => {
-    treeHandle?.collapseAll()
-  }
-
-  const handleLocateFile = () => {
-    if (props.activeFilePath) {
-      // Setting selectedPath triggers the auto-expand + scroll effects in DirectoryTree.
-      props.onFileSelect(props.activeFilePath)
-    }
-  }
 
   const handleFlatFileOpen = (entry: GitFileStatusEntry) => {
     const root = props.gitStatusStore.state.repoRoot || props.workingDir
@@ -175,43 +225,6 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
               </button>
             )}
           </For>
-          <div class={styles.toolbar}>
-            <Show when={isFiltered()}>
-              <IconButton
-                icon={flatListMode() ? FolderTree : List}
-                iconSize="xs"
-                size="sm"
-                title={flatListMode() ? 'Tree view' : 'Flat list'}
-                onClick={() => setFlatListMode(prev => !prev)}
-                data-testid="files-flat-list-toggle"
-              />
-            </Show>
-            <IconButton
-              icon={ChevronsDownUp}
-              iconSize="xs"
-              size="sm"
-              title="Collapse all"
-              onClick={handleCollapseAll}
-              data-testid="files-collapse-all"
-            />
-            <IconButton
-              icon={LocateFixed}
-              iconSize="xs"
-              size="sm"
-              title="Locate active file"
-              onClick={handleLocateFile}
-              state={props.hasActiveFileTab ? IconButtonState.Enabled : IconButtonState.Disabled}
-              data-testid="files-locate-file"
-            />
-            <IconButton
-              icon={RefreshCw}
-              iconSize="xs"
-              size="sm"
-              title="Refresh git status"
-              onClick={handleRefresh}
-              data-testid="files-refresh-git"
-            />
-          </div>
         </div>
       </Show>
 
@@ -243,7 +256,7 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
                 class={styles.flatListItem}
                 onClick={() => handleFlatFileOpen(entry)}
               >
-                <FileStatusIndicator entry={entry} />
+                <FileStatusIcon entry={entry} />
                 <span>{entry.path}</span>
                 <DiffStatsBadge entry={entry} />
               </div>

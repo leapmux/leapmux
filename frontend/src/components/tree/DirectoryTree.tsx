@@ -10,7 +10,7 @@ import FolderClosed from 'lucide-solid/icons/folder-closed'
 import FolderOpen from 'lucide-solid/icons/folder-open'
 import MoreHorizontal from 'lucide-solid/icons/more-horizontal'
 import TerminalIcon from 'lucide-solid/icons/terminal'
-import { createEffect, createSignal, For, Show, untrack } from 'solid-js'
+import { createEffect, createSignal, For, on, Show } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
 import { fileClient } from '~/api/clients'
 import { relativizePath, tildify } from '~/components/chat/messageUtils'
@@ -227,62 +227,58 @@ function renderTreeContextMenu(menuProps: {
   )
 }
 
-/** Render git status indicator for a tree node (file or directory). */
-function renderNodeGitStatus(
+/** Return a CSS class to color the file/folder icon based on git status. */
+function getGitIconClass(
+  node: TreeNodeData,
+  gitStatusStore?: ReturnType<typeof createGitFileStatusStore>,
+): { class: string, testId: string | undefined } {
+  if (!gitStatusStore)
+    return { class: '', testId: undefined }
+  if (node.isDir) {
+    const hasChanges = gitStatusStore.hasChanges(node.path)
+    return hasChanges
+      ? { class: styles.iconDirChanged, testId: undefined }
+      : { class: '', testId: undefined }
+  }
+  const entry = gitStatusStore.getFileStatus(node.path)
+  if (!entry)
+    return { class: '', testId: undefined }
+  if (entry.unstagedStatus === GitFileStatusCode.UNMERGED || entry.stagedStatus === GitFileStatusCode.UNMERGED)
+    return { class: styles.iconConflict, testId: 'git-status-unstaged' }
+  if (entry.unstagedStatus === GitFileStatusCode.UNTRACKED)
+    return { class: styles.iconUntracked, testId: 'git-status-untracked' }
+  if (entry.stagedStatus !== GitFileStatusCode.UNSPECIFIED && entry.unstagedStatus === GitFileStatusCode.UNSPECIFIED)
+    return { class: styles.iconStaged, testId: 'git-status-staged' }
+  return { class: styles.iconUnstaged, testId: 'git-status-unstaged' }
+}
+
+/** Render diff stats for a tree node (file only). */
+function renderNodeDiffStats(
   node: TreeNodeData,
   gitStatusStore?: ReturnType<typeof createGitFileStatusStore>,
 ): JSX.Element {
-  if (!gitStatusStore)
+  if (!gitStatusStore || node.isDir)
     return <></>
-  if (node.isDir) {
-    // Show a small dot if any descendant has changes.
-    const hasChanges = gitStatusStore.hasChanges(node.path)
-    return (
-      <Show when={hasChanges}>
-        <span class={fsStyles.dirChangeIndicator} />
-      </Show>
-    )
-  }
-  // File: show status indicator + diff stats.
   const entry = gitStatusStore.getFileStatus(node.path)
   if (!entry)
     return <></>
+  const totalAdded = entry.linesAdded + entry.stagedLinesAdded
+  const totalDeleted = entry.linesDeleted + entry.stagedLinesDeleted
+  if (totalAdded === 0 && totalDeleted === 0)
+    return <></>
   return (
-    <span class={fsStyles.statusGroup}>
-      <span
-        class={`${fsStyles.statusIndicator} ${
-          entry.unstagedStatus === GitFileStatusCode.UNMERGED || entry.stagedStatus === GitFileStatusCode.UNMERGED
-            ? fsStyles.statusConflict
-            : entry.unstagedStatus === GitFileStatusCode.UNTRACKED
-              ? fsStyles.statusUntracked
-              : entry.stagedStatus !== GitFileStatusCode.UNSPECIFIED && entry.unstagedStatus === GitFileStatusCode.UNSPECIFIED
-                ? fsStyles.statusStaged
-                : fsStyles.statusUnstaged
-        }`}
-        data-testid={
-          entry.stagedStatus !== GitFileStatusCode.UNSPECIFIED
-          && entry.unstagedStatus === GitFileStatusCode.UNSPECIFIED
-            ? 'git-status-staged'
-            : entry.unstagedStatus === GitFileStatusCode.UNTRACKED
-              ? 'git-status-untracked'
-              : 'git-status-unstaged'
-        }
-      />
-      <Show when={entry.linesAdded + entry.stagedLinesAdded > 0 || entry.linesDeleted + entry.stagedLinesDeleted > 0}>
-        <span class={fsStyles.diffStats} data-testid="git-diff-stats">
-          <Show when={entry.linesAdded + entry.stagedLinesAdded > 0}>
-            <span class={fsStyles.diffStatsAdded}>
-              +
-              {entry.linesAdded + entry.stagedLinesAdded}
-            </span>
-          </Show>
-          {(entry.linesAdded + entry.stagedLinesAdded > 0 && entry.linesDeleted + entry.stagedLinesDeleted > 0) ? ' ' : ''}
-          <Show when={entry.linesDeleted + entry.stagedLinesDeleted > 0}>
-            <span class={fsStyles.diffStatsDeleted}>
-              -
-              {entry.linesDeleted + entry.stagedLinesDeleted}
-            </span>
-          </Show>
+    <span class={fsStyles.diffStats} data-testid="git-diff-stats">
+      <Show when={totalAdded > 0}>
+        <span class={fsStyles.diffStatsAdded}>
+          +
+          {totalAdded}
+        </span>
+      </Show>
+      {totalAdded > 0 && totalDeleted > 0 ? ' ' : ''}
+      <Show when={totalDeleted > 0}>
+        <span class={fsStyles.diffStatsDeleted}>
+          -
+          {totalDeleted}
         </span>
       </Show>
     </span>
@@ -358,28 +354,28 @@ const TreeNode: Component<{
       props.onFileOpen?.(props.node.path)
       return
     }
-    props.onSelect(props.node.path)
     await doLoad()
     const willExpand = !expanded()
+    // Set expanded state before onSelect so that the scroll-on-select
+    // effect sees the correct state and skips scrolling on collapse.
     props.setNodeExpanded(props.node.path, willExpand)
+    props.onSelect(props.node.path)
     if (willExpand) {
       scrollIntoViewIfNeeded()
     }
   }
 
-  // Auto-expand when selectedPath is a descendant of this node.
-  createEffect(() => {
-    const selected = props.selectedPath
-    if (!props.node.isDir)
-      return
-    if (!selected.startsWith(`${props.node.path}/`))
-      return
-    if (loading())
-      return
+  // Auto-expand when selectedPath changes to a descendant of this node.
+  createEffect(on(
+    () => props.selectedPath,
+    (selected) => {
+      if (!props.node.isDir)
+        return
+      if (!selected.startsWith(`${props.node.path}/`))
+        return
 
-    if (!loaded()) {
-      untrack(() => {
-        doLoad().then(() => { // eslint-disable-line solid/reactivity -- one-shot async load inside untrack
+      if (!loaded()) {
+        doLoad().then(() => { // eslint-disable-line solid/reactivity -- one-shot async load
           props.setNodeExpanded(props.node.path, true)
           // Scroll into view for the deepest auto-expanded node.
           // Only scroll if this is the closest ancestor (children will handle deeper).
@@ -390,16 +386,19 @@ const TreeNode: Component<{
             scrollIntoViewIfNeeded()
           }
         })
-      })
-    }
-    else if (!expanded()) {
-      props.setNodeExpanded(props.node.path, true)
-    }
-  })
+      }
+      else if (!expanded()) {
+        props.setNodeExpanded(props.node.path, true)
+      }
+    },
+  ))
 
   // Scroll into view when this node is selected via path input.
+  // Skip for directories that are collapsed — collapsing should not scroll.
   createEffect(() => {
     if (props.selectedPath === props.node.path && wrapperRef) {
+      if (props.node.isDir && !expanded())
+        return
       const container = props.scrollContainer
       if (!container)
         return
@@ -414,6 +413,7 @@ const TreeNode: Component<{
   })
 
   const indent = () => `${8 + props.depth * 16}px`
+  const gitIcon = () => getGitIconClass(props.node, props.gitStatusStore)
 
   return (
     <div ref={wrapperRef}>
@@ -430,17 +430,17 @@ const TreeNode: Component<{
         </Show>
         <Show
           when={props.node.isDir}
-          fallback={<Icon icon={File} size="sm" class={styles.fileIcon} />}
+          fallback={<Icon icon={File} size="sm" class={gitIcon().class || styles.fileIcon} data-testid={gitIcon().testId} />}
         >
           <Show
             when={expanded()}
-            fallback={<Icon icon={FolderClosed} size="sm" class={styles.folderIcon} />}
+            fallback={<Icon icon={FolderClosed} size="sm" class={gitIcon().class || styles.folderIcon} data-testid={gitIcon().testId} />}
           >
-            <Icon icon={FolderOpen} size="sm" class={styles.folderIcon} />
+            <Icon icon={FolderOpen} size="sm" class={gitIcon().class || styles.folderIcon} data-testid={gitIcon().testId} />
           </Show>
         </Show>
         <span class={styles.nodeName}>{props.node.displayName}</span>
-        {renderNodeGitStatus(props.node, props.gitStatusStore)}
+        {renderNodeDiffStats(props.node, props.gitStatusStore)}
         <div class={styles.nodeActions}>
           {renderTreeContextMenu({
             path: props.node.path,
@@ -583,7 +583,6 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   }
 
   const rootPath = () => props.rootPath ?? '~'
-  const rootExpanded = () => isNodeExpanded(rootPath())
   const rootDisplayName = () => {
     const rp = rootPath()
     return rp.split('/').pop() || rp
@@ -652,10 +651,6 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     }
   }
 
-  const toggleRoot = () => {
-    setNodeExpanded(rootPath(), !rootExpanded())
-  }
-
   return (
     <div class={styles.container}>
       <div class={styles.pathInput}>
@@ -683,16 +678,9 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
             <div
               class={styles.node}
               style={{ 'padding-left': '8px' }}
-              onClick={toggleRoot}
               data-testid="tree-root-node"
             >
-              <Icon icon={ChevronRight} size="md" class={`${styles.chevron}${rootExpanded() ? ` ${styles.chevronExpanded}` : ''}`} />
-              <Show
-                when={rootExpanded()}
-                fallback={<Icon icon={FolderClosed} size="sm" class={styles.folderIcon} />}
-              >
-                <Icon icon={FolderOpen} size="sm" class={styles.folderIcon} />
-              </Show>
+              <Icon icon={FolderOpen} size="sm" class={styles.folderIcon} />
               <span class={styles.nodeName}>{rootDisplayName()}</span>
               <div class={styles.nodeActions}>
                 {renderTreeContextMenu({
@@ -706,11 +694,11 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
               </div>
             </div>
             <Show when={rootChildren() !== undefined}>
-              <div class={`${styles.childrenWrapper}${rootExpanded() ? ` ${styles.childrenWrapperExpanded}` : ''}`}>
+              <div class={`${styles.childrenWrapper} ${styles.childrenWrapperExpanded}`}>
                 <div class={styles.childrenInner}>
                   <Show
                     when={rootChildren()!.length > 0}
-                    fallback={<div class={styles.emptyState}>Empty directory</div>}
+                    fallback={<div class={styles.emptyState}>{props.visiblePaths ? 'No changes' : 'Empty directory'}</div>}
                   >
                     <For each={rootChildren()}>
                       {node => (
@@ -723,7 +711,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
                           onFileOpen={props.onFileOpen}
                           onMention={props.onMention}
                           onOpenTerminal={props.onOpenTerminal}
-                          depth={1}
+                          depth={0}
                           scrollContainer={treeRef}
                           rootPath={rootPath()}
                           homeDir={props.homeDir}

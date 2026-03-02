@@ -1,7 +1,7 @@
 import type { ParentComponent } from 'solid-js'
 import type { SidebarElementsOpts } from './SidebarElements'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
-import { createEffect, createMemo, createSignal, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, on, Show } from 'solid-js'
 import { agentLoadingTimeoutMs, apiCallTimeout } from '~/api/transport'
 import { NotFoundPage } from '~/components/common/NotFoundPage'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
@@ -324,7 +324,6 @@ export const AppShell: ParentComponent = (props) => {
     termOps,
     activeTab,
     getCurrentTabContext,
-    persistLayout,
     focusEditor: () => focusEditorRef.current?.(),
     getScrollState: () => getScrollStateRef.current?.(),
     setFileTreePath,
@@ -469,16 +468,23 @@ export const AppShell: ParentComponent = (props) => {
     },
   })
 
-  // Refresh git status when the workspace/worker context changes.
-  createEffect(() => {
-    const ctx = getCurrentTabContext()
-    if (ctx.workerId && ctx.workingDir) {
-      gitFileStatusStore.refresh(ctx.workerId, ctx.workingDir)
-    }
-    else {
-      gitFileStatusStore.clear()
-    }
-  })
+  // Refresh git status only when workerId or workingDir actually changes
+  // (not on every tab switch within the same worker context).
+  createEffect(on(
+    () => {
+      const ctx = getCurrentTabContext()
+      return `${ctx.workerId}\0${ctx.workingDir}`
+    },
+    () => {
+      const ctx = getCurrentTabContext()
+      if (ctx.workerId && ctx.workingDir) {
+        gitFileStatusStore.refresh(ctx.workerId, ctx.workingDir)
+      }
+      else {
+        gitFileStatusStore.clear()
+      }
+    },
+  ))
 
   return (
     <>

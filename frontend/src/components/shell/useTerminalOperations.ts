@@ -5,7 +5,7 @@ import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
 import type { createTerminalStore } from '~/stores/terminal.store'
 
-import { createEffect, createSignal } from 'solid-js'
+import { createEffect, createSignal, on } from 'solid-js'
 import { gitClient, terminalClient } from '~/api/clients'
 import { showToast } from '~/components/common/Toast'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
@@ -32,17 +32,14 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   const [availableShells, setAvailableShells] = createSignal<string[]>([])
   const [defaultShell, setDefaultShell] = createSignal('')
 
-  // Load available shells when active tab's worker changes
-  createEffect(() => {
+  /** Load available shells on demand (e.g. when the new-terminal dialog opens). */
+  const loadAvailableShells = () => {
     const ws = props.activeWorkspace()
     if (!ws)
       return
     const ctx = props.getCurrentTabContext()
-    if (!ctx.workerId) {
-      setAvailableShells([])
-      setDefaultShell('')
+    if (!ctx.workerId)
       return
-    }
     terminalClient.listAvailableShells({ orgId: props.org.orgId(), workspaceId: ws.id, workerId: ctx.workerId })
       .then((resp) => {
         setAvailableShells(resp.shells)
@@ -52,7 +49,16 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
         setAvailableShells([])
         setDefaultShell('')
       })
-  })
+  }
+
+  // Load available shells once per workerId change so the tabbar dropdown is populated.
+  createEffect(on(
+    () => props.getCurrentTabContext().workerId,
+    (workerId) => {
+      if (workerId)
+        loadAvailableShells()
+    },
+  ))
 
   const handleOpenTerminal = async (shellStartDir?: string) => {
     if (!props.isActiveWorkspaceMutatable())
@@ -198,6 +204,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     // Signals
     availableShells,
     defaultShell,
+    loadAvailableShells,
 
     // Handlers
     handleOpenTerminal,

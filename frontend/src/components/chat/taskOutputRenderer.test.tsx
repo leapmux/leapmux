@@ -52,8 +52,8 @@ describe('formatTaskStatus', () => {
     expect(formatTaskStatus('running')).toBe('Running')
   })
 
-  it('undefined → "Pending"', () => {
-    expect(formatTaskStatus(undefined)).toBe('Pending')
+  it('undefined → "Waiting for output"', () => {
+    expect(formatTaskStatus(undefined)).toBe('Waiting for output')
   })
 })
 
@@ -87,13 +87,13 @@ describe('renderTaskOutput', () => {
     expect(text).not.toContain('Complete')
   })
 
-  it('missing status: shows "Pending"', () => {
+  it('missing status: shows "Waiting for output"', () => {
     const text = renderText({
       childTask: {
         description: 'Some task',
       },
     })
-    expect(text).toContain('Pending')
+    expect(text).toContain('Waiting for output')
   })
 
   it('missing description: shows status only, no dash separator', () => {
@@ -134,15 +134,15 @@ describe('renderTaskOutput', () => {
     expect(text).toContain('Task ID xyz')
   })
 
-  it('all childTask properties missing (undefined): graceful "Pending" fallback', () => {
+  it('all childTask properties missing (undefined): graceful "Waiting for output" fallback', () => {
     const text = renderText({
       childTask: {},
     })
-    expect(text).toContain('Pending')
+    expect(text).toContain('Waiting for output')
   })
 
-  it('no childTask at all (no thread child yet): shows "Pending"', () => {
+  it('no childTask at all (no thread child yet): shows "Waiting for output"', () => {
     const text = renderText({})
-    expect(text).toContain('Pending')
+    expect(text).toContain('Waiting for output')
   })
 })

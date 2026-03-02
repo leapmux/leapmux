@@ -375,9 +375,17 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                       />
                     </Show>
                     <span class={styles.sidebarTitle}>{section().title}</span>
-                    <div class={styles.sidebarHeaderActions}>
-                      {section().headerActions}
-                    </div>
+                    <Show when={sectionOpen() && section().headerActions}>
+                      <div
+                        class={styles.sidebarHeaderActions}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          e.preventDefault()
+                        }}
+                      >
+                        {section().headerActions}
+                      </div>
+                    </Show>
                     <Show when={index() === 0 && props.onCollapse && props.side === 'right'}>
                       <IconButton
                         icon={CollapseIcon}

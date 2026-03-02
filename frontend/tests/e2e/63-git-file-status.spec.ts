@@ -215,9 +215,9 @@ test.describe('Git File Status', () => {
     }
   })
 
-  test('locate file button disabled when no file tab active', async ({ page, leapmuxServer }) => {
+  test('locate file button hidden when no file tab active', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Locate Disabled Test', adminOrgId, process.cwd())
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Locate Hidden Test', adminOrgId, process.cwd())
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -225,11 +225,9 @@ test.describe('Git File Status', () => {
 
       await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible({ timeout: 15_000 })
 
-      // When an agent tab is active (default), locate button should be disabled.
+      // When an agent tab is active (default), locate button should not be visible.
       const locateButton = page.locator('[data-testid="files-locate-file"]')
-      await expect(locateButton).toBeVisible()
-      // IconButton renders with the standard HTML disabled attribute.
-      await expect(locateButton).toBeDisabled()
+      await expect(locateButton).not.toBeVisible()
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

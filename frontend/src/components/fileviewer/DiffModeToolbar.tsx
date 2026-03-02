@@ -23,26 +23,28 @@ export const DiffModeToolbar: Component<DiffModeToolbarProps> = (props) => {
   )
 
   return (
-    <div class={styles.toolbar} data-testid="diff-mode-toolbar">
-      {btn('HEAD', 'head', 'diff-mode-head')}
-      {btn('Working', 'working', 'diff-mode-working')}
-      {btn('Unified', 'unified-diff', 'diff-mode-unified')}
-      {btn('Split', 'split-diff', 'diff-mode-split')}
-      <Show when={props.hasStagedAndUnstaged}>
-        <div class={styles.separator} />
-        <button
-          class={`${styles.toolbarButton}${props.diffBase === 'head-vs-working' ? ` ${styles.toolbarButtonActive}` : ''}`}
-          onClick={() => props.onDiffBaseChange?.('head-vs-working')}
-        >
-          vs Working
-        </button>
-        <button
-          class={`${styles.toolbarButton}${props.diffBase === 'head-vs-staged' ? ` ${styles.toolbarButtonActive}` : ''}`}
-          onClick={() => props.onDiffBaseChange?.('head-vs-staged')}
-        >
-          vs Staged
-        </button>
-      </Show>
+    <div class={styles.toolbarWrapper}>
+      <div class={styles.toolbar} data-testid="diff-mode-toolbar">
+        {btn('HEAD', 'head', 'diff-mode-head')}
+        {btn('Working', 'working', 'diff-mode-working')}
+        {btn('Unified', 'unified-diff', 'diff-mode-unified')}
+        {btn('Split', 'split-diff', 'diff-mode-split')}
+        <Show when={props.hasStagedAndUnstaged}>
+          <div class={styles.separator} />
+          <button
+            class={`${styles.toolbarButton}${props.diffBase === 'head-vs-working' ? ` ${styles.toolbarButtonActive}` : ''}`}
+            onClick={() => props.onDiffBaseChange?.('head-vs-working')}
+          >
+            vs Working
+          </button>
+          <button
+            class={`${styles.toolbarButton}${props.diffBase === 'head-vs-staged' ? ` ${styles.toolbarButtonActive}` : ''}`}
+            onClick={() => props.onDiffBaseChange?.('head-vs-staged')}
+          >
+            vs Staged
+          </button>
+        </Show>
+      </div>
     </div>
   )
 }
