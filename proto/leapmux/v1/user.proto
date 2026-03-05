@@ -55,15 +55,15 @@ enum TurnEndSound {
 }
 
 message UpdatePreferencesRequest {
-  repeated string ui_fonts = 5;
-  repeated string mono_fonts = 6;
-  string theme = 7;
-  string terminal_theme = 8;
-  bool ui_font_custom_enabled = 9;
-  bool mono_font_custom_enabled = 10;
-  DiffView diff_view = 11;
-  TurnEndSound turn_end_sound = 12;
-  uint32 turn_end_sound_volume = 13;
+  repeated string ui_fonts = 1;
+  repeated string mono_fonts = 2;
+  string theme = 3;
+  string terminal_theme = 4;
+  bool ui_font_custom_enabled = 5;
+  bool mono_font_custom_enabled = 6;
+  DiffView diff_view = 7;
+  TurnEndSound turn_end_sound = 8;
+  uint32 turn_end_sound_volume = 9;
 }
 
 message UpdatePreferencesResponse {
@@ -79,13 +79,13 @@ message GetTimeoutsResponse {
 }
 
 message UserPreferences {
-  repeated string ui_fonts = 5;
-  repeated string mono_fonts = 6;
-  string theme = 7;
-  string terminal_theme = 8;
-  bool ui_font_custom_enabled = 9;
-  bool mono_font_custom_enabled = 10;
-  DiffView diff_view = 11;
-  TurnEndSound turn_end_sound = 12;
-  uint32 turn_end_sound_volume = 13;
+  repeated string ui_fonts = 1;
+  repeated string mono_fonts = 2;
+  string theme = 3;
+  string terminal_theme = 4;
+  bool ui_font_custom_enabled = 5;
+  bool mono_font_custom_enabled = 6;
+  DiffView diff_view = 7;
+  TurnEndSound turn_end_sound = 8;
+  uint32 turn_end_sound_volume = 9;
 }

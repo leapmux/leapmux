@@ -3,10 +3,13 @@ import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { createTerminalStore } from '~/stores/terminal.store'
 import { createEffect, on } from 'solid-js'
-import { agentClient, terminalClient, workspaceClient } from '~/api/clients'
-import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
+import { workspaceClient } from '~/api/clients'
+import * as workerRpc from '~/api/workerRpc'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { createLogger } from '~/lib/logger'
 import { tabKey } from '~/stores/tab.store'
+
+const log = createLogger('restore')
 
 interface UseWorkspaceRestoreOpts {
   getActiveWorkspaceId: () => string | null | undefined
@@ -40,25 +43,73 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
     setWorkspaceLoading(true)
     tabStore.clear()
 
-    const agentsLoaded = agentClient.listAgents({ workspaceId: activeId })
-      .then((resp) => {
-        if (gen !== loadGeneration)
-          return
-        agentStore.setAgents(resp.agents)
-      })
-      .catch(() => {})
+    // Fetch tabs and layout from hub (single call, no worker needed).
+    const tabsLoaded = workspaceClient.listTabs({ orgId: currentOrgId, workspaceId: activeId })
+      .catch(() => null)
 
-    const terminalsLoaded = terminalClient.listTerminals({ orgId: currentOrgId, workspaceId: activeId })
-      .then((resp) => {
-        if (gen !== loadGeneration)
-          return
-        terminalStore.setTerminals([])
-        for (const t of resp.terminals) {
+    const layoutLoaded = workspaceClient.getLayout({ orgId: currentOrgId, workspaceId: activeId })
+      .catch(() => null)
+
+    const loadTimeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Workspace load timed out after 30s')), 30_000),
+    )
+
+    Promise.race([
+      Promise.all([tabsLoaded, layoutLoaded]),
+      loadTimeout,
+    ]).then(async ([tabsResp, layoutResp]) => {
+      if (gen !== loadGeneration)
+        return
+
+      // Derive distinct worker IDs from tabs.
+      const workerIds = new Set<string>()
+      if (tabsResp?.tabs) {
+        for (const t of tabsResp.tabs) {
+          if (t.workerId)
+            workerIds.add(t.workerId)
+        }
+      }
+
+      // Fetch agents and terminals from each worker in parallel.
+      const agentResults = await Promise.all(
+        [...workerIds].map(async (workerId) => {
+          try {
+            const resp = await workerRpc.listAgents(workerId, { workspaceId: activeId })
+            return resp.agents
+          }
+          catch {
+            return []
+          }
+        }),
+      )
+
+      const terminalResults = await Promise.all(
+        [...workerIds].map(async (workerId) => {
+          try {
+            const resp = await workerRpc.listTerminals(workerId, { orgId: currentOrgId, workspaceId: activeId })
+            return { workerId, terminals: resp.terminals }
+          }
+          catch {
+            return { workerId, terminals: [] as Awaited<ReturnType<typeof workerRpc.listTerminals>>['terminals'] }
+          }
+        }),
+      )
+
+      if (gen !== loadGeneration)
+        return
+
+      // Populate agent store.
+      const allAgents = agentResults.flat()
+      agentStore.setAgents(allAgents)
+
+      // Populate terminal store.
+      terminalStore.setTerminals([])
+      for (const { workerId, terminals } of terminalResults) {
+        for (const t of terminals) {
           terminalStore.addTerminal({
             id: t.terminalId,
             workspaceId: activeId,
-            workerId: t.workerId,
-            title: t.title || undefined,
+            workerId,
             workingDir: t.workingDir || undefined,
             shellStartDir: t.shellStartDir || undefined,
             screen: t.screen.length > 0 ? t.screen : undefined,
@@ -69,18 +120,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
             terminalStore.markExited(t.terminalId)
           }
         }
-      })
-      .catch(() => {})
-
-    const tabsLoaded = workspaceClient.listTabs({ orgId: currentOrgId, workspaceId: activeId })
-      .catch(() => null)
-
-    const layoutLoaded = workspaceClient.getLayout({ orgId: currentOrgId, workspaceId: activeId })
-      .catch(() => null)
-
-    Promise.all([agentsLoaded, terminalsLoaded, tabsLoaded, layoutLoaded]).then(([, , tabsResp, layoutResp]) => {
-      if (gen !== loadGeneration)
-        return
+      }
 
       tabStore.clear()
 
@@ -107,13 +147,11 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       const defaultTileId = layoutStore.focusedTileId()
 
       for (const a of agentStore.state.agents) {
-        if (a.status === AgentStatus.ACTIVE || persistedKeys.has(`${TabType.AGENT}:${a.id}`)) {
-          const key = `${TabType.AGENT}:${a.id}`
-          let tileId = tabTileMap.get(key) ?? defaultTileId
-          if (!validTileIds.has(tileId))
-            tileId = defaultTileId
-          tabStore.addTab({ type: TabType.AGENT, id: a.id, title: a.title || undefined, tileId, workerId: a.workerId, workingDir: a.workingDir }, false)
-        }
+        const key = `${TabType.AGENT}:${a.id}`
+        let tileId = tabTileMap.get(key) ?? defaultTileId
+        if (!validTileIds.has(tileId))
+          tileId = defaultTileId
+        tabStore.addTab({ type: TabType.AGENT, id: a.id, title: a.title || undefined, tileId, workerId: a.workerId, workingDir: a.workingDir }, false)
       }
 
       for (const t of terminalStore.state.terminals) {
@@ -172,12 +210,6 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         // Ignore corrupt sessionStorage data
       }
 
-      if (layoutResp?.activeTabs && layoutResp.activeTabs.length > 0) {
-        for (const at of layoutResp.activeTabs) {
-          tabStore.setActiveTabForTile(at.tileId, at.tabType, at.tabId)
-        }
-      }
-
       const savedKey = sessionStorage.getItem(`leapmux:activeTab:${activeId}`)
       if (savedKey && tabStore.state.tabs.some(t => tabKey(t) === savedKey)) {
         const parts = savedKey.split(':')
@@ -206,6 +238,9 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         }
       }
 
+      setWorkspaceLoading(false)
+    }).catch((err) => {
+      log.warn('Workspace restore failed, unblocking UI:', err)
       setWorkspaceLoading(false)
     })
   }))

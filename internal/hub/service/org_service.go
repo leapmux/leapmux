@@ -10,9 +10,9 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/id"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/validate"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
 
@@ -424,8 +424,7 @@ func (s *OrgService) RemoveOrgMember(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("remove org member: %w", err))
 	}
 
-	// Enforce: deregister all the removed user's workers in this org
-	// and terminate their workspaces on other users' workers.
+	// Enforce: deregister all the removed user's workers in this org.
 	if s.notifier != nil {
 		if err := s.notifier.EnforceOrgMemberRemoval(ctx, orgID, targetUserID); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("enforce org member removal: %w", err))

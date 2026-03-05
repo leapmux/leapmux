@@ -134,16 +134,6 @@ export const toolInputCode = style({
   minWidth: 0,
 })
 
-// Diff stat: added lines count (green)
-export const toolInputStatAdded = style({
-  color: 'var(--success)',
-})
-
-// Diff stat: removed lines count (red)
-export const toolInputStatRemoved = style({
-  color: 'var(--danger)',
-})
-
 // File path display in tool messages
 export const toolInputPath = style({
   color: 'var(--foreground)',

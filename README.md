@@ -252,6 +252,13 @@ task lint-backend    # Lint Go code (hub + worker)
 task lint-frontend   # Lint frontend code (ESLint)
 ```
 
+Auto-fix lint violations:
+```bash
+task lint-fix            # Fix both Go and frontend
+task lint-fix-backend    # Fix Go code (golangci-lint --fix)
+task lint-fix-frontend   # Fix frontend code (ESLint --fix)
+```
+
 ### Code Generation
 
 Regenerate all generated code (Protocol Buffers and sqlc):

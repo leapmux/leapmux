@@ -1,6 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import X from 'lucide-solid/icons/x'
-import { onMount } from 'solid-js'
+import { onCleanup, onMount } from 'solid-js'
 import { dialogCloseButton, dialogHeader, dialogStandard, dialogTall } from '~/styles/shared.css'
 import { IconButton } from './IconButton'
 
@@ -15,8 +15,15 @@ interface DialogProps {
 
 export const Dialog: Component<DialogProps> = (props) => {
   let dialogRef!: HTMLDialogElement
+  let unmounting = false
 
   onMount(() => dialogRef.showModal())
+  onCleanup(() => {
+    unmounting = true
+    if (dialogRef.open) {
+      dialogRef.close()
+    }
+  })
 
   return (
     <dialog
@@ -24,7 +31,10 @@ export const Dialog: Component<DialogProps> = (props) => {
       class={`${dialogStandard}${props.tall ? ` ${dialogTall}` : ''}${props.class ? ` ${props.class}` : ''}`}
       data-testid={props['data-testid']}
       closedby="any"
-      onClose={() => props.onClose()}
+      onClose={() => {
+        if (!unmounting)
+          props.onClose()
+      }}
     >
       <header class={dialogHeader}>
         <h2>{props.title}</h2>

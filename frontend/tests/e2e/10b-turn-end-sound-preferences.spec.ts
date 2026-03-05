@@ -99,7 +99,7 @@ test.describe('Turn End Sound Preferences', () => {
     }, { timeout: 120_000 })
 
     // Give a short moment for the effect to fire
-    await page.waitForTimeout(200)
+    await page.waitForTimeout(500)
 
     // Verify the doorbell sound was played
     const calls = await page.evaluate(() => (window as any).__audioPlayCalls as string[])
@@ -249,6 +249,51 @@ test.describe('Turn End Sound Preferences', () => {
     calls = await page.evaluate(() => (window as any).__audioPlayCalls as string[])
     const soundCountAfterClose = calls.filter((src: string) => src.includes('benkirb-electronic-doorbell')).length
     expect(soundCountAfterClose).toBe(soundCountAfterTurn)
+  })
+
+  test('should NOT play sound when opening a new tab', async ({ page, authenticatedWorkspace }) => {
+    // Set up audio spy
+    await page.addInitScript(() => {
+      (window as any).__audioPlayCalls = [] as string[]
+      HTMLAudioElement.prototype.play = function () {
+        (window as any).__audioPlayCalls.push(this.src)
+        return Promise.resolve()
+      }
+    })
+    await page.addInitScript(() => {
+      localStorage.setItem('leapmux-turn-end-sound', 'ding-dong')
+    })
+
+    // Reload so the init scripts take effect
+    await page.reload()
+    await waitForWorkspaceReady(page)
+
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+
+    // Send a message and wait for the turn to complete
+    await editor.click()
+    await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
+    await page.keyboard.press('Meta+Enter')
+    await expect(page.locator('[data-testid="interrupt-button"]')).toBeVisible()
+    await page.waitForFunction(() => {
+      return !document.querySelector('[data-testid="interrupt-button"]')
+    }, { timeout: 120_000 })
+    await page.waitForTimeout(200)
+
+    // Verify the sound played exactly once for the real turn end
+    let calls = await page.evaluate(() => (window as any).__audioPlayCalls as string[])
+    const soundCountAfterTurn = calls.filter((src: string) => src.includes('benkirb-electronic-doorbell')).length
+    expect(soundCountAfterTurn).toBe(1)
+
+    // Open a new agent tab (this restarts the WatchEvents stream)
+    await openAgentViaUI(page)
+    await page.waitForTimeout(5000)
+
+    // Verify no additional sound was played from the stream restart replay
+    calls = await page.evaluate(() => (window as any).__audioPlayCalls as string[])
+    const soundCountAfterNewTab = calls.filter((src: string) => src.includes('benkirb-electronic-doorbell')).length
+    expect(soundCountAfterNewTab).toBe(soundCountAfterTurn)
   })
 
   test('should NOT play sound when switching between agent tabs', async ({ page, authenticatedWorkspace }) => {

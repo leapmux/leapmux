@@ -1,18 +1,12 @@
 package service
 
 import (
-	"context"
-	"database/sql"
 	"fmt"
 	"os"
 	"strings"
 	"unicode"
 
-	"connectrpc.com/connect"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/generated/db"
 )
 
 // DefaultModel is the model used when none is specified.
@@ -28,54 +22,6 @@ func getEnvOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
-}
-
-// getVisibleWorkspace looks up a workspace by ID and org, then verifies the user can see it.
-func getVisibleWorkspace(ctx context.Context, queries *db.Queries, user *auth.UserInfo, orgID, workspaceID string) (*db.Workspace, error) {
-	ws, err := queries.GetWorkspaceByID(ctx, db.GetWorkspaceByIDParams{
-		ID:    workspaceID,
-		OrgID: orgID,
-	})
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found"))
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
-	_, err = queries.GetVisibleWorkspace(ctx, db.GetVisibleWorkspaceParams{
-		UserID:      user.ID,
-		WorkspaceID: workspaceID,
-		OrgID:       ws.OrgID,
-	})
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found"))
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
-	return &ws, nil
-}
-
-// getVisibleNonArchivedWorkspace combines visibility and archived checks.
-// It verifies the user can see the workspace and that it is not in an archived section.
-func getVisibleNonArchivedWorkspace(ctx context.Context, queries *db.Queries, user *auth.UserInfo, orgID, workspaceID string) (*db.Workspace, error) {
-	ws, err := getVisibleWorkspace(ctx, queries, user, orgID, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	archived, err := queries.IsWorkspaceInArchivedSection(ctx, db.IsWorkspaceInArchivedSectionParams{
-		UserID:      user.ID,
-		WorkspaceID: workspaceID,
-	})
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("check archived: %w", err))
-	}
-	if archived {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("workspace is archived"))
-	}
-	return ws, nil
 }
 
 // sanitizeGitStatus validates and sanitizes git status data received from a worker.

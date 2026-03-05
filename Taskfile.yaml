@@ -37,7 +37,11 @@ tasks:
       - buf generate
 
   generate-sqlc:
-    desc: Generate type-safe SQL code
+    desc: Generate all type-safe SQL code
+    deps: [generate-sqlc-hub, generate-sqlc-worker]
+
+  generate-sqlc-hub:
+    desc: Generate type-safe SQL code for Hub
     deps: [generate-proto]
     sources:
       - generated/proto/**/*
@@ -48,6 +52,18 @@ tasks:
     cmds:
       - cd internal/hub && sqlc generate
 
+  generate-sqlc-worker:
+    desc: Generate type-safe SQL code for Worker
+    deps: [generate-proto]
+    sources:
+      - generated/proto/**/*
+      - internal/worker/db/**/*.sql
+      - internal/worker/sqlc.yaml
+    generates:
+      - internal/worker/generated/db/**/*
+    cmds:
+      - cd internal/worker && sqlc generate
+
   # --- Preparation ---
 
   prepare:
@@ -56,7 +72,7 @@ tasks:
 
   prepare-backend:
     desc: Prepare backend (generate proto + sqlc)
-    deps: [generate-proto, generate-sqlc]
+    deps: [generate]
 
   prepare-frontend:
     desc: Install frontend dependencies
@@ -201,6 +217,28 @@ tasks:
       - frontend/eslint.config.ts
     cmds:
       - cd frontend && bun run lint .
+
+  lint-fix:
+    desc: Auto-fix lint violations (Go + frontend)
+    cmds:
+      - task: generate
+      - task: _lint-fix
+
+  _lint-fix:
+    internal: true
+    deps: [lint-fix-backend, lint-fix-frontend]
+
+  lint-fix-backend:
+    desc: Auto-fix Go lint violations
+    deps: [prepare-backend, embed-frontend]
+    cmds:
+      - golangci-lint run --fix ./...
+
+  lint-fix-frontend:
+    desc: Auto-fix frontend lint violations
+    deps: [prepare-frontend]
+    cmds:
+      - cd frontend && bun run lint . --fix
 
   # --- Development ---
 

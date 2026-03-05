@@ -3,15 +3,11 @@ import type { Org } from '~/generated/leapmux/v1/org_pb'
 import type { GetRegistrationResponse } from '~/generated/leapmux/v1/worker_pb'
 import { useNavigate } from '@solidjs/router'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
-import RefreshCw from 'lucide-solid/icons/refresh-cw'
-import { generateSlug } from 'random-word-slugs'
 import { createSignal, For, onMount, Show } from 'solid-js'
 import { orgClient, workerClient } from '~/api/clients'
 import { Icon } from '~/components/common/Icon'
 import { RegistrationStatus } from '~/generated/leapmux/v1/worker_pb'
-import { sanitizeName } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
-import { labelRow, refreshButton } from '~/styles/shared.css'
 import { NotFoundPage } from './NotFoundPage'
 import * as styles from './RegistrationPage.css'
 
@@ -24,16 +20,12 @@ export const RegistrationPage: Component<RegistrationPageProps> = (props) => {
   const [registration, setRegistration] = createSignal<GetRegistrationResponse | null>(null)
   const [loading, setLoading] = createSignal(true)
   const [notFound, setNotFound] = createSignal(false)
-  const [name, setName] = createSignal('')
-  const [nameError, setNameError] = createSignal<string | null>(null)
   const [orgs, setOrgs] = createSignal<Org[]>([])
   const [selectedOrgId, setSelectedOrgId] = createSignal('')
   const [submitting, setSubmitting] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
   const [approved, setApproved] = createSignal(false)
   const [approvedWorkerId, setApprovedWorkerId] = createSignal<string | null>(null)
-
-  const randomName = () => generateSlug(3, { format: 'kebab' })
 
   onMount(async () => {
     try {
@@ -46,12 +38,6 @@ export const RegistrationPage: Component<RegistrationPageProps> = (props) => {
       if (orgResp.orgs.length > 0) {
         const personal = orgResp.orgs.find(o => o.isPersonal)
         setSelectedOrgId(personal?.id ?? orgResp.orgs[0].id)
-      }
-      // Auto-prefill name from hostname
-      if (regResp.hostname) {
-        const { value, error } = sanitizeName(regResp.hostname.toLowerCase())
-        setName(value)
-        setNameError(error)
       }
     }
     catch (e) {
@@ -68,25 +54,13 @@ export const RegistrationPage: Component<RegistrationPageProps> = (props) => {
     }
   })
 
-  const handleNameInput = (raw: string) => {
-    const { value, error } = sanitizeName(raw)
-    setName(value)
-    setNameError(error)
-  }
-
   const handleApprove = async (e: Event) => {
     e.preventDefault()
-    const { error } = sanitizeName(name())
-    if (error) {
-      setNameError(error)
-      return
-    }
     setSubmitting(true)
     setError(null)
     try {
       const resp = await workerClient.approveRegistration({
         registrationToken: props.token,
-        name: name(),
         orgId: selectedOrgId(),
       })
       setApproved(true)
@@ -159,15 +133,13 @@ export const RegistrationPage: Component<RegistrationPageProps> = (props) => {
                       Only approve workers that you trust. A registered worker will have access to your workspace data.
                     </div>
                     <div class={styles.infoGrid}>
-                      <span class={styles.infoLabel}>Hostname</span>
-                      <span class={styles.infoValue}>{registration()!.hostname}</span>
-                      <span class={styles.infoLabel}>OS</span>
-                      <span class={styles.infoValue}>{registration()!.os}</span>
-                      <span class={styles.infoLabel}>Architecture</span>
-                      <span class={styles.infoValue}>{registration()!.arch}</span>
                       <Show when={registration()!.version}>
                         <span class={styles.infoLabel}>Version</span>
                         <span class={styles.infoValue}>{registration()!.version}</span>
+                      </Show>
+                      <Show when={registration()!.publicKeyFingerprint}>
+                        <span class={styles.infoLabel}>Key Fingerprint</span>
+                        <span class={styles.infoValue}><code>{registration()!.publicKeyFingerprint}</code></span>
                       </Show>
                     </div>
 
@@ -188,38 +160,12 @@ export const RegistrationPage: Component<RegistrationPageProps> = (props) => {
                           </For>
                         </select>
                       </label>
-                      <label>
-                        <div class={labelRow}>
-                          Worker Name
-                          <button
-                            type="button"
-                            class={refreshButton}
-                            onClick={() => {
-                              const { value, error } = sanitizeName(randomName())
-                              setName(value)
-                              setNameError(error)
-                            }}
-                            title="Generate random name"
-                          >
-                            <Icon icon={RefreshCw} size="sm" />
-                          </button>
-                        </div>
-                        <input
-                          type="text"
-                          value={name()}
-                          onInput={e => handleNameInput(e.currentTarget.value)}
-                          placeholder="e.g. my-workstation"
-                        />
-                        <Show when={nameError() && name()}>
-                          <span class={styles.fieldError}>{nameError()}</span>
-                        </Show>
-                      </label>
                       <Show when={error()}>
                         <div class={styles.errorText}>{error()}</div>
                       </Show>
                       <button
                         type="submit"
-                        disabled={submitting() || !name() || !!nameError() || !selectedOrgId()}
+                        disabled={submitting() || !selectedOrgId()}
                       >
                         <Show when={submitting()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
                         {submitting() ? 'Approving...' : 'Approve'}

@@ -10,19 +10,19 @@ import FolderClosed from 'lucide-solid/icons/folder-closed'
 import FolderOpen from 'lucide-solid/icons/folder-open'
 import MoreHorizontal from 'lucide-solid/icons/more-horizontal'
 import TerminalIcon from 'lucide-solid/icons/terminal'
-import { createEffect, createSignal, For, on, Show } from 'solid-js'
+import { createContext, createEffect, createSignal, For, on, onCleanup, onMount, Show, useContext } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
-import { fileClient } from '~/api/clients'
+import * as workerRpc from '~/api/workerRpc'
 import { relativizePath, tildify } from '~/components/chat/messageUtils'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
-import { GitFileStatusCode } from '~/generated/leapmux/v1/git_pb'
 import * as styles from './DirectoryTree.css'
-import * as fsStyles from './FilesSection.css'
+import { DiffStatsBadge, getGitFileIconClass } from './gitStatusUtils'
 
 export interface DirectoryTreeHandle {
   collapseAll: () => void
+  refresh: () => void
 }
 
 export interface DirectoryTreeProps {
@@ -38,6 +38,8 @@ export interface DirectoryTreeProps {
   gitStatusStore?: ReturnType<typeof createGitFileStatusStore>
   /** When set, only show nodes whose paths are in this set. */
   visiblePaths?: Set<string>
+  /** Signal bumped on agent turn-end; drives directory tree refresh. */
+  turnEndTrigger?: number
   /** Ref callback for imperative actions (collapse all, etc.). */
   ref?: (handle: DirectoryTreeHandle) => void
 }
@@ -46,63 +48,68 @@ interface TreeNodeData {
   path: string
   displayName: string
   isDir: boolean
-  size: bigint
 }
 
 // -------------------------------------------------------------------------
-// Serialization helpers for sessionStorage (BigInt ↔ string)
+// Tree context — bundles stable, tree-wide values to avoid prop drilling
 // -------------------------------------------------------------------------
 
-interface TreeNodeDataJSON {
-  path: string
-  displayName: string
-  isDir: boolean
-  size: string
+interface TreeContextValue {
+  workerId: string
+  showFiles: boolean
+  rootPath: string
+  homeDir?: string
+  scrollContainer?: HTMLDivElement
+  gitStatusStore: () => ReturnType<typeof createGitFileStatusStore> | undefined
+  visiblePaths: () => Set<string> | undefined
+  refreshVersion: () => number
+  onSelect: (path: string) => void
+  onFileOpen?: (path: string) => void
+  onMention?: (path: string) => void
+  onOpenTerminal?: (dirPath: string) => void
+  isNodeExpanded: (path: string) => boolean
+  setNodeExpanded: (path: string, expanded: boolean) => void
+  getChildren: (path: string) => TreeNodeData[] | undefined
+  setChildren: (path: string, data: TreeNodeData[], truncated: boolean) => void
+  isTruncated: (path: string) => boolean
 }
+
+const TreeContext = createContext<TreeContextValue>()
+
+function useTree(): TreeContextValue {
+  const ctx = useContext(TreeContext)
+  if (!ctx)
+    throw new Error('useTree must be used within a TreeContext.Provider')
+  return ctx
+}
+
+// -------------------------------------------------------------------------
+// Serialization helpers for sessionStorage
+// -------------------------------------------------------------------------
 
 interface DirectoryTreeStateJSON {
   expandedPaths: Record<string, boolean>
-  childrenCache: Record<string, TreeNodeDataJSON[]>
+  childrenCache: Record<string, TreeNodeData[]>
+  truncatedDirs?: Record<string, boolean>
 }
 
 function serializeState(
   expandedPaths: Record<string, boolean>,
   childrenCache: Record<string, TreeNodeData[]>,
+  truncatedDirs: Record<string, boolean>,
 ): string {
-  const json: DirectoryTreeStateJSON = {
-    expandedPaths,
-    childrenCache: {},
-  }
-  for (const [key, nodes] of Object.entries(childrenCache)) {
-    json.childrenCache[key] = nodes.map(n => ({
-      path: n.path,
-      displayName: n.displayName,
-      isDir: n.isDir,
-      size: n.size.toString(),
-    }))
-  }
-  return JSON.stringify(json)
+  return JSON.stringify({ expandedPaths, childrenCache, truncatedDirs })
 }
 
-function deserializeState(raw: string): { expandedPaths: Record<string, boolean>, childrenCache: Record<string, TreeNodeData[]> } | null {
+function deserializeState(raw: string): { expandedPaths: Record<string, boolean>, childrenCache: Record<string, TreeNodeData[]>, truncatedDirs: Record<string, boolean> } | null {
   try {
     const json: DirectoryTreeStateJSON = JSON.parse(raw)
     if (!json || typeof json !== 'object')
       return null
-    const childrenCache: Record<string, TreeNodeData[]> = {}
-    if (json.childrenCache) {
-      for (const [key, nodes] of Object.entries(json.childrenCache)) {
-        childrenCache[key] = nodes.map(n => ({
-          path: n.path,
-          displayName: n.displayName,
-          isDir: n.isDir,
-          size: BigInt(n.size),
-        }))
-      }
-    }
     return {
       expandedPaths: json.expandedPaths ?? {},
-      childrenCache,
+      childrenCache: json.childrenCache ?? {},
+      truncatedDirs: json.truncatedDirs ?? {},
     }
   }
   catch {
@@ -124,28 +131,26 @@ async function loadChildren(
   workerId: string,
   dirPath: string,
   showFiles: boolean,
-): Promise<TreeNodeData[]> {
-  const resp = await fileClient.listDirectory({ workerId, path: dirPath, maxDepth: 5 })
+): Promise<{ entries: TreeNodeData[], truncated: boolean }> {
+  const resp = await workerRpc.listDirectory(workerId, { workerId, path: dirPath, maxDepth: 5, dirsOnly: !showFiles })
   const entries = [...resp.entries].sort(sortEntries)
-  const filtered = showFiles ? entries : entries.filter(e => e.isDir)
 
-  return filtered.map(entry => ({
-    path: entry.path,
-    displayName: entry.name,
-    isDir: entry.isDir,
-    size: entry.size,
-  }))
+  return {
+    entries: entries.map(entry => ({
+      path: entry.path,
+      displayName: entry.name,
+      isDir: entry.isDir,
+    })),
+    truncated: resp.truncated,
+  }
 }
 
-/** Renders the three-dot context menu for a tree node (file or directory). */
-function renderTreeContextMenu(menuProps: {
+/** Three-dot context menu for a tree node (file or directory). */
+const TreeContextMenu: Component<{
   path: string
   isDir: boolean
-  rootPath: string
-  homeDir?: string
-  onMention?: (path: string) => void
-  onOpenTerminal?: (dirPath: string) => void
-}): JSX.Element {
+}> = (props) => {
+  const tree = useTree()
   let popoverRef: HTMLElement | undefined
   const closeMenu = () => popoverRef?.hidePopover()
 
@@ -172,12 +177,12 @@ function renderTreeContextMenu(menuProps: {
       )}
       popoverRef={(el) => { popoverRef = el }}
     >
-      <Show when={menuProps.onMention}>
+      <Show when={tree.onMention}>
         <button
           role="menuitem"
           data-testid="tree-mention-button"
           onClick={() => {
-            menuProps.onMention?.(menuProps.path)
+            tree.onMention?.(props.path)
             closeMenu()
           }}
         >
@@ -185,12 +190,12 @@ function renderTreeContextMenu(menuProps: {
           Mention in chat
         </button>
       </Show>
-      <Show when={menuProps.isDir && menuProps.onOpenTerminal}>
+      <Show when={props.isDir && tree.onOpenTerminal}>
         <button
           role="menuitem"
           data-testid="tree-open-terminal-button"
           onClick={() => {
-            menuProps.onOpenTerminal?.(menuProps.path)
+            tree.onOpenTerminal?.(props.path)
             closeMenu()
           }}
         >
@@ -202,7 +207,7 @@ function renderTreeContextMenu(menuProps: {
         role="menuitem"
         data-testid="tree-copy-path-button"
         onClick={() => {
-          navigator.clipboard.writeText(menuProps.path)
+          navigator.clipboard.writeText(props.path)
           closeMenu()
         }}
       >
@@ -213,9 +218,9 @@ function renderTreeContextMenu(menuProps: {
         role="menuitem"
         data-testid="tree-copy-relative-path-button"
         onClick={() => {
-          const rel = menuProps.path === menuProps.rootPath
+          const rel = props.path === tree.rootPath
             ? '.'
-            : relativizePath(menuProps.path, menuProps.rootPath, menuProps.homeDir)
+            : relativizePath(props.path, tree.rootPath, tree.homeDir)
           navigator.clipboard.writeText(rel)
           closeMenu()
         }}
@@ -243,13 +248,7 @@ function getGitIconClass(
   const entry = gitStatusStore.getFileStatus(node.path)
   if (!entry)
     return { class: '', testId: undefined }
-  if (entry.unstagedStatus === GitFileStatusCode.UNMERGED || entry.stagedStatus === GitFileStatusCode.UNMERGED)
-    return { class: styles.iconConflict, testId: 'git-status-unstaged' }
-  if (entry.unstagedStatus === GitFileStatusCode.UNTRACKED)
-    return { class: styles.iconUntracked, testId: 'git-status-untracked' }
-  if (entry.stagedStatus !== GitFileStatusCode.UNSPECIFIED && entry.unstagedStatus === GitFileStatusCode.UNSPECIFIED)
-    return { class: styles.iconStaged, testId: 'git-status-staged' }
-  return { class: styles.iconUnstaged, testId: 'git-status-unstaged' }
+  return getGitFileIconClass(entry)
 }
 
 /** Render diff stats for a tree node (file only). */
@@ -262,74 +261,73 @@ function renderNodeDiffStats(
   const entry = gitStatusStore.getFileStatus(node.path)
   if (!entry)
     return <></>
-  const totalAdded = entry.linesAdded + entry.stagedLinesAdded
-  const totalDeleted = entry.linesDeleted + entry.stagedLinesDeleted
-  if (totalAdded === 0 && totalDeleted === 0)
-    return <></>
   return (
-    <span class={fsStyles.diffStats} data-testid="git-diff-stats">
-      <Show when={totalAdded > 0}>
-        <span class={fsStyles.diffStatsAdded}>
-          +
-          {totalAdded}
-        </span>
-      </Show>
-      {totalAdded > 0 && totalDeleted > 0 ? ' ' : ''}
-      <Show when={totalDeleted > 0}>
-        <span class={fsStyles.diffStatsDeleted}>
-          -
-          {totalDeleted}
-        </span>
-      </Show>
-    </span>
+    <DiffStatsBadge
+      added={entry.linesAdded + entry.stagedLinesAdded}
+      deleted={entry.linesDeleted + entry.stagedLinesDeleted}
+    />
   )
 }
 
 const TreeNode: Component<{
   node: TreeNodeData
-  workerId: string
-  showFiles: boolean
   selectedPath: string
-  onSelect: (path: string) => void
-  onFileOpen?: (path: string) => void
-  onMention?: (path: string) => void
-  onOpenTerminal?: (dirPath: string) => void
   depth: number
-  scrollContainer?: HTMLDivElement
-  rootPath: string
-  homeDir?: string
-  isNodeExpanded: (path: string) => boolean
-  setNodeExpanded: (path: string, expanded: boolean) => void
-  getChildren: (path: string) => TreeNodeData[] | undefined
-  setChildren: (path: string, data: TreeNodeData[]) => void
-  gitStatusStore?: ReturnType<typeof createGitFileStatusStore>
-  visiblePaths?: Set<string>
 }> = (props) => {
+  const tree = useTree()
   const [loading, setLoading] = createSignal(false)
   let wrapperRef!: HTMLDivElement
+  let nodeRef!: HTMLDivElement
+  let childrenRef: HTMLDivElement | undefined
 
-  const expanded = () => props.isNodeExpanded(props.node.path)
+  const expanded = () => tree.isNodeExpanded(props.node.path)
   const isSelected = () => props.selectedPath === props.node.path
-  const allChildren = () => props.getChildren(props.node.path) ?? []
+  const allChildren = () => tree.getChildren(props.node.path) ?? []
   const children = () => {
-    const visible = props.visiblePaths
+    const visible = tree.visiblePaths()
     if (!visible)
       return allChildren()
     return allChildren().filter(c => visible.has(c.path))
   }
-  const loaded = () => props.getChildren(props.node.path) !== undefined
+  const loaded = () => tree.getChildren(props.node.path) !== undefined
 
-  const scrollIntoViewIfNeeded = () => {
-    const container = props.scrollContainer
+  const doScroll = () => {
+    const container = tree.scrollContainer
     if (!container || !wrapperRef)
       return
-    requestAnimationFrame(() => {
-      const containerRect = container.getBoundingClientRect()
-      const wrapperRect = wrapperRef.getBoundingClientRect()
-      if (wrapperRect.bottom > containerRect.bottom) {
-        container.scrollTop += wrapperRect.top - containerRect.top
-      }
-    })
+    const containerRect = container.getBoundingClientRect()
+    const wrapperRect = wrapperRef.getBoundingClientRect()
+    if (wrapperRect.bottom > containerRect.bottom) {
+      // Scroll so the children are visible, but clamp so the node
+      // row itself (the selected directory) stays visible at the top.
+      const nodeRowHeight = nodeRef ? nodeRef.getBoundingClientRect().height : 0
+      const overflow = wrapperRect.bottom - containerRect.bottom
+      const maxScroll = wrapperRect.top - containerRect.top - nodeRowHeight
+      container.scrollTop += Math.min(overflow, Math.max(0, maxScroll))
+    }
+  }
+
+  const scrollIntoViewIfNeeded = () => {
+    if (!childrenRef) {
+      requestAnimationFrame(doScroll)
+      return
+    }
+    // Wait for the CSS grid-template-rows expand transition to finish
+    // so that wrapperRef has its full height when we measure.
+    // When prefers-reduced-motion is enabled, transitions are instant
+    // so transitionend never fires — use requestAnimationFrame instead.
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (prefersReducedMotion) {
+      requestAnimationFrame(doScroll)
+      return
+    }
+    const onEnd = (e: TransitionEvent) => {
+      if (e.target !== childrenRef)
+        return
+      childrenRef!.removeEventListener('transitionend', onEnd)
+      doScroll()
+    }
+    childrenRef.addEventListener('transitionend', onEnd)
   }
 
   const doLoad = async () => {
@@ -337,8 +335,8 @@ const TreeNode: Component<{
       return
     setLoading(true)
     try {
-      const result = await loadChildren(props.workerId, props.node.path, props.showFiles)
-      props.setChildren(props.node.path, result)
+      const result = await loadChildren(tree.workerId, props.node.path, tree.showFiles)
+      tree.setChildren(props.node.path, result.entries, result.truncated)
     }
     catch {
       // ignore load errors
@@ -350,16 +348,16 @@ const TreeNode: Component<{
 
   const toggle = async () => {
     if (!props.node.isDir) {
-      props.onSelect(props.node.path)
-      props.onFileOpen?.(props.node.path)
+      tree.onSelect(props.node.path)
+      tree.onFileOpen?.(props.node.path)
       return
     }
     await doLoad()
     const willExpand = !expanded()
     // Set expanded state before onSelect so that the scroll-on-select
     // effect sees the correct state and skips scrolling on collapse.
-    props.setNodeExpanded(props.node.path, willExpand)
-    props.onSelect(props.node.path)
+    tree.setNodeExpanded(props.node.path, willExpand)
+    tree.onSelect(props.node.path)
     if (willExpand) {
       scrollIntoViewIfNeeded()
     }
@@ -376,7 +374,7 @@ const TreeNode: Component<{
 
       if (!loaded()) {
         doLoad().then(() => { // eslint-disable-line solid/reactivity -- one-shot async load
-          props.setNodeExpanded(props.node.path, true)
+          tree.setNodeExpanded(props.node.path, true)
           // Scroll into view for the deepest auto-expanded node.
           // Only scroll if this is the closest ancestor (children will handle deeper).
           const hasMatchingChild = children().some(
@@ -388,37 +386,62 @@ const TreeNode: Component<{
         })
       }
       else if (!expanded()) {
-        props.setNodeExpanded(props.node.path, true)
+        tree.setNodeExpanded(props.node.path, true)
       }
+    },
+  ))
+
+  // Re-fetch when expanded but cache is missing (e.g. after sessionStorage restore).
+  createEffect(() => {
+    if (props.node.isDir && expanded() && !loaded() && !loading()) {
+      doLoad()
+    }
+  })
+
+  // Silently re-fetch when refreshVersion bumps (keeps old data visible).
+  createEffect(on(
+    () => tree.refreshVersion(),
+    (_, prev) => {
+      if (prev === undefined)
+        return
+      if (!props.node.isDir || !expanded())
+        return
+      loadChildren(tree.workerId, props.node.path, tree.showFiles)
+        .then((result) => { // eslint-disable-line solid/reactivity -- one-shot async refresh
+          tree.setChildren(props.node.path, result.entries, result.truncated)
+        })
+        .catch(() => { /* ignore refresh errors */ })
     },
   ))
 
   // Scroll into view when this node is selected via path input.
   // Skip for directories that are collapsed — collapsing should not scroll.
   createEffect(() => {
-    if (props.selectedPath === props.node.path && wrapperRef) {
+    if (props.selectedPath === props.node.path && nodeRef) {
       if (props.node.isDir && !expanded())
         return
-      const container = props.scrollContainer
+      const container = tree.scrollContainer
       if (!container)
         return
       requestAnimationFrame(() => {
         const containerRect = container.getBoundingClientRect()
-        const wrapperRect = wrapperRef.getBoundingClientRect()
-        if (wrapperRect.top < containerRect.top || wrapperRect.bottom > containerRect.bottom) {
-          container.scrollTop += wrapperRect.top - containerRect.top
+        const nodeRect = nodeRef.getBoundingClientRect()
+        if (nodeRect.top < containerRect.top || nodeRect.bottom > containerRect.bottom) {
+          container.scrollTop += nodeRect.top - containerRect.top
         }
       })
     }
   })
 
   const indent = () => `${8 + props.depth * 16}px`
-  const gitIcon = () => getGitIconClass(props.node, props.gitStatusStore)
+  const gitIcon = () => getGitIconClass(props.node, tree.gitStatusStore())
 
   return (
     <div ref={wrapperRef}>
       <div
-        class={`${styles.node} ${isSelected() ? styles.nodeSelected : ''}`}
+        ref={nodeRef}
+        class={styles.node}
+        classList={{ [styles.nodeSelected]: isSelected() }}
         style={{ 'padding-left': indent() }}
         onClick={toggle}
       >
@@ -440,16 +463,12 @@ const TreeNode: Component<{
           </Show>
         </Show>
         <span class={styles.nodeName}>{props.node.displayName}</span>
-        {renderNodeDiffStats(props.node, props.gitStatusStore)}
+        {renderNodeDiffStats(props.node, tree.gitStatusStore())}
         <div class={styles.nodeActions}>
-          {renderTreeContextMenu({
-            path: props.node.path,
-            isDir: props.node.isDir,
-            rootPath: props.rootPath,
-            homeDir: props.homeDir,
-            onMention: props.onMention,
-            onOpenTerminal: props.onOpenTerminal,
-          })}
+          <TreeContextMenu
+            path={props.node.path}
+            isDir={props.node.isDir}
+          />
         </div>
       </div>
       <Show when={loading()}>
@@ -458,35 +477,25 @@ const TreeNode: Component<{
         </div>
       </Show>
       <Show when={loaded()}>
-        <div class={`${styles.childrenWrapper}${expanded() && !loading() ? ` ${styles.childrenWrapperExpanded}` : ''}`}>
+        <div ref={childrenRef} class={styles.childrenWrapper} classList={{ [styles.childrenWrapperExpanded]: expanded() && !loading() }}>
           <div class={styles.childrenInner}>
             <For each={children()}>
               {child => (
                 <TreeNode
                   node={child}
-                  workerId={props.workerId}
-                  showFiles={props.showFiles}
                   selectedPath={props.selectedPath}
-                  onSelect={props.onSelect}
-                  onFileOpen={props.onFileOpen}
-                  onMention={props.onMention}
-                  onOpenTerminal={props.onOpenTerminal}
                   depth={props.depth + 1}
-                  scrollContainer={props.scrollContainer}
-                  rootPath={props.rootPath}
-                  homeDir={props.homeDir}
-                  isNodeExpanded={props.isNodeExpanded}
-                  setNodeExpanded={props.setNodeExpanded}
-                  getChildren={props.getChildren}
-                  setChildren={props.setChildren}
-                  gitStatusStore={props.gitStatusStore}
-                  visiblePaths={props.visiblePaths}
                 />
               )}
             </For>
             <Show when={children().length === 0}>
               <div class={styles.emptyInline} style={{ 'padding-left': `${8 + (props.depth + 1) * 16}px` }}>
                 Empty
+              </div>
+            </Show>
+            <Show when={tree.isTruncated(props.node.path) && !tree.visiblePaths()}>
+              <div class={styles.emptyInline} style={{ 'padding-left': `${8 + (props.depth + 1) * 16}px` }}>
+                {`${children().length}+ entries, listing truncated`}
               </div>
             </Show>
           </div>
@@ -503,16 +512,40 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   let loadVersion = 0
   let treeRef!: HTMLDivElement
 
+  // When the tree container shrinks (e.g. WorktreeOptions appearing below),
+  // re-scroll the selected node into view if it was pushed out.
+  onMount(() => {
+    const observer = new ResizeObserver(() => {
+      if (!treeRef)
+        return
+      const selected = treeRef.querySelector(`.${styles.nodeSelected}`) as HTMLElement | null
+      if (!selected)
+        return
+      const containerRect = treeRef.getBoundingClientRect()
+      const nodeRect = selected.getBoundingClientRect()
+      if (nodeRect.top < containerRect.top || nodeRect.bottom > containerRect.bottom) {
+        treeRef.scrollTop += nodeRect.top - containerRect.top
+      }
+    })
+    observer.observe(treeRef)
+    onCleanup(() => observer.disconnect())
+  })
+
   // -------------------------------------------------------------------------
   // Centralized tree state: expanded paths + children cache
   // -------------------------------------------------------------------------
   const [state, setState] = createStore<{
     expandedPaths: Record<string, boolean>
     childrenCache: Record<string, TreeNodeData[]>
+    truncatedDirs: Record<string, boolean>
   }>({
     expandedPaths: {},
     childrenCache: {},
+    truncatedDirs: {},
   })
+
+  const [refreshVersion, setRefreshVersion] = createSignal(0)
+  const triggerRefresh = () => setRefreshVersion(v => v + 1)
 
   // Expose imperative handle via ref callback.
   createEffect(() => {
@@ -526,10 +559,11 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
           }
         }))
       },
+      refresh: triggerRefresh,
     })
   })
 
-  const storageKey = () => `directoryTree:state:${props.rootPath ?? '~'}`
+  const storageKey = () => `directoryTree:state:${props.rootPath ?? '~'}:${props.showFiles ? 'files' : 'dirs'}`
 
   // Restore state from sessionStorage when rootPath changes
   createEffect(() => {
@@ -549,16 +583,18 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     setState({
       expandedPaths: { [props.rootPath ?? '~']: true },
       childrenCache: {},
+      truncatedDirs: {},
     })
   })
 
   // Persist state whenever it changes
   createEffect(() => {
-    // Read both to subscribe
+    // Read all to subscribe
     const expanded = state.expandedPaths
     const cache = state.childrenCache
+    const truncated = state.truncatedDirs
     try {
-      sessionStorage.setItem(storageKey(), serializeState(expanded, cache))
+      sessionStorage.setItem(storageKey(), serializeState(expanded, cache, truncated))
     }
     catch { /* quota exceeded — ignore */ }
   })
@@ -576,9 +612,16 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   }
 
   const getChildren = (path: string): TreeNodeData[] | undefined => state.childrenCache[path]
-  const setChildrenInStore = (path: string, data: TreeNodeData[]) => {
+  const isTruncated = (path: string): boolean => !!state.truncatedDirs[path]
+  const setChildrenInStore = (path: string, data: TreeNodeData[], truncated: boolean) => {
     setState(produce((s) => {
       s.childrenCache[path] = data
+      if (truncated) {
+        s.truncatedDirs[path] = true
+      }
+      else {
+        delete s.truncatedDirs[path]
+      }
     }))
   }
 
@@ -620,10 +663,10 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     setLoading(true)
     setError(null)
     loadChildren(workerId, root, props.showFiles ?? false)
-      .then((children) => {
+      .then((result) => {
         if (version !== loadVersion)
           return
-        setChildrenInStore(root, children)
+        setChildrenInStore(root, result.entries, result.truncated)
         setLoading(false)
       })
       .catch((err) => {
@@ -633,6 +676,34 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
         setLoading(false)
       })
   })
+
+  // Auto-refresh tree when an agent turn ends.
+  createEffect(on(
+    () => props.turnEndTrigger,
+    (_, prev) => {
+      if (prev !== undefined) {
+        triggerRefresh()
+      }
+    },
+  ))
+
+  // Re-fetch root silently when refreshVersion bumps (keeps old data visible).
+  createEffect(on(
+    () => refreshVersion(),
+    (_, prev) => {
+      if (prev === undefined)
+        return
+      const workerId = props.workerId
+      const root = props.rootPath ?? '~'
+      if (!workerId)
+        return
+      loadChildren(workerId, root, props.showFiles ?? false)
+        .then((result) => {
+          setChildrenInStore(root, result.entries, result.truncated)
+        })
+        .catch(() => { /* ignore refresh errors */ })
+    },
+  ))
 
   const handlePathKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter') {
@@ -646,91 +717,107 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
 
   const handlePathBlur = () => {
     const value = inputValue().trim()
-    if (value) {
-      props.onSelect(value)
-    }
+    if (!value)
+      return
+    // Only emit onSelect if the user actually edited the path.
+    // The input displays a tildified version, so re-emitting on blur
+    // would change the signal (e.g. "/home/user/repo" → "~/repo"),
+    // causing downstream effects to refire unnecessarily.
+    if (value === tildify(props.selectedPath, props.homeDir))
+      return
+    props.onSelect(value)
+  }
+
+  const treeContextValue: TreeContextValue = {
+    get workerId() { return props.workerId },
+    get showFiles() { return props.showFiles ?? false },
+    get rootPath() { return rootPath() },
+    get homeDir() { return props.homeDir },
+    get scrollContainer() { return treeRef },
+    gitStatusStore: () => props.gitStatusStore,
+    visiblePaths: () => props.visiblePaths,
+    refreshVersion,
+    onSelect: path => props.onSelect(path),
+    get onFileOpen() { return props.onFileOpen },
+    get onMention() { return props.onMention },
+    get onOpenTerminal() { return props.onOpenTerminal },
+    isNodeExpanded,
+    setNodeExpanded,
+    getChildren,
+    setChildren: setChildrenInStore,
+    isTruncated,
   }
 
   return (
-    <div class={styles.container}>
-      <div class={styles.pathInput}>
-        <input
-          class={styles.pathInputField}
-          type="text"
-          value={inputValue()}
-          title={props.selectedPath}
-          onInput={e => setInputValue(e.currentTarget.value)}
-          onKeyDown={handlePathKeyDown}
-          onBlur={handlePathBlur}
-          placeholder="Enter path..."
-        />
-      </div>
-      <div class={styles.tree} ref={treeRef}>
-        <Show when={error()}>
-          <div class={styles.errorState}>{error()}</div>
-        </Show>
-        <Show when={loading()}>
-          <div class={styles.loadingState}>Loading...</div>
-        </Show>
-        <Show when={!loading() && !error()}>
-          <div class={styles.treeInner}>
-            {/* Root directory row */}
-            <div
-              class={styles.node}
-              style={{ 'padding-left': '8px' }}
-              data-testid="tree-root-node"
-            >
-              <Icon icon={FolderOpen} size="sm" class={styles.folderIcon} />
-              <span class={styles.nodeName}>{rootDisplayName()}</span>
-              <div class={styles.nodeActions}>
-                {renderTreeContextMenu({
-                  path: rootPath(),
-                  isDir: true,
-                  rootPath: rootPath(),
-                  homeDir: props.homeDir,
-                  onMention: props.onMention,
-                  onOpenTerminal: props.onOpenTerminal,
-                })}
-              </div>
-            </div>
-            <Show when={rootChildren() !== undefined}>
-              <div class={`${styles.childrenWrapper} ${styles.childrenWrapperExpanded}`}>
-                <div class={styles.childrenInner}>
-                  <Show
-                    when={rootChildren()!.length > 0}
-                    fallback={<div class={styles.emptyState}>{props.visiblePaths ? 'No changes' : 'Empty directory'}</div>}
-                  >
-                    <For each={rootChildren()}>
-                      {node => (
-                        <TreeNode
-                          node={node}
-                          workerId={props.workerId}
-                          showFiles={props.showFiles ?? false}
-                          selectedPath={props.selectedPath}
-                          onSelect={props.onSelect}
-                          onFileOpen={props.onFileOpen}
-                          onMention={props.onMention}
-                          onOpenTerminal={props.onOpenTerminal}
-                          depth={0}
-                          scrollContainer={treeRef}
-                          rootPath={rootPath()}
-                          homeDir={props.homeDir}
-                          isNodeExpanded={isNodeExpanded}
-                          setNodeExpanded={setNodeExpanded}
-                          getChildren={getChildren}
-                          setChildren={setChildrenInStore}
-                          gitStatusStore={props.gitStatusStore}
-                          visiblePaths={props.visiblePaths}
-                        />
-                      )}
-                    </For>
-                  </Show>
+    <TreeContext.Provider value={treeContextValue}>
+      <div class={styles.container}>
+        <div class={styles.pathInput}>
+          <input
+            class={styles.pathInputField}
+            type="text"
+            value={inputValue()}
+            title={props.selectedPath}
+            onInput={e => setInputValue(e.currentTarget.value)}
+            onKeyDown={handlePathKeyDown}
+            onBlur={handlePathBlur}
+            placeholder="Enter path..."
+          />
+        </div>
+        <div class={styles.tree} ref={treeRef}>
+          <Show when={error()}>
+            <div class={styles.errorState}>{error()}</div>
+          </Show>
+          <Show when={loading()}>
+            <div class={styles.loadingState}>Loading...</div>
+          </Show>
+          <Show when={!loading() && !error()}>
+            <div class={styles.treeInner}>
+              {/* Root directory row */}
+              <div
+                class={styles.node}
+                classList={{ [styles.nodeSelected]: props.selectedPath === rootPath() }}
+                style={{ 'padding-left': '8px' }}
+                data-testid="tree-root-node"
+                onClick={() => props.onSelect(rootPath())}
+              >
+                <Icon icon={FolderOpen} size="sm" class={styles.folderIcon} />
+                <span class={styles.nodeName}>{rootDisplayName()}</span>
+                <div class={styles.nodeActions}>
+                  <TreeContextMenu
+                    path={rootPath()}
+                    isDir
+                  />
                 </div>
               </div>
-            </Show>
-          </div>
-        </Show>
+              <Show when={rootChildren() !== undefined}>
+                <div class={`${styles.childrenWrapper} ${styles.childrenWrapperExpanded}`}>
+                  <div class={styles.childrenInner}>
+                    <Show
+                      when={rootChildren()!.length > 0}
+                      fallback={<div class={styles.emptyState}>{props.visiblePaths ? 'No changes' : 'Empty directory'}</div>}
+                    >
+                      <For each={rootChildren()}>
+                        {node => (
+                          <TreeNode
+                            node={node}
+                            selectedPath={props.selectedPath}
+                            depth={0}
+                          />
+                        )}
+                      </For>
+                      <Show when={isTruncated(rootPath()) && !props.visiblePaths}>
+                        <div class={styles.emptyInline} style={{ 'padding-left': '24px' }}>
+                          {`${rootChildren()!.length}+ entries, listing truncated`}
+                        </div>
+                      </Show>
+                    </Show>
+                  </div>
+                </div>
+              </Show>
+            </div>
+          </Show>
+        </div>
       </div>
-    </div>
+    </TreeContext.Provider>
   )
 }

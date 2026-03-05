@@ -75,8 +75,8 @@ test.describe('Workspace Context Menu', () => {
 
   test('should not activate unfocused workspace when opening context menu', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     // Create a second workspace via API (no navigation)
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const secondWorkspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Unfocused WS', adminOrgId)
+    const { hubUrl, adminToken, adminOrgId } = leapmuxServer
+    const secondWorkspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Unfocused WS', adminOrgId)
     try {
       // Navigate to the SECOND workspace so it becomes active, making the first inactive
       await page.goto(`/o/admin/workspace/${secondWorkspaceId}`)
@@ -113,8 +113,8 @@ test.describe('Workspace Context Menu', () => {
 
   test('should not activate unfocused workspace when clicking a menu action', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     // Create a second workspace via API (no navigation)
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const secondWorkspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Action WS', adminOrgId)
+    const { hubUrl, adminToken, adminOrgId } = leapmuxServer
+    const secondWorkspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Action WS', adminOrgId)
     try {
       // Navigate to the SECOND workspace so it becomes active, making the first inactive
       await page.goto(`/o/admin/workspace/${secondWorkspaceId}`)

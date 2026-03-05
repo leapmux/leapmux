@@ -1,7 +1,7 @@
 import type { Accessor, JSX } from 'solid-js'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
-import type { Todo } from '~/stores/chat.store'
+import type { TodoItem } from '~/stores/chat.store'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
 import type { createTabStore } from '~/stores/tab.store'
@@ -13,7 +13,7 @@ import { insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 
 export interface SidebarElementsOpts {
   workspaces: Workspace[]
-  activeWorkspaceId: string | null | undefined
+  activeWorkspaceId: string | null
   sectionStore: ReturnType<typeof createSectionStore>
   tabStore: ReturnType<typeof createTabStore>
   loadSections: () => Promise<void>
@@ -34,8 +34,10 @@ export interface SidebarElementsOpts {
   activeFilePath?: string
   hasActiveFileTab: boolean
   showTodos: boolean
-  activeTodos: Todo[]
+  activeTodos: TodoItem[]
   termOps: ReturnType<typeof useTerminalOperations>
+  /** Signal bumped on agent turn-end; drives directory tree refresh. */
+  turnEndTrigger: number
 }
 
 interface SidebarDisplayOpts {
@@ -88,6 +90,7 @@ export function createLeftSidebarElement(opts: SidebarElementsOpts, display?: Si
       gitStatusStore={opts.gitStatusStore}
       activeFilePath={opts.activeFilePath}
       hasActiveFileTab={opts.hasActiveFileTab}
+      turnEndTrigger={opts.turnEndTrigger}
     />
   )
 }
@@ -133,6 +136,7 @@ export function createRightSidebarElement(opts: SidebarElementsOpts, display?: S
       gitStatusStore={opts.gitStatusStore}
       activeFilePath={opts.activeFilePath}
       hasActiveFileTab={opts.hasActiveFileTab}
+      turnEndTrigger={opts.turnEndTrigger}
     />
   )
 }

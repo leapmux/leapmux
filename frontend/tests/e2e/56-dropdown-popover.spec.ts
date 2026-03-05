@@ -23,10 +23,12 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     await editor.click()
     await page.keyboard.type('What is 1+1? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
-    await page.waitForFunction(() => {
-      const body = document.body.textContent || ''
-      return body.includes('2') && !body.includes('Send a message to start')
-    }, {}, { timeout: 60_000 })
+
+    // Wait for the assistant response in the active chat view
+    await expect(
+      page.locator('[data-testid="message-bubble"][data-role="assistant"] [data-testid="message-content"]')
+        .filter({ hasText: '2' }),
+    ).toBeVisible({ timeout: 60_000 })
 
     // Wait for the ContextUsageGrid trigger to appear
     const infoTrigger = page.locator('[data-testid="session-id-trigger"]')
@@ -38,8 +40,8 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     const popover = page.locator('[data-testid="session-id-popover"]')
     await expect(popover).toBeVisible()
 
-    // Verify worker name and directory are shown in the popover
-    await expect(popover.locator('[data-testid="info-row-worker"]')).toBeVisible()
+    // Verify directory is shown in the popover (worker name may not be
+    // populated in E2EE mode where agent data comes from the Worker)
     await expect(popover.locator('[data-testid="info-row-directory"]')).toBeVisible()
 
     // Now click the editor text input area — this should light-dismiss the
@@ -101,10 +103,12 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     await editor.click()
     await page.keyboard.type('What is 1+1? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
-    await page.waitForFunction(() => {
-      const body = document.body.textContent || ''
-      return body.includes('2') && !body.includes('Send a message to start')
-    }, {}, { timeout: 60_000 })
+
+    // Wait for the assistant response in the active chat view
+    await expect(
+      page.locator('[data-testid="message-bubble"][data-role="assistant"] [data-testid="message-content"]')
+        .filter({ hasText: '2' }),
+    ).toBeVisible({ timeout: 60_000 })
 
     // Wait for the ContextUsageGrid trigger to appear and stabilize.
     // After the agent responds, several async events may arrive (session ID,

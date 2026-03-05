@@ -4,12 +4,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentChatMessageSchema, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { createChatStore } from '~/stores/chat.store'
 
-// Mock agentClient for loadInitialMessages / loadOlderMessages
+// Mock workerRpc for loadInitialMessages / loadOlderMessages / loadNewerMessages
 const mockListAgentMessages = vi.fn()
-vi.mock('~/api/clients', () => ({
-  agentClient: {
-    listAgentMessages: (...args: unknown[]) => mockListAgentMessages(...args),
-  },
+vi.mock('~/api/workerRpc', () => ({
+  listAgentMessages: (...args: unknown[]) => mockListAgentMessages(...args),
 }))
 
 function makeMessage(id: string, seq: bigint, deliveryError = '') {
@@ -298,11 +296,11 @@ describe('createChatStore', () => {
             makeMessage(`m${i}`, BigInt(i + 1)))
           mockListAgentMessages.mockResolvedValueOnce({ messages, hasMore: true })
 
-          await store.loadInitialMessages('a1')
+          await store.loadInitialMessages('w1', 'a1')
           expect(store.getMessages('a1')).toHaveLength(50)
           expect(store.hasOlderMessages('a1')).toBe(true)
           expect(store.isInitialLoadComplete('a1')).toBe(true)
-          expect(mockListAgentMessages).toHaveBeenCalledWith({ agentId: 'a1', limit: 50 })
+          expect(mockListAgentMessages).toHaveBeenCalledWith('w1', { agentId: 'a1', limit: 50 })
           dispose()
         })
       })
@@ -312,10 +310,10 @@ describe('createChatStore', () => {
           const store = createChatStore()
           mockListAgentMessages.mockResolvedValueOnce({ messages: [makeMessage('m1', 1n)], hasMore: false })
 
-          await store.loadInitialMessages('a1')
+          await store.loadInitialMessages('w1', 'a1')
           const callCount = mockListAgentMessages.mock.calls.length
 
-          await store.loadInitialMessages('a1')
+          await store.loadInitialMessages('w1', 'a1')
           expect(mockListAgentMessages.mock.calls.length).toBe(callCount) // No new call
           dispose()
         })
@@ -328,7 +326,7 @@ describe('createChatStore', () => {
           const promise = new Promise(resolve => (resolveFn = resolve))
           mockListAgentMessages.mockReturnValueOnce(promise)
 
-          const loadPromise = store.loadInitialMessages('a1')
+          const loadPromise = store.loadInitialMessages('w1', 'a1')
           expect(store.isFetchingOlder('a1')).toBe(true)
 
           resolveFn!({ messages: [], hasMore: false })
@@ -354,13 +352,13 @@ describe('createChatStore', () => {
             makeMessage(`m${i}`, BigInt(i + 1)))
           mockListAgentMessages.mockResolvedValueOnce({ messages: older, hasMore: false })
 
-          await store.loadOlderMessages('a1')
+          await store.loadOlderMessages('w1', 'a1')
           const msgs = store.getMessages('a1')
           expect(msgs).toHaveLength(100)
           expect(msgs[0].seq).toBe(1n)
           expect(msgs[99].seq).toBe(100n)
           expect(store.hasOlderMessages('a1')).toBe(false)
-          expect(mockListAgentMessages).toHaveBeenCalledWith({
+          expect(mockListAgentMessages).toHaveBeenCalledWith('w1', {
             agentId: 'a1',
             beforeSeq: 51n,
             limit: 50,
@@ -375,7 +373,7 @@ describe('createChatStore', () => {
           store.setMessages('a1', [makeMessage('m1', 1n)], false)
 
           const callCount = mockListAgentMessages.mock.calls.length
-          await store.loadOlderMessages('a1')
+          await store.loadOlderMessages('w1', 'a1')
           expect(mockListAgentMessages.mock.calls.length).toBe(callCount)
           dispose()
         })
@@ -391,11 +389,11 @@ describe('createChatStore', () => {
           const promise = new Promise(resolve => (resolveFn = resolve))
           mockListAgentMessages.mockReturnValueOnce(promise)
 
-          const loadPromise = store.loadOlderMessages('a1')
+          const loadPromise = store.loadOlderMessages('w1', 'a1')
           const callCount = mockListAgentMessages.mock.calls.length
 
           // Second call should be a no-op
-          await store.loadOlderMessages('a1')
+          await store.loadOlderMessages('w1', 'a1')
           expect(mockListAgentMessages.mock.calls.length).toBe(callCount)
 
           resolveFn!({ messages: [], hasMore: false })
@@ -413,7 +411,7 @@ describe('createChatStore', () => {
           const older = [makeMessage('m4', 4n), makeMessage('m5_dup', 5n)]
           mockListAgentMessages.mockResolvedValueOnce({ messages: older, hasMore: false })
 
-          await store.loadOlderMessages('a1')
+          await store.loadOlderMessages('w1', 'a1')
           const msgs = store.getMessages('a1')
           // Should have m4, m5, m6 — not m5_dup
           expect(msgs).toHaveLength(3)
@@ -439,12 +437,12 @@ describe('createChatStore', () => {
             makeMessage(`m${i + 51}`, BigInt(i + 51)))
           mockListAgentMessages.mockResolvedValueOnce({ messages: newer, hasMore: false })
 
-          await store.loadNewerMessages('a1', 50n)
+          await store.loadNewerMessages('w1', 'a1', 50n)
           const msgs = store.getMessages('a1')
           expect(msgs).toHaveLength(75)
           expect(msgs[0].seq).toBe(1n)
           expect(msgs[74].seq).toBe(75n)
-          expect(mockListAgentMessages).toHaveBeenLastCalledWith({
+          expect(mockListAgentMessages).toHaveBeenLastCalledWith('w1', {
             agentId: 'a1',
             afterSeq: 50n,
             limit: 50,
@@ -472,7 +470,7 @@ describe('createChatStore', () => {
             makeMessage(`m${i + 101}`, BigInt(i + 101)))
           mockListAgentMessages.mockResolvedValueOnce({ messages: batch2, hasMore: false })
 
-          await store.loadNewerMessages('a1', 50n)
+          await store.loadNewerMessages('w1', 'a1', 50n)
           const msgs = store.getMessages('a1')
           expect(msgs).toHaveLength(120)
           expect(msgs[0].seq).toBe(1n)
@@ -480,12 +478,12 @@ describe('createChatStore', () => {
 
           // Verify two calls with correct cursors
           expect(mockListAgentMessages).toHaveBeenCalledTimes(2)
-          expect(mockListAgentMessages).toHaveBeenNthCalledWith(1, {
+          expect(mockListAgentMessages).toHaveBeenNthCalledWith(1, 'w1', {
             agentId: 'a1',
             afterSeq: 50n,
             limit: 50,
           })
-          expect(mockListAgentMessages).toHaveBeenNthCalledWith(2, {
+          expect(mockListAgentMessages).toHaveBeenNthCalledWith(2, 'w1', {
             agentId: 'a1',
             afterSeq: 100n,
             limit: 50,
@@ -511,7 +509,7 @@ describe('createChatStore', () => {
             return { messages: batch1, hasMore: true }
           })
 
-          await store.loadNewerMessages('a1', 1n, controller.signal)
+          await store.loadNewerMessages('w1', 'a1', 1n, controller.signal)
 
           // Should have made only one call because signal was aborted
           expect(mockListAgentMessages).toHaveBeenCalledTimes(1)
@@ -527,7 +525,7 @@ describe('createChatStore', () => {
 
           mockListAgentMessages.mockResolvedValueOnce({ messages: [], hasMore: false })
 
-          await store.loadNewerMessages('a1', 1n)
+          await store.loadNewerMessages('w1', 'a1', 1n)
           expect(store.getMessages('a1')).toHaveLength(1)
           expect(mockListAgentMessages).toHaveBeenCalledTimes(1)
           dispose()
@@ -574,7 +572,7 @@ describe('createChatStore', () => {
         ]
         mockListAgentMessages.mockResolvedValueOnce({ messages, hasMore: false })
 
-        await store.loadInitialMessages('a1')
+        await store.loadInitialMessages('w1', 'a1')
         expect(store.getTodos('a1')).toEqual(sampleTodos)
         dispose()
       })
@@ -591,7 +589,7 @@ describe('createChatStore', () => {
         const older = [makeTodoWriteMessage('m5', 5n, sampleTodos)]
         mockListAgentMessages.mockResolvedValueOnce({ messages: older, hasMore: false })
 
-        await store.loadOlderMessages('a1')
+        await store.loadOlderMessages('w1', 'a1')
         expect(store.getTodos('a1')).toEqual(sampleTodos)
         dispose()
       })
@@ -610,7 +608,7 @@ describe('createChatStore', () => {
         const older = [makeTodoWriteMessage('m5', 5n, olderTodos)]
         mockListAgentMessages.mockResolvedValueOnce({ messages: older, hasMore: false })
 
-        await store.loadOlderMessages('a1')
+        await store.loadOlderMessages('w1', 'a1')
         expect(store.getTodos('a1')).toEqual(newerTodos)
         dispose()
       })
@@ -621,6 +619,93 @@ describe('createChatStore', () => {
         const store = createChatStore()
         store.setMessages('a1', [makeMessage('m1', 1n)])
         expect(store.getTodos('a1')).toEqual([])
+        dispose()
+      })
+    })
+  })
+
+  describe('local (optimistic) messages with seq === 0n', () => {
+    it('should append local message at the end', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        store.addMessage('a1', makeMessage('s1', 1n))
+        store.addMessage('a1', makeMessage('s2', 2n))
+        store.addMessage('a1', makeMessage('local1', 0n))
+
+        const msgs = store.getMessages('a1')
+        expect(msgs).toHaveLength(3)
+        expect(msgs[0].id).toBe('s1')
+        expect(msgs[1].id).toBe('s2')
+        expect(msgs[2].id).toBe('local1')
+        dispose()
+      })
+    })
+
+    it('should insert server message before trailing local messages', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        store.addMessage('a1', makeMessage('s1', 1n))
+        store.addMessage('a1', makeMessage('local1', 0n))
+
+        // Server message arrives — should go before local1
+        store.addMessage('a1', makeMessage('s2', 2n))
+
+        const msgs = store.getMessages('a1')
+        expect(msgs).toHaveLength(3)
+        expect(msgs[0].id).toBe('s1')
+        expect(msgs[1].id).toBe('s2')
+        expect(msgs[2].id).toBe('local1')
+        dispose()
+      })
+    })
+
+    it('should keep multiple local messages at end in insertion order', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        store.addMessage('a1', makeMessage('s1', 1n))
+        store.addMessage('a1', makeMessage('local1', 0n))
+        store.addMessage('a1', makeMessage('local2', 0n))
+
+        // Server message arrives
+        store.addMessage('a1', makeMessage('s2', 2n))
+
+        const msgs = store.getMessages('a1')
+        expect(msgs).toHaveLength(4)
+        expect(msgs[0].id).toBe('s1')
+        expect(msgs[1].id).toBe('s2')
+        expect(msgs[2].id).toBe('local1')
+        expect(msgs[3].id).toBe('local2')
+        dispose()
+      })
+    })
+
+    it('getLastSeq should skip trailing local messages', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        store.addMessage('a1', makeMessage('s1', 5n))
+        store.addMessage('a1', makeMessage('s2', 10n))
+        store.addMessage('a1', makeMessage('local1', 0n))
+
+        expect(store.getLastSeq('a1')).toBe(10n)
+        dispose()
+      })
+    })
+
+    it('getLastSeq should return 0n when only local messages exist', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        store.addMessage('a1', makeMessage('local1', 0n))
+
+        expect(store.getLastSeq('a1')).toBe(0n)
+        dispose()
+      })
+    })
+
+    it('getFirstSeq should return first server message seq', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        store.setMessages('a1', [makeMessage('s1', 5n), makeMessage('s2', 6n)])
+        expect(store.getFirstSeq('a1')).toBe(5n)
         dispose()
       })
     })

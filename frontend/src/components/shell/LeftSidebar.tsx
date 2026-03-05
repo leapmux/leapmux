@@ -56,6 +56,8 @@ interface LeftSidebarProps {
   hasActiveFileTab?: boolean
   showTodos: boolean
   activeTodos: TodoItem[]
+  /** Signal bumped on agent turn-end; drives directory tree refresh. */
+  turnEndTrigger?: number
 }
 
 export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
@@ -229,6 +231,7 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
               onRefresh={() => {
                 if (props.workerId && props.workingDir)
                   props.gitStatusStore?.refresh(props.workerId, props.workingDir)
+                filesSectionHandle()?.refresh()
               }}
               hasActiveFileTab={props.hasActiveFileTab ?? false}
               isFiltered={() => filesSectionHandle()?.isFiltered() ?? false}
@@ -253,6 +256,7 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
                 gitStatusStore={props.gitStatusStore!}
                 activeFilePath={props.activeFilePath}
                 hasActiveFileTab={props.hasActiveFileTab ?? false}
+                turnEndTrigger={props.turnEndTrigger}
                 ref={setFilesSectionHandle}
               />
             </Show>

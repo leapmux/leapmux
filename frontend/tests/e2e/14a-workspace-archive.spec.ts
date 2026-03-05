@@ -1,7 +1,9 @@
-import process from 'node:process'
+import path from 'node:path'
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { loginViaToken, openWorkspaceContextMenu, waitForWorkspaceReady } from './helpers/ui'
+
+const frontendDir = path.resolve(import.meta.dirname, '../..')
 
 test.describe('Workspace Archive', () => {
   test('should archive workspace via context menu with confirmation dialog', async ({ page, authenticatedWorkspace }) => {
@@ -148,8 +150,9 @@ test.describe('Workspace Archive', () => {
   })
 
   test('should allow closing file tabs in archived workspace', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'File Tab Close', adminOrgId, process.cwd())
+    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Tab Close', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -190,8 +193,9 @@ test.describe('Workspace Archive', () => {
   })
 
   test('should hide tree mention button in archived workspace', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'No Mention', adminOrgId, process.cwd())
+    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'No Mention', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -234,8 +238,9 @@ test.describe('Workspace Archive', () => {
   })
 
   test('should hide file mention button in archived workspace', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'No File Mention', adminOrgId, process.cwd())
+    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'No File Mention', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)

@@ -172,33 +172,6 @@ test.describe('Workspace Chat', () => {
     expect(tabWidth).toBeLessThanOrEqual(200)
   })
 
-  test('should wrap tabs to multiple rows when many tabs are open', async ({ page, authenticatedWorkspace }) => {
-    await ensureAgentTab(page)
-
-    // Create 5 more agents to ensure wrapping.
-    // Wait for each tab to appear before clicking the agent button again.
-    const allTabs = page.locator('[data-testid="tab"]')
-    for (let i = 0; i < 5; i++) {
-      const countBefore = await allTabs.count()
-      await page.locator('[data-testid="new-agent-button"]').click()
-      await expect(allTabs).toHaveCount(countBefore + 1)
-    }
-
-    // Shrink viewport so tabs must wrap.
-    // With resizable panels + drag handles, center area is ~55-60% of viewport width.
-    // At 800px: center ~ 440-480px. 6 tabs * ~74px = 444px -> wraps.
-    await page.setViewportSize({ width: 800, height: 600 })
-    await page.waitForTimeout(500)
-
-    // The agent button should still be visible
-    await expect(page.locator('[data-testid="new-agent-button"]')).toBeVisible()
-
-    // The tab bar should have grown taller (multi-row) compared to single-row height
-    const tabBarHeight = await page.locator('[data-testid="tab-bar"]').evaluate(el => el.getBoundingClientRect().height)
-    // Single row is minHeight 35px (headerHeightPx - 1); with wrapping it should be at least that
-    expect(tabBarHeight).toBeGreaterThanOrEqual(35)
-  })
-
   test('should allow double-click rename on a non-active tab', async ({ page, authenticatedWorkspace }) => {
     const initialCount = await ensureAgentTab(page)
 

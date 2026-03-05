@@ -14,7 +14,7 @@ function wrap(messages: unknown[]): Uint8Array {
 }
 
 /** Build a minimal AgentChatMessage. */
-function makeMsg(role: MessageRole, content?: Uint8Array): AgentChatMessage {
+function makeMsg(role: MessageRole, content?: Uint8Array, deliveryError?: string): AgentChatMessage {
   return {
     $typeName: 'leapmux.v1.AgentChatMessage' as const,
     id: 'msg-1',
@@ -22,7 +22,7 @@ function makeMsg(role: MessageRole, content?: Uint8Array): AgentChatMessage {
     seq: 1n,
     createdAt: '',
     updatedAt: '',
-    deliveryError: '',
+    deliveryError: deliveryError ?? '',
     content: content ?? new Uint8Array(),
     contentCompression: ContentCompression.NONE,
   } as AgentChatMessage
@@ -118,11 +118,18 @@ describe('isAgentWorking', () => {
     ])).toBe(false)
   })
 
-  it('skips LEAPMUX message and finds preceding ASSISTANT', () => {
+  it('skips LEAPMUX settings_changed and finds preceding ASSISTANT', () => {
     expect(isAgentWorking([
       makeMsg(MessageRole.ASSISTANT),
       makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'settings_changed' }])),
     ])).toBe(true)
+  })
+
+  it('treats LEAPMUX context_cleared as turn boundary (returns false)', () => {
+    expect(isAgentWorking([
+      makeMsg(MessageRole.ASSISTANT),
+      makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'context_cleared' }])),
+    ])).toBe(false)
   })
 
   it('skips multiple trailing LEAPMUX messages', () => {
@@ -138,6 +145,20 @@ describe('isAgentWorking', () => {
       makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'settings_changed' }])),
       makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'context_cleared' }])),
     ])).toBe(false)
+  })
+
+  it('skips USER message with deliveryError (agent never received it)', () => {
+    expect(isAgentWorking([
+      makeMsg(MessageRole.RESULT, wrap([{ type: 'result', subtype: 'turn_result' }])),
+      makeMsg(MessageRole.USER, undefined, 'connection lost'),
+    ])).toBe(false)
+  })
+
+  it('skips trailing deliveryError messages and finds preceding ASSISTANT', () => {
+    expect(isAgentWorking([
+      makeMsg(MessageRole.ASSISTANT),
+      makeMsg(MessageRole.USER, undefined, 'connection lost'),
+    ])).toBe(true)
   })
 
   it('skips mixed LEAPMUX and notification RESULT messages', () => {

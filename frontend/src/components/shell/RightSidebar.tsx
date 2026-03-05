@@ -53,6 +53,8 @@ interface RightSidebarProps {
   onConfirmDelete?: (workspaceId: string) => Promise<boolean>
   onConfirmArchive?: (workspaceId: string) => Promise<boolean>
   onPostArchiveWorkspace?: (workspaceId: string) => void
+  /** Signal bumped on agent turn-end; drives directory tree refresh. */
+  turnEndTrigger?: number
 }
 
 export const RightSidebar: Component<RightSidebarProps> = (props) => {
@@ -128,6 +130,7 @@ export const RightSidebar: Component<RightSidebarProps> = (props) => {
               onRefresh={() => {
                 if (props.workerId && props.workingDir)
                   props.gitStatusStore.refresh(props.workerId, props.workingDir)
+                filesSectionHandle()?.refresh()
               }}
               hasActiveFileTab={props.hasActiveFileTab}
               isFiltered={() => filesSectionHandle()?.isFiltered() ?? false}
@@ -152,6 +155,7 @@ export const RightSidebar: Component<RightSidebarProps> = (props) => {
                 gitStatusStore={props.gitStatusStore}
                 activeFilePath={props.activeFilePath}
                 hasActiveFileTab={props.hasActiveFileTab}
+                turnEndTrigger={props.turnEndTrigger}
                 ref={setFilesSectionHandle}
               />
             </Show>

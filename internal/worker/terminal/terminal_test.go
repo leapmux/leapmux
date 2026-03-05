@@ -1,8 +1,7 @@
 package terminal
 
 import (
-	"encoding/json"
-	"os"
+	"context"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -10,6 +9,8 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	workerdb "github.com/leapmux/leapmux/internal/worker/db"
+	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -287,20 +288,31 @@ func TestManager_HasTerminal_UnknownTerminal(t *testing.T) {
 	assert.False(t, m.HasTerminal("nonexistent"), "expected HasTerminal = false for unknown terminal")
 }
 
-func TestManager_SaveAndLoadScreens(t *testing.T) {
+// newTestDB creates an in-memory SQLite database with migrations applied.
+func newTestDB(t *testing.T) *db.Queries {
+	t.Helper()
+	sqlDB, err := workerdb.Open(":memory:")
+	require.NoError(t, err, "open in-memory DB")
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	require.NoError(t, workerdb.Migrate(sqlDB), "migrate DB")
+	return db.New(sqlDB)
+}
+
+func TestSnapshotTerminal(t *testing.T) {
 	m := NewManager()
 	var mu sync.Mutex
 	var output []byte
 
-	termID := "tm-save"
+	termID := "tm-snap-single"
 	wsID := "ws-1"
 
 	err := m.StartTerminal(Options{
-		ID:         termID,
-		Shell:      "/bin/sh",
-		WorkingDir: t.TempDir(),
-		Cols:       80,
-		Rows:       24,
+		ID:          termID,
+		WorkspaceID: wsID,
+		Shell:       "/bin/sh",
+		WorkingDir:  t.TempDir(),
+		Cols:        80,
+		Rows:        24,
 	}, func(data []byte) {
 		mu.Lock()
 		output = append(output, data...)
@@ -308,89 +320,62 @@ func TestManager_SaveAndLoadScreens(t *testing.T) {
 	}, nil)
 	require.NoError(t, err, "StartTerminal")
 
-	// Send a command so there is screen buffer content.
-	require.NoError(t, m.SendInput(termID, []byte("echo save_load_test\n")), "SendInput")
-
+	require.NoError(t, m.SendInput(termID, []byte("echo snapshot_single\n")), "SendInput")
 	testutil.AssertEventually(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
-		return strings.Contains(string(output), "save_load_test")
-	}, "expected output to contain 'save_load_test'")
+		return strings.Contains(string(output), "snapshot_single")
+	}, "expected output to contain 'snapshot_single'")
 
-	dataDir := t.TempDir()
-	getMeta := func(id string) (string, uint32, uint32) {
-		if id == termID {
-			return wsID, 80, 24
-		}
-		return "", 0, 0
-	}
+	snap, ok := m.SnapshotTerminal(termID)
+	require.True(t, ok, "SnapshotTerminal should return ok=true")
+	assert.Equal(t, wsID, snap.WorkspaceID)
+	assert.Equal(t, uint32(80), snap.Cols)
+	assert.Equal(t, uint32(24), snap.Rows)
+	assert.Contains(t, string(snap.Screen), "snapshot_single")
 
-	// Save screens and metadata.
-	require.NoError(t, m.SaveScreens(dataDir, getMeta), "SaveScreens")
-	require.NoError(t, m.SaveTerminalMeta(dataDir, getMeta), "SaveTerminalMeta")
+	// Unknown terminal returns ok=false.
+	_, ok = m.SnapshotTerminal("nonexistent")
+	assert.False(t, ok, "SnapshotTerminal should return ok=false for unknown terminal")
 
-	// Verify files were written.
-	termDir := filepath.Join(dataDir, "workspaces", wsID, "terminals", termID)
-	bufferPath := filepath.Join(termDir, "screen.buffer")
-	metaPath := filepath.Join(termDir, "screen.json")
-
-	bufferData, err := os.ReadFile(bufferPath)
-	require.NoError(t, err, "read screen.buffer")
-	assert.NotEmpty(t, bufferData, "screen.buffer should not be empty")
-	assert.Contains(t, string(bufferData), "save_load_test", "screen.buffer should contain echoed text")
-
-	metaData, err := os.ReadFile(metaPath)
-	require.NoError(t, err, "read screen.json")
-	var meta savedScreenMeta
-	require.NoError(t, json.Unmarshal(metaData, &meta), "unmarshal screen.json")
-	assert.Equal(t, uint32(80), meta.Cols, "saved cols")
-	assert.Equal(t, uint32(24), meta.Rows, "saved rows")
-
-	// Stop the manager before loading.
 	m.StopAll()
-
-	// Load saved terminals from disk.
-	loaded, err := LoadSavedTerminals(dataDir)
-	require.NoError(t, err, "LoadSavedTerminals")
-	require.Contains(t, loaded, termID, "loaded terminals should contain the terminal ID")
-
-	saved := loaded[termID]
-	assert.Equal(t, wsID, saved.WorkspaceID, "loaded workspace ID")
-	assert.Equal(t, uint32(80), saved.Cols, "loaded cols")
-	assert.Equal(t, uint32(24), saved.Rows, "loaded rows")
-	assert.NotEmpty(t, saved.Screen, "loaded screen should not be empty")
-	assert.Contains(t, string(saved.Screen), "save_load_test", "loaded screen should contain echoed text")
-
-	// Verify that LoadSavedTerminals cleaned up the terminals directory.
-	_, err = os.Stat(filepath.Join(dataDir, "workspaces", wsID, "terminals"))
-	assert.True(t, os.IsNotExist(err), "terminals dir should be removed after load")
 }
 
-func TestLoadSavedTerminals_EmptyDir(t *testing.T) {
-	dataDir := t.TempDir()
-	// No workspaces directory exists; should return nil, nil.
-	result, err := LoadSavedTerminals(dataDir)
-	assert.NoError(t, err, "LoadSavedTerminals on empty dir")
-	assert.Nil(t, result, "expected nil result for non-existent workspaces dir")
-}
+func TestUpsertAndGetTerminal(t *testing.T) {
+	ctx := context.Background()
+	queries := newTestDB(t)
 
-func TestLoadSavedTerminals_LegacyCleanup(t *testing.T) {
-	dataDir := t.TempDir()
+	wsID := "ws-1"
+	termID := "tm-db"
 
-	// Create a legacy screens/ directory.
-	legacyDir := filepath.Join(dataDir, "screens")
-	require.NoError(t, os.MkdirAll(legacyDir, 0755), "create legacy screens dir")
+	// Upsert a terminal (workspace_id is plain TEXT, no FK needed).
+	screenData := []byte("hello terminal")
+	require.NoError(t, queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
+		ID:          termID,
+		WorkspaceID: wsID,
+		WorkingDir:  "/tmp",
+		HomeDir:     "/home/test",
+		Cols:        120,
+		Rows:        40,
+		Screen:      screenData,
+	}), "UpsertTerminal")
 
-	// Also create an empty workspaces dir so the function progresses past the ReadDir call.
-	require.NoError(t, os.MkdirAll(filepath.Join(dataDir, "workspaces"), 0755), "create workspaces dir")
+	// Get it back.
+	row, err := queries.GetTerminal(ctx, termID)
+	require.NoError(t, err, "GetTerminal")
+	assert.Equal(t, termID, row.ID)
+	assert.Equal(t, wsID, row.WorkspaceID)
+	assert.Equal(t, "/tmp", row.WorkingDir)
+	assert.Equal(t, "/home/test", row.HomeDir)
+	assert.Equal(t, int64(120), row.Cols)
+	assert.Equal(t, int64(40), row.Rows)
+	assert.Equal(t, screenData, row.Screen)
 
-	result, err := LoadSavedTerminals(dataDir)
-	assert.NoError(t, err, "LoadSavedTerminals with legacy dir")
-	assert.Empty(t, result, "expected empty result with no saved terminals")
-
-	// Verify legacy directory was removed.
-	_, err = os.Stat(legacyDir)
-	assert.True(t, os.IsNotExist(err), "legacy screens/ dir should be removed")
+	// Soft-delete and verify closed_at is set.
+	require.NoError(t, queries.CloseTerminal(ctx, termID), "CloseTerminal")
+	row, err = queries.GetTerminal(ctx, termID)
+	require.NoError(t, err, "GetTerminal after close")
+	assert.True(t, row.ClosedAt.Valid, "closed_at should be set")
 }
 
 // resetShellCache resets the sync.Once so ListAvailableShells recomputes.

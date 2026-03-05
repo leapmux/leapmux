@@ -1,4 +1,3 @@
-import type { CallOptions } from '@connectrpc/connect'
 import type { Accessor } from 'solid-js'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { createLayoutStore } from '~/stores/layout.store'
@@ -6,7 +5,8 @@ import type { createTabStore } from '~/stores/tab.store'
 import type { createTerminalStore } from '~/stores/terminal.store'
 
 import { createEffect, createSignal, on } from 'solid-js'
-import { gitClient, terminalClient } from '~/api/clients'
+import { workspaceClient } from '~/api/clients'
+import * as workerRpc from '~/api/workerRpc'
 import { showToast } from '~/components/common/Toast'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 
@@ -25,12 +25,16 @@ export interface UseTerminalOperationsProps {
   setNewShellLoading: (v: boolean) => void
   pendingWorktreeChoice: () => 'keep' | 'remove' | null
   persistLayout?: () => void
-  apiCallTimeout: () => CallOptions
 }
 
 export function useTerminalOperations(props: UseTerminalOperationsProps) {
   const [availableShells, setAvailableShells] = createSignal<string[]>([])
   const [defaultShell, setDefaultShell] = createSignal('')
+
+  /** Get workerId for a terminal from the terminal store. */
+  const getTerminalWorkerId = (terminalId: string): string => {
+    return props.terminalStore.state.terminals.find(t => t.id === terminalId)?.workerId ?? ''
+  }
 
   /** Load available shells on demand (e.g. when the new-terminal dialog opens). */
   const loadAvailableShells = () => {
@@ -40,7 +44,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     const ctx = props.getCurrentTabContext()
     if (!ctx.workerId)
       return
-    terminalClient.listAvailableShells({ orgId: props.org.orgId(), workspaceId: ws.id, workerId: ctx.workerId })
+    workerRpc.listAvailableShells(ctx.workerId, { orgId: props.org.orgId(), workspaceId: ws.id, workerId: ctx.workerId })
       .then((resp) => {
         setAvailableShells(resp.shells)
         setDefaultShell(resp.defaultShell)
@@ -74,7 +78,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     props.setNewTerminalLoading(true)
     try {
       const title = `Terminal ${nextTabNumber(props.tabStore.state.tabs, TabType.TERMINAL, 'Terminal')}`
-      const resp = await terminalClient.openTerminal({
+      const resp = await workerRpc.openTerminal(ctx.workerId, {
         orgId: props.org.orgId(),
         workspaceId: ws.id,
         cols: 80,
@@ -90,6 +94,11 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir })
       props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, resp.terminalId)
       props.persistLayout?.()
+      // Register tab with hub.
+      workspaceClient.addTab({
+        workspaceId: ws.id,
+        tab: { tabType: TabType.TERMINAL, tabId: resp.terminalId, tileId, workerId: ctx.workerId },
+      }).catch(() => {})
     }
     catch (err) {
       showToast(err instanceof Error ? err.message : 'Failed to open terminal', 'danger')
@@ -113,7 +122,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     props.setNewShellLoading(true)
     try {
       const title = `Terminal ${nextTabNumber(props.tabStore.state.tabs, TabType.TERMINAL, 'Terminal')}`
-      const resp = await terminalClient.openTerminal({
+      const resp = await workerRpc.openTerminal(ctx.workerId, {
         orgId: props.org.orgId(),
         workspaceId: ws.id,
         cols: 80,
@@ -128,6 +137,11 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir })
       props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, resp.terminalId)
       props.persistLayout?.()
+      // Register tab with hub.
+      workspaceClient.addTab({
+        workspaceId: ws.id,
+        tab: { tabType: TabType.TERMINAL, tabId: resp.terminalId, tileId, workerId: ctx.workerId },
+      }).catch(() => {})
     }
     catch (err) {
       showToast(err instanceof Error ? err.message : 'Failed to open terminal', 'danger')
@@ -142,7 +156,8 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       const ws = props.activeWorkspace()
       if (!ws || !props.terminalStore.hasTerminal(terminalId) || props.terminalStore.isExited(terminalId))
         return
-      await terminalClient.sendInput({ orgId: props.org.orgId(), workspaceId: ws.id, terminalId, data })
+      const workerId = getTerminalWorkerId(terminalId)
+      await workerRpc.sendInput(workerId, { orgId: props.org.orgId(), workspaceId: ws.id, terminalId, data })
     }
     catch {
       // ignore input errors
@@ -168,7 +183,8 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       const ws = props.activeWorkspace()
       if (!ws || !props.terminalStore.hasTerminal(terminalId) || props.terminalStore.isExited(terminalId))
         return
-      await terminalClient.resizeTerminal({ orgId: props.org.orgId(), workspaceId: ws.id, terminalId, cols, rows })
+      const workerId = getTerminalWorkerId(terminalId)
+      await workerRpc.resizeTerminal(workerId, { orgId: props.org.orgId(), workspaceId: ws.id, terminalId, cols, rows })
     }
     catch {
       // ignore resize errors
@@ -176,18 +192,19 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   }
 
   const handleTerminalClose = async (terminalId: string) => {
+    const ws = props.activeWorkspace()
     try {
-      const ws = props.activeWorkspace()
       if (!ws)
         return
-      const resp = await terminalClient.closeTerminal({ orgId: props.org.orgId(), workspaceId: ws.id, terminalId })
+      const workerId = getTerminalWorkerId(terminalId)
+      const resp = await workerRpc.closeTerminal(workerId, { orgId: props.org.orgId(), workspaceId: ws.id, terminalId })
       // Auto-handle worktree cleanup if the pre-close check stored a choice.
       if (resp.worktreeCleanupPending && resp.worktreeId) {
         if (props.pendingWorktreeChoice() === 'remove') {
-          gitClient.forceRemoveWorktree({ worktreeId: resp.worktreeId }, props.apiCallTimeout()).catch(() => {})
+          workerRpc.forceRemoveWorktree(workerId, { worktreeId: resp.worktreeId }).catch(() => {})
         }
         else {
-          gitClient.keepWorktree({ worktreeId: resp.worktreeId }).catch(() => {})
+          workerRpc.keepWorktree(workerId, { worktreeId: resp.worktreeId }).catch(() => {})
         }
       }
     }
@@ -197,6 +214,10 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     finally {
       props.terminalStore.removeTerminal(terminalId)
       props.tabStore.removeTab(TabType.TERMINAL, terminalId)
+      // Unregister tab from hub.
+      if (ws) {
+        workspaceClient.removeTab({ workspaceId: ws.id, tabType: TabType.TERMINAL, tabId: terminalId }).catch(() => {})
+      }
     }
   }
 

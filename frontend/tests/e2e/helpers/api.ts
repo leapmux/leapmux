@@ -2,6 +2,39 @@
 // API helpers for setting up test prerequisites
 // ──────────────────────────────────────────────
 
+import type { ChannelManager } from '../../../src/lib/channel'
+import { createTestChannelManager } from './e2e-channel'
+
+// ---- E2EE channel cache ----
+// Keeps a ChannelManager per hubUrl+token pair to avoid re-handshaking
+// on every test API call.
+
+const channelManagerCache = new Map<string, ChannelManager>()
+const channelManagerPending = new Map<string, Promise<ChannelManager>>()
+
+async function getTestChannel(hubUrl: string, token: string): Promise<ChannelManager> {
+  const key = `${hubUrl}|${token}`
+  const cached = channelManagerCache.get(key)
+  if (cached) {
+    return cached
+  }
+  // Deduplicate concurrent initialization for the same key.
+  let pending = channelManagerPending.get(key)
+  if (!pending) {
+    pending = createTestChannelManager(hubUrl, token).then((mgr) => {
+      channelManagerCache.set(key, mgr)
+      channelManagerPending.delete(key)
+      return mgr
+    })
+    channelManagerPending.set(key, pending)
+  }
+  return pending
+}
+
+export { getTestChannel }
+
+// ---- Hub API helpers (Auth, Org, Admin, Worker management) ----
+
 /**
  * Login via the Connect API. Returns the auth token.
  */
@@ -16,6 +49,25 @@ export async function loginViaAPI(hubUrl: string, username: string, password: st
   }
   const data = await res.json() as { token: string }
   return data.token
+}
+
+/**
+ * Get the current user's ID via the Connect API.
+ */
+export async function getUserId(hubUrl: string, token: string): Promise<string> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.AuthService/GetCurrentUser`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({}),
+  })
+  if (!res.ok) {
+    throw new Error(`getUserId failed: ${res.status}`)
+  }
+  const data = await res.json() as { user: { id: string } }
+  return data.user.id
 }
 
 /**
@@ -132,55 +184,6 @@ export async function inviteToOrgViaAPI(
 }
 
 /**
- * Create a workspace via the Connect API. Returns the workspace ID.
- */
-export async function createWorkspaceViaAPI(
-  hubUrl: string,
-  token: string,
-  workerId: string,
-  title: string,
-  orgId: string,
-  workingDir?: string,
-): Promise<string> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/CreateWorkspace`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body: JSON.stringify({ workerId, title, orgId, workingDir }),
-  })
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new Error(`createWorkspaceViaAPI failed: ${res.status} ${body}`)
-  }
-  const data = await res.json() as { workspace: { id: string } }
-  return data.workspace.id
-}
-
-/**
- * Update workspace sharing via the Connect API.
- */
-export async function shareWorkspaceViaAPI(
-  hubUrl: string,
-  token: string,
-  workspaceId: string,
-  shareMode: 'SHARE_MODE_PRIVATE' | 'SHARE_MODE_ORG' | 'SHARE_MODE_MEMBERS',
-): Promise<void> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/UpdateWorkspaceSharing`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body: JSON.stringify({ workspaceId, shareMode }),
-  })
-  if (!res.ok) {
-    throw new Error(`shareWorkspaceViaAPI failed: ${res.status}`)
-  }
-}
-
-/**
  * Deregister a worker via the Connect API.
  */
 export async function deregisterWorkerViaAPI(
@@ -208,7 +211,6 @@ export async function approveRegistrationViaAPI(
   hubUrl: string,
   token: string,
   registrationToken: string,
-  name: string,
   orgId: string,
 ): Promise<string> {
   const res = await fetch(`${hubUrl}/leapmux.v1.WorkerManagementService/ApproveRegistration`, {
@@ -217,7 +219,7 @@ export async function approveRegistrationViaAPI(
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${token}`,
     },
-    body: JSON.stringify({ registrationToken, name, orgId }),
+    body: JSON.stringify({ registrationToken, orgId }),
   })
   if (!res.ok) {
     throw new Error(`approveRegistrationViaAPI failed: ${res.status}`)
@@ -226,8 +228,109 @@ export async function approveRegistrationViaAPI(
   return data.workerId
 }
 
+// ---- Worker E2EE helpers (Agent) ----
+
 /**
- * Delete (soft-delete) a workspace via the Connect API.
+ * Open an agent via E2EE channel to the Worker and register the tab on the hub.
+ * Returns the agent ID.
+ */
+export async function openAgentViaAPI(
+  hubUrl: string,
+  token: string,
+  workerId: string,
+  workspaceId: string,
+  workingDir?: string,
+  options?: { createWorktree?: boolean, worktreeBranch?: string },
+): Promise<string> {
+  const { OpenAgentRequestSchema, OpenAgentResponseSchema } = await import('../../../src/generated/leapmux/v1/agent_pb')
+  const channel = await getTestChannel(hubUrl, token)
+  const resp = await channel.callWorker(
+    workerId,
+    'OpenAgent',
+    OpenAgentRequestSchema,
+    OpenAgentResponseSchema,
+    {
+      workspaceId,
+      workerId,
+      workingDir: workingDir ?? '',
+      ...(options?.createWorktree ? { createWorktree: true, worktreeBranch: options.worktreeBranch ?? '' } : {}),
+    },
+  )
+  if (!resp.agent) {
+    throw new Error('openAgentViaAPI: no agent in response')
+  }
+
+  // Register the tab on the hub so the frontend can discover it.
+  await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/AddTab`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      workspaceId,
+      tab: { tabType: 'TAB_TYPE_AGENT', tabId: resp.agent.id, workerId },
+    }),
+  })
+
+  return resp.agent.id
+}
+
+// ---- Hub API helpers (Workspace CRUD) ----
+// These call the hub's WorkspaceService directly via HTTP.
+
+/**
+ * Create a workspace via the hub's WorkspaceService. Returns the workspace ID.
+ */
+export async function createWorkspaceViaAPI(
+  hubUrl: string,
+  token: string,
+  title: string,
+  orgId: string,
+): Promise<string> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/CreateWorkspace`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({ title, orgId }),
+  })
+  if (!res.ok) {
+    throw new Error(`createWorkspaceViaAPI failed: ${res.status}`)
+  }
+  const data = await res.json() as { workspace: { id: string } }
+  if (!data.workspace) {
+    throw new Error('createWorkspaceViaAPI: no workspace in response')
+  }
+  return data.workspace.id
+}
+
+/**
+ * Update workspace sharing via the hub's WorkspaceService.
+ */
+export async function shareWorkspaceViaAPI(
+  hubUrl: string,
+  token: string,
+  workspaceId: string,
+  shareMode: 'SHARE_MODE_PRIVATE' | 'SHARE_MODE_ORG' | 'SHARE_MODE_MEMBERS',
+  userIds?: string[],
+): Promise<void> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/UpdateWorkspaceSharing`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({ workspaceId, shareMode, userIds }),
+  })
+  if (!res.ok) {
+    throw new Error(`shareWorkspaceViaAPI failed: ${res.status}`)
+  }
+}
+
+/**
+ * Delete (soft-delete) a workspace via the hub's WorkspaceService.
  */
 export async function deleteWorkspaceViaAPI(
   hubUrl: string,
@@ -248,7 +351,7 @@ export async function deleteWorkspaceViaAPI(
 }
 
 /**
- * List all workspaces in an org via the Connect API.
+ * List all workspaces in an org via the hub's WorkspaceService.
  */
 export async function listWorkspacesViaAPI(
   hubUrl: string,
@@ -266,12 +369,12 @@ export async function listWorkspacesViaAPI(
   if (!res.ok) {
     throw new Error(`listWorkspacesViaAPI failed: ${res.status}`)
   }
-  const data = await res.json() as { workspaces: { id: string }[] }
+  const data = await res.json() as { workspaces?: Array<{ id: string }> }
   return data.workspaces ?? []
 }
 
 /**
- * Delete all workspaces in an org via the Connect API (best effort).
+ * Delete all workspaces in an org via the hub (best effort).
  */
 export async function deleteAllWorkspacesViaAPI(
   hubUrl: string,

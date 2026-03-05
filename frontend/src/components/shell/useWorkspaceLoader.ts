@@ -1,4 +1,5 @@
 import type { Sidebar } from '~/generated/leapmux/v1/section_pb'
+import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { createSectionStore } from '~/stores/section.store'
 import type { createWorkspaceStore } from '~/stores/workspace.store'
 import { createEffect } from 'solid-js'
@@ -21,7 +22,7 @@ export function useWorkspaceLoader(opts: UseWorkspaceLoaderOpts) {
     workspaceStore.setLoading(true)
     try {
       const resp = await workspaceClient.listWorkspaces({ orgId })
-      workspaceStore.setWorkspaces(resp.workspaces)
+      workspaceStore.setWorkspaces(resp.workspaces as Workspace[])
     }
     catch (err) {
       workspaceStore.setError(String(err))

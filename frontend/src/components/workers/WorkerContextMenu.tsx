@@ -5,7 +5,6 @@ import { IconButton } from '~/components/common/IconButton'
 import { dangerMenuItem } from '~/styles/shared.css'
 
 interface WorkerContextMenuProps {
-  onRename: () => void
   onDeregister: () => void
 }
 
@@ -16,10 +15,6 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
         <IconButton icon={Ellipsis} iconSize="md" size="lg" data-testid="worker-menu-trigger" {...triggerProps} />
       )}
     >
-      <button role="menuitem" onClick={() => props.onRename()}>
-        Rename
-      </button>
-      <hr />
       <button role="menuitem" class={dangerMenuItem} onClick={() => props.onDeregister()}>
         Deregister
       </button>

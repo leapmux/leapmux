@@ -1,36 +1,26 @@
 syntax = "proto3";
 package leapmux.v1;
 
-// FileService provides file system browsing.
-// Called by Frontend on Hub via ConnectRPC.
-// Hub routes requests to the Worker via the bidirectional gRPC stream.
-service FileService {
-  // List directory contents on a worker.
-  rpc ListDirectory(ListDirectoryRequest) returns (ListDirectoryResponse);
-  // Read file content from a worker.
-  rpc ReadFile(ReadFileRequest) returns (ReadFileResponse);
-  // Get file metadata from a worker.
-  rpc StatFile(StatFileRequest) returns (StatFileResponse);
-}
-
 message ListDirectoryRequest {
-  string worker_id = 1;
-  string path = 2;
-  string org_id = 3;
+  string org_id = 1;
+  string worker_id = 2;
+  string path = 3;
   int32 max_depth = 4; // When > 0, merge single-child directories server-side up to this depth
+  bool dirs_only = 5; // When true, exclude non-directory entries before applying the entry limit
 }
 
 message ListDirectoryResponse {
   string path = 1;
   repeated FileInfo entries = 2;
+  bool truncated = 3;
 }
 
 message ReadFileRequest {
-  string worker_id = 1;
-  string path = 2;
-  int64 offset = 3;
-  int64 limit = 4; // Max bytes; 0 = default (64KB)
-  string org_id = 5;
+  string org_id = 1;
+  string worker_id = 2;
+  string path = 3;
+  int64 offset = 4;
+  int64 limit = 5; // Max bytes; 0 = default (64KB)
 }
 
 message ReadFileResponse {
@@ -40,9 +30,9 @@ message ReadFileResponse {
 }
 
 message StatFileRequest {
-  string worker_id = 1;
-  string path = 2;
-  string org_id = 3;
+  string org_id = 1;
+  string worker_id = 2;
+  string path = 3;
 }
 
 message StatFileResponse {

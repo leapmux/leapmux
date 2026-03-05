@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
 import type { DirectoryTreeHandle } from './DirectoryTree'
-import type { GitFileStatusEntry } from '~/generated/leapmux/v1/git_pb'
+import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import ChevronsDownUp from 'lucide-solid/icons/chevrons-down-up'
 import FileIcon from 'lucide-solid/icons/file'
@@ -11,13 +11,13 @@ import RefreshCw from 'lucide-solid/icons/refresh-cw'
 import { createEffect, createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
-import { GitFileStatusCode } from '~/generated/leapmux/v1/git_pb'
 import { DirectoryTree } from './DirectoryTree'
-import * as dtStyles from './DirectoryTree.css'
 import * as styles from './FilesSection.css'
+import { DiffStatsBadge, getGitFileIconClass } from './gitStatusUtils'
 
 export interface FilesSectionHandle {
   collapseAll: () => void
+  refresh: () => void
   isFiltered: () => boolean
   flatListMode: () => boolean
   toggleFlatListMode: () => void
@@ -37,6 +37,8 @@ export interface FilesSectionProps {
   activeFilePath?: string
   /** Whether the active tab is a file tab (for locate button enabled state). */
   hasActiveFileTab: boolean
+  /** Signal bumped on agent turn-end; drives directory tree refresh. */
+  turnEndTrigger?: number
   /** Ref callback for imperative actions (collapse all). */
   ref?: (handle: FilesSectionHandle) => void
 }
@@ -60,52 +62,17 @@ const FILTER_TABS: { key: GitFilterTab, label: string }[] = [
 
 /** Colored file icon for a git file entry. */
 export const FileStatusIcon: Component<{ entry: GitFileStatusEntry }> = (props) => {
-  const iconClass = () => {
-    const e = props.entry
-    if (e.unstagedStatus === GitFileStatusCode.UNMERGED || e.stagedStatus === GitFileStatusCode.UNMERGED)
-      return dtStyles.iconConflict
-    if (e.unstagedStatus === GitFileStatusCode.UNTRACKED)
-      return dtStyles.iconUntracked
-    if (e.stagedStatus !== GitFileStatusCode.UNSPECIFIED && e.unstagedStatus === GitFileStatusCode.UNSPECIFIED)
-      return dtStyles.iconStaged
-    return dtStyles.iconUnstaged
-  }
-
-  const testId = () => {
-    const e = props.entry
-    if (e.stagedStatus !== GitFileStatusCode.UNSPECIFIED && e.unstagedStatus === GitFileStatusCode.UNSPECIFIED)
-      return 'git-status-staged'
-    if (e.unstagedStatus === GitFileStatusCode.UNTRACKED)
-      return 'git-status-untracked'
-    return 'git-status-unstaged'
-  }
-
-  return <Icon icon={FileIcon} size="sm" class={iconClass()} data-testid={testId()} />
+  const gitIcon = () => getGitFileIconClass(props.entry)
+  return <Icon icon={FileIcon} size="sm" class={gitIcon().class} data-testid={gitIcon().testId} />
 }
 
-/** Diff stats badge showing +N -M. */
-export const DiffStatsBadge: Component<{ entry: GitFileStatusEntry }> = (props) => {
-  const totalAdded = () => props.entry.linesAdded + props.entry.stagedLinesAdded
-  const totalDeleted = () => props.entry.linesDeleted + props.entry.stagedLinesDeleted
-
+/** Diff stats badge showing +N -M for a git file entry. */
+export const FileDiffStatsBadge: Component<{ entry: GitFileStatusEntry }> = (props) => {
   return (
-    <Show when={totalAdded() > 0 || totalDeleted() > 0}>
-      <span class={styles.diffStats} data-testid="git-diff-stats">
-        <Show when={totalAdded() > 0}>
-          <span class={styles.diffStatsAdded}>
-            +
-            {totalAdded()}
-          </span>
-        </Show>
-        {totalAdded() > 0 && totalDeleted() > 0 ? ' ' : ''}
-        <Show when={totalDeleted() > 0}>
-          <span class={styles.diffStatsDeleted}>
-            -
-            {totalDeleted()}
-          </span>
-        </Show>
-      </span>
-    </Show>
+    <DiffStatsBadge
+      added={props.entry.linesAdded + props.entry.stagedLinesAdded}
+      deleted={props.entry.linesDeleted + props.entry.stagedLinesDeleted}
+    />
   )
 }
 
@@ -146,9 +113,9 @@ export const FilesSectionHeaderActions: Component<FilesSectionHeaderActionsProps
         icon={RefreshCw}
         iconSize="xs"
         size="sm"
-        title="Refresh git status"
+        title="Refresh"
         onClick={() => props.onRefresh()}
-        data-testid="files-refresh-git"
+        data-testid="files-refresh"
       />
     </>
   )
@@ -165,6 +132,7 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
   createEffect(() => {
     props.ref?.({
       collapseAll: () => treeHandle?.collapseAll(),
+      refresh: () => treeHandle?.refresh(),
       isFiltered,
       flatListMode,
       toggleFlatListMode: () => setFlatListMode(prev => !prev),
@@ -217,7 +185,8 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
           <For each={FILTER_TABS}>
             {tab => (
               <button
-                class={`${styles.tabButton}${activeFilter() === tab.key ? ` ${styles.tabButtonActive}` : ''}`}
+                class={styles.tabButton}
+                classList={{ [styles.tabButtonActive]: activeFilter() === tab.key }}
                 onClick={() => setActiveFilter(tab.key)}
                 data-testid={`files-filter-${tab.key}`}
               >
@@ -244,6 +213,7 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
               homeDir={props.homeDir}
               gitStatusStore={props.gitStatusStore}
               visiblePaths={visiblePaths()}
+              turnEndTrigger={props.turnEndTrigger}
               ref={(h) => { treeHandle = h }}
             />
           </div>
@@ -258,7 +228,7 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
               >
                 <FileStatusIcon entry={entry} />
                 <span>{entry.path}</span>
-                <DiffStatsBadge entry={entry} />
+                <FileDiffStatsBadge entry={entry} />
               </div>
             )}
           </For>

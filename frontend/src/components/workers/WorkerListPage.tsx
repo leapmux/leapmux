@@ -1,10 +1,10 @@
 import type { Component } from 'solid-js'
-import type { WorkerSettingsTab } from './WorkerSettingsDialog'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import { A, useParams } from '@solidjs/router'
 import { createEffect, createSignal, For, onMount, Show } from 'solid-js'
 import { workerClient } from '~/api/clients'
 import { useOrg } from '~/context/OrgContext'
+import { createWorkerInfoStore } from '~/stores/workerInfo.store'
 import { WorkerContextMenu } from './WorkerContextMenu'
 import * as styles from './WorkerListPage.css'
 import { WorkerSettingsDialog } from './WorkerSettingsDialog'
@@ -12,13 +12,14 @@ import { WorkerSettingsDialog } from './WorkerSettingsDialog'
 export const WorkerListPage: Component = () => {
   const org = useOrg()
   const params = useParams<{ orgSlug: string }>()
+  const workerInfoStore = createWorkerInfoStore()
 
   const [workers, setWorkers] = createSignal<Worker[]>([])
   const [loading, setLoading] = createSignal(true)
   const [error, setError] = createSignal<string | null>(null)
 
   // Settings dialog state
-  const [settingsTarget, setSettingsTarget] = createSignal<{ worker: Worker, tab: WorkerSettingsTab } | null>(null)
+  const [settingsTarget, setSettingsTarget] = createSignal<Worker | null>(null)
 
   const fetchWorkers = async () => {
     const orgId = org.orgId()
@@ -30,6 +31,12 @@ export const WorkerListPage: Component = () => {
     try {
       const resp = await workerClient.listWorkers({ orgId })
       setWorkers(resp.workers)
+      // Fetch system info for online workers via E2EE.
+      for (const w of resp.workers) {
+        if (w.online) {
+          workerInfoStore.fetchWorkerInfo(w.id)
+        }
+      }
     }
     catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load workers')
@@ -49,31 +56,32 @@ export const WorkerListPage: Component = () => {
     fetchWorkers()
   })
 
-  const renderCard = (worker: Worker) => (
-    <div class={`card hstack justify-between ${styles.workerCard}`} data-testid="worker-card">
-      <div class={styles.cardInfo}>
-        <div class={styles.cardName} data-testid="worker-name">{worker.name}</div>
-        <div class={styles.cardHostname} data-testid="worker-hostname">{worker.hostname}</div>
-        <div class={styles.cardMeta}>
-          {worker.os}
-          /
-          {worker.arch}
+  const renderCard = (worker: Worker) => {
+    const info = () => workerInfoStore.workerInfo(worker.id)
+    return (
+      <div class={`card hstack justify-between ${styles.workerCard}`} data-testid="worker-card">
+        <div class={styles.cardInfo}>
+          <div class={styles.cardName} data-testid="worker-name">{info()?.name ?? '—'}</div>
+          <div class={styles.cardMeta}>
+            {info()?.os ?? '—'}
+            /
+            {info()?.arch ?? '—'}
+          </div>
+        </div>
+        <div class={styles.cardRight}>
+          <span
+            class={worker.online ? 'badge success' : 'badge outline'}
+            data-testid="worker-status"
+          >
+            {worker.online ? 'Online' : 'Offline'}
+          </span>
+          <WorkerContextMenu
+            onDeregister={() => setSettingsTarget(worker)}
+          />
         </div>
       </div>
-      <div class={styles.cardRight}>
-        <span
-          class={worker.online ? 'badge success' : 'badge outline'}
-          data-testid="worker-status"
-        >
-          {worker.online ? 'Online' : 'Offline'}
-        </span>
-        <WorkerContextMenu
-          onRename={() => setSettingsTarget({ worker, tab: 'general' })}
-          onDeregister={() => setSettingsTarget({ worker, tab: 'deregister' })}
-        />
-      </div>
-    </div>
-  )
+    )
+  }
 
   return (
     <div class={styles.container}>
@@ -110,21 +118,14 @@ export const WorkerListPage: Component = () => {
         </div>
       </Show>
 
-      {/* Worker settings dialog (rename, deregister) */}
+      {/* Worker settings dialog (deregister) */}
       <Show when={settingsTarget()}>
         {target => (
           <WorkerSettingsDialog
-            worker={target().worker}
-            initialTab={target().tab}
+            worker={target()}
             onClose={() => setSettingsTarget(null)}
-            onRenamed={(newName) => {
-              setWorkers(prev =>
-                prev.map(b => b.id === target().worker.id ? { ...b, name: newName } : b),
-              )
-              setSettingsTarget(null)
-            }}
             onDeregistered={() => {
-              setWorkers(prev => prev.filter(b => b.id !== target().worker.id))
+              setWorkers(prev => prev.filter(b => b.id !== target().id))
               setSettingsTarget(null)
             }}
           />

@@ -1,0 +1,129 @@
+syntax = "proto3";
+package leapmux.v1;
+
+// ChannelService manages end-to-end encrypted channels between Frontend and Worker.
+// Hub acts purely as an authenticated relay -- it cannot read channel traffic.
+service ChannelService {
+  // Get a Worker's static public key for Noise_NK handshake.
+  rpc GetWorkerPublicKey(GetWorkerPublicKeyRequest) returns (GetWorkerPublicKeyResponse);
+  // Open an encrypted channel to a Worker (triggers Noise_NK handshake via relay).
+  rpc OpenChannel(OpenChannelRequest) returns (OpenChannelResponse);
+  // Close an encrypted channel.
+  rpc CloseChannel(CloseChannelRequest) returns (CloseChannelResponse);
+}
+
+// --- ChannelService RPC messages ---
+
+message GetWorkerPublicKeyRequest {
+  string worker_id = 1;
+}
+
+message GetWorkerPublicKeyResponse {
+  bytes public_key = 1;
+}
+
+message OpenChannelRequest {
+  string worker_id = 1;
+  bytes handshake_payload = 2; // Noise_NK handshake message 1
+}
+
+message OpenChannelResponse {
+  string channel_id = 1;
+  bytes handshake_payload = 2; // Noise_NK handshake message 2
+}
+
+message CloseChannelRequest {
+  string channel_id = 1;
+}
+
+message CloseChannelResponse {}
+
+// --- Channel relay messages (used between Hub and Worker via bidi stream) ---
+
+// Hub -> Worker: request to open a new channel.
+message ChannelOpenRequest {
+  string channel_id = 1;
+  string user_id = 2; // Hub tells Worker who opened the channel
+  bytes handshake_payload = 3;
+  repeated string accessible_workspace_ids = 4; // Workspaces the user can access
+}
+
+// Worker -> Hub: response to channel open request.
+message ChannelOpenResponse {
+  string channel_id = 1;
+  bytes handshake_payload = 2;
+  string error = 3;
+}
+
+// Hub -> Worker: notification that a channel was closed.
+message ChannelCloseNotification {
+  string channel_id = 1;
+}
+
+// ChannelMessageFlags controls chunking and close semantics for channel messages.
+enum ChannelMessageFlags {
+  CHANNEL_MESSAGE_FLAGS_UNSPECIFIED = 0; // Final chunk (or single non-chunked message)
+  CHANNEL_MESSAGE_FLAGS_MORE = 1;        // More chunks follow for this logical message
+  CHANNEL_MESSAGE_FLAGS_CLOSE = 2;       // Channel close sentinel
+}
+
+// ChannelMessage is the outer envelope for all encrypted channel traffic.
+// Hub reads only the channel_id for routing; ciphertext is opaque.
+message ChannelMessage {
+  uint32 protocol_version = 1;
+  string channel_id = 2;
+  uint32 correlation_id = 3;        // Request-response correlation ID
+  ChannelMessageFlags flags = 4;
+  bytes ciphertext = 5;
+}
+
+// --- User ID claim (post-handshake verification) ---
+
+// Sent by Frontend as the first encrypted InnerMessage after handshake.
+// Worker verifies this matches the Hub-provided user_id.
+message UserIdClaim {
+  string user_id = 1;
+  int64 timestamp_ms = 2;
+}
+
+// Sent by Worker in response to UserIdClaim.
+message UserIdClaimResponse {
+  bool success = 1;
+  string error_message = 2;
+}
+
+// --- Inner RPC protocol (serialized inside encrypted channel) ---
+
+// InnerMessage wraps all post-handshake encrypted payloads with type-safe routing.
+message InnerMessage {
+  oneof kind {
+    UserIdClaim user_id_claim = 1;
+    UserIdClaimResponse user_id_claim_response = 2;
+    InnerRpcRequest request = 3;
+    InnerRpcResponse response = 4;
+    InnerStreamMessage stream = 5;
+  }
+}
+
+// Request from Frontend to Worker (encrypted).
+message InnerRpcRequest {
+  string method = 1;  // e.g. "ListWorkspaces", "SendAgentMessage"
+  bytes payload = 2;  // Serialized protobuf for the specific method
+}
+
+// Unary response from Worker to Frontend (encrypted).
+message InnerRpcResponse {
+  bytes payload = 1;       // Serialized protobuf response
+  bool is_error = 2;
+  string error_message = 3;
+  int32 error_code = 4;    // ConnectRPC-style error code
+}
+
+// Streaming response from Worker to Frontend (agent output, terminal I/O, watch events).
+message InnerStreamMessage {
+  bytes payload = 1;       // Serialized protobuf for the specific event
+  bool end = 2;            // Marks end of stream
+  bool is_error = 3;
+  string error_message = 4;
+  int32 error_code = 5;
+}

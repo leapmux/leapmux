@@ -12,7 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/id"
+	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 func setupDB(t *testing.T) *gendb.Queries {

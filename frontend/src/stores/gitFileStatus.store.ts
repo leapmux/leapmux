@@ -1,9 +1,8 @@
-import type { GitFileStatusEntry } from '~/generated/leapmux/v1/git_pb'
+import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
 import { createSignal } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
-import { gitClient } from '~/api/clients'
-import { apiCallTimeout } from '~/api/transport'
-import { GitFileStatusCode } from '~/generated/leapmux/v1/git_pb'
+import * as workerRpc from '~/api/workerRpc'
+import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 
 export { GitFileStatusCode }
 export type { GitFileStatusEntry }
@@ -24,20 +23,18 @@ export function createGitFileStatusStore() {
   })
 
   const [loading, setLoading] = createSignal(false)
-  const [lastFetchedAt, setLastFetchedAt] = createSignal(0)
 
   const refresh = async (workerId: string, path: string) => {
     if (!workerId || !path)
       return
     setLoading(true)
     try {
-      const resp = await gitClient.getGitFileStatus({ workerId, path }, apiCallTimeout())
+      const resp = await workerRpc.getGitFileStatus(workerId, { workerId, path })
       setState(produce((s) => {
         s.isGitRepo = true
         s.repoRoot = resp.repoRoot
         s.files = resp.files
       }))
-      setLastFetchedAt(Date.now())
     }
     catch {
       setState(produce((s) => {
@@ -91,7 +88,6 @@ export function createGitFileStatusStore() {
   return {
     state,
     loading,
-    lastFetchedAt,
     refresh,
     clear,
     getFileStatus,

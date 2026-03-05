@@ -37,7 +37,11 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
       if (!selection || selection.isCollapsed || !selection.toString().trim())
         return
 
-      const container = props.containerRef ?? wrapperRef
+      // When containerRef is passed as a static prop (e.g. from ChatView), it can
+      // become a stale, disconnected DOM element after a SolidJS <Show> toggles.
+      // Fall back to wrapperRef when the containerRef is no longer in the document.
+      const propsRef = props.containerRef
+      const container = (propsRef && propsRef.isConnected ? propsRef : null) ?? wrapperRef
       if (!container)
         return
 

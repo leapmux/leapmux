@@ -10,10 +10,10 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/id"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
-	"github.com/leapmux/leapmux/internal/hub/validate"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
+	noiseutil "github.com/leapmux/leapmux/internal/noise"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
 
@@ -44,11 +44,6 @@ func (s *WorkerManagementService) ApproveRegistration(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("registration_token is required"))
 	}
 
-	name, err := validate.SanitizeName(req.Msg.GetName())
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-
 	// Resolve org ID - user picks which org to register the worker in.
 	orgID, err := auth.ResolveOrgID(ctx, s.queries, user, req.Msg.GetOrgId())
 	if err != nil {
@@ -72,16 +67,18 @@ func (s *WorkerManagementService) ApproveRegistration(
 	workerID := id.Generate()
 	authToken := id.Generate()
 
+	// Copy public key from registration to worker (may be empty if worker didn't send one).
+	publicKey := reg.PublicKey
+	if publicKey == nil {
+		publicKey = []byte{}
+	}
+
 	if err := s.queries.CreateWorker(ctx, db.CreateWorkerParams{
 		ID:           workerID,
 		OrgID:        orgID,
-		Name:         name,
-		Hostname:     reg.Hostname,
-		Os:           reg.Os,
-		Arch:         reg.Arch,
 		AuthToken:    authToken,
 		RegisteredBy: user.ID,
-		HomeDir:      reg.HomeDir,
+		PublicKey:    publicKey,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create worker: %w", err))
 	}
@@ -128,8 +125,7 @@ func (s *WorkerManagementService) ListWorkers(
 		}
 	}
 
-	workers, err := s.queries.ListOwnedWorkers(ctx, db.ListOwnedWorkersParams{
-		UserID: user.ID,
+	workers, err := s.queries.ListWorkersByOrgID(ctx, db.ListWorkersByOrgIDParams{
 		OrgID:  orgID,
 		Limit:  limit,
 		Offset: offset,
@@ -193,37 +189,6 @@ func (s *WorkerManagementService) GetWorker(
 	}), nil
 }
 
-func (s *WorkerManagementService) RenameWorker(
-	ctx context.Context,
-	req *connect.Request[leapmuxv1.RenameWorkerRequest],
-) (*connect.Response[leapmuxv1.RenameWorkerResponse], error) {
-	user, err := auth.MustGetUser(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	name, err := validate.SanitizeName(req.Msg.GetName())
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-
-	result, err := s.queries.RenameWorker(ctx, db.RenameWorkerParams{
-		Name:         name,
-		ID:           req.Msg.GetWorkerId(),
-		RegisteredBy: user.ID,
-	})
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("rename worker: %w", err))
-	}
-
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
-	}
-
-	return connect.NewResponse(&leapmuxv1.RenameWorkerResponse{}), nil
-}
-
 func (s *WorkerManagementService) DeregisterWorker(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.DeregisterWorkerRequest],
@@ -233,8 +198,14 @@ func (s *WorkerManagementService) DeregisterWorker(
 		return nil, err
 	}
 
+	orgID, err := auth.ResolveOrgID(ctx, s.queries, user, "")
+	if err != nil {
+		return nil, err
+	}
+
 	result, err := s.queries.DeregisterWorker(ctx, db.DeregisterWorkerParams{
 		ID:           req.Msg.GetWorkerId(),
+		OrgID:        orgID,
 		RegisteredBy: user.ID,
 	})
 	if err != nil {
@@ -277,13 +248,16 @@ func (s *WorkerManagementService) GetRegistration(
 
 	status := reg.Status
 
+	var fingerprint string
+	if len(reg.PublicKey) > 0 {
+		fingerprint = noiseutil.KeyFingerprint(reg.PublicKey)
+	}
+
 	return connect.NewResponse(&leapmuxv1.GetRegistrationResponse{
-		RegistrationToken: reg.ID,
-		Hostname:          reg.Hostname,
-		Os:                reg.Os,
-		Arch:              reg.Arch,
-		Version:           reg.Version,
-		Status:            status,
+		RegistrationToken:    reg.ID,
+		Version:              reg.Version,
+		Status:               status,
+		PublicKeyFingerprint: fingerprint,
 	}), nil
 }
 
@@ -296,14 +270,9 @@ func (s *WorkerManagementService) workerToProto(b *db.Worker) *leapmuxv1.Worker 
 	return &leapmuxv1.Worker{
 		Id:           b.ID,
 		OrgId:        b.OrgID,
-		Name:         b.Name,
-		Hostname:     b.Hostname,
-		Os:           b.Os,
-		Arch:         b.Arch,
 		Online:       s.workerMgr.IsOnline(b.ID),
 		CreatedAt:    timefmt.Format(b.CreatedAt),
 		LastSeenAt:   lastSeen,
 		RegisteredBy: b.RegisteredBy,
-		HomeDir:      b.HomeDir,
 	}
 }

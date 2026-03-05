@@ -1,24 +1,38 @@
 package terminal
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"sync"
 )
+
+// TerminalMeta holds the workspace ID and dimensions for a terminal.
+type TerminalMeta struct {
+	WorkspaceID   string
+	WorkingDir    string
+	ShellStartDir string
+	Cols          uint32
+	Rows          uint32
+}
+
+// TerminalSnapshot holds a point-in-time copy of a terminal's metadata and screen.
+type TerminalSnapshot struct {
+	TerminalMeta
+	Screen []byte
+}
 
 // Manager tracks active terminal sessions.
 type Manager struct {
 	mu        sync.RWMutex
-	terminals map[string]*Terminal // terminalID -> Terminal
+	terminals map[string]*Terminal    // terminalID -> Terminal
+	meta      map[string]TerminalMeta // terminalID -> metadata
 }
 
 // NewManager creates a new terminal Manager.
 func NewManager() *Manager {
 	return &Manager{
 		terminals: make(map[string]*Terminal),
+		meta:      make(map[string]TerminalMeta),
 	}
 }
 
@@ -41,6 +55,13 @@ func (m *Manager) StartTerminal(opts Options, outputFn OutputHandler, exitFn Exi
 
 	m.mu.Lock()
 	m.terminals[opts.ID] = t
+	m.meta[opts.ID] = TerminalMeta{
+		WorkspaceID:   opts.WorkspaceID,
+		WorkingDir:    opts.WorkingDir,
+		ShellStartDir: opts.ShellStartDir,
+		Cols:          uint32(opts.Cols),
+		Rows:          uint32(opts.Rows),
+	}
 	m.mu.Unlock()
 
 	// Notify when the terminal exits but keep it in the map
@@ -91,7 +112,19 @@ func (m *Manager) Resize(terminalID string, cols, rows uint16) error {
 		return fmt.Errorf("terminal exited: %s", terminalID)
 	}
 
-	return t.Resize(cols, rows)
+	if err := t.Resize(cols, rows); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	if meta, exists := m.meta[terminalID]; exists {
+		meta.Cols = uint32(cols)
+		meta.Rows = uint32(rows)
+		m.meta[terminalID] = meta
+	}
+	m.mu.Unlock()
+
+	return nil
 }
 
 // StopTerminal stops a specific terminal's process without removing it.
@@ -111,6 +144,7 @@ func (m *Manager) RemoveTerminal(terminalID string) {
 	t, ok := m.terminals[terminalID]
 	if ok {
 		delete(m.terminals, terminalID)
+		delete(m.meta, terminalID)
 	}
 	m.mu.Unlock()
 
@@ -151,6 +185,75 @@ func (m *Manager) ScreenSnapshot(terminalID string) []byte {
 	return t.ScreenSnapshot()
 }
 
+// SnapshotTerminal returns a point-in-time copy of a single terminal's
+// metadata and screen buffer, or ok=false if the terminal doesn't exist
+// or has no screen data.
+func (m *Manager) SnapshotTerminal(terminalID string) (snap TerminalSnapshot, ok bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	t, exists := m.terminals[terminalID]
+	if !exists {
+		return TerminalSnapshot{}, false
+	}
+	screen := t.ScreenSnapshot()
+	if len(screen) == 0 {
+		return TerminalSnapshot{}, false
+	}
+	meta, hasMeta := m.meta[terminalID]
+	if !hasMeta || meta.WorkspaceID == "" {
+		return TerminalSnapshot{}, false
+	}
+	return TerminalSnapshot{
+		TerminalMeta: meta,
+		Screen:       screen,
+	}, true
+}
+
+// ListTerminalIDs returns the IDs of all currently tracked terminals.
+func (m *Manager) ListTerminalIDs() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ids := make([]string, 0, len(m.terminals))
+	for id := range m.terminals {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// TerminalEntry holds the ID, metadata, screen data and exit state for a terminal.
+type TerminalEntry struct {
+	ID     string
+	Meta   TerminalMeta
+	Screen []byte
+	Exited bool
+}
+
+// ListByWorkspace returns all terminals belonging to the given workspace.
+func (m *Manager) ListByWorkspace(workspaceID string) []TerminalEntry {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var result []TerminalEntry
+	for id, meta := range m.meta {
+		if meta.WorkspaceID != workspaceID {
+			continue
+		}
+		entry := TerminalEntry{
+			ID:   id,
+			Meta: meta,
+		}
+		if t, ok := m.terminals[id]; ok {
+			entry.Screen = t.ScreenSnapshot()
+			entry.Exited = t.IsExited()
+		} else {
+			entry.Exited = true
+		}
+		result = append(result, entry)
+	}
+	return result
+}
+
 // StopAll stops all terminals and clears the map.
 func (m *Manager) StopAll() {
 	m.mu.Lock()
@@ -159,162 +262,10 @@ func (m *Manager) StopAll() {
 		terminals = append(terminals, t)
 	}
 	m.terminals = make(map[string]*Terminal)
+	m.meta = make(map[string]TerminalMeta)
 	m.mu.Unlock()
 
 	for _, t := range terminals {
 		t.Stop()
 	}
-}
-
-// savedScreenMeta is the on-disk JSON format for screen.json (cols/rows only).
-type savedScreenMeta struct {
-	Cols uint32 `json:"cols"`
-	Rows uint32 `json:"rows"`
-}
-
-// SavedTerminal holds a persisted terminal's metadata and screen buffer.
-type SavedTerminal struct {
-	WorkspaceID string
-	Cols        uint32
-	Rows        uint32
-	Screen      []byte
-}
-
-// SaveScreens writes each terminal's screen buffer to
-// {dataDir}/workspaces/{workspaceID}/terminals/{terminalID}/screen.buffer.
-// The getMeta function provides the workspace ID for each terminal ID.
-func (m *Manager) SaveScreens(dataDir string, getMeta func(terminalID string) (workspaceID string, cols, rows uint32)) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	for id, t := range m.terminals {
-		screen := t.ScreenSnapshot()
-		if len(screen) == 0 {
-			continue
-		}
-		wsID, _, _ := getMeta(id)
-		if wsID == "" {
-			continue
-		}
-		dir := filepath.Join(dataDir, "workspaces", wsID, "terminals", id)
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			slog.Error("failed to create terminal dir", "terminal_id", id, "error", err)
-			continue
-		}
-		path := filepath.Join(dir, "screen.buffer")
-		if err := os.WriteFile(path, screen, 0644); err != nil {
-			slog.Error("failed to save terminal screen", "terminal_id", id, "error", err)
-		}
-	}
-
-	return nil
-}
-
-// SaveTerminalMeta writes per-terminal metadata as JSON to
-// {dataDir}/workspaces/{workspaceID}/terminals/{terminalID}/screen.json.
-// The getMeta function provides workspace/cols/rows for each terminal ID.
-func (m *Manager) SaveTerminalMeta(dataDir string, getMeta func(terminalID string) (workspaceID string, cols, rows uint32)) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	for id := range m.terminals {
-		wsID, cols, rows := getMeta(id)
-		if wsID == "" {
-			continue
-		}
-		dir := filepath.Join(dataDir, "workspaces", wsID, "terminals", id)
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			slog.Error("failed to create terminal dir", "terminal_id", id, "error", err)
-			continue
-		}
-		data, err := json.Marshal(savedScreenMeta{Cols: cols, Rows: rows})
-		if err != nil {
-			slog.Error("failed to marshal terminal meta", "terminal_id", id, "error", err)
-			continue
-		}
-		path := filepath.Join(dir, "screen.json")
-		if err := os.WriteFile(path, data, 0644); err != nil {
-			slog.Error("failed to save terminal meta", "terminal_id", id, "error", err)
-		}
-	}
-
-	return nil
-}
-
-// LoadSavedTerminals reads saved terminal metadata and screen buffers from disk.
-// It walks {dataDir}/workspaces/*/terminals/* directories, reading screen.json
-// and screen.buffer from each. It also cleans up the legacy {dataDir}/screens/
-// directory if present.
-func LoadSavedTerminals(dataDir string) (map[string]SavedTerminal, error) {
-	result := make(map[string]SavedTerminal)
-
-	// Clean up legacy screens/ directory if it exists.
-	legacyDir := filepath.Join(dataDir, "screens")
-	_ = os.RemoveAll(legacyDir)
-
-	workspacesDir := filepath.Join(dataDir, "workspaces")
-	wsEntries, err := os.ReadDir(workspacesDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read workspaces dir: %w", err)
-	}
-
-	for _, wsEntry := range wsEntries {
-		if !wsEntry.IsDir() {
-			continue
-		}
-		wsID := wsEntry.Name()
-		terminalsDir := filepath.Join(workspacesDir, wsID, "terminals")
-		termEntries, err := os.ReadDir(terminalsDir)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			slog.Warn("failed to read terminals dir", "workspace_id", wsID, "error", err)
-			continue
-		}
-
-		for _, termEntry := range termEntries {
-			if !termEntry.IsDir() {
-				continue
-			}
-			termID := termEntry.Name()
-			termDir := filepath.Join(terminalsDir, termID)
-
-			// Read screen.json metadata.
-			metaPath := filepath.Join(termDir, "screen.json")
-			metaBytes, err := os.ReadFile(metaPath)
-			if err != nil {
-				slog.Warn("failed to read terminal screen meta", "terminal_id", termID, "error", err)
-				continue
-			}
-			var meta savedScreenMeta
-			if err := json.Unmarshal(metaBytes, &meta); err != nil {
-				slog.Warn("failed to unmarshal terminal screen meta", "terminal_id", termID, "error", err)
-				continue
-			}
-
-			// Read screen.buffer.
-			bufferPath := filepath.Join(termDir, "screen.buffer")
-			screen, err := os.ReadFile(bufferPath)
-			if err != nil {
-				slog.Warn("failed to read terminal screen buffer", "terminal_id", termID, "error", err)
-				screen = nil
-			}
-
-			result[termID] = SavedTerminal{
-				WorkspaceID: wsID,
-				Cols:        meta.Cols,
-				Rows:        meta.Rows,
-				Screen:      screen,
-			}
-		}
-
-		// Clean up terminals dir after loading.
-		_ = os.RemoveAll(terminalsDir)
-	}
-
-	return result, nil
 }

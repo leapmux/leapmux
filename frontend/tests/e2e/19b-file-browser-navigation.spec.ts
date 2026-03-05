@@ -1,12 +1,15 @@
-import process from 'node:process'
+import path from 'node:path'
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+
+const frontendDir = path.resolve(import.meta.dirname, '../..')
 
 test.describe('File Browser Navigation', () => {
   test('should open file browser tab and show files', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'File Browser Nav Test', adminOrgId, process.cwd())
+    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Browser Nav Test', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -25,8 +28,9 @@ test.describe('File Browser Navigation', () => {
   })
 
   test('should navigate into a directory', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'File Nav Into Dir', adminOrgId, process.cwd())
+    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Nav Into Dir', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -47,8 +51,9 @@ test.describe('File Browser Navigation', () => {
   })
 
   test('should navigate to parent directory', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'File Nav Parent Dir', adminOrgId, process.cwd())
+    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Nav Parent Dir', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)

@@ -2,37 +2,42 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
-	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 
 	"github.com/leapmux/leapmux/hub"
+	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/logging"
 )
 
 func runHub(args []string) error {
-	fs := flag.NewFlagSet("hub", flag.ExitOnError)
-	addr := fs.String("addr", ":4327", "listen address")
-	dataDir := fs.String("data-dir", defaultHubDataDir(), "data directory")
-	devFrontend := fs.String("dev-frontend", "", "Vite dev server URL for reverse proxy (dev mode only)")
-	showVersion := fs.Bool("version", false, "print version and exit")
-	_ = fs.Parse(args)
+	cfg, showVersion, err := hubconfig.Load(args)
+	if err != nil {
+		return err
+	}
 
-	if *showVersion {
+	if showVersion {
 		fmt.Println(version)
 		return nil
 	}
 
-	logging.PrintBanner("hub", version, *addr)
-	logging.PrintAccessURL(*addr)
+	level, err := logging.ParseLevel(cfg.LogLevel)
+	if err != nil {
+		return fmt.Errorf("invalid log level: %w", err)
+	}
+	logging.SetLevel(level)
+
+	logging.PrintBanner("hub", version, cfg.Addr)
+	logging.PrintAccessURL(cfg.Addr)
 
 	server, err := hub.NewServer(hub.ServerConfig{
-		DataDir:     *dataDir,
-		Addr:        *addr,
-		DevFrontend: *devFrontend,
+		DataDir:              cfg.DataDir,
+		Addr:                 cfg.Addr,
+		DevFrontend:          cfg.DevFrontend,
+		DBMaxConns:           cfg.DBMaxConns,
+		MaxMessageSize:       cfg.MaxMessageSize,
+		MaxIncompleteChunked: cfg.MaxIncompleteChunked,
 	})
 	if err != nil {
 		return err
@@ -42,12 +47,4 @@ func runHub(args []string) error {
 	defer stop()
 
 	return server.Serve(ctx)
-}
-
-func defaultHubDataDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(".config", "leapmux", "hub")
-	}
-	return filepath.Join(home, ".config", "leapmux", "hub")
 }

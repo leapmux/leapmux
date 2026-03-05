@@ -29,29 +29,6 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "RegistrationStatus"
-          # Workspace enums
-          - column: "workspaces.share_mode"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "ShareMode"
-          # Agent enums
-          - column: "agents.status"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "AgentStatus"
-          - column: "agents.plan_content_compression"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "ContentCompression"
-          # Message enums
-          - column: "messages.role"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "MessageRole"
-          - column: "messages.content_compression"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "ContentCompression"
           # Workspace section enums
           - column: "workspace_sections.section_type"
             go_type:
@@ -61,22 +38,13 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "Sidebar"
-          # Workspace tab enums
-          - column: "workspace_tabs.tab_type"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "TabType"
-          - column: "workspace_tile_active_tabs.tab_type"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "TabType"
-          # Worktree tab enum
-          - column: "worktree_tabs.tab_type"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "TabType"
           # Org member enum
           - column: "org_members.role"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "OrgMemberRole"
+          # Workspace tab enum
+          - column: "workspace_tabs.tab_type"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "TabType"

@@ -30,8 +30,7 @@ export const messageWithError = style({
   display: 'flex',
   flexDirection: 'column',
   alignItems: 'flex-end',
-  alignSelf: 'flex-end',
-  maxWidth: '85%',
+  width: '100%',
 })
 
 export const messageError = style({

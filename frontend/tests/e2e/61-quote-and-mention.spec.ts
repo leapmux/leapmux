@@ -1,7 +1,9 @@
-import process from 'node:process'
+import path from 'node:path'
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { loginViaToken, sendMessage, waitForAgentIdle, waitForWorkspaceReady } from './helpers/ui'
+
+const frontendDir = path.resolve(import.meta.dirname, '../..')
 
 test.describe('Quote and Mention', () => {
   test('reply button on assistant message inserts quoted text into editor', async ({ page, authenticatedWorkspace }) => {
@@ -78,11 +80,8 @@ test.describe('Quote and Mention', () => {
 
     const messageContent = assistantBubble.locator('[data-testid="message-content"]')
 
-    // Triple-click to select a paragraph of text
+    // Triple-click to select all text in the message (triggers mouseup → popover)
     await messageContent.click({ clickCount: 3 })
-
-    // Wait for the popover to appear
-    await page.waitForTimeout(500)
 
     // The copy button should appear
     const copyButton = page.locator('[data-testid="copy-selection-button"]')
@@ -111,11 +110,8 @@ test.describe('Quote and Mention', () => {
 
     const messageContent = assistantBubble.locator('[data-testid="message-content"]')
 
-    // Triple-click to select a paragraph of text
+    // Triple-click to select all text in the message (triggers mouseup → popover)
     await messageContent.click({ clickCount: 3 })
-
-    // Wait a bit for the popover to appear (mouseup triggers it)
-    await page.waitForTimeout(500)
 
     // The quote popover should appear
     const quoteButton = page.locator('[data-testid="quote-selection-button"]')
@@ -130,7 +126,8 @@ test.describe('Quote and Mention', () => {
 
   test('AtSign mention button in DirectoryTree context menu', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Tree Mention Test', adminOrgId, process.cwd())
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Tree Mention Test', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -168,7 +165,8 @@ test.describe('Quote and Mention', () => {
 
   test('AtSign mention button in file view toolbar', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'File Mention Test', adminOrgId, process.cwd())
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Mention Test', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -216,7 +214,8 @@ test.describe('Quote and Mention', () => {
 
   test('file view mention preserves existing editor draft', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Mention Preserve Test', adminOrgId, process.cwd())
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Mention Preserve Test', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -264,7 +263,8 @@ test.describe('Quote and Mention', () => {
 
   test('multiple tree mentions are space-separated', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Multi Mention Test', adminOrgId, process.cwd())
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Multi Mention Test', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -313,7 +313,8 @@ test.describe('Quote and Mention', () => {
 
   test('text selection quote in file view inserts with file path and line numbers', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'File Quote Test', adminOrgId, process.cwd())
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Quote Test', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)

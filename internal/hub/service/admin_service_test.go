@@ -17,9 +17,9 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/id"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/timeout"
+	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 type adminTestEnv struct {

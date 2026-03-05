@@ -13,6 +13,16 @@ describe('relativizePath', () => {
       .toBe('src/foo.ts')
   })
 
+  it('returns . when path equals workingDir', () => {
+    expect(relativizePath('/home/user/project', '/home/user/project'))
+      .toBe('.')
+  })
+
+  it('returns . when path equals workingDir with trailing slash', () => {
+    expect(relativizePath('/home/user/project', '/home/user/project/'))
+      .toBe('.')
+  })
+
   it('handles workingDir with trailing slash', () => {
     expect(relativizePath('/home/user/project/src/foo.ts', '/home/user/project/'))
       .toBe('src/foo.ts')

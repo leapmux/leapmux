@@ -13,8 +13,7 @@ import type { createTerminalStore } from '~/stores/terminal.store'
 import Bot from 'lucide-solid/icons/bot'
 import Terminal from 'lucide-solid/icons/terminal'
 import { createEffect, createMemo, For, onCleanup, Show } from 'solid-js'
-import { agentClient } from '~/api/clients'
-import { agentCallTimeout } from '~/api/transport'
+import * as workerRpc from '~/api/workerRpc'
 import { AgentEditorPanel } from '~/components/chat/AgentEditorPanel'
 import { ChatView } from '~/components/chat/ChatView'
 import { relativizePath } from '~/components/chat/messageUtils'
@@ -22,8 +21,8 @@ import { Icon } from '~/components/common/Icon'
 import { showToast } from '~/components/common/Toast'
 import { FileViewer } from '~/components/fileviewer/FileViewer'
 import { TerminalView } from '~/components/terminal/TerminalView'
-import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
-import { GitFileStatusCode } from '~/generated/leapmux/v1/git_pb'
+import { AgentStatus, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
@@ -130,7 +129,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
       onRename={(tab, title) => {
         tabStore.updateTabTitle(tab.type, tab.id, title)
         if (tab.type === TabType.AGENT) {
-          agentClient.renameAgent({ agentId: tab.id, title }).catch((err) => {
+          const renameWorkerId = agentStore.state.agents.find(a => a.id === tab.id)?.workerId ?? ''
+          workerRpc.renameAgent(renameWorkerId, { agentId: tab.id, title }).catch((err) => {
             showToast(err instanceof Error ? err.message : 'Failed to rename agent', 'danger')
           })
         }
@@ -237,7 +237,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     homeDir={agentStore.state.agents.find(a => a.id === agentId)?.homeDir}
                     hasOlderMessages={chatStore.hasOlderMessages(agentId)}
                     fetchingOlder={chatStore.isFetchingOlder(agentId)}
-                    onLoadOlderMessages={() => chatStore.loadOlderMessages(agentId)}
+                    onLoadOlderMessages={() => chatStore.loadOlderMessages(agentStore.state.agents.find(a => a.id === agentId)?.workerId ?? '', agentId)}
                     onTrimOldMessages={() => chatStore.trimOldMessages(agentId, 150)}
                     savedViewportScroll={chatStore.getSavedViewportScroll(agentId)}
                     onClearSavedViewportScroll={() => chatStore.clearSavedViewportScroll(agentId)}
@@ -402,12 +402,33 @@ export function createTileRenderer(opts: TileRendererOpts) {
           if (!id)
             return
           forceScrollToBottomRef.current?.()
+
+          // Create an optimistic local message so it appears immediately in the chat.
+          const localId = `local-${crypto.randomUUID()}`
+          const wrapped = JSON.stringify({ old_seqs: [], messages: [{ content }] })
+          const localMsg = {
+            $typeName: 'leapmux.v1.AgentChatMessage' as const,
+            id: localId,
+            role: MessageRole.USER,
+            content: new TextEncoder().encode(wrapped),
+            contentCompression: ContentCompression.NONE,
+            seq: 0n,
+            createdAt: new Date().toISOString(),
+            deliveryError: '',
+            updatedAt: '',
+          }
+          chatStore.addMessage(id, localMsg)
+
           try {
             const sendAgent = agentStore.state.agents.find(a => a.id === id)
-            await agentClient.sendAgentMessage({ agentId: id, content }, agentCallTimeout(sendAgent?.status === AgentStatus.ACTIVE))
+            await workerRpc.sendAgentMessage(sendAgent?.workerId ?? '', { agentId: id, content })
+            // Success: remove the optimistic message. The real message
+            // will arrive via the WatchEvents stream from the Worker.
+            chatStore.removeMessage(id, localId)
           }
-          catch (err) {
-            showToast(err instanceof Error ? err.message : 'Failed to send message', 'danger')
+          catch {
+            chatStore.setMessageError(localId, 'Failed to deliver')
+            chatStore.persistLocalMessage(id, localId, content, 'Failed to deliver')
           }
         }}
         disabled={false}

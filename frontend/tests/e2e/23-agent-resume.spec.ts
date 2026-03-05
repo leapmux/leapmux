@@ -1,12 +1,31 @@
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
+
+/**
+ * Wait for an assistant message containing the given text.
+ * Scoped to assistant message bubbles to avoid false matches from
+ * timestamps, file names, or other page content.
+ */
+async function waitForAssistantMessage(page: import('@playwright/test').Page, text: string) {
+  await page.waitForFunction(
+    (t: string) => {
+      const msgs = document.querySelectorAll(
+        '[data-testid="message-bubble"][data-role="assistant"] [data-testid="message-content"]',
+      )
+      return Array.from(msgs).some(m => m.textContent?.includes(t))
+    },
+    text,
+    { timeout: 60_000 },
+  )
+}
 
 test.describe('Agent Session Resume', () => {
   test('should resume agent session after worker restart', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Resume Test', adminOrgId)
+    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Resume Test', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -22,11 +41,8 @@ test.describe('Agent Session Resume', () => {
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 
-      // Wait for the response
-      await page.waitForFunction(() => {
-        const body = document.body.textContent || ''
-        return body.includes('4') && !body.includes('Send a message to start')
-      })
+      // Wait for the assistant's response
+      await waitForAssistantMessage(page, '4')
 
       // Stop the worker
       await stopWorker()
@@ -46,10 +62,7 @@ test.describe('Agent Session Resume', () => {
       await page.keyboard.press('Meta+Enter')
 
       // Wait for a response - the agent should have resumed
-      await page.waitForFunction(() => {
-        const body = document.body.textContent || ''
-        return body.includes('6')
-      })
+      await waitForAssistantMessage(page, '6')
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
@@ -58,8 +71,9 @@ test.describe('Agent Session Resume', () => {
 
   test('should deliver control request after worker restart', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Control Request Restart', adminOrgId)
+    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Control Request Restart', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -74,10 +88,7 @@ test.describe('Agent Session Resume', () => {
       await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
-      await page.waitForFunction(() => {
-        const body = document.body.textContent || ''
-        return body.includes('4') && !body.includes('Send a message to start')
-      })
+      await waitForAssistantMessage(page, '4')
 
       // Stop the worker, wait, restart
       await stopWorker()
@@ -104,8 +115,9 @@ test.describe('Agent Session Resume', () => {
 
   test('should handle interrupt after worker restart', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Interrupt Restart', adminOrgId)
+    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Interrupt Restart', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -120,10 +132,7 @@ test.describe('Agent Session Resume', () => {
       await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
-      await page.waitForFunction(() => {
-        const body = document.body.textContent || ''
-        return body.includes('4') && !body.includes('Send a message to start')
-      })
+      await waitForAssistantMessage(page, '4')
 
       // Stop the worker, wait, restart
       await stopWorker()
@@ -139,10 +148,7 @@ test.describe('Agent Session Resume', () => {
       await page.keyboard.press('Meta+Enter')
 
       // Wait for response — verifies normal operation post-restart
-      await page.waitForFunction(() => {
-        const body = document.body.textContent || ''
-        return body.includes('10')
-      })
+      await waitForAssistantMessage(page, '10')
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

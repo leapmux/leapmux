@@ -1,10 +1,30 @@
 import type { Page } from '@playwright/test'
 import { execSync } from 'node:child_process'
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import path, { join } from 'node:path'
+import {
+  CloseAgentRequestSchema,
+  CloseAgentResponseSchema,
+  ListAgentsRequestSchema,
+  ListAgentsResponseSchema,
+} from '../../src/generated/leapmux/v1/agent_pb'
+import {
+  ForceRemoveWorktreeRequestSchema,
+  ForceRemoveWorktreeResponseSchema,
+  KeepWorktreeRequestSchema,
+  KeepWorktreeResponseSchema,
+} from '../../src/generated/leapmux/v1/git_pb'
+import {
+  CloseTerminalRequestSchema,
+  CloseTerminalResponseSchema,
+  OpenTerminalRequestSchema,
+  OpenTerminalResponseSchema,
+} from '../../src/generated/leapmux/v1/terminal_pb'
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI } from './helpers/api'
+import { createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './helpers/api'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+
+const frontendDir = path.resolve(import.meta.dirname, '../..')
 
 /**
  * Create a git repo inside the server's data directory so the worker can access it.
@@ -67,7 +87,17 @@ async function openNewWorkspaceDialog(page: Page) {
 }
 
 /**
- * Create a workspace with a worktree enabled via the ConnectRPC API.
+ * Open the "New Agent" dialog from within a workspace via the tab menu.
+ */
+async function openNewAgentDialog(page: Page) {
+  const addMenu = page.locator('[data-testid="tab-more-menu"]').first()
+  await addMenu.click()
+  await page.getByRole('menuitem', { name: 'New agent...' }).click()
+  await expect(page.getByRole('heading', { name: 'New Agent' })).toBeVisible()
+}
+
+/**
+ * Create a workspace on the hub, then open an agent with worktree enabled.
  * Returns the workspace ID.
  */
 async function createWorkspaceWithWorktreeViaAPI(
@@ -79,31 +109,16 @@ async function createWorkspaceWithWorktreeViaAPI(
   workingDir: string,
   worktreeBranch: string,
 ): Promise<string> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/CreateWorkspace`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body: JSON.stringify({
-      workerId,
-      title,
-      orgId,
-      workingDir,
-      createWorktree: true,
-      worktreeBranch,
-    }),
+  const workspaceId = await createWorkspaceViaAPI(hubUrl, token, title, orgId)
+  await openAgentViaAPI(hubUrl, token, workerId, workspaceId, workingDir, {
+    createWorktree: true,
+    worktreeBranch,
   })
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new Error(`createWorkspaceWithWorktreeViaAPI failed: ${res.status} ${body}`)
-  }
-  const data = await res.json() as { workspace: { id: string } }
-  return data.workspace.id
+  return workspaceId
 }
 
 /**
- * Open a terminal with a worktree via the ConnectRPC API.
+ * Open a terminal with a worktree via E2EE channel.
  * Returns the terminal ID.
  */
 async function openTerminalWithWorktreeViaAPI(
@@ -115,147 +130,125 @@ async function openTerminalWithWorktreeViaAPI(
   workingDir: string,
   worktreeBranch: string,
 ): Promise<string> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.TerminalService/OpenTerminal`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body: JSON.stringify({
-      workspaceId,
-      workerId,
-      orgId,
-      cols: 80,
-      rows: 24,
-      workingDir,
-      createWorktree: true,
-      worktreeBranch,
-    }),
-  })
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new Error(`openTerminalWithWorktreeViaAPI failed: ${res.status} ${body}`)
-  }
-  const data = await res.json() as { terminalId: string }
-  return data.terminalId
+  const channel = await getTestChannel(hubUrl, token)
+  const resp = await channel.callWorker(
+    workerId,
+    'OpenTerminal',
+    OpenTerminalRequestSchema,
+    OpenTerminalResponseSchema,
+    { workspaceId, workerId, orgId, cols: 80, rows: 24, workingDir, createWorktree: true, worktreeBranch },
+  )
+  return resp.terminalId
 }
 
 /**
- * Close a terminal via the ConnectRPC API.
+ * Close a terminal via E2EE channel.
  * Returns the response including worktree cleanup info.
  */
 async function closeTerminalViaAPI(
   hubUrl: string,
   token: string,
+  workerId: string,
   workspaceId: string,
   orgId: string,
   terminalId: string,
-): Promise<{ worktreeCleanupPending?: boolean, worktreePath?: string, worktreeId?: string }> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.TerminalService/CloseTerminal`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body: JSON.stringify({ workspaceId, orgId, terminalId }),
-  })
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new Error(`closeTerminalViaAPI failed: ${res.status} ${body}`)
+): Promise<{ worktreeCleanupPending: boolean, worktreePath: string, worktreeId: string }> {
+  const channel = await getTestChannel(hubUrl, token)
+  const resp = await channel.callWorker(
+    workerId,
+    'CloseTerminal',
+    CloseTerminalRequestSchema,
+    CloseTerminalResponseSchema,
+    { workspaceId, orgId, terminalId },
+  )
+  return {
+    worktreeCleanupPending: resp.worktreeCleanupPending,
+    worktreePath: resp.worktreePath,
+    worktreeId: resp.worktreeId,
   }
-  return await res.json() as any
 }
 
 /**
- * Close an agent via the ConnectRPC API.
+ * Close an agent via E2EE channel.
  * Returns the response including worktree cleanup info.
  */
 async function closeAgentViaAPI(
   hubUrl: string,
   token: string,
+  workerId: string,
   agentId: string,
-): Promise<{ worktreeCleanupPending?: boolean, worktreePath?: string, worktreeId?: string }> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.AgentService/CloseAgent`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body: JSON.stringify({ agentId }),
-  })
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new Error(`closeAgentViaAPI failed: ${res.status} ${body}`)
+): Promise<{ worktreeCleanupPending: boolean, worktreePath: string, worktreeId: string }> {
+  const channel = await getTestChannel(hubUrl, token)
+  const resp = await channel.callWorker(
+    workerId,
+    'CloseAgent',
+    CloseAgentRequestSchema,
+    CloseAgentResponseSchema,
+    { agentId },
+  )
+  return {
+    worktreeCleanupPending: resp.worktreeCleanupPending,
+    worktreePath: resp.worktreePath,
+    worktreeId: resp.worktreeId,
   }
-  return await res.json() as any
 }
 
 /**
- * List agents for a workspace via API.
+ * List agents for a workspace via E2EE channel.
  */
 async function listAgentsViaAPI(
   hubUrl: string,
   token: string,
+  workerId: string,
   workspaceId: string,
 ): Promise<Array<{ id: string, workingDir: string }>> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.AgentService/ListAgents`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body: JSON.stringify({ workspaceId }),
-  })
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new Error(`listAgentsViaAPI failed: ${res.status} ${body}`)
-  }
-  const data = await res.json() as { agents: Array<{ id: string, workingDir: string }> }
-  return data.agents ?? []
+  const channel = await getTestChannel(hubUrl, token)
+  const resp = await channel.callWorker(
+    workerId,
+    'ListAgents',
+    ListAgentsRequestSchema,
+    ListAgentsResponseSchema,
+    { workspaceId },
+  )
+  return (resp.agents ?? []).map(a => ({ id: a.id, workingDir: a.workingDir }))
 }
 
 /**
- * Force-remove a worktree via API.
+ * Force-remove a worktree via E2EE channel.
  */
 async function forceRemoveWorktreeViaAPI(
   hubUrl: string,
   token: string,
+  workerId: string,
   worktreeId: string,
 ): Promise<void> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.GitService/ForceRemoveWorktree`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body: JSON.stringify({ worktreeId }),
-  })
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new Error(`forceRemoveWorktreeViaAPI failed: ${res.status} ${body}`)
-  }
+  const channel = await getTestChannel(hubUrl, token)
+  await channel.callWorker(
+    workerId,
+    'ForceRemoveWorktree',
+    ForceRemoveWorktreeRequestSchema,
+    ForceRemoveWorktreeResponseSchema,
+    { worktreeId },
+  )
 }
 
 /**
- * Keep a worktree (stop tracking but leave on disk) via API.
+ * Keep a worktree (stop tracking but leave on disk) via E2EE channel.
  */
 async function keepWorktreeViaAPI(
   hubUrl: string,
   token: string,
+  workerId: string,
   worktreeId: string,
 ): Promise<void> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.GitService/KeepWorktree`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body: JSON.stringify({ worktreeId }),
-  })
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new Error(`keepWorktreeViaAPI failed: ${res.status} ${body}`)
-  }
+  const channel = await getTestChannel(hubUrl, token)
+  await channel.callWorker(
+    workerId,
+    'KeepWorktree',
+    KeepWorktreeRequestSchema,
+    KeepWorktreeResponseSchema,
+    { worktreeId },
+  )
 }
 
 /** Wait for a worker to be available (retry with backoff). */
@@ -293,9 +286,7 @@ test.describe('Worktree Support', () => {
     await page.goto('/o/admin')
     await waitForOrgPageReady(page)
 
-    // Open new workspace dialog via sidebar button
     await openNewWorkspaceDialog(page)
-
     await waitForWorker(page)
 
     // Set working directory to a known non-git directory
@@ -329,7 +320,6 @@ test.describe('Worktree Support', () => {
     await waitForOrgPageReady(page)
 
     await openNewWorkspaceDialog(page)
-
     await waitForWorker(page)
 
     // Set working directory to a subdirectory of the git repo
@@ -359,7 +349,6 @@ test.describe('Worktree Support', () => {
     await waitForOrgPageReady(page)
 
     await openNewWorkspaceDialog(page)
-
     await waitForWorker(page)
 
     // Set working directory to the git repo
@@ -381,21 +370,18 @@ test.describe('Worktree Support', () => {
   test('worktree checkbox appears in new agent dialog for git repo', async ({
     page,
     leapmuxServer,
-    workspace,
   }) => {
-    const { adminToken, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-agent')
 
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Agent WT Dialog Test', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
+
     await loginViaToken(page, adminToken)
-    await page.goto(workspace.workspaceUrl)
+    await page.goto(`/o/admin/workspace/${workspaceId}`)
     await waitForWorkspaceReady(page)
 
-    const addMenu = page.locator('[data-testid="tab-more-menu"]').first()
-    await addMenu.click()
-    await page.getByRole('menuitem', { name: 'New agent...' }).click()
-
-    await expect(page.getByRole('heading', { name: 'New Agent' })).toBeVisible()
-
+    await openNewAgentDialog(page)
     await waitForWorker(page)
 
     const dialog = page.getByRole('dialog')
@@ -411,13 +397,15 @@ test.describe('Worktree Support', () => {
   test('worktree checkbox appears in new terminal dialog for git repo', async ({
     page,
     leapmuxServer,
-    workspace,
   }) => {
-    const { adminToken, dataDir } = leapmuxServer
+    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-terminal')
 
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Terminal WT Dialog Test', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
+
     await loginViaToken(page, adminToken)
-    await page.goto(workspace.workspaceUrl)
+    await page.goto(`/o/admin/workspace/${workspaceId}`)
     await waitForWorkspaceReady(page)
 
     const addMenu = page.locator('[data-testid="tab-more-menu"]').first()
@@ -452,7 +440,6 @@ test.describe('Worktree Support', () => {
     await waitForOrgPageReady(page)
 
     await openNewWorkspaceDialog(page)
-
     await waitForWorker(page)
 
     await page.getByPlaceholder('New Workspace').fill('Worktree Test WS')
@@ -511,11 +498,11 @@ test.describe('Worktree Support', () => {
     expect(existsSync(worktreeDir)).toBe(true)
 
     // Get the initial agent that was auto-created with the workspace
-    const agents = await listAgentsViaAPI(hubUrl, adminToken, workspaceId)
+    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
     expect(agents.length).toBeGreaterThan(0)
 
     // Close the agent (last tab referencing the worktree)
-    const resp = await closeAgentViaAPI(hubUrl, adminToken, agents[0].id)
+    const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
     // Worktree should be clean, so it should have been auto-deleted
     expect(resp.worktreeCleanupPending).toBeFalsy()
@@ -559,14 +546,14 @@ test.describe('Worktree Support', () => {
     )
 
     // Close the terminal — agent still holds reference, worktree should persist
-    const termResp = await closeTerminalViaAPI(hubUrl, adminToken, workspaceId, adminOrgId, terminalId)
+    const termResp = await closeTerminalViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId, terminalId)
     expect(termResp.worktreeCleanupPending).toBeFalsy()
     expect(existsSync(worktreeDir)).toBe(true)
 
     // Now close the agent (last tab)
-    const agents = await listAgentsViaAPI(hubUrl, adminToken, workspaceId)
+    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
     expect(agents.length).toBeGreaterThan(0)
-    const agentResp = await closeAgentViaAPI(hubUrl, adminToken, agents[0].id)
+    const agentResp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
     // Clean worktree should now be auto-deleted
     expect(agentResp.worktreeCleanupPending).toBeFalsy()
@@ -596,18 +583,17 @@ test.describe('Worktree Support', () => {
     const workspaceId = await createWorkspaceViaAPI(
       hubUrl,
       adminToken,
-      workerId,
       'Existing WT WS',
       adminOrgId,
-      manualWorktreeDir,
     )
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
 
     // Get the auto-created agent
-    const agents = await listAgentsViaAPI(hubUrl, adminToken, workspaceId)
+    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
     expect(agents.length).toBeGreaterThan(0)
 
     // Close the agent
-    const resp = await closeAgentViaAPI(hubUrl, adminToken, agents[0].id)
+    const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
     // No worktree cleanup should be triggered (not tracked by LeapMux)
     expect(resp.worktreeCleanupPending).toBeFalsy()
@@ -642,9 +628,9 @@ test.describe('Worktree Support', () => {
     writeFileSync(join(worktreeDir, 'dirty.txt'), 'uncommitted change\n')
 
     // Close the agent (last tab)
-    const agents = await listAgentsViaAPI(hubUrl, adminToken, workspaceId)
+    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
     expect(agents.length).toBeGreaterThan(0)
-    const resp = await closeAgentViaAPI(hubUrl, adminToken, agents[0].id)
+    const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
     // Should trigger confirmation (worktree NOT auto-deleted)
     expect(resp.worktreeCleanupPending).toBe(true)
@@ -656,7 +642,7 @@ test.describe('Worktree Support', () => {
     expect(existsSync(worktreeDir)).toBe(true)
 
     // Now force-remove it
-    await forceRemoveWorktreeViaAPI(hubUrl, adminToken, resp.worktreeId!)
+    await forceRemoveWorktreeViaAPI(hubUrl, adminToken, workerId, resp.worktreeId!)
     await expect(async () => {
       expect(existsSync(worktreeDir)).toBe(false)
       expect(branchExists(repoDir, 'dirty-branch')).toBe(false)
@@ -692,16 +678,16 @@ test.describe('Worktree Support', () => {
     execSync('git commit -m "local only"', { cwd: worktreeDir })
 
     // Close the agent (last tab)
-    const agents = await listAgentsViaAPI(hubUrl, adminToken, workspaceId)
+    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
     expect(agents.length).toBeGreaterThan(0)
-    const resp = await closeAgentViaAPI(hubUrl, adminToken, agents[0].id)
+    const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
     // Should trigger confirmation — commits exist only on this branch
     expect(resp.worktreeCleanupPending).toBe(true)
     expect(existsSync(worktreeDir)).toBe(true)
 
     // Force-remove it
-    await forceRemoveWorktreeViaAPI(hubUrl, adminToken, resp.worktreeId!)
+    await forceRemoveWorktreeViaAPI(hubUrl, adminToken, workerId, resp.worktreeId!)
     await expect(async () => {
       expect(existsSync(worktreeDir)).toBe(false)
       expect(branchExists(repoDir, 'no-upstream-branch')).toBe(false)
@@ -756,16 +742,16 @@ test.describe('Worktree Support', () => {
     execSync('git commit -m "another unpushed"', { cwd: worktreeDir })
 
     // Close the agent (last tab)
-    const agents = await listAgentsViaAPI(hubUrl, adminToken, workspaceId)
+    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
     expect(agents.length).toBeGreaterThan(0)
-    const resp = await closeAgentViaAPI(hubUrl, adminToken, agents[0].id)
+    const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
     // Should trigger confirmation
     expect(resp.worktreeCleanupPending).toBe(true)
     expect(existsSync(worktreeDir)).toBe(true)
 
     // This time, choose "keep" instead of force-remove
-    await keepWorktreeViaAPI(hubUrl, adminToken, resp.worktreeId!)
+    await keepWorktreeViaAPI(hubUrl, adminToken, workerId, resp.worktreeId!)
 
     // Worktree should still exist on disk (kept by user choice)
     expect(existsSync(worktreeDir)).toBe(true)
@@ -961,7 +947,6 @@ test.describe('Worktree Support', () => {
     await waitForOrgPageReady(page)
 
     await openNewWorkspaceDialog(page)
-
     await waitForWorker(page)
 
     // Set working directory to the worktree root
@@ -991,7 +976,6 @@ test.describe('Worktree Support', () => {
     await waitForOrgPageReady(page)
 
     await openNewWorkspaceDialog(page)
-
     await waitForWorker(page)
 
     const dialog = page.getByRole('dialog')
@@ -1067,7 +1051,6 @@ test.describe('Worktree Support', () => {
     await waitForOrgPageReady(page)
 
     await openNewWorkspaceDialog(page)
-
     await waitForWorker(page)
 
     await page.getByPlaceholder('New Workspace').fill('Error Test WS')
@@ -1123,7 +1106,6 @@ test.describe('Worktree Support', () => {
     await waitForOrgPageReady(page)
 
     await openNewWorkspaceDialog(page)
-
     await waitForWorker(page)
 
     const dialog = page.getByRole('dialog')

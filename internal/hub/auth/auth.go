@@ -11,7 +11,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/id"
+	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 type contextKey int

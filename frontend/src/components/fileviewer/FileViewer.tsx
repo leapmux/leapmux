@@ -4,8 +4,7 @@ import type { FileViewMode } from '~/lib/fileType'
 import type { FileDiffBase, FileViewMode as TabFileViewMode } from '~/stores/tab.store'
 import AtSign from 'lucide-solid/icons/at-sign'
 import { createEffect, createMemo, createSignal, on, onCleanup, Show } from 'solid-js'
-import { fileClient, gitClient } from '~/api/clients'
-import { apiCallTimeout } from '~/api/transport'
+import * as workerRpc from '~/api/workerRpc'
 import { diffAdded, diffRemoved } from '~/components/chat/diffStyles.css'
 import { DiffView, rawDiffToHunks } from '~/components/chat/diffUtils'
 import { Icon } from '~/components/common/Icon'
@@ -69,7 +68,7 @@ export const FileViewer: Component<{
       setImageTooLarge(false)
 
       try {
-        const statResp = await fileClient.statFile({ workerId, path: filePath })
+        const statResp = await workerRpc.statFile(workerId, { workerId, path: filePath })
         const fileSize = Number(statResp.info?.size ?? 0n)
         setTotalSize(fileSize)
 
@@ -82,7 +81,7 @@ export const FileViewer: Component<{
           }
         }
 
-        const readResp = await fileClient.readFile({
+        const readResp = await workerRpc.readFile(workerId, {
           workerId,
           path: filePath,
           limit: BigInt(MAX_FILE_SIZE),
@@ -115,7 +114,7 @@ export const FileViewer: Component<{
       try {
         if (fvMode === 'head' || fvMode === 'staged') {
           const ref = fvMode === 'head' ? GitFileRef.HEAD : GitFileRef.STAGED
-          const resp = await gitClient.readGitFile({ workerId, path: filePath, ref }, apiCallTimeout())
+          const resp = await workerRpc.readGitFile(workerId, { workerId, path: filePath, ref })
           if (resp.exists) {
             setDiffOldContent(new TextDecoder().decode(resp.content))
           }
@@ -125,27 +124,27 @@ export const FileViewer: Component<{
         }
         else if (fvMode === 'unified-diff' || fvMode === 'split-diff') {
           // Fetch HEAD version.
-          const headResp = await gitClient.readGitFile({
+          const headResp = await workerRpc.readGitFile(workerId, {
             workerId,
             path: filePath,
             ref: GitFileRef.HEAD,
-          }, apiCallTimeout())
+          })
           const headContent = headResp.exists ? new TextDecoder().decode(headResp.content) : ''
           setDiffOldContent(headContent)
 
           // Fetch the "new" version.
           if (diffBase === 'head-vs-staged') {
-            const stagedResp = await gitClient.readGitFile({
+            const stagedResp = await workerRpc.readGitFile(workerId, {
               workerId,
               path: filePath,
               ref: GitFileRef.STAGED,
-            }, apiCallTimeout())
+            })
             setDiffNewContent(stagedResp.exists ? new TextDecoder().decode(stagedResp.content) : '')
           }
           else {
             // head-vs-working: read working copy from disk to avoid race
             // with the content-loading effect that runs concurrently.
-            const workingResp = await fileClient.readFile({
+            const workingResp = await workerRpc.readFile(workerId, {
               workerId,
               path: filePath,
               limit: BigInt(MAX_FILE_SIZE),

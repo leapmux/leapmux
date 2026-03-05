@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 import { ensureWorkerOnline, expect, stopWorker, processTest as test } from './process-control-fixtures'
 
@@ -24,8 +24,9 @@ async function getTerminalText(page: Page): Promise<string> {
 test.describe('Terminal Disconnection', () => {
   test('should mark terminal as disconnected when worker stops', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Terminal Disconnect Test', adminOrgId)
+    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Terminal Disconnect Test', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)

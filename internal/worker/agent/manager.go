@@ -139,12 +139,48 @@ func (m *Manager) StopAgent(agentID string) bool {
 	return ok
 }
 
+// StopAndWaitAgent stops the agent and waits for it to fully exit and be
+// removed from the manager's map. This is necessary before restarting an
+// agent to avoid the "agent already running" error from StartAgent.
+// Returns true if the agent was found and stopped, false if it was not running.
+func (m *Manager) StopAndWaitAgent(agentID string) bool {
+	m.mu.RLock()
+	agent, ok := m.agents[agentID]
+	m.mu.RUnlock()
+
+	if !ok {
+		return false
+	}
+
+	agent.Stop()
+	_ = agent.Wait()
+
+	// Remove the map entry eagerly so that StartAgent can proceed
+	// immediately. The background goroutine's delete will be a no-op.
+	m.mu.Lock()
+	delete(m.agents, agentID)
+	m.mu.Unlock()
+
+	return true
+}
+
 // HasAgent returns true if an agent is running with the given agent ID.
 func (m *Manager) HasAgent(agentID string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	_, ok := m.agents[agentID]
 	return ok
+}
+
+// ListAgentIDs returns the IDs of all currently tracked agents.
+func (m *Manager) ListAgentIDs() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ids := make([]string, 0, len(m.agents))
+	for id := range m.agents {
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // StopAll stops all running agents.

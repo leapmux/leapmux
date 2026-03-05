@@ -11,7 +11,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/id"
+	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 func newTestQueries(t *testing.T) *gendb.Queries {
@@ -122,19 +122,16 @@ func TestWorkers_CRUD(t *testing.T) {
 	err := q.CreateWorker(ctx, gendb.CreateWorkerParams{
 		ID:           workerID,
 		OrgID:        orgID,
-		Name:         "dev-machine",
-		Hostname:     "host1",
-		Os:           "linux",
-		Arch:         "amd64",
 		AuthToken:    token,
 		RegisteredBy: userID,
+		PublicKey:    []byte{},
 	})
 	require.NoError(t, err)
 
 	b, err := q.GetWorkerByID(ctx, gendb.GetWorkerByIDParams{ID: workerID, OrgID: orgID})
 	require.NoError(t, err)
-	if b.Name != "dev-machine" {
-		t.Errorf("Name = %q, want %q", b.Name, "dev-machine")
+	if b.ID != workerID {
+		t.Errorf("ID = %q, want %q", b.ID, workerID)
 	}
 
 	b2, err := q.GetWorkerByAuthToken(ctx, token)
@@ -180,18 +177,17 @@ func TestRegistrations(t *testing.T) {
 	})
 	workerID := makeID()
 	_ = q.CreateWorker(ctx, gendb.CreateWorkerParams{
-		ID: workerID, OrgID: orgID, Name: "b",
+		ID: workerID, OrgID: orgID,
 		AuthToken: makeID(), RegisteredBy: userID,
+		PublicKey: []byte{},
 	})
 
 	regID := makeID()
 	expires := time.Now().Add(10 * time.Minute).UTC()
 	err := q.CreateRegistration(ctx, gendb.CreateRegistrationParams{
 		ID:        regID,
-		Hostname:  "host1",
-		Os:        "darwin",
-		Arch:      "arm64",
 		Version:   "0.1.0",
+		PublicKey: []byte("test-public-key"),
 		ExpiresAt: expires,
 	})
 	require.NoError(t, err)
@@ -224,7 +220,8 @@ func TestRegistrations_Expire(t *testing.T) {
 	// Set expiry in the past.
 	expires := time.Now().Add(-1 * time.Minute).UTC()
 	_ = q.CreateRegistration(ctx, gendb.CreateRegistrationParams{
-		ID: regID, Hostname: "h", Os: "l", Arch: "a", Version: "v",
+		ID: regID, Version: "v",
+		PublicKey: []byte("test-key"),
 		ExpiresAt: expires,
 	})
 
@@ -234,108 +231,6 @@ func TestRegistrations_Expire(t *testing.T) {
 	reg, _ := q.GetRegistrationByID(ctx, regID)
 	if reg.Status != leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_EXPIRED {
 		t.Errorf("Status = %v, want %v", reg.Status, leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_EXPIRED)
-	}
-}
-
-func TestWorkspaces_CRUD(t *testing.T) {
-	q := newTestQueries(t)
-	ctx := context.Background()
-
-	orgID := makeID()
-	_ = q.CreateOrg(ctx, gendb.CreateOrgParams{ID: orgID, Name: "org"})
-	userID := makeID()
-	_ = q.CreateUser(ctx, gendb.CreateUserParams{
-		ID: userID, OrgID: orgID, Username: "u",
-		PasswordHash: "h", DisplayName: "U", IsAdmin: 0,
-	})
-	workerID := makeID()
-	_ = q.CreateWorker(ctx, gendb.CreateWorkerParams{
-		ID: workerID, OrgID: orgID, Name: "b",
-		AuthToken: makeID(), RegisteredBy: userID,
-	})
-
-	wsID := makeID()
-	err := q.CreateWorkspace(ctx, gendb.CreateWorkspaceParams{
-		ID: wsID, OrgID: orgID,
-		CreatedBy: userID, Title: "Test Workspace",
-	})
-	require.NoError(t, err)
-
-	_, err = q.GetWorkspaceByID(ctx, gendb.GetWorkspaceByIDParams{ID: wsID, OrgID: orgID})
-	require.NoError(t, err)
-
-	workspaces, err := q.ListWorkspacesByOrgID(ctx, gendb.ListWorkspacesByOrgIDParams{
-		OrgID: orgID, Limit: 10, Offset: 0,
-	})
-	require.NoError(t, err)
-	if len(workspaces) != 1 {
-		t.Errorf("len = %d, want 1", len(workspaces))
-	}
-}
-
-func TestMessages_CRUD(t *testing.T) {
-	q := newTestQueries(t)
-	ctx := context.Background()
-
-	// Set up prerequisite data.
-	orgID := makeID()
-	_ = q.CreateOrg(ctx, gendb.CreateOrgParams{ID: orgID, Name: "org"})
-	userID := makeID()
-	_ = q.CreateUser(ctx, gendb.CreateUserParams{
-		ID: userID, OrgID: orgID, Username: "u",
-		PasswordHash: "h", DisplayName: "U", IsAdmin: 0,
-	})
-	workerID := makeID()
-	_ = q.CreateWorker(ctx, gendb.CreateWorkerParams{
-		ID: workerID, OrgID: orgID, Name: "b",
-		AuthToken: makeID(), RegisteredBy: userID,
-	})
-	wsID := makeID()
-	_ = q.CreateWorkspace(ctx, gendb.CreateWorkspaceParams{
-		ID: wsID, OrgID: orgID,
-		CreatedBy: userID, Title: "w",
-	})
-	agentID := makeID()
-	_ = q.CreateAgent(ctx, gendb.CreateAgentParams{
-		ID: agentID, WorkspaceID: wsID, WorkerID: workerID,
-		Title: "agent", Model: "haiku", SystemPrompt: "",
-	})
-
-	// Create messages.
-	for i := int64(1); i <= 3; i++ {
-		seq, err := q.CreateMessage(ctx, gendb.CreateMessageParams{
-			ID:                 makeID(),
-			AgentID:            agentID,
-			Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
-			Content:            []byte(`{"text":"hello"}`),
-			ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		})
-		if err != nil {
-			t.Fatalf("CreateMessage seq=%d: %v", i, err)
-		}
-		if seq != i {
-			t.Errorf("CreateMessage returned seq=%d, want %d", seq, i)
-		}
-	}
-
-	// List from seq 0.
-	msgs, err := q.ListMessagesByAgentID(ctx, gendb.ListMessagesByAgentIDParams{
-		AgentID: agentID, Seq: 0, Limit: 10,
-	})
-	require.NoError(t, err)
-	if len(msgs) != 3 {
-		t.Fatalf("len = %d, want 3", len(msgs))
-	}
-	if msgs[0].Seq != 1 || msgs[2].Seq != 3 {
-		t.Errorf("ordering wrong: first=%d, last=%d", msgs[0].Seq, msgs[2].Seq)
-	}
-
-	// List from seq 1 (should skip first message).
-	msgs2, _ := q.ListMessagesByAgentID(ctx, gendb.ListMessagesByAgentIDParams{
-		AgentID: agentID, Seq: 1, Limit: 10,
-	})
-	if len(msgs2) != 2 {
-		t.Errorf("len from seq 1 = %d, want 2", len(msgs2))
 	}
 }
 
@@ -402,144 +297,4 @@ func TestUserSessions_Expired(t *testing.T) {
 	// Cleanup should remove it.
 	err = q.DeleteExpiredUserSessions(ctx)
 	require.NoError(t, err)
-}
-
-func TestUpdateAgentHomeDir(t *testing.T) {
-	q := newTestQueries(t)
-	ctx := context.Background()
-
-	// Set up prerequisite data.
-	orgID := makeID()
-	_ = q.CreateOrg(ctx, gendb.CreateOrgParams{ID: orgID, Name: "org"})
-	userID := makeID()
-	_ = q.CreateUser(ctx, gendb.CreateUserParams{
-		ID: userID, OrgID: orgID, Username: "u",
-		PasswordHash: "h", DisplayName: "U", IsAdmin: 0,
-	})
-	workerID := makeID()
-	_ = q.CreateWorker(ctx, gendb.CreateWorkerParams{
-		ID: workerID, OrgID: orgID, Name: "b",
-		AuthToken: makeID(), RegisteredBy: userID,
-	})
-	wsID := makeID()
-	_ = q.CreateWorkspace(ctx, gendb.CreateWorkspaceParams{
-		ID: wsID, OrgID: orgID,
-		CreatedBy: userID, Title: "w",
-	})
-	agentID := makeID()
-	_ = q.CreateAgent(ctx, gendb.CreateAgentParams{
-		ID: agentID, WorkspaceID: wsID, WorkerID: workerID,
-		Title: "agent", Model: "haiku", SystemPrompt: "",
-	})
-
-	// Verify home_dir defaults to empty.
-	agent, err := q.GetAgentByID(ctx, agentID)
-	require.NoError(t, err)
-	require.Empty(t, agent.HomeDir)
-
-	// Update home_dir.
-	err = q.UpdateAgentHomeDir(ctx, gendb.UpdateAgentHomeDirParams{
-		HomeDir: "/home/alice",
-		ID:      agentID,
-	})
-	require.NoError(t, err)
-
-	// Verify it was persisted.
-	agent, err = q.GetAgentByID(ctx, agentID)
-	require.NoError(t, err)
-	require.Equal(t, "/home/alice", agent.HomeDir)
-}
-
-func TestUpdateAgentPlanFilePath(t *testing.T) {
-	q := newTestQueries(t)
-	ctx := context.Background()
-
-	orgID := makeID()
-	userID := makeID()
-	_ = q.CreateOrg(ctx, gendb.CreateOrgParams{ID: orgID, Name: "plan-file-org"})
-	_ = q.CreateUser(ctx, gendb.CreateUserParams{
-		ID: userID, OrgID: orgID, Username: "u",
-		PasswordHash: "h", DisplayName: "U", IsAdmin: 1,
-	})
-	workerID := makeID()
-	_ = q.CreateWorker(ctx, gendb.CreateWorkerParams{
-		ID: workerID, OrgID: orgID, Name: "w",
-		AuthToken: makeID(), RegisteredBy: userID,
-	})
-	wsID := makeID()
-	_ = q.CreateWorkspace(ctx, gendb.CreateWorkspaceParams{
-		ID: wsID, OrgID: orgID,
-		CreatedBy: userID, Title: "w",
-	})
-	agentID := makeID()
-	_ = q.CreateAgent(ctx, gendb.CreateAgentParams{
-		ID: agentID, WorkspaceID: wsID, WorkerID: workerID,
-		Title: "agent", Model: "haiku", SystemPrompt: "",
-	})
-
-	// Verify defaults.
-	agent, err := q.GetAgentByID(ctx, agentID)
-	require.NoError(t, err)
-	require.Empty(t, agent.PlanFilePath)
-
-	// Update plan_file_path.
-	err = q.UpdateAgentPlanFilePath(ctx, gendb.UpdateAgentPlanFilePathParams{
-		PlanFilePath: "/home/alice/.claude/plans/my-plan.md",
-		ID:           agentID,
-	})
-	require.NoError(t, err)
-
-	agent, err = q.GetAgentByID(ctx, agentID)
-	require.NoError(t, err)
-	require.Equal(t, "/home/alice/.claude/plans/my-plan.md", agent.PlanFilePath)
-}
-
-func TestUpdateAgentPlanContent(t *testing.T) {
-	q := newTestQueries(t)
-	ctx := context.Background()
-
-	orgID := makeID()
-	userID := makeID()
-	_ = q.CreateOrg(ctx, gendb.CreateOrgParams{ID: orgID, Name: "plan-content-org"})
-	_ = q.CreateUser(ctx, gendb.CreateUserParams{
-		ID: userID, OrgID: orgID, Username: "u",
-		PasswordHash: "h", DisplayName: "U", IsAdmin: 1,
-	})
-	workerID := makeID()
-	_ = q.CreateWorker(ctx, gendb.CreateWorkerParams{
-		ID: workerID, OrgID: orgID, Name: "w",
-		AuthToken: makeID(), RegisteredBy: userID,
-	})
-	wsID := makeID()
-	_ = q.CreateWorkspace(ctx, gendb.CreateWorkspaceParams{
-		ID: wsID, OrgID: orgID,
-		CreatedBy: userID, Title: "w",
-	})
-	agentID := makeID()
-	_ = q.CreateAgent(ctx, gendb.CreateAgentParams{
-		ID: agentID, WorkspaceID: wsID, WorkerID: workerID,
-		Title: "agent", Model: "haiku", SystemPrompt: "",
-	})
-
-	// Verify defaults.
-	agent, err := q.GetAgentByID(ctx, agentID)
-	require.NoError(t, err)
-	require.Empty(t, agent.PlanContent)
-	require.Equal(t, leapmuxv1.ContentCompression(0), agent.PlanContentCompression)
-
-	// Update plan content with compression.
-	planContent := []byte("compressed plan data")
-	compression := leapmuxv1.ContentCompression_CONTENT_COMPRESSION_ZSTD
-	err = q.UpdateAgentPlanContent(ctx, gendb.UpdateAgentPlanContentParams{
-		PlanContent:            planContent,
-		PlanContentCompression: compression,
-		ID:                     agentID,
-	})
-	require.NoError(t, err)
-
-	// Verify round-trip.
-	agent, err = q.GetAgentByID(ctx, agentID)
-	require.NoError(t, err)
-	require.Equal(t, planContent, agent.PlanContent)
-	require.Equal(t, compression, agent.PlanContentCompression)
 }

@@ -95,6 +95,7 @@ const TerminalContainer: Component<{
     // Write screen snapshot if available (restore on refresh)
     if (props.screen && props.screen.length > 0) {
       instance.terminal.write(props.screen)
+      instance.screenRestored = true
     }
 
     // ResizeObserver on this terminal's container element.

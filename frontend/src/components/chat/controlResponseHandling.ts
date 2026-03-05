@@ -24,7 +24,7 @@ export interface ControlResponseHandlingResult {
   isAskUserQuestion: Accessor<boolean>
   showInterrupt: Accessor<boolean>
   handleControlSend: (content: string) => boolean | void
-  handleSend: (content: string) => void
+  handleSend: (content: string) => boolean | void
   cleanupControlRequestDrafts: (requestId: string) => void
   sendControlResponse: (agentId: string, bytes: Uint8Array) => Promise<void>
   togglePlanMode: () => void
@@ -158,7 +158,9 @@ export function useControlResponseHandling(
     resetEditorHeightFn()
   }
 
-  const handleSend = (content: string) => {
+  const handleSend = (content: string): boolean | void => {
+    if (content.trim().length < 1)
+      return false
     props.onSendMessage(content)
     resetEditorHeightFn()
   }

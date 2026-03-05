@@ -17,6 +17,8 @@ export interface TerminalFontOptions {
 export interface TerminalInstance {
   terminal: Terminal
   fitAddon: FitAddon
+  /** True after a screen snapshot has been written (prevents duplicate writes). */
+  screenRestored: boolean
   dispose: () => void
 }
 
@@ -126,6 +128,7 @@ export function createTerminalInstance(opts?: TerminalFontOptions): TerminalInst
   return {
     terminal,
     fitAddon,
+    screenRestored: false,
     dispose() {
       terminal.dispose()
     },

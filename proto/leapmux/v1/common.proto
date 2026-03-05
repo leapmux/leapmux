@@ -20,3 +20,29 @@ message PageResponse {
   string next_cursor = 1;
   bool has_more = 2;
 }
+
+// --- Per-file git status ---
+
+// GitFileStatusCode describes the status of a file in the index or working tree.
+enum GitFileStatusCode {
+  GIT_FILE_STATUS_CODE_UNSPECIFIED = 0;
+  GIT_FILE_STATUS_CODE_MODIFIED = 1;
+  GIT_FILE_STATUS_CODE_ADDED = 2;
+  GIT_FILE_STATUS_CODE_DELETED = 3;
+  GIT_FILE_STATUS_CODE_RENAMED = 4;
+  GIT_FILE_STATUS_CODE_COPIED = 5;
+  GIT_FILE_STATUS_CODE_TYPE_CHANGED = 6;
+  GIT_FILE_STATUS_CODE_UNTRACKED = 7;
+  GIT_FILE_STATUS_CODE_UNMERGED = 8;
+}
+
+message GitFileStatusEntry {
+  string path = 1;                              // Path relative to repo root
+  GitFileStatusCode staged_status = 2;          // Status in the index (staged)
+  GitFileStatusCode unstaged_status = 3;        // Status in the working tree (unstaged)
+  int32 lines_added = 4;                        // Unstaged lines added
+  int32 lines_deleted = 5;                      // Unstaged lines deleted
+  int32 staged_lines_added = 6;                 // Staged lines added
+  int32 staged_lines_deleted = 7;               // Staged lines deleted
+  string old_path = 8;                          // Previous path (for renames/copies)
+}

@@ -2,6 +2,7 @@ import type { Buffer } from 'node:buffer'
 import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import process from 'node:process'
 import { approveRegistrationViaAPI, deregisterWorkerViaAPI } from './helpers/api'
 import { loginViaUI } from './helpers/ui'
 import { expect, processTest as test } from './process-control-fixtures'
@@ -32,6 +33,7 @@ test.describe('Worker Deregistration', () => {
       workerDataDir,
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, LEAPMUX_WORKER_NAME: 'deregister-test-worker' },
     })
     tempWorkerPid = workerProc.pid
 
@@ -65,7 +67,6 @@ test.describe('Worker Deregistration', () => {
       hubUrl,
       adminToken,
       registrationToken,
-      'deregister-test-worker',
       adminOrgId,
     )
   })
@@ -107,7 +108,7 @@ test.describe('Worker Deregistration', () => {
     // Confirmation dialog should appear
     const dialog = page.getByTestId('worker-settings-dialog')
     await expect(dialog).toBeVisible()
-    await expect(dialog.getByText('Worker Settings')).toBeVisible()
+    await expect(dialog.getByText('Deregister Worker')).toBeVisible()
 
     // Warning about termination should be visible
     const warning = page.getByTestId('deregister-warning')
@@ -177,6 +178,6 @@ test.describe('Worker Deregistration', () => {
     await expect(page.getByRole('heading', { name: 'Workers' })).toBeVisible()
 
     // The main test-worker should still be visible
-    await expect(page.getByTestId('worker-name').filter({ hasText: 'test-worker' })).toBeVisible()
+    await expect(page.getByText('test-worker', { exact: true })).toBeVisible()
   })
 })

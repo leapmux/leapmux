@@ -1,4 +1,4 @@
-import type { AgentEvent, TerminalEvent, WatchAgentEntry, WatchTerminalEntry } from '~/generated/leapmux/v1/workspace_pb'
+import type { AgentEvent, TerminalEvent, WatchAgentEntry } from '~/generated/leapmux/v1/workspace_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { createAgentStore } from '~/stores/agent.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
@@ -6,15 +6,18 @@ import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
 import type { createTabStore } from '~/stores/tab.store'
 import type { createTerminalStore } from '~/stores/terminal.store'
-import { create } from '@bufbuild/protobuf'
-import { createEffect, createMemo, createSignal, onCleanup, untrack } from 'solid-js'
-import { getToken } from '~/api/transport'
-import { watchEventsViaWebSocket } from '~/api/wsWatchEvents'
+import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
+import { watchEventsViaChannel } from '~/api/workerRpc'
+import { showToast } from '~/components/common/Toast'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
 import { AgentStatus, MessageRole } from '~/generated/leapmux/v1/agent_pb'
-import { TabType, WatchEventsRequestSchema } from '~/generated/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { ChannelError } from '~/lib/channel'
+import { createLogger } from '~/lib/logger'
 import { extractAgentRenamed, extractAssistantUsage, extractPlanFilePath, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessageType, parseMessageContent } from '~/lib/messageParser'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
+
+const log = createLogger('workspace')
 
 export interface WorkspaceConnectionParams {
   agentStore: ReturnType<typeof createAgentStore>
@@ -24,12 +27,11 @@ export interface WorkspaceConnectionParams {
   controlStore: ReturnType<typeof createControlStore>
   agentSessionStore: ReturnType<typeof createAgentSessionStore>
   settingsLoading: ReturnType<typeof createLoadingSignal>
-  getOrgId: () => string
   getActiveWorkspaceId: () => string | null
-  /** Returns the set of per-tile active tab keys that need connections. */
-  getTileActiveTabKeys?: () => string[]
-  /** Called when a turn-end sound should play (turn completed or control request received). */
-  onTurnEndSound?: (agentId: string) => void
+  /** Returns the worker ID for the active workspace. */
+  getWorkerId: () => string
+  /** Called when an agent turn ends (turn completed or control request received). */
+  onTurnEnd?: (agentId: string) => void
 }
 
 export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
@@ -44,28 +46,21 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   // Handle an agent event from the unified stream.
   const handleAgentEvent = (
     agentEvent: AgentEvent,
-    catchUpPhases: Map<string, 'messages' | 'controlRequests' | 'live'>,
+    catchUpPhases: Map<string, 'catchingUp' | 'live'>,
     signal?: AbortSignal,
   ) => {
     const agentId = agentEvent.agentId
     const inner = agentEvent.event
 
     // Get or initialize catch-up phase for this agent.
-    let catchUpPhase = catchUpPhases.get(agentId) ?? 'live'
-
-    // Transition from 'controlRequests' → 'live' once a
-    // non-controlRequest event arrives after the initial statusChange.
-    if (catchUpPhase === 'controlRequests' && inner.case !== 'controlRequest') {
-      catchUpPhase = 'live'
-      catchUpPhases.set(agentId, catchUpPhase)
-    }
+    const catchUpPhase = catchUpPhases.get(agentId) ?? 'live'
 
     switch (inner.case) {
       case 'agentMessage': {
         const msg = inner.value
 
         // Intercept ephemeral agent_session_info messages (broadcast by
-        // Hub without persisting). These update the agent session store
+        // Worker without persisting). These update the agent session store
         // and should not appear in chat history.
         if (msg.role === MessageRole.LEAPMUX) {
           try {
@@ -134,7 +129,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             const meta = extractResultMetadata(parseMessageContent(msg))
             if (meta) {
               if (meta.subtype && catchUpPhase === 'live')
-                params.onTurnEndSound?.(agentId)
+                params.onTurnEnd?.(agentId)
               if (meta.contextWindow !== undefined) {
                 const existingUsage = agentSessionStore.getInfo(agentId).contextUsage
                 if (existingUsage) {
@@ -166,22 +161,39 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       case 'statusChange': {
         const sc = inner.value
         setWorkerOnline(sc.workerOnline)
+
+        // When a settings change is in progress (optimistic update active),
+        // don't overwrite the optimistically-set fields — the pending RPC
+        // will resolve or revert them.
+        const pendingSettings = settingsLoading.loading()
+        // Only update status and agentSessionId when status is set
+        // (non-UNSPECIFIED). Proto3 defaults unset enums to 0
+        // (UNSPECIFIED), so a statusChange carrying only git data
+        // would otherwise overwrite valid agent state with defaults,
+        // causing the agent to become "unwatchable" and dropping the
+        // event stream.
+        const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
         agentStore.updateAgent(sc.agentId, {
-          status: sc.status,
-          agentSessionId: sc.agentSessionId,
-          permissionMode: sc.permissionMode,
-          model: sc.model,
-          effort: sc.effort,
+          ...(hasStatus ? { status: sc.status, agentSessionId: sc.agentSessionId } : {}),
+          ...(pendingSettings
+            ? {}
+            : {
+                ...(sc.permissionMode ? { permissionMode: sc.permissionMode } : {}),
+                ...(sc.model ? { model: sc.model } : {}),
+                ...(sc.effort ? { effort: sc.effort } : {}),
+              }),
           gitStatus: sc.gitStatus,
         })
-        settingsLoading.stop()
+        if (!pendingSettings) {
+          settingsLoading.stop()
+        }
         if (sc.status === AgentStatus.INACTIVE) {
           if (
             catchUpPhase === 'live'
             && sc.agentSessionId
             && agentStore.state.agents.some(a => a.id === agentId)
           ) {
-            params.onTurnEndSound?.(agentId)
+            params.onTurnEnd?.(agentId)
           }
           if (!sc.agentSessionId) {
             const hasMessages = chatStore.getMessages(sc.agentId).length > 0
@@ -192,16 +204,16 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           }
         }
         // The initial statusChange marks the end of the message
-        // replay; subsequent events are pending controlRequests
-        // (still suppressed) or live events.
-        // Fetch remaining messages the server didn't replay (limit of 50 per stream).
-        if (catchUpPhase === 'messages') {
+        // replay. Fetch remaining messages the server didn't replay
+        // (limit of 50 per stream). The phase stays 'catchingUp'
+        // until the server sends catch_up_complete.
+        if (catchUpPhase === 'catchingUp') {
           const replayEndSeq = chatStore.getLastSeq(agentId)
           if (replayEndSeq > 0n) {
-            void chatStore.loadNewerMessages(agentId, replayEndSeq, signal)
+            const wid = agentStore.state.agents.find(a => a.id === agentId)?.workerId ?? ''
+            void chatStore.loadNewerMessages(wid, agentId, replayEndSeq, signal)
           }
         }
-        catchUpPhases.set(agentId, 'controlRequests')
         break
       }
       case 'controlRequest': {
@@ -213,7 +225,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           payload,
         })
         if (catchUpPhase === 'live')
-          params.onTurnEndSound?.(agentId)
+          params.onTurnEnd?.(agentId)
         break
       }
       case 'controlCancel': {
@@ -236,6 +248,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         chatStore.removeMessage(md.agentId, md.messageId)
         break
       }
+      case 'catchUpComplete':
+        catchUpPhases.set(agentId, 'live')
+        break
     }
   }
 
@@ -246,7 +261,18 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       case 'data': {
         const instance = getTerminalInstance(terminalId)
         if (instance) {
-          instance.terminal.write(termEvent.event.value.data)
+          if (termEvent.event.value.isSnapshot) {
+            // Initial screen snapshot from WatchEvents. Only apply if the
+            // screen hasn't already been restored (e.g. from the
+            // listTerminals snapshot written during component mount).
+            if (!instance.screenRestored) {
+              instance.terminal.write(termEvent.event.value.data)
+              instance.screenRestored = true
+            }
+          }
+          else {
+            instance.terminal.write(termEvent.event.value.data)
+          }
         }
         break
       }
@@ -262,21 +288,28 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     }
   }
 
-  // Unified event stream with retry.
+  // Handle from the previous stream iteration. Kept alive during the
+  // gap between abort and new stream registration so that the old
+  // listener can still receive terminal data (the server-side watcher
+  // still routes via the old sender until the new WatchEvents updates it).
+  let previousHandle: { close: () => void } | null = null
+
+  // Unified event stream via E2EE channel with retry.
   const watchEvents = async (
-    wsId: string,
     agentEntries: WatchAgentEntry[],
-    terminalEntries: WatchTerminalEntry[],
+    terminalIds: string[],
     signal: AbortSignal,
   ) => {
     // Load initial messages for all agents in parallel before starting the stream.
     await Promise.all(
       agentEntries.map(async (entry) => {
         try {
-          await chatStore.loadInitialMessages(entry.agentId)
+          const wid = agentStore.state.agents.find(a => a.id === entry.agentId)?.workerId ?? ''
+          await chatStore.loadInitialMessages(wid, entry.agentId)
         }
-        catch {
-          // Ignore — the stream will still deliver history.
+        catch (err) {
+          log.warn(`[watchEvents] Failed to load initial messages for agent ${entry.agentId}:`, err)
+          showToast('Failed to load chat history', 'danger')
         }
       }),
     )
@@ -285,9 +318,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       return
 
     // Per-agent catch-up phase tracking.
-    const catchUpPhases = new Map<string, 'messages' | 'controlRequests' | 'live'>()
+    const catchUpPhases = new Map<string, 'catchingUp' | 'live'>()
     for (const entry of agentEntries) {
-      catchUpPhases.set(entry.agentId, 'messages')
+      catchUpPhases.set(entry.agentId, 'catchingUp')
     }
 
     let backoff = 1000
@@ -298,42 +331,80 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           agentId: entry.agentId,
           afterSeq: untrack(() => chatStore.getLastSeq(entry.agentId)),
         }))
-        const terminals = terminalEntries.map(entry => ({
-          terminalId: entry.terminalId,
-        }))
 
         // Reset catch-up phases on reconnect and clear stale control requests.
         for (const entry of agentEntries) {
-          catchUpPhases.set(entry.agentId, 'messages')
+          catchUpPhases.set(entry.agentId, 'catchingUp')
           controlStore.clearAgent(entry.agentId)
         }
 
-        const token = getToken()
-        if (!token)
+        const workerId = untrack(() => params.getWorkerId())
+        if (!workerId)
           return
 
-        const request = create(WatchEventsRequestSchema, {
-          orgId: untrack(() => params.getOrgId()),
-          workspaceId: wsId,
+        // Open the E2EE channel stream to the Worker.
+        const handle = await watchEventsViaChannel(workerId, {
           agents,
-          terminals,
+          terminalIds,
         })
 
-        for await (const response of watchEventsViaWebSocket(token, request, { signal })) {
-          backoff = 1000
-          switch (response.event.case) {
-            case 'agentEvent':
-              handleAgentEvent(response.event.value, catchUpPhases, signal)
-              break
-            case 'terminalEvent':
-              handleTerminalEvent(response.event.value)
-              break
+        // Now that the new stream listener is registered, clean up
+        // the previous one. The server-side sender update (Bug 2 fix)
+        // ensures no more events will arrive on the old request ID
+        // once the server processes this new WatchEvents RPC.
+        previousHandle?.close()
+        previousHandle = handle
+
+        // Wait for the stream to end or error using a promise.
+        await new Promise<void>((resolve, reject) => {
+          const onAbort = () => {
+            resolve()
           }
-        }
+          signal.addEventListener('abort', onAbort, { once: true })
+
+          handle.onEvent((response) => {
+            backoff = 1000
+            switch (response.event.case) {
+              case 'agentEvent':
+                handleAgentEvent(response.event.value, catchUpPhases, signal)
+                break
+              case 'terminalEvent':
+                handleTerminalEvent(response.event.value)
+                break
+            }
+          })
+
+          handle.onEnd(() => {
+            signal.removeEventListener('abort', onAbort)
+            resolve()
+          })
+
+          handle.onError((err) => {
+            signal.removeEventListener('abort', onAbort)
+            reject(err)
+          })
+        })
       }
-      catch {
+      catch (err) {
         if (signal.aborted)
           return
+
+        const isConnectionLost = err instanceof ChannelError && err.source === 'transport'
+
+        if (isConnectionLost) {
+          log.warn('[watchEvents] E2EE channel disconnected:', err)
+          showToast('Connection to worker lost, reconnecting\u2026', 'danger')
+          // Channel disconnected (worker went offline or restarted).
+          // Mark worker as offline so terminals show disconnection and
+          // thinking indicators are hidden.
+          setWorkerOnline(false)
+        }
+        else {
+          // Stream-level error (e.g. NOT_FOUND for entities not yet
+          // visible). Retry quickly without alarming the user.
+          log.warn('[watchEvents] stream error, retrying:', err)
+          backoff = Math.min(backoff, 500)
+        }
       }
 
       await new Promise(r => setTimeout(r, backoff))
@@ -341,84 +412,35 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     }
   }
 
-  // Helper: check if a tab key is watchable
-  const isWatchable = (key: string): boolean => {
-    const parts = key.split(':')
-    if (parts.length !== 2)
-      return false
-    const tabType = Number(parts[0]) as TabType
-    const tabId = parts[1]
-    if (tabType === TabType.AGENT) {
-      const agent = agentStore.state.agents.find(a => a.id === tabId)
-      return !!(agent && (agent.status === AgentStatus.ACTIVE || agent.agentSessionId))
-    }
-    if (tabType === TabType.TERMINAL) {
-      return !terminalStore.isExited(tabId)
-    }
-    return false
-  }
-
-  // Determines what the active tab should watch (used for single-tile / mobile)
-  const activeWatchTarget = createMemo((): string | null => {
-    const activeKey = tabStore.state.activeTabKey
-    if (!activeKey)
-      return null
-    return isWatchable(activeKey) ? activeKey : null
-  })
-
-  // Collect all unique watchable targets across tiles
-  const allWatchTargets = createMemo((): Set<string> => {
-    const targets = new Set<string>()
-    // Include the global active tab
-    const globalTarget = activeWatchTarget()
-    if (globalTarget)
-      targets.add(globalTarget)
-    // Include per-tile active tabs
-    const tileKeys = params.getTileActiveTabKeys?.() ?? []
-    for (const key of tileKeys) {
-      if (key && isWatchable(key))
-        targets.add(key)
-    }
-    return targets
-  })
-
-  // Watch all active targets via a single unified WatchEvents stream.
-  // When the target set changes, tear down the old stream and start a new one.
+  // Watch all agents and terminals on the current worker via a single
+  // unified WatchEvents stream. When the entity set changes (new agent
+  // or terminal created), the effect triggers a stream restart.
   createEffect(() => {
-    const targets = allWatchTargets()
+    const workerId = params.getWorkerId()
     const wsId = params.getActiveWorkspaceId()
 
-    // Build agent and terminal entries from targets.
+    // Collect all agent IDs on this worker.
     const agentEntries: WatchAgentEntry[] = []
-    const terminalEntries: WatchTerminalEntry[] = []
+    const terminalIds: string[] = []
 
-    if (wsId) {
-      for (const target of targets) {
-        const parts = target.split(':')
-        const tabType = Number(parts[0]) as TabType
-        const tabId = parts[1]
-        if (tabType === TabType.AGENT) {
-          agentEntries.push({ agentId: tabId, afterSeq: BigInt(0) } as WatchAgentEntry)
-        }
-        else if (tabType === TabType.TERMINAL) {
-          terminalEntries.push({ terminalId: tabId } as WatchTerminalEntry)
+    if (wsId && workerId) {
+      for (const agent of agentStore.state.agents) {
+        if (agent.workerId === workerId) {
+          agentEntries.push({ agentId: agent.id, afterSeq: BigInt(0) } as WatchAgentEntry)
         }
       }
 
-      // For terminal-only tiles, ensure at least one active agent is watched in background
-      // (so we get status updates, control requests, etc.)
-      if (agentEntries.length === 0) {
-        const bgAgent = agentStore.state.agents.find(a => a.status === AgentStatus.ACTIVE || a.agentSessionId)
-        if (bgAgent) {
-          agentEntries.push({ agentId: bgAgent.id, afterSeq: BigInt(0) } as WatchAgentEntry)
+      for (const terminal of terminalStore.state.terminals) {
+        if (terminal.workerId === workerId) {
+          terminalIds.push(terminal.id)
         }
       }
     }
 
     // Build a key representing the current subscription set.
     const agentIds = agentEntries.map(e => e.agentId).sort()
-    const terminalIds = terminalEntries.map(e => e.terminalId).sort()
-    const newKey = wsId ? `${wsId}|a:${agentIds.join(',')}|t:${terminalIds.join(',')}` : ''
+    const sortedTermIds = [...terminalIds].sort()
+    const newKey = workerId ? `${workerId}|a:${agentIds.join(',')}|t:${sortedTermIds.join(',')}` : ''
 
     // Skip if the subscription set hasn't changed.
     if (newKey === currentTargetsKey)
@@ -432,15 +454,17 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     currentTargetsKey = newKey
 
     // Start new stream if there's anything to watch.
-    if (wsId && (agentEntries.length > 0 || terminalEntries.length > 0)) {
+    if (workerId && (agentEntries.length > 0 || terminalIds.length > 0)) {
       const abort = new AbortController()
       eventStreamAbort = abort
-      watchEvents(wsId, agentEntries, terminalEntries, abort.signal)
+      watchEvents(agentEntries, terminalIds, abort.signal)
     }
   })
 
-  // When the worker goes offline, mark all non-exited terminals as disconnected
-  // and clear stale streaming text from agents.
+  // When the worker goes offline, mark all non-exited terminals as disconnected,
+  // clear stale streaming text, and set active agents to inactive so the
+  // thinking indicator hides. The real status will arrive when the WatchEvents
+  // stream reconnects.
   createEffect(() => {
     if (workerOnline())
       return
@@ -455,16 +479,16 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     }
     for (const a of agentStore.state.agents) {
       chatStore.clearStreamingText(a.id)
+      if (a.status === AgentStatus.ACTIVE) {
+        agentStore.updateAgent(a.id, { status: AgentStatus.INACTIVE })
+      }
     }
   })
 
-  // Lazy message loading for non-watchable agent tabs
+  // Lazy message loading for agent tabs not on the current worker
   createEffect(() => {
     const activeKey = tabStore.state.activeTabKey
     if (!activeKey)
-      return
-    // Skip if already being watched (via global active or tile watchers)
-    if (allWatchTargets().has(activeKey))
       return
     const parts = activeKey.split(':')
     if (parts.length !== 2)
@@ -475,17 +499,23 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     const tabId = parts[1]
     if (chatStore.isInitialLoadComplete(tabId))
       return
-    chatStore.loadInitialMessages(tabId).catch(() => {})
+    const lazyWid = agentStore.state.agents.find(a => a.id === tabId)?.workerId ?? ''
+    chatStore.loadInitialMessages(lazyWid, tabId).catch((err) => {
+      log.warn(`[lazyLoad] Failed to load messages for agent ${tabId}:`, err)
+      showToast('Failed to load chat history', 'danger')
+    })
   })
 
-  // Abort the WebSocket connection on page unload. SolidJS's onCleanup does
-  // not fire on hard browser refresh, so without this the WebSocket stays
+  // Abort the stream on page unload. SolidJS's onCleanup does
+  // not fire on hard browser refresh, so without this the connection stays
   // open as a zombie until the server times it out.
   const abortStream = () => {
     if (eventStreamAbort) {
       eventStreamAbort.abort()
       eventStreamAbort = null
     }
+    previousHandle?.close()
+    previousHandle = null
   }
 
   window.addEventListener('beforeunload', abortStream)
@@ -498,6 +528,5 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
 
   return {
     workerOnline,
-    activeWatchTarget,
   }
 }

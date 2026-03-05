@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,51 +11,122 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/knadh/koanf/parsers/yaml"
+	"github.com/knadh/koanf/providers/confmap"
+	"github.com/knadh/koanf/providers/file"
+	"github.com/knadh/koanf/v2"
 	"github.com/leapmux/leapmux/hub"
+	internalconfig "github.com/leapmux/leapmux/internal/config"
+	hubdb "github.com/leapmux/leapmux/internal/hub/db"
 	"github.com/leapmux/leapmux/internal/logging"
+	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/worker"
 )
 
 // standaloneState persists the auto-registered worker credentials.
 type standaloneState struct {
-	WorkerID  string `json:"worker_id"`
-	AuthToken string `json:"auth_token"`
+	WorkerID   string `json:"worker_id"`
+	AuthToken  string `json:"auth_token"`
+	PublicKey  string `json:"public_key,omitempty"`
+	PrivateKey string `json:"private_key,omitempty"`
 }
 
 func runStandalone(args []string) error {
-	fs := flag.NewFlagSet("leapmux", flag.ExitOnError)
-	addr := fs.String("addr", ":4327", "TCP listen address")
-	dataDir := fs.String("data-dir", defaultStandaloneDataDir(), "data directory")
-	devFrontend := fs.String("dev-frontend", "", "Vite dev server URL (dev mode)")
+	// Define CLI flags.
+	fs := flag.NewFlagSet("leapmux", flag.ContinueOnError)
+	fs.String("addr", ":4327", "TCP listen address")
+	fs.String("data-dir", defaultStandaloneDataDir(), "data directory")
+	fs.String("dev-frontend", "", "Vite dev server URL (dev mode)")
+	fs.Int("db-max-conns", hubdb.DefaultMaxConns, "maximum number of open database connections")
+	fs.String("log-level", "info", "log level (debug, info, warn, error)")
 	showVersion := fs.Bool("version", false, "print version and exit")
-	_ = fs.Parse(args)
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	if *showVersion {
 		fmt.Println(version)
 		return nil
 	}
 
-	logging.PrintBanner("standalone", version, *addr)
-	logging.PrintAccessURL(*addr)
+	// Flag name -> koanf key mapping.
+	fieldMap := map[string]string{
+		"addr":         "addr",
+		"data-dir":     "data_dir",
+		"dev-frontend": "dev_frontend",
+		"db-max-conns": "db_max_conns",
+		"log-level":    "log_level",
+	}
+
+	defaults := map[string]interface{}{
+		"addr":         ":4327",
+		"data_dir":     defaultStandaloneDataDir(),
+		"dev_frontend": "",
+		"db_max_conns": hubdb.DefaultMaxConns,
+		"log_level":    "info",
+	}
+
+	k := koanf.New(".")
+	fp := internalconfig.NewFlagProvider(fs, fieldMap)
+
+	if err := internalconfig.Load(k, defaults, "", "LEAPMUX_HUB_", fp); err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	addr := k.String("addr")
+	dataDir := k.String("data_dir")
+	devFrontend := k.String("dev_frontend")
+	dbMaxConns := k.Int("db_max_conns")
+	logLevel := k.String("log_level")
+
+	// Expand ~ in data dir.
+	dataDir = internalconfig.ExpandHome(dataDir)
+
+	level, err := logging.ParseLevel(logLevel)
+	if err != nil {
+		return fmt.Errorf("invalid log level: %w", err)
+	}
+	logging.SetLevel(level)
+
+	logging.PrintBanner("standalone", version, addr)
+	logging.PrintAccessURL(addr)
 
 	// Ensure top-level data directory exists.
-	if err := os.MkdirAll(*dataDir, 0o750); err != nil {
+	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
 	}
 
-	hubDataDir := filepath.Join(*dataDir, "hub")
-	workerDataDir := filepath.Join(*dataDir, "worker")
+	hubDataDir := filepath.Join(dataDir, "hub")
+	workerDataDir := filepath.Join(dataDir, "worker")
+
+	// Load hub config file if it exists at {data-dir}/hub/hub.yaml.
+	hubConfigPath := filepath.Join(hubDataDir, "hub.yaml")
+	hubK := koanf.New(".")
+	hubDefaults := map[string]interface{}{
+		"max_message_size":       0,
+		"max_incomplete_chunked": 0,
+	}
+	_ = hubK.Load(confmap.Provider(hubDefaults, "."), nil)
+	if _, statErr := os.Stat(hubConfigPath); statErr == nil {
+		_ = hubK.Load(file.Provider(hubConfigPath), yaml.Parser())
+	}
+
+	maxMessageSize := hubK.Int("max_message_size")
+	maxIncompleteChunked := hubK.Int("max_incomplete_chunked")
 
 	// Start the Hub server.
 	server, err := hub.NewServer(hub.ServerConfig{
-		DataDir:     hubDataDir,
-		Addr:        *addr,
-		DevFrontend: *devFrontend,
+		DataDir:              hubDataDir,
+		Addr:                 addr,
+		DevFrontend:          devFrontend,
+		DBMaxConns:           dbMaxConns,
+		MaxMessageSize:       maxMessageSize,
+		MaxIncompleteChunked: maxIncompleteChunked,
 	})
 	if err != nil {
 		return fmt.Errorf("create hub server: %w", err)
@@ -89,6 +161,25 @@ func runStandalone(args []string) error {
 		return fmt.Errorf("auto-register worker: %w", err)
 	}
 
+	// Ensure the worker has an X25519 keypair for E2EE channels.
+	if state.PublicKey == "" || state.PrivateKey == "" {
+		kp, kpErr := noiseutil.GenerateKeypair()
+		if kpErr != nil {
+			stop()
+			wg.Wait()
+			return fmt.Errorf("generate keypair: %w", kpErr)
+		}
+		state.PublicKey = base64.StdEncoding.EncodeToString(kp.Public)
+		state.PrivateKey = base64.StdEncoding.EncodeToString(kp.Private)
+		stateData, _ := json.MarshalIndent(state, "", "  ")
+		if writeErr := os.WriteFile(statePath, stateData, 0o600); writeErr != nil {
+			slog.Warn("failed to save keypair", "error", writeErr)
+		}
+	}
+
+	privateKey, _ := base64.StdEncoding.DecodeString(state.PrivateKey)
+	publicKey, _ := base64.StdEncoding.DecodeString(state.PublicKey)
+
 	slog.Info("standalone worker registered",
 		"worker_id", state.WorkerID,
 		"socket", socketPath,
@@ -99,15 +190,19 @@ func runStandalone(args []string) error {
 	go func() {
 		defer wg.Done()
 		if err := worker.Run(ctx, worker.RunConfig{
-			HubURL:    "unix:" + socketPath,
-			DataDir:   workerDataDir,
-			AuthToken: state.AuthToken,
+			HubURL:     "unix:" + socketPath,
+			DataDir:    workerDataDir,
+			AuthToken:  state.AuthToken,
+			PrivateKey: privateKey,
+			PublicKey:  publicKey,
+			WorkerID:   state.WorkerID,
+			DBMaxConns: dbMaxConns,
 		}); err != nil {
 			slog.Error("worker error", "error", err)
 		}
 	}()
 
-	slog.Info("leapmux standalone listening", "addr", *addr)
+	slog.Info("leapmux standalone listening", "addr", addr)
 
 	// Wait for Hub error or context cancellation.
 	select {
@@ -164,9 +259,7 @@ func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath,
 		return nil, err
 	}
 
-	hostname, _ := os.Hostname()
-
-	creds, err := server.RegisterWorker(ctx, orgID, "Local", hostname, runtime.GOOS, runtime.GOARCH, userID)
+	creds, err := server.RegisterWorker(ctx, orgID, userID)
 	if err != nil {
 		return nil, err
 	}
