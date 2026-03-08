@@ -117,6 +117,8 @@ export interface RenderContext {
   childGlobDurationMs?: number
   /** Glob result: whether results were truncated from child tool_use_result. */
   childGlobTruncated?: boolean
+  /** ToolSearch result: matched tool names from child tool_use_result. */
+  childToolSearchMatches?: string[]
 }
 
 export interface MessageContentRenderer {

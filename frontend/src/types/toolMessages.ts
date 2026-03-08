@@ -75,6 +75,15 @@ export interface TaskOutputInput {
   timeout?: number
 }
 
+export interface ToolSearchInput {
+  query?: string
+  max_results?: number
+}
+
+export interface TaskStopInput {
+  task_id?: string
+}
+
 export interface AskUserQuestionInput {
   questions?: Array<{
     question?: string
@@ -101,6 +110,8 @@ export type KnownToolInput
     | { toolName: 'WebSearch', input: WebSearchInput }
     | { toolName: 'TodoWrite', input: TodoWriteInput }
     | { toolName: 'TaskOutput', input: TaskOutputInput }
+    | { toolName: 'ToolSearch', input: ToolSearchInput }
+    | { toolName: 'TaskStop', input: TaskStopInput }
     | { toolName: 'AskUserQuestion', input: AskUserQuestionInput }
 
 /** All known tool names. */
@@ -119,6 +130,8 @@ const KNOWN_TOOLS = new Set<string>([
   'WebSearch',
   'TaskOutput',
   'TodoWrite',
+  'ToolSearch',
+  'TaskStop',
   'AskUserQuestion',
 ])
 

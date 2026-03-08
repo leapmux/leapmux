@@ -292,6 +292,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       childGlobNumFiles: typeof tur?.numFiles === 'number' ? tur.numFiles : undefined,
       childGlobDurationMs: typeof tur?.durationMs === 'number' ? tur.durationMs : undefined,
       childGlobTruncated: typeof tur?.truncated === 'boolean' ? tur.truncated : undefined,
+      childToolSearchMatches: Array.isArray(tur?.matches) ? tur.matches as string[] : undefined,
     }
   }
 
