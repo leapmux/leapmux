@@ -130,23 +130,6 @@ CREATE TABLE user_preferences (
     updated_at               DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
--- System settings (single-row)
-CREATE TABLE system_settings (
-    id                              INTEGER PRIMARY KEY CHECK (id = 1),
-    signup_enabled                  INTEGER NOT NULL DEFAULT 0,
-    email_verification_required     INTEGER NOT NULL DEFAULT 0,
-    smtp_host                       TEXT NOT NULL DEFAULT '',
-    smtp_port                       INTEGER NOT NULL DEFAULT 587,
-    smtp_username                   TEXT NOT NULL DEFAULT '',
-    smtp_password                   TEXT NOT NULL DEFAULT '',
-    smtp_from_address               TEXT NOT NULL DEFAULT '',
-    smtp_use_tls                    INTEGER NOT NULL DEFAULT 1,
-    api_timeout_seconds             INTEGER NOT NULL DEFAULT 10,
-    agent_startup_timeout_seconds   INTEGER NOT NULL DEFAULT 30,
-    worktree_create_timeout_seconds INTEGER NOT NULL DEFAULT 60,
-    updated_at                      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-);
-
 -- Cross-user Worker access grants (for workspace sharing)
 CREATE TABLE worker_access_grants (
     worker_id  TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
@@ -195,15 +178,11 @@ CREATE TABLE workspace_layouts (
     PRIMARY KEY (workspace_id)
 );
 
--- Insert default system settings row
-INSERT INTO system_settings (id) VALUES (1);
-
 -- +goose Down
 DROP TABLE IF EXISTS workspace_layouts;
 DROP TABLE IF EXISTS workspace_tabs;
 DROP TABLE IF EXISTS workspace_access;
 DROP TABLE IF EXISTS worker_access_grants;
-DROP TABLE IF EXISTS system_settings;
 DROP TABLE IF EXISTS user_preferences;
 DROP TABLE IF EXISTS email_verifications;
 DROP TABLE IF EXISTS workspace_section_items;

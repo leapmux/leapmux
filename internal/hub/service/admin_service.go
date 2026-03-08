@@ -12,22 +12,19 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/hub/validate"
-	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
 
 // AdminService implements the leapmux.v1.AdminService ConnectRPC handler.
 type AdminService struct {
-	queries    *db.Queries
-	timeoutCfg *timeout.Config
+	queries *db.Queries
 }
 
 // NewAdminService creates a new AdminService.
-func NewAdminService(q *db.Queries, tc *timeout.Config) *AdminService {
-	return &AdminService{queries: q, timeoutCfg: tc}
+func NewAdminService(q *db.Queries) *AdminService {
+	return &AdminService{queries: q}
 }
 
 func requireAdmin(ctx context.Context) (*auth.UserInfo, error) {
@@ -39,95 +36,6 @@ func requireAdmin(ctx context.Context) (*auth.UserInfo, error) {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("admin access required"))
 	}
 	return user, nil
-}
-
-func (s *AdminService) GetSettings(ctx context.Context, req *connect.Request[leapmuxv1.GetSettingsRequest]) (*connect.Response[leapmuxv1.GetSettingsResponse], error) {
-	if _, err := requireAdmin(ctx); err != nil {
-		return nil, err
-	}
-
-	settings, err := s.queries.GetSystemSettings(ctx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get settings: %w", err))
-	}
-
-	return connect.NewResponse(&leapmuxv1.GetSettingsResponse{
-		Settings: settingsToProto(&settings),
-	}), nil
-}
-
-func (s *AdminService) UpdateSettings(ctx context.Context, req *connect.Request[leapmuxv1.UpdateSettingsRequest]) (*connect.Response[leapmuxv1.UpdateSettingsResponse], error) {
-	if _, err := requireAdmin(ctx); err != nil {
-		return nil, err
-	}
-
-	// Get current settings to preserve SMTP password if not provided.
-	current, err := s.queries.GetSystemSettings(ctx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get current settings: %w", err))
-	}
-
-	reqSettings := req.Msg.GetSettings()
-
-	smtpPassword := current.SmtpPassword
-	if reqSettings.GetSmtp().GetPassword() != "" {
-		smtpPassword = reqSettings.GetSmtp().GetPassword()
-	}
-
-	var signupEnabled int64
-	if reqSettings.GetSignupEnabled() {
-		signupEnabled = 1
-	}
-	var emailVerificationRequired int64
-	if reqSettings.GetEmailVerificationRequired() {
-		emailVerificationRequired = 1
-	}
-	var smtpUseTls int64
-	if reqSettings.GetSmtp().GetUseTls() {
-		smtpUseTls = 1
-	}
-
-	apiTimeout := int64(reqSettings.GetApiTimeoutSeconds())
-	if apiTimeout <= 0 {
-		apiTimeout = timeout.DefaultAPITimeout
-	}
-	agentStartupTimeout := int64(reqSettings.GetAgentStartupTimeoutSeconds())
-	if agentStartupTimeout <= 0 {
-		agentStartupTimeout = timeout.DefaultAgentStartupTimeout
-	}
-	worktreeCreateTimeout := int64(reqSettings.GetWorktreeCreateTimeoutSeconds())
-	if worktreeCreateTimeout <= 0 {
-		worktreeCreateTimeout = timeout.DefaultWorktreeCreateTimeout
-	}
-
-	if err := s.queries.UpdateSystemSettings(ctx, db.UpdateSystemSettingsParams{
-		SignupEnabled:                signupEnabled,
-		EmailVerificationRequired:    emailVerificationRequired,
-		SmtpHost:                     reqSettings.GetSmtp().GetHost(),
-		SmtpPort:                     int64(reqSettings.GetSmtp().GetPort()),
-		SmtpUsername:                 reqSettings.GetSmtp().GetUsername(),
-		SmtpPassword:                 smtpPassword,
-		SmtpFromAddress:              reqSettings.GetSmtp().GetFromAddress(),
-		SmtpUseTls:                   smtpUseTls,
-		ApiTimeoutSeconds:            apiTimeout,
-		AgentStartupTimeoutSeconds:   agentStartupTimeout,
-		WorktreeCreateTimeoutSeconds: worktreeCreateTimeout,
-	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update settings: %w", err))
-	}
-
-	// Re-fetch to get updated_at.
-	updated, err := s.queries.GetSystemSettings(ctx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get updated settings: %w", err))
-	}
-
-	// Refresh the in-memory timeout config.
-	s.timeoutCfg.Refresh(updated)
-
-	return connect.NewResponse(&leapmuxv1.UpdateSettingsResponse{
-		Settings: settingsToProto(&updated),
-	}), nil
 }
 
 func (s *AdminService) ListUsers(ctx context.Context, req *connect.Request[leapmuxv1.ListUsersRequest]) (*connect.Response[leapmuxv1.ListUsersResponse], error) {
@@ -370,15 +278,10 @@ func (s *AdminService) DeleteUser(ctx context.Context, req *connect.Request[leap
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get user: %w", err))
 	}
 
-	// Delete user (cascade will clean up related rows).
 	if err := s.queries.DeleteUser(ctx, user.ID); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete user: %w", err))
 	}
 
-	// Delete personal org.
-	// Note: DeleteOrg has is_personal = 0 constraint, so we use it
-	// only for non-personal orgs. For personal orgs, the cascade from
-	// user deletion should handle cleanup. If not, we attempt it anyway.
 	_ = s.queries.DeleteOrg(ctx, user.OrgID)
 
 	return connect.NewResponse(&leapmuxv1.DeleteUserResponse{}), nil
@@ -404,29 +307,6 @@ func (s *AdminService) ResetUserPassword(ctx context.Context, req *connect.Reque
 	return connect.NewResponse(&leapmuxv1.ResetUserPasswordResponse{}), nil
 }
 
-func (s *AdminService) GetLogLevel(ctx context.Context, req *connect.Request[leapmuxv1.GetLogLevelRequest]) (*connect.Response[leapmuxv1.GetLogLevelResponse], error) {
-	if _, err := requireAdmin(ctx); err != nil {
-		return nil, err
-	}
-	return connect.NewResponse(&leapmuxv1.GetLogLevelResponse{
-		Level: logging.GetLevel().String(),
-	}), nil
-}
-
-func (s *AdminService) SetLogLevel(ctx context.Context, req *connect.Request[leapmuxv1.SetLogLevelRequest]) (*connect.Response[leapmuxv1.SetLogLevelResponse], error) {
-	if _, err := requireAdmin(ctx); err != nil {
-		return nil, err
-	}
-	level, err := logging.ParseLevel(req.Msg.GetLevel())
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid log level: %w", err))
-	}
-	logging.SetLevel(level)
-	return connect.NewResponse(&leapmuxv1.SetLogLevelResponse{
-		Level: level.String(),
-	}), nil
-}
-
 func adminUserToProto(u *db.User, orgName string) *leapmuxv1.AdminUserView {
 	return &leapmuxv1.AdminUserView{
 		Id:            u.ID,
@@ -439,23 +319,5 @@ func adminUserToProto(u *db.User, orgName string) *leapmuxv1.AdminUserView {
 		OrgName:       orgName,
 		CreatedAt:     timefmt.Format(u.CreatedAt),
 		UpdatedAt:     timefmt.Format(u.UpdatedAt),
-	}
-}
-
-func settingsToProto(s *db.SystemSetting) *leapmuxv1.SystemSettings {
-	return &leapmuxv1.SystemSettings{
-		SignupEnabled:             s.SignupEnabled == 1,
-		EmailVerificationRequired: s.EmailVerificationRequired == 1,
-		Smtp: &leapmuxv1.SmtpConfig{
-			Host:        s.SmtpHost,
-			Port:        int32(s.SmtpPort),
-			Username:    s.SmtpUsername,
-			PasswordSet: s.SmtpPassword != "",
-			FromAddress: s.SmtpFromAddress,
-			UseTls:      s.SmtpUseTls == 1,
-		},
-		ApiTimeoutSeconds:            int32(s.ApiTimeoutSeconds),
-		AgentStartupTimeoutSeconds:   int32(s.AgentStartupTimeoutSeconds),
-		WorktreeCreateTimeoutSeconds: int32(s.WorktreeCreateTimeoutSeconds),
 	}
 }

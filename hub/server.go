@@ -24,7 +24,6 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
-	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/metrics"
@@ -34,15 +33,18 @@ import (
 	"golang.org/x/net/http2/h2c"
 )
 
-// ServerConfig holds configuration for a Hub server.
-type ServerConfig struct {
-	DataDir              string       // Hub data directory (contains DB and socket)
-	Addr                 string       // TCP listen address (empty to disable TCP)
-	DevFrontend          string       // Vite dev server URL (empty for production embedded assets)
-	FrontendHandler      http.Handler // Optional override for frontend serving (nil uses default)
-	DBMaxConns           int          // Maximum number of open database connections (0 = default)
-	MaxMessageSize       int          // Maximum reassembled channel message size (0 = default 16 MiB)
-	MaxIncompleteChunked int          // Maximum in-flight chunked sequences per channel (0 = default 4)
+// ServerOption configures optional aspects of a Hub server.
+type ServerOption func(*serverOptions)
+
+type serverOptions struct {
+	frontendHandler http.Handler
+}
+
+// WithFrontendHandler overrides the default frontend handler.
+func WithFrontendHandler(h http.Handler) ServerOption {
+	return func(o *serverOptions) {
+		o.frontendHandler = h
+	}
 }
 
 // Server is a reusable Hub server instance.
@@ -58,12 +60,10 @@ type Server struct {
 // NewServer creates a new Hub server. It opens the database, runs
 // migrations, bootstraps defaults, and wires all services. Call
 // Serve() to start listening.
-func NewServer(sc ServerConfig) (*Server, error) {
-	cfg := &config.Config{
-		Addr:        sc.Addr,
-		DataDir:     sc.DataDir,
-		DevFrontend: sc.DevFrontend,
-		DBMaxConns:  sc.DBMaxConns,
+func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
+	var so serverOptions
+	for _, opt := range opts {
+		opt(&so)
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -87,52 +87,46 @@ func NewServer(sc ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("bootstrap: %w", err)
 	}
 
-	timeoutCfg, err := timeout.NewFromDB(queries)
-	if err != nil {
-		_ = sqlDB.Close()
-		return nil, fmt.Errorf("load timeout config: %w", err)
-	}
-
 	shutdownCh := make(chan struct{})
 
 	wMgr := workermgr.New()
 	var cMgrOpts []channelmgr.Option
-	if sc.MaxMessageSize > 0 {
-		cMgrOpts = append(cMgrOpts, channelmgr.WithMaxMessageSize(sc.MaxMessageSize))
+	if cfg.MaxMessageSize > 0 {
+		cMgrOpts = append(cMgrOpts, channelmgr.WithMaxMessageSize(cfg.MaxMessageSize))
 	}
-	if sc.MaxIncompleteChunked > 0 {
-		cMgrOpts = append(cMgrOpts, channelmgr.WithMaxIncompleteChunked(sc.MaxIncompleteChunked))
+	if cfg.MaxIncompleteChunked > 0 {
+		cMgrOpts = append(cMgrOpts, channelmgr.WithMaxIncompleteChunked(cfg.MaxIncompleteChunked))
 	}
 	cMgr := channelmgr.New(cMgrOpts...)
-	pendingReqs := workermgr.NewPendingRequests(timeoutCfg.APITimeout)
+	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
-	opts := connect.WithInterceptors(
+	connectOpts := connect.WithInterceptors(
 		auth.NewShutdownInterceptor(shutdownCh),
 		metrics.NewInterceptor(),
-		auth.NewTimeoutInterceptor(timeoutCfg.APITimeout),
+		auth.NewTimeoutInterceptor(cfg.APITimeout),
 		auth.NewInterceptor(queries),
 	)
 
 	mux := http.NewServeMux()
 
-	authSvc := service.NewAuthService(queries)
-	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
+	authSvc := service.NewAuthService(queries, cfg)
+	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, connectOpts)
 	mux.Handle(authPath, authHandler)
 
 	connectorSvc := service.NewWorkerConnectorService(queries, wMgr)
 	connectorSvc.SetShutdownCh(shutdownCh)
 	connectorSvc.SetChannelMgr(cMgr)
 	connectorSvc.SetPendingRequests(pendingReqs)
-	connectorPath, connectorHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(connectorSvc, opts)
+	connectorPath, connectorHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(connectorSvc, connectOpts)
 	mux.Handle(connectorPath, connectorHandler)
 
-	notifierSvc := notifier.New(queries, wMgr, pendingReqs, timeoutCfg)
+	notifierSvc := notifier.New(queries, wMgr, pendingReqs, cfg)
 	mgmtSvc := service.NewWorkerManagementService(queries, wMgr, notifierSvc)
-	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(mgmtSvc, opts)
+	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(mgmtSvc, connectOpts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
 	channelSvc := service.NewChannelService(queries, wMgr, cMgr, pendingReqs)
-	channelPath, channelHandler := leapmuxv1connect.NewChannelServiceHandler(channelSvc, opts)
+	channelPath, channelHandler := leapmuxv1connect.NewChannelServiceHandler(channelSvc, connectOpts)
 	mux.Handle(channelPath, channelHandler)
 
 	// WebSocket endpoint for encrypted channel relay (Frontend ↔ Worker).
@@ -140,31 +134,31 @@ func NewServer(sc ServerConfig) (*Server, error) {
 	mux.Handle("/ws/channel", channelRelay)
 
 	orgSvc := service.NewOrgService(queries, nil)
-	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, opts)
+	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, connectOpts)
 	mux.Handle(orgPath, orgHandler)
 
-	userSvc := service.NewUserService(queries, timeoutCfg)
-	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
+	userSvc := service.NewUserService(queries, cfg)
+	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, connectOpts)
 	mux.Handle(userPath, userHandler)
 
 	sectionSvc := service.NewSectionService(queries)
-	sectionPath, sectionHandler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, opts)
+	sectionPath, sectionHandler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, connectOpts)
 	mux.Handle(sectionPath, sectionHandler)
 
-	adminSvc := service.NewAdminService(queries, timeoutCfg)
-	adminPath, adminHandler := leapmuxv1connect.NewAdminServiceHandler(adminSvc, opts)
+	adminSvc := service.NewAdminService(queries)
+	adminPath, adminHandler := leapmuxv1connect.NewAdminServiceHandler(adminSvc, connectOpts)
 	mux.Handle(adminPath, adminHandler)
 
 	workspaceSvc := service.NewWorkspaceService(queries)
-	workspacePath, workspaceHandler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, opts)
+	workspacePath, workspaceHandler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, connectOpts)
 	mux.Handle(workspacePath, workspaceHandler)
 
 	// Prometheus metrics endpoint.
 	mux.Handle("/metrics", promhttp.Handler())
 
 	// Frontend handler.
-	if sc.FrontendHandler != nil {
-		mux.Handle("/", sc.FrontendHandler)
+	if so.frontendHandler != nil {
+		mux.Handle("/", so.frontendHandler)
 	} else if cfg.DevFrontend != "" {
 		devProxy, proxyErr := frontend.DevProxy(cfg.DevFrontend)
 		if proxyErr != nil {

@@ -19,7 +19,6 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
-	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
@@ -48,16 +47,14 @@ func setupWorkerTestServer(t *testing.T) *workerTestEnv {
 
 	bgMgr := workermgr.New()
 
-	tc, tcErr := timeout.NewFromDB(q)
-	require.NoError(t, tcErr)
-
-	pendingReqs := workermgr.NewPendingRequests(tc.APITimeout)
-	notifierSvc := notifier.New(q, bgMgr, pendingReqs, tc)
+	cfg := testConfig()
+	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
+	notifierSvc := notifier.New(q, bgMgr, pendingReqs, cfg)
 
 	mux := http.NewServeMux()
 	opts := connect.WithInterceptors(auth.NewInterceptor(q))
 
-	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(q), opts)
+	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(q, cfg), opts)
 	mux.Handle(authPath, authHandler)
 
 	connPath, connHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(

@@ -3,13 +3,9 @@ package leapmux.v1;
 
 import "leapmux/v1/common.proto";
 
-// AdminService provides admin-only system management.
+// AdminService provides admin-only user management.
 // Called by Frontend on Hub via ConnectRPC.
 service AdminService {
-  // Get system settings.
-  rpc GetSettings(GetSettingsRequest) returns (GetSettingsResponse);
-  // Update system settings.
-  rpc UpdateSettings(UpdateSettingsRequest) returns (UpdateSettingsResponse);
   // List all users (paginated with optional search).
   rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
   // Get a single user's details.
@@ -22,45 +18,6 @@ service AdminService {
   rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
   // Reset a user's password (admin).
   rpc ResetUserPassword(ResetUserPasswordRequest) returns (ResetUserPasswordResponse);
-  // Get the current hub log level.
-  rpc GetLogLevel(GetLogLevelRequest) returns (GetLogLevelResponse);
-  // Set the hub log level at runtime.
-  rpc SetLogLevel(SetLogLevelRequest) returns (SetLogLevelResponse);
-}
-
-// --- Settings ---
-
-message GetSettingsRequest {}
-
-message GetSettingsResponse {
-  SystemSettings settings = 1;
-}
-
-message UpdateSettingsRequest {
-  SystemSettings settings = 1;
-}
-
-message UpdateSettingsResponse {
-  SystemSettings settings = 1;
-}
-
-message SystemSettings {
-  bool signup_enabled = 1;
-  bool email_verification_required = 2;
-  SmtpConfig smtp = 3;
-  int32 api_timeout_seconds = 4;
-  int32 agent_startup_timeout_seconds = 5;
-  int32 worktree_create_timeout_seconds = 6;
-}
-
-message SmtpConfig {
-  string host = 1;
-  int32 port = 2;
-  string username = 3;
-  bool password_set = 4; // Read-only: indicates password is configured
-  string password = 5;   // Write-only: set to update, empty to keep existing
-  string from_address = 6;
-  bool use_tls = 7;
 }
 
 // --- User Management ---
@@ -118,22 +75,6 @@ message ResetUserPasswordRequest {
 }
 
 message ResetUserPasswordResponse {}
-
-// --- Log Level ---
-
-message GetLogLevelRequest {}
-
-message GetLogLevelResponse {
-  string level = 1; // e.g. "DEBUG", "INFO", "WARN", "ERROR"
-}
-
-message SetLogLevelRequest {
-  string level = 1; // e.g. "DEBUG", "INFO", "WARN", "ERROR"
-}
-
-message SetLogLevelResponse {
-  string level = 1; // The level that was set
-}
 
 message AdminUserView {
   string id = 1;

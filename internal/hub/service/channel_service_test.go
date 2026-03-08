@@ -21,7 +21,6 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/service"
-	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
@@ -51,17 +50,15 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	err = bootstrap.Run(context.Background(), q)
 	require.NoError(t, err)
 
-	tc, tcErr := timeout.NewFromDB(q)
-	require.NoError(t, tcErr)
-
+	cfg := testConfig()
 	wMgr := workermgr.New()
 	cMgr := channelmgr.New()
-	pendingReqs := workermgr.NewPendingRequests(tc.APITimeout)
+	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
 	mux := http.NewServeMux()
 	opts := connect.WithInterceptors(auth.NewInterceptor(q))
 
-	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(q), opts)
+	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(q, cfg), opts)
 	mux.Handle(authPath, authHandler)
 
 	connPath, connHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(

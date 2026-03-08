@@ -11,7 +11,6 @@ import {
   approveRegistrationViaAPI,
   createWorkspaceViaAPI,
   deleteWorkspaceViaAPI,
-  enableSignupViaAPI,
   getAdminOrgId,
   loginViaAPI,
   openAgentViaAPI,
@@ -204,7 +203,7 @@ export async function restartHub(serverInfo: SeparateServerInfo) {
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
-    env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low' },
+    env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low', LEAPMUX_HUB_SIGNUP_ENABLED: 'true' },
   })
   hubProc.unref()
 
@@ -268,7 +267,7 @@ export const processTest = base.extend<
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
-      env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low' },
+      env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low', LEAPMUX_HUB_SIGNUP_ENABLED: 'true' },
     })
     hubProc.unref()
     hubProc.stdout?.on('data', (c: Buffer) => process.stderr.write(`[HUB-OUT] ${c}`))
@@ -280,9 +279,6 @@ export const processTest = base.extend<
     // Login as admin and setup
     const adminToken = await loginViaAPI(hubUrl, 'admin', 'admin')
     const adminOrgId = await getAdminOrgId(hubUrl, adminToken)
-
-    // Enable signup
-    await enableSignupViaAPI(hubUrl, adminToken)
 
     // Start worker in its own process group so stray signals from the test
     // runner's process group don't kill it prematurely.

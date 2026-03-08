@@ -9,21 +9,21 @@ import (
 	"connectrpc.com/connect"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/hub/validate"
 	"golang.org/x/crypto/bcrypt"
 )
 
 // UserService implements the leapmux.v1.UserService ConnectRPC handler.
 type UserService struct {
-	queries    *db.Queries
-	timeoutCfg *timeout.Config
+	queries *db.Queries
+	cfg     *config.Config
 }
 
 // NewUserService creates a new UserService.
-func NewUserService(q *db.Queries, tc *timeout.Config) *UserService {
-	return &UserService{queries: q, timeoutCfg: tc}
+func NewUserService(q *db.Queries, cfg *config.Config) *UserService {
+	return &UserService{queries: q, cfg: cfg}
 }
 
 func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[leapmuxv1.UpdateProfileRequest]) (*connect.Response[leapmuxv1.UpdateProfileResponse], error) {
@@ -159,9 +159,9 @@ func (s *UserService) GetTimeouts(ctx context.Context, req *connect.Request[leap
 	}
 
 	return connect.NewResponse(&leapmuxv1.GetTimeoutsResponse{
-		ApiTimeoutSeconds:            int32(s.timeoutCfg.APITimeout().Seconds()),
-		AgentStartupTimeoutSeconds:   int32(s.timeoutCfg.AgentStartupTimeout().Seconds()),
-		WorktreeCreateTimeoutSeconds: int32(s.timeoutCfg.WorktreeCreateTimeout().Seconds()),
+		ApiTimeoutSeconds:            int32(s.cfg.APITimeout().Seconds()),
+		AgentStartupTimeoutSeconds:   int32(s.cfg.AgentStartupTimeout().Seconds()),
+		WorktreeCreateTimeoutSeconds: int32(s.cfg.WorktreeCreateTimeout().Seconds()),
 	}), nil
 }
 

@@ -19,7 +19,6 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
-	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
@@ -49,11 +48,9 @@ func setupOrgTestServer(t *testing.T) *orgTestEnv {
 
 	bgMgr := workermgr.New()
 
-	tc, tcErr := timeout.NewFromDB(q)
-	require.NoError(t, tcErr)
-
-	pendingReqs := workermgr.NewPendingRequests(tc.APITimeout)
-	notifierSvc := notifier.New(q, bgMgr, pendingReqs, tc)
+	cfg := testConfig()
+	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
+	notifierSvc := notifier.New(q, bgMgr, pendingReqs, cfg)
 
 	mux := http.NewServeMux()
 	opts := connect.WithInterceptors(auth.NewInterceptor(q))
@@ -62,7 +59,7 @@ func setupOrgTestServer(t *testing.T) *orgTestEnv {
 	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, opts)
 	mux.Handle(orgPath, orgHandler)
 
-	authSvc := service.NewAuthService(q)
+	authSvc := service.NewAuthService(q, cfg)
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(authPath, authHandler)
 

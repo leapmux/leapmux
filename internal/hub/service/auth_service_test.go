@@ -14,13 +14,13 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
+	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/service"
-	"github.com/leapmux/leapmux/internal/hub/timeout"
 )
 
-func setupTestServer(t *testing.T) (leapmuxv1connect.AuthServiceClient, *gendb.Queries) {
+func setupAuthTestServer(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, *gendb.Queries) {
 	t.Helper()
 
 	sqlDB, err := db.Open(":memory:")
@@ -37,7 +37,7 @@ func setupTestServer(t *testing.T) (leapmuxv1connect.AuthServiceClient, *gendb.Q
 
 	mux := http.NewServeMux()
 	opts := connect.WithInterceptors(auth.NewInterceptor(q))
-	authSvc := service.NewAuthService(q)
+	authSvc := service.NewAuthService(q, cfg)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 
@@ -49,7 +49,7 @@ func setupTestServer(t *testing.T) (leapmuxv1connect.AuthServiceClient, *gendb.Q
 }
 
 func TestAuthService_LoginSuccess(t *testing.T) {
-	client, _ := setupTestServer(t)
+	client, _ := setupAuthTestServer(t, testConfig())
 
 	resp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username: "admin",
@@ -63,7 +63,7 @@ func TestAuthService_LoginSuccess(t *testing.T) {
 }
 
 func TestAuthService_LoginInvalidPassword(t *testing.T) {
-	client, _ := setupTestServer(t)
+	client, _ := setupAuthTestServer(t, testConfig())
 
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username: "admin",
@@ -74,7 +74,7 @@ func TestAuthService_LoginInvalidPassword(t *testing.T) {
 }
 
 func TestAuthService_GetCurrentUser(t *testing.T) {
-	client, _ := setupTestServer(t)
+	client, _ := setupAuthTestServer(t, testConfig())
 
 	// Login first.
 	loginResp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
@@ -93,7 +93,7 @@ func TestAuthService_GetCurrentUser(t *testing.T) {
 }
 
 func TestAuthService_GetCurrentUser_NoToken(t *testing.T) {
-	client, _ := setupTestServer(t)
+	client, _ := setupAuthTestServer(t, testConfig())
 
 	_, err := client.GetCurrentUser(context.Background(), connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
 	require.Error(t, err)
@@ -101,7 +101,7 @@ func TestAuthService_GetCurrentUser_NoToken(t *testing.T) {
 }
 
 func TestAuthService_Login_EmptyUsername(t *testing.T) {
-	client, _ := setupTestServer(t)
+	client, _ := setupAuthTestServer(t, testConfig())
 
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username: "",
@@ -112,7 +112,7 @@ func TestAuthService_Login_EmptyUsername(t *testing.T) {
 }
 
 func TestAuthService_Login_EmptyPassword(t *testing.T) {
-	client, _ := setupTestServer(t)
+	client, _ := setupAuthTestServer(t, testConfig())
 
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username: "admin",
@@ -123,13 +123,7 @@ func TestAuthService_Login_EmptyPassword(t *testing.T) {
 }
 
 func TestAuthService_SignUp_WhenEnabled(t *testing.T) {
-	client, q := setupTestServer(t)
-
-	// Enable signup in system settings.
-	err := q.UpdateSystemSettings(context.Background(), gendb.UpdateSystemSettingsParams{
-		SignupEnabled: 1,
-	})
-	require.NoError(t, err)
+	client, _ := setupAuthTestServer(t, testConfigWithSignup())
 
 	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username:    "newuser",
@@ -144,9 +138,9 @@ func TestAuthService_SignUp_WhenEnabled(t *testing.T) {
 }
 
 func TestAuthService_SignUp_WhenDisabled(t *testing.T) {
-	client, _ := setupTestServer(t)
+	client, _ := setupAuthTestServer(t, testConfig())
 
-	// Signup is disabled by default after bootstrap.
+	// Signup is disabled by default.
 	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username: "newuser",
 		Password: "newpass123",
@@ -156,16 +150,10 @@ func TestAuthService_SignUp_WhenDisabled(t *testing.T) {
 }
 
 func TestAuthService_SignUp_DuplicateUsername(t *testing.T) {
-	client, q := setupTestServer(t)
-
-	// Enable signup.
-	err := q.UpdateSystemSettings(context.Background(), gendb.UpdateSystemSettingsParams{
-		SignupEnabled: 1,
-	})
-	require.NoError(t, err)
+	client, _ := setupAuthTestServer(t, testConfigWithSignup())
 
 	// First signup should succeed.
-	_, err = client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username: "dupuser",
 		Password: "pass123",
 	}))
@@ -181,7 +169,7 @@ func TestAuthService_SignUp_DuplicateUsername(t *testing.T) {
 }
 
 func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
-	client, q := setupTestServer(t)
+	client, q := setupAuthTestServer(t, testConfig())
 
 	// Login to get a token.
 	loginResp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
@@ -194,9 +182,7 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 	// Set up a UserService client using the same queries and auth interceptor.
 	mux := http.NewServeMux()
 	opts := connect.WithInterceptors(auth.NewInterceptor(q))
-	tc, tcErr := timeout.NewFromDB(q)
-	require.NoError(t, tcErr)
-	userSvc := service.NewUserService(q, tc)
+	userSvc := service.NewUserService(q, testConfig())
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(path, handler)
 	server := httptest.NewServer(mux)
@@ -215,7 +201,7 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 }
 
 func TestAuthService_Logout(t *testing.T) {
-	client, _ := setupTestServer(t)
+	client, _ := setupAuthTestServer(t, testConfig())
 
 	// Login.
 	loginResp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{

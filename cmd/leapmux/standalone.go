@@ -21,6 +21,7 @@ import (
 	"github.com/knadh/koanf/v2"
 	"github.com/leapmux/leapmux/hub"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
+	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
 	hubdb "github.com/leapmux/leapmux/internal/hub/db"
 	"github.com/leapmux/leapmux/internal/logging"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
@@ -64,11 +65,22 @@ func runStandalone(args []string) error {
 	}
 
 	defaults := map[string]interface{}{
-		"addr":         ":4327",
-		"data_dir":     defaultStandaloneDataDir(),
-		"dev_frontend": "",
-		"db_max_conns": hubdb.DefaultMaxConns,
-		"log_level":    "info",
+		"addr":                            ":4327",
+		"data_dir":                        defaultStandaloneDataDir(),
+		"dev_frontend":                    "",
+		"db_max_conns":                    hubdb.DefaultMaxConns,
+		"log_level":                       "info",
+		"signup_enabled":                  false,
+		"email_verification_required":     false,
+		"smtp_host":                       "",
+		"smtp_port":                       587,
+		"smtp_username":                   "",
+		"smtp_password":                   "",
+		"smtp_from_address":               "",
+		"smtp_use_tls":                    true,
+		"api_timeout_seconds":             10,
+		"agent_startup_timeout_seconds":   30,
+		"worktree_create_timeout_seconds": 60,
 	}
 
 	k := koanf.New(".")
@@ -116,18 +128,29 @@ func runStandalone(args []string) error {
 		_ = hubK.Load(file.Provider(hubConfigPath), yaml.Parser())
 	}
 
-	maxMessageSize := hubK.Int("max_message_size")
-	maxIncompleteChunked := hubK.Int("max_incomplete_chunked")
+	hubCfg := &hubconfig.Config{
+		Addr:                         addr,
+		DataDir:                      hubDataDir,
+		DevFrontend:                  devFrontend,
+		DBMaxConns:                   dbMaxConns,
+		MaxMessageSize:               hubK.Int("max_message_size"),
+		MaxIncompleteChunked:         hubK.Int("max_incomplete_chunked"),
+		LogLevel:                     logLevel,
+		SignupEnabled:                k.Bool("signup_enabled"),
+		EmailVerificationRequired:    k.Bool("email_verification_required"),
+		SmtpHost:                     k.String("smtp_host"),
+		SmtpPort:                     k.Int("smtp_port"),
+		SmtpUsername:                 k.String("smtp_username"),
+		SmtpPassword:                 k.String("smtp_password"),
+		SmtpFromAddress:              k.String("smtp_from_address"),
+		SmtpUseTLS:                   k.Bool("smtp_use_tls"),
+		APITimeoutSeconds:            k.Int("api_timeout_seconds"),
+		AgentStartupTimeoutSeconds:   k.Int("agent_startup_timeout_seconds"),
+		WorktreeCreateTimeoutSeconds: k.Int("worktree_create_timeout_seconds"),
+	}
 
 	// Start the Hub server.
-	server, err := hub.NewServer(hub.ServerConfig{
-		DataDir:              hubDataDir,
-		Addr:                 addr,
-		DevFrontend:          devFrontend,
-		DBMaxConns:           dbMaxConns,
-		MaxMessageSize:       maxMessageSize,
-		MaxIncompleteChunked: maxIncompleteChunked,
-	})
+	server, err := hub.NewServer(hubCfg)
 	if err != nil {
 		return fmt.Errorf("create hub server: %w", err)
 	}

@@ -9,7 +9,6 @@ import { test as base, expect } from '@playwright/test'
 import {
   createWorkspaceViaAPI,
   deleteWorkspaceViaAPI,
-  enableSignupViaAPI,
   getAdminOrgId,
   getWorkerId,
   loginViaAPI,
@@ -62,7 +61,7 @@ export const test = base.extend<
       dataDir,
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low', LEAPMUX_WORKER_NAME: 'Local' },
+      env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low', LEAPMUX_WORKER_NAME: 'Local', LEAPMUX_HUB_SIGNUP_ENABLED: 'true' },
     })
 
     // Drain server output to prevent backpressure.
@@ -76,9 +75,6 @@ export const test = base.extend<
     const adminToken = await loginViaAPI(hubUrl, 'admin', 'admin')
     const adminOrgId = await getAdminOrgId(hubUrl, adminToken)
     const workerId = await getWorkerId(hubUrl, adminToken)
-
-    // Enable signup so signup tests work
-    await enableSignupViaAPI(hubUrl, adminToken)
 
     // Create newuser for sharing tests
     const newuserToken = await signUpViaAPI(hubUrl, 'newuser', 'password123', 'New User', 'new@test.com')

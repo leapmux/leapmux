@@ -93,23 +93,6 @@ export async function signUpViaAPI(
 }
 
 /**
- * Enable signup via admin API.
- */
-export async function enableSignupViaAPI(hubUrl: string, adminToken: string): Promise<void> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.AdminService/UpdateSettings`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${adminToken}`,
-    },
-    body: JSON.stringify({ settings: { signupEnabled: true } }),
-  })
-  if (!res.ok) {
-    throw new Error(`enableSignupViaAPI failed: ${res.status}`)
-  }
-}
-
-/**
  * Get the admin user's personal org ID via the Connect API.
  */
 export async function getAdminOrgId(hubUrl: string, token: string): Promise<string> {
