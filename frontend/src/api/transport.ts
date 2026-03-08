@@ -85,11 +85,6 @@ export async function loadTimeouts(): Promise<void> {
   }
 }
 
-/** Get the current timeout config (for admin settings display). */
-export function getTimeoutConfig(): Readonly<TimeoutConfig> {
-  return timeoutConfig
-}
-
 // ---------------------------------------------------------------------------
 // Per-call timeout helpers (return CallOptions with timeoutMs)
 // ---------------------------------------------------------------------------

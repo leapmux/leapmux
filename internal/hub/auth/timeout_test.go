@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
+	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/service"
 )
 
@@ -39,7 +40,7 @@ func setupTimeoutTestServer(t *testing.T, timeout time.Duration) (leapmuxv1conne
 	err := bootstrap.Run(context.Background(), q)
 	require.NoError(t, err)
 
-	capture := &timeoutCapture{inner: service.NewAuthService(q)}
+	capture := &timeoutCapture{inner: service.NewAuthService(q, &config.Config{})}
 
 	mux := http.NewServeMux()
 	interceptors := connect.WithInterceptors(auth.NewTimeoutInterceptor(func() time.Duration { return timeout }))

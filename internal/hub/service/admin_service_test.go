@@ -18,7 +18,6 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/service"
-	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
@@ -44,10 +43,7 @@ func setupAdminTestServer(t *testing.T) *adminTestEnv {
 	err = bootstrap.Run(context.Background(), q)
 	require.NoError(t, err)
 
-	tc, err := timeout.NewFromDB(q)
-	require.NoError(t, err)
-
-	adminSvc := service.NewAdminService(q, tc)
+	adminSvc := service.NewAdminService(q)
 
 	mux := http.NewServeMux()
 	opts := connect.WithInterceptors(auth.NewInterceptor(q))
@@ -95,104 +91,6 @@ func (e *adminTestEnv) createNonAdminUser(t *testing.T) (userID, token string) {
 	token, _, loginErr := auth.Login(ctx, e.queries, "regularuser", "userpass")
 	require.NoError(t, loginErr)
 	return
-}
-
-// --- GetSettings ---
-
-func TestAdminService_GetSettings(t *testing.T) {
-	env := setupAdminTestServer(t)
-
-	resp, err := env.client.GetSettings(context.Background(), authedReq(&leapmuxv1.GetSettingsRequest{}, env.token))
-	require.NoError(t, err)
-
-	settings := resp.Msg.GetSettings()
-	assert.NotNil(t, settings)
-	// Default settings: signup disabled, email verification not required.
-	assert.False(t, settings.GetSignupEnabled())
-	assert.False(t, settings.GetEmailVerificationRequired())
-}
-
-func TestAdminService_GetSettings_NonAdmin(t *testing.T) {
-	env := setupAdminTestServer(t)
-	_, nonAdminToken := env.createNonAdminUser(t)
-
-	_, err := env.client.GetSettings(context.Background(), authedReq(&leapmuxv1.GetSettingsRequest{}, nonAdminToken))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
-}
-
-// --- UpdateSettings ---
-
-func TestAdminService_UpdateSettings(t *testing.T) {
-	env := setupAdminTestServer(t)
-
-	// Enable signup.
-	resp, err := env.client.UpdateSettings(context.Background(), authedReq(&leapmuxv1.UpdateSettingsRequest{
-		Settings: &leapmuxv1.SystemSettings{
-			SignupEnabled:             true,
-			EmailVerificationRequired: true,
-			Smtp: &leapmuxv1.SmtpConfig{
-				Host:        "smtp.example.com",
-				Port:        587,
-				Username:    "mailuser",
-				Password:    "mailpass",
-				FromAddress: "noreply@example.com",
-				UseTls:      true,
-			},
-		},
-	}, env.token))
-	require.NoError(t, err)
-
-	settings := resp.Msg.GetSettings()
-	assert.True(t, settings.GetSignupEnabled())
-	assert.True(t, settings.GetEmailVerificationRequired())
-	assert.Equal(t, "smtp.example.com", settings.GetSmtp().GetHost())
-	assert.Equal(t, int32(587), settings.GetSmtp().GetPort())
-	assert.Equal(t, "mailuser", settings.GetSmtp().GetUsername())
-	assert.True(t, settings.GetSmtp().GetPasswordSet())
-	assert.Equal(t, "noreply@example.com", settings.GetSmtp().GetFromAddress())
-	assert.True(t, settings.GetSmtp().GetUseTls())
-
-	// Verify via GetSettings.
-	getResp, err := env.client.GetSettings(context.Background(), authedReq(&leapmuxv1.GetSettingsRequest{}, env.token))
-	require.NoError(t, err)
-	assert.True(t, getResp.Msg.GetSettings().GetSignupEnabled())
-	assert.True(t, getResp.Msg.GetSettings().GetSmtp().GetPasswordSet())
-}
-
-func TestAdminService_UpdateSettings_PreservesSmtpPassword(t *testing.T) {
-	env := setupAdminTestServer(t)
-
-	// Set an SMTP password first.
-	_, err := env.client.UpdateSettings(context.Background(), authedReq(&leapmuxv1.UpdateSettingsRequest{
-		Settings: &leapmuxv1.SystemSettings{
-			Smtp: &leapmuxv1.SmtpConfig{
-				Host:     "smtp.example.com",
-				Password: "secretpass",
-			},
-		},
-	}, env.token))
-	require.NoError(t, err)
-
-	// Update settings without providing a password (empty string).
-	resp, err := env.client.UpdateSettings(context.Background(), authedReq(&leapmuxv1.UpdateSettingsRequest{
-		Settings: &leapmuxv1.SystemSettings{
-			SignupEnabled: true,
-			Smtp: &leapmuxv1.SmtpConfig{
-				Host: "smtp.example.com",
-				// Password intentionally omitted (empty).
-			},
-		},
-	}, env.token))
-	require.NoError(t, err)
-
-	// The password should still be set (preserved from the previous update).
-	assert.True(t, resp.Msg.GetSettings().GetSmtp().GetPasswordSet())
-
-	// Verify the actual password in the database was preserved.
-	dbSettings, err := env.queries.GetSystemSettings(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, "secretpass", dbSettings.SmtpPassword)
 }
 
 // --- ListUsers ---
@@ -472,12 +370,6 @@ func TestAdminService_NonAdmin_AllEndpoints(t *testing.T) {
 		}},
 		{"DeleteUser", func() error {
 			_, err := env.client.DeleteUser(context.Background(), authedReq(&leapmuxv1.DeleteUserRequest{UserId: env.userID}, nonAdminToken))
-			return err
-		}},
-		{"UpdateSettings", func() error {
-			_, err := env.client.UpdateSettings(context.Background(), authedReq(&leapmuxv1.UpdateSettingsRequest{
-				Settings: &leapmuxv1.SystemSettings{SignupEnabled: true},
-			}, nonAdminToken))
 			return err
 		}},
 	}

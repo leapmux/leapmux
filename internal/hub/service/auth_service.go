@@ -11,6 +11,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/validate"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -19,11 +20,12 @@ import (
 // AuthService implements the leapmux.v1.AuthService ConnectRPC handler.
 type AuthService struct {
 	queries *db.Queries
+	cfg     *config.Config
 }
 
 // NewAuthService creates a new AuthService.
-func NewAuthService(q *db.Queries) *AuthService {
-	return &AuthService{queries: q}
+func NewAuthService(q *db.Queries, cfg *config.Config) *AuthService {
+	return &AuthService{queries: q, cfg: cfg}
 }
 
 func (s *AuthService) Login(ctx context.Context, req *connect.Request[leapmuxv1.LoginRequest]) (*connect.Response[leapmuxv1.LoginResponse], error) {
@@ -73,12 +75,7 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[l
 }
 
 func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1.SignUpRequest]) (*connect.Response[leapmuxv1.SignUpResponse], error) {
-	// Check if sign-up is enabled.
-	settings, err := s.queries.GetSystemSettings(ctx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get settings: %w", err))
-	}
-	if settings.SignupEnabled == 0 {
+	if !s.cfg.SignupEnabled {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("sign-up is disabled"))
 	}
 
@@ -151,8 +148,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 	}
 
 	// Check if email verification is required.
-	if settings.EmailVerificationRequired == 1 && req.Msg.GetEmail() != "" {
-		// Create verification token.
+	if s.cfg.EmailVerificationRequired && req.Msg.GetEmail() != "" {
 		verificationID := id.Generate()
 		verificationToken := id.Generate()
 		expiresAt := time.Now().Add(24 * time.Hour).UTC()
@@ -198,12 +194,10 @@ func (s *AuthService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	// Check expiration.
 	if time.Now().UTC().After(verification.ExpiresAt) {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("verification token expired"))
 	}
 
-	// Mark email as verified.
 	if err := s.queries.UpdateUserEmailVerified(ctx, db.UpdateUserEmailVerifiedParams{
 		EmailVerified: 1,
 		ID:            verification.UserID,
@@ -211,12 +205,10 @@ func (s *AuthService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	// Clean up verification tokens.
 	if err := s.queries.DeleteEmailVerificationsByUserID(ctx, verification.UserID); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	// Create session for the user.
 	user, err := s.queries.GetUserByID(ctx, verification.UserID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -244,12 +236,8 @@ func (s *AuthService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 }
 
 func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[leapmuxv1.GetSystemInfoRequest]) (*connect.Response[leapmuxv1.GetSystemInfoResponse], error) {
-	settings, err := s.queries.GetSystemSettings(ctx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get system settings: %w", err))
-	}
 	return connect.NewResponse(&leapmuxv1.GetSystemInfoResponse{
-		SignupEnabled: settings.SignupEnabled == 1,
+		SignupEnabled: s.cfg.SignupEnabled,
 	}), nil
 }
 

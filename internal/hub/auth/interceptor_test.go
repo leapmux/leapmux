@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
+	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/service"
 )
 
@@ -31,7 +32,7 @@ func setupInterceptorTestServer(t *testing.T) leapmuxv1connect.AuthServiceClient
 
 	mux := http.NewServeMux()
 	interceptors := connect.WithInterceptors(auth.NewInterceptor(q))
-	authSvc := service.NewAuthService(q)
+	authSvc := service.NewAuthService(q, &config.Config{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 

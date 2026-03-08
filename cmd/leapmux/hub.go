@@ -31,14 +31,7 @@ func runHub(args []string) error {
 	logging.PrintBanner("hub", version, cfg.Addr)
 	logging.PrintAccessURL(cfg.Addr)
 
-	server, err := hub.NewServer(hub.ServerConfig{
-		DataDir:              cfg.DataDir,
-		Addr:                 cfg.Addr,
-		DevFrontend:          cfg.DevFrontend,
-		DBMaxConns:           cfg.DBMaxConns,
-		MaxMessageSize:       cfg.MaxMessageSize,
-		MaxIncompleteChunked: cfg.MaxIncompleteChunked,
-	})
+	server, err := hub.NewServer(cfg)
 	if err != nil {
 		return err
 	}
