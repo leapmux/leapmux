@@ -15,7 +15,7 @@ LeapMux is a platform for running and managing multiple Claude Code instances th
 
 ## Table of Contents
 
-- [Overview](#overview)
+- [What is LeapMux?](#what-is-leapmux)
 - [Architecture](#architecture)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
@@ -29,52 +29,48 @@ LeapMux is a platform for running and managing multiple Claude Code instances th
 
 ---
 
-## Overview
+## What is LeapMux?
 
-LeapMux is an **AI coding agent multiplexer** that enables developers to run multiple Claude Code instances simultaneously from a single web interface. It provides a centralized hub for managing AI coding agents across different workspaces and backends.
-
-### What is LeapMux?
-
-LeapMux acts as a multiplexer for Claude Code instances, allowing you to:
-- Run multiple AI coding agents in parallel across different workspaces
-- Access remote development backends through a web interface
-- Share workspaces and backends with team members
-- Interact with terminals and browse files on remote systems
-- Manage agent lifecycles, messages, and permissions centrally
+LeapMux is an **AI coding agent multiplexer** that enables developers to run multiple Claude Code instances simultaneously from a single web interface. Connect remote development backends (even behind NATs), organize work across tiling workspaces, interact with terminals, browse and diff files with full git and worktree awareness, and collaborate with your team, all with end-to-end encrypted communication.
 
 ### Key Features
 
-- **Multi-Agent Workspaces**: Run multiple Claude Code instances simultaneously
+- **Multi-Agent Workspaces**: Run multiple local or remote Claude Code instances simultaneously
+- **Tiling Layout**: Split the workspace into resizable horizontal/vertical panes — run chat and terminal side by side
 - **Terminal Access**: Interactive PTY sessions with real-time I/O streaming
-- **File Browser**: Browse and read files on remote backends
+- **Git-Aware File Browser**: Browse files on remote backends with real-time git status, change/staged/unstaged filters, and inline diffs
+- **Rich File Viewer**: Syntax-highlighted source, image preview with zoom/pan, hex view for binaries, and side-by-side or unified diffs
+- **Git Worktree Management**: Agents and terminals auto-create isolated git worktrees per task, with dirty-worktree protection
+- **End-to-End Encryption**: All Frontend-Worker traffic is encrypted via Noise_NK over multiplexed WebSocket channels — the Hub cannot read it
+- **Multi-Organization Support**: Create teams with role-based access control (Owner/Admin/Member) and automatic resource cleanup
 - **Workspace Sharing**: Collaborate by sharing workspaces with specific users or organizations
-- **Backend Management**: Register and manage multiple development backends
-- **Real-Time Communication**: Bidirectional streaming for messages and events
-- **Permission Management**: Control requests for agent permission prompts
-- **Message Delivery**: Reliable message delivery with retry and error handling
+- **Backend Management**: Register and manage multiple development backends with approval workflow
+- **NAT Traversal**: Workers initiate outbound connections, so they run behind firewalls without port forwarding
 
 ---
 
 ## Architecture
 
-LeapMux uses a three-tier architecture with a centralized hub mediating all communication between the frontend and workers:
+LeapMux uses a three-tier architecture. The Hub handles authentication and routing, while the Frontend communicates directly with Workers through end-to-end encrypted channels relayed by the Hub:
 
 ```
 ┌─────────────────┐  ConnectRPC  ┌─────────────────┐                 ┌───────────────────┐
 │                 │  WebSocket   │                 │   gRPC (bidi)   │  Worker 1         │
 │    Frontend     │◄────────────►│       Hub       │◄───────────────►│  ┌─────────────┐  │
-│    (Browser)    │              │    (Central)    │                 │  │ Claude Code │  │
+│    (Browser)    │    (E2EE)    │    (Relay)      │                 │  │ Claude Code │  │
 │                 │              │                 │                 │  │ (multiple)  │  │
 │    SolidJS      │              │   Go Service    │                 │  └─────────────┘  │
-│    Web App      │              │   + Database    │                 └───────────────────┘
-│                 │              │                 │                           ⋮
-└─────────────────┘              └─────────────────┘                 ┌───────────────────┐
-                                          │                          │  Worker N         │
-                                          ▼                          │  ┌─────────────┐  │
-                                  ┌───────────────┐                  │  │ Claude Code │  │
-                                  │    SQLite     │                  │  │ (multiple)  │  │
-                                  │               │                  │  └─────────────┘  │
-                                  └───────────────┘                  └───────────────────┘
+│    Web App      │              │   + Database    │                 │  + Database       │
+│                 │              │                 │                 └───────────────────┘
+└─────────────────┘              └─────────────────┘                           ⋮
+                                         │                          ┌───────────────────┐
+                                         ▼                          │  Worker N         │
+                                 ┌───────────────┐                  │  ┌─────────────┐  │
+                                 │    SQLite     │                  │  │ Claude Code │  │
+                                 │               │                  │  │ (multiple)  │  │
+                                 └───────────────┘                  │  └─────────────┘  │
+                                                                    │  + Database       │
+                                                                    └───────────────────┘
 ```
 
 LeapMux is built as a single Go binary (`leapmux`) that can run in three modes:
@@ -87,27 +83,29 @@ LeapMux is built as a single Go binary (`leapmux`) that can run in three modes:
 
 **Frontend (SolidJS)**
 - Web application providing the user interface
-- Communicates with Hub via ConnectRPC and WebSocket (for event streaming)
+- Communicates with Hub via ConnectRPC (for auth and workspace management)
+- Establishes end-to-end encrypted channels to Workers (Noise_NK handshake, multiplexed WebSocket relay)
+- Key pinning with TOFU (Trust On First Use) model for Worker identity verification
 - Manages UI state for workspaces, agents, terminals, and file browsing
-- Real-time message streaming and chat interface
 
 **Hub (Go)**
-- Central orchestration service that routes all traffic
-- Manages user authentication, workspaces, and worker registration
-- Stores persistent data in SQLite
-- Handles bidirectional streaming for real-time events
-- No direct Frontend-Worker communication (all traffic goes through Hub)
+- Authentication, workspace management, and worker registration service
+- Relays encrypted Frontend-Worker traffic without decrypting it
+- Stores persistent data in SQLite (users, workspaces, worker registry)
+- No access to channel plaintext — acts as an authenticated relay
 
 **Worker (Go)**
 - Wraps Claude Code instances and provides system access
-- Manages PTY sessions for terminal access
-- Provides file system browsing capabilities
-- Communicates with Hub via standard gRPC (over TCP or Unix domain socket)
+- Handles agent lifecycle, terminal sessions, file browsing, and git operations
+- Maintains its own SQLite database for agent and terminal state
+- Communicates with Hub via gRPC (over TCP or Unix domain socket)
+- Terminates E2EE channels from the Frontend (Noise_NK responder)
 - Auto-reconnects to Hub on disconnection
 
 ### Communication
 
-- **Frontend → Hub**: ConnectRPC (gRPC-compatible) for RPCs, WebSocket for event streaming
+- **Frontend → Hub**: ConnectRPC (gRPC-compatible) for authentication, workspace management, and worker registration
+- **Frontend → Worker (via Hub relay)**: End-to-end encrypted channels using Noise_NK_25519_ChaChaPoly_BLAKE2b, multiplexed over a single WebSocket connection through the Hub
 - **Worker → Hub**: Standard gRPC with bidirectional streaming (over TCP or Unix domain socket).
   - Workers initiate outbound connections to the Hub, so they can run behind NATs, without requiring inbound port access.
   - For local workers on the same machine, connect via Unix domain socket using `unix:<socket-path>` as the Hub URL.
@@ -275,7 +273,7 @@ task generate-sqlc    # Generate type-safe SQL code for the hub
 Task uses checksums to skip generation when source files haven't changed. To force regeneration, use `task --force generate`.
 
 Always run `task generate-proto` after modifying `.proto` files in `/proto/leapmux/v1/`.
-Always run `task generate-sqlc` after modifying `.sql` files in `/internal/hub/db/queries/`.
+Always run `task generate-sqlc` after modifying `.sql` files in `/internal/hub/db/queries/` or `/internal/worker/db/queries/`.
 
 ### Preparation
 
@@ -344,7 +342,8 @@ Tool and base image versions are centralized in the `versions.yaml` file at the 
 ### Frontend
 
 - **[Bun](https://bun.sh/)** - Runtime and package manager
-- **[ConnectRPC](https://connectrpc.com/)** (@connectrpc/connect-web) - RPC client for browser
+- **[ConnectRPC](https://connectrpc.com/)** - RPC client for browser
+- **[Noble](https://paulmillr.com/noble/)** - Cryptographic primitives for E2EE (X25519, ChaCha20-Poly1305, BLAKE2b)
 - **[Corvu](https://corvu.dev/)** - Resizable panel components
 - **[Lucide](https://lucide.dev/)** - Icon library
 - **[Milkdown](https://milkdown.dev/)** - Markdown editor
@@ -370,9 +369,11 @@ Tool and base image versions are centralized in the `versions.yaml` file at the 
 
 ### Worker (Claude Code Wrapper)
 
+- **[flynn/noise](https://github.com/flynn/noise)** - Noise protocol implementation for E2EE channel handling
 - **[Git](https://git-scm.com/)** - Repository info and worktree management
 - **[Go](https://go.dev/)** - Primary language
 - **[gRPC](https://grpc.io/)** - Communication with Hub
+- **[SQLite](https://sqlite.org/)** - Embedded database for agent and terminal state
 
 ### Build Tools
 
@@ -421,37 +422,40 @@ leapmux/
 ├── icons/                  # SVG icons (light, dark, and default variants)
 │
 ├── internal/
-│   ├── hub/                # Hub implementation
-│   │   ├── agentmgr/       # Agent message routing and event broadcasting
-│   │   ├── auth/           # Session-based authentication
-│   │   ├── bootstrap/      # Database initialization and seeding
-│   │   ├── config/         # Hub configuration
-│   │   ├── db/             # Database driver, migrations, and queries
-│   │   ├── email/          # Email sending
-│   │   ├── frontend/       # Frontend asset embedding and dev proxy
-│   │   ├── generated/      # sqlc-generated code (gitignored)
-│   │   ├── id/             # Unique ID generation
-│   │   ├── layout/         # Workspace tiling layout management
-│   │   ├── lexorank/       # LexoRank ordering for sections
-│   │   ├── msgcodec/       # Message compression (zstd)
-│   │   ├── notifier/       # Worker notification queue (persistent delivery with retries)
-│   │   ├── service/        # RPC service implementations
-│   │   ├── terminalmgr/    # Terminal session management
-│   │   ├── timeout/        # Timeout configuration
-│   │   ├── validate/       # Input validation
-│   │   └── workermgr/      # Worker connection registry and pending approvals
+│   ├── config/            # Shared configuration loading (koanf-based)
 │   │
-│   ├── logging/            # Structured logging and middleware
-│   ├── metrics/            # Prometheus metrics and interceptors
-│   ├── util/               # Shared utilities (timefmt, sanitize, testutil)
+│   ├── hub/               # Hub implementation
+│   │   ├── agentmgr/      # Agent event broadcasting
+│   │   ├── auth/          # Session-based authentication
+│   │   ├── bootstrap/     # Database initialization and seeding
+│   │   ├── channelmgr/    # E2EE channel routing and chunk validation
+│   │   ├── config/        # Hub configuration
+│   │   ├── db/            # Database driver, migrations, and queries
+│   │   ├── frontend/      # Frontend asset embedding and dev proxy
+│   │   ├── generated/     # sqlc-generated code (gitignored)
+│   │   ├── layout/        # Workspace tiling layout management
+│   │   ├── notifier/      # Worker notification queue (persistent delivery with retries)
+│   │   ├── service/       # RPC service implementations (auth, workspace, channel relay)
+│   │   ├── terminalmgr/   # Terminal session management
+│   │   ├── timeout/       # Timeout configuration
+│   │   ├── validate/      # Input validation
+│   │   └── workermgr/     # Worker connection registry and pending approvals
 │   │
-│   └── worker/             # Worker implementation
-│       ├── agent/          # Claude Code process management
-│       ├── config/         # Worker configuration
-│       ├── filebrowser/    # File system access
-│       ├── gitutil/        # Git repository utilities
-│       ├── hub/            # gRPC client to Hub (with auto-reconnect)
-│       └── terminal/       # PTY session management
+│   ├── logging/           # Structured logging and middleware
+│   ├── metrics/           # Prometheus metrics and interceptors
+│   ├── noise/             # Noise_NK protocol and key fingerprinting
+│   ├── util/              # Shared utilities (id, lexorank, msgcodec, timefmt, testutil)
+│   │
+│   └── worker/            # Worker implementation
+│       ├── agent/         # Claude Code process management
+│       ├── channel/       # E2EE channel session management and dispatch
+│       ├── config/        # Worker configuration
+│       ├── db/            # Worker database driver, migrations, and queries
+│       ├── filebrowser/   # File system access
+│       ├── gitutil/       # Git repository utilities
+│       ├── hub/           # gRPC client to Hub (with auto-reconnect)
+│       ├── service/       # Agent, terminal, file, and git service handlers
+│       └── terminal/      # PTY session management
 │
 ├── proto/                  # Protocol Buffer definitions
 │   └── leapmux/v1/         # Service and message definitions
