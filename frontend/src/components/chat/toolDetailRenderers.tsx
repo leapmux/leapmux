@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from './messageRenderers'
-import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, WebFetchInput, WebSearchInput, WriteInput } from '~/types/toolMessages'
+import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, TaskStopInput, ToolSearchInput, WebFetchInput, WebSearchInput, WriteInput } from '~/types/toolMessages'
 import { diffLines } from 'diff'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { relativizePath } from './messageUtils'
@@ -117,6 +117,18 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
       const status = formatTaskStatus(task?.status)
       const title = `${status}${description ? ` - ${description}` : ''}`
       return <span class={toolInputText}>{title}</span>
+    }
+    case 'ToolSearch': {
+      const { query } = input as ToolSearchInput
+      return query
+        ? <span class={toolInputCode}>{`"${query}"`}</span>
+        : null
+    }
+    case 'TaskStop': {
+      const { task_id: taskId } = input as TaskStopInput
+      return taskId
+        ? <span class={toolInputText}>{`Stop task ${taskId}`}</span>
+        : <span class={toolInputText}>Stop task</span>
     }
     case 'EnterPlanMode':
       return <span class={toolInputText}>Entering Plan Mode</span>

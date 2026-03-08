@@ -18,6 +18,7 @@ import FoldVertical from 'lucide-solid/icons/fold-vertical'
 import FolderSearch from 'lucide-solid/icons/folder-search'
 import Globe from 'lucide-solid/icons/globe'
 import ListTodo from 'lucide-solid/icons/list-todo'
+import OctagonX from 'lucide-solid/icons/octagon-x'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import Quote from 'lucide-solid/icons/quote'
 import Rows2 from 'lucide-solid/icons/rows-2'
@@ -157,6 +158,8 @@ export function toolIconFor(name: string): LucideIcon {
     case 'AskUserQuestion': return Vote
     case 'TaskOutput': return SquareTerminal
     case 'Skill': return Toolbox
+    case 'ToolSearch': return Toolbox
+    case 'TaskStop': return OctagonX
     default: return ChevronsRight
   }
 }
@@ -354,6 +357,12 @@ function deriveToolSummary(toolName: string, input: Record<string, unknown>, con
         ? <div class={toolInputSummary}>{parts.join(' \u00B7 ')}</div>
         : undefined
     }
+    case 'ToolSearch': {
+      const matches = context?.childToolSearchMatches
+      if (!matches || matches.length === 0)
+        return undefined
+      return <div class={toolInputSummary}>{`Found ${matches.length} tool${matches.length === 1 ? '' : 's'}`}</div>
+    }
     case 'Agent':
     case 'Task': {
       const status = context?.childToolResultStatus
@@ -465,6 +474,26 @@ function FileListView(props: {
         )}
       </For>
     </ul>
+  )
+}
+
+/** ToolSearch result view showing matched tool names. */
+function ToolSearchResultView(props: {
+  matches: string[]
+}): JSX.Element {
+  return (
+    <div class={toolMessage}>
+      <Show
+        when={props.matches.length > 0}
+        fallback={<div class={toolResultContentPre}>No tools found</div>}
+      >
+        <ul class={toolFileList}>
+          <For each={props.matches}>
+            {name => <li class={toolInputPath}>{name}</li>}
+          </For>
+        </ul>
+      </Show>
+    </div>
   )
 }
 
@@ -669,6 +698,12 @@ export const toolResultRenderer: MessageContentRenderer = {
           context={context}
         />
       )
+    }
+
+    // ToolSearch: render matched tool names from tool_use_result.
+    if (toolName === 'ToolSearch' && toolUseResult) {
+      const matches = Array.isArray(toolUseResult.matches) ? toolUseResult.matches as string[] : []
+      return <ToolSearchResultView matches={matches} />
     }
 
     // Glob: render structured result view when tool_use_result has filenames.
