@@ -55,10 +55,14 @@ COPY --from=proto-gen /src/generated/ generated/
 COPY internal/hub/sqlc.yaml internal/hub/sqlc.yaml
 COPY internal/hub/db/queries/ internal/hub/db/queries/
 COPY internal/hub/db/migrations/ internal/hub/db/migrations/
+COPY internal/worker/sqlc.yaml internal/worker/sqlc.yaml
+COPY internal/worker/db/queries/ internal/worker/db/queries/
+COPY internal/worker/db/migrations/ internal/worker/db/migrations/
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     go install github.com/sqlc-dev/sqlc/cmd/sqlc@v${SQLC_VERSION} && \
-    cd internal/hub && sqlc generate
+    cd internal/hub && sqlc generate && \
+    cd /src/internal/worker && sqlc generate
 
 # Embed frontend assets
 COPY internal/hub/frontend.embed internal/hub/generated/frontend/embed.go
