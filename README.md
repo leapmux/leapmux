@@ -1,21 +1,30 @@
+[![License: FSL-1.1-ALv2](https://img.shields.io/badge/License-FSL--1.1--ALv2-blue.svg)](LICENSE.md)
+
 <p align="center">
   <img src="icons/leapmux-icon.svg" alt="LeapMux" width="128" height="128">
 </p>
 
 # LeapMux
 
-**AI Coding Agent Multiplexer**
+LeapMux is an **AI coding agent multiplexer** that enables developers to run multiple Claude Code instances simultaneously from a single web interface. Connect remote development backends (even behind NATs), organize work across tiling workspaces, interact with terminals, browse and diff files with full git and worktree awareness, and collaborate with your team, all with end-to-end encrypted communication.
 
-LeapMux is a platform for running and managing multiple Claude Code instances through a centralized web interface.
+## Key Features
 
-[![License: FSL-1.1-ALv2](https://img.shields.io/badge/License-FSL--1.1--ALv2-blue.svg)](LICENSE.md)
-![Version](https://img.shields.io/badge/version-0.0.1--dev-orange.svg)
+- **Multi-Agent Workspaces**: Run multiple local or remote Claude Code instances simultaneously
+- **Tiling Layout**: Split the workspace into resizable horizontal/vertical panes — run chats and terminals side by side
+- **Git-Aware File Browser**: Browse files on remote backends with real-time git status, change/staged/unstaged filters, and inline diffs
+- **Rich File Viewer**: Syntax-highlighted source, image preview with zoom/pan, hex view for binaries, and side-by-side or unified diffs
+- **Git Worktree Management**: Agents and terminals auto-create isolated git worktrees per task, with dirty-worktree protection
+- **End-to-End Encryption**: All Frontend-Worker traffic is encrypted via Noise_NK over multiplexed WebSocket channels
+- **Multi-Organization Support**: Create teams with role-based access control (Owner/Admin/Member)
+- **Workspace Sharing**: Collaborate by sharing workspaces with specific users or organization members
+- **Backend Management**: Register and manage multiple development backends with approval workflow
+- **NAT Traversal**: Workers initiate outbound connections, so they run behind firewalls without port forwarding
 
 ---
 
 ## Table of Contents
 
-- [What is LeapMux?](#what-is-leapmux)
 - [Architecture](#architecture)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
@@ -26,26 +35,6 @@ LeapMux is a platform for running and managing multiple Claude Code instances th
 - [Contributing](#contributing)
 - [License](#license)
 - [Project Status](#project-status)
-
----
-
-## What is LeapMux?
-
-LeapMux is an **AI coding agent multiplexer** that enables developers to run multiple Claude Code instances simultaneously from a single web interface. Connect remote development backends (even behind NATs), organize work across tiling workspaces, interact with terminals, browse and diff files with full git and worktree awareness, and collaborate with your team, all with end-to-end encrypted communication.
-
-### Key Features
-
-- **Multi-Agent Workspaces**: Run multiple local or remote Claude Code instances simultaneously
-- **Tiling Layout**: Split the workspace into resizable horizontal/vertical panes — run chat and terminal side by side
-- **Terminal Access**: Interactive PTY sessions with real-time I/O streaming
-- **Git-Aware File Browser**: Browse files on remote backends with real-time git status, change/staged/unstaged filters, and inline diffs
-- **Rich File Viewer**: Syntax-highlighted source, image preview with zoom/pan, hex view for binaries, and side-by-side or unified diffs
-- **Git Worktree Management**: Agents and terminals auto-create isolated git worktrees per task, with dirty-worktree protection
-- **End-to-End Encryption**: All Frontend-Worker traffic is encrypted via Noise_NK over multiplexed WebSocket channels — the Hub cannot read it
-- **Multi-Organization Support**: Create teams with role-based access control (Owner/Admin/Member) and automatic resource cleanup
-- **Workspace Sharing**: Collaborate by sharing workspaces with specific users or organizations
-- **Backend Management**: Register and manage multiple development backends with approval workflow
-- **NAT Traversal**: Workers initiate outbound connections, so they run behind firewalls without port forwarding
 
 ---
 
