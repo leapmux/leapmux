@@ -2,14 +2,16 @@ import type { Component } from 'solid-js'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import RefreshCw from 'lucide-solid/icons/refresh-cw'
 import { createEffect, createSignal, For, on, onMount, Show } from 'solid-js'
-import { gitClient, terminalClient, workerClient } from '~/api/clients'
+import { workerClient } from '~/api/clients'
 import { apiLoadingTimeoutMs } from '~/api/transport'
+import * as workerRpc from '~/api/workerRpc'
 import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
 import { WorktreeOptions } from '~/components/shell/WorktreeOptions'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
 import { useOrg } from '~/context/OrgContext'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
+import { createWorkerInfoStore } from '~/stores/workerInfo.store'
 import { spinner } from '~/styles/animations.css'
 import { errorText, labelRow, refreshButton, spinning, treeContainer } from '~/styles/shared.css'
 
@@ -23,6 +25,7 @@ interface NewTerminalDialogProps {
 
 export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
   const org = useOrg()
+  const workerInfoStore = createWorkerInfoStore()
   const [workers, setWorkers] = createSignal<import('~/generated/leapmux/v1/worker_pb').Worker[]>([])
   const [workerId, setWorkerId] = createSignal('')
   const [workingDir, setWorkingDir] = createSignal(props.defaultWorkingDir ?? '~')
@@ -43,6 +46,10 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
       setWorkers(online)
       if (online.length > 0 && !workerId()) {
         setWorkerId(online[0].id)
+      }
+      // Fetch system info for homeDir via E2EE.
+      for (const w of online) {
+        workerInfoStore.fetchWorkerInfo(w.id)
       }
       return online.length > 0
     }
@@ -72,7 +79,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
         return
       resolved = true
       try {
-        const resp = await gitClient.getGitInfo({
+        const resp = await workerRpc.getGitInfo(wid, {
           workerId: wid,
           path: props.defaultWorkingDir,
           orgId: org.orgId(),
@@ -93,7 +100,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
     setShells([])
     setShell('')
     try {
-      const resp = await terminalClient.listAvailableShells({
+      const resp = await workerRpc.listAvailableShells(id, {
         orgId: org.orgId(),
         workspaceId: props.workspaceId,
         workerId: id,
@@ -123,7 +130,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
     submitting.start()
     setError(null)
     try {
-      const resp = await terminalClient.openTerminal({
+      const resp = await workerRpc.openTerminal(workerId(), {
         orgId: org.orgId(),
         workspaceId: props.workspaceId,
         cols: 80,
@@ -170,7 +177,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
                   <option value="">No workers online</option>
                 </Show>
                 <For each={workers()}>
-                  {b => <option value={b.id}>{b.name}</option>}
+                  {b => <option value={b.id}>{workerInfoStore.workerInfo(b.id)?.name ?? b.id}</option>}
                 </For>
               </select>
             </label>
@@ -183,7 +190,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
                     selectedPath={workingDir()}
                     onSelect={setWorkingDir}
                     rootPath="~"
-                    homeDir={workers().find(w => w.id === workerId())?.homeDir}
+                    homeDir={workerInfoStore.getHomeDir(workerId())}
                   />
                 </div>
               </Show>
@@ -192,7 +199,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
               <WorktreeOptions
                 workerId={workerId()}
                 selectedPath={workingDir()}
-                homeDir={workers().find(w => w.id === workerId())?.homeDir}
+                homeDir={workerInfoStore.getHomeDir(workerId())}
                 onWorktreeChange={(create, branch, branchError) => {
                   setCreateWorktree(create)
                   setWorktreeBranch(branch)

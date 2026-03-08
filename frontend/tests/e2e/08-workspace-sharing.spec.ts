@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, inviteToOrgViaAPI, shareWorkspaceViaAPI } from './helpers/api'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, getUserId, inviteToOrgViaAPI, shareWorkspaceViaAPI } from './helpers/api'
 import { loginViaToken, loginViaUI, openWorkspaceContextMenu, waitForWorkspaceReady } from './helpers/ui'
 
 test.describe('Workspace Sharing', () => {
@@ -15,8 +15,8 @@ test.describe('Workspace Sharing', () => {
   })
 
   test('should show context menu with share option on owned workspace', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Share Test Workspace', adminOrgId)
+    const { hubUrl, adminToken, adminOrgId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Share Test Workspace', adminOrgId)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -34,8 +34,8 @@ test.describe('Workspace Sharing', () => {
   })
 
   test('should open sharing dialog via context menu', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Share Dialog Test', adminOrgId)
+    const { hubUrl, adminToken, adminOrgId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Share Dialog Test', adminOrgId)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -57,18 +57,19 @@ test.describe('Workspace Sharing', () => {
   })
 
   test('should share workspace to org and show to non-owner', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
+    const { hubUrl, adminToken, newuserToken, adminOrgId } = leapmuxServer
 
     // Use API calls for setup to stay within timeout
     const workspaceId = await createWorkspaceViaAPI(
       hubUrl,
       adminToken,
-      workerId,
       'Shared Workspace',
       adminOrgId,
     )
     try {
-      await shareWorkspaceViaAPI(hubUrl, adminToken, workspaceId, 'SHARE_MODE_ORG')
+      // Use SHARE_MODE_MEMBERS since the Worker doesn't support SHARE_MODE_ORG.
+      const newuserUserId = await getUserId(hubUrl, newuserToken)
+      await shareWorkspaceViaAPI(hubUrl, adminToken, workspaceId, 'SHARE_MODE_MEMBERS', [newuserUserId])
 
       // Login as newuser and verify the shared workspace is visible
       await loginViaUI(page, 'newuser', 'password123')

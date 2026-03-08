@@ -115,11 +115,11 @@ test.describe('TabBar Improvements', () => {
     await page.keyboard.type('Say "hello". Reply with just the word, nothing else.')
     await page.keyboard.press('Meta+Enter')
 
-    // Wait for the agent to respond (which triggers the init message with session ID)
-    await page.waitForFunction(() => {
-      const body = document.body.textContent || ''
-      return body.includes('hello') && !body.includes('Send a message to start')
-    })
+    // Wait for the agent to respond (which triggers the init message with session ID).
+    // Use a visible locator instead of document.body.textContent, because
+    // textContent includes hidden tabs (display:none) whose "Send a message
+    // to start" placeholder would prevent the condition from ever being true.
+    await expect(page.locator('[data-testid="message-content"]', { hasText: 'hello' })).toBeVisible()
 
     // The session ID trigger button should now be visible in the footer
     await expect(page.locator('[data-testid="session-id-trigger"]')).toBeVisible()

@@ -15,21 +15,20 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
-	"github.com/leapmux/leapmux/internal/hub/agentmgr"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
+	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	"github.com/leapmux/leapmux/internal/hub/frontend"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/id"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
-	"github.com/leapmux/leapmux/internal/hub/terminalmgr"
 	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/metrics"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
@@ -37,10 +36,13 @@ import (
 
 // ServerConfig holds configuration for a Hub server.
 type ServerConfig struct {
-	DataDir         string       // Hub data directory (contains DB and socket)
-	Addr            string       // TCP listen address (empty to disable TCP)
-	DevFrontend     string       // Vite dev server URL (empty for production embedded assets)
-	FrontendHandler http.Handler // Optional override for frontend serving (nil uses default)
+	DataDir              string       // Hub data directory (contains DB and socket)
+	Addr                 string       // TCP listen address (empty to disable TCP)
+	DevFrontend          string       // Vite dev server URL (empty for production embedded assets)
+	FrontendHandler      http.Handler // Optional override for frontend serving (nil uses default)
+	DBMaxConns           int          // Maximum number of open database connections (0 = default)
+	MaxMessageSize       int          // Maximum reassembled channel message size (0 = default 16 MiB)
+	MaxIncompleteChunked int          // Maximum in-flight chunked sequences per channel (0 = default 4)
 }
 
 // Server is a reusable Hub server instance.
@@ -61,13 +63,14 @@ func NewServer(sc ServerConfig) (*Server, error) {
 		Addr:        sc.Addr,
 		DataDir:     sc.DataDir,
 		DevFrontend: sc.DevFrontend,
+		DBMaxConns:  sc.DBMaxConns,
 	}
 
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)
 	}
 
-	sqlDB, err := db.Open(cfg.DBPath())
+	sqlDB, err := db.Open(cfg.DBPath(), cfg.DBMaxConns)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -84,15 +87,6 @@ func NewServer(sc ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("bootstrap: %w", err)
 	}
 
-	// No agent process can be running when the hub just started, so mark
-	// all ACTIVE agents as INACTIVE.  This handles the case where the hub
-	// was shut down while agents were mid-turn — cleanupWorker skips DB
-	// writes during shutdown, leaving stale ACTIVE status in the database.
-	if err := queries.CloseAllActiveAgents(context.Background()); err != nil {
-		_ = sqlDB.Close()
-		return nil, fmt.Errorf("close stale agents: %w", err)
-	}
-
 	timeoutCfg, err := timeout.NewFromDB(queries)
 	if err != nil {
 		_ = sqlDB.Close()
@@ -102,8 +96,14 @@ func NewServer(sc ServerConfig) (*Server, error) {
 	shutdownCh := make(chan struct{})
 
 	wMgr := workermgr.New()
-	agentMgr := agentmgr.New()
-	termMgr := terminalmgr.New()
+	var cMgrOpts []channelmgr.Option
+	if sc.MaxMessageSize > 0 {
+		cMgrOpts = append(cMgrOpts, channelmgr.WithMaxMessageSize(sc.MaxMessageSize))
+	}
+	if sc.MaxIncompleteChunked > 0 {
+		cMgrOpts = append(cMgrOpts, channelmgr.WithMaxIncompleteChunked(sc.MaxIncompleteChunked))
+	}
+	cMgr := channelmgr.New(cMgrOpts...)
 	pendingReqs := workermgr.NewPendingRequests(timeoutCfg.APITimeout)
 
 	opts := connect.WithInterceptors(
@@ -119,47 +119,27 @@ func NewServer(sc ServerConfig) (*Server, error) {
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(authPath, authHandler)
 
-	notifierSvc := notifier.New(queries, wMgr, pendingReqs, agentMgr, timeoutCfg)
-
 	connectorSvc := service.NewWorkerConnectorService(queries, wMgr)
-	connectorSvc.SetNotifier(notifierSvc)
 	connectorSvc.SetShutdownCh(shutdownCh)
+	connectorSvc.SetChannelMgr(cMgr)
+	connectorSvc.SetPendingRequests(pendingReqs)
 	connectorPath, connectorHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(connectorSvc, opts)
 	mux.Handle(connectorPath, connectorHandler)
 
+	notifierSvc := notifier.New(queries, wMgr, pendingReqs, timeoutCfg)
 	mgmtSvc := service.NewWorkerManagementService(queries, wMgr, notifierSvc)
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(mgmtSvc, opts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
-	worktreeHelper := service.NewWorktreeHelper(queries, wMgr, pendingReqs, timeoutCfg)
+	channelSvc := service.NewChannelService(queries, wMgr, cMgr, pendingReqs)
+	channelPath, channelHandler := leapmuxv1connect.NewChannelServiceHandler(channelSvc, opts)
+	mux.Handle(channelPath, channelHandler)
 
-	workspaceSvc := service.NewWorkspaceService(queries, wMgr, agentMgr, termMgr, pendingReqs, worktreeHelper)
-	workspacePath, workspaceHandler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, opts)
-	mux.Handle(workspacePath, workspaceHandler)
+	// WebSocket endpoint for encrypted channel relay (Frontend ↔ Worker).
+	channelRelay := service.NewChannelRelayHandler(queries, wMgr, cMgr)
+	mux.Handle("/ws/channel", channelRelay)
 
-	agentSvc := service.NewAgentService(queries, wMgr, agentMgr, pendingReqs, worktreeHelper, timeoutCfg)
-	connectorSvc.SetAgentService(agentSvc)
-	connectorSvc.SetAgentMgr(agentMgr)
-	workspaceSvc.SetAgentService(agentSvc)
-	agentPath, agentHandler := leapmuxv1connect.NewAgentServiceHandler(agentSvc, opts)
-	mux.Handle(agentPath, agentHandler)
-
-	terminalSvc := service.NewTerminalService(queries, wMgr, termMgr, pendingReqs, worktreeHelper)
-	connectorSvc.SetTerminalService(terminalSvc)
-	workspaceSvc.SetTerminalService(terminalSvc)
-	terminalPath, terminalHandler := leapmuxv1connect.NewTerminalServiceHandler(terminalSvc, opts)
-	mux.Handle(terminalPath, terminalHandler)
-
-	connectorSvc.SetPendingRequests(pendingReqs)
-	fileSvc := service.NewFileService(queries, wMgr, pendingReqs)
-	filePath, fileHandler := leapmuxv1connect.NewFileServiceHandler(fileSvc, opts)
-	mux.Handle(filePath, fileHandler)
-
-	gitSvc := service.NewGitService(queries, wMgr, pendingReqs, timeoutCfg)
-	gitPath, gitHandler := leapmuxv1connect.NewGitServiceHandler(gitSvc, opts)
-	mux.Handle(gitPath, gitHandler)
-
-	orgSvc := service.NewOrgService(queries, notifierSvc)
+	orgSvc := service.NewOrgService(queries, nil)
 	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, opts)
 	mux.Handle(orgPath, orgHandler)
 
@@ -167,9 +147,7 @@ func NewServer(sc ServerConfig) (*Server, error) {
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(userPath, userHandler)
 
-	sectionSvc := service.NewSectionService(queries, wMgr)
-	sectionSvc.SetAgentService(agentSvc)
-	sectionSvc.SetTerminalService(terminalSvc)
+	sectionSvc := service.NewSectionService(queries)
 	sectionPath, sectionHandler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, opts)
 	mux.Handle(sectionPath, sectionHandler)
 
@@ -177,8 +155,9 @@ func NewServer(sc ServerConfig) (*Server, error) {
 	adminPath, adminHandler := leapmuxv1connect.NewAdminServiceHandler(adminSvc, opts)
 	mux.Handle(adminPath, adminHandler)
 
-	// WebSocket endpoint for WatchEvents (browser-friendly alternative to HTTP/2 streaming).
-	mux.Handle("/ws/watch-events", service.WSWatchEventsHandler(queries, workspaceSvc, shutdownCh, timeoutCfg))
+	workspaceSvc := service.NewWorkspaceService(queries)
+	workspacePath, workspaceHandler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, opts)
+	mux.Handle(workspacePath, workspaceHandler)
 
 	// Prometheus metrics endpoint.
 	mux.Handle("/metrics", promhttp.Handler())
@@ -237,19 +216,16 @@ type WorkerCredentials struct {
 // RegisterWorker creates a worker record directly in the database,
 // bypassing the normal registration flow. This is used by the standalone
 // binary to auto-register a local worker.
-func (s *Server) RegisterWorker(ctx context.Context, orgID, name, hostname, os, arch, registeredBy string) (*WorkerCredentials, error) {
+func (s *Server) RegisterWorker(ctx context.Context, orgID, registeredBy string) (*WorkerCredentials, error) {
 	workerID := id.Generate()
 	authToken := id.Generate()
 
 	if err := s.queries.CreateWorker(ctx, gendb.CreateWorkerParams{
 		ID:           workerID,
 		OrgID:        orgID,
-		Name:         name,
-		Hostname:     hostname,
-		Os:           os,
-		Arch:         arch,
 		AuthToken:    authToken,
 		RegisteredBy: registeredBy,
+		PublicKey:    []byte{},
 	}); err != nil {
 		return nil, fmt.Errorf("create worker: %w", err)
 	}

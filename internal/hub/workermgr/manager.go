@@ -56,7 +56,8 @@ func New() *Manager {
 }
 
 // Register adds a worker connection. Replaces any existing connection.
-func (m *Manager) Register(c *Conn) {
+// Returns true if an existing connection was replaced.
+func (m *Manager) Register(c *Conn) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	_, exists := m.conns[c.WorkerID]
@@ -64,6 +65,7 @@ func (m *Manager) Register(c *Conn) {
 	if !exists {
 		metrics.ActiveWorkers.Inc()
 	}
+	return exists
 }
 
 // Unregister removes the given worker connection only if it is still the

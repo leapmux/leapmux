@@ -53,14 +53,6 @@ export const cardName = style({
   whiteSpace: 'nowrap',
 })
 
-export const cardHostname = style({
-  fontSize: 'var(--text-7)',
-  color: 'var(--muted-foreground)',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-})
-
 export const cardMeta = style({
   fontSize: 'var(--text-8)',
   color: 'var(--faint-foreground)',

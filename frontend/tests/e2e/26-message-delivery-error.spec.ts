@@ -1,4 +1,4 @@
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { loginViaToken, loginViaUI, waitForWorkspaceReady } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
@@ -6,8 +6,9 @@ test.describe('Message Delivery Error', () => {
   test('should show delivery error when worker is offline and retry on reconnect', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
 
-    const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Delivery Error Test', adminOrgId)
+    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Delivery Error Test', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -68,8 +69,9 @@ test.describe('Message Delivery Error', () => {
 
   test('should persist delivery error across page refresh', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Persist Error Test', adminOrgId)
+    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Persist Error Test', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -101,6 +103,11 @@ test.describe('Message Delivery Error', () => {
       const errorIndicator = page.locator('[data-testid="message-error"]')
       await expect(errorIndicator).toBeVisible()
 
+      // Restart the worker so the workspace is accessible after reload.
+      // The local delivery error is persisted in localStorage and will
+      // survive the page refresh.
+      await restartWorker(separateHubWorker)
+
       // Reload the page
       await page.reload()
 
@@ -121,8 +128,9 @@ test.describe('Message Delivery Error', () => {
   test('should delete failed message', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
 
-    const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Delete Error Test', adminOrgId)
+    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Delete Error Test', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)

@@ -13,16 +13,15 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
-	"github.com/leapmux/leapmux/internal/hub/agentmgr"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/id"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/timeout"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
+	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 type orgTestEnv struct {
@@ -49,13 +48,12 @@ func setupOrgTestServer(t *testing.T) *orgTestEnv {
 	require.NoError(t, err)
 
 	bgMgr := workermgr.New()
-	agentMgr := agentmgr.New()
 
 	tc, tcErr := timeout.NewFromDB(q)
 	require.NoError(t, tcErr)
 
 	pendingReqs := workermgr.NewPendingRequests(tc.APITimeout)
-	notifierSvc := notifier.New(q, bgMgr, pendingReqs, agentMgr, tc)
+	notifierSvc := notifier.New(q, bgMgr, pendingReqs, tc)
 
 	mux := http.NewServeMux()
 	opts := connect.WithInterceptors(auth.NewInterceptor(q))

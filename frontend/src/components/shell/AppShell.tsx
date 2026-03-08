@@ -1,8 +1,10 @@
 import type { ParentComponent } from 'solid-js'
+import type { KeyPinConfirmState } from './AppShellDialogs'
 import type { SidebarElementsOpts } from './SidebarElements'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createSignal, on, Show } from 'solid-js'
-import { agentLoadingTimeoutMs, apiCallTimeout } from '~/api/transport'
+import { agentLoadingTimeoutMs } from '~/api/transport'
+import { setConfirmKeyPin, setGetUserId } from '~/api/workerRpc'
 import { NotFoundPage } from '~/components/common/NotFoundPage'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
 import { useAuth } from '~/context/AuthContext'
@@ -72,6 +74,15 @@ export const AppShell: ParentComponent = (props) => {
   const settingsLoading = createLoadingSignal(agentLoadingTimeoutMs(true))
   const [confirmDeleteWs, setConfirmDeleteWs] = createSignal<{ workspaceId: string, resolve: (confirmed: boolean) => void } | null>(null)
   const [confirmArchiveWs, setConfirmArchiveWs] = createSignal<{ workspaceId: string, resolve: (confirmed: boolean) => void } | null>(null)
+  const [keyPinConfirm, setKeyPinConfirm] = createSignal<KeyPinConfirmState | null>(null)
+
+  // Register E2EE channel callbacks (module-level singletons in workerRpc.ts).
+  setConfirmKeyPin((workerId, expectedFingerprint, actualFingerprint) =>
+    new Promise((resolve) => {
+      setKeyPinConfirm({ workerId, expectedFingerprint, actualFingerprint, resolve })
+    }),
+  )
+  setGetUserId(() => auth.user()?.id ?? '')
 
   // Mobile layout state
   const isMobile = useIsMobile()
@@ -90,14 +101,19 @@ export const AppShell: ParentComponent = (props) => {
     setRightSidebarOpen(false)
   }
 
-  // Debounced turn-end sound playback
+  // Shared turn-end signal: bumped when an agent turn ends.
+  // Drives sound playback, git file status refresh, and directory tree refresh.
+  const [turnEndTrigger, setTurnEndTrigger] = createSignal(0)
+
+  // Debounced turn-end handler
   const TURN_END_SOUND_COOLDOWN_MS = 10_000
   let lastSoundPlayedAt = 0
   // Late-bound ref: set once useTabOperations is initialized (after useWorkspaceConnection).
   let isAgentClosing: (agentId: string) => boolean = () => false
-  const playTurnEndSound = (agentId: string) => {
+  const handleTurnEnd = (agentId: string) => {
     if (isAgentClosing(agentId))
       return
+    setTurnEndTrigger(v => v + 1)
     const now = Date.now()
     if (now - lastSoundPlayedAt < TURN_END_SOUND_COOLDOWN_MS)
       return
@@ -119,15 +135,21 @@ export const AppShell: ParentComponent = (props) => {
     controlStore,
     agentSessionStore,
     settingsLoading,
-    getOrgId: () => org.orgId(),
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
-    getTileActiveTabKeys: () => {
-      const tileIds = layoutStore.getAllTileIds()
-      return tileIds
-        .map(id => tabStore.getActiveTabKeyForTile(id))
-        .filter((key): key is string => key !== null)
+    getWorkerId: () => {
+      // Derive workerId from active tab's agent/terminal store data.
+      const tab = tabStore.activeTab()
+      if (!tab)
+        return ''
+      if (tab.type === TabType.AGENT) {
+        return agentStore.state.agents.find(a => a.id === tab.id)?.workerId ?? ''
+      }
+      if (tab.type === TabType.TERMINAL) {
+        return terminalStore.state.terminals.find(t => t.id === tab.id)?.workerId ?? ''
+      }
+      return tab.workerId ?? ''
     },
-    onTurnEndSound: playTurnEndSound,
+    onTurnEnd: handleTurnEnd,
   })
 
   // Auto-open new workspace dialog from URL search params
@@ -234,7 +256,8 @@ export const AppShell: ParentComponent = (props) => {
       return { workerId: '', workingDir: '', homeDir: '' }
     if (tab.type === TabType.AGENT) {
       const agent = agentStore.state.agents.find(a => a.id === tab.id)
-      return { workerId: agent?.workerId ?? '', workingDir: agent?.workingDir ?? '', homeDir: agent?.homeDir ?? '' }
+      const workerId = agent?.workerId || ''
+      return { workerId, workingDir: agent?.workingDir ?? '', homeDir: agent?.homeDir ?? '' }
     }
     else if (tab.type === TabType.FILE) {
       const dir = tab.workingDir || (tab.filePath ? tab.filePath.substring(0, tab.filePath.lastIndexOf('/')) || '/' : '')
@@ -248,6 +271,19 @@ export const AppShell: ParentComponent = (props) => {
       return { workerId, workingDir: terminal?.workingDir ?? '', homeDir }
     }
   }
+
+  // Refresh git file status when a turn ends.
+  createEffect(on(
+    () => turnEndTrigger(),
+    (_, prev) => {
+      if (prev === undefined)
+        return
+      const ctx = getCurrentTabContext()
+      if (ctx.workerId && ctx.workingDir) {
+        gitFileStatusStore.refresh(ctx.workerId, ctx.workingDir)
+      }
+    },
+  ))
 
   // Get working directory and home directory from the MRU agent tab
   const getMruAgentContext = (): { workingDir: string, homeDir: string } => {
@@ -269,7 +305,6 @@ export const AppShell: ParentComponent = (props) => {
   // Tab persistence (layout save, sessionStorage effects)
   const { persistLayout } = useTabPersistence({
     tabStore,
-    terminalStore,
     layoutStore,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
     getOrgId: () => org.orgId(),
@@ -314,7 +349,6 @@ export const AppShell: ParentComponent = (props) => {
     setNewShellLoading,
     pendingWorktreeChoice: () => pendingWorktreeChoiceRef.current,
     persistLayout,
-    apiCallTimeout,
   })
 
   // Tab operations (select, close, file open, worktree confirm)
@@ -465,6 +499,7 @@ export const AppShell: ParentComponent = (props) => {
     get activeTodos() { return activeTodos() },
     termOps,
     gitStatusStore: gitFileStatusStore,
+    get turnEndTrigger() { return turnEndTrigger() },
     get activeFilePath() {
       const active = tabStore.activeTab()
       return active?.type === TabType.FILE ? active.filePath : undefined
@@ -581,6 +616,8 @@ export const AppShell: ParentComponent = (props) => {
         setConfirmArchiveWs={setConfirmArchiveWs}
         worktreeConfirm={tabOps.worktreeConfirm()}
         setWorktreeConfirm={tabOps.setWorktreeConfirm}
+        keyPinConfirm={keyPinConfirm()}
+        setKeyPinConfirm={setKeyPinConfirm}
         activeWorkspace={activeWorkspace}
         getCurrentTabContext={getCurrentTabContext}
         agentOps={agentOps}

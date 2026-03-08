@@ -1,0 +1,210 @@
+// Package service implements the Worker-side business logic for E2EE channel
+// requests. Each service registers its handlers with the inner RPC dispatcher,
+// which routes decrypted InnerRpcRequests from the Frontend to the appropriate
+// handler function.
+package service
+
+import (
+	"context"
+	"database/sql"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/channel"
+	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/terminal"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+)
+
+// SendFunc sends a ConnectRequest message to the Hub.
+type SendFunc func(msg *leapmuxv1.ConnectRequest) error
+
+// Context holds shared dependencies for all service implementations.
+type Context struct {
+	DB        *sql.DB
+	Queries   *db.Queries
+	Agents    *agent.Manager
+	Terminals *terminal.Manager
+	Channels  *channel.Manager // E2EE channel manager (for workspace access lookups)
+	HomeDir   string
+	DataDir   string
+	WorkerID  string          // This worker's ID (set after registration)
+	Name      string          // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
+	Version   string          // Build-time version string
+	Send      SendFunc        // Forwards messages to the Hub via WebSocket
+	Watchers  *WatcherManager // Fan-out manager for event broadcasting
+	Output    *OutputHandler  // Agent output NDJSON processor
+}
+
+// NewContext creates a new service context with all dependencies.
+func NewContext(sqlDB *sql.DB, agents *agent.Manager, terminals *terminal.Manager, homeDir, dataDir string) *Context {
+	queries := db.New(sqlDB)
+	watchers := NewWatcherManager()
+	output := NewOutputHandler(queries, watchers)
+	return &Context{
+		DB:        sqlDB,
+		Queries:   queries,
+		Agents:    agents,
+		Terminals: terminals,
+		HomeDir:   homeDir,
+		DataDir:   dataDir,
+		Watchers:  watchers,
+		Output:    output,
+	}
+}
+
+// Init performs one-time startup tasks such as clearing stale agent state
+// left over from a previous Worker process.
+//
+// Init panics if required fields (Channels, Send) have not been set.
+// These fields are not part of NewContext because they depend on
+// components that are created separately (e.g. the channel manager).
+func (svc *Context) Init() {
+	// Validate required fields that are set after NewContext.
+	if svc.Channels == nil {
+		panic("service.Context.Init: Channels must be set before calling Init")
+	}
+	if svc.Send == nil {
+		panic("service.Context.Init: Send must be set before calling Init")
+	}
+
+	// No need to deactivate agents/terminals on startup — status is now
+	// derived from runtime state (HasAgent/HasTerminal), not from the DB.
+}
+
+// Shutdown persists in-memory terminal screen snapshots to the database
+// so they survive a worker restart. Call this before stopping the terminal
+// manager (which clears in-memory state).
+func (svc *Context) Shutdown() {
+	for _, tid := range svc.Terminals.ListTerminalIDs() {
+		snap, ok := svc.Terminals.SnapshotTerminal(tid)
+		if !ok {
+			continue
+		}
+		if err := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
+			ID:            tid,
+			WorkspaceID:   snap.WorkspaceID,
+			WorkingDir:    snap.WorkingDir,
+			ShellStartDir: snap.ShellStartDir,
+			Cols:          int64(snap.Cols),
+			Rows:          int64(snap.Rows),
+			Screen:        snap.Screen,
+		}); err != nil {
+			slog.Error("failed to save terminal screen on shutdown", "terminal_id", tid, "error", err)
+		}
+	}
+}
+
+// RegisterAll registers all service handlers with the dispatcher.
+func RegisterAll(d *channel.Dispatcher, svc *Context) {
+	registerFileHandlers(d, svc)
+	registerGitHandlers(d, svc)
+	registerTerminalHandlers(d, svc)
+	registerAgentHandlers(d, svc)
+	registerCleanupHandlers(d, svc)
+	registerSysInfoHandlers(d, svc)
+}
+
+// modelOrDefault returns the given model, or falls back to the
+// LEAPMUX_DEFAULT_MODEL environment variable, or "opus" if unset.
+func modelOrDefault(model string) string {
+	if model != "" {
+		return model
+	}
+	if env := os.Getenv("LEAPMUX_DEFAULT_MODEL"); env != "" {
+		return env
+	}
+	return "opus"
+}
+
+// effortOrDefault returns the given effort, or falls back to the
+// LEAPMUX_DEFAULT_EFFORT environment variable, or "high" if unset.
+func effortOrDefault(effort string) string {
+	if effort != "" {
+		return effort
+	}
+	if env := os.Getenv("LEAPMUX_DEFAULT_EFFORT"); env != "" {
+		return env
+	}
+	return "high"
+}
+
+// sendProtoResponse is a helper that serializes a proto response and sends it.
+func sendProtoResponse(sender *channel.Sender, msg proto.Message) {
+	slog.Debug("response payload", "payload", protojson.Format(msg))
+	data, err := proto.Marshal(msg)
+	if err != nil {
+		slog.Error("failed to marshal response", "error", err)
+		_ = sender.SendError(13, "internal: marshal response") // INTERNAL
+		return
+	}
+	_ = sender.SendResponse(&leapmuxv1.InnerRpcResponse{
+		Payload: data,
+	})
+}
+
+// unmarshalRequest is a helper that deserializes an InnerRpcRequest payload.
+func unmarshalRequest(req *leapmuxv1.InnerRpcRequest, msg proto.Message) error {
+	if err := proto.Unmarshal(req.GetPayload(), msg); err != nil {
+		return err
+	}
+	slog.Debug("request payload",
+		"method", req.GetMethod(),
+		"payload", protojson.Format(msg),
+	)
+	return nil
+}
+
+// sendInternalError sends an INTERNAL (13) error response.
+func sendInternalError(sender *channel.Sender, msg string) {
+	_ = sender.SendError(13, msg)
+}
+
+// sendNotFoundError sends a NOT_FOUND (5) error response.
+func sendNotFoundError(sender *channel.Sender, msg string) {
+	_ = sender.SendError(5, msg)
+}
+
+// sendPermissionDenied sends a PERMISSION_DENIED (7) error response.
+func sendPermissionDenied(sender *channel.Sender, msg string) {
+	_ = sender.SendError(7, msg)
+}
+
+// sendInvalidArgument sends an INVALID_ARGUMENT (3) error response.
+func sendInvalidArgument(sender *channel.Sender, msg string) {
+	_ = sender.SendError(3, msg)
+}
+
+// agentOutputFn creates a callback that processes agent output lines via
+// the OutputHandler, which persists messages and broadcasts events to
+// watching E2EE channels.
+func agentOutputFn(output *OutputHandler, agentID, workspaceID, workingDir string) func([]byte) {
+	return func(line []byte) {
+		output.HandleAgentOutput(agentID, workspaceID, workingDir, line)
+	}
+}
+
+// expandTilde expands a leading "~" or "~/" in a path to the user's home
+// directory. Other forms (e.g. "~user/", "~~") are left unchanged.
+func expandTilde(path string) string {
+	if path == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+	} else if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[2:])
+		}
+	}
+	return path
+}
+
+// bgCtx returns a background context for database operations.
+func bgCtx() context.Context {
+	return context.Background()
+}

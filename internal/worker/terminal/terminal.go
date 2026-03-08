@@ -77,11 +77,13 @@ type Terminal struct {
 
 // Options configures a new Terminal.
 type Options struct {
-	ID         string
-	Shell      string
-	WorkingDir string
-	Cols       uint16
-	Rows       uint16
+	ID            string
+	WorkspaceID   string
+	Shell         string
+	WorkingDir    string
+	ShellStartDir string
+	Cols          uint16
+	Rows          uint16
 }
 
 // Start creates a new PTY terminal session.

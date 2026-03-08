@@ -2,13 +2,12 @@ import type { JSX } from 'solid-js'
 import type { RenderContext } from './messageRenderers'
 import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, WebFetchInput, WebSearchInput, WriteInput } from '~/types/toolMessages'
 import { diffLines } from 'diff'
+import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { relativizePath } from './messageUtils'
 import { formatTaskStatus } from './rendererUtils'
 import {
   toolInputCode,
   toolInputPath,
-  toolInputStatAdded,
-  toolInputStatRemoved,
   toolInputText,
 } from './toolStyles.css'
 
@@ -72,22 +71,10 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
             removed += count
         }
       }
-      const hasStats = added > 0 || removed > 0
       return (
         <>
           <span class={toolInputPath}>{relativizePath(path, cwd, homeDir)}</span>
-          {hasStats && (
-            <span class={toolInputText}>
-              {' '}
-              <span class={toolInputStatAdded}>
-                {`+${added}`}
-              </span>
-              {' '}
-              <span class={toolInputStatRemoved}>
-                {`-${removed}`}
-              </span>
-            </span>
-          )}
+          <DiffStatsBadge added={added} deleted={removed} class={toolInputText} />
         </>
       )
     }

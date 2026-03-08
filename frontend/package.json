@@ -32,6 +32,9 @@
     "@milkdown/preset-gfm": "^7.18.0",
     "@milkdown/prose": "^7.18.0",
     "@milkdown/utils": "^7.18.0",
+    "@noble/ciphers": "^2.1.1",
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^2.0.1",
     "@shikijs/rehype": "^3.22.0",
     "@solidjs/router": "^0.15.4",
     "@solidjs/start": "^1.2.1",
@@ -52,6 +55,7 @@
     "remark-rehype": "^11.1.2",
     "shiki": "^3.22.0",
     "solid-js": "^1.9.0",
+    "tslog": "^4.10.2",
     "unified": "^11.0.5",
     "vinxi": "^0.5.11"
   },

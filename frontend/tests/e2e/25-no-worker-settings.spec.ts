@@ -1,13 +1,14 @@
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
-import { ensureWorkerOnline, expect, restartHub, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
+import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
-test.describe('Settings and /clear without Worker', () => {
-  test('should handle /clear and settings changes without worker', async ({ separateHubWorker, page }) => {
+test.describe('Settings and /clear after Worker restart', () => {
+  test('should handle settings changes and /clear after worker restart', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
 
-    const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'No Worker Settings Test', adminOrgId)
+    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Worker Restart Settings Test', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -33,21 +34,15 @@ test.describe('Settings and /clear without Worker', () => {
         return false
       })
 
-      // Remember the workspace URL
-      const workspaceUrl = page.url()
-
-      // Step 2: Stop Worker and Hub
+      // Step 2: Restart the Worker (stop + start). All persistent data
+      // (workspaces, agents, messages) is stored on the Worker's SQLite DB,
+      // so the conversation should survive the restart.
       await stopWorker()
-      await stopHub()
+      await waitForWorkerOffline(hubUrl, adminToken)
+      await restartWorker(separateHubWorker)
 
-      // Step 3: Restart only Hub — Worker stays down.
-      await restartHub(separateHubWorker)
-
-      // Reload the page to establish fresh connections to the restarted Hub.
-      await page.goto(workspaceUrl)
-      await expect(editor).toBeVisible()
-
-      // Verify the original conversation is visible (loaded from Hub DB)
+      // Wait for the E2EE channels to reconnect and messages to reload.
+      // The original conversation should be visible (loaded from Worker DB).
       await page.waitForFunction(() => {
         const userBubbles = document.querySelectorAll('[data-testid="message-bubble"][data-role="user"]')
         const assistantBubbles = document.querySelectorAll('[data-testid="message-bubble"][data-role="assistant"]')
@@ -84,7 +79,7 @@ test.describe('Settings and /clear without Worker', () => {
         }).toPass({ timeout: 5000 })
       }
 
-      // Step 4: Change permission mode (Default → Plan Mode)
+      // Step 3: Change permission mode (Default → Plan Mode)
       await openSettingsMenu()
       await page.locator('[data-testid="permission-mode-plan"]').click()
 
@@ -92,20 +87,20 @@ test.describe('Settings and /clear without Worker', () => {
       await waitForNotification('Mode (Default \u2192 Plan Mode)')
       await waitForSettingsIdle()
 
-      // Step 5: Change model (Sonnet → Haiku)
+      // Step 4: Change model (Sonnet → Haiku)
       await openSettingsMenu()
       await page.locator('[data-testid="model-haiku"]').click()
 
       await waitForNotification('Model (Sonnet \u2192 Haiku)')
       await waitForSettingsIdle()
 
-      // Step 6: Change effort (Low → Medium, default overridden via LEAPMUX_DEFAULT_EFFORT in e2e)
+      // Step 5: Change effort (Low → Medium, default overridden via LEAPMUX_DEFAULT_EFFORT in e2e)
       await openSettingsMenu()
       await page.locator('[data-testid="effort-medium"]').click()
 
       await waitForNotification('Effort (Low \u2192 Medium)')
 
-      // Step 7: Send /clear
+      // Step 6: Send /clear
       await editor.click()
       await page.keyboard.type('/clear')
       await page.keyboard.press('Meta+Enter')

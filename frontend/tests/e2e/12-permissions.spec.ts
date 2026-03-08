@@ -1,5 +1,11 @@
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, inviteToOrgViaAPI, shareWorkspaceViaAPI } from './helpers/api'
+import {
+  createWorkspaceViaAPI,
+  getUserId,
+  inviteToOrgViaAPI,
+  openAgentViaAPI,
+  shareWorkspaceViaAPI,
+} from './helpers/api'
 import { loginViaToken, loginViaUI } from './helpers/ui'
 
 test.describe('Permissions', () => {
@@ -8,7 +14,7 @@ test.describe('Permissions', () => {
   // Set up prerequisites: ensure newuser exists (fixture setup), is invited
   // to admin's org, and a shared workspace exists.
   test.beforeAll(async ({ leapmuxServer }) => {
-    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
+    const { hubUrl, adminToken, adminOrgId, newuserToken } = leapmuxServer
     try {
       await inviteToOrgViaAPI(hubUrl, adminToken, adminOrgId, 'newuser')
     }
@@ -20,15 +26,24 @@ test.describe('Permissions', () => {
     sharedWorkspaceId = await createWorkspaceViaAPI(
       hubUrl,
       adminToken,
-      workerId,
       'Permissions Shared WS',
       adminOrgId,
     )
+    // Open an agent so the workspace has visible tabs.
+    await openAgentViaAPI(
+      hubUrl,
+      adminToken,
+      leapmuxServer.workerId,
+      sharedWorkspaceId,
+    )
+    // Use SHARE_MODE_MEMBERS since the Worker doesn't support SHARE_MODE_ORG.
+    const newuserUserId = await getUserId(hubUrl, newuserToken)
     await shareWorkspaceViaAPI(
       hubUrl,
       adminToken,
       sharedWorkspaceId,
-      'SHARE_MODE_ORG',
+      'SHARE_MODE_MEMBERS',
+      [newuserUserId],
     )
   })
 

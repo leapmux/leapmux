@@ -4,11 +4,11 @@ import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
 test.describe('Workspace Lifecycle', () => {
   test('should create multiple workspaces and show all in sidebar', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
+    const { hubUrl, adminToken, adminOrgId } = leapmuxServer
     const workspaceIds: string[] = []
-    workspaceIds.push(await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Lifecycle WS Alpha', adminOrgId))
-    workspaceIds.push(await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Lifecycle WS Beta', adminOrgId))
-    workspaceIds.push(await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Lifecycle WS Gamma', adminOrgId))
+    workspaceIds.push(await createWorkspaceViaAPI(hubUrl, adminToken, 'Lifecycle WS Alpha', adminOrgId))
+    workspaceIds.push(await createWorkspaceViaAPI(hubUrl, adminToken, 'Lifecycle WS Beta', adminOrgId))
+    workspaceIds.push(await createWorkspaceViaAPI(hubUrl, adminToken, 'Lifecycle WS Gamma', adminOrgId))
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceIds[0]}`)
@@ -27,8 +27,8 @@ test.describe('Workspace Lifecycle', () => {
   })
 
   test('should handle workspace with special characters in title', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Test - My_Workspace 2.0', adminOrgId)
+    const { hubUrl, adminToken, adminOrgId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Test - My_Workspace 2.0', adminOrgId)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)

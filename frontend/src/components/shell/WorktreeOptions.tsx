@@ -2,7 +2,7 @@ import type { Component } from 'solid-js'
 import RefreshCw from 'lucide-solid/icons/refresh-cw'
 import { generateSlug } from 'random-word-slugs'
 import { createEffect, createMemo, createSignal, on, Show } from 'solid-js'
-import { gitClient } from '~/api/clients'
+import * as workerRpc from '~/api/workerRpc'
 import { tildify } from '~/components/chat/messageUtils'
 import { Icon } from '~/components/common/Icon'
 import { useOrg } from '~/context/OrgContext'
@@ -27,6 +27,8 @@ export const WorktreeOptions: Component<WorktreeOptionsProps> = (props) => {
   const [createWorktree, setCreateWorktree] = createSignal(false)
   const [branchName, setBranchName] = createSignal(generateSlug(3, { format: 'kebab' }))
   const [loading, setLoading] = createSignal(false)
+  // Once the user explicitly unchecks, stop auto-checking for this dialog session.
+  let userUnchecked = false
   const branchError = createMemo(() => validateBranchName(branchName()))
 
   const showWorktreeOption = () => isGitRepo() && (isRepoRoot() || isWorktreeRoot())
@@ -39,7 +41,12 @@ export const WorktreeOptions: Component<WorktreeOptionsProps> = (props) => {
   }
 
   // Fetch git info when worker or path changes.
+  // Use a generation counter to discard stale responses from previous
+  // invocations (the async RPC may return out-of-order when the path
+  // changes rapidly).
+  let gitInfoGeneration = 0
   createEffect(on(() => [props.workerId, props.selectedPath] as const, async ([wid, path]) => {
+    const gen = ++gitInfoGeneration
     if (!wid || !path) {
       setIsGitRepo(false)
       setIsRepoRoot(false)
@@ -51,26 +58,32 @@ export const WorktreeOptions: Component<WorktreeOptionsProps> = (props) => {
 
     setLoading(true)
     try {
-      const resp = await gitClient.getGitInfo({
+      const resp = await workerRpc.getGitInfo(wid, {
         workerId: wid,
         path,
         orgId: org.orgId(),
       })
+      if (gen !== gitInfoGeneration)
+        return // Stale response; a newer request is in flight.
       setIsGitRepo(resp.isGitRepo)
       setIsRepoRoot(resp.isRepoRoot)
       setIsWorktreeRoot(resp.isWorktreeRoot)
       setIsDirty(resp.isDirty)
       setRepoRoot(resp.repoRoot)
       setRepoDirName(resp.repoDirName)
-      // Default worktree checkbox based on whether the path is a repo/worktree root.
-      if (resp.isGitRepo && (resp.isRepoRoot || resp.isWorktreeRoot)) {
-        setCreateWorktree(true)
-      }
-      else {
-        setCreateWorktree(false)
+      // Auto-check only if the user hasn't explicitly unchecked.
+      if (!userUnchecked) {
+        if (resp.isGitRepo && (resp.isRepoRoot || resp.isWorktreeRoot)) {
+          setCreateWorktree(true)
+        }
+        else {
+          setCreateWorktree(false)
+        }
       }
     }
     catch {
+      if (gen !== gitInfoGeneration)
+        return
       setIsGitRepo(false)
       setIsRepoRoot(false)
       setIsWorktreeRoot(false)
@@ -78,7 +91,8 @@ export const WorktreeOptions: Component<WorktreeOptionsProps> = (props) => {
       setCreateWorktree(false)
     }
     finally {
-      setLoading(false)
+      if (gen === gitInfoGeneration)
+        setLoading(false)
     }
   }))
 
@@ -97,7 +111,12 @@ export const WorktreeOptions: Component<WorktreeOptionsProps> = (props) => {
         <input
           type="checkbox"
           checked={createWorktree()}
-          onChange={e => setCreateWorktree(e.currentTarget.checked)}
+          onChange={(e) => {
+            const checked = e.currentTarget.checked
+            if (!checked)
+              userUnchecked = true
+            setCreateWorktree(checked)
+          }}
         />
         Create new worktree
       </label>

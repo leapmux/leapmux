@@ -4,6 +4,7 @@ import type { createSectionStore } from '~/stores/section.store'
 
 import { createMemo, createSignal } from 'solid-js'
 import { sectionClient, workspaceClient } from '~/api/clients'
+import * as workerRpc from '~/api/workerRpc'
 import { showToast } from '~/components/common/Toast'
 import { useAuth } from '~/context/AuthContext'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
@@ -217,7 +218,16 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     }
     const done = startWorkspaceLoading(workspaceId)
     try {
-      await workspaceClient.deleteWorkspace({ workspaceId })
+      // 1. Hub soft-deletes the workspace and returns worker IDs that had tabs.
+      const resp = await workspaceClient.deleteWorkspace({ workspaceId })
+
+      // 2. Clean up resources on each worker via E2EE.
+      await Promise.all(
+        resp.workerIds.map(wid =>
+          workerRpc.cleanupWorkspace(wid, { workspaceId }).catch(() => {}),
+        ),
+      )
+
       await Promise.all([props.onRefreshWorkspaces(), props.loadSections()])
 
       if (props.onDeleteWorkspace) {

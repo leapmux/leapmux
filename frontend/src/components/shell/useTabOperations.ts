@@ -7,8 +7,7 @@ import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, FileOpenSource, Tab } from '~/stores/tab.store'
 import type { createTerminalStore } from '~/stores/terminal.store'
 import { createEffect, createSignal } from 'solid-js'
-import { gitClient } from '~/api/clients'
-import { apiCallTimeout } from '~/api/transport'
+import * as workerRpc from '~/api/workerRpc'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { tabKey } from '~/stores/tab.store'
@@ -115,7 +114,8 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
 
     try {
       const tabType = tab.type === TabType.AGENT ? TabType.AGENT : TabType.TERMINAL
-      const status = await gitClient.checkWorktreeStatus({ tabType, tabId: tab.id }, apiCallTimeout())
+      const ctx = getCurrentTabContext()
+      const status = await workerRpc.checkWorktreeStatus(ctx.workerId, { tabType, tabId: tab.id })
       if (status.hasWorktree && status.isLastTab && status.isDirty) {
         const choice = await askWorktreeConfirmation(status)
         if (choice === 'cancel') {

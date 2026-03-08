@@ -1,14 +1,12 @@
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
-import type { createTerminalStore } from '~/stores/terminal.store'
 import { createEffect } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 
 interface UseTabPersistenceOpts {
   tabStore: ReturnType<typeof createTabStore>
-  terminalStore: ReturnType<typeof createTerminalStore>
   layoutStore: ReturnType<typeof createLayoutStore>
   getActiveWorkspaceId: () => string | null | undefined
   getOrgId: () => string | undefined
@@ -19,7 +17,6 @@ interface UseTabPersistenceOpts {
 export function useTabPersistence(opts: UseTabPersistenceOpts) {
   const {
     tabStore,
-    terminalStore,
     layoutStore,
     getActiveWorkspaceId,
     getOrgId,
@@ -36,18 +33,6 @@ export function useTabPersistence(opts: UseTabPersistenceOpts) {
     if (layoutSaveTimer)
       clearTimeout(layoutSaveTimer)
     layoutSaveTimer = setTimeout(() => {
-      const tileIds = layoutStore.getAllTileIds()
-      const activeTabs = tileIds.map((tileId) => {
-        const activeKey = tabStore.getActiveTabKeyForTile(tileId)
-        if (!activeKey)
-          return null
-        const parts = activeKey.split(':')
-        const tabType = Number(parts[0]) as TabType
-        if (tabType === TabType.FILE)
-          return null
-        return { tileId, tabType, tabId: parts[1] }
-      }).filter(Boolean) as Array<{ tileId: string, tabType: TabType, tabId: string }>
-
       const tabs = tabStore.state.tabs
         .filter(t => t.type !== TabType.FILE)
         .map(t => ({
@@ -55,18 +40,17 @@ export function useTabPersistence(opts: UseTabPersistenceOpts) {
           tabId: t.id,
           position: t.position ?? '',
           tileId: t.tileId ?? '',
-          workingDir: t.workingDir ?? '',
-          shellStartDir: t.type === TabType.TERMINAL
-            ? (terminalStore.state.terminals.find(term => term.id === t.id)?.shellStartDir ?? '')
-            : '',
+          workerId: t.workerId ?? '',
         }))
 
       workspaceClient.saveLayout({
         orgId: getOrgId(),
         workspaceId: ws.id,
         layout: layoutStore.toProto(),
-        activeTabs,
         tabs,
+      }).then(() => {
+        // Dispatch a custom event so E2E tests can detect layout save completion.
+        window.dispatchEvent(new CustomEvent('leapmux:layout-saved'))
       }).catch(() => {})
     }, 500)
   }

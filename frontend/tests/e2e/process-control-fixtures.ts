@@ -14,6 +14,7 @@ import {
   enableSignupViaAPI,
   getAdminOrgId,
   loginViaAPI,
+  openAgentViaAPI,
   signUpViaAPI,
 } from './helpers/api'
 import { findFreePort, getGlobalState, waitForServer } from './helpers/server'
@@ -141,7 +142,10 @@ export async function restartWorker(serverInfo: SeparateServerInfo) {
     workerDataDir,
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
+    env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low', LEAPMUX_WORKER_NAME: 'test-worker' },
   })
+  workerProc.unref()
 
   // Wait for the worker to connect to the hub
   await new Promise<void>((resolve, reject) => {
@@ -152,8 +156,8 @@ export async function restartWorker(serverInfo: SeparateServerInfo) {
         clearTimeout(timeout)
         workerProc.stderr?.off('data', onData)
         workerProc.stdout?.off('data', onData)
-        workerProc.stderr?.resume()
-        workerProc.stdout?.resume()
+        workerProc.stderr?.on('data', (c: Buffer) => process.stderr.write(`[WORKER-ERR] ${c}`))
+        workerProc.stdout?.on('data', (c: Buffer) => process.stderr.write(`[WORKER-OUT] ${c}`))
         resolve()
       }
     }
@@ -199,8 +203,10 @@ export async function restartHub(serverInfo: SeparateServerInfo) {
     hubDataDir,
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
     env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low' },
   })
+  hubProc.unref()
 
   hubProc.stdout?.resume()
   hubProc.stderr?.resume()
@@ -251,7 +257,8 @@ export const processTest = base.extend<
 
     console.log(`[e2e] Starting separate hub on port ${hubPort}...`)
 
-    // Start hub
+    // Start hub in its own process group so stray signals from the test
+    // runner's process group don't kill it prematurely.
     const hubProc = spawn(globalState.binaryPath, [
       'hub',
       '-addr',
@@ -260,10 +267,12 @@ export const processTest = base.extend<
       hubDataDir,
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
       env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low' },
     })
-    hubProc.stdout?.resume()
-    hubProc.stderr?.resume()
+    hubProc.unref()
+    hubProc.stdout?.on('data', (c: Buffer) => process.stderr.write(`[HUB-OUT] ${c}`))
+    hubProc.stderr?.on('data', (c: Buffer) => process.stderr.write(`[HUB-ERR] ${c}`))
 
     await waitForServer(hubUrl)
     console.log(`[e2e] Hub ready on port ${hubPort}`)
@@ -275,7 +284,8 @@ export const processTest = base.extend<
     // Enable signup
     await enableSignupViaAPI(hubUrl, adminToken)
 
-    // Start worker
+    // Start worker in its own process group so stray signals from the test
+    // runner's process group don't kill it prematurely.
     console.log('[e2e] Starting separate worker...')
     const workerProc = spawn(globalState.binaryPath, [
       'worker',
@@ -285,7 +295,10 @@ export const processTest = base.extend<
       workerDataDir,
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+      env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low', LEAPMUX_WORKER_NAME: 'test-worker' },
     })
+    workerProc.unref()
 
     // Wait for registration token
     const registrationToken = await new Promise<string>((resolve, reject) => {
@@ -299,8 +312,8 @@ export const processTest = base.extend<
           clearTimeout(timeout)
           workerProc.stderr?.off('data', onData)
           workerProc.stdout?.off('data', onData)
-          workerProc.stderr?.resume()
-          workerProc.stdout?.resume()
+          workerProc.stderr?.on('data', (c: Buffer) => process.stderr.write(`[WORKER-ERR] ${c}`))
+          workerProc.stdout?.on('data', (c: Buffer) => process.stderr.write(`[WORKER-OUT] ${c}`))
           resolve(token)
         }
       }
@@ -313,7 +326,6 @@ export const processTest = base.extend<
       hubUrl,
       adminToken,
       registrationToken,
-      'test-worker',
       adminOrgId,
     )
     console.log(`[e2e] Worker approved: ${workerId}`)
@@ -429,17 +441,17 @@ export const processTest = base.extend<
     }
   }, { auto: true }],
 
-  // Workspace fixture — ensure worker is online before creating workspace
+  // Workspace fixture — ensure worker is online before creating workspace + initial agent
   workspace: async ({ separateHubWorker }, use) => {
     await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
+    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(
       hubUrl,
       adminToken,
-      workerId,
       `e2e-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       adminOrgId,
     )
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     const workspaceUrl = `/o/admin/workspace/${workspaceId}`
     await use({ workspaceId, workspaceUrl })
     try {

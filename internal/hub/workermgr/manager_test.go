@@ -91,6 +91,28 @@ func TestMarkDeregistering(t *testing.T) {
 	assert.False(t, m.IsDeregistering("b2"))
 }
 
+func TestRegister_ReturnsReplacedFlag(t *testing.T) {
+	m := New()
+
+	conn1 := &Conn{WorkerID: "w1"}
+	conn2 := &Conn{WorkerID: "w1"}
+	conn3 := &Conn{WorkerID: "w2"}
+
+	// First registration for w1: not a replacement.
+	assert.False(t, m.Register(conn1))
+	// Second registration for w1: replaces conn1.
+	assert.True(t, m.Register(conn2))
+	// First registration for w2: not a replacement.
+	assert.False(t, m.Register(conn3))
+
+	// Verify conn2 is the current connection for w1.
+	assert.Equal(t, conn2, m.Get("w1"))
+	// Unregister with old conn1 should return false (already replaced).
+	assert.False(t, m.Unregister("w1", conn1))
+	// Unregister with current conn2 should return true.
+	assert.True(t, m.Unregister("w1", conn2))
+}
+
 func TestManager_Get_NotRegistered(t *testing.T) {
 	m := New()
 

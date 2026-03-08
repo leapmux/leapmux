@@ -8,6 +8,7 @@ import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
 import { useOrg } from '~/context/OrgContext'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
+import { createWorkerInfoStore } from '~/stores/workerInfo.store'
 import { spinner } from '~/styles/animations.css'
 import { errorText, labelRow, refreshButton, spinning } from '~/styles/shared.css'
 
@@ -21,6 +22,7 @@ const SESSION_ID_PATTERN = /^[\w-]+$/
 
 export const ResumeSessionDialog: Component<ResumeSessionDialogProps> = (props) => {
   const org = useOrg()
+  const workerInfoStore = createWorkerInfoStore()
   const [workers, setWorkers] = createSignal<import('~/generated/leapmux/v1/worker_pb').Worker[]>([])
   const [workerId, setWorkerId] = createSignal('')
   const [sessionId, setSessionId] = createSignal('')
@@ -48,6 +50,10 @@ export const ResumeSessionDialog: Component<ResumeSessionDialogProps> = (props) 
       setWorkers(online)
       if (online.length > 0 && !workerId()) {
         setWorkerId(online[0].id)
+      }
+      // Fetch system info for name via E2EE.
+      for (const w of online) {
+        workerInfoStore.fetchWorkerInfo(w.id)
       }
       return online.length > 0
     }
@@ -108,7 +114,7 @@ export const ResumeSessionDialog: Component<ResumeSessionDialogProps> = (props) 
                   <option value="">No workers online</option>
                 </Show>
                 <For each={workers()}>
-                  {b => <option value={b.id}>{b.name}</option>}
+                  {b => <option value={b.id}>{workerInfoStore.workerInfo(b.id)?.name ?? b.id}</option>}
                 </For>
               </select>
             </label>

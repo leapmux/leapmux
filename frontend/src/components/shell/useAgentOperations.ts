@@ -6,11 +6,11 @@ import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { PermissionMode } from '~/utils/controlResponse'
 
-import { agentClient, gitClient } from '~/api/clients'
-import { agentCallTimeout, apiCallTimeout } from '~/api/transport'
+import { workspaceClient } from '~/api/clients'
+import * as workerRpc from '~/api/workerRpc'
 import { showToast } from '~/components/common/Toast'
-import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
 import { buildInterruptRequest, buildSetPermissionModeRequest, DEFAULT_EFFORT, DEFAULT_MODEL } from '~/utils/controlResponse'
 
 /** Find the smallest unused number for auto-naming tabs (gap-filling). */
@@ -49,11 +49,16 @@ export interface UseAgentOperationsProps {
 }
 
 export function useAgentOperations(props: UseAgentOperationsProps) {
+  /** Look up the workerId for a given agent from the agent store. */
+  const getAgentWorkerId = (agentId: string): string => {
+    return props.agentStore.state.agents.find(a => a.id === agentId)?.workerId ?? ''
+  }
+
   // Open a new agent in the given workspace
   const openAgentInWorkspace = async (workspaceId: string, workerId: string, workingDir: string, sessionId?: string) => {
     try {
       const title = `Agent ${nextTabNumber(props.tabStore.state.tabs, TabType.AGENT, 'Agent')}`
-      const resp = await agentClient.openAgent({
+      const resp = await workerRpc.openAgent(workerId, {
         workspaceId,
         model: DEFAULT_MODEL,
         title,
@@ -61,7 +66,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
         workerId,
         workingDir,
         ...(sessionId ? { agentSessionId: sessionId } : {}),
-      }, agentCallTimeout(false))
+      })
       if (resp.agent) {
         const tileId = props.layoutStore.focusedTileId()
         props.agentStore.addAgent(resp.agent)
@@ -75,6 +80,11 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
         })
         props.tabStore.setActiveTabForTile(tileId, TabType.AGENT, resp.agent.id)
         props.persistLayout?.()
+        // Register tab with hub.
+        workspaceClient.addTab({
+          workspaceId,
+          tab: { tabType: TabType.AGENT, tabId: resp.agent.id, tileId, workerId },
+        }).catch(() => {})
         // Focus the editor after the reactive updates propagate to the DOM.
         requestAnimationFrame(() => props.focusEditor?.())
       }
@@ -128,9 +138,8 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   const handleControlResponse = async (agentId: string, content: Uint8Array) => {
     props.forceScrollToBottom?.()
     try {
-      const agent = props.agentStore.state.agents.find(a => a.id === agentId)
-      const isActive = agent?.status === AgentStatus.ACTIVE
-      await agentClient.sendControlResponse({ agentId, content }, agentCallTimeout(isActive))
+      const workerId = getAgentWorkerId(agentId)
+      await workerRpc.sendControlResponse(workerId, { agentId, content })
       // Remove from pending after successful send.
       const parsed = JSON.parse(new TextDecoder().decode(content))
       const requestId = parsed?.response?.request_id
@@ -156,11 +165,11 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     props.agentStore.updateAgent(agentId, { [field]: value })
     props.settingsLoading.start()
     try {
-      await agentClient.updateAgentSettings({
+      await workerRpc.updateAgentSettings(agent.workerId, {
         agentId,
         model: field === 'model' ? value : '',
         effort: field === 'effort' ? value : '',
-      }, agentCallTimeout(agent.status === AgentStatus.ACTIVE))
+      })
       props.settingsLoading.stop()
     }
     catch (err) {
@@ -176,10 +185,11 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     if (!agentId)
       return
     try {
-      await agentClient.sendAgentMessage({
+      const workerId = getAgentWorkerId(agentId)
+      await workerRpc.sendAgentMessage(workerId, {
         agentId,
         content: buildInterruptRequest(),
-      }, agentCallTimeout(true))
+      })
     }
     catch (err) {
       showToast(err instanceof Error ? err.message : 'Failed to interrupt', 'danger')
@@ -199,10 +209,10 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     props.agentStore.updateAgent(agentId, { permissionMode: mode })
     props.settingsLoading.start()
     try {
-      await agentClient.sendAgentMessage({
+      await workerRpc.sendAgentMessage(agent.workerId, {
         agentId,
         content: buildSetPermissionModeRequest(mode),
-      }, agentCallTimeout(agent.status === AgentStatus.ACTIVE))
+      })
       props.settingsLoading.stop()
     }
     catch (err) {
@@ -216,9 +226,26 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   // Retry a failed message delivery
   const handleRetryMessage = async (agentId: string, messageId: string) => {
     try {
-      const retryAgent = props.agentStore.state.agents.find(a => a.id === agentId)
-      await agentClient.retryAgentMessage({ agentId, messageId }, agentCallTimeout(retryAgent?.status === AgentStatus.ACTIVE))
-      props.chatStore.clearMessageError(messageId)
+      const workerId = getAgentWorkerId(agentId)
+      if (messageId.startsWith('local-')) {
+        // Local optimistic message was never stored on the Worker.
+        // Extract the original content and re-send it.
+        const message = props.chatStore.getMessages(agentId).find(m => m.id === messageId)
+        if (!message)
+          return
+        const parsed = parseMessageContent(message)
+        const inner = getInnerMessage(parsed)
+        const content = inner?.content
+        if (typeof content !== 'string')
+          return
+        await workerRpc.sendAgentMessage(workerId, { agentId, content })
+        // Success: remove local message; the real one arrives via WatchEvents.
+        props.chatStore.removeMessage(agentId, messageId)
+      }
+      else {
+        await workerRpc.retryAgentMessage(workerId, { agentId, messageId })
+        props.chatStore.clearMessageError(messageId)
+      }
     }
     catch (err) {
       showToast(err instanceof Error ? err.message : 'Retry failed', 'danger')
@@ -227,8 +254,14 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
 
   // Delete a failed message
   const handleDeleteMessage = async (agentId: string, messageId: string) => {
+    if (messageId.startsWith('local-')) {
+      // Local optimistic message: just remove from the local store.
+      props.chatStore.removeMessage(agentId, messageId)
+      return
+    }
     try {
-      await agentClient.deleteAgentMessage({ agentId, messageId })
+      const workerId = getAgentWorkerId(agentId)
+      await workerRpc.deleteAgentMessage(workerId, { agentId, messageId })
       props.chatStore.removeMessage(agentId, messageId)
     }
     catch (err) {
@@ -239,18 +272,24 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   // Close an agent
   const handleCloseAgent = async (agentId: string) => {
     try {
+      const workerId = getAgentWorkerId(agentId)
       props.controlStore.clearAgent(agentId)
-      const resp = await agentClient.closeAgent({ agentId })
+      const resp = await workerRpc.closeAgent(workerId, { agentId })
       props.agentStore.removeAgent(agentId)
       props.tabStore.removeTab(TabType.AGENT, agentId)
+      // Unregister tab from hub.
+      const ws = props.activeWorkspace()
+      if (ws) {
+        workspaceClient.removeTab({ workspaceId: ws.id, tabType: TabType.AGENT, tabId: agentId }).catch(() => {})
+      }
       // Auto-handle worktree cleanup if the pre-close check stored a choice.
       if (resp.worktreeCleanupPending && resp.worktreeId) {
         if (props.pendingWorktreeChoice() === 'remove') {
-          gitClient.forceRemoveWorktree({ worktreeId: resp.worktreeId }, apiCallTimeout()).catch(() => {})
+          workerRpc.forceRemoveWorktree(workerId, { worktreeId: resp.worktreeId }).catch(() => {})
         }
         else {
           // Default to keep (if somehow no choice was stored)
-          gitClient.keepWorktree({ worktreeId: resp.worktreeId }).catch(() => {})
+          workerRpc.keepWorktree(workerId, { worktreeId: resp.worktreeId }).catch(() => {})
         }
       }
     }

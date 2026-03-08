@@ -1,12 +1,13 @@
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Worker Restart Thinking Indicator', () => {
   test('should hide thinking indicator when worker goes offline during agent turn', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Thinking Indicator Test', adminOrgId)
+    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Thinking Indicator Test', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -46,8 +47,9 @@ test.describe('Worker Restart Thinking Indicator', () => {
 
   test('should resume agent after worker restart and new message', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, workerId, adminOrgId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Agent Resume Test', adminOrgId)
+    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Agent Resume Test', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -85,6 +87,24 @@ test.describe('Worker Restart Thinking Indicator', () => {
       // Thinking indicator should still be hidden (agent not auto-restarted)
       await expect(thinkingIndicator).not.toBeVisible()
 
+      // Install a MutationObserver BEFORE sending the message so we can
+      // detect even a brief flash of the thinking indicator.
+      await page.evaluate(() => {
+        (window as any).__thinkingIndicatorSeen = false
+        const observer = new MutationObserver(() => {
+          if (document.querySelector('[data-testid="thinking-indicator"]')) {
+            (window as any).__thinkingIndicatorSeen = true
+            observer.disconnect()
+          }
+        })
+        observer.observe(document.body, { childList: true, subtree: true })
+        // Also check immediately in case it's already visible.
+        if (document.querySelector('[data-testid="thinking-indicator"]')) {
+          (window as any).__thinkingIndicatorSeen = true
+          observer.disconnect()
+        }
+      })
+
       // Send a new message — agent should restart and respond
       await editor.click()
       await page.keyboard.type('What is 3+3? Reply with just the number, nothing else.')
@@ -99,6 +119,11 @@ test.describe('Worker Restart Thinking Indicator', () => {
         }
         return false
       }, { timeout: 60_000 })
+
+      // Verify that the thinking indicator was shown at some point during
+      // the turn, even if only briefly before streaming began.
+      const sawThinking = await page.evaluate(() => (window as any).__thinkingIndicatorSeen)
+      expect(sawThinking).toBe(true)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

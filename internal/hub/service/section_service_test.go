@@ -16,9 +16,8 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/id"
 	"github.com/leapmux/leapmux/internal/hub/service"
-	"github.com/leapmux/leapmux/internal/hub/workermgr"
+	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 type sectionTestEnv struct {
@@ -40,8 +39,7 @@ func setupSectionTest(t *testing.T) *sectionTestEnv {
 	require.NoError(t, err)
 
 	queries := gendb.New(sqlDB)
-	wMgr := workermgr.New()
-	sectionSvc := service.NewSectionService(queries, wMgr)
+	sectionSvc := service.NewSectionService(queries)
 
 	mux := http.NewServeMux()
 	opts := connect.WithInterceptors(auth.NewInterceptor(queries))
@@ -259,23 +257,15 @@ func TestSectionService_MoveSection(t *testing.T) {
 func TestSectionService_MoveWorkspace(t *testing.T) {
 	env := setupSectionTest(t)
 
-	// Create a workspace directly in DB.
-	workerID := id.Generate()
-	_ = env.queries.CreateWorker(context.Background(), gendb.CreateWorkerParams{
-		ID:           workerID,
-		OrgID:        env.orgID,
-		Name:         "test-worker",
-		Hostname:     "localhost",
-		AuthToken:    id.Generate(),
-		RegisteredBy: env.userID,
-	})
+	// Create a workspace (hub-owned) so that the FK in workspace_section_items is satisfied.
 	workspaceID := id.Generate()
-	_ = env.queries.CreateWorkspace(context.Background(), gendb.CreateWorkspaceParams{
-		ID:        workspaceID,
-		OrgID:     env.orgID,
-		CreatedBy: env.userID,
-		Title:     "Test Workspace",
+	err := env.queries.CreateWorkspace(context.Background(), gendb.CreateWorkspaceParams{
+		ID:          workspaceID,
+		OrgID:       env.orgID,
+		OwnerUserID: env.userID,
+		Title:       "test workspace",
 	})
+	require.NoError(t, err)
 
 	// Trigger auto-init of sections.
 	listResp, _ := env.client.ListSections(context.Background(), authedReq(
@@ -289,7 +279,7 @@ func TestSectionService_MoveWorkspace(t *testing.T) {
 	}
 
 	// Move the workspace to the archived section.
-	_, err := env.client.MoveWorkspace(context.Background(), authedReq(
+	_, err = env.client.MoveWorkspace(context.Background(), authedReq(
 		&leapmuxv1.MoveWorkspaceRequest{
 			WorkspaceId: workspaceID,
 			SectionId:   archivedID,
@@ -306,141 +296,17 @@ func TestSectionService_MoveWorkspace(t *testing.T) {
 	assert.Equal(t, workspaceID, items[0].GetWorkspaceId())
 }
 
-func TestSectionService_MoveWorkspace_ArchiveClosesAgents(t *testing.T) {
-	env := setupSectionTest(t)
-
-	// Create a workspace with an active agent.
-	workerID := id.Generate()
-	_ = env.queries.CreateWorker(context.Background(), gendb.CreateWorkerParams{
-		ID:           workerID,
-		OrgID:        env.orgID,
-		Name:         "test-worker",
-		Hostname:     "localhost",
-		AuthToken:    id.Generate(),
-		RegisteredBy: env.userID,
-	})
-	workspaceID := id.Generate()
-	_ = env.queries.CreateWorkspace(context.Background(), gendb.CreateWorkspaceParams{
-		ID:        workspaceID,
-		OrgID:     env.orgID,
-		CreatedBy: env.userID,
-		Title:     "Test WS",
-	})
-	agentID := id.Generate()
-	_ = env.queries.CreateAgent(context.Background(), gendb.CreateAgentParams{
-		ID:          agentID,
-		WorkspaceID: workspaceID,
-		WorkerID:    workerID,
-		WorkingDir:  "/tmp",
-		HomeDir:     "/home",
-		Title:       "Test Agent",
-		Model:       "sonnet",
-		Effort:      "high",
-	})
-
-	// Verify agent is initially active (status=1 is the default from CreateAgent).
-	agent, err := env.queries.GetAgentByID(context.Background(), agentID)
-	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, agent.Status)
-
-	// Trigger auto-init of sections and find archived section.
-	listResp, _ := env.client.ListSections(context.Background(), authedReq(
-		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
-	var archivedID string
-	for _, s := range listResp.Msg.GetSections() {
-		if s.GetSectionType() == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED {
-			archivedID = s.GetId()
-		}
-	}
-
-	// Archive the workspace.
-	_, err = env.client.MoveWorkspace(context.Background(), authedReq(
-		&leapmuxv1.MoveWorkspaceRequest{
-			WorkspaceId: workspaceID,
-			SectionId:   archivedID,
-			Position:    "n",
-		}, env.token))
-	require.NoError(t, err)
-
-	// Verify agent was closed in the database.
-	agent, err = env.queries.GetAgentByID(context.Background(), agentID)
-	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE, agent.Status)
-}
-
-func TestSectionService_MoveWorkspace_NonArchiveDoesNotCloseAgents(t *testing.T) {
-	env := setupSectionTest(t)
-
-	// Create a workspace with an active agent.
-	workerID := id.Generate()
-	_ = env.queries.CreateWorker(context.Background(), gendb.CreateWorkerParams{
-		ID:           workerID,
-		OrgID:        env.orgID,
-		Name:         "test-worker",
-		Hostname:     "localhost",
-		AuthToken:    id.Generate(),
-		RegisteredBy: env.userID,
-	})
-	workspaceID := id.Generate()
-	_ = env.queries.CreateWorkspace(context.Background(), gendb.CreateWorkspaceParams{
-		ID:        workspaceID,
-		OrgID:     env.orgID,
-		CreatedBy: env.userID,
-		Title:     "Test WS",
-	})
-	agentID := id.Generate()
-	_ = env.queries.CreateAgent(context.Background(), gendb.CreateAgentParams{
-		ID:          agentID,
-		WorkspaceID: workspaceID,
-		WorkerID:    workerID,
-		WorkingDir:  "/tmp",
-		HomeDir:     "/home",
-		Title:       "Test Agent",
-		Model:       "sonnet",
-		Effort:      "high",
-	})
-
-	// Create a custom section and move to it.
-	listResp, _ := env.client.ListSections(context.Background(), authedReq(
-		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
-	createResp, _ := env.client.CreateSection(context.Background(), authedReq(
-		&leapmuxv1.CreateSectionRequest{Name: "Custom"}, env.token))
-	customID := createResp.Msg.GetSection().GetId()
-	_ = listResp // suppress unused warning
-
-	_, err := env.client.MoveWorkspace(context.Background(), authedReq(
-		&leapmuxv1.MoveWorkspaceRequest{
-			WorkspaceId: workspaceID,
-			SectionId:   customID,
-			Position:    "n",
-		}, env.token))
-	require.NoError(t, err)
-
-	// Agent should still be active.
-	agent, err := env.queries.GetAgentByID(context.Background(), agentID)
-	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, agent.Status)
-}
-
 func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
 	env := setupSectionTest(t)
 
-	workerID := id.Generate()
-	_ = env.queries.CreateWorker(context.Background(), gendb.CreateWorkerParams{
-		ID:           workerID,
-		OrgID:        env.orgID,
-		Name:         "test-worker",
-		Hostname:     "localhost",
-		AuthToken:    id.Generate(),
-		RegisteredBy: env.userID,
-	})
 	workspaceID := id.Generate()
-	_ = env.queries.CreateWorkspace(context.Background(), gendb.CreateWorkspaceParams{
-		ID:        workspaceID,
-		OrgID:     env.orgID,
-		CreatedBy: env.userID,
-		Title:     "Test WS",
+	err := env.queries.CreateWorkspace(context.Background(), gendb.CreateWorkspaceParams{
+		ID:          workspaceID,
+		OrgID:       env.orgID,
+		OwnerUserID: env.userID,
+		Title:       "test workspace",
 	})
+	require.NoError(t, err)
 
 	// Trigger auto-init and find section IDs.
 	listResp, _ := env.client.ListSections(context.Background(), authedReq(

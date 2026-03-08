@@ -10,25 +10,23 @@ import (
 	"connectrpc.com/connect"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/hub/agentmgr"
+	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/id"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/validate"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
+	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 // WorkerConnectorService implements the Hub-side service called by Worker
 // instances for registration and bidirectional streaming.
 type WorkerConnectorService struct {
-	queries     *db.Queries
-	workerMgr   *workermgr.Manager
-	agentSvc    *AgentService
-	terminalSvc *TerminalService
-	agentMgr    *agentmgr.Manager
-	pending     *workermgr.PendingRequests
-	notifier    *notifier.Notifier
-	shutdownCh  <-chan struct{}
+	queries    *db.Queries
+	workerMgr  *workermgr.Manager
+	channelMgr *channelmgr.Manager
+	pending    *workermgr.PendingRequests
+	notifier   *notifier.Notifier
+	shutdownCh <-chan struct{}
 }
 
 // NewWorkerConnectorService creates a new WorkerConnectorService.
@@ -36,19 +34,9 @@ func NewWorkerConnectorService(q *db.Queries, mgr *workermgr.Manager) *WorkerCon
 	return &WorkerConnectorService{queries: q, workerMgr: mgr}
 }
 
-// SetAgentService sets the agent service for routing agent output.
-func (s *WorkerConnectorService) SetAgentService(svc *AgentService) {
-	s.agentSvc = svc
-}
-
-// SetTerminalService sets the terminal service for routing terminal output.
-func (s *WorkerConnectorService) SetTerminalService(svc *TerminalService) {
-	s.terminalSvc = svc
-}
-
-// SetAgentMgr sets the agent watcher manager for broadcasting status changes.
-func (s *WorkerConnectorService) SetAgentMgr(mgr *agentmgr.Manager) {
-	s.agentMgr = mgr
+// SetChannelMgr sets the channel manager for routing encrypted channel traffic.
+func (s *WorkerConnectorService) SetChannelMgr(cm *channelmgr.Manager) {
+	s.channelMgr = cm
 }
 
 // SetPendingRequests sets the pending requests tracker for file operations.
@@ -79,33 +67,20 @@ func (s *WorkerConnectorService) RequestRegistration(
 	regID := id.Generate()
 	expiresAt := time.Now().Add(10 * time.Minute).UTC()
 
-	// Sanitize worker properties: strip invalid characters, reject if empty.
-	hostname, err := validate.ValidateProperty("hostname", req.Msg.GetHostname())
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	osName, err := validate.ValidateProperty("os", req.Msg.GetOs())
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	arch, err := validate.ValidateProperty("arch", req.Msg.GetArch())
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
 	version, err := validate.ValidateProperty("version", req.Msg.GetVersion())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	homeDir := validate.SanitizePath(req.Msg.GetHomeDir(), "")
+	publicKey := req.Msg.GetPublicKey()
+	if publicKey == nil {
+		publicKey = []byte{}
+	}
 
 	if err := s.queries.CreateRegistration(ctx, db.CreateRegistrationParams{
 		ID:        regID,
-		Hostname:  hostname,
-		Os:        osName,
-		Arch:      arch,
 		Version:   version,
-		HomeDir:   homeDir,
+		PublicKey: publicKey,
 		ExpiresAt: expiresAt,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create registration: %w", err))
@@ -203,7 +178,15 @@ func (s *WorkerConnectorService) Connect(
 		OrgID:    worker.OrgID,
 		Stream:   stream,
 	}
-	s.workerMgr.Register(conn)
+	replaced := s.workerMgr.Register(conn)
+	if replaced {
+		// A new worker process replaced an older connection. The old
+		// connection's Unregister will return false (it's no longer the
+		// current conn), so cleanupWorker won't run from its defer.
+		// We must close old channels now so the Frontend detects the
+		// disconnect and opens fresh channels to the new worker.
+		s.cleanupWorker(worker.ID)
+	}
 	defer func() {
 		// Only run cleanup if this connection is still the registered one.
 		// A newer worker process may have already replaced it, in which
@@ -213,18 +196,12 @@ func (s *WorkerConnectorService) Connect(
 		}
 	}()
 
-	// Notify frontends that the worker is back online so agent tabs
-	// with session IDs become writable again (resumable).
-	if worker.Status != leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING {
-		s.broadcastWorkerOnline(worker.ID)
-	}
-
 	// Update last seen.
 	if err := s.queries.UpdateWorkerLastSeen(ctx, worker.ID); err != nil {
 		slog.Warn("failed to update worker last seen", "worker_id", worker.ID, "error", err)
 	}
 
-	slog.Info("worker connected", "worker_id", worker.ID, "name", worker.Name, "status", worker.Status)
+	slog.Info("worker connected", "worker_id", worker.ID, "status", worker.Status)
 	defer slog.Info("worker disconnected", "worker_id", worker.ID)
 
 	// Process pending notifications.
@@ -274,6 +251,7 @@ func (s *WorkerConnectorService) Connect(
 		select {
 		case result := <-msgCh:
 			if result.err != nil {
+				// Connection closed by worker.
 				return nil // Connection closed.
 			}
 
@@ -287,13 +265,27 @@ func (s *WorkerConnectorService) Connect(
 			idleTimer.Reset(workerIdleTimeout)
 
 			msg := result.msg
-			s.processWorkerMessage(ctx, stream, worker.ID, msg)
+			s.processWorkerMessage(ctx, conn, worker.ID, msg)
 
 		case <-idleTimer.C:
+			// A message may have arrived at the same instant the timer
+			// fired. Go's select picks randomly among ready cases, so
+			// drain msgCh before deciding to disconnect.
+			select {
+			case result := <-msgCh:
+				if result.err != nil {
+					return nil
+				}
+				idleTimer.Reset(workerIdleTimeout)
+				s.processWorkerMessage(ctx, conn, worker.ID, result.msg)
+				continue
+			default:
+			}
 			slog.Warn("worker idle timeout, assuming disconnected", "worker_id", worker.ID)
 			return nil
 
 		case <-ctx.Done():
+			// Hub shutting down or request canceled.
 			return nil
 		}
 	}
@@ -302,7 +294,7 @@ func (s *WorkerConnectorService) Connect(
 // processWorkerMessage handles a single message from the worker stream.
 func (s *WorkerConnectorService) processWorkerMessage(
 	ctx context.Context,
-	stream *connect.BidiStream[leapmuxv1.ConnectRequest, leapmuxv1.ConnectResponse],
+	conn *workermgr.Conn,
 	workerID string,
 	msg *leapmuxv1.ConnectRequest,
 ) {
@@ -311,18 +303,18 @@ func (s *WorkerConnectorService) processWorkerMessage(
 		if err := s.queries.UpdateWorkerLastSeen(ctx, workerID); err != nil {
 			slog.Warn("failed to update worker last seen on heartbeat", "worker_id", workerID, "error", err)
 		}
-		// Persist worker's home directory if provided (sent with the initial heartbeat).
-		if homeDir := validate.SanitizePath(hb.HomeDir, ""); homeDir != "" {
-			if err := s.queries.UpdateWorkerHomeDir(ctx, db.UpdateWorkerHomeDirParams{
-				HomeDir:   homeDir,
+		// Persist worker's public key if provided (sent with the initial heartbeat).
+		if pk := hb.GetPublicKey(); len(pk) > 0 {
+			if err := s.queries.UpdateWorkerPublicKey(ctx, db.UpdateWorkerPublicKeyParams{
+				PublicKey: pk,
 				ID:        workerID,
-				HomeDir_2: homeDir,
 			}); err != nil {
-				slog.Warn("failed to update worker home dir", "worker_id", workerID, "error", err)
+				slog.Warn("failed to update worker public key", "worker_id", workerID, "error", err)
 			}
 		}
-		// Send heartbeat response.
-		if err := stream.Send(&leapmuxv1.ConnectResponse{
+		// Send heartbeat response via conn.Send() to serialize with
+		// other writes (e.g. channel relay) on the same bidi stream.
+		if err := conn.Send(&leapmuxv1.ConnectResponse{
 			Payload: &leapmuxv1.ConnectResponse_Heartbeat{
 				Heartbeat: &leapmuxv1.Heartbeat{},
 			},
@@ -339,162 +331,105 @@ func (s *WorkerConnectorService) processWorkerMessage(
 		}
 	}
 
-	// Route messages to appropriate services.
-	switch payload := msg.GetPayload().(type) {
-	case *leapmuxv1.ConnectRequest_AgentOutput:
-		if s.agentSvc != nil {
-			s.agentSvc.HandleAgentOutput(ctx, payload.AgentOutput)
-		}
-	case *leapmuxv1.ConnectRequest_AgentStarted:
-		agentID := payload.AgentStarted.GetAgentId()
-		sessionID := payload.AgentStarted.GetAgentSessionId()
-		slog.Info("agent started on worker",
-			"worker_id", workerID,
-			"workspace_id", payload.AgentStarted.GetWorkspaceId(),
-			"agent_id", agentID,
-			"agent_session_id", sessionID,
-		)
-		// Persist session ID if present.
-		if sessionID != "" && agentID != "" {
-			if err := s.queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
-				AgentSessionID: sessionID,
-				ID:             agentID,
-			}); err != nil {
-				slog.Error("failed to store agent session ID",
-					"agent_id", agentID, "error", err)
-			}
-		}
-		// Persist confirmed permission mode from startup handshake.
-		if confirmedMode := payload.AgentStarted.GetPermissionMode(); confirmedMode != "" && agentID != "" {
-			if err := s.queries.SetAgentPermissionMode(ctx, db.SetAgentPermissionModeParams{
-				PermissionMode: confirmedMode,
-				ID:             agentID,
-			}); err != nil {
-				slog.Warn("failed to set agent permission mode", "agent_id", agentID, "error", err)
-			}
-		}
-		// Store git status from agent startup (sanitized).
-		if gs := sanitizeGitStatus(payload.AgentStarted.GetGitStatus()); gs != nil {
-			s.agentSvc.StoreGitStatus(agentID, gs)
-		}
-		// Persist worker home directory for tilde path display.
-		if homeDir := validate.SanitizePath(payload.AgentStarted.GetHomeDir(), ""); homeDir != "" && agentID != "" {
-			if err := s.queries.UpdateAgentHomeDir(ctx, db.UpdateAgentHomeDirParams{
-				HomeDir: homeDir,
-				ID:      agentID,
-			}); err != nil {
-				slog.Warn("failed to store agent home dir", "agent_id", agentID, "error", err)
-			}
-		}
-	case *leapmuxv1.ConnectRequest_AgentStopped:
-		agentID := payload.AgentStopped.GetAgentId()
-		slog.Info("agent stopped on worker",
-			"worker_id", workerID,
-			"workspace_id", payload.AgentStopped.GetWorkspaceId(),
-			"agent_id", agentID,
-		)
-		// Check if this stop was part of a restart cycle (settings change or /clear).
-		if s.agentSvc != nil {
-			if opts := s.agentSvc.ConsumeRestartPending(agentID); opts != nil {
-				go func() {
-					bgCtx := context.Background()
-					agent, aErr := s.queries.GetAgentByID(bgCtx, agentID)
-					if aErr != nil {
-						slog.Error("restart pending: get agent", "agent_id", agentID, "error", aErr)
-						return
-					}
-
-					// Clear session ID if requested (for /clear).
-					if opts.ClearSession {
-						if err := s.queries.UpdateAgentSessionID(bgCtx, db.UpdateAgentSessionIDParams{
-							AgentSessionID: "",
-							ID:             agentID,
-						}); err != nil {
-							slog.Warn("failed to clear agent session ID on restart", "agent_id", agentID, "error", err)
-						}
-						agent.AgentSessionID = ""
-					}
-
-					ws, wErr := s.queries.GetWorkspaceByIDInternal(bgCtx, agent.WorkspaceID)
-					if wErr != nil {
-						slog.Error("restart pending: get workspace", "agent_id", agentID, "error", wErr)
-						return
-					}
-					if err := s.agentSvc.ensureAgentActive(bgCtx, &agent, &ws); err != nil {
-						slog.Error("restart pending: ensureAgentActive", "agent_id", agentID, "error", err)
-						return
-					}
-
-					// Broadcast context_cleared notification after successful restart.
-					if opts.ClearSession {
-						s.agentSvc.broadcastNotification(bgCtx, agentID, map[string]interface{}{
-							"type": "context_cleared",
-						})
-					}
-
-					// Broadcast plan execution notification.
-					if opts.PlanExec {
-						s.agentSvc.broadcastNotification(bgCtx, agentID, map[string]interface{}{
-							"type":            "plan_execution",
-							"context_cleared": opts.ClearSession,
-							"plan_file_path":  opts.PlanFilePath,
-						})
-					}
-
-					// Send synthetic user message after plan execution restart.
-					if opts.SyntheticUserMessage != "" {
-						if err := s.agentSvc.sendSyntheticUserMessage(bgCtx, agentID, opts.SyntheticUserMessage); err != nil {
-							slog.Error("send synthetic user message after plan restart",
-								"agent_id", agentID, "error", err)
-						}
-					}
-				}()
-			}
-		}
-	case *leapmuxv1.ConnectRequest_AgentGitInfo:
-		info := payload.AgentGitInfo
-		agentID := info.GetAgentId()
-		sanitized := sanitizeGitStatus(info.GetGitStatus())
-		if sanitized != nil && s.agentSvc != nil {
-			s.agentSvc.StoreGitStatus(agentID, sanitized)
-			// Broadcast status change so frontend gets the git status update.
-			if agent, aErr := s.queries.GetAgentByID(ctx, agentID); aErr == nil {
-				workerOnline := s.workerMgr.IsOnline(agent.WorkerID)
-				sc := AgentStatusChange(&agent, workerOnline)
-				sc.GitStatus = sanitized
-				s.agentMgr.Broadcast(agentID, &leapmuxv1.AgentEvent{
-					AgentId: agentID,
-					Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: sc},
-				})
-			}
-		}
-	case *leapmuxv1.ConnectRequest_TerminalOutput:
-		if s.terminalSvc != nil {
-			s.terminalSvc.HandleTerminalOutput(payload.TerminalOutput)
-		}
-	case *leapmuxv1.ConnectRequest_TerminalStarted:
-		slog.Info("terminal started on worker",
-			"worker_id", workerID,
-			"terminal_id", payload.TerminalStarted.GetTerminalId(),
-		)
-	case *leapmuxv1.ConnectRequest_TerminalExited:
-		if s.terminalSvc != nil {
-			s.terminalSvc.HandleTerminalExited(payload.TerminalExited)
-		}
-	default:
-		slog.Debug("unhandled worker message",
-			"worker_id", workerID,
-			"request_id", msg.GetRequestId(),
-		)
+	// Handle workspace tab sync from worker.
+	if tabSync := msg.GetWorkspaceTabsSync(); tabSync != nil {
+		s.handleWorkspaceTabsSync(ctx, workerID, tabSync)
+		return
 	}
+
+	// Route channel messages from worker to frontend.
+	if chMsg := msg.GetChannelMessageResp(); chMsg != nil {
+		if s.channelMgr != nil {
+			// Validate chunked message constraints before forwarding.
+			if err := s.channelMgr.ChunkTracker.Track(
+				chMsg.GetChannelId(), "w2fe",
+				chMsg.GetCorrelationId(),
+				len(chMsg.GetCiphertext()),
+				chMsg.GetFlags() == leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
+			); err != nil {
+				slog.Warn("channel relay: chunk validation failed",
+					"worker_id", workerID,
+					"channel_id", chMsg.GetChannelId(),
+					"correlation_id", chMsg.GetCorrelationId(),
+					"error", err,
+				)
+				return
+			}
+
+			slog.Debug("relaying channel message from worker",
+				"worker_id", workerID,
+				"channel_id", chMsg.GetChannelId(),
+				"correlation_id", chMsg.GetCorrelationId(),
+			)
+			if !s.channelMgr.SendToFrontend(chMsg) {
+				slog.Debug("failed to route channel message to frontend",
+					"worker_id", workerID,
+					"channel_id", chMsg.GetChannelId(),
+					"correlation_id", chMsg.GetCorrelationId(),
+				)
+			}
+		}
+		return
+	}
+
+	slog.Debug("unhandled worker message",
+		"worker_id", workerID,
+		"request_id", msg.GetRequestId(),
+	)
 }
 
-// cleanupWorker closes active agents for a disconnected worker and
-// notifies watchers so frontends see the status change.
-// Workspaces are NOT closed — their availability is determined by the
-// worker's online status (workerMgr), not a DB column.
+// handleWorkspaceTabsSync reconciles the hub's workspace_tabs for the connecting worker.
+// It deletes stale hub tabs whose agents or terminals no longer exist on the worker.
+// It does NOT add missing tabs because the hub is the source of truth for tab
+// visibility — a tab absent from the hub may have been explicitly closed by the user.
+func (s *WorkerConnectorService) handleWorkspaceTabsSync(ctx context.Context, workerID string, sync *leapmuxv1.WorkspaceTabsSync) {
+	// Build a set of tabs the worker currently has.
+	workerTabs := make(map[string]struct{})
+	for _, tab := range sync.GetTabs() {
+		key := tab.GetWorkspaceId() + "|" + tab.GetTabType().String() + "|" + tab.GetTabId()
+		workerTabs[key] = struct{}{}
+	}
+
+	// Get current hub tabs for this worker.
+	hubTabs, err := s.queries.ListWorkspaceTabsByWorker(ctx, workerID)
+	if err != nil {
+		slog.Error("failed to list hub tabs for worker during sync", "worker_id", workerID, "error", err)
+		return
+	}
+
+	// Delete hub tabs that the worker no longer has.
+	deleted := 0
+	for _, ht := range hubTabs {
+		key := ht.WorkspaceID + "|" + ht.TabType.String() + "|" + ht.TabID
+		if _, ok := workerTabs[key]; !ok {
+			if err := s.queries.DeleteWorkspaceTab(ctx, db.DeleteWorkspaceTabParams{
+				WorkspaceID: ht.WorkspaceID,
+				TabType:     ht.TabType,
+				TabID:       ht.TabID,
+			}); err != nil {
+				slog.Error("failed to delete stale tab during sync",
+					"worker_id", workerID,
+					"workspace_id", ht.WorkspaceID,
+					"tab_id", ht.TabID,
+					"error", err,
+				)
+			} else {
+				deleted++
+			}
+		}
+	}
+
+	slog.Info("workspace tab sync completed",
+		"worker_id", workerID,
+		"worker_tabs", len(sync.GetTabs()),
+		"hub_tabs", len(hubTabs),
+		"deleted", deleted,
+	)
+}
+
+// cleanupWorker handles resource cleanup for a disconnected worker.
 func (s *WorkerConnectorService) cleanupWorker(workerID string) {
-	// During hub shutdown, skip all DB operations and broadcasts.
+	// During hub shutdown, skip all cleanup operations.
 	// The DB is about to be closed and all workers are disconnecting.
 	if s.shutdownCh != nil {
 		select {
@@ -505,92 +440,16 @@ func (s *WorkerConnectorService) cleanupWorker(workerID string) {
 		}
 	}
 
-	ctx := context.Background()
-
-	// Query agents directly by worker.
-	allAgentIDs, err := s.queries.ListActiveAgentIDsByWorker(ctx, workerID)
-	if err != nil {
-		slog.Error("failed to list agents for worker", "worker_id", workerID, "error", err)
-	}
-
-	// Close agents by worker.
-	if err := s.queries.CloseActiveAgentsByWorker(ctx, workerID); err != nil {
-		slog.Error("failed to close agents for worker", "worker_id", workerID, "error", err)
-	}
-
-	// Broadcast agent closure to watchers so frontends see the status change.
-	// Include agent_session_id so the frontend knows the agent is resumable.
-	events := make([]agentmgr.AgentBroadcast, 0, len(allAgentIDs))
-	for _, agentID := range allAgentIDs {
-		a, aErr := s.queries.GetAgentByID(ctx, agentID)
-		if err := s.queries.DeleteControlRequestsByAgentID(ctx, agentID); err != nil {
-			slog.Warn("failed to delete control requests on worker cleanup", "agent_id", agentID, "error", err)
-		}
-		if aErr == nil {
-			sc := AgentStatusChange(&a, false)
-			sc.Status = leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE
-			sc.GitStatus = s.agentSvc.GetGitStatus(agentID)
-			events = append(events, agentmgr.AgentBroadcast{
-				AgentID: agentID,
-				Event: &leapmuxv1.AgentEvent{
-					AgentId: agentID,
-					Event: &leapmuxv1.AgentEvent_StatusChange{
-						StatusChange: sc,
-					},
-				},
-			})
-			// Remove persisted tab for agents without a session ID — they
-			// can never be resumed and would appear permanently disconnected.
-			if a.AgentSessionID == "" && a.WorkspaceID != "" {
-				if err := s.queries.DeleteWorkspaceTab(ctx, db.DeleteWorkspaceTabParams{
-					WorkspaceID: a.WorkspaceID,
-					TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-					TabID:       agentID,
-				}); err != nil {
-					slog.Warn("failed to delete workspace tab on worker cleanup", "agent_id", agentID, "workspace_id", a.WorkspaceID, "error", err)
-				}
-			}
+	// Close all channels associated with this worker.
+	if s.channelMgr != nil {
+		removed := s.channelMgr.UnregisterByWorker(workerID)
+		if len(removed) > 0 {
+			slog.Info("closed channels for disconnected worker",
+				"worker_id", workerID,
+				"count", len(removed),
+			)
 		}
 	}
-	if s.agentMgr != nil && len(events) > 0 {
-		s.agentMgr.BroadcastMany(events)
-	}
 
-	// Broadcast terminal closure to watchers so frontends see the disconnection.
-	if s.terminalSvc != nil {
-		s.terminalSvc.CleanupTerminalsByWorker(workerID)
-	}
-
-	slog.Info("cleaned up worker resources", "worker_id", workerID, "agents_closed", len(allAgentIDs))
-}
-
-// broadcastWorkerOnline notifies all agent watchers that the worker is
-// back online, so agent tabs with session IDs become writable (resumable).
-func (s *WorkerConnectorService) broadcastWorkerOnline(workerID string) {
-	if s.agentMgr == nil {
-		return
-	}
-
-	ctx := context.Background()
-	agents, err := s.queries.ListAgentsByWorker(ctx, workerID)
-	if err != nil {
-		slog.Error("failed to list agents for worker online broadcast", "worker_id", workerID, "error", err)
-		return
-	}
-
-	events := make([]agentmgr.AgentBroadcast, len(agents))
-	for i := range agents {
-		sc := AgentStatusChange(&agents[i], true)
-		sc.GitStatus = s.agentSvc.GetGitStatus(agents[i].ID)
-		events[i] = agentmgr.AgentBroadcast{
-			AgentID: agents[i].ID,
-			Event: &leapmuxv1.AgentEvent{
-				AgentId: agents[i].ID,
-				Event: &leapmuxv1.AgentEvent_StatusChange{
-					StatusChange: sc,
-				},
-			},
-		}
-	}
-	s.agentMgr.BroadcastMany(events)
+	slog.Info("worker disconnected, cleanup complete", "worker_id", workerID)
 }

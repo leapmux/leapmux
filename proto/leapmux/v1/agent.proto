@@ -1,31 +1,7 @@
 syntax = "proto3";
 package leapmux.v1;
 
-// AgentService manages coding agents within workspaces.
-// Called by Frontend on Hub via ConnectRPC.
-// Each workspace can have multiple agents (1:N).
-service AgentService {
-  // Open a new coding agent in a workspace.
-  rpc OpenAgent(OpenAgentRequest) returns (OpenAgentResponse);
-  // Close a coding agent.
-  rpc CloseAgent(CloseAgentRequest) returns (CloseAgentResponse);
-  // Send a user message to a coding agent.
-  rpc SendAgentMessage(SendAgentMessageRequest) returns (SendAgentMessageResponse);
-  // List agents in a workspace.
-  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
-  // Get message history for an agent (paginated).
-  rpc ListAgentMessages(ListAgentMessagesRequest) returns (ListAgentMessagesResponse);
-  // Rename an agent.
-  rpc RenameAgent(RenameAgentRequest) returns (RenameAgentResponse);
-  // Send a control response (permission grant/deny) back to an agent.
-  rpc SendControlResponse(SendControlResponseRequest) returns (SendControlResponseResponse);
-  // Retry delivering a failed user message to the worker.
-  rpc RetryAgentMessage(RetryAgentMessageRequest) returns (RetryAgentMessageResponse);
-  // Delete a failed user message.
-  rpc DeleteAgentMessage(DeleteAgentMessageRequest) returns (DeleteAgentMessageResponse);
-  // Update agent settings (model, effort). Requires agent restart.
-  rpc UpdateAgentSettings(UpdateAgentSettingsRequest) returns (UpdateAgentSettingsResponse);
-}
+import "leapmux/v1/common.proto";
 
 // AgentStatus tracks the lifecycle state of an agent.
 enum AgentStatus {
@@ -155,6 +131,9 @@ message AgentStatusChange {
   string model = 6;
   string effort = 7;
   AgentGitStatus git_status = 8; // Git status for the agent's working directory
+  string git_repo_root = 9;                          // Repo root for per-file paths
+  repeated GitFileStatusEntry git_file_status = 10;   // Per-file git status (turn-end only)
+  bool git_file_status_set = 11;                       // True when git_file_status was explicitly computed (distinguishes empty from absent)
 }
 
 // AgentGitStatus holds git repository status for an agent's working directory.

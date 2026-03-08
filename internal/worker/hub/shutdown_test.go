@@ -185,10 +185,7 @@ func TestConnectWithReconnect_HubRetryDelayCancelledByContext(t *testing.T) {
 }
 
 func TestHandleMessage_HubShuttingDown(t *testing.T) {
-	c := &Client{
-		agentWorkspaces:    make(map[string]string),
-		terminalWorkspaces: make(map[string]terminalMeta),
-	}
+	c := &Client{}
 
 	msg := &leapmuxv1.ConnectResponse{
 		Payload: &leapmuxv1.ConnectResponse_HubShuttingDown{
@@ -198,7 +195,7 @@ func TestHandleMessage_HubShuttingDown(t *testing.T) {
 		},
 	}
 
-	c.handleMessage(context.Background(), msg)
+	c.handleMessage(msg)
 
 	assert.Equal(t, int64(25), c.hubRetryDelay.Load())
 }

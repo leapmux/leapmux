@@ -5,32 +5,6 @@ import "leapmux/v1/agent.proto";
 import "leapmux/v1/common.proto";
 import "leapmux/v1/terminal.proto";
 
-// WorkspaceService manages coding workspaces.
-// Called by Frontend on Hub via ConnectRPC.
-// Hub internally routes to the appropriate Worker.
-service WorkspaceService {
-  // Create a new coding workspace on a specific worker.
-  rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
-  // List workspaces for the user's organization.
-  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
-  // Get a single workspace's details.
-  rpc GetWorkspace(GetWorkspaceRequest) returns (GetWorkspaceResponse);
-  // Rename a workspace.
-  rpc RenameWorkspace(RenameWorkspaceRequest) returns (RenameWorkspaceResponse);
-  // Soft-delete a workspace.
-  rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
-  // Update workspace sharing settings.
-  rpc UpdateWorkspaceSharing(UpdateWorkspaceSharingRequest) returns (UpdateWorkspaceSharingResponse);
-  // List users a workspace is shared with.
-  rpc ListWorkspaceShares(ListWorkspaceSharesRequest) returns (ListWorkspaceSharesResponse);
-  // List tabs for a workspace (ordered by position).
-  rpc ListTabs(ListTabsRequest) returns (ListTabsResponse);
-  // Get the tiling layout for a workspace.
-  rpc GetLayout(GetLayoutRequest) returns (GetLayoutResponse);
-  // Save the tiling layout for a workspace.
-  rpc SaveLayout(SaveLayoutRequest) returns (SaveLayoutResponse);
-}
-
 // TabType identifies the kind of workspace tab.
 enum TabType {
   TAB_TYPE_UNSPECIFIED = 0;
@@ -39,15 +13,28 @@ enum TabType {
   TAB_TYPE_FILE = 3; // Ephemeral file viewer tab (not persisted to backend)
 }
 
+// WorkspaceService is the hub-side service for workspace management.
+// Frontend calls these RPCs directly on the Hub (not via E2EE channels).
+service WorkspaceService {
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
+  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
+  rpc GetWorkspace(GetWorkspaceRequest) returns (GetWorkspaceResponse);
+  rpc RenameWorkspace(RenameWorkspaceRequest) returns (RenameWorkspaceResponse);
+  rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
+  rpc UpdateWorkspaceSharing(UpdateWorkspaceSharingRequest) returns (UpdateWorkspaceSharingResponse);
+  rpc ListWorkspaceShares(ListWorkspaceSharesRequest) returns (ListWorkspaceSharesResponse);
+  rpc AddTab(AddTabRequest) returns (AddTabResponse);
+  rpc RemoveTab(RemoveTabRequest) returns (RemoveTabResponse);
+  rpc ListTabs(ListTabsRequest) returns (ListTabsResponse);
+  rpc GetLayout(GetLayoutRequest) returns (GetLayoutResponse);
+  rpc SaveLayout(SaveLayoutRequest) returns (SaveLayoutResponse);
+}
+
 // --- Workspace CRUD ---
 
 message CreateWorkspaceRequest {
-  string worker_id = 1;
+  string org_id = 1;
   string title = 2;
-  string working_dir = 3;
-  string org_id = 6;
-  bool create_worktree = 7;     // If true, create a git worktree before starting
-  string worktree_branch = 8;   // Branch name for the worktree
 }
 
 message CreateWorkspaceResponse {
@@ -55,20 +42,18 @@ message CreateWorkspaceResponse {
 }
 
 message ListWorkspacesRequest {
-  PageRequest page = 1;
-  reserved 2;                 // was status filter
-  string org_id = 3;
+  string org_id = 1;
+  PageRequest page = 2;
 }
 
 message ListWorkspacesResponse {
   repeated Workspace workspaces = 1;
   PageResponse page = 2;
-  reserved 3;                 // was active_workspace_id
 }
 
 message GetWorkspaceRequest {
-  string org_id = 2;
-  string workspace_id = 1;
+  string org_id = 1;
+  string workspace_id = 2;
 }
 
 message GetWorkspaceResponse {
@@ -78,14 +63,10 @@ message GetWorkspaceResponse {
 message Workspace {
   string id = 1;
   string org_id = 2;
-  reserved 3;               // was backend_id (moved to per-agent)
-  string created_by = 4;
-  string title = 5;
-  reserved 6;               // was working_dir (moved to per-agent)
-  reserved 8;               // was status
-  string created_at = 9;
-  reserved 10;              // was closed_at
-  ShareMode share_mode = 11;
+  string created_by = 3;
+  string title = 4;
+  string created_at = 5;
+  ShareMode share_mode = 6;
 }
 
 // --- Workspace Sharing ---
@@ -126,7 +107,9 @@ message DeleteWorkspaceRequest {
   string workspace_id = 1;
 }
 
-message DeleteWorkspaceResponse {}
+message DeleteWorkspaceResponse {
+  repeated string worker_ids = 1; // Workers that had tabs (frontend calls each for cleanup)
+}
 
 // --- Workspace Tabs ---
 
@@ -135,19 +118,31 @@ message WorkspaceTab {
   string tab_id = 2;
   string position = 3;
   string tile_id = 4;
-  string working_dir = 5;        // Tab's working directory context
-  string shell_start_dir = 6;    // Where the shell started (terminal tabs only)
+  string worker_id = 5;         // Worker that owns this tab
 }
 
-message ListTabsRequest {
-  string org_id = 2;
+message AddTabRequest {
   string workspace_id = 1;
+  WorkspaceTab tab = 2;
+}
+
+message AddTabResponse {}
+
+message RemoveTabRequest {
+  string workspace_id = 1;
+  TabType tab_type = 2;
+  string tab_id = 3;
+}
+
+message RemoveTabResponse {}
+
+message ListTabsRequest {
+  string org_id = 1;
+  string workspace_id = 2;
 }
 
 message ListTabsResponse {
   repeated WorkspaceTab tabs = 1;
-  reserved 2, 3;
-  reserved "active_tab_type", "active_tab_id";
 }
 
 // --- Tiling Layout ---
@@ -177,47 +172,53 @@ message LayoutLeaf {
 }
 
 message GetLayoutRequest {
-  string org_id = 2;
-  string workspace_id = 1;
+  string org_id = 1;
+  string workspace_id = 2;
 }
 
 message GetLayoutResponse {
   LayoutNode layout = 1;
-  repeated TileActiveTab active_tabs = 2;
-}
-
-message TileActiveTab {
-  string tile_id = 1;
-  TabType tab_type = 2;
-  string tab_id = 3;
 }
 
 message SaveLayoutRequest {
-  string org_id = 5;
-  string workspace_id = 1;
-  LayoutNode layout = 2;
-  repeated TileActiveTab active_tabs = 3;
+  string org_id = 1;
+  string workspace_id = 2;
+  LayoutNode layout = 3;
   repeated WorkspaceTab tabs = 4;
 }
 
 message SaveLayoutResponse {}
 
+// --- Worker Inner RPCs ---
+
+// CleanupWorkspaceRequest is sent via E2EE channel to a worker to clean up
+// all resources (agents, terminals, worktrees) for a deleted workspace.
+message CleanupWorkspaceRequest {
+  string workspace_id = 1;
+}
+
+message CleanupWorkspaceResponse {
+  repeated WorktreeInfo worktrees = 1;
+}
+
+// WorktreeInfo describes a worktree found during workspace cleanup.
+// Travels via E2EE so the hub never sees filesystem paths.
+message WorktreeInfo {
+  string worktree_id = 1;
+  string worktree_path = 2;
+  string branch_name = 3;
+}
+
 // --- Event Streaming ---
 
 message WatchEventsRequest {
-  string org_id = 4;
-  string workspace_id = 1;
-  repeated WatchAgentEntry agents = 2;
-  repeated WatchTerminalEntry terminals = 3;
+  repeated WatchAgentEntry agents = 1;
+  repeated string terminal_ids = 2;
 }
 
 message WatchAgentEntry {
   string agent_id = 1;
   int64 after_seq = 2; // Resume from this sequence number (0 = from beginning, -1 = live only)
-}
-
-message WatchTerminalEntry {
-  string terminal_id = 1;
 }
 
 message WatchEventsResponse {
@@ -241,8 +242,15 @@ message AgentEvent {
     AgentControlCancelRequest control_cancel = 7;
     AgentMessageError message_error = 8;
     AgentMessageDeleted message_deleted = 9;
+    CatchUpComplete catch_up_complete = 10;
   }
 }
+
+// CatchUpComplete is a sentinel event sent by the server after all historical
+// replay events (messages, status, control requests) for an agent have been
+// delivered. The client uses this to transition from catch-up phase to live
+// phase, preventing replayed events from triggering side effects like sounds.
+message CatchUpComplete {}
 
 // TerminalEvent wraps terminal-related events with the originating terminal_id.
 // Used both as the wire type in WatchEventsResponse and as the internal

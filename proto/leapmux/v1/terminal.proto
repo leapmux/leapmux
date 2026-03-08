@@ -1,35 +1,17 @@
 syntax = "proto3";
 package leapmux.v1;
 
-// TerminalService manages interactive terminal sessions.
-// Called by Frontend on Hub via ConnectRPC.
-// Hub routes I/O to the Worker via the bidirectional gRPC stream.
-service TerminalService {
-  // Open a new terminal on a worker.
-  rpc OpenTerminal(OpenTerminalRequest) returns (OpenTerminalResponse);
-  // Close an active terminal.
-  rpc CloseTerminal(CloseTerminalRequest) returns (CloseTerminalResponse);
-  // Send keyboard input to a terminal.
-  rpc SendInput(SendInputRequest) returns (SendInputResponse);
-  // Resize a terminal.
-  rpc ResizeTerminal(ResizeTerminalRequest) returns (ResizeTerminalResponse);
-  // List active terminals for a workspace (restored from the Worker).
-  rpc ListTerminals(ListTerminalsRequest) returns (ListTerminalsResponse);
-  // List available shells on the worker.
-  rpc ListAvailableShells(ListAvailableShellsRequest) returns (ListAvailableShellsResponse);
-}
-
 message OpenTerminalRequest {
-  string org_id = 9;
-  string workspace_id = 1;
-  uint32 cols = 2;
-  uint32 rows = 3;
+  string org_id = 1;
+  string workspace_id = 2;
+  string worker_id = 3;
   string working_dir = 4;
   string shell = 5;
-  string worker_id = 6;         // Target worker (required)
-  bool create_worktree = 7;     // If true, create a git worktree before starting
-  string worktree_branch = 8;   // Branch name for the worktree
-  string shell_start_dir = 10;  // Where the shell starts (defaults to working_dir if empty)
+  string shell_start_dir = 6;
+  uint32 cols = 7;
+  uint32 rows = 8;
+  bool create_worktree = 9;     // If true, create a git worktree before starting
+  string worktree_branch = 10;  // Branch name for the worktree
 }
 
 message OpenTerminalResponse {
@@ -37,9 +19,9 @@ message OpenTerminalResponse {
 }
 
 message CloseTerminalRequest {
-  string org_id = 3;
-  string workspace_id = 1;
-  string terminal_id = 2;
+  string org_id = 1;
+  string workspace_id = 2;
+  string terminal_id = 3;
 }
 
 message CloseTerminalResponse {
@@ -49,27 +31,27 @@ message CloseTerminalResponse {
 }
 
 message SendInputRequest {
-  string org_id = 4;
-  string workspace_id = 1;
-  string terminal_id = 2;
-  bytes data = 3;
+  string org_id = 1;
+  string workspace_id = 2;
+  string terminal_id = 3;
+  bytes data = 4;
 }
 
 message SendInputResponse {}
 
 message ResizeTerminalRequest {
-  string org_id = 5;
-  string workspace_id = 1;
-  string terminal_id = 2;
-  uint32 cols = 3;
-  uint32 rows = 4;
+  string org_id = 1;
+  string workspace_id = 2;
+  string terminal_id = 3;
+  uint32 cols = 4;
+  uint32 rows = 5;
 }
 
 message ResizeTerminalResponse {}
 
 message ListTerminalsRequest {
-  string org_id = 2;
-  string workspace_id = 1;
+  string org_id = 1;
+  string workspace_id = 2;
 }
 
 message ListTerminalsResponse {
@@ -88,6 +70,7 @@ message TerminalInfo {
 
 message TerminalData {
   bytes data = 1;
+  bool is_snapshot = 2; // True for initial screen buffer snapshots; frontend should reset buffer before writing.
 }
 
 message TerminalClosed {
@@ -95,9 +78,9 @@ message TerminalClosed {
 }
 
 message ListAvailableShellsRequest {
-  string org_id = 3;
-  string workspace_id = 1;
-  string worker_id = 2;   // Which worker to query for shells (required)
+  string org_id = 1;
+  string workspace_id = 2;
+  string worker_id = 3;   // Which worker to query for shells (required)
 }
 
 message ListAvailableShellsResponse {

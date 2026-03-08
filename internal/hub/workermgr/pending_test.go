@@ -21,9 +21,9 @@ func TestPendingRequests_Complete(t *testing.T) {
 
 	resp := &leapmuxv1.ConnectRequest{
 		RequestId: "req-1",
-		Payload: &leapmuxv1.ConnectRequest_FileBrowseResp{
-			FileBrowseResp: &leapmuxv1.FileBrowseResponse{
-				Path: "/home",
+		Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
+			ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
+				ChannelId: "ch-1",
 			},
 		},
 	}
@@ -34,8 +34,8 @@ func TestPendingRequests_Complete(t *testing.T) {
 
 	select {
 	case got := <-ch:
-		if got.GetFileBrowseResp().GetPath() != "/home" {
-			t.Errorf("path = %q, want %q", got.GetFileBrowseResp().GetPath(), "/home")
+		if got.GetChannelOpenResp().GetChannelId() != "ch-1" {
+			t.Errorf("channel_id = %q, want %q", got.GetChannelOpenResp().GetChannelId(), "ch-1")
 		}
 	default:
 		t.Fatal("expected message on channel")
@@ -87,95 +87,92 @@ func TestPendingRequests_OutOfOrder(t *testing.T) {
 		err  error
 	}
 
-	// Launch two concurrent SendAndWait calls.
-	agentCh := make(chan result, 1)
-	termCh := make(chan result, 1)
+	// Launch two concurrent SendAndWait calls using ChannelOpen messages.
+	ch1Result := make(chan result, 1)
+	ch2Result := make(chan result, 1)
 
 	go func() {
 		resp, err := p.SendAndWait(context.Background(), conn, &leapmuxv1.ConnectResponse{
-			Payload: &leapmuxv1.ConnectResponse_AgentStart{
-				AgentStart: &leapmuxv1.AgentStartRequest{AgentId: "agent-1"},
+			Payload: &leapmuxv1.ConnectResponse_ChannelOpen{
+				ChannelOpen: &leapmuxv1.ChannelOpenRequest{ChannelId: "ch-1"},
 			},
 		})
-		agentCh <- result{resp, err}
+		ch1Result <- result{resp, err}
 	}()
 
 	go func() {
 		resp, err := p.SendAndWait(context.Background(), conn, &leapmuxv1.ConnectResponse{
-			Payload: &leapmuxv1.ConnectResponse_TerminalStart{
-				TerminalStart: &leapmuxv1.TerminalStartRequest{TerminalId: "term-1"},
+			Payload: &leapmuxv1.ConnectResponse_ChannelOpen{
+				ChannelOpen: &leapmuxv1.ChannelOpenRequest{ChannelId: "ch-2"},
 			},
 		})
-		termCh <- result{resp, err}
+		ch2Result <- result{resp, err}
 	}()
 
-	// Collect both sent messages and identify them by payload type.
-	var agentReqID, termReqID string
+	// Collect both sent messages and capture their request IDs.
+	var reqID1, reqID2 string
 	for i := 0; i < 2; i++ {
 		select {
 		case msg := <-sentMsgs:
-			switch msg.GetPayload().(type) {
-			case *leapmuxv1.ConnectResponse_AgentStart:
-				agentReqID = msg.GetRequestId()
-			case *leapmuxv1.ConnectResponse_TerminalStart:
-				termReqID = msg.GetRequestId()
+			open := msg.GetChannelOpen()
+			if open != nil {
+				switch open.GetChannelId() {
+				case "ch-1":
+					reqID1 = msg.GetRequestId()
+				case "ch-2":
+					reqID2 = msg.GetRequestId()
+				}
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatal("timeout waiting for sends")
 		}
 	}
 
-	if agentReqID == "" || termReqID == "" {
-		t.Fatalf("missing request IDs: agent=%q, terminal=%q", agentReqID, termReqID)
+	if reqID1 == "" || reqID2 == "" {
+		t.Fatalf("missing request IDs: ch1=%q, ch2=%q", reqID1, reqID2)
 	}
 
-	// Complete terminal first, then agent (out of order).
-	if !p.Complete(termReqID, &leapmuxv1.ConnectRequest{
-		RequestId: termReqID,
-		Payload: &leapmuxv1.ConnectRequest_TerminalStarted{
-			TerminalStarted: &leapmuxv1.TerminalStarted{
-				TerminalId:         "term-1",
-				ResolvedWorkingDir: "/home/user",
-			},
+	// Complete ch-2 first, then ch-1 (out of order).
+	if !p.Complete(reqID2, &leapmuxv1.ConnectRequest{
+		RequestId: reqID2,
+		Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
+			ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{ChannelId: "ch-2"},
 		},
 	}) {
-		t.Fatal("Complete(terminal) returned false")
+		t.Fatal("Complete(ch-2) returned false")
 	}
 
-	if !p.Complete(agentReqID, &leapmuxv1.ConnectRequest{
-		RequestId: agentReqID,
-		Payload: &leapmuxv1.ConnectRequest_AgentStarted{
-			AgentStarted: &leapmuxv1.AgentStarted{
-				AgentId:            "agent-1",
-				ResolvedWorkingDir: "/workspace",
-			},
+	if !p.Complete(reqID1, &leapmuxv1.ConnectRequest{
+		RequestId: reqID1,
+		Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
+			ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{ChannelId: "ch-1"},
 		},
 	}) {
-		t.Fatal("Complete(agent) returned false")
+		t.Fatal("Complete(ch-1) returned false")
 	}
 
 	// Verify each goroutine received its correct response.
 	select {
-	case r := <-agentCh:
+	case r := <-ch1Result:
 		if r.err != nil {
-			t.Fatalf("agent error: %v", r.err)
+			t.Fatalf("ch-1 error: %v", r.err)
 		}
-		if r.resp.GetAgentStarted().GetResolvedWorkingDir() != "/workspace" {
-			t.Errorf("agent resolved_working_dir = %q, want %q", r.resp.GetAgentStarted().GetResolvedWorkingDir(), "/workspace")
+		if r.resp.GetChannelOpenResp().GetChannelId() != "ch-1" {
+			t.Errorf("ch-1 channel_id = %q, want %q", r.resp.GetChannelOpenResp().GetChannelId(), "ch-1")
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for agent result")
+		t.Fatal("timeout waiting for ch-1 result")
 	}
 
 	select {
-	case r := <-termCh:
+	case r := <-ch2Result:
 		if r.err != nil {
-			t.Fatalf("terminal error: %v", r.err)
+			t.Fatalf("ch-2 error: %v", r.err)
 		}
-		if r.resp.GetTerminalStarted().GetResolvedWorkingDir() != "/home/user" {
-			t.Errorf("terminal resolved_working_dir = %q, want %q", r.resp.GetTerminalStarted().GetResolvedWorkingDir(), "/home/user")
+		if r.resp.GetChannelOpenResp().GetChannelId() != "ch-2" {
+			t.Errorf("ch-2 channel_id = %q, want %q", r.resp.GetChannelOpenResp().GetChannelId(), "ch-2")
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for terminal result")
+		t.Fatal("timeout waiting for ch-2 result")
 	}
 }

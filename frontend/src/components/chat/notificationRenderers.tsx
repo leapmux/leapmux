@@ -79,6 +79,16 @@ export const contextClearedRenderer: MessageContentRenderer = {
   },
 }
 
+/** Handles agent error notifications: {"type":"agent_error","error":"..."} */
+export const agentErrorRenderer: MessageContentRenderer = {
+  render(parsed, _role, _context) {
+    if (!isObject(parsed) || parsed.type !== 'agent_error')
+      return null
+    const error = typeof parsed.error === 'string' ? parsed.error : 'Unknown error'
+    return <div class={controlResponseMessage}>{error}</div>
+  },
+}
+
 /** Handles agent renamed notifications: {"type":"agent_renamed","title":"..."} */
 export const agentRenamedRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
@@ -316,6 +326,10 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
       else {
         settingsParts.push('Executing plan retaining context')
       }
+    }
+    else if (t === 'agent_error') {
+      const error = typeof m.error === 'string' ? m.error : 'Unknown error'
+      settingsParts.push(error)
     }
     else if (t === 'interrupted') {
       interrupted = true

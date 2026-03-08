@@ -24,6 +24,11 @@ export function relativizePath(absPath: string, workingDir?: string, homeDir?: s
     return absPath
   const base = workingDir.endsWith('/') ? workingDir : `${workingDir}/`
 
+  // Exact match: path is the working directory itself
+  if (absPath === workingDir || `${absPath}/` === base) {
+    return '.'
+  }
+
   // Candidate 1: direct relative (path is under workingDir)
   if (absPath.startsWith(base)) {
     return absPath.slice(base.length) // always shortest for subpaths

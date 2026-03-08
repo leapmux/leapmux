@@ -20,36 +20,36 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"golang.org/x/net/http2"
 )
 
-// terminalMeta holds metadata about a running terminal.
-type terminalMeta struct {
-	workspaceID string
-	cols        uint32
-	rows        uint32
-}
-
 // Client manages the connection to the Hub.
 type Client struct {
-	connector leapmuxv1connect.WorkerConnectorServiceClient
-	hubURL    string
-	dataDir   string
-	agents    *agent.Manager
-	terminals *terminal.Manager
+	connector  leapmuxv1connect.WorkerConnectorServiceClient
+	hubURL     string
+	agents     *agent.Manager
+	terminals  *terminal.Manager
+	channelMgr *channel.Manager
 
 	// OnDeregister is called when the Hub sends a deregistration notification.
 	// The worker should clear its state and shut down gracefully.
 	OnDeregister func()
 
-	mu                 sync.Mutex
-	stream             *connect.BidiStreamForClient[leapmuxv1.ConnectRequest, leapmuxv1.ConnectResponse]
-	agentWorkspaces    map[string]string                 // agentID -> workspaceID
-	terminalWorkspaces map[string]terminalMeta           // terminalID -> meta
-	savedTerminals     map[string]terminal.SavedTerminal // terminalID -> saved state from previous run
-	lastSendTime       time.Time                         // last time a message was sent (for idle heartbeat)
-	stopOnce           sync.Once
+	// PublicKey is the Worker's X25519 public key for E2EE channels.
+	// Sent to the Hub with the initial heartbeat.
+	PublicKey []byte
+
+	// TabSyncProvider returns the current tab state for WorkspaceTabsSync
+	// on connect. Set by the runner after initializing the service context.
+	TabSyncProvider func() *leapmuxv1.WorkspaceTabsSync
+
+	mu           sync.Mutex
+	stream       *connect.BidiStreamForClient[leapmuxv1.ConnectRequest, leapmuxv1.ConnectResponse]
+	connCancel   context.CancelFunc // cancel function for current connection context
+	lastSendTime time.Time          // last time a message was sent (for idle heartbeat)
+	stopOnce     sync.Once
 
 	// hubRetryDelay stores the retry delay (in seconds) requested by the Hub
 	// when it sends a HubShuttingDownNotification. Consumed once by
@@ -58,22 +58,20 @@ type Client struct {
 }
 
 // New creates a new Hub client with integrated lifecycle management.
-// It creates agent and terminal managers internally and loads saved terminals from dataDir.
+// It creates agent and terminal managers internally.
 // If hubURL starts with "unix:", it creates a Unix domain socket transport automatically.
-func New(hubURL, dataDir string) *Client {
+func New(hubURL string) *Client {
 	if strings.HasPrefix(hubURL, "unix:") {
 		socketPath := strings.TrimPrefix(hubURL, "unix:")
-		return NewWithHTTPClient(newUnixSocketClient(socketPath), hubURL, dataDir)
+		return NewWithHTTPClient(newUnixSocketClient(socketPath), hubURL)
 	}
-	return NewWithHTTPClient(newH2CClient(), hubURL, dataDir)
+	return NewWithHTTPClient(newH2CClient(), hubURL)
 }
 
 // NewWithHTTPClient creates a new Hub client that uses the provided HTTP client
 // for ConnectRPC communication. This allows callers to provide a custom transport
 // (e.g. one that dials via Unix domain socket).
-func NewWithHTTPClient(httpClient *http.Client, hubURL, dataDir string) *Client {
-	terminals := terminal.NewManager()
-
+func NewWithHTTPClient(httpClient *http.Client, hubURL string) *Client {
 	// When connecting via Unix domain socket, hubURL is "unix:<path>".
 	// ConnectRPC needs a valid HTTP base URL, so use http://localhost instead.
 	connectURL := hubURL
@@ -87,61 +85,47 @@ func NewWithHTTPClient(httpClient *http.Client, hubURL, dataDir string) *Client 
 			connectURL,
 			connect.WithGRPC(),
 		),
-		hubURL:             hubURL,
-		dataDir:            dataDir,
-		terminals:          terminals,
-		agentWorkspaces:    make(map[string]string),
-		terminalWorkspaces: make(map[string]terminalMeta),
+		hubURL:    hubURL,
+		terminals: terminal.NewManager(),
 	}
 
 	c.agents = agent.NewManager(func(agentID string, exitCode int, err error) {
-		c.mu.Lock()
-		workspaceID := c.agentWorkspaces[agentID]
-		delete(c.agentWorkspaces, agentID)
-		c.mu.Unlock()
-
-		errMsg := ""
 		if err != nil {
-			errMsg = err.Error()
+			slog.Info("agent exited with error", "agent_id", agentID, "exit_code", exitCode, "error", err)
+		} else {
+			slog.Info("agent exited", "agent_id", agentID, "exit_code", exitCode)
 		}
-		_ = c.Send(&leapmuxv1.ConnectRequest{
-			Payload: &leapmuxv1.ConnectRequest_AgentStopped{
-				AgentStopped: &leapmuxv1.AgentStopped{
-					AgentId:     agentID,
-					WorkspaceId: workspaceID,
-					ExitCode:    int32(exitCode),
-					Error:       errMsg,
-				},
-			},
-		})
 	})
-
-	// Load saved terminals from previous run.
-	savedTerminals, err := terminal.LoadSavedTerminals(dataDir)
-	if err != nil {
-		slog.Warn("failed to load saved terminals", "error", err)
-	}
-	if savedTerminals != nil {
-		c.SetSavedTerminals(savedTerminals)
-	}
 
 	return c
 }
 
-// Stop gracefully stops all managers and persists terminal state.
+// Stop gracefully stops all managers.
 // Safe to call multiple times.
 func (c *Client) Stop() {
 	c.stopOnce.Do(func() {
-		// Persist terminal screen buffers before stopping.
-		if err := c.terminals.SaveScreens(c.dataDir, c.GetTerminalMeta); err != nil {
-			slog.Error("failed to save terminal screens", "error", err)
-		}
-		if err := c.terminals.SaveTerminalMeta(c.dataDir, c.GetTerminalMeta); err != nil {
-			slog.Error("failed to save terminal meta", "error", err)
+		// Close all encrypted channels.
+		if c.channelMgr != nil {
+			c.channelMgr.CloseAll()
 		}
 		c.terminals.StopAll()
 		c.agents.StopAll()
 	})
+}
+
+// SetChannelMgr sets the encrypted channel manager for E2EE channel handling.
+func (c *Client) SetChannelMgr(mgr *channel.Manager) {
+	c.channelMgr = mgr
+}
+
+// AgentManager returns the agent manager.
+func (c *Client) AgentManager() *agent.Manager {
+	return c.agents
+}
+
+// TerminalManager returns the terminal manager.
+func (c *Client) TerminalManager() *terminal.Manager {
+	return c.terminals
 }
 
 // newH2CClient creates an HTTP client that supports HTTP/2 cleartext (h2c),
@@ -171,35 +155,11 @@ func newUnixSocketClient(socketPath string) *http.Client {
 	}
 }
 
-// SetSavedTerminals sets saved terminal state from a previous worker run.
-func (c *Client) SetSavedTerminals(saved map[string]terminal.SavedTerminal) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.savedTerminals = saved
-	// Also populate terminalWorkspaces so handleTerminalList can find them.
-	for id, st := range saved {
-		c.terminalWorkspaces[id] = terminalMeta{
-			workspaceID: st.WorkspaceID,
-			cols:        st.Cols,
-			rows:        st.Rows,
-		}
-	}
-}
-
-// GetTerminalMeta returns the workspace ID, cols, and rows for a terminal.
-func (c *Client) GetTerminalMeta(terminalID string) (string, uint32, uint32) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	meta, ok := c.terminalWorkspaces[terminalID]
-	if !ok {
-		return "", 0, 0
-	}
-	return meta.workspaceID, meta.cols, meta.rows
-}
-
 // Send sends a message to the Hub via the bidi stream.
 // The mutex is held for the entire send to prevent concurrent writes,
 // which would corrupt the HTTP/2 frame buffer ("short write" errors).
+// On send failure, the connection context is canceled to trigger
+// immediate reconnection rather than waiting for the Hub's idle timeout.
 func (c *Client) Send(msg *leapmuxv1.ConnectRequest) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -210,30 +170,46 @@ func (c *Client) Send(msg *leapmuxv1.ConnectRequest) error {
 	err := c.stream.Send(msg)
 	if err == nil {
 		c.lastSendTime = time.Now()
+	} else if c.connCancel != nil {
+		slog.Warn("bidi stream send failed, canceling connection for reconnect", "error", err)
+		c.connCancel()
 	}
 	return err
 }
 
 // Connect establishes the bidirectional streaming connection to the Hub.
 func (c *Client) Connect(ctx context.Context, authToken string) error {
-	stream := c.connector.Connect(ctx)
+	// Create a connection-scoped context so that Send failures can
+	// cancel the connection and trigger immediate reconnection.
+	connCtx, connCancel := context.WithCancel(ctx)
+	defer connCancel()
+
+	stream := c.connector.Connect(connCtx)
 	stream.RequestHeader().Set("Authorization", "Bearer "+authToken)
 
 	c.mu.Lock()
 	c.stream = stream
+	c.connCancel = connCancel
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
 		c.stream = nil
+		c.connCancel = nil
 		c.mu.Unlock()
+
+		// Close all channel sessions so watchers are unregistered and
+		// the Frontend detects the disconnect. New channels will be
+		// opened on reconnection.
+		if c.channelMgr != nil {
+			c.channelMgr.CloseAll()
+		}
 	}()
 
 	// Send an initial heartbeat to trigger the Hub's bidi stream handler.
 	// ConnectRPC with gRPC protocol only sends HTTP/2 headers on the first Send().
-	homeDir, _ := os.UserHomeDir()
 	if err := stream.Send(&leapmuxv1.ConnectRequest{
 		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
-			Heartbeat: &leapmuxv1.Heartbeat{HomeDir: homeDir},
+			Heartbeat: &leapmuxv1.Heartbeat{PublicKey: c.PublicKey},
 		},
 	}); err != nil {
 		return fmt.Errorf("initial heartbeat: %w", err)
@@ -241,8 +217,21 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 
 	slog.Info("connected to hub", "url", c.hubURL)
 
-	// Start heartbeat goroutine.
-	go c.heartbeatLoop(ctx)
+	// Send workspace tab sync if a provider is configured.
+	if c.TabSyncProvider != nil {
+		if tabSync := c.TabSyncProvider(); tabSync != nil {
+			if err := stream.Send(&leapmuxv1.ConnectRequest{
+				Payload: &leapmuxv1.ConnectRequest_WorkspaceTabsSync{
+					WorkspaceTabsSync: tabSync,
+				},
+			}); err != nil {
+				slog.Warn("failed to send workspace tabs sync", "error", err)
+			}
+		}
+	}
+
+	// Start heartbeat goroutine (uses connCtx so it exits on reconnect).
+	go c.heartbeatLoop(connCtx)
 
 	// Main receive loop.
 	for {
@@ -251,77 +240,29 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 			return fmt.Errorf("receive: %w", err)
 		}
 
-		c.handleMessage(ctx, msg)
+		c.handleMessage(msg)
 	}
 }
 
-func (c *Client) handleMessage(ctx context.Context, msg *leapmuxv1.ConnectResponse) {
+func (c *Client) handleMessage(msg *leapmuxv1.ConnectResponse) {
 	switch payload := msg.GetPayload().(type) {
 	case *leapmuxv1.ConnectResponse_Heartbeat:
 		// Ignore heartbeat responses.
 
-	case *leapmuxv1.ConnectResponse_AgentStart:
-		go c.handleAgentStart(ctx, msg.GetRequestId(), payload.AgentStart)
-
-	case *leapmuxv1.ConnectResponse_AgentInput:
-		c.handleAgentInput(msg.GetRequestId(), payload.AgentInput)
-
-	case *leapmuxv1.ConnectResponse_AgentRawInput:
-		c.handleAgentRawInput(msg.GetRequestId(), payload.AgentRawInput)
-
-	case *leapmuxv1.ConnectResponse_AgentStop:
-		c.handleAgentStop(payload.AgentStop)
-
-	case *leapmuxv1.ConnectResponse_TerminalStart:
-		c.handleTerminalStart(msg.GetRequestId(), payload.TerminalStart)
-
-	case *leapmuxv1.ConnectResponse_TerminalInput:
-		c.handleTerminalInput(payload.TerminalInput)
-
-	case *leapmuxv1.ConnectResponse_TerminalResize:
-		c.handleTerminalResize(payload.TerminalResize)
-
-	case *leapmuxv1.ConnectResponse_TerminalStop:
-		c.handleTerminalStop(payload.TerminalStop)
-
-	case *leapmuxv1.ConnectResponse_TerminalList:
-		c.handleTerminalList(msg.GetRequestId(), payload.TerminalList)
-
-	case *leapmuxv1.ConnectResponse_ShellList:
-		c.handleShellList(msg.GetRequestId())
-
-	case *leapmuxv1.ConnectResponse_FileBrowse:
-		c.handleFileBrowse(msg.GetRequestId(), payload.FileBrowse)
-
-	case *leapmuxv1.ConnectResponse_FileRead:
-		c.handleFileRead(msg.GetRequestId(), payload.FileRead)
-
-	case *leapmuxv1.ConnectResponse_FileStat:
-		c.handleFileStat(msg.GetRequestId(), payload.FileStat)
-
-	case *leapmuxv1.ConnectResponse_GitInfo:
-		c.handleGitInfo(msg.GetRequestId(), payload.GitInfo)
-
-	case *leapmuxv1.ConnectResponse_GitWorktreeCreate:
-		c.handleGitWorktreeCreate(msg.GetRequestId(), payload.GitWorktreeCreate)
-
-	case *leapmuxv1.ConnectResponse_GitWorktreeRemove:
-		c.handleGitWorktreeRemove(msg.GetRequestId(), payload.GitWorktreeRemove)
-
-	case *leapmuxv1.ConnectResponse_GitFileStatus:
-		c.handleGitFileStatus(msg.GetRequestId(), payload.GitFileStatus)
-
-	case *leapmuxv1.ConnectResponse_GitFileRead:
-		c.handleGitFileRead(msg.GetRequestId(), payload.GitFileRead)
-
 	case *leapmuxv1.ConnectResponse_Deregister:
 		c.handleDeregister(msg.GetRequestId(), payload.Deregister)
 
-	case *leapmuxv1.ConnectResponse_TerminateWorkspaces:
-		c.handleTerminateWorkspaces(msg.GetRequestId(), payload.TerminateWorkspaces)
-
 	case *leapmuxv1.ConnectResponse_HubShuttingDown:
 		c.handleHubShuttingDown(payload.HubShuttingDown)
+
+	case *leapmuxv1.ConnectResponse_ChannelOpen:
+		c.handleChannelOpen(msg.GetRequestId(), payload.ChannelOpen)
+
+	case *leapmuxv1.ConnectResponse_ChannelMessage:
+		c.handleChannelMessage(payload.ChannelMessage)
+
+	case *leapmuxv1.ConnectResponse_ChannelClose:
+		c.handleChannelClose(payload.ChannelClose)
 
 	default:
 		slog.Warn("unhandled hub message", "request_id", msg.GetRequestId(), "payload_type", fmt.Sprintf("%T", msg.GetPayload()))

@@ -13,6 +13,7 @@ import {
   getAdminOrgId,
   getWorkerId,
   loginViaAPI,
+  openAgentViaAPI,
   signUpViaAPI,
 } from './helpers/api'
 import { findFreePort, getGlobalState, waitForServer } from './helpers/server'
@@ -61,10 +62,10 @@ export const test = base.extend<
       dataDir,
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low' },
+      env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low', LEAPMUX_WORKER_NAME: 'Local' },
     })
 
-    // Drain stdout/stderr
+    // Drain server output to prevent backpressure.
     proc.stdout?.resume()
     proc.stderr?.resume()
 
@@ -123,16 +124,18 @@ export const test = base.extend<
     }
   }, { auto: true }],
 
-  // Workspace fixture: creates workspace via API, provides ID and URL
+  // Workspace fixture: creates workspace via API + opens initial agent, provides ID and URL
   workspace: async ({ leapmuxServer }, use) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
+    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
     const workspaceId = await createWorkspaceViaAPI(
       hubUrl,
       adminToken,
-      workerId,
       `e2e-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       adminOrgId,
     )
+    // Open an initial agent — workspace creation on the hub no longer
+    // auto-creates one (that was the old worker behavior).
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     const workspaceUrl = `/o/admin/workspace/${workspaceId}`
 
     await use({ workspaceId, workspaceUrl })

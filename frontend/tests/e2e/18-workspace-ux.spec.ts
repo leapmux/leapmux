@@ -5,8 +5,8 @@ import { loginViaToken, openWorkspaceContextMenu, waitForWorkspaceReady } from '
 
 test.describe('Workspace UX Enhancements', () => {
   test('should auto-activate first workspace on org root', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Auto Activate Test', adminOrgId)
+    const { hubUrl, adminToken, adminOrgId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Auto Activate Test', adminOrgId)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -42,8 +42,8 @@ test.describe('Workspace UX Enhancements', () => {
   })
 
   test('should show empty state when no tabs are open', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Empty State Test', adminOrgId)
+    const { hubUrl, adminToken, adminOrgId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Empty State Test', adminOrgId)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -72,8 +72,8 @@ test.describe('Workspace UX Enhancements', () => {
   })
 
   test('should open new agent dialog when clicking agent button with no tabs', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'No Tabs Agent Dialog Test', adminOrgId)
+    const { hubUrl, adminToken, adminOrgId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'No Tabs Agent Dialog Test', adminOrgId)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -110,8 +110,8 @@ test.describe('Workspace UX Enhancements', () => {
   })
 
   test('should open new terminal dialog when clicking terminal button with no tabs', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'No Tabs Terminal Dialog Test', adminOrgId)
+    const { hubUrl, adminToken, adminOrgId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'No Tabs Terminal Dialog Test', adminOrgId)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId}`)
@@ -148,9 +148,9 @@ test.describe('Workspace UX Enhancements', () => {
   })
 
   test('should activate next workspace after deleting the active one', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    const workspaceId1 = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Delete Target WS', adminOrgId)
-    const workspaceId2 = await createWorkspaceViaAPI(hubUrl, adminToken, workerId, 'Next WS', adminOrgId)
+    const { hubUrl, adminToken, adminOrgId } = leapmuxServer
+    const workspaceId1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Delete Target WS', adminOrgId)
+    const workspaceId2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Next WS', adminOrgId)
     try {
       await loginViaToken(page, adminToken)
       await page.goto(`/o/admin/workspace/${workspaceId1}`)

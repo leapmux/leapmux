@@ -1,7 +1,61 @@
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import { createStore } from 'solid-js/store'
-import { agentClient } from '~/api/clients'
+import * as workerRpc from '~/api/workerRpc'
+import { ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { extractTodos, findLatestTodos, parseMessageContent } from '~/lib/messageParser'
+import { safeGetJson, safeSetJson } from '~/lib/safeStorage'
+
+// ---------------------------------------------------------------------------
+// Local (optimistic) message persistence via localStorage
+// ---------------------------------------------------------------------------
+
+interface PersistedLocalMessage {
+  id: string
+  contentText: string
+  createdAt: string
+  deliveryError: string
+}
+
+const LOCAL_MSG_KEY = 'local-messages'
+
+function getPersistedLocalMessages(): Record<string, PersistedLocalMessage[]> {
+  return safeGetJson<Record<string, PersistedLocalMessage[]>>(LOCAL_MSG_KEY) ?? {}
+}
+
+function persistLocalMessage(agentId: string, msg: PersistedLocalMessage) {
+  const all = getPersistedLocalMessages()
+  const list = all[agentId] ?? []
+  list.push(msg)
+  all[agentId] = list
+  safeSetJson(LOCAL_MSG_KEY, all)
+}
+
+function removePersistedLocalMessage(agentId: string, messageId: string) {
+  const all = getPersistedLocalMessages()
+  const list = all[agentId]
+  if (!list)
+    return
+  all[agentId] = list.filter(m => m.id !== messageId)
+  if (all[agentId].length === 0)
+    delete all[agentId]
+  safeSetJson(LOCAL_MSG_KEY, all)
+}
+
+/** Reconstruct an AgentChatMessage from a persisted local message. */
+function hydrateLocalMessage(p: PersistedLocalMessage): AgentChatMessage {
+  const wrapped = JSON.stringify({ old_seqs: [], messages: [{ content: p.contentText }] })
+  return {
+    $typeName: 'leapmux.v1.AgentChatMessage' as const,
+    id: p.id,
+    role: MessageRole.USER,
+    content: new TextEncoder().encode(wrapped),
+    contentCompression: ContentCompression.NONE,
+    seq: 0n,
+    createdAt: p.createdAt,
+    deliveryError: p.deliveryError,
+    updatedAt: '',
+  } as AgentChatMessage
+}
 
 export interface TodoItem {
   content: string
@@ -83,20 +137,38 @@ export function createChatStore() {
       }
       else {
         setState('messagesByAgent', agentId, (prev = []) => {
-          // Fast path: message is in order (most common case).
-          if (prev.length === 0 || message.seq > prev[prev.length - 1].seq) {
+          // Local (optimistic) messages have seq === 0n and always go at the end.
+          if (message.seq === 0n) {
             return [...prev, message]
           }
 
-          // Dedup: skip if a message with this exact seq already exists.
-          if (prev.findLastIndex(m => m.seq === message.seq) !== -1)
-            return prev
+          // Find the boundary where trailing local messages start.
+          let serverEnd = prev.length
+          while (serverEnd > 0 && prev[serverEnd - 1].seq === 0n)
+            serverEnd--
 
-          // Out-of-order message (e.g. catch-up replay after a thread merge
-          // advanced lastSeq): insert in sorted position by seq.
-          const insertAfter = prev.findLastIndex(m => m.seq < message.seq)
-          const insertIdx = insertAfter + 1
-          return [...prev.slice(0, insertIdx), message, ...prev.slice(insertIdx)]
+          // Dedup: skip if a server message with this exact seq already exists.
+          for (let i = serverEnd - 1; i >= 0; i--) {
+            if (prev[i].seq === message.seq)
+              return prev
+          }
+
+          // Fast path: message is in order relative to the last server message.
+          if (serverEnd === 0 || message.seq > prev[serverEnd - 1].seq) {
+            return [...prev.slice(0, serverEnd), message, ...prev.slice(serverEnd)]
+          }
+
+          // Slow path: binary-insert among server messages [0, serverEnd).
+          let lo = 0
+          let hi = serverEnd
+          while (lo < hi) {
+            const mid = (lo + hi) >>> 1
+            if (prev[mid].seq < message.seq)
+              lo = mid + 1
+            else
+              hi = mid
+          }
+          return [...prev.slice(0, lo), message, ...prev.slice(lo)]
         })
       }
 
@@ -121,7 +193,12 @@ export function createChatStore() {
       const messages = state.messagesByAgent[agentId]
       if (!messages || messages.length === 0)
         return 0n
-      return messages[messages.length - 1].seq
+      // Skip trailing local messages (seq === 0n).
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].seq !== 0n)
+          return messages[i].seq
+      }
+      return 0n
     },
 
     setMessageError(messageId: string, error: string) {
@@ -139,6 +216,31 @@ export function createChatStore() {
         (prev = []) => prev.filter(m => m.id !== messageId),
       )
       setState('messageErrors', messageId, undefined!)
+      if (messageId.startsWith('local-')) {
+        removePersistedLocalMessage(agentId, messageId)
+      }
+    },
+
+    /** Persist a local optimistic message to localStorage. */
+    persistLocalMessage(agentId: string, messageId: string, contentText: string, deliveryError: string) {
+      persistLocalMessage(agentId, {
+        id: messageId,
+        contentText,
+        createdAt: new Date().toISOString(),
+        deliveryError,
+      })
+    },
+
+    /** Load persisted local messages from localStorage and add them to the store. */
+    loadLocalMessages(agentId: string) {
+      const all = getPersistedLocalMessages()
+      const list = all[agentId]
+      if (!list || list.length === 0)
+        return
+      for (const p of list) {
+        const msg = hydrateLocalMessage(p)
+        this.addMessage(agentId, msg)
+      }
     },
 
     setStreamingText(agentId: string, text: string) {
@@ -162,12 +264,12 @@ export function createChatStore() {
     },
 
     /** Fetch the latest messages for an agent (initial page load). */
-    async loadInitialMessages(agentId: string): Promise<void> {
+    async loadInitialMessages(workerId: string, agentId: string): Promise<void> {
       if (state.initialLoadComplete[agentId])
         return
       setState('fetchingOlder', agentId, true)
       try {
-        const resp = await agentClient.listAgentMessages({
+        const resp = await workerRpc.listAgentMessages(workerId, {
           agentId,
           limit: 50,
         })
@@ -176,10 +278,13 @@ export function createChatStore() {
       finally {
         setState('fetchingOlder', agentId, false)
       }
+      // Restore any local messages that were persisted to localStorage
+      // (e.g. undelivered messages that survived a page refresh).
+      this.loadLocalMessages(agentId)
     },
 
     /** Fetch older messages before the current window. */
-    async loadOlderMessages(agentId: string): Promise<void> {
+    async loadOlderMessages(workerId: string, agentId: string): Promise<void> {
       if (state.fetchingOlder[agentId])
         return
       if (!state.hasMoreOlder[agentId])
@@ -191,7 +296,7 @@ export function createChatStore() {
       const firstSeq = messages[0].seq
       setState('fetchingOlder', agentId, true)
       try {
-        const resp = await agentClient.listAgentMessages({
+        const resp = await workerRpc.listAgentMessages(workerId, {
           agentId,
           beforeSeq: firstSeq,
           limit: 50,
@@ -221,10 +326,10 @@ export function createChatStore() {
      * Fetch messages forward from a given seq, looping until all are retrieved.
      * Used after WatchEvents catch-up replay to fill any gap beyond the 50-message replay limit.
      */
-    async loadNewerMessages(agentId: string, afterSeq: bigint, signal?: AbortSignal): Promise<void> {
+    async loadNewerMessages(workerId: string, agentId: string, afterSeq: bigint, signal?: AbortSignal): Promise<void> {
       let cursor = afterSeq
       while (!signal?.aborted) {
-        const resp = await agentClient.listAgentMessages({
+        const resp = await workerRpc.listAgentMessages(workerId, {
           agentId,
           afterSeq: cursor,
           limit: 50,
@@ -253,7 +358,12 @@ export function createChatStore() {
       const messages = state.messagesByAgent[agentId]
       if (!messages || messages.length === 0)
         return 0n
-      return messages[0].seq
+      // Skip leading local messages (seq === 0n).
+      for (let i = 0; i < messages.length; i++) {
+        if (messages[i].seq !== 0n)
+          return messages[i].seq
+      }
+      return 0n
     },
 
     hasOlderMessages(agentId: string): boolean {

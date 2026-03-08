@@ -92,7 +92,7 @@ export async function approveWorkerViaUI(page: Page, token: string, name: string
  * until an online worker is selected. If the worker is temporarily
  * offline (e.g. bidi stream reconnecting), retries by clicking refresh.
  */
-export async function createWorkspaceViaUI(page: Page, title: string, workingDir?: string) {
+export async function createWorkspaceViaUI(page: Page, title: string) {
   // Click "+" button on a section header to open new workspace dialog
   await page.getByTitle(/New workspace/).first().click()
   await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
@@ -120,14 +120,6 @@ export async function createWorkspaceViaUI(page: Page, title: string, workingDir
   // Fill in the form
   if (title) {
     await page.getByPlaceholder('New Workspace').fill(title)
-  }
-
-  // Set working directory via the DirectoryTree path input (scoped to dialog
-  // to avoid ambiguity with the sidebar DirectoryTree)
-  if (workingDir) {
-    const pathInput = dialog.getByPlaceholder('Enter path...')
-    await pathInput.fill(workingDir)
-    await pathInput.press('Enter')
   }
 
   // Click Create
@@ -273,10 +265,13 @@ export async function loginViaToken(page: Page, token: string) {
  *   await page.reload()
  */
 export function waitForLayoutSave(page: Page) {
-  return page.waitForResponse(
-    resp => resp.url().includes('WorkspaceService/SaveLayout') && resp.ok(),
-    { timeout: 10_000 },
-  )
+  return page.evaluate(() => new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('layout save timeout')), 10_000)
+    window.addEventListener('leapmux:layout-saved', () => {
+      clearTimeout(timer)
+      resolve()
+    }, { once: true })
+  }))
 }
 
 /**

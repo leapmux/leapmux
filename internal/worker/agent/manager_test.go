@@ -106,6 +106,36 @@ func TestManager_StopAll(t *testing.T) {
 	}
 }
 
+func TestManager_StopAndWaitAgent(t *testing.T) {
+	m := NewManager(nil)
+	ctx := context.Background()
+
+	_, err := m.startAgentWith(ctx, Options{
+		AgentID:    "s1",
+		Model:      "test",
+		WorkingDir: t.TempDir(),
+	}, func([]byte) {}, startMockAgent)
+	require.NoError(t, err, "StartAgent")
+
+	// StopAndWaitAgent should block until the agent is fully removed.
+	assert.True(t, m.StopAndWaitAgent("s1"), "expected StopAndWaitAgent to return true")
+	assert.False(t, m.HasAgent("s1"), "expected HasAgent(s1) = false immediately after StopAndWaitAgent")
+
+	// A new agent with the same ID should start successfully.
+	_, err = m.startAgentWith(ctx, Options{
+		AgentID:    "s1",
+		Model:      "test",
+		WorkingDir: t.TempDir(),
+	}, func([]byte) {}, startMockAgent)
+	require.NoError(t, err, "StartAgent after StopAndWaitAgent should succeed")
+	m.StopAgent("s1")
+}
+
+func TestManager_StopAndWaitAgent_NotRunning(t *testing.T) {
+	m := NewManager(nil)
+	assert.False(t, m.StopAndWaitAgent("nonexistent"), "expected false for non-running agent")
+}
+
 func TestManager_StopUnknownAgent(t *testing.T) {
 	m := NewManager(nil)
 	// Should not panic.

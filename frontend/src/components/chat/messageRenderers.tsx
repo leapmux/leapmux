@@ -16,6 +16,7 @@ import { markdownContent } from './markdownContent.css'
 import { thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
 import { isObject } from './messageUtils'
 import {
+  agentErrorRenderer,
   agentRenamedRenderer,
   compactBoundaryRenderer,
   contextClearedRenderer,
@@ -300,6 +301,7 @@ const KIND_RENDERERS: Record<string, (parsed: unknown, role: MessageRole, contex
     return settingsChangedRenderer.render(parsed, role, context)
       ?? interruptedRenderer.render(parsed, role, context)
       ?? contextClearedRenderer.render(parsed, role, context)
+      ?? agentErrorRenderer.render(parsed, role, context)
       ?? agentRenamedRenderer.render(parsed, role, context)
       ?? rateLimitRenderer.render(parsed, role, context)
       ?? compactBoundaryRenderer.render(parsed, role, context)
@@ -360,6 +362,7 @@ function getFallbackRenderers(): MessageContentRenderer[] {
       settingsChangedRenderer,
       interruptedRenderer,
       contextClearedRenderer,
+      agentErrorRenderer,
       agentRenamedRenderer,
       rateLimitRenderer,
       compactBoundaryRenderer,

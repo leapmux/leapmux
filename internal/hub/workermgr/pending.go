@@ -7,7 +7,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/hub/id"
+	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 // PendingRequests tracks in-flight request/response pairs for worker

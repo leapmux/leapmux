@@ -1,30 +1,13 @@
 syntax = "proto3";
 package leapmux.v1;
 
+import "leapmux/v1/common.proto";
 import "leapmux/v1/workspace.proto";
 
-// GitService provides git repository information and worktree management.
-// Called by Frontend on Hub via ConnectRPC.
-service GitService {
-  // Get git repository info for a path on a worker.
-  rpc GetGitInfo(GetGitInfoRequest) returns (GetGitInfoResponse);
-  // Check if closing a tab would leave a dirty worktree needing confirmation.
-  // Called BEFORE closing a tab so the frontend can ask the user first.
-  rpc CheckWorktreeStatus(CheckWorktreeStatusRequest) returns (CheckWorktreeStatusResponse);
-  // Force-remove a dirty worktree (after user confirmation).
-  rpc ForceRemoveWorktree(ForceRemoveWorktreeRequest) returns (ForceRemoveWorktreeResponse);
-  // Keep a dirty worktree on disk (stop tracking it).
-  rpc KeepWorktree(KeepWorktreeRequest) returns (KeepWorktreeResponse);
-  // Get per-file git status (staged/unstaged changes, diff stats).
-  rpc GetGitFileStatus(GetGitFileStatusRequest) returns (GetGitFileStatusResponse);
-  // Read a file at a specific git ref (HEAD or staged).
-  rpc ReadGitFile(ReadGitFileRequest) returns (ReadGitFileResponse);
-}
-
 message GetGitInfoRequest {
-  string worker_id = 1;
-  string path = 2;
-  string org_id = 3;
+  string org_id = 1;
+  string worker_id = 2;
+  string path = 3;
 }
 
 message GetGitInfoResponse {
@@ -64,36 +47,10 @@ message KeepWorktreeRequest {
 
 message KeepWorktreeResponse {}
 
-// --- Per-file git status ---
-
-// GitFileStatusCode describes the status of a file in the index or working tree.
-enum GitFileStatusCode {
-  GIT_FILE_STATUS_CODE_UNSPECIFIED = 0;
-  GIT_FILE_STATUS_CODE_MODIFIED = 1;
-  GIT_FILE_STATUS_CODE_ADDED = 2;
-  GIT_FILE_STATUS_CODE_DELETED = 3;
-  GIT_FILE_STATUS_CODE_RENAMED = 4;
-  GIT_FILE_STATUS_CODE_COPIED = 5;
-  GIT_FILE_STATUS_CODE_TYPE_CHANGED = 6;
-  GIT_FILE_STATUS_CODE_UNTRACKED = 7;
-  GIT_FILE_STATUS_CODE_UNMERGED = 8;
-}
-
-message GitFileStatusEntry {
-  string path = 1;                              // Path relative to repo root
-  GitFileStatusCode staged_status = 2;          // Status in the index (staged)
-  GitFileStatusCode unstaged_status = 3;        // Status in the working tree (unstaged)
-  int32 lines_added = 4;                        // Unstaged lines added
-  int32 lines_deleted = 5;                      // Unstaged lines deleted
-  int32 staged_lines_added = 6;                 // Staged lines added
-  int32 staged_lines_deleted = 7;               // Staged lines deleted
-  string old_path = 8;                          // Previous path (for renames/copies)
-}
-
 message GetGitFileStatusRequest {
-  string worker_id = 1;
-  string path = 2;       // Working directory (worker resolves to repo root)
-  string org_id = 3;
+  string org_id = 1;
+  string worker_id = 2;
+  string path = 3;       // Working directory (worker resolves to repo root)
 }
 
 message GetGitFileStatusResponse {
@@ -109,10 +66,10 @@ enum GitFileRef {
 }
 
 message ReadGitFileRequest {
-  string worker_id = 1;
-  string path = 2;       // Absolute path to the file
-  GitFileRef ref = 3;
-  string org_id = 4;
+  string org_id = 1;
+  string worker_id = 2;
+  string path = 3;       // Absolute path to the file
+  GitFileRef ref = 4;
 }
 
 message ReadGitFileResponse {

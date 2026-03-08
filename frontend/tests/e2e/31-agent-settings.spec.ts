@@ -278,6 +278,56 @@ test.describe('Agent Settings', () => {
     await expect(page.getByText('Mode (Default \u2192 Plan Mode)')).toBeVisible()
   })
 
+  test('no thinking indicator when switching settings', async ({ authenticatedWorkspace, page }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+
+    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    await expect(trigger).toBeVisible()
+
+    // Install a MutationObserver to detect even a brief flash of the thinking indicator
+    await page.evaluate(() => {
+      (window as any).__thinkingIndicatorSeen = false
+      const observer = new MutationObserver(() => {
+        if (document.querySelector('[data-testid="thinking-indicator"]')) {
+          (window as any).__thinkingIndicatorSeen = true
+        }
+      })
+      observer.observe(document.body, { childList: true, subtree: true })
+      ;(window as any).__thinkingObserver = observer
+    })
+
+    // Switch permission mode to Plan Mode
+    await openSettingsMenu(page)
+    await page.locator('[data-testid="permission-mode-plan"]').click()
+    await expect(trigger).toContainText('Plan Mode')
+    await waitForSettingsIdle(page)
+
+    // Switch model to Haiku
+    await openSettingsMenu(page)
+    await page.locator('[data-testid="model-haiku"]').click()
+    await expect(trigger).toContainText('Haiku')
+    await waitForSettingsIdle(page)
+
+    // Switch effort to High
+    await openSettingsMenu(page)
+    await page.locator('[data-testid="effort-high"]').click()
+    await waitForSettingsIdle(page)
+
+    // Wait a moment for any delayed status events
+    await page.waitForTimeout(2000)
+
+    // Verify indicator was never shown
+    const sawThinking = await page.evaluate(() => {
+      (window as any).__thinkingObserver?.disconnect()
+      return (window as any).__thinkingIndicatorSeen
+    })
+    expect(sawThinking).toBe(false)
+
+    // Direct check too
+    await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible()
+  })
+
   test('settings loading indicator on trigger', async ({ authenticatedWorkspace, page }) => {
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     await expect(trigger).toBeVisible()

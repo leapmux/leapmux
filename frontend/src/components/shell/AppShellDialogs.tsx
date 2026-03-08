@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import type { useAgentOperations } from './useAgentOperations'
+import type { KeyPinDecision } from '~/lib/channel'
 import type { createAgentStore } from '~/stores/agent.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
@@ -9,6 +10,7 @@ import { onMount, Show } from 'solid-js'
 import { sectionClient } from '~/api/clients'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
+import { KeyPinMismatchDialog } from '~/components/common/KeyPinMismatchDialog'
 import { NewWorkspaceDialog } from '~/components/workspace/NewWorkspaceDialog'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { dialogStandard } from '~/styles/shared.css'
@@ -22,6 +24,13 @@ interface WorktreeConfirmState {
   id: string
   branchName: string
   resolve: (choice: 'cancel' | 'keep' | 'remove') => void
+}
+
+export interface KeyPinConfirmState {
+  workerId: string
+  expectedFingerprint: string
+  actualFingerprint: string
+  resolve: (decision: KeyPinDecision) => void
 }
 
 interface AppShellDialogsProps {
@@ -43,6 +52,8 @@ interface AppShellDialogsProps {
   setConfirmArchiveWs: (v: { workspaceId: string, resolve: (confirmed: boolean) => void } | null) => void
   worktreeConfirm: WorktreeConfirmState | null
   setWorktreeConfirm: (v: WorktreeConfirmState | null) => void
+  keyPinConfirm: KeyPinConfirmState | null
+  setKeyPinConfirm: (v: KeyPinConfirmState | null) => void
   activeWorkspace: () => { id: string } | null
   getCurrentTabContext: () => { workerId: string, workingDir: string, homeDir: string }
   agentOps: ReturnType<typeof useAgentOperations>
@@ -119,7 +130,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
       <Show when={props.showNewWorkspace}>
         <NewWorkspaceDialog
           preselectedWorkerId={props.preselectedWorkerId}
-          onCreated={(ws) => {
+          onCreated={(ws, _wid) => {
             props.workspaceStore.addWorkspace(ws)
             props.setShowNewWorkspace(false)
             props.setPreselectedWorkerId(undefined)
@@ -231,6 +242,20 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             </dialog>
           )
         }}
+      </Show>
+
+      <Show when={props.keyPinConfirm}>
+        {state => (
+          <KeyPinMismatchDialog
+            workerId={state().workerId}
+            expectedFingerprint={state().expectedFingerprint}
+            actualFingerprint={state().actualFingerprint}
+            resolve={(decision) => {
+              state().resolve(decision)
+              props.setKeyPinConfirm(null)
+            }}
+          />
+        )}
       </Show>
     </>
   )
