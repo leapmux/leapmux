@@ -14,7 +14,7 @@ import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { getResetsAt } from '~/lib/rateLimitUtils'
 import { safeGetString, safeRemoveItem, safeSetString } from '~/lib/safeStorage'
 import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store'
-import { interruptPulse, spinner } from '~/styles/animations.css'
+import { spinner } from '~/styles/animations.css'
 import { iconSize } from '~/styles/tokens'
 import { useAgentInfoCard } from './AgentInfoCard'
 import * as styles from './ChatView.css'
@@ -151,7 +151,6 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     props,
     askState,
     () => editorContentRef,
-    setHasContent,
     resetEditorHeight,
   )
 
@@ -381,7 +380,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                     <div class={styles.footerBarRight}>
                       <Show when={ctrl.showInterrupt()}>
                         <button
-                          class={`${styles.interruptButton} ${interruptLoading.loading() ? '' : interruptPulse}`}
+                          class="small"
+                          data-variant="secondary"
                           onClick={() => {
                             interruptLoading.start()
                             props.onInterrupt?.()

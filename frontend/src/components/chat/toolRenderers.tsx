@@ -11,22 +11,23 @@ import Check from 'lucide-solid/icons/check'
 import ChevronsRight from 'lucide-solid/icons/chevrons-right'
 import Columns2 from 'lucide-solid/icons/columns-2'
 import Copy from 'lucide-solid/icons/copy'
+import File from 'lucide-solid/icons/file'
 import FilePen from 'lucide-solid/icons/file-pen'
 import FilePlus from 'lucide-solid/icons/file-plus'
-import FileText from 'lucide-solid/icons/file-text'
 import FoldVertical from 'lucide-solid/icons/fold-vertical'
 import FolderSearch from 'lucide-solid/icons/folder-search'
 import Globe from 'lucide-solid/icons/globe'
 import ListTodo from 'lucide-solid/icons/list-todo'
 import OctagonX from 'lucide-solid/icons/octagon-x'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
+import PocketKnife from 'lucide-solid/icons/pocket-knife'
 import Quote from 'lucide-solid/icons/quote'
 import Rows2 from 'lucide-solid/icons/rows-2'
 import Search from 'lucide-solid/icons/search'
 import SquareTerminal from 'lucide-solid/icons/square-terminal'
 import Terminal from 'lucide-solid/icons/terminal'
+import TextSearch from 'lucide-solid/icons/text-search'
 import TicketsPlane from 'lucide-solid/icons/tickets-plane'
-import Toolbox from 'lucide-solid/icons/toolbox'
 import UnfoldVertical from 'lucide-solid/icons/unfold-vertical'
 import Vote from 'lucide-solid/icons/vote'
 import { createSignal, For, Show } from 'solid-js'
@@ -39,7 +40,7 @@ import { DiffView, rawDiffToHunks } from './diffUtils'
 import { getAssistantContent, isObject, relativizePath } from './messageUtils'
 import { parseCatNContent, ReadResultView } from './ReadResultView'
 import { RelativeTime } from './RelativeTime'
-import { firstNonEmptyLine, formatDuration, formatGlobSummary, formatGrepSummary, formatNumber, formatTaskStatus, formatToolInput } from './rendererUtils'
+import { firstNonEmptyLine, formatCompactNumber, formatDuration, formatGlobSummary, formatGrepSummary, formatTaskStatus, formatToolInput } from './rendererUtils'
 import { renderToolDetail } from './toolDetailRenderers'
 import {
   controlResponseTag,
@@ -143,10 +144,10 @@ export function ToolUseLayout(props: {
 export function toolIconFor(name: string): LucideIcon {
   switch (name) {
     case 'Bash': return Terminal
-    case 'Read': return FileText
+    case 'Read': return File
     case 'Write': return FilePlus
     case 'Edit': return FilePen
-    case 'Grep': return Search
+    case 'Grep': return TextSearch
     case 'Glob': return FolderSearch
     case 'Task': return Bot
     case 'Agent': return Bot
@@ -157,8 +158,8 @@ export function toolIconFor(name: string): LucideIcon {
     case 'ExitPlanMode': return PlaneTakeoff
     case 'AskUserQuestion': return Vote
     case 'TaskOutput': return SquareTerminal
-    case 'Skill': return Toolbox
-    case 'ToolSearch': return Toolbox
+    case 'Skill': return PocketKnife
+    case 'ToolSearch': return Search
     case 'TaskStop': return OctagonX
     default: return ChevronsRight
   }
@@ -349,8 +350,10 @@ function deriveToolSummary(toolName: string, input: Record<string, unknown>, con
     case 'TaskOutput': {
       const task = context?.childTask
       const parts: string[] = []
-      if (task?.exitCode !== undefined)
+      if (task?.exitCode != null)
         parts.push(`Exit code ${task.exitCode}`)
+      else if (task?.status)
+        parts.push(formatTaskStatus(task.status))
       if (task?.task_id)
         parts.push(`Task ID ${task.task_id}`)
       return parts.length > 0
@@ -375,10 +378,10 @@ function deriveToolSummary(toolName: string, input: Record<string, unknown>, con
         parts.push(displayStatus)
       if (context?.childTotalDurationMs !== undefined)
         parts.push(formatDuration(context.childTotalDurationMs))
-      if (context?.childTotalTokens !== undefined)
-        parts.push(`${formatNumber(context.childTotalTokens)} tokens`)
       if (context?.childTotalToolUseCount !== undefined)
         parts.push(`${context.childTotalToolUseCount} tool use${context.childTotalToolUseCount === 1 ? '' : 's'}`)
+      if (context?.childTotalTokens !== undefined)
+        parts.push(`${formatCompactNumber(context.childTotalTokens)} tokens`)
       return parts.length > 0
         ? <div class={toolInputSummary}>{parts.join(' \u00B7 ')}</div>
         : undefined

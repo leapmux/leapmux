@@ -177,7 +177,17 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
                   <option value="">No workers online</option>
                 </Show>
                 <For each={workers()}>
-                  {b => <option value={b.id}>{workerInfoStore.workerInfo(b.id)?.name ?? b.id}</option>}
+                  {(b) => {
+                    const info = () => workerInfoStore.workerInfo(b.id)
+                    const label = () => {
+                      const i = info()
+                      if (!i)
+                        return b.id
+                      const details = [i.version, i.os, i.arch].filter(Boolean).join(', ')
+                      return details ? `${i.name} (${details})` : i.name
+                    }
+                    return <option value={b.id}>{label()}</option>
+                  }}
                 </For>
               </select>
             </label>

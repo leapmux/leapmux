@@ -306,10 +306,11 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   onCleanup(() => {
     clearTimeout(draftSaveTimer.current)
     // Save draft for the current agent/control-request before cleanup.
-    // getDraftKey() may return undefined during unmount (reactive getters
-    // can return null when the parent <Show> disposes), so fall back to
-    // the last known valid key.
-    const cleanupKey = getDraftKey() ?? latestDraftKey
+    // Prefer the cached latestDraftKey over getDraftKey(): during disposal
+    // reactive getters (props.agentId) may already reflect the NEW agent
+    // (e.g. tab switch causes FocusedAgentEditorPanel to be recreated,
+    // and focusedAgentId() has already changed by cleanup time).
+    const cleanupKey = latestDraftKey ?? getDraftKey()
     if (editorInstance && cleanupKey) {
       try {
         saveDraftFromEditor(editorInstance, cleanupKey)

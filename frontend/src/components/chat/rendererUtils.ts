@@ -38,6 +38,22 @@ export function formatNumber(n: number): string {
   return n.toLocaleString('en-US')
 }
 
+/** Format a number in compact form (e.g. 1.2k, 3.5m, 1.1g). */
+export function formatCompactNumber(n: number): string {
+  if (n < 1000)
+    return String(n)
+  if (n < 1_000_000) {
+    const v = n / 1000
+    return `${v >= 100 ? Math.round(v) : Number(v.toFixed(1))}k`
+  }
+  if (n < 1_000_000_000) {
+    const v = n / 1_000_000
+    return `${v >= 100 ? Math.round(v) : Number(v.toFixed(1))}m`
+  }
+  const v = n / 1_000_000_000
+  return `${v >= 100 ? Math.round(v) : Number(v.toFixed(1))}g`
+}
+
 /** Format a Grep result summary for display (without trailing colon). */
 export function formatGrepSummary(numFiles?: number, numLines?: number, fallback?: string | null): string | null {
   if (numFiles === undefined && numLines === undefined)

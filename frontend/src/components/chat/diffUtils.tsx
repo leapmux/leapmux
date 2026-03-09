@@ -492,7 +492,7 @@ function DiffGapSeparator(props: {
               <ArrowUpFromLine size={12} />
               Expand up
             </span>
-            <span>
+            <span class={diffGapExpandButton} onClick={() => props.onExpandAll()}>
               {hiddenLabel()}
               <Show when={tokenizing()}>
                 {' '}

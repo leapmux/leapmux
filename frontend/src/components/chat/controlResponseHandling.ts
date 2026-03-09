@@ -1,4 +1,4 @@
-import type { Accessor, Setter } from 'solid-js'
+import type { Accessor } from 'solid-js'
 import type { AskQuestionState, EditorContentRef } from './controls/types'
 import type { ControlRequest } from '~/stores/control.store'
 import type { PermissionMode } from '~/utils/controlResponse'
@@ -35,7 +35,6 @@ export function useControlResponseHandling(
   props: ControlResponseHandlingProps,
   askState: AskQuestionState,
   editorContentRefAccessor: () => EditorContentRef | undefined,
-  setHasContent: Setter<boolean>,
   resetEditorHeightFn: () => void,
 ): ControlResponseHandlingResult {
   // Track previous non-plan mode for Shift+Tab toggling.
@@ -84,6 +83,11 @@ export function useControlResponseHandling(
   const activeRequestId = createMemo(() => activeControlRequest()?.requestId)
 
   // Reset AskUserQuestion state when the active request changes.
+  // NOTE: Do NOT call setHasContent(false) here.  The MarkdownEditor's
+  // controlRequestId swap effect is the authoritative source for editor
+  // content state — it loads the correct draft and calls onContentChange.
+  // Resetting hasContent here races with the MarkdownEditor and causes the
+  // "Send Feedback" button to disappear after a tab switch (A → B → A).
   createEffect(on(
     activeRequestId,
     (requestId) => {
@@ -94,14 +98,12 @@ export function useControlResponseHandling(
           askState.setSelections(saved.selections ?? {})
           askState.setCustomTexts(saved.customTexts ?? {})
           askState.setCurrentPage(saved.currentPage ?? 0)
-          setHasContent(false)
           return
         }
       }
       askState.setSelections({})
       askState.setCustomTexts({})
       askState.setCurrentPage(0)
-      setHasContent(false)
     },
   ))
 

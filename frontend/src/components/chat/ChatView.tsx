@@ -5,7 +5,6 @@ import ArrowDown from 'lucide-solid/icons/arrow-down'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createEffect, createSignal, For, on, onCleanup, onMount, Show, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
-import { IconButton } from '~/components/common/IconButton'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { renderMarkdown } from '~/lib/renderMarkdown'
@@ -190,6 +189,10 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     void props.streamingText
     void props.agentWorking
     if (untrack(atBottom) && messageListRef) {
+      // Skip scroll when hidden (e.g. inactive tab with display:none).
+      // The ResizeObserver will scroll to bottom when the tab becomes visible.
+      if (messageListRef.clientHeight === 0)
+        return
       autoScrollPending = true
       requestAnimationFrame(() => {
         messageListRef!.scrollTop = messageListRef!.scrollHeight
@@ -207,6 +210,10 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     () => props.savedViewportScroll,
     (saved) => {
       if (!messageListRef)
+        return
+      // Don't consume saved state while hidden — wait until the tab is
+      // visible so the ResizeObserver can apply the correct scroll position.
+      if (messageListRef.clientHeight === 0)
         return
       if (!saved) {
         requestAnimationFrame(() => checkAtBottom())
@@ -248,11 +255,37 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // with undelivered notifications" errors when collapsing large elements.
   onMount(() => {
     let resizeRafId = 0
+    let prevClientHeight = messageListRef?.clientHeight ?? 0
     const handleResize = () => {
       cancelAnimationFrame(resizeRafId)
       resizeRafId = requestAnimationFrame(() => {
         if (!messageListRef || scrollAnimationId !== null || autoScrollPending)
           return
+        // Detect hidden → visible transition (e.g. tab switch).
+        const ch = messageListRef.clientHeight
+        const wasHidden = prevClientHeight === 0 && ch > 0
+        prevClientHeight = ch
+        if (wasHidden) {
+          // Restore saved viewport scroll if available; otherwise use atBottom.
+          const saved = props.savedViewportScroll
+          if (saved) {
+            if (saved.atBottom) {
+              messageListRef.scrollTop = messageListRef.scrollHeight
+              setAtBottom(true)
+            }
+            else {
+              const maxScroll = messageListRef.scrollHeight - messageListRef.clientHeight
+              messageListRef.scrollTop = saved.distFromBottom > maxScroll ? 0 : maxScroll - saved.distFromBottom
+              setAtBottom(false)
+            }
+            props.onClearSavedViewportScroll?.()
+            return
+          }
+          if (atBottom()) {
+            messageListRef.scrollTop = messageListRef.scrollHeight
+            return
+          }
+        }
         if (atBottom()) {
           messageListRef.scrollTop = messageListRef.scrollHeight
         }
@@ -321,11 +354,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
           </Show>
         </div>
         <Show when={!atBottom()}>
-          <IconButton
-            icon={ArrowDown}
-            iconSize="md"
-            onClick={scrollToBottom}
-          />
+          <button type="button" class={`outline icon small ${styles.scrollToBottomButton}`} onClick={scrollToBottom}>
+            <Icon icon={ArrowDown} size="lg" />
+          </button>
         </Show>
       </div>
     </div>

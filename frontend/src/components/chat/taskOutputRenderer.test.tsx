@@ -145,4 +145,31 @@ describe('renderTaskOutput', () => {
     const text = renderText({})
     expect(text).toContain('Waiting for output')
   })
+
+  it('exitCode null (process still running): shows status instead of "Exit code null"', () => {
+    const text = renderText({
+      childTask: {
+        task_id: 'b0c676c',
+        task_type: 'local_bash',
+        status: 'running',
+        description: 'Run full E2E suite',
+        output: '',
+        exitCode: null,
+      },
+    })
+    expect(text).not.toContain('Exit code null')
+    expect(text).toContain('Running')
+    expect(text).toContain('Task ID b0c676c')
+  })
+
+  it('exitCode 0 still shows "Exit code 0"', () => {
+    const text = renderText({
+      childTask: {
+        task_id: 'abc',
+        status: 'completed',
+        exitCode: 0,
+      },
+    })
+    expect(text).toContain('Exit code 0')
+  })
 })
