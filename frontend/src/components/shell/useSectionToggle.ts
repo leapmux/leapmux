@@ -100,16 +100,31 @@ export function useSectionToggle(options: UseSectionToggleOptions): UseSectionTo
           return changed ? next : prev
         })
 
-        // Redistribute sizes equally so new sections get a fair share.
-        // Without this, normalization in expandedSizes would squeeze
-        // the new section because existing sections keep their old
-        // absolute sizes.
+        // Redistribute sizes so new sections get a fair share.
+        // Sections with a defaultSize get that fraction; the remaining
+        // space is split equally among the rest.
         const expanded = expandableSectionIds().filter(sid => isOpen(sid))
         if (expanded.length >= 2) {
-          const equalSize = 1 / expanded.length
+          const byId = sectionById()
+          let reservedTotal = 0
+          let unreservedCount = 0
+          for (const eid of expanded) {
+            const ds = byId.get(eid)?.defaultSize
+            if (ds !== undefined) {
+              reservedTotal += ds
+            }
+            else {
+              unreservedCount++
+            }
+          }
+          const unreservedSize = unreservedCount > 0
+            ? (1 - reservedTotal) / unreservedCount
+            : 1 / expanded.length
           setSectionSizes((prev) => {
             const next = { ...prev }
-            for (const eid of expanded) next[eid] = equalSize
+            for (const eid of expanded) {
+              next[eid] = byId.get(eid)?.defaultSize ?? unreservedSize
+            }
             return next
           })
         }

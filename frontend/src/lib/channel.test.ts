@@ -984,4 +984,110 @@ describe('channelManager', () => {
       expect(mgr.isOpen(channelId)).toBe(false)
     })
   })
+
+  describe('observability hooks', () => {
+    describe('onStateChange', () => {
+      it('should fire after openChannel succeeds', async () => {
+        const cb = vi.fn()
+        mgr.onStateChange(cb)
+        await openTestChannel('w1')
+        expect(cb).toHaveBeenCalledOnce()
+      })
+
+      it('should fire after closeChannel', async () => {
+        const channelId = await openTestChannel('w1')
+        const cb = vi.fn()
+        mgr.onStateChange(cb)
+        await mgr.closeChannel(channelId)
+        expect(cb).toHaveBeenCalledOnce()
+      })
+
+      it('should fire on WebSocket close (all channels torn down)', async () => {
+        await openTestChannel('w1')
+        await openTestChannel('w2')
+        const cb = vi.fn()
+        mgr.onStateChange(cb)
+        mockWs.simulateClose()
+        expect(cb).toHaveBeenCalledOnce()
+      })
+
+      it('should fire on CLOSE sentinel', async () => {
+        const channelId = await openTestChannel('w1')
+        const cb = vi.fn()
+        mgr.onStateChange(cb)
+        mockWs.simulateMessage(encodeCloseMessage(channelId))
+        expect(cb).toHaveBeenCalledOnce()
+      })
+
+      it('should not fire after unsubscribe', async () => {
+        const cb = vi.fn()
+        const unsub = mgr.onStateChange(cb)
+        unsub()
+        await openTestChannel('w1')
+        expect(cb).not.toHaveBeenCalled()
+      })
+    })
+
+    describe('onChannelError', () => {
+      it('should fire on RPC error (non-transport)', async () => {
+        const channelId = await openTestChannel('w1')
+        const cb = vi.fn()
+        mgr.onChannelError(cb)
+
+        const callPromise = mgr.call(channelId, 'Test', new Uint8Array())
+        sendErrorResponseFromWorker(channelId, 1, 'rpc failed')
+        await expect(callPromise).rejects.toThrow('rpc failed')
+
+        expect(cb).toHaveBeenCalledOnce()
+        expect(cb.mock.calls[0][0]).toBe('w1')
+        expect(cb.mock.calls[0][1].source).toBe('rpc')
+      })
+
+      it('should fire on stream error (non-transport)', async () => {
+        const channelId = await openTestChannel('w1')
+        const cb = vi.fn()
+        mgr.onChannelError(cb)
+
+        const errorFn = vi.fn()
+        const handle = mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+        handle.onError(errorFn)
+
+        sendStreamErrorFromWorker(channelId, handle.requestId, 'stream broke')
+
+        expect(cb).toHaveBeenCalledOnce()
+        expect(cb.mock.calls[0][0]).toBe('w1')
+        expect(cb.mock.calls[0][1].source).toBe('stream')
+      })
+
+      it('should not fire after unsubscribe', async () => {
+        const channelId = await openTestChannel('w1')
+        const cb = vi.fn()
+        const unsub = mgr.onChannelError(cb)
+        unsub()
+
+        const callPromise = mgr.call(channelId, 'Test', new Uint8Array())
+        sendErrorResponseFromWorker(channelId, 1, 'rpc failed')
+        await expect(callPromise).rejects.toThrow('rpc failed')
+
+        expect(cb).not.toHaveBeenCalled()
+      })
+    })
+
+    describe('hasOpenChannel', () => {
+      it('should return true when channel is open', async () => {
+        await openTestChannel('w1')
+        expect(mgr.hasOpenChannel('w1')).toBe(true)
+      })
+
+      it('should return false when no channel exists', () => {
+        expect(mgr.hasOpenChannel('w1')).toBe(false)
+      })
+
+      it('should return false after channel is closed', async () => {
+        const channelId = await openTestChannel('w1')
+        await mgr.closeChannel(channelId)
+        expect(mgr.hasOpenChannel('w1')).toBe(false)
+      })
+    })
+  })
 })

@@ -24,9 +24,6 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
 
   const renderMenuItems = () => (
     <>
-      <button role="menuitem" onClick={() => navigate(`/o/${org.slug()}/workers`)}>
-        Workers
-      </button>
       <button role="menuitem" onClick={() => navigate('/settings')}>
         Preferences
       </button>
