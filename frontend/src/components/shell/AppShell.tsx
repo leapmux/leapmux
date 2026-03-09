@@ -318,6 +318,31 @@ export const AppShell: ParentComponent = (props) => {
     },
   ))
 
+  // Sync git file status store to tab-level diff stats so the workspace
+  // tab tree stays consistent with the directory tree after refreshes.
+  createEffect(() => {
+    const files = gitFileStatusStore.state.files
+    const repoRoot = gitFileStatusStore.state.repoRoot
+    if (!repoRoot)
+      return
+    let added = 0
+    let deleted = 0
+    for (const f of files) {
+      added += f.linesAdded + f.stagedLinesAdded
+      deleted += f.linesDeleted + f.stagedLinesDeleted
+    }
+    for (const tab of tabStore.state.tabs) {
+      if (tab.type !== TabType.AGENT)
+        continue
+      const agent = agentStore.state.agents.find(a => a.id === tab.id)
+      if (!agent?.workingDir)
+        continue
+      if (agent.workingDir === repoRoot || agent.workingDir.startsWith(`${repoRoot}/`)) {
+        tabStore.updateTab(TabType.AGENT, tab.id, { gitDiffAdded: added, gitDiffDeleted: deleted })
+      }
+    }
+  })
+
   // Get working directory and home directory from the MRU agent tab
   const getMruAgentContext = (): { workingDir: string, homeDir: string } => {
     const agentPrefix = `${TabType.AGENT}:`
@@ -545,6 +570,20 @@ export const AppShell: ParentComponent = (props) => {
     workerInfoFn: workerInfoStore.workerInfo,
     channelStatusFn: workerChannelStatusStore.getStatus,
     onDeregisterWorker: (worker: Worker) => setDeregisterTarget(worker),
+    onTabClick: (type: number, id: string) => {
+      const tabType = type as TabType
+      tabStore.setActiveTab(tabType, id)
+      const tab = tabStore.state.tabs.find(t => t.type === tabType && t.id === id)
+      if (tab?.tileId) {
+        tabStore.setActiveTabForTile(tab.tileId, tabType, id)
+      }
+      if (tabType === TabType.AGENT) {
+        agentStore.setActiveAgent(id)
+      }
+      else if (tabType === TabType.TERMINAL) {
+        terminalStore.setActiveTerminal(id)
+      }
+    },
   })
 
   // Refresh git status only when workerId or workingDir actually changes

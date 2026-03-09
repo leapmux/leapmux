@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, waitForLayoutSave, waitForWorkspaceReady } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Full Hub+Worker Restart', () => {
@@ -119,6 +119,63 @@ test.describe('Full Hub+Worker Restart', () => {
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
     }
+  })
+
+  test('should preserve terminal tab title after full restart', async ({ authenticatedWorkspace, separateHubWorker, page }) => {
+    // Listen for layout save before opening terminal
+    const saved = waitForLayoutSave(page)
+
+    // Open a terminal via the tab bar
+    await page.locator('[data-testid="new-terminal-button"]').click()
+
+    // Wait for the terminal tab to appear and xterm to render
+    const terminalTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
+    await expect(terminalTab).toBeVisible()
+    await expect(page.locator('.xterm')).toBeVisible()
+
+    // Wait for layout save so the tab is persisted
+    await saved
+
+    // Set the terminal title explicitly via an escape sequence.
+    // This simulates what shells do automatically with precmd hooks.
+    // Focus the terminal textarea and type the escape sequence.
+    await page.evaluate(() => {
+      const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
+      for (const container of containers) {
+        if (container.style.display !== 'none') {
+          const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
+          if (textarea) {
+            textarea.focus()
+            return
+          }
+        }
+      }
+    })
+    await page.keyboard.type('printf "\\e]0;My Custom Title\\a"\n', { delay: 30 })
+
+    // Wait for the title to update in the tab
+    await expect(terminalTab).toContainText('My Custom Title', { timeout: 10_000 })
+
+    // Wait for the UpdateTerminalTitle RPC to reach the backend
+    await page.waitForTimeout(2000)
+
+    const workspaceUrl = page.url()
+
+    // Stop worker first, then hub
+    await stopWorker()
+    await stopHub()
+
+    // Start hub and worker back up
+    await restartHub(separateHubWorker)
+    await restartWorker(separateHubWorker)
+
+    // Reload the page
+    await page.goto(workspaceUrl)
+
+    // Verify the terminal tab is restored with the custom title
+    const restoredTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
+    await expect(restoredTab).toBeVisible()
+    await expect(restoredTab).toContainText('My Custom Title')
   })
 
   test('should not show thinking indicator after full restart during active turn', async ({ separateHubWorker, page }) => {

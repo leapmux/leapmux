@@ -88,25 +88,48 @@ func (svc *Context) Init() {
 	// derived from runtime state (HasAgent/HasTerminal), not from the DB.
 }
 
-// Shutdown persists in-memory terminal screen snapshots to the database
-// so they survive a worker restart. Call this before stopping the terminal
+// Shutdown persists in-memory terminal state to the database so it
+// survives a worker restart. Call this before stopping the terminal
 // manager (which clears in-memory state).
 func (svc *Context) Shutdown() {
 	for _, tid := range svc.Terminals.ListTerminalIDs() {
+		// Try to get a full snapshot (metadata + screen). If the screen
+		// is empty (e.g. terminal was killed before rendering), fall back
+		// to metadata-only so the title and other fields are still saved.
 		snap, ok := svc.Terminals.SnapshotTerminal(tid)
-		if !ok {
+		if ok {
+			if err := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
+				ID:            tid,
+				WorkspaceID:   snap.WorkspaceID,
+				WorkingDir:    snap.WorkingDir,
+				ShellStartDir: snap.ShellStartDir,
+				Title:         snap.Title,
+				Cols:          int64(snap.Cols),
+				Rows:          int64(snap.Rows),
+				Screen:        snap.Screen,
+			}); err != nil {
+				slog.Error("failed to save terminal on shutdown", "terminal_id", tid, "error", err)
+			}
+			continue
+		}
+
+		// No screen available — still persist metadata (title, etc.)
+		// so it survives the restart.
+		meta, hasMeta := svc.Terminals.GetMeta(tid)
+		if !hasMeta {
 			continue
 		}
 		if err := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
 			ID:            tid,
-			WorkspaceID:   snap.WorkspaceID,
-			WorkingDir:    snap.WorkingDir,
-			ShellStartDir: snap.ShellStartDir,
-			Cols:          int64(snap.Cols),
-			Rows:          int64(snap.Rows),
-			Screen:        snap.Screen,
+			WorkspaceID:   meta.WorkspaceID,
+			WorkingDir:    meta.WorkingDir,
+			ShellStartDir: meta.ShellStartDir,
+			Title:         meta.Title,
+			Cols:          int64(meta.Cols),
+			Rows:          int64(meta.Rows),
+			Screen:        []byte{},
 		}); err != nil {
-			slog.Error("failed to save terminal screen on shutdown", "terminal_id", tid, "error", err)
+			slog.Error("failed to save terminal metadata on shutdown", "terminal_id", tid, "error", err)
 		}
 	}
 }

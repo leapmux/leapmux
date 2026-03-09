@@ -22,6 +22,10 @@ export interface Tab {
   fileViewMode?: FileViewMode
   fileDiffBase?: FileDiffBase
   fileOpenSource?: FileOpenSource
+  gitBranch?: string
+  gitOriginUrl?: string
+  gitDiffAdded?: number
+  gitDiffDeleted?: number
 }
 
 export function tabKey(tab: Tab): string {
@@ -223,6 +227,12 @@ export function createTabStore() {
     setTabFileDiffBase(type: TabType, id: string, base: FileDiffBase) {
       const key = tabKey({ type, id })
       setState('tabs', t => tabKey(t) === key, 'fileDiffBase', base)
+    },
+
+    /** Update arbitrary fields on a tab. */
+    updateTab(type: TabType, id: string, fields: Partial<Tab>) {
+      const key = tabKey({ type, id })
+      setState('tabs', t => tabKey(t) === key, prev => ({ ...prev, ...fields }))
     },
 
     /** Move a tab to a different tile, cleaning up source tile state. */

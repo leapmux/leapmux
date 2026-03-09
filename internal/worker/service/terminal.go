@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
@@ -85,12 +86,29 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 					WorkingDir:    workingDir,
 					HomeDir:       svc.HomeDir,
 					ShellStartDir: shellStartDir,
+					Title:         snap.Title,
 					Cols:          int64(snap.Cols),
 					Rows:          int64(snap.Rows),
 					Screen:        snap.Screen,
 					ExitCode:      int64(exitCode),
 				}); err != nil {
 					slog.Error("failed to save terminal on exit", "terminal_id", tid, "error", err)
+				}
+			} else if meta, hasMeta := svc.Terminals.GetMeta(tid); hasMeta {
+				// No screen available — still persist metadata (title, etc.)
+				if err := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
+					ID:            tid,
+					WorkspaceID:   meta.WorkspaceID,
+					WorkingDir:    workingDir,
+					HomeDir:       svc.HomeDir,
+					ShellStartDir: shellStartDir,
+					Title:         meta.Title,
+					Cols:          int64(meta.Cols),
+					Rows:          int64(meta.Rows),
+					Screen:        []byte{},
+					ExitCode:      int64(exitCode),
+				}); err != nil {
+					slog.Error("failed to save terminal metadata on exit", "terminal_id", tid, "error", err)
 				}
 			}
 
@@ -137,9 +155,18 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		// Register the terminal tab with the worktree.
 		svc.registerTabForWorktree(worktreeID, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID)
 
-		sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{
+		resp := &leapmuxv1.OpenTerminalResponse{
 			TerminalId: terminalID,
-		})
+		}
+		gitDir := shellStartDir
+		if gitDir == "" {
+			gitDir = workingDir
+		}
+		if gs := gitutil.GetGitStatus(gitDir); gs != nil {
+			resp.GitBranch = gs.Branch
+			resp.GitOriginUrl = gs.OriginURL
+		}
+		sendProtoResponse(sender, resp)
 	})
 
 	// CloseTerminal stops and removes a terminal session.
@@ -223,6 +250,45 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		sendProtoResponse(sender, &leapmuxv1.ResizeTerminalResponse{})
 	})
 
+	// UpdateTerminalTitle updates a terminal's title in both the in-memory
+	// manager and the database. The frontend debounces calls at 10s intervals.
+	d.Register("UpdateTerminalTitle", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+		var r leapmuxv1.UpdateTerminalTitleRequest
+		if err := unmarshalRequest(req, &r); err != nil {
+			sendInvalidArgument(sender, "invalid request")
+			return
+		}
+
+		terminalID := r.GetTerminalId()
+		if terminalID == "" {
+			sendInvalidArgument(sender, "terminal_id is required")
+			return
+		}
+
+		title := r.GetTitle()
+		svc.Terminals.UpdateTitle(terminalID, title)
+
+		// Persist to DB so it survives restarts.
+		dbTerm, err := svc.Queries.GetTerminal(bgCtx(), terminalID)
+		if err == nil {
+			_ = svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
+				ID:            dbTerm.ID,
+				WorkspaceID:   dbTerm.WorkspaceID,
+				WorkingDir:    dbTerm.WorkingDir,
+				HomeDir:       dbTerm.HomeDir,
+				ShellStartDir: dbTerm.ShellStartDir,
+				Title:         title,
+				Cols:          dbTerm.Cols,
+				Rows:          dbTerm.Rows,
+				Screen:        dbTerm.Screen,
+				ExitCode:      dbTerm.ExitCode,
+				ClosedAt:      dbTerm.ClosedAt,
+			})
+		}
+
+		sendProtoResponse(sender, &leapmuxv1.UpdateTerminalTitleResponse{})
+	})
+
 	// ListTerminals returns all terminal tabs for a workspace.
 	// Uses the in-memory terminal manager for running terminals and falls
 	// back to saved terminal records for terminals that have already exited
@@ -246,7 +312,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		var terminals []*leapmuxv1.TerminalInfo
 		for _, e := range entries {
 			seen[e.ID] = true
-			terminals = append(terminals, &leapmuxv1.TerminalInfo{
+			ti := &leapmuxv1.TerminalInfo{
 				TerminalId:    e.ID,
 				Cols:          e.Meta.Cols,
 				Rows:          e.Meta.Rows,
@@ -254,7 +320,10 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 				Exited:        e.Exited,
 				WorkingDir:    e.Meta.WorkingDir,
 				ShellStartDir: e.Meta.ShellStartDir,
-			})
+				Title:         e.Meta.Title,
+			}
+			populateTerminalGitInfo(ti, e.Meta.ShellStartDir)
+			terminals = append(terminals, ti)
 		}
 
 		// Also include terminals from the DB that have been removed from
@@ -267,7 +336,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 				if seen[ts.ID] {
 					continue
 				}
-				terminals = append(terminals, &leapmuxv1.TerminalInfo{
+				ti := &leapmuxv1.TerminalInfo{
 					TerminalId:    ts.ID,
 					Cols:          uint32(ts.Cols),
 					Rows:          uint32(ts.Rows),
@@ -275,7 +344,10 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 					Exited:        !svc.Terminals.HasTerminal(ts.ID),
 					WorkingDir:    ts.WorkingDir,
 					ShellStartDir: ts.ShellStartDir,
-				})
+					Title:         ts.Title,
+				}
+				populateTerminalGitInfo(ti, ts.ShellStartDir)
+				terminals = append(terminals, ti)
 			}
 		}
 
@@ -331,4 +403,22 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			DefaultShell: filepath.Base(defaultShell),
 		})
 	})
+}
+
+// populateTerminalGitInfo fills in the git branch and origin URL fields on a TerminalInfo
+// from the terminal's shell start directory. Best-effort: fields are left empty if the
+// directory is not inside a git repo.
+func populateTerminalGitInfo(ti *leapmuxv1.TerminalInfo, shellStartDir string) {
+	dir := shellStartDir
+	if dir == "" {
+		dir = ti.WorkingDir
+	}
+	if dir == "" {
+		return
+	}
+	gs := gitutil.GetGitStatus(dir)
+	if gs != nil {
+		ti.GitBranch = gs.Branch
+		ti.GitOriginUrl = gs.OriginURL
+	}
 }

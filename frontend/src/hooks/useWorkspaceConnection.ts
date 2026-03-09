@@ -184,6 +184,13 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
               }),
           gitStatus: sc.gitStatus,
         })
+        if (sc.gitStatus) {
+          const gs = sc.gitStatus
+          tabStore.updateTab(TabType.AGENT, sc.agentId, {
+            gitBranch: gs.branch || undefined,
+            gitOriginUrl: gs.originUrl || undefined,
+          })
+        }
         if (!pendingSettings) {
           settingsLoading.stop()
         }

@@ -11,6 +11,7 @@ type TerminalMeta struct {
 	WorkspaceID   string
 	WorkingDir    string
 	ShellStartDir string
+	Title         string
 	Cols          uint32
 	Rows          uint32
 }
@@ -173,6 +174,19 @@ func (m *Manager) IsExited(terminalID string) bool {
 	return t.IsExited()
 }
 
+// UpdateTitle updates the title of a terminal in the in-memory metadata.
+func (m *Manager) UpdateTitle(terminalID, title string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	meta, ok := m.meta[terminalID]
+	if !ok {
+		return false
+	}
+	meta.Title = title
+	m.meta[terminalID] = meta
+	return true
+}
+
 // ScreenSnapshot returns the screen buffer snapshot for a terminal.
 func (m *Manager) ScreenSnapshot(terminalID string) []byte {
 	m.mu.RLock()
@@ -208,6 +222,14 @@ func (m *Manager) SnapshotTerminal(terminalID string) (snap TerminalSnapshot, ok
 		TerminalMeta: meta,
 		Screen:       screen,
 	}, true
+}
+
+// GetMeta returns the metadata for a terminal, or ok=false if not found.
+func (m *Manager) GetMeta(terminalID string) (meta TerminalMeta, ok bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	meta, ok = m.meta[terminalID]
+	return
 }
 
 // ListTerminalIDs returns the IDs of all currently tracked terminals.

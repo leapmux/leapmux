@@ -16,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/gitutil"
 )
 
 // notifThreadGracePeriod is how long a soft-cleared notification thread
@@ -289,19 +290,19 @@ func (h *OutputHandler) handleSystemInit(agentID string, content []byte) {
 
 	// Always broadcast ACTIVE so the frontend learns the agent is running
 	// (even on resume where the session ID hasn't changed).
+	sc := &leapmuxv1.AgentStatusChange{
+		AgentId:        agentID,
+		Status:         leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE,
+		AgentSessionId: initMsg.SessionID,
+		WorkerOnline:   true,
+		PermissionMode: existingAgent.PermissionMode,
+		Model:          existingAgent.Model,
+		Effort:         existingAgent.Effort,
+		GitStatus:      gitStatusToProto(gitutil.GetGitStatus(existingAgent.WorkingDir)),
+	}
 	h.watcher.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
-		Event: &leapmuxv1.AgentEvent_StatusChange{
-			StatusChange: &leapmuxv1.AgentStatusChange{
-				AgentId:        agentID,
-				Status:         leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE,
-				AgentSessionId: initMsg.SessionID,
-				WorkerOnline:   true,
-				PermissionMode: existingAgent.PermissionMode,
-				Model:          existingAgent.Model,
-				Effort:         existingAgent.Effort,
-			},
-		},
+		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: sc},
 	})
 }
 
@@ -410,6 +411,7 @@ func (h *OutputHandler) handleControlResponse(agentID string, content []byte) {
 							PermissionMode: newMode,
 							Model:          dbAgent.Model,
 							Effort:         dbAgent.Effort,
+							GitStatus:      gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
 						},
 					},
 				})

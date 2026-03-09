@@ -5,6 +5,7 @@ import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { TodoItem } from '~/stores/chat.store'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
+import type { createTabStore } from '~/stores/tab.store'
 
 import Plus from 'lucide-solid/icons/plus'
 import { createMemo, createSignal, Show } from 'solid-js'
@@ -55,6 +56,8 @@ interface RightSidebarProps {
   onPostArchiveWorkspace?: (workspaceId: string) => void
   /** Signal bumped on agent turn-end; drives directory tree refresh. */
   turnEndTrigger?: number
+  tabStore?: ReturnType<typeof createTabStore>
+  onTabClick?: (type: number, id: string) => void
 }
 
 export const RightSidebar: Component<RightSidebarProps> = (props) => {
@@ -235,6 +238,9 @@ export const RightSidebar: Component<RightSidebarProps> = (props) => {
               onRenameCommit={wsOps.commitRename}
               onRenameCancel={wsOps.cancelRename}
               isWorkspaceLoading={wsOps.isWorkspaceLoading}
+              tabs={props.tabStore?.state.tabs ?? []}
+              activeTabKey={props.tabStore?.state.activeTabKey ?? null}
+              onTabClick={props.onTabClick ?? (() => {})}
             />
           ),
         }

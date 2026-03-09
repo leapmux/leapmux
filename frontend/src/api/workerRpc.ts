@@ -41,6 +41,7 @@ import type {
   OpenTerminalResponse,
   ResizeTerminalResponse,
   SendInputResponse,
+  UpdateTerminalTitleResponse,
 } from '~/generated/leapmux/v1/terminal_pb'
 import type {
   GetWorkerSystemInfoResponse,
@@ -111,6 +112,8 @@ import {
   ResizeTerminalResponseSchema,
   SendInputRequestSchema,
   SendInputResponseSchema,
+  UpdateTerminalTitleRequestSchema,
+  UpdateTerminalTitleResponseSchema,
 } from '~/generated/leapmux/v1/terminal_pb'
 import {
   GetWorkerSystemInfoRequestSchema,
@@ -284,6 +287,10 @@ export function sendInput(workerId: string, req: MessageInitShape<typeof SendInp
 
 export function resizeTerminal(workerId: string, req: MessageInitShape<typeof ResizeTerminalRequestSchema>): Promise<ResizeTerminalResponse> {
   return callWorker(workerId, 'ResizeTerminal', ResizeTerminalRequestSchema, ResizeTerminalResponseSchema, req)
+}
+
+export function updateTerminalTitle(workerId: string, req: MessageInitShape<typeof UpdateTerminalTitleRequestSchema>): Promise<UpdateTerminalTitleResponse> {
+  return callWorker(workerId, 'UpdateTerminalTitle', UpdateTerminalTitleRequestSchema, UpdateTerminalTitleResponseSchema, req)
 }
 
 export function listTerminals(workerId: string, req: MessageInitShape<typeof ListTerminalsRequestSchema>): Promise<ListTerminalsResponse> {

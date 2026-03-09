@@ -91,13 +91,20 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
 
       const tileId = props.layoutStore.focusedTileId()
       props.terminalStore.addTerminal({ id: resp.terminalId, workspaceId: ws.id, workerId: ctx.workerId, workingDir: ctx.workingDir, shellStartDir: shellStartDir ?? ctx.workingDir })
-      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir })
+      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, gitBranch: resp.gitBranch || undefined, gitOriginUrl: resp.gitOriginUrl || undefined })
       props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, resp.terminalId)
       props.persistLayout?.()
       // Register tab with hub.
       workspaceClient.addTab({
         workspaceId: ws.id,
         tab: { tabType: TabType.TERMINAL, tabId: resp.terminalId, tileId, workerId: ctx.workerId },
+      }).catch(() => {})
+      // Persist initial title to backend so it survives restarts.
+      workerRpc.updateTerminalTitle(ctx.workerId, {
+        orgId: props.org.orgId(),
+        workspaceId: ws.id,
+        terminalId: resp.terminalId,
+        title,
       }).catch(() => {})
     }
     catch (err) {
@@ -134,13 +141,20 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
 
       const tileId = props.layoutStore.focusedTileId()
       props.terminalStore.addTerminal({ id: resp.terminalId, workspaceId: ws.id, workerId: ctx.workerId, workingDir: ctx.workingDir })
-      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir })
+      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, gitBranch: resp.gitBranch || undefined, gitOriginUrl: resp.gitOriginUrl || undefined })
       props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, resp.terminalId)
       props.persistLayout?.()
       // Register tab with hub.
       workspaceClient.addTab({
         workspaceId: ws.id,
         tab: { tabType: TabType.TERMINAL, tabId: resp.terminalId, tileId, workerId: ctx.workerId },
+      }).catch(() => {})
+      // Persist initial title to backend so it survives restarts.
+      workerRpc.updateTerminalTitle(ctx.workerId, {
+        orgId: props.org.orgId(),
+        workspaceId: ws.id,
+        terminalId: resp.terminalId,
+        title,
       }).catch(() => {})
     }
     catch (err) {
@@ -164,9 +178,45 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     }
   }
 
+  // Debounce backend title updates: at most once per 10 seconds per terminal.
+  const titleTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const titleLastSent = new Map<string, number>()
+
+  const sendTitleToBackend = (terminalId: string, title: string) => {
+    const ws = props.activeWorkspace()
+    if (!ws)
+      return
+    const workerId = getTerminalWorkerId(terminalId)
+    workerRpc.updateTerminalTitle(workerId, {
+      orgId: props.org.orgId(),
+      workspaceId: ws.id,
+      terminalId,
+      title,
+    }).catch(() => {})
+    titleLastSent.set(terminalId, Date.now())
+  }
+
   const handleTerminalTitleChange = (terminalId: string, title: string) => {
     props.terminalStore.updateTerminalTitle(terminalId, title)
     props.tabStore.updateTabTitle(TabType.TERMINAL, terminalId, title)
+
+    // Debounced backend sync
+    const existing = titleTimers.get(terminalId)
+    if (existing)
+      clearTimeout(existing)
+
+    const last = titleLastSent.get(terminalId) ?? 0
+    const elapsed = Date.now() - last
+    const delay = Math.max(0, 10_000 - elapsed)
+    if (delay === 0) {
+      sendTitleToBackend(terminalId, title)
+    }
+    else {
+      titleTimers.set(terminalId, setTimeout(() => {
+        titleTimers.delete(terminalId)
+        sendTitleToBackend(terminalId, title)
+      }, delay))
+    }
   }
 
   const handleTerminalBell = (terminalId: string) => {

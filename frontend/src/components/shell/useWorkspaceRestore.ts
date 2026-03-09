@@ -151,16 +151,38 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         let tileId = tabTileMap.get(key) ?? defaultTileId
         if (!validTileIds.has(tileId))
           tileId = defaultTileId
-        tabStore.addTab({ type: TabType.AGENT, id: a.id, title: a.title || undefined, tileId, workerId: a.workerId, workingDir: a.workingDir }, false)
+        tabStore.addTab({
+          type: TabType.AGENT,
+          id: a.id,
+          title: a.title || undefined,
+          tileId,
+          workerId: a.workerId,
+          workingDir: a.workingDir,
+          gitBranch: a.gitStatus?.branch || undefined,
+          gitOriginUrl: a.gitStatus?.originUrl || undefined,
+        }, false)
       }
 
-      for (const t of terminalStore.state.terminals) {
-        if (!terminalStore.isExited(t.id) || persistedKeys.has(`${TabType.TERMINAL}:${t.id}`)) {
-          const key = `${TabType.TERMINAL}:${t.id}`
-          let tileId = tabTileMap.get(key) ?? defaultTileId
-          if (!validTileIds.has(tileId))
-            tileId = defaultTileId
-          tabStore.addTab({ type: TabType.TERMINAL, id: t.id, tileId, workerId: t.workerId, workingDir: t.workingDir }, false)
+      for (const { workerId, terminals: terms } of terminalResults) {
+        for (const term of terms) {
+          const termId = term.terminalId
+          if (!terminalStore.isExited(termId) || persistedKeys.has(`${TabType.TERMINAL}:${termId}`)) {
+            const key = `${TabType.TERMINAL}:${termId}`
+            let tileId = tabTileMap.get(key) ?? defaultTileId
+            if (!validTileIds.has(tileId))
+              tileId = defaultTileId
+            const termData = terminalStore.state.terminals.find(t => t.id === termId)
+            tabStore.addTab({
+              type: TabType.TERMINAL,
+              id: termId,
+              title: term.title || undefined,
+              tileId,
+              workerId,
+              workingDir: termData?.workingDir,
+              gitBranch: term.gitBranch || undefined,
+              gitOriginUrl: term.gitOriginUrl || undefined,
+            }, false)
+          }
         }
       }
 

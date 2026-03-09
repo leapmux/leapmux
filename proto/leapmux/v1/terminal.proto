@@ -16,6 +16,8 @@ message OpenTerminalRequest {
 
 message OpenTerminalResponse {
   string terminal_id = 1;
+  string git_branch = 2;        // Current git branch (if working dir is in a git repo)
+  string git_origin_url = 3;    // Remote origin URL (if working dir is in a git repo)
 }
 
 message CloseTerminalRequest {
@@ -49,6 +51,15 @@ message ResizeTerminalRequest {
 
 message ResizeTerminalResponse {}
 
+message UpdateTerminalTitleRequest {
+  string org_id = 1;
+  string workspace_id = 2;
+  string terminal_id = 3;
+  string title = 4;
+}
+
+message UpdateTerminalTitleResponse {}
+
 message ListTerminalsRequest {
   string org_id = 1;
   string workspace_id = 2;
@@ -66,6 +77,9 @@ message TerminalInfo {
   bool exited = 5;
   string working_dir = 6;       // Tab's working directory context
   string shell_start_dir = 7;   // Where the shell started
+  string git_branch = 8;        // Current git branch (if in a git repo)
+  string git_origin_url = 9;    // Remote origin URL (if in a git repo)
+  string title = 10;            // User-visible tab title
 }
 
 message TerminalData {

@@ -107,6 +107,11 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 			resp.CurrentBranch = strings.TrimSpace(branch)
 		}
 
+		// Origin URL.
+		if originURL, err := gitOutput(ctx, dirPath, "config", "--get", "remote.origin.url"); err == nil {
+			resp.OriginUrl = strings.TrimSpace(originURL)
+		}
+
 		// Dirty status.
 		if status, err := gitOutput(ctx, dirPath, "status", "--porcelain"); err == nil {
 			resp.IsDirty = strings.TrimSpace(status) != ""
@@ -356,15 +361,6 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 
 		sendProtoResponse(sender, &leapmuxv1.KeepWorktreeResponse{})
 	})
-}
-
-// gitRepoRoot resolves the git repository root for the given directory.
-func gitRepoRoot(ctx context.Context, dir string) (string, error) {
-	out, err := gitOutput(ctx, dir, "rev-parse", "--show-toplevel")
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(out), nil
 }
 
 // getGitFileStatusEntries computes per-file git status for the given repo root.

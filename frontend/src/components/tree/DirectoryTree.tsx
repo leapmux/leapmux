@@ -251,13 +251,17 @@ function getGitIconClass(
   return getGitFileIconClass(entry)
 }
 
-/** Render diff stats for a tree node (file only). */
+/** Render diff stats for a tree node (file or directory). */
 function renderNodeDiffStats(
   node: TreeNodeData,
   gitStatusStore?: ReturnType<typeof createGitFileStatusStore>,
 ): JSX.Element {
-  if (!gitStatusStore || node.isDir)
+  if (!gitStatusStore)
     return <></>
+  if (node.isDir) {
+    const stats = gitStatusStore.getDirDiffStats(node.path)
+    return <DiffStatsBadge added={stats.added} deleted={stats.deleted} />
+  }
   const entry = gitStatusStore.getFileStatus(node.path)
   if (!entry)
     return <></>
@@ -782,6 +786,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
               >
                 <Icon icon={FolderOpen} size="sm" class={styles.folderIcon} />
                 <span class={styles.nodeName}>{rootDisplayName()}</span>
+                {renderNodeDiffStats({ path: rootPath(), displayName: rootDisplayName(), isDir: true }, props.gitStatusStore)}
                 <div class={styles.nodeActions}>
                   <TreeContextMenu
                     path={rootPath()}
