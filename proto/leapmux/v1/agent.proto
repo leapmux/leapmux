@@ -129,7 +129,6 @@ message AgentStatusChange {
   string model = 6;
   string effort = 7;
   AgentGitStatus git_status = 8; // Git status for the agent's working directory
-  reserved 9, 10, 11;
 }
 
 // AgentGitStatus holds git repository status for an agent's working directory.
