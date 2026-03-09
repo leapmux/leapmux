@@ -213,6 +213,7 @@ export const infoTrigger = style({
   display: 'inline-flex',
   alignItems: 'center',
   justifyContent: 'center',
+  gap: 'var(--space-1)',
   padding: '2px',
   fontSize: 'var(--text-8)',
   color: 'var(--faint-foreground)',

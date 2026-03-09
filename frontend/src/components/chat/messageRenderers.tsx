@@ -93,7 +93,7 @@ export interface RenderContext {
     status?: string
     description?: string
     output?: string
-    exitCode?: number
+    exitCode?: number | null
   }
   /** Status from child tool_use_result (for Agent/Task status display). */
   childToolResultStatus?: string
