@@ -1,7 +1,7 @@
 import type { Component, JSX } from 'solid-js'
 import X from 'lucide-solid/icons/x'
 import { onCleanup, onMount } from 'solid-js'
-import { dialogCloseButton, dialogHeader, dialogStandard, dialogTall } from '~/styles/shared.css'
+import { dialogBody, dialogCloseButton, dialogHeader, dialogStandard, dialogTall } from '~/styles/shared.css'
 import { IconButton } from './IconButton'
 
 interface DialogProps {
@@ -47,7 +47,9 @@ export const Dialog: Component<DialogProps> = (props) => {
           aria-label="Close"
         />
       </header>
-      {props.children}
+      <div class={dialogBody}>
+        {props.children}
+      </div>
     </dialog>
   )
 }

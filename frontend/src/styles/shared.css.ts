@@ -116,7 +116,7 @@ export const dialogHeader = style({
   alignItems: 'center',
   justifyContent: 'space-between',
   gap: 0,
-  padding: 'var(--space-6) var(--space-6) 0',
+  padding: 'var(--space-4) var(--space-6) 0',
 })
 
 export const dialogCloseButton = style({
@@ -129,8 +129,27 @@ globalStyle(`${dialogHeader} > h2`, {
   margin: 0,
 })
 
+// Dialog body wrapper provides consistent padding for all dialog content.
+export const dialogBody = style({
+  display: 'flex',
+  flexDirection: 'column',
+  flex: 1,
+  minHeight: 0,
+  overflow: 'hidden',
+  padding: 'var(--space-6)',
+  paddingBlockStart: 'var(--space-4)',
+})
+
+// Footer inside dialog body
+globalStyle(`${dialogStandard} > .${dialogBody} > footer, ${dialogStandard} > .${dialogBody} > form > footer`, {
+  display: 'flex',
+  justifyContent: 'flex-end',
+  gap: 'var(--space-2)',
+  paddingBlockStart: 'var(--space-6)',
+})
+
 // Make dialog forms use flex layout so the tree container can fill remaining space.
-globalStyle(`${dialogStandard} > form`, {
+globalStyle(`${dialogStandard} > .${dialogBody} > form`, {
   display: 'flex',
   flexDirection: 'column',
   overflow: 'hidden',
@@ -138,7 +157,7 @@ globalStyle(`${dialogStandard} > form`, {
   minHeight: 0,
 })
 
-globalStyle(`${dialogStandard} > section`, {
+globalStyle(`${dialogStandard} > .${dialogBody} > section`, {
   display: 'flex',
   flexDirection: 'column',
   flex: 1,
@@ -146,14 +165,14 @@ globalStyle(`${dialogStandard} > section`, {
   overflowY: 'auto',
 })
 
-globalStyle(`${dialogStandard} > form > section`, {
+globalStyle(`${dialogStandard} > .${dialogBody} > form > section`, {
   display: 'flex',
   flexDirection: 'column',
   flex: 1,
   minHeight: 0,
 })
 
-globalStyle(`${dialogStandard} > form > section > .vstack`, {
+globalStyle(`${dialogStandard} > .${dialogBody} > form > section > .vstack`, {
   flex: 1,
   minHeight: 0,
 })
@@ -198,7 +217,7 @@ export const treeContainer = style({
 })
 
 // The label wrapping the DirectoryTree needs to grow and use flex layout.
-globalStyle(`${dialogStandard} > form > section > .vstack > label:has(.${treeContainer})`, {
+globalStyle(`${dialogStandard} > .${dialogBody} > form > section > .vstack > label:has(.${treeContainer})`, {
   display: 'flex',
   flexDirection: 'column',
   flex: 1,
