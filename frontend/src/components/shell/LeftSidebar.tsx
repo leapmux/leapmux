@@ -10,7 +10,6 @@ import type { createSectionStore } from '~/stores/section.store'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 
 import CircleUser from 'lucide-solid/icons/circle-user'
-import Monitor from 'lucide-solid/icons/monitor'
 import Plus from 'lucide-solid/icons/plus'
 import { createMemo, createSignal, onCleanup, Show } from 'solid-js'
 import { IconButton } from '~/components/common/IconButton'
@@ -293,28 +292,28 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
           content: () => <TodoList todos={props.activeTodos} />,
         })
       }
+      else if (sectionType === SectionType.WORKERS) {
+        sections.push({
+          id: sectionId,
+          title: group.section.name,
+          railIcon: getSectionIcon(group.section),
+          railTitle: group.section.name,
+          defaultOpen: true,
+          collapsible: true,
+          draggable: true,
+          defaultSize: 0.15,
+          testId: `section-header-${sectionTypeTestId(sectionType)}`,
+          content: () => (
+            <WorkerSectionContent
+              workers={props.workers}
+              workerInfo={props.workerInfoFn}
+              channelStatus={props.channelStatusFn}
+              onDeregister={props.onDeregisterWorker}
+            />
+          ),
+        })
+      }
     }
-
-    // Workers section
-    sections.push({
-      id: 'workers',
-      title: 'Workers',
-      railIcon: Monitor,
-      railTitle: 'Workers',
-      defaultOpen: true,
-      collapsible: true,
-      draggable: true,
-      defaultSize: 0.15,
-      testId: 'section-header-workers',
-      content: () => (
-        <WorkerSectionContent
-          workers={props.workers}
-          workerInfo={props.workerInfoFn}
-          channelStatus={props.channelStatusFn}
-          onDeregister={props.onDeregisterWorker}
-        />
-      ),
-    })
 
     // User Menu section (rail-only in collapsed, rendered at bottom in expanded)
     sections.push({

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -20,16 +21,17 @@ import (
 
 // RunConfig holds configuration for running the worker as a library.
 type RunConfig struct {
-	HubURL     string       // Hub server URL (e.g. "http://localhost:4327") or "unix:<socket-path>"
-	DataDir    string       // Directory for persistent state
-	AuthToken  string       // Pre-provisioned auth token (skip registration)
-	HTTPClient *http.Client // Custom HTTP client (e.g. for Unix socket transport)
-	PrivateKey []byte       // Worker's X25519 private key for E2EE channels
-	PublicKey  []byte       // Worker's X25519 public key for E2EE channels
-	WorkerID   string       // Worker ID (from registration)
-	Name       string       // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
-	Version    string       // Build-time version string
-	DBMaxConns int          // Maximum number of open database connections (0 = default)
+	HubURL              string        // Hub server URL (e.g. "http://localhost:4327") or "unix:<socket-path>"
+	DataDir             string        // Directory for persistent state
+	AuthToken           string        // Pre-provisioned auth token (skip registration)
+	HTTPClient          *http.Client  // Custom HTTP client (e.g. for Unix socket transport)
+	PrivateKey          []byte        // Worker's X25519 private key for E2EE channels
+	PublicKey           []byte        // Worker's X25519 public key for E2EE channels
+	WorkerID            string        // Worker ID (from registration)
+	Name                string        // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
+	Version             string        // Build-time version string
+	DBMaxConns          int           // Maximum number of open database connections (0 = default)
+	AgentStartupTimeout time.Duration // Timeout for agent startup handshake (0 = 30s default)
 }
 
 // Run starts the worker and blocks until ctx is cancelled.
@@ -85,6 +87,7 @@ func Run(ctx context.Context, cfg RunConfig) error {
 			svcCtx.Name = hostname
 		}
 		svcCtx.Version = cfg.Version
+		svcCtx.AgentStartupTimeout = cfg.AgentStartupTimeout
 		svcCtx.Send = client.Send
 		svcCtx.Channels = channelMgr
 		svcCtx.Init()

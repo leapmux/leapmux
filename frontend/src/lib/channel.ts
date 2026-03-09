@@ -109,11 +109,16 @@ interface ActiveChannel {
   claimReject?: (err: Error) => void
 }
 
+/** Default RPC call timeout in milliseconds (matches hub apiTimeoutSeconds). */
+const DEFAULT_RPC_TIMEOUT_MS = 10_000
+
 /** Optional overrides for testing (dependency injection). */
 export interface ChannelManagerOpts {
   handshake1?: typeof initiatorHandshake1
   handshake2?: typeof initiatorHandshake2
   maxMessageSize?: number
+  /** Timeout for individual RPC calls in milliseconds. Defaults to 30s. */
+  rpcTimeout?: number
 }
 
 /** ChannelManager manages encrypted E2EE channels to Workers. */
@@ -125,6 +130,7 @@ export class ChannelManager {
   private handshake1: typeof initiatorHandshake1
   private handshake2: typeof initiatorHandshake2
   private maxMessageSize: number
+  private rpcTimeout: number
   /** Workers whose keys were rejected by the user during this session. */
   private rejectedWorkers = new Set<string>()
 
@@ -137,6 +143,7 @@ export class ChannelManager {
     this.handshake1 = opts?.handshake1 ?? initiatorHandshake1
     this.handshake2 = opts?.handshake2 ?? initiatorHandshake2
     this.maxMessageSize = opts?.maxMessageSize ?? DEFAULT_MAX_MESSAGE_SIZE
+    this.rpcTimeout = opts?.rpcTimeout ?? DEFAULT_RPC_TIMEOUT_MS
   }
 
   /** Subscribe to channel state changes (open/close). Returns an unsubscribe function. */
@@ -297,11 +304,12 @@ export class ChannelManager {
     const requestId = ch.nextRequestId++
 
     return new Promise<InnerRpcResponse>((resolve, reject) => {
+      const timeoutSec = Math.round(this.rpcTimeout / 1000)
       const timer = setTimeout(() => {
         ch.pendingRequests.delete(requestId)
         log.debug('inner RPC request timed out', { channel_id: ch.channelId, id: requestId, method })
-        reject(new ChannelError('client', `RPC call '${method}' timed out after 30s (channel=${channelId})`))
-      }, 30_000)
+        reject(new ChannelError('client', `RPC call '${method}' timed out after ${timeoutSec}s (channel=${channelId})`))
+      }, this.rpcTimeout)
 
       log.debug('sending inner RPC request', { channel_id: ch.channelId, id: requestId, method, payload_len: payload.length })
 

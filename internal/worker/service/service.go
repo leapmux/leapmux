@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -26,19 +27,29 @@ type SendFunc func(msg *leapmuxv1.ConnectRequest) error
 
 // Context holds shared dependencies for all service implementations.
 type Context struct {
-	DB        *sql.DB
-	Queries   *db.Queries
-	Agents    *agent.Manager
-	Terminals *terminal.Manager
-	Channels  *channel.Manager // E2EE channel manager (for workspace access lookups)
-	HomeDir   string
-	DataDir   string
-	WorkerID  string          // This worker's ID (set after registration)
-	Name      string          // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
-	Version   string          // Build-time version string
-	Send      SendFunc        // Forwards messages to the Hub via WebSocket
-	Watchers  *WatcherManager // Fan-out manager for event broadcasting
-	Output    *OutputHandler  // Agent output NDJSON processor
+	DB                  *sql.DB
+	Queries             *db.Queries
+	Agents              *agent.Manager
+	Terminals           *terminal.Manager
+	Channels            *channel.Manager // E2EE channel manager (for workspace access lookups)
+	HomeDir             string
+	DataDir             string
+	WorkerID            string          // This worker's ID (set after registration)
+	Name                string          // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
+	Version             string          // Build-time version string
+	Send                SendFunc        // Forwards messages to the Hub via WebSocket
+	Watchers            *WatcherManager // Fan-out manager for event broadcasting
+	Output              *OutputHandler  // Agent output NDJSON processor
+	AgentStartupTimeout time.Duration   // Timeout for agent startup handshake (default: 30s)
+}
+
+// agentStartupTimeout returns the configured agent startup timeout,
+// or 30s if not set.
+func (svc *Context) agentStartupTimeout() time.Duration {
+	if svc.AgentStartupTimeout > 0 {
+		return svc.AgentStartupTimeout
+	}
+	return 30 * time.Second
 }
 
 // NewContext creates a new service context with all dependencies.

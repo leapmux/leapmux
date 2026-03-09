@@ -81,7 +81,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			Effort:          r.GetEffort(),
 			WorkingDir:      workingDir,
 			ResumeSessionID: r.GetAgentSessionId(),
-			StartupTimeout:  30 * time.Second,
+			StartupTimeout:  svc.agentStartupTimeout(),
 		}
 
 		outputFn := agentOutputFn(svc.Output, agentID, r.GetWorkspaceId(), workingDir)
@@ -471,7 +471,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 				WorkingDir:      dbAgent.WorkingDir,
 				ResumeSessionID: dbAgent.AgentSessionID,
 				PermissionMode:  dbAgent.PermissionMode,
-				StartupTimeout:  30 * time.Second,
+				StartupTimeout:  svc.agentStartupTimeout(),
 			}
 
 			outputFn := agentOutputFn(svc.Output, agentID, dbAgent.WorkspaceID, dbAgent.WorkingDir)
@@ -869,7 +869,7 @@ func (svc *Context) handleClearContext(agentID string) {
 		Effort:         dbAgent.Effort,
 		WorkingDir:     dbAgent.WorkingDir,
 		PermissionMode: dbAgent.PermissionMode,
-		StartupTimeout: 30 * time.Second,
+		StartupTimeout: svc.agentStartupTimeout(),
 	}, outputFn); err != nil {
 		slog.Error("clear context: failed to restart agent", "agent_id", agentID, "error", err)
 		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
@@ -912,7 +912,7 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 		WorkingDir:      dbAgent.WorkingDir,
 		ResumeSessionID: dbAgent.AgentSessionID,
 		PermissionMode:  dbAgent.PermissionMode,
-		StartupTimeout:  30 * time.Second,
+		StartupTimeout:  svc.agentStartupTimeout(),
 	}, outputFn); err != nil {
 		slog.Error("ensureAgentRunning: failed to start agent", "agent_id", agentID, "error", err)
 		return err
@@ -1164,7 +1164,7 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 		Effort:         dbAgent.Effort,
 		WorkingDir:     dbAgent.WorkingDir,
 		PermissionMode: targetMode,
-		StartupTimeout: 30 * time.Second,
+		StartupTimeout: svc.agentStartupTimeout(),
 	}, outputFn); err != nil {
 		slog.Error("plan exec: failed to restart agent", "agent_id", agentID, "error", err)
 		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{

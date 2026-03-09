@@ -33,13 +33,6 @@ test.describe('Page Titles', () => {
     await expect(page).toHaveTitle(/Admin.*LeapMux/)
   })
 
-  test('should show workers page title', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/o/admin/workers')
-    await expect(page.getByRole('heading', { name: 'Workers' })).toBeVisible()
-    await expect(page).toHaveTitle(/Workers.*LeapMux/)
-  })
-
   test('should show org management page title', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/o/admin/org')

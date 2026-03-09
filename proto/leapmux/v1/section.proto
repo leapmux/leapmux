@@ -28,6 +28,7 @@ enum SectionType {
   SECTION_TYPE_WORKSPACES_SHARED = 4;
   SECTION_TYPE_FILES = 5;
   SECTION_TYPE_TODOS = 6;
+  SECTION_TYPE_WORKERS = 7;
 }
 
 // Sidebar indicates which sidebar a section belongs to.

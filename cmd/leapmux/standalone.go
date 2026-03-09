@@ -213,14 +213,15 @@ func runStandalone(args []string) error {
 	go func() {
 		defer wg.Done()
 		if err := worker.Run(ctx, worker.RunConfig{
-			HubURL:     "unix:" + socketPath,
-			DataDir:    workerDataDir,
-			AuthToken:  state.AuthToken,
-			PrivateKey: privateKey,
-			PublicKey:  publicKey,
-			WorkerID:   state.WorkerID,
-			Version:    version,
-			DBMaxConns: dbMaxConns,
+			HubURL:              "unix:" + socketPath,
+			DataDir:             workerDataDir,
+			AuthToken:           state.AuthToken,
+			PrivateKey:          privateKey,
+			PublicKey:           publicKey,
+			WorkerID:            state.WorkerID,
+			Version:             version,
+			DBMaxConns:          dbMaxConns,
+			AgentStartupTimeout: hubCfg.AgentStartupTimeout(),
 		}); err != nil {
 			slog.Error("worker error", "error", err)
 		}
