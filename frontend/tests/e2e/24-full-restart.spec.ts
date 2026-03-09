@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, waitForLayoutSave, waitForWorkspaceReady } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Full Hub+Worker Restart', () => {
@@ -119,6 +119,45 @@ test.describe('Full Hub+Worker Restart', () => {
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
     }
+  })
+
+  test('should preserve terminal tab title after full restart', async ({ authenticatedWorkspace, separateHubWorker, page }) => {
+    // Listen for layout save before opening terminal
+    const saved = waitForLayoutSave(page)
+
+    // Open a terminal via the tab bar
+    await page.locator('[data-testid="new-terminal-button"]').click()
+
+    // Wait for the terminal tab to appear
+    const terminalTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
+    await expect(terminalTab).toBeVisible()
+
+    // Wait for layout save so the tab is persisted
+    await saved
+
+    // Verify the tab title is "Terminal 1"
+    await expect(terminalTab).toContainText('Terminal 1')
+
+    // Wait a moment for the UpdateTerminalTitle RPC to reach the backend
+    await page.waitForTimeout(2000)
+
+    const workspaceUrl = page.url()
+
+    // Stop worker first, then hub
+    await stopWorker()
+    await stopHub()
+
+    // Start hub and worker back up
+    await restartHub(separateHubWorker)
+    await restartWorker(separateHubWorker)
+
+    // Reload the page
+    await page.goto(workspaceUrl)
+
+    // Verify the terminal tab is restored with the correct title
+    const restoredTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
+    await expect(restoredTab).toBeVisible()
+    await expect(restoredTab).toContainText('Terminal 1')
   })
 
   test('should not show thinking indicator after full restart during active turn', async ({ separateHubWorker, page }) => {

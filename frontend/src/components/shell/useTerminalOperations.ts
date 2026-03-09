@@ -99,6 +99,13 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
         workspaceId: ws.id,
         tab: { tabType: TabType.TERMINAL, tabId: resp.terminalId, tileId, workerId: ctx.workerId },
       }).catch(() => {})
+      // Persist initial title to backend so it survives restarts.
+      workerRpc.updateTerminalTitle(ctx.workerId, {
+        orgId: props.org.orgId(),
+        workspaceId: ws.id,
+        terminalId: resp.terminalId,
+        title,
+      }).catch(() => {})
     }
     catch (err) {
       showToast(err instanceof Error ? err.message : 'Failed to open terminal', 'danger')
@@ -141,6 +148,13 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       workspaceClient.addTab({
         workspaceId: ws.id,
         tab: { tabType: TabType.TERMINAL, tabId: resp.terminalId, tileId, workerId: ctx.workerId },
+      }).catch(() => {})
+      // Persist initial title to backend so it survives restarts.
+      workerRpc.updateTerminalTitle(ctx.workerId, {
+        orgId: props.org.orgId(),
+        workspaceId: ws.id,
+        terminalId: resp.terminalId,
+        title,
       }).catch(() => {})
     }
     catch (err) {
