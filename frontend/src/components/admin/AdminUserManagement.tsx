@@ -5,7 +5,7 @@ import { adminClient } from '~/api/clients'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { useAuth } from '~/context/AuthContext'
 import { sanitizeSlug } from '~/lib/validate'
-import * as styles from './AdminSettingsPage.css'
+import * as styles from './AdminDialog.css'
 
 export const AdminUserManagement: Component = () => {
   const auth = useAuth()

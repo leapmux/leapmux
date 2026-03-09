@@ -1,7 +1,9 @@
 import type { Component, JSX } from 'solid-js'
 import { useNavigate } from '@solidjs/router'
-import { For, Show } from 'solid-js'
+import { createSignal, For, Show } from 'solid-js'
+import { AdminDialog } from '~/components/admin/AdminDialog'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
+import { PreferencesDialog } from '~/components/settings/PreferencesDialog'
 import { useAuth } from '~/context/AuthContext'
 import { useOrg } from '~/context/OrgContext'
 import { dangerMenuItem, menuSectionHeader } from '~/styles/shared.css'
@@ -17,6 +19,9 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
   const org = useOrg()
   const navigate = useNavigate()
 
+  const [showPreferencesDialog, setShowPreferencesDialog] = createSignal(false)
+  const [showAdminDialog, setShowAdminDialog] = createSignal(false)
+
   const handleLogout = async () => {
     await auth.logout()
     navigate('/login', { replace: true })
@@ -24,7 +29,7 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
 
   const renderMenuItems = () => (
     <>
-      <button role="menuitem" onClick={() => navigate('/settings')}>
+      <button role="menuitem" onClick={() => setShowPreferencesDialog(true)}>
         Preferences
       </button>
       <hr />
@@ -47,7 +52,7 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
       </div>
       <hr />
       <Show when={auth.user()?.isAdmin}>
-        <button role="menuitem" onClick={() => navigate('/admin')}>
+        <button role="menuitem" onClick={() => setShowAdminDialog(true)}>
           Administration
         </button>
       </Show>
@@ -58,25 +63,33 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
   )
 
   return (
-    <Show
-      when={props.trigger}
-      fallback={(
-        <div class={styles.container}>
-          <DropdownMenu
-            trigger={triggerProps => (
-              <button class={styles.trigger} data-testid="user-menu-trigger" {...triggerProps}>
-                {auth.user()?.username ?? '...'}
-              </button>
-            )}
-          >
-            {renderMenuItems()}
-          </DropdownMenu>
-        </div>
-      )}
-    >
-      <DropdownMenu trigger={props.trigger}>
-        {renderMenuItems()}
-      </DropdownMenu>
-    </Show>
+    <>
+      <Show
+        when={props.trigger}
+        fallback={(
+          <div class={styles.container}>
+            <DropdownMenu
+              trigger={triggerProps => (
+                <button class={styles.trigger} data-testid="user-menu-trigger" {...triggerProps}>
+                  {auth.user()?.username ?? '...'}
+                </button>
+              )}
+            >
+              {renderMenuItems()}
+            </DropdownMenu>
+          </div>
+        )}
+      >
+        <DropdownMenu trigger={props.trigger}>
+          {renderMenuItems()}
+        </DropdownMenu>
+      </Show>
+      <Show when={showPreferencesDialog()}>
+        <PreferencesDialog onClose={() => setShowPreferencesDialog(false)} />
+      </Show>
+      <Show when={showAdminDialog()}>
+        <AdminDialog onClose={() => setShowAdminDialog(false)} />
+      </Show>
+    </>
   )
 }

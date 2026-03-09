@@ -1,10 +1,10 @@
 import { expect, test } from './fixtures'
-import { loginViaUI } from './helpers/ui'
+import { loginViaUI, openPreferencesDialog } from './helpers/ui'
 
 test.describe('Diff View Preferences', () => {
   test('should show Diff View section in This Browser tab with correct options', async ({ page }) => {
     await loginViaUI(page)
-    await page.goto('/settings')
+    await openPreferencesDialog(page)
     await expect(page.getByRole('heading', { name: 'Diff View' }).first()).toBeVisible()
     await expect(page.getByRole('button', { name: 'Unified' }).first()).toBeVisible()
     await expect(page.getByRole('button', { name: 'Side-by-Side' }).first()).toBeVisible()
@@ -12,7 +12,7 @@ test.describe('Diff View Preferences', () => {
 
   test('should persist browser-level diff view in localStorage', async ({ page }) => {
     await loginViaUI(page)
-    await page.goto('/settings')
+    await openPreferencesDialog(page)
     await expect(page.getByRole('heading', { name: 'Diff View' }).first()).toBeVisible()
 
     // Click "Unified" in browser tab (first occurrence)
@@ -34,14 +34,14 @@ test.describe('Diff View Preferences', () => {
 
     // Reload and verify persistence
     await page.reload()
-    await expect(page.getByText('Preferences')).toBeVisible()
+    await openPreferencesDialog(page)
     const valueAfterReload = await page.evaluate(() => localStorage.getItem('leapmux-diff-view'))
     expect(valueAfterReload).toBe('account-default')
   })
 
   test('should show Diff View section in Account Defaults tab', async ({ page }) => {
     await loginViaUI(page)
-    await page.goto('/settings')
+    await openPreferencesDialog(page)
     await page.getByRole('tab', { name: 'Account Defaults' }).click()
     await expect(page.getByRole('heading', { name: 'Diff View' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Unified' }).first()).toBeVisible()
@@ -50,7 +50,7 @@ test.describe('Diff View Preferences', () => {
 
   test('should persist account-level diff view via API', async ({ page }) => {
     await loginViaUI(page)
-    await page.goto('/settings')
+    await openPreferencesDialog(page)
     await page.getByRole('tab', { name: 'Account Defaults' }).click()
     await expect(page.getByRole('heading', { name: 'Diff View' })).toBeVisible()
 
@@ -62,7 +62,7 @@ test.describe('Diff View Preferences', () => {
 
     // Reload and verify persistence
     await page.reload()
-    await expect(page.getByText('Preferences')).toBeVisible()
+    await openPreferencesDialog(page)
     await page.getByRole('tab', { name: 'Account Defaults' }).click()
     await expect(page.getByRole('heading', { name: 'Diff View' })).toBeVisible()
 
