@@ -380,8 +380,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                     <div class={styles.footerBarRight}>
                       <Show when={ctrl.showInterrupt()}>
                         <button
-                          class="small"
-                          data-variant="secondary"
+                          class="outline"
                           onClick={() => {
                             interruptLoading.start()
                             props.onInterrupt?.()
@@ -397,7 +396,6 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                       </Show>
                       <button
                         type="button"
-                        class={`${styles.sendButton} ${!hasContent() || props.disabled || sending() ? styles.sendButtonDisabled : ''}`}
                         disabled={!hasContent() || props.disabled || sending()}
                         onClick={() => {
                           startSending()
