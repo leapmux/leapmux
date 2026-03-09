@@ -1,10 +1,13 @@
 import type { Accessor, JSX } from 'solid-js'
 import type { useTerminalOperations } from './useTerminalOperations'
+import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
+import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { TodoItem } from '~/stores/chat.store'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
 import type { createTabStore } from '~/stores/tab.store'
+import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import { relativizePath } from '~/components/chat/messageUtils'
 import { LeftSidebar } from '~/components/shell/LeftSidebar'
 import { RightSidebar } from '~/components/shell/RightSidebar'
@@ -38,6 +41,11 @@ export interface SidebarElementsOpts {
   termOps: ReturnType<typeof useTerminalOperations>
   /** Signal bumped on agent turn-end; drives directory tree refresh. */
   turnEndTrigger: number
+  // Worker section
+  workers: Worker[]
+  workerInfoFn: (id: string) => WorkerInfo | null
+  channelStatusFn: (id: string) => ChannelStatus
+  onDeregisterWorker: (worker: Worker) => void
 }
 
 interface SidebarDisplayOpts {
@@ -91,6 +99,10 @@ export function createLeftSidebarElement(opts: SidebarElementsOpts, display?: Si
       activeFilePath={opts.activeFilePath}
       hasActiveFileTab={opts.hasActiveFileTab}
       turnEndTrigger={opts.turnEndTrigger}
+      workers={opts.workers}
+      workerInfoFn={opts.workerInfoFn}
+      channelStatusFn={opts.channelStatusFn}
+      onDeregisterWorker={opts.onDeregisterWorker}
     />
   )
 }

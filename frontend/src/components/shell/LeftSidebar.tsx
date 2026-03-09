@@ -1,17 +1,22 @@
 import type { Component } from 'solid-js'
 import type { SidebarSectionDef } from './CollapsibleSidebar'
 import type { FilesSectionHandle } from '~/components/tree/FilesSection'
+import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
+import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { TodoItem } from '~/stores/chat.store'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
+import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 
 import CircleUser from 'lucide-solid/icons/circle-user'
+import Monitor from 'lucide-solid/icons/monitor'
 import Plus from 'lucide-solid/icons/plus'
 import { createMemo, createSignal, onCleanup, Show } from 'solid-js'
 import { IconButton } from '~/components/common/IconButton'
 import { TodoList } from '~/components/todo/TodoList'
 import { FilesSection, FilesSectionHeaderActions } from '~/components/tree/FilesSection'
+import { WorkerSectionContent } from '~/components/workers/WorkerSectionContent'
 import { emptySection as emptySectionStyle, dragOverlay as wsDragOverlay } from '~/components/workspace/workspaceList.css'
 import { WorkspaceSectionContent } from '~/components/workspace/WorkspaceSectionContent'
 import { WorkspaceSharingDialog } from '~/components/workspace/WorkspaceSharingDialog'
@@ -58,6 +63,11 @@ interface LeftSidebarProps {
   activeTodos: TodoItem[]
   /** Signal bumped on agent turn-end; drives directory tree refresh. */
   turnEndTrigger?: number
+  // Worker section props
+  workers: Worker[]
+  workerInfoFn: (id: string) => WorkerInfo | null
+  channelStatusFn: (id: string) => ChannelStatus
+  onDeregisterWorker: (worker: Worker) => void
 }
 
 export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
@@ -284,6 +294,27 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
         })
       }
     }
+
+    // Workers section
+    sections.push({
+      id: 'workers',
+      title: 'Workers',
+      railIcon: Monitor,
+      railTitle: 'Workers',
+      defaultOpen: true,
+      collapsible: true,
+      draggable: true,
+      defaultSize: 0.15,
+      testId: 'section-header-workers',
+      content: () => (
+        <WorkerSectionContent
+          workers={props.workers}
+          workerInfo={props.workerInfoFn}
+          channelStatus={props.channelStatusFn}
+          onDeregister={props.onDeregisterWorker}
+        />
+      ),
+    })
 
     // User Menu section (rail-only in collapsed, rendered at bottom in expanded)
     sections.push({

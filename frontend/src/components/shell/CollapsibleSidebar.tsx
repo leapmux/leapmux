@@ -54,6 +54,11 @@ export interface SidebarSectionDef {
   testId?: string
   /** Whether the section can be dragged/reordered. Default: false. */
   draggable?: boolean
+  /**
+   * Default fractional size when no persisted size exists.
+   * Used instead of equal distribution (1/N) for initial layout.
+   */
+  defaultSize?: number
 }
 
 export interface CollapsibleSidebarProps {
@@ -149,6 +154,16 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
   // Resize handle hook
   // ---------------------------------------------------------------------------
 
+  /** Per-section default fractional sizes from section definitions. */
+  const defaultSizes = createMemo(() => {
+    const map = new Map<string, number>()
+    for (const s of props.sections) {
+      if (s.defaultSize !== undefined)
+        map.set(s.id, s.defaultSize)
+    }
+    return map
+  })
+
   const {
     expandedCount,
     expandedSizes,
@@ -162,6 +177,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
     setDraggingHandleIndex,
     containerRef: () => containerRef,
     notifyStateChange,
+    defaultSizes,
   })
 
   // ---------------------------------------------------------------------------

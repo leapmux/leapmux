@@ -1,12 +1,15 @@
 import type { ParentComponent } from 'solid-js'
 import type { KeyPinConfirmState } from './AppShellDialogs'
 import type { SidebarElementsOpts } from './SidebarElements'
+import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createSignal, on, Show } from 'solid-js'
+import { workerClient } from '~/api/clients'
 import { agentLoadingTimeoutMs } from '~/api/transport'
-import { setConfirmKeyPin, setGetUserId } from '~/api/workerRpc'
+import { channelManager, setConfirmKeyPin, setGetUserId } from '~/api/workerRpc'
 import { NotFoundPage } from '~/components/common/NotFoundPage'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
+import { WorkerSettingsDialog } from '~/components/workers/WorkerSettingsDialog'
 import { useAuth } from '~/context/AuthContext'
 import { useOrg } from '~/context/OrgContext'
 import { usePreferences } from '~/context/PreferencesContext'
@@ -25,6 +28,8 @@ import { createLayoutStore } from '~/stores/layout.store'
 import { createSectionStore } from '~/stores/section.store'
 import { createTabStore, tabKey } from '~/stores/tab.store'
 import { createTerminalStore } from '~/stores/terminal.store'
+import { createWorkerChannelStatusStore } from '~/stores/workerChannelStatus.store'
+import { createWorkerInfoStore } from '~/stores/workerInfo.store'
 import { createWorkspaceStore } from '~/stores/workspace.store'
 import * as styles from './AppShell.css'
 import { AppShellDialogs } from './AppShellDialogs'
@@ -75,6 +80,34 @@ export const AppShell: ParentComponent = (props) => {
   const [confirmDeleteWs, setConfirmDeleteWs] = createSignal<{ workspaceId: string, resolve: (confirmed: boolean) => void } | null>(null)
   const [confirmArchiveWs, setConfirmArchiveWs] = createSignal<{ workspaceId: string, resolve: (confirmed: boolean) => void } | null>(null)
   const [keyPinConfirm, setKeyPinConfirm] = createSignal<KeyPinConfirmState | null>(null)
+
+  // Worker section state
+  const workerInfoStore = createWorkerInfoStore()
+  const workerChannelStatusStore = createWorkerChannelStatusStore(channelManager)
+  const [workers, setWorkers] = createSignal<Worker[]>([])
+  const [deregisterTarget, setDeregisterTarget] = createSignal<Worker | null>(null)
+
+  // Fetch workers when org changes
+  createEffect(() => {
+    const orgId = org.orgId()
+    if (!orgId)
+      return
+    void (async () => {
+      try {
+        const resp = await workerClient.listWorkers({ orgId })
+        setWorkers(resp.workers)
+        workerChannelStatusStore.setWorkerIds(resp.workers.map(w => w.id))
+        for (const w of resp.workers) {
+          if (w.online) {
+            workerInfoStore.fetchWorkerInfo(w.id)
+          }
+        }
+      }
+      catch {
+        // Best effort — sidebar will show empty workers list.
+      }
+    })()
+  })
 
   // Register E2EE channel callbacks (module-level singletons in workerRpc.ts).
   setConfirmKeyPin((workerId, expectedFingerprint, actualFingerprint) =>
@@ -508,6 +541,10 @@ export const AppShell: ParentComponent = (props) => {
       const active = tabStore.activeTab()
       return active?.type === TabType.FILE
     },
+    get workers() { return workers() },
+    workerInfoFn: workerInfoStore.workerInfo,
+    channelStatusFn: workerChannelStatusStore.getStatus,
+    onDeregisterWorker: (worker: Worker) => setDeregisterTarget(worker),
   })
 
   // Refresh git status only when workerId or workingDir actually changes
@@ -632,6 +669,20 @@ export const AppShell: ParentComponent = (props) => {
         loadWorkspaces={loadWorkspaces}
         navigate={path => navigate(path)}
       />
+
+      <Show when={deregisterTarget()}>
+        {target => (
+          <WorkerSettingsDialog
+            worker={target()}
+            onClose={() => setDeregisterTarget(null)}
+            onDeregistered={() => {
+              setWorkers(prev => prev.filter(w => w.id !== target().id))
+              workerChannelStatusStore.setWorkerIds(workers().map(w => w.id))
+              setDeregisterTarget(null)
+            }}
+          />
+        )}
+      </Show>
     </>
   )
 }

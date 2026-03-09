@@ -26,6 +26,8 @@ export interface UseResizeHandleOptions {
   containerRef: () => HTMLDivElement | undefined
   /** Called after resize completes (mouseup) or after reset. */
   notifyStateChange: () => void
+  /** Optional default fractional size per section ID (used instead of 1/N). */
+  defaultSizes?: Accessor<Map<string, number>>
 }
 
 export interface UseResizeHandleReturn {
@@ -48,6 +50,7 @@ export function useResizeHandle(options: UseResizeHandleOptions): UseResizeHandl
     setDraggingHandleIndex,
     containerRef,
     notifyStateChange,
+    defaultSizes,
   } = options
 
   // Count how many expandable sections are currently expanded
@@ -70,8 +73,9 @@ export function useResizeHandle(options: UseResizeHandleOptions): UseResizeHandl
     const result = new Map<string, number>()
     let total = 0
 
+    const defaults = defaultSizes?.()
     for (const id of expandedIds) {
-      const size = sizes[id] ?? (1 / expandedIds.length)
+      const size = sizes[id] ?? defaults?.get(id) ?? (1 / expandedIds.length)
       result.set(id, size)
       total += size
     }

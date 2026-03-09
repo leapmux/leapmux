@@ -187,7 +187,7 @@ class BrowserChannelTransport implements ChannelTransport {
   }
 }
 
-const channelManager = new ChannelManager(new BrowserChannelTransport())
+export const channelManager = new ChannelManager(new BrowserChannelTransport())
 
 // ---------------------------------------------------------------------------
 // Generic helper

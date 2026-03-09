@@ -28,6 +28,7 @@ type RunConfig struct {
 	PublicKey  []byte       // Worker's X25519 public key for E2EE channels
 	WorkerID   string       // Worker ID (from registration)
 	Name       string       // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
+	Version    string       // Build-time version string
 	DBMaxConns int          // Maximum number of open database connections (0 = default)
 }
 
@@ -83,6 +84,7 @@ func Run(ctx context.Context, cfg RunConfig) error {
 			hostname, _ := os.Hostname()
 			svcCtx.Name = hostname
 		}
+		svcCtx.Version = cfg.Version
 		svcCtx.Send = client.Send
 		svcCtx.Channels = channelMgr
 		svcCtx.Init()
