@@ -161,7 +161,7 @@ export const itemActions = style({
   flexShrink: 0,
   marginLeft: 'auto',
   position: 'sticky',
-  right: 'var(--space-3)',
+  right: 'var(--space-2)',
 })
 
 /** Give itemActions a background on hover so it covers scrolled text underneath. */

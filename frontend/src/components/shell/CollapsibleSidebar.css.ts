@@ -80,7 +80,7 @@ export const collapsibleTrigger = style({
   'display': 'flex',
   'alignItems': 'center',
   'gap': 'var(--space-1)',
-  'padding': '0 var(--space-3) 0 var(--space-4)',
+  'padding': '0 var(--space-2) 0 var(--space-4)',
   'minHeight': headerHeight,
   'borderBottom': '1px solid var(--border)',
   'flexShrink': 0,
