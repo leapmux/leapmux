@@ -175,6 +175,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
             tabStore.addTab({
               type: TabType.TERMINAL,
               id: termId,
+              title: term.title || undefined,
               tileId,
               workerId,
               workingDir: termData?.workingDir,

@@ -102,6 +102,7 @@ func (svc *Context) Shutdown() {
 			WorkspaceID:   snap.WorkspaceID,
 			WorkingDir:    snap.WorkingDir,
 			ShellStartDir: snap.ShellStartDir,
+			Title:         snap.Title,
 			Cols:          int64(snap.Cols),
 			Rows:          int64(snap.Rows),
 			Screen:        snap.Screen,

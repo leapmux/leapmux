@@ -164,9 +164,45 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     }
   }
 
+  // Debounce backend title updates: at most once per 10 seconds per terminal.
+  const titleTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const titleLastSent = new Map<string, number>()
+
+  const sendTitleToBackend = (terminalId: string, title: string) => {
+    const ws = props.activeWorkspace()
+    if (!ws)
+      return
+    const workerId = getTerminalWorkerId(terminalId)
+    workerRpc.updateTerminalTitle(workerId, {
+      orgId: props.org.orgId(),
+      workspaceId: ws.id,
+      terminalId,
+      title,
+    }).catch(() => {})
+    titleLastSent.set(terminalId, Date.now())
+  }
+
   const handleTerminalTitleChange = (terminalId: string, title: string) => {
     props.terminalStore.updateTerminalTitle(terminalId, title)
     props.tabStore.updateTabTitle(TabType.TERMINAL, terminalId, title)
+
+    // Debounced backend sync
+    const existing = titleTimers.get(terminalId)
+    if (existing)
+      clearTimeout(existing)
+
+    const last = titleLastSent.get(terminalId) ?? 0
+    const elapsed = Date.now() - last
+    const delay = Math.max(0, 10_000 - elapsed)
+    if (delay === 0) {
+      sendTitleToBackend(terminalId, title)
+    }
+    else {
+      titleTimers.set(terminalId, setTimeout(() => {
+        titleTimers.delete(terminalId)
+        sendTitleToBackend(terminalId, title)
+      }, delay))
+    }
   }
 
   const handleTerminalBell = (terminalId: string) => {

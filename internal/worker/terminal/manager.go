@@ -11,6 +11,7 @@ type TerminalMeta struct {
 	WorkspaceID   string
 	WorkingDir    string
 	ShellStartDir string
+	Title         string
 	Cols          uint32
 	Rows          uint32
 }
@@ -171,6 +172,19 @@ func (m *Manager) IsExited(terminalID string) bool {
 		return false
 	}
 	return t.IsExited()
+}
+
+// UpdateTitle updates the title of a terminal in the in-memory metadata.
+func (m *Manager) UpdateTitle(terminalID, title string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	meta, ok := m.meta[terminalID]
+	if !ok {
+		return false
+	}
+	meta.Title = title
+	m.meta[terminalID] = meta
+	return true
 }
 
 // ScreenSnapshot returns the screen buffer snapshot for a terminal.

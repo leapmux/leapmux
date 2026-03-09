@@ -51,6 +51,15 @@ message ResizeTerminalRequest {
 
 message ResizeTerminalResponse {}
 
+message UpdateTerminalTitleRequest {
+  string org_id = 1;
+  string workspace_id = 2;
+  string terminal_id = 3;
+  string title = 4;
+}
+
+message UpdateTerminalTitleResponse {}
+
 message ListTerminalsRequest {
   string org_id = 1;
   string workspace_id = 2;
@@ -70,6 +79,7 @@ message TerminalInfo {
   string shell_start_dir = 7;   // Where the shell started
   string git_branch = 8;        // Current git branch (if in a git repo)
   string git_origin_url = 9;    // Remote origin URL (if in a git repo)
+  string title = 10;            // User-visible tab title
 }
 
 message TerminalData {

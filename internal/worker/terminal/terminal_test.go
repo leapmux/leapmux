@@ -378,6 +378,73 @@ func TestUpsertAndGetTerminal(t *testing.T) {
 	assert.True(t, row.ClosedAt.Valid, "closed_at should be set")
 }
 
+func TestUpdateTitle(t *testing.T) {
+	m := NewManager()
+	wsID := "ws-title"
+
+	termID := "tm-title"
+	err := m.StartTerminal(Options{
+		ID:          termID,
+		WorkspaceID: wsID,
+		Shell:       "/bin/sh",
+		WorkingDir:  t.TempDir(),
+		Cols:        80,
+		Rows:        24,
+	}, func([]byte) {}, nil)
+	require.NoError(t, err)
+
+	// Initially empty title via ListByWorkspace.
+	entries := m.ListByWorkspace(wsID)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "", entries[0].Meta.Title)
+
+	// Update title.
+	assert.True(t, m.UpdateTitle(termID, "my terminal"))
+	entries = m.ListByWorkspace(wsID)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "my terminal", entries[0].Meta.Title)
+
+	// Unknown terminal returns false.
+	assert.False(t, m.UpdateTitle("nonexistent", "nope"))
+
+	m.StopAll()
+}
+
+func TestUpsertTerminalTitle(t *testing.T) {
+	ctx := context.Background()
+	queries := newTestDB(t)
+
+	termID := "tm-title-db"
+	require.NoError(t, queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
+		ID:          termID,
+		WorkspaceID: "ws-1",
+		WorkingDir:  "/tmp",
+		Title:       "Terminal 1",
+		Cols:        80,
+		Rows:        24,
+		Screen:      []byte{},
+	}))
+
+	row, err := queries.GetTerminal(ctx, termID)
+	require.NoError(t, err)
+	assert.Equal(t, "Terminal 1", row.Title)
+
+	// Update title via upsert.
+	require.NoError(t, queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
+		ID:          termID,
+		WorkspaceID: "ws-1",
+		WorkingDir:  "/tmp",
+		Title:       "My Shell",
+		Cols:        80,
+		Rows:        24,
+		Screen:      []byte{},
+	}))
+
+	row, err = queries.GetTerminal(ctx, termID)
+	require.NoError(t, err)
+	assert.Equal(t, "My Shell", row.Title)
+}
+
 // resetShellCache resets the sync.Once so ListAvailableShells recomputes.
 func resetShellCache() {
 	shellCache.once = sync.Once{}
