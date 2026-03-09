@@ -30,6 +30,7 @@ export const Dialog: Component<DialogProps> = (props) => {
       ref={dialogRef}
       class={`${dialogStandard}${props.tall ? ` ${dialogTall}` : ''}${props.class ? ` ${props.class}` : ''}`}
       data-testid={props['data-testid']}
+      aria-label={props.title}
       closedby="any"
       onClose={() => {
         if (!unmounting)

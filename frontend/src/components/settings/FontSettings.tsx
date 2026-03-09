@@ -2,7 +2,7 @@ import type { Component } from 'solid-js'
 import { createSignal, For, onMount, Show } from 'solid-js'
 import { usePreferences } from '~/context/PreferencesContext'
 import { sanitizeName } from '~/lib/validate'
-import * as styles from './PreferencesPage.css'
+import * as styles from './PreferencesDialog.css'
 
 export const FontSettings: Component = () => {
   const prefs = usePreferences()

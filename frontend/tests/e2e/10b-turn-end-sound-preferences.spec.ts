@@ -1,10 +1,11 @@
 import { expect, test } from './fixtures'
-import { loginViaToken, openAgentViaUI, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openAgentViaUI, openPreferencesDialog, waitForWorkspaceReady } from './helpers/ui'
 
 test.describe('Turn End Sound Preferences', () => {
   test('should show Turn End Sound section in This Browser tab', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/settings')
+    await page.goto('/o/admin')
+    await openPreferencesDialog(page)
     await expect(page.getByRole('heading', { name: 'Turn End Sound' }).first()).toBeVisible()
     await expect(page.getByRole('button', { name: 'None' }).first()).toBeVisible()
     await expect(page.getByRole('button', { name: 'Ding Dong' }).first()).toBeVisible()
@@ -12,7 +13,8 @@ test.describe('Turn End Sound Preferences', () => {
 
   test('should persist browser-level turn end sound in localStorage', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/settings')
+    await page.goto('/o/admin')
+    await openPreferencesDialog(page)
     await expect(page.getByRole('heading', { name: 'Turn End Sound' }).first()).toBeVisible()
 
     // Click "Ding Dong"
@@ -35,7 +37,8 @@ test.describe('Turn End Sound Preferences', () => {
 
   test('should show Turn End Sound section in Account Defaults tab', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/settings')
+    await page.goto('/o/admin')
+    await openPreferencesDialog(page)
     await page.getByRole('tab', { name: 'Account Defaults' }).click()
     await expect(page.getByRole('heading', { name: 'Turn End Sound' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'None' }).first()).toBeVisible()
@@ -44,7 +47,8 @@ test.describe('Turn End Sound Preferences', () => {
 
   test('should persist account-level turn end sound via API', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/settings')
+    await page.goto('/o/admin')
+    await openPreferencesDialog(page)
     await page.getByRole('tab', { name: 'Account Defaults' }).click()
     await expect(page.getByRole('heading', { name: 'Turn End Sound' })).toBeVisible()
 
@@ -54,7 +58,7 @@ test.describe('Turn End Sound Preferences', () => {
 
     // Reload and verify persistence
     await page.reload()
-    await expect(page.getByText('Preferences')).toBeVisible()
+    await openPreferencesDialog(page)
     await page.getByRole('tab', { name: 'Account Defaults' }).click()
     await expect(page.getByRole('heading', { name: 'Turn End Sound' })).toBeVisible()
     await page.waitForTimeout(500)
@@ -146,7 +150,7 @@ test.describe('Turn End Sound Preferences', () => {
     expect(calls.some((src: string) => src.includes('benkirb-electronic-doorbell'))).toBe(false)
   })
 
-  test('should NOT play sound when navigating to Preferences and back', async ({ page, authenticatedWorkspace }) => {
+  test('should NOT play sound when opening and closing Preferences dialog', async ({ page, authenticatedWorkspace }) => {
     // Set up audio spy
     await page.addInitScript(() => {
       (window as any).__audioPlayCalls = [] as string[]
@@ -178,23 +182,21 @@ test.describe('Turn End Sound Preferences', () => {
 
     // Verify the sound played exactly once for the real turn end
     const calls = await page.evaluate(() => (window as any).__audioPlayCalls as string[])
-    expect(calls.filter((src: string) => src.includes('benkirb-electronic-doorbell')).length).toBe(1)
+    const soundCountBeforeDialog = calls.filter((src: string) => src.includes('benkirb-electronic-doorbell')).length
+    expect(soundCountBeforeDialog).toBe(1)
 
-    // Navigate to Preferences page (full navigation resets __audioPlayCalls via addInitScript)
-    await page.goto('/settings')
-    await expect(page.getByText('Preferences')).toBeVisible()
+    // Open and close the Preferences dialog (no full navigation)
+    await openPreferencesDialog(page)
+    await page.getByRole('dialog', { name: 'Preferences' }).getByLabel('Close').click()
+    await expect(page.getByRole('dialog', { name: 'Preferences' })).not.toBeVisible()
 
-    // Navigate back to the workspace (addInitScript runs again, resetting __audioPlayCalls)
-    await page.goBack()
-    await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
-
-    // Wait for the watch connection to reconnect and replay events
+    // Wait a moment for any spurious effects
     await page.waitForTimeout(1000)
 
-    // Verify no sound was played from navigating back (array was reset on navigation,
-    // so any entries here are spurious sounds from the reconnection replay)
-    const callsAfterNav = await page.evaluate(() => (window as any).__audioPlayCalls as string[])
-    expect(callsAfterNav.filter((src: string) => src.includes('benkirb-electronic-doorbell')).length).toBe(0)
+    // Verify no additional sound was played from opening/closing the dialog
+    const callsAfterDialog = await page.evaluate(() => (window as any).__audioPlayCalls as string[])
+    const soundCountAfterDialog = callsAfterDialog.filter((src: string) => src.includes('benkirb-electronic-doorbell')).length
+    expect(soundCountAfterDialog).toBe(soundCountBeforeDialog)
   })
 
   test('should NOT play sound when closing an agent tab', async ({ page, authenticatedWorkspace }) => {

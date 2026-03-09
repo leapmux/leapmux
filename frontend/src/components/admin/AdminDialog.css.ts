@@ -1,6 +1,6 @@
 import { style } from '@vanilla-extract/css'
 
-export { backLink, errorText, successText } from '~/styles/shared.css'
+export { errorText, successText } from '~/styles/shared.css'
 
 export const section = style({
   marginBottom: 'var(--space-6)',
@@ -63,10 +63,6 @@ export const inlineResetRow = style({
   flexDirection: 'row',
   alignItems: 'center',
   gap: 'var(--space-2)',
-})
-
-export const pageContainer = style({
-  padding: 'var(--space-6)',
 })
 
 export const mutedHint = style({

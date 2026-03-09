@@ -4,7 +4,7 @@ import type { DiffViewPreference, TurnEndSoundPreference } from '~/context/Prefe
 import type { TerminalThemePreference } from '~/lib/terminal'
 import { For, Show } from 'solid-js'
 import { usePreferences } from '~/context/PreferencesContext'
-import * as styles from './PreferencesPage.css'
+import * as styles from './PreferencesDialog.css'
 
 const themeOptions = [
   { value: 'dark', label: 'Dark' },

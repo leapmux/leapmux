@@ -138,6 +138,14 @@ globalStyle(`${dialogStandard} > form`, {
   minHeight: 0,
 })
 
+globalStyle(`${dialogStandard} > section`, {
+  display: 'flex',
+  flexDirection: 'column',
+  flex: 1,
+  minHeight: 0,
+  overflowY: 'auto',
+})
+
 globalStyle(`${dialogStandard} > form > section`, {
   display: 'flex',
   flexDirection: 'column',
