@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import { createSignal, Show } from 'solid-js'
 
-import * as styles from './PreferencesPage.css'
+import * as styles from './PreferencesDialog.css'
 
 export const PasswordSettings: Component = () => {
   const [currentPassword, setCurrentPassword] = createSignal('')

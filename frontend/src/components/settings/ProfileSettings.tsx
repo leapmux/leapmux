@@ -2,7 +2,7 @@ import type { Component } from 'solid-js'
 import { createSignal, onMount, Show } from 'solid-js'
 import { useAuth } from '~/context/AuthContext'
 import { sanitizeSlug } from '~/lib/validate'
-import * as styles from './PreferencesPage.css'
+import * as styles from './PreferencesDialog.css'
 
 export const ProfileSettings: Component = () => {
   const auth = useAuth()

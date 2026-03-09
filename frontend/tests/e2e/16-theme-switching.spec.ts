@@ -1,10 +1,10 @@
 import { expect, test } from './fixtures'
-import { loginViaUI, setInitialTheme } from './helpers/ui'
+import { loginViaUI, openPreferencesDialog, setInitialTheme } from './helpers/ui'
 
 test.describe('Theme Switching', () => {
-  test('should show theme options on preferences page', async ({ page }) => {
+  test('should show theme options in preferences dialog', async ({ page }) => {
     await loginViaUI(page)
-    await page.goto('/settings')
+    await openPreferencesDialog(page)
 
     // Theme section should be visible (exact: true to avoid matching "Terminal Theme")
     await expect(page.getByRole('heading', { name: 'Theme', exact: true })).toBeVisible()
@@ -17,7 +17,7 @@ test.describe('Theme Switching', () => {
 
   test('should apply dark theme', async ({ page }) => {
     await loginViaUI(page)
-    await page.goto('/settings')
+    await openPreferencesDialog(page)
     await expect(page.getByRole('heading', { name: 'Theme', exact: true })).toBeVisible()
 
     // Click "Dark" theme button (first one is in Theme section, not Terminal Theme)
@@ -30,7 +30,7 @@ test.describe('Theme Switching', () => {
 
   test('should apply light theme', async ({ page }) => {
     await loginViaUI(page)
-    await page.goto('/settings')
+    await openPreferencesDialog(page)
     await expect(page.getByRole('heading', { name: 'Theme', exact: true })).toBeVisible()
 
     // Click "Light" theme button (first one is in Theme section, not Terminal Theme)
@@ -43,15 +43,16 @@ test.describe('Theme Switching', () => {
 
   test('should persist theme across page reload', async ({ page }) => {
     await loginViaUI(page)
-    await page.goto('/settings')
+    await openPreferencesDialog(page)
     await expect(page.getByRole('heading', { name: 'Theme', exact: true })).toBeVisible()
 
     // Switch to dark theme (first Dark button is in Theme section)
     await page.getByRole('button', { name: 'Dark' }).first().click()
     await page.waitForTimeout(500)
 
-    // Reload the page
+    // Reload the page and re-open dialog
     await page.reload()
+    await openPreferencesDialog(page)
     await expect(page.getByRole('heading', { name: 'Theme', exact: true })).toBeVisible()
 
     // Theme should still be dark (check localStorage)

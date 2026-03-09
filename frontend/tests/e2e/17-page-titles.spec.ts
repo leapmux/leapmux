@@ -19,20 +19,6 @@ test.describe('Page Titles', () => {
     await expect(page).toHaveTitle(/LeapMux/)
   })
 
-  test('should show preferences page title', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/settings')
-    await expect(page.getByText('Preferences')).toBeVisible()
-    await expect(page).toHaveTitle(/Preferences.*LeapMux/)
-  })
-
-  test('should show admin page title', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/admin')
-    await expect(page.getByText('Administration')).toBeVisible()
-    await expect(page).toHaveTitle(/Admin.*LeapMux/)
-  })
-
   test('should show org management page title', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/o/admin/org')

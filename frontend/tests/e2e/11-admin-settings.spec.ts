@@ -1,17 +1,17 @@
 import { expect, test } from './fixtures'
-import { loginViaUI } from './helpers/ui'
+import { loginViaUI, openAdminDialog } from './helpers/ui'
 
 test.describe('Admin Settings', () => {
-  test('should access admin page as admin user', async ({ page }) => {
+  test('should access admin dialog as admin user', async ({ page }) => {
     await loginViaUI(page)
-    await page.goto('/admin')
+    await openAdminDialog(page)
     // Should see user management (system settings UI has been removed)
     await expect(page.getByText('User Management')).toBeVisible()
   })
 
   test('should show user list in admin panel', async ({ page }) => {
     await loginViaUI(page)
-    await page.goto('/admin')
+    await openAdminDialog(page)
     await expect(page.getByText('User Management')).toBeVisible()
 
     // The user table should be visible with at least one row

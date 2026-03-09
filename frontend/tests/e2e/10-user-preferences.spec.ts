@@ -1,16 +1,16 @@
 import { expect, test } from './fixtures'
-import { loginViaUI } from './helpers/ui'
+import { loginViaUI, openPreferencesDialog } from './helpers/ui'
 
 test.describe('User Preferences', () => {
-  test('should navigate to settings page', async ({ page }) => {
+  test('should open preferences dialog', async ({ page }) => {
     await loginViaUI(page)
-    await page.goto('/settings')
-    await expect(page.getByText('Preferences')).toBeVisible()
+    await openPreferencesDialog(page)
+    await expect(page.getByRole('dialog', { name: 'Preferences' })).toBeVisible()
   })
 
   test('should show browser tab by default with theme options', async ({ page }) => {
     await loginViaUI(page)
-    await page.goto('/settings')
+    await openPreferencesDialog(page)
     await expect(page.getByRole('heading', { name: 'Theme', exact: true })).toBeVisible()
     // "This Browser" tab should show "Use account default" option
     await expect(page.getByRole('button', { name: 'Use account default' }).first()).toBeVisible()
@@ -18,8 +18,7 @@ test.describe('User Preferences', () => {
 
   test('should show profile fields in Account Defaults tab', async ({ page }) => {
     await loginViaUI(page)
-    await page.goto('/settings')
-    await expect(page.getByText('Preferences')).toBeVisible()
+    await openPreferencesDialog(page)
 
     // Switch to Account Defaults tab
     await page.getByRole('tab', { name: 'Account Defaults' }).click()
@@ -32,7 +31,7 @@ test.describe('User Preferences', () => {
 
   test('should persist theme preference after page reload', async ({ page }) => {
     await loginViaUI(page)
-    await page.goto('/settings')
+    await openPreferencesDialog(page)
     await expect(page.getByRole('heading', { name: 'Theme', exact: true })).toBeVisible()
 
     // Click "Dark" to set the browser-level theme to dark
@@ -42,9 +41,9 @@ test.describe('User Preferences', () => {
     const themeValue = await page.evaluate(() => localStorage.getItem('leapmux-theme'))
     expect(themeValue).toBe('dark')
 
-    // Reload the page
+    // Reload the page and re-open dialog
     await page.reload()
-    await expect(page.getByText('Preferences')).toBeVisible()
+    await openPreferencesDialog(page)
     await expect(page.getByRole('heading', { name: 'Theme', exact: true })).toBeVisible()
 
     // After reload, verify the theme persisted via localStorage

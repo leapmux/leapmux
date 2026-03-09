@@ -1,12 +1,6 @@
 import { style } from '@vanilla-extract/css'
 
-export { backLink, errorText, successText, warningText } from '~/styles/shared.css'
-
-export const container = style({
-  maxWidth: '600px',
-  margin: '0 auto',
-  padding: 'var(--space-8)',
-})
+export { errorText, successText, warningText } from '~/styles/shared.css'
 
 export const section = style({
   marginBottom: 'var(--space-6)',
