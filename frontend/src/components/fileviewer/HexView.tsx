@@ -36,6 +36,7 @@ function formatRow(bytes: Uint8Array, offset: number): { offsetStr: string, hex:
 export function HexView(props: {
   content: Uint8Array
   totalSize: number
+  topOffset?: number
 }): JSX.Element {
   let scrollRef!: HTMLDivElement
   const [scrollTop, setScrollTop] = createSignal(0)
@@ -43,13 +44,14 @@ export function HexView(props: {
   const [rowHeight, setRowHeight] = createSignal(FALLBACK_ROW_HEIGHT)
 
   const totalRows = createMemo(() => Math.max(1, Math.ceil(props.content.length / 16)))
+  const topOffset = () => props.topOffset ?? 0
 
   const startIdx = createMemo(() =>
-    Math.max(0, Math.floor(scrollTop() / rowHeight()) - OVERSCAN),
+    Math.max(0, Math.floor(Math.max(0, scrollTop() - topOffset()) / rowHeight()) - OVERSCAN),
   )
 
   const endIdx = createMemo(() =>
-    Math.min(totalRows(), Math.ceil((scrollTop() + viewHeight()) / rowHeight()) + OVERSCAN),
+    Math.min(totalRows(), Math.ceil(Math.max(0, scrollTop() - topOffset() + viewHeight()) / rowHeight()) + OVERSCAN),
   )
 
   const visibleRows = createMemo(() => {
@@ -86,7 +88,7 @@ export function HexView(props: {
     })
   })
 
-  const topPad = () => `${BASE_VPAD + startIdx() * rowHeight()}px`
+  const topPad = () => `${topOffset() + BASE_VPAD + startIdx() * rowHeight()}px`
   const bottomPad = () => `${BASE_VPAD + Math.max(0, totalRows() - endIdx()) * rowHeight()}px`
 
   return (

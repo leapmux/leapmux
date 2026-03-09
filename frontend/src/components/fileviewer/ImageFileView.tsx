@@ -20,7 +20,8 @@ const MIME_MAP: Record<string, string> = {
   avif: 'image/avif',
 }
 
-const WRAPPER_PADDING = 16 // matches var(--space-4) used in imageZoomWrapper
+const WRAPPER_PADDING_X = 16 // matches var(--space-4) used in imageZoomWrapper
+const WRAPPER_PADDING_TOP = 44 // matches toolbar clearance used in imageZoomWrapper
 
 function getMimeType(path: string): string {
   const ext = path.split('.').pop()?.toLowerCase() ?? ''
@@ -62,8 +63,8 @@ function ImageRender(props: {
     const cs = containerSize()
     if (!ns?.w || !ns?.h || !cs.w || !cs.h)
       return null
-    const availW = cs.w - WRAPPER_PADDING * 2
-    const availH = cs.h - WRAPPER_PADDING * 2
+    const availW = cs.w - WRAPPER_PADDING_X * 2
+    const availH = cs.h - WRAPPER_PADDING_TOP - WRAPPER_PADDING_X
     if (availW <= 0 || availH <= 0)
       return null
     return Math.min(availW / ns.w, availH / ns.h)
@@ -110,8 +111,8 @@ function ImageRender(props: {
       // Compute new scroll position to keep the point under cursor stable
       const newImgW = ns.w * newScale
       const newImgH = ns.h * newScale
-      const contentW = Math.max(el.clientWidth, newImgW + WRAPPER_PADDING * 2)
-      const contentH = Math.max(el.clientHeight, newImgH + WRAPPER_PADDING * 2)
+      const contentW = Math.max(el.clientWidth, newImgW + WRAPPER_PADDING_X * 2)
+      const contentH = Math.max(el.clientHeight, newImgH + WRAPPER_PADDING_TOP + WRAPPER_PADDING_X)
       const imgOffsetX = (contentW - newImgW) / 2
       const imgOffsetY = (contentH - newImgH) / 2
       el.scrollLeft = imgOffsetX + fracX * newImgW - viewX + e.deltaX
