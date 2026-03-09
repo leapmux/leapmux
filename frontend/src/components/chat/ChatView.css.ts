@@ -76,7 +76,7 @@ export const footerBar = style({
   display: 'flex',
   justifyContent: 'space-between',
   alignItems: 'center',
-  padding: 'var(--space-1) var(--space-2)',
+  padding: 'var(--space-1) var(--space-1) var(--space-1) var(--space-3)',
   backgroundColor: 'var(--background)',
   flexShrink: 0,
 })
@@ -84,34 +84,6 @@ export const footerBar = style({
 export const footerBarLeft = style({
   display: 'flex',
   alignItems: 'center',
-})
-
-export const sendButton = style({
-  'all': 'unset',
-  'boxSizing': 'border-box',
-  'display': 'flex',
-  'alignItems': 'center',
-  'justifyContent': 'center',
-  'gap': 'var(--space-1)',
-  'padding': 'var(--space-1) var(--space-2)',
-  'fontSize': 'var(--text-7)',
-  'fontWeight': 400,
-  'borderRadius': 'var(--radius-small)',
-  'backgroundColor': 'var(--primary)',
-  'color': '#fff',
-  'cursor': 'pointer',
-  ':hover': {
-    backgroundColor: 'var(--primary)',
-  },
-})
-
-export const sendButtonDisabled = style({
-  'backgroundColor': 'var(--card)',
-  'color': 'var(--faint-foreground)',
-  'cursor': 'default',
-  ':hover': {
-    backgroundColor: 'var(--card)',
-  },
 })
 
 export const scrollToBottomButton = style({
@@ -145,6 +117,7 @@ export const settingsTrigger = style({
   gap: 'var(--space-1)',
   padding: '2px var(--space-1)',
   marginBottom: '3px',
+  marginLeft: '-3px',
   fontSize: 'var(--text-8)',
   color: 'var(--faint-foreground)',
   cursor: 'pointer',

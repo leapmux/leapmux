@@ -172,7 +172,7 @@ export const controlFooter = style({
   gridTemplateColumns: '1fr auto 1fr',
   alignItems: 'center',
   gap: 'var(--space-1)',
-  padding: 'var(--space-1) var(--space-2)',
+  padding: 'var(--space-1) var(--space-1) var(--space-1) var(--space-3)',
   backgroundColor: 'var(--background)',
   flexShrink: 0,
   flex: 1,
