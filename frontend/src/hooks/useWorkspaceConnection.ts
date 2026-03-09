@@ -4,7 +4,7 @@ import type { createAgentStore } from '~/stores/agent.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
-import type { createTabStore } from '~/stores/tab.store'
+import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { createTerminalStore } from '~/stores/terminal.store'
 import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { watchEventsViaChannel } from '~/api/workerRpc'
@@ -184,6 +184,28 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
               }),
           gitStatus: sc.gitStatus,
         })
+        if (sc.gitStatus) {
+          const gs = sc.gitStatus
+          const tabFields: Partial<Tab> = {
+            gitBranch: gs.branch || undefined,
+            gitOriginUrl: gs.originUrl || undefined,
+          }
+          if (sc.gitFileStatusSet && sc.gitFileStatus.length > 0) {
+            let added = 0
+            let deleted = 0
+            for (const f of sc.gitFileStatus) {
+              added += f.linesAdded + f.stagedLinesAdded
+              deleted += f.linesDeleted + f.stagedLinesDeleted
+            }
+            tabFields.gitDiffAdded = added
+            tabFields.gitDiffDeleted = deleted
+          }
+          else if (sc.gitFileStatusSet) {
+            tabFields.gitDiffAdded = 0
+            tabFields.gitDiffDeleted = 0
+          }
+          tabStore.updateTab(TabType.AGENT, sc.agentId, tabFields)
+        }
         if (!pendingSettings) {
           settingsLoading.stop()
         }

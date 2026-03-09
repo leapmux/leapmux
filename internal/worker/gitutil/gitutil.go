@@ -17,14 +17,15 @@ type GitStatus struct {
 	Branch      string
 	Ahead       int
 	Behind      int
-	Conflicted  bool // Has merge conflicts (unmerged paths)
-	Stashed     bool // Has stashed changes
-	Deleted     bool // Has staged deletions
-	Renamed     bool // Has staged renames
-	Modified    bool // Has modifications in working directory
-	TypeChanged bool // Has type changes in staging area
-	Added       bool // Has staged additions
-	Untracked   bool // Has untracked files
+	Conflicted  bool   // Has merge conflicts (unmerged paths)
+	Stashed     bool   // Has stashed changes
+	Deleted     bool   // Has staged deletions
+	Renamed     bool   // Has staged renames
+	Modified    bool   // Has modifications in working directory
+	TypeChanged bool   // Has type changes in staging area
+	Added       bool   // Has staged additions
+	Untracked   bool   // Has untracked files
+	OriginURL   string // Remote origin URL
 }
 
 // GetGitStatus returns the git status for the given directory.
@@ -43,6 +44,9 @@ func GetGitStatus(dir string) *GitStatus {
 
 	// Check for stashes (separate command, not included in status output).
 	checkStash(dir, status)
+
+	// Get the remote origin URL.
+	status.OriginURL = GetOriginURL(dir)
 
 	return status
 }
@@ -176,6 +180,9 @@ func getGitStatusV1(dir string) *GitStatus {
 	// Check for stashes.
 	checkStash(dir, status)
 
+	// Get the remote origin URL.
+	status.OriginURL = GetOriginURL(dir)
+
 	return status
 }
 
@@ -185,6 +192,17 @@ func checkStash(dir string, status *GitStatus) {
 	if err := cmd.Run(); err == nil {
 		status.Stashed = true
 	}
+}
+
+// GetOriginURL returns the remote origin URL for the given directory.
+// Returns an empty string if the directory is not a git repo or has no origin remote.
+func GetOriginURL(dir string) string {
+	cmd := exec.Command("git", "-C", dir, "config", "--get", "remote.origin.url")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
 }
 
 // GitInfo holds information about a path's git context.

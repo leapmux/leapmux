@@ -1,0 +1,159 @@
+import type { Tab } from '~/stores/tab.store'
+import { describe, expect, it } from 'vitest'
+import { TabType } from '~/stores/tab.store'
+import { buildTree, formatGitOriginUrl } from './WorkspaceTabTree'
+
+describe('formatGitOriginUrl', () => {
+  it('strips https protocol', () => {
+    expect(formatGitOriginUrl('https://github.com/org/repo.git'))
+      .toBe('github.com/org/repo')
+  })
+
+  it('strips http protocol', () => {
+    expect(formatGitOriginUrl('http://github.com/org/repo.git'))
+      .toBe('github.com/org/repo')
+  })
+
+  it('converts SSH format', () => {
+    expect(formatGitOriginUrl('git@github.com:org/repo.git'))
+      .toBe('github.com/org/repo')
+  })
+
+  it('strips trailing .git', () => {
+    expect(formatGitOriginUrl('https://github.com/org/repo.git'))
+      .toBe('github.com/org/repo')
+  })
+
+  it('handles URL without .git suffix', () => {
+    expect(formatGitOriginUrl('https://github.com/org/repo'))
+      .toBe('github.com/org/repo')
+  })
+
+  it('strips trailing slash', () => {
+    expect(formatGitOriginUrl('https://github.com/org/repo/'))
+      .toBe('github.com/org/repo')
+  })
+
+  it('returns empty string for empty input', () => {
+    expect(formatGitOriginUrl('')).toBe('')
+  })
+
+  it('handles SSH with nested path', () => {
+    expect(formatGitOriginUrl('git@gitlab.com:group/subgroup/repo.git'))
+      .toBe('gitlab.com/group/subgroup/repo')
+  })
+})
+
+function makeTab(overrides: Partial<Tab> & { id: string }): Tab {
+  return {
+    type: TabType.AGENT,
+    title: overrides.id,
+    tileId: 'tile-1',
+    position: '0',
+    ...overrides,
+  }
+}
+
+describe('buildTree', () => {
+  it('returns empty tree for empty input', () => {
+    const tree = buildTree([])
+    expect(tree.groups).toHaveLength(0)
+    expect(tree.ungrouped).toHaveLength(0)
+  })
+
+  it('puts tabs without git info into ungrouped', () => {
+    const tabs = [
+      makeTab({ id: 'a1' }),
+      makeTab({ id: 'a2', type: TabType.TERMINAL }),
+    ]
+    const tree = buildTree(tabs)
+    expect(tree.groups).toHaveLength(0)
+    expect(tree.ungrouped).toHaveLength(2)
+  })
+
+  it('groups tabs by origin URL and branch', () => {
+    const tabs = [
+      makeTab({ id: 'a1', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+      makeTab({ id: 'a2', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+      makeTab({ id: 'a3', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'dev' }),
+    ]
+    const tree = buildTree(tabs)
+    expect(tree.groups).toHaveLength(1)
+    expect(tree.groups[0].branches).toHaveLength(2)
+    // Branches sorted alphabetically
+    expect(tree.groups[0].branches[0].branchName).toBe('dev')
+    expect(tree.groups[0].branches[0].tabs).toHaveLength(1)
+    expect(tree.groups[0].branches[1].branchName).toBe('main')
+    expect(tree.groups[0].branches[1].tabs).toHaveLength(2)
+  })
+
+  it('separates different repos into different groups', () => {
+    const tabs = [
+      makeTab({ id: 'a1', gitOriginUrl: 'https://github.com/org/repo1.git', gitBranch: 'main' }),
+      makeTab({ id: 'a2', gitOriginUrl: 'https://github.com/org/repo2.git', gitBranch: 'main' }),
+    ]
+    const tree = buildTree(tabs)
+    expect(tree.groups).toHaveLength(2)
+    // Groups sorted by formatted URL
+    expect(tree.groups[0].repoLabel).toBe('github.com/org/repo1')
+    expect(tree.groups[1].repoLabel).toBe('github.com/org/repo2')
+  })
+
+  it('sorts agents before terminals within a branch', () => {
+    const tabs = [
+      makeTab({ id: 't1', type: TabType.TERMINAL, gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+      makeTab({ id: 'a1', type: TabType.AGENT, gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+    ]
+    const tree = buildTree(tabs)
+    expect(tree.groups[0].branches[0].tabs[0].type).toBe(TabType.AGENT)
+    expect(tree.groups[0].branches[0].tabs[1].type).toBe(TabType.TERMINAL)
+  })
+
+  it('uses "(no branch)" for tabs without gitBranch', () => {
+    const tabs = [
+      makeTab({ id: 'a1', gitOriginUrl: 'https://github.com/org/repo.git' }),
+    ]
+    const tree = buildTree(tabs)
+    expect(tree.groups[0].branches[0].branchName).toBe('(no branch)')
+  })
+
+  it('handles mix of grouped and ungrouped tabs', () => {
+    const tabs = [
+      makeTab({ id: 'a1', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+      makeTab({ id: 'a2' }),
+    ]
+    const tree = buildTree(tabs)
+    expect(tree.groups).toHaveLength(1)
+    expect(tree.ungrouped).toHaveLength(1)
+  })
+
+  it('uses first tab with diff stats for branch (no summing)', () => {
+    const tabs = [
+      makeTab({ id: 'a1', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main', gitDiffAdded: 10, gitDiffDeleted: 3 }),
+      makeTab({ id: 'a2', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main', gitDiffAdded: 5, gitDiffDeleted: 2 }),
+    ]
+    const tree = buildTree(tabs)
+    // All tabs on same branch share git state; use first non-zero tab's values
+    expect(tree.groups[0].branches[0].diffAdded).toBe(10)
+    expect(tree.groups[0].branches[0].diffDeleted).toBe(3)
+  })
+
+  it('sums branch diff stats into repo group', () => {
+    const tabs = [
+      makeTab({ id: 'a1', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main', gitDiffAdded: 10, gitDiffDeleted: 3 }),
+      makeTab({ id: 'a2', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'dev', gitDiffAdded: 5, gitDiffDeleted: 2 }),
+    ]
+    const tree = buildTree(tabs)
+    expect(tree.groups[0].diffAdded).toBe(15)
+    expect(tree.groups[0].diffDeleted).toBe(5)
+  })
+
+  it('defaults diff stats to zero when tabs have no counts', () => {
+    const tabs = [
+      makeTab({ id: 'a1', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+    ]
+    const tree = buildTree(tabs)
+    expect(tree.groups[0].branches[0].diffAdded).toBe(0)
+    expect(tree.groups[0].branches[0].diffDeleted).toBe(0)
+  })
+})

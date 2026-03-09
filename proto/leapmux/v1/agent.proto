@@ -149,6 +149,7 @@ message AgentGitStatus {
   bool type_changed = 9;    // Has type changes in staging area
   bool added = 10;          // Has staged additions
   bool untracked = 11;      // Has untracked files
+  string origin_url = 12;   // Remote origin URL
 }
 
 // --- Message History ---

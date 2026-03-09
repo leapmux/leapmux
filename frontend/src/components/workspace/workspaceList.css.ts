@@ -1,4 +1,4 @@
-import { style } from '@vanilla-extract/css'
+import { globalStyle, style } from '@vanilla-extract/css'
 import { iconSize } from '~/styles/tokens'
 
 export const list = style({
@@ -94,28 +94,42 @@ export const sectionAddButton = style({
 export const sectionItems = style({
   display: 'flex',
   flexDirection: 'column',
+  minWidth: '100%',
+  width: 'max-content',
 })
 
 export const item = style({
   'display': 'flex',
   'alignItems': 'center',
   'padding': 'var(--space-1) var(--space-3)',
-  'paddingLeft': 'var(--space-4)',
+  'paddingLeft': 'var(--space-2)',
   'cursor': 'pointer',
   'gap': 'var(--space-1)',
-  'borderRight': '2px solid transparent',
   ':hover': {
     backgroundColor: 'var(--card)',
   },
 })
 
 export const itemActive = style({
-  backgroundColor: 'var(--secondary)',
-  borderRightColor: 'var(--primary)',
+  'backgroundColor': 'var(--secondary)',
+  'paddingRight': 0,
+  ':hover': {
+    backgroundColor: 'var(--muted)',
+  },
+})
+
+globalStyle(`${item}${itemActive}::after`, {
+  content: '""',
+  position: 'sticky',
+  right: 0,
+  width: '2px',
+  alignSelf: 'stretch',
+  margin: 'calc(-1 * var(--space-1)) 0',
+  backgroundColor: 'var(--primary)',
+  flexShrink: 0,
 })
 
 export const itemTitle = style({
-  flex: 1,
   fontSize: 'var(--text-7)',
   fontWeight: 400,
   color: 'var(--foreground)',
@@ -139,6 +153,30 @@ export const itemRenameInput = style({
   ':focus': {
     boxShadow: '0 0 0 2px var(--ring)',
   },
+})
+
+export const itemActions = style({
+  display: 'flex',
+  alignItems: 'center',
+  flexShrink: 0,
+  marginLeft: 'auto',
+  position: 'sticky',
+  right: 'var(--space-2)',
+})
+
+/** Give itemActions a background on hover so it covers scrolled text underneath. */
+globalStyle(`${item}:hover ${itemActions}`, {
+  backgroundColor: 'var(--card)',
+})
+
+/** Match active item background. */
+globalStyle(`${item}${itemActive} ${itemActions}`, {
+  backgroundColor: 'var(--secondary)',
+})
+
+/** Match active + hover item background. */
+globalStyle(`${item}${itemActive}:hover ${itemActions}`, {
+  backgroundColor: 'var(--muted)',
 })
 
 export const itemMenuTrigger = style({

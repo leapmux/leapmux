@@ -46,6 +46,7 @@ export interface SidebarElementsOpts {
   workerInfoFn: (id: string) => WorkerInfo | null
   channelStatusFn: (id: string) => ChannelStatus
   onDeregisterWorker: (worker: Worker) => void
+  onTabClick: (type: number, id: string) => void
 }
 
 interface SidebarDisplayOpts {
@@ -103,6 +104,8 @@ export function createLeftSidebarElement(opts: SidebarElementsOpts, display?: Si
       workerInfoFn={opts.workerInfoFn}
       channelStatusFn={opts.channelStatusFn}
       onDeregisterWorker={opts.onDeregisterWorker}
+      tabStore={opts.tabStore}
+      onTabClick={opts.onTabClick}
     />
   )
 }
@@ -149,6 +152,8 @@ export function createRightSidebarElement(opts: SidebarElementsOpts, display?: S
       activeFilePath={opts.activeFilePath}
       hasActiveFileTab={opts.hasActiveFileTab}
       turnEndTrigger={opts.turnEndTrigger}
+      tabStore={opts.tabStore}
+      onTabClick={opts.onTabClick}
     />
   )
 }

@@ -7,6 +7,7 @@ import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { TodoItem } from '~/stores/chat.store'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
+import type { createTabStore } from '~/stores/tab.store'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 
 import CircleUser from 'lucide-solid/icons/circle-user'
@@ -67,6 +68,8 @@ interface LeftSidebarProps {
   workerInfoFn: (id: string) => WorkerInfo | null
   channelStatusFn: (id: string) => ChannelStatus
   onDeregisterWorker: (worker: Worker) => void
+  tabStore: ReturnType<typeof createTabStore>
+  onTabClick: (type: number, id: string) => void
 }
 
 export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
@@ -215,6 +218,9 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
               onRenameCommit={wsOps.commitRename}
               onRenameCancel={wsOps.cancelRename}
               isWorkspaceLoading={wsOps.isWorkspaceLoading}
+              tabs={props.tabStore.state.tabs}
+              activeTabKey={props.tabStore.state.activeTabKey}
+              onTabClick={props.onTabClick}
             />
           ),
         })

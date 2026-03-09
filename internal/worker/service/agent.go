@@ -9,6 +9,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"sync"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
@@ -16,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -122,7 +125,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.OpenAgentResponse{
-			Agent: agentToProto(&dbAgent, permissionMode, svc.WorkerID, true),
+			Agent: agentToProto(&dbAgent, permissionMode, svc.WorkerID, true, gitutil.GetGitStatus(dbAgent.WorkingDir)),
 		})
 	})
 
@@ -286,9 +289,21 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
+		// Compute git status concurrently for all agents.
+		gitStatuses := make([]*gitutil.GitStatus, len(agents))
+		var wg sync.WaitGroup
+		for i := range agents {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				gitStatuses[idx] = gitutil.GetGitStatus(agents[idx].WorkingDir)
+			}(i)
+		}
+		wg.Wait()
+
 		protoAgents := make([]*leapmuxv1.AgentInfo, 0, len(agents))
 		for i := range agents {
-			protoAgents = append(protoAgents, agentToProto(&agents[i], agents[i].PermissionMode, svc.WorkerID, svc.Agents.HasAgent(agents[i].ID)))
+			protoAgents = append(protoAgents, agentToProto(&agents[i], agents[i].PermissionMode, svc.WorkerID, svc.Agents.HasAgent(agents[i].ID), gitStatuses[i]))
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.ListAgentsResponse{
@@ -718,7 +733,9 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 					PermissionMode: dbAgent.PermissionMode,
 					Model:          modelOrDefault(dbAgent.Model),
 					Effort:         dbAgent.Effort,
+					GitStatus:      gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
 				}
+				populateGitFileStatus(sc, dbAgent.WorkingDir)
 				broadcastWatchEvent(sender, &leapmuxv1.WatchEventsResponse{
 					Event: &leapmuxv1.WatchEventsResponse_AgentEvent{
 						AgentEvent: &leapmuxv1.AgentEvent{
@@ -793,7 +810,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 }
 
 // agentToProto converts a DB Agent to a proto AgentInfo.
-func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool) *leapmuxv1.AgentInfo {
+func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, gs *gitutil.GitStatus) *leapmuxv1.AgentInfo {
 	status := leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE
 	if isRunning {
 		status = leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE
@@ -811,6 +828,7 @@ func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool) 
 		HomeDir:        a.HomeDir,
 		WorkerId:       workerID,
 		CreatedAt:      timefmt.Format(a.CreatedAt),
+		GitStatus:      gitStatusToProto(gs),
 	}
 
 	if a.ClosedAt.Valid {
@@ -818,6 +836,28 @@ func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool) 
 	}
 
 	return info
+}
+
+// gitStatusToProto converts a gitutil.GitStatus to a proto AgentGitStatus.
+// Returns nil if gs is nil.
+func gitStatusToProto(gs *gitutil.GitStatus) *leapmuxv1.AgentGitStatus {
+	if gs == nil {
+		return nil
+	}
+	return &leapmuxv1.AgentGitStatus{
+		Branch:      gs.Branch,
+		Ahead:       int32(gs.Ahead),
+		Behind:      int32(gs.Behind),
+		Conflicted:  gs.Conflicted,
+		Stashed:     gs.Stashed,
+		Deleted:     gs.Deleted,
+		Renamed:     gs.Renamed,
+		Modified:    gs.Modified,
+		TypeChanged: gs.TypeChanged,
+		Added:       gs.Added,
+		Untracked:   gs.Untracked,
+		OriginUrl:   gs.OriginURL,
+	}
 }
 
 // extractUserText extracts the original user text from a persisted user
@@ -980,6 +1020,7 @@ func (svc *Context) setAgentPermissionMode(agentID, mode string) {
 				PermissionMode: mode,
 				Model:          modelOrDefault(dbAgent.Model),
 				Effort:         dbAgent.Effort,
+				GitStatus:      gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
 			},
 		},
 	})

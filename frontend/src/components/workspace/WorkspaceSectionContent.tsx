@@ -1,15 +1,20 @@
 import type { Component } from 'solid-js'
 import type { Section } from '~/generated/leapmux/v1/section_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
+import type { Tab, TabType } from '~/stores/tab.store'
 
 import { createDroppable, createSortable, SortableProvider, transformStyle } from '@thisbeyond/solid-dnd'
+import ChevronRight from 'lucide-solid/icons/chevron-right'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
-import { createEffect, createMemo, For, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { ShareMode } from '~/generated/leapmux/v1/common_pb'
 import { spinner } from '~/styles/animations.css'
+import { DiffStatsBadge } from '../tree/gitStatusUtils'
+import * as shared from '../tree/sharedTree.css'
 import { WorkspaceContextMenu } from './WorkspaceContextMenu'
 import * as styles from './workspaceList.css'
+import { buildTree, WorkspaceTabTree } from './WorkspaceTabTree'
 
 export interface WorkspaceSectionContentProps {
   workspaces: Workspace[]
@@ -32,6 +37,9 @@ export interface WorkspaceSectionContentProps {
   onRenameCommit: () => void
   onRenameCancel: () => void
   isWorkspaceLoading: (id: string) => boolean
+  tabs: Tab[]
+  activeTabKey: string | null
+  onTabClick: (type: TabType, id: string) => void
 }
 
 export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = (props) => {
@@ -50,6 +58,46 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
   // workspace — preventing orphaned DnD primitives and "nonexistent
   // transformer" warnings.
   // ---------------------------------------------------------------------------
+
+  // Track which workspaces have their tab tree expanded (independent of selection).
+  const [expandedIds, setExpandedIds] = createSignal<Set<string>>(new Set())
+
+  function isExpanded(id: string): boolean {
+    return expandedIds().has(id)
+  }
+
+  function toggleExpanded(id: string) {
+    setExpandedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id))
+        next.delete(id)
+      else
+        next.add(id)
+      return next
+    })
+  }
+
+  // Auto-expand the active workspace when it changes (if it has tabs).
+  createEffect(() => {
+    const activeId = props.activeWorkspaceId
+    if (activeId && props.tabs.length > 0) {
+      setExpandedIds((prev) => {
+        if (prev.has(activeId))
+          return prev
+        const next = new Set(prev)
+        next.add(activeId)
+        return next
+      })
+    }
+  })
+
+  const workspaceDiffStats = createMemo(() => {
+    const tree = buildTree(props.tabs)
+    return {
+      added: tree.groups.reduce((sum, g) => sum + g.diffAdded, 0),
+      deleted: tree.groups.reduce((sum, g) => sum + g.diffDeleted, 0),
+    }
+  })
 
   const workspaceIds = () => props.workspaces.map(w => w.id)
 
@@ -97,79 +145,105 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
               })
 
               return (
-                <div
-                  ref={sortable}
-                  class={styles.item}
-                  classList={{
-                    [styles.itemActive]: isActive(),
-                    [styles.itemDragging]: sortable.isActiveDraggable,
-                  }}
-                  style={transformStyle(sortable.transform)}
-                  onClick={() => {
-                    if (wasDragging) {
-                      wasDragging = false
-                      return
-                    }
-                    props.onSelect(id)
-                  }}
-                  onDblClick={() => {
-                    if (isOwner())
-                      props.onRename(workspace())
-                  }}
-                  data-testid={`workspace-item-${id}`}
-                >
-                  <Show
-                    when={!isRenaming()}
-                    fallback={(
-                      <input
-                        class={styles.itemRenameInput}
-                        value={props.renameValue}
-                        onInput={e => props.onRenameInput(e.currentTarget.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter')
-                            props.onRenameCommit()
-                          if (e.key === 'Escape')
-                            props.onRenameCancel()
-                        }}
-                        onBlur={() => props.onRenameCommit()}
-                        onClick={e => e.stopPropagation()}
-                        ref={(el) => {
-                          requestAnimationFrame(() => {
-                            el.focus()
-                            el.select()
-                          })
-                        }}
-                      />
-                    )}
+                <>
+                  <div
+                    ref={sortable}
+                    class={styles.item}
+                    classList={{
+                      [styles.itemActive]: isActive(),
+                      [styles.itemDragging]: sortable.isActiveDraggable,
+                    }}
+                    style={transformStyle(sortable.transform)}
+                    onClick={() => {
+                      if (wasDragging) {
+                        wasDragging = false
+                        return
+                      }
+                      props.onSelect(id)
+                    }}
+                    onDblClick={() => {
+                      if (isOwner())
+                        props.onRename(workspace())
+                    }}
+                    data-testid={`workspace-item-${id}`}
                   >
-                    <span class={styles.itemTitle}>
-                      {workspace().title || 'Untitled'}
-                    </span>
-                    <Show when={workspace().shareMode !== ShareMode.PRIVATE && workspace().shareMode !== ShareMode.UNSPECIFIED}>
-                      <span class={styles.sharedBadge}>shared</span>
+                    <ChevronRight
+                      size={14}
+                      class={`${shared.chevron} ${isActive() && props.tabs.length > 0 && isExpanded(id) ? shared.chevronExpanded : ''}`}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        if (isActive() && props.tabs.length > 0)
+                          toggleExpanded(id)
+                      }}
+                    />
+                    <Show
+                      when={!isRenaming()}
+                      fallback={(
+                        <input
+                          class={styles.itemRenameInput}
+                          value={props.renameValue}
+                          onInput={e => props.onRenameInput(e.currentTarget.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter')
+                              props.onRenameCommit()
+                            if (e.key === 'Escape')
+                              props.onRenameCancel()
+                          }}
+                          onBlur={() => props.onRenameCommit()}
+                          onClick={e => e.stopPropagation()}
+                          ref={(el) => {
+                            requestAnimationFrame(() => {
+                              el.focus()
+                              el.select()
+                            })
+                          }}
+                        />
+                      )}
+                    >
+                      <span class={styles.itemTitle}>
+                        {workspace().title || 'Untitled'}
+                      </span>
+                      <Show when={workspace().shareMode !== ShareMode.PRIVATE && workspace().shareMode !== ShareMode.UNSPECIFIED}>
+                        <span class={styles.sharedBadge}>shared</span>
+                      </Show>
+                      <Show when={isActive()}>
+                        <DiffStatsBadge added={workspaceDiffStats().added} deleted={workspaceDiffStats().deleted} />
+                      </Show>
                     </Show>
-                  </Show>
 
-                  <Show
-                    when={!isLoading()}
-                    fallback={<Icon icon={LoaderCircle} size="xs" class={spinner} style={{ 'flex-shrink': '0' }} />}
-                  >
-                    <Show when={!isRenaming() && !props.isVirtual}>
-                      <WorkspaceContextMenu
-                        isOwner={isOwner()}
-                        isArchived={props.isArchived(id)}
-                        sections={props.sections}
-                        currentSectionId={props.sectionId}
-                        onRename={() => props.onRename(workspace())}
-                        onMoveTo={targetSectionId => props.onMoveTo(id, targetSectionId)}
-                        onShare={() => props.onShare(id)}
-                        onArchive={() => props.onArchive(id)}
-                        onUnarchive={() => props.onUnarchive(id)}
-                        onDelete={() => props.onDelete(id)}
+                    <div class={styles.itemActions}>
+                      <Show
+                        when={!isLoading()}
+                        fallback={<Icon icon={LoaderCircle} size="xs" class={spinner} style={{ 'flex-shrink': '0' }} />}
+                      >
+                        <Show when={!isRenaming() && !props.isVirtual}>
+                          <WorkspaceContextMenu
+                            isOwner={isOwner()}
+                            isArchived={props.isArchived(id)}
+                            sections={props.sections}
+                            currentSectionId={props.sectionId}
+                            onRename={() => props.onRename(workspace())}
+                            onMoveTo={targetSectionId => props.onMoveTo(id, targetSectionId)}
+                            onShare={() => props.onShare(id)}
+                            onArchive={() => props.onArchive(id)}
+                            onUnarchive={() => props.onUnarchive(id)}
+                            onDelete={() => props.onDelete(id)}
+                          />
+                        </Show>
+                      </Show>
+                    </div>
+                  </div>
+                  <div class={`${shared.childrenWrapper} ${isActive() && props.tabs.length > 0 && isExpanded(id) ? shared.childrenWrapperExpanded : ''}`}>
+                    <div class={shared.childrenInner}>
+                      <WorkspaceTabTree
+                        tabs={props.tabs}
+                        activeTabKey={props.activeTabKey}
+                        onTabClick={props.onTabClick}
+                        workspaceId={id}
                       />
-                    </Show>
-                  </Show>
-                </div>
+                    </div>
+                  </div>
+                </>
               )
             }}
           </For>

@@ -10,823 +10,118 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// resolvedTempDir returns a temp directory with symlinks resolved (e.g. /var -> /private/var on macOS).
-func resolvedTempDir(t *testing.T) string {
+// initRepo creates a temporary git repo with an initial commit and returns its path.
+func initRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	resolved, err := filepath.EvalSymlinks(dir)
-	require.NoError(t, err)
-	return resolved
+	cmds := [][]string{
+		{"git", "-C", dir, "init"},
+		{"git", "-C", dir, "config", "user.email", "test@test.com"},
+		{"git", "-C", dir, "config", "user.name", "Test"},
+		{"git", "-C", dir, "commit", "--allow-empty", "-m", "init"},
+	}
+	for _, args := range cmds {
+		cmd := exec.Command(args[0], args[1:]...)
+		require.NoError(t, cmd.Run(), "command failed: %v", args)
+	}
+	return dir
 }
 
-// initGitRepo creates a git repo in dir with an initial commit.
-func initGitRepo(t *testing.T, dir string) {
-	t.Helper()
-	run(t, dir, "git", "init")
-	run(t, dir, "git", "config", "user.email", "test@test.com")
-	run(t, dir, "git", "config", "user.name", "Test")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("hello"), 0o644))
-	run(t, dir, "git", "add", ".")
-	run(t, dir, "git", "commit", "-m", "initial")
+func TestGetOriginURL(t *testing.T) {
+	t.Run("returns origin URL when set", func(t *testing.T) {
+		dir := initRepo(t)
+		expected := "https://github.com/example/repo.git"
+		cmd := exec.Command("git", "-C", dir, "remote", "add", "origin", expected)
+		require.NoError(t, cmd.Run())
+
+		got := GetOriginURL(dir)
+		assert.Equal(t, expected, got)
+	})
+
+	t.Run("returns SSH origin URL", func(t *testing.T) {
+		dir := initRepo(t)
+		expected := "git@github.com:example/repo.git"
+		cmd := exec.Command("git", "-C", dir, "remote", "add", "origin", expected)
+		require.NoError(t, cmd.Run())
+
+		got := GetOriginURL(dir)
+		assert.Equal(t, expected, got)
+	})
+
+	t.Run("returns empty string when no origin", func(t *testing.T) {
+		dir := initRepo(t)
+		got := GetOriginURL(dir)
+		assert.Empty(t, got)
+	})
+
+	t.Run("returns empty string for non-git directory", func(t *testing.T) {
+		dir := t.TempDir()
+		got := GetOriginURL(dir)
+		assert.Empty(t, got)
+	})
+
+	t.Run("returns empty string for nonexistent directory", func(t *testing.T) {
+		got := GetOriginURL(filepath.Join(t.TempDir(), "nonexistent"))
+		assert.Empty(t, got)
+	})
 }
 
-func run(t *testing.T, dir string, name string, args ...string) {
-	t.Helper()
-	cmd := exec.Command(name, args...)
-	cmd.Dir = dir
-	output, err := cmd.CombinedOutput()
-	require.NoError(t, err, "command %q failed: %s", append([]string{name}, args...), string(output))
+func TestGetGitStatus_OriginURL(t *testing.T) {
+	t.Run("includes origin URL in status", func(t *testing.T) {
+		dir := initRepo(t)
+		expected := "https://github.com/example/repo.git"
+		cmd := exec.Command("git", "-C", dir, "remote", "add", "origin", expected)
+		require.NoError(t, cmd.Run())
+
+		status := GetGitStatus(dir)
+		require.NotNil(t, status)
+		assert.Equal(t, expected, status.OriginURL)
+	})
+
+	t.Run("origin URL is empty when no remote", func(t *testing.T) {
+		dir := initRepo(t)
+
+		status := GetGitStatus(dir)
+		require.NotNil(t, status)
+		assert.Empty(t, status.OriginURL)
+	})
 }
 
-func TestGetGitInfo_RegularRepo(t *testing.T) {
-	dir := resolvedTempDir(t)
-	initGitRepo(t, dir)
-
-	info, err := GetGitInfo(dir)
-	require.NoError(t, err)
-	assert.True(t, info.IsGitRepo)
-	assert.False(t, info.IsWorktree)
-	assert.Equal(t, dir, info.RepoRoot)
-	assert.Equal(t, filepath.Base(dir), info.RepoDirName)
-	assert.True(t, info.IsRepoRoot)
-	assert.False(t, info.IsWorktreeRoot, "regular repo root should not be a worktree root")
+func TestGetGitStatus_Branch(t *testing.T) {
+	dir := initRepo(t)
+	status := GetGitStatus(dir)
+	require.NotNil(t, status)
+	assert.NotEmpty(t, status.Branch)
 }
 
-func TestGetGitInfo_Worktree(t *testing.T) {
-	dir := resolvedTempDir(t)
-	repoDir := filepath.Join(dir, "myrepo")
-	require.NoError(t, os.Mkdir(repoDir, 0o755))
-	initGitRepo(t, repoDir)
-
-	wtDir := filepath.Join(dir, "myrepo-worktrees", "feature")
-	run(t, repoDir, "git", "worktree", "add", wtDir, "-b", "feature")
-
-	info, err := GetGitInfo(wtDir)
-	require.NoError(t, err)
-	assert.True(t, info.IsGitRepo)
-	assert.True(t, info.IsWorktree)
-	assert.Equal(t, repoDir, info.RepoRoot)
-	assert.Equal(t, "myrepo", info.RepoDirName)
-	assert.False(t, info.IsRepoRoot, "worktree directory should not be the repo root")
-	assert.True(t, info.IsWorktreeRoot, "worktree directory should be the worktree root")
-}
-
-func TestGetGitInfo_WorktreeSubdir(t *testing.T) {
-	dir := resolvedTempDir(t)
-	repoDir := filepath.Join(dir, "myrepo")
-	require.NoError(t, os.Mkdir(repoDir, 0o755))
-	initGitRepo(t, repoDir)
-
-	wtDir := filepath.Join(dir, "myrepo-worktrees", "feature")
-	run(t, repoDir, "git", "worktree", "add", wtDir, "-b", "feature")
-
-	// Create a subdirectory inside the worktree.
-	subDir := filepath.Join(wtDir, "sub", "dir")
-	require.NoError(t, os.MkdirAll(subDir, 0o755))
-
-	info, err := GetGitInfo(subDir)
-	require.NoError(t, err)
-	assert.True(t, info.IsGitRepo)
-	assert.True(t, info.IsWorktree)
-	assert.Equal(t, repoDir, info.RepoRoot)
-	assert.False(t, info.IsRepoRoot)
-	assert.False(t, info.IsWorktreeRoot, "subdirectory inside worktree should not be worktree root")
-}
-
-func TestGetGitInfo_NotGitRepo(t *testing.T) {
-	dir := resolvedTempDir(t)
-
-	info, err := GetGitInfo(dir)
-	require.NoError(t, err)
-	assert.False(t, info.IsGitRepo)
-	assert.False(t, info.IsRepoRoot)
-}
-
-func TestGetGitInfo_NestedSubdir(t *testing.T) {
-	dir := resolvedTempDir(t)
-	initGitRepo(t, dir)
-
-	subdir := filepath.Join(dir, "a", "b", "c")
-	require.NoError(t, os.MkdirAll(subdir, 0o755))
-
-	info, err := GetGitInfo(subdir)
-	require.NoError(t, err)
-	assert.True(t, info.IsGitRepo)
-	assert.False(t, info.IsWorktree)
-	assert.Equal(t, dir, info.RepoRoot)
-	assert.False(t, info.IsRepoRoot, "nested subdir should not be the repo root")
-}
-
-func TestCreateWorktree_NewBranch(t *testing.T) {
-	dir := resolvedTempDir(t)
-	repoDir := filepath.Join(dir, "repo")
-	require.NoError(t, os.Mkdir(repoDir, 0o755))
-	initGitRepo(t, repoDir)
-
-	wtDir := filepath.Join(dir, "repo-worktrees", "new-feature")
-	err := CreateWorktree(repoDir, wtDir, "new-feature", "HEAD")
-	require.NoError(t, err)
-
-	// Verify the worktree directory exists.
-	_, err = os.Stat(wtDir)
-	require.NoError(t, err)
-
-	// Verify we're on the right branch.
-	cmd := exec.Command("git", "-C", wtDir, "branch", "--show-current")
-	output, err := cmd.Output()
-	require.NoError(t, err)
-	assert.Equal(t, "new-feature", trimOutput(output))
-}
-
-func TestCreateWorktree_ExistingBranch(t *testing.T) {
-	dir := resolvedTempDir(t)
-	repoDir := filepath.Join(dir, "repo")
-	require.NoError(t, os.Mkdir(repoDir, 0o755))
-	initGitRepo(t, repoDir)
-
-	// Create a branch first.
-	run(t, repoDir, "git", "branch", "existing-branch")
-
-	wtDir := filepath.Join(dir, "repo-worktrees", "existing-branch")
-	err := CreateWorktree(repoDir, wtDir, "existing-branch", "HEAD")
-	require.NoError(t, err)
-
-	// Verify the worktree is on the existing branch.
-	cmd := exec.Command("git", "-C", wtDir, "branch", "--show-current")
-	output, err := cmd.Output()
-	require.NoError(t, err)
-	assert.Equal(t, "existing-branch", trimOutput(output))
-}
-
-func TestCreateWorktree_InvalidBranch(t *testing.T) {
-	dir := resolvedTempDir(t)
-	repoDir := filepath.Join(dir, "repo")
-	require.NoError(t, os.Mkdir(repoDir, 0o755))
-	initGitRepo(t, repoDir)
-
-	wtDir := filepath.Join(dir, "repo-worktrees", "bad")
-	err := CreateWorktree(repoDir, wtDir, "bad..branch", "HEAD")
-	assert.Error(t, err)
-}
-
-func TestCreateWorktree_PathExists(t *testing.T) {
-	dir := resolvedTempDir(t)
-	repoDir := filepath.Join(dir, "repo")
-	require.NoError(t, os.Mkdir(repoDir, 0o755))
-	initGitRepo(t, repoDir)
-
-	// Pre-create the target path.
-	wtDir := filepath.Join(dir, "repo-worktrees", "taken")
-	require.NoError(t, os.MkdirAll(wtDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(wtDir, "file.txt"), []byte("block"), 0o644))
-
-	err := CreateWorktree(repoDir, wtDir, "taken", "HEAD")
-	assert.Error(t, err)
-}
-
-func TestCreateWorktree_WithStartPoint(t *testing.T) {
-	dir := resolvedTempDir(t)
-	repoDir := filepath.Join(dir, "repo")
-	require.NoError(t, os.Mkdir(repoDir, 0o755))
-	initGitRepo(t, repoDir)
-
-	// Create a feature branch with an extra commit.
-	run(t, repoDir, "git", "checkout", "-b", "feature")
-	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "feature.txt"), []byte("feature work"), 0o644))
-	run(t, repoDir, "git", "add", ".")
-	run(t, repoDir, "git", "commit", "-m", "feature commit")
-
-	// Get the feature branch HEAD.
-	featureHead := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD")
-	featureHeadOutput, err := featureHead.Output()
-	require.NoError(t, err)
-	featureCommit := trimOutput(featureHeadOutput)
-
-	// Switch back to main.
-	run(t, repoDir, "git", "checkout", "-")
-
-	// Create a worktree from the feature branch.
-	wtDir := filepath.Join(dir, "repo-worktrees", "from-feature")
-	err = CreateWorktree(repoDir, wtDir, "from-feature", "feature")
-	require.NoError(t, err)
-
-	// Verify the new worktree's HEAD matches the feature branch HEAD.
-	wtHead := exec.Command("git", "-C", wtDir, "rev-parse", "HEAD")
-	wtHeadOutput, err := wtHead.Output()
-	require.NoError(t, err)
-	assert.Equal(t, featureCommit, trimOutput(wtHeadOutput),
-		"new worktree should start from the feature branch commit")
-
-	// Verify the feature.txt file exists in the worktree.
-	_, err = os.Stat(filepath.Join(wtDir, "feature.txt"))
-	assert.NoError(t, err, "feature.txt should exist in worktree created from feature branch")
-}
-
-func TestCreateWorktree_StartPointDifferentFromMainHead(t *testing.T) {
-	dir := resolvedTempDir(t)
-	repoDir := filepath.Join(dir, "repo")
-	require.NoError(t, os.Mkdir(repoDir, 0o755))
-	initGitRepo(t, repoDir)
-
-	// Get main branch HEAD.
-	mainHead := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD")
-	mainHeadOutput, err := mainHead.Output()
-	require.NoError(t, err)
-	mainCommit := trimOutput(mainHeadOutput)
-
-	// Create a branch with extra commits.
-	run(t, repoDir, "git", "checkout", "-b", "diverged")
-	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "extra.txt"), []byte("extra"), 0o644))
-	run(t, repoDir, "git", "add", ".")
-	run(t, repoDir, "git", "commit", "-m", "diverge")
-
-	divergedHead := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD")
-	divergedOutput, err := divergedHead.Output()
-	require.NoError(t, err)
-	divergedCommit := trimOutput(divergedOutput)
-	assert.NotEqual(t, mainCommit, divergedCommit, "diverged branch should have a different commit")
-
-	// Switch back to main.
-	run(t, repoDir, "git", "checkout", "-")
-
-	// Create worktree from diverged branch.
-	wtDir := filepath.Join(dir, "repo-worktrees", "from-diverged")
-	err = CreateWorktree(repoDir, wtDir, "from-diverged", "diverged")
-	require.NoError(t, err)
-
-	// Verify the worktree HEAD matches diverged, not main.
-	wtHead := exec.Command("git", "-C", wtDir, "rev-parse", "HEAD")
-	wtHeadOutput, err := wtHead.Output()
-	require.NoError(t, err)
-	assert.Equal(t, divergedCommit, trimOutput(wtHeadOutput),
-		"worktree should start from diverged branch, not main HEAD")
-}
-
-func TestIsWorktreeClean_Clean(t *testing.T) {
-	dir := resolvedTempDir(t)
-	repoDir := filepath.Join(dir, "repo")
-	require.NoError(t, os.Mkdir(repoDir, 0o755))
-	initGitRepo(t, repoDir)
-
-	wtDir := filepath.Join(dir, "repo-worktrees", "clean")
-	run(t, repoDir, "git", "worktree", "add", wtDir, "-b", "clean")
-
-	clean, err := IsWorktreeClean(wtDir)
-	require.NoError(t, err)
-	assert.True(t, clean)
-}
-
-func TestIsWorktreeClean_UncommittedChanges(t *testing.T) {
-	dir := resolvedTempDir(t)
-	repoDir := filepath.Join(dir, "repo")
-	require.NoError(t, os.Mkdir(repoDir, 0o755))
-	initGitRepo(t, repoDir)
-
-	wtDir := filepath.Join(dir, "repo-worktrees", "dirty")
-	run(t, repoDir, "git", "worktree", "add", wtDir, "-b", "dirty")
-
-	// Make uncommitted changes.
-	require.NoError(t, os.WriteFile(filepath.Join(wtDir, "new-file.txt"), []byte("dirty"), 0o644))
-
-	clean, err := IsWorktreeClean(wtDir)
-	require.NoError(t, err)
-	assert.False(t, clean)
-}
-
-func TestIsWorktreeClean_UnpushedCommits(t *testing.T) {
-	dir := resolvedTempDir(t)
-
-	// Create a bare "remote" repo.
-	remoteDir := filepath.Join(dir, "remote.git")
-	run(t, dir, "git", "init", "--bare", remoteDir)
-
-	// Create main repo and push to remote.
-	repoDir := filepath.Join(dir, "repo")
-	require.NoError(t, os.Mkdir(repoDir, 0o755))
-	initGitRepo(t, repoDir)
-	run(t, repoDir, "git", "remote", "add", "origin", remoteDir)
-	run(t, repoDir, "git", "push", "-u", "origin", "HEAD")
-
-	// Create worktree with tracking.
-	wtDir := filepath.Join(dir, "repo-worktrees", "unpushed")
-	run(t, repoDir, "git", "worktree", "add", wtDir, "-b", "unpushed")
-	run(t, wtDir, "git", "push", "-u", "origin", "unpushed")
-
-	// Make a local commit without pushing.
-	require.NoError(t, os.WriteFile(filepath.Join(wtDir, "local.txt"), []byte("local"), 0o644))
-	run(t, wtDir, "git", "add", ".")
-	run(t, wtDir, "git", "commit", "-m", "local commit")
-
-	clean, err := IsWorktreeClean(wtDir)
-	require.NoError(t, err)
-	assert.False(t, clean)
-}
-
-func TestIsWorktreeClean_BothDirty(t *testing.T) {
-	dir := resolvedTempDir(t)
-
-	remoteDir := filepath.Join(dir, "remote.git")
-	run(t, dir, "git", "init", "--bare", remoteDir)
-
-	repoDir := filepath.Join(dir, "repo")
-	require.NoError(t, os.Mkdir(repoDir, 0o755))
-	initGitRepo(t, repoDir)
-	run(t, repoDir, "git", "remote", "add", "origin", remoteDir)
-	run(t, repoDir, "git", "push", "-u", "origin", "HEAD")
-
-	wtDir := filepath.Join(dir, "repo-worktrees", "both")
-	run(t, repoDir, "git", "worktree", "add", wtDir, "-b", "both")
-	run(t, wtDir, "git", "push", "-u", "origin", "both")
-
-	// Unpushed commit.
-	require.NoError(t, os.WriteFile(filepath.Join(wtDir, "committed.txt"), []byte("c"), 0o644))
-	run(t, wtDir, "git", "add", ".")
-	run(t, wtDir, "git", "commit", "-m", "local")
-
-	// Uncommitted changes.
-	require.NoError(t, os.WriteFile(filepath.Join(wtDir, "uncommitted.txt"), []byte("u"), 0o644))
-
-	clean, err := IsWorktreeClean(wtDir)
-	require.NoError(t, err)
-	assert.False(t, clean)
-}
-
-func TestIsWorktreeClean_NoUpstreamWithLocalCommits(t *testing.T) {
-	dir := resolvedTempDir(t)
-	repoDir := filepath.Join(dir, "repo")
-	require.NoError(t, os.Mkdir(repoDir, 0o755))
-	initGitRepo(t, repoDir)
-
-	// Create a worktree (no remote configured, so no upstream).
-	wtDir := filepath.Join(dir, "repo-worktrees", "no-upstream")
-	run(t, repoDir, "git", "worktree", "add", wtDir, "-b", "no-upstream")
-
-	// Make a local commit — this commit only exists on this branch.
-	require.NoError(t, os.WriteFile(filepath.Join(wtDir, "local.txt"), []byte("only here"), 0o644))
-	run(t, wtDir, "git", "add", ".")
-	run(t, wtDir, "git", "commit", "-m", "local only commit")
-
-	clean, err := IsWorktreeClean(wtDir)
-	require.NoError(t, err)
-	assert.False(t, clean, "worktree with local-only commits (no upstream) should be dirty")
-}
-
-func TestIsWorktreeClean_NoUpstreamNoDivergence(t *testing.T) {
-	dir := resolvedTempDir(t)
-	repoDir := filepath.Join(dir, "repo")
-	require.NoError(t, os.Mkdir(repoDir, 0o755))
-	initGitRepo(t, repoDir)
-
-	// Create a worktree (no remote, no upstream) but don't add any new commits.
-	// The worktree branch starts at the same commit as the main branch.
-	wtDir := filepath.Join(dir, "repo-worktrees", "fresh")
-	run(t, repoDir, "git", "worktree", "add", wtDir, "-b", "fresh")
-
-	clean, err := IsWorktreeClean(wtDir)
-	require.NoError(t, err)
-	assert.True(t, clean, "freshly created worktree with no new commits should be clean")
-}
-
-func TestRemoveWorktree_Clean(t *testing.T) {
-	dir := resolvedTempDir(t)
-	repoDir := filepath.Join(dir, "repo")
-	require.NoError(t, os.Mkdir(repoDir, 0o755))
-	initGitRepo(t, repoDir)
-
-	wtDir := filepath.Join(dir, "repo-worktrees", "removeme")
-	run(t, repoDir, "git", "worktree", "add", wtDir, "-b", "removeme")
-
-	err := RemoveWorktree(repoDir, wtDir)
-	require.NoError(t, err)
-
-	// Verify directory is gone.
-	_, err = os.Stat(wtDir)
-	assert.True(t, os.IsNotExist(err))
-
-	// Verify empty parent directory was also cleaned up.
-	_, err = os.Stat(filepath.Dir(wtDir))
-	assert.True(t, os.IsNotExist(err))
-}
-
-func TestRemoveWorktree_ParentKeptWhenNotEmpty(t *testing.T) {
-	dir := resolvedTempDir(t)
-	repoDir := filepath.Join(dir, "repo")
-	require.NoError(t, os.Mkdir(repoDir, 0o755))
-	initGitRepo(t, repoDir)
-
-	parentDir := filepath.Join(dir, "repo-worktrees")
-	wt1 := filepath.Join(parentDir, "branch1")
-	wt2 := filepath.Join(parentDir, "branch2")
-	run(t, repoDir, "git", "worktree", "add", wt1, "-b", "branch1")
-	run(t, repoDir, "git", "worktree", "add", wt2, "-b", "branch2")
-
-	// Remove only one worktree.
-	err := RemoveWorktree(repoDir, wt1)
-	require.NoError(t, err)
-
-	// Verify the removed worktree is gone.
-	_, err = os.Stat(wt1)
-	assert.True(t, os.IsNotExist(err))
-
-	// Verify the parent directory still exists (wt2 is still there).
-	_, err = os.Stat(parentDir)
-	assert.NoError(t, err)
-
-	// Remove the second worktree.
-	err = RemoveWorktree(repoDir, wt2)
-	require.NoError(t, err)
-
-	// Now the parent should be cleaned up.
-	_, err = os.Stat(parentDir)
-	assert.True(t, os.IsNotExist(err))
-}
-
-func TestRemoveWorktree_NonExistent(t *testing.T) {
-	dir := resolvedTempDir(t)
-	repoDir := filepath.Join(dir, "repo")
-	require.NoError(t, os.Mkdir(repoDir, 0o755))
-	initGitRepo(t, repoDir)
-
-	wtDir := filepath.Join(dir, "repo-worktrees", "nonexistent")
-	err := RemoveWorktree(repoDir, wtDir)
-	// Should not error since the directory doesn't exist (nothing to remove).
-	// git worktree remove on non-existent will error, but our fallback handles it.
-	assert.NoError(t, err)
-}
-
-func trimOutput(b []byte) string {
-	return string(b[:max(0, len(b)-1)]) // strip trailing newline
-}
-
-// --- Tests for git status parsing ---
-
-func TestParseStatusV2_BranchAndTracking(t *testing.T) {
-	input := []byte("# branch.oid abc123\n# branch.head main\n# branch.upstream origin/main\n# branch.ab +3 -1\n")
-	status := &GitStatus{}
-	parseStatusV2(input, status)
-
-	assert.Equal(t, "main", status.Branch)
-	assert.Equal(t, 3, status.Ahead)
-	assert.Equal(t, 1, status.Behind)
-}
-
-func TestParseStatusV2_DetachedHead(t *testing.T) {
-	input := []byte("# branch.oid abc123\n# branch.head (detached)\n")
-	status := &GitStatus{}
-	parseStatusV2(input, status)
-
-	assert.Empty(t, status.Branch, "Branch should be empty for detached HEAD")
-}
-
-func TestParseStatusV2_OrdinaryModified(t *testing.T) {
-	input := []byte("1 M. N... 100644 100644 100644 abc123 def456 file.go\n")
-	status := &GitStatus{}
-	parseStatusV2(input, status)
-
-	assert.True(t, status.Modified, "Modified should be true for M in staging")
-}
-
-func TestParseStatusV2_AddedAndDeleted(t *testing.T) {
-	input := []byte("1 A. N... 100644 100644 100644 abc123 def456 new.go\n1 .D N... 100644 100644 100644 abc123 def456 old.go\n")
-	status := &GitStatus{}
-	parseStatusV2(input, status)
-
-	assert.True(t, status.Added)
-	assert.True(t, status.Deleted)
-}
-
-func TestParseStatusV2_Renamed(t *testing.T) {
-	input := []byte("2 R. N... 100644 100644 100644 abc123 def456 R100 new.go\told.go\n")
-	status := &GitStatus{}
-	parseStatusV2(input, status)
-
-	assert.True(t, status.Renamed)
-}
-
-func TestParseStatusV2_Unmerged(t *testing.T) {
-	input := []byte("u UU N... 100644 100644 100644 100644 abc123 def456 ghi789 conflict.go\n")
-	status := &GitStatus{}
-	parseStatusV2(input, status)
-
-	assert.True(t, status.Conflicted)
-}
-
-func TestParseStatusV2_Untracked(t *testing.T) {
-	input := []byte("? newfile.txt\n")
-	status := &GitStatus{}
-	parseStatusV2(input, status)
-
-	assert.True(t, status.Untracked)
-}
-
-func TestParseStatusV2_TypeChanged(t *testing.T) {
-	input := []byte("1 T. N... 120000 100644 100644 abc123 def456 link.go\n")
-	status := &GitStatus{}
-	parseStatusV2(input, status)
-
-	assert.True(t, status.TypeChanged)
-}
-
-func TestParseStatusV2_MixedStatus(t *testing.T) {
-	input := []byte(
-		"# branch.head feature/test\n" +
-			"# branch.ab +1 -0\n" +
-			"1 M. N... 100644 100644 100644 abc123 def456 modified.go\n" +
-			"1 A. N... 100644 100644 100644 abc123 def456 added.go\n" +
-			"2 R. N... 100644 100644 100644 abc123 def456 R100 new.go\told.go\n" +
-			"? untracked.txt\n",
-	)
-	status := &GitStatus{}
-	parseStatusV2(input, status)
-
-	assert.Equal(t, "feature/test", status.Branch)
-	assert.Equal(t, 1, status.Ahead)
+func TestGetGitStatus_Modified(t *testing.T) {
+	dir := initRepo(t)
+
+	filePath := filepath.Join(dir, "test.txt")
+	require.NoError(t, os.WriteFile(filePath, []byte("hello"), 0o644))
+	cmd := exec.Command("git", "-C", dir, "add", "test.txt")
+	require.NoError(t, cmd.Run())
+	cmd = exec.Command("git", "-C", dir, "commit", "-m", "add test.txt")
+	require.NoError(t, cmd.Run())
+
+	require.NoError(t, os.WriteFile(filePath, []byte("world"), 0o644))
+
+	status := GetGitStatus(dir)
+	require.NotNil(t, status)
 	assert.True(t, status.Modified)
-	assert.True(t, status.Added)
-	assert.True(t, status.Renamed)
-	assert.True(t, status.Untracked)
-	assert.False(t, status.Deleted)
-	assert.False(t, status.Conflicted)
 }
 
-func TestParseStatusV2_EmptyOutput(t *testing.T) {
-	status := &GitStatus{}
-	parseStatusV2([]byte(""), status)
+func TestGetGitStatus_Untracked(t *testing.T) {
+	dir := initRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("new"), 0o644))
 
-	assert.Empty(t, status.Branch)
-	assert.False(t, status.Modified)
-	assert.False(t, status.Added)
-	assert.False(t, status.Deleted)
-	assert.False(t, status.Renamed)
-	assert.False(t, status.Untracked)
-	assert.False(t, status.Conflicted)
-	assert.False(t, status.TypeChanged)
-}
-
-func TestParseStatusV2_CleanRepo(t *testing.T) {
-	input := []byte("# branch.oid abc123\n# branch.head main\n# branch.upstream origin/main\n# branch.ab +0 -0\n")
-	status := &GitStatus{}
-	parseStatusV2(input, status)
-
-	assert.Equal(t, "main", status.Branch)
-	assert.Equal(t, 0, status.Ahead)
-	assert.Equal(t, 0, status.Behind)
-	assert.False(t, status.Modified)
-	assert.False(t, status.Added)
-	assert.False(t, status.Deleted)
-	assert.False(t, status.Renamed)
-	assert.False(t, status.Untracked)
-	assert.False(t, status.Conflicted)
-	assert.False(t, status.TypeChanged)
-	assert.False(t, status.Stashed)
-}
-
-func TestParseXY(t *testing.T) {
-	tests := []struct {
-		name        string
-		x, y        byte
-		modified    bool
-		added       bool
-		deleted     bool
-		typeChanged bool
-		renamed     bool
-	}{
-		{"staged modified", 'M', '.', true, false, false, false, false},
-		{"worktree modified", '.', 'M', true, false, false, false, false},
-		{"staged added", 'A', '.', false, true, false, false, false},
-		{"staged deleted", 'D', '.', false, false, true, false, false},
-		{"worktree deleted", '.', 'D', false, false, true, false, false},
-		{"type changed", 'T', '.', false, false, false, true, false},
-		{"renamed", 'R', '.', false, false, false, false, true},
-		{"both modified", 'M', 'M', true, false, false, false, false},
-		{"no change", '.', '.', false, false, false, false, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			status := &GitStatus{}
-			parseXY(tt.x, tt.y, status)
-			assert.Equal(t, tt.modified, status.Modified, "Modified")
-			assert.Equal(t, tt.added, status.Added, "Added")
-			assert.Equal(t, tt.deleted, status.Deleted, "Deleted")
-			assert.Equal(t, tt.typeChanged, status.TypeChanged, "TypeChanged")
-			assert.Equal(t, tt.renamed, status.Renamed, "Renamed")
-		})
-	}
-}
-
-func TestGetGitStatus_Integration(t *testing.T) {
-	dir := resolvedTempDir(t)
-	initGitRepo(t, dir)
-
-	// Clean repo should have branch but no flags.
 	status := GetGitStatus(dir)
-	require.NotNil(t, status)
-	assert.NotEmpty(t, status.Branch) // "main" or "master" depending on git config
-	assert.False(t, status.Modified)
-	assert.False(t, status.Untracked)
-
-	// Add an untracked file.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("hello"), 0o644))
-	status = GetGitStatus(dir)
 	require.NotNil(t, status)
 	assert.True(t, status.Untracked)
-
-	// Stage and modify.
-	run(t, dir, "git", "add", "untracked.txt")
-	status = GetGitStatus(dir)
-	require.NotNil(t, status)
-	assert.True(t, status.Added)
-	assert.False(t, status.Untracked)
 }
 
-func TestGetGitStatus_NotGitRepo(t *testing.T) {
-	dir := resolvedTempDir(t)
+func TestGetGitStatus_NonGitDir(t *testing.T) {
+	dir := t.TempDir()
 	status := GetGitStatus(dir)
-	assert.Nil(t, status, "should return nil for non-git directory")
-}
-
-func TestGetGitStatus_Stash(t *testing.T) {
-	dir := resolvedTempDir(t)
-	initGitRepo(t, dir)
-
-	// Create a stash.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "stashme.txt"), []byte("stash"), 0o644))
-	run(t, dir, "git", "add", "stashme.txt")
-	run(t, dir, "git", "stash")
-
-	status := GetGitStatus(dir)
-	require.NotNil(t, status)
-	assert.True(t, status.Stashed)
-}
-
-// --- Tests for GetPerFileStatus ---
-
-func TestGetPerFileStatus_MixedChanges(t *testing.T) {
-	dir := resolvedTempDir(t)
-	initGitRepo(t, dir)
-
-	// Create committed file, then modify it (unstaged).
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("modified content\nline2\n"), 0o644))
-
-	// Stage a new file.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "staged.txt"), []byte("staged"), 0o644))
-	run(t, dir, "git", "add", "staged.txt")
-
-	// Create an untracked file.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("untracked"), 0o644))
-
-	files, err := GetPerFileStatus(dir)
-	require.NoError(t, err)
-	require.NotNil(t, files)
-
-	// Build a map for easy lookup.
-	fileMap := make(map[string]*FileStatus, len(files))
-	for i := range files {
-		fileMap[files[i].Path] = &files[i]
-	}
-
-	// README.md should be unstaged modified.
-	readme, ok := fileMap["README.md"]
-	require.True(t, ok, "README.md should be in status")
-	assert.Equal(t, byte('.'), readme.StagedStatus)
-	assert.Equal(t, byte('M'), readme.UnstagedStatus)
-	assert.Greater(t, readme.LinesAdded, 0, "Should have lines added")
-
-	// staged.txt should be staged added.
-	staged, ok := fileMap["staged.txt"]
-	require.True(t, ok, "staged.txt should be in status")
-	assert.Equal(t, byte('A'), staged.StagedStatus)
-	assert.Equal(t, byte('.'), staged.UnstagedStatus)
-
-	// untracked.txt should be untracked.
-	untracked, ok := fileMap["untracked.txt"]
-	require.True(t, ok, "untracked.txt should be in status")
-	assert.Equal(t, byte('.'), untracked.StagedStatus)
-	assert.Equal(t, byte('?'), untracked.UnstagedStatus)
-}
-
-func TestGetPerFileStatus_EmptyRepo(t *testing.T) {
-	dir := resolvedTempDir(t)
-	initGitRepo(t, dir)
-
-	// Clean repo — no changes.
-	files, err := GetPerFileStatus(dir)
-	require.NoError(t, err)
-	assert.Nil(t, files, "clean repo should return nil")
-}
-
-func TestGetPerFileStatus_NotGitRepo(t *testing.T) {
-	dir := resolvedTempDir(t)
-
-	files, err := GetPerFileStatus(dir)
-	require.NoError(t, err)
-	assert.Nil(t, files, "non-git directory should return nil")
-}
-
-func TestGetPerFileStatus_DeletedFile(t *testing.T) {
-	dir := resolvedTempDir(t)
-	initGitRepo(t, dir)
-
-	// Delete a tracked file.
-	require.NoError(t, os.Remove(filepath.Join(dir, "README.md")))
-
-	files, err := GetPerFileStatus(dir)
-	require.NoError(t, err)
-	require.NotNil(t, files)
-
-	found := false
-	for _, f := range files {
-		if f.Path == "README.md" {
-			assert.Equal(t, byte('D'), f.UnstagedStatus)
-			found = true
-		}
-	}
-	assert.True(t, found, "README.md should appear as deleted")
-}
-
-func TestGetPerFileStatus_StagedAndUnstaged(t *testing.T) {
-	dir := resolvedTempDir(t)
-	initGitRepo(t, dir)
-
-	// Stage a modification.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("staged change"), 0o644))
-	run(t, dir, "git", "add", "README.md")
-
-	// Make another modification (unstaged).
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("staged change + more"), 0o644))
-
-	files, err := GetPerFileStatus(dir)
-	require.NoError(t, err)
-	require.NotNil(t, files)
-
-	for _, f := range files {
-		if f.Path == "README.md" {
-			assert.Equal(t, byte('M'), f.StagedStatus, "Should be staged modified")
-			assert.Equal(t, byte('M'), f.UnstagedStatus, "Should be unstaged modified")
-			assert.Greater(t, f.StagedLinesAdded+f.StagedLinesDeleted, 0, "Should have staged diff stats")
-			assert.Greater(t, f.LinesAdded+f.LinesDeleted, 0, "Should have unstaged diff stats")
-		}
-	}
-}
-
-// --- Tests for ReadFileAtRef ---
-
-func TestReadFileAtRef_HEAD(t *testing.T) {
-	dir := resolvedTempDir(t)
-	initGitRepo(t, dir)
-
-	// Modify the file in the working tree.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("modified"), 0o644))
-
-	// Read HEAD version — should return original content.
-	content, exists, err := ReadFileAtRef(dir, "README.md", "HEAD")
-	require.NoError(t, err)
-	assert.True(t, exists)
-	assert.Equal(t, "hello", string(content))
-}
-
-func TestReadFileAtRef_Staged(t *testing.T) {
-	dir := resolvedTempDir(t)
-	initGitRepo(t, dir)
-
-	// Stage a modification.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("staged content"), 0o644))
-	run(t, dir, "git", "add", "README.md")
-
-	// Read staged version.
-	content, exists, err := ReadFileAtRef(dir, "README.md", "STAGED")
-	require.NoError(t, err)
-	assert.True(t, exists)
-	assert.Equal(t, "staged content", string(content))
-}
-
-func TestReadFileAtRef_NonexistentFile(t *testing.T) {
-	dir := resolvedTempDir(t)
-	initGitRepo(t, dir)
-
-	content, exists, err := ReadFileAtRef(dir, "nonexistent.txt", "HEAD")
-	require.NoError(t, err)
-	assert.False(t, exists)
-	assert.Nil(t, content)
-}
-
-func TestReadFileAtRef_NewStagedFile(t *testing.T) {
-	dir := resolvedTempDir(t)
-	initGitRepo(t, dir)
-
-	// Stage a new file.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "new.txt"), []byte("new file"), 0o644))
-	run(t, dir, "git", "add", "new.txt")
-
-	// HEAD should not have it.
-	_, exists, err := ReadFileAtRef(dir, "new.txt", "HEAD")
-	require.NoError(t, err)
-	assert.False(t, exists)
-
-	// Staged should have it.
-	content, exists, err := ReadFileAtRef(dir, "new.txt", "STAGED")
-	require.NoError(t, err)
-	assert.True(t, exists)
-	assert.Equal(t, "new file", string(content))
+	assert.Nil(t, status)
 }

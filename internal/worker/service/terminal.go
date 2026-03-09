@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
@@ -137,9 +138,18 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		// Register the terminal tab with the worktree.
 		svc.registerTabForWorktree(worktreeID, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID)
 
-		sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{
+		resp := &leapmuxv1.OpenTerminalResponse{
 			TerminalId: terminalID,
-		})
+		}
+		gitDir := shellStartDir
+		if gitDir == "" {
+			gitDir = workingDir
+		}
+		if gs := gitutil.GetGitStatus(gitDir); gs != nil {
+			resp.GitBranch = gs.Branch
+			resp.GitOriginUrl = gs.OriginURL
+		}
+		sendProtoResponse(sender, resp)
 	})
 
 	// CloseTerminal stops and removes a terminal session.
@@ -246,7 +256,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		var terminals []*leapmuxv1.TerminalInfo
 		for _, e := range entries {
 			seen[e.ID] = true
-			terminals = append(terminals, &leapmuxv1.TerminalInfo{
+			ti := &leapmuxv1.TerminalInfo{
 				TerminalId:    e.ID,
 				Cols:          e.Meta.Cols,
 				Rows:          e.Meta.Rows,
@@ -254,7 +264,9 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 				Exited:        e.Exited,
 				WorkingDir:    e.Meta.WorkingDir,
 				ShellStartDir: e.Meta.ShellStartDir,
-			})
+			}
+			populateTerminalGitInfo(ti, e.Meta.ShellStartDir)
+			terminals = append(terminals, ti)
 		}
 
 		// Also include terminals from the DB that have been removed from
@@ -267,7 +279,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 				if seen[ts.ID] {
 					continue
 				}
-				terminals = append(terminals, &leapmuxv1.TerminalInfo{
+				ti := &leapmuxv1.TerminalInfo{
 					TerminalId:    ts.ID,
 					Cols:          uint32(ts.Cols),
 					Rows:          uint32(ts.Rows),
@@ -275,7 +287,9 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 					Exited:        !svc.Terminals.HasTerminal(ts.ID),
 					WorkingDir:    ts.WorkingDir,
 					ShellStartDir: ts.ShellStartDir,
-				})
+				}
+				populateTerminalGitInfo(ti, ts.ShellStartDir)
+				terminals = append(terminals, ti)
 			}
 		}
 
@@ -331,4 +345,22 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			DefaultShell: filepath.Base(defaultShell),
 		})
 	})
+}
+
+// populateTerminalGitInfo fills in the git branch and origin URL fields on a TerminalInfo
+// from the terminal's shell start directory. Best-effort: fields are left empty if the
+// directory is not inside a git repo.
+func populateTerminalGitInfo(ti *leapmuxv1.TerminalInfo, shellStartDir string) {
+	dir := shellStartDir
+	if dir == "" {
+		dir = ti.WorkingDir
+	}
+	if dir == "" {
+		return
+	}
+	gs := gitutil.GetGitStatus(dir)
+	if gs != nil {
+		ti.GitBranch = gs.Branch
+		ti.GitOriginUrl = gs.OriginURL
+	}
 }

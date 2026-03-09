@@ -545,6 +545,20 @@ export const AppShell: ParentComponent = (props) => {
     workerInfoFn: workerInfoStore.workerInfo,
     channelStatusFn: workerChannelStatusStore.getStatus,
     onDeregisterWorker: (worker: Worker) => setDeregisterTarget(worker),
+    onTabClick: (type: number, id: string) => {
+      const tabType = type as TabType
+      tabStore.setActiveTab(tabType, id)
+      const tab = tabStore.state.tabs.find(t => t.type === tabType && t.id === id)
+      if (tab?.tileId) {
+        tabStore.setActiveTabForTile(tab.tileId, tabType, id)
+      }
+      if (tabType === TabType.AGENT) {
+        agentStore.setActiveAgent(id)
+      }
+      else if (tabType === TabType.TERMINAL) {
+        terminalStore.setActiveTerminal(id)
+      }
+    },
   })
 
   // Refresh git status only when workerId or workingDir actually changes

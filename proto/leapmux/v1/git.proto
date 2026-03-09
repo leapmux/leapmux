@@ -19,6 +19,7 @@ message GetGitInfoResponse {
   bool is_worktree_root = 6;  // True if the queried path IS a linked worktree root
   bool is_dirty = 7;          // True if the working directory has uncommitted changes
   string current_branch = 8;  // Current branch name of the working directory
+  string origin_url = 9;      // Remote origin URL
 }
 
 message ForceRemoveWorktreeRequest {
