@@ -5,7 +5,6 @@ import ArrowDown from 'lucide-solid/icons/arrow-down'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createEffect, createSignal, For, on, onCleanup, onMount, Show, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
-import { IconButton } from '~/components/common/IconButton'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { renderMarkdown } from '~/lib/renderMarkdown'
@@ -355,11 +354,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
           </Show>
         </div>
         <Show when={!atBottom()}>
-          <IconButton
-            icon={ArrowDown}
-            iconSize="md"
-            onClick={scrollToBottom}
-          />
+          <button type="button" class={`outline icon small ${styles.scrollToBottomButton}`} onClick={scrollToBottom}>
+            <Icon icon={ArrowDown} size="lg" />
+          </button>
         </Show>
       </div>
     </div>

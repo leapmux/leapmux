@@ -114,36 +114,20 @@ export const sendButtonDisabled = style({
   },
 })
 
+export const scrollToBottomButton = style({
+  position: 'absolute',
+  bottom: 'var(--space-3)',
+  left: '50%',
+  transform: 'translateX(-50%)',
+  zIndex: 10,
+})
+
 export const emptyChat = style({
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
   flex: 1,
   color: 'var(--faint-foreground)',
-})
-
-export const interruptButton = style({
-  'border': 'none',
-  'background': 'none',
-  'font': 'inherit',
-  'boxSizing': 'border-box',
-  'display': 'flex',
-  'alignItems': 'center',
-  'gap': 'var(--space-1)',
-  'padding': 'var(--space-1) var(--space-2)',
-  'fontSize': 'var(--text-7)',
-  'fontWeight': 400,
-  'borderRadius': 'var(--radius-small)',
-  'color': 'var(--muted-foreground)',
-  'cursor': 'pointer',
-  'vars': {
-    '--color-shift-from': 'var(--card)',
-    '--color-shift-to': 'var(--card)',
-  },
-  ':hover': {
-    backgroundColor: 'var(--card)',
-    color: 'var(--foreground)',
-  },
 })
 
 export const settingsTrigger = style({
