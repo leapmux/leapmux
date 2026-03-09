@@ -219,6 +219,7 @@ func runStandalone(args []string) error {
 			PrivateKey: privateKey,
 			PublicKey:  publicKey,
 			WorkerID:   state.WorkerID,
+			Version:    version,
 			DBMaxConns: dbMaxConns,
 		}); err != nil {
 			slog.Error("worker error", "error", err)

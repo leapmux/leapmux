@@ -128,11 +128,48 @@ export class ChannelManager {
   /** Workers whose keys were rejected by the user during this session. */
   private rejectedWorkers = new Set<string>()
 
+  // Observability hooks
+  private stateListeners = new Set<() => void>()
+  private errorListeners = new Set<(workerId: string, error: ChannelError) => void>()
+
   constructor(transport: ChannelTransport, opts?: ChannelManagerOpts) {
     this.transport = transport
     this.handshake1 = opts?.handshake1 ?? initiatorHandshake1
     this.handshake2 = opts?.handshake2 ?? initiatorHandshake2
     this.maxMessageSize = opts?.maxMessageSize ?? DEFAULT_MAX_MESSAGE_SIZE
+  }
+
+  /** Subscribe to channel state changes (open/close). Returns an unsubscribe function. */
+  onStateChange(cb: () => void): () => void {
+    this.stateListeners.add(cb)
+    return () => {
+      this.stateListeners.delete(cb)
+    }
+  }
+
+  /** Subscribe to non-transport channel errors. Returns an unsubscribe function. */
+  onChannelError(cb: (workerId: string, error: ChannelError) => void): () => void {
+    this.errorListeners.add(cb)
+    return () => {
+      this.errorListeners.delete(cb)
+    }
+  }
+
+  /** Check if any non-closed channel exists for a worker. */
+  hasOpenChannel(workerId: string): boolean {
+    for (const ch of this.channels.values()) {
+      if (ch.workerId === workerId && !ch.closed)
+        return true
+    }
+    return false
+  }
+
+  private notifyStateChange(): void {
+    for (const cb of this.stateListeners) cb()
+  }
+
+  private notifyError(workerId: string, error: ChannelError): void {
+    for (const cb of this.errorListeners) cb(workerId, error)
   }
 
   /**
@@ -212,6 +249,7 @@ export class ChannelManager {
       throw err
     }
 
+    this.notifyStateChange()
     return result.channelId
   }
 
@@ -237,6 +275,8 @@ export class ChannelManager {
     ch.reassembly.clear()
 
     this.channels.delete(channelId)
+
+    this.notifyStateChange()
 
     // Tell the Hub to clean up.
     try {
@@ -634,6 +674,7 @@ export class ChannelManager {
       ch.reassembly.clear()
       ch.closed = true
       this.channels.delete(channelId)
+      this.notifyStateChange()
       return
     }
 
@@ -723,7 +764,9 @@ export class ChannelManager {
         if (pending) {
           ch.pendingRequests.delete(msg.correlationId)
           if (resp.isError) {
-            pending.reject(new ChannelError('rpc', resp.errorMessage || `RPC error code ${resp.errorCode}`, resp.errorCode))
+            const err = new ChannelError('rpc', resp.errorMessage || `RPC error code ${resp.errorCode}`, resp.errorCode)
+            this.notifyError(ch.workerId, err)
+            pending.reject(err)
           }
           else {
             pending.resolve(resp)
@@ -746,7 +789,9 @@ export class ChannelManager {
         const listener = ch.streamListeners.get(msg.correlationId)
         if (listener) {
           if (streamMsg.isError) {
-            listener.onError(new ChannelError('stream', streamMsg.errorMessage || `stream error code ${streamMsg.errorCode}`, streamMsg.errorCode))
+            const err = new ChannelError('stream', streamMsg.errorMessage || `stream error code ${streamMsg.errorCode}`, streamMsg.errorCode)
+            this.notifyError(ch.workerId, err)
+            listener.onError(err)
             ch.streamListeners.delete(msg.correlationId)
           }
           else if (streamMsg.end) {
@@ -818,6 +863,8 @@ export class ChannelManager {
       ch.closed = true
       this.channels.delete(channelId)
     }
+
+    this.notifyStateChange()
   }
 }
 
