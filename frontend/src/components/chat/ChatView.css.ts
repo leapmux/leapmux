@@ -115,11 +115,18 @@ export const sendButtonDisabled = style({
 })
 
 export const scrollToBottomButton = style({
-  position: 'absolute',
-  bottom: 'var(--space-3)',
-  left: '50%',
-  transform: 'translateX(-50%)',
-  zIndex: 10,
+  'position': 'absolute',
+  'bottom': 'var(--space-3)',
+  'left': '50%',
+  'transform': 'translateX(-50%)',
+  'zIndex': 10,
+  'width': '36px',
+  'height': '36px',
+  'backgroundColor': 'var(--background)',
+  'opacity': 0.8,
+  ':hover': {
+    opacity: 1,
+  },
 })
 
 export const emptyChat = style({

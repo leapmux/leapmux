@@ -12,6 +12,7 @@ import { GitFileRef } from '~/generated/leapmux/v1/git_pb'
 import { detectFileViewMode, isImageExtension } from '~/lib/fileType'
 import { DiffModeToolbar } from './DiffModeToolbar'
 import * as styles from './FileViewer.css'
+import { TOOLBAR_CLEARANCE_PX } from './FileViewer.css'
 import { HexView } from './HexView'
 import { ImageFileView } from './ImageFileView'
 import { MarkdownFileView } from './MarkdownFileView'
@@ -283,7 +284,7 @@ export const FileViewer: Component<{
           </button>
         </div>
       </Show>
-      <div class={styles.content} ref={contentRef}>
+      <div class={`${styles.content}${showToolbar() || showOuterMention() ? ` ${styles.hasFloatingToolbar}` : ''}`} ref={contentRef}>
         <Show when={loading() || diffLoading()}>
           <div class={styles.loadingState}>Loading...</div>
         </Show>
@@ -355,6 +356,7 @@ export const FileViewer: Component<{
               <HexView
                 content={content()!}
                 totalSize={totalSize()}
+                topOffset={showToolbar() || showOuterMention() ? TOOLBAR_CLEARANCE_PX : 0}
               />
             </Show>
           </Show>

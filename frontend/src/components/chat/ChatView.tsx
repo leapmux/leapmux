@@ -354,7 +354,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
           </Show>
         </div>
         <Show when={!atBottom()}>
-          <button type="button" class={`outline icon small ${styles.scrollToBottomButton}`} onClick={scrollToBottom}>
+          <button type="button" class={`outline icon ${styles.scrollToBottomButton}`} onClick={scrollToBottom}>
             <Icon icon={ArrowDown} size="lg" />
           </button>
         </Show>

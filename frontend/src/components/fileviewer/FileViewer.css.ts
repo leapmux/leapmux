@@ -2,6 +2,10 @@ import { globalStyle, style } from '@vanilla-extract/css'
 import { codeViewContainer } from '~/components/chat/codeViewStyles.css'
 import { diffContainer, diffSplitContainer } from '~/components/chat/diffStyles.css'
 
+// Floating toolbar clearance: toolbar height (28px) + top offset + bottom gap.
+const toolbarClearance = 'calc(28px + var(--space-2) * 2)'
+export const TOOLBAR_CLEARANCE_PX = 44
+
 export const container = style({
   display: 'flex',
   flexDirection: 'column',
@@ -16,11 +20,19 @@ export const content = style({
   minHeight: 0,
 })
 
+// Marker class applied to `content` when an outer floating toolbar is visible.
+export const hasFloatingToolbar = style({})
+
 // Remove border/margin from diff views when used inside the file viewer.
 globalStyle(`${content} ${diffContainer}, ${content} ${diffSplitContainer}`, {
   border: 'none',
   borderRadius: 0,
   marginTop: 0,
+})
+
+// Add toolbar clearance to diff views when an outer toolbar is present.
+globalStyle(`${hasFloatingToolbar} ${diffContainer}, ${hasFloatingToolbar} ${diffSplitContainer}`, {
+  paddingTop: toolbarClearance,
 })
 
 export const statusBar = style({
@@ -125,6 +137,12 @@ globalStyle(`${textViewContainer} ${codeViewContainer}`, {
   paddingBlock: 'var(--space-2)',
 })
 
+// Add toolbar clearance to code view when an outer toolbar is present
+// (direct child only — excludes text views nested inside toggleViewContainer).
+globalStyle(`${hasFloatingToolbar} > ${textViewContainer} ${codeViewContainer}`, {
+  paddingTop: toolbarClearance,
+})
+
 // Container for views that have a render/source toggle (markdown, SVG)
 export const toggleViewContainer = style({
   position: 'relative',
@@ -179,7 +197,8 @@ export const viewToggleActive = style({
 })
 
 export const markdownContainer = style({
-  padding: 'var(--space-4)',
+  boxSizing: 'border-box',
+  padding: `${toolbarClearance} var(--space-4) var(--space-4)`,
   overflow: 'auto',
   height: '100%',
 })
@@ -216,6 +235,19 @@ globalStyle(`${splitPane} ${codeViewContainer}`, {
   marginTop: 0,
   overflow: 'visible',
   paddingBlock: 'var(--space-2)',
+})
+
+// Add toolbar clearance inside toggleViewContainer (ViewToggle always present).
+globalStyle(`${toggleViewContainer} ${splitPaneMarkdown}`, {
+  paddingTop: toolbarClearance,
+})
+
+globalStyle(`${toggleViewContainer} ${splitPane} ${codeViewContainer}`, {
+  paddingTop: toolbarClearance,
+})
+
+globalStyle(`${toggleViewContainer} > ${textViewContainer} ${codeViewContainer}`, {
+  paddingTop: toolbarClearance,
 })
 
 // Floating toolbar for image zoom controls (top-left)
@@ -312,7 +344,7 @@ export const imageZoomWrapper = style({
   minWidth: '100%',
   minHeight: '100%',
   width: 'max-content',
-  padding: 'var(--space-4)',
+  padding: `${toolbarClearance} var(--space-4) var(--space-4)`,
 })
 
 // Checkerboard transparency pattern + border for images
