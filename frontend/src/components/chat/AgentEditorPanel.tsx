@@ -151,7 +151,6 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     props,
     askState,
     () => editorContentRef,
-    setHasContent,
     resetEditorHeight,
   )
 

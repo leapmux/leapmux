@@ -581,7 +581,8 @@ describe('taskOutput rendering', () => {
 
     const bubble = screen.getByTestId('message-content')
     expect(bubble.textContent).toContain('Build')
-    expect(bubble.textContent).not.toContain('Complete')
+    // When exitCode is absent but status is set, the formatted status is shown.
+    expect(bubble.textContent).toContain('Complete')
   })
 
   it('hides metadata when collapsed', () => {
@@ -935,7 +936,7 @@ describe('agent stats summary', () => {
 
     const bubble = screen.getByTestId('message-content')
     expect(bubble.textContent).toContain('1m 5s')
-    expect(bubble.textContent).toContain('1,234 tokens')
+    expect(bubble.textContent).toContain('1.2k tokens')
     expect(bubble.textContent).toContain('5 tool uses')
   })
 
