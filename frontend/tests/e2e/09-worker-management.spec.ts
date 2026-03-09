@@ -1,42 +1,29 @@
 import { expect, test } from './fixtures'
-import { loginViaUI } from './helpers/ui'
 
 test.describe('Worker Management', () => {
-  test('should show Workers link in user menu and navigate to page', async ({ page }) => {
-    await loginViaUI(page)
-    // Click the user menu trigger
-    await page.getByTestId('user-menu-trigger').first().click()
-    // Workers menu item should be visible
-    const workersItem = page.getByRole('menuitem', { name: 'Workers' })
-    await expect(workersItem).toBeVisible()
-    await workersItem.click()
-    // Should navigate to workers page
-    await expect(page).toHaveURL(/\/o\/admin\/workers/)
-    await expect(page.getByRole('heading', { name: 'Workers' })).toBeVisible()
+  test('should show Workers section with registered worker', async ({ page, authenticatedWorkspace }) => {
+    // Workers section should be visible in the sidebar
+    const workersSection = page.getByTestId('section-header-workers')
+    await expect(workersSection).toBeVisible()
+
+    // Expand the section if collapsed
+    const isOpen = await workersSection.evaluate((el: HTMLDetailsElement) => el.open)
+    if (!isOpen)
+      await workersSection.locator('> summary').click()
+
+    // Should contain the worker named "Local" (standalone sets LEAPMUX_WORKER_NAME=Local)
+    await expect(workersSection.getByText('Local')).toBeVisible()
   })
 
-  test('should show My Workers section with registered worker', async ({ page }) => {
-    await loginViaUI(page)
-    await page.goto('/o/admin/workers')
-    await expect(page.getByRole('heading', { name: 'Workers' })).toBeVisible()
+  test('should show green status dot for online worker', async ({ page, authenticatedWorkspace }) => {
+    const workersSection = page.getByTestId('section-header-workers')
+    await expect(workersSection).toBeVisible()
 
-    // My Workers section should exist
-    const ownedSection = page.getByTestId('worker-section-owned')
-    await expect(ownedSection).toBeVisible()
-    await expect(ownedSection.getByText('My Workers')).toBeVisible()
+    const isOpen = await workersSection.evaluate((el: HTMLDetailsElement) => el.open)
+    if (!isOpen)
+      await workersSection.locator('> summary').click()
 
-    // Should contain the worker card with name fetched via E2EE
-    // (standalone sets LEAPMUX_WORKER_NAME=Local in E2E fixtures)
-    await expect(ownedSection.getByTestId('worker-name').filter({ hasText: 'Local' })).toBeVisible()
-  })
-
-  test('should show worker status badge', async ({ page }) => {
-    await loginViaUI(page)
-    await page.goto('/o/admin/workers')
-    await expect(page.getByRole('heading', { name: 'Workers' })).toBeVisible()
-
-    const card = page.getByTestId('worker-card').first()
-    // Status badge should show Online or Offline
-    await expect(card.getByTestId('worker-status')).toBeVisible()
+    // The status dot should indicate "connected"
+    await expect(workersSection.locator('[data-status="connected"]')).toBeVisible()
   })
 })

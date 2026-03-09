@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/knadh/koanf/v2"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
@@ -20,16 +21,30 @@ const (
 	defaultConfigDir  = "~/.config/leapmux/worker"
 	defaultConfigFile = "~/.config/leapmux/worker/worker.yaml"
 	defaultLogLevel   = "info"
+
+	// DefaultAgentStartupTimeoutSeconds is the default timeout (in seconds) for
+	// agent startup handshake. Must match the hub's default.
+	DefaultAgentStartupTimeoutSeconds = 30
 )
 
 // Config holds the worker's runtime configuration.
 type Config struct {
-	HubURL         string `koanf:"hub" json:"hub_url"`
-	Name           string `koanf:"name" json:"name"`
-	DataDir        string `koanf:"data_dir" json:"data_dir"`
-	DBMaxConns     int    `koanf:"db_max_conns" json:"db_max_conns"`
-	MaxMessageSize int    `koanf:"max_message_size" json:"max_message_size"`
-	LogLevel       string `koanf:"log_level" json:"log_level"`
+	HubURL                     string `koanf:"hub" json:"hub_url"`
+	Name                       string `koanf:"name" json:"name"`
+	DataDir                    string `koanf:"data_dir" json:"data_dir"`
+	DBMaxConns                 int    `koanf:"db_max_conns" json:"db_max_conns"`
+	MaxMessageSize             int    `koanf:"max_message_size" json:"max_message_size"`
+	AgentStartupTimeoutSeconds int    `koanf:"agent_startup_timeout_seconds" json:"agent_startup_timeout_seconds"`
+	LogLevel                   string `koanf:"log_level" json:"log_level"`
+}
+
+// AgentStartupTimeout returns the agent startup timeout as a duration.
+func (c *Config) AgentStartupTimeout() time.Duration {
+	v := c.AgentStartupTimeoutSeconds
+	if v <= 0 {
+		v = DefaultAgentStartupTimeoutSeconds
+	}
+	return time.Duration(v) * time.Second
 }
 
 // State holds the worker's persistent state (saved to disk after registration).
@@ -82,6 +97,7 @@ func Load(args []string) (*Config, bool, error) {
 	fs.String("data-dir", ".", "data directory")
 	fs.Int("db-max-conns", workerdb.DefaultMaxConns, "maximum number of open database connections")
 	fs.Int("max-message-size", 0, "maximum reassembled channel message size in bytes (default 16 MiB)")
+	fs.Int("agent-startup-timeout-seconds", DefaultAgentStartupTimeoutSeconds, "agent startup timeout in seconds")
 	fs.String("log-level", defaultLogLevel, "log level (debug, info, warn, error)")
 	showVersion := fs.Bool("version", false, "print version and exit")
 
@@ -95,21 +111,23 @@ func Load(args []string) (*Config, bool, error) {
 
 	// Flag name -> koanf key mapping.
 	fieldMap := map[string]string{
-		"hub":              "hub",
-		"name":             "name",
-		"data-dir":         "data_dir",
-		"db-max-conns":     "db_max_conns",
-		"max-message-size": "max_message_size",
-		"log-level":        "log_level",
+		"hub":                           "hub",
+		"name":                          "name",
+		"data-dir":                      "data_dir",
+		"db-max-conns":                  "db_max_conns",
+		"max-message-size":              "max_message_size",
+		"agent-startup-timeout-seconds": "agent_startup_timeout_seconds",
+		"log-level":                     "log_level",
 	}
 
 	defaults := map[string]interface{}{
-		"hub":              defaultHubURL,
-		"name":             "",
-		"data_dir":         ".",
-		"db_max_conns":     workerdb.DefaultMaxConns,
-		"max_message_size": 0,
-		"log_level":        defaultLogLevel,
+		"hub":                           defaultHubURL,
+		"name":                          "",
+		"data_dir":                      ".",
+		"db_max_conns":                  workerdb.DefaultMaxConns,
+		"max_message_size":              0,
+		"agent_startup_timeout_seconds": DefaultAgentStartupTimeoutSeconds,
+		"log_level":                     defaultLogLevel,
 	}
 
 	k := koanf.New(".")

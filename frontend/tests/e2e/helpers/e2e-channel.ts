@@ -114,5 +114,7 @@ async function fetchUserId(hubUrl: string, token: string): Promise<string> {
 /** Create a ChannelManager with a fetch-based transport for e2e tests. */
 export async function createTestChannelManager(hubUrl: string, token: string): Promise<ChannelManager> {
   const userId = await fetchUserId(hubUrl, token)
-  return new ChannelManager(new FetchChannelTransport(hubUrl, token, userId))
+  // Use a longer RPC timeout for e2e tests since OpenAgent spawns a subprocess
+  // that can take up to 30s to start, and the E2EE round-trip adds overhead.
+  return new ChannelManager(new FetchChannelTransport(hubUrl, token, userId), { rpcTimeout: 60_000 })
 }

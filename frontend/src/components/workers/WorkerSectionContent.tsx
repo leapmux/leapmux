@@ -32,6 +32,7 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
             <div class={listStyles.item}>
               <div
                 class={`${styles.statusDot} ${statusClass[props.channelStatus(worker.id)]}`}
+                data-status={props.channelStatus(worker.id)}
               />
               <span class={listStyles.itemTitle}>
                 {props.workerInfo(worker.id)?.name ?? '\u2014'}

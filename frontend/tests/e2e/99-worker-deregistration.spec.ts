@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { approveRegistrationViaAPI, deregisterWorkerViaAPI } from './helpers/api'
 import { loginViaUI } from './helpers/ui'
-import { expect, processTest as test } from './process-control-fixtures'
+import { expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 // This file spawns its own temporary worker so that deregistering it
 // does not affect the main worker used by other tests in this file.
@@ -16,6 +16,38 @@ function extractRegistrationToken(output: string): string | null {
   const jsonMatch = output.match(/"token"\s*:\s*"([^"]+)"/)
   const urlMatch = output.match(/\/register\/(\S+)/)
   return jsonMatch?.[1] ?? urlMatch?.[1] ?? null
+}
+
+/**
+ * Navigate to a workspace and expand the Workers sidebar section.
+ * Returns the workers section locator.
+ */
+async function openWorkersSidebar(page: import('@playwright/test').Page) {
+  await loginViaUI(page)
+  const workersSection = page.getByTestId('section-header-workers')
+  await expect(workersSection).toBeVisible()
+  // Expand the section if collapsed by checking the DOM open property
+  const isOpen = await workersSection.evaluate((el: HTMLDetailsElement) => el.open)
+  if (!isOpen)
+    await workersSection.locator('> summary').click()
+  // Wait for content to be visible
+  await expect(workersSection.locator('[class*="sectionItems"]')).toBeVisible()
+  return workersSection
+}
+
+/**
+ * Find a worker item by name within the Workers section and open its context menu.
+ */
+async function openWorkerContextMenu(
+  page: import('@playwright/test').Page,
+  workersSection: import('@playwright/test').Locator,
+  workerName: string,
+) {
+  const workerItem = workersSection.getByText(workerName).locator('..')
+  await expect(workerItem).toBeVisible()
+  await workerItem.hover()
+  await workerItem.locator('button[aria-expanded]').click()
+  return workerItem
 }
 
 test.describe('Worker Deregistration', () => {
@@ -93,16 +125,10 @@ test.describe('Worker Deregistration', () => {
   })
 
   test('should show confirmation dialog with worker details', async ({ page }) => {
-    await loginViaUI(page)
-    await page.goto('/o/admin/workers')
-    await expect(page.getByRole('heading', { name: 'Workers' })).toBeVisible()
+    const workersSection = await openWorkersSidebar(page)
 
-    // Find the deregister-test-worker card and open its context menu
-    const card = page.locator('[data-testid="worker-card"]').filter({
-      has: page.getByTestId('worker-name').filter({ hasText: 'deregister-test-worker' }),
-    })
-    await expect(card).toBeVisible()
-    await card.getByTestId('worker-menu-trigger').click()
+    // Open context menu for the temp worker and click Deregister
+    await openWorkerContextMenu(page, workersSection, 'deregister-test-worker')
     await page.getByRole('menuitem', { name: 'Deregister' }).click()
 
     // Confirmation dialog should appear
@@ -120,18 +146,10 @@ test.describe('Worker Deregistration', () => {
   })
 
   test('should cancel deregistration', async ({ page }) => {
-    await loginViaUI(page)
-    await page.goto('/o/admin/workers')
-    await expect(page.getByRole('heading', { name: 'Workers' })).toBeVisible()
-
-    // Find the deregister-test-worker card
-    const card = page.locator('[data-testid="worker-card"]').filter({
-      has: page.getByTestId('worker-name').filter({ hasText: 'deregister-test-worker' }),
-    })
-    await expect(card).toBeVisible()
+    const workersSection = await openWorkersSidebar(page)
 
     // Open deregister dialog
-    await card.getByTestId('worker-menu-trigger').click()
+    await openWorkerContextMenu(page, workersSection, 'deregister-test-worker')
     await page.getByRole('menuitem', { name: 'Deregister' }).click()
     await expect(page.getByTestId('worker-settings-dialog')).toBeVisible()
 
@@ -140,22 +158,14 @@ test.describe('Worker Deregistration', () => {
     await expect(page.getByTestId('worker-settings-dialog')).not.toBeVisible()
 
     // Worker should still be visible
-    await expect(page.getByTestId('worker-name').filter({ hasText: 'deregister-test-worker' })).toBeVisible()
+    await expect(workersSection.getByText('deregister-test-worker')).toBeVisible()
   })
 
   test('should deregister worker after confirmation', async ({ page }) => {
-    await loginViaUI(page)
-    await page.goto('/o/admin/workers')
-    await expect(page.getByRole('heading', { name: 'Workers' })).toBeVisible()
-
-    // Find the deregister-test-worker card
-    const card = page.locator('[data-testid="worker-card"]').filter({
-      has: page.getByTestId('worker-name').filter({ hasText: 'deregister-test-worker' }),
-    })
-    await expect(card).toBeVisible()
+    const workersSection = await openWorkersSidebar(page)
 
     // Open deregister dialog
-    await card.getByTestId('worker-menu-trigger').click()
+    await openWorkerContextMenu(page, workersSection, 'deregister-test-worker')
     await page.getByRole('menuitem', { name: 'Deregister' }).click()
     await expect(page.getByTestId('worker-settings-dialog')).toBeVisible()
 
@@ -166,18 +176,47 @@ test.describe('Worker Deregistration', () => {
     await expect(page.getByTestId('worker-settings-dialog')).not.toBeVisible()
 
     // The deregister-test-worker should disappear from the list
-    await expect(page.getByTestId('worker-name').filter({ hasText: 'deregister-test-worker' })).not.toBeVisible()
+    await expect(workersSection.getByText('deregister-test-worker')).not.toBeVisible()
 
     // Mark as deregistered so afterAll doesn't try again
     tempWorkerId = undefined
   })
 
   test('should still show main worker after deregistration of temp worker', async ({ page }) => {
-    await loginViaUI(page)
-    await page.goto('/o/admin/workers')
-    await expect(page.getByRole('heading', { name: 'Workers' })).toBeVisible()
+    const workersSection = await openWorkersSidebar(page)
 
     // The main test-worker should still be visible
-    await expect(page.getByText('test-worker', { exact: true })).toBeVisible()
+    await expect(workersSection.getByText('test-worker', { exact: true })).toBeVisible()
+  })
+})
+
+test.describe('Worker Status Indicator', () => {
+  test('should show red status dot when worker goes offline and green when back online', async ({ page, separateHubWorker }) => {
+    const workersSection = await openWorkersSidebar(page)
+
+    // Worker should initially be connected (green)
+    await expect(workersSection.locator('[data-status="connected"]')).toBeVisible()
+
+    // Stop the worker
+    await stopWorker()
+    await waitForWorkerOffline(separateHubWorker.hubUrl, separateHubWorker.adminToken)
+
+    // Status dot should change to disconnected (red)
+    await expect(workersSection.locator('[data-status="disconnected"]')).toBeVisible({ timeout: 15_000 })
+
+    // Restart the worker
+    await restartWorker(separateHubWorker)
+
+    // Reload the page so the frontend re-fetches workers and re-establishes
+    // E2EE channels (channel status reflects E2EE state, not backend online/offline).
+    await page.reload()
+    const refreshedSection = page.getByTestId('section-header-workers')
+    await expect(refreshedSection).toBeVisible()
+    const reopened = await refreshedSection.evaluate((el: HTMLDetailsElement) => el.open)
+    if (!reopened)
+      await refreshedSection.locator('> summary').click()
+
+    // Status dot should change back to connected (green)
+    await expect(refreshedSection.locator('[data-status="connected"]')).toBeVisible({ timeout: 15_000 })
   })
 })

@@ -26,6 +26,10 @@ describe('isMoveTargetSection', () => {
   it('returns false for TODOS', () => {
     expect(isMoveTargetSection(SectionType.TODOS)).toBe(false)
   })
+
+  it('returns false for WORKERS', () => {
+    expect(isMoveTargetSection(SectionType.WORKERS)).toBe(false)
+  })
 })
 
 describe('isWorkspaceMutatable', () => {

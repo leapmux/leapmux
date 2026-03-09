@@ -45,32 +45,33 @@ test.describe('Resizable Sidebars', () => {
     const boxAfter = (await handle.boundingBox())!
     expect(boxAfter.x).toBeGreaterThan(boxBefore.x)
   })
-
-  test('should hide right panel on non-workspace routes', async ({ page, authenticatedWorkspace }) => {
-    // Navigate to workers page (inside AppShell but not a workspace route)
-    await page.goto('/o/admin/workers')
-    await expect(page.getByRole('heading', { name: 'Workers' })).toBeVisible()
-
-    // Right sidebar (Files) should not be visible
-    await expect(page.locator('[data-testid="section-header-files-summary"]')).not.toBeVisible()
-
-    // Only 1 resize handle should exist (left|center)
-    const handles = page.locator('[data-testid="resize-handle"]')
-    await expect(handles).toHaveCount(0)
-  })
 })
 
 test.describe('Pane Resize Handles', () => {
   /**
-   * Helper to ensure both In Progress and Archived sections are expanded,
-   * so that a pane resize handle appears between them.
+   * Helper to ensure only In Progress and Archived sections are expanded,
+   * so that exactly one pane resize handle appears between them.
+   * Collapses any other open sections (e.g., Workers) first.
    */
-  async function ensureBothSectionsExpanded(page: any) {
+  async function ensureOnlyTwoSectionsExpanded(page: any) {
     const inProgress = page.locator('[data-testid="section-header-workspaces_in_progress"]')
     const archived = page.locator('[data-testid="section-header-workspaces_archived"]')
 
     await expect(inProgress).toBeVisible()
     await expect(archived).toBeVisible()
+
+    // Collapse any other open sections (Workers, etc.) to isolate the test
+    const allSections = page.locator('[data-testid^="section-header-"]:not([data-testid$="-summary"])')
+    const count = await allSections.count()
+    for (let i = 0; i < count; i++) {
+      const section = allSections.nth(i)
+      const testId = await section.getAttribute('data-testid')
+      if (testId === 'section-header-workspaces_in_progress' || testId === 'section-header-workspaces_archived')
+        continue
+      const isOpen = await section.evaluate((el: HTMLDetailsElement) => el.open)
+      if (isOpen)
+        await section.locator('> summary').click()
+    }
 
     // Ensure In Progress is expanded (it should be by default, but check)
     const inProgressIsOpen = await inProgress.evaluate((el: HTMLDetailsElement) => el.open)
@@ -82,12 +83,12 @@ test.describe('Pane Resize Handles', () => {
     if (!archivedIsOpen)
       await archived.locator('> summary').click()
 
-    // Wait for resize handle to appear
+    // Wait for exactly one resize handle between the two sections
     await expect(page.locator('[data-testid="pane-resize-handle"]')).toHaveCount(1)
   }
 
   test('should show pane resize handle between expanded left sidebar sections', async ({ page, authenticatedWorkspace }) => {
-    await ensureBothSectionsExpanded(page)
+    await ensureOnlyTwoSectionsExpanded(page)
 
     // Verify the pane resize handle is between the two sections
     const paneHandles = page.locator('[data-testid="pane-resize-handle"]')
@@ -95,7 +96,7 @@ test.describe('Pane Resize Handles', () => {
   })
 
   test('should resize left sidebar panes via drag', async ({ page, authenticatedWorkspace }) => {
-    await ensureBothSectionsExpanded(page)
+    await ensureOnlyTwoSectionsExpanded(page)
 
     // Let layout settle
     await page.waitForTimeout(500)
@@ -123,7 +124,7 @@ test.describe('Pane Resize Handles', () => {
   })
 
   test('should hide pane resize handle when only one section is open', async ({ page, authenticatedWorkspace }) => {
-    await ensureBothSectionsExpanded(page)
+    await ensureOnlyTwoSectionsExpanded(page)
 
     // Collapse Archived section
     await page.locator('[data-testid="section-header-workspaces_archived"] > summary').click()
@@ -133,7 +134,7 @@ test.describe('Pane Resize Handles', () => {
   })
 
   test('should reset pane sizes on double-click', async ({ page, authenticatedWorkspace }) => {
-    await ensureBothSectionsExpanded(page)
+    await ensureOnlyTwoSectionsExpanded(page)
 
     // Let layout settle
     await page.waitForTimeout(500)
@@ -170,19 +171,24 @@ test.describe('Pane Resize Handles', () => {
 
   test('should not show pane resize handle above user menu', async ({ page, authenticatedWorkspace }) => {
     // The user menu is a railOnly section at the bottom — it should never
-    // get a resize handle. Verify by ensuring only 1 section is open and
+    // get a resize handle. Verify by ensuring only In Progress is open and
     // confirming no pane handles exist despite user menu being present.
 
     await expect(page.locator('[data-testid="section-header-workspaces_in_progress"]')).toBeVisible()
 
-    // Ensure Archived is collapsed so only In Progress is open
-    const archived = page.locator('[data-testid="section-header-workspaces_archived"]')
-    await expect(archived).toBeVisible()
-    const archivedOpen = await archived.getAttribute('open')
-    if (archivedOpen !== null) {
-      await archived.locator('> summary').click()
-      await page.waitForTimeout(200)
+    // Collapse all sections except In Progress
+    const allSections = page.locator('[data-testid^="section-header-"]:not([data-testid$="-summary"])')
+    const count = await allSections.count()
+    for (let i = 0; i < count; i++) {
+      const section = allSections.nth(i)
+      const testId = await section.getAttribute('data-testid')
+      if (testId === 'section-header-workspaces_in_progress')
+        continue
+      const isOpen = await section.evaluate((el: HTMLDetailsElement) => el.open)
+      if (isOpen)
+        await section.locator('> summary').click()
     }
+    await page.waitForTimeout(200)
 
     // With only In Progress open, there should be no pane handles
     await expect(page.locator('[data-testid="pane-resize-handle"]')).toHaveCount(0)

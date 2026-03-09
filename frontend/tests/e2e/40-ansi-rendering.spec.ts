@@ -43,16 +43,19 @@ test.describe('ANSI Escape Sequence Rendering', () => {
     // Approve the Bash tool execution if a control banner appears
     await allowToolExecutionIfNeeded(page)
 
-    // Wait for the agent's turn to finish (indicated by the turn duration marker).
-    await expect(page.locator('[data-testid="message-content"]').last()).toBeVisible({ timeout: 60_000 })
+    // Wait for the agent's turn to finish. The "Took Xs" marker appears after all
+    // tool bubbles have been rendered, so this ensures expand buttons are available.
+    await expect(page.getByText(/Took \d+/)).toBeVisible({ timeout: 60_000 })
 
-    // If the tool result is collapsed, expand it so the ANSI output becomes visible.
-    const expandBtn = page.getByRole('button', { name: /Expand.*tool result/ })
-    if (await expandBtn.isVisible().catch(() => false)) {
-      await expandBtn.click()
+    // The agent may invoke ToolSearch before Bash, creating multiple tool bubbles
+    // with separate "Expand" buttons. Expand ALL collapsed tool results so the
+    // Bash output is visible regardless of ordering.
+    // Click one at a time since clicking changes the button to "Collapse".
+    while (await page.getByRole('button', { name: /Expand.*tool result/ }).first().isVisible().catch(() => false)) {
+      await page.getByRole('button', { name: /Expand.*tool result/ }).first().click()
     }
 
-    // The ANSI-rendered content will have a pre.shiki element inside the thread child bubble
+    // The ANSI-rendered content will have a pre.shiki element inside a thread child bubble
     // (tool results render outside [data-testid="message-content"]).
     // If the tool output doesn't contain ANSI codes, it may render as a plain <code> element instead.
     // Use a combined locator to wait for whichever element appears first, avoiding

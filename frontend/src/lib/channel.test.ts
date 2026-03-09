@@ -462,15 +462,15 @@ describe('channelManager', () => {
       expect(resp2.payload).toEqual(new Uint8Array([20]))
     })
 
-    it('should timeout after 30s', async () => {
+    it('should timeout after default rpcTimeout (10s)', async () => {
       vi.useFakeTimers()
       try {
         const channelId = await openTestChannel('w1')
         const callPromise = mgr.call(channelId, 'SlowMethod', new Uint8Array())
 
-        vi.advanceTimersByTime(30_000)
+        vi.advanceTimersByTime(10_000)
 
-        await expect(callPromise).rejects.toThrow('timed out after 30s')
+        await expect(callPromise).rejects.toThrow('timed out after 10s')
       }
       finally {
         vi.useRealTimers()

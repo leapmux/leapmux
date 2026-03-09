@@ -49,6 +49,25 @@ func (s *SectionService) ListSections(
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
+	// Ensure Workers section exists for users created before it became a server-side section.
+	hasWorkers := false
+	for _, sec := range sections {
+		if sec.SectionType == leapmuxv1.SectionType_SECTION_TYPE_WORKERS {
+			hasWorkers = true
+			break
+		}
+	}
+	if !hasWorkers {
+		if err := s.createWorkersSection(ctx, user.ID, sections); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create workers section: %w", err))
+		}
+		// Re-fetch to include the new section.
+		sections, err = s.queries.ListWorkspaceSectionsByUserID(ctx, user.ID)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+	}
+
 	items, err := s.queries.ListWorkspaceSectionItemsByUser(ctx, user.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -307,6 +326,8 @@ func (s *SectionService) initDefaultSections(ctx context.Context, userID string)
 	sharedPos := lexorank.After(inProgressPos)
 	archivedPos := lexorank.After(sharedPos)
 
+	workersPos := lexorank.After(archivedPos)
+
 	// Right sidebar sections
 	filesPos := lexorank.First()
 	todosPos := lexorank.After(filesPos)
@@ -347,6 +368,17 @@ func (s *SectionService) initDefaultSections(ctx context.Context, userID string)
 	if err := s.queries.CreateWorkspaceSection(ctx, db.CreateWorkspaceSectionParams{
 		ID:          id.Generate(),
 		UserID:      userID,
+		Name:        "Workers",
+		Position:    workersPos,
+		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKERS,
+		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
+	}); err != nil {
+		return err
+	}
+
+	if err := s.queries.CreateWorkspaceSection(ctx, db.CreateWorkspaceSectionParams{
+		ID:          id.Generate(),
+		UserID:      userID,
 		Name:        "Files",
 		Position:    filesPos,
 		SectionType: leapmuxv1.SectionType_SECTION_TYPE_FILES,
@@ -367,4 +399,31 @@ func (s *SectionService) initDefaultSections(ctx context.Context, userID string)
 	}
 
 	return nil
+}
+
+// createWorkersSection creates a Workers section for an existing user.
+// It is positioned after the last left-sidebar section.
+func (s *SectionService) createWorkersSection(ctx context.Context, userID string, sections []db.WorkspaceSection) error {
+	var lastLeftPos string
+	for _, sec := range sections {
+		if sec.Sidebar == leapmuxv1.Sidebar_SIDEBAR_LEFT && sec.Position > lastLeftPos {
+			lastLeftPos = sec.Position
+		}
+	}
+
+	var position string
+	if lastLeftPos != "" {
+		position = lexorank.After(lastLeftPos)
+	} else {
+		position = lexorank.First()
+	}
+
+	return s.queries.CreateWorkspaceSection(ctx, db.CreateWorkspaceSectionParams{
+		ID:          id.Generate(),
+		UserID:      userID,
+		Name:        "Workers",
+		Position:    position,
+		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKERS,
+		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
+	})
 }

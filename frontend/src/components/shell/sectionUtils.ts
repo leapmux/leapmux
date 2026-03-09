@@ -5,6 +5,7 @@ import Folder from 'lucide-solid/icons/folder'
 import FolderTree from 'lucide-solid/icons/folder-tree'
 import Layers from 'lucide-solid/icons/layers'
 import ListChecks from 'lucide-solid/icons/list-checks'
+import Monitor from 'lucide-solid/icons/monitor'
 import Users from 'lucide-solid/icons/users'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
 
@@ -25,6 +26,7 @@ export function sectionTypeTestId(sectionType: SectionType): string {
     case SectionType.WORKSPACES_SHARED: return 'workspaces_shared'
     case SectionType.FILES: return 'files'
     case SectionType.TODOS: return 'todos'
+    case SectionType.WORKERS: return 'workers'
     default: return String(sectionType)
   }
 }
@@ -62,6 +64,8 @@ export function getSectionIcon(section: Section): LucideIcon {
       return FolderTree
     case SectionType.TODOS:
       return ListChecks
+    case SectionType.WORKERS:
+      return Monitor
     default:
       return Folder
   }
