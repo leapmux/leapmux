@@ -363,34 +363,6 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 	})
 }
 
-// gitRepoRoot resolves the git repository root for the given directory.
-func gitRepoRoot(ctx context.Context, dir string) (string, error) {
-	out, err := gitOutput(ctx, dir, "rev-parse", "--show-toplevel")
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(out), nil
-}
-
-// populateGitFileStatus fills GitRepoRoot, GitFileStatus, and GitFileStatusSet
-// on the given AgentStatusChange by running git commands against workingDir.
-func populateGitFileStatus(sc *leapmuxv1.AgentStatusChange, workingDir string) {
-	ctx := bgCtx()
-	repoRoot, err := gitRepoRoot(ctx, workingDir)
-	if err != nil {
-		return
-	}
-	entries, err := getGitFileStatusEntries(ctx, repoRoot)
-	if err != nil {
-		slog.Warn("failed to get git file status for broadcast",
-			"working_dir", workingDir, "error", err)
-		return
-	}
-	sc.GitRepoRoot = repoRoot
-	sc.GitFileStatus = entries
-	sc.GitFileStatusSet = true
-}
-
 // getGitFileStatusEntries computes per-file git status for the given repo root.
 // It combines porcelain status with numstat diff data for line counts.
 func getGitFileStatusEntries(ctx context.Context, repoRoot string) ([]*leapmuxv1.GitFileStatusEntry, error) {

@@ -232,7 +232,6 @@ func (h *OutputHandler) detectPlanModeFromToolResult(agentID string, content []b
 					Model:          dbAgent.Model,
 					Effort:         dbAgent.Effort,
 				}
-				populateGitFileStatus(sc, dbAgent.WorkingDir)
 				h.watcher.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
 					AgentId: agentID,
 					Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: sc},

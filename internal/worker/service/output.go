@@ -300,7 +300,6 @@ func (h *OutputHandler) handleSystemInit(agentID string, content []byte) {
 		Effort:         existingAgent.Effort,
 		GitStatus:      gitStatusToProto(gitutil.GetGitStatus(existingAgent.WorkingDir)),
 	}
-	populateGitFileStatus(sc, existingAgent.WorkingDir)
 	h.watcher.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: sc},

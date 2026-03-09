@@ -735,7 +735,6 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 					Effort:         dbAgent.Effort,
 					GitStatus:      gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
 				}
-				populateGitFileStatus(sc, dbAgent.WorkingDir)
 				broadcastWatchEvent(sender, &leapmuxv1.WatchEventsResponse{
 					Event: &leapmuxv1.WatchEventsResponse_AgentEvent{
 						AgentEvent: &leapmuxv1.AgentEvent{

@@ -1,8 +1,6 @@
 syntax = "proto3";
 package leapmux.v1;
 
-import "leapmux/v1/common.proto";
-
 // AgentStatus tracks the lifecycle state of an agent.
 enum AgentStatus {
   AGENT_STATUS_UNSPECIFIED = 0;
@@ -131,9 +129,7 @@ message AgentStatusChange {
   string model = 6;
   string effort = 7;
   AgentGitStatus git_status = 8; // Git status for the agent's working directory
-  string git_repo_root = 9;                          // Repo root for per-file paths
-  repeated GitFileStatusEntry git_file_status = 10;   // Per-file git status (turn-end only)
-  bool git_file_status_set = 11;                       // True when git_file_status was explicitly computed (distinguishes empty from absent)
+  reserved 9, 10, 11;
 }
 
 // AgentGitStatus holds git repository status for an agent's working directory.
