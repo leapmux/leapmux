@@ -349,7 +349,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                   data-testid={section().testId}
                 >
                   <summary
-                    class={`${styles.collapsibleTrigger} ${isStatic() || !canCollapse() ? styles.collapsibleTriggerStatic : ''} ${index() === 0 && props.side === 'right' ? styles.collapsibleTriggerNoChevron : ''}`}
+                    class={`${styles.collapsibleTrigger} ${props.side === 'right' ? styles.collapsibleTriggerRight : ''} ${isStatic() || !canCollapse() ? styles.collapsibleTriggerStatic : ''} ${index() === 0 && props.side === 'right' ? styles.collapsibleTriggerNoChevron : ''}`}
                     data-testid={section().testId ? `${section().testId}-summary` : undefined}
                     onClick={(e) => {
                       // Prevent native <details> toggle -- we control state

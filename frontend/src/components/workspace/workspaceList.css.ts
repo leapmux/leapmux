@@ -102,7 +102,7 @@ export const item = style({
   'display': 'flex',
   'alignItems': 'center',
   'padding': 'var(--space-1) var(--space-3)',
-  'paddingLeft': 'var(--space-2)',
+  'paddingLeft': 'var(--space-1)',
   'cursor': 'pointer',
   'gap': 'var(--space-1)',
   ':hover': {

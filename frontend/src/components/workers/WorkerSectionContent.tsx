@@ -37,10 +37,12 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
               <span class={listStyles.itemTitle}>
                 {props.workerInfo(worker.id)?.name ?? '\u2014'}
               </span>
-              <WorkerContextMenu
-                workerInfo={props.workerInfo(worker.id)}
-                onDeregister={() => props.onDeregister(worker)}
-              />
+              <div class={listStyles.itemActions}>
+                <WorkerContextMenu
+                  workerInfo={props.workerInfo(worker.id)}
+                  onDeregister={() => props.onDeregister(worker)}
+                />
+              </div>
             </div>
           )}
         </For>

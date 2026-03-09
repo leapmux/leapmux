@@ -80,7 +80,7 @@ export const collapsibleTrigger = style({
   'display': 'flex',
   'alignItems': 'center',
   'gap': 'var(--space-1)',
-  'padding': '0 var(--space-4)',
+  'padding': '0 var(--space-3) 0 var(--space-4)',
   'minHeight': headerHeight,
   'borderBottom': '1px solid var(--border)',
   'flexShrink': 0,
@@ -99,6 +99,11 @@ export const collapsibleTriggerStatic = style({
   '::after': {
     display: 'none',
   },
+})
+
+/** Right-sidebar triggers keep the original --space-4 right padding. */
+export const collapsibleTriggerRight = style({
+  paddingRight: 'var(--space-4)',
 })
 
 /** Hide the OAT accordion chevron on a section header (e.g. first right-sidebar section). */
