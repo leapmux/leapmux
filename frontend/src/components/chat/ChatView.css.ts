@@ -110,6 +110,7 @@ export const settingsTrigger = style({
   gap: 'var(--space-1)',
   padding: '2px var(--space-1)',
   marginBottom: '3px',
+  marginLeft: '-3px',
   fontSize: 'var(--text-8)',
   color: 'var(--faint-foreground)',
   cursor: 'pointer',
