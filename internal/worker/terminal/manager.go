@@ -224,6 +224,14 @@ func (m *Manager) SnapshotTerminal(terminalID string) (snap TerminalSnapshot, ok
 	}, true
 }
 
+// GetMeta returns the metadata for a terminal, or ok=false if not found.
+func (m *Manager) GetMeta(terminalID string) (meta TerminalMeta, ok bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	meta, ok = m.meta[terminalID]
+	return
+}
+
 // ListTerminalIDs returns the IDs of all currently tracked terminals.
 func (m *Manager) ListTerminalIDs() []string {
 	m.mu.RLock()

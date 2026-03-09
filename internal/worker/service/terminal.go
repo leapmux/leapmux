@@ -5,8 +5,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sync"
-	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -15,38 +13,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
-
-// titleDebouncer tracks the last DB-write time per terminal to limit
-// title persistence frequency. The worker uses a shorter interval (7s)
-// than the frontend (10s) because the frontend is the primary rate
-// limiter; the worker acts as a secondary safety net to prevent
-// excessive DB writes if multiple clients or timing drift cause
-// requests to arrive more frequently than expected.
-type titleDebouncer struct {
-	mu       sync.Mutex
-	lastSave map[string]time.Time
-	interval time.Duration
-}
-
-func newTitleDebouncer(interval time.Duration) *titleDebouncer {
-	return &titleDebouncer{
-		lastSave: make(map[string]time.Time),
-		interval: interval,
-	}
-}
-
-// shouldSave returns true if enough time has elapsed since the last
-// save for the given terminal ID.
-func (d *titleDebouncer) shouldSave(terminalID string) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	last := d.lastSave[terminalID]
-	if time.Since(last) < d.interval {
-		return false
-	}
-	d.lastSave[terminalID] = time.Now()
-	return true
-}
 
 // registerTerminalHandlers registers all terminal-related RPC handlers.
 func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
@@ -127,6 +93,22 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 					ExitCode:      int64(exitCode),
 				}); err != nil {
 					slog.Error("failed to save terminal on exit", "terminal_id", tid, "error", err)
+				}
+			} else if meta, hasMeta := svc.Terminals.GetMeta(tid); hasMeta {
+				// No screen available — still persist metadata (title, etc.)
+				if err := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
+					ID:            tid,
+					WorkspaceID:   meta.WorkspaceID,
+					WorkingDir:    workingDir,
+					HomeDir:       svc.HomeDir,
+					ShellStartDir: shellStartDir,
+					Title:         meta.Title,
+					Cols:          int64(meta.Cols),
+					Rows:          int64(meta.Rows),
+					Screen:        []byte{},
+					ExitCode:      int64(exitCode),
+				}); err != nil {
+					slog.Error("failed to save terminal metadata on exit", "terminal_id", tid, "error", err)
 				}
 			}
 
@@ -269,9 +251,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 	})
 
 	// UpdateTerminalTitle updates a terminal's title in both the in-memory
-	// manager and the database. DB writes are debounced to at most once
-	// per 7 seconds per terminal (the frontend debounces at 10s).
-	titleDeb := newTitleDebouncer(7 * time.Second)
+	// manager and the database. The frontend debounces calls at 10s intervals.
 	d.Register("UpdateTerminalTitle", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.UpdateTerminalTitleRequest
 		if err := unmarshalRequest(req, &r); err != nil {
@@ -288,25 +268,22 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		title := r.GetTitle()
 		svc.Terminals.UpdateTitle(terminalID, title)
 
-		// Persist to DB (debounced). The in-memory title is always
-		// up-to-date and will be written on shutdown regardless.
-		if titleDeb.shouldSave(terminalID) {
-			dbTerm, err := svc.Queries.GetTerminal(bgCtx(), terminalID)
-			if err == nil {
-				_ = svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
-					ID:            dbTerm.ID,
-					WorkspaceID:   dbTerm.WorkspaceID,
-					WorkingDir:    dbTerm.WorkingDir,
-					HomeDir:       dbTerm.HomeDir,
-					ShellStartDir: dbTerm.ShellStartDir,
-					Title:         title,
-					Cols:          dbTerm.Cols,
-					Rows:          dbTerm.Rows,
-					Screen:        dbTerm.Screen,
-					ExitCode:      dbTerm.ExitCode,
-					ClosedAt:      dbTerm.ClosedAt,
-				})
-			}
+		// Persist to DB so it survives restarts.
+		dbTerm, err := svc.Queries.GetTerminal(bgCtx(), terminalID)
+		if err == nil {
+			_ = svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
+				ID:            dbTerm.ID,
+				WorkspaceID:   dbTerm.WorkspaceID,
+				WorkingDir:    dbTerm.WorkingDir,
+				HomeDir:       dbTerm.HomeDir,
+				ShellStartDir: dbTerm.ShellStartDir,
+				Title:         title,
+				Cols:          dbTerm.Cols,
+				Rows:          dbTerm.Rows,
+				Screen:        dbTerm.Screen,
+				ExitCode:      dbTerm.ExitCode,
+				ClosedAt:      dbTerm.ClosedAt,
+			})
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.UpdateTerminalTitleResponse{})
