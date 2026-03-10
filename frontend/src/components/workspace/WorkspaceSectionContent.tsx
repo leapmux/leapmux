@@ -96,6 +96,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
     return {
       added: tree.groups.reduce((sum, g) => sum + g.diffAdded, 0),
       deleted: tree.groups.reduce((sum, g) => sum + g.diffDeleted, 0),
+      untracked: tree.groups.reduce((sum, g) => sum + g.diffUntracked, 0),
     }
   })
 
@@ -207,7 +208,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                         <span class={styles.sharedBadge}>shared</span>
                       </Show>
                       <Show when={isActive()}>
-                        <DiffStatsBadge added={workspaceDiffStats().added} deleted={workspaceDiffStats().deleted} />
+                        <DiffStatsBadge added={workspaceDiffStats().added} deleted={workspaceDiffStats().deleted} untracked={workspaceDiffStats().untracked} />
                       </Show>
                     </Show>
 

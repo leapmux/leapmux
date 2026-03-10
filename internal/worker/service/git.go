@@ -5,10 +5,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -364,55 +364,43 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 }
 
 // getGitFileStatusEntries computes per-file git status for the given repo root.
-// It combines porcelain status with numstat diff data for line counts.
-func getGitFileStatusEntries(ctx context.Context, repoRoot string) ([]*leapmuxv1.GitFileStatusEntry, error) {
-	// Collect file status from git status --porcelain=v1.
-	statusOut, err := gitOutput(ctx, repoRoot, "status", "--porcelain=v1")
+// It runs three git commands:
+//   - git status --porcelain=v2 -z (all changed files with XY status codes)
+//   - git diff --numstat -z (unstaged diff stats)
+//   - git diff --numstat --staged -z (staged diff stats)
+//
+// Returns nil for non-git directories.
+func getGitFileStatusEntries(_ context.Context, repoRoot string) ([]*leapmuxv1.GitFileStatusEntry, error) {
+	// 1. Get file status via porcelain v2.
+	cmd := exec.Command("git", "-C", repoRoot, "status", "--porcelain=v2", "-z")
+	statusOut, err := cmd.Output()
 	if err != nil {
-		return nil, err
+		return nil, nil // Not a git repo or git unavailable.
 	}
 
-	// Build a map of file entries.
-	fileMap := make(map[string]*leapmuxv1.GitFileStatusEntry)
-	for _, line := range strings.Split(statusOut, "\n") {
-		if len(line) < 4 {
-			continue
-		}
-		indexChar := line[0]
-		workChar := line[1]
-		filePath := line[3:]
-
-		// Handle renames: "R  old -> new"
-		var oldPath string
-		if idx := strings.Index(filePath, " -> "); idx >= 0 {
-			oldPath = filePath[:idx]
-			filePath = filePath[idx+4:]
-		}
-
-		entry := &leapmuxv1.GitFileStatusEntry{
-			Path:           filePath,
-			StagedStatus:   parseGitStatusCode(indexChar),
-			UnstagedStatus: parseGitStatusCode(workChar),
-			OldPath:        oldPath,
-		}
-		fileMap[filePath] = entry
+	files := parseStatusV2(statusOut)
+	if len(files) == 0 {
+		return nil, nil
 	}
 
-	// Collect unstaged diff stats: git diff --numstat
-	if diffOut, err := gitOutput(ctx, repoRoot, "diff", "--numstat"); err == nil {
-		parseNumstat(diffOut, fileMap, false)
+	// Build a map for easy lookup.
+	fileMap := make(map[string]*leapmuxv1.GitFileStatusEntry, len(files))
+	for _, f := range files {
+		fileMap[f.Path] = f
 	}
 
-	// Collect staged diff stats: git diff --cached --numstat
-	if diffOut, err := gitOutput(ctx, repoRoot, "diff", "--cached", "--numstat"); err == nil {
-		parseNumstat(diffOut, fileMap, true)
+	// 2. Get unstaged diff stats.
+	cmd2 := exec.Command("git", "-C", repoRoot, "diff", "--numstat", "-z")
+	if numstatOut, err := cmd2.Output(); err == nil {
+		applyNumstat(numstatOut, fileMap, false)
 	}
 
-	// Convert map to slice.
-	files := make([]*leapmuxv1.GitFileStatusEntry, 0, len(fileMap))
-	for _, entry := range fileMap {
-		files = append(files, entry)
+	// 3. Get staged diff stats.
+	cmd3 := exec.Command("git", "-C", repoRoot, "diff", "--numstat", "--staged", "-z")
+	if numstatOut, err := cmd3.Output(); err == nil {
+		applyNumstat(numstatOut, fileMap, true)
 	}
+
 	return files, nil
 }
 
@@ -474,50 +462,191 @@ func parseGitStatusCode(c byte) leapmuxv1.GitFileStatusCode {
 	}
 }
 
-// parseNumstat parses `git diff --numstat` output and populates the line
-// counts in the given file map. If staged is true, fills StagedLinesAdded
-// and StagedLinesDeleted; otherwise fills LinesAdded and LinesDeleted.
-func parseNumstat(output string, fileMap map[string]*leapmuxv1.GitFileStatusEntry, staged bool) {
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
+// parseStatusV2 parses NUL-delimited `git status --porcelain=v2 -z` output
+// into proto entries.
+func parseStatusV2(data []byte) []*leapmuxv1.GitFileStatusEntry {
+	var files []*leapmuxv1.GitFileStatusEntry
+	parts := splitNUL(data)
+
+	i := 0
+	for i < len(parts) {
+		entry := parts[i]
+		if len(entry) == 0 {
+			i++
 			continue
 		}
 
-		parts := strings.SplitN(line, "\t", 3)
-		if len(parts) < 3 {
-			continue
-		}
+		switch entry[0] {
+		case '1':
+			// Ordinary changed entry: "1 XY sub mH mI mW hH hI path"
+			if f := parseOrdinaryEntry(entry); f != nil {
+				files = append(files, f)
+			}
+			i++
 
-		// Binary files show "-" for both added and deleted.
-		added, err1 := strconv.ParseInt(parts[0], 10, 32)
-		deleted, err2 := strconv.ParseInt(parts[1], 10, 32)
-		if err1 != nil || err2 != nil {
-			continue
-		}
+		case '2':
+			// Renamed/copied entry: "2 XY sub mH mI mW hH hI Xscore path\0origPath"
+			if f := parseRenameEntry(entry); f != nil {
+				if i+1 < len(parts) {
+					f.OldPath = parts[i+1]
+					i += 2
+				} else {
+					i++
+				}
+				files = append(files, f)
+			} else {
+				i++
+			}
 
-		filePath := parts[2]
-		// Handle renames: "old => new" or "{old => new}/path"
-		if idx := strings.Index(filePath, " => "); idx >= 0 {
-			// Use the new path.
-			filePath = filePath[idx+4:]
-			// Strip any trailing "}" from brace-style renames.
-			filePath = strings.TrimSuffix(filePath, "}")
-			filePath = strings.TrimPrefix(filePath, "{")
-		}
+		case 'u':
+			// Unmerged entry: "u XY sub m1 m2 m3 hH h1 h2 h3 path"
+			if f := parseUnmergedEntry(entry); f != nil {
+				files = append(files, f)
+			}
+			i++
 
-		entry, ok := fileMap[filePath]
-		if !ok {
-			entry = &leapmuxv1.GitFileStatusEntry{Path: filePath}
-			fileMap[filePath] = entry
-		}
+		case '?':
+			// Untracked: "? path"
+			if len(entry) > 2 {
+				files = append(files, &leapmuxv1.GitFileStatusEntry{
+					Path:           entry[2:],
+					StagedStatus:   leapmuxv1.GitFileStatusCode_GIT_FILE_STATUS_CODE_UNSPECIFIED,
+					UnstagedStatus: leapmuxv1.GitFileStatusCode_GIT_FILE_STATUS_CODE_UNTRACKED,
+				})
+			}
+			i++
 
-		if staged {
-			entry.StagedLinesAdded = int32(added)
-			entry.StagedLinesDeleted = int32(deleted)
-		} else {
-			entry.LinesAdded = int32(added)
-			entry.LinesDeleted = int32(deleted)
+		default:
+			i++
 		}
 	}
+
+	return files
+}
+
+func parseOrdinaryEntry(entry string) *leapmuxv1.GitFileStatusEntry {
+	// Format: "1 XY sub mH mI mW hH hI path"
+	if len(entry) < 4 {
+		return nil
+	}
+	path := nthField(entry, 8)
+	if path == "" {
+		return nil
+	}
+	return &leapmuxv1.GitFileStatusEntry{
+		Path:           path,
+		StagedStatus:   parseGitStatusCode(entry[2]),
+		UnstagedStatus: parseGitStatusCode(entry[3]),
+	}
+}
+
+func parseRenameEntry(entry string) *leapmuxv1.GitFileStatusEntry {
+	// Format: "2 XY sub mH mI mW hH hI Xscore path"
+	if len(entry) < 4 {
+		return nil
+	}
+	path := nthField(entry, 9)
+	if path == "" {
+		return nil
+	}
+	return &leapmuxv1.GitFileStatusEntry{
+		Path:           path,
+		StagedStatus:   parseGitStatusCode(entry[2]),
+		UnstagedStatus: parseGitStatusCode(entry[3]),
+	}
+}
+
+func parseUnmergedEntry(entry string) *leapmuxv1.GitFileStatusEntry {
+	// Format: "u XY sub m1 m2 m3 hH h1 h2 h3 path"
+	if len(entry) < 4 {
+		return nil
+	}
+	path := nthField(entry, 10)
+	if path == "" {
+		return nil
+	}
+	return &leapmuxv1.GitFileStatusEntry{
+		Path:           path,
+		StagedStatus:   parseGitStatusCode(entry[2]),
+		UnstagedStatus: parseGitStatusCode(entry[3]),
+	}
+}
+
+// nthField returns the content after the nth space in s (0-indexed).
+func nthField(s string, n int) string {
+	count := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == ' ' {
+			count++
+			if count == n {
+				return s[i+1:]
+			}
+		}
+	}
+	return ""
+}
+
+// applyNumstat parses NUL-delimited `git diff --numstat -z` output and applies
+// line counts to the file map. When staged is true, it populates
+// StagedLinesAdded/StagedLinesDeleted; otherwise LinesAdded/LinesDeleted.
+func applyNumstat(data []byte, fileMap map[string]*leapmuxv1.GitFileStatusEntry, staged bool) {
+	parts := splitNUL(data)
+	i := 0
+	for i < len(parts) {
+		line := parts[i]
+		if line == "" {
+			i++
+			continue
+		}
+
+		tabs := strings.SplitN(line, "\t", 3)
+		if len(tabs) < 3 {
+			i++
+			continue
+		}
+
+		var addedVal, deletedVal int32
+		if _, err := fmt.Sscanf(tabs[0], "%d", &addedVal); err != nil {
+			addedVal = 0
+		}
+		if _, err := fmt.Sscanf(tabs[1], "%d", &deletedVal); err != nil {
+			deletedVal = 0
+		}
+
+		filePath := tabs[2]
+		if filePath == "" {
+			// Rename: next two parts are oldpath and newpath.
+			if i+2 < len(parts) {
+				filePath = parts[i+2]
+				i += 3
+			} else {
+				i++
+				continue
+			}
+		} else {
+			i++
+		}
+
+		if f, ok := fileMap[filePath]; ok {
+			if staged {
+				f.StagedLinesAdded = addedVal
+				f.StagedLinesDeleted = deletedVal
+			} else {
+				f.LinesAdded = addedVal
+				f.LinesDeleted = deletedVal
+			}
+		}
+	}
+}
+
+// splitNUL splits data by NUL bytes, discarding a trailing empty element.
+func splitNUL(data []byte) []string {
+	if len(data) == 0 {
+		return nil
+	}
+	parts := strings.Split(string(data), "\x00")
+	if len(parts) > 0 && parts[len(parts)-1] == "" {
+		parts = parts[:len(parts)-1]
+	}
+	return parts
 }

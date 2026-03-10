@@ -16,10 +16,11 @@ export function getGitFileIconClass(entry: GitFileStatusEntry): { class: string,
   return { class: dtStyles.iconUnstaged, testId: 'git-status-unstaged' }
 }
 
-/** Diff stats badge showing +N -M. */
-export const DiffStatsBadge: Component<{ added: number, deleted: number, class?: string }> = (props) => {
+/** Diff stats badge showing +N -M *U. */
+export const DiffStatsBadge: Component<{ added: number, deleted: number, untracked?: number, class?: string }> = (props) => {
+  const hasContent = () => props.added > 0 || props.deleted > 0 || (props.untracked ?? 0) > 0
   return (
-    <Show when={props.added > 0 || props.deleted > 0}>
+    <Show when={hasContent()}>
       <span class={props.class ?? gsStyles.diffStats} data-testid="git-diff-stats">
         <Show when={props.added > 0}>
           <span class={gsStyles.diffStatsAdded}>
@@ -32,6 +33,13 @@ export const DiffStatsBadge: Component<{ added: number, deleted: number, class?:
           <span class={gsStyles.diffStatsDeleted}>
             -
             {props.deleted}
+          </span>
+        </Show>
+        {(props.added > 0 || props.deleted > 0) && (props.untracked ?? 0) > 0 ? ' ' : ''}
+        <Show when={(props.untracked ?? 0) > 0}>
+          <span class={gsStyles.diffStatsUntracked}>
+            *
+            {props.untracked}
           </span>
         </Show>
       </span>

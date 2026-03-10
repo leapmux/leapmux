@@ -77,21 +77,27 @@ export function createGitFileStatusStore() {
     })
   }
 
-  const getDirDiffStats = (dirPath: string): { added: number, deleted: number } => {
+  const getDirDiffStats = (dirPath: string): { added: number, deleted: number, untracked: number } => {
     const root = state.repoRoot
     if (!root)
-      return { added: 0, deleted: 0 }
+      return { added: 0, deleted: 0, untracked: 0 }
     const isRoot = dirPath === root
     const relDir = dirPath.startsWith(`${root}/`) ? dirPath.slice(root.length + 1) : dirPath
     let added = 0
     let deleted = 0
+    let untracked = 0
     for (const f of state.files) {
       if (isRoot || f.path.startsWith(`${relDir}/`) || f.path === relDir) {
-        added += f.linesAdded + f.stagedLinesAdded
-        deleted += f.linesDeleted + f.stagedLinesDeleted
+        if (f.unstagedStatus === GitFileStatusCode.UNTRACKED) {
+          untracked++
+        }
+        else {
+          added += f.linesAdded + f.stagedLinesAdded
+          deleted += f.linesDeleted + f.stagedLinesDeleted
+        }
       }
     }
-    return { added, deleted }
+    return { added, deleted, untracked }
   }
 
   const hasChanges = (dirPath: string): boolean => {

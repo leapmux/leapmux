@@ -14,6 +14,7 @@ import { useAuth } from '~/context/AuthContext'
 import { useOrg } from '~/context/OrgContext'
 import { usePreferences } from '~/context/PreferencesContext'
 import { useWorkspace } from '~/context/WorkspaceContext'
+import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
@@ -327,9 +328,15 @@ export const AppShell: ParentComponent = (props) => {
       return
     let added = 0
     let deleted = 0
+    let untracked = 0
     for (const f of files) {
-      added += f.linesAdded + f.stagedLinesAdded
-      deleted += f.linesDeleted + f.stagedLinesDeleted
+      if (f.unstagedStatus === GitFileStatusCode.UNTRACKED) {
+        untracked++
+      }
+      else {
+        added += f.linesAdded + f.stagedLinesAdded
+        deleted += f.linesDeleted + f.stagedLinesDeleted
+      }
     }
     for (const tab of tabStore.state.tabs) {
       if (tab.type !== TabType.AGENT)
@@ -338,7 +345,7 @@ export const AppShell: ParentComponent = (props) => {
       if (!agent?.workingDir)
         continue
       if (agent.workingDir === repoRoot || agent.workingDir.startsWith(`${repoRoot}/`)) {
-        tabStore.updateTab(TabType.AGENT, tab.id, { gitDiffAdded: added, gitDiffDeleted: deleted })
+        tabStore.updateTab(TabType.AGENT, tab.id, { gitDiffAdded: added, gitDiffDeleted: deleted, gitDiffUntracked: untracked })
       }
     }
   })

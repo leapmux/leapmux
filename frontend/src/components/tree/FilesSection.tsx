@@ -11,6 +11,7 @@ import RefreshCw from 'lucide-solid/icons/refresh-cw'
 import { createEffect, createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
+import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { DirectoryTree } from './DirectoryTree'
 import * as styles from './FilesSection.css'
 import { DiffStatsBadge, getGitFileIconClass } from './gitStatusUtils'
@@ -66,12 +67,14 @@ export const FileStatusIcon: Component<{ entry: GitFileStatusEntry }> = (props) 
   return <Icon icon={FileIcon} size="sm" class={gitIcon().class} data-testid={gitIcon().testId} />
 }
 
-/** Diff stats badge showing +N -M for a git file entry. */
+/** Diff stats badge showing +N -M for a git file entry, or *1 for untracked. */
 export const FileDiffStatsBadge: Component<{ entry: GitFileStatusEntry }> = (props) => {
+  const isUntracked = () => props.entry.unstagedStatus === GitFileStatusCode.UNTRACKED
   return (
     <DiffStatsBadge
-      added={props.entry.linesAdded + props.entry.stagedLinesAdded}
-      deleted={props.entry.linesDeleted + props.entry.stagedLinesDeleted}
+      added={isUntracked() ? 0 : props.entry.linesAdded + props.entry.stagedLinesAdded}
+      deleted={isUntracked() ? 0 : props.entry.linesDeleted + props.entry.stagedLinesDeleted}
+      untracked={isUntracked() ? 1 : 0}
     />
   )
 }
