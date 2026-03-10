@@ -28,6 +28,7 @@ service WorkspaceService {
   rpc ListTabs(ListTabsRequest) returns (ListTabsResponse);
   rpc GetLayout(GetLayoutRequest) returns (GetLayoutResponse);
   rpc SaveLayout(SaveLayoutRequest) returns (SaveLayoutResponse);
+  rpc SaveMultiLayout(SaveMultiLayoutRequest) returns (SaveMultiLayoutResponse);
 }
 
 // --- Workspace CRUD ---
@@ -189,6 +190,21 @@ message SaveLayoutRequest {
 
 message SaveLayoutResponse {}
 
+// --- Multi-Workspace Layout ---
+
+message WorkspaceLayoutEntry {
+  string workspace_id = 1;
+  LayoutNode layout = 2;
+  repeated WorkspaceTab tabs = 3;
+}
+
+message SaveMultiLayoutRequest {
+  string org_id = 1;
+  repeated WorkspaceLayoutEntry entries = 2;
+}
+
+message SaveMultiLayoutResponse {}
+
 // --- Worker Inner RPCs ---
 
 // CleanupWorkspaceRequest is sent via E2EE channel to a worker to clean up
@@ -208,6 +224,16 @@ message WorktreeInfo {
   string worktree_path = 2;
   string branch_name = 3;
 }
+
+// --- Tab Workspace Move (Worker Inner RPC) ---
+
+message MoveTabWorkspaceRequest {
+  TabType tab_type = 1;
+  string tab_id = 2;
+  string new_workspace_id = 3;
+}
+
+message MoveTabWorkspaceResponse {}
 
 // --- Event Streaming ---
 

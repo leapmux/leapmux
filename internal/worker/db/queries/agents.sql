@@ -57,5 +57,8 @@ UPDATE agents SET plan_file_path = ?, plan_content = ?, plan_content_compression
 -- name: GetAgentWorkspaceID :one
 SELECT workspace_id FROM agents WHERE id = ?;
 
+-- name: UpdateAgentWorkspace :exec
+UPDATE agents SET workspace_id = ? WHERE id = ?;
+
 -- name: DeleteClosedAgentsBefore :execresult
 DELETE FROM agents WHERE closed_at < ?;

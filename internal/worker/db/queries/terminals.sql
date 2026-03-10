@@ -35,3 +35,6 @@ DELETE FROM terminals WHERE closed_at < ?;
 
 -- name: GetTerminalWorkspaceID :one
 SELECT workspace_id FROM terminals WHERE id = ?;
+
+-- name: UpdateTerminalWorkspace :exec
+UPDATE terminals SET workspace_id = ? WHERE id = ?;

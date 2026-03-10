@@ -149,7 +149,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	adminPath, adminHandler := leapmuxv1connect.NewAdminServiceHandler(adminSvc, connectOpts)
 	mux.Handle(adminPath, adminHandler)
 
-	workspaceSvc := service.NewWorkspaceService(queries)
+	workspaceSvc := service.NewWorkspaceService(sqlDB, queries)
 	workspacePath, workspaceHandler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, connectOpts)
 	mux.Handle(workspacePath, workspaceHandler)
 
