@@ -178,6 +178,54 @@ test.describe('Full Hub+Worker Restart', () => {
     await expect(restoredTab).toContainText('My Custom Title')
   })
 
+  test('should preserve agent tab after clicking it post-restart', async ({ separateHubWorker, page }) => {
+    await ensureWorkerOnline(separateHubWorker)
+    const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Restart Tab Click Test', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    try {
+      await loginViaToken(page, adminToken)
+      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await waitForWorkspaceReady(page)
+
+      // Verify the agent tab is visible
+      const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]')
+      await expect(agentTab).toHaveCount(1)
+
+      const workspaceUrl = page.url()
+
+      // Stop worker and hub
+      await stopWorker()
+      await stopHub()
+
+      // Restart hub and worker
+      await restartHub(separateHubWorker)
+      await restartWorker(separateHubWorker)
+
+      // Reload the page
+      await page.goto(workspaceUrl)
+      await waitForWorkspaceReady(page)
+
+      // Agent tab should be visible after restore
+      await expect(agentTab).toHaveCount(1)
+
+      // Click the agent tab — it should remain visible (not disappear).
+      // Before the fix, clicking an inactive agent with no messages would
+      // remove it because the WatchEvents catch-up phase reported INACTIVE
+      // status before message replay completed.
+      await agentTab.click()
+      await page.waitForTimeout(2000)
+      await expect(agentTab).toHaveCount(1)
+
+      // Also verify the tab tree leaf is present in the sidebar
+      const treeLeaf = page.locator('[data-testid="tab-tree-leaf"]')
+      await expect(treeLeaf).toHaveCount(1)
+    }
+    finally {
+      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
+    }
+  })
+
   test('should not show thinking indicator after full restart during active turn', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker
