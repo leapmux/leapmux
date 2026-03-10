@@ -125,3 +125,124 @@ func TestGetGitStatus_NonGitDir(t *testing.T) {
 	status := GetGitStatus(dir)
 	assert.Nil(t, status)
 }
+
+func TestCountFileLines(t *testing.T) {
+	t.Run("counts lines with trailing newline", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "a.txt")
+		require.NoError(t, os.WriteFile(f, []byte("one\ntwo\nthree\n"), 0o644))
+		assert.Equal(t, 3, countFileLines(f))
+	})
+
+	t.Run("counts lines without trailing newline", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "a.txt")
+		require.NoError(t, os.WriteFile(f, []byte("one\ntwo\nthree"), 0o644))
+		assert.Equal(t, 3, countFileLines(f))
+	})
+
+	t.Run("single line with newline", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "a.txt")
+		require.NoError(t, os.WriteFile(f, []byte("hello\n"), 0o644))
+		assert.Equal(t, 1, countFileLines(f))
+	})
+
+	t.Run("single line without newline", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "a.txt")
+		require.NoError(t, os.WriteFile(f, []byte("hello"), 0o644))
+		assert.Equal(t, 1, countFileLines(f))
+	})
+
+	t.Run("empty file", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "a.txt")
+		require.NoError(t, os.WriteFile(f, []byte{}, 0o644))
+		assert.Equal(t, 0, countFileLines(f))
+	})
+
+	t.Run("binary file returns zero", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "a.bin")
+		require.NoError(t, os.WriteFile(f, []byte("hello\x00world\n"), 0o644))
+		assert.Equal(t, 0, countFileLines(f))
+	})
+
+	t.Run("nonexistent file returns zero", func(t *testing.T) {
+		assert.Equal(t, 0, countFileLines(filepath.Join(t.TempDir(), "nope")))
+	})
+}
+
+func TestGetPerFileStatus_UntrackedLines(t *testing.T) {
+	dir := initRepo(t)
+
+	// Create an untracked file with 3 lines.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "new.txt"), []byte("a\nb\nc\n"), 0o644))
+
+	files, err := GetPerFileStatus(dir)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	assert.Equal(t, "new.txt", files[0].Path)
+	assert.Equal(t, byte('?'), files[0].UnstagedStatus)
+	assert.Equal(t, 3, files[0].LinesAdded)
+	assert.Equal(t, 0, files[0].LinesDeleted)
+}
+
+func TestGetPerFileStatus_UntrackedBinaryFile(t *testing.T) {
+	dir := initRepo(t)
+
+	// Create an untracked binary file.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "image.bin"), []byte("\x89PNG\r\n\x00\x00"), 0o644))
+
+	files, err := GetPerFileStatus(dir)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	assert.Equal(t, "image.bin", files[0].Path)
+	assert.Equal(t, 0, files[0].LinesAdded)
+}
+
+func TestGetPerFileStatus_MixedTrackedAndUntracked(t *testing.T) {
+	dir := initRepo(t)
+
+	// Create a committed file, then modify it (unstaged).
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("line1\n"), 0o644))
+	run(t, dir, "git", "add", "tracked.txt")
+	run(t, dir, "git", "commit", "-m", "add tracked")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("line1\nline2\n"), 0o644))
+
+	// Create an untracked text file.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("a\nb\nc\nd\n"), 0o644))
+
+	// Create an untracked binary file.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "binary.dat"), []byte("data\x00bin\n"), 0o644))
+
+	files, err := GetPerFileStatus(dir)
+	require.NoError(t, err)
+	require.Len(t, files, 3)
+
+	// Build a map for easier assertion.
+	byPath := make(map[string]FileStatus, len(files))
+	for _, f := range files {
+		byPath[f.Path] = f
+	}
+
+	// tracked.txt: unstaged modification, 1 line added via numstat.
+	tracked := byPath["tracked.txt"]
+	assert.Equal(t, byte('M'), tracked.UnstagedStatus)
+	assert.Equal(t, 1, tracked.LinesAdded)
+	assert.Equal(t, 0, tracked.LinesDeleted)
+
+	// untracked.txt: untracked, 4 lines counted from file.
+	untracked := byPath["untracked.txt"]
+	assert.Equal(t, byte('?'), untracked.UnstagedStatus)
+	assert.Equal(t, 4, untracked.LinesAdded)
+	assert.Equal(t, 0, untracked.LinesDeleted)
+
+	// binary.dat: untracked binary, 0 lines.
+	binary := byPath["binary.dat"]
+	assert.Equal(t, byte('?'), binary.UnstagedStatus)
+	assert.Equal(t, 0, binary.LinesAdded)
+}
+
+// run executes a command in the given directory.
+func run(t *testing.T, dir string, name string, args ...string) {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	require.NoError(t, cmd.Run(), "command failed: %s %v", name, args)
+}

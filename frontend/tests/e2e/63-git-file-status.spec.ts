@@ -32,6 +32,9 @@ function createTempGitRepo(): string {
   // file_b: unstaged modification
   writeFileSync(join(dir, 'file_b.txt'), 'modified content b\nline2\nline3\n')
 
+  // untracked.txt: new untracked file with 4 lines
+  writeFileSync(join(dir, 'untracked.txt'), 'line1\nline2\nline3\nline4\n')
+
   return dir
 }
 
@@ -149,6 +152,40 @@ test.describe('Git File Status', () => {
 
       // Diff stats badges should be visible.
       await expect(page.locator('[data-testid="git-diff-stats"]').first()).toBeVisible()
+    }
+    finally {
+      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  test('untracked files show diff stats badge', async ({ page, leapmuxServer }) => {
+    const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
+    const tempDir = createTempGitRepo()
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Untracked Stats Test', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, tempDir)
+    try {
+      await loginViaToken(page, adminToken)
+      await page.goto(`/o/admin/workspace/${workspaceId}`)
+      await waitForWorkspaceReady(page)
+
+      await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible({ timeout: 15_000 })
+
+      // Switch to Changed tab and enable flat list for easier targeting.
+      await page.locator('[data-testid="files-filter-changed"]').click()
+      await expect(page.getByText('untracked.txt')).toBeVisible({ timeout: 10_000 })
+      await page.locator('[data-testid="files-flat-list-toggle"]').click()
+      await expect(page.locator('[data-testid="files-flat-list"]')).toBeVisible()
+
+      // The untracked file row should have a diff stats badge showing +4.
+      const flatList = page.locator('[data-testid="files-flat-list"]')
+      const untrackedRow = flatList.locator('div', { hasText: 'untracked.txt' }).first()
+      const badge = untrackedRow.locator('[data-testid="git-diff-stats"]')
+      await expect(badge).toBeVisible()
+      await expect(badge).toContainText('+4')
+
+      // It should also have the untracked status indicator.
+      await expect(untrackedRow.locator('[data-testid="git-status-untracked"]')).toBeVisible()
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

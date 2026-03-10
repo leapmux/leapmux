@@ -8,13 +8,13 @@ import (
 	"log/slog"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	"github.com/leapmux/leapmux/internal/worker/gitutil"
 )
 
 // registerGitHandlers registers handlers for git operations on the local filesystem.
@@ -364,54 +364,25 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 }
 
 // getGitFileStatusEntries computes per-file git status for the given repo root.
-// It combines porcelain status with numstat diff data for line counts.
-func getGitFileStatusEntries(ctx context.Context, repoRoot string) ([]*leapmuxv1.GitFileStatusEntry, error) {
-	// Collect file status from git status --porcelain=v1.
-	statusOut, err := gitOutput(ctx, repoRoot, "status", "--porcelain=v1")
+// It delegates to gitutil.GetPerFileStatus and converts results to proto entries.
+func getGitFileStatusEntries(_ context.Context, repoRoot string) ([]*leapmuxv1.GitFileStatusEntry, error) {
+	statuses, err := gitutil.GetPerFileStatus(repoRoot)
 	if err != nil {
 		return nil, err
 	}
 
-	// Build a map of file entries.
-	fileMap := make(map[string]*leapmuxv1.GitFileStatusEntry)
-	for _, line := range strings.Split(statusOut, "\n") {
-		if len(line) < 4 {
-			continue
+	files := make([]*leapmuxv1.GitFileStatusEntry, len(statuses))
+	for i, s := range statuses {
+		files[i] = &leapmuxv1.GitFileStatusEntry{
+			Path:               s.Path,
+			StagedStatus:       parseGitStatusCode(s.StagedStatus),
+			UnstagedStatus:     parseGitStatusCode(s.UnstagedStatus),
+			LinesAdded:         int32(s.LinesAdded),
+			LinesDeleted:       int32(s.LinesDeleted),
+			StagedLinesAdded:   int32(s.StagedLinesAdded),
+			StagedLinesDeleted: int32(s.StagedLinesDeleted),
+			OldPath:            s.OldPath,
 		}
-		indexChar := line[0]
-		workChar := line[1]
-		filePath := line[3:]
-
-		// Handle renames: "R  old -> new"
-		var oldPath string
-		if idx := strings.Index(filePath, " -> "); idx >= 0 {
-			oldPath = filePath[:idx]
-			filePath = filePath[idx+4:]
-		}
-
-		entry := &leapmuxv1.GitFileStatusEntry{
-			Path:           filePath,
-			StagedStatus:   parseGitStatusCode(indexChar),
-			UnstagedStatus: parseGitStatusCode(workChar),
-			OldPath:        oldPath,
-		}
-		fileMap[filePath] = entry
-	}
-
-	// Collect unstaged diff stats: git diff --numstat
-	if diffOut, err := gitOutput(ctx, repoRoot, "diff", "--numstat"); err == nil {
-		parseNumstat(diffOut, fileMap, false)
-	}
-
-	// Collect staged diff stats: git diff --cached --numstat
-	if diffOut, err := gitOutput(ctx, repoRoot, "diff", "--cached", "--numstat"); err == nil {
-		parseNumstat(diffOut, fileMap, true)
-	}
-
-	// Convert map to slice.
-	files := make([]*leapmuxv1.GitFileStatusEntry, 0, len(fileMap))
-	for _, entry := range fileMap {
-		files = append(files, entry)
 	}
 	return files, nil
 }
@@ -471,53 +442,5 @@ func parseGitStatusCode(c byte) leapmuxv1.GitFileStatusCode {
 		return leapmuxv1.GitFileStatusCode_GIT_FILE_STATUS_CODE_UNMERGED
 	default:
 		return leapmuxv1.GitFileStatusCode_GIT_FILE_STATUS_CODE_UNSPECIFIED
-	}
-}
-
-// parseNumstat parses `git diff --numstat` output and populates the line
-// counts in the given file map. If staged is true, fills StagedLinesAdded
-// and StagedLinesDeleted; otherwise fills LinesAdded and LinesDeleted.
-func parseNumstat(output string, fileMap map[string]*leapmuxv1.GitFileStatusEntry, staged bool) {
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		parts := strings.SplitN(line, "\t", 3)
-		if len(parts) < 3 {
-			continue
-		}
-
-		// Binary files show "-" for both added and deleted.
-		added, err1 := strconv.ParseInt(parts[0], 10, 32)
-		deleted, err2 := strconv.ParseInt(parts[1], 10, 32)
-		if err1 != nil || err2 != nil {
-			continue
-		}
-
-		filePath := parts[2]
-		// Handle renames: "old => new" or "{old => new}/path"
-		if idx := strings.Index(filePath, " => "); idx >= 0 {
-			// Use the new path.
-			filePath = filePath[idx+4:]
-			// Strip any trailing "}" from brace-style renames.
-			filePath = strings.TrimSuffix(filePath, "}")
-			filePath = strings.TrimPrefix(filePath, "{")
-		}
-
-		entry, ok := fileMap[filePath]
-		if !ok {
-			entry = &leapmuxv1.GitFileStatusEntry{Path: filePath}
-			fileMap[filePath] = entry
-		}
-
-		if staged {
-			entry.StagedLinesAdded = int32(added)
-			entry.StagedLinesDeleted = int32(deleted)
-		} else {
-			entry.LinesAdded = int32(added)
-			entry.LinesDeleted = int32(deleted)
-		}
 	}
 }
