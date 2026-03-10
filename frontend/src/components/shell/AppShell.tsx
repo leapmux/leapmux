@@ -539,37 +539,57 @@ export const AppShell: ParentComponent = (props) => {
       })
     }
     else {
-      const targetSnap = registry.get(resolvedTargetWsId)
-      if (targetSnap) {
-        // Use a valid tileId from the target workspace's layout.
-        const targetTileIds = getAllTileIds(targetSnap.layout.root)
-        const targetTileId = targetSnap.layout.focusedTileId ?? targetTileIds[0] ?? ''
-        const newTab = { ...tab, tileId: targetTileId }
-        const key = `${newTab.type}:${newTab.id}`
-        targetSnap.tabs.tabs = [...targetSnap.tabs.tabs, newTab]
-        targetSnap.tabs.activeTabKey = key
-        targetSnap.tabs.mruOrder = [key, ...targetSnap.tabs.mruOrder]
-        if (targetTileId) {
-          targetSnap.tabs.tileActiveTabKeys = {
-            ...targetSnap.tabs.tileActiveTabKeys,
-            [targetTileId]: key,
-          }
-        }
-        // Move the agent/terminal data to the target snapshot.
-        if (tab.type === TabType.AGENT) {
-          const agent = agentStore.state.agents.find(a => a.id === tab.id)
-          if (agent && !targetSnap.agents.some(a => a.id === tab.id)) {
-            targetSnap.agents = [...targetSnap.agents, agent]
-          }
-        }
-        else if (tab.type === TabType.TERMINAL) {
-          const term = terminalStore.state.terminals.find(t => t.id === tab.id)
-          if (term && !targetSnap.terminals.some(t => t.id === tab.id)) {
-            targetSnap.terminals = [...targetSnap.terminals, term]
-          }
-        }
-        registry.set(resolvedTargetWsId, { ...targetSnap })
+      // Get or create a snapshot for the target workspace.
+      // If we create a new one, mark it as NOT tabsLoaded so that
+      // saveMultiLayout won't include it (which would overwrite the
+      // hub's full tab list with our partial view).
+      const targetSnap = registry.get(resolvedTargetWsId) ?? {
+        workspaceId: resolvedTargetWsId,
+        tabs: {
+          tabs: [],
+          activeTabKey: null,
+          mruOrder: [],
+          tileActiveTabKeys: {},
+          tileMruOrder: {},
+        },
+        layout: {
+          root: { type: 'leaf' as const, id: 'tile-1' },
+          focusedTileId: 'tile-1',
+        },
+        agents: [],
+        terminals: [],
+        restored: false,
+        tabsLoaded: false,
       }
+
+      // Use a valid tileId from the target workspace's layout.
+      const targetTileIds = getAllTileIds(targetSnap.layout.root)
+      const targetTileId = targetSnap.layout.focusedTileId ?? targetTileIds[0] ?? ''
+      const newTab = { ...tab, tileId: targetTileId }
+      const key = `${newTab.type}:${newTab.id}`
+      targetSnap.tabs.tabs = [...targetSnap.tabs.tabs, newTab]
+      targetSnap.tabs.activeTabKey = key
+      targetSnap.tabs.mruOrder = [key, ...targetSnap.tabs.mruOrder]
+      if (targetTileId) {
+        targetSnap.tabs.tileActiveTabKeys = {
+          ...targetSnap.tabs.tileActiveTabKeys,
+          [targetTileId]: key,
+        }
+      }
+      // Move the agent/terminal data to the target snapshot.
+      if (tab.type === TabType.AGENT) {
+        const agent = agentStore.state.agents.find(a => a.id === tab.id)
+        if (agent && !targetSnap.agents.some(a => a.id === tab.id)) {
+          targetSnap.agents = [...targetSnap.agents, agent]
+        }
+      }
+      else if (tab.type === TabType.TERMINAL) {
+        const term = terminalStore.state.terminals.find(t => t.id === tab.id)
+        if (term && !targetSnap.terminals.some(t => t.id === tab.id)) {
+          targetSnap.terminals = [...targetSnap.terminals, term]
+        }
+      }
+      registry.set(resolvedTargetWsId, { ...targetSnap })
     }
 
     // For FILE tabs, update sessionStorage entries.
@@ -617,7 +637,39 @@ export const AppShell: ParentComponent = (props) => {
         }).catch(() => {})
       : Promise.resolve()
 
-    rpcDone.then(() => persistMultiLayout(true))
+    rpcDone.then(async () => {
+      // If the target snapshot was newly created (not fully loaded),
+      // fetch the target workspace's existing tabs from the hub and
+      // merge them so saveMultiLayout sends the complete tab list
+      // (hub does DELETE + INSERT, so partial saves lose existing tabs).
+      const currentOrgId = org.orgId()
+      const targetSnap = registry.get(resolvedTargetWsId)
+      if (currentOrgId && targetSnap && !targetSnap.tabsLoaded) {
+        try {
+          const resp = await workspaceClient.listTabs({
+            orgId: currentOrgId,
+            workspaceId: resolvedTargetWsId,
+          })
+          const existingKeys = new Set(targetSnap.tabs.tabs.map(t => `${t.type}:${t.id}`))
+          for (const t of resp.tabs) {
+            const key = `${t.tabType}:${t.tabId}`
+            if (!existingKeys.has(key)) {
+              targetSnap.tabs.tabs.push({
+                type: t.tabType as TabType,
+                id: t.tabId,
+                position: t.position,
+                tileId: t.tileId || targetSnap.layout.focusedTileId || '',
+                workerId: t.workerId,
+              } as import('~/stores/tab.store').Tab)
+            }
+          }
+          targetSnap.tabsLoaded = true
+          registry.set(resolvedTargetWsId, { ...targetSnap })
+        }
+        catch { /* ignore — will be picked up on next restore */ }
+      }
+      persistMultiLayout(true)
+    })
   }
 
   // Lazy-load tabs for a non-active workspace when its tree is expanded.

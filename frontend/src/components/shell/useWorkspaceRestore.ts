@@ -134,10 +134,8 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       if (gen !== loadGeneration)
         return
 
-      // Populate agent store.
-      // Use persistedKeys (from hub's listTabs) to filter out stale agents
-      // that the worker hasn't moved yet — the hub tab list is the source
-      // of truth for which tabs belong to this workspace.
+      // Build persistedKeys from hub's listTabs — used to filter stale
+      // agents that the worker hasn't moved yet.
       const persistedKeys = new Set<string>()
       const tabTileMap = new Map<string, string>()
       if (tabsResp?.tabs) {
@@ -150,14 +148,26 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         }
       }
 
+      // Also include tabs from the registry snapshot (e.g. tabs moved
+      // to this workspace via cross-workspace drag that the hub may not
+      // know about yet). This prevents the agent filter from discarding
+      // locally-moved tabs.
+      if (cached) {
+        for (const snapTab of cached.tabs.tabs) {
+          const key = `${snapTab.type}:${snapTab.id}`
+          persistedKeys.add(key)
+        }
+      }
+
+      // Populate agent store.
       const allAgents = agentResults.flat()
       log.warn(`[restore] listAgents for ${activeId}: ${allAgents.map(a => a.id).join(', ')}`)
-      // Filter agents to only those the hub confirms belong to this workspace.
+      // Filter agents to only those confirmed by hub OR cached snapshot.
       const filteredAgents = allAgents.filter(a => persistedKeys.has(`${TabType.AGENT}:${a.id}`))
       // Merge locally-moved agents from the registry snapshot that the
-      // worker hasn't processed yet (cross-workspace MoveTabWorkspace
-      // may still be in flight).
-      if (cached?.tabsLoaded && cached.agents.length > 0) {
+      // worker hasn't returned yet (cross-workspace move may still be
+      // in flight on the worker side).
+      if (cached && cached.agents.length > 0) {
         const fetchedIds = new Set(filteredAgents.map(a => a.id))
         for (const snapAgent of cached.agents) {
           if (!fetchedIds.has(snapAgent.id)) {
@@ -244,7 +254,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       // Merge any locally-moved tabs from the registry snapshot that the
       // server didn't return yet (cross-workspace moves may still be in
       // flight when we fetch from the server).
-      if (cached?.tabsLoaded) {
+      if (cached && cached.tabs.tabs.length > 0) {
         const existingKeys = new Set(tabStore.state.tabs.map(t => tabKey(t)))
         for (const snapTab of cached.tabs.tabs) {
           const key = tabKey(snapTab)
