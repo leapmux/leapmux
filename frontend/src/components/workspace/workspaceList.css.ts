@@ -155,6 +155,19 @@ export const itemRenameInput = style({
   },
 })
 
+export const itemDragging = style({
+  opacity: 0.4,
+})
+
+export const itemDropTarget = style({
+  'backgroundColor': 'var(--accent)',
+  'outline': '1px dashed var(--primary)',
+  'outlineOffset': '-1px',
+  ':hover': {
+    backgroundColor: 'var(--accent)',
+  },
+})
+
 export const itemActions = style({
   display: 'flex',
   alignItems: 'center',
@@ -165,7 +178,7 @@ export const itemActions = style({
 })
 
 /** Give itemActions a background on hover so it covers scrolled text underneath. */
-globalStyle(`${item}:hover ${itemActions}`, {
+globalStyle(`${item}:hover:not(${itemDropTarget}) ${itemActions}`, {
   backgroundColor: 'var(--card)',
 })
 
@@ -175,7 +188,7 @@ globalStyle(`${item}${itemActive} ${itemActions}`, {
 })
 
 /** Match active + hover item background. */
-globalStyle(`${item}${itemActive}:hover ${itemActions}`, {
+globalStyle(`${item}${itemActive}:hover:not(${itemDropTarget}) ${itemActions}`, {
   backgroundColor: 'var(--muted)',
 })
 
@@ -183,7 +196,7 @@ export const itemMenuTrigger = style({
   opacity: 0,
   transition: 'opacity 0.15s',
   selectors: {
-    [`${item}:hover &`]: {
+    [`${item}:hover:not(${itemDropTarget}) &`]: {
       opacity: 1,
     },
     '&[aria-expanded="true"]': {
@@ -205,16 +218,6 @@ export const emptySection = style({
   fontSize: 'var(--text-7)',
   color: 'var(--faint-foreground)',
   fontStyle: 'italic',
-})
-
-export const itemDragging = style({
-  opacity: 0.4,
-})
-
-export const itemDropTarget = style({
-  backgroundColor: 'var(--accent)',
-  outline: '1px dashed var(--primary)',
-  outlineOffset: '-1px',
 })
 
 export const sectionHeaderDropTarget = style({
