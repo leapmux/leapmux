@@ -147,6 +147,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
     return {
       added: tree.groups.reduce((sum, g) => sum + g.diffAdded, 0),
       deleted: tree.groups.reduce((sum, g) => sum + g.diffDeleted, 0),
+      untracked: tree.groups.reduce((sum, g) => sum + g.diffUntracked, 0),
     }
   }
 
@@ -266,8 +267,8 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                       {(() => {
                         const stats = workspaceDiffStatsFor(id)
                         return (
-                          <Show when={stats.added > 0 || stats.deleted > 0}>
-                            <DiffStatsBadge added={stats.added} deleted={stats.deleted} />
+                          <Show when={stats.added > 0 || stats.deleted > 0 || stats.untracked > 0}>
+                            <DiffStatsBadge added={stats.added} deleted={stats.deleted} untracked={stats.untracked} />
                           </Show>
                         )
                       })()}

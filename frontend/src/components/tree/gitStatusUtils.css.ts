@@ -17,3 +17,7 @@ export const diffStatsAdded = style({
 export const diffStatsDeleted = style({
   color: 'var(--danger)',
 })
+
+export const diffStatsUntracked = style({
+  color: 'var(--warning)',
+})

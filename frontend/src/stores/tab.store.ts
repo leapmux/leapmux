@@ -26,6 +26,7 @@ export interface Tab {
   gitOriginUrl?: string
   gitDiffAdded?: number
   gitDiffDeleted?: number
+  gitDiffUntracked?: number
 }
 
 export function tabKey(tab: Tab): string {

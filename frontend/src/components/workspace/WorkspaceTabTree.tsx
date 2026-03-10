@@ -111,7 +111,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
                 />
                 <FolderGit size={14} class={css.groupIcon} />
                 <span class={css.groupLabel}>{group.repoLabel}</span>
-                <DiffStatsBadge added={group.diffAdded} deleted={group.diffDeleted} />
+                <DiffStatsBadge added={group.diffAdded} deleted={group.diffDeleted} untracked={group.diffUntracked} />
               </div>
 
               <div class={`${shared.childrenWrapper} ${!isCollapsed(group.repoKey) ? shared.childrenWrapperExpanded : ''}`}>
@@ -132,7 +132,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
                           />
                           <GitBranch size={14} class={css.groupIcon} />
                           <span class={css.groupLabel}>{branch.branchName}</span>
-                          <DiffStatsBadge added={branch.diffAdded} deleted={branch.diffDeleted} />
+                          <DiffStatsBadge added={branch.diffAdded} deleted={branch.diffDeleted} untracked={branch.diffUntracked} />
                         </div>
 
                         <div class={`${shared.childrenWrapper} ${!isCollapsed(`${group.repoKey}:${branch.branchName}`) ? shared.childrenWrapperExpanded : ''}`}>
@@ -183,6 +183,7 @@ interface BranchGroup {
   tabs: Tab[]
   diffAdded: number
   diffDeleted: number
+  diffUntracked: number
 }
 
 interface RepoGroup {
@@ -191,6 +192,7 @@ interface RepoGroup {
   branches: BranchGroup[]
   diffAdded: number
   diffDeleted: number
+  diffUntracked: number
 }
 
 interface TabTree {
@@ -252,14 +254,16 @@ export function buildTree(tabs: Tab[]): TabTree {
           // the first tab that has diff stats rather than summing.
           let diffAdded = 0
           let diffDeleted = 0
+          let diffUntracked = 0
           for (const t of branchTabs) {
-            if ((t.gitDiffAdded ?? 0) > 0 || (t.gitDiffDeleted ?? 0) > 0) {
+            if ((t.gitDiffAdded ?? 0) > 0 || (t.gitDiffDeleted ?? 0) > 0 || (t.gitDiffUntracked ?? 0) > 0) {
               diffAdded = t.gitDiffAdded ?? 0
               diffDeleted = t.gitDiffDeleted ?? 0
+              diffUntracked = t.gitDiffUntracked ?? 0
               break
             }
           }
-          return { branchName, tabs: sortTabs(branchTabs), diffAdded, diffDeleted }
+          return { branchName, tabs: sortTabs(branchTabs), diffAdded, diffDeleted, diffUntracked }
         })
       return {
         repoKey: url,
@@ -267,6 +271,7 @@ export function buildTree(tabs: Tab[]): TabTree {
         branches,
         diffAdded: branches.reduce((sum, b) => sum + b.diffAdded, 0),
         diffDeleted: branches.reduce((sum, b) => sum + b.diffDeleted, 0),
+        diffUntracked: branches.reduce((sum, b) => sum + b.diffUntracked, 0),
       }
     })
 
