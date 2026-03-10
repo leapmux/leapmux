@@ -33,7 +33,7 @@ const TabLeaf: Component<{
     <div
       ref={draggable}
       class={`${shared.node} ${css.leafNode} ${props.isActive ? css.leafActive : ''} ${draggable.isActiveDraggable ? css.leafDragging : ''}`}
-      style={{ 'padding-left': `${8 + props.depth * 16}px` }}
+      style={{ 'padding-left': `${4 + props.depth * 16}px` }}
       onClick={() => {
         if (!draggable.isActiveDraggable)
           props.onClick()
@@ -101,7 +101,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
               {/* Repo group header */}
               <div
                 class={shared.node}
-                style={{ 'padding-left': '24px' }}
+                style={{ 'padding-left': '20px' }}
                 onClick={() => toggleCollapsed(group.repoKey)}
                 data-testid="tab-tree-repo-group"
               >
@@ -122,7 +122,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
                         {/* Branch group header */}
                         <div
                           class={shared.node}
-                          style={{ 'padding-left': '40px' }}
+                          style={{ 'padding-left': '36px' }}
                           onClick={() => toggleCollapsed(`${group.repoKey}:${branch.branchName}`)}
                           data-testid="tab-tree-branch-group"
                         >
