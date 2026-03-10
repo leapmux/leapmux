@@ -25,7 +25,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
 
   const sim = createCompassSimulation((state) => {
     setAngleDeg((state.angle * 180) / Math.PI)
-    const pos = ((-state.angle * 180) / Math.PI / 360) * chars.length
+    const pos = ((state.angle * 180) / Math.PI / 360) * chars.length
     setHighlightPos(((pos % chars.length) + chars.length) % chars.length)
   })
 
