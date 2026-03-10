@@ -9,7 +9,7 @@ import type { createTerminalStore } from '~/stores/terminal.store'
 import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { watchEventsViaChannel } from '~/api/workerRpc'
-import { showToast } from '~/components/common/Toast'
+import { showWarnToast } from '~/components/common/Toast'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
 import { AgentStatus, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
@@ -375,8 +375,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             await chatStore.loadInitialMessages(wid, entry.agentId)
           }
           catch (err) {
-            log.warn(`Failed to load initial messages for agent ${entry.agentId}:`, err)
-            showToast('Failed to load chat history', 'danger')
+            showWarnToast('Failed to load chat history', err)
           }
         }),
     )
@@ -459,8 +458,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         const isConnectionLost = err instanceof ChannelError && err.source === 'transport'
 
         if (isConnectionLost) {
-          log.warn('[watchEvents] E2EE channel disconnected:', err)
-          showToast('Connection to worker lost, reconnecting\u2026', 'danger')
+          showWarnToast('Connection to worker lost, reconnecting\u2026', err)
           // Channel disconnected (worker went offline or restarted).
           // Mark worker as offline so terminals show disconnection and
           // thinking indicators are hidden.
@@ -602,8 +600,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     if (!agent)
       return
     chatStore.loadInitialMessages(agent.workerId, tabId).catch((err) => {
-      log.warn(`[lazyLoad] Failed to load messages for agent ${tabId}:`, err)
-      showToast('Failed to load chat history', 'danger')
+      showWarnToast('Failed to load chat history', err)
     })
   })
 

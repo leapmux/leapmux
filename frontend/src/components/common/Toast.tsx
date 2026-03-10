@@ -16,7 +16,7 @@ export function showErrorToast(message: string, err?: unknown) {
   showToast(err instanceof Error ? err.message : message, 'danger')
 }
 
-export function showToast(message: string, type: ToastType = 'danger') {
+export function showToast(message: string, type: ToastType = 'success') {
   const variant = type === 'success' ? 'success' : 'danger'
 
   const toast = document.createElement('output')
