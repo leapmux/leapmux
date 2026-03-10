@@ -515,28 +515,15 @@ export const AppShell: ParentComponent = (props) => {
     }
 
     // Add the tab to the target (optimistic UI update).
+    // Use spread to preserve all tab properties (including workingDir,
+    // git fields, etc.) and only override tileId as needed.
     if (isTargetActive) {
       // When moving from a non-active workspace, the tab's tileId may not exist
       // in the active workspace's layout. Use the focused tile as a fallback.
       const activeTileId = !isSourceActive
         ? (layoutStore.focusedTileId() ?? tab.tileId)
         : tab.tileId
-      tabStore.addTab({
-        type: tab.type,
-        id: tab.id,
-        title: tab.title,
-        workerId: tab.workerId,
-        filePath: tab.filePath,
-        position: tab.position,
-        tileId: activeTileId,
-        displayMode: tab.displayMode,
-        fileViewMode: tab.fileViewMode,
-        fileDiffBase: tab.fileDiffBase,
-        gitBranch: tab.gitBranch,
-        gitOriginUrl: tab.gitOriginUrl,
-        gitDiffAdded: tab.gitDiffAdded,
-        gitDiffDeleted: tab.gitDiffDeleted,
-      })
+      tabStore.addTab({ ...tab, tileId: activeTileId })
     }
     else {
       // Get or create a snapshot for the target workspace.
@@ -598,18 +585,7 @@ export const AppShell: ParentComponent = (props) => {
         // Add to target workspace's sessionStorage
         const targetKey = `leapmux:localTabs:${resolvedTargetWsId}`
         const existing = JSON.parse(sessionStorage.getItem(targetKey) ?? '[]') as Array<Record<string, unknown>>
-        existing.push({
-          type: tab.type,
-          id: tab.id,
-          filePath: tab.filePath,
-          workerId: tab.workerId,
-          position: tab.position,
-          tileId: tab.tileId,
-          title: tab.title,
-          displayMode: tab.displayMode,
-          fileViewMode: tab.fileViewMode,
-          fileDiffBase: tab.fileDiffBase,
-        })
+        existing.push({ ...tab })
         sessionStorage.setItem(targetKey, JSON.stringify(existing))
 
         // Remove from source workspace's sessionStorage
