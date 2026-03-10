@@ -244,7 +244,6 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           if (!sc.agentSessionId) {
             const hasMessages = chatStore.getMessages(sc.agentId).length > 0
             if (!hasMessages) {
-              log.warn(`[watchEvents] removing agent ${sc.agentId} (INACTIVE, no session, no messages)`)
               agentStore.removeAgent(sc.agentId)
               tabStore.removeTab(TabType.AGENT, sc.agentId)
             }
@@ -375,8 +374,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             const wid = agentStore.state.agents.find(a => a.id === entry.agentId)?.workerId ?? ''
             await chatStore.loadInitialMessages(wid, entry.agentId)
           }
-          catch (err) {
-            log.warn(`[watchEvents] Failed to load initial messages for agent ${entry.agentId}:`, err)
+          catch {
             showToast('Failed to load chat history', 'danger')
           }
         }),

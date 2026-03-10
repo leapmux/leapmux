@@ -104,8 +104,6 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
             workerIds.add(t.workerId)
         }
       }
-      log.warn(`[restore] listTabs for ${activeId}: ${tabsResp?.tabs.map(t => `${t.tabType}:${t.tabId}`).join(', ') ?? 'null'}`)
-
       // Fetch agents and terminals from each worker in parallel.
       const agentResults = await Promise.all(
         [...workerIds].map(async (workerId) => {
@@ -161,7 +159,6 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
 
       // Populate agent store.
       const allAgents = agentResults.flat()
-      log.warn(`[restore] listAgents for ${activeId}: ${allAgents.map(a => a.id).join(', ')}`)
       // Filter agents to only those confirmed by hub OR cached snapshot.
       const filteredAgents = allAgents.filter(a => persistedKeys.has(`${TabType.AGENT}:${a.id}`))
       // Merge locally-moved agents from the registry snapshot that the
@@ -175,7 +172,6 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
           }
         }
       }
-      log.warn(`[restore] final agents for ${activeId}: ${filteredAgents.map(a => a.id).join(', ')}`)
       agentStore.setAgents(filteredAgents)
 
       // Populate terminal store.
@@ -210,7 +206,6 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       const validTileIds = new Set(layoutStore.getAllTileIds())
       const defaultTileId = layoutStore.focusedTileId()
 
-      log.warn(`[restore] creating tabs for ${activeId}, agents: ${agentStore.state.agents.map(a => a.id).join(', ')}`)
       for (const a of agentStore.state.agents) {
         const key = `${TabType.AGENT}:${a.id}`
         let tileId = tabTileMap.get(key) ?? defaultTileId
