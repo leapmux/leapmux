@@ -160,12 +160,8 @@ export const itemDragging = style({
 })
 
 export const itemDropTarget = style({
-  'backgroundColor': 'var(--accent)',
-  'outline': '1px dashed var(--primary)',
-  'outlineOffset': '-1px',
-  ':hover': {
-    backgroundColor: 'var(--accent)',
-  },
+  outline: '2px dashed var(--primary)',
+  outlineOffset: '-2px',
 })
 
 export const itemActions = style({
