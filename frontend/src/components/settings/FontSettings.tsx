@@ -209,9 +209,8 @@ export const FontSettings: Component = () => {
                         type="text"
                         value={editingValue()}
                         onInput={(e) => {
-                          const { value, error } = sanitizeName(e.currentTarget.value)
-                          setEditingValue(value)
-                          setEditingError(error)
+                          setEditingValue(e.currentTarget.value)
+                          setEditingError(null)
                         }}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') {
@@ -251,7 +250,7 @@ export const FontSettings: Component = () => {
             type="text"
             placeholder="Font name"
             value={inputValue()}
-            onInput={e => setInputValue(sanitizeName(e.currentTarget.value).value)}
+            onInput={e => setInputValue(e.currentTarget.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 addFont(list)

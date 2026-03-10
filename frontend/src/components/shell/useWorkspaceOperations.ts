@@ -9,7 +9,6 @@ import { showWarnToast } from '~/components/common/Toast'
 import { useAuth } from '~/context/AuthContext'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
 import { mid } from '~/lib/lexorank'
-import { sanitizeName } from '~/lib/validate'
 import { isWorkspaceSection } from './sectionUtils'
 
 export interface SectionGroup {
@@ -395,7 +394,7 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     canAddToSection,
     isWorkspaceArchived,
     isWorkspaceLoading,
-    onRenameInput: (v: string) => setRenameValue(sanitizeName(v).value),
+    onRenameInput: (v: string) => setRenameValue(v),
 
     // DnD
     computeDropPosition,

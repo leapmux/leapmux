@@ -5,7 +5,7 @@ import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { TodoItem } from '~/stores/chat.store'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
-import type { createTabStore } from '~/stores/tab.store'
+import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 
 import Plus from 'lucide-solid/icons/plus'
@@ -60,6 +60,7 @@ interface RightSidebarProps {
   tabStore?: ReturnType<typeof createTabStore>
   registry?: WorkspaceStoreRegistryType
   onTabClick?: (type: number, id: string) => void
+  onTabRename?: (tab: Tab, title: string) => void
   onExpandWorkspace?: (workspaceId: string) => void
 }
 
@@ -252,6 +253,7 @@ export const RightSidebar: Component<RightSidebarProps> = (props) => {
                 return snap?.tabs.activeTabKey ?? null
               }}
               onTabClick={props.onTabClick ?? (() => {})}
+              onTabRename={props.onTabRename}
               onExpandWorkspace={props.onExpandWorkspace}
             />
           ),

@@ -6,7 +6,7 @@ import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/r
 import { createEffect, createMemo, createSignal, on, Show, untrack } from 'solid-js'
 import { workerClient, workspaceClient } from '~/api/clients'
 import { agentLoadingTimeoutMs } from '~/api/transport'
-import { channelManager, listAgents, listTerminals, moveTabWorkspace, setConfirmKeyPin, setGetUserId } from '~/api/workerRpc'
+import { channelManager, listAgents, listTerminals, moveTabWorkspace, renameAgent, setConfirmKeyPin, setGetUserId } from '~/api/workerRpc'
 import { NotFoundPage } from '~/components/common/NotFoundPage'
 import { showWarnToast } from '~/components/common/Toast'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
@@ -941,6 +941,15 @@ export const AppShell: ParentComponent = (props) => {
       }
       else if (tabType === TabType.TERMINAL) {
         terminalStore.setActiveTerminal(id)
+      }
+    },
+    onTabRename: (tab, title) => {
+      tabStore.updateTabTitle(tab.type, tab.id, title)
+      if (tab.type === TabType.AGENT) {
+        const workerId = agentStore.state.agents.find(a => a.id === tab.id)?.workerId ?? ''
+        renameAgent(workerId, { agentId: tab.id, title }).catch((err) => {
+          showWarnToast('Failed to rename agent', err)
+        })
       }
     },
     onExpandWorkspace: handleExpandWorkspace,

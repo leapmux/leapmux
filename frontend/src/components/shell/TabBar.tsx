@@ -16,7 +16,6 @@ import { createSignal, ErrorBoundary, For, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
-import { sanitizeName } from '~/lib/validate'
 import { tabKey, TabType } from '~/stores/tab.store'
 import { menuSectionHeader, monoFont } from '~/styles/shared.css'
 import { TABBAR_ZONE_PREFIX, useCrossTileDrag } from './CrossTileDragContext'
@@ -203,7 +202,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
           class={styles.tabEditInput}
           type="text"
           value={editingValue()}
-          onInput={e => setEditingValue(sanitizeName(e.currentTarget.value).value)}
+          onInput={e => setEditingValue(e.currentTarget.value)}
           onKeyDown={(e) => {
             e.stopPropagation()
             if (e.key === 'Enter') {

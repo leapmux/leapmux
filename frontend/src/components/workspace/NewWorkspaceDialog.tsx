@@ -180,7 +180,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
               <input
                 type="text"
                 value={title()}
-                onInput={e => setTitle(sanitizeName(e.currentTarget.value).value)}
+                onInput={e => setTitle(e.currentTarget.value)}
                 placeholder="New Workspace"
               />
               <Show when={titleError()}>

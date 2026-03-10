@@ -6,7 +6,7 @@ import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { TodoItem } from '~/stores/chat.store'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
-import type { createTabStore } from '~/stores/tab.store'
+import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 import { relativizePath } from '~/components/chat/messageUtils'
@@ -49,6 +49,7 @@ export interface SidebarElementsOpts {
   channelStatusFn: (id: string) => ChannelStatus
   onDeregisterWorker: (worker: Worker) => void
   onTabClick: (type: number, id: string) => void
+  onTabRename?: (tab: Tab, title: string) => void
   onExpandWorkspace: (workspaceId: string) => void
 }
 
@@ -110,6 +111,7 @@ export function createLeftSidebarElement(opts: SidebarElementsOpts, display?: Si
       tabStore={opts.tabStore}
       registry={opts.registry}
       onTabClick={opts.onTabClick}
+      onTabRename={opts.onTabRename}
       onExpandWorkspace={opts.onExpandWorkspace}
     />
   )
@@ -160,6 +162,7 @@ export function createRightSidebarElement(opts: SidebarElementsOpts, display?: S
       tabStore={opts.tabStore}
       registry={opts.registry}
       onTabClick={opts.onTabClick}
+      onTabRename={opts.onTabRename}
       onExpandWorkspace={opts.onExpandWorkspace}
     />
   )

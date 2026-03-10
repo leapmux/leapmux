@@ -7,7 +7,7 @@ import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { TodoItem } from '~/stores/chat.store'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
-import type { createTabStore } from '~/stores/tab.store'
+import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 
@@ -72,6 +72,7 @@ interface LeftSidebarProps {
   tabStore: ReturnType<typeof createTabStore>
   registry?: WorkspaceStoreRegistryType
   onTabClick: (type: number, id: string) => void
+  onTabRename?: (tab: Tab, title: string) => void
   onExpandWorkspace: (workspaceId: string) => void
 }
 
@@ -232,6 +233,7 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
                 return snap?.tabs.activeTabKey ?? null
               }}
               onTabClick={props.onTabClick}
+              onTabRename={props.onTabRename}
               onExpandWorkspace={props.onExpandWorkspace}
             />
           ),
