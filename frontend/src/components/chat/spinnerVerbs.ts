@@ -1,4 +1,4 @@
-const modules = import.meta.glob('/public/spinners/*.json', { eager: true })
+const modules = import.meta.glob('/src/spinners/*.json', { eager: true })
 
 const allVerbs: string[] = []
 for (const mod of Object.values(modules)) {

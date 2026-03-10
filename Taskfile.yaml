@@ -79,17 +79,17 @@ tasks:
     vars:
       CACHE_DIR: '{{.HOME}}/.cache/awesome-claude-spinners'
     generates:
-      - frontend/public/spinners/**/*
+      - frontend/src/spinners/**/*
     status:
-      - test -d frontend/public/spinners
+      - test -d frontend/src/spinners
     cmds:
       - |
         if [ ! -d "{{.CACHE_DIR}}" ] || [ -n "$(find "{{.CACHE_DIR}}" -maxdepth 0 -mtime +30 2>/dev/null)" ]; then
           rm -rf "{{.CACHE_DIR}}"
           git clone --depth 1 https://github.com/AlexPl292/awesome-claude-spinners "{{.CACHE_DIR}}"
         fi
-      - mkdir -p frontend/public/spinners
-      - rsync -a --delete "{{.CACHE_DIR}}/spinners/" frontend/public/spinners/
+      - mkdir -p frontend/src/spinners
+      - rsync -a --delete "{{.CACHE_DIR}}/spinners/" frontend/src/spinners/
 
   prepare-frontend:
     desc: Install frontend dependencies
@@ -316,5 +316,5 @@ tasks:
       - rm -f ./leapmux
       - rm -rf generated/ */generated/ */*/generated/
       - rm -rf frontend/.output/ frontend/.vinxi/ frontend/node_modules/
-      - rm -rf frontend/public/spinners/
+      - rm -rf frontend/src/spinners/
       - rm -rf .task/
