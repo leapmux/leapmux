@@ -346,9 +346,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     <div class={markdownContent} innerHTML={renderedStreamHtml()} />
                   </div>
                 </Show>
-                <Show when={props.agentWorking && !props.streamingText}>
-                  <ThinkingIndicator />
-                </Show>
+                <ThinkingIndicator visible={props.agentWorking && !props.streamingText} />
               </div>
             </SelectionQuotePopover>
           </Show>
