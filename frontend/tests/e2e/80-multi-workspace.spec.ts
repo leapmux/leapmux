@@ -609,6 +609,62 @@ test.describe('Multi-Workspace', () => {
     }
   })
 
+  test('clicking specific tab in non-active workspace activates that tab', async ({ page, leapmuxServer }) => {
+    const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
+    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Specific Tab WS1', adminOrgId)
+    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Specific Tab WS2', adminOrgId)
+    // Create 2 agents in ws2 so we can distinguish which tab is active.
+    await openAgentViaAPI(hubUrl, adminToken, workerId, ws1)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
+
+    try {
+      await loginViaToken(page, adminToken)
+      await page.goto(`/o/admin/workspace/${ws1}`)
+      await waitForWorkspaceReady(page)
+      await waitForInitialAgent(page)
+
+      // Expand ws2 in the sidebar
+      const ws2Item = page.locator(`[data-testid="workspace-item-${ws2}"]`)
+      await ws2Item.locator('svg').first().click()
+
+      // Wait for ws2's tab tree leaves to appear (2 agents)
+      await page.waitForFunction((wsId) => {
+        const wsItem = document.querySelector(`[data-testid="workspace-item-${wsId}"]`)
+        if (!wsItem)
+          return false
+        const childrenWrapper = wsItem.nextElementSibling
+        if (!childrenWrapper)
+          return false
+        return childrenWrapper.querySelectorAll('[data-testid="tab-tree-leaf"]').length === 2
+      }, ws2, { timeout: 5000 })
+
+      // Get the tab ID of the SECOND leaf and click it
+      const secondLeafTabId = await page.evaluate((wsId) => {
+        const wsItem = document.querySelector(`[data-testid="workspace-item-${wsId}"]`)!
+        const childrenWrapper = wsItem.nextElementSibling!
+        const leaves = childrenWrapper.querySelectorAll<HTMLElement>('[data-testid="tab-tree-leaf"]')
+        const secondLeaf = leaves[1]
+        const tabId = secondLeaf.getAttribute('data-tab-id')
+        secondLeaf.click()
+        return tabId
+      }, ws2)
+      expect(secondLeafTabId).toBeTruthy()
+
+      // Should switch to ws2
+      await waitForWorkspaceReady(page)
+      await expect(page).toHaveURL(new RegExp(`/workspace/${ws2}`), { timeout: 5000 })
+
+      // The clicked tab should be the active (aria-selected) tab in the tab bar
+      const activeTab = page.locator('[data-testid="tab"][aria-selected="true"]')
+      await expect(activeTab).toHaveAttribute('data-tab-id', secondLeafTabId!)
+    }
+    finally {
+      await deleteWorkspaceViaAPI(hubUrl, adminToken, ws1).catch(() => {})
+      await deleteWorkspaceViaAPI(hubUrl, adminToken, ws2).catch(() => {})
+    }
+  })
+
   test('cross-workspace move persists after reload', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
     const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Persist Source', adminOrgId)

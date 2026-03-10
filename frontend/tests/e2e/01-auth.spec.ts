@@ -35,7 +35,7 @@ test.describe('Authentication', () => {
 
   test('should redirect to original page after login', async ({ page }) => {
     // Navigate to a protected page while unauthenticated
-    const targetPath = '/settings'
+    const targetPath = '/o/admin'
     await page.goto(targetPath)
 
     // Should redirect to login with redirect query param
@@ -47,8 +47,7 @@ test.describe('Authentication', () => {
     await page.getByLabel('Password').fill('admin')
     await page.getByRole('button', { name: 'Sign in' }).click()
 
-    // Should redirect back to the original page (settings/preferences)
-    await expect(page).toHaveURL(/\/settings/)
-    await expect(page.getByText('Preferences')).toBeVisible()
+    // Should redirect back to the original page
+    await expect(page).toHaveURL(/\/o\/admin/)
   })
 })

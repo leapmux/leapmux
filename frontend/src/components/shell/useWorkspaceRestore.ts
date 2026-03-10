@@ -71,6 +71,26 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       layoutStore.restore(cached.layout)
       agentStore.setAgents(cached.agents)
       terminalStore.setTerminals(cached.terminals)
+
+      // Activate the tab the user clicked in the sidebar (if any).
+      const savedKey = sessionStorage.getItem(`leapmux:activeTab:${activeId}`)
+      if (savedKey && tabStore.state.tabs.some(t => tabKey(t) === savedKey)) {
+        const parts = savedKey.split(':')
+        const tabType = Number(parts[0]) as TabType
+        const tabId = parts[1]
+        tabStore.setActiveTab(tabType, tabId)
+        const restoredTab = tabStore.state.tabs.find(t => tabKey(t) === savedKey)
+        if (restoredTab?.tileId) {
+          tabStore.setActiveTabForTile(restoredTab.tileId, tabType, tabId)
+        }
+        if (tabType === TabType.AGENT) {
+          agentStore.setActiveAgent(tabId)
+        }
+        else if (tabType === TabType.TERMINAL) {
+          terminalStore.setActiveTerminal(tabId)
+        }
+      }
+
       setWorkspaceLoading(false)
       return
     }

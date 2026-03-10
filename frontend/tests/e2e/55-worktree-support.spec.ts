@@ -194,21 +194,45 @@ async function closeAgentViaAPI(
 }
 
 /**
- * List agents for a workspace via E2EE channel.
+ * List agents for a workspace via hub ListTabs + worker ListAgents.
+ * The ListAgents RPC now accepts tab_ids instead of workspace_id,
+ * so we first fetch the tab list from the hub and then request agents by ID.
  */
 async function listAgentsViaAPI(
   hubUrl: string,
   token: string,
   workerId: string,
   workspaceId: string,
+  orgId: string,
 ): Promise<Array<{ id: string, workingDir: string }>> {
+  // Get tab IDs from the hub's ListTabs endpoint.
+  const tabsRes = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/ListTabs`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({ orgId, workspaceId }),
+  })
+  if (!tabsRes.ok) {
+    throw new Error(`ListTabs failed: ${tabsRes.status}`)
+  }
+  const tabsData = await tabsRes.json() as { tabs?: Array<{ tabType: string, tabId: string }> }
+  const agentTabIds = (tabsData.tabs ?? [])
+    .filter(t => t.tabType === 'TAB_TYPE_AGENT')
+    .map(t => t.tabId)
+
+  if (agentTabIds.length === 0) {
+    return []
+  }
+
   const channel = await getTestChannel(hubUrl, token)
   const resp = await channel.callWorker(
     workerId,
     'ListAgents',
     ListAgentsRequestSchema,
     ListAgentsResponseSchema,
-    { workspaceId },
+    { tabIds: agentTabIds },
   )
   return (resp.agents ?? []).map(a => ({ id: a.id, workingDir: a.workingDir }))
 }
@@ -254,11 +278,11 @@ async function keepWorktreeViaAPI(
 /** Wait for a worker to be available (retry with backoff). */
 async function waitForWorker(page: Page) {
   const dialog = page.getByRole('dialog')
-  const createBtn = dialog.getByRole('button', { name: 'Create', exact: true })
+  const workerSelect = dialog.locator('select').first()
   const refreshBtn = dialog.getByTitle('Refresh workers')
   for (let attempt = 0; attempt < 6; attempt++) {
     try {
-      await expect(createBtn).toBeEnabled()
+      await expect(workerSelect).toContainText('Local', { timeout: 5000 })
       break
     }
     catch {
@@ -498,7 +522,7 @@ test.describe('Worktree Support', () => {
     expect(existsSync(worktreeDir)).toBe(true)
 
     // Get the initial agent that was auto-created with the workspace
-    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
     expect(agents.length).toBeGreaterThan(0)
 
     // Close the agent (last tab referencing the worktree)
@@ -551,7 +575,7 @@ test.describe('Worktree Support', () => {
     expect(existsSync(worktreeDir)).toBe(true)
 
     // Now close the agent (last tab)
-    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
     expect(agents.length).toBeGreaterThan(0)
     const agentResp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
@@ -589,7 +613,7 @@ test.describe('Worktree Support', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
 
     // Get the auto-created agent
-    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
     expect(agents.length).toBeGreaterThan(0)
 
     // Close the agent
@@ -628,7 +652,7 @@ test.describe('Worktree Support', () => {
     writeFileSync(join(worktreeDir, 'dirty.txt'), 'uncommitted change\n')
 
     // Close the agent (last tab)
-    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
     expect(agents.length).toBeGreaterThan(0)
     const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
@@ -678,7 +702,7 @@ test.describe('Worktree Support', () => {
     execSync('git commit -m "local only"', { cwd: worktreeDir })
 
     // Close the agent (last tab)
-    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
     expect(agents.length).toBeGreaterThan(0)
     const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
@@ -742,7 +766,7 @@ test.describe('Worktree Support', () => {
     execSync('git commit -m "another unpushed"', { cwd: worktreeDir })
 
     // Close the agent (last tab)
-    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
     expect(agents.length).toBeGreaterThan(0)
     const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 

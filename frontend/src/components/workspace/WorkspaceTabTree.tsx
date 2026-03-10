@@ -39,6 +39,7 @@ const TabLeaf: Component<{
           props.onClick()
       }}
       data-testid="tab-tree-leaf"
+      data-tab-id={props.tab.id}
     >
       <div class={shared.chevronPlaceholder} />
       <Show when={props.tab.type === TabType.AGENT} fallback={<Terminal size={14} class={css.tabIcon} />}>
