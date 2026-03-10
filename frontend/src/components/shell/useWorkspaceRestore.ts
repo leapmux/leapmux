@@ -96,34 +96,52 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       if (gen !== loadGeneration)
         return
 
-      // Derive distinct worker IDs from tabs.
-      const workerIds = new Set<string>()
+      // Group agent/terminal tab IDs by worker from the hub's tab list.
+      const agentIdsByWorker = new Map<string, string[]>()
+      const terminalIdsByWorker = new Map<string, string[]>()
+      const tabTileMap = new Map<string, string>()
       if (tabsResp?.tabs) {
         for (const t of tabsResp.tabs) {
-          if (t.workerId)
-            workerIds.add(t.workerId)
+          if (t.tileId) {
+            tabTileMap.set(`${t.tabType}:${t.tabId}`, t.tileId)
+          }
+          if (!t.workerId)
+            continue
+          if (t.tabType === TabType.AGENT) {
+            const ids = agentIdsByWorker.get(t.workerId) ?? []
+            ids.push(t.tabId)
+            agentIdsByWorker.set(t.workerId, ids)
+          }
+          else if (t.tabType === TabType.TERMINAL) {
+            const ids = terminalIdsByWorker.get(t.workerId) ?? []
+            ids.push(t.tabId)
+            terminalIdsByWorker.set(t.workerId, ids)
+          }
         }
       }
-      // Fetch agents and terminals from each worker in parallel.
+
+      // Fetch agents and terminals from each worker by tab IDs.
       const agentResults = await Promise.all(
-        [...workerIds].map(async (workerId) => {
+        [...agentIdsByWorker.entries()].map(async ([workerId, tabIds]) => {
           try {
-            const resp = await workerRpc.listAgents(workerId, { workspaceId: activeId })
+            const resp = await workerRpc.listAgents(workerId, { tabIds })
             return resp.agents
           }
-          catch {
+          catch (err) {
+            log.warn('failed to list agents from worker', { workerId, tabIds, err })
             return []
           }
         }),
       )
 
       const terminalResults = await Promise.all(
-        [...workerIds].map(async (workerId) => {
+        [...terminalIdsByWorker.entries()].map(async ([workerId, tabIds]) => {
           try {
-            const resp = await workerRpc.listTerminals(workerId, { orgId: currentOrgId, workspaceId: activeId })
+            const resp = await workerRpc.listTerminals(workerId, { tabIds })
             return { workerId, terminals: resp.terminals }
           }
-          catch {
+          catch (err) {
+            log.warn('failed to list terminals from worker', { workerId, tabIds, err })
             return { workerId, terminals: [] as Awaited<ReturnType<typeof workerRpc.listTerminals>>['terminals'] }
           }
         }),
@@ -132,35 +150,8 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       if (gen !== loadGeneration)
         return
 
-      // Build persistedKeys from hub's listTabs — used to filter stale
-      // agents that the worker hasn't moved yet.
-      const persistedKeys = new Set<string>()
-      const tabTileMap = new Map<string, string>()
-      if (tabsResp?.tabs) {
-        for (const t of tabsResp.tabs) {
-          const key = `${t.tabType}:${t.tabId}`
-          persistedKeys.add(key)
-          if (t.tileId) {
-            tabTileMap.set(key, t.tileId)
-          }
-        }
-      }
-
-      // Also include tabs from the registry snapshot (e.g. tabs moved
-      // to this workspace via cross-workspace drag that the hub may not
-      // know about yet). This prevents the agent filter from discarding
-      // locally-moved tabs.
-      if (cached) {
-        for (const snapTab of cached.tabs.tabs) {
-          const key = `${snapTab.type}:${snapTab.id}`
-          persistedKeys.add(key)
-        }
-      }
-
       // Populate agent store.
-      const allAgents = agentResults.flat()
-      // Filter agents to only those confirmed by hub OR cached snapshot.
-      const filteredAgents = allAgents.filter(a => persistedKeys.has(`${TabType.AGENT}:${a.id}`))
+      const filteredAgents = agentResults.flat()
       // Merge locally-moved agents from the registry snapshot that the
       // worker hasn't returned yet (cross-workspace move may still be
       // in flight on the worker side).
@@ -206,6 +197,8 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       const validTileIds = new Set(layoutStore.getAllTileIds())
       const defaultTileId = layoutStore.focusedTileId()
 
+      const addedTabKeys = new Set<string>()
+
       for (const a of agentStore.state.agents) {
         const key = `${TabType.AGENT}:${a.id}`
         let tileId = tabTileMap.get(key) ?? defaultTileId
@@ -221,28 +214,48 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
           gitBranch: a.gitStatus?.branch || undefined,
           gitOriginUrl: a.gitStatus?.originUrl || undefined,
         }, false)
+        addedTabKeys.add(key)
       }
 
       for (const { workerId, terminals: terms } of terminalResults) {
         for (const term of terms) {
           const termId = term.terminalId
-          if (!terminalStore.isExited(termId) || persistedKeys.has(`${TabType.TERMINAL}:${termId}`)) {
-            const key = `${TabType.TERMINAL}:${termId}`
-            let tileId = tabTileMap.get(key) ?? defaultTileId
-            if (!validTileIds.has(tileId))
-              tileId = defaultTileId
-            const termData = terminalStore.state.terminals.find(t => t.id === termId)
-            tabStore.addTab({
-              type: TabType.TERMINAL,
-              id: termId,
-              title: term.title || undefined,
-              tileId,
-              workerId,
-              workingDir: termData?.workingDir,
-              gitBranch: term.gitBranch || undefined,
-              gitOriginUrl: term.gitOriginUrl || undefined,
-            }, false)
-          }
+          const key = `${TabType.TERMINAL}:${termId}`
+          let tileId = tabTileMap.get(key) ?? defaultTileId
+          if (!validTileIds.has(tileId))
+            tileId = defaultTileId
+          const termData = terminalStore.state.terminals.find(t => t.id === termId)
+          tabStore.addTab({
+            type: TabType.TERMINAL,
+            id: termId,
+            title: term.title || undefined,
+            tileId,
+            workerId,
+            workingDir: termData?.workingDir,
+            gitBranch: term.gitBranch || undefined,
+            gitOriginUrl: term.gitOriginUrl || undefined,
+          }, false)
+          addedTabKeys.add(key)
+        }
+      }
+
+      // Add hub tabs the worker didn't return (e.g. worker offline or
+      // agent inactive after restart) so they remain visible in the UI.
+      if (tabsResp?.tabs) {
+        for (const t of tabsResp.tabs) {
+          const key = `${t.tabType}:${t.tabId}`
+          if (addedTabKeys.has(key))
+            continue
+          let tileId = tabTileMap.get(key) ?? defaultTileId
+          if (!validTileIds.has(tileId))
+            tileId = defaultTileId
+          tabStore.addTab({
+            type: t.tabType as TabType,
+            id: t.tabId,
+            tileId,
+            workerId: t.workerId,
+          }, false)
+          addedTabKeys.add(key)
         }
       }
 

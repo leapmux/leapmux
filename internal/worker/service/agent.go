@@ -282,11 +282,23 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		agents, err := svc.Queries.ListAgentsByWorkspaceID(bgCtx(), r.GetWorkspaceId())
+		tabIDs := r.GetTabIds()
+		if len(tabIDs) == 0 {
+			sendProtoResponse(sender, &leapmuxv1.ListAgentsResponse{})
+			return
+		}
+
+		agents, err := svc.Queries.ListAgentsByIDs(bgCtx(), tabIDs)
 		if err != nil {
-			slog.Error("failed to list agents", "workspace_id", r.GetWorkspaceId(), "error", err)
+			slog.Error("failed to list agents", "tab_ids", tabIDs, "error", err)
 			sendInternalError(sender, "failed to list agents")
 			return
+		}
+
+		// Filter by access control: only return agents in accessible workspaces.
+		var accessibleWsIDs map[string]bool
+		if chID := sender.ChannelID(); chID != "" {
+			accessibleWsIDs = svc.Channels.AccessibleWorkspaceIDs(chID)
 		}
 
 		// Compute git status concurrently for all agents.
@@ -303,6 +315,9 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		protoAgents := make([]*leapmuxv1.AgentInfo, 0, len(agents))
 		for i := range agents {
+			if accessibleWsIDs != nil && !accessibleWsIDs[agents[i].WorkspaceID] {
+				continue
+			}
 			protoAgents = append(protoAgents, agentToProto(&agents[i], agents[i].PermissionMode, svc.WorkerID, svc.Agents.HasAgent(agents[i].ID), gitStatuses[i]))
 		}
 

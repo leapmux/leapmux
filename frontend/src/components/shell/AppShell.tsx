@@ -3,11 +3,12 @@ import type { KeyPinConfirmState } from './AppShellDialogs'
 import type { SidebarElementsOpts } from './SidebarElements'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
-import { createEffect, createMemo, createSignal, on, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, on, Show, untrack } from 'solid-js'
 import { workerClient, workspaceClient } from '~/api/clients'
 import { agentLoadingTimeoutMs } from '~/api/transport'
 import { channelManager, listAgents, listTerminals, moveTabWorkspace, setConfirmKeyPin, setGetUserId } from '~/api/workerRpc'
 import { NotFoundPage } from '~/components/common/NotFoundPage'
+import { showWarnToast } from '~/components/common/Toast'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
 import { WorkerSettingsDialog } from '~/components/workers/WorkerSettingsDialog'
 import { useAuth } from '~/context/AuthContext'
@@ -20,6 +21,7 @@ import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { useIsMobile } from '~/hooks/useIsMobile'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
+import { createLogger } from '~/lib/logger'
 import { createAgentStore } from '~/stores/agent.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
@@ -46,6 +48,8 @@ import { useTerminalOperations } from './useTerminalOperations'
 import { useTileDragDrop } from './useTileDragDrop'
 import { useWorkspaceLoader } from './useWorkspaceLoader'
 import { useWorkspaceRestore } from './useWorkspaceRestore'
+
+const log = createLogger('AppShell')
 
 export const AppShell: ParentComponent = (props) => {
   const auth = useAuth()
@@ -328,6 +332,9 @@ export const AppShell: ParentComponent = (props) => {
 
   // Sync git file status store to tab-level diff stats so the workspace
   // tab tree stays consistent with the directory tree after refreshes.
+  // Use untrack for tab/agent reads so this effect only re-runs when the
+  // git store changes — not when tabs change due to a workspace switch,
+  // which would apply stale git data from the previous workspace.
   createEffect(() => {
     const files = gitFileStatusStore.state.files
     const repoRoot = gitFileStatusStore.state.repoRoot
@@ -345,10 +352,10 @@ export const AppShell: ParentComponent = (props) => {
         deleted += f.linesDeleted + f.stagedLinesDeleted
       }
     }
-    for (const tab of tabStore.state.tabs) {
+    for (const tab of untrack(() => tabStore.state.tabs)) {
       if (tab.type !== TabType.AGENT)
         continue
-      const agent = agentStore.state.agents.find(a => a.id === tab.id)
+      const agent = untrack(() => agentStore.state.agents.find(a => a.id === tab.id))
       if (!agent?.workingDir)
         continue
       if (agent.workingDir === repoRoot || agent.workingDir.startsWith(`${repoRoot}/`)) {
@@ -617,7 +624,7 @@ export const AppShell: ParentComponent = (props) => {
           tabType: tab.type,
           tabId: tab.id,
           newWorkspaceId: resolvedTargetWsId,
-        }).catch(() => {})
+        })
       : Promise.resolve()
 
     rpcDone.then(async () => {
@@ -652,6 +659,54 @@ export const AppShell: ParentComponent = (props) => {
         catch { /* ignore — will be picked up on next restore */ }
       }
       persistMultiLayout(true)
+    }).catch((err: unknown) => {
+      // Worker RPC failed — revert the optimistic UI update.
+      // Move the tab back to the source workspace.
+      if (isTargetActive) {
+        tabStore.removeTab(tab!.type, tab!.id)
+      }
+      else {
+        const tSnap = registry.get(resolvedTargetWsId)
+        if (tSnap) {
+          tSnap.tabs.tabs = tSnap.tabs.tabs.filter((t: any) => `${t.type}:${t.id}` !== draggedKey)
+          if (tab!.type === TabType.AGENT) {
+            tSnap.agents = tSnap.agents.filter(a => a.id !== tab!.id)
+          }
+          else if (tab!.type === TabType.TERMINAL) {
+            tSnap.terminals = tSnap.terminals.filter(t => t.id !== tab!.id)
+          }
+          registry.set(resolvedTargetWsId, { ...tSnap })
+        }
+      }
+
+      // Add it back to the source workspace.
+      if (isSourceActive) {
+        tabStore.addTab(tab!)
+      }
+      else {
+        const sSnap = registry.get(resolvedSourceWsId)
+        if (sSnap) {
+          const tgtSnap = registry.get(resolvedTargetWsId)
+          sSnap.tabs.tabs = [...sSnap.tabs.tabs, tab!]
+          if (tab!.type === TabType.AGENT) {
+            const agent = agentStore.state.agents.find(a => a.id === tab!.id)
+              ?? tgtSnap?.agents.find(a => a.id === tab!.id)
+            if (agent && !sSnap.agents.some(a => a.id === tab!.id)) {
+              sSnap.agents = [...sSnap.agents, agent]
+            }
+          }
+          else if (tab!.type === TabType.TERMINAL) {
+            const term = terminalStore.state.terminals.find(t => t.id === tab!.id)
+              ?? tgtSnap?.terminals.find(t => t.id === tab!.id)
+            if (term && !sSnap.terminals.some(t => t.id === tab!.id)) {
+              sSnap.terminals = [...sSnap.terminals, term]
+            }
+          }
+          registry.set(resolvedSourceWsId, { ...sSnap })
+        }
+      }
+
+      showWarnToast('Failed to move tab', err)
     })
   }
 
@@ -665,24 +720,42 @@ export const AppShell: ParentComponent = (props) => {
       return
 
     workspaceClient.listTabs({ orgId: currentOrgId, workspaceId }).then(async (tabsResp) => {
-      const workerIds = new Set<string>()
+      // Group tab IDs by worker and type.
+      const agentIdsByWorker = new Map<string, string[]>()
+      const terminalIdsByWorker = new Map<string, string[]>()
       for (const t of tabsResp.tabs) {
-        if (t.workerId)
-          workerIds.add(t.workerId)
+        if (!t.workerId)
+          continue
+        if (t.tabType === TabType.AGENT) {
+          const ids = agentIdsByWorker.get(t.workerId) ?? []
+          ids.push(t.tabId)
+          agentIdsByWorker.set(t.workerId, ids)
+        }
+        else if (t.tabType === TabType.TERMINAL) {
+          const ids = terminalIdsByWorker.get(t.workerId) ?? []
+          ids.push(t.tabId)
+          terminalIdsByWorker.set(t.workerId, ids)
+        }
       }
 
       const [agentResults, terminalResults] = await Promise.all([
-        Promise.all([...workerIds].map(async (wid) => {
+        Promise.all([...agentIdsByWorker.entries()].map(async ([wid, tabIds]) => {
           try {
-            return (await listAgents(wid, { workspaceId })).agents
+            return (await listAgents(wid, { tabIds })).agents
           }
-          catch { return [] }
+          catch (err) {
+            log.warn('failed to list agents from worker', { workerId: wid, tabIds, err })
+            return []
+          }
         })),
-        Promise.all([...workerIds].map(async (wid) => {
+        Promise.all([...terminalIdsByWorker.entries()].map(async ([wid, tabIds]) => {
           try {
-            return { workerId: wid, terminals: (await listTerminals(wid, { orgId: currentOrgId, workspaceId })).terminals }
+            return { workerId: wid, terminals: (await listTerminals(wid, { tabIds })).terminals }
           }
-          catch { return { workerId: wid, terminals: [] as Awaited<ReturnType<typeof listTerminals>>['terminals'] } }
+          catch (err) {
+            log.warn('failed to list terminals from worker', { workerId: wid, tabIds, err })
+            return { workerId: wid, terminals: [] as Awaited<ReturnType<typeof listTerminals>>['terminals'] }
+          }
         })),
       ])
 

@@ -4,9 +4,6 @@ INSERT INTO agents (id, workspace_id, working_dir, home_dir, title, model, syste
 -- name: GetAgentByID :one
 SELECT * FROM agents WHERE id = ?;
 
--- name: ListAgentsByWorkspaceID :many
-SELECT * FROM agents WHERE workspace_id = ? AND closed_at IS NULL ORDER BY created_at ASC;
-
 -- name: ListOpenAgentIDsByWorkspaceID :many
 SELECT id FROM agents WHERE workspace_id = ? AND closed_at IS NULL;
 
@@ -59,6 +56,9 @@ SELECT workspace_id FROM agents WHERE id = ?;
 
 -- name: UpdateAgentWorkspace :exec
 UPDATE agents SET workspace_id = ? WHERE id = ?;
+
+-- name: ListAgentsByIDs :many
+SELECT * FROM agents WHERE id IN (sqlc.slice('ids')) AND closed_at IS NULL;
 
 -- name: DeleteClosedAgentsBefore :execresult
 DELETE FROM agents WHERE closed_at < ?;

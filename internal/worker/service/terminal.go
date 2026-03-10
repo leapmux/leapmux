@@ -300,17 +300,26 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		workspaceID := r.GetWorkspaceId()
-		if workspaceID == "" {
-			sendInvalidArgument(sender, "workspace_id is required")
+		tabIDs := r.GetTabIds()
+		if len(tabIDs) == 0 {
+			sendProtoResponse(sender, &leapmuxv1.ListTerminalsResponse{})
 			return
 		}
 
+		// Filter by access control: only return terminals in accessible workspaces.
+		var accessibleWsIDs map[string]bool
+		if chID := sender.ChannelID(); chID != "" {
+			accessibleWsIDs = svc.Channels.AccessibleWorkspaceIDs(chID)
+		}
+
 		// Collect running/exited terminals from the in-memory manager.
-		entries := svc.Terminals.ListByWorkspace(workspaceID)
+		entries := svc.Terminals.ListByIDs(tabIDs)
 		seen := make(map[string]bool, len(entries))
 		var terminals []*leapmuxv1.TerminalInfo
 		for _, e := range entries {
+			if accessibleWsIDs != nil && !accessibleWsIDs[e.Meta.WorkspaceID] {
+				continue
+			}
 			seen[e.ID] = true
 			ti := &leapmuxv1.TerminalInfo{
 				TerminalId:    e.ID,
@@ -328,12 +337,15 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 
 		// Also include terminals from the DB that have been removed from
 		// the manager (e.g. exited + cleaned up) but still have saved data.
-		dbTerminals, err := svc.Queries.ListTerminalsByWorkspace(bgCtx(), workspaceID)
+		dbTerminals, err := svc.Queries.ListTerminalsByIDs(bgCtx(), tabIDs)
 		if err != nil {
 			slog.Error("failed to list terminals from DB", "error", err)
 		} else {
 			for _, ts := range dbTerminals {
 				if seen[ts.ID] {
+					continue
+				}
+				if accessibleWsIDs != nil && !accessibleWsIDs[ts.WorkspaceID] {
 					continue
 				}
 				ti := &leapmuxv1.TerminalInfo{

@@ -241,13 +241,6 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           ) {
             params.onTurnEnd?.(agentId)
           }
-          if (!sc.agentSessionId) {
-            const hasMessages = chatStore.getMessages(sc.agentId).length > 0
-            if (!hasMessages) {
-              agentStore.removeAgent(sc.agentId)
-              tabStore.removeTab(TabType.AGENT, sc.agentId)
-            }
-          }
         }
         // The initial statusChange marks the end of the message
         // replay. Fetch remaining messages the server didn't replay
