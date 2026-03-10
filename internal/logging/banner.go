@@ -28,7 +28,7 @@ var logoLines = [6]string{
 	` | |   / _ \/ _` + "`" + ` | '_ \ | |\/| | | | \ \/ /`,
 	` | |__|  __/ (_| | |_) || |  | | |_| |>  < `,
 	` |_____\___|\__,_| .__/ |_|  |_|\__,_/_/\_\`,
-	`                  |_|                       `,
+	`                 |_|                        `,
 }
 
 // Mode-specific ASCII art (right-side, same height as logo).

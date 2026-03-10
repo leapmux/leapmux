@@ -40,34 +40,69 @@ LeapMux is an **AI coding agent multiplexer** that enables developers to run mul
 
 ## Architecture
 
-LeapMux uses a three-tier architecture. The Hub handles authentication and routing, while the Frontend communicates directly with Workers through end-to-end encrypted channels relayed by the Hub:
+LeapMux is built as a single Go binary (`leapmux`) that runs in two deployment modes:
+
+### Solo Mode (default)
+
+Run `leapmux` with no subcommand for a zero-config, single-user setup. Hub and Worker run in the same process, bound to localhost only. No login is required — the UI opens directly into the workspace.
+
+```
+                 LeapMux (127.0.0.1:4327)
+┌──────────────────────────────────────────────────────┐
+│                                                      │
+│  ┌─────────────┐  in-process   ┌──────────────────┐  │
+│  │     Hub     │◄─────────────►│     Worker       │  │
+│  │  (no auth)  │               │  ┌────────────┐  │  │
+│  │  + SQLite   │               │  │Claude Code │  │  │
+│  │             │               │  │ (multiple) │  │  │
+│  └─────────────┘               │  └────────────┘  │  │
+│         ▲                      │  + SQLite        │  │
+│         │                      └──────────────────┘  │
+│         │ ConnectRPC + WebSocket (E2EE)              │
+└─────────┼────────────────────────────────────────────┘
+          │
+          ▼
+   ┌──────────────┐
+   │   Frontend   │
+   │  (Browser)   │
+   └──────────────┘
+```
+
+### Distributed Mode
+
+For multi-user and remote setups, run `leapmux hub` and `leapmux worker` separately. The Hub handles authentication and relays end-to-end encrypted traffic between the Frontend and Workers. Workers can be on different machines, behind NATs — they initiate outbound connections to the Hub.
 
 ```
 ┌─────────────────┐  ConnectRPC  ┌─────────────────┐                 ┌───────────────────┐
 │                 │  WebSocket   │                 │   gRPC (bidi)   │  Worker 1         │
-│    Frontend     │◄────────────►│       Hub       │◄───────────────►│  ┌─────────────┐  │
+│    Frontend     │◄────────────►│      Hub        │◄───────────────►│  ┌─────────────┐  │
 │    (Browser)    │    (E2EE)    │    (Relay)      │                 │  │ Claude Code │  │
 │                 │              │                 │                 │  │ (multiple)  │  │
 │    SolidJS      │              │   Go Service    │                 │  └─────────────┘  │
-│    Web App      │              │   + Database    │                 │  + Database       │
+│    Web App      │              │   + SQLite      │                 │  + SQLite         │
 │                 │              │                 │                 └───────────────────┘
 └─────────────────┘              └─────────────────┘                           ⋮
-                                         │                          ┌───────────────────┐
-                                         ▼                          │  Worker N         │
-                                 ┌───────────────┐                  │  ┌─────────────┐  │
-                                 │    SQLite     │                  │  │ Claude Code │  │
-                                 │               │                  │  │ (multiple)  │  │
-                                 └───────────────┘                  │  └─────────────┘  │
-                                                                    │  + Database       │
-                                                                    └───────────────────┘
+                                                                     ┌───────────────────┐
+                                                                     │  Worker N         │
+                                                                     │  ┌─────────────┐  │
+                                                                     │  │ Claude Code │  │
+                                                                     │  │ (multiple)  │  │
+                                                                     │  └─────────────┘  │
+                                                                     │  + SQLite         │
+                                                                     └───────────────────┘
 ```
 
-LeapMux is built as a single Go binary (`leapmux`) that can run in multiple modes:
-- **`leapmux`** (no subcommand) — Solo mode: Hub + Worker on loopback (`127.0.0.1:4327`), no login required, single-user
-- **`leapmux hub`** — Runs only the Hub (central service)
-- **`leapmux worker`** — Runs only a Worker (connects to a remote Hub)
-- **`leapmux dev`** — Dev mode: Hub + Worker on all interfaces, login required, all multi-user features enabled
-- **`leapmux version`** — Prints the version and exits
+### Modes
+
+LeapMux is a single binary with these subcommands:
+
+| Command | Mode | Description |
+|---------|------|-------------|
+| `leapmux` | Solo | Hub + Worker on `127.0.0.1:4327`, no login, single-user |
+| `leapmux hub` | Hub | Central service only (authentication, relay, database) |
+| `leapmux worker` | Worker | Connects to a remote Hub |
+| `leapmux dev` | Dev | Hub + Worker on `:4327` (all interfaces), login required, all features |
+| `leapmux version` | — | Prints version and exits |
 
 ### Components
 
