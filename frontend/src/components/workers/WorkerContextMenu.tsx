@@ -4,7 +4,7 @@ import MoreHorizontal from 'lucide-solid/icons/more-horizontal'
 import { Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { IconButton } from '~/components/common/IconButton'
-import { showToast } from '~/components/common/Toast'
+import { showInfoToast } from '~/components/common/Toast'
 import * as listStyles from '~/components/workspace/workspaceList.css'
 import { dangerMenuItem } from '~/styles/shared.css'
 
@@ -50,7 +50,7 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
             role="menuitem"
             onClick={() => {
               navigator.clipboard.writeText(text())
-              showToast('Worker info copied to clipboard', 'success')
+              showInfoToast('Worker info copied to clipboard')
               popoverEl?.hidePopover()
             }}
           >
