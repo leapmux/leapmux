@@ -18,7 +18,7 @@ import { AgentEditorPanel } from '~/components/chat/AgentEditorPanel'
 import { ChatView } from '~/components/chat/ChatView'
 import { relativizePath } from '~/components/chat/messageUtils'
 import { Icon } from '~/components/common/Icon'
-import { showToast } from '~/components/common/Toast'
+import { showWarnToast } from '~/components/common/Toast'
 import { FileViewer } from '~/components/fileviewer/FileViewer'
 import { TerminalView } from '~/components/terminal/TerminalView'
 import { AgentStatus, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
@@ -131,7 +131,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         if (tab.type === TabType.AGENT) {
           const renameWorkerId = agentStore.state.agents.find(a => a.id === tab.id)?.workerId ?? ''
           workerRpc.renameAgent(renameWorkerId, { agentId: tab.id, title }).catch((err) => {
-            showToast(err instanceof Error ? err.message : 'Failed to rename agent', 'danger')
+            showWarnToast('Failed to rename agent', err)
           })
         }
       }}

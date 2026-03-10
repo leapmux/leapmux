@@ -8,7 +8,7 @@ import type { PermissionMode } from '~/utils/controlResponse'
 
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
-import { showToast } from '~/components/common/Toast'
+import { showWarnToast } from '~/components/common/Toast'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
 import { buildInterruptRequest, buildSetPermissionModeRequest, DEFAULT_EFFORT, DEFAULT_MODEL } from '~/utils/controlResponse'
@@ -90,7 +90,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       }
     }
     catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to open agent', 'danger')
+      showWarnToast('Failed to open agent', err)
     }
   }
 
@@ -127,7 +127,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       await openAgentInWorkspace(ws.id, workerId, ctx.workingDir || '~', sessionId)
     }
     catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to resume session', 'danger')
+      showWarnToast('Failed to resume session', err)
     }
     finally {
       props.setShowResumeDialog(false)
@@ -148,7 +148,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       }
     }
     catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to send response', 'danger')
+      showWarnToast('Failed to send response', err)
     }
   }
 
@@ -175,7 +175,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     catch (err) {
       props.agentStore.updateAgent(agentId, { [field]: previous })
       props.settingsLoading.stop()
-      showToast(err instanceof Error ? err.message : `Failed to change ${field}`, 'danger')
+      showWarnToast(`Failed to change ${field}`, err)
     }
   }
 
@@ -192,7 +192,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       })
     }
     catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to interrupt', 'danger')
+      showWarnToast('Failed to interrupt', err)
     }
   }
 
@@ -219,7 +219,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       // Revert on failure
       props.agentStore.updateAgent(agentId, { permissionMode: previousMode })
       props.settingsLoading.stop()
-      showToast(err instanceof Error ? err.message : 'Failed to change permission mode', 'danger')
+      showWarnToast('Failed to change permission mode', err)
     }
   }
 
@@ -248,7 +248,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       }
     }
     catch (err) {
-      showToast(err instanceof Error ? err.message : 'Retry failed', 'danger')
+      showWarnToast('Retry failed', err)
     }
   }
 
@@ -265,7 +265,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       props.chatStore.removeMessage(agentId, messageId)
     }
     catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to delete message', 'danger')
+      showWarnToast('Failed to delete message', err)
     }
   }
 
@@ -294,7 +294,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       }
     }
     catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to close agent', 'danger')
+      showWarnToast('Failed to close agent', err)
     }
   }
 

@@ -374,7 +374,8 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             const wid = agentStore.state.agents.find(a => a.id === entry.agentId)?.workerId ?? ''
             await chatStore.loadInitialMessages(wid, entry.agentId)
           }
-          catch {
+          catch (err) {
+            log.warn(`Failed to load initial messages for agent ${entry.agentId}:`, err)
             showToast('Failed to load chat history', 'danger')
           }
         }),
