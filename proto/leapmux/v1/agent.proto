@@ -55,7 +55,7 @@ message CloseAgentResponse {
 }
 
 message ListAgentsRequest {
-  string workspace_id = 1;
+  repeated string tab_ids = 1;
 }
 
 message ListAgentsResponse {

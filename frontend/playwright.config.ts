@@ -5,7 +5,7 @@ export default defineConfig({
   globalSetup: './tests/e2e/global-setup.ts',
   globalTeardown: './tests/e2e/global-teardown.ts',
   fullyParallel: false,
-  workers: 4,
+  workers: 2,
   timeout: 180_000,
   expect: {
     timeout: 30_000,

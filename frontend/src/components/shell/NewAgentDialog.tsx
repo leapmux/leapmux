@@ -8,6 +8,7 @@ import { agentLoadingTimeoutMs } from '~/api/transport'
 import * as workerRpc from '~/api/workerRpc'
 import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
+import { isAgentCreateDisabled } from '~/components/shell/dialogValidation'
 import { WorktreeOptions } from '~/components/shell/WorktreeOptions'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
 import { useOrg } from '~/context/OrgContext'
@@ -32,7 +33,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
   const workerInfoStore = createWorkerInfoStore()
   const [workers, setWorkers] = createSignal<import('~/generated/leapmux/v1/worker_pb').Worker[]>([])
   const [workerId, setWorkerId] = createSignal('')
-  const [workingDir, setWorkingDir] = createSignal(props.defaultWorkingDir ?? '~')
+  const [workingDir, setWorkingDir] = createSignal(props.defaultWorkingDir ?? '')
   const submitting = createLoadingSignal(agentLoadingTimeoutMs(false))
   const [error, setError] = createSignal<string | null>(null)
   const [refreshing, setRefreshing] = createSignal(false)
@@ -100,7 +101,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
-    if (!workerId())
+    if (!workerId() || !workingDir().trim())
       return
 
     submitting.start()
@@ -206,7 +207,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
           </button>
           <button
             type="submit"
-            disabled={submitting.loading() || !workerId() || (createWorktree() && !!worktreeBranchError())}
+            disabled={isAgentCreateDisabled({ submitting: submitting.loading(), workerId: workerId(), workingDir: workingDir(), createWorktree: createWorktree(), worktreeBranchError: worktreeBranchError() })}
           >
             <Show when={submitting.loading()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
             {submitting.loading() ? 'Creating...' : 'Create'}

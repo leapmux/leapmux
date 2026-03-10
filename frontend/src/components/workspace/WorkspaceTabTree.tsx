@@ -1,11 +1,13 @@
 import type { Component } from 'solid-js'
 import type { Tab } from '~/stores/tab.store'
+import { createDraggable } from '@thisbeyond/solid-dnd'
 import Bot from 'lucide-solid/icons/bot'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FolderGit from 'lucide-solid/icons/folder-git'
 import GitBranch from 'lucide-solid/icons/git-branch'
 import Terminal from 'lucide-solid/icons/terminal'
 import { createMemo, createSignal, For, Show } from 'solid-js'
+import { SIDEBAR_TAB_PREFIX } from '~/components/shell/CrossTileDragContext'
 import { tabKey, TabType } from '~/stores/tab.store'
 import { DiffStatsBadge } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
@@ -15,24 +17,75 @@ import * as css from './workspaceTabTree.css'
 
 const TabLeaf: Component<{
   tab: Tab
+  workspaceId: string
   depth: number
   isActive: boolean
+  isEditing: boolean
+  editingValue: string
   onClick: () => void
+  onDblClick: () => void
+  onEditInput: (value: string) => void
+  onEditCommit: () => void
+  onEditCancel: () => void
 }> = (props) => {
+  /* eslint-disable solid/reactivity -- stable identifier for createDraggable */
+  const draggable = createDraggable(
+    `${SIDEBAR_TAB_PREFIX}${props.workspaceId}:${props.tab.type}:${props.tab.id}`,
+    { title: props.tab.title || props.tab.id, type: props.tab.type },
+  )
+  /* eslint-enable solid/reactivity */
+
   return (
     <div
-      class={`${shared.node} ${css.leafNode} ${props.isActive ? css.leafActive : ''}`}
-      style={{ 'padding-left': `${8 + props.depth * 16}px` }}
-      onClick={() => props.onClick()}
+      ref={draggable}
+      class={`${shared.node} ${css.leafNode} ${props.isActive ? css.leafActive : ''} ${draggable.isActiveDraggable ? css.leafDragging : ''}`}
+      style={{ 'padding-left': `${4 + props.depth * 16}px` }}
+      onClick={() => {
+        if (!draggable.isActiveDraggable)
+          props.onClick()
+      }}
+      onDblClick={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        props.onDblClick()
+      }}
       data-testid="tab-tree-leaf"
+      data-tab-id={props.tab.id}
     >
       <div class={shared.chevronPlaceholder} />
       <Show when={props.tab.type === TabType.AGENT} fallback={<Terminal size={14} class={css.tabIcon} />}>
         <Bot size={14} class={css.tabIcon} />
       </Show>
-      <span class={css.tabLabel}>
-        {props.tab.title || props.tab.id}
-      </span>
+      <Show
+        when={!props.isEditing}
+        fallback={(
+          <input
+            class={css.tabRenameInput}
+            type="text"
+            value={props.editingValue}
+            onInput={e => props.onEditInput(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              if (e.key === 'Enter')
+                props.onEditCommit()
+              else if (e.key === 'Escape')
+                props.onEditCancel()
+            }}
+            onBlur={() => props.onEditCommit()}
+            onClick={e => e.stopPropagation()}
+            ref={(el) => {
+              requestAnimationFrame(() => {
+                el.focus()
+                el.select()
+              })
+            }}
+          />
+        )}
+      >
+        <span class={css.tabLabel}>
+          {props.tab.title || props.tab.id}
+        </span>
+      </Show>
     </div>
   )
 }
@@ -43,12 +96,45 @@ export interface WorkspaceTabTreeProps {
   tabs: Tab[]
   activeTabKey: string | null
   onTabClick: (type: TabType, id: string) => void
+  onTabRename?: (tab: Tab, title: string) => void
+  readOnly?: boolean
   workspaceId: string
 }
 
 export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
   const tree = createMemo(() => buildTree(props.tabs))
   const storageKey = () => `leapmux:tabTree:${props.workspaceId}`
+
+  // --- Tab rename editing state ---
+  const [editingTabKey, setEditingTabKey] = createSignal<string | null>(null)
+  const [editingValue, setEditingValue] = createSignal('')
+  let editCancelled = false
+
+  const tabLabel = (tab: Tab): string => tab.title || tab.id
+
+  const startEditing = (tab: Tab) => {
+    if (props.readOnly || tab.type === TabType.FILE || !props.onTabRename)
+      return
+    setEditingTabKey(tabKey(tab))
+    setEditingValue(tabLabel(tab))
+  }
+
+  const commitEdit = (tab: Tab) => {
+    if (editCancelled) {
+      editCancelled = false
+      return
+    }
+    const value = editingValue().trim()
+    if (value && value !== tabLabel(tab)) {
+      props.onTabRename?.(tab, value)
+    }
+    setEditingTabKey(null)
+  }
+
+  const cancelEdit = () => {
+    editCancelled = true
+    setEditingTabKey(null)
+  }
 
   function loadCollapsedState(): Record<string, boolean> {
     try {
@@ -87,7 +173,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
               {/* Repo group header */}
               <div
                 class={shared.node}
-                style={{ 'padding-left': '24px' }}
+                style={{ 'padding-left': '20px' }}
                 onClick={() => toggleCollapsed(group.repoKey)}
                 data-testid="tab-tree-repo-group"
               >
@@ -108,7 +194,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
                         {/* Branch group header */}
                         <div
                           class={shared.node}
-                          style={{ 'padding-left': '40px' }}
+                          style={{ 'padding-left': '36px' }}
                           onClick={() => toggleCollapsed(`${group.repoKey}:${branch.branchName}`)}
                           data-testid="tab-tree-branch-group"
                         >
@@ -127,9 +213,16 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
                               {tab => (
                                 <TabLeaf
                                   tab={tab}
+                                  workspaceId={props.workspaceId}
                                   depth={3}
                                   isActive={tabKey(tab) === props.activeTabKey}
+                                  isEditing={editingTabKey() === tabKey(tab)}
+                                  editingValue={editingValue()}
                                   onClick={() => props.onTabClick(tab.type, tab.id)}
+                                  onDblClick={() => startEditing(tab)}
+                                  onEditInput={v => setEditingValue(v)}
+                                  onEditCommit={() => commitEdit(tab)}
+                                  onEditCancel={cancelEdit}
                                 />
                               )}
                             </For>
@@ -150,9 +243,16 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
         {tab => (
           <TabLeaf
             tab={tab}
+            workspaceId={props.workspaceId}
             depth={1}
             isActive={tabKey(tab) === props.activeTabKey}
+            isEditing={editingTabKey() === tabKey(tab)}
+            editingValue={editingValue()}
             onClick={() => props.onTabClick(tab.type, tab.id)}
+            onDblClick={() => startEditing(tab)}
+            onEditInput={v => setEditingValue(v)}
+            onEditCommit={() => commitEdit(tab)}
+            onEditCancel={cancelEdit}
           />
         )}
       </For>

@@ -4,7 +4,7 @@ import type { createSectionStore } from '~/stores/section.store'
 import type { createWorkspaceStore } from '~/stores/workspace.store'
 import { createEffect } from 'solid-js'
 import { sectionClient, workspaceClient } from '~/api/clients'
-import { showToast } from '~/components/common/Toast'
+import { showWarnToast } from '~/components/common/Toast'
 
 interface UseWorkspaceLoaderOpts {
   getOrgId: () => string | undefined
@@ -69,7 +69,7 @@ export function useWorkspaceLoader(opts: UseWorkspaceLoaderOpts) {
   const handleMoveSectionServer = (sectionId: string, sidebar: Sidebar, position: string) => {
     sectionClient.moveSection({ sectionId, sidebar, position })
       .catch((err) => {
-        showToast(err instanceof Error ? err.message : 'Failed to move section', 'danger')
+        showWarnToast('Failed to move section', err)
         loadSections()
       })
   }

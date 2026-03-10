@@ -5,11 +5,10 @@ import type { createSectionStore } from '~/stores/section.store'
 import { createMemo, createSignal } from 'solid-js'
 import { sectionClient, workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
-import { showToast } from '~/components/common/Toast'
+import { showWarnToast } from '~/components/common/Toast'
 import { useAuth } from '~/context/AuthContext'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
 import { mid } from '~/lib/lexorank'
-import { sanitizeName } from '~/lib/validate'
 import { isWorkspaceSection } from './sectionUtils'
 
 export interface SectionGroup {
@@ -148,7 +147,7 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
       props.onRefreshWorkspaces()
     }
     catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to rename workspace', 'danger')
+      showWarnToast('Failed to rename workspace', err)
     }
     finally {
       done()
@@ -166,7 +165,7 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
       store.moveWorkspace(workspaceId, sectionId, position)
     }
     catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to move workspace', 'danger')
+      showWarnToast('Failed to move workspace', err)
     }
     finally {
       done()
@@ -236,7 +235,7 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
       }
     }
     catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to delete workspace', 'danger')
+      showWarnToast('Failed to delete workspace', err)
     }
     finally {
       done()
@@ -350,7 +349,7 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     const done = startWorkspaceLoading(wsId)
     sectionClient.moveWorkspace({ workspaceId: wsId, sectionId: targetSectionId, position })
       .catch((err) => {
-        showToast(err instanceof Error ? err.message : 'Failed to reorder workspace', 'danger')
+        showWarnToast('Failed to reorder workspace', err)
         props.loadSections()
       })
       .finally(() => done())
@@ -395,7 +394,7 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     canAddToSection,
     isWorkspaceArchived,
     isWorkspaceLoading,
-    onRenameInput: (v: string) => setRenameValue(sanitizeName(v).value),
+    onRenameInput: (v: string) => setRenameValue(v),
 
     // DnD
     computeDropPosition,

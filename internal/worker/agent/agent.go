@@ -270,6 +270,9 @@ func (a *Agent) Stop() {
 		// if the process still hasn't exited.
 		a.cancel()
 	}
+
+	// Wait for the process to actually exit after SIGTERM/SIGKILL.
+	<-a.processDone
 }
 
 // IsStopped returns true if the agent was intentionally stopped via Stop().

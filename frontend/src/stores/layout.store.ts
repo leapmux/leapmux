@@ -20,7 +20,7 @@ export interface LeafNode {
 
 export type LayoutNodeLocal = SplitNode | LeafNode
 
-interface LayoutStoreState {
+export interface LayoutStoreState {
   root: LayoutNodeLocal
   focusedTileId: string | null
 }
@@ -357,5 +357,31 @@ export function createLayoutStore() {
       const local = fromProto(node)
       this.setLayout(local)
     },
+
+    /** Snapshot the current state for registry caching. */
+    snapshot(): LayoutStoreState {
+      return {
+        root: cloneNode(state.root),
+        focusedTileId: state.focusedTileId,
+      }
+    },
+
+    /** Restore from a previously snapshotted state. */
+    restore(snap: LayoutStoreState) {
+      setState('root', cloneNode(snap.root))
+      setState('focusedTileId', snap.focusedTileId)
+    },
+  }
+}
+
+function cloneNode(node: LayoutNodeLocal): LayoutNodeLocal {
+  if (node.type === 'leaf')
+    return { type: 'leaf', id: node.id }
+  return {
+    type: 'split',
+    id: node.id,
+    direction: node.direction,
+    ratios: [...node.ratios],
+    children: node.children.map(c => cloneNode(c)),
   }
 }

@@ -171,7 +171,7 @@ func TestListAgents_ClosedAgent_NotReturned(t *testing.T) {
 	require.NoError(t, svc.Queries.CloseAgent(ctx, "agent-closed"))
 
 	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
-		WorkspaceId: "ws-1",
+		TabIds: []string{"agent-open", "agent-closed"},
 	}, w)
 	require.Len(t, w.responses, 1)
 	var resp leapmuxv1.ListAgentsResponse
@@ -206,7 +206,7 @@ func TestListTerminals_ClosedTerminal_NotReturned(t *testing.T) {
 	}))
 
 	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
-		WorkspaceId: "ws-1",
+		TabIds: []string{"term-open", "term-closed"},
 	}, w)
 	require.Len(t, w.responses, 1)
 	var resp leapmuxv1.ListTerminalsResponse

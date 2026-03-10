@@ -7,7 +7,7 @@ import type { createTerminalStore } from '~/stores/terminal.store'
 import { createEffect, createSignal, on } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
-import { showToast } from '~/components/common/Toast'
+import { showWarnToast } from '~/components/common/Toast'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 
 import { nextTabNumber } from './useAgentOperations'
@@ -108,7 +108,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       }).catch(() => {})
     }
     catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to open terminal', 'danger')
+      showWarnToast('Failed to open terminal', err)
     }
     finally {
       props.setNewTerminalLoading(false)
@@ -158,7 +158,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       }).catch(() => {})
     }
     catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to open terminal', 'danger')
+      showWarnToast('Failed to open terminal', err)
     }
     finally {
       props.setNewShellLoading(false)

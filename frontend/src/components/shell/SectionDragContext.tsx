@@ -15,7 +15,9 @@ import {
 export { SECTION_DRAG_PREFIX, SIDEBAR_ZONE_PREFIX }
 
 type ExternalDragHandler = (event: { draggable: any, droppable: any }) => void
-type ExternalOverlayRenderer = (draggable: any) => JSX.Element
+type ExternalDragStartHandler = (event: { draggable: any }) => void
+type ExternalDragOverHandler = (event: { draggable: any, droppable: any }) => void
+type ExternalOverlayRenderer = (draggable: any) => JSX.Element | null
 
 export interface DropIndicator {
   /** The section ID being hovered, or `__zone_left__` / `__zone_right__` for sidebar zones. */
@@ -27,10 +29,14 @@ interface SectionDragState {
   draggedSectionId: () => string | null
   /** Current drop indicator position (null when not dragging a section). */
   dropIndicator: () => DropIndicator | null
-  /** Register an external drag end handler (e.g., workspace DnD). */
-  setExternalDragHandler: (handler: ExternalDragHandler | null) => void
-  /** Register an external drag overlay renderer. */
-  setExternalOverlayRenderer: (renderer: ExternalOverlayRenderer | null) => void
+  /** Add an external drag end handler. Returns a dispose function. */
+  addExternalDragHandler: (handler: ExternalDragHandler) => () => void
+  /** Add an external drag start handler. Returns a dispose function. */
+  addExternalDragStartHandler: (handler: ExternalDragStartHandler) => () => void
+  /** Add an external drag over handler. Returns a dispose function. */
+  addExternalDragOverHandler: (handler: ExternalDragOverHandler) => () => void
+  /** Add an external drag overlay renderer. Returns a dispose function. */
+  addExternalOverlayRenderer: (renderer: ExternalOverlayRenderer) => () => void
 }
 
 const SectionDragCtx = createContext<SectionDragState>()
@@ -60,8 +66,19 @@ interface SectionDragProviderProps {
 export function SectionDragProvider(props: SectionDragProviderProps) {
   const [draggedSectionId, setDraggedSectionId] = createSignal<string | null>(null)
   const [dropIndicator, setDropIndicator] = createSignal<DropIndicator | null>(null)
-  const [externalHandler, setExternalHandler] = createSignal<ExternalDragHandler | null>(null)
-  const [externalRenderer, setExternalRenderer] = createSignal<ExternalOverlayRenderer | null>(null)
+  const externalHandlers: ExternalDragHandler[] = []
+  const externalStartHandlers: ExternalDragStartHandler[] = []
+  const externalOverHandlers: ExternalDragOverHandler[] = []
+  const externalRenderers: ExternalOverlayRenderer[] = []
+
+  function addToArray<T>(arr: T[], item: T): () => void {
+    arr.push(item)
+    return () => {
+      const idx = arr.indexOf(item)
+      if (idx >= 0)
+        arr.splice(idx, 1)
+    }
+  }
 
   // Track the last pointer position during a drag. solid-dnd resets
   // draggable.transformed before firing onDragEnd, so we cannot rely
@@ -106,6 +123,19 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
       const filtered = droppables.filter((d: any) => {
         const id = String(d.id)
         return id.startsWith('ws-') || id.startsWith('section-')
+      })
+      return closestCenter(draggable, filtered, context)
+    }
+
+    // Tab drags (tabKey format: "type:id") — filter to tab-related droppables
+    // only (other tabs, tab-bar zones, workspace drop targets).
+    if (!dragId.startsWith(SECTION_DRAG_PREFIX) && !dragId.startsWith('ws-')) {
+      const filtered = droppables.filter((d: any) => {
+        const id = String(d.id)
+        return !id.startsWith(SECTION_DRAG_PREFIX)
+          && !id.startsWith(SIDEBAR_ZONE_PREFIX)
+          && !id.startsWith('ws-')
+          && !id.startsWith('section-')
       })
       return closestCenter(draggable, filtered, context)
     }
@@ -171,6 +201,10 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
     if (id.startsWith(SECTION_DRAG_PREFIX)) {
       setDraggedSectionId(id.slice(SECTION_DRAG_PREFIX.length))
     }
+    else {
+      for (const handler of externalStartHandlers)
+        handler({ draggable })
+    }
     setDropIndicator(null)
     lastPointerX = null
     lastPointerY = null
@@ -191,6 +225,8 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
     if (!dragId.startsWith(SECTION_DRAG_PREFIX)) {
       currentDropTarget = null
       setDropIndicator(null)
+      for (const handler of externalOverHandlers)
+        handler({ draggable, droppable })
       return
     }
 
@@ -340,11 +376,11 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
       props.onMoveSectionServer(sectionId, targetSidebar, position)
     }
     else {
-      // Non-section drag — delegate to external handler (e.g., workspace DnD)
+      // Non-section drag — delegate to external handlers (workspace DnD, tab DnD)
       setDraggedSectionId(null)
-      const handler = externalHandler()
-      if (handler && draggable && droppable) {
-        handler({ draggable, droppable })
+      if (draggable && droppable) {
+        for (const handler of externalHandlers)
+          handler({ draggable, droppable })
       }
     }
   }
@@ -352,8 +388,10 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
   const ctxValue: SectionDragState = {
     draggedSectionId,
     dropIndicator,
-    setExternalDragHandler: h => setExternalHandler(() => h),
-    setExternalOverlayRenderer: r => setExternalRenderer(() => r),
+    addExternalDragHandler: h => addToArray(externalHandlers, h),
+    addExternalDragStartHandler: h => addToArray(externalStartHandlers, h),
+    addExternalDragOverHandler: h => addToArray(externalOverHandlers, h),
+    addExternalOverlayRenderer: r => addToArray(externalRenderers, r),
   }
 
   return (
@@ -396,9 +434,13 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
               )
             }
             else {
-              // External drag overlay (e.g., workspace DnD)
-              const renderer = externalRenderer()
-              return renderer ? renderer(draggable) : <></>
+              // External drag overlay — try each renderer in order
+              for (const renderer of externalRenderers) {
+                const result = renderer(draggable)
+                if (result)
+                  return result
+              }
+              return <></>
             }
           }}
         </DragOverlay>

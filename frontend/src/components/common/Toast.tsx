@@ -1,6 +1,27 @@
-export type ToastType = 'danger' | 'success'
+import { createLogger } from '~/lib/logger'
 
-export function showToast(message: string, type: ToastType = 'danger') {
+const log = createLogger('toast')
+
+type ToastType = 'danger' | 'success'
+
+/** Show a warning toast and log the error at warn level. */
+export function showWarnToast(message: string, err?: unknown) {
+  log.warn(message, err)
+  renderToast(err instanceof Error ? err.message : message, 'danger')
+}
+
+/** Show an error toast and log the error at error level. */
+export function showErrorToast(message: string, err?: unknown) {
+  log.error(message, err)
+  renderToast(err instanceof Error ? err.message : message, 'danger')
+}
+
+/** Show an informational (success) toast. */
+export function showInfoToast(message: string) {
+  renderToast(message, 'success')
+}
+
+function renderToast(message: string, type: ToastType) {
   const variant = type === 'success' ? 'success' : 'danger'
 
   const toast = document.createElement('output')

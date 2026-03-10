@@ -24,12 +24,13 @@ type layoutJSON struct {
 
 // WorkspaceService implements the WorkspaceServiceHandler interface.
 type WorkspaceService struct {
+	db      *sql.DB
 	queries *db.Queries
 }
 
 // NewWorkspaceService creates a new WorkspaceService.
-func NewWorkspaceService(q *db.Queries) *WorkspaceService {
-	return &WorkspaceService{queries: q}
+func NewWorkspaceService(sqlDB *sql.DB, q *db.Queries) *WorkspaceService {
+	return &WorkspaceService{db: sqlDB, queries: q}
 }
 
 // workspaceToProto converts a hub DB workspace row to the proto Workspace message.
@@ -466,4 +467,89 @@ func (s *WorkspaceService) SaveLayout(
 	}
 
 	return connect.NewResponse(&leapmuxv1.SaveLayoutResponse{}), nil
+}
+
+func (s *WorkspaceService) SaveMultiLayout(
+	ctx context.Context,
+	req *connect.Request[leapmuxv1.SaveMultiLayoutRequest],
+) (*connect.Response[leapmuxv1.SaveMultiLayoutResponse], error) {
+	user, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(req.Msg.GetEntries()) == 0 {
+		return connect.NewResponse(&leapmuxv1.SaveMultiLayoutResponse{}), nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("begin transaction: %w", err))
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	txq := s.queries.WithTx(tx)
+	marshaler := protojson.MarshalOptions{EmitUnpopulated: false}
+
+	for _, entry := range req.Msg.GetEntries() {
+		wsID := entry.GetWorkspaceId()
+
+		// Verify ownership for each workspace (shared workspaces must never be modified).
+		ws, err := txq.GetWorkspaceByID(ctx, wsID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace %s not found", wsID))
+			}
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		if ws.OwnerUserID != user.ID {
+			return nil, connect.NewError(connect.CodePermissionDenied,
+				fmt.Errorf("only workspace owner can save layout for workspace %s", wsID))
+		}
+
+		// Serialize layout.
+		var stored layoutJSON
+		if entry.GetLayout() != nil {
+			layoutBytes, err := marshaler.Marshal(entry.GetLayout())
+			if err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("serialize layout for %s: %w", wsID, err))
+			}
+			stored.Layout = layoutBytes
+		}
+
+		layoutJSONBytes, err := json.Marshal(stored)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("serialize layout JSON for %s: %w", wsID, err))
+		}
+
+		if err := txq.UpsertWorkspaceLayout(ctx, db.UpsertWorkspaceLayoutParams{
+			WorkspaceID: wsID,
+			LayoutJson:  string(layoutJSONBytes),
+		}); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save layout for %s: %w", wsID, err))
+		}
+
+		// Delete existing tabs and re-insert.
+		if err := txq.DeleteWorkspaceTabsByWorkspace(ctx, wsID); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete tabs for %s: %w", wsID, err))
+		}
+		for _, tab := range entry.GetTabs() {
+			if err := txq.UpsertWorkspaceTab(ctx, db.UpsertWorkspaceTabParams{
+				WorkspaceID: wsID,
+				WorkerID:    tab.GetWorkerId(),
+				TabType:     tab.GetTabType(),
+				TabID:       tab.GetTabId(),
+				Position:    tab.GetPosition(),
+				TileID:      tab.GetTileId(),
+			}); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save tab for %s: %w", wsID, err))
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit transaction: %w", err))
+	}
+
+	return connect.NewResponse(&leapmuxv1.SaveMultiLayoutResponse{}), nil
 }

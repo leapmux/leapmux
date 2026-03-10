@@ -141,6 +141,7 @@ func RegisterAll(d *channel.Dispatcher, svc *Context) {
 	registerTerminalHandlers(d, svc)
 	registerAgentHandlers(d, svc)
 	registerCleanupHandlers(d, svc)
+	registerTabMoveHandlers(d, svc)
 	registerSysInfoHandlers(d, svc)
 }
 

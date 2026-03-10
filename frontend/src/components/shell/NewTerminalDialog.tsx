@@ -7,6 +7,7 @@ import { apiLoadingTimeoutMs } from '~/api/transport'
 import * as workerRpc from '~/api/workerRpc'
 import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
+import { isTerminalCreateDisabled } from '~/components/shell/dialogValidation'
 import { WorktreeOptions } from '~/components/shell/WorktreeOptions'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
 import { useOrg } from '~/context/OrgContext'
@@ -28,7 +29,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
   const workerInfoStore = createWorkerInfoStore()
   const [workers, setWorkers] = createSignal<import('~/generated/leapmux/v1/worker_pb').Worker[]>([])
   const [workerId, setWorkerId] = createSignal('')
-  const [workingDir, setWorkingDir] = createSignal(props.defaultWorkingDir ?? '~')
+  const [workingDir, setWorkingDir] = createSignal(props.defaultWorkingDir ?? '')
   const [shells, setShells] = createSignal<string[]>([])
   const [shell, setShell] = createSignal('')
   const [shellsLoading, setShellsLoading] = createSignal(false)
@@ -124,7 +125,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
-    if (!workerId() || !shell())
+    if (!workerId() || !workingDir().trim() || !shell())
       return
 
     submitting.start()
@@ -246,7 +247,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
           </button>
           <button
             type="submit"
-            disabled={submitting.loading() || !workerId() || !shell() || (createWorktree() && !!worktreeBranchError())}
+            disabled={isTerminalCreateDisabled({ submitting: submitting.loading(), workerId: workerId(), workingDir: workingDir(), shell: shell(), createWorktree: createWorktree(), worktreeBranchError: worktreeBranchError() })}
           >
             <Show when={submitting.loading()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
             {submitting.loading() ? 'Creating...' : 'Create'}

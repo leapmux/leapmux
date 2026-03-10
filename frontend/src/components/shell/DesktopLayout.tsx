@@ -25,6 +25,7 @@ interface DesktopLayoutProps {
   // Tiling
   onIntraTileReorder: (tileId: string, fromKey: string, toKey: string) => void
   onCrossTileMove: (fromTileId: string, toTileId: string, draggedTabKey: string, nearTabKey: string | null) => void
+  onCrossWorkspaceMove?: (targetWorkspaceId: string, tabKey: string, sourceWorkspaceId?: string) => void
   lookupTileIdForTab: (key: string) => string | undefined
   renderDragOverlay: (key: string) => JSX.Element
   renderTile: (tileId: string) => JSX.Element
@@ -209,6 +210,7 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
                   <CrossTileDragProvider
                     onIntraTileReorder={props.onIntraTileReorder}
                     onCrossTileMove={props.onCrossTileMove}
+                    onCrossWorkspaceMove={props.onCrossWorkspaceMove}
                     lookupTileIdForTab={props.lookupTileIdForTab}
                     renderDragOverlay={props.renderDragOverlay}
                   >

@@ -276,6 +276,32 @@ func (m *Manager) ListByWorkspace(workspaceID string) []TerminalEntry {
 	return result
 }
 
+// ListByIDs returns terminals matching the given IDs.
+func (m *Manager) ListByIDs(ids []string) []TerminalEntry {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var result []TerminalEntry
+	for _, id := range ids {
+		meta, ok := m.meta[id]
+		if !ok {
+			continue
+		}
+		entry := TerminalEntry{
+			ID:   id,
+			Meta: meta,
+		}
+		if t, ok := m.terminals[id]; ok {
+			entry.Screen = t.ScreenSnapshot()
+			entry.Exited = t.IsExited()
+		} else {
+			entry.Exited = true
+		}
+		result = append(result, entry)
+	}
+	return result
+}
+
 // StopAll stops all terminals and clears the map.
 func (m *Manager) StopAll() {
 	m.mu.Lock()

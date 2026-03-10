@@ -6,8 +6,9 @@ import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { TodoItem } from '~/stores/chat.store'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
-import type { createTabStore } from '~/stores/tab.store'
+import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
+import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 import { relativizePath } from '~/components/chat/messageUtils'
 import { LeftSidebar } from '~/components/shell/LeftSidebar'
 import { RightSidebar } from '~/components/shell/RightSidebar'
@@ -19,6 +20,7 @@ export interface SidebarElementsOpts {
   activeWorkspaceId: string | null
   sectionStore: ReturnType<typeof createSectionStore>
   tabStore: ReturnType<typeof createTabStore>
+  registry: WorkspaceStoreRegistryType
   loadSections: () => Promise<void>
   onSelectWorkspace: (id: string) => void
   onNewWorkspace: (sectionId: string | null) => void
@@ -47,6 +49,8 @@ export interface SidebarElementsOpts {
   channelStatusFn: (id: string) => ChannelStatus
   onDeregisterWorker: (worker: Worker) => void
   onTabClick: (type: number, id: string) => void
+  onTabRename?: (tab: Tab, title: string) => void
+  onExpandWorkspace: (workspaceId: string) => void
 }
 
 interface SidebarDisplayOpts {
@@ -105,7 +109,10 @@ export function createLeftSidebarElement(opts: SidebarElementsOpts, display?: Si
       channelStatusFn={opts.channelStatusFn}
       onDeregisterWorker={opts.onDeregisterWorker}
       tabStore={opts.tabStore}
+      registry={opts.registry}
       onTabClick={opts.onTabClick}
+      onTabRename={opts.onTabRename}
+      onExpandWorkspace={opts.onExpandWorkspace}
     />
   )
 }
@@ -153,7 +160,10 @@ export function createRightSidebarElement(opts: SidebarElementsOpts, display?: S
       hasActiveFileTab={opts.hasActiveFileTab}
       turnEndTrigger={opts.turnEndTrigger}
       tabStore={opts.tabStore}
+      registry={opts.registry}
       onTabClick={opts.onTabClick}
+      onTabRename={opts.onTabRename}
+      onExpandWorkspace={opts.onExpandWorkspace}
     />
   )
 }

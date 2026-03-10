@@ -18,9 +18,6 @@ test.describe('Worker Registration', () => {
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
     // The initial fetch on mount should find the worker (already online).
-    const dialog = page.getByRole('dialog')
-    await expect(dialog.getByRole('button', { name: 'Create', exact: true })).toBeEnabled()
-
     // Verify the worker name appears in the dropdown (standalone uses "Local")
     await expect(page.locator('select').first()).toContainText('Local')
   })

@@ -30,8 +30,14 @@ WHERE workspace_id = ? AND closed_at IS NULL;
 -- name: ListTerminalsByWorkspace :many
 SELECT * FROM terminals WHERE workspace_id = ? AND closed_at IS NULL;
 
+-- name: ListTerminalsByIDs :many
+SELECT * FROM terminals WHERE id IN (sqlc.slice('ids')) AND closed_at IS NULL;
+
 -- name: DeleteClosedTerminalsBefore :execresult
 DELETE FROM terminals WHERE closed_at < ?;
 
 -- name: GetTerminalWorkspaceID :one
 SELECT workspace_id FROM terminals WHERE id = ?;
+
+-- name: UpdateTerminalWorkspace :exec
+UPDATE terminals SET workspace_id = ? WHERE id = ?;

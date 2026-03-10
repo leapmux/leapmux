@@ -383,11 +383,15 @@ func (s *WorkerConnectorService) processWorkerMessage(
 // It does NOT add missing tabs because the hub is the source of truth for tab
 // visibility — a tab absent from the hub may have been explicitly closed by the user.
 func (s *WorkerConnectorService) handleWorkspaceTabsSync(ctx context.Context, workerID string, sync *leapmuxv1.WorkspaceTabsSync) {
-	// Build a set of tabs the worker currently has.
-	workerTabs := make(map[string]struct{})
+	// Build worker map keyed by tab_type|tab_id → workspace_id.
+	type tabKey struct {
+		tabType leapmuxv1.TabType
+		tabID   string
+	}
+	workerTabs := make(map[tabKey]string)
 	for _, tab := range sync.GetTabs() {
-		key := tab.GetWorkspaceId() + "|" + tab.GetTabType().String() + "|" + tab.GetTabId()
-		workerTabs[key] = struct{}{}
+		k := tabKey{tabType: tab.GetTabType(), tabID: tab.GetTabId()}
+		workerTabs[k] = tab.GetWorkspaceId()
 	}
 
 	// Get current hub tabs for this worker.
@@ -397,11 +401,14 @@ func (s *WorkerConnectorService) handleWorkspaceTabsSync(ctx context.Context, wo
 		return
 	}
 
-	// Delete hub tabs that the worker no longer has.
+	// Reconcile hub tabs against worker state.
 	deleted := 0
+	moved := 0
 	for _, ht := range hubTabs {
-		key := ht.WorkspaceID + "|" + ht.TabType.String() + "|" + ht.TabID
-		if _, ok := workerTabs[key]; !ok {
+		k := tabKey{tabType: ht.TabType, tabID: ht.TabID}
+		workerWsID, exists := workerTabs[k]
+		if !exists {
+			// Tab no longer exists on worker — delete from hub.
 			if err := s.queries.DeleteWorkspaceTab(ctx, db.DeleteWorkspaceTabParams{
 				WorkspaceID: ht.WorkspaceID,
 				TabType:     ht.TabType,
@@ -416,6 +423,41 @@ func (s *WorkerConnectorService) handleWorkspaceTabsSync(ctx context.Context, wo
 			} else {
 				deleted++
 			}
+		} else if workerWsID != ht.WorkspaceID {
+			// Workspace mismatch — worker is authoritative, update hub.
+			// Delete old row and upsert new row with worker's workspace_id,
+			// preserving position and tile_id.
+			if err := s.queries.DeleteWorkspaceTab(ctx, db.DeleteWorkspaceTabParams{
+				WorkspaceID: ht.WorkspaceID,
+				TabType:     ht.TabType,
+				TabID:       ht.TabID,
+			}); err != nil {
+				slog.Error("failed to delete mismatched tab during sync",
+					"worker_id", workerID,
+					"old_workspace_id", ht.WorkspaceID,
+					"new_workspace_id", workerWsID,
+					"tab_id", ht.TabID,
+					"error", err,
+				)
+				continue
+			}
+			if err := s.queries.UpsertWorkspaceTab(ctx, db.UpsertWorkspaceTabParams{
+				WorkspaceID: workerWsID,
+				WorkerID:    ht.WorkerID,
+				TabType:     ht.TabType,
+				TabID:       ht.TabID,
+				Position:    ht.Position,
+				TileID:      ht.TileID,
+			}); err != nil {
+				slog.Error("failed to upsert moved tab during sync",
+					"worker_id", workerID,
+					"workspace_id", workerWsID,
+					"tab_id", ht.TabID,
+					"error", err,
+				)
+			} else {
+				moved++
+			}
 		}
 	}
 
@@ -424,6 +466,7 @@ func (s *WorkerConnectorService) handleWorkspaceTabsSync(ctx context.Context, wo
 		"worker_tabs", len(sync.GetTabs()),
 		"hub_tabs", len(hubTabs),
 		"deleted", deleted,
+		"moved", moved,
 	)
 }
 

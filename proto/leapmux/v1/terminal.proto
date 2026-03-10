@@ -61,8 +61,7 @@ message UpdateTerminalTitleRequest {
 message UpdateTerminalTitleResponse {}
 
 message ListTerminalsRequest {
-  string org_id = 1;
-  string workspace_id = 2;
+  repeated string tab_ids = 1;
 }
 
 message ListTerminalsResponse {

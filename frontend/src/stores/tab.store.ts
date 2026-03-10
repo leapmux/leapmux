@@ -33,7 +33,7 @@ export function tabKey(tab: Tab): string {
   return `${tab.type}:${tab.id}`
 }
 
-interface TabStoreState {
+export interface TabStoreState {
   tabs: Tab[]
   activeTabKey: string | null
   /** Most-recently-used tab key history (most recent first). */
@@ -187,6 +187,30 @@ export function createTabStore() {
       setState('mruOrder', [])
       setState('tileActiveTabKeys', {})
       setState('tileMruOrder', {})
+    },
+
+    /** Snapshot the current state for registry caching. */
+    snapshot(): TabStoreState {
+      return {
+        tabs: state.tabs.map(t => ({ ...t })),
+        activeTabKey: state.activeTabKey,
+        mruOrder: [...state.mruOrder],
+        tileActiveTabKeys: { ...state.tileActiveTabKeys },
+        tileMruOrder: Object.fromEntries(
+          Object.entries(state.tileMruOrder).map(([k, v]) => [k, [...v]]),
+        ),
+      }
+    },
+
+    /** Restore from a previously snapshotted state. */
+    restore(snap: TabStoreState) {
+      setState('tabs', snap.tabs.map(t => ({ ...t })))
+      setState('activeTabKey', snap.activeTabKey)
+      setState('mruOrder', [...snap.mruOrder])
+      setState('tileActiveTabKeys', { ...snap.tileActiveTabKeys })
+      setState('tileMruOrder', Object.fromEntries(
+        Object.entries(snap.tileMruOrder).map(([k, v]) => [k, [...v]]),
+      ))
     },
 
     /** Get tabs for a specific tile. */
