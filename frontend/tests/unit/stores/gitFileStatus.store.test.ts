@@ -26,7 +26,7 @@ function makeEntry(overrides: Partial<GitFileStatusEntry> & { path: string }): G
 
 describe('gitFileStatusStore', () => {
   describe('getDirDiffStats', () => {
-    it('includes untracked file lines in diff stats', async () => {
+    it('counts untracked files separately in diff stats', async () => {
       await createRoot(async (dispose) => {
         const store = createGitFileStatusStore()
 
@@ -36,7 +36,6 @@ describe('gitFileStatusStore', () => {
             makeEntry({
               path: 'untracked.txt',
               unstagedStatus: GitFileStatusCode.UNTRACKED,
-              linesAdded: 10,
             }),
           ],
         })
@@ -44,14 +43,15 @@ describe('gitFileStatusStore', () => {
         await store.refresh('worker1', '/repo')
 
         const stats = store.getDirDiffStats('/repo')
-        expect(stats.added).toBe(10)
+        expect(stats.added).toBe(0)
         expect(stats.deleted).toBe(0)
+        expect(stats.untracked).toBe(1)
 
         dispose()
       })
     })
 
-    it('sums tracked and untracked file lines', async () => {
+    it('sums tracked lines and counts untracked files separately', async () => {
       await createRoot(async (dispose) => {
         const store = createGitFileStatusStore()
 
@@ -72,7 +72,6 @@ describe('gitFileStatusStore', () => {
             makeEntry({
               path: 'untracked.txt',
               unstagedStatus: GitFileStatusCode.UNTRACKED,
-              linesAdded: 8,
             }),
           ],
         })
@@ -80,8 +79,9 @@ describe('gitFileStatusStore', () => {
         await store.refresh('worker1', '/repo')
 
         const stats = store.getDirDiffStats('/repo')
-        expect(stats.added).toBe(5 + 20 + 8)
+        expect(stats.added).toBe(5 + 20)
         expect(stats.deleted).toBe(2)
+        expect(stats.untracked).toBe(1)
 
         dispose()
       })
@@ -97,12 +97,10 @@ describe('gitFileStatusStore', () => {
             makeEntry({
               path: 'src/untracked.txt',
               unstagedStatus: GitFileStatusCode.UNTRACKED,
-              linesAdded: 7,
             }),
             makeEntry({
               path: 'other.txt',
               unstagedStatus: GitFileStatusCode.UNTRACKED,
-              linesAdded: 3,
             }),
           ],
         })
@@ -110,10 +108,10 @@ describe('gitFileStatusStore', () => {
         await store.refresh('worker1', '/repo')
 
         const srcStats = store.getDirDiffStats('/repo/src')
-        expect(srcStats.added).toBe(7)
+        expect(srcStats.untracked).toBe(1)
 
         const rootStats = store.getDirDiffStats('/repo')
-        expect(rootStats.added).toBe(10)
+        expect(rootStats.untracked).toBe(2)
 
         dispose()
       })

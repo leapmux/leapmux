@@ -17,6 +17,7 @@ import { relativizePath, tildify } from '~/components/chat/messageUtils'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
+import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import * as styles from './DirectoryTree.css'
 import { DiffStatsBadge, getGitFileIconClass } from './gitStatusUtils'
 
@@ -260,15 +261,17 @@ function renderNodeDiffStats(
     return <></>
   if (node.isDir) {
     const stats = gitStatusStore.getDirDiffStats(node.path)
-    return <DiffStatsBadge added={stats.added} deleted={stats.deleted} />
+    return <DiffStatsBadge added={stats.added} deleted={stats.deleted} untracked={stats.untracked} />
   }
   const entry = gitStatusStore.getFileStatus(node.path)
   if (!entry)
     return <></>
+  const isUntracked = entry.unstagedStatus === GitFileStatusCode.UNTRACKED
   return (
     <DiffStatsBadge
-      added={entry.linesAdded + entry.stagedLinesAdded}
-      deleted={entry.linesDeleted + entry.stagedLinesDeleted}
+      added={isUntracked ? 0 : entry.linesAdded + entry.stagedLinesAdded}
+      deleted={isUntracked ? 0 : entry.linesDeleted + entry.stagedLinesDeleted}
+      untracked={isUntracked ? 1 : 0}
     />
   )
 }

@@ -177,12 +177,12 @@ test.describe('Git File Status', () => {
       await page.locator('[data-testid="files-flat-list-toggle"]').click()
       await expect(page.locator('[data-testid="files-flat-list"]')).toBeVisible()
 
-      // The untracked file row should have a diff stats badge showing +4.
+      // The untracked file row should have a diff stats badge showing *1.
       const flatList = page.locator('[data-testid="files-flat-list"]')
       const untrackedRow = flatList.locator('div', { hasText: 'untracked.txt' }).first()
       const badge = untrackedRow.locator('[data-testid="git-diff-stats"]')
       await expect(badge).toBeVisible()
-      await expect(badge).toContainText('+4')
+      await expect(badge).toContainText('*1')
 
       // It should also have the untracked status indicator.
       await expect(untrackedRow.locator('[data-testid="git-status-untracked"]')).toBeVisible()

@@ -1,7 +1,6 @@
 package gitutil
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -509,15 +508,6 @@ func GetPerFileStatus(dir string) ([]FileStatus, error) {
 		parseNumstatNUL(numstatOut, fileMap, true)
 	}
 
-	// 4. Count lines for untracked files (not covered by git diff --numstat).
-	for i := range files {
-		if files[i].UnstagedStatus == '?' {
-			if n := countFileLines(filepath.Join(dir, files[i].Path)); n > 0 {
-				files[i].LinesAdded = n
-			}
-		}
-	}
-
 	return files, nil
 }
 
@@ -716,41 +706,6 @@ func parseNumstatNUL(data []byte, fileMap map[string]*FileStatus, staged bool) {
 }
 
 // splitNUL splits data by NUL bytes, discarding a trailing empty element.
-// countFileLines counts the number of lines in a file by streaming it
-// through a buffer. Returns 0 for binary files (containing NUL bytes),
-// empty files, or on any error.
-func countFileLines(path string) int {
-	f, err := os.Open(path)
-	if err != nil {
-		return 0
-	}
-	defer func() { _ = f.Close() }()
-
-	buf := make([]byte, 32*1024)
-	lines := 0
-	lastByte := byte('\n') // treat start as if preceded by newline
-	for {
-		n, err := f.Read(buf)
-		chunk := buf[:n]
-		// Check for NUL bytes (binary file).
-		if bytes.ContainsRune(chunk, 0) {
-			return 0
-		}
-		lines += bytes.Count(chunk, []byte{'\n'})
-		if n > 0 {
-			lastByte = chunk[n-1]
-		}
-		if err != nil {
-			break
-		}
-	}
-	// Count a final line that doesn't end with a newline.
-	if lastByte != '\n' {
-		lines++
-	}
-	return lines
-}
-
 func splitNUL(data []byte) []string {
 	if len(data) == 0 {
 		return nil

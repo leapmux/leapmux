@@ -126,48 +126,6 @@ func TestGetGitStatus_NonGitDir(t *testing.T) {
 	assert.Nil(t, status)
 }
 
-func TestCountFileLines(t *testing.T) {
-	t.Run("counts lines with trailing newline", func(t *testing.T) {
-		f := filepath.Join(t.TempDir(), "a.txt")
-		require.NoError(t, os.WriteFile(f, []byte("one\ntwo\nthree\n"), 0o644))
-		assert.Equal(t, 3, countFileLines(f))
-	})
-
-	t.Run("counts lines without trailing newline", func(t *testing.T) {
-		f := filepath.Join(t.TempDir(), "a.txt")
-		require.NoError(t, os.WriteFile(f, []byte("one\ntwo\nthree"), 0o644))
-		assert.Equal(t, 3, countFileLines(f))
-	})
-
-	t.Run("single line with newline", func(t *testing.T) {
-		f := filepath.Join(t.TempDir(), "a.txt")
-		require.NoError(t, os.WriteFile(f, []byte("hello\n"), 0o644))
-		assert.Equal(t, 1, countFileLines(f))
-	})
-
-	t.Run("single line without newline", func(t *testing.T) {
-		f := filepath.Join(t.TempDir(), "a.txt")
-		require.NoError(t, os.WriteFile(f, []byte("hello"), 0o644))
-		assert.Equal(t, 1, countFileLines(f))
-	})
-
-	t.Run("empty file", func(t *testing.T) {
-		f := filepath.Join(t.TempDir(), "a.txt")
-		require.NoError(t, os.WriteFile(f, []byte{}, 0o644))
-		assert.Equal(t, 0, countFileLines(f))
-	})
-
-	t.Run("binary file returns zero", func(t *testing.T) {
-		f := filepath.Join(t.TempDir(), "a.bin")
-		require.NoError(t, os.WriteFile(f, []byte("hello\x00world\n"), 0o644))
-		assert.Equal(t, 0, countFileLines(f))
-	})
-
-	t.Run("nonexistent file returns zero", func(t *testing.T) {
-		assert.Equal(t, 0, countFileLines(filepath.Join(t.TempDir(), "nope")))
-	})
-}
-
 func TestGetPerFileStatus_UntrackedLines(t *testing.T) {
 	dir := initRepo(t)
 
@@ -179,7 +137,8 @@ func TestGetPerFileStatus_UntrackedLines(t *testing.T) {
 	require.Len(t, files, 1)
 	assert.Equal(t, "new.txt", files[0].Path)
 	assert.Equal(t, byte('?'), files[0].UnstagedStatus)
-	assert.Equal(t, 3, files[0].LinesAdded)
+	// Untracked files don't have line counts (numstat doesn't cover them).
+	assert.Equal(t, 0, files[0].LinesAdded)
 	assert.Equal(t, 0, files[0].LinesDeleted)
 }
 
@@ -227,10 +186,10 @@ func TestGetPerFileStatus_MixedTrackedAndUntracked(t *testing.T) {
 	assert.Equal(t, 1, tracked.LinesAdded)
 	assert.Equal(t, 0, tracked.LinesDeleted)
 
-	// untracked.txt: untracked, 4 lines counted from file.
+	// untracked.txt: untracked, no line counts (numstat doesn't cover them).
 	untracked := byPath["untracked.txt"]
 	assert.Equal(t, byte('?'), untracked.UnstagedStatus)
-	assert.Equal(t, 4, untracked.LinesAdded)
+	assert.Equal(t, 0, untracked.LinesAdded)
 	assert.Equal(t, 0, untracked.LinesDeleted)
 
 	// binary.dat: untracked binary, 0 lines.
