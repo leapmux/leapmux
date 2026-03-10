@@ -8,6 +8,7 @@ import { workerClient, workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
+import { isWorkspaceCreateDisabled } from '~/components/shell/dialogValidation'
 import { WorktreeOptions } from '~/components/shell/WorktreeOptions'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
 import { useOrg } from '~/context/OrgContext'
@@ -30,7 +31,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
   const [workerId, setWorkerId] = createSignal('')
   const randomTitle = () => generateSlug(3, { format: 'title' })
   const [title, setTitle] = createSignal(randomTitle())
-  const [workingDir, setWorkingDir] = createSignal('~')
+  const [workingDir, setWorkingDir] = createSignal('')
   const [submitting, setSubmitting] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
   const [refreshing, setRefreshing] = createSignal(false)
@@ -79,7 +80,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
-    if (!workerId())
+    if (!workerId() || !workingDir().trim())
       return
 
     setSubmitting(true)
@@ -223,7 +224,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
           </button>
           <button
             type="submit"
-            disabled={submitting() || !workerId() || !!titleError() || (createWorktree() && !!worktreeBranchError())}
+            disabled={isWorkspaceCreateDisabled({ submitting: submitting(), workerId: workerId(), workingDir: workingDir(), titleError: titleError(), createWorktree: createWorktree(), worktreeBranchError: worktreeBranchError() })}
           >
             <Show when={submitting()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
             {submitting() ? 'Creating...' : 'Create'}
