@@ -183,7 +183,7 @@ globalStyle(`${item}:hover:not(${itemDropTarget}) ${itemActions}`, {
 })
 
 /** Match active item background. */
-globalStyle(`${item}${itemActive} ${itemActions}`, {
+globalStyle(`${item}${itemActive}:not(${itemDropTarget}) ${itemActions}`, {
   backgroundColor: 'var(--secondary)',
 })
 
