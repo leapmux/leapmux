@@ -9,6 +9,7 @@ import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileSta
 import type { createSectionStore } from '~/stores/section.store'
 import type { createTabStore } from '~/stores/tab.store'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
+import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 
 import CircleUser from 'lucide-solid/icons/circle-user'
 import Plus from 'lucide-solid/icons/plus'
@@ -69,14 +70,16 @@ interface LeftSidebarProps {
   channelStatusFn: (id: string) => ChannelStatus
   onDeregisterWorker: (worker: Worker) => void
   tabStore: ReturnType<typeof createTabStore>
+  registry?: WorkspaceStoreRegistryType
   onTabClick: (type: number, id: string) => void
+  onExpandWorkspace: (workspaceId: string) => void
 }
 
 export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
   const auth = useAuth()
   // eslint-disable-next-line solid/reactivity -- stable store reference for component lifetime
   const store = props.sectionStore
-  const { setExternalDragHandler, setExternalOverlayRenderer } = useSectionDrag()
+  const { addExternalDragHandler, addExternalOverlayRenderer } = useSectionDrag()
 
   // Captured from CollapsibleSidebar's expandSectionRef callback.
   let expandSection: ((sectionId: string) => void) | undefined
@@ -127,23 +130,23 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
   // Register workspace DnD handlers with the unified SectionDragProvider.
   // This allows workspace dragging to work through the shared DragDropProvider
   // instead of requiring a separate nested provider (which would shadow section DnD).
-  setExternalDragHandler(wsOps.handleWorkspaceDragEnd)
+  const disposeWsDragHandler = addExternalDragHandler(wsOps.handleWorkspaceDragEnd)
   // eslint-disable-next-line solid/reactivity -- overlay renderer is called from DragOverlay, not a tracked scope
-  setExternalOverlayRenderer((draggable: any) => {
+  const disposeWsOverlayRenderer = addExternalOverlayRenderer((draggable: any) => {
     if (!draggable)
-      return <></>
+      return null
     const id = String(draggable.id)
     if (!id.startsWith('ws-'))
-      return <></>
+      return null
     const wsId = id.slice(3)
     const workspace = props.workspaces.find(w => w.id === wsId)
     return workspace
       ? <div class={wsDragOverlay}>{workspace.title || 'Untitled'}</div>
-      : <></>
+      : null as unknown as JSX.Element
   })
   onCleanup(() => {
-    setExternalDragHandler(null)
-    setExternalOverlayRenderer(null)
+    disposeWsDragHandler()
+    disposeWsOverlayRenderer()
   })
 
   // ---------------------------------------------------------------------------
@@ -220,7 +223,16 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
               isWorkspaceLoading={wsOps.isWorkspaceLoading}
               tabs={props.tabStore.state.tabs}
               activeTabKey={props.tabStore.state.activeTabKey}
+              getTabsForWorkspace={(wsId: string) => {
+                const snap = props.registry?.get(wsId)
+                return snap?.tabs.tabs ?? []
+              }}
+              getActiveTabKeyForWorkspace={(wsId: string) => {
+                const snap = props.registry?.get(wsId)
+                return snap?.tabs.activeTabKey ?? null
+              }}
               onTabClick={props.onTabClick}
+              onExpandWorkspace={props.onExpandWorkspace}
             />
           ),
         })

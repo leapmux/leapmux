@@ -22,6 +22,10 @@ export const leafActive = style({
   },
 })
 
+export const leafDragging = style({
+  opacity: 0.4,
+})
+
 export const groupIcon = style({
   flexShrink: 0,
   color: 'var(--primary)',

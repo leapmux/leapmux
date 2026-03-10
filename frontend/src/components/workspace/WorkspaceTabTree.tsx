@@ -1,11 +1,13 @@
 import type { Component } from 'solid-js'
 import type { Tab } from '~/stores/tab.store'
+import { createDraggable } from '@thisbeyond/solid-dnd'
 import Bot from 'lucide-solid/icons/bot'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FolderGit from 'lucide-solid/icons/folder-git'
 import GitBranch from 'lucide-solid/icons/git-branch'
 import Terminal from 'lucide-solid/icons/terminal'
 import { createMemo, createSignal, For, Show } from 'solid-js'
+import { SIDEBAR_TAB_PREFIX } from '~/components/shell/CrossTileDragContext'
 import { tabKey, TabType } from '~/stores/tab.store'
 import { DiffStatsBadge } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
@@ -15,15 +17,27 @@ import * as css from './workspaceTabTree.css'
 
 const TabLeaf: Component<{
   tab: Tab
+  workspaceId: string
   depth: number
   isActive: boolean
   onClick: () => void
 }> = (props) => {
+  /* eslint-disable solid/reactivity -- stable identifier for createDraggable */
+  const draggable = createDraggable(
+    `${SIDEBAR_TAB_PREFIX}${props.workspaceId}:${props.tab.type}:${props.tab.id}`,
+    { title: props.tab.title || props.tab.id, type: props.tab.type },
+  )
+  /* eslint-enable solid/reactivity */
+
   return (
     <div
-      class={`${shared.node} ${css.leafNode} ${props.isActive ? css.leafActive : ''}`}
+      ref={draggable}
+      class={`${shared.node} ${css.leafNode} ${props.isActive ? css.leafActive : ''} ${draggable.isActiveDraggable ? css.leafDragging : ''}`}
       style={{ 'padding-left': `${8 + props.depth * 16}px` }}
-      onClick={() => props.onClick()}
+      onClick={() => {
+        if (!draggable.isActiveDraggable)
+          props.onClick()
+      }}
       data-testid="tab-tree-leaf"
     >
       <div class={shared.chevronPlaceholder} />
@@ -127,6 +141,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
                               {tab => (
                                 <TabLeaf
                                   tab={tab}
+                                  workspaceId={props.workspaceId}
                                   depth={3}
                                   isActive={tabKey(tab) === props.activeTabKey}
                                   onClick={() => props.onTabClick(tab.type, tab.id)}
@@ -150,6 +165,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
         {tab => (
           <TabLeaf
             tab={tab}
+            workspaceId={props.workspaceId}
             depth={1}
             isActive={tabKey(tab) === props.activeTabKey}
             onClick={() => props.onTabClick(tab.type, tab.id)}

@@ -1,7 +1,11 @@
 import type { createAgentStore } from '~/stores/agent.store'
+import type { createAgentSessionStore } from '~/stores/agentSession.store'
+import type { createChatStore } from '~/stores/chat.store'
+import type { createControlStore } from '~/stores/control.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { createTerminalStore } from '~/stores/terminal.store'
+import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 import { createEffect, on } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
@@ -18,6 +22,10 @@ interface UseWorkspaceRestoreOpts {
   terminalStore: ReturnType<typeof createTerminalStore>
   tabStore: ReturnType<typeof createTabStore>
   layoutStore: ReturnType<typeof createLayoutStore>
+  chatStore: ReturnType<typeof createChatStore>
+  controlStore: ReturnType<typeof createControlStore>
+  agentSessionStore: ReturnType<typeof createAgentSessionStore>
+  registry: WorkspaceStoreRegistryType
   setWorkspaceLoading: (v: boolean) => void
 }
 
@@ -29,16 +37,43 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
     terminalStore,
     tabStore,
     layoutStore,
+    registry,
     setWorkspaceLoading,
   } = opts
 
   let loadGeneration = 0
+  let previousWorkspaceId: string | null = null
 
   createEffect(on([getActiveWorkspaceId, getOrgId], ([activeId, currentOrgId]) => {
     if (!activeId || !currentOrgId)
       return
 
     const gen = ++loadGeneration
+
+    // Save current workspace state to registry before switching.
+    if (previousWorkspaceId && previousWorkspaceId !== activeId) {
+      registry.set(previousWorkspaceId, {
+        workspaceId: previousWorkspaceId,
+        tabs: tabStore.snapshot(),
+        layout: layoutStore.snapshot(),
+        agents: [...agentStore.state.agents],
+        terminals: [...terminalStore.state.terminals],
+        restored: true,
+        tabsLoaded: true,
+      })
+    }
+    previousWorkspaceId = activeId
+
+    // Check if we have a cached snapshot for this workspace.
+    const cached = registry.get(activeId)
+    if (cached?.restored) {
+      tabStore.restore(cached.tabs)
+      layoutStore.restore(cached.layout)
+      agentStore.setAgents(cached.agents)
+      terminalStore.setTerminals(cached.terminals)
+      setWorkspaceLoading(false)
+      return
+    }
 
     setWorkspaceLoading(true)
     tabStore.clear()
@@ -69,6 +104,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
             workerIds.add(t.workerId)
         }
       }
+      log.warn(`[restore] listTabs for ${activeId}: ${tabsResp?.tabs.map(t => `${t.tabType}:${t.tabId}`).join(', ') ?? 'null'}`)
 
       // Fetch agents and terminals from each worker in parallel.
       const agentResults = await Promise.all(
@@ -99,8 +135,38 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         return
 
       // Populate agent store.
+      // Use persistedKeys (from hub's listTabs) to filter out stale agents
+      // that the worker hasn't moved yet — the hub tab list is the source
+      // of truth for which tabs belong to this workspace.
+      const persistedKeys = new Set<string>()
+      const tabTileMap = new Map<string, string>()
+      if (tabsResp?.tabs) {
+        for (const t of tabsResp.tabs) {
+          const key = `${t.tabType}:${t.tabId}`
+          persistedKeys.add(key)
+          if (t.tileId) {
+            tabTileMap.set(key, t.tileId)
+          }
+        }
+      }
+
       const allAgents = agentResults.flat()
-      agentStore.setAgents(allAgents)
+      log.warn(`[restore] listAgents for ${activeId}: ${allAgents.map(a => a.id).join(', ')}`)
+      // Filter agents to only those the hub confirms belong to this workspace.
+      const filteredAgents = allAgents.filter(a => persistedKeys.has(`${TabType.AGENT}:${a.id}`))
+      // Merge locally-moved agents from the registry snapshot that the
+      // worker hasn't processed yet (cross-workspace MoveTabWorkspace
+      // may still be in flight).
+      if (cached?.tabsLoaded && cached.agents.length > 0) {
+        const fetchedIds = new Set(filteredAgents.map(a => a.id))
+        for (const snapAgent of cached.agents) {
+          if (!fetchedIds.has(snapAgent.id)) {
+            filteredAgents.push(snapAgent)
+          }
+        }
+      }
+      log.warn(`[restore] final agents for ${activeId}: ${filteredAgents.map(a => a.id).join(', ')}`)
+      agentStore.setAgents(filteredAgents)
 
       // Populate terminal store.
       terminalStore.setTerminals([])
@@ -131,21 +197,10 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         layoutStore.initSingleTile()
       }
 
-      const persistedKeys = new Set<string>()
-      const tabTileMap = new Map<string, string>()
-      if (tabsResp?.tabs) {
-        for (const t of tabsResp.tabs) {
-          const key = `${t.tabType}:${t.tabId}`
-          persistedKeys.add(key)
-          if (t.tileId) {
-            tabTileMap.set(key, t.tileId)
-          }
-        }
-      }
-
       const validTileIds = new Set(layoutStore.getAllTileIds())
       const defaultTileId = layoutStore.focusedTileId()
 
+      log.warn(`[restore] creating tabs for ${activeId}, agents: ${agentStore.state.agents.map(a => a.id).join(', ')}`)
       for (const a of agentStore.state.agents) {
         const key = `${TabType.AGENT}:${a.id}`
         let tileId = tabTileMap.get(key) ?? defaultTileId
@@ -181,6 +236,29 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
               workingDir: termData?.workingDir,
               gitBranch: term.gitBranch || undefined,
               gitOriginUrl: term.gitOriginUrl || undefined,
+            }, false)
+          }
+        }
+      }
+
+      // Merge any locally-moved tabs from the registry snapshot that the
+      // server didn't return yet (cross-workspace moves may still be in
+      // flight when we fetch from the server).
+      if (cached?.tabsLoaded) {
+        const existingKeys = new Set(tabStore.state.tabs.map(t => tabKey(t)))
+        for (const snapTab of cached.tabs.tabs) {
+          const key = tabKey(snapTab)
+          if (!existingKeys.has(key)) {
+            const tileId = defaultTileId
+            tabStore.addTab({
+              type: snapTab.type,
+              id: snapTab.id,
+              title: snapTab.title,
+              tileId,
+              workerId: snapTab.workerId,
+              workingDir: snapTab.workingDir,
+              gitBranch: snapTab.gitBranch,
+              gitOriginUrl: snapTab.gitOriginUrl,
             }, false)
           }
         }
@@ -259,6 +337,17 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
           agentStore.setActiveAgent(firstTab.id)
         }
       }
+
+      // Cache the restored state in the registry.
+      registry.set(activeId, {
+        workspaceId: activeId,
+        tabs: tabStore.snapshot(),
+        layout: layoutStore.snapshot(),
+        agents: [...agentStore.state.agents],
+        terminals: [...terminalStore.state.terminals],
+        restored: true,
+        tabsLoaded: true,
+      })
 
       setWorkspaceLoading(false)
     }).catch((err) => {

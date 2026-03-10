@@ -1,9 +1,15 @@
 import type { JSX } from 'solid-js'
-import { closestCenter, DragDropProvider, DragDropSensors, DragOverlay } from '@thisbeyond/solid-dnd'
-import { createContext, createSignal, useContext } from 'solid-js'
+import { createContext, createSignal, onCleanup, useContext } from 'solid-js'
+import { useSectionDrag } from './SectionDragContext'
 
 /** Prefix used for tab-bar zone droppable IDs. */
 export const TABBAR_ZONE_PREFIX = 'tabbar-zone:'
+
+/** Prefix used for workspace drop target IDs in sidebar. */
+export const WORKSPACE_DROP_PREFIX = 'workspace-drop:'
+
+/** Prefix used for draggable sidebar tab tree leaves. Format: `sidebar-tab:{workspaceId}:{tabType}:{tabId}` */
+export const SIDEBAR_TAB_PREFIX = 'sidebar-tab:'
 
 interface CrossTileDragState {
   /** Tile ID where the drag started. */
@@ -26,27 +32,73 @@ export function useCrossTileDrag(): CrossTileDragState {
 interface CrossTileDragProviderProps {
   onIntraTileReorder: (tileId: string, fromKey: string, toKey: string) => void
   onCrossTileMove: (fromTileId: string, toTileId: string, tabKey: string, nearTabKey: string | null) => void
+  onCrossWorkspaceMove?: (targetWorkspaceId: string, tabKey: string, sourceWorkspaceId?: string) => void
   lookupTileIdForTab: (tabKey: string) => string | undefined
   renderDragOverlay: (tabKey: string) => JSX.Element
   children: JSX.Element
 }
 
+/**
+ * Tab drag-and-drop context that delegates to the unified SectionDragProvider.
+ *
+ * Instead of creating its own DragDropProvider (which would shadow the outer
+ * SectionDragProvider and prevent cross-scope interactions), this component
+ * registers its drag handlers as external handlers on SectionDragProvider.
+ * Tab draggables and droppables register with the single shared provider,
+ * enabling tabs to be dragged onto workspace items in the sidebar.
+ */
 export function CrossTileDragProvider(props: CrossTileDragProviderProps) {
   const [dragSourceTileId, setDragSourceTileId] = createSignal<string | null>(null)
   const [dragOverTileId, setDragOverTileId] = createSignal<string | null>(null)
   const [draggedTabKey, setDraggedTabKey] = createSignal<string | null>(null)
+  /** Source workspace ID when dragging a sidebar tab from a non-active workspace. */
+  const [dragSourceWorkspaceId, setDragSourceWorkspaceId] = createSignal<string | null>(null)
 
-  const handleDragStart = ({ draggable }: any) => {
+  const {
+    addExternalDragHandler,
+    addExternalDragStartHandler,
+    addExternalDragOverHandler,
+    addExternalOverlayRenderer,
+  } = useSectionDrag()
+
+  /* eslint-disable solid/reactivity -- handler callbacks are stable, invoked by SectionDragProvider events */
+
+  // Register tab drag start handler.
+  const disposeStartHandler = addExternalDragStartHandler(({ draggable }) => {
     if (!draggable)
       return
-    const tabKey = String(draggable.id)
-    const tileId = props.lookupTileIdForTab(tabKey)
-    setDraggedTabKey(tabKey)
+    const id = String(draggable.id)
+    // Only handle tab drags (not workspace drags which start with 'ws-')
+    if (id.startsWith('ws-'))
+      return
+
+    // Sidebar tab drag: sidebar-tab:{workspaceId}:{tabType}:{tabId}
+    if (id.startsWith(SIDEBAR_TAB_PREFIX)) {
+      const rest = id.slice(SIDEBAR_TAB_PREFIX.length)
+      const colonIdx = rest.indexOf(':')
+      if (colonIdx >= 0) {
+        const wsId = rest.slice(0, colonIdx)
+        const realTabKey = rest.slice(colonIdx + 1)
+        setDraggedTabKey(realTabKey)
+        setDragSourceWorkspaceId(wsId)
+        setDragSourceTileId(null) // sidebar tabs have no tile
+        setDragOverTileId(null)
+        return
+      }
+    }
+
+    const tileId = props.lookupTileIdForTab(id)
+    setDraggedTabKey(id)
+    setDragSourceWorkspaceId(null)
     setDragSourceTileId(tileId ?? null)
     setDragOverTileId(null)
-  }
+  })
 
-  const handleDragOver = ({ droppable }: any) => {
+  // Register tab drag over handler.
+  const disposeOverHandler = addExternalDragOverHandler(({ draggable, droppable }) => {
+    const dragId = String(draggable?.id ?? '')
+    if (dragId.startsWith('ws-'))
+      return
     if (!droppable) {
       setDragOverTileId(null)
       return
@@ -55,52 +107,122 @@ export function CrossTileDragProvider(props: CrossTileDragProviderProps) {
     if (droppableId.startsWith(TABBAR_ZONE_PREFIX)) {
       setDragOverTileId(droppableId.slice(TABBAR_ZONE_PREFIX.length))
     }
+    else if (droppableId.startsWith(WORKSPACE_DROP_PREFIX)) {
+      setDragOverTileId(null)
+    }
     else {
-      // Droppable is a tab — look up its tile
       const tileId = props.lookupTileIdForTab(droppableId)
       setDragOverTileId(tileId ?? null)
     }
-  }
+  })
 
-  const handleDragEnd = ({ draggable, droppable }: any) => {
-    const tabKey = draggedTabKey()
+  // Register tab drag end handler.
+  const disposeDragHandler = addExternalDragHandler(({ draggable, droppable }) => {
+    const dragId = String(draggable?.id ?? '')
+
+    // Don't handle workspace drags — they're handled by the workspace handler.
+    if (dragId.startsWith('ws-'))
+      return
+
+    const tabKeyVal = draggedTabKey()
     const sourceTileId = dragSourceTileId()
+    const sourceWsId = dragSourceWorkspaceId()
 
     // Reset state
     setDraggedTabKey(null)
     setDragSourceTileId(null)
     setDragOverTileId(null)
+    setDragSourceWorkspaceId(null)
 
-    if (!draggable || !droppable || !tabKey || !sourceTileId)
+    if (!draggable || !droppable || !tabKeyVal)
       return
 
     const droppableId = String(droppable.id)
 
+    // Cross-workspace drop (sidebar workspace item).
+    if (droppableId.startsWith(WORKSPACE_DROP_PREFIX)) {
+      const targetWsId = droppableId.slice(WORKSPACE_DROP_PREFIX.length)
+      props.onCrossWorkspaceMove?.(targetWsId, tabKeyVal, sourceWsId ?? undefined)
+      return
+    }
+
+    // Sidebar tab dropped onto tabbar zone or tabbar tab → move to active workspace.
+    if (sourceWsId) {
+      if (droppableId.startsWith(TABBAR_ZONE_PREFIX) || props.lookupTileIdForTab(droppableId)) {
+        // Move from source workspace to active workspace (target = active).
+        // Pass undefined as targetWorkspaceId — AppShell interprets it as "active workspace".
+        props.onCrossWorkspaceMove?.('__active__', tabKeyVal, sourceWsId)
+      }
+      return
+    }
+
+    if (!sourceTileId)
+      return
+
     if (droppableId.startsWith(TABBAR_ZONE_PREFIX)) {
-      // Dropped on a tab bar zone — cross-tile append
       const targetTileId = droppableId.slice(TABBAR_ZONE_PREFIX.length)
       if (targetTileId === sourceTileId)
-        return // Same tile, no-op
-      props.onCrossTileMove(sourceTileId, targetTileId, tabKey, null)
+        return
+      props.onCrossTileMove(sourceTileId, targetTileId, tabKeyVal, null)
     }
     else {
-      // Dropped on a tab
       const targetTileId = props.lookupTileIdForTab(droppableId)
       if (!targetTileId)
         return
 
       if (targetTileId === sourceTileId) {
-        // Intra-tile reorder
-        if (tabKey !== droppableId) {
-          props.onIntraTileReorder(sourceTileId, tabKey, droppableId)
+        if (tabKeyVal !== droppableId) {
+          props.onIntraTileReorder(sourceTileId, tabKeyVal, droppableId)
         }
       }
       else {
-        // Cross-tile move near a specific tab
-        props.onCrossTileMove(sourceTileId, targetTileId, tabKey, droppableId)
+        props.onCrossTileMove(sourceTileId, targetTileId, tabKeyVal, droppableId)
       }
     }
-  }
+  })
+
+  // Register tab drag overlay renderer.
+  const disposeOverlayRenderer = addExternalOverlayRenderer((draggable: any) => {
+    if (!draggable)
+      return null
+    const id = String(draggable.id)
+    // Don't render overlay for workspace drags
+    if (id.startsWith('ws-'))
+      return null
+    // Sidebar tab drag — render overlay from draggable data since the tab
+    // may not be in the active workspace's store.
+    if (id.startsWith(SIDEBAR_TAB_PREFIX)) {
+      const title = String(draggable.data?.title || 'Tab')
+      return (
+        <div style={{
+          'display': 'flex',
+          'align-items': 'center',
+          'padding': '4px 6px',
+          'font-size': '13px',
+          'background': 'var(--card)',
+          'border': '1px solid var(--border)',
+          'border-radius': '4px',
+          'box-shadow': '0 2px 8px rgba(0,0,0,0.15)',
+          'white-space': 'nowrap',
+          'max-width': '180px',
+          'overflow': 'hidden',
+          'text-overflow': 'ellipsis',
+        }}
+        >
+          <span>{title}</span>
+        </div>
+      )
+    }
+    return props.renderDragOverlay(id)
+  })
+  /* eslint-enable solid/reactivity */
+
+  onCleanup(() => {
+    disposeStartHandler()
+    disposeOverHandler()
+    disposeDragHandler()
+    disposeOverlayRenderer()
+  })
 
   const ctxValue: CrossTileDragState = {
     dragSourceTileId,
@@ -110,23 +232,7 @@ export function CrossTileDragProvider(props: CrossTileDragProviderProps) {
 
   return (
     <CrossTileDragContext.Provider value={ctxValue}>
-      <DragDropProvider
-        onDragStart={handleDragStart}
-        onDragOver={handleDragOver}
-        onDragEnd={handleDragEnd}
-        collisionDetector={closestCenter}
-      >
-        <DragDropSensors />
-        {props.children}
-        <DragOverlay>
-          {(draggable: any) => {
-            if (!draggable)
-              return <></>
-            const key = String(draggable.id)
-            return props.renderDragOverlay(key)
-          }}
-        </DragOverlay>
-      </DragDropProvider>
+      {props.children}
     </CrossTileDragContext.Provider>
   )
 }

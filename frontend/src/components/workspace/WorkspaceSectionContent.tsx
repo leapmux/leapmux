@@ -8,6 +8,7 @@ import ChevronRight from 'lucide-solid/icons/chevron-right'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createEffect, createMemo, createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
+import { WORKSPACE_DROP_PREFIX } from '~/components/shell/CrossTileDragContext'
 import { ShareMode } from '~/generated/leapmux/v1/common_pb'
 import { spinner } from '~/styles/animations.css'
 import { DiffStatsBadge } from '../tree/gitStatusUtils'
@@ -39,7 +40,10 @@ export interface WorkspaceSectionContentProps {
   isWorkspaceLoading: (id: string) => boolean
   tabs: Tab[]
   activeTabKey: string | null
+  getTabsForWorkspace: (workspaceId: string) => Tab[]
+  getActiveTabKeyForWorkspace: (workspaceId: string) => string | null
   onTabClick: (type: TabType, id: string) => void
+  onExpandWorkspace?: (workspaceId: string) => void
 }
 
 export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = (props) => {
@@ -60,7 +64,18 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
   // ---------------------------------------------------------------------------
 
   // Track which workspaces have their tab tree expanded (independent of selection).
-  const [expandedIds, setExpandedIds] = createSignal<Set<string>>(new Set())
+  // Restore from sessionStorage so expanded state survives page refresh.
+  const EXPANDED_KEY = 'leapmux:expandedWorkspaces'
+  function loadExpandedIds(): Set<string> {
+    try {
+      const stored = sessionStorage.getItem(EXPANDED_KEY)
+      return stored ? new Set(JSON.parse(stored) as string[]) : new Set()
+    }
+    catch {
+      return new Set()
+    }
+  }
+  const [expandedIds, setExpandedIds] = createSignal<Set<string>>(loadExpandedIds())
 
   function isExpanded(id: string): boolean {
     return expandedIds().has(id)
@@ -77,6 +92,15 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
     })
   }
 
+  // Persist expanded state to sessionStorage.
+  createEffect(() => {
+    const ids = expandedIds()
+    try {
+      sessionStorage.setItem(EXPANDED_KEY, JSON.stringify([...ids]))
+    }
+    catch { /* ignore quota errors */ }
+  })
+
   // Auto-expand the active workspace when it changes (if it has tabs).
   createEffect(() => {
     const activeId = props.activeWorkspaceId
@@ -91,13 +115,40 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
     }
   })
 
-  const workspaceDiffStats = createMemo(() => {
-    const tree = buildTree(props.tabs)
+  // Trigger lazy loading for non-active workspaces restored as expanded
+  // from sessionStorage (their tabs haven't been fetched yet).
+  createEffect(() => {
+    for (const id of expandedIds()) {
+      if (id !== props.activeWorkspaceId && tabsFor(id).length === 0) {
+        props.onExpandWorkspace?.(id)
+      }
+    }
+  })
+
+  /**
+   * Get the tabs for a specific workspace, using the per-workspace lookup or
+   * falling back to the active workspace's tabs for backwards compatibility.
+   */
+  function tabsFor(workspaceId: string): Tab[] {
+    if (workspaceId === props.activeWorkspaceId)
+      return props.tabs
+    return props.getTabsForWorkspace(workspaceId)
+  }
+
+  function activeTabKeyFor(workspaceId: string): string | null {
+    if (workspaceId === props.activeWorkspaceId)
+      return props.activeTabKey
+    return props.getActiveTabKeyForWorkspace(workspaceId)
+  }
+
+  /** Per-workspace diff stats. */
+  function workspaceDiffStatsFor(workspaceId: string) {
+    const tree = buildTree(tabsFor(workspaceId))
     return {
       added: tree.groups.reduce((sum, g) => sum + g.diffAdded, 0),
       deleted: tree.groups.reduce((sum, g) => sum + g.diffDeleted, 0),
     }
-  })
+  }
 
   const workspaceIds = () => props.workspaces.map(w => w.id)
 
@@ -131,6 +182,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                 sectionId: props.sectionId,
                 workspaceId: id,
               })
+              const wsDroppable = createDroppable(`${WORKSPACE_DROP_PREFIX}${id}`)
               const isActive = () => id === props.activeWorkspaceId
               const isOwner = () => workspace().createdBy === props.currentUserId
               const isRenaming = () => props.renamingWorkspaceId === id
@@ -147,11 +199,15 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
               return (
                 <>
                   <div
-                    ref={sortable}
+                    ref={(el: HTMLElement) => {
+                      (sortable as unknown as (el: HTMLElement) => void)(el);
+                      (wsDroppable as unknown as (el: HTMLElement) => void)(el)
+                    }}
                     class={styles.item}
                     classList={{
                       [styles.itemActive]: isActive(),
                       [styles.itemDragging]: sortable.isActiveDraggable,
+                      [styles.itemDropTarget]: wsDroppable.isActiveDroppable,
                     }}
                     style={transformStyle(sortable.transform)}
                     onClick={() => {
@@ -169,11 +225,12 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                   >
                     <ChevronRight
                       size={14}
-                      class={`${shared.chevron} ${isActive() && props.tabs.length > 0 && isExpanded(id) ? shared.chevronExpanded : ''}`}
+                      class={`${shared.chevron} ${isExpanded(id) ? shared.chevronExpanded : ''}`}
                       onClick={(e) => {
                         e.stopPropagation()
-                        if (isActive() && props.tabs.length > 0)
-                          toggleExpanded(id)
+                        toggleExpanded(id)
+                        if (!isActive())
+                          props.onExpandWorkspace?.(id)
                       }}
                     />
                     <Show
@@ -206,9 +263,14 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                       <Show when={workspace().shareMode !== ShareMode.PRIVATE && workspace().shareMode !== ShareMode.UNSPECIFIED}>
                         <span class={styles.sharedBadge}>shared</span>
                       </Show>
-                      <Show when={isActive()}>
-                        <DiffStatsBadge added={workspaceDiffStats().added} deleted={workspaceDiffStats().deleted} />
-                      </Show>
+                      {(() => {
+                        const stats = workspaceDiffStatsFor(id)
+                        return (
+                          <Show when={stats.added > 0 || stats.deleted > 0}>
+                            <DiffStatsBadge added={stats.added} deleted={stats.deleted} />
+                          </Show>
+                        )
+                      })()}
                     </Show>
 
                     <div class={styles.itemActions}>
@@ -233,12 +295,21 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                       </Show>
                     </div>
                   </div>
-                  <div class={`${shared.childrenWrapper} ${isActive() && props.tabs.length > 0 && isExpanded(id) ? shared.childrenWrapperExpanded : ''}`}>
+                  <div class={`${shared.childrenWrapper} ${isExpanded(id) ? shared.childrenWrapperExpanded : ''}`}>
                     <div class={shared.childrenInner}>
                       <WorkspaceTabTree
-                        tabs={props.tabs}
-                        activeTabKey={props.activeTabKey}
-                        onTabClick={props.onTabClick}
+                        tabs={tabsFor(id)}
+                        activeTabKey={activeTabKeyFor(id)}
+                        onTabClick={(type, tabId) => {
+                          if (id !== props.activeWorkspaceId) {
+                            // Store desired tab so workspace restore activates it.
+                            sessionStorage.setItem(`leapmux:activeTab:${id}`, `${type}:${tabId}`)
+                            props.onSelect(id)
+                          }
+                          else {
+                            props.onTabClick(type, tabId)
+                          }
+                        }}
                         workspaceId={id}
                       />
                     </div>

@@ -4,9 +4,9 @@ import type { SidebarElementsOpts } from './SidebarElements'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createSignal, on, Show } from 'solid-js'
-import { workerClient } from '~/api/clients'
+import { workerClient, workspaceClient } from '~/api/clients'
 import { agentLoadingTimeoutMs } from '~/api/transport'
-import { channelManager, setConfirmKeyPin, setGetUserId } from '~/api/workerRpc'
+import { channelManager, listAgents, listTerminals, moveTabWorkspace, setConfirmKeyPin, setGetUserId } from '~/api/workerRpc'
 import { NotFoundPage } from '~/components/common/NotFoundPage'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
 import { WorkerSettingsDialog } from '~/components/workers/WorkerSettingsDialog'
@@ -24,13 +24,14 @@ import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
 import { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
-import { createLayoutStore } from '~/stores/layout.store'
+import { createLayoutStore, getAllTileIds } from '~/stores/layout.store'
 import { createSectionStore } from '~/stores/section.store'
 import { createTabStore, tabKey } from '~/stores/tab.store'
 import { createTerminalStore } from '~/stores/terminal.store'
 import { createWorkerChannelStatusStore } from '~/stores/workerChannelStatus.store'
 import { createWorkerInfoStore } from '~/stores/workerInfo.store'
 import { createWorkspaceStore } from '~/stores/workspace.store'
+import { createWorkspaceStoreRegistry } from '~/stores/workspaceStoreRegistry'
 import * as styles from './AppShell.css'
 import { AppShellDialogs } from './AppShellDialogs'
 import { DesktopLayout } from './DesktopLayout'
@@ -57,6 +58,11 @@ export const AppShell: ParentComponent = (props) => {
 
   const workspaceStore = createWorkspaceStore()
   const sectionStore = createSectionStore()
+  const registry = createWorkspaceStoreRegistry()
+
+  // Active stores: these stable instances are used throughout AppShell.
+  // On workspace switch, useWorkspaceRestore saves their state to the old
+  // bundle in the registry and restores from the new bundle (or fetches).
   const agentStore = createAgentStore()
   const chatStore = createChatStore()
   const terminalStore = createTerminalStore()
@@ -167,6 +173,7 @@ export const AppShell: ParentComponent = (props) => {
     tabStore,
     controlStore,
     agentSessionStore,
+    registry,
     settingsLoading,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
     getWorkerId: () => {
@@ -361,9 +368,10 @@ export const AppShell: ParentComponent = (props) => {
   const [centerPanelHeight, setCenterPanelHeight] = createSignal(0)
 
   // Tab persistence (layout save, sessionStorage effects)
-  const { persistLayout } = useTabPersistence({
+  const { persistLayout, persistMultiLayout } = useTabPersistence({
     tabStore,
     layoutStore,
+    registry,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
     getOrgId: () => org.orgId(),
     activeWorkspace,
@@ -437,11 +445,253 @@ export const AppShell: ParentComponent = (props) => {
     terminalStore,
     tabStore,
     layoutStore,
+    chatStore,
+    controlStore,
+    agentSessionStore,
+    registry,
     setWorkspaceLoading,
   })
 
   // Tile drag-and-drop
   const tileDrag = useTileDragDrop({ tabStore, layoutStore, persistLayout })
+
+  // Cross-workspace tab move handler (drag a tab to another workspace in the sidebar)
+  const handleCrossWorkspaceMove = (targetWorkspaceId: string, draggedKey: string, sourceWorkspaceId?: string) => {
+    const activeWsId = workspace.activeWorkspaceId()
+    if (!activeWsId)
+      return
+
+    // Resolve the actual source and target workspace IDs.
+    const resolvedSourceWsId = sourceWorkspaceId ?? activeWsId
+    const resolvedTargetWsId = targetWorkspaceId === '__active__' ? activeWsId : targetWorkspaceId
+
+    // No-op if source and target are the same.
+    if (resolvedSourceWsId === resolvedTargetWsId)
+      return
+
+    // Find the tab in the source: either active tabStore or registry snapshot.
+    const isSourceActive = resolvedSourceWsId === activeWsId
+    const isTargetActive = resolvedTargetWsId === activeWsId
+
+    let tab: ReturnType<typeof tabStore.state.tabs.find>
+    if (isSourceActive) {
+      tab = tabStore.state.tabs.find(t => tabKey(t) === draggedKey)
+    }
+    else {
+      const sourceSnap = registry.get(resolvedSourceWsId)
+      tab = sourceSnap?.tabs.tabs.find((t: any) => `${t.type}:${t.id}` === draggedKey)
+    }
+    if (!tab)
+      return
+
+    // Determine the worker for this tab
+    let workerId = tab.workerId ?? ''
+    if (!workerId) {
+      if (tab.type === TabType.AGENT) {
+        workerId = agentStore.state.agents.find(a => a.id === tab.id)?.workerId ?? ''
+      }
+      else if (tab.type === TabType.TERMINAL) {
+        workerId = terminalStore.state.terminals.find(t => t.id === tab.id)?.workerId ?? ''
+      }
+    }
+
+    // Remove the tab from the source (optimistic UI update).
+    if (isSourceActive) {
+      tabStore.removeTab(tab.type, tab.id)
+    }
+    else {
+      const sourceSnap = registry.get(resolvedSourceWsId)
+      if (sourceSnap) {
+        sourceSnap.tabs.tabs = sourceSnap.tabs.tabs.filter((t: any) => `${t.type}:${t.id}` !== draggedKey)
+        // Also remove the agent/terminal from the source snapshot.
+        if (tab.type === TabType.AGENT) {
+          sourceSnap.agents = sourceSnap.agents.filter(a => a.id !== tab.id)
+        }
+        else if (tab.type === TabType.TERMINAL) {
+          sourceSnap.terminals = sourceSnap.terminals.filter(t => t.id !== tab.id)
+        }
+        registry.set(resolvedSourceWsId, { ...sourceSnap })
+      }
+    }
+
+    // Add the tab to the target (optimistic UI update).
+    if (isTargetActive) {
+      // When moving from a non-active workspace, the tab's tileId may not exist
+      // in the active workspace's layout. Use the focused tile as a fallback.
+      const activeTileId = !isSourceActive
+        ? (layoutStore.focusedTileId() ?? tab.tileId)
+        : tab.tileId
+      tabStore.addTab({
+        type: tab.type,
+        id: tab.id,
+        title: tab.title,
+        workerId: tab.workerId,
+        filePath: tab.filePath,
+        position: tab.position,
+        tileId: activeTileId,
+        displayMode: tab.displayMode,
+        fileViewMode: tab.fileViewMode,
+        fileDiffBase: tab.fileDiffBase,
+        gitBranch: tab.gitBranch,
+        gitOriginUrl: tab.gitOriginUrl,
+        gitDiffAdded: tab.gitDiffAdded,
+        gitDiffDeleted: tab.gitDiffDeleted,
+      })
+    }
+    else {
+      const targetSnap = registry.get(resolvedTargetWsId)
+      if (targetSnap) {
+        // Use a valid tileId from the target workspace's layout.
+        const targetTileIds = getAllTileIds(targetSnap.layout.root)
+        const targetTileId = targetSnap.layout.focusedTileId ?? targetTileIds[0] ?? ''
+        const newTab = { ...tab, tileId: targetTileId }
+        const key = `${newTab.type}:${newTab.id}`
+        targetSnap.tabs.tabs = [...targetSnap.tabs.tabs, newTab]
+        targetSnap.tabs.activeTabKey = key
+        targetSnap.tabs.mruOrder = [key, ...targetSnap.tabs.mruOrder]
+        if (targetTileId) {
+          targetSnap.tabs.tileActiveTabKeys = {
+            ...targetSnap.tabs.tileActiveTabKeys,
+            [targetTileId]: key,
+          }
+        }
+        // Move the agent/terminal data to the target snapshot.
+        if (tab.type === TabType.AGENT) {
+          const agent = agentStore.state.agents.find(a => a.id === tab.id)
+          if (agent && !targetSnap.agents.some(a => a.id === tab.id)) {
+            targetSnap.agents = [...targetSnap.agents, agent]
+          }
+        }
+        else if (tab.type === TabType.TERMINAL) {
+          const term = terminalStore.state.terminals.find(t => t.id === tab.id)
+          if (term && !targetSnap.terminals.some(t => t.id === tab.id)) {
+            targetSnap.terminals = [...targetSnap.terminals, term]
+          }
+        }
+        registry.set(resolvedTargetWsId, { ...targetSnap })
+      }
+    }
+
+    // For FILE tabs, update sessionStorage entries.
+    if (tab.type === TabType.FILE) {
+      try {
+        // Add to target workspace's sessionStorage
+        const targetKey = `leapmux:localTabs:${resolvedTargetWsId}`
+        const existing = JSON.parse(sessionStorage.getItem(targetKey) ?? '[]') as Array<Record<string, unknown>>
+        existing.push({
+          type: tab.type,
+          id: tab.id,
+          filePath: tab.filePath,
+          workerId: tab.workerId,
+          position: tab.position,
+          tileId: tab.tileId,
+          title: tab.title,
+          displayMode: tab.displayMode,
+          fileViewMode: tab.fileViewMode,
+          fileDiffBase: tab.fileDiffBase,
+        })
+        sessionStorage.setItem(targetKey, JSON.stringify(existing))
+
+        // Remove from source workspace's sessionStorage
+        const sourceKey = `leapmux:localTabs:${resolvedSourceWsId}`
+        const sourceExisting = JSON.parse(sessionStorage.getItem(sourceKey) ?? '[]') as Array<Record<string, unknown>>
+        const filtered = sourceExisting.filter((t: any) => !(t.type === tab!.type && t.id === tab!.id))
+        if (filtered.length > 0)
+          sessionStorage.setItem(sourceKey, JSON.stringify(filtered))
+        else
+          sessionStorage.removeItem(sourceKey)
+      }
+      catch { /* quota */ }
+    }
+
+    // Tell the worker to reassign the tab's workspace, then persist
+    // both workspaces to the hub. The RPC must complete before persist
+    // so that a subsequent listAgents returns the agent under the new
+    // workspace. Persist without debounce — cross-workspace moves are
+    // discrete actions that must survive an immediate page refresh.
+    const rpcDone = (workerId && tab.type !== TabType.FILE)
+      ? moveTabWorkspace(workerId, {
+          tabType: tab.type,
+          tabId: tab.id,
+          newWorkspaceId: resolvedTargetWsId,
+        }).catch(() => {})
+      : Promise.resolve()
+
+    rpcDone.then(() => persistMultiLayout(true))
+  }
+
+  // Lazy-load tabs for a non-active workspace when its tree is expanded.
+  const handleExpandWorkspace = (workspaceId: string) => {
+    const snap = registry.get(workspaceId)
+    if (snap?.tabsLoaded)
+      return
+    const currentOrgId = org.orgId()
+    if (!currentOrgId)
+      return
+
+    workspaceClient.listTabs({ orgId: currentOrgId, workspaceId }).then(async (tabsResp) => {
+      const workerIds = new Set<string>()
+      for (const t of tabsResp.tabs) {
+        if (t.workerId)
+          workerIds.add(t.workerId)
+      }
+
+      const [agentResults, terminalResults] = await Promise.all([
+        Promise.all([...workerIds].map(async (wid) => {
+          try {
+            return (await listAgents(wid, { workspaceId })).agents
+          }
+          catch { return [] }
+        })),
+        Promise.all([...workerIds].map(async (wid) => {
+          try {
+            return { workerId: wid, terminals: (await listTerminals(wid, { orgId: currentOrgId, workspaceId })).terminals }
+          }
+          catch { return { workerId: wid, terminals: [] as Awaited<ReturnType<typeof listTerminals>>['terminals'] } }
+        })),
+      ])
+
+      const allAgents = agentResults.flat()
+      const tabs: import('~/stores/tab.store').Tab[] = []
+
+      for (const a of allAgents) {
+        tabs.push({
+          type: TabType.AGENT,
+          id: a.id,
+          title: a.title || undefined,
+          workerId: a.workerId,
+          workingDir: a.workingDir,
+          gitBranch: a.gitStatus?.branch || undefined,
+          gitOriginUrl: a.gitStatus?.originUrl || undefined,
+        })
+      }
+
+      for (const { workerId, terminals } of terminalResults) {
+        for (const t of terminals) {
+          tabs.push({
+            type: TabType.TERMINAL,
+            id: t.terminalId,
+            title: t.title || undefined,
+            workerId,
+            workingDir: t.workingDir || undefined,
+            gitBranch: t.gitBranch || undefined,
+            gitOriginUrl: t.gitOriginUrl || undefined,
+          })
+        }
+      }
+
+      const existing = registry.get(workspaceId)
+      registry.set(workspaceId, {
+        workspaceId,
+        tabs: { tabs, activeTabKey: existing?.tabs.activeTabKey ?? null, mruOrder: [] },
+        layout: existing?.layout ?? { root: { type: 'leaf', id: 'default' } },
+        agents: allAgents,
+        terminals: existing?.terminals ?? [],
+        restored: false,
+        tabsLoaded: true,
+      })
+    }).catch(() => {})
+  }
 
   // Active agent todos (for right sidebar To-dos pane)
   const activeTodos = createMemo(() => {
@@ -536,6 +786,7 @@ export const AppShell: ParentComponent = (props) => {
     get activeWorkspaceId() { return workspace.activeWorkspaceId() },
     sectionStore,
     tabStore,
+    registry,
     loadSections,
     onSelectWorkspace: handleSelectWorkspace,
     onNewWorkspace: (sectionId: string | null) => {
@@ -584,6 +835,7 @@ export const AppShell: ParentComponent = (props) => {
         terminalStore.setActiveTerminal(id)
       }
     },
+    onExpandWorkspace: handleExpandWorkspace,
   })
 
   // Refresh git status only when workerId or workingDir actually changes
@@ -655,6 +907,7 @@ export const AppShell: ParentComponent = (props) => {
               setCenterPanelHeight={setCenterPanelHeight}
               onIntraTileReorder={tileDrag.handleIntraTileReorder}
               onCrossTileMove={tileDrag.handleCrossTileMove}
+              onCrossWorkspaceMove={handleCrossWorkspaceMove}
               lookupTileIdForTab={tileDrag.lookupTileIdForTab}
               renderDragOverlay={tileDrag.renderDragOverlay}
               renderTile={tileRenderer.renderTile}

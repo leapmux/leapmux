@@ -211,6 +211,12 @@ export const itemDragging = style({
   opacity: 0.4,
 })
 
+export const itemDropTarget = style({
+  backgroundColor: 'var(--accent)',
+  outline: '1px dashed var(--primary)',
+  outlineOffset: '-1px',
+})
+
 export const sectionHeaderDropTarget = style({
   backgroundColor: 'var(--secondary)',
 })

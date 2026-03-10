@@ -48,6 +48,7 @@ import type {
 } from '~/generated/leapmux/v1/worker_pb'
 import type {
   CleanupWorkspaceResponse,
+  MoveTabWorkspaceResponse,
   WatchEventsResponse,
 } from '~/generated/leapmux/v1/workspace_pb'
 import type { ChannelTransport, KeyPinDecision } from '~/lib/channel'
@@ -122,6 +123,8 @@ import {
 import {
   CleanupWorkspaceRequestSchema,
   CleanupWorkspaceResponseSchema,
+  MoveTabWorkspaceRequestSchema,
+  MoveTabWorkspaceResponseSchema,
   WatchEventsRequestSchema,
   WatchEventsResponseSchema,
 } from '~/generated/leapmux/v1/workspace_pb'
@@ -223,6 +226,10 @@ export function getWorkerSystemInfo(workerId: string): Promise<GetWorkerSystemIn
 
 export function cleanupWorkspace(workerId: string, req: MessageInitShape<typeof CleanupWorkspaceRequestSchema>): Promise<CleanupWorkspaceResponse> {
   return callWorker(workerId, 'CleanupWorkspace', CleanupWorkspaceRequestSchema, CleanupWorkspaceResponseSchema, req)
+}
+
+export function moveTabWorkspace(workerId: string, req: MessageInitShape<typeof MoveTabWorkspaceRequestSchema>): Promise<MoveTabWorkspaceResponse> {
+  return callWorker(workerId, 'MoveTabWorkspace', MoveTabWorkspaceRequestSchema, MoveTabWorkspaceResponseSchema, req)
 }
 
 // ---------------------------------------------------------------------------

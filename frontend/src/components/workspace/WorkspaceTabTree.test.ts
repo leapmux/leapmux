@@ -1,5 +1,6 @@
 import type { Tab } from '~/stores/tab.store'
 import { describe, expect, it } from 'vitest'
+import { SIDEBAR_TAB_PREFIX } from '~/components/shell/CrossTileDragContext'
 import { TabType } from '~/stores/tab.store'
 import { buildTree, formatGitOriginUrl } from './WorkspaceTabTree'
 
@@ -155,5 +156,62 @@ describe('buildTree', () => {
     const tree = buildTree(tabs)
     expect(tree.groups[0].branches[0].diffAdded).toBe(0)
     expect(tree.groups[0].branches[0].diffDeleted).toBe(0)
+  })
+})
+
+describe('tabLeaf draggable ID format', () => {
+  // TabLeaf creates draggable IDs with the format:
+  //   `${SIDEBAR_TAB_PREFIX}${workspaceId}:${tabType}:${tabId}`
+  // CrossTileDragContext parses these IDs to extract workspaceId and tabKey.
+  // These tests verify the encoding/parsing roundtrip is correct.
+
+  function encodeDraggableId(workspaceId: string, tabType: TabType, tabId: string): string {
+    return `${SIDEBAR_TAB_PREFIX}${workspaceId}:${tabType}:${tabId}`
+  }
+
+  function parseDraggableId(id: string): { workspaceId: string, tabKey: string } | null {
+    if (!id.startsWith(SIDEBAR_TAB_PREFIX))
+      return null
+    const rest = id.slice(SIDEBAR_TAB_PREFIX.length)
+    const colonIdx = rest.indexOf(':')
+    if (colonIdx < 0)
+      return null
+    return {
+      workspaceId: rest.slice(0, colonIdx),
+      tabKey: rest.slice(colonIdx + 1),
+    }
+  }
+
+  it('roundtrips agent tab ID', () => {
+    const id = encodeDraggableId('ws-abc', TabType.AGENT, 'agent-123')
+    const parsed = parseDraggableId(id)
+    expect(parsed).not.toBeNull()
+    expect(parsed!.workspaceId).toBe('ws-abc')
+    expect(parsed!.tabKey).toBe(`${TabType.AGENT}:agent-123`)
+  })
+
+  it('roundtrips terminal tab ID', () => {
+    const id = encodeDraggableId('ws-xyz', TabType.TERMINAL, 'term-456')
+    const parsed = parseDraggableId(id)
+    expect(parsed).not.toBeNull()
+    expect(parsed!.workspaceId).toBe('ws-xyz')
+    expect(parsed!.tabKey).toBe(`${TabType.TERMINAL}:term-456`)
+  })
+
+  it('handles workspace ID with hyphens and UUIDs', () => {
+    const wsId = '550e8400-e29b-41d4-a716-446655440000'
+    const id = encodeDraggableId(wsId, TabType.AGENT, 'a1')
+    const parsed = parseDraggableId(id)
+    expect(parsed!.workspaceId).toBe(wsId)
+  })
+
+  it('returns null for non-sidebar-tab IDs', () => {
+    expect(parseDraggableId('1:agent-1')).toBeNull()
+    expect(parseDraggableId('ws-drop:ws-1')).toBeNull()
+    expect(parseDraggableId('')).toBeNull()
+  })
+
+  it('returns null for malformed sidebar-tab ID without colon', () => {
+    expect(parseDraggableId(`${SIDEBAR_TAB_PREFIX}nocolon`)).toBeNull()
   })
 })

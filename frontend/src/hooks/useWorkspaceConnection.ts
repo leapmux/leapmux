@@ -6,6 +6,7 @@ import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
 import type { createTabStore } from '~/stores/tab.store'
 import type { createTerminalStore } from '~/stores/terminal.store'
+import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { watchEventsViaChannel } from '~/api/workerRpc'
 import { showToast } from '~/components/common/Toast'
@@ -26,6 +27,7 @@ export interface WorkspaceConnectionParams {
   tabStore: ReturnType<typeof createTabStore>
   controlStore: ReturnType<typeof createControlStore>
   agentSessionStore: ReturnType<typeof createAgentSessionStore>
+  registry: WorkspaceStoreRegistryType
   settingsLoading: ReturnType<typeof createLoadingSignal>
   getActiveWorkspaceId: () => string | null
   /** Returns the worker ID for the active workspace. */
@@ -43,6 +45,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   // Serialized key of the current subscription set to detect changes.
   let currentTargetsKey = ''
 
+  // Set of agent/terminal IDs that belong to non-active workspaces (in registry
+  // snapshots). Events for these receive lightweight handling (status/git updates
+  // to the snapshot) rather than full chat processing.
+  const nonActiveAgentIds = new Set<string>()
+  const nonActiveTerminalIds = new Set<string>()
+
   // Handle an agent event from the unified stream.
   const handleAgentEvent = (
     agentEvent: AgentEvent,
@@ -51,6 +59,37 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   ) => {
     const agentId = agentEvent.agentId
     const inner = agentEvent.event
+
+    // Non-active workspace agent — only handle status/git changes,
+    // skip full chat processing to avoid routing events to the wrong stores.
+    if (nonActiveAgentIds.has(agentId)) {
+      if (inner.case === 'statusChange') {
+        const sc = inner.value
+        // Update the agent's status and git info in the registry snapshot.
+        for (const snap of params.registry.all()) {
+          const agentIdx = snap.agents.findIndex(a => a.id === agentId)
+          if (agentIdx >= 0) {
+            if (sc.status !== AgentStatus.UNSPECIFIED) {
+              snap.agents[agentIdx] = { ...snap.agents[agentIdx], status: sc.status }
+            }
+            if (sc.gitStatus) {
+              // Update git branch/url on the tab in the snapshot.
+              const tabIdx = snap.tabs.tabs.findIndex(t => t.type === TabType.AGENT && t.id === agentId)
+              if (tabIdx >= 0) {
+                snap.tabs.tabs[tabIdx] = {
+                  ...snap.tabs.tabs[tabIdx],
+                  gitBranch: sc.gitStatus.branch || undefined,
+                  gitOriginUrl: sc.gitStatus.originUrl || undefined,
+                }
+              }
+            }
+            params.registry.set(snap.workspaceId, { ...snap })
+            break
+          }
+        }
+      }
+      return
+    }
 
     // Get or initialize catch-up phase for this agent.
     const catchUpPhase = catchUpPhases.get(agentId) ?? 'live'
@@ -205,6 +244,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           if (!sc.agentSessionId) {
             const hasMessages = chatStore.getMessages(sc.agentId).length > 0
             if (!hasMessages) {
+              log.warn(`[watchEvents] removing agent ${sc.agentId} (INACTIVE, no session, no messages)`)
               agentStore.removeAgent(sc.agentId)
               tabStore.removeTab(TabType.AGENT, sc.agentId)
             }
@@ -264,6 +304,23 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   // Handle a terminal event from the unified stream.
   const handleTerminalEvent = (termEvent: TerminalEvent) => {
     const terminalId = termEvent.terminalId
+
+    // Non-active workspace terminal — skip data events (no terminal instance
+    // exists), but handle closed events to update the snapshot.
+    if (nonActiveTerminalIds.has(terminalId)) {
+      if (termEvent.event.case === 'closed') {
+        for (const snap of params.registry.all()) {
+          const termIdx = snap.terminals.findIndex(t => t.id === terminalId)
+          if (termIdx >= 0) {
+            snap.terminals[termIdx] = { ...snap.terminals[termIdx], exited: true }
+            params.registry.set(snap.workspaceId, { ...snap })
+            break
+          }
+        }
+      }
+      return
+    }
+
     switch (termEvent.event.case) {
       case 'data': {
         const instance = getTerminalInstance(terminalId)
@@ -307,18 +364,22 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     terminalIds: string[],
     signal: AbortSignal,
   ) => {
-    // Load initial messages for all agents in parallel before starting the stream.
+    // Load initial messages for active workspace agents only. Non-active
+    // workspace agents only receive lightweight status/git updates — they
+    // don't need full chat history loaded.
     await Promise.all(
-      agentEntries.map(async (entry) => {
-        try {
-          const wid = agentStore.state.agents.find(a => a.id === entry.agentId)?.workerId ?? ''
-          await chatStore.loadInitialMessages(wid, entry.agentId)
-        }
-        catch (err) {
-          log.warn(`[watchEvents] Failed to load initial messages for agent ${entry.agentId}:`, err)
-          showToast('Failed to load chat history', 'danger')
-        }
-      }),
+      agentEntries
+        .filter(entry => !nonActiveAgentIds.has(entry.agentId))
+        .map(async (entry) => {
+          try {
+            const wid = agentStore.state.agents.find(a => a.id === entry.agentId)?.workerId ?? ''
+            await chatStore.loadInitialMessages(wid, entry.agentId)
+          }
+          catch (err) {
+            log.warn(`[watchEvents] Failed to load initial messages for agent ${entry.agentId}:`, err)
+            showToast('Failed to load chat history', 'danger')
+          }
+        }),
     )
 
     if (signal.aborted)
@@ -422,6 +483,8 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   // Watch all agents and terminals on the current worker via a single
   // unified WatchEvents stream. When the entity set changes (new agent
   // or terminal created), the effect triggers a stream restart.
+  // Also includes agents/terminals from non-active workspace snapshots
+  // in the registry, so that status updates are received for all workspaces.
   createEffect(() => {
     const workerId = params.getWorkerId()
     const wsId = params.getActiveWorkspaceId()
@@ -429,8 +492,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     // Collect all agent IDs on this worker.
     const agentEntries: WatchAgentEntry[] = []
     const terminalIds: string[] = []
+    nonActiveAgentIds.clear()
+    nonActiveTerminalIds.clear()
 
     if (wsId && workerId) {
+      // Active workspace agents/terminals from live stores.
       for (const agent of agentStore.state.agents) {
         if (agent.workerId === workerId) {
           agentEntries.push({ agentId: agent.id, afterSeq: BigInt(0) } as WatchAgentEntry)
@@ -440,6 +506,29 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       for (const terminal of terminalStore.state.terminals) {
         if (terminal.workerId === workerId) {
           terminalIds.push(terminal.id)
+        }
+      }
+
+      // Non-active workspace agents/terminals from registry snapshots.
+      const activeAgentIds = new Set(agentEntries.map(e => e.agentId))
+      const activeTermIds = new Set(terminalIds)
+
+      for (const snap of params.registry.all()) {
+        if (snap.workspaceId === wsId)
+          continue
+        if (!snap.tabsLoaded)
+          continue
+        for (const agent of snap.agents) {
+          if (agent.workerId === workerId && !activeAgentIds.has(agent.id)) {
+            agentEntries.push({ agentId: agent.id, afterSeq: BigInt(0) } as WatchAgentEntry)
+            nonActiveAgentIds.add(agent.id)
+          }
+        }
+        for (const terminal of snap.terminals) {
+          if (terminal.workerId === workerId && !activeTermIds.has(terminal.id)) {
+            terminalIds.push(terminal.id)
+            nonActiveTerminalIds.add(terminal.id)
+          }
         }
       }
     }
@@ -506,8 +595,14 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     const tabId = parts[1]
     if (chatStore.isInitialLoadComplete(tabId))
       return
-    const lazyWid = agentStore.state.agents.find(a => a.id === tabId)?.workerId ?? ''
-    chatStore.loadInitialMessages(lazyWid, tabId).catch((err) => {
+    // Only load messages for agents in the active workspace's store.
+    // Non-active workspace agents exist only in registry snapshots and
+    // don't have a workerId in agentStore — attempting to load with an
+    // empty workerId causes an "invalid_argument" error.
+    const agent = agentStore.state.agents.find(a => a.id === tabId)
+    if (!agent)
+      return
+    chatStore.loadInitialMessages(agent.workerId, tabId).catch((err) => {
       log.warn(`[lazyLoad] Failed to load messages for agent ${tabId}:`, err)
       showToast('Failed to load chat history', 'danger')
     })
