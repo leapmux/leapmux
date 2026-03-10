@@ -62,10 +62,11 @@ LeapMux uses a three-tier architecture. The Hub handles authentication and routi
                                                                     └───────────────────┘
 ```
 
-LeapMux is built as a single Go binary (`leapmux`) that can run in three modes:
+LeapMux is built as a single Go binary (`leapmux`) that can run in multiple modes:
+- **`leapmux`** (no subcommand) — Solo mode: Hub + Worker on loopback (`127.0.0.1:4327`), no login required, single-user
 - **`leapmux hub`** — Runs only the Hub (central service)
 - **`leapmux worker`** — Runs only a Worker (connects to a remote Hub)
-- **`leapmux`** (no subcommand) — Runs Hub + Worker together (standalone mode)
+- **`leapmux dev`** — Dev mode: Hub + Worker on all interfaces, login required, all multi-user features enabled
 - **`leapmux version`** — Prints the version and exits
 
 ### Components
@@ -176,7 +177,7 @@ http://localhost:4327
 ```
 
 The `task dev` command uses `mprocs` to run two processes concurrently:
-- **Backend** — Runs Hub + Worker together in standalone mode (with `-dev-frontend` flag to proxy to the frontend dev server)
+- **Backend** — Runs Hub + Worker together in dev mode (with `-dev-frontend` flag to proxy to the frontend dev server)
 - **Frontend** — Bun dev server for the SolidJS web application
 
 ---
@@ -382,8 +383,8 @@ leapmux/
 │
 ├── cmd/leapmux/            # Unified binary entry point
 │   ├── hub.go              # Hub mode
-│   ├── main.go             # Subcommand routing (hub, worker, standalone)
-│   ├── standalone.go       # Standalone mode (hub + worker, default)
+│   ├── main.go             # Subcommand routing (hub, worker, solo, dev)
+│   ├── solo.go             # Solo/dev mode (hub + worker, default)
 │   └── worker.go           # Worker mode
 │
 ├── docker/                 # Dockerfile and s6-overlay service definitions

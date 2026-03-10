@@ -20,17 +20,21 @@ import (
 type OrgService struct {
 	queries  *db.Queries
 	notifier *notifier.Notifier
+	soloMode bool
 }
 
 // NewOrgService creates a new OrgService.
-func NewOrgService(q *db.Queries, n *notifier.Notifier) *OrgService {
-	return &OrgService{queries: q, notifier: n}
+func NewOrgService(q *db.Queries, n *notifier.Notifier, soloMode bool) *OrgService {
+	return &OrgService{queries: q, notifier: n, soloMode: soloMode}
 }
 
 func (s *OrgService) CreateOrg(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.CreateOrgRequest],
 ) (*connect.Response[leapmuxv1.CreateOrgResponse], error) {
+	if s.soloMode {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("organization management is not available in solo mode"))
+	}
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -162,6 +166,9 @@ func (s *OrgService) DeleteOrg(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.DeleteOrgRequest],
 ) (*connect.Response[leapmuxv1.DeleteOrgResponse], error) {
+	if s.soloMode {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("organization management is not available in solo mode"))
+	}
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -283,6 +290,9 @@ func (s *OrgService) InviteOrgMember(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.InviteOrgMemberRequest],
 ) (*connect.Response[leapmuxv1.InviteOrgMemberResponse], error) {
+	if s.soloMode {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("organization management is not available in solo mode"))
+	}
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -362,6 +372,9 @@ func (s *OrgService) RemoveOrgMember(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.RemoveOrgMemberRequest],
 ) (*connect.Response[leapmuxv1.RemoveOrgMemberResponse], error) {
+	if s.soloMode {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("organization management is not available in solo mode"))
+	}
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -438,6 +451,9 @@ func (s *OrgService) UpdateOrgMember(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.UpdateOrgMemberRequest],
 ) (*connect.Response[leapmuxv1.UpdateOrgMemberResponse], error) {
+	if s.soloMode {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("organization management is not available in solo mode"))
+	}
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err

@@ -75,4 +75,5 @@ message GetSystemInfoRequest {}
 
 message GetSystemInfoResponse {
   bool signup_enabled = 1;
+  bool solo_mode = 2;
 }

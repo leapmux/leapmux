@@ -50,13 +50,22 @@ var workerArt = [6]string{
 	`                                     `,
 }
 
-var standaloneArt = [6]string{
-	`  ____  _                  _       _                  `,
-	` / ___|| |_ __ _ _ __   __| | __ _| | ___  _ __   ___ `,
-	` \___ \| __/ _` + "`" + ` | '_ \ / _` + "`" + ` |/ _` + "`" + ` | |/ _ \| '_ \ / _ \`,
-	`  ___) | || (_| | | | | (_| | (_| | | (_) | | | |  __/`,
-	` |____/ \__\__,_|_| |_|\__,_|\__,_|_|\___/|_| |_|\___|`,
-	`                                                       `,
+var soloArt = [6]string{
+	`  ____        _       `,
+	` / ___|  ___ | | ___  `,
+	` \___ \ / _ \| |/ _ \ `,
+	`  ___) | (_) | | (_) |`,
+	` |____/ \___/|_|\___/ `,
+	`                      `,
+}
+
+var devArt = [6]string{
+	`  ____             `,
+	` |  _ \  _____   __`,
+	` | | | |/ _ \ \ / /`,
+	` | |_| |  __/\ V / `,
+	` |____/ \___| \_/  `,
+	`                   `,
 }
 
 // PrintBanner prints the LeapMux ASCII art logo with mode-specific
@@ -74,8 +83,11 @@ func PrintBanner(mode, ver, addr string) {
 	case "worker":
 		modeArt = &workerArt
 		modeColor = yellow
-	default: // standalone
-		modeArt = &standaloneArt
+	case "dev":
+		modeArt = &devArt
+		modeColor = yellow
+	default: // solo
+		modeArt = &soloArt
 		modeColor = magenta
 	}
 

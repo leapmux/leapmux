@@ -46,6 +46,7 @@ type Config struct {
 	APITimeoutSeconds            int    `koanf:"api_timeout_seconds"`
 	AgentStartupTimeoutSeconds   int    `koanf:"agent_startup_timeout_seconds"`
 	WorktreeCreateTimeoutSeconds int    `koanf:"worktree_create_timeout_seconds"`
+	SoloMode                     bool
 }
 
 // APITimeout returns the general API timeout as a duration.
@@ -175,10 +176,6 @@ func Load(args []string) (*Config, bool, error) {
 
 // Validate checks the configuration values and ensures required directories exist.
 func (c *Config) Validate() error {
-	if c.Addr == "" {
-		return fmt.Errorf("addr is required")
-	}
-
 	// Ensure data dir exists.
 	if err := os.MkdirAll(c.DataDir, 0o750); err != nil {
 		return fmt.Errorf("create data dir: %w", err)

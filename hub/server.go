@@ -1,5 +1,5 @@
 // Package hub provides a reusable Hub server that can be embedded
-// in other binaries (e.g. the standalone all-in-one binary).
+// in other binaries (e.g. the solo/dev all-in-one binary).
 package hub
 
 import (
@@ -82,7 +82,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 
 	queries := gendb.New(sqlDB)
 
-	if err := bootstrap.Run(context.Background(), queries); err != nil {
+	if err := bootstrap.Run(context.Background(), queries, cfg.SoloMode); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("bootstrap: %w", err)
 	}
@@ -104,7 +104,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		auth.NewShutdownInterceptor(shutdownCh),
 		metrics.NewInterceptor(),
 		auth.NewTimeoutInterceptor(cfg.APITimeout),
-		auth.NewInterceptor(queries),
+		auth.NewInterceptor(queries, cfg.SoloMode),
 	)
 
 	mux := http.NewServeMux()
@@ -113,7 +113,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, connectOpts)
 	mux.Handle(authPath, authHandler)
 
-	connectorSvc := service.NewWorkerConnectorService(queries, wMgr)
+	connectorSvc := service.NewWorkerConnectorService(queries, wMgr, cfg.SoloMode)
 	connectorSvc.SetShutdownCh(shutdownCh)
 	connectorSvc.SetChannelMgr(cMgr)
 	connectorSvc.SetPendingRequests(pendingReqs)
@@ -121,7 +121,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	mux.Handle(connectorPath, connectorHandler)
 
 	notifierSvc := notifier.New(queries, wMgr, pendingReqs, cfg)
-	mgmtSvc := service.NewWorkerManagementService(queries, wMgr, notifierSvc)
+	mgmtSvc := service.NewWorkerManagementService(queries, wMgr, notifierSvc, cfg.SoloMode)
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(mgmtSvc, connectOpts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
@@ -133,7 +133,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	channelRelay := service.NewChannelRelayHandler(queries, wMgr, cMgr)
 	mux.Handle("/ws/channel", channelRelay)
 
-	orgSvc := service.NewOrgService(queries, nil)
+	orgSvc := service.NewOrgService(queries, nil, cfg.SoloMode)
 	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, connectOpts)
 	mux.Handle(orgPath, orgHandler)
 
@@ -145,11 +145,11 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	sectionPath, sectionHandler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, connectOpts)
 	mux.Handle(sectionPath, sectionHandler)
 
-	adminSvc := service.NewAdminService(queries)
+	adminSvc := service.NewAdminService(queries, cfg.SoloMode)
 	adminPath, adminHandler := leapmuxv1connect.NewAdminServiceHandler(adminSvc, connectOpts)
 	mux.Handle(adminPath, adminHandler)
 
-	workspaceSvc := service.NewWorkspaceService(sqlDB, queries)
+	workspaceSvc := service.NewWorkspaceService(sqlDB, queries, cfg.SoloMode)
 	workspacePath, workspaceHandler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, connectOpts)
 	mux.Handle(workspacePath, workspaceHandler)
 
@@ -191,7 +191,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 }
 
 // Queries returns the Hub's store queries for direct database access
-// (e.g. for standalone auto-registration).
+// (e.g. for solo/dev auto-registration).
 func (s *Server) Queries() *gendb.Queries {
 	return s.queries
 }
@@ -208,7 +208,7 @@ type WorkerCredentials struct {
 }
 
 // RegisterWorker creates a worker record directly in the database,
-// bypassing the normal registration flow. This is used by the standalone
+// bypassing the normal registration flow. This is used by the solo/dev
 // binary to auto-register a local worker.
 func (s *Server) RegisterWorker(ctx context.Context, orgID, registeredBy string) (*WorkerCredentials, error) {
 	workerID := id.Generate()

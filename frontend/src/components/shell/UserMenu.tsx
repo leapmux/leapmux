@@ -6,6 +6,7 @@ import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { PreferencesDialog } from '~/components/settings/PreferencesDialog'
 import { useAuth } from '~/context/AuthContext'
 import { useOrg } from '~/context/OrgContext'
+import { isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem, menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './UserMenu.css'
 
@@ -32,33 +33,35 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
       <button role="menuitem" onClick={() => setShowPreferencesDialog(true)}>
         Preferences
       </button>
-      <hr />
-      <li class={menuSectionHeader}>Switch organization</li>
-      <div class={styles.orgList}>
-        <For each={org.orgs()}>
-          {o => (
-            <button
-              role="menuitem"
-              class={o.name === org.slug() ? styles.orgItemActive : styles.orgItem}
-              onClick={() => navigate(`/o/${o.name}`)}
-            >
-              {o.name}
-              <Show when={o.isPersonal}>
-                <span class={styles.personalTag}>(personal)</span>
-              </Show>
-            </button>
-          )}
-        </For>
-      </div>
-      <hr />
-      <Show when={auth.user()?.isAdmin}>
-        <button role="menuitem" onClick={() => setShowAdminDialog(true)}>
-          Administration
+      <Show when={!isSoloMode()}>
+        <hr />
+        <li class={menuSectionHeader}>Switch organization</li>
+        <div class={styles.orgList}>
+          <For each={org.orgs()}>
+            {o => (
+              <button
+                role="menuitem"
+                class={o.name === org.slug() ? styles.orgItemActive : styles.orgItem}
+                onClick={() => navigate(`/o/${o.name}`)}
+              >
+                {o.name}
+                <Show when={o.isPersonal}>
+                  <span class={styles.personalTag}>(personal)</span>
+                </Show>
+              </button>
+            )}
+          </For>
+        </div>
+        <hr />
+        <Show when={auth.user()?.isAdmin}>
+          <button role="menuitem" onClick={() => setShowAdminDialog(true)}>
+            Administration
+          </button>
+        </Show>
+        <button role="menuitem" class={dangerMenuItem} onClick={() => handleLogout()}>
+          Log out
         </button>
       </Show>
-      <button role="menuitem" class={dangerMenuItem} onClick={() => handleLogout()}>
-        Log out
-      </button>
     </>
   )
 
@@ -71,7 +74,7 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
             <DropdownMenu
               trigger={triggerProps => (
                 <button class={styles.trigger} data-testid="user-menu-trigger" {...triggerProps}>
-                  {auth.user()?.username ?? '...'}
+                  {isSoloMode() ? 'Preferences' : (auth.user()?.username ?? '...')}
                 </button>
               )}
             >

@@ -1,5 +1,5 @@
 // Package worker provides an exported entry point for running the
-// LeapMux worker as a library (e.g. from the standalone binary).
+// LeapMux worker as a library (e.g. from the solo/dev binary).
 package worker
 
 import (

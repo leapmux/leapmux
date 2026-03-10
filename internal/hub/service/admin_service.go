@@ -19,12 +19,13 @@ import (
 
 // AdminService implements the leapmux.v1.AdminService ConnectRPC handler.
 type AdminService struct {
-	queries *db.Queries
+	queries  *db.Queries
+	soloMode bool
 }
 
 // NewAdminService creates a new AdminService.
-func NewAdminService(q *db.Queries) *AdminService {
-	return &AdminService{queries: q}
+func NewAdminService(q *db.Queries, soloMode bool) *AdminService {
+	return &AdminService{queries: q, soloMode: soloMode}
 }
 
 func requireAdmin(ctx context.Context) (*auth.UserInfo, error) {
@@ -129,6 +130,9 @@ func (s *AdminService) GetUser(ctx context.Context, req *connect.Request[leapmux
 }
 
 func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leapmuxv1.CreateUserRequest]) (*connect.Response[leapmuxv1.CreateUserResponse], error) {
+	if s.soloMode {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("user management is not available in solo mode"))
+	}
 	if _, err := requireAdmin(ctx); err != nil {
 		return nil, err
 	}
@@ -200,6 +204,9 @@ func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leap
 }
 
 func (s *AdminService) UpdateUser(ctx context.Context, req *connect.Request[leapmuxv1.UpdateUserRequest]) (*connect.Response[leapmuxv1.UpdateUserResponse], error) {
+	if s.soloMode {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("user management is not available in solo mode"))
+	}
 	caller, err := requireAdmin(ctx)
 	if err != nil {
 		return nil, err
@@ -261,6 +268,9 @@ func (s *AdminService) UpdateUser(ctx context.Context, req *connect.Request[leap
 }
 
 func (s *AdminService) DeleteUser(ctx context.Context, req *connect.Request[leapmuxv1.DeleteUserRequest]) (*connect.Response[leapmuxv1.DeleteUserResponse], error) {
+	if s.soloMode {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("user management is not available in solo mode"))
+	}
 	caller, err := requireAdmin(ctx)
 	if err != nil {
 		return nil, err
@@ -288,6 +298,9 @@ func (s *AdminService) DeleteUser(ctx context.Context, req *connect.Request[leap
 }
 
 func (s *AdminService) ResetUserPassword(ctx context.Context, req *connect.Request[leapmuxv1.ResetUserPasswordRequest]) (*connect.Response[leapmuxv1.ResetUserPasswordResponse], error) {
+	if s.soloMode {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("user management is not available in solo mode"))
+	}
 	if _, err := requireAdmin(ctx); err != nil {
 		return nil, err
 	}

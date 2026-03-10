@@ -7,6 +7,7 @@ import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
 import { isMoveTargetSection } from '~/components/shell/sectionUtils'
+import { isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem } from '~/styles/shared.css'
 import * as listStyles from './workspaceList.css'
 
@@ -72,7 +73,7 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
         </DropdownMenu>
       </Show>
 
-      <Show when={props.isOwner}>
+      <Show when={props.isOwner && !isSoloMode()}>
         <button role="menuitem" onClick={() => props.onShare()}>
           Share...
         </button>

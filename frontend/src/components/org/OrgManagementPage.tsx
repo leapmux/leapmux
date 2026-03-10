@@ -1,13 +1,14 @@
 import type { Component } from 'solid-js'
 import type { OrgMember } from '~/generated/leapmux/v1/org_pb'
 
-import { A, useParams } from '@solidjs/router'
-import { createEffect, createSignal, For, Show } from 'solid-js'
+import { A, useNavigate, useParams } from '@solidjs/router'
+import { createEffect, createSignal, For, onMount, Show } from 'solid-js'
 import { orgClient } from '~/api/clients'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { useAuth } from '~/context/AuthContext'
 import { useOrg } from '~/context/OrgContext'
 import { OrgMemberRole } from '~/generated/leapmux/v1/org_pb'
+import { isSoloMode } from '~/lib/systemInfo'
 import { sanitizeSlug } from '~/lib/validate'
 import * as styles from './OrgManagementPage.css'
 
@@ -15,6 +16,13 @@ export const OrgManagementPage: Component = () => {
   const auth = useAuth()
   const org = useOrg()
   const params = useParams<{ orgSlug: string }>()
+  const navigate = useNavigate()
+
+  onMount(() => {
+    if (isSoloMode()) {
+      navigate(`/o/${params.orgSlug}`, { replace: true })
+    }
+  })
 
   // Org name editing
   const [editName, setEditName] = createSignal('')

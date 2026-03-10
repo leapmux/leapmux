@@ -6,6 +6,7 @@ import { createSignal, onMount, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { Icon } from '~/components/common/Icon'
 import { useAuth } from '~/context/AuthContext'
+import { isSoloMode } from '~/lib/systemInfo'
 import { spinner } from '~/styles/animations.css'
 import * as styles from './LoginPage.css'
 
@@ -21,6 +22,11 @@ export const LoginPage: Component = () => {
   let passwordRef!: HTMLInputElement
 
   onMount(async () => {
+    if (isSoloMode()) {
+      navigate('/o/admin', { replace: true })
+      return
+    }
+
     // Focus the first empty input field (username if both empty).
     if (!usernameRef.value) {
       usernameRef.focus()

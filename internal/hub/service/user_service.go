@@ -27,6 +27,9 @@ func NewUserService(q *db.Queries, cfg *config.Config) *UserService {
 }
 
 func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[leapmuxv1.UpdateProfileRequest]) (*connect.Response[leapmuxv1.UpdateProfileResponse], error) {
+	if s.cfg.SoloMode {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("profile changes are not available in solo mode"))
+	}
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -84,6 +87,9 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 }
 
 func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[leapmuxv1.ChangePasswordRequest]) (*connect.Response[leapmuxv1.ChangePasswordResponse], error) {
+	if s.cfg.SoloMode {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("password changes are not available in solo mode"))
+	}
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err

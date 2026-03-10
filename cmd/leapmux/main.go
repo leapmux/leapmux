@@ -14,8 +14,13 @@ func main() {
 	logging.Setup()
 
 	if len(os.Args) < 2 {
-		// No subcommand: run standalone mode (default).
-		if err := runStandalone(os.Args[1:]); err != nil {
+		// No subcommand: run solo mode (default).
+		if os.Getenv("LEAPMUX_DOCKER") == "1" {
+			fmt.Fprintf(os.Stderr, "error: LEAPMUX_MODE env var is required in Docker\n")
+			fmt.Fprintf(os.Stderr, "usage: leapmux [hub|worker|dev|version] [flags]\n")
+			os.Exit(1)
+		}
+		if err := runSolo(os.Args[1:], true); err != nil {
 			slog.Error("fatal", "error", err)
 			os.Exit(1)
 		}
@@ -33,19 +38,29 @@ func main() {
 			slog.Error("fatal", "error", err)
 			os.Exit(1)
 		}
+	case "dev":
+		if err := runSolo(os.Args[2:], false); err != nil {
+			slog.Error("fatal", "error", err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Println(version)
 	default:
-		// If the first arg starts with '-', treat as standalone flags.
+		// If the first arg starts with '-', treat as solo flags.
 		if len(os.Args[1]) > 0 && os.Args[1][0] == '-' {
-			if err := runStandalone(os.Args[1:]); err != nil {
+			if os.Getenv("LEAPMUX_DOCKER") == "1" {
+				fmt.Fprintf(os.Stderr, "error: LEAPMUX_MODE env var is required in Docker\n")
+				fmt.Fprintf(os.Stderr, "usage: leapmux [hub|worker|dev|version] [flags]\n")
+				os.Exit(1)
+			}
+			if err := runSolo(os.Args[1:], true); err != nil {
 				slog.Error("fatal", "error", err)
 				os.Exit(1)
 			}
 			return
 		}
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
-		fmt.Fprintf(os.Stderr, "usage: leapmux [hub|worker|version] [flags]\n")
+		fmt.Fprintf(os.Stderr, "usage: leapmux [hub|worker|dev|version] [flags]\n")
 		os.Exit(1)
 	}
 }

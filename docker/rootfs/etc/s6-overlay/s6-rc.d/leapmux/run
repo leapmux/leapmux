@@ -1,2 +1,3 @@
 #!/command/execlineb -P
-/usr/local/bin/leapmux -addr :4327 -data-dir /data
+importas MODE LEAPMUX_MODE
+/usr/local/bin/leapmux ${MODE} -data-dir /data

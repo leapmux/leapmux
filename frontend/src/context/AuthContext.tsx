@@ -5,6 +5,7 @@ import { createContext, createSignal, onMount, useContext } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { clearToken, getToken, loadTimeouts, setOnAuthError, setToken } from '~/api/transport'
 import { LoginRequestSchema } from '~/generated/leapmux/v1/auth_pb'
+import { isSoloMode, loadSystemInfo } from '~/lib/systemInfo'
 
 interface AuthState {
   user: () => User | null
@@ -25,16 +26,32 @@ export const AuthProvider: ParentComponent = (props) => {
 
   // Register auth error callback for auto-logout on 401.
   setOnAuthError(() => {
-    setUser(null)
+    if (!isSoloMode()) {
+      setUser(null)
+    }
   })
 
   onMount(async () => {
+    await loadSystemInfo()
+
+    if (isSoloMode()) {
+      try {
+        const resp = await authClient.getCurrentUser({})
+        setUser(resp.user ?? null)
+        loadTimeouts().catch(() => {})
+      }
+      catch {
+        // Solo mode should always work; ignore errors.
+      }
+      setLoading(false)
+      return
+    }
+
     const token = getToken()
     if (token) {
       try {
         const resp = await authClient.getCurrentUser({})
         setUser(resp.user ?? null)
-        // Load timeout configuration after successful auth validation.
         loadTimeouts().catch(() => {})
       }
       catch {
@@ -65,6 +82,8 @@ export const AuthProvider: ParentComponent = (props) => {
   }
 
   const logout = async () => {
+    if (isSoloMode())
+      return
     try {
       await authClient.logout({})
     }

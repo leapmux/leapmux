@@ -6,6 +6,7 @@ import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { IconButton } from '~/components/common/IconButton'
 import { showInfoToast } from '~/components/common/Toast'
 import * as listStyles from '~/components/workspace/workspaceList.css'
+import { isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem } from '~/styles/shared.css'
 
 interface WorkerContextMenuProps {
@@ -58,10 +59,12 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
           </button>
         )}
       </Show>
-      <hr />
-      <button role="menuitem" class={dangerMenuItem} onClick={() => props.onDeregister()}>
-        Deregister...
-      </button>
+      <Show when={!isSoloMode()}>
+        <hr />
+        <button role="menuitem" class={dangerMenuItem} onClick={() => props.onDeregister()}>
+          Deregister...
+        </button>
+      </Show>
     </DropdownMenu>
   )
 }

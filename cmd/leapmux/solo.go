@@ -28,19 +28,29 @@ import (
 	"github.com/leapmux/leapmux/worker"
 )
 
-// standaloneState persists the auto-registered worker credentials.
-type standaloneState struct {
+// soloState persists the auto-registered worker credentials.
+type soloState struct {
 	WorkerID   string `json:"worker_id"`
 	AuthToken  string `json:"auth_token"`
 	PublicKey  string `json:"public_key,omitempty"`
 	PrivateKey string `json:"private_key,omitempty"`
 }
 
-func runStandalone(args []string) error {
+func runSolo(args []string, soloMode bool) error {
+	modeName := "solo"
+	if !soloMode {
+		modeName = "dev"
+	}
+
+	defaultAddr := "127.0.0.1:4327"
+	if !soloMode {
+		defaultAddr = ":4327"
+	}
+
 	// Define CLI flags.
 	fs := flag.NewFlagSet("leapmux", flag.ContinueOnError)
-	fs.String("addr", ":4327", "TCP listen address")
-	fs.String("data-dir", defaultStandaloneDataDir(), "data directory")
+	fs.String("addr", defaultAddr, "TCP listen address")
+	fs.String("data-dir", defaultSoloDataDir(), "data directory")
 	fs.String("dev-frontend", "", "Vite dev server URL (dev mode)")
 	fs.Int("db-max-conns", hubdb.DefaultMaxConns, "maximum number of open database connections")
 	fs.String("log-level", "info", "log level (debug, info, warn, error)")
@@ -65,8 +75,8 @@ func runStandalone(args []string) error {
 	}
 
 	defaults := map[string]interface{}{
-		"addr":                            ":4327",
-		"data_dir":                        defaultStandaloneDataDir(),
+		"addr":                            defaultAddr,
+		"data_dir":                        defaultSoloDataDir(),
 		"dev_frontend":                    "",
 		"db_max_conns":                    hubdb.DefaultMaxConns,
 		"log_level":                       "info",
@@ -105,7 +115,7 @@ func runStandalone(args []string) error {
 	}
 	logging.SetLevel(level)
 
-	logging.PrintBanner("standalone", version, addr)
+	logging.PrintBanner(modeName, version, addr)
 	logging.PrintAccessURL(addr)
 
 	// Ensure top-level data directory exists.
@@ -147,6 +157,7 @@ func runStandalone(args []string) error {
 		APITimeoutSeconds:            k.Int("api_timeout_seconds"),
 		AgentStartupTimeoutSeconds:   k.Int("agent_startup_timeout_seconds"),
 		WorktreeCreateTimeoutSeconds: k.Int("worktree_create_timeout_seconds"),
+		SoloMode:                     soloMode,
 	}
 
 	// Start the Hub server.
@@ -203,7 +214,7 @@ func runStandalone(args []string) error {
 	privateKey, _ := base64.StdEncoding.DecodeString(state.PrivateKey)
 	publicKey, _ := base64.StdEncoding.DecodeString(state.PublicKey)
 
-	slog.Info("standalone worker registered",
+	slog.Info(modeName+" worker registered",
 		"worker_id", state.WorkerID,
 		"socket", socketPath,
 	)
@@ -227,7 +238,7 @@ func runStandalone(args []string) error {
 		}
 	}()
 
-	slog.Info("leapmux standalone listening", "addr", addr)
+	slog.Info("leapmux "+modeName+" listening", "addr", addr)
 
 	// Wait for Hub error or context cancellation.
 	select {
@@ -258,7 +269,7 @@ func waitForSocket(ctx context.Context, path string) error {
 
 // loadOrCreateWorkerState loads saved credentials or creates a new worker
 // record directly in the Hub's database (avoiding the registration flow).
-func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath, workerDataDir string) (*standaloneState, error) {
+func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath, workerDataDir string) (*soloState, error) {
 	if err := os.MkdirAll(workerDataDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create worker data dir: %w", err)
 	}
@@ -266,7 +277,7 @@ func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath,
 	// Try loading existing state.
 	data, err := os.ReadFile(statePath)
 	if err == nil {
-		var s standaloneState
+		var s soloState
 		if json.Unmarshal(data, &s) == nil && s.WorkerID != "" && s.AuthToken != "" {
 			// Verify the worker still exists in the DB.
 			if dbErr := server.GetWorkerByID(ctx, s.WorkerID); dbErr == nil {
@@ -289,7 +300,7 @@ func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath,
 		return nil, err
 	}
 
-	state := &standaloneState{
+	state := &soloState{
 		WorkerID:  creds.WorkerID,
 		AuthToken: creds.AuthToken,
 	}
@@ -305,7 +316,7 @@ func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath,
 	return state, nil
 }
 
-func defaultStandaloneDataDir() string {
+func defaultSoloDataDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return filepath.Join(".config", "leapmux")

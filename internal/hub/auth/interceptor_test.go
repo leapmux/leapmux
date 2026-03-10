@@ -27,11 +27,11 @@ func setupInterceptorTestServer(t *testing.T) leapmuxv1connect.AuthServiceClient
 	q := setupDB(t)
 
 	// Bootstrap creates an admin user (admin/admin).
-	err := bootstrap.Run(context.Background(), q)
+	err := bootstrap.Run(context.Background(), q, false)
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptors := connect.WithInterceptors(auth.NewInterceptor(q))
+	interceptors := connect.WithInterceptors(auth.NewInterceptor(q, false))
 	authSvc := service.NewAuthService(q, &config.Config{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)

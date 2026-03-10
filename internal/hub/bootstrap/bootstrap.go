@@ -19,7 +19,7 @@ const (
 
 // Run creates the personal org and admin user if no organizations
 // exist yet. This is a no-op if the database already has data.
-func Run(ctx context.Context, q *db.Queries) error {
+func Run(ctx context.Context, q *db.Queries, soloMode bool) error {
 	count, err := q.CountOrgs(ctx)
 	if err != nil {
 		return fmt.Errorf("count orgs: %w", err)
@@ -38,9 +38,13 @@ func Run(ctx context.Context, q *db.Queries) error {
 		return fmt.Errorf("create personal org: %w", err)
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(defaultPassword), bcrypt.DefaultCost)
-	if err != nil {
-		return fmt.Errorf("hash password: %w", err)
+	var passwordHash string
+	if !soloMode {
+		hash, err := bcrypt.GenerateFromPassword([]byte(defaultPassword), bcrypt.DefaultCost)
+		if err != nil {
+			return fmt.Errorf("hash password: %w", err)
+		}
+		passwordHash = string(hash)
 	}
 
 	userID := id.Generate()
@@ -48,7 +52,7 @@ func Run(ctx context.Context, q *db.Queries) error {
 		ID:           userID,
 		OrgID:        orgID,
 		Username:     defaultUsername,
-		PasswordHash: string(hash),
+		PasswordHash: passwordHash,
 		DisplayName:  "Admin",
 		Email:        "",
 		IsAdmin:      1,

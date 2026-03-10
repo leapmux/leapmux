@@ -43,7 +43,7 @@ func setupOrgTestServer(t *testing.T) *orgTestEnv {
 
 	q := gendb.New(sqlDB)
 
-	err = bootstrap.Run(context.Background(), q)
+	err = bootstrap.Run(context.Background(), q, false)
 	require.NoError(t, err)
 
 	bgMgr := workermgr.New()
@@ -53,9 +53,9 @@ func setupOrgTestServer(t *testing.T) *orgTestEnv {
 	notifierSvc := notifier.New(q, bgMgr, pendingReqs, cfg)
 
 	mux := http.NewServeMux()
-	opts := connect.WithInterceptors(auth.NewInterceptor(q))
+	opts := connect.WithInterceptors(auth.NewInterceptor(q, false))
 
-	orgSvc := service.NewOrgService(q, notifierSvc)
+	orgSvc := service.NewOrgService(q, notifierSvc, false)
 	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, opts)
 	mux.Handle(orgPath, orgHandler)
 

@@ -29,7 +29,7 @@ func TestRun_CreatesOrgAndAdmin(t *testing.T) {
 	q := setupDB(t)
 	ctx := context.Background()
 
-	err := bootstrap.Run(ctx, q)
+	err := bootstrap.Run(ctx, q, false)
 	require.NoError(t, err)
 
 	// Verify org was created.
@@ -53,11 +53,11 @@ func TestRun_Idempotent(t *testing.T) {
 	q := setupDB(t)
 	ctx := context.Background()
 
-	err := bootstrap.Run(ctx, q)
+	err := bootstrap.Run(ctx, q, false)
 	require.NoError(t, err)
 
 	// Second run should be a no-op (org already exists).
-	err = bootstrap.Run(ctx, q)
+	err = bootstrap.Run(ctx, q, false)
 	require.NoError(t, err)
 
 	// Should still have exactly one org.
