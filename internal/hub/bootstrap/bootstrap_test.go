@@ -29,7 +29,7 @@ func TestRun_CreatesOrgAndAdmin(t *testing.T) {
 	q := setupDB(t)
 	ctx := context.Background()
 
-	err := bootstrap.Run(ctx, q)
+	err := bootstrap.Run(ctx, q, false)
 	require.NoError(t, err)
 
 	// Verify org was created.
@@ -49,15 +49,38 @@ func TestRun_CreatesOrgAndAdmin(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestRun_SoloMode(t *testing.T) {
+	q := setupDB(t)
+	ctx := context.Background()
+
+	err := bootstrap.Run(ctx, q, true)
+	require.NoError(t, err)
+
+	// Verify org was created with "solo" name.
+	org, err := q.GetOrgByName(ctx, "solo")
+	require.NoError(t, err)
+	assert.Equal(t, "solo", org.Name)
+
+	// Verify user was created with "solo" username.
+	user, err := q.GetUserByUsername(ctx, "solo")
+	require.NoError(t, err)
+	assert.Equal(t, "solo", user.Username)
+	assert.Equal(t, org.ID, user.OrgID)
+	assert.Equal(t, int64(1), user.IsAdmin)
+
+	// Verify password hash is empty in solo mode.
+	assert.Empty(t, user.PasswordHash)
+}
+
 func TestRun_Idempotent(t *testing.T) {
 	q := setupDB(t)
 	ctx := context.Background()
 
-	err := bootstrap.Run(ctx, q)
+	err := bootstrap.Run(ctx, q, false)
 	require.NoError(t, err)
 
 	// Second run should be a no-op (org already exists).
-	err = bootstrap.Run(ctx, q)
+	err = bootstrap.Run(ctx, q, false)
 	require.NoError(t, err)
 
 	// Should still have exactly one org.

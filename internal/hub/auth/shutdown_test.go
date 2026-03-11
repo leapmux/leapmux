@@ -22,7 +22,7 @@ func setupShutdownTestServer(t *testing.T, shutdownCh chan struct{}) leapmuxv1co
 	t.Helper()
 
 	q := setupDB(t)
-	err := bootstrap.Run(context.Background(), q)
+	err := bootstrap.Run(context.Background(), q, false)
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()

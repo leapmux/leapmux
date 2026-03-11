@@ -27,6 +27,7 @@ type ChannelRelayHandler struct {
 	queries    *db.Queries
 	workerMgr  *workermgr.Manager
 	channelMgr *channelmgr.Manager
+	soloUser   *auth.UserInfo
 }
 
 // NewChannelRelayHandler creates a new WebSocket relay handler.
@@ -34,28 +35,37 @@ func NewChannelRelayHandler(
 	q *db.Queries,
 	wMgr *workermgr.Manager,
 	cMgr *channelmgr.Manager,
+	soloUser *auth.UserInfo,
 ) *ChannelRelayHandler {
 	return &ChannelRelayHandler{
 		queries:    q,
 		workerMgr:  wMgr,
 		channelMgr: cMgr,
+		soloUser:   soloUser,
 	}
 }
 
 // ServeHTTP upgrades the connection to a multiplexed WebSocket and relays
 // channel messages for all channels belonging to the authenticated user.
 func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
-	if token == "" {
-		http.Error(w, "missing token parameter", http.StatusBadRequest)
-		return
-	}
+	var user *auth.UserInfo
 
-	// Authenticate user.
-	user, err := auth.ValidateToken(r.Context(), h.queries, token)
-	if err != nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
+	if h.soloUser != nil {
+		// Solo mode: auto-authenticate as the solo user.
+		user = h.soloUser
+	} else {
+		token := r.URL.Query().Get("token")
+		if token == "" {
+			http.Error(w, "missing token parameter", http.StatusBadRequest)
+			return
+		}
+
+		var err error
+		user, err = auth.ValidateToken(r.Context(), h.queries, token)
+		if err != nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 	}
 
 	// Upgrade to WebSocket.

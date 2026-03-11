@@ -44,17 +44,18 @@ export const test = base.extend<
     leapmuxServer: ServerInfo
   }
 >({
-  // Worker-scoped fixture: spawns a fresh standalone instance per test file
+  // Worker-scoped fixture: spawns a fresh dev-mode instance per test file
   // eslint-disable-next-line no-empty-pattern
   leapmuxServer: [async ({}, use) => {
     const globalState = getGlobalState()
-    const dataDir = mkdtempSync(join(tmpdir(), 'leapmux-e2e-standalone-'))
+    const dataDir = mkdtempSync(join(tmpdir(), 'leapmux-e2e-dev-'))
     const port = await findFreePort()
     const hubUrl = `http://localhost:${port}`
 
-    console.log(`[e2e] Starting standalone instance on port ${port}...`)
+    console.log(`[e2e] Starting dev instance on port ${port}...`)
 
     const proc = spawn(globalState.binaryPath, [
+      'dev',
       '-addr',
       `:${port}`,
       '-data-dir',
@@ -69,7 +70,7 @@ export const test = base.extend<
     proc.stderr?.resume()
 
     await waitForServer(hubUrl)
-    console.log(`[e2e] Standalone instance ready on port ${port}`)
+    console.log(`[e2e] Dev instance ready on port ${port}`)
 
     // Login as admin (bootstrap creates admin/admin)
     const adminToken = await loginViaAPI(hubUrl, 'admin', 'admin')
@@ -89,10 +90,10 @@ export const test = base.extend<
     }
     catch { /* already dead */ }
     rmSync(dataDir, { recursive: true, force: true })
-    console.log(`[e2e] Standalone instance on port ${port} stopped`)
+    console.log(`[e2e] Dev instance on port ${port} stopped`)
   }, { scope: 'worker' }],
 
-  // Override page to set baseURL dynamically from the standalone instance
+  // Override page to set baseURL dynamically from the dev instance
   page: async ({ leapmuxServer, browser }, use) => {
     const context = await browser.newContext({
       baseURL: leapmuxServer.hubUrl,

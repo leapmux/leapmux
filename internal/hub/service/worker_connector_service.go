@@ -27,11 +27,12 @@ type WorkerConnectorService struct {
 	pending    *workermgr.PendingRequests
 	notifier   *notifier.Notifier
 	shutdownCh <-chan struct{}
+	soloMode   bool
 }
 
 // NewWorkerConnectorService creates a new WorkerConnectorService.
-func NewWorkerConnectorService(q *db.Queries, mgr *workermgr.Manager) *WorkerConnectorService {
-	return &WorkerConnectorService{queries: q, workerMgr: mgr}
+func NewWorkerConnectorService(q *db.Queries, mgr *workermgr.Manager, soloMode bool) *WorkerConnectorService {
+	return &WorkerConnectorService{queries: q, workerMgr: mgr, soloMode: soloMode}
 }
 
 // SetChannelMgr sets the channel manager for routing encrypted channel traffic.
@@ -59,6 +60,9 @@ func (s *WorkerConnectorService) RequestRegistration(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.RequestRegistrationRequest],
 ) (*connect.Response[leapmuxv1.RequestRegistrationResponse], error) {
+	if s.soloMode {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker registration is not available in solo mode"))
+	}
 	// Expire old pending registrations first.
 	if err := s.queries.ExpireRegistrations(ctx); err != nil {
 		slog.Debug("failed to expire registrations", "error", err)

@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -15,138 +14,69 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/knadh/koanf/parsers/yaml"
-	"github.com/knadh/koanf/providers/confmap"
-	"github.com/knadh/koanf/providers/file"
-	"github.com/knadh/koanf/v2"
 	"github.com/leapmux/leapmux/hub"
-	internalconfig "github.com/leapmux/leapmux/internal/config"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
-	hubdb "github.com/leapmux/leapmux/internal/hub/db"
 	"github.com/leapmux/leapmux/internal/logging"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/worker"
 )
 
-// standaloneState persists the auto-registered worker credentials.
-type standaloneState struct {
+// soloState persists the auto-registered worker credentials.
+type soloState struct {
 	WorkerID   string `json:"worker_id"`
 	AuthToken  string `json:"auth_token"`
 	PublicKey  string `json:"public_key,omitempty"`
 	PrivateKey string `json:"private_key,omitempty"`
 }
 
-func runStandalone(args []string) error {
-	// Define CLI flags.
-	fs := flag.NewFlagSet("leapmux", flag.ContinueOnError)
-	fs.String("addr", ":4327", "TCP listen address")
-	fs.String("data-dir", defaultStandaloneDataDir(), "data directory")
-	fs.String("dev-frontend", "", "Vite dev server URL (dev mode)")
-	fs.Int("db-max-conns", hubdb.DefaultMaxConns, "maximum number of open database connections")
-	fs.String("log-level", "info", "log level (debug, info, warn, error)")
-	showVersion := fs.Bool("version", false, "print version and exit")
+func runSolo(args []string, soloMode bool) error {
+	modeName := "solo"
+	if !soloMode {
+		modeName = "dev"
+	}
 
-	if err := fs.Parse(args); err != nil {
+	defaultAddr := "127.0.0.1:4327"
+	if !soloMode {
+		defaultAddr = ":4327"
+	}
+
+	defaultConfigDir := "~/.config/leapmux/" + modeName
+	defaultConfigFile := defaultConfigDir + "/" + modeName + ".yaml"
+
+	hubCfg, showVersion, err := hubconfig.LoadWithOptions(args, hubconfig.LoadOptions{
+		DefaultAddr:       defaultAddr,
+		DefaultConfigDir:  defaultConfigDir,
+		DefaultConfigFile: defaultConfigFile,
+		FlagSetName:       "leapmux",
+		CLIFlags:          []string{"addr", "data-dir", "dev-frontend", "db-max-conns", "log-level"},
+		SoloMode:          soloMode,
+	})
+	if err != nil {
 		return err
 	}
 
-	if *showVersion {
+	if showVersion {
 		fmt.Println(version)
 		return nil
 	}
 
-	// Flag name -> koanf key mapping.
-	fieldMap := map[string]string{
-		"addr":         "addr",
-		"data-dir":     "data_dir",
-		"dev-frontend": "dev_frontend",
-		"db-max-conns": "db_max_conns",
-		"log-level":    "log_level",
-	}
-
-	defaults := map[string]interface{}{
-		"addr":                            ":4327",
-		"data_dir":                        defaultStandaloneDataDir(),
-		"dev_frontend":                    "",
-		"db_max_conns":                    hubdb.DefaultMaxConns,
-		"log_level":                       "info",
-		"signup_enabled":                  false,
-		"email_verification_required":     false,
-		"smtp_host":                       "",
-		"smtp_port":                       587,
-		"smtp_username":                   "",
-		"smtp_password":                   "",
-		"smtp_from_address":               "",
-		"smtp_use_tls":                    true,
-		"api_timeout_seconds":             10,
-		"agent_startup_timeout_seconds":   30,
-		"worktree_create_timeout_seconds": 60,
-	}
-
-	k := koanf.New(".")
-	fp := internalconfig.NewFlagProvider(fs, fieldMap)
-
-	if err := internalconfig.Load(k, defaults, "", "LEAPMUX_HUB_", fp); err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-
-	addr := k.String("addr")
-	dataDir := k.String("data_dir")
-	devFrontend := k.String("dev_frontend")
-	dbMaxConns := k.Int("db_max_conns")
-	logLevel := k.String("log_level")
-
-	// Expand ~ in data dir.
-	dataDir = internalconfig.ExpandHome(dataDir)
-
-	level, err := logging.ParseLevel(logLevel)
+	level, err := logging.ParseLevel(hubCfg.LogLevel)
 	if err != nil {
 		return fmt.Errorf("invalid log level: %w", err)
 	}
 	logging.SetLevel(level)
 
-	logging.PrintBanner("standalone", version, addr)
-	logging.PrintAccessURL(addr)
+	logging.PrintBanner(modeName, version, hubCfg.Addr)
+	logging.PrintAccessURL(hubCfg.Addr)
+
+	// Split the data dir into hub and worker subdirectories.
+	dataDir := hubCfg.DataDir
+	hubCfg.DataDir = filepath.Join(dataDir, "hub")
+	workerDataDir := filepath.Join(dataDir, "worker")
 
 	// Ensure top-level data directory exists.
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
-	}
-
-	hubDataDir := filepath.Join(dataDir, "hub")
-	workerDataDir := filepath.Join(dataDir, "worker")
-
-	// Load hub config file if it exists at {data-dir}/hub/hub.yaml.
-	hubConfigPath := filepath.Join(hubDataDir, "hub.yaml")
-	hubK := koanf.New(".")
-	hubDefaults := map[string]interface{}{
-		"max_message_size":       0,
-		"max_incomplete_chunked": 0,
-	}
-	_ = hubK.Load(confmap.Provider(hubDefaults, "."), nil)
-	if _, statErr := os.Stat(hubConfigPath); statErr == nil {
-		_ = hubK.Load(file.Provider(hubConfigPath), yaml.Parser())
-	}
-
-	hubCfg := &hubconfig.Config{
-		Addr:                         addr,
-		DataDir:                      hubDataDir,
-		DevFrontend:                  devFrontend,
-		DBMaxConns:                   dbMaxConns,
-		MaxMessageSize:               hubK.Int("max_message_size"),
-		MaxIncompleteChunked:         hubK.Int("max_incomplete_chunked"),
-		LogLevel:                     logLevel,
-		SignupEnabled:                k.Bool("signup_enabled"),
-		EmailVerificationRequired:    k.Bool("email_verification_required"),
-		SmtpHost:                     k.String("smtp_host"),
-		SmtpPort:                     k.Int("smtp_port"),
-		SmtpUsername:                 k.String("smtp_username"),
-		SmtpPassword:                 k.String("smtp_password"),
-		SmtpFromAddress:              k.String("smtp_from_address"),
-		SmtpUseTLS:                   k.Bool("smtp_use_tls"),
-		APITimeoutSeconds:            k.Int("api_timeout_seconds"),
-		AgentStartupTimeoutSeconds:   k.Int("agent_startup_timeout_seconds"),
-		WorktreeCreateTimeoutSeconds: k.Int("worktree_create_timeout_seconds"),
 	}
 
 	// Start the Hub server.
@@ -203,7 +133,7 @@ func runStandalone(args []string) error {
 	privateKey, _ := base64.StdEncoding.DecodeString(state.PrivateKey)
 	publicKey, _ := base64.StdEncoding.DecodeString(state.PublicKey)
 
-	slog.Info("standalone worker registered",
+	slog.Info(modeName+" worker registered",
 		"worker_id", state.WorkerID,
 		"socket", socketPath,
 	)
@@ -220,14 +150,14 @@ func runStandalone(args []string) error {
 			PublicKey:           publicKey,
 			WorkerID:            state.WorkerID,
 			Version:             version,
-			DBMaxConns:          dbMaxConns,
+			DBMaxConns:          hubCfg.DBMaxConns,
 			AgentStartupTimeout: hubCfg.AgentStartupTimeout(),
 		}); err != nil {
 			slog.Error("worker error", "error", err)
 		}
 	}()
 
-	slog.Info("leapmux standalone listening", "addr", addr)
+	slog.Info("leapmux "+modeName+" listening", "addr", hubCfg.Addr)
 
 	// Wait for Hub error or context cancellation.
 	select {
@@ -258,7 +188,7 @@ func waitForSocket(ctx context.Context, path string) error {
 
 // loadOrCreateWorkerState loads saved credentials or creates a new worker
 // record directly in the Hub's database (avoiding the registration flow).
-func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath, workerDataDir string) (*standaloneState, error) {
+func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath, workerDataDir string) (*soloState, error) {
 	if err := os.MkdirAll(workerDataDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create worker data dir: %w", err)
 	}
@@ -266,7 +196,7 @@ func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath,
 	// Try loading existing state.
 	data, err := os.ReadFile(statePath)
 	if err == nil {
-		var s standaloneState
+		var s soloState
 		if json.Unmarshal(data, &s) == nil && s.WorkerID != "" && s.AuthToken != "" {
 			// Verify the worker still exists in the DB.
 			if dbErr := server.GetWorkerByID(ctx, s.WorkerID); dbErr == nil {
@@ -289,7 +219,7 @@ func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath,
 		return nil, err
 	}
 
-	state := &standaloneState{
+	state := &soloState{
 		WorkerID:  creds.WorkerID,
 		AuthToken: creds.AuthToken,
 	}
@@ -303,12 +233,4 @@ func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath,
 	}
 
 	return state, nil
-}
-
-func defaultStandaloneDataDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(".config", "leapmux")
-	}
-	return filepath.Join(home, ".config", "leapmux")
 }

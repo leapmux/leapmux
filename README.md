@@ -40,33 +40,69 @@ LeapMux is an **AI coding agent multiplexer** that enables developers to run mul
 
 ## Architecture
 
-LeapMux uses a three-tier architecture. The Hub handles authentication and routing, while the Frontend communicates directly with Workers through end-to-end encrypted channels relayed by the Hub:
+LeapMux is built as a single Go binary (`leapmux`) that runs in two deployment modes:
+
+### Solo Mode (default)
+
+Run `leapmux` with no subcommand for a zero-config, single-user setup. Hub and Worker run in the same process, bound to localhost only. No login is required — the UI opens directly into the workspace.
+
+```
+                 LeapMux (127.0.0.1:4327)
+┌──────────────────────────────────────────────────────┐
+│                                                      │
+│  ┌─────────────┐  in-process   ┌──────────────────┐  │
+│  │     Hub     │◄─────────────►│     Worker       │  │
+│  │  (no auth)  │               │  ┌────────────┐  │  │
+│  │  + SQLite   │               │  │Claude Code │  │  │
+│  │             │               │  │ (multiple) │  │  │
+│  └─────────────┘               │  └────────────┘  │  │
+│         ▲                      │  + SQLite        │  │
+│         │                      └──────────────────┘  │
+│         │ ConnectRPC + WebSocket (E2EE)              │
+└─────────┼────────────────────────────────────────────┘
+          │
+          ▼
+   ┌──────────────┐
+   │   Frontend   │
+   │  (Browser)   │
+   └──────────────┘
+```
+
+### Distributed Mode
+
+For multi-user and remote setups, run `leapmux hub` and `leapmux worker` separately. The Hub handles authentication and relays end-to-end encrypted traffic between the Frontend and Workers. Workers can be on different machines, behind NATs — they initiate outbound connections to the Hub.
 
 ```
 ┌─────────────────┐  ConnectRPC  ┌─────────────────┐                 ┌───────────────────┐
 │                 │  WebSocket   │                 │   gRPC (bidi)   │  Worker 1         │
-│    Frontend     │◄────────────►│       Hub       │◄───────────────►│  ┌─────────────┐  │
+│    Frontend     │◄────────────►│      Hub        │◄───────────────►│  ┌─────────────┐  │
 │    (Browser)    │    (E2EE)    │    (Relay)      │                 │  │ Claude Code │  │
 │                 │              │                 │                 │  │ (multiple)  │  │
 │    SolidJS      │              │   Go Service    │                 │  └─────────────┘  │
-│    Web App      │              │   + Database    │                 │  + Database       │
+│    Web App      │              │   + SQLite      │                 │  + SQLite         │
 │                 │              │                 │                 └───────────────────┘
 └─────────────────┘              └─────────────────┘                           ⋮
-                                         │                          ┌───────────────────┐
-                                         ▼                          │  Worker N         │
-                                 ┌───────────────┐                  │  ┌─────────────┐  │
-                                 │    SQLite     │                  │  │ Claude Code │  │
-                                 │               │                  │  │ (multiple)  │  │
-                                 └───────────────┘                  │  └─────────────┘  │
-                                                                    │  + Database       │
-                                                                    └───────────────────┘
+                                                                     ┌───────────────────┐
+                                                                     │  Worker N         │
+                                                                     │  ┌─────────────┐  │
+                                                                     │  │ Claude Code │  │
+                                                                     │  │ (multiple)  │  │
+                                                                     │  └─────────────┘  │
+                                                                     │  + SQLite         │
+                                                                     └───────────────────┘
 ```
 
-LeapMux is built as a single Go binary (`leapmux`) that can run in three modes:
-- **`leapmux hub`** — Runs only the Hub (central service)
-- **`leapmux worker`** — Runs only a Worker (connects to a remote Hub)
-- **`leapmux`** (no subcommand) — Runs Hub + Worker together (standalone mode)
-- **`leapmux version`** — Prints the version and exits
+### Modes
+
+LeapMux is a single binary with these subcommands:
+
+| Command | Mode | Description |
+|---------|------|-------------|
+| `leapmux` | Solo | Hub + Worker on `127.0.0.1:4327`, no login, single-user |
+| `leapmux hub` | Hub | Central service only (authentication, relay, database) |
+| `leapmux worker` | Worker | Connects to a remote Hub |
+| `leapmux dev` | Dev | Hub + Worker on `:4327` (all interfaces), login required, all features |
+| `leapmux version` | — | Prints version and exits |
 
 ### Components
 
@@ -176,8 +212,13 @@ http://localhost:4327
 ```
 
 The `task dev` command uses `mprocs` to run two processes concurrently:
-- **Backend** — Runs Hub + Worker together in standalone mode (with `-dev-frontend` flag to proxy to the frontend dev server)
+- **Backend** — Runs Hub + Worker together in dev mode (with `-dev-frontend` flag to proxy to the frontend dev server)
 - **Frontend** — Bun dev server for the SolidJS web application
+
+To run in solo mode (localhost-only, no login) instead of dev mode during development:
+```bash
+task dev-solo
+```
 
 ---
 
@@ -309,10 +350,14 @@ By default this builds for `linux/amd64` and `linux/arm64`. You can override the
 task docker-build-alpine PLATFORM=linux/amd64 TAG=leapmux:dev
 ```
 
-The image uses a multi-stage build (buf, Bun, Go) and runs with [s6-overlay](https://github.com/just-containers/s6-overlay) for process supervision. The Hub listens on port 4327 and data is stored in the `/data` volume.
+The image uses a multi-stage build (buf, Bun, Go) and runs with [s6-overlay](https://github.com/just-containers/s6-overlay) for process supervision. The `LEAPMUX_MODE` environment variable selects the subcommand (`hub`, `worker`, `dev`, etc.) and is required. Data and configuration are stored under `/data/<mode>/` (e.g. `/data/hub/`) in the `/data` volume.
 
 ```bash
-docker run -p 4327:4327 -v leapmux-data:/data leapmux:latest
+# Run as a hub (central service only)
+docker run -p 4327:4327 -e LEAPMUX_MODE=hub -v leapmux-data:/data leapmux:latest
+
+# Run as hub + worker together (dev mode)
+docker run -p 4327:4327 -e LEAPMUX_MODE=dev -v leapmux-data:/data leapmux:latest
 ```
 
 Pre-built images are published to GHCR in two variants:
@@ -382,8 +427,8 @@ leapmux/
 │
 ├── cmd/leapmux/            # Unified binary entry point
 │   ├── hub.go              # Hub mode
-│   ├── main.go             # Subcommand routing (hub, worker, standalone)
-│   ├── standalone.go       # Standalone mode (hub + worker, default)
+│   ├── main.go             # Subcommand routing (hub, worker, solo, dev)
+│   ├── solo.go             # Solo/dev mode (hub + worker, default)
 │   └── worker.go           # Worker mode
 │
 ├── docker/                 # Dockerfile and s6-overlay service definitions
@@ -454,7 +499,8 @@ leapmux/
 │
 ├── buf.gen.yaml            # Protocol Buffer code generation targets
 ├── buf.yaml                # Protocol Buffer linting configuration
-├── mprocs.yaml             # Development process configuration
+├── mprocs.yaml             # Dev mode process configuration (task dev)
+├── mprocs-solo.yaml        # Solo mode process configuration (task dev-solo)
 ├── README.md               # This file
 ├── Taskfile.yaml           # Build orchestration (go-task.dev)
 └── versions.yaml           # Version string and tool/image versions

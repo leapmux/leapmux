@@ -2,7 +2,7 @@ import { expect, test } from './fixtures'
 import { loginViaUI } from './helpers/ui'
 
 test.describe('Worker Registration', () => {
-  // In standalone mode, the worker is auto-registered with name "Local".
+  // In dev mode, the worker is auto-registered with name "Local".
   // These tests verify the worker appears online in the UI.
 
   test('should show worker online in new workspace dialog after approval', async ({ page }) => {
@@ -18,7 +18,7 @@ test.describe('Worker Registration', () => {
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
     // The initial fetch on mount should find the worker (already online).
-    // Verify the worker name appears in the dropdown (standalone uses "Local")
+    // Verify the worker name appears in the dropdown (dev mode uses "Local")
     await expect(page.locator('select').first()).toContainText('Local')
   })
 

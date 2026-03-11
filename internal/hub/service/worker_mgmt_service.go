@@ -23,17 +23,21 @@ type WorkerManagementService struct {
 	queries   *db.Queries
 	workerMgr *workermgr.Manager
 	notifier  *notifier.Notifier
+	soloMode  bool
 }
 
 // NewWorkerManagementService creates a new WorkerManagementService.
-func NewWorkerManagementService(q *db.Queries, mgr *workermgr.Manager, n *notifier.Notifier) *WorkerManagementService {
-	return &WorkerManagementService{queries: q, workerMgr: mgr, notifier: n}
+func NewWorkerManagementService(q *db.Queries, mgr *workermgr.Manager, n *notifier.Notifier, soloMode bool) *WorkerManagementService {
+	return &WorkerManagementService{queries: q, workerMgr: mgr, notifier: n, soloMode: soloMode}
 }
 
 func (s *WorkerManagementService) ApproveRegistration(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.ApproveRegistrationRequest],
 ) (*connect.Response[leapmuxv1.ApproveRegistrationResponse], error) {
+	if s.soloMode {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker registration approval is not available in solo mode"))
+	}
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -193,6 +197,9 @@ func (s *WorkerManagementService) DeregisterWorker(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.DeregisterWorkerRequest],
 ) (*connect.Response[leapmuxv1.DeregisterWorkerResponse], error) {
+	if s.soloMode {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker deregistration is not available in solo mode"))
+	}
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err

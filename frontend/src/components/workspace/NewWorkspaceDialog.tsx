@@ -1,22 +1,22 @@
 import type { Component } from 'solid-js'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
-import RefreshCw from 'lucide-solid/icons/refresh-cw'
 import { generateSlug } from 'random-word-slugs'
-import { createMemo, createSignal, For, onMount, Show } from 'solid-js'
-import { workerClient, workspaceClient } from '~/api/clients'
+import { createMemo, createSignal, Show } from 'solid-js'
+import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
+import { RefreshButton } from '~/components/common/RefreshButton'
 import { isWorkspaceCreateDisabled } from '~/components/shell/dialogValidation'
+import { DirectorySelector } from '~/components/shell/DirectorySelector'
+import { WorkerSelector } from '~/components/shell/WorkerSelector'
 import { WorktreeOptions } from '~/components/shell/WorktreeOptions'
-import { DirectoryTree } from '~/components/tree/DirectoryTree'
-import { useOrg } from '~/context/OrgContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
 import { sanitizeName } from '~/lib/validate'
-import { createWorkerInfoStore } from '~/stores/workerInfo.store'
 import { spinner } from '~/styles/animations.css'
-import { errorText, labelRow, refreshButton, spinning, treeContainer } from '~/styles/shared.css'
+import { errorText, labelRow } from '~/styles/shared.css'
 
 interface NewWorkspaceDialogProps {
   onCreated: (workspace: Workspace, workerId: string) => void
@@ -25,86 +25,42 @@ interface NewWorkspaceDialogProps {
 }
 
 export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) => {
-  const org = useOrg()
-  const workerInfoStore = createWorkerInfoStore()
-  const [workers, setWorkers] = createSignal<import('~/generated/leapmux/v1/worker_pb').Worker[]>([])
-  const [workerId, setWorkerId] = createSignal('')
+  // eslint-disable-next-line solid/reactivity -- one-time initial value
+  const state = createWorkerDialogState({ preselectedWorkerId: props.preselectedWorkerId })
   const randomTitle = () => generateSlug(3, { format: 'title' })
   const [title, setTitle] = createSignal(randomTitle())
-  const [workingDir, setWorkingDir] = createSignal('')
   const [submitting, setSubmitting] = createSignal(false)
-  const [error, setError] = createSignal<string | null>(null)
-  const [refreshing, setRefreshing] = createSignal(false)
-  const [createWorktree, setCreateWorktree] = createSignal(false)
-  const [worktreeBranch, setWorktreeBranch] = createSignal('')
-  const [worktreeBranchError, setWorktreeBranchError] = createSignal<string | null>(null)
   const titleError = createMemo(() => sanitizeName(title()).error)
-
-  const fetchWorkers = async () => {
-    try {
-      const resp = await workerClient.listWorkers({ orgId: org.orgId() })
-      const online = resp.workers.filter(b => b.online)
-      setWorkers(online)
-      if (online.length > 0 && !workerId()) {
-        setWorkerId(online[0].id)
-      }
-      // Fetch system info for homeDir via E2EE.
-      for (const w of online) {
-        workerInfoStore.fetchWorkerInfo(w.id)
-      }
-      return online.length > 0
-    }
-    catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load workers')
-      return false
-    }
-  }
-
-  // Fetch on mount only
-  onMount(async () => {
-    await fetchWorkers()
-    // Pre-select worker if specified and online
-    if (props.preselectedWorkerId) {
-      const match = workers().find(b => b.id === props.preselectedWorkerId)
-      if (match) {
-        setWorkerId(match.id)
-      }
-    }
-  })
-
-  const handleRefresh = async () => {
-    setRefreshing(true)
-    await fetchWorkers()
-    setRefreshing(false)
-  }
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
-    if (!workerId() || !workingDir().trim())
+    if (!state.workerId() || !state.workingDir().trim())
       return
 
     setSubmitting(true)
-    setError(null)
+    state.setError(null)
+    let createdWorkspaceId: string | undefined
     try {
       // 1. Create workspace on hub.
       const wsResp = await workspaceClient.createWorkspace({
-        orgId: org.orgId(),
+        orgId: state.org.orgId(),
         title: title().trim(),
       })
       if (!wsResp.workspace)
         throw new Error('No workspace in response')
+      createdWorkspaceId = wsResp.workspace.id
 
       // 2. Open the first agent on the selected worker.
-      const wid = workerId()
+      const wid = state.workerId()
       const agentResp = await workerRpc.openAgent(wid, {
         workspaceId: wsResp.workspace.id,
         model: '',
         title: 'Agent 1',
         systemPrompt: '',
         workerId: wid,
-        workingDir: workingDir(),
-        createWorktree: createWorktree(),
-        worktreeBranch: worktreeBranch(),
+        workingDir: state.workingDir(),
+        createWorktree: state.createWorktree(),
+        worktreeBranch: state.worktreeBranch(),
       })
 
       // 3. Register the agent tab on the hub.
@@ -118,7 +74,11 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       props.onCreated(wsResp.workspace, wid)
     }
     catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create workspace')
+      // Roll back the workspace if it was created but a subsequent step failed.
+      if (createdWorkspaceId) {
+        workspaceClient.deleteWorkspace({ workspaceId: createdWorkspaceId }).catch(() => {})
+      }
+      state.setError(err instanceof Error ? err.message : 'Failed to create workspace')
     }
     finally {
       setSubmitting(false)
@@ -130,52 +90,11 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       <form onSubmit={handleSubmit}>
         <section>
           <div class="vstack gap-4">
-            <label>
-              <div class={labelRow}>
-                Worker
-                <button
-                  type="button"
-                  class={refreshButton}
-                  onClick={handleRefresh}
-                  disabled={refreshing()}
-                  title="Refresh workers"
-                >
-                  <Icon icon={RefreshCw} size="sm" class={refreshing() ? spinning : ''} />
-                </button>
-              </div>
-              <select
-                value={workerId()}
-                onChange={e => setWorkerId(e.currentTarget.value)}
-              >
-                <Show when={workers().length === 0}>
-                  <option value="">No workers online</option>
-                </Show>
-                <For each={workers()}>
-                  {(b) => {
-                    const info = () => workerInfoStore.workerInfo(b.id)
-                    const label = () => {
-                      const i = info()
-                      if (!i)
-                        return b.id
-                      const details = [i.version, i.os, i.arch].filter(Boolean).join(', ')
-                      return details ? `${i.name} (${details})` : i.name
-                    }
-                    return <option value={b.id}>{label()}</option>
-                  }}
-                </For>
-              </select>
-            </label>
+            <WorkerSelector state={state} />
             <label>
               <div class={labelRow}>
                 Title
-                <button
-                  type="button"
-                  class={refreshButton}
-                  onClick={() => setTitle(randomTitle())}
-                  title="Generate random name"
-                >
-                  <Icon icon={RefreshCw} size="sm" />
-                </button>
+                <RefreshButton onClick={() => setTitle(randomTitle())} title="Generate random name" />
               </div>
               <input
                 type="text"
@@ -187,34 +106,17 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
                 <div class={errorText}>{titleError()}</div>
               </Show>
             </label>
-            <label>
-              Working Directory
-              <Show when={workerId()}>
-                <div class={treeContainer}>
-                  <DirectoryTree
-                    workerId={workerId()}
-                    selectedPath={workingDir()}
-                    onSelect={setWorkingDir}
-                    rootPath="~"
-                    homeDir={workerInfoStore.getHomeDir(workerId())}
-                  />
-                </div>
-              </Show>
-            </label>
-            <Show when={workerId()}>
+            <DirectorySelector state={state} />
+            <Show when={state.workerId()}>
               <WorktreeOptions
-                workerId={workerId()}
-                selectedPath={workingDir()}
-                homeDir={workerInfoStore.getHomeDir(workerId())}
-                onWorktreeChange={(create, branch, branchError) => {
-                  setCreateWorktree(create)
-                  setWorktreeBranch(branch)
-                  setWorktreeBranchError(branchError)
-                }}
+                workerId={state.workerId()}
+                selectedPath={state.workingDir()}
+                homeDir={state.workerInfoStore.getHomeDir(state.workerId())}
+                onWorktreeChange={state.handleWorktreeChange}
               />
             </Show>
-            <Show when={error()}>
-              <div class={errorText}>{error()}</div>
+            <Show when={state.error()}>
+              <div class={errorText}>{state.error()}</div>
             </Show>
           </div>
         </section>
@@ -224,7 +126,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
           </button>
           <button
             type="submit"
-            disabled={isWorkspaceCreateDisabled({ submitting: submitting(), workerId: workerId(), workingDir: workingDir(), titleError: titleError(), createWorktree: createWorktree(), worktreeBranchError: worktreeBranchError() })}
+            disabled={isWorkspaceCreateDisabled({ submitting: submitting(), workerId: state.workerId(), workingDir: state.workingDir(), titleError: titleError(), createWorktree: state.createWorktree(), worktreeBranchError: state.worktreeBranchError() })}
           >
             <Show when={submitting()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
             {submitting() ? 'Creating...' : 'Create'}

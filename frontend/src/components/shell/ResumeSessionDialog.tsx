@@ -1,16 +1,16 @@
 import type { Component } from 'solid-js'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
-import RefreshCw from 'lucide-solid/icons/refresh-cw'
 import { createMemo, createSignal, For, onMount, Show } from 'solid-js'
 import { workerClient } from '~/api/clients'
 import { agentLoadingTimeoutMs } from '~/api/transport'
 import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
+import { RefreshButton } from '~/components/common/RefreshButton'
 import { useOrg } from '~/context/OrgContext'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { createWorkerInfoStore } from '~/stores/workerInfo.store'
 import { spinner } from '~/styles/animations.css'
-import { errorText, labelRow, refreshButton, spinning } from '~/styles/shared.css'
+import { errorText, labelRow } from '~/styles/shared.css'
 
 interface ResumeSessionDialogProps {
   defaultWorkerId?: string
@@ -96,15 +96,7 @@ export const ResumeSessionDialog: Component<ResumeSessionDialogProps> = (props) 
             <label>
               <div class={labelRow}>
                 Worker
-                <button
-                  type="button"
-                  class={refreshButton}
-                  onClick={handleRefresh}
-                  disabled={refreshing()}
-                  title="Refresh workers"
-                >
-                  <Icon icon={RefreshCw} size="sm" class={refreshing() ? spinning : ''} />
-                </button>
+                <RefreshButton onClick={handleRefresh} disabled={refreshing()} title="Refresh workers" />
               </div>
               <select
                 value={workerId()}

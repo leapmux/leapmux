@@ -42,7 +42,7 @@ func setupWorkerTestServer(t *testing.T) *workerTestEnv {
 
 	q := gendb.New(sqlDB)
 
-	err = bootstrap.Run(context.Background(), q)
+	err = bootstrap.Run(context.Background(), q, false)
 	require.NoError(t, err)
 
 	bgMgr := workermgr.New()
@@ -52,17 +52,17 @@ func setupWorkerTestServer(t *testing.T) *workerTestEnv {
 	notifierSvc := notifier.New(q, bgMgr, pendingReqs, cfg)
 
 	mux := http.NewServeMux()
-	opts := connect.WithInterceptors(auth.NewInterceptor(q))
+	opts := connect.WithInterceptors(auth.NewInterceptor(q, false))
 
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(q, cfg), opts)
 	mux.Handle(authPath, authHandler)
 
 	connPath, connHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(
-		service.NewWorkerConnectorService(q, bgMgr), opts)
+		service.NewWorkerConnectorService(q, bgMgr, false), opts)
 	mux.Handle(connPath, connHandler)
 
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(
-		service.NewWorkerManagementService(q, bgMgr, notifierSvc), opts)
+		service.NewWorkerManagementService(q, bgMgr, notifierSvc, false), opts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
 	server := httptest.NewServer(mux)

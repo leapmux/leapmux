@@ -11,7 +11,7 @@ test.describe('Worker Management', () => {
     if (!isOpen)
       await workersSection.locator('> summary').click()
 
-    // Should contain the worker named "Local" (standalone sets LEAPMUX_WORKER_NAME=Local)
+    // Should contain the worker named "Local" (dev mode sets LEAPMUX_WORKER_NAME=Local)
     await expect(workersSection.getByText('Local')).toBeVisible()
   })
 

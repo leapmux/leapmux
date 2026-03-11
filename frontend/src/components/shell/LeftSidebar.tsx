@@ -13,6 +13,7 @@ import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry
 
 import CircleUser from 'lucide-solid/icons/circle-user'
 import Plus from 'lucide-solid/icons/plus'
+import Settings from 'lucide-solid/icons/settings'
 import { createMemo, createSignal, onCleanup, Show } from 'solid-js'
 import { IconButton } from '~/components/common/IconButton'
 import { TodoList } from '~/components/todo/TodoList'
@@ -23,6 +24,7 @@ import { WorkspaceSectionContent } from '~/components/workspace/WorkspaceSection
 import { WorkspaceSharingDialog } from '~/components/workspace/WorkspaceSharingDialog'
 import { useAuth } from '~/context/AuthContext'
 import { SectionType, Sidebar } from '~/generated/leapmux/v1/section_pb'
+import { isSoloMode } from '~/lib/systemInfo'
 import { CollapsibleSidebar } from './CollapsibleSidebar'
 import * as csStyles from './CollapsibleSidebar.css'
 import { useSectionDrag } from './SectionDragContext'
@@ -336,24 +338,25 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
     }
 
     // User Menu section (rail-only in collapsed, rendered at bottom in expanded)
+    const solo = isSoloMode()
     sections.push({
       id: 'user-menu',
-      title: 'User',
+      title: solo ? 'Preferences' : 'User',
       railOnly: true,
       railPosition: 'bottom',
       collapsible: false,
-      railIcon: CircleUser,
-      railTitle: 'User menu',
+      railIcon: solo ? Settings : CircleUser,
+      railTitle: solo ? 'Preferences' : 'User menu',
       railElement: (
         <UserMenu
-          trigger={<IconButton icon={CircleUser} iconSize="lg" size="lg" title="User menu" data-testid="user-menu-trigger" />}
+          trigger={<IconButton icon={solo ? Settings : CircleUser} iconSize="lg" size="lg" title={solo ? 'Preferences' : 'User menu'} data-testid="user-menu-trigger" />}
         />
       ),
       content: () => (
         <UserMenu
           trigger={(
             <span class={csStyles.sidebarTitle} style={{ cursor: 'pointer' }} data-testid="user-menu-trigger">
-              {auth.user()?.username ?? '...'}
+              {solo ? 'Preferences' : (auth.user()?.username ?? '...')}
             </span>
           )}
         />

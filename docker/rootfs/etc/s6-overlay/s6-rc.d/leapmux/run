@@ -1,2 +1,5 @@
-#!/command/execlineb -P
-/usr/local/bin/leapmux -addr :4327 -data-dir /data
+#!/bin/sh
+config="/data/${LEAPMUX_MODE}/${LEAPMUX_MODE}.yaml"
+mkdir -p "$(dirname "$config")"
+[ -f "$config" ] || touch "$config"
+exec /usr/local/bin/leapmux ${LEAPMUX_MODE} -config "$config"

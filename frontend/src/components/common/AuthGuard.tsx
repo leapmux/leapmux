@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from '@solidjs/router'
 import { createEffect, createMemo, Show } from 'solid-js'
 import { NotFoundPage } from '~/components/common/NotFoundPage'
 import { useAuth } from '~/context/AuthContext'
+import { isSoloMode } from '~/lib/systemInfo'
 import { centeredFull } from '~/styles/shared.css'
 
 interface AuthGuardProps {
@@ -18,7 +19,7 @@ export const AuthGuard: ParentComponent<AuthGuardProps> = (props) => {
     if (auth.loading())
       return
 
-    if (!auth.isAuthenticated()) {
+    if (!auth.isAuthenticated() && !isSoloMode()) {
       const returnTo = location.pathname + location.search
       navigate(`/login?redirect=${encodeURIComponent(returnTo)}`, { replace: true })
     }

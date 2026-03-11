@@ -1,0 +1,116 @@
+import type { DirectoryTreeHandle } from '~/components/tree/DirectoryTree'
+import type { Worker } from '~/generated/leapmux/v1/worker_pb'
+import { createEffect, createSignal, on, onMount } from 'solid-js'
+import { workerClient } from '~/api/clients'
+import * as workerRpc from '~/api/workerRpc'
+import { useOrg } from '~/context/OrgContext'
+import { createWorkerInfoStore } from '~/stores/workerInfo.store'
+
+interface WorkerDialogStateOptions {
+  preselectedWorkerId?: string
+  defaultWorkingDir?: string
+  /** When true, resolves worktree roots to the original repo root on mount. */
+  resolveWorktree?: boolean
+}
+
+export function createWorkerDialogState(options: WorkerDialogStateOptions = {}) {
+  const org = useOrg()
+  const workerInfoStore = createWorkerInfoStore()
+  const [workers, setWorkers] = createSignal<Worker[]>([])
+  const [workerId, setWorkerId] = createSignal('')
+  const [workingDir, setWorkingDir] = createSignal(options.defaultWorkingDir ?? '')
+  const [error, setError] = createSignal<string | null>(null)
+  const [refreshing, setRefreshing] = createSignal(false)
+  const [createWorktree, setCreateWorktree] = createSignal(false)
+  const [worktreeBranch, setWorktreeBranch] = createSignal('')
+  const [worktreeBranchError, setWorktreeBranchError] = createSignal<string | null>(null)
+  let treeHandle: DirectoryTreeHandle | undefined
+
+  const fetchWorkers = async () => {
+    try {
+      const resp = await workerClient.listWorkers({ orgId: org.orgId() })
+      const online = resp.workers.filter(b => b.online)
+      setWorkers(online)
+      if (online.length > 0 && !workerId()) {
+        setWorkerId(online[0].id)
+      }
+      // Fetch system info for homeDir via E2EE.
+      for (const w of online) {
+        workerInfoStore.fetchWorkerInfo(w.id)
+      }
+      return online.length > 0
+    }
+    catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load workers')
+      return false
+    }
+  }
+
+  // Fetch on mount only
+  onMount(async () => {
+    await fetchWorkers()
+    // Pre-select worker if specified and online
+    if (options.preselectedWorkerId) {
+      const match = workers().find(b => b.id === options.preselectedWorkerId)
+      if (match) {
+        setWorkerId(match.id)
+      }
+    }
+    // Refresh the directory tree to show latest contents.
+    treeHandle?.refresh()
+  })
+
+  // If the default working directory is a worktree, resolve to the original repo root.
+  if (options.resolveWorktree) {
+    let resolved = false
+    createEffect(on(() => workerId(), async (wid) => {
+      if (resolved || !wid || !options.defaultWorkingDir)
+        return
+      resolved = true
+      try {
+        const resp = await workerRpc.getGitInfo(wid, {
+          workerId: wid,
+          path: options.defaultWorkingDir,
+          orgId: org.orgId(),
+        })
+        if (resp.isWorktreeRoot && resp.repoRoot)
+          setWorkingDir(resp.repoRoot)
+      }
+      catch {}
+    }))
+  }
+
+  const handleRefresh = async () => {
+    setRefreshing(true)
+    await fetchWorkers()
+    setRefreshing(false)
+  }
+
+  const handleWorktreeChange = (create: boolean, branch: string, branchError: string | null) => {
+    setCreateWorktree(create)
+    setWorktreeBranch(branch)
+    setWorktreeBranchError(branchError)
+  }
+
+  return {
+    org,
+    workerInfoStore,
+    workers,
+    workerId,
+    setWorkerId,
+    workingDir,
+    setWorkingDir,
+    error,
+    setError,
+    refreshing,
+    handleRefresh,
+    createWorktree,
+    worktreeBranch,
+    worktreeBranchError,
+    handleWorktreeChange,
+    treeRef: (h: DirectoryTreeHandle) => { treeHandle = h },
+    refreshTree: () => treeHandle?.refresh(),
+  }
+}
+
+export type WorkerDialogState = ReturnType<typeof createWorkerDialogState>

@@ -45,10 +45,10 @@ func setupWorkspaceTest(t *testing.T) *workspaceTestEnv {
 	require.NoError(t, err)
 
 	queries := gendb.New(sqlDB)
-	workspaceSvc := service.NewWorkspaceService(sqlDB, queries)
+	workspaceSvc := service.NewWorkspaceService(sqlDB, queries, false)
 
 	mux := http.NewServeMux()
-	opts := connect.WithInterceptors(auth.NewInterceptor(queries))
+	opts := connect.WithInterceptors(auth.NewInterceptor(queries, false))
 	path, handler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, opts)
 	mux.Handle(path, handler)
 

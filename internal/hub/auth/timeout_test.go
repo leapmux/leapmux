@@ -37,7 +37,7 @@ func setupTimeoutTestServer(t *testing.T, timeout time.Duration) (leapmuxv1conne
 	t.Helper()
 
 	q := setupDB(t)
-	err := bootstrap.Run(context.Background(), q)
+	err := bootstrap.Run(context.Background(), q, false)
 	require.NoError(t, err)
 
 	capture := &timeoutCapture{inner: service.NewAuthService(q, &config.Config{})}

@@ -24,13 +24,14 @@ type layoutJSON struct {
 
 // WorkspaceService implements the WorkspaceServiceHandler interface.
 type WorkspaceService struct {
-	db      *sql.DB
-	queries *db.Queries
+	db       *sql.DB
+	queries  *db.Queries
+	soloMode bool
 }
 
 // NewWorkspaceService creates a new WorkspaceService.
-func NewWorkspaceService(sqlDB *sql.DB, q *db.Queries) *WorkspaceService {
-	return &WorkspaceService{db: sqlDB, queries: q}
+func NewWorkspaceService(sqlDB *sql.DB, q *db.Queries, soloMode bool) *WorkspaceService {
+	return &WorkspaceService{db: sqlDB, queries: q, soloMode: soloMode}
 }
 
 // workspaceToProto converts a hub DB workspace row to the proto Workspace message.
@@ -209,6 +210,9 @@ func (s *WorkspaceService) UpdateWorkspaceSharing(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.UpdateWorkspaceSharingRequest],
 ) (*connect.Response[leapmuxv1.UpdateWorkspaceSharingResponse], error) {
+	if s.soloMode {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("workspace sharing is not available in solo mode"))
+	}
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err

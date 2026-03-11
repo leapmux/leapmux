@@ -75,6 +75,9 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[l
 }
 
 func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1.SignUpRequest]) (*connect.Response[leapmuxv1.SignUpResponse], error) {
+	if s.cfg.SoloMode {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("sign-up is not available in solo mode"))
+	}
 	if !s.cfg.SignupEnabled {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("sign-up is disabled"))
 	}
@@ -238,6 +241,7 @@ func (s *AuthService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[leapmuxv1.GetSystemInfoRequest]) (*connect.Response[leapmuxv1.GetSystemInfoResponse], error) {
 	return connect.NewResponse(&leapmuxv1.GetSystemInfoResponse{
 		SignupEnabled: s.cfg.SignupEnabled,
+		SoloMode:      s.cfg.SoloMode,
 	}), nil
 }
 

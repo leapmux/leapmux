@@ -47,7 +47,7 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 
 	q := gendb.New(sqlDB)
 
-	err = bootstrap.Run(context.Background(), q)
+	err = bootstrap.Run(context.Background(), q, false)
 	require.NoError(t, err)
 
 	cfg := testConfig()
@@ -56,17 +56,17 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
 	mux := http.NewServeMux()
-	opts := connect.WithInterceptors(auth.NewInterceptor(q))
+	opts := connect.WithInterceptors(auth.NewInterceptor(q, false))
 
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(q, cfg), opts)
 	mux.Handle(authPath, authHandler)
 
 	connPath, connHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(
-		service.NewWorkerConnectorService(q, wMgr), opts)
+		service.NewWorkerConnectorService(q, wMgr, false), opts)
 	mux.Handle(connPath, connHandler)
 
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(
-		service.NewWorkerManagementService(q, wMgr, nil), opts)
+		service.NewWorkerManagementService(q, wMgr, nil, false), opts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
 	channelSvc := service.NewChannelService(q, wMgr, cMgr, pendingReqs)
