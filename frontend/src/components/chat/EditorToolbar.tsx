@@ -9,9 +9,7 @@ import { liftListItem } from '@milkdown/prose/schema-list'
 import { callCommand } from '@milkdown/utils'
 import Bold from 'lucide-solid/icons/bold'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
-import ChevronUp from 'lucide-solid/icons/chevron-up'
 import Code from 'lucide-solid/icons/code'
-import Command from 'lucide-solid/icons/command'
 import Heading1 from 'lucide-solid/icons/heading-1'
 import Heading2 from 'lucide-solid/icons/heading-2'
 import Heading3 from 'lucide-solid/icons/heading-3'
@@ -238,7 +236,7 @@ export const EditorToolbar: Component<EditorToolbarProps> = (props) => {
     return `Heading ${level}`
   }
 
-  const modKeyLabel = isMac ? 'Cmd' : 'Ctrl'
+  const modKeyLabel = isMac ? '⌘' : 'Ctrl'
 
   const enterModeTitle = () => {
     if (props.enterMode() === 'enter-sends') {
@@ -502,14 +500,7 @@ export const EditorToolbar: Component<EditorToolbarProps> = (props) => {
           >
             <Show
               when={props.enterMode() === 'enter-sends'}
-              fallback={(
-                <>
-                  {isMac
-                    ? <Icon icon={Command} size="xxs" class={styles.iconNudge} />
-                    : <Icon icon={ChevronUp} size="xxs" class={styles.iconNudge} />}
-                  <span>Enter sends</span>
-                </>
-              )}
+              fallback={isMac ? '⌘+Enter sends' : 'Ctrl+Enter sends'}
             >
               Enter sends
             </Show>

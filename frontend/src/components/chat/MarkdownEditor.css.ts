@@ -13,10 +13,6 @@ export const headingPickerButton = style({
   padding: '0 4px',
 })
 
-export const iconNudge = style({
-  marginTop: '1px',
-})
-
 export const container = style({
   position: 'relative',
   display: 'flex',
@@ -37,7 +33,7 @@ export const toolbar = style({
   display: 'flex',
   alignItems: 'center',
   gap: 'var(--space-1)',
-  padding: 'var(--space-1) var(--space-2)',
+  padding: 'var(--space-1) var(--space-1) var(--space-1) var(--space-2)',
   borderBottom: '1px solid var(--border)',
   backgroundColor: 'var(--card)',
   flexShrink: 0,
@@ -68,7 +64,7 @@ export const enterModeWrapper = style({
 // Override OAT .ghost styles to match the muted style of IconButton toolbar items.
 globalStyle(`${enterModeWrapper} > button`, {
   color: 'var(--muted-foreground)',
-  padding: 0,
+  padding: '0 var(--space-1)',
 })
 
 globalStyle(`${enterModeWrapper} > button:hover`, {
