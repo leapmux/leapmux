@@ -86,8 +86,21 @@ export const collapsibleTrigger = style({
   'borderBottom': '1px solid var(--border)',
   'flexShrink': 0,
   'position': 'relative',
+  'cursor': 'pointer',
+  'userSelect': 'none',
   ':hover': {
     backgroundColor: 'var(--card)',
+  },
+  '::after': {
+    content: '""',
+    width: '1em',
+    height: '1em',
+    flexShrink: 0,
+    backgroundColor: 'currentColor',
+    maskImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`,
+    maskSize: 'contain',
+    maskRepeat: 'no-repeat',
+    transition: 'transform var(--transition-fast)',
   },
 })
 
@@ -119,8 +132,13 @@ globalStyle(`${collapsibleTrigger} > ${sidebarTitle}`, {
   flex: 1,
 })
 
+/** Rotate chevron when the pane is expanded. */
+globalStyle(`${collapsiblePaneExpanded} > ${collapsibleTrigger}::after`, {
+  transform: 'rotate(180deg)',
+})
+
 /** Hide bottom border on collapsed pane triggers. */
-globalStyle(`${collapsiblePane}:not([open]) > ${collapsibleTrigger}`, {
+globalStyle(`${collapsiblePane}:not(${collapsiblePaneExpanded}) > ${collapsibleTrigger}`, {
   borderBottom: 'none',
 })
 

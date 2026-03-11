@@ -7,9 +7,9 @@ test.describe('Worker Management', () => {
     await expect(workersSection).toBeVisible()
 
     // Expand the section if collapsed
-    const isOpen = await workersSection.evaluate((el: HTMLDetailsElement) => el.open)
+    const isOpen = await workersSection.evaluate(el => !el.hasAttribute('data-closed'))
     if (!isOpen)
-      await workersSection.locator('> summary').click()
+      await workersSection.locator('> [role="button"]').click()
 
     // Should contain the worker named "Local" (dev mode sets LEAPMUX_WORKER_NAME=Local)
     await expect(workersSection.getByText('Local')).toBeVisible()
@@ -19,9 +19,9 @@ test.describe('Worker Management', () => {
     const workersSection = page.getByTestId('section-header-workers')
     await expect(workersSection).toBeVisible()
 
-    const isOpen = await workersSection.evaluate((el: HTMLDetailsElement) => el.open)
+    const isOpen = await workersSection.evaluate(el => !el.hasAttribute('data-closed'))
     if (!isOpen)
-      await workersSection.locator('> summary').click()
+      await workersSection.locator('> [role="button"]').click()
 
     // The status dot should indicate "connected"
     await expect(workersSection.locator('[data-status="connected"]')).toBeVisible()

@@ -30,9 +30,9 @@ async function openWorkersSidebar(page: import('@playwright/test').Page) {
   const workersSection = page.getByTestId('section-header-workers')
   await expect(workersSection).toBeVisible()
   // Expand the section if collapsed by checking the DOM open property
-  const isOpen = await workersSection.evaluate((el: HTMLDetailsElement) => el.open)
+  const isOpen = await workersSection.evaluate(el => !el.hasAttribute('data-closed'))
   if (!isOpen)
-    await workersSection.locator('> summary').click()
+    await workersSection.locator('> [role="button"]').click()
   // Wait for content to be visible
   await expect(workersSection.locator('[class*="sectionItems"]')).toBeVisible()
   return workersSection
@@ -215,9 +215,9 @@ test.describe('Worker Status Indicator', () => {
     await page.reload()
     const refreshedSection = page.getByTestId('section-header-workers')
     await expect(refreshedSection).toBeVisible()
-    const reopened = await refreshedSection.evaluate((el: HTMLDetailsElement) => el.open)
+    const reopened = await refreshedSection.evaluate(el => !el.hasAttribute('data-closed'))
     if (!reopened)
-      await refreshedSection.locator('> summary').click()
+      await refreshedSection.locator('> [role="button"]').click()
 
     // Status dot should change back to connected (green)
     await expect(refreshedSection.locator('[data-status="connected"]')).toBeVisible({ timeout: 15_000 })

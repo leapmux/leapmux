@@ -4,11 +4,11 @@ import { createCompassSimulation } from './compassPhysics'
 import { getRandomVerb } from './spinnerVerbs'
 import * as styles from './ThinkingIndicator.css'
 
-function charWeight(index: number, total: number, highlightPos: number): number {
+function charElevation(index: number, total: number, highlightPos: number): number {
   const dist = Math.abs(index - highlightPos)
   const wrappedDist = Math.min(dist, total - dist)
-  const falloff = Math.max(0, 1 - (wrappedDist / total) * 2)
-  return 400 + 300 * falloff
+  const falloff = Math.max(0, 1 - wrappedDist / 1.5)
+  return -4 * falloff
 }
 
 export interface ThinkingIndicatorProps {
@@ -127,7 +127,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
           <span class={styles.verb}>
             <For each={chars()}>
               {(char, i) => (
-                <span style={{ 'font-weight': charWeight(i(), chars().length, highlightPos()) }}>
+                <span class={styles.char} style={{ transform: `translateY(${charElevation(i(), chars().length, highlightPos())}px)` }}>
                   {char}
                 </span>
               )}

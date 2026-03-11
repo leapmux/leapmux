@@ -18,13 +18,13 @@ test.describe('Workspace Sections', () => {
     await expect(wsItem).toBeVisible()
 
     // Click the section header summary to collapse it
-    await page.locator('[data-testid="section-header-workspaces_in_progress"] > summary').click()
+    await page.locator('[data-testid="section-header-workspaces_in_progress"] > [role="button"]').click()
 
     // Workspace should be hidden
     await expect(wsItem).not.toBeVisible()
 
     // Click the section header summary again to expand
-    await page.locator('[data-testid="section-header-workspaces_in_progress"] > summary').click()
+    await page.locator('[data-testid="section-header-workspaces_in_progress"] > [role="button"]').click()
 
     // Workspace should be visible again
     await expect(wsItem).toBeVisible()
@@ -53,7 +53,7 @@ test.describe('Workspace Sections', () => {
     const wsItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
 
     // Collapse the section
-    await page.locator('[data-testid="section-header-workspaces_in_progress"] > summary').click()
+    await page.locator('[data-testid="section-header-workspaces_in_progress"] > [role="button"]').click()
     await expect(wsItem).not.toBeVisible()
 
     // Reload the page
@@ -66,6 +66,6 @@ test.describe('Workspace Sections', () => {
     await expect(wsItem).not.toBeVisible()
 
     // Expand it again for cleanup
-    await page.locator('[data-testid="section-header-workspaces_in_progress"] > summary').click()
+    await page.locator('[data-testid="section-header-workspaces_in_progress"] > [role="button"]').click()
   })
 })

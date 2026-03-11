@@ -68,20 +68,20 @@ test.describe('Pane Resize Handles', () => {
       const testId = await section.getAttribute('data-testid')
       if (testId === 'section-header-workspaces_in_progress' || testId === 'section-header-workspaces_archived')
         continue
-      const isOpen = await section.evaluate((el: HTMLDetailsElement) => el.open)
+      const isOpen = await section.evaluate(el => !el.hasAttribute('data-closed'))
       if (isOpen)
-        await section.locator('> summary').click()
+        await section.locator('> [role="button"]').click()
     }
 
     // Ensure In Progress is expanded (it should be by default, but check)
-    const inProgressIsOpen = await inProgress.evaluate((el: HTMLDetailsElement) => el.open)
+    const inProgressIsOpen = await inProgress.evaluate(el => !el.hasAttribute('data-closed'))
     if (!inProgressIsOpen)
-      await inProgress.locator('> summary').click()
+      await inProgress.locator('> [role="button"]').click()
 
     // Ensure Archived is expanded
-    const archivedIsOpen = await archived.evaluate((el: HTMLDetailsElement) => el.open)
+    const archivedIsOpen = await archived.evaluate(el => !el.hasAttribute('data-closed'))
     if (!archivedIsOpen)
-      await archived.locator('> summary').click()
+      await archived.locator('> [role="button"]').click()
 
     // Wait for exactly one resize handle between the two sections
     await expect(page.locator('[data-testid="pane-resize-handle"]')).toHaveCount(1)
@@ -127,7 +127,7 @@ test.describe('Pane Resize Handles', () => {
     await ensureOnlyTwoSectionsExpanded(page)
 
     // Collapse Archived section
-    await page.locator('[data-testid="section-header-workspaces_archived"] > summary').click()
+    await page.locator('[data-testid="section-header-workspaces_archived"] > [role="button"]').click()
 
     // Pane resize handle should disappear
     await expect(page.locator('[data-testid="pane-resize-handle"]')).toHaveCount(0)
@@ -184,9 +184,9 @@ test.describe('Pane Resize Handles', () => {
       const testId = await section.getAttribute('data-testid')
       if (testId === 'section-header-workspaces_in_progress')
         continue
-      const isOpen = await section.evaluate((el: HTMLDetailsElement) => el.open)
+      const isOpen = await section.evaluate(el => !el.hasAttribute('data-closed'))
       if (isOpen)
-        await section.locator('> summary').click()
+        await section.locator('> [role="button"]').click()
     }
     await page.waitForTimeout(200)
 

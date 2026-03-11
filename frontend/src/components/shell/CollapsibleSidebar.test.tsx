@@ -116,7 +116,7 @@ describe('collapsibleSidebar', () => {
 
     // Click the summary of section B to collapse it
     const summaries = screen.getAllByText('Section B')
-    const summary = summaries[0].closest('summary')
+    const summary = summaries[0].closest('[role="button"]')
     if (summary) {
       fireEvent.click(summary)
     }
@@ -215,7 +215,7 @@ describe('collapsibleSidebar', () => {
     expect(screen.getAllByTestId('pane-resize-handle')).toHaveLength(2)
 
     // Collapse section B by clicking its summary
-    const summary = screen.getByText('Section B').closest('summary')
+    const summary = screen.getByText('Section B').closest('[role="button"]')
     if (summary) {
       fireEvent.click(summary)
     }
