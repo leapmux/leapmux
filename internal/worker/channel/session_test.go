@@ -50,22 +50,25 @@ func (c *collectSender) waitForMessages(n int) []*leapmuxv1.ConnectRequest {
 	return append([]*leapmuxv1.ConnectRequest(nil), c.msgs...)
 }
 
-func setupTestManager(t *testing.T) (*Manager, noiseutil.Keypair, *collectSender) {
+func setupTestManager(t *testing.T) (*Manager, *noiseutil.CompositeKeypair, *collectSender) {
 	t.Helper()
-	kp, err := noiseutil.GenerateKeypair()
+	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 
 	sender := newCollectSender()
-	mgr := NewManager(kp.Private, kp.Public, sender.send)
-	return mgr, kp, sender
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send)
+	return mgr, ck, sender
 }
 
-// performHandshake runs a full Noise_NK handshake between initiator and responder (Manager).
-func performHandshake(t *testing.T, mgr *Manager, kp noiseutil.Keypair, channelID, userID string) *noiseutil.Session {
+// performHandshake runs a full hybrid Noise_NK handshake between initiator and responder (Manager).
+func performHandshake(t *testing.T, mgr *Manager, ck *noiseutil.CompositeKeypair, channelID, userID string) *noiseutil.Session {
 	t.Helper()
 
+	slhdsaPub, err := ck.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+
 	// Initiator creates msg1.
-	hs, msg1, err := noiseutil.InitiatorHandshake1(kp.Public)
+	hs, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
 	require.NoError(t, err)
 
 	// Responder (Manager) handles open.
@@ -79,7 +82,7 @@ func performHandshake(t *testing.T, mgr *Manager, kp noiseutil.Keypair, channelI
 	assert.Equal(t, channelID, resp.GetChannelId())
 
 	// Initiator completes handshake.
-	initiatorSession, err := noiseutil.InitiatorHandshake2(hs, resp.GetHandshakePayload())
+	initiatorSession, err := noiseutil.InitiatorHandshake2(hs, resp.GetHandshakePayload(), slhdsaPub)
 	require.NoError(t, err)
 
 	return initiatorSession
@@ -165,11 +168,11 @@ func decryptClaimResponse(t *testing.T, initiatorSession *noiseutil.Session, msg
 }
 
 // performHandshakeAndVerify performs handshake + UserIdClaim in one step.
-func performHandshakeAndVerify(t *testing.T, mgr *Manager, kp noiseutil.Keypair, sender *collectSender, channelID, userID string) *noiseutil.Session {
+func performHandshakeAndVerify(t *testing.T, mgr *Manager, ck *noiseutil.CompositeKeypair, sender *collectSender, channelID, userID string) *noiseutil.Session {
 	t.Helper()
 
 	msgsBefore := len(sender.messages())
-	session := performHandshake(t, mgr, kp, channelID, userID)
+	session := performHandshake(t, mgr, ck, channelID, userID)
 
 	// Send UserIdClaim.
 	sendUserIdClaim(t, mgr, session, channelID, userID)
@@ -466,10 +469,10 @@ func TestHandleMessage_NonBlocking(t *testing.T) {
 		return sender.send(msg)
 	}
 
-	kp, err := noiseutil.GenerateKeypair()
+	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 
-	mgr := NewManager(kp.Private, kp.Public, blockingSend)
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, blockingSend)
 
 	// Set up a dispatcher with a handler that sends a response.
 	dispatcher := NewDispatcher()
@@ -481,7 +484,7 @@ func TestHandleMessage_NonBlocking(t *testing.T) {
 	mgr.SetDispatcher(dispatcher)
 
 	// Open channel and verify claim.
-	session := performHandshake(t, mgr, kp, "ch-block", "user-1")
+	session := performHandshake(t, mgr, ck, "ch-block", "user-1")
 
 	// Send the UserIdClaim. Since sends are now async, HandleMessage returns
 	// immediately and the claim response send happens in a goroutine.

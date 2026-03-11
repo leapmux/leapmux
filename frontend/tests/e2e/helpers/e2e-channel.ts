@@ -5,7 +5,7 @@
  * allowing the shared ChannelManager to work in Node.js/Bun test environments.
  */
 
-import type { ChannelTransport, KeyPinDecision } from '../../../src/lib/channel'
+import type { ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '../../../src/lib/channel'
 import { Buffer } from 'node:buffer'
 import { ChannelManager } from '../../../src/lib/channel'
 
@@ -30,7 +30,7 @@ class FetchChannelTransport implements ChannelTransport {
     this.userId = userId
   }
 
-  async getWorkerPublicKey(workerId: string): Promise<Uint8Array> {
+  async getWorkerPublicKey(workerId: string): Promise<WorkerKeyBundle> {
     const resp = await fetch(`${this.hubUrl}/leapmux.v1.ChannelService/GetWorkerPublicKey`, {
       method: 'POST',
       headers: {
@@ -43,8 +43,12 @@ class FetchChannelTransport implements ChannelTransport {
       const body = await resp.text().catch(() => '')
       throw new Error(`GetWorkerPublicKey failed: ${resp.status} ${body}`)
     }
-    const data = await resp.json() as { publicKey: string }
-    return base64ToBytes(data.publicKey)
+    const data = await resp.json() as { publicKey: string, mlkemPublicKey: string, slhdsaPublicKey: string }
+    return {
+      x25519PublicKey: base64ToBytes(data.publicKey),
+      mlkemPublicKey: base64ToBytes(data.mlkemPublicKey),
+      slhdsaPublicKey: base64ToBytes(data.slhdsaPublicKey),
+    }
   }
 
   async openChannel(workerId: string, handshakePayload: Uint8Array): Promise<{ channelId: string, handshakePayload: Uint8Array }> {

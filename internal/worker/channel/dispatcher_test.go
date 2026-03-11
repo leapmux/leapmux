@@ -11,6 +11,28 @@ import (
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 )
 
+// setupTestSessions creates a composite keypair and performs a full hybrid handshake,
+// returning the worker and initiator sessions.
+func setupTestSessions(t *testing.T) (*noiseutil.Session, *noiseutil.Session) {
+	t.Helper()
+	ck, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+
+	slhdsaPub, err := ck.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+
+	hs, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	require.NoError(t, err)
+
+	msg2, workerSession, err := noiseutil.ResponderHandshake(ck, msg1)
+	require.NoError(t, err)
+
+	initiatorSession, err := noiseutil.InitiatorHandshake2(hs, msg2, slhdsaPub)
+	require.NoError(t, err)
+
+	return workerSession, initiatorSession
+}
+
 func TestDispatcher_RegisterAndDispatch(t *testing.T) {
 	d := NewDispatcher()
 
@@ -27,18 +49,7 @@ func TestDispatcher_RegisterAndDispatch(t *testing.T) {
 		})
 	})
 
-	// Create a channel sender backed by noise session.
-	kp, err := noiseutil.GenerateKeypair()
-	require.NoError(t, err)
-
-	hs, msg1, err := noiseutil.InitiatorHandshake1(kp.Public)
-	require.NoError(t, err)
-
-	msg2, workerSession, err := noiseutil.ResponderHandshake(kp, msg1)
-	require.NoError(t, err)
-
-	initiatorSession, err := noiseutil.InitiatorHandshake2(hs, msg2)
-	require.NoError(t, err)
+	workerSession, initiatorSession := setupTestSessions(t)
 
 	sender := newCollectSender()
 	cs := &channelSender{
@@ -82,17 +93,7 @@ func TestDispatcher_PanicRecovery(t *testing.T) {
 		panic("test panic in handler")
 	})
 
-	kp, err := noiseutil.GenerateKeypair()
-	require.NoError(t, err)
-
-	hs, msg1, err := noiseutil.InitiatorHandshake1(kp.Public)
-	require.NoError(t, err)
-
-	msg2, workerSession, err := noiseutil.ResponderHandshake(kp, msg1)
-	require.NoError(t, err)
-
-	initiatorSession, err := noiseutil.InitiatorHandshake2(hs, msg2)
-	require.NoError(t, err)
+	workerSession, initiatorSession := setupTestSessions(t)
 
 	sender := newCollectSender()
 	cs := &channelSender{
@@ -134,17 +135,7 @@ func TestDispatcher_UnknownMethod(t *testing.T) {
 	d := NewDispatcher()
 	d.Register("known", func(_ string, _ *leapmuxv1.InnerRpcRequest, _ *Sender) {})
 
-	kp, err := noiseutil.GenerateKeypair()
-	require.NoError(t, err)
-
-	hs, msg1, err := noiseutil.InitiatorHandshake1(kp.Public)
-	require.NoError(t, err)
-
-	msg2, workerSession, err := noiseutil.ResponderHandshake(kp, msg1)
-	require.NoError(t, err)
-
-	initiatorSession, err := noiseutil.InitiatorHandshake2(hs, msg2)
-	require.NoError(t, err)
+	workerSession, initiatorSession := setupTestSessions(t)
 
 	sender := newCollectSender()
 	cs := &channelSender{

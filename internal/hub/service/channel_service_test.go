@@ -117,8 +117,10 @@ func (e *channelTestEnv) createWorkerWithKey(t *testing.T, token string, publicK
 	// Set the public key.
 	if len(publicKey) > 0 {
 		err = e.queries.UpdateWorkerPublicKey(ctx, gendb.UpdateWorkerPublicKeyParams{
-			PublicKey: publicKey,
-			ID:        workerID,
+			PublicKey:       publicKey,
+			MlkemPublicKey:  []byte{},
+			SlhdsaPublicKey: []byte{},
+			ID:              workerID,
 		})
 		require.NoError(t, err)
 	}
@@ -203,15 +205,6 @@ func TestOpenChannel_EmptyFields(t *testing.T) {
 		&leapmuxv1.OpenChannelRequest{
 			WorkerId:         "",
 			HandshakePayload: []byte("data"),
-		}, token))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
-
-	// Empty handshake_payload.
-	_, err = env.channelClient.OpenChannel(ctx, authedReq(
-		&leapmuxv1.OpenChannelRequest{
-			WorkerId:         "some-id",
-			HandshakePayload: nil,
 		}, token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
@@ -337,6 +330,222 @@ func TestGetWorkerPublicKey_Unauthenticated(t *testing.T) {
 		&leapmuxv1.GetWorkerPublicKeyRequest{WorkerId: "any"}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+// --- GetWorkerEncryptionMode tests ---
+
+func TestGetWorkerEncryptionMode_WorkerOffline(t *testing.T) {
+	env := setupChannelTestServer(t)
+	ctx := context.Background()
+	token := env.adminToken(t)
+
+	workerID := env.createWorkerWithKey(t, token, []byte("key"))
+
+	_, err := env.channelClient.GetWorkerEncryptionMode(ctx, authedReq(
+		&leapmuxv1.GetWorkerEncryptionModeRequest{WorkerId: workerID}, token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
+}
+
+func TestGetWorkerEncryptionMode_EmptyWorkerID(t *testing.T) {
+	env := setupChannelTestServer(t)
+	ctx := context.Background()
+	token := env.adminToken(t)
+
+	_, err := env.channelClient.GetWorkerEncryptionMode(ctx, authedReq(
+		&leapmuxv1.GetWorkerEncryptionModeRequest{WorkerId: ""}, token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+func TestGetWorkerEncryptionMode_Unauthenticated(t *testing.T) {
+	env := setupChannelTestServer(t)
+	ctx := context.Background()
+
+	_, err := env.channelClient.GetWorkerEncryptionMode(ctx, connect.NewRequest(
+		&leapmuxv1.GetWorkerEncryptionModeRequest{WorkerId: "any"}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+func TestGetWorkerEncryptionMode_PostQuantum(t *testing.T) {
+	env := setupChannelTestServer(t)
+	ctx := context.Background()
+	token := env.adminToken(t)
+
+	workerID := env.createWorkerWithKey(t, token, []byte("key"))
+
+	// Simulate worker online with POST_QUANTUM mode.
+	conn := &workermgr.Conn{
+		WorkerID:       workerID,
+		OrgID:          "test-org",
+		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+	}
+	env.workerMgr.Register(conn)
+
+	resp, err := env.channelClient.GetWorkerEncryptionMode(ctx, authedReq(
+		&leapmuxv1.GetWorkerEncryptionModeRequest{WorkerId: workerID}, token))
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, resp.Msg.GetEncryptionMode())
+}
+
+func TestGetWorkerEncryptionMode_Classic(t *testing.T) {
+	env := setupChannelTestServer(t)
+	ctx := context.Background()
+	token := env.adminToken(t)
+
+	workerID := env.createWorkerWithKey(t, token, []byte("key"))
+
+	conn := &workermgr.Conn{
+		WorkerID:       workerID,
+		OrgID:          "test-org",
+		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
+	}
+	env.workerMgr.Register(conn)
+
+	resp, err := env.channelClient.GetWorkerEncryptionMode(ctx, authedReq(
+		&leapmuxv1.GetWorkerEncryptionModeRequest{WorkerId: workerID}, token))
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, resp.Msg.GetEncryptionMode())
+}
+
+func TestGetWorkerEncryptionMode_UnspecifiedDefaultsToPostQuantum(t *testing.T) {
+	env := setupChannelTestServer(t)
+	ctx := context.Background()
+	token := env.adminToken(t)
+
+	workerID := env.createWorkerWithKey(t, token, []byte("key"))
+
+	// Register with UNSPECIFIED — should be normalized to POST_QUANTUM.
+	conn := &workermgr.Conn{
+		WorkerID:       workerID,
+		OrgID:          "test-org",
+		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED,
+	}
+	env.workerMgr.Register(conn)
+
+	resp, err := env.channelClient.GetWorkerEncryptionMode(ctx, authedReq(
+		&leapmuxv1.GetWorkerEncryptionModeRequest{WorkerId: workerID}, token))
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, resp.Msg.GetEncryptionMode())
+}
+
+// --- Handshake scenario tests with different encryption modes ---
+
+func TestOpenChannel_PostQuantumHandshake(t *testing.T) {
+	env := setupChannelTestServer(t)
+	ctx := context.Background()
+	token := env.adminToken(t)
+
+	workerID := env.createWorkerWithKey(t, token, []byte("key"))
+
+	sentCh := make(chan *leapmuxv1.ConnectResponse, 1)
+	conn := &workermgr.Conn{
+		WorkerID:       workerID,
+		OrgID:          "test-org",
+		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
+			sentCh <- msg
+			return nil
+		},
+	}
+	env.workerMgr.Register(conn)
+
+	shortCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+
+	_, err := env.channelClient.OpenChannel(shortCtx, authedReq(
+		&leapmuxv1.OpenChannelRequest{
+			WorkerId:         workerID,
+			HandshakePayload: []byte("pq-handshake-msg1"),
+		}, token))
+	// Times out because mock worker doesn't respond.
+	require.Error(t, err)
+
+	select {
+	case sentMsg := <-sentCh:
+		assert.NotNil(t, sentMsg.GetChannelOpen())
+		assert.Equal(t, []byte("pq-handshake-msg1"), sentMsg.GetChannelOpen().GetHandshakePayload())
+	default:
+		t.Fatal("expected a message to be sent to worker")
+	}
+}
+
+func TestOpenChannel_ClassicHandshake(t *testing.T) {
+	env := setupChannelTestServer(t)
+	ctx := context.Background()
+	token := env.adminToken(t)
+
+	workerID := env.createWorkerWithKey(t, token, []byte("key"))
+
+	sentCh := make(chan *leapmuxv1.ConnectResponse, 1)
+	conn := &workermgr.Conn{
+		WorkerID:       workerID,
+		OrgID:          "test-org",
+		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
+		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
+			sentCh <- msg
+			return nil
+		},
+	}
+	env.workerMgr.Register(conn)
+
+	shortCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+
+	_, err := env.channelClient.OpenChannel(shortCtx, authedReq(
+		&leapmuxv1.OpenChannelRequest{
+			WorkerId:         workerID,
+			HandshakePayload: []byte("classic-handshake-msg1"),
+		}, token))
+	require.Error(t, err)
+
+	select {
+	case sentMsg := <-sentCh:
+		assert.NotNil(t, sentMsg.GetChannelOpen())
+		assert.Equal(t, []byte("classic-handshake-msg1"), sentMsg.GetChannelOpen().GetHandshakePayload())
+	default:
+		t.Fatal("expected a message to be sent to worker")
+	}
+}
+
+func TestOpenChannel_DisabledHandshake(t *testing.T) {
+	env := setupChannelTestServer(t)
+	ctx := context.Background()
+	token := env.adminToken(t)
+
+	workerID := env.createWorkerWithKey(t, token, []byte("key"))
+
+	sentCh := make(chan *leapmuxv1.ConnectResponse, 1)
+	conn := &workermgr.Conn{
+		WorkerID:       workerID,
+		OrgID:          "test-org",
+		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED,
+		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
+			sentCh <- msg
+			return nil
+		},
+	}
+	env.workerMgr.Register(conn)
+
+	shortCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+
+	// Disabled mode sends empty handshake payload.
+	_, err := env.channelClient.OpenChannel(shortCtx, authedReq(
+		&leapmuxv1.OpenChannelRequest{
+			WorkerId:         workerID,
+			HandshakePayload: []byte{},
+		}, token))
+	require.Error(t, err)
+
+	select {
+	case sentMsg := <-sentCh:
+		assert.NotNil(t, sentMsg.GetChannelOpen())
+		assert.Empty(t, sentMsg.GetChannelOpen().GetHandshakePayload())
+	default:
+		t.Fatal("expected a message to be sent to worker")
+	}
 }
 
 func (e *channelTestEnv) createSecondUser(t *testing.T) (userID, token string) {

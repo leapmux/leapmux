@@ -8,8 +8,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/logging"
-	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
@@ -53,11 +53,11 @@ func runWorker(args []string) error {
 		state = &config.State{}
 	}
 
-	// Ensure the worker has an X25519 keypair for E2EE channels.
-	// Generated before registration so the public key can be sent to the Hub.
-	generated, err := state.EnsureKeypair()
+	// Ensure the worker has a composite keypair for E2EE channels.
+	// Generated before registration so the public keys can be sent to the Hub.
+	generated, err := state.EnsureCompositeKeypair()
 	if err != nil {
-		return fmt.Errorf("ensure keypair: %w", err)
+		return fmt.Errorf("ensure composite keypair: %w", err)
 	}
 	if generated {
 		if err := cfg.SaveState(state); err != nil {
@@ -67,11 +67,12 @@ func runWorker(args []string) error {
 
 	if state.AuthToken == "" {
 		// No saved credentials — need to register.
-		publicKey, pkErr := state.PublicKeyBytes()
-		if pkErr != nil {
-			return fmt.Errorf("decode public key for registration: %w", pkErr)
+		compositeKey, ckErr := state.CompositeKeypair()
+		if ckErr != nil {
+			return fmt.Errorf("restore composite keypair for registration: %w", ckErr)
 		}
-		result, regErr := hub.Register(ctx, cfg.HubURL, version, publicKey)
+		slhdsaPub, _ := compositeKey.SlhdsaPublicKeyBytes()
+		result, regErr := hub.Register(ctx, cfg.HubURL, version, compositeKey.X25519Public, compositeKey.MlkemPublicKeyBytes(), slhdsaPub)
 		if regErr != nil {
 			return fmt.Errorf("registration: %w", regErr)
 		}
@@ -87,19 +88,16 @@ func runWorker(args []string) error {
 		slog.Info("credentials saved", "path", cfg.StatePath())
 	}
 
-	privateKey, err := state.PrivateKeyBytes()
+	compositeKey, err := state.CompositeKeypair()
 	if err != nil {
-		return fmt.Errorf("decode private key: %w", err)
-	}
-	publicKey, err := state.PublicKeyBytes()
-	if err != nil {
-		return fmt.Errorf("decode public key: %w", err)
+		return fmt.Errorf("restore composite keypair: %w", err)
 	}
 
 	slog.Info("starting worker",
 		"worker_id", state.WorkerID,
 		"hub", cfg.HubURL,
-		"key_fingerprint", noiseutil.KeyFingerprint(publicKey),
+		"key_fingerprint", compositeKey.Fingerprint(),
+		"encryption_mode", cfg.EncryptionMode,
 	)
 
 	// Open the Worker-local database for persistent state.
@@ -123,7 +121,8 @@ func runWorker(args []string) error {
 	homeDir, _ := os.UserHomeDir()
 
 	// Set up E2EE channel manager with service handlers.
-	channelMgr := channel.NewManager(privateKey, publicKey, client.Send)
+	encMode := cfg.EncryptionModeProto()
+	channelMgr := channel.NewManager(compositeKey, encMode, client.Send)
 	if cfg.MaxMessageSize > 0 {
 		channelMgr.SetMaxMessageSize(cfg.MaxMessageSize)
 	}
@@ -156,7 +155,14 @@ func runWorker(args []string) error {
 	})
 
 	client.SetChannelMgr(channelMgr)
-	client.PublicKey = publicKey
+	client.EncryptionMode = encMode
+	client.PublicKey = compositeKey.X25519Public
+	if encMode != leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC &&
+		encMode != leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED {
+		client.MlkemPublicKey = compositeKey.MlkemPublicKeyBytes()
+		slhdsaPub, _ := compositeKey.SlhdsaPublicKeyBytes()
+		client.SlhdsaPublicKey = slhdsaPub
+	}
 
 	client.OnDeregister = func() {
 		slog.Info("worker deregistered by hub, clearing state and shutting down")

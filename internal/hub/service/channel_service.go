@@ -57,7 +57,7 @@ func (s *ChannelService) GetWorkerPublicKey(
 		return nil, err
 	}
 
-	pubKey, err := s.queries.GetWorkerPublicKey(ctx, workerID)
+	keys, err := s.queries.GetWorkerPublicKey(ctx, workerID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
@@ -65,12 +65,49 @@ func (s *ChannelService) GetWorkerPublicKey(
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	if len(pubKey) == 0 {
+	if len(keys.PublicKey) == 0 {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker has no public key"))
 	}
 
 	return connect.NewResponse(&leapmuxv1.GetWorkerPublicKeyResponse{
-		PublicKey: pubKey,
+		PublicKey:       keys.PublicKey,
+		MlkemPublicKey:  keys.MlkemPublicKey,
+		SlhdsaPublicKey: keys.SlhdsaPublicKey,
+	}), nil
+}
+
+func (s *ChannelService) GetWorkerEncryptionMode(
+	ctx context.Context,
+	req *connect.Request[leapmuxv1.GetWorkerEncryptionModeRequest],
+) (*connect.Response[leapmuxv1.GetWorkerEncryptionModeResponse], error) {
+	user, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workerID := req.Msg.GetWorkerId()
+	if workerID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))
+	}
+
+	// Verify user has access to this worker.
+	if _, err := s.verifyWorkerAccess(ctx, user, workerID); err != nil {
+		return nil, err
+	}
+
+	// Read encryption mode from the live connection (not DB).
+	conn := s.workerMgr.Get(workerID)
+	if conn == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("worker is offline"))
+	}
+
+	encMode := conn.EncryptionMode
+	if encMode == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED {
+		encMode = leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM
+	}
+
+	return connect.NewResponse(&leapmuxv1.GetWorkerEncryptionModeResponse{
+		EncryptionMode: encMode,
 	}), nil
 }
 
@@ -88,9 +125,7 @@ func (s *ChannelService) OpenChannel(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))
 	}
 
-	if len(req.Msg.GetHandshakePayload()) == 0 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("handshake_payload is required"))
-	}
+	// handshake_payload may be empty for disabled encryption mode (solo/loopback).
 
 	// Verify user has access to this worker and get the worker's org.
 	worker, err := s.verifyWorkerAccess(ctx, user, workerID)

@@ -29,7 +29,7 @@ type RegistrationResult struct {
 // 3. Poll until the registration is approved or expires.
 //
 // If hubURL starts with "unix:", it creates a Unix domain socket transport automatically.
-func Register(ctx context.Context, hubURL, version string, publicKey []byte) (*RegistrationResult, error) {
+func Register(ctx context.Context, hubURL, version string, publicKey, mlkemPublicKey, slhdsaPublicKey []byte) (*RegistrationResult, error) {
 	var httpClient *http.Client
 	connectURL := hubURL
 	if strings.HasPrefix(hubURL, "unix:") {
@@ -44,14 +44,14 @@ func Register(ctx context.Context, hubURL, version string, publicKey []byte) (*R
 		connectURL,
 		connect.WithGRPC(),
 	)
-	return registerWithClient(ctx, client, hubURL, version, publicKey, newDefaultBackoff())
+	return registerWithClient(ctx, client, hubURL, version, publicKey, mlkemPublicKey, slhdsaPublicKey, newDefaultBackoff())
 }
 
 func registerWithClient(
 	ctx context.Context,
 	client leapmuxv1connect.WorkerConnectorServiceClient,
 	hubURL, version string,
-	publicKey []byte,
+	publicKey, mlkemPublicKey, slhdsaPublicKey []byte,
 	bo backoff.BackOff,
 ) (*RegistrationResult, error) {
 	// Step 1: Request registration with retry.
@@ -60,8 +60,10 @@ func registerWithClient(
 		var err error
 		reqResp, err = client.RequestRegistration(ctx, connect.NewRequest(
 			&leapmuxv1.RequestRegistrationRequest{
-				Version:   version,
-				PublicKey: publicKey,
+				Version:         version,
+				PublicKey:       publicKey,
+				MlkemPublicKey:  mlkemPublicKey,
+				SlhdsaPublicKey: slhdsaPublicKey,
 			},
 		))
 		if err == nil {

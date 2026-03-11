@@ -6,6 +6,8 @@ package leapmux.v1;
 service ChannelService {
   // Get a Worker's static public key for Noise_NK handshake.
   rpc GetWorkerPublicKey(GetWorkerPublicKeyRequest) returns (GetWorkerPublicKeyResponse);
+  // Get a Worker's encryption mode from its live connection (not persisted).
+  rpc GetWorkerEncryptionMode(GetWorkerEncryptionModeRequest) returns (GetWorkerEncryptionModeResponse);
   // Open an encrypted channel to a Worker (triggers Noise_NK handshake via relay).
   rpc OpenChannel(OpenChannelRequest) returns (OpenChannelResponse);
   // Close an encrypted channel.
@@ -20,6 +22,26 @@ message GetWorkerPublicKeyRequest {
 
 message GetWorkerPublicKeyResponse {
   bytes public_key = 1;
+  bytes mlkem_public_key = 2;
+  bytes slhdsa_public_key = 3;
+  // Field 4 (encryption_mode) removed — use GetWorkerEncryptionMode instead.
+  reserved 4;
+}
+
+message GetWorkerEncryptionModeRequest {
+  string worker_id = 1;
+}
+
+message GetWorkerEncryptionModeResponse {
+  EncryptionMode encryption_mode = 1;
+}
+
+// EncryptionMode specifies which E2EE handshake protocol the Worker uses.
+enum EncryptionMode {
+  ENCRYPTION_MODE_UNSPECIFIED = 0;    // Treated as POST_QUANTUM
+  ENCRYPTION_MODE_DISABLED = 1;       // No encryption (solo mode only)
+  ENCRYPTION_MODE_CLASSIC = 2;        // Classical Noise_NK (X25519 only)
+  ENCRYPTION_MODE_POST_QUANTUM = 3;   // Hybrid PQ Noise_NK (X25519 + ML-KEM + SLH-DSA)
 }
 
 message OpenChannelRequest {

@@ -20,7 +20,7 @@ import type {
   SendControlResponseResponse,
   UpdateAgentSettingsResponse,
 } from '~/generated/leapmux/v1/agent_pb'
-import type { InnerStreamMessage } from '~/generated/leapmux/v1/channel_pb'
+import type { EncryptionMode, InnerStreamMessage } from '~/generated/leapmux/v1/channel_pb'
 import type {
   ListDirectoryResponse,
   ReadFileResponse,
@@ -51,7 +51,7 @@ import type {
   MoveTabWorkspaceResponse,
   WatchEventsResponse,
 } from '~/generated/leapmux/v1/workspace_pb'
-import type { ChannelTransport, KeyPinDecision } from '~/lib/channel'
+import type { ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '~/lib/channel'
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
 import { createClient } from '@connectrpc/connect'
 import { getToken, transport } from '~/api/transport'
@@ -153,9 +153,18 @@ export function setGetUserId(fn: () => string): void {
 }
 
 class BrowserChannelTransport implements ChannelTransport {
-  async getWorkerPublicKey(workerId: string): Promise<Uint8Array> {
+  async getWorkerPublicKey(workerId: string): Promise<WorkerKeyBundle> {
     const resp = await channelRpcClient.getWorkerPublicKey({ workerId })
-    return resp.publicKey
+    return {
+      x25519PublicKey: resp.publicKey,
+      mlkemPublicKey: resp.mlkemPublicKey,
+      slhdsaPublicKey: resp.slhdsaPublicKey,
+    }
+  }
+
+  async getWorkerEncryptionMode(workerId: string): Promise<EncryptionMode> {
+    const resp = await channelRpcClient.getWorkerEncryptionMode({ workerId })
+    return resp.encryptionMode
   }
 
   async openChannel(workerId: string, handshakePayload: Uint8Array): Promise<{ channelId: string, handshakePayload: Uint8Array }> {

@@ -227,11 +227,13 @@ func (s *Server) RegisterWorker(ctx context.Context, orgID, registeredBy string)
 	authToken := id.Generate()
 
 	if err := s.queries.CreateWorker(ctx, gendb.CreateWorkerParams{
-		ID:           workerID,
-		OrgID:        orgID,
-		AuthToken:    authToken,
-		RegisteredBy: registeredBy,
-		PublicKey:    []byte{},
+		ID:              workerID,
+		OrgID:           orgID,
+		AuthToken:       authToken,
+		RegisteredBy:    registeredBy,
+		PublicKey:       []byte{},
+		MlkemPublicKey:  []byte{},
+		SlhdsaPublicKey: []byte{},
 	}); err != nil {
 		return nil, fmt.Errorf("create worker: %w", err)
 	}

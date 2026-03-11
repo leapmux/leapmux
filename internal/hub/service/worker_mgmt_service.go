@@ -71,18 +71,28 @@ func (s *WorkerManagementService) ApproveRegistration(
 	workerID := id.Generate()
 	authToken := id.Generate()
 
-	// Copy public key from registration to worker (may be empty if worker didn't send one).
+	// Copy public keys from registration to worker (may be empty if worker didn't send them).
 	publicKey := reg.PublicKey
 	if publicKey == nil {
 		publicKey = []byte{}
 	}
+	mlkemPK := reg.MlkemPublicKey
+	if mlkemPK == nil {
+		mlkemPK = []byte{}
+	}
+	slhdsaPK := reg.SlhdsaPublicKey
+	if slhdsaPK == nil {
+		slhdsaPK = []byte{}
+	}
 
 	if err := s.queries.CreateWorker(ctx, db.CreateWorkerParams{
-		ID:           workerID,
-		OrgID:        orgID,
-		AuthToken:    authToken,
-		RegisteredBy: user.ID,
-		PublicKey:    publicKey,
+		ID:              workerID,
+		OrgID:           orgID,
+		AuthToken:       authToken,
+		RegisteredBy:    user.ID,
+		PublicKey:       publicKey,
+		MlkemPublicKey:  mlkemPK,
+		SlhdsaPublicKey: slhdsaPK,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create worker: %w", err))
 	}
@@ -257,7 +267,7 @@ func (s *WorkerManagementService) GetRegistration(
 
 	var fingerprint string
 	if len(reg.PublicKey) > 0 {
-		fingerprint = noiseutil.KeyFingerprint(reg.PublicKey)
+		fingerprint = noiseutil.CompositeKeyFingerprint(reg.PublicKey, reg.MlkemPublicKey, reg.SlhdsaPublicKey)
 	}
 
 	return connect.NewResponse(&leapmuxv1.GetRegistrationResponse{

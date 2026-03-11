@@ -1,6 +1,6 @@
 -- name: CreateRegistration :exec
-INSERT INTO worker_registrations (id, version, public_key, expires_at)
-VALUES (?, ?, ?, ?);
+INSERT INTO worker_registrations (id, version, public_key, mlkem_public_key, slhdsa_public_key, expires_at)
+VALUES (?, ?, ?, ?, ?, ?);
 
 -- name: GetRegistrationByID :one
 SELECT * FROM worker_registrations WHERE id = ?;

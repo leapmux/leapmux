@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/noise"
+	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -20,7 +20,7 @@ type SendFunc func(msg *leapmuxv1.ConnectRequest) error
 type channelSession struct {
 	ChannelID              string
 	UserID                 string
-	Session                *noise.Session
+	Session                *noiseutil.Session
 	sender                 *channelSender          // shared sender for this channel (protects Encrypt+Send)
 	verified               bool                    // true after a valid UserIdClaim has been received
 	reassembly             map[uint32]*chunkBuffer // correlationID -> in-progress chunk reassembly
@@ -34,22 +34,22 @@ type CloseCallback func(channelID string)
 // Manager manages encrypted channel sessions on the Worker side.
 type Manager struct {
 	mu                   sync.RWMutex
-	sessions             map[string]*channelSession // channelID -> session
-	privateKey           []byte                     // Worker's X25519 private key
-	publicKey            []byte                     // Worker's X25519 public key
-	sendFn               SendFunc                   // Function to send messages to Hub
-	dispatcher           *Dispatcher                // Inner RPC dispatcher
-	closeCallback        CloseCallback              // Called when a channel is closed
-	maxMessageSize       int                        // maximum reassembled message size
-	maxIncompleteChunked int                        // maximum in-flight chunked sequences per channel
+	sessions             map[string]*channelSession  // channelID -> session
+	compositeKey         *noiseutil.CompositeKeypair // Worker's composite keypair (X25519 + ML-KEM + SLH-DSA)
+	encryptionMode       leapmuxv1.EncryptionMode    // Encryption mode
+	sendFn               SendFunc                    // Function to send messages to Hub
+	dispatcher           *Dispatcher                 // Inner RPC dispatcher
+	closeCallback        CloseCallback               // Called when a channel is closed
+	maxMessageSize       int                         // maximum reassembled message size
+	maxIncompleteChunked int                         // maximum in-flight chunked sequences per channel
 }
 
 // NewManager creates a new channel Manager.
-func NewManager(privateKey, publicKey []byte, sendFn SendFunc) *Manager {
+func NewManager(compositeKey *noiseutil.CompositeKeypair, encryptionMode leapmuxv1.EncryptionMode, sendFn SendFunc) *Manager {
 	return &Manager{
 		sessions:             make(map[string]*channelSession),
-		privateKey:           privateKey,
-		publicKey:            publicKey,
+		compositeKey:         compositeKey,
+		encryptionMode:       encryptionMode,
 		sendFn:               sendFn,
 		maxMessageSize:       DefaultMaxMessageSize,
 		maxIncompleteChunked: DefaultMaxIncompleteChunked,
@@ -85,11 +85,29 @@ func (m *Manager) Dispatcher() *Dispatcher {
 // HandleOpen processes a ChannelOpenRequest from the Hub.
 // It performs the Noise_NK responder handshake and returns the response.
 func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.ChannelOpenResponse {
-	keypair := noise.Keypair{Private: m.privateKey, Public: m.publicKey}
-	handshakeResp, session, err := noise.ResponderHandshake(
-		keypair,
-		req.GetHandshakePayload(),
-	)
+	var handshakeResp []byte
+	var session *noiseutil.Session
+	var err error
+
+	switch m.encryptionMode {
+	case leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED:
+		// No encryption — use passthrough session.
+		session = noiseutil.NewPassthroughSession()
+	case leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC:
+		// Classical Noise_NK (X25519 only, no PQ).
+		handshakeResp, session, err = noiseutil.ClassicalResponderHandshake(
+			m.compositeKey.X25519Public,
+			m.compositeKey.X25519Private,
+			req.GetHandshakePayload(),
+		)
+	default:
+		// Post-quantum hybrid Noise_NK (X25519 + ML-KEM + SLH-DSA).
+		handshakeResp, session, err = noiseutil.ResponderHandshake(
+			m.compositeKey,
+			req.GetHandshakePayload(),
+		)
+	}
+
 	if err != nil {
 		slog.Error("channel handshake failed",
 			"channel_id", req.GetChannelId(),
@@ -126,6 +144,7 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 	slog.Info("channel opened",
 		"channel_id", req.GetChannelId(),
 		"user_id", req.GetUserId(),
+		"encryption_mode", m.encryptionMode,
 	)
 
 	return &leapmuxv1.ChannelOpenResponse{
@@ -375,7 +394,7 @@ func (m *Manager) CloseAll() {
 type channelSender struct {
 	mu             sync.Mutex
 	channelID      string
-	session        *noise.Session
+	session        *noiseutil.Session
 	sendFn         SendFunc
 	maxMessageSize int
 }

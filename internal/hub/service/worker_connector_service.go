@@ -80,12 +80,22 @@ func (s *WorkerConnectorService) RequestRegistration(
 	if publicKey == nil {
 		publicKey = []byte{}
 	}
+	mlkemPublicKey := req.Msg.GetMlkemPublicKey()
+	if mlkemPublicKey == nil {
+		mlkemPublicKey = []byte{}
+	}
+	slhdsaPublicKey := req.Msg.GetSlhdsaPublicKey()
+	if slhdsaPublicKey == nil {
+		slhdsaPublicKey = []byte{}
+	}
 
 	if err := s.queries.CreateRegistration(ctx, db.CreateRegistrationParams{
-		ID:        regID,
-		Version:   version,
-		PublicKey: publicKey,
-		ExpiresAt: expiresAt,
+		ID:              regID,
+		Version:         version,
+		PublicKey:       publicKey,
+		MlkemPublicKey:  mlkemPublicKey,
+		SlhdsaPublicKey: slhdsaPublicKey,
+		ExpiresAt:       expiresAt,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create registration: %w", err))
 	}
@@ -269,7 +279,9 @@ func (s *WorkerConnectorService) Connect(
 			idleTimer.Reset(workerIdleTimeout)
 
 			msg := result.msg
-			s.processWorkerMessage(ctx, conn, worker.ID, msg)
+			if err := s.processWorkerMessage(ctx, conn, worker.ID, msg); err != nil {
+				return connect.NewError(connect.CodeInvalidArgument, err)
+			}
 
 		case <-idleTimer.C:
 			// A message may have arrived at the same instant the timer
@@ -281,7 +293,9 @@ func (s *WorkerConnectorService) Connect(
 					return nil
 				}
 				idleTimer.Reset(workerIdleTimeout)
-				s.processWorkerMessage(ctx, conn, worker.ID, result.msg)
+				if err := s.processWorkerMessage(ctx, conn, worker.ID, result.msg); err != nil {
+					return connect.NewError(connect.CodeInvalidArgument, err)
+				}
 				continue
 			default:
 			}
@@ -296,22 +310,35 @@ func (s *WorkerConnectorService) Connect(
 }
 
 // processWorkerMessage handles a single message from the worker stream.
+// Returns a non-nil error to terminate the connection (e.g. invalid config).
 func (s *WorkerConnectorService) processWorkerMessage(
 	ctx context.Context,
 	conn *workermgr.Conn,
 	workerID string,
 	msg *leapmuxv1.ConnectRequest,
-) {
+) error {
 	// Update last seen periodically on heartbeats.
 	if hb := msg.GetHeartbeat(); hb != nil {
 		if err := s.queries.UpdateWorkerLastSeen(ctx, workerID); err != nil {
 			slog.Warn("failed to update worker last seen on heartbeat", "worker_id", workerID, "error", err)
 		}
-		// Persist worker's public key if provided (sent with the initial heartbeat).
+		// Cache encryption mode on the live connection (not persisted to DB).
+		encMode := hb.GetEncryptionMode()
+		if encMode == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED {
+			encMode = leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM
+		}
+		// Reject disabled encryption in non-solo mode.
+		if encMode == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED && !s.soloMode {
+			return fmt.Errorf("disabled encryption mode is only allowed in solo mode")
+		}
+		conn.EncryptionMode = encMode
+		// Persist worker's public keys if provided (sent with the initial heartbeat).
 		if pk := hb.GetPublicKey(); len(pk) > 0 {
 			if err := s.queries.UpdateWorkerPublicKey(ctx, db.UpdateWorkerPublicKeyParams{
-				PublicKey: pk,
-				ID:        workerID,
+				PublicKey:       pk,
+				MlkemPublicKey:  hb.GetMlkemPublicKey(),
+				SlhdsaPublicKey: hb.GetSlhdsaPublicKey(),
+				ID:              workerID,
 			}); err != nil {
 				slog.Warn("failed to update worker public key", "worker_id", workerID, "error", err)
 			}
@@ -325,20 +352,20 @@ func (s *WorkerConnectorService) processWorkerMessage(
 		}); err != nil {
 			slog.Debug("failed to send heartbeat response", "worker_id", workerID, "error", err)
 		}
-		return
+		return nil
 	}
 
 	// Try to complete pending request-response pairs (file operations).
 	if s.pending != nil && msg.GetRequestId() != "" {
 		if s.pending.Complete(msg.GetRequestId(), msg) {
-			return
+			return nil
 		}
 	}
 
 	// Handle workspace tab sync from worker.
 	if tabSync := msg.GetWorkspaceTabsSync(); tabSync != nil {
 		s.handleWorkspaceTabsSync(ctx, workerID, tabSync)
-		return
+		return nil
 	}
 
 	// Route channel messages from worker to frontend.
@@ -357,7 +384,7 @@ func (s *WorkerConnectorService) processWorkerMessage(
 					"correlation_id", chMsg.GetCorrelationId(),
 					"error", err,
 				)
-				return
+				return nil
 			}
 
 			slog.Debug("relaying channel message from worker",
@@ -373,13 +400,14 @@ func (s *WorkerConnectorService) processWorkerMessage(
 				)
 			}
 		}
-		return
+		return nil
 	}
 
 	slog.Debug("unhandled worker message",
 		"worker_id", workerID,
 		"request_id", msg.GetRequestId(),
 	)
+	return nil
 }
 
 // handleWorkspaceTabsSync reconciles the hub's workspace_tabs for the connecting worker.

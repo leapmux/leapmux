@@ -36,7 +36,7 @@ function generateKeypair(): { privateKey: Uint8Array, publicKey: Uint8Array } {
   return { privateKey, publicKey }
 }
 
-function hkdf(
+export function hkdf(
   chainingKey: Uint8Array,
   inputKeyMaterial: Uint8Array,
 ): [Uint8Array, Uint8Array] {
@@ -60,7 +60,7 @@ function decrypt(key: Uint8Array, nonce: number, ad: Uint8Array, ciphertext: Uin
   return cipher.decrypt(ciphertext)
 }
 
-function concatBytes(...arrays: Uint8Array[]): Uint8Array {
+export function concatBytes(...arrays: Uint8Array[]): Uint8Array {
   let totalLen = 0
   for (const a of arrays) totalLen += a.length
   const result = new Uint8Array(totalLen)
@@ -75,7 +75,7 @@ function concatBytes(...arrays: Uint8Array[]): Uint8Array {
 // ---- Noise Protocol State Machines ----
 
 /** SymmetricState manages the handshake hash (h) and chaining key (ck). */
-class SymmetricState {
+export class SymmetricState {
   h: Uint8Array // handshake hash (64 bytes for BLAKE2b)
   ck: Uint8Array // chaining key (64 bytes for BLAKE2b)
   hasK: boolean
@@ -138,6 +138,26 @@ class SymmetricState {
       new CipherState(tempK1.slice(0, 32)), // truncate to 32 for ChaChaPoly
       new CipherState(tempK2.slice(0, 32)),
     ]
+  }
+
+  /**
+   * hybridSplit mixes extra key material (e.g. ML-KEM shared secret)
+   * into the chaining key before deriving cipher keys.
+   */
+  hybridSplit(extraKeyMaterial: Uint8Array): [CipherState, CipherState] {
+    // Mix extra key material into chaining key.
+    const [ck2] = hkdf(this.ck, extraKeyMaterial)
+    this.ck = ck2
+    return this.split()
+  }
+
+  /** Zero all sensitive fields in the symmetric state. */
+  clear(): void {
+    this.h.fill(0)
+    this.ck.fill(0)
+    this.k.fill(0)
+    this.hasK = false
+    this.n = 0
   }
 }
 
@@ -220,6 +240,7 @@ export function initiatorHandshake1(remoteStaticPubKey: Uint8Array): {
   // es: DH(e, rs)
   const dhResult = dh(e.privateKey, remoteStaticPubKey)
   ss.mixKey(dhResult)
+  dhResult.fill(0)
 
   // Encrypt empty payload (no payload in handshake message 1).
   const encPayload = ss.encryptAndHash(new Uint8Array(0))
@@ -230,6 +251,15 @@ export function initiatorHandshake1(remoteStaticPubKey: Uint8Array): {
     handshakeState: { ss, e, rs: remoteStaticPubKey },
     message1,
   }
+}
+
+/**
+ * Zero all sensitive fields in a classical HandshakeState.
+ * Only secrets are zeroed — public keys (rs, e.publicKey) are not sensitive.
+ */
+export function clearClassicalHandshakeState(state: HandshakeState): void {
+  state.ss.clear()
+  state.e.privateKey.fill(0)
 }
 
 /**
@@ -252,6 +282,7 @@ export function initiatorHandshake2(state: HandshakeState, message2: Uint8Array)
   // ee: DH(e, re)
   const dhResult = dh(e.privateKey, re)
   ss.mixKey(dhResult)
+  dhResult.fill(0)
 
   // Decrypt payload (should be empty).
   const payload = message2.slice(32)
@@ -262,5 +293,9 @@ export function initiatorHandshake2(state: HandshakeState, message2: Uint8Array)
   //   Responder: send=cs1, receive=cs2
   //   Initiator: send=cs2, receive=cs1
   const [c1, c2] = ss.split()
+
+  // Zero sensitive handshake material.
+  clearClassicalHandshakeState(state)
+
   return { send: c2, receive: c1 }
 }

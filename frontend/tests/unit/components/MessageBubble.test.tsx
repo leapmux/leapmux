@@ -498,7 +498,7 @@ describe('todoWrite collapse/expand', () => {
     ))
 
     // Expand button should not exist since alwaysVisible hides it
-    expect(screen.queryByTitle('Expand 1 tool result')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Expand 1 tool result' })).toBeNull()
   })
 
   it('body has left border (always visible)', () => {
@@ -630,7 +630,7 @@ describe('taskOutput rendering', () => {
     ))
 
     // Click the expand button
-    const expandBtn = screen.getByTitle('Expand 1 tool result')
+    const expandBtn = screen.getByRole('button', { name: 'Expand 1 tool result' })
     fireEvent.click(expandBtn)
 
     const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
@@ -659,7 +659,7 @@ describe('taskOutput rendering', () => {
     ))
 
     // Click the expand button
-    const expandBtn = screen.getByTitle('Expand 1 tool result')
+    const expandBtn = screen.getByRole('button', { name: 'Expand 1 tool result' })
     fireEvent.click(expandBtn)
 
     const bubble = screen.getByTestId('message-content')
@@ -1061,7 +1061,7 @@ describe('edit/write alwaysVisible', () => {
     const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
     expect(bodyWrapper).not.toBeNull()
     // Expand button should not exist since alwaysVisible hides it
-    expect(screen.queryByTitle('Expand 1 tool result')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Expand 1 tool result' })).toBeNull()
   })
 
   it('write body is visible without expanding and shows additions diff', () => {
@@ -1081,7 +1081,7 @@ describe('edit/write alwaysVisible', () => {
     const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
     expect(bodyWrapper).not.toBeNull()
     // Expand button should not exist since alwaysVisible hides it
-    expect(screen.queryByTitle('Expand 1 tool result')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Expand 1 tool result' })).toBeNull()
     // Should show the file content as an additions diff
     const bubble = screen.getByTestId('message-content')
     expect(bubble.textContent).toContain('hello')
