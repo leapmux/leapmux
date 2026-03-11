@@ -33,6 +33,7 @@ import Vote from 'lucide-solid/icons/vote'
 import { createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
+import { Tooltip } from '~/components/common/Tooltip'
 import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
@@ -67,10 +68,12 @@ export function ControlResponseTag(props: { response?: { action: string, comment
   return (
     <Show when={props.response}>
       {cr => (
-        <span class={controlResponseTag} title={cr().comment || undefined}>
-          {'\u00B7 '}
-          {cr().action === 'approved' ? 'Approved' : cr().comment ? `Rejected: ${cr().comment}` : 'Rejected'}
-        </span>
+        <Tooltip text={cr().comment || undefined}>
+          <span class={controlResponseTag}>
+            {'\u00B7 '}
+            {cr().action === 'approved' ? 'Approved' : cr().comment ? `Rejected: ${cr().comment}` : 'Rejected'}
+          </span>
+        </Tooltip>
       )}
     </Show>
   )
@@ -106,9 +109,11 @@ export function ToolUseLayout(props: {
   return (
     <div class={toolMessage}>
       <div class={toolUseHeader}>
-        <span class={`${inlineFlex} ${toolUseIcon}`} title={props.toolName}>
-          <Icon icon={props.icon} size="md" />
-        </span>
+        <Tooltip text={props.toolName}>
+          <span class={`${inlineFlex} ${toolUseIcon}`}>
+            <Icon icon={props.icon} size="md" />
+          </span>
+        </Tooltip>
         {typeof props.title === 'string'
           ? <span class={toolInputText}>{props.title}</span>
           : props.title}

@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import Info from 'lucide-solid/icons/info'
 import { createMemo, For, Show } from 'solid-js'
+import { Tooltip } from '~/components/common/Tooltip'
 
 interface ContextUsageGridProps {
   contextUsage?: ContextUsageInfo
@@ -80,27 +81,28 @@ export const ContextUsageGrid: Component<ContextUsageGridProps> = (props) => {
 
   return (
     <Show when={percentage() != null} fallback={<Info size={props.size} />}>
-      <svg
-        width={props.size}
-        height={props.size}
-        viewBox="0 0 11 11"
-        fill="none"
-        aria-label={tooltip()}
-      >
-        <title>{tooltip()}</title>
-        <For each={fillOrder}>
-          {([row, col], i) => (
-            <rect
-              x={col * STEP}
-              y={row * STEP}
-              width={SQUARE_SIZE}
-              height={SQUARE_SIZE}
-              rx={0.5}
-              fill={i() < filled() ? activeColor() : 'var(--context-grid-inactive)'}
-            />
-          )}
-        </For>
-      </svg>
+      <Tooltip text={tooltip()}>
+        <svg
+          width={props.size}
+          height={props.size}
+          viewBox="0 0 11 11"
+          fill="none"
+          aria-label={tooltip()}
+        >
+          <For each={fillOrder}>
+            {([row, col], i) => (
+              <rect
+                x={col * STEP}
+                y={row * STEP}
+                width={SQUARE_SIZE}
+                height={SQUARE_SIZE}
+                rx={0.5}
+                fill={i() < filled() ? activeColor() : 'var(--context-grid-inactive)'}
+              />
+            )}
+          </For>
+        </svg>
+      </Tooltip>
     </Show>
   )
 }

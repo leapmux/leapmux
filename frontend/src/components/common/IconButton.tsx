@@ -6,6 +6,7 @@ import { Show, splitProps } from 'solid-js'
 import { spinner } from '~/styles/animations.css'
 import { Icon } from './Icon'
 import * as styles from './IconButton.css'
+import { Tooltip } from './Tooltip'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -22,7 +23,7 @@ export type IconButtonSize = 'sm' | 'md' | 'lg' | 'xl'
 
 type ButtonHtmlAttributes = Omit<
   ComponentProps<'button'>,
-  'class' | 'style' | 'disabled' | 'onClick' | 'children'
+  'class' | 'style' | 'disabled' | 'onClick' | 'children' | 'title'
 >
 
 export interface IconButtonProps extends ButtonHtmlAttributes {
@@ -40,6 +41,8 @@ export interface IconButtonProps extends ButtonHtmlAttributes {
   style?: JSX.CSSProperties
   /** Click handler. */
   onClick?: JSX.EventHandlerUnion<HTMLButtonElement, MouseEvent>
+  /** Tooltip text shown on hover (rendered via portal to escape overflow:hidden). */
+  title?: string
   /** Extra content rendered after the icon (e.g., dropdown arrow). */
   children?: JSX.Element
 }
@@ -64,6 +67,7 @@ export const IconButton: Component<IconButtonProps> = (props) => {
     'class',
     'style',
     'onClick',
+    'title',
     'children',
   ])
 
@@ -87,19 +91,22 @@ export const IconButton: Component<IconButtonProps> = (props) => {
   }
 
   return (
-    <button
-      type="button"
-      class={classes()}
-      style={local.style}
-      disabled={isDisabled()}
-      // eslint-disable-next-line solid/reactivity -- onClick is forwarded from props, reactivity not needed
-      onClick={local.onClick}
-      {...rest}
-    >
-      <Show when={isLoading()} fallback={<Icon icon={local.icon} size={iconSz()} />}>
-        <Icon icon={LoaderCircle} size={iconSz()} class={spinner} />
-      </Show>
-      {local.children}
-    </button>
+    <Tooltip text={local.title}>
+      <button
+        type="button"
+        class={classes()}
+        style={local.style}
+        disabled={isDisabled()}
+        aria-label={local.title}
+        // eslint-disable-next-line solid/reactivity -- onClick is forwarded from props, reactivity not needed
+        onClick={local.onClick}
+        {...rest}
+      >
+        <Show when={isLoading()} fallback={<Icon icon={local.icon} size={iconSz()} />}>
+          <Icon icon={LoaderCircle} size={iconSz()} class={spinner} />
+        </Show>
+        {local.children}
+      </button>
+    </Tooltip>
   )
 }

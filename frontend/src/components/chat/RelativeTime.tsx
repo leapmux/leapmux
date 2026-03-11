@@ -14,6 +14,7 @@ import Clock11 from 'lucide-solid/icons/clock-11'
 import Clock12 from 'lucide-solid/icons/clock-12'
 import { createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
+import { Tooltip } from '~/components/common/Tooltip'
 
 const clockIcons: Component<{ size: number }>[] = [
   Clock12,
@@ -91,11 +92,13 @@ export function RelativeTime(props: RelativeTimeProps) {
 
   return (
     <Show when={isValid()}>
-      <span class={props.class} title={fullText()}>
-        <ClockIcon />
-        {' '}
-        {relative()}
-      </span>
+      <Tooltip text={fullText()}>
+        <span class={props.class}>
+          <ClockIcon />
+          {' '}
+          {relative()}
+        </span>
+      </Tooltip>
     </Show>
   )
 }

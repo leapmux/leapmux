@@ -17,6 +17,7 @@ import { relativizePath, tildify } from '~/components/chat/messageUtils'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
+import { Tooltip } from '~/components/common/Tooltip'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import * as styles from './DirectoryTree.css'
 import { DiffStatsBadge, getGitFileIconClass } from './gitStatusUtils'
@@ -759,16 +760,17 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     <TreeContext.Provider value={treeContextValue}>
       <div class={styles.container}>
         <div class={styles.pathInput}>
-          <input
-            class={styles.pathInputField}
-            type="text"
-            value={inputValue()}
-            title={props.selectedPath}
-            onInput={e => setInputValue(e.currentTarget.value)}
-            onKeyDown={handlePathKeyDown}
-            onBlur={handlePathBlur}
-            placeholder="Enter path..."
-          />
+          <Tooltip text={props.selectedPath}>
+            <input
+              class={styles.pathInputField}
+              type="text"
+              value={inputValue()}
+              onInput={e => setInputValue(e.currentTarget.value)}
+              onKeyDown={handlePathKeyDown}
+              onBlur={handlePathBlur}
+              placeholder="Enter path..."
+            />
+          </Tooltip>
         </div>
         <div class={styles.tree} ref={treeRef}>
           <Show when={error()}>

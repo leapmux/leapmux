@@ -4,6 +4,7 @@ import { createEffect, createMemo, createSignal, on, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { tildify } from '~/components/chat/messageUtils'
 import { RefreshButton } from '~/components/common/RefreshButton'
+import { Tooltip } from '~/components/common/Tooltip'
 import { useOrg } from '~/context/OrgContext'
 import { validateBranchName } from '~/lib/validate'
 import { checkboxRow, errorText, labelRow, pathPreview, warningText } from '~/styles/shared.css'
@@ -146,7 +147,7 @@ export const WorktreeOptions: Component<WorktreeOptionsProps> = (props) => {
           <div class={pathPreview}>
             Worktree path:
             {' '}
-            <code title={worktreePath()}>{tildify(worktreePath(), props.homeDir)}</code>
+            <Tooltip text={worktreePath()}><code>{tildify(worktreePath(), props.homeDir)}</code></Tooltip>
           </div>
         </Show>
       </Show>
