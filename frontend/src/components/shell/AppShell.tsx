@@ -150,7 +150,7 @@ export const AppShell: ParentComponent = (props) => {
   const [turnEndTrigger, setTurnEndTrigger] = createSignal(0)
 
   // Debounced turn-end handler
-  const TURN_END_SOUND_COOLDOWN_MS = 10_000
+  const TURN_END_SOUND_COOLDOWN_MS = 60_000
   let lastSoundPlayedAt = 0
   // Late-bound ref: set once useTabOperations is initialized (after useWorkspaceConnection).
   let isAgentClosing: (agentId: string) => boolean = () => false
