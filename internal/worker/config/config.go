@@ -49,38 +49,61 @@ func (c *Config) AgentStartupTimeout() time.Duration {
 
 // State holds the worker's persistent state (saved to disk after registration).
 type State struct {
-	WorkerID   string `json:"worker_id"`
-	AuthToken  string `json:"auth_token"`
-	OrgID      string `json:"org_id"`
-	PublicKey  string `json:"public_key,omitempty"`  // Base64-encoded X25519 public key
-	PrivateKey string `json:"private_key,omitempty"` // Base64-encoded X25519 private key
+	WorkerID        string `json:"worker_id"`
+	AuthToken       string `json:"auth_token"`
+	OrgID           string `json:"org_id"`
+	PublicKey       string `json:"public_key,omitempty"`        // Base64-encoded X25519 public key
+	PrivateKey      string `json:"private_key,omitempty"`       // Base64-encoded X25519 private key
+	MlkemPublicKey  string `json:"mlkem_public_key,omitempty"`  // Base64-encoded ML-KEM-1024 decapsulation key
+	SlhdsaPublicKey string `json:"slhdsa_public_key,omitempty"` // Base64-encoded SLH-DSA public key
+	SlhdsaPrivateKey string `json:"slhdsa_private_key,omitempty"` // Base64-encoded SLH-DSA private key
+	MlkemPrivateKey string `json:"mlkem_private_key,omitempty"` // Base64-encoded ML-KEM-1024 decapsulation key (serialized)
 }
 
-// PublicKeyBytes returns the decoded public key bytes.
-func (s *State) PublicKeyBytes() ([]byte, error) {
-	return base64.StdEncoding.DecodeString(s.PublicKey)
-}
-
-// PrivateKeyBytes returns the decoded private key bytes.
-func (s *State) PrivateKeyBytes() ([]byte, error) {
-	return base64.StdEncoding.DecodeString(s.PrivateKey)
-}
-
-// EnsureKeypair generates a keypair if one doesn't exist in the state.
+// EnsureCompositeKeypair generates a composite keypair if one doesn't exist.
 // Returns true if a new keypair was generated (state needs saving).
-func (s *State) EnsureKeypair() (bool, error) {
-	if s.PublicKey != "" && s.PrivateKey != "" {
+func (s *State) EnsureCompositeKeypair() (bool, error) {
+	if s.PublicKey != "" && s.PrivateKey != "" && s.MlkemPublicKey != "" && s.MlkemPrivateKey != "" && s.SlhdsaPublicKey != "" && s.SlhdsaPrivateKey != "" {
 		return false, nil
 	}
 
-	kp, err := noiseutil.GenerateKeypair()
+	ck, err := noiseutil.GenerateCompositeKeypair()
 	if err != nil {
-		return false, fmt.Errorf("generate keypair: %w", err)
+		return false, fmt.Errorf("generate composite keypair: %w", err)
 	}
 
-	s.PublicKey = base64.StdEncoding.EncodeToString(kp.Public)
-	s.PrivateKey = base64.StdEncoding.EncodeToString(kp.Private)
+	slhdsaPub, err := ck.SlhdsaPublicKeyBytes()
+	if err != nil {
+		return false, fmt.Errorf("marshal slhdsa public key: %w", err)
+	}
+	slhdsaPriv, err := ck.SlhdsaPrivateKey.MarshalBinary()
+	if err != nil {
+		return false, fmt.Errorf("marshal slhdsa private key: %w", err)
+	}
+
+	s.PublicKey = base64.StdEncoding.EncodeToString(ck.X25519Public)
+	s.PrivateKey = base64.StdEncoding.EncodeToString(ck.X25519Private)
+	s.MlkemPublicKey = base64.StdEncoding.EncodeToString(ck.MlkemPublicKeyBytes())
+	s.MlkemPrivateKey = base64.StdEncoding.EncodeToString(ck.MlkemDecapsulationKey.Bytes())
+	s.SlhdsaPublicKey = base64.StdEncoding.EncodeToString(slhdsaPub)
+	s.SlhdsaPrivateKey = base64.StdEncoding.EncodeToString(slhdsaPriv)
 	return true, nil
+}
+
+// CompositeKeypair reconstructs the CompositeKeypair from persisted state.
+func (s *State) CompositeKeypair() (*noiseutil.CompositeKeypair, error) {
+	return noiseutil.RestoreCompositeKeypair(
+		mustDecode(s.PublicKey),
+		mustDecode(s.PrivateKey),
+		mustDecode(s.MlkemPrivateKey),
+		mustDecode(s.SlhdsaPublicKey),
+		mustDecode(s.SlhdsaPrivateKey),
+	)
+}
+
+func mustDecode(s string) []byte {
+	b, _ := base64.StdEncoding.DecodeString(s)
+	return b
 }
 
 // Load parses worker configuration from defaults, config file, env vars, and CLI flags.

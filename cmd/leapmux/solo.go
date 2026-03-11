@@ -23,10 +23,14 @@ import (
 
 // soloState persists the auto-registered worker credentials.
 type soloState struct {
-	WorkerID   string `json:"worker_id"`
-	AuthToken  string `json:"auth_token"`
-	PublicKey  string `json:"public_key,omitempty"`
-	PrivateKey string `json:"private_key,omitempty"`
+	WorkerID         string `json:"worker_id"`
+	AuthToken        string `json:"auth_token"`
+	PublicKey        string `json:"public_key,omitempty"`
+	PrivateKey       string `json:"private_key,omitempty"`
+	MlkemPublicKey   string `json:"mlkem_public_key,omitempty"`
+	MlkemPrivateKey  string `json:"mlkem_private_key,omitempty"`
+	SlhdsaPublicKey  string `json:"slhdsa_public_key,omitempty"`
+	SlhdsaPrivateKey string `json:"slhdsa_private_key,omitempty"`
 }
 
 func runSolo(args []string, soloMode bool) error {
@@ -114,24 +118,40 @@ func runSolo(args []string, soloMode bool) error {
 		return fmt.Errorf("auto-register worker: %w", err)
 	}
 
-	// Ensure the worker has an X25519 keypair for E2EE channels.
-	if state.PublicKey == "" || state.PrivateKey == "" {
-		kp, kpErr := noiseutil.GenerateKeypair()
+	// Ensure the worker has a composite keypair for E2EE channels.
+	if state.PublicKey == "" || state.PrivateKey == "" || state.MlkemPublicKey == "" || state.MlkemPrivateKey == "" || state.SlhdsaPublicKey == "" || state.SlhdsaPrivateKey == "" {
+		ck, kpErr := noiseutil.GenerateCompositeKeypair()
 		if kpErr != nil {
 			stop()
 			wg.Wait()
-			return fmt.Errorf("generate keypair: %w", kpErr)
+			return fmt.Errorf("generate composite keypair: %w", kpErr)
 		}
-		state.PublicKey = base64.StdEncoding.EncodeToString(kp.Public)
-		state.PrivateKey = base64.StdEncoding.EncodeToString(kp.Private)
+		slhdsaPub, _ := ck.SlhdsaPublicKeyBytes()
+		slhdsaPriv, _ := ck.SlhdsaPrivateKey.MarshalBinary()
+		state.PublicKey = base64.StdEncoding.EncodeToString(ck.X25519Public)
+		state.PrivateKey = base64.StdEncoding.EncodeToString(ck.X25519Private)
+		state.MlkemPublicKey = base64.StdEncoding.EncodeToString(ck.MlkemPublicKeyBytes())
+		state.MlkemPrivateKey = base64.StdEncoding.EncodeToString(ck.MlkemDecapsulationKey.Bytes())
+		state.SlhdsaPublicKey = base64.StdEncoding.EncodeToString(slhdsaPub)
+		state.SlhdsaPrivateKey = base64.StdEncoding.EncodeToString(slhdsaPriv)
 		stateData, _ := json.MarshalIndent(state, "", "  ")
 		if writeErr := os.WriteFile(statePath, stateData, 0o600); writeErr != nil {
 			slog.Warn("failed to save keypair", "error", writeErr)
 		}
 	}
 
-	privateKey, _ := base64.StdEncoding.DecodeString(state.PrivateKey)
-	publicKey, _ := base64.StdEncoding.DecodeString(state.PublicKey)
+	compositeKey, ckErr := noiseutil.RestoreCompositeKeypair(
+		mustDecode64(state.PublicKey),
+		mustDecode64(state.PrivateKey),
+		mustDecode64(state.MlkemPrivateKey),
+		mustDecode64(state.SlhdsaPublicKey),
+		mustDecode64(state.SlhdsaPrivateKey),
+	)
+	if ckErr != nil {
+		stop()
+		wg.Wait()
+		return fmt.Errorf("restore composite keypair: %w", ckErr)
+	}
 
 	slog.Info(modeName+" worker registered",
 		"worker_id", state.WorkerID,
@@ -146,8 +166,7 @@ func runSolo(args []string, soloMode bool) error {
 			HubURL:              "unix:" + socketPath,
 			DataDir:             workerDataDir,
 			AuthToken:           state.AuthToken,
-			PrivateKey:          privateKey,
-			PublicKey:           publicKey,
+			CompositeKey:        compositeKey,
 			WorkerID:            state.WorkerID,
 			Version:             version,
 			DBMaxConns:          hubCfg.DBMaxConns,
@@ -233,4 +252,9 @@ func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath,
 	}
 
 	return state, nil
+}
+
+func mustDecode64(s string) []byte {
+	b, _ := base64.StdEncoding.DecodeString(s)
+	return b
 }

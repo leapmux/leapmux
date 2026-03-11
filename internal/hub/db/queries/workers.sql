@@ -1,6 +1,6 @@
 -- name: CreateWorker :exec
-INSERT INTO workers (id, org_id, auth_token, registered_by, public_key)
-VALUES (?, ?, ?, ?, ?);
+INSERT INTO workers (id, org_id, auth_token, registered_by, public_key, mlkem_public_key, slhdsa_public_key)
+VALUES (?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetWorkerByID :one
 SELECT * FROM workers WHERE id = ? AND org_id = ?;
@@ -48,7 +48,7 @@ SELECT id FROM workers WHERE org_id = ? AND registered_by = ? AND status = 1;
 UPDATE workers SET last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?;
 
 -- name: UpdateWorkerPublicKey :exec
-UPDATE workers SET public_key = ? WHERE id = ?;
+UPDATE workers SET public_key = ?, mlkem_public_key = ?, slhdsa_public_key = ? WHERE id = ?;
 
 -- name: GetWorkerPublicKey :one
-SELECT public_key FROM workers WHERE id = ?;
+SELECT public_key, mlkem_public_key, slhdsa_public_key FROM workers WHERE id = ?;

@@ -26,7 +26,8 @@ import {
   UserIdClaimSchema,
 } from '~/generated/leapmux/v1/channel_pb'
 import { createLogger } from './logger'
-import { initiatorHandshake1, initiatorHandshake2 } from './noise'
+import { concatBytes } from './noise'
+import { initiatorHandshake1, initiatorHandshake2 } from './noise-hybrid'
 import { safeGetJson, safeRemoveItem, safeSetJson } from './safeStorage'
 
 const log = createLogger('channel')
@@ -54,9 +55,16 @@ export class ChannelError extends Error {
   }
 }
 
+/** Worker key bundle returned by transport. */
+export interface WorkerKeyBundle {
+  x25519PublicKey: Uint8Array
+  mlkemPublicKey: Uint8Array
+  slhdsaPublicKey: Uint8Array
+}
+
 /** Transport interface for platform-specific RPC and WebSocket creation. */
 export interface ChannelTransport {
-  getWorkerPublicKey: (workerId: string) => Promise<Uint8Array>
+  getWorkerPublicKey: (workerId: string) => Promise<WorkerKeyBundle>
   openChannel: (workerId: string, handshakePayload: Uint8Array) => Promise<{ channelId: string, handshakePayload: Uint8Array }>
   closeChannel: (channelId: string) => Promise<void>
   createWebSocket: () => WebSocket
@@ -185,11 +193,12 @@ export class ChannelManager {
    * and connects the shared WebSocket relay.
    */
   async openChannel(workerId: string): Promise<string> {
-    // 1. Get Worker's public key.
-    const publicKey = await this.transport.getWorkerPublicKey(workerId)
+    // 1. Get Worker's key bundle (X25519 + ML-KEM + SLH-DSA).
+    const keyBundle = await this.transport.getWorkerPublicKey(workerId)
 
-    // 2. Key pinning (TOFU model).
-    const publicKeyHex = bytesToHex(publicKey)
+    // 2. Key pinning (TOFU model) — pin composite key.
+    const compositeKeyBytes = concatBytes(keyBundle.x25519PublicKey, keyBundle.mlkemPublicKey, keyBundle.slhdsaPublicKey)
+    const publicKeyHex = bytesToHex(compositeKeyBytes)
     const pinKey = `leapmux:key-pin:${workerId}`
     const pinned = safeGetJson<{ publicKeyHex: string, firstSeen: number }>(pinKey)
 
@@ -214,14 +223,14 @@ export class ChannelManager {
       safeSetJson(pinKey, { publicKeyHex, firstSeen: Date.now() })
     }
 
-    // 3. Perform Noise_NK handshake (message 1).
-    const { handshakeState, message1 } = this.handshake1(publicKey)
+    // 3. Perform hybrid Noise_NK handshake (message 1).
+    const { handshakeState, message1 } = this.handshake1(keyBundle.x25519PublicKey, keyBundle.mlkemPublicKey)
 
     // 4. Send handshake via Hub and get response.
     const result = await this.transport.openChannel(workerId, message1)
 
-    // 5. Complete handshake (message 2).
-    const session = this.handshake2(handshakeState, result.handshakePayload)
+    // 5. Complete hybrid handshake (message 2) — verifies SLH-DSA signature.
+    const session = this.handshake2(handshakeState, result.handshakePayload, keyBundle.slhdsaPublicKey)
 
     // 6. Ensure shared WebSocket is connected.
     await this.ensureWebSocket()

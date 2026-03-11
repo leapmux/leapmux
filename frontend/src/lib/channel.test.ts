@@ -1,4 +1,4 @@
-import type { ChannelTransport, KeyPinDecision } from './channel'
+import type { ChannelTransport, KeyPinDecision, WorkerKeyBundle } from './channel'
 import type { Session } from './noise'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js'
@@ -175,10 +175,14 @@ const sessions = new Map<string, { initiator: Session, responder: Session }>()
 
 function createMockTransport(mockWs: MockWebSocket): ChannelTransport {
   return {
-    async getWorkerPublicKey(_workerId: string): Promise<Uint8Array> {
-      // Return a dummy 32-byte key. The real handshake is bypassed
+    async getWorkerPublicKey(_workerId: string): Promise<WorkerKeyBundle> {
+      // Return dummy keys. The real handshake is bypassed
       // since we mock initiatorHandshake1/2.
-      return new Uint8Array(32)
+      return {
+        x25519PublicKey: new Uint8Array(32),
+        mlkemPublicKey: new Uint8Array(1568),
+        slhdsaPublicKey: new Uint8Array(64),
+      }
     },
     async openChannel(_workerId: string, _handshakePayload: Uint8Array) {
       const channelId = `ch-${Math.random().toString(36).slice(2, 8)}`
@@ -186,7 +190,7 @@ function createMockTransport(mockWs: MockWebSocket): ChannelTransport {
       sessions.set(channelId, pair)
       // Return the handshake payload that initiatorHandshake2 expects.
       // Since we mock the handshake functions, the actual bytes don't matter.
-      return { channelId, handshakePayload: new Uint8Array(48) }
+      return { channelId, handshakePayload: new Uint8Array(49904) }
     },
     async closeChannel(_channelId: string) {},
     createWebSocket(): WebSocket {
@@ -203,14 +207,14 @@ function createMockTransport(mockWs: MockWebSocket): ChannelTransport {
 
 // ---- Mock handshake functions (injected via ChannelManager DI) ----
 
-function mockHandshake1(_publicKey: Uint8Array) {
+function mockHandshake1(_remoteX25519Pub: Uint8Array, _remoteMlkemPub: Uint8Array) {
   return {
     handshakeState: {} as any,
-    message1: new Uint8Array(48),
+    message1: new Uint8Array(1616),
   }
 }
 
-function mockHandshake2(_state: any, _message2: Uint8Array) {
+function mockHandshake2(_state: any, _message2: Uint8Array, _remoteSlhdsaPub: Uint8Array) {
   const entries = [...sessions.entries()]
   const lastEntry = entries.at(-1)
   if (!lastEntry)

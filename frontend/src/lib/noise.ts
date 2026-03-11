@@ -36,7 +36,7 @@ function generateKeypair(): { privateKey: Uint8Array, publicKey: Uint8Array } {
   return { privateKey, publicKey }
 }
 
-function hkdf(
+export function hkdf(
   chainingKey: Uint8Array,
   inputKeyMaterial: Uint8Array,
 ): [Uint8Array, Uint8Array] {
@@ -60,7 +60,7 @@ function decrypt(key: Uint8Array, nonce: number, ad: Uint8Array, ciphertext: Uin
   return cipher.decrypt(ciphertext)
 }
 
-function concatBytes(...arrays: Uint8Array[]): Uint8Array {
+export function concatBytes(...arrays: Uint8Array[]): Uint8Array {
   let totalLen = 0
   for (const a of arrays) totalLen += a.length
   const result = new Uint8Array(totalLen)
@@ -75,7 +75,7 @@ function concatBytes(...arrays: Uint8Array[]): Uint8Array {
 // ---- Noise Protocol State Machines ----
 
 /** SymmetricState manages the handshake hash (h) and chaining key (ck). */
-class SymmetricState {
+export class SymmetricState {
   h: Uint8Array // handshake hash (64 bytes for BLAKE2b)
   ck: Uint8Array // chaining key (64 bytes for BLAKE2b)
   hasK: boolean
@@ -138,6 +138,17 @@ class SymmetricState {
       new CipherState(tempK1.slice(0, 32)), // truncate to 32 for ChaChaPoly
       new CipherState(tempK2.slice(0, 32)),
     ]
+  }
+
+  /**
+   * hybridSplit mixes extra key material (e.g. ML-KEM shared secret)
+   * into the chaining key before deriving cipher keys.
+   */
+  hybridSplit(extraKeyMaterial: Uint8Array): [CipherState, CipherState] {
+    // Mix extra key material into chaining key.
+    const [ck2] = hkdf(this.ck, extraKeyMaterial)
+    this.ck = ck2
+    return this.split()
   }
 }
 

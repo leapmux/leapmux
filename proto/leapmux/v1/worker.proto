@@ -36,6 +36,8 @@ service WorkerManagementService {
 message RequestRegistrationRequest {
   string version = 1;
   bytes public_key = 2;  // Worker's X25519 static public key for E2EE
+  bytes mlkem_public_key = 3;  // Worker's ML-KEM-1024 public key for post-quantum key encapsulation
+  bytes slhdsa_public_key = 4;  // Worker's SLH-DSA-SHAKE-256f public key for post-quantum authentication
 }
 
 message RequestRegistrationResponse {
@@ -202,6 +204,8 @@ message HubShuttingDownNotification {
 message Heartbeat {
   int64 timestamp_ms = 1;
   bytes public_key = 2;  // Worker's X25519 public key for E2EE channels (sent with first heartbeat)
+  bytes mlkem_public_key = 3;  // Worker's ML-KEM-1024 public key for post-quantum key encapsulation
+  bytes slhdsa_public_key = 4;  // Worker's SLH-DSA-SHAKE-256f public key for post-quantum authentication
 }
 
 // --- Inner RPC messages (E2EE channel, Frontend ↔ Worker) ---

@@ -20,6 +20,8 @@ message GetWorkerPublicKeyRequest {
 
 message GetWorkerPublicKeyResponse {
   bytes public_key = 1;
+  bytes mlkem_public_key = 2;
+  bytes slhdsa_public_key = 3;
 }
 
 message OpenChannelRequest {

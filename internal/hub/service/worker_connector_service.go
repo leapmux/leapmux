@@ -80,12 +80,22 @@ func (s *WorkerConnectorService) RequestRegistration(
 	if publicKey == nil {
 		publicKey = []byte{}
 	}
+	mlkemPublicKey := req.Msg.GetMlkemPublicKey()
+	if mlkemPublicKey == nil {
+		mlkemPublicKey = []byte{}
+	}
+	slhdsaPublicKey := req.Msg.GetSlhdsaPublicKey()
+	if slhdsaPublicKey == nil {
+		slhdsaPublicKey = []byte{}
+	}
 
 	if err := s.queries.CreateRegistration(ctx, db.CreateRegistrationParams{
-		ID:        regID,
-		Version:   version,
-		PublicKey: publicKey,
-		ExpiresAt: expiresAt,
+		ID:              regID,
+		Version:         version,
+		PublicKey:       publicKey,
+		MlkemPublicKey:  mlkemPublicKey,
+		SlhdsaPublicKey: slhdsaPublicKey,
+		ExpiresAt:       expiresAt,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create registration: %w", err))
 	}
@@ -307,11 +317,13 @@ func (s *WorkerConnectorService) processWorkerMessage(
 		if err := s.queries.UpdateWorkerLastSeen(ctx, workerID); err != nil {
 			slog.Warn("failed to update worker last seen on heartbeat", "worker_id", workerID, "error", err)
 		}
-		// Persist worker's public key if provided (sent with the initial heartbeat).
+		// Persist worker's public keys if provided (sent with the initial heartbeat).
 		if pk := hb.GetPublicKey(); len(pk) > 0 {
 			if err := s.queries.UpdateWorkerPublicKey(ctx, db.UpdateWorkerPublicKeyParams{
-				PublicKey: pk,
-				ID:        workerID,
+				PublicKey:       pk,
+				MlkemPublicKey:  hb.GetMlkemPublicKey(),
+				SlhdsaPublicKey: hb.GetSlhdsaPublicKey(),
+				ID:              workerID,
 			}); err != nil {
 				slog.Warn("failed to update worker public key", "worker_id", workerID, "error", err)
 			}

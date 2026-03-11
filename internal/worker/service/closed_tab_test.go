@@ -62,11 +62,11 @@ func setupTestService(t *testing.T, workspaceIDs ...string) (*Context, *channel.
 
 	// Set up a channel manager with a handshake so
 	// AccessibleWorkspaceIDs returns the desired workspaces.
-	kp, err := noiseutil.GenerateKeypair()
+	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
-	chmgr := channel.NewManager(kp.Private, kp.Public, func(*leapmuxv1.ConnectRequest) error { return nil })
+	chmgr := channel.NewManager(ck, func(*leapmuxv1.ConnectRequest) error { return nil })
 
-	_, msg1, err := noiseutil.InitiatorHandshake1(kp.Public)
+	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
 	require.NoError(t, err)
 	chmgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
 		ChannelId:              "test-ch",

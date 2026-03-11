@@ -40,6 +40,10 @@ type Client struct {
 	// PublicKey is the Worker's X25519 public key for E2EE channels.
 	// Sent to the Hub with the initial heartbeat.
 	PublicKey []byte
+	// MlkemPublicKey is the Worker's ML-KEM-1024 public key.
+	MlkemPublicKey []byte
+	// SlhdsaPublicKey is the Worker's SLH-DSA-SHAKE-256f public key.
+	SlhdsaPublicKey []byte
 
 	// TabSyncProvider returns the current tab state for WorkspaceTabsSync
 	// on connect. Set by the runner after initializing the service context.
@@ -209,7 +213,11 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 	// ConnectRPC with gRPC protocol only sends HTTP/2 headers on the first Send().
 	if err := stream.Send(&leapmuxv1.ConnectRequest{
 		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
-			Heartbeat: &leapmuxv1.Heartbeat{PublicKey: c.PublicKey},
+			Heartbeat: &leapmuxv1.Heartbeat{
+				PublicKey:       c.PublicKey,
+				MlkemPublicKey:  c.MlkemPublicKey,
+				SlhdsaPublicKey: c.SlhdsaPublicKey,
+			},
 		},
 	}); err != nil {
 		return fmt.Errorf("initial heartbeat: %w", err)

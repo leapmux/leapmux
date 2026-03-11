@@ -57,7 +57,7 @@ func (s *ChannelService) GetWorkerPublicKey(
 		return nil, err
 	}
 
-	pubKey, err := s.queries.GetWorkerPublicKey(ctx, workerID)
+	keys, err := s.queries.GetWorkerPublicKey(ctx, workerID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
@@ -65,12 +65,14 @@ func (s *ChannelService) GetWorkerPublicKey(
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	if len(pubKey) == 0 {
+	if len(keys.PublicKey) == 0 {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker has no public key"))
 	}
 
 	return connect.NewResponse(&leapmuxv1.GetWorkerPublicKeyResponse{
-		PublicKey: pubKey,
+		PublicKey:       keys.PublicKey,
+		MlkemPublicKey:  keys.MlkemPublicKey,
+		SlhdsaPublicKey: keys.SlhdsaPublicKey,
 	}), nil
 }
 

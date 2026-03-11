@@ -35,8 +35,7 @@ type CloseCallback func(channelID string)
 type Manager struct {
 	mu                   sync.RWMutex
 	sessions             map[string]*channelSession // channelID -> session
-	privateKey           []byte                     // Worker's X25519 private key
-	publicKey            []byte                     // Worker's X25519 public key
+	compositeKey         *noise.CompositeKeypair    // Worker's composite keypair (X25519 + ML-KEM + SLH-DSA)
 	sendFn               SendFunc                   // Function to send messages to Hub
 	dispatcher           *Dispatcher                // Inner RPC dispatcher
 	closeCallback        CloseCallback              // Called when a channel is closed
@@ -45,11 +44,10 @@ type Manager struct {
 }
 
 // NewManager creates a new channel Manager.
-func NewManager(privateKey, publicKey []byte, sendFn SendFunc) *Manager {
+func NewManager(compositeKey *noise.CompositeKeypair, sendFn SendFunc) *Manager {
 	return &Manager{
 		sessions:             make(map[string]*channelSession),
-		privateKey:           privateKey,
-		publicKey:            publicKey,
+		compositeKey:         compositeKey,
 		sendFn:               sendFn,
 		maxMessageSize:       DefaultMaxMessageSize,
 		maxIncompleteChunked: DefaultMaxIncompleteChunked,
@@ -85,9 +83,8 @@ func (m *Manager) Dispatcher() *Dispatcher {
 // HandleOpen processes a ChannelOpenRequest from the Hub.
 // It performs the Noise_NK responder handshake and returns the response.
 func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.ChannelOpenResponse {
-	keypair := noise.Keypair{Private: m.privateKey, Public: m.publicKey}
 	handshakeResp, session, err := noise.ResponderHandshake(
-		keypair,
+		m.compositeKey,
 		req.GetHandshakePayload(),
 	)
 	if err != nil {

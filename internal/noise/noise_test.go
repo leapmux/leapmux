@@ -9,27 +9,30 @@ import (
 )
 
 func TestHandshakeRoundtrip(t *testing.T) {
-	// Worker generates static key pair
-	workerKey, err := GenerateKeypair()
+	// Worker generates composite keypair.
+	workerKey, err := GenerateCompositeKeypair()
 	require.NoError(t, err)
 
-	// Initiator (Frontend) starts handshake with Worker's public key
-	hs, msg1, err := InitiatorHandshake1(workerKey.Public)
+	slhdsaPubBytes, err := workerKey.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+
+	// Initiator (Frontend) starts handshake.
+	hs, msg1, err := InitiatorHandshake1(workerKey.X25519Public, workerKey.MlkemPublicKeyBytes())
 	require.NoError(t, err)
 	assert.NotEmpty(t, msg1)
 
-	// Worker (Responder) processes msg1 and returns msg2
+	// Worker (Responder) processes msg1 and returns msg2.
 	msg2, workerSession, err := ResponderHandshake(workerKey, msg1)
 	require.NoError(t, err)
 	assert.NotEmpty(t, msg2)
 	assert.NotNil(t, workerSession)
 
-	// Initiator completes handshake
-	initiatorSession, err := InitiatorHandshake2(hs, msg2)
+	// Initiator completes handshake.
+	initiatorSession, err := InitiatorHandshake2(hs, msg2, slhdsaPubBytes)
 	require.NoError(t, err)
 	assert.NotNil(t, initiatorSession)
 
-	// Test bidirectional encryption
+	// Test bidirectional encryption.
 	t.Run("initiator_to_responder", func(t *testing.T) {
 		plaintext := []byte("hello from initiator")
 		ciphertext, err := initiatorSession.Encrypt(plaintext)
@@ -54,19 +57,21 @@ func TestHandshakeRoundtrip(t *testing.T) {
 }
 
 func TestMultipleMessages(t *testing.T) {
-	workerKey, err := GenerateKeypair()
+	workerKey, err := GenerateCompositeKeypair()
 	require.NoError(t, err)
 
-	hs, msg1, err := InitiatorHandshake1(workerKey.Public)
+	slhdsaPubBytes, err := workerKey.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+
+	hs, msg1, err := InitiatorHandshake1(workerKey.X25519Public, workerKey.MlkemPublicKeyBytes())
 	require.NoError(t, err)
 
 	msg2, workerSession, err := ResponderHandshake(workerKey, msg1)
 	require.NoError(t, err)
 
-	initiatorSession, err := InitiatorHandshake2(hs, msg2)
+	initiatorSession, err := InitiatorHandshake2(hs, msg2, slhdsaPubBytes)
 	require.NoError(t, err)
 
-	// Send multiple messages in each direction
 	for i := 0; i < 100; i++ {
 		msg := []byte(fmt.Sprintf("message %d from initiator", i))
 		ct, err := initiatorSession.Encrypt(msg)
@@ -84,45 +89,75 @@ func TestMultipleMessages(t *testing.T) {
 	}
 }
 
-func TestWrongKey(t *testing.T) {
-	workerKey, err := GenerateKeypair()
+func TestWrongMlkemKey(t *testing.T) {
+	workerKey, err := GenerateCompositeKeypair()
 	require.NoError(t, err)
 
-	wrongKey, err := GenerateKeypair()
+	slhdsaPubBytes, err := workerKey.SlhdsaPublicKeyBytes()
 	require.NoError(t, err)
 
-	// Initiator uses wrong public key
-	_, msg1, err := InitiatorHandshake1(wrongKey.Public)
+	// Generate a different ML-KEM key.
+	wrongKey, err := GenerateCompositeKeypair()
 	require.NoError(t, err)
 
-	// Worker tries to complete handshake - should fail because
-	// initiator encrypted to wrong key
-	_, _, err = ResponderHandshake(workerKey, msg1)
-	// NK pattern: msg1 doesn't authenticate to the responder's key in a way
-	// that causes immediate failure. The handshake may complete but
-	// subsequent messages will fail to decrypt.
-	// Let's just verify the basic flow works with correct keys.
-	// The important thing is that wrong keys produce unusable sessions.
-	_ = err
+	// Initiator uses wrong ML-KEM public key — encapsulates to wrong key.
+	hs, msg1, err := InitiatorHandshake1(workerKey.X25519Public, wrongKey.MlkemPublicKeyBytes())
+	require.NoError(t, err)
+
+	// Responder decapsulates with its own key. ML-KEM implicit rejection
+	// produces a random shared secret rather than an error, so the
+	// responder handshake itself succeeds.
+	msg2, _, err := ResponderHandshake(workerKey, msg1)
+	require.NoError(t, err)
+
+	// Initiator verification fails because the ML-KEM shared secrets differ,
+	// producing different transcripts and thus an SLH-DSA signature mismatch.
+	_, err = InitiatorHandshake2(hs, msg2, slhdsaPubBytes)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "SLH-DSA")
+}
+
+func TestInvalidSlhdsaSignature(t *testing.T) {
+	workerKey, err := GenerateCompositeKeypair()
+	require.NoError(t, err)
+
+	// Generate a different SLH-DSA key — use its public key for verification.
+	wrongKey, err := GenerateCompositeKeypair()
+	require.NoError(t, err)
+	wrongSlhdsaPubBytes, err := wrongKey.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+
+	hs, msg1, err := InitiatorHandshake1(workerKey.X25519Public, workerKey.MlkemPublicKeyBytes())
+	require.NoError(t, err)
+
+	msg2, _, err := ResponderHandshake(workerKey, msg1)
+	require.NoError(t, err)
+
+	// Initiator uses wrong SLH-DSA public key — signature verification should fail.
+	_, err = InitiatorHandshake2(hs, msg2, wrongSlhdsaPubBytes)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "SLH-DSA")
 }
 
 func TestEmptyMessage(t *testing.T) {
-	workerKey, err := GenerateKeypair()
+	workerKey, err := GenerateCompositeKeypair()
 	require.NoError(t, err)
 
-	hs, msg1, err := InitiatorHandshake1(workerKey.Public)
+	slhdsaPubBytes, err := workerKey.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+
+	hs, msg1, err := InitiatorHandshake1(workerKey.X25519Public, workerKey.MlkemPublicKeyBytes())
 	require.NoError(t, err)
 
 	msg2, workerSession, err := ResponderHandshake(workerKey, msg1)
 	require.NoError(t, err)
 
-	initiatorSession, err := InitiatorHandshake2(hs, msg2)
+	initiatorSession, err := InitiatorHandshake2(hs, msg2, slhdsaPubBytes)
 	require.NoError(t, err)
 
-	// Empty plaintext should still work (authenticated empty message)
 	ct, err := initiatorSession.Encrypt([]byte{})
 	require.NoError(t, err)
-	assert.NotEmpty(t, ct) // Ciphertext includes auth tag
+	assert.NotEmpty(t, ct) // Ciphertext includes auth tag.
 
 	pt, err := workerSession.Decrypt(ct)
 	require.NoError(t, err)
@@ -130,16 +165,19 @@ func TestEmptyMessage(t *testing.T) {
 }
 
 func TestPlaintextSizeLimit(t *testing.T) {
-	workerKey, err := GenerateKeypair()
+	workerKey, err := GenerateCompositeKeypair()
 	require.NoError(t, err)
 
-	hs, msg1, err := InitiatorHandshake1(workerKey.Public)
+	slhdsaPubBytes, err := workerKey.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+
+	hs, msg1, err := InitiatorHandshake1(workerKey.X25519Public, workerKey.MlkemPublicKeyBytes())
 	require.NoError(t, err)
 
 	msg2, _, err := ResponderHandshake(workerKey, msg1)
 	require.NoError(t, err)
 
-	session, err := InitiatorHandshake2(hs, msg2)
+	session, err := InitiatorHandshake2(hs, msg2, slhdsaPubBytes)
 	require.NoError(t, err)
 
 	// Exactly at limit should succeed.
@@ -155,25 +193,44 @@ func TestPlaintextSizeLimit(t *testing.T) {
 }
 
 func TestNeedsRekey(t *testing.T) {
-	// NeedsRekey should be false initially.
-	workerKey, err := GenerateKeypair()
+	workerKey, err := GenerateCompositeKeypair()
 	require.NoError(t, err)
 
-	hs, msg1, err := InitiatorHandshake1(workerKey.Public)
+	slhdsaPubBytes, err := workerKey.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+
+	hs, msg1, err := InitiatorHandshake1(workerKey.X25519Public, workerKey.MlkemPublicKeyBytes())
 	require.NoError(t, err)
 
 	msg2, _, err := ResponderHandshake(workerKey, msg1)
 	require.NoError(t, err)
 
-	session, err := InitiatorHandshake2(hs, msg2)
+	session, err := InitiatorHandshake2(hs, msg2, slhdsaPubBytes)
 	require.NoError(t, err)
 
 	assert.False(t, session.NeedsRekey(), "NeedsRekey should be false at nonce 0")
 }
 
 func TestNonceLimitsConst(t *testing.T) {
-	// Verify the constant values match spec expectations.
 	assert.Equal(t, uint64(1<<31-1), SoftNonceLimit, "SoftNonceLimit should be 2^31-1")
 	assert.Equal(t, uint64(1<<32-1), HardNonceLimit, "HardNonceLimit should be 2^32-1")
 	assert.Equal(t, 65535-16, MaxPlaintextSize, "MaxPlaintextSize should be 65535-16")
+}
+
+func TestMessageSizes(t *testing.T) {
+	workerKey, err := GenerateCompositeKeypair()
+	require.NoError(t, err)
+
+	hs, msg1, err := InitiatorHandshake1(workerKey.X25519Public, workerKey.MlkemPublicKeyBytes())
+	require.NoError(t, err)
+
+	// message1 = noise_msg1 (48) + mlkem_ciphertext (1568) = 1616
+	assert.Equal(t, 48+MlkemCiphertextSize, len(msg1), "message1 size")
+
+	msg2, _, err := ResponderHandshake(workerKey, msg1)
+	require.NoError(t, err)
+
+	// message2 = noise_msg2 (48) + slhdsa_signature (49856) = 49904
+	assert.Equal(t, 48+SlhdsaSignatureSize, len(msg2), "message2 size")
+	_ = hs
 }

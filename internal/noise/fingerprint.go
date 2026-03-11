@@ -81,6 +81,16 @@ var wordlist = [256]string{
 	"zany", "zeal", "zero", "zest", "zinc", "zone", "zoom",
 }
 
+// CompositeKeyFingerprint generates a 4-word fingerprint from the concatenation
+// of x25519, ML-KEM, and SLH-DSA public key bytes: BLAKE2b(x25519 || mlkem || slhdsa).
+func CompositeKeyFingerprint(x25519Pub, mlkemPub, slhdsaPub []byte) string {
+	composite := make([]byte, 0, len(x25519Pub)+len(mlkemPub)+len(slhdsaPub))
+	composite = append(composite, x25519Pub...)
+	composite = append(composite, mlkemPub...)
+	composite = append(composite, slhdsaPub...)
+	return KeyFingerprint(composite)
+}
+
 // KeyFingerprint generates a human-friendly 4-word fingerprint from a
 // public key. The fingerprint is derived by hashing the key with BLAKE2b
 // and mapping the first 4 bytes to the wordlist.
@@ -93,13 +103,14 @@ func KeyFingerprint(publicKey []byte) string {
 	return strings.Join(words, "-")
 }
 
-// KeyFingerprintHex generates a fingerprint from a hex-encoded public key.
+// KeyFingerprintHex generates a fingerprint from a hex-encoded public key
+// (or concatenated composite key bytes).
 func KeyFingerprintHex(publicKeyHex string) (string, error) {
-	if len(publicKeyHex) != 64 {
-		return "", fmt.Errorf("invalid public key hex length: %d (expected 64)", len(publicKeyHex))
+	if len(publicKeyHex)%2 != 0 || len(publicKeyHex) == 0 {
+		return "", fmt.Errorf("invalid public key hex length: %d", len(publicKeyHex))
 	}
-	key := make([]byte, 32)
-	for i := 0; i < 32; i++ {
+	key := make([]byte, len(publicKeyHex)/2)
+	for i := range key {
 		b, err := hexByte(publicKeyHex[i*2], publicKeyHex[i*2+1])
 		if err != nil {
 			return "", err

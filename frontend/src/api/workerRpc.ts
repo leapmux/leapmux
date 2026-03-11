@@ -51,7 +51,7 @@ import type {
   MoveTabWorkspaceResponse,
   WatchEventsResponse,
 } from '~/generated/leapmux/v1/workspace_pb'
-import type { ChannelTransport, KeyPinDecision } from '~/lib/channel'
+import type { ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '~/lib/channel'
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
 import { createClient } from '@connectrpc/connect'
 import { getToken, transport } from '~/api/transport'
@@ -153,9 +153,13 @@ export function setGetUserId(fn: () => string): void {
 }
 
 class BrowserChannelTransport implements ChannelTransport {
-  async getWorkerPublicKey(workerId: string): Promise<Uint8Array> {
+  async getWorkerPublicKey(workerId: string): Promise<WorkerKeyBundle> {
     const resp = await channelRpcClient.getWorkerPublicKey({ workerId })
-    return resp.publicKey
+    return {
+      x25519PublicKey: resp.publicKey,
+      mlkemPublicKey: resp.mlkemPublicKey,
+      slhdsaPublicKey: resp.slhdsaPublicKey,
+    }
   }
 
   async openChannel(workerId: string, handshakePayload: Uint8Array): Promise<{ channelId: string, handshakePayload: Uint8Array }> {
