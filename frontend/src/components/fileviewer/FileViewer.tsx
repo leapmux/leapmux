@@ -236,12 +236,12 @@ export const FileViewer: Component<{
 
       requestAnimationFrame(() => {
         const container = contentRef!
-        const diffElements = container.querySelectorAll(`.${diffAdded}, .${diffRemoved}`)
+        const diffElements = [...container.querySelectorAll(`.${diffAdded}, .${diffRemoved}`)]
         if (diffElements.length === 0)
           return
 
         const firstEl = diffElements[0] as HTMLElement
-        const lastEl = diffElements[diffElements.length - 1] as HTMLElement
+        const lastEl = diffElements.at(-1)! as HTMLElement
         const containerRect = container.getBoundingClientRect()
         const firstRect = firstEl.getBoundingClientRect()
         const lastRect = lastEl.getBoundingClientRect()

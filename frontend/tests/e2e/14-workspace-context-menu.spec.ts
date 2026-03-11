@@ -2,6 +2,8 @@ import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
 import { openWorkspaceContextMenu, waitForWorkspaceReady } from './helpers/ui'
 
+const ITEM_ACTIVE_RE = /itemActive/
+
 test.describe('Workspace Context Menu', () => {
   test('should show context menu options for owned workspace', async ({ page, authenticatedWorkspace }) => {
     // Open context menu on the workspace item
@@ -85,7 +87,7 @@ test.describe('Workspace Context Menu', () => {
       // The first workspace should appear as inactive in the sidebar
       const firstWorkspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
       await expect(firstWorkspaceItem).toBeVisible()
-      await expect(firstWorkspaceItem).not.toHaveClass(/itemActive/)
+      await expect(firstWorkspaceItem).not.toHaveClass(ITEM_ACTIVE_RE)
 
       // Record URL before opening the context menu
       const urlBefore = page.url()
@@ -104,7 +106,7 @@ test.describe('Workspace Context Menu', () => {
       await page.keyboard.press('Escape')
 
       // The first workspace should still be inactive
-      await expect(firstWorkspaceItem).not.toHaveClass(/itemActive/)
+      await expect(firstWorkspaceItem).not.toHaveClass(ITEM_ACTIVE_RE)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, secondWorkspaceId).catch(() => {})
@@ -122,7 +124,7 @@ test.describe('Workspace Context Menu', () => {
 
       const firstWorkspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
       await expect(firstWorkspaceItem).toBeVisible()
-      await expect(firstWorkspaceItem).not.toHaveClass(/itemActive/)
+      await expect(firstWorkspaceItem).not.toHaveClass(ITEM_ACTIVE_RE)
 
       // Record URL before the action
       const urlBefore = page.url()
@@ -140,7 +142,7 @@ test.describe('Workspace Context Menu', () => {
       expect(page.url()).toBe(urlBefore)
 
       // The first workspace should still be inactive
-      await expect(firstWorkspaceItem).not.toHaveClass(/itemActive/)
+      await expect(firstWorkspaceItem).not.toHaveClass(ITEM_ACTIVE_RE)
 
       // Cancel the archive
       await dialog.getByRole('button', { name: 'Cancel' }).click()

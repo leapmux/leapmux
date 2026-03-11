@@ -1,5 +1,7 @@
 import { expect, test } from './fixtures'
 
+const ICON_BUTTON_ACTIVE_RE = /IconButton_active/
+
 test.describe('Tab and Shift+Tab behavior', () => {
   test('Tab indents bullet list item', async ({ page, authenticatedWorkspace }) => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
@@ -667,7 +669,7 @@ test.describe('Code Span Escape', () => {
 
     // Toolbar code button should be inactive
     const codeBtn = page.locator('[data-testid="toolbar-code"]')
-    await expect(codeBtn).not.toHaveClass(/IconButton_active/)
+    await expect(codeBtn).not.toHaveClass(ICON_BUTTON_ACTIVE_RE)
 
     // Typing new text should produce plain text (not code)
     await page.keyboard.type('plain', { delay: 100 })
@@ -687,7 +689,7 @@ test.describe('Code Span Escape', () => {
     await page.waitForTimeout(100)
 
     // Toolbar code button should be active
-    await expect(codeBtn).toHaveClass(/IconButton_active/)
+    await expect(codeBtn).toHaveClass(ICON_BUTTON_ACTIVE_RE)
 
     // Type text — should be code
     await page.keyboard.type('code', { delay: 100 })
@@ -698,7 +700,7 @@ test.describe('Code Span Escape', () => {
     await page.waitForTimeout(100)
 
     // Code mark should be removed
-    await expect(codeBtn).not.toHaveClass(/IconButton_active/)
+    await expect(codeBtn).not.toHaveClass(ICON_BUTTON_ACTIVE_RE)
     await expect(editor.locator('code')).toHaveCount(0)
 
     // Type more — should be plain
@@ -716,7 +718,7 @@ test.describe('Code Span Escape', () => {
 
     // Click code button to enter code mode
     await codeBtn.click()
-    await expect(codeBtn).toHaveClass(/IconButton_active/)
+    await expect(codeBtn).toHaveClass(ICON_BUTTON_ACTIVE_RE)
 
     // Type text — should be code
     await editor.click()
@@ -725,7 +727,7 @@ test.describe('Code Span Escape', () => {
 
     // Click code button again to exit code mode
     await codeBtn.click()
-    await expect(codeBtn).not.toHaveClass(/IconButton_active/)
+    await expect(codeBtn).not.toHaveClass(ICON_BUTTON_ACTIVE_RE)
     await expect(editor.locator('code')).toHaveCount(0)
   })
 })
@@ -942,7 +944,7 @@ test.describe('Code Block Input Rule', () => {
 
     // Code block button should be active
     const codeBlockBtn = page.locator('[data-testid="toolbar-codeblock"]')
-    await expect(codeBlockBtn).toHaveClass(/IconButton_active/)
+    await expect(codeBlockBtn).toHaveClass(ICON_BUTTON_ACTIVE_RE)
   })
 
   test('typing ``` after text creates code block after paragraph', async ({ page, authenticatedWorkspace }) => {

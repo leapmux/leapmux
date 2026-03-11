@@ -6,8 +6,10 @@ declare global {
         variant?: 'success' | 'danger' | 'warning' | ''
         placement?: 'top-left' | 'top-center' | 'top-right' | 'bottom-left' | 'bottom-center' | 'bottom-right'
         duration?: number
-      }) => void) & { clear: (placement?: string) => void }
-      toastEl: (element: HTMLElement, options?: Record<string, unknown>) => void
+      }) => void) & {
+        el: (element: HTMLElement, options?: Record<string, unknown>) => void
+        clear: (placement?: string) => void
+      }
     }
   }
 }

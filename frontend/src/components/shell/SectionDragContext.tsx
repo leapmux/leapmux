@@ -363,7 +363,7 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
           .filter(s => s.sidebar === targetSidebar && s.id !== sectionId)
           .sort((a, b) => a.position.localeCompare(b.position))
 
-        const lastSection = sidebarSections[sidebarSections.length - 1]
+        const lastSection = sidebarSections.at(-1)
         position = lastSection ? mid(lastSection.position, '') : mid('', '')
       }
       else {

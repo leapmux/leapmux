@@ -42,7 +42,7 @@ function renderToast(message: string, type: ToastType) {
   closeBtn.onclick = () => toast.remove()
   toast.appendChild(closeBtn)
 
-  window.ot.toastEl(toast, {
+  window.ot.toast.el(toast, {
     placement: 'bottom-right',
     duration: 3000,
   })

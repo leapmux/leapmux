@@ -1,6 +1,8 @@
 import { expect, test } from './fixtures'
 import { loginViaUI, openAdminDialog } from './helpers/ui'
 
+const ADMIN_ROW_RE = /^admin\s+Admin/
+
 test.describe('Admin Settings', () => {
   test('should access admin dialog as admin user', async ({ page }) => {
     await loginViaUI(page)
@@ -27,7 +29,7 @@ test.describe('Admin Settings', () => {
     // The admin user should appear in the table.
     // Use getByRole('row') with a name pattern matching the admin row's accessible name
     // to avoid matching rows that contain "admin" in button text like "Make Admin".
-    const adminRow = page.getByRole('row', { name: /^admin\s+Admin/ })
+    const adminRow = page.getByRole('row', { name: ADMIN_ROW_RE })
     await expect(adminRow).toBeVisible()
 
     // The admin user's role column should show the Admin badge

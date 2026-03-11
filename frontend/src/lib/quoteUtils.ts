@@ -21,6 +21,8 @@ export function formatFileMention(relativePath: string): string {
   return `@${relativePath}`
 }
 
+const TRAILING_NEWLINES_RE = /\n+$/
+
 /**
  * Extract markdown-like text from a DOM selection, preserving inline formatting.
  * Falls back to plain selection.toString() if no range is available.
@@ -42,7 +44,7 @@ export function nodeToMarkdown(node: Node): string {
     return node.textContent ?? ''
 
   const tag = node instanceof HTMLElement ? node.tagName.toLowerCase() : ''
-  const childMd = () => Array.from(node.childNodes).map(nodeToMarkdown).join('')
+  const childMd = () => Array.from(node.childNodes, nodeToMarkdown).join('')
 
   switch (tag) {
     case 'strong':
@@ -62,7 +64,7 @@ export function nodeToMarkdown(node: Node): string {
       const text = codeChild?.textContent ?? node.textContent ?? ''
       let lang = ''
       if (codeChild) {
-        const cls = Array.from(codeChild.classList).find(c => c.startsWith('language-'))
+        const cls = [...codeChild.classList].find(c => c.startsWith('language-'))
         if (cls)
           lang = cls.slice('language-'.length)
       }
@@ -77,7 +79,7 @@ export function nodeToMarkdown(node: Node): string {
     case 'p':
       return `${childMd()}\n\n`
     case 'blockquote': {
-      const inner = childMd().replace(/\n+$/, '')
+      const inner = childMd().replace(TRAILING_NEWLINES_RE, '')
       return `${inner.split('\n').map(line => `> ${line}`).join('\n')}\n`
     }
     case 'ul':
@@ -86,7 +88,7 @@ export function nodeToMarkdown(node: Node): string {
     case 'li': {
       const parent = node instanceof HTMLElement ? node.parentElement : null
       if (parent?.tagName.toLowerCase() === 'ol') {
-        const idx = Array.from(parent.children).indexOf(node as HTMLElement) + 1
+        const idx = [...parent.children].indexOf(node as HTMLElement) + 1
         return `${idx}. ${childMd().trim()}\n`
       }
       return `- ${childMd().trim()}\n`

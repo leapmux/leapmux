@@ -11,7 +11,7 @@ export const messageBubble = style({
 })
 
 export const userMessage = style([messageBubble, {
-  backgroundColor: 'color-mix(in srgb, var(--primary) 6%, var(--card))',
+  backgroundColor: 'var(--accent)',
   border: '1px solid var(--border)',
   color: 'var(--foreground)',
   alignSelf: 'flex-end',

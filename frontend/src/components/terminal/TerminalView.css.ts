@@ -26,3 +26,9 @@ export const terminalWrapper = style({
 globalStyle(`${terminalWrapper} .xterm`, {
   padding: 'var(--space-1)',
 })
+
+// Override xterm's hardcoded black background on the viewport so it
+// matches the app theme and doesn't show a black border.
+globalStyle(`${terminalWrapper} .xterm-viewport`, {
+  backgroundColor: 'var(--background)',
+})

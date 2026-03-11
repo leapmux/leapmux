@@ -38,7 +38,7 @@ globalStyle('html, body, #app', {
 globalStyle(':root', {
   vars: {
     // Core palette — warm sand base
-    '--background': 'rgb(255 255 255)',
+    '--background': 'rgb(253 252 250)',
     '--foreground': 'rgb(34 32 30)',
     '--card': 'rgb(247 245 242)',
     '--card-foreground': 'rgb(34 32 30)',
@@ -59,8 +59,8 @@ globalStyle(':root', {
     '--faint': 'rgb(242 240 236)',
     '--faint-foreground': 'rgb(160 157 151)',
 
-    // Accent — amber sparkle
-    '--accent': 'rgb(251 191 36)',
+    // Accent — soft sage green
+    '--accent': 'rgb(222 235 225)',
     '--accent-foreground': 'rgb(34 32 30)',
 
     // Semantic colors
@@ -113,14 +113,14 @@ globalStyle('[data-theme="dark"]', {
     '--faint': 'rgb(36 34 32)',
     '--faint-foreground': 'rgb(107 104 98)',
 
-    // Accent — amber sparkle
-    '--accent': 'rgb(251 191 36)',
-    '--accent-foreground': 'rgb(26 25 23)',
+    // Accent — soft sage green
+    '--accent': 'rgb(45 62 50)',
+    '--accent-foreground': 'rgb(232 230 225)',
 
     // Semantic colors
     '--danger': 'rgb(239 83 80)',
     '--danger-foreground': 'rgb(255 255 255)',
-    '--success': 'rgb(163 230 53)',
+    '--success': 'rgb(132 204 22)',
     '--success-foreground': 'rgb(12 12 11)',
     '--warning': 'rgb(251 191 36)',
     '--warning-foreground': 'rgb(26 25 23)',

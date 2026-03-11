@@ -90,6 +90,15 @@ export function createSelectionWrapPlugin() {
   })
 }
 
+const MARKDOWN_BLOCK_SYNTAX_RE = /^(?:\s*[-+*]\s|#{1,6}\s|\d+\.\s|```|>\s)/m
+const MARKDOWN_INLINE_SYNTAX_RE = /\*\*\S[^*]*\*\*|__\S[^_]*__|~~\S[^~]*~~|`[^`\n]+`/
+
+const LEADING_BR_RE = /^<br \/>\n/
+const TRAILING_BR_RE = /\n<br \/>$/
+const FENCED_CODE_BLOCK_RE = /^```[^\n]*\n([\s\S]*?)```$/gm
+const TRAILING_NEWLINE_RE = /\n$/
+const INLINE_BACKTICK_RE = /``([^`].*?)``|`([^`]+)`/g
+
 /**
  * Strip code delimiters (fenced code blocks, inline backticks, surrounding `<br />` tags)
  * from pasted text so that raw content can be inserted into code contexts.
@@ -98,18 +107,18 @@ function stripCodeDelimiters(text: string): string {
   let result = text
 
   // Strip leading <br />\n and trailing \n<br />
-  result = result.replace(/^<br \/>\n/, '').replace(/\n<br \/>$/, '')
+  result = result.replace(LEADING_BR_RE, '').replace(TRAILING_BR_RE, '')
 
   // Strip fenced code blocks: ```lang\n...\n``` -> content between fences
   // Handle multiple fences by replacing each pair
-  result = result.replace(/^```[^\n]*\n([\s\S]*?)```$/gm, '$1')
+  result = result.replace(FENCED_CODE_BLOCK_RE, '$1')
   // Trim trailing newline left by fence stripping
   if (result !== text) {
-    result = result.replace(/\n$/, '')
+    result = result.replace(TRAILING_NEWLINE_RE, '')
   }
 
   // Strip inline backtick pairs: `content` -> content (including double-backtick syntax)
-  result = result.replace(/``([^`].*?)``|`([^`]+)`/g, (_m, g1, g2) => g1 ?? g2)
+  result = result.replace(INLINE_BACKTICK_RE, (_m, g1, g2) => g1 ?? g2)
 
   return result
 }
@@ -176,8 +185,8 @@ export function createMarkdownPastePlugin() {
           // strikethrough, inline code) which may be stripped when the clipboard
           // loses text/html (e.g. headless browsers, cross-app paste).
           const hasMarkdownSyntax
-            = /^(?:\s*[-+*]\s|#{1,6}\s|\d+\.\s|```|>\s)/m.test(text)
-              || /\*\*\S[^*]*\*\*|__\S[^_]*__|~~\S[^~]*~~|`[^`\n]+`/.test(text)
+            = MARKDOWN_BLOCK_SYNTAX_RE.test(text)
+              || MARKDOWN_INLINE_SYNTAX_RE.test(text)
           if (!hasMarkdownSyntax)
             return false
 

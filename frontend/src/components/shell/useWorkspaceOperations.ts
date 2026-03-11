@@ -157,7 +157,7 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
 
   const moveWorkspace = async (workspaceId: string, sectionId: string) => {
     const sectionItems = store.getItemsForSection(sectionId)
-    const lastItem = sectionItems[sectionItems.length - 1]
+    const lastItem = sectionItems.at(-1)
     const position = lastItem ? mid(lastItem.position, '') : mid('', '')
     const done = startWorkspaceLoading(workspaceId)
     try {
@@ -273,7 +273,7 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
       .filter(i => i.workspaceId !== wsId)
     const targetIdx = items.findIndex(i => i.workspaceId === targetWsId)
     if (targetIdx < 0) {
-      const lastItem = items[items.length - 1]
+      const lastItem = items.at(-1)
       return lastItem ? mid(lastItem.position, '') : mid('', '')
     }
     if (direction === 'after') {
@@ -331,7 +331,7 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
       if (targetSection?.sectionType === SectionType.WORKSPACES_SHARED || fromSectionId === targetSectionId)
         return
       const items = store.getItemsForSection(targetSectionId)
-      const lastItem = items[items.length - 1]
+      const lastItem = items.at(-1)
       position = lastItem ? mid(lastItem.position, '') : mid('', '')
     }
     else {

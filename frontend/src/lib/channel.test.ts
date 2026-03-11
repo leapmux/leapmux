@@ -212,7 +212,7 @@ function mockHandshake1(_publicKey: Uint8Array) {
 
 function mockHandshake2(_state: any, _message2: Uint8Array) {
   const entries = [...sessions.entries()]
-  const lastEntry = entries[entries.length - 1]
+  const lastEntry = entries.at(-1)
   if (!lastEntry)
     throw new Error('No session registered')
   return lastEntry[1].initiator
@@ -253,7 +253,7 @@ describe('channelManager', () => {
    * encrypted message. This helper decrypts it and responds with success.
    */
   function simulateClaimAccept() {
-    const lastSent = mockWs.sent[mockWs.sent.length - 1]
+    const lastSent = mockWs.sent.at(-1)
     const sentMsg = decodeWireMessage(lastSent)
     const channelId = sentMsg.channelId
     const pair = sessions.get(channelId)!
@@ -791,7 +791,7 @@ describe('channelManager', () => {
       await flushMicrotasks()
 
       // Simulate claim accept for the small manager.
-      const lastSent = mockWs.sent[mockWs.sent.length - 1]
+      const lastSent = mockWs.sent.at(-1)
       const sentMsg = decodeWireMessage(lastSent)
       const chId = sentMsg.channelId
       const pair = sessions.get(chId)!
@@ -859,7 +859,7 @@ describe('channelManager', () => {
       await flushMicrotasks()
 
       // Simulate claim accept.
-      const lastSent = mockWs.sent[mockWs.sent.length - 1]
+      const lastSent = mockWs.sent.at(-1)
       const sentMsg = decodeWireMessage(lastSent)
       const chId = sentMsg.channelId
       const pair = sessions.get(chId)!
@@ -894,7 +894,7 @@ describe('channelManager', () => {
       await flushMicrotasks()
 
       // Simulate claim accept.
-      const lastSent = mockWs.sent[mockWs.sent.length - 1]
+      const lastSent = mockWs.sent.at(-1)
       const sentMsg = decodeWireMessage(lastSent)
       const chId = sentMsg.channelId
       const pair = sessions.get(chId)!
@@ -938,7 +938,7 @@ describe('channelManager', () => {
       await flushMicrotasks()
 
       // Simulate claim accept.
-      const lastSent = mockWs.sent[mockWs.sent.length - 1]
+      const lastSent = mockWs.sent.at(-1)
       const sentMsg = decodeWireMessage(lastSent)
       const chId = sentMsg.channelId
       const pair = sessions.get(chId)!

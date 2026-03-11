@@ -10,6 +10,7 @@ import Square from 'lucide-solid/icons/square'
 import { createEffect, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
+import { Tooltip } from '~/components/common/Tooltip'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { getResetsAt } from '~/lib/rateLimitUtils'
 import { safeGetString, safeRemoveItem, safeSetString } from '~/lib/safeStorage'
@@ -305,15 +306,16 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                                   <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} size={iconSize.xs} />
                                   <Show when={info.urgentRateLimit()}>
                                     {rl => (
-                                      <span
-                                        class={styles.rateLimitCountdown}
-                                        title={(() => {
+                                      <Tooltip
+                                        text={(() => {
                                           const resetsAt = getResetsAt(rl().info)
                                           return resetsAt ? `Resets at ${new Date(resetsAt * 1000).toLocaleString()}` : undefined
                                         })()}
                                       >
-                                        {rl().countdown}
-                                      </span>
+                                        <span class={styles.rateLimitCountdown}>
+                                          {rl().countdown}
+                                        </span>
+                                      </Tooltip>
                                     )}
                                   </Show>
                                 </button>
@@ -355,15 +357,16 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                               <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} size={iconSize.xs} />
                               <Show when={info.urgentRateLimit()}>
                                 {rl => (
-                                  <span
-                                    class={styles.rateLimitCountdown}
-                                    title={(() => {
+                                  <Tooltip
+                                    text={(() => {
                                       const resetsAt = getResetsAt(rl().info)
                                       return resetsAt ? `Resets at ${new Date(resetsAt * 1000).toLocaleString()}` : undefined
                                     })()}
                                   >
-                                    {rl().countdown}
-                                  </span>
+                                    <span class={styles.rateLimitCountdown}>
+                                      {rl().countdown}
+                                    </span>
+                                  </Tooltip>
                                 )}
                               </Show>
                             </button>

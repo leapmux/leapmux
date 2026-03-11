@@ -35,12 +35,12 @@ export function useTileDragDrop(opts: UseTileDragDropOpts) {
         newPosition = mid(prevPos, nextPos)
       }
       else {
-        const lastTab = targetTabs[targetTabs.length - 1]
+        const lastTab = targetTabs.at(-1)
         newPosition = lastTab?.position ? after(lastTab.position) : 'a'
       }
     }
     else {
-      const lastTab = targetTabs[targetTabs.length - 1]
+      const lastTab = targetTabs.at(-1)
       newPosition = lastTab?.position ? after(lastTab.position) : 'a'
     }
     tabStore.setTabPosition(draggedTabKey, newPosition)

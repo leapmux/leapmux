@@ -1,37 +1,41 @@
 import { expect, test } from './fixtures'
 import { loginViaToken } from './helpers/ui'
 
+const LOGIN_TITLE_RE = /Login.*LeapMux|LeapMux/
+const LEAPMUX_TITLE_RE = /LeapMux/
+const ORG_TITLE_RE = /Org.*LeapMux/
+
 test.describe('Page Titles', () => {
   test('should show login page title', async ({ page }) => {
     await page.goto('/login')
-    await expect(page).toHaveTitle(/Login.*LeapMux|LeapMux/)
+    await expect(page).toHaveTitle(LOGIN_TITLE_RE)
   })
 
   test('should show page title after login', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/o/admin')
     // After login, title may show "Dashboard" or an auto-activated workspace name
-    await expect(page).toHaveTitle(/LeapMux/)
+    await expect(page).toHaveTitle(LEAPMUX_TITLE_RE)
   })
 
   test('should show workspace title in page title', async ({ page, authenticatedWorkspace }) => {
     // Page title should include the workspace name (fixture creates a workspace with an auto-generated name)
-    await expect(page).toHaveTitle(/LeapMux/)
+    await expect(page).toHaveTitle(LEAPMUX_TITLE_RE)
   })
 
   test('should show org management page title', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/o/admin/org')
     await expect(page.getByRole('heading', { name: 'Members' })).toBeVisible()
-    await expect(page).toHaveTitle(/Org.*LeapMux/)
+    await expect(page).toHaveTitle(ORG_TITLE_RE)
   })
 
   test('should update title when switching workspaces', async ({ page, authenticatedWorkspace }) => {
-    await expect(page).toHaveTitle(/LeapMux/)
+    await expect(page).toHaveTitle(LEAPMUX_TITLE_RE)
 
     // Navigate back to org root
     await page.goto('/o/admin')
     // Title may show "Dashboard" or an auto-activated workspace name
-    await expect(page).toHaveTitle(/LeapMux/)
+    await expect(page).toHaveTitle(LEAPMUX_TITLE_RE)
   })
 })

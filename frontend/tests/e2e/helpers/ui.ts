@@ -5,6 +5,9 @@ import process from 'node:process'
 
 import { expect } from '@playwright/test'
 
+const NEW_WORKSPACE_RE = /New workspace/
+const WORKSPACE_URL_RE = /\/workspace\//
+
 // ──────────────────────────────────────────────
 // Common UI interaction helpers
 // ──────────────────────────────────────────────
@@ -108,14 +111,14 @@ export async function approveWorkerViaUI(page: Page, token: string, name: string
  */
 export async function createWorkspaceViaUI(page: Page, title: string) {
   // Click "+" button on a section header to open new workspace dialog
-  await page.getByTitle(/New workspace/).first().click()
+  await page.getByLabel(NEW_WORKSPACE_RE).first().click()
   await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
   // Scope to the dialog to avoid strict-mode violations with the sidebar
   // "Create a new workspace..." button.
   const dialog = page.getByRole('dialog')
   const createBtn = dialog.getByRole('button', { name: 'Create', exact: true })
-  const refreshBtn = dialog.getByTitle('Refresh workers')
+  const refreshBtn = dialog.getByLabel('Refresh workers')
 
   // Wait for the initial fetch to find an online worker.
   // If not found, retry by clicking the refresh button (worker may be reconnecting).
@@ -141,7 +144,7 @@ export async function createWorkspaceViaUI(page: Page, title: string) {
 
   // Wait for navigation to the new workspace page (uses unique workspace ID in URL).
   // This avoids strict-mode issues with duplicate workspace titles on retries.
-  await expect(page).toHaveURL(/\/workspace\//)
+  await expect(page).toHaveURL(WORKSPACE_URL_RE)
 
   // Wait for the dialog to fully close. With many workspaces in the sidebar,
   // the UI re-render after workspace creation can delay dialog removal.

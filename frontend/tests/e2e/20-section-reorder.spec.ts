@@ -397,7 +397,7 @@ test.describe('Section Reorder & Move', () => {
     // Find a section in the left sidebar
     const leftSections = await getSectionOrder(page, 'left')
     expect(leftSections.length).toBeGreaterThanOrEqual(1)
-    const source = leftSections[leftSections.length - 1] // take the last one
+    const source = leftSections.at(-1) // take the last one
 
     // Find a section in the right sidebar as drop target
     const rightSections = await getSectionOrder(page, 'right')
@@ -426,7 +426,7 @@ test.describe('Section Reorder & Move', () => {
     // Find a section in the right sidebar
     const rightSections = await getSectionOrder(page, 'right')
     expect(rightSections.length).toBeGreaterThanOrEqual(1)
-    const source = rightSections[rightSections.length - 1]
+    const source = rightSections.at(-1)
 
     // Find a section in the left sidebar as drop target
     const leftSections = await getSectionOrder(page, 'left')
@@ -544,7 +544,7 @@ test.describe('Section Reorder & Move', () => {
     // Pick a section from the left sidebar to drag back
     const leftSections = await getSectionOrder(page, 'left')
     expect(leftSections.length).toBeGreaterThanOrEqual(1)
-    const sectionToMove = leftSections[leftSections.length - 1]
+    const sectionToMove = leftSections.at(-1)
 
     // Drag onto the empty drop zone
     const sourceHandle = page.locator(`[data-testid="${sectionToMove}"] [data-testid^="section-drag-handle-"]`)

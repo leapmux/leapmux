@@ -259,7 +259,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     if (proseMirrorEl) {
       let rafId = 0
       const resizeObserver = new ResizeObserver((entries) => {
-        const entry = entries[entries.length - 1]
+        const entry = entries.at(-1)
         if (!entry)
           return
         const h = entry.borderBoxSize?.[0]?.blockSize

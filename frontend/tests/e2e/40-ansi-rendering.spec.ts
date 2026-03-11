@@ -1,6 +1,9 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 
+const TOOK_TIME_RE = /Took \d+/
+const EXPAND_TOOL_RESULT_RE = /Expand.*tool result/
+
 /** Send a message via the ProseMirror editor. */
 async function sendMessage(page: Page, text: string) {
   const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
@@ -45,14 +48,14 @@ test.describe('ANSI Escape Sequence Rendering', () => {
 
     // Wait for the agent's turn to finish. The "Took Xs" marker appears after all
     // tool bubbles have been rendered, so this ensures expand buttons are available.
-    await expect(page.getByText(/Took \d+/)).toBeVisible({ timeout: 60_000 })
+    await expect(page.getByText(TOOK_TIME_RE)).toBeVisible({ timeout: 60_000 })
 
     // The agent may invoke ToolSearch before Bash, creating multiple tool bubbles
     // with separate "Expand" buttons. Expand ALL collapsed tool results so the
     // Bash output is visible regardless of ordering.
     // Click one at a time since clicking changes the button to "Collapse".
-    while (await page.getByRole('button', { name: /Expand.*tool result/ }).first().isVisible().catch(() => false)) {
-      await page.getByRole('button', { name: /Expand.*tool result/ }).first().click()
+    while (await page.getByRole('button', { name: EXPAND_TOOL_RESULT_RE }).first().isVisible().catch(() => false)) {
+      await page.getByRole('button', { name: EXPAND_TOOL_RESULT_RE }).first().click()
     }
 
     // The ANSI-rendered content will have a pre.shiki element inside a thread child bubble

@@ -1,6 +1,9 @@
 import { expect, test } from './fixtures'
 import { loginViaUI } from './helpers/ui'
 
+const CREATED_SUCCESS_RE = /created|success/i
+const ORG_ADMIN_URL_RE = /\/o\/admin/
+
 test.describe('Organization Management', () => {
   test('should navigate to org management page', async ({ page }) => {
     await loginViaUI(page)
@@ -17,14 +20,14 @@ test.describe('Organization Management', () => {
     if (await orgInput.isVisible()) {
       await orgInput.fill('test-org')
       await page.getByRole('button', { name: 'Create' }).click()
-      await expect(page.getByText(/created|success/i)).toBeVisible()
+      await expect(page.getByText(CREATED_SUCCESS_RE)).toBeVisible()
     }
   })
 
   test('should switch org via user menu', async ({ page }) => {
     await loginViaUI(page)
     // The personal org (admin) should be the current org
-    await expect(page).toHaveURL(/\/o\/admin/)
+    await expect(page).toHaveURL(ORG_ADMIN_URL_RE)
   })
 
   test('should show org members list', async ({ page }) => {

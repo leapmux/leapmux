@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import { createSignal, For, onMount, Show } from 'solid-js'
+import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
 import { sanitizeName } from '~/lib/validate'
 import * as styles from './PreferencesDialog.css'
@@ -233,13 +234,14 @@ export const FontSettings: Component = () => {
                       </Show>
                     </div>
                   </Show>
-                  <button
-                    class={styles.fontRemoveButton}
-                    onClick={() => removeFont(list, i())}
-                    title="Remove"
-                  >
-                    &#xd7;
-                  </button>
+                  <Tooltip text="Remove">
+                    <button
+                      class={styles.fontRemoveButton}
+                      onClick={() => removeFont(list, i())}
+                    >
+                      &#xd7;
+                    </button>
+                  </Tooltip>
                 </div>
               )}
             </For>
@@ -258,14 +260,15 @@ export const FontSettings: Component = () => {
             }}
             disabled={fontSaving()}
           />
-          <button
-            class="small outline"
-            onClick={() => addFont(list)}
-            disabled={fontSaving() || !inputValue().trim()}
-            title={`Add ${label.toLowerCase()}`}
-          >
-            +
-          </button>
+          <Tooltip text={`Add ${label.toLowerCase()}`}>
+            <button
+              class="small outline"
+              onClick={() => addFont(list)}
+              disabled={fontSaving() || !inputValue().trim()}
+            >
+              +
+            </button>
+          </Tooltip>
         </div>
       </div>
     )

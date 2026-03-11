@@ -10,6 +10,7 @@ import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import { createSignal, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
+import { Tooltip } from '~/components/common/Tooltip'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { markdownContent } from './markdownContent.css'
@@ -159,9 +160,11 @@ function ThinkingMessage(props: { text: string, context?: RenderContext }): JSX.
   return (
     <>
       <div class={thinkingHeader} onClick={() => setExpanded(v => !v)}>
-        <span class={inlineFlex} title="Thinking">
-          <Icon icon={Brain} size="md" class={toolUseIcon} />
-        </span>
+        <Tooltip text="Thinking">
+          <span class={inlineFlex}>
+            <Icon icon={Brain} size="md" class={toolUseIcon} />
+          </span>
+        </Tooltip>
         <span class={toolInputText}>Thinking</span>
         <span class={`${inlineFlex} ${thinkingChevron}${expanded() ? ` ${thinkingChevronExpanded}` : ''}`}>
           <Icon icon={ChevronRight} size="sm" class={toolUseIcon} />
@@ -205,9 +208,11 @@ const taskStartedRenderer: MessageContentRenderer = {
     return (
       <div class={toolMessage}>
         <div class={toolUseHeader}>
-          <span class={inlineFlex} title="Task Started">
-            <Icon icon={Bot} size="md" class={toolUseIcon} />
-          </span>
+          <Tooltip text="Task Started">
+            <span class={inlineFlex}>
+              <Icon icon={Bot} size="md" class={toolUseIcon} />
+            </span>
+          </Tooltip>
           <span class={toolInputText}>Task started</span>
         </div>
       </div>

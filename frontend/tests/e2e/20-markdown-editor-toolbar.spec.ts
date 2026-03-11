@@ -1,6 +1,9 @@
 import { expect, test } from './fixtures'
 import { enterAndExitPlanMode } from './helpers/plan-mode'
 
+const ICON_BUTTON_ACTIVE_RE = /IconButton_active/
+const MONOSPACE_FONT_RE = /HackNerdFont|Menlo|Monaco|Courier New|monospace/
+
 test.describe('Markdown Editor Toolbar', () => {
   test('should show active state on bold button when text is bold', async ({ page, authenticatedWorkspace }) => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
@@ -11,7 +14,7 @@ test.describe('Markdown Editor Toolbar', () => {
     await boldBtn.click()
 
     // Bold button should have the active class
-    await expect(boldBtn).toHaveClass(/IconButton_active/)
+    await expect(boldBtn).toHaveClass(ICON_BUTTON_ACTIVE_RE)
 
     // Type some text — it should be bold
     await editor.click()
@@ -19,11 +22,11 @@ test.describe('Markdown Editor Toolbar', () => {
     await expect(editor.locator('strong')).toHaveText('bold text')
 
     // Bold button should still be active
-    await expect(boldBtn).toHaveClass(/IconButton_active/)
+    await expect(boldBtn).toHaveClass(ICON_BUTTON_ACTIVE_RE)
 
     // Toggle bold off
     await boldBtn.click()
-    await expect(boldBtn).not.toHaveClass(/IconButton_active/)
+    await expect(boldBtn).not.toHaveClass(ICON_BUTTON_ACTIVE_RE)
   })
 
   test('should select heading level from dropdown', async ({ page, authenticatedWorkspace }) => {
@@ -49,7 +52,7 @@ test.describe('Markdown Editor Toolbar', () => {
     await expect(editor.locator('h2')).toBeVisible()
 
     // Heading button should now be active
-    await expect(headingBtn).toHaveClass(/IconButton_active/)
+    await expect(headingBtn).toHaveClass(ICON_BUTTON_ACTIVE_RE)
 
     // Convert back to paragraph
     await headingBtn.click()
@@ -58,7 +61,7 @@ test.describe('Markdown Editor Toolbar', () => {
 
     // h2 should be gone
     await expect(editor.locator('h2')).not.toBeVisible()
-    await expect(headingBtn).not.toHaveClass(/IconButton_active/)
+    await expect(headingBtn).not.toHaveClass(ICON_BUTTON_ACTIVE_RE)
   })
 
   test('should insert code block when clicking code block button', async ({ page, authenticatedWorkspace }) => {
@@ -75,7 +78,7 @@ test.describe('Markdown Editor Toolbar', () => {
     await expect(editor.locator('pre')).toBeVisible()
 
     // Code block button should be active
-    await expect(codeBlockBtn).toHaveClass(/IconButton_active/)
+    await expect(codeBlockBtn).toHaveClass(ICON_BUTTON_ACTIVE_RE)
   })
 
   test('should grow editor beyond old 120px limit', async ({ page, authenticatedWorkspace }) => {
@@ -114,7 +117,7 @@ test.describe('Markdown Editor Toolbar', () => {
       el => window.getComputedStyle(el).fontFamily,
     )
     // Should contain at least one of the expected monospace fonts
-    expect(fontFamily).toMatch(/HackNerdFont|Menlo|Monaco|Courier New|monospace/)
+    expect(fontFamily).toMatch(MONOSPACE_FONT_RE)
   })
 })
 
@@ -128,12 +131,12 @@ test.describe('Toggleable List Buttons', () => {
 
     // Click bullet list → should activate
     await bulletBtn.click()
-    await expect(bulletBtn).toHaveClass(/IconButton_active/)
+    await expect(bulletBtn).toHaveClass(ICON_BUTTON_ACTIVE_RE)
     await expect(editor.locator('ul')).toBeVisible()
 
     // Click again → should deactivate (convert back to paragraph)
     await bulletBtn.click()
-    await expect(bulletBtn).not.toHaveClass(/IconButton_active/)
+    await expect(bulletBtn).not.toHaveClass(ICON_BUTTON_ACTIVE_RE)
     await expect(editor.locator('ul')).not.toBeVisible()
   })
 
@@ -149,14 +152,14 @@ test.describe('Toggleable List Buttons', () => {
     // Create bullet list
     await bulletBtn.click()
     await expect(editor.locator('ul')).toBeVisible()
-    await expect(bulletBtn).toHaveClass(/IconButton_active/)
+    await expect(bulletBtn).toHaveClass(ICON_BUTTON_ACTIVE_RE)
 
     // Switch to ordered list
     await orderedBtn.click()
     await expect(editor.locator('ol')).toBeVisible()
     await expect(editor.locator('ul')).not.toBeVisible()
-    await expect(orderedBtn).toHaveClass(/IconButton_active/)
-    await expect(bulletBtn).not.toHaveClass(/IconButton_active/)
+    await expect(orderedBtn).toHaveClass(ICON_BUTTON_ACTIVE_RE)
+    await expect(bulletBtn).not.toHaveClass(ICON_BUTTON_ACTIVE_RE)
   })
 
   test('task list button wraps existing text into task list', async ({ page, authenticatedWorkspace }) => {
@@ -169,7 +172,7 @@ test.describe('Toggleable List Buttons', () => {
 
     // Click task list button — should wrap the existing text into a task list item
     await taskBtn.click()
-    await expect(taskBtn).toHaveClass(/IconButton_active/)
+    await expect(taskBtn).toHaveClass(ICON_BUTTON_ACTIVE_RE)
 
     // The task list item should contain the text we typed
     const taskItem = editor.locator('li[data-checked]')
@@ -198,8 +201,8 @@ test.describe('Toggleable List Buttons', () => {
     // Switch to task list
     await taskBtn.click()
     await expect(editor.locator('li[data-checked]')).toBeVisible()
-    await expect(taskBtn).toHaveClass(/IconButton_active/)
-    await expect(bulletBtn).not.toHaveClass(/IconButton_active/)
+    await expect(taskBtn).toHaveClass(ICON_BUTTON_ACTIVE_RE)
+    await expect(bulletBtn).not.toHaveClass(ICON_BUTTON_ACTIVE_RE)
   })
 })
 

@@ -4,9 +4,12 @@ import { createEffect, createMemo, createSignal, on, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { tildify } from '~/components/chat/messageUtils'
 import { RefreshButton } from '~/components/common/RefreshButton'
+import { Tooltip } from '~/components/common/Tooltip'
 import { useOrg } from '~/context/OrgContext'
 import { validateBranchName } from '~/lib/validate'
 import { checkboxRow, errorText, labelRow, pathPreview, warningText } from '~/styles/shared.css'
+
+const LAST_PATH_SEGMENT_RE = /\/[^/]+$/
 
 interface WorktreeOptionsProps {
   workerId: string
@@ -35,7 +38,7 @@ export const WorktreeOptions: Component<WorktreeOptionsProps> = (props) => {
   const worktreePath = () => {
     if (!repoRoot() || !branchName())
       return ''
-    const parentDir = repoRoot().replace(/\/[^/]+$/, '')
+    const parentDir = repoRoot().replace(LAST_PATH_SEGMENT_RE, '')
     return `${parentDir}/${repoDirName()}-worktrees/${branchName()}`
   }
 
@@ -144,7 +147,7 @@ export const WorktreeOptions: Component<WorktreeOptionsProps> = (props) => {
           <div class={pathPreview}>
             Worktree path:
             {' '}
-            <code title={worktreePath()}>{tildify(worktreePath(), props.homeDir)}</code>
+            <Tooltip text={worktreePath()}><code>{tildify(worktreePath(), props.homeDir)}</code></Tooltip>
           </div>
         </Show>
       </Show>

@@ -29,7 +29,7 @@ test.describe('Plan Mode - Bypass Permissions', () => {
     // Verify bypass button is visible
     const bypassBtn = page.locator('[data-testid="control-bypass-btn"]')
     await expect(bypassBtn).toBeVisible()
-    await expect(bypassBtn).toHaveAttribute('title', 'Approve this plan and stop asking for permissions')
+    await expect(bypassBtn).toHaveAttribute('data-tooltip', 'Approve this plan and stop asking for permissions')
 
     // Click bypass permissions
     await bypassBtn.click()

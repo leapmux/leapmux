@@ -2,6 +2,10 @@ import { expect, test } from './fixtures'
 import { deleteAllWorkspacesViaAPI } from './helpers/api'
 import { loginViaToken } from './helpers/ui'
 
+const OPEN_AGENT_TAB_RE = /Open a new agent tab/
+const OPEN_TERMINAL_TAB_RE = /Open a new terminal tab/
+const CREATE_WORKSPACE_RE = /Create a new workspace/
+
 /** Close all tabs in the workspace by clicking close buttons. */
 async function closeAllTabs(page: import('@playwright/test').Page) {
   const tabs = page.locator('[data-testid="tab"]')
@@ -24,8 +28,8 @@ test.describe('Empty State Buttons', () => {
     await expect(actions).toBeVisible()
     await expect(page.locator('[data-testid="empty-tile-open-agent"]')).toBeVisible()
     await expect(page.locator('[data-testid="empty-tile-open-terminal"]')).toBeVisible()
-    await expect(page.locator('[data-testid="empty-tile-open-agent"]')).toHaveText(/Open a new agent tab/)
-    await expect(page.locator('[data-testid="empty-tile-open-terminal"]')).toHaveText(/Open a new terminal tab/)
+    await expect(page.locator('[data-testid="empty-tile-open-agent"]')).toHaveText(OPEN_AGENT_TAB_RE)
+    await expect(page.locator('[data-testid="empty-tile-open-terminal"]')).toHaveText(OPEN_TERMINAL_TAB_RE)
   })
 
   test('clicking agent button opens agent or dialog', async ({ page, authenticatedWorkspace }) => {
@@ -92,7 +96,7 @@ test.describe('Empty State Buttons', () => {
 
     const createBtn = page.locator('[data-testid="create-workspace-button"]')
     await expect(createBtn).toBeVisible()
-    await expect(createBtn).toHaveText(/Create a new workspace/)
+    await expect(createBtn).toHaveText(CREATE_WORKSPACE_RE)
 
     await createBtn.click()
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()

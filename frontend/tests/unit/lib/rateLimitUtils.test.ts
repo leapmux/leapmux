@@ -2,6 +2,8 @@ import type { RateLimitInfo } from '~/stores/agentSession.store'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { formatCountdown, formatRateLimitMessage, formatRateLimitSummary, getResetsAt, pickUrgentRateLimit } from '~/lib/rateLimitUtils'
 
+const UNKNOWN_TYPE_PREFIX_RE = /^Rate limit \(unknown_type\):/
+
 describe('formatCountdown', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -153,7 +155,7 @@ describe('formatRateLimitMessage', () => {
 
   it('includes raw type in parentheses for unknown types', () => {
     const msg = formatRateLimitMessage({ rateLimitType: 'unknown_type', utilization: 0.5 })
-    expect(msg).toMatch(/^Rate limit \(unknown_type\):/)
+    expect(msg).toMatch(UNKNOWN_TYPE_PREFIX_RE)
   })
 
   it('includes utilization as percentage', () => {

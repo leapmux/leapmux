@@ -25,6 +25,7 @@ import { createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './helper
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
+const WORKSPACE_URL_RE = /\/workspace\//
 
 /**
  * Create a git repo inside the server's data directory so the worker can access it.
@@ -279,7 +280,7 @@ async function keepWorktreeViaAPI(
 async function waitForWorker(page: Page) {
   const dialog = page.getByRole('dialog')
   const workerSelect = dialog.locator('select').first()
-  const refreshBtn = dialog.getByTitle('Refresh workers')
+  const refreshBtn = dialog.getByLabel('Refresh workers')
   for (let attempt = 0; attempt < 6; attempt++) {
     try {
       await expect(workerSelect).toContainText('Local', { timeout: 5000 })
@@ -487,7 +488,7 @@ test.describe('Worktree Support', () => {
     // Wait for the dialog to close first — this signals the API call
     // (including the git worktree creation) has completed.
     await expect(page.getByRole('dialog')).not.toBeVisible({ timeout: 30000 })
-    await expect(page).toHaveURL(/\/workspace\//, { timeout: 30000 })
+    await expect(page).toHaveURL(WORKSPACE_URL_RE, { timeout: 30000 })
     await waitForWorkspaceReady(page)
 
     // Verify the worktree directory was created on disk.
@@ -1146,7 +1147,7 @@ test.describe('Worktree Support', () => {
     expect(initialBranch).toBeTruthy()
 
     // Click the randomize button for branch name (last one — first is for workspace title)
-    await dialog.getByTitle('Generate random name').last().click()
+    await dialog.getByLabel('Generate random name').last().click()
 
     // Branch name should change
     const newBranch = await branchInput.inputValue()

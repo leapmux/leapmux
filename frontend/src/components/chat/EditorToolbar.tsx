@@ -32,6 +32,7 @@ import { createUniqueId, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
+import { Tooltip } from '~/components/common/Tooltip'
 import { positionPopoverAbove } from '~/lib/popoverPosition'
 import * as styles from './MarkdownEditor.css'
 
@@ -490,29 +491,30 @@ export const EditorToolbar: Component<EditorToolbarProps> = (props) => {
         </form>
       </div>
       <span class={styles.enterModeWrapper}>
-        <button
-          type="button"
-          class="ghost small"
-          title={enterModeTitle()}
-          onClick={() => {
-            props.toggleEnterMode()
-            props.setEnterTooltipOpen(true)
-          }}
-        >
-          <Show
-            when={props.enterMode() === 'enter-sends'}
-            fallback={(
-              <>
-                {isMac
-                  ? <Icon icon={Command} size="xxs" class={styles.iconNudge} />
-                  : <Icon icon={ChevronUp} size="xxs" class={styles.iconNudge} />}
-                <span>Enter sends</span>
-              </>
-            )}
+        <Tooltip text={enterModeTitle()}>
+          <button
+            type="button"
+            class="ghost small"
+            onClick={() => {
+              props.toggleEnterMode()
+              props.setEnterTooltipOpen(true)
+            }}
           >
-            Enter sends
-          </Show>
-        </button>
+            <Show
+              when={props.enterMode() === 'enter-sends'}
+              fallback={(
+                <>
+                  {isMac
+                    ? <Icon icon={Command} size="xxs" class={styles.iconNudge} />
+                    : <Icon icon={ChevronUp} size="xxs" class={styles.iconNudge} />}
+                  <span>Enter sends</span>
+                </>
+              )}
+            >
+              Enter sends
+            </Show>
+          </button>
+        </Tooltip>
       </span>
     </div>
   )

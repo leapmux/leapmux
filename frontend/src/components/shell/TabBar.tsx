@@ -16,22 +16,27 @@ import { createSignal, ErrorBoundary, For, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
+import { Tooltip } from '~/components/common/Tooltip'
 import { tabKey, TabType } from '~/stores/tab.store'
 import { menuSectionHeader, monoFont } from '~/styles/shared.css'
 import { TABBAR_ZONE_PREFIX, useCrossTileDrag } from './CrossTileDragContext'
 import * as styles from './TabBar.css'
 
 const TabBarTooltip: Component<{ text: string, children: JSX.Element }> = tipProps => (
-  <span class={styles.tooltipTrigger} title={tipProps.text}>
-    {tipProps.children}
-  </span>
+  <Tooltip text={tipProps.text}>
+    <span class={styles.tooltipTrigger}>
+      {tipProps.children}
+    </span>
+  </Tooltip>
 )
 
 const TabTextWithTooltip: Component<{ label: string }> = (props) => {
   return (
-    <span class={styles.tabText} title={props.label}>
-      {props.label}
-    </span>
+    <Tooltip text={props.label}>
+      <span class={styles.tabText}>
+        {props.label}
+      </span>
+    </Tooltip>
   )
 }
 

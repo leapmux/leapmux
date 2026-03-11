@@ -63,6 +63,8 @@ export const shikiHighlighter = createHighlighterCoreSync({
   engine: createJavaScriptRegexEngine(),
 })
 
+const HTTP_URL_RE = /^https?:\/\//
+
 /** Rehype plugin that secures links: adds target/rel to http(s) links, unwraps non-http(s) links. */
 function rehypeExternalLinks() {
   return (tree: Root) => {
@@ -70,7 +72,7 @@ function rehypeExternalLinks() {
       if (node.tagName !== 'a')
         return
       const href = node.properties?.href
-      if (typeof href === 'string' && /^https?:\/\//.test(href)) {
+      if (typeof href === 'string' && HTTP_URL_RE.test(href)) {
         node.properties ??= {}
         node.properties.target = '_blank'
         node.properties.rel = 'noopener noreferrer nofollow'

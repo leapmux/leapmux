@@ -32,6 +32,7 @@ export const collapsibleContent = style({
   display: 'grid',
   gridTemplateRows: '0fr',
   minHeight: 0,
+  margin: 0,
   padding: 0,
   selectors: {
     '[data-closed] &': {

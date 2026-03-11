@@ -192,8 +192,8 @@ export const treeContainer = style({
   overflow: 'hidden',
 })
 
-// The label wrapping the DirectoryTree needs to grow and use flex layout.
-globalStyle(`${dialogStandard} > .${dialogBody} > form > section > .vstack > label:has(.${treeContainer})`, {
+// The element wrapping the DirectoryTree needs to grow and use flex layout.
+globalStyle(`${dialogStandard} > .${dialogBody} > form > section > .vstack > :has(.${treeContainer})`, {
   display: 'flex',
   flexDirection: 'column',
   flex: 1,

@@ -122,7 +122,7 @@ describe('collapsibleSidebar', () => {
     }
 
     expect(onStateChange).toHaveBeenCalled()
-    const [openSections] = onStateChange.mock.calls[onStateChange.mock.calls.length - 1]
+    const [openSections] = onStateChange.mock.calls.at(-1)
     expect(openSections.b).toBe(false)
   })
 
@@ -146,7 +146,7 @@ describe('collapsibleSidebar', () => {
 
     // onStateChange should have been called (at least for mouseup)
     expect(onStateChange).toHaveBeenCalled()
-    const lastCall = onStateChange.mock.calls[onStateChange.mock.calls.length - 1]
+    const lastCall = onStateChange.mock.calls.at(-1)
     const [, sectionSizes] = lastCall
     // Both sections should have sizes
     expect(sectionSizes.a).toBeDefined()
@@ -169,7 +169,7 @@ describe('collapsibleSidebar', () => {
     fireEvent.dblClick(handle)
 
     expect(onStateChange).toHaveBeenCalled()
-    const lastCall = onStateChange.mock.calls[onStateChange.mock.calls.length - 1]
+    const lastCall = onStateChange.mock.calls.at(-1)
     const [, sectionSizes] = lastCall
     expect(sectionSizes.a).toBe(0.5)
     expect(sectionSizes.b).toBe(0.5)
@@ -193,7 +193,7 @@ describe('collapsibleSidebar', () => {
     fireEvent.dblClick(handles[0])
 
     expect(onStateChange).toHaveBeenCalled()
-    const lastCall = onStateChange.mock.calls[onStateChange.mock.calls.length - 1]
+    const lastCall = onStateChange.mock.calls.at(-1)
     const [, sectionSizes] = lastCall
     const third = 1 / 3
     expect(sectionSizes.a).toBeCloseTo(third)
