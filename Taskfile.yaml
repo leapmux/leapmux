@@ -266,6 +266,12 @@ tasks:
       - task: build-backend
       - mprocs
 
+  dev-solo:
+    desc: Start solo mode for development
+    cmds:
+      - task: generate
+      - mprocs --config mprocs-solo.yaml
+
   # --- Docker ---
 
   docker-build:
