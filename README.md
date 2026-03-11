@@ -58,7 +58,7 @@ Run `leapmux` with no subcommand for a zero-config, single-user setup. Hub and W
 │  └─────────────┘               │  └────────────┘  │  │
 │         ▲                      │  + SQLite        │  │
 │         │                      └──────────────────┘  │
-│         │ ConnectRPC + WebSocket (E2EE)              │
+│         │ ConnectRPC + WebSocket                      │
 └─────────┼────────────────────────────────────────────┘
           │
           ▼
