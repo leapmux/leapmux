@@ -339,7 +339,9 @@ func (c *Client) heartbeatLoop(ctx context.Context) {
 			if idle >= heartbeatIdleTimeout {
 				if err := c.Send(&leapmuxv1.ConnectRequest{
 					Payload: &leapmuxv1.ConnectRequest_Heartbeat{
-						Heartbeat: &leapmuxv1.Heartbeat{},
+						Heartbeat: &leapmuxv1.Heartbeat{
+							EncryptionMode: c.EncryptionMode,
+						},
 					},
 				}); err != nil {
 					slog.Warn("heartbeat send failed", "error", err)

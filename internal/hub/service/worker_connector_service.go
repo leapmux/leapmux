@@ -325,6 +325,11 @@ func (s *WorkerConnectorService) processWorkerMessage(
 		// Cache encryption mode on the live connection (not persisted to DB).
 		encMode := hb.GetEncryptionMode()
 		if encMode == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED {
+			if conn.EncryptionMode != leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED {
+				// The worker already declared a mode; sending UNSPECIFIED
+				// afterwards is a bug — reject the connection.
+				return fmt.Errorf("worker sent unspecified encryption mode after previously declaring %v", conn.EncryptionMode)
+			}
 			encMode = leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM
 		}
 		// Reject disabled encryption in non-solo mode.
