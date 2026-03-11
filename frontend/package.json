@@ -22,7 +22,7 @@
     "@connectrpc/connect": "^2.1.1",
     "@connectrpc/connect-web": "^2.1.1",
     "@corvu/resizable": "^0.2.5",
-    "@knadh/oat": "^0.4.2",
+    "@knadh/oat": "0.4.2",
     "@milkdown/core": "^7.19.0",
     "@milkdown/ctx": "^7.19.0",
     "@milkdown/plugin-clipboard": "^7.19.0",

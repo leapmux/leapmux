@@ -51,11 +51,11 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
 
       // Position the popover above the end of the selection
       const range = selection.getRangeAt(0)
-      const rects = range.getClientRects()
+      const rects = [...range.getClientRects()]
       if (rects.length === 0)
         return
 
-      const lastRect = rects.at(-1)
+      const lastRect = rects.at(-1)!
 
       // Place at the end of the selection, then clamp so it stays on-screen.
       let left = lastRect.right

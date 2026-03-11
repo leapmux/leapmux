@@ -16,7 +16,7 @@ test.describe('Worker Registration', () => {
     await page.waitForLoadState('networkidle')
 
     // Open the new workspace dialog
-    await page.getByTitle(NEW_WORKSPACE_RE).first().click()
+    await page.getByLabel(NEW_WORKSPACE_RE).first().click()
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
     // The initial fetch on mount should find the worker (already online).
@@ -28,14 +28,14 @@ test.describe('Worker Registration', () => {
     await loginViaUI(page)
 
     // Open the new workspace dialog
-    await page.getByTitle(NEW_WORKSPACE_RE).first().click()
+    await page.getByLabel(NEW_WORKSPACE_RE).first().click()
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
     // Wait for initial load to find the worker
     await expect(page.locator('select').first()).toContainText('Local')
 
     // Click the refresh button
-    await page.getByTitle('Refresh workers').click()
+    await page.getByLabel('Refresh workers').click()
 
     // Worker should still be shown after refresh
     await expect(page.locator('select').first()).toContainText('Local')
@@ -45,7 +45,7 @@ test.describe('Worker Registration', () => {
     await loginViaUI(page)
 
     // Open the new workspace dialog
-    await page.getByTitle(NEW_WORKSPACE_RE).first().click()
+    await page.getByLabel(NEW_WORKSPACE_RE).first().click()
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
     // Wait for initial load to find the worker and directory tree
@@ -53,7 +53,7 @@ test.describe('Worker Registration', () => {
     await expect(page.getByTestId('tree-root-node')).toBeVisible()
 
     // Locate the "Refresh directory tree" button's icon
-    const refreshBtn = page.getByTitle('Refresh directory tree')
+    const refreshBtn = page.getByLabel('Refresh directory tree')
     const refreshIcon = refreshBtn.locator('svg')
 
     // Click a directory node in the tree (the root node)
@@ -70,7 +70,7 @@ test.describe('Worker Registration', () => {
     await loginViaUI(page)
 
     // Open the new workspace dialog
-    await page.getByTitle(NEW_WORKSPACE_RE).first().click()
+    await page.getByLabel(NEW_WORKSPACE_RE).first().click()
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
     // Wait for initial load
@@ -81,7 +81,7 @@ test.describe('Worker Registration', () => {
     await expect(page.getByRole('heading', { name: 'New Workspace' })).not.toBeVisible()
 
     // Re-open the dialog
-    await page.getByTitle(NEW_WORKSPACE_RE).first().click()
+    await page.getByLabel(NEW_WORKSPACE_RE).first().click()
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
     // The re-mount fetch should find the worker

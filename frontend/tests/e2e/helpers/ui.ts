@@ -111,14 +111,14 @@ export async function approveWorkerViaUI(page: Page, token: string, name: string
  */
 export async function createWorkspaceViaUI(page: Page, title: string) {
   // Click "+" button on a section header to open new workspace dialog
-  await page.getByTitle(NEW_WORKSPACE_RE).first().click()
+  await page.getByLabel(NEW_WORKSPACE_RE).first().click()
   await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
   // Scope to the dialog to avoid strict-mode violations with the sidebar
   // "Create a new workspace..." button.
   const dialog = page.getByRole('dialog')
   const createBtn = dialog.getByRole('button', { name: 'Create', exact: true })
-  const refreshBtn = dialog.getByTitle('Refresh workers')
+  const refreshBtn = dialog.getByLabel('Refresh workers')
 
   // Wait for the initial fetch to find an online worker.
   // If not found, retry by clicking the refresh button (worker may be reconnecting).

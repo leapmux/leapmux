@@ -280,7 +280,7 @@ async function keepWorktreeViaAPI(
 async function waitForWorker(page: Page) {
   const dialog = page.getByRole('dialog')
   const workerSelect = dialog.locator('select').first()
-  const refreshBtn = dialog.getByTitle('Refresh workers')
+  const refreshBtn = dialog.getByLabel('Refresh workers')
   for (let attempt = 0; attempt < 6; attempt++) {
     try {
       await expect(workerSelect).toContainText('Local', { timeout: 5000 })
@@ -1147,7 +1147,7 @@ test.describe('Worktree Support', () => {
     expect(initialBranch).toBeTruthy()
 
     // Click the randomize button for branch name (last one — first is for workspace title)
-    await dialog.getByTitle('Generate random name').last().click()
+    await dialog.getByLabel('Generate random name').last().click()
 
     // Branch name should change
     const newBranch = await branchInput.inputValue()

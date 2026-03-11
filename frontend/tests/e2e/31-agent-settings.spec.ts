@@ -285,15 +285,18 @@ test.describe('Agent Settings', () => {
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     await expect(trigger).toBeVisible()
 
-    // Install a MutationObserver to detect even a brief flash of the thinking indicator
+    // Install a MutationObserver to detect even a brief flash of the thinking indicator.
+    // The ThinkingIndicator element is always in the DOM (collapsed via grid-template-rows: 0fr),
+    // so we check whether it becomes visually expanded (grid-template-rows: 1fr / opacity: 1).
     await page.evaluate(() => {
       (window as any).__thinkingIndicatorSeen = false
       const observer = new MutationObserver(() => {
-        if (document.querySelector('[data-testid="thinking-indicator"]')) {
+        const el = document.querySelector('[data-testid="thinking-indicator"]') as HTMLElement | null
+        if (el && el.style.gridTemplateRows === '1fr') {
           (window as any).__thinkingIndicatorSeen = true
         }
       })
-      observer.observe(document.body, { childList: true, subtree: true })
+      observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['style'] })
       ;(window as any).__thinkingObserver = observer
     })
 

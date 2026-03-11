@@ -15,6 +15,23 @@ export default defineConfig({
   vite: {
     build: { sourcemap: true },
     plugins: [
+      {
+        // Workaround: vinxi passes configFile: false to Vite, so
+        // @vanilla-extract/vite-plugin falls back to config.inlineConfig
+        // when creating its vite-node compiler.  That inlineConfig doesn't
+        // include the resolved aliases, causing "~/..." imports in .css.ts
+        // files to fail.  Copy the resolved alias into inlineConfig so the
+        // compiler sees it.
+        name: 'forward-alias-to-inline-config',
+        enforce: 'pre' as const,
+        configResolved(config: any) {
+          if (config.resolve?.alias) {
+            config.inlineConfig ??= {}
+            config.inlineConfig.resolve ??= {}
+            config.inlineConfig.resolve.alias = config.resolve.alias
+          }
+        },
+      },
       vanillaExtractPlugin({ identifiers: 'debug' }),
       {
         // Suppress "didn't resolve at build time" warnings for public/ assets
@@ -117,11 +134,17 @@ export default defineConfig({
         '@bufbuild/protobuf/codegenv2',
         '@connectrpc/connect',
         '@connectrpc/connect-web',
+        // Encryption
+        '@noble/ciphers/chacha.js',
+        '@noble/curves/ed25519.js',
+        '@noble/hashes/blake2.js',
+        '@noble/hashes/hmac.js',
         // UI / misc
         '@knadh/oat/oat.min.js',
         'diff',
         'fracturedjsonjs',
         'fzstd',
+        'tslog',
         'random-word-slugs',
       ],
     },
