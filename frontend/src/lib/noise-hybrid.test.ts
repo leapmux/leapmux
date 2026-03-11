@@ -12,7 +12,7 @@ import { slh_dsa_shake_256f } from '@noble/post-quantum/slh-dsa.js'
 
 import { describe, expect, it } from 'vitest'
 import { concatBytes, hkdf } from './noise'
-import { initiatorHandshake1, initiatorHandshake2 } from './noise-hybrid'
+import { clearHandshakeState, initiatorHandshake1, initiatorHandshake2 } from './noise-hybrid'
 
 const PROTOCOL_NAME = 'Noise_NK_25519_ChaChaPoly_BLAKE2b'
 const DH_LEN = 32
@@ -106,6 +106,9 @@ function responderHandshake(
   mixKey(dhES)
 
   decryptAndHash(message1.slice(DH_LEN, noiseMsg1Len))
+
+  // Bind ML-KEM ciphertext into the handshake hash (matches initiator's mixHash).
+  mixHash(mlkemCT)
 
   // Write message 2: <- e, ee
   const ePriv = x25519.utils.randomSecretKey()
@@ -232,7 +235,104 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
   it('should fail with short message2', () => {
     const { handshakeState } = initiatorHandshake1(x25519Pub, mlkemKeys.publicKey)
     expect(() => initiatorHandshake2(handshakeState, new Uint8Array(16), slhdsaKeys.publicKey))
-      .toThrow('too short')
+      .toThrow('wrong size')
+  })
+
+  it('should fail with oversized message2', () => {
+    const { handshakeState, message1 } = initiatorHandshake1(x25519Pub, mlkemKeys.publicKey)
+    const responder = responderHandshake(
+      x25519Priv,
+      x25519Pub,
+      mlkemKeys.secretKey,
+      slhdsaKeys.secretKey,
+      message1,
+    )
+    // Append an extra byte to the valid message2.
+    const oversized = new Uint8Array(responder.message2.length + 1)
+    oversized.set(responder.message2)
+    expect(() => initiatorHandshake2(handshakeState, oversized, slhdsaKeys.publicKey))
+      .toThrow('wrong size')
+  })
+
+  it('should zero handshake state after completing handshake', () => {
+    const { handshakeState, message1 } = initiatorHandshake1(x25519Pub, mlkemKeys.publicKey)
+    const responder = responderHandshake(
+      x25519Priv,
+      x25519Pub,
+      mlkemKeys.secretKey,
+      slhdsaKeys.secretKey,
+      message1,
+    )
+
+    // Verify sensitive material exists before handshake2.
+    expect(handshakeState.mlkemSS.length).toBeGreaterThan(0)
+    expect(handshakeState.mlkemCT.length).toBeGreaterThan(0)
+    expect(handshakeState.e.privateKey.length).toBeGreaterThan(0)
+
+    initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey)
+
+    // After handshake2, all sensitive fields should be zeroed.
+    expect(handshakeState.mlkemSS.every(b => b === 0)).toBe(true)
+    expect(handshakeState.mlkemCT.every(b => b === 0)).toBe(true)
+    expect(handshakeState.e.privateKey.every(b => b === 0)).toBe(true)
+    expect(handshakeState.ss.h.every(b => b === 0)).toBe(true)
+    expect(handshakeState.ss.ck.every(b => b === 0)).toBe(true)
+    expect(handshakeState.ss.k.every(b => b === 0)).toBe(true)
+  })
+
+  it('should zero handshake state on SLH-DSA verification failure', () => {
+    const { handshakeState, message1 } = initiatorHandshake1(x25519Pub, mlkemKeys.publicKey)
+    const responder = responderHandshake(
+      x25519Priv,
+      x25519Pub,
+      mlkemKeys.secretKey,
+      slhdsaKeys.secretKey,
+      message1,
+    )
+
+    const wrongKeys = slh_dsa_shake_256f.keygen()
+    expect(() => initiatorHandshake2(handshakeState, responder.message2, wrongKeys.publicKey))
+      .toThrow('SLH-DSA')
+
+    // Even on failure, sensitive material should be zeroed.
+    expect(handshakeState.mlkemSS.every(b => b === 0)).toBe(true)
+    expect(handshakeState.e.privateKey.every(b => b === 0)).toBe(true)
+  })
+
+  it('should zero handshake state via clearHandshakeState', () => {
+    const { handshakeState } = initiatorHandshake1(x25519Pub, mlkemKeys.publicKey)
+
+    // Verify non-zero before clearing.
+    expect(handshakeState.mlkemSS.some(b => b !== 0)).toBe(true)
+
+    clearHandshakeState(handshakeState)
+
+    expect(handshakeState.mlkemSS.every(b => b === 0)).toBe(true)
+    expect(handshakeState.mlkemCT.every(b => b === 0)).toBe(true)
+    expect(handshakeState.e.privateKey.every(b => b === 0)).toBe(true)
+  })
+
+  it('should fail when ML-KEM ciphertext is tampered (handshake hash divergence)', () => {
+    const { handshakeState, message1 } = initiatorHandshake1(x25519Pub, mlkemKeys.publicKey)
+
+    // Tamper with the ML-KEM ciphertext portion (after the 48-byte Noise message).
+    const tampered = new Uint8Array(message1)
+    tampered[48] ^= 0xFF
+
+    // Responder processes tampered message — ML-KEM implicit rejection means
+    // decapsulation succeeds with a random shared secret.
+    const responder = responderHandshake(
+      x25519Priv,
+      x25519Pub,
+      mlkemKeys.secretKey,
+      slhdsaKeys.secretKey,
+      tampered,
+    )
+
+    // Initiator should fail because handshake hashes diverged
+    // (mixHash(mlkemCT) differs between initiator and responder).
+    expect(() => initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey))
+      .toThrow()
   })
 
   it('should encrypt empty messages', () => {

@@ -60,6 +60,7 @@ export function initiatorHandshake1(
   // es: DH(e, rs)
   const dhES = x25519.getSharedSecret(ePriv, remoteX25519Pub)
   ss.mixKey(dhES)
+  dhES.fill(0)
 
   // Encrypt empty payload.
   const encPayload = ss.encryptAndHash(new Uint8Array(0))
@@ -67,6 +68,9 @@ export function initiatorHandshake1(
 
   // ML-KEM-1024 encapsulation.
   const { cipherText: mlkemCT, sharedSecret: mlkemSS } = ml_kem1024.encapsulate(remoteMlkemPub)
+
+  // Bind ML-KEM ciphertext into the handshake hash (matches responder's mixHash).
+  ss.mixHash(mlkemCT)
 
   return {
     handshakeState: {
@@ -78,6 +82,17 @@ export function initiatorHandshake1(
     },
     message1: concatBytes(noiseMsg1, mlkemCT),
   }
+}
+
+/**
+ * Zero all sensitive fields in a HybridHandshakeState.
+ * Only secrets are zeroed — public keys (rs, e.publicKey) are not sensitive.
+ */
+export function clearHandshakeState(state: HybridHandshakeState): void {
+  state.ss.clear()
+  state.e.privateKey.fill(0)
+  state.mlkemSS.fill(0)
+  state.mlkemCT.fill(0)
 }
 
 /**
@@ -97,8 +112,8 @@ export function initiatorHandshake2(
   const { ss, e, mlkemSS, mlkemCT } = state
 
   const expectedLen = NOISE_MSG_LEN + SLHDSA_SIG_SIZE
-  if (message2.length < expectedLen) {
-    throw new Error(`noise-hybrid: message2 too short (${message2.length} < ${expectedLen})`)
+  if (message2.length !== expectedLen) {
+    throw new Error(`noise-hybrid: message2 wrong size (${message2.length} !== ${expectedLen})`)
   }
 
   const noiseMsg2 = message2.slice(0, NOISE_MSG_LEN)
@@ -111,6 +126,7 @@ export function initiatorHandshake2(
   // ee: DH(e, re)
   const dhEE = x25519.getSharedSecret(e.privateKey, re)
   ss.mixKey(dhEE)
+  dhEE.fill(0)
 
   // Decrypt payload (should be empty).
   const encPayload = noiseMsg2.slice(DH_LEN)
@@ -122,11 +138,15 @@ export function initiatorHandshake2(
   // Verify SLH-DSA signature.
   const valid = slh_dsa_shake_256f.verify(slhdsaSig, transcript, remoteSlhdsaPub)
   if (!valid) {
+    clearHandshakeState(state)
     throw new Error('noise-hybrid: SLH-DSA signature verification failed')
   }
 
   // Hybrid split: mix ML-KEM shared secret into chaining key before deriving cipher keys.
   const [c1, c2] = ss.hybridSplit(mlkemSS)
+
+  // Zero sensitive handshake material.
+  clearHandshakeState(state)
 
   // Initiator convention: send=c2, receive=c1
   return { send: c2, receive: c1 }

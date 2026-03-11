@@ -211,6 +211,52 @@ func TestNeedsRekey(t *testing.T) {
 	assert.False(t, session.NeedsRekey(), "NeedsRekey should be false at nonce 0")
 }
 
+func TestTamperedMlkemCiphertextCausesAEADFailure(t *testing.T) {
+	workerKey, err := GenerateCompositeKeypair()
+	require.NoError(t, err)
+
+	_, msg1, err := InitiatorHandshake1(workerKey.X25519Public, workerKey.MlkemPublicKeyBytes())
+	require.NoError(t, err)
+
+	// Tamper with the ML-KEM ciphertext portion of message1.
+	// The classical Noise part (first 48 bytes) is untouched.
+	tampered := make([]byte, len(msg1))
+	copy(tampered, msg1)
+	tampered[48] ^= 0xFF // flip one byte in the ML-KEM ciphertext
+
+	// Responder should fail because the tampered mlkemCT changes the handshake
+	// hash (via mixHash), causing the message2 AEAD to use a different AD than
+	// what the initiator expects. This proves mlkemCT is bound into the
+	// Noise state, not just the SLH-DSA transcript.
+	// Note: ML-KEM implicit rejection means Decapsulate doesn't error on
+	// tampered ciphertext — it produces a random shared secret instead.
+	// The failure comes from the divergent handshake hash.
+	_, _, err = ResponderHandshake(workerKey, tampered)
+	// The responder handshake itself succeeds (ML-KEM implicit rejection),
+	// but when the initiator tries to verify, the handshake hashes differ.
+	// Let's verify from the initiator's perspective instead:
+	require.NoError(t, err) // Responder doesn't detect the tampering
+
+	// Re-do the handshake properly and verify the initiator would fail.
+	hs, msg1Good, err := InitiatorHandshake1(workerKey.X25519Public, workerKey.MlkemPublicKeyBytes())
+	require.NoError(t, err)
+
+	// Tamper with message1 before sending to responder.
+	tamperedMsg1 := make([]byte, len(msg1Good))
+	copy(tamperedMsg1, msg1Good)
+	tamperedMsg1[48] ^= 0xFF
+
+	slhdsaPubBytes, err := workerKey.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+
+	msg2, _, err := ResponderHandshake(workerKey, tamperedMsg1)
+	require.NoError(t, err) // Responder succeeds due to ML-KEM implicit rejection
+
+	// Initiator fails because handshake hashes diverged (mixHash(mlkemCT) differs).
+	_, err = InitiatorHandshake2(hs, msg2, slhdsaPubBytes)
+	require.Error(t, err, "initiator should detect tampered mlkemCT via handshake hash divergence")
+}
+
 func TestClassicalHandshakeRoundtrip(t *testing.T) {
 	// Worker generates composite keypair (only X25519 used for classical).
 	workerKey, err := GenerateCompositeKeypair()
@@ -364,4 +410,59 @@ func TestMessageSizes(t *testing.T) {
 	// message2 = noise_msg2 (48) + slhdsa_signature (49856) = 49904
 	assert.Equal(t, 48+SlhdsaSignatureSize, len(msg2), "message2 size")
 	_ = hs
+}
+
+func TestHandshakeStateZeroedAfterHybrid(t *testing.T) {
+	workerKey, err := GenerateCompositeKeypair()
+	require.NoError(t, err)
+
+	slhdsaPubBytes, err := workerKey.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+
+	hs, msg1, err := InitiatorHandshake1(workerKey.X25519Public, workerKey.MlkemPublicKeyBytes())
+	require.NoError(t, err)
+
+	// Verify sensitive material exists before completing handshake.
+	assert.NotNil(t, hs.ss, "symmetric state should exist before handshake2")
+	assert.NotEmpty(t, hs.mlkemSS, "mlkemSS should be set before handshake2")
+	assert.NotEmpty(t, hs.mlkemCT, "mlkemCT should be set before handshake2")
+
+	msg2, _, err := ResponderHandshake(workerKey, msg1)
+	require.NoError(t, err)
+
+	_, err = InitiatorHandshake2(hs, msg2, slhdsaPubBytes)
+	require.NoError(t, err)
+
+	// After handshake2 completes, HandshakeState should be zeroed.
+	assert.Nil(t, hs.ss, "symmetric state should be nil after handshake2")
+	assert.Nil(t, hs.ePriv, "ephemeral private key should be nil after handshake2")
+	for _, b := range hs.mlkemSS {
+		if b != 0 {
+			t.Fatal("mlkemSS should be zeroed after handshake2")
+		}
+	}
+	for _, b := range hs.mlkemCT {
+		if b != 0 {
+			t.Fatal("mlkemCT should be zeroed after handshake2")
+		}
+	}
+}
+
+func TestHandshakeStateZeroedAfterClassical(t *testing.T) {
+	workerKey, err := GenerateCompositeKeypair()
+	require.NoError(t, err)
+
+	hs, msg1, err := ClassicalInitiatorHandshake1(workerKey.X25519Public)
+	require.NoError(t, err)
+
+	assert.NotNil(t, hs.ss, "symmetric state should exist before handshake2")
+
+	msg2, _, err := ClassicalResponderHandshake(workerKey.X25519Public, workerKey.X25519Private, msg1)
+	require.NoError(t, err)
+
+	_, err = ClassicalInitiatorHandshake2(hs, msg2)
+	require.NoError(t, err)
+
+	assert.Nil(t, hs.ss, "symmetric state should be nil after classical handshake2")
+	assert.Nil(t, hs.ePriv, "ephemeral private key should be nil after classical handshake2")
 }

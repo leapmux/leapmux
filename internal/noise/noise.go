@@ -367,12 +367,18 @@ func ResponderHandshake(compositeKey *CompositeKeypair, message1 []byte) (respon
 		return nil, nil, fmt.Errorf("noise: es DH failed: %w", err)
 	}
 	ss.mixKey(dhES)
+	zeroBytes(dhES)
 
 	// Decrypt payload from message 1.
 	_, err = ss.decryptAndHash(noiseMsg1[dhLen:])
 	if err != nil {
 		return nil, nil, fmt.Errorf("noise: decrypt message1 payload: %w", err)
 	}
+
+	// Bind ML-KEM ciphertext into the handshake hash so that tampering with
+	// the ciphertext causes the message2 AEAD to fail, independent of the
+	// SLH-DSA transcript signature.
+	ss.mixHash(mlkemCT)
 
 	// Write message 2: <- e, ee
 	// Generate responder ephemeral.
@@ -389,6 +395,7 @@ func ResponderHandshake(compositeKey *CompositeKeypair, message1 []byte) (respon
 		return nil, nil, fmt.Errorf("noise: ee DH failed: %w", err)
 	}
 	ss.mixKey(dhEE)
+	zeroBytes(dhEE)
 
 	// Encrypt empty payload.
 	encPayload, err := ss.encryptAndHash(nil)
@@ -410,11 +417,14 @@ func ResponderHandshake(compositeKey *CompositeKeypair, message1 []byte) (respon
 	// Sign transcript with SLH-DSA.
 	sig, err := compositeKey.SlhdsaPrivateKey.Sign(rand.Reader, transcript, nil)
 	if err != nil {
+		zeroBytes(mlkemSS)
 		return nil, nil, fmt.Errorf("noise: SLH-DSA sign: %w", err)
 	}
 
 	// Hybrid split: combine classical ck with ML-KEM shared secret.
 	send, recv := ss.hybridSplit(mlkemSS)
+	zeroBytes(mlkemSS)
+	ss.clear()
 
 	return append(noiseMsg2, sig...), &Session{Send: send, Receive: recv}, nil
 }
@@ -453,6 +463,7 @@ func InitiatorHandshake1(remoteX25519Pub, remoteMlkemPub []byte) (*HandshakeStat
 		return nil, nil, fmt.Errorf("noise: es DH failed: %w", err)
 	}
 	ss.mixKey(dhES)
+	zeroBytes(dhES)
 
 	// Encrypt empty payload.
 	encPayload, err := ss.encryptAndHash(nil)
@@ -468,6 +479,9 @@ func InitiatorHandshake1(remoteX25519Pub, remoteMlkemPub []byte) (*HandshakeStat
 		return nil, nil, fmt.Errorf("noise: parse ML-KEM encapsulation key: %w", err)
 	}
 	mlkemSS, mlkemCT := mlkemEK.Encapsulate()
+
+	// Bind ML-KEM ciphertext into the handshake hash (matches responder's mixHash).
+	ss.mixHash(mlkemCT)
 
 	message1 := append(noiseMsg1, mlkemCT...)
 
@@ -510,6 +524,7 @@ func InitiatorHandshake2(hs *HandshakeState, message2 []byte, remoteSlhdsaPub []
 		return nil, fmt.Errorf("noise: ee DH failed: %w", err)
 	}
 	ss.mixKey(dhEE)
+	zeroBytes(dhEE)
 
 	// Decrypt payload.
 	_, err = ss.decryptAndHash(noiseMsg2[dhLen:])
@@ -532,6 +547,9 @@ func InitiatorHandshake2(hs *HandshakeState, message2 []byte, remoteSlhdsaPub []
 	// Hybrid split: combine classical ck with ML-KEM shared secret.
 	// Initiator convention: send=cs2, receive=cs1.
 	cs1, cs2 := ss.hybridSplit(hs.mlkemSS)
+	ss.clear()
+	hs.Clear()
+
 	return &Session{Send: cs2, Receive: cs1}, nil
 }
 
@@ -565,6 +583,7 @@ func ClassicalResponderHandshake(x25519Pub, x25519Priv []byte, message1 []byte) 
 		return nil, nil, fmt.Errorf("noise: es DH failed: %w", err)
 	}
 	ss.mixKey(dhES)
+	zeroBytes(dhES)
 
 	if _, err = ss.decryptAndHash(message1[dhLen:]); err != nil {
 		return nil, nil, fmt.Errorf("noise: decrypt message1 payload: %w", err)
@@ -582,6 +601,7 @@ func ClassicalResponderHandshake(x25519Pub, x25519Priv []byte, message1 []byte) 
 		return nil, nil, fmt.Errorf("noise: ee DH failed: %w", err)
 	}
 	ss.mixKey(dhEE)
+	zeroBytes(dhEE)
 
 	encPayload, err := ss.encryptAndHash(nil)
 	if err != nil {
@@ -589,6 +609,7 @@ func ClassicalResponderHandshake(x25519Pub, x25519Priv []byte, message1 []byte) 
 	}
 
 	send, recv := ss.split()
+	ss.clear()
 	return append(ePub, encPayload...), &Session{Send: send, Receive: recv}, nil
 }
 
@@ -616,6 +637,7 @@ func ClassicalInitiatorHandshake1(remoteX25519Pub []byte) (*HandshakeState, []by
 		return nil, nil, fmt.Errorf("noise: es DH failed: %w", err)
 	}
 	ss.mixKey(dhES)
+	zeroBytes(dhES)
 
 	encPayload, err := ss.encryptAndHash(nil)
 	if err != nil {
@@ -650,13 +672,47 @@ func ClassicalInitiatorHandshake2(hs *HandshakeState, message2 []byte) (*Session
 		return nil, fmt.Errorf("noise: ee DH failed: %w", err)
 	}
 	ss.mixKey(dhEE)
+	zeroBytes(dhEE)
 
 	if _, err = ss.decryptAndHash(message2[dhLen:]); err != nil {
 		return nil, fmt.Errorf("noise: decrypt message2 payload: %w", err)
 	}
 
 	cs1, cs2 := ss.split()
+	ss.clear()
+	hs.Clear()
 	return &Session{Send: cs2, Receive: cs1}, nil
+}
+
+// ---- Key material zeroing ----
+
+// zeroBytes overwrites a byte slice with zeros to limit key material lifetime in memory.
+func zeroBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
+}
+
+// clear zeroes the symmetric state's sensitive fields after split/hybridSplit.
+func (ss *symmetricState) clear() {
+	zeroBytes(ss.ck[:])
+	zeroBytes(ss.k[:])
+	zeroBytes(ss.h[:])
+	ss.hasK = false
+	ss.n = 0
+}
+
+// Clear zeroes all sensitive fields in the HandshakeState.
+// Only secrets are zeroed — public keys (rs) are not sensitive.
+// Called automatically by InitiatorHandshake2 after completing the handshake.
+func (hs *HandshakeState) Clear() {
+	if hs.ss != nil {
+		hs.ss.clear()
+		hs.ss = nil
+	}
+	hs.ePriv = nil
+	zeroBytes(hs.mlkemSS)
+	zeroBytes(hs.mlkemCT)
 }
 
 // ---- Crypto primitives ----

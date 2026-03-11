@@ -150,6 +150,15 @@ export class SymmetricState {
     this.ck = ck2
     return this.split()
   }
+
+  /** Zero all sensitive fields in the symmetric state. */
+  clear(): void {
+    this.h.fill(0)
+    this.ck.fill(0)
+    this.k.fill(0)
+    this.hasK = false
+    this.n = 0
+  }
 }
 
 /** CipherState for post-handshake encryption/decryption. */
@@ -231,6 +240,7 @@ export function initiatorHandshake1(remoteStaticPubKey: Uint8Array): {
   // es: DH(e, rs)
   const dhResult = dh(e.privateKey, remoteStaticPubKey)
   ss.mixKey(dhResult)
+  dhResult.fill(0)
 
   // Encrypt empty payload (no payload in handshake message 1).
   const encPayload = ss.encryptAndHash(new Uint8Array(0))
@@ -241,6 +251,15 @@ export function initiatorHandshake1(remoteStaticPubKey: Uint8Array): {
     handshakeState: { ss, e, rs: remoteStaticPubKey },
     message1,
   }
+}
+
+/**
+ * Zero all sensitive fields in a classical HandshakeState.
+ * Only secrets are zeroed — public keys (rs, e.publicKey) are not sensitive.
+ */
+export function clearClassicalHandshakeState(state: HandshakeState): void {
+  state.ss.clear()
+  state.e.privateKey.fill(0)
 }
 
 /**
@@ -263,6 +282,7 @@ export function initiatorHandshake2(state: HandshakeState, message2: Uint8Array)
   // ee: DH(e, re)
   const dhResult = dh(e.privateKey, re)
   ss.mixKey(dhResult)
+  dhResult.fill(0)
 
   // Decrypt payload (should be empty).
   const payload = message2.slice(32)
@@ -273,5 +293,9 @@ export function initiatorHandshake2(state: HandshakeState, message2: Uint8Array)
   //   Responder: send=cs1, receive=cs2
   //   Initiator: send=cs2, receive=cs1
   const [c1, c2] = ss.split()
+
+  // Zero sensitive handshake material.
+  clearClassicalHandshakeState(state)
+
   return { send: c2, receive: c1 }
 }

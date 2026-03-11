@@ -15,7 +15,7 @@ LeapMux is an **AI coding agent multiplexer** that enables developers to run mul
 - **Git-Aware File Browser**: Browse files on remote backends with real-time git status, change/staged/unstaged filters, and inline diffs
 - **Rich File Viewer**: Syntax-highlighted source, image preview with zoom/pan, hex view for binaries, and side-by-side or unified diffs
 - **Git Worktree Management**: Agents and terminals auto-create isolated git worktrees per task, with dirty-worktree protection
-- **End-to-End Encryption**: All Frontend-Worker traffic is encrypted via hybrid post-quantum Noise_NK (X25519 + ML-KEM-768 + SLH-DSA) over multiplexed WebSocket channels
+- **End-to-End Encryption**: All Frontend-Worker traffic is encrypted via hybrid post-quantum Noise_NK (X25519 + ML-KEM-1024 + SLH-DSA) over multiplexed WebSocket channels
 - **Multi-Organization Support**: Create teams with role-based access control (Owner/Admin/Member)
 - **Workspace Sharing**: Collaborate by sharing workspaces with specific users or organization members
 - **Backend Management**: Register and manage multiple development backends with approval workflow
@@ -130,7 +130,7 @@ LeapMux is a single binary with these subcommands:
 ### Communication
 
 - **Frontend → Hub**: ConnectRPC (gRPC-compatible) for authentication, workspace management, and worker registration
-- **Frontend → Worker (via Hub relay)**: End-to-end encrypted channels using hybrid post-quantum Noise_NK (X25519 + ML-KEM-768 for key exchange, SLH-DSA for static key authentication, ChaChaPoly + BLAKE2b for transport), multiplexed over a single WebSocket connection through the Hub
+- **Frontend → Worker (via Hub relay)**: End-to-end encrypted channels using hybrid post-quantum Noise_NK (X25519 + ML-KEM-1024 for key exchange, SLH-DSA for static key authentication, ChaChaPoly + BLAKE2b for transport), multiplexed over a single WebSocket connection through the Hub
 - **Worker → Hub**: Standard gRPC with bidirectional streaming (over TCP or Unix domain socket).
   - Workers initiate outbound connections to the Hub, so they can run behind NATs, without requiring inbound port access.
   - For local workers on the same machine, connect via Unix domain socket using `unix:<socket-path>` as the Hub URL.
@@ -377,7 +377,7 @@ Tool and base image versions are centralized in the `versions.yaml` file at the 
 
 - **[Bun](https://bun.sh/)** - Runtime and package manager
 - **[ConnectRPC](https://connectrpc.com/)** - RPC client for browser
-- **[Noble](https://paulmillr.com/noble/)** - Cryptographic primitives for E2EE (X25519, ML-KEM-768, SLH-DSA, ChaCha20-Poly1305, BLAKE2b)
+- **[Noble](https://paulmillr.com/noble/)** - Cryptographic primitives for E2EE (X25519, ML-KEM-1024, SLH-DSA, ChaCha20-Poly1305, BLAKE2b)
 - **[Corvu](https://corvu.dev/)** - Resizable panel components
 - **[Lucide](https://lucide.dev/)** - Icon library
 - **[Milkdown](https://milkdown.dev/)** - Markdown editor
