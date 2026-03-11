@@ -33,7 +33,7 @@ export function parseCatNContent(content: string): ParsedCatLine[] | null {
     return null
   const rawLines = content.split('\n')
   // Tolerate trailing empty line
-  if (rawLines.length > 0 && rawLines[rawLines.length - 1] === '')
+  if (rawLines.length > 0 && rawLines.at(-1) === '')
     rawLines.pop()
   if (rawLines.length === 0)
     return null
@@ -95,7 +95,7 @@ export function ReadResultView(props: {
   // Dynamic line number column width based on the largest line number
   const lineNumWidth = () => {
     const maxNum = props.lines.length > 0
-      ? props.lines[props.lines.length - 1].num
+      ? props.lines.at(-1).num
       : 0
     return `${Math.max(String(maxNum).length, 1)}ch`
   }

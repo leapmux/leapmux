@@ -36,7 +36,7 @@ function pathSegments(path: string): { name: string, path: string }[] {
 }
 
 function sortedEntries(entries: FileInfo[]): FileInfo[] {
-  return [...entries].sort((a, b) => {
+  return entries.toSorted((a, b) => {
     if (a.isDir !== b.isDir)
       return a.isDir ? -1 : 1
     return a.name.localeCompare(b.name)

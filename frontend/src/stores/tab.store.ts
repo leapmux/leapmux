@@ -59,7 +59,7 @@ export function createTabStore() {
     addTab(tab: Tab, activate = true) {
       // Assign a position if not already set
       if (!tab.position) {
-        const lastTab = state.tabs[state.tabs.length - 1]
+        const lastTab = state.tabs.at(-1)
         tab = { ...tab, position: lastTab?.position ? after(lastTab.position) : first() }
       }
       const key = tabKey(tab)

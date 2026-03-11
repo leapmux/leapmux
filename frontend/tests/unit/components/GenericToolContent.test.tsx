@@ -3,6 +3,10 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { GenericToolContent } from '~/components/chat/controls/GenericToolControl'
 
+const PERMISSION_REQUIRED_RE = /Permission Required:/
+const BASH_RE = /Bash/
+const KEY_19_RE = /key_19/
+
 function makeRequest(input: Record<string, unknown>): ControlRequest {
   return {
     requestId: 'req-1',
@@ -17,8 +21,8 @@ describe('genericToolContent', () => {
   it('renders tool name and short JSON without toggle', () => {
     render(() => <GenericToolContent request={makeRequest({ command: 'ls' })} />)
 
-    expect(screen.getByText(/Permission Required:/)).toBeTruthy()
-    expect(screen.getByText(/Bash/)).toBeTruthy()
+    expect(screen.getByText(PERMISSION_REQUIRED_RE)).toBeTruthy()
+    expect(screen.getByText(BASH_RE)).toBeTruthy()
     // Short JSON should be fully visible with no toggle
     expect(screen.queryByRole('button')).toBeNull()
   })
@@ -44,7 +48,7 @@ describe('genericToolContent', () => {
     fireEvent.click(screen.getByRole('button'))
 
     // All keys should now be visible
-    expect(screen.getByText(/key_19/)).toBeTruthy()
+    expect(screen.getByText(KEY_19_RE)).toBeTruthy()
     expect(screen.getByRole('button').textContent).toBe('Show less')
   })
 })

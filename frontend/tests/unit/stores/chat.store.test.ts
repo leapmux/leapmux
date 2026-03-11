@@ -229,7 +229,7 @@ describe('createChatStore', () => {
           expect(trimmed).toHaveLength(150)
           // Should keep the latest 150 (seq 51-200)
           expect(trimmed[0].seq).toBe(51n)
-          expect(trimmed[trimmed.length - 1].seq).toBe(200n)
+          expect(trimmed.at(-1).seq).toBe(200n)
           expect(store.hasOlderMessages('a1')).toBe(true)
           dispose()
         })

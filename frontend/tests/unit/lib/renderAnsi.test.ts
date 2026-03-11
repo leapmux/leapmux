@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
 
+const SPAN_TAG_RE = /<span/g
+
 describe('containsAnsi', () => {
   it('returns false for plain text', () => {
     expect(containsAnsi('hello world')).toBe(false)
@@ -71,7 +73,7 @@ describe('renderAnsi', () => {
     expect(html).toContain('red')
     expect(html).toContain('green')
     // Should have multiple styled spans
-    const spanCount = (html.match(/<span/g) || []).length
+    const spanCount = (html.match(SPAN_TAG_RE) || []).length
     expect(spanCount).toBeGreaterThanOrEqual(2)
   })
 

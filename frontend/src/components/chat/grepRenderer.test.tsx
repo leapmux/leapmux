@@ -1,10 +1,12 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 
+// eslint-disable-next-line no-control-regex -- ANSI escape detection requires matching control characters
+const ANSI_ESCAPE_RE = /\x1B\[[\d;]*m/
+
 // Mock renderAnsi to avoid shiki initialization in tests.
 vi.mock('~/lib/renderAnsi', () => ({
-  // eslint-disable-next-line no-control-regex -- ANSI escape detection requires matching control characters
-  containsAnsi: (text: string) => /\x1B\[[\d;]*m/.test(text),
+  containsAnsi: (text: string) => ANSI_ESCAPE_RE.test(text),
   renderAnsi: (text: string) => `<pre class="shiki"><code>${text}</code></pre>`,
 }))
 

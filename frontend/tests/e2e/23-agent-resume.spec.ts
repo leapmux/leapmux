@@ -13,7 +13,7 @@ async function waitForAssistantMessage(page: import('@playwright/test').Page, te
       const msgs = document.querySelectorAll(
         '[data-testid="message-bubble"][data-role="assistant"] [data-testid="message-content"]',
       )
-      return Array.from(msgs).some(m => m.textContent?.includes(t))
+      return [...msgs].some(m => m.textContent?.includes(t))
     },
     text,
     { timeout: 60_000 },

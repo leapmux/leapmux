@@ -11,6 +11,8 @@ import {
   toolInputText,
 } from './toolStyles.css'
 
+const TRAILING_NEWLINE_RE = /\n$/
+
 /** Render per-tool compact display for a tool_use block. */
 export function renderToolDetail(toolName: string, input: Record<string, unknown>, context?: RenderContext): JSX.Element | null {
   const cwd = context?.workingDir
@@ -64,7 +66,7 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
       if (oldStr && newStr && oldStr !== newStr) {
         const changes = diffLines(oldStr, newStr)
         for (const c of changes) {
-          const count = c.value.replace(/\n$/, '').split('\n').length
+          const count = c.value.replace(TRAILING_NEWLINE_RE, '').split('\n').length
           if (c.added)
             added += count
           else if (c.removed)

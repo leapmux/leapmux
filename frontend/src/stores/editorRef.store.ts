@@ -39,14 +39,14 @@ export function registerEditorRef(agentId: string, ref: EditorRef): void {
       ref.set(combined)
       // Verify the text was actually inserted (ref.set may silently fail).
       if (ref.get().length === 0 && attempt < 10) {
-        setTimeout(() => tryFlush(attempt + 1), 50)
+        setTimeout(tryFlush, 50, attempt + 1)
       }
       else {
         ref.focus()
       }
     }
     // Start with a small delay to let the editor settle after mount.
-    setTimeout(() => tryFlush(0), 50)
+    setTimeout(tryFlush, 50, 0)
   }
 }
 

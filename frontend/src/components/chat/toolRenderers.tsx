@@ -456,9 +456,11 @@ export const toolUseRenderer: MessageContentRenderer = {
 /** Set of tool names whose results should be rendered as preformatted text. */
 const PRE_TEXT_TOOLS = new Set(['Bash', 'Grep', 'Glob', 'Read', 'TaskOutput'])
 
+const TOOL_USE_ERROR_RE = /<tool_use_error>([\s\S]*?)<\/tool_use_error>/
+
 /** Extract error text from <tool_use_error> tags in tool result content. */
 function extractToolUseError(content: string): string | null {
-  const match = content.match(/<tool_use_error>([\s\S]*?)<\/tool_use_error>/)
+  const match = content.match(TOOL_USE_ERROR_RE)
   return match ? match[1].trim() : null
 }
 

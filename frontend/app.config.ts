@@ -7,6 +7,8 @@ import MagicString from 'magic-string'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 
+const PUBLIC_ASSET_WARNING_RE = /\/fonts\/\S+ referenced in .+ didn't resolve at build time/
+
 export default defineConfig({
   ssr: false,
   server: { static: true },
@@ -21,7 +23,7 @@ export default defineConfig({
         name: 'suppress-public-asset-warnings',
         configResolved(config) {
           const isPublicAssetWarning = (msg: string) =>
-            /\/fonts\/\S+ referenced in .+ didn't resolve at build time/.test(msg)
+            PUBLIC_ASSET_WARNING_RE.test(msg)
           for (const method of ['warn', 'warnOnce'] as const) {
             const original = config.logger[method].bind(config.logger)
             config.logger[method] = (msg: string, options?: any) => {

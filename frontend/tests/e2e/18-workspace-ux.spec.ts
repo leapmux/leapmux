@@ -3,6 +3,8 @@ import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
 import { getRecordedToasts } from './helpers/toast'
 import { loginViaToken, openWorkspaceContextMenu, waitForWorkspaceReady } from './helpers/ui'
 
+const WORKSPACE_URL_RE = /\/workspace\//
+
 test.describe('Workspace UX Enhancements', () => {
   test('should auto-activate first workspace on org root', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, adminOrgId } = leapmuxServer
@@ -17,7 +19,7 @@ test.describe('Workspace UX Enhancements', () => {
       await expect(page.locator('[data-testid="section-header-workspaces_in_progress"]')).toBeVisible()
 
       // Should auto-redirect to the first workspace
-      await expect(page).toHaveURL(/\/workspace\//)
+      await expect(page).toHaveURL(WORKSPACE_URL_RE)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
@@ -173,7 +175,7 @@ test.describe('Workspace UX Enhancements', () => {
       // The deleted workspace should be gone from sidebar
       await expect(page.locator('[data-testid^="workspace-item-"]').filter({ hasText: 'Delete Target WS' })).not.toBeVisible()
       // Should navigate to the next workspace
-      await expect(page).toHaveURL(/\/workspace\//)
+      await expect(page).toHaveURL(WORKSPACE_URL_RE)
       // Verify the 'Next WS' workspace is visible in the sidebar
       await expect(page.getByText('Next WS')).toBeVisible()
     }

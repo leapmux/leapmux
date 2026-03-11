@@ -1,6 +1,8 @@
 import { expect, test } from './fixtures'
 import { loginViaUI } from './helpers/ui'
 
+const NEW_WORKSPACE_RE = /New workspace/
+
 test.describe('Worker Registration', () => {
   // In dev mode, the worker is auto-registered with name "Local".
   // These tests verify the worker appears online in the UI.
@@ -14,7 +16,7 @@ test.describe('Worker Registration', () => {
     await page.waitForLoadState('networkidle')
 
     // Open the new workspace dialog
-    await page.getByTitle(/New workspace/).first().click()
+    await page.getByTitle(NEW_WORKSPACE_RE).first().click()
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
     // The initial fetch on mount should find the worker (already online).
@@ -26,7 +28,7 @@ test.describe('Worker Registration', () => {
     await loginViaUI(page)
 
     // Open the new workspace dialog
-    await page.getByTitle(/New workspace/).first().click()
+    await page.getByTitle(NEW_WORKSPACE_RE).first().click()
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
     // Wait for initial load to find the worker
@@ -43,7 +45,7 @@ test.describe('Worker Registration', () => {
     await loginViaUI(page)
 
     // Open the new workspace dialog
-    await page.getByTitle(/New workspace/).first().click()
+    await page.getByTitle(NEW_WORKSPACE_RE).first().click()
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
     // Wait for initial load to find the worker and directory tree
@@ -68,7 +70,7 @@ test.describe('Worker Registration', () => {
     await loginViaUI(page)
 
     // Open the new workspace dialog
-    await page.getByTitle(/New workspace/).first().click()
+    await page.getByTitle(NEW_WORKSPACE_RE).first().click()
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
     // Wait for initial load
@@ -79,7 +81,7 @@ test.describe('Worker Registration', () => {
     await expect(page.getByRole('heading', { name: 'New Workspace' })).not.toBeVisible()
 
     // Re-open the dialog
-    await page.getByTitle(/New workspace/).first().click()
+    await page.getByTitle(NEW_WORKSPACE_RE).first().click()
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
     // The re-mount fetch should find the worker

@@ -8,6 +8,8 @@ import { useOrg } from '~/context/OrgContext'
 import { validateBranchName } from '~/lib/validate'
 import { checkboxRow, errorText, labelRow, pathPreview, warningText } from '~/styles/shared.css'
 
+const LAST_PATH_SEGMENT_RE = /\/[^/]+$/
+
 interface WorktreeOptionsProps {
   workerId: string
   selectedPath: string
@@ -35,7 +37,7 @@ export const WorktreeOptions: Component<WorktreeOptionsProps> = (props) => {
   const worktreePath = () => {
     if (!repoRoot() || !branchName())
       return ''
-    const parentDir = repoRoot().replace(/\/[^/]+$/, '')
+    const parentDir = repoRoot().replace(LAST_PATH_SEGMENT_RE, '')
     return `${parentDir}/${repoDirName()}-worktrees/${branchName()}`
   }
 

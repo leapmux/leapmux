@@ -1,6 +1,8 @@
 import { expect, test } from './fixtures'
 import { openAgentViaUI } from './helpers/ui'
 
+const HAS_TEXT_RE = /.+/
+
 test.describe('DropdownMenu Popover – Focus and Positioning', () => {
   /**
    * Problem 1: Focus stealing on popover close.
@@ -138,7 +140,7 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
 
     // Find a text element inside the popover to drag-select.
     // The popover has info rows with labels like "Session ID", "Context", etc.
-    const popoverText = popover.locator('span, div').filter({ hasText: /.+/ }).first()
+    const popoverText = popover.locator('span, div').filter({ hasText: HAS_TEXT_RE }).first()
     await expect(popoverText).toBeVisible()
     const textBox = await popoverText.boundingBox()
     expect(textBox).not.toBeNull()

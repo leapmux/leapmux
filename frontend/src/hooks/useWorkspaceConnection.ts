@@ -525,7 +525,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
 
     // Build a key representing the current subscription set.
     const agentIds = agentEntries.map(e => e.agentId).sort()
-    const sortedTermIds = [...terminalIds].sort()
+    const sortedTermIds = terminalIds.toSorted()
     const newKey = workerId ? `${workerId}|a:${agentIds.join(',')}|t:${sortedTermIds.join(',')}` : ''
 
     // Skip if the subscription set hasn't changed.

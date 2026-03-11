@@ -79,7 +79,7 @@ function injectCopyButtons(container: HTMLElement) {
             const text = code?.textContent || pre.textContent || ''
             navigator.clipboard.writeText(text).then(() => {
               setCopied(true)
-              setTimeout(() => setCopied(false), 2000)
+              setTimeout(setCopied, 2000, false)
             })
           }}
         />
@@ -171,7 +171,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const copyJson = async () => {
     await navigator.clipboard.writeText(prettifyJson(rawJson()))
     setJsonCopied(true)
-    setTimeout(() => setJsonCopied(false), 2000)
+    setTimeout(setJsonCopied, 2000, false)
   }
 
   // Extract structuredPatch from a thread child (tool_result) for the parent tool_use diff.
@@ -344,7 +344,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       return
     await navigator.clipboard.writeText(text)
     setMarkdownCopied(true)
-    setTimeout(() => setMarkdownCopied(false), 2000)
+    setTimeout(setMarkdownCopied, 2000, false)
   }
 
   const rowClass = () => messageRowClass(category().kind, props.message.role)

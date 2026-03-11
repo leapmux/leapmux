@@ -1,6 +1,8 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 
+const MODE_NOTIFICATION_RE = /Mode \(/
+
 /** Click the settings trigger to open the dropdown menu. */
 async function openSettingsMenu(page: Page) {
   await page.locator('[data-testid="agent-settings-trigger"]').click()
@@ -38,7 +40,7 @@ test.describe('Shift-Tab Plan Mode Toggle', () => {
 
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     const chatContainer = page.locator('[data-testid="chat-container"]')
-    const modeNotifications = chatContainer.getByText(/Mode \(/)
+    const modeNotifications = chatContainer.getByText(MODE_NOTIFICATION_RE)
     await editor.click()
 
     // Toggle Default → Plan → Default (round-trip should cancel out)

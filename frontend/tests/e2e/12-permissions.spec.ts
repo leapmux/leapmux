@@ -8,6 +8,9 @@ import {
 } from './helpers/api'
 import { loginViaToken, loginViaUI } from './helpers/ui'
 
+const ORG_ADMIN_URL_RE = /\/o\/admin/
+const WORKSPACE_URL_RE = /\/workspace\//
+
 test.describe('Permissions', () => {
   let sharedWorkspaceId: string
 
@@ -85,7 +88,7 @@ test.describe('Permissions', () => {
     // Login as admin
     await loginViaUI(page)
     // Admin's workspace page should be loaded
-    await expect(page).toHaveURL(/\/o\/admin/)
+    await expect(page).toHaveURL(ORG_ADMIN_URL_RE)
   })
 
   test('should not show new tab button to non-owner on shared workspace', async ({ page }) => {
@@ -94,13 +97,13 @@ test.describe('Permissions', () => {
 
     // Navigate to admin's org
     await page.goto('/o/admin')
-    await expect(page).toHaveURL(/\/o\/admin/)
+    await expect(page).toHaveURL(ORG_ADMIN_URL_RE)
 
     // Click on the shared workspace (created and shared in beforeAll)
     await page.getByText('Permissions Shared WS').click()
 
     // Verify workspace loaded (page content is visible)
-    await expect(page).toHaveURL(/\/workspace\//)
+    await expect(page).toHaveURL(WORKSPACE_URL_RE)
     await expect(page.locator('[data-testid="tab"]').or(page.getByText('no open tabs'))).toBeVisible()
 
     // New agent/terminal buttons should NOT be visible for non-owner

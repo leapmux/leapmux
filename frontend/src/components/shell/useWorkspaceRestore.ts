@@ -142,7 +142,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
 
       // Fetch agents and terminals from each worker by tab IDs.
       const agentResults = await Promise.all(
-        [...agentIdsByWorker.entries()].map(async ([workerId, tabIds]) => {
+        Array.from(agentIdsByWorker.entries(), async ([workerId, tabIds]) => {
           try {
             const resp = await workerRpc.listAgents(workerId, { tabIds })
             return resp.agents
@@ -155,7 +155,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       )
 
       const terminalResults = await Promise.all(
-        [...terminalIdsByWorker.entries()].map(async ([workerId, tabIds]) => {
+        Array.from(terminalIdsByWorker.entries(), async ([workerId, tabIds]) => {
           try {
             const resp = await workerRpc.listTerminals(workerId, { tabIds })
             return { workerId, terminals: resp.terminals }

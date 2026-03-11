@@ -31,6 +31,8 @@ import {
   diffSplitContainer,
 } from './diffStyles.css'
 
+const TRAILING_NEWLINE_RE = /\n$/
+
 /** A hunk from the structuredPatch format in tool_use_result. */
 export interface StructuredPatchHunk {
   oldStart: number
@@ -200,7 +202,7 @@ export function rawDiffToHunks(oldStr: string, newStr: string): StructuredPatchH
   let newLines = 0
   for (const change of changes) {
     const prefix = change.added ? '+' : change.removed ? '-' : ' '
-    const rawLines = change.value.replace(/\n$/, '').split('\n')
+    const rawLines = change.value.replace(TRAILING_NEWLINE_RE, '').split('\n')
     for (const line of rawLines) {
       lines.push(prefix + line)
       if (change.added) {
@@ -296,7 +298,7 @@ export function computeGapMap(
   }
 
   // Trailing gap (lines after the last hunk)
-  const lastHunk = hunks[hunks.length - 1]
+  const lastHunk = hunks.at(-1)
   const trailingStart = lastHunk.oldStart + lastHunk.oldLines // 1-based
   if (trailingStart <= originalFileLines.length) {
     trailing = {
@@ -744,7 +746,7 @@ function UnifiedDiffView(props: { hunks: StructuredPatchHunk[], filePath?: strin
     if (!props.originalFile)
       return undefined
     const lines = props.originalFile.split('\n')
-    if (lines.length > 0 && lines[lines.length - 1] === '')
+    if (lines.length > 0 && lines.at(-1) === '')
       lines.pop()
     return lines
   }
@@ -872,7 +874,7 @@ function SplitDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string,
     if (!props.originalFile)
       return undefined
     const lines = props.originalFile.split('\n')
-    if (lines.length > 0 && lines[lines.length - 1] === '')
+    if (lines.length > 0 && lines.at(-1) === '')
       lines.pop()
     return lines
   }

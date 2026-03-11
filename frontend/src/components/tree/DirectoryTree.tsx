@@ -134,7 +134,7 @@ async function loadChildren(
   showFiles: boolean,
 ): Promise<{ entries: TreeNodeData[], truncated: boolean }> {
   const resp = await workerRpc.listDirectory(workerId, { workerId, path: dirPath, maxDepth: 5, dirsOnly: !showFiles })
-  const entries = [...resp.entries].sort(sortEntries)
+  const entries = resp.entries.toSorted(sortEntries)
 
   return {
     entries: entries.map(entry => ({

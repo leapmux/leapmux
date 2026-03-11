@@ -63,8 +63,8 @@ describe('lexorank', () => {
     it('should produce valid mid for sequential insertions', () => {
       const ranks: string[] = [first()]
       for (let i = 0; i < 20; i++) {
-        const next = mid(ranks[ranks.length - 1], '')
-        expect(next > ranks[ranks.length - 1]).toBe(true)
+        const next = mid(ranks.at(-1), '')
+        expect(next > ranks.at(-1)).toBe(true)
         ranks.push(next)
       }
 

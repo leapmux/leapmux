@@ -25,6 +25,7 @@ import { createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './helper
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
+const WORKSPACE_URL_RE = /\/workspace\//
 
 /**
  * Create a git repo inside the server's data directory so the worker can access it.
@@ -487,7 +488,7 @@ test.describe('Worktree Support', () => {
     // Wait for the dialog to close first — this signals the API call
     // (including the git worktree creation) has completed.
     await expect(page.getByRole('dialog')).not.toBeVisible({ timeout: 30000 })
-    await expect(page).toHaveURL(/\/workspace\//, { timeout: 30000 })
+    await expect(page).toHaveURL(WORKSPACE_URL_RE, { timeout: 30000 })
     await waitForWorkspaceReady(page)
 
     // Verify the worktree directory was created on disk.

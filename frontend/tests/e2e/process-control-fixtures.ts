@@ -20,6 +20,9 @@ import { findFreePort, getGlobalState, waitForServer } from './helpers/server'
 import { getRecordedToasts, installToastRecorder } from './helpers/toast'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
+const TOKEN_JSON_RE = /"token"\s*:\s*"([^"]+)"/
+const TOKEN_URL_RE = /\/register\/(\S+)/
+
 export interface SeparateServerInfo {
   hubUrl: string
   adminToken: string
@@ -301,8 +304,8 @@ export const processTest = base.extend<
       const timeout = setTimeout(() => reject(new Error('Timed out waiting for worker registration token')), 30_000)
       const onData = (chunk: Buffer) => {
         const text = chunk.toString()
-        const jsonMatch = text.match(/"token"\s*:\s*"([^"]+)"/)
-        const urlMatch = text.match(/\/register\/(\S+)/)
+        const jsonMatch = text.match(TOKEN_JSON_RE)
+        const urlMatch = text.match(TOKEN_URL_RE)
         const token = jsonMatch?.[1] ?? urlMatch?.[1]
         if (token) {
           clearTimeout(timeout)

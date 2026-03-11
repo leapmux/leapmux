@@ -32,7 +32,7 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
     try {
       await navigator.clipboard.writeText(sid)
       setSessionIdCopied(true)
-      setTimeout(() => setSessionIdCopied(false), 2000)
+      setTimeout(setSessionIdCopied, 2000, false)
     }
     catch {
       // ignore clipboard errors

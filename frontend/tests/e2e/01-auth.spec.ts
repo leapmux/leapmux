@@ -1,11 +1,15 @@
 import { expect, test } from './fixtures'
 import { loginViaUI, logoutViaUI } from './helpers/ui'
 
+const ORG_ADMIN_URL_RE = /\/o\/admin/
+const ORG_URL_RE = /\/o\//
+const INVALID_CREDENTIALS_RE = /invalid|incorrect|wrong|failed/i
+
 test.describe('Authentication', () => {
   test('should login with valid credentials', async ({ page }) => {
     await loginViaUI(page)
     // Verify URL redirected to personal org
-    await expect(page).toHaveURL(/\/o\/admin/)
+    await expect(page).toHaveURL(ORG_ADMIN_URL_RE)
   })
 
   test('should show error with wrong password', async ({ page }) => {
@@ -17,9 +21,9 @@ test.describe('Authentication', () => {
     // Should remain on the login page with an error
     await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
     // Should NOT redirect to a workspace page (login failed)
-    await expect(page).not.toHaveURL(/\/o\//)
+    await expect(page).not.toHaveURL(ORG_URL_RE)
     // Verify an error message is displayed (not just URL check)
-    await expect(page.getByText(/invalid|incorrect|wrong|failed/i)).toBeVisible()
+    await expect(page.getByText(INVALID_CREDENTIALS_RE)).toBeVisible()
   })
 
   test('should logout and return to login page', async ({ page }) => {
@@ -48,6 +52,6 @@ test.describe('Authentication', () => {
     await page.getByRole('button', { name: 'Sign in' }).click()
 
     // Should redirect back to the original page
-    await expect(page).toHaveURL(/\/o\/admin/)
+    await expect(page).toHaveURL(ORG_ADMIN_URL_RE)
   })
 })

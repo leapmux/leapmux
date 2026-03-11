@@ -4,6 +4,9 @@ import { Plugin, PluginKey, TextSelection } from '@milkdown/prose/state'
 import { Decoration, DecorationSet } from '@milkdown/prose/view'
 import { $prose } from '@milkdown/utils'
 
+const CODE_FENCE_RE = /^```\w*$/
+const HR_DASHES_RE = /^---$/
+
 /** Shared refs accessed by plugins via getter functions (closures over mutable refs). */
 export interface PluginRefs {
   getDisabled: () => boolean
@@ -52,7 +55,7 @@ export function createSendOnEnterPlugin(refs: Pick<PluginRefs, 'getDisabled' | '
               const { state } = view
               const { $from } = state.selection
               const textBefore = $from.parent.textContent.slice(0, $from.parentOffset)
-              if (/^```\w*$/.test(textBefore) || /^---$/.test(textBefore)) {
+              if (CODE_FENCE_RE.test(textBefore) || HR_DASHES_RE.test(textBefore)) {
                 return false
               }
               event.preventDefault()

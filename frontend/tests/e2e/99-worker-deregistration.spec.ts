@@ -12,9 +12,12 @@ import { expect, restartWorker, stopWorker, processTest as test, waitForWorkerOf
 let tempWorkerPid: number | undefined
 let tempWorkerId: string | undefined
 
+const TOKEN_JSON_RE = /"token"\s*:\s*"([^"]+)"/
+const TOKEN_URL_RE = /\/register\/(\S+)/
+
 function extractRegistrationToken(output: string): string | null {
-  const jsonMatch = output.match(/"token"\s*:\s*"([^"]+)"/)
-  const urlMatch = output.match(/\/register\/(\S+)/)
+  const jsonMatch = output.match(TOKEN_JSON_RE)
+  const urlMatch = output.match(TOKEN_URL_RE)
   return jsonMatch?.[1] ?? urlMatch?.[1] ?? null
 }
 

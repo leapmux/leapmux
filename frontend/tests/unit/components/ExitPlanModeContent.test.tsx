@@ -3,6 +3,12 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { ExitPlanModeContent } from '~/components/chat/controls/ExitPlanModeControl'
 
+const BASH_ALL_PROMPTS_RE = /run tests, run build, install deps/
+const BASH_TWO_PROMPTS_RE = /run tests, run build/
+const READ_CONFIG_RE = /read config.json/
+const SEARCH_CODE_RE = /search code/
+const FIND_FILES_RE = /find files/
+
 function makeRequest(allowedPrompts?: Array<{ tool: string, prompt: string }>): ControlRequest {
   return {
     requestId: 'req-1',
@@ -34,7 +40,7 @@ describe('exitPlanModeContent', () => {
 
     expect(screen.getByText('Requested permissions:')).toBeTruthy()
     // All Bash prompts should be joined in a single list item
-    expect(screen.getByText(/run tests, run build, install deps/)).toBeTruthy()
+    expect(screen.getByText(BASH_ALL_PROMPTS_RE)).toBeTruthy()
   })
 
   it('renders separate groups for different tools', () => {
@@ -46,9 +52,9 @@ describe('exitPlanModeContent', () => {
     render(() => <ExitPlanModeContent request={makeRequest(prompts)} />)
 
     // Bash group should have both prompts joined
-    expect(screen.getByText(/run tests, run build/)).toBeTruthy()
+    expect(screen.getByText(BASH_TWO_PROMPTS_RE)).toBeTruthy()
     // Read group should be separate
-    expect(screen.getByText(/read config.json/)).toBeTruthy()
+    expect(screen.getByText(READ_CONFIG_RE)).toBeTruthy()
   })
 
   it('does not show collapsible toggle with 3 or fewer groups', () => {
@@ -89,8 +95,8 @@ describe('exitPlanModeContent', () => {
 
     fireEvent.click(screen.getByRole('button'))
 
-    expect(screen.getByText(/search code/)).toBeTruthy()
-    expect(screen.getByText(/find files/)).toBeTruthy()
+    expect(screen.getByText(SEARCH_CODE_RE)).toBeTruthy()
+    expect(screen.getByText(FIND_FILES_RE)).toBeTruthy()
     expect(screen.getByRole('button').textContent).toBe('Show less')
   })
 })

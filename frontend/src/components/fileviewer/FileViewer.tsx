@@ -241,7 +241,7 @@ export const FileViewer: Component<{
           return
 
         const firstEl = diffElements[0] as HTMLElement
-        const lastEl = diffElements[diffElements.length - 1] as HTMLElement
+        const lastEl = diffElements.at(-1) as HTMLElement
         const containerRect = container.getBoundingClientRect()
         const firstRect = firstEl.getBoundingClientRect()
         const lastRect = lastEl.getBoundingClientRect()

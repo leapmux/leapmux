@@ -739,7 +739,7 @@ export const AppShell: ParentComponent = (props) => {
       }
 
       const [agentResults, terminalResults] = await Promise.all([
-        Promise.all([...agentIdsByWorker.entries()].map(async ([wid, tabIds]) => {
+        Promise.all(Array.from(agentIdsByWorker.entries(), async ([wid, tabIds]) => {
           try {
             return (await listAgents(wid, { tabIds })).agents
           }
@@ -748,7 +748,7 @@ export const AppShell: ParentComponent = (props) => {
             return []
           }
         })),
-        Promise.all([...terminalIdsByWorker.entries()].map(async ([wid, tabIds]) => {
+        Promise.all(Array.from(terminalIdsByWorker.entries(), async ([wid, tabIds]) => {
           try {
             return { workerId: wid, terminals: (await listTerminals(wid, { tabIds })).terminals }
           }

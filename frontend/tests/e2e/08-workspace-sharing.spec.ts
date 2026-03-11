@@ -2,6 +2,8 @@ import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, getUserId, inviteToOrgViaAPI, shareWorkspaceViaAPI } from './helpers/api'
 import { loginViaToken, loginViaUI, openWorkspaceContextMenu, waitForWorkspaceReady } from './helpers/ui'
 
+const ORG_ADMIN_URL_RE = /\/o\/admin/
+
 test.describe('Workspace Sharing', () => {
   // Ensure newuser is invited to admin's org before any test in this file.
   test.beforeAll(async ({ leapmuxServer }) => {
@@ -76,7 +78,7 @@ test.describe('Workspace Sharing', () => {
 
       // Navigate to admin's org
       await page.goto('/o/admin')
-      await expect(page).toHaveURL(/\/o\/admin/)
+      await expect(page).toHaveURL(ORG_ADMIN_URL_RE)
 
       // Shared workspace should be visible (in the "Shared" section)
       await expect(page.getByText('Shared Workspace')).toBeVisible()

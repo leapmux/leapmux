@@ -34,7 +34,7 @@ export function MarkdownFileView(props: {
     if (!raw)
       return []
     const split = raw.split('\n')
-    if (split.length > 0 && split[split.length - 1] === '')
+    if (split.length > 0 && split.at(-1) === '')
       split.pop()
     return split.map((line, i) => ({ num: i + 1, text: line }))
   })

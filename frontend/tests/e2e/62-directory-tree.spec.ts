@@ -6,6 +6,7 @@ import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from '.
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
+const ABSOLUTE_PATH_RE = /^\//
 
 test.describe('DirectoryTree', () => {
   test('root directory is always visible and expanded', async ({ page, leapmuxServer }) => {
@@ -156,7 +157,7 @@ test.describe('DirectoryTree', () => {
       // Clipboard should contain the absolute path (ends with /package.json)
       const clipboardText = await page.evaluate(() => navigator.clipboard.readText())
       expect(clipboardText).toContain('package.json')
-      expect(clipboardText).toMatch(/^\//)
+      expect(clipboardText).toMatch(ABSOLUTE_PATH_RE)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

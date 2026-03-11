@@ -284,20 +284,25 @@ interface TabTree {
   ungrouped: Tab[]
 }
 
+const SSH_ORIGIN_RE = /^git@([^:]+):(.+)$/
+const PROTOCOL_PREFIX_RE = /^https?:\/\//
+const TRAILING_DOT_GIT_RE = /\.git$/
+const TRAILING_SLASH_RE = /\/$/
+
 export function formatGitOriginUrl(url: string): string {
   if (!url)
     return ''
   let result = url
   // Convert SSH format: git@github.com:org/repo -> github.com/org/repo
-  const sshMatch = result.match(/^git@([^:]+):(.+)$/)
+  const sshMatch = result.match(SSH_ORIGIN_RE)
   if (sshMatch)
     result = `${sshMatch[1]}/${sshMatch[2]}`
   // Strip protocols
-  result = result.replace(/^https?:\/\//, '')
+  result = result.replace(PROTOCOL_PREFIX_RE, '')
   // Strip trailing .git
-  result = result.replace(/\.git$/, '')
+  result = result.replace(TRAILING_DOT_GIT_RE, '')
   // Strip trailing slash
-  result = result.replace(/\/$/, '')
+  result = result.replace(TRAILING_SLASH_RE, '')
   return result
 }
 
@@ -328,42 +333,38 @@ export function buildTree(tabs: Tab[]): TabTree {
   }
 
   // Sort and build tree
-  const groups: RepoGroup[] = [...repoMap.entries()]
-    .sort(([a], [b]) => formatGitOriginUrl(a).localeCompare(formatGitOriginUrl(b)))
-    .map(([url, branchMap]) => {
-      const branches = [...branchMap.entries()]
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([branchName, branchTabs]) => {
-          // All tabs on the same branch share the same git state, so use
-          // the first tab that has diff stats rather than summing.
-          let diffAdded = 0
-          let diffDeleted = 0
-          let diffUntracked = 0
-          for (const t of branchTabs) {
-            if ((t.gitDiffAdded ?? 0) > 0 || (t.gitDiffDeleted ?? 0) > 0 || (t.gitDiffUntracked ?? 0) > 0) {
-              diffAdded = t.gitDiffAdded ?? 0
-              diffDeleted = t.gitDiffDeleted ?? 0
-              diffUntracked = t.gitDiffUntracked ?? 0
-              break
-            }
-          }
-          return { branchName, tabs: sortTabs(branchTabs), diffAdded, diffDeleted, diffUntracked }
-        })
-      return {
-        repoKey: url,
-        repoLabel: formatGitOriginUrl(url),
-        branches,
-        diffAdded: branches.reduce((sum, b) => sum + b.diffAdded, 0),
-        diffDeleted: branches.reduce((sum, b) => sum + b.diffDeleted, 0),
-        diffUntracked: branches.reduce((sum, b) => sum + b.diffUntracked, 0),
+  const groups: RepoGroup[] = [...repoMap.entries()].toSorted(([a], [b]) => formatGitOriginUrl(a).localeCompare(formatGitOriginUrl(b))).map(([url, branchMap]) => {
+    const branches = [...branchMap.entries()].toSorted(([a], [b]) => a.localeCompare(b)).map(([branchName, branchTabs]) => {
+      // All tabs on the same branch share the same git state, so use
+      // the first tab that has diff stats rather than summing.
+      let diffAdded = 0
+      let diffDeleted = 0
+      let diffUntracked = 0
+      for (const t of branchTabs) {
+        if ((t.gitDiffAdded ?? 0) > 0 || (t.gitDiffDeleted ?? 0) > 0 || (t.gitDiffUntracked ?? 0) > 0) {
+          diffAdded = t.gitDiffAdded ?? 0
+          diffDeleted = t.gitDiffDeleted ?? 0
+          diffUntracked = t.gitDiffUntracked ?? 0
+          break
+        }
       }
+      return { branchName, tabs: sortTabs(branchTabs), diffAdded, diffDeleted, diffUntracked }
     })
+    return {
+      repoKey: url,
+      repoLabel: formatGitOriginUrl(url),
+      branches,
+      diffAdded: branches.reduce((sum, b) => sum + b.diffAdded, 0),
+      diffDeleted: branches.reduce((sum, b) => sum + b.diffDeleted, 0),
+      diffUntracked: branches.reduce((sum, b) => sum + b.diffUntracked, 0),
+    }
+  })
 
   return { groups, ungrouped: sortTabs(ungrouped) }
 }
 
 function sortTabs(tabs: Tab[]): Tab[] {
-  return [...tabs].sort((a, b) => {
+  return tabs.toSorted((a, b) => {
     // Agents before terminals
     if (a.type !== b.type)
       return a.type === TabType.AGENT ? -1 : 1

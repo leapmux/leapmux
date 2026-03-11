@@ -6,6 +6,21 @@ import { InputRule } from '@milkdown/prose/inputrules'
 import { TextSelection } from '@milkdown/prose/state'
 import { $inputRule } from '@milkdown/utils'
 
+const BULLET_AFTER_HARD_BREAK_RE = /\uFFFC[-+*]\s$/
+const ORDERED_AFTER_HARD_BREAK_RE = /\uFFFC(\d+)\.\s$/
+const LINK_INPUT_RE = /\[(?<text>[^\]]+)\]\((?<href>[^)]+)\)$/
+const HR_INPUT_RE = /\uFFFC?---$/
+const CODE_BLOCK_INPUT_RE = /\uFFFC?```$/
+const FIRST_NON_WHITESPACE_RE = /\S/
+// eslint-disable-next-line regexp/no-useless-lazy,regexp/no-useless-assertions -- mirrors Milkdown's original regex
+const STRONG_INPUT_RE = /(?<![\w:/])(?:\*\*|__)([^*_]+?)(?:\*\*|__)(?![\w/])$/
+const EMPHASIS_STAR_INPUT_RE = /(?:^|[^*])\*([^*]+)\*$/
+const EMPHASIS_UNDERSCORE_INPUT_RE = /\b_(?![_\s])(.*?[^_\s])_\b/
+// eslint-disable-next-line regexp/no-useless-non-capturing-group -- mirrors Milkdown's original regex
+const INLINE_CODE_INPUT_RE = /(?:`)([^`]+)(?:`)$/
+// eslint-disable-next-line regexp/no-misleading-capturing-group -- mirrors Milkdown's original regex
+const STRIKETHROUGH_INPUT_RE = /(?<![\w:/])(~{1,2})(.+?)\1(?!\w|\/)/
+
 /**
  * Input rule for "- " (or "+ " or "* ") typed after a hard break (Shift+Enter).
  * Splits the paragraph at the hard break, wrapping the new paragraph in a bullet list.
@@ -13,7 +28,7 @@ import { $inputRule } from '@milkdown/utils'
 export function createBulletListAfterHardBreakInputRule() {
   return $inputRule(() => {
     return new InputRule(
-      /\uFFFC[-+*]\s$/,
+      BULLET_AFTER_HARD_BREAK_RE,
       (state, _match, start, end) => {
         const bulletListType = state.schema.nodes.bullet_list
         const listItemType = state.schema.nodes.list_item
@@ -45,7 +60,7 @@ export function createBulletListAfterHardBreakInputRule() {
 export function createOrderedListAfterHardBreakInputRule() {
   return $inputRule(() => {
     return new InputRule(
-      /\uFFFC(\d+)\.\s$/,
+      ORDERED_AFTER_HARD_BREAK_RE,
       (state, match, start, end) => {
         const orderedListType = state.schema.nodes.ordered_list
         const listItemType = state.schema.nodes.list_item
@@ -75,7 +90,7 @@ export function createOrderedListAfterHardBreakInputRule() {
 export function createLinkInputRule() {
   return $inputRule(() => {
     return new InputRule(
-      /\[(?<text>[^\]]+)\]\((?<href>[^)]+)\)$/,
+      LINK_INPUT_RE,
       (state, match, start, end) => {
         const linkMarkType = state.schema.marks.link
         if (!linkMarkType)
@@ -102,7 +117,7 @@ export function createLinkInputRule() {
 export function createHrInputRule() {
   return $inputRule(() => {
     return new InputRule(
-      /\uFFFC?---$/,
+      HR_INPUT_RE,
       (state, _match, start, end) => {
         const $start = state.doc.resolve(start)
         // Don't trigger inside inline code marks (document marks or stored marks)
@@ -184,7 +199,7 @@ export function createHrInputRule() {
 export function createCodeBlockInputRule() {
   return $inputRule(() => {
     return new InputRule(
-      /\uFFFC?```$/,
+      CODE_BLOCK_INPUT_RE,
       (state, _match, start, end) => {
         const $start = state.doc.resolve(start)
         // Don't trigger inside inline code marks (document marks or stored marks)
@@ -317,7 +332,7 @@ function codeAwareMarkRule(
       return null
 
     if (group) {
-      const startSpaces = fullMatch.search(/\S/)
+      const startSpaces = fullMatch.search(FIRST_NON_WHITESPACE_RE)
       const textStart = start + fullMatch.indexOf(group)
       const textEnd = textStart + group.length
 
@@ -344,8 +359,7 @@ function codeAwareMarkRule(
 export function createStrongInputRule() {
   return $inputRule((ctx) => {
     return codeAwareMarkRule(
-      // eslint-disable-next-line regexp/no-useless-lazy,regexp/no-useless-assertions -- mirrors Milkdown's original regex
-      /(?<![\w:/])(?:\*\*|__)([^*_]+?)(?:\*\*|__)(?![\w/])$/,
+      STRONG_INPUT_RE,
       ctx.get(schemaCtx).marks.strong,
       {
         getAttr: match => ({
@@ -360,7 +374,7 @@ export function createStrongInputRule() {
 export function createEmphasisStarInputRule() {
   return $inputRule((ctx) => {
     return codeAwareMarkRule(
-      /(?:^|[^*])\*([^*]+)\*$/,
+      EMPHASIS_STAR_INPUT_RE,
       ctx.get(schemaCtx).marks.emphasis,
       {
         getAttr: () => ({ marker: '*' }),
@@ -377,7 +391,7 @@ export function createEmphasisStarInputRule() {
 export function createEmphasisUnderscoreInputRule() {
   return $inputRule((ctx) => {
     return codeAwareMarkRule(
-      /\b_(?![_\s])(.*?[^_\s])_\b/,
+      EMPHASIS_UNDERSCORE_INPUT_RE,
       ctx.get(schemaCtx).marks.emphasis,
       {
         getAttr: () => ({ marker: '_' }),
@@ -394,8 +408,7 @@ export function createEmphasisUnderscoreInputRule() {
 export function createInlineCodeInputRule() {
   return $inputRule((ctx) => {
     return codeAwareMarkRule(
-      // eslint-disable-next-line regexp/no-useless-non-capturing-group -- mirrors Milkdown's original regex
-      /(?:`)([^`]+)(?:`)$/,
+      INLINE_CODE_INPUT_RE,
       ctx.get(schemaCtx).marks.inlineCode,
     )
   })
@@ -405,8 +418,7 @@ export function createInlineCodeInputRule() {
 export function createStrikethroughInputRule() {
   return $inputRule((ctx) => {
     return codeAwareMarkRule(
-      // eslint-disable-next-line regexp/no-misleading-capturing-group -- mirrors Milkdown's original regex
-      /(?<![\w:/])(~{1,2})(.+?)\1(?!\w|\/)/,
+      STRIKETHROUGH_INPUT_RE,
       ctx.get(schemaCtx).marks.strike_through,
     )
   })

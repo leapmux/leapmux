@@ -1,5 +1,7 @@
 import { expect, test } from './fixtures'
 
+const CONTEXT_PERCENTAGE_RE = /(\d+)%/
+
 test.describe('Clear Command – Context Usage Reset', () => {
   test('context usage indicator resets after /clear', async ({ page, authenticatedWorkspace }) => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
@@ -22,11 +24,11 @@ test.describe('Clear Command – Context Usage Reset', () => {
     await expect(contextGrid).toBeVisible({ timeout: 60_000 })
 
     // Record the pre-clear context percentage from the grid's aria-label.
-    const getContextPercentage = () => contextGrid.evaluate((svg) => {
+    const getContextPercentage = () => contextGrid.evaluate((svg, re) => {
       const label = svg.getAttribute('aria-label')
-      const match = label?.match(/(\d+)%/)
+      const match = label?.match(re)
       return match ? Number(match[1]) : null
-    })
+    }, CONTEXT_PERCENTAGE_RE)
     const percentBefore = await getContextPercentage()
     expect(percentBefore).toBeGreaterThan(0)
 
