@@ -29,7 +29,7 @@ func runHub(args []string) error {
 	logging.SetLevel(level)
 
 	logging.PrintBanner("hub", version, cfg.Addr)
-	logging.PrintAccessURL(cfg.Addr)
+	logging.PrintAccessURL("hub", cfg.Addr)
 
 	server, err := hub.NewServer(cfg)
 	if err != nil {
