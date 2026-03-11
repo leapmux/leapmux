@@ -350,7 +350,7 @@ By default this builds for `linux/amd64` and `linux/arm64`. You can override the
 task docker-build-alpine PLATFORM=linux/amd64 TAG=leapmux:dev
 ```
 
-The image uses a multi-stage build (buf, Bun, Go) and runs with [s6-overlay](https://github.com/just-containers/s6-overlay) for process supervision. The `LEAPMUX_MODE` environment variable selects the subcommand (`hub`, `worker`, `dev`, etc.) and is required. Data is stored in the `/data` volume.
+The image uses a multi-stage build (buf, Bun, Go) and runs with [s6-overlay](https://github.com/just-containers/s6-overlay) for process supervision. The `LEAPMUX_MODE` environment variable selects the subcommand (`hub`, `worker`, `dev`, etc.) and is required. Data and configuration are stored under `/data/<mode>/` (e.g. `/data/hub/`) in the `/data` volume.
 
 ```bash
 # Run as a hub (central service only)
