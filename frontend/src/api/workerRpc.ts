@@ -130,6 +130,7 @@ import {
 } from '~/generated/leapmux/v1/workspace_pb'
 import { ChannelManager } from '~/lib/channel'
 import { createLogger } from '~/lib/logger'
+import { isSoloMode } from '~/lib/systemInfo'
 
 const log = createLogger('workerRpc')
 
@@ -167,12 +168,19 @@ class BrowserChannelTransport implements ChannelTransport {
   }
 
   createWebSocket(): WebSocket {
-    const token = getToken()
-    if (!token) {
-      throw new Error('not authenticated')
-    }
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${wsProtocol}//${window.location.host}/ws/channel?token=${encodeURIComponent(token)}`
+    let wsUrl: string
+    if (isSoloMode()) {
+      // Solo mode: no session token needed; backend auto-authenticates.
+      wsUrl = `${wsProtocol}//${window.location.host}/ws/channel`
+    }
+    else {
+      const token = getToken()
+      if (!token) {
+        throw new Error('not authenticated')
+      }
+      wsUrl = `${wsProtocol}//${window.location.host}/ws/channel?token=${encodeURIComponent(token)}`
+    }
     const ws = new WebSocket(wsUrl, ['channel-relay'])
     ws.binaryType = 'arraybuffer'
     return ws

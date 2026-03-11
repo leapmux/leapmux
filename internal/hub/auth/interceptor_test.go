@@ -92,6 +92,31 @@ func TestInterceptor_PrivateProcedure_ValidToken(t *testing.T) {
 	assert.True(t, resp.Msg.GetUser().GetIsAdmin())
 }
 
+func TestInterceptor_SoloMode_AutoAuthenticated(t *testing.T) {
+	q := setupDB(t)
+
+	// Bootstrap in solo mode creates a user named "solo".
+	err := bootstrap.Run(context.Background(), q, true)
+	require.NoError(t, err)
+
+	mux := http.NewServeMux()
+	interceptors := connect.WithInterceptors(auth.NewInterceptor(q, true))
+	authSvc := service.NewAuthService(q, &config.Config{SoloMode: true})
+	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
+	mux.Handle(path, handler)
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+
+	// In solo mode, private endpoints should work without any token.
+	resp, err := client.GetCurrentUser(context.Background(), connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
+	require.NoError(t, err)
+	assert.Equal(t, "solo", resp.Msg.GetUser().GetUsername())
+	assert.True(t, resp.Msg.GetUser().GetIsAdmin())
+}
+
 func TestInterceptor_PrivateProcedure_InvalidToken(t *testing.T) {
 	client := setupInterceptorTestServer(t)
 

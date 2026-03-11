@@ -130,7 +130,19 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	mux.Handle(channelPath, channelHandler)
 
 	// WebSocket endpoint for encrypted channel relay (Frontend ↔ Worker).
-	channelRelay := service.NewChannelRelayHandler(queries, wMgr, cMgr)
+	var soloUser *auth.UserInfo
+	if cfg.SoloMode {
+		username := bootstrap.Username(cfg.SoloMode)
+		if u, lookupErr := queries.GetUserByUsername(context.Background(), username); lookupErr == nil {
+			soloUser = &auth.UserInfo{
+				ID:       u.ID,
+				OrgID:    u.OrgID,
+				Username: u.Username,
+				IsAdmin:  u.IsAdmin == 1,
+			}
+		}
+	}
+	channelRelay := service.NewChannelRelayHandler(queries, wMgr, cMgr, soloUser)
 	mux.Handle("/ws/channel", channelRelay)
 
 	orgSvc := service.NewOrgService(queries, nil, cfg.SoloMode)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"connectrpc.com/connect"
+	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 )
 
@@ -35,7 +36,7 @@ type authInterceptor struct {
 func NewInterceptor(q *db.Queries, soloMode bool) connect.Interceptor {
 	a := &authInterceptor{queries: q, soloMode: soloMode}
 	if soloMode {
-		user, err := q.GetUserByUsername(context.Background(), "admin")
+		user, err := q.GetUserByUsername(context.Background(), bootstrap.Username(soloMode))
 		if err == nil {
 			a.soloUser = &UserInfo{
 				ID:       user.ID,
