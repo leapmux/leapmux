@@ -346,7 +346,14 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     <div class={markdownContent} innerHTML={renderedStreamHtml()} />
                   </div>
                 </Show>
-                <ThinkingIndicator visible={props.agentWorking && !props.streamingText} />
+                <ThinkingIndicator
+                  visible={props.agentWorking && !props.streamingText}
+                  onExpandTick={() => {
+                    if (atBottom() && messageListRef) {
+                      messageListRef.scrollTop = messageListRef.scrollHeight
+                    }
+                  }}
+                />
               </div>
             </SelectionQuotePopover>
           </Show>

@@ -1,23 +1,27 @@
-import { keyframes, style } from '@vanilla-extract/css'
+import { style } from '@vanilla-extract/css'
 
-const fadeIn = keyframes({
-  from: { opacity: 0 },
-  to: { opacity: 1 },
+export const wrapper = style({
+  display: 'grid',
+  gridTemplateRows: '0fr',
+  opacity: 0,
+  marginLeft: 'calc(-1 * var(--space-1))',
+})
+
+export const wrapperInner = style({
+  overflow: 'hidden',
 })
 
 export const container = style({
   display: 'flex',
   alignItems: 'center',
-  gap: '6px',
+  gap: 'var(--space-1)',
   padding: 'var(--space-2) 0',
   color: 'var(--primary)',
-  animation: `${fadeIn} 0.3s ease-out`,
-  transition: 'opacity 0.3s ease-out',
 })
 
 export const compass = style({
-  width: '20px',
-  height: '20px',
+  width: '24px',
+  height: '24px',
   flexShrink: 0,
 })
 
