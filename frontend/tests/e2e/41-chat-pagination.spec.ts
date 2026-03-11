@@ -173,6 +173,59 @@ test.describe('Chat Pagination & Scroll', () => {
     await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible()
   })
 
+  test('should scroll to bottom when switching back to a tab that was at bottom', async ({ page, authenticatedWorkspace }) => {
+    // Use a small viewport so the response overflows.
+    await page.setViewportSize({ width: 1280, height: 400 })
+    await ensureAgentTab(page)
+
+    // Generate a response long enough to overflow the viewport.
+    await sendMessage(page, 'Write a numbered list of 30 programming languages, one per line. Include a brief one-sentence description for each.')
+    await waitForAssistantReply(page)
+    await waitForTurnComplete(page)
+
+    // Verify the chat content is scrollable (overflows).
+    const isScrollable = await page.evaluate(() => {
+      const els = document.querySelectorAll<HTMLElement>('[class*="messageList"]')
+      for (const el of els) {
+        if (getComputedStyle(el).overflowY === 'auto')
+          return el.scrollHeight > el.clientHeight + 16
+      }
+      return false
+    })
+    expect(isScrollable).toBe(true)
+
+    // Record "at bottom" state before switching.
+    const wasAtBottom = await page.evaluate(() => {
+      const els = document.querySelectorAll<HTMLElement>('[class*="messageList"]')
+      for (const el of els) {
+        if (getComputedStyle(el).overflowY === 'auto')
+          return el.scrollHeight - el.scrollTop - el.clientHeight < 32
+      }
+      return false
+    })
+    expect(wasAtBottom).toBe(true)
+
+    // Create a second agent tab (switches to it automatically).
+    await page.locator('[data-testid="new-agent-button"]').click()
+    await page.waitForTimeout(2000)
+
+    // Switch back to the first agent tab.
+    const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
+    await agentTabs.first().click()
+    await page.waitForTimeout(500)
+
+    // The chat should still be scrolled to the bottom.
+    const isAtBottom = await page.evaluate(() => {
+      const els = document.querySelectorAll<HTMLElement>('[class*="messageList"]')
+      for (const el of els) {
+        if (getComputedStyle(el).overflowY === 'auto')
+          return el.scrollHeight - el.scrollTop - el.clientHeight < 32
+      }
+      return false
+    })
+    expect(isAtBottom).toBe(true)
+  })
+
   test('should load initial messages when opening existing agent', async ({ page, authenticatedWorkspace }) => {
     await ensureAgentTab(page)
 
