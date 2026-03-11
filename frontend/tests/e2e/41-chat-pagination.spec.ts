@@ -173,6 +173,115 @@ test.describe('Chat Pagination & Scroll', () => {
     await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible()
   })
 
+  test('should scroll to bottom when switching back to a tab that was at bottom', async ({ page, authenticatedWorkspace }) => {
+    // Use a small viewport so the response overflows.
+    await page.setViewportSize({ width: 1280, height: 400 })
+    await ensureAgentTab(page)
+
+    // Generate a response long enough to overflow the viewport.
+    await sendMessage(page, 'Write a numbered list of 30 programming languages, one per line. Include a brief one-sentence description for each.')
+    await waitForAssistantReply(page)
+    await waitForTurnComplete(page)
+
+    // Verify the chat content is scrollable (overflows).
+    const isScrollable = await page.evaluate(() => {
+      const els = document.querySelectorAll<HTMLElement>('[class*="messageList"]')
+      for (const el of els) {
+        if (getComputedStyle(el).overflowY === 'auto')
+          return el.scrollHeight > el.clientHeight + 16
+      }
+      return false
+    })
+    expect(isScrollable).toBe(true)
+
+    // Record "at bottom" state before switching.
+    const wasAtBottom = await page.evaluate(() => {
+      const els = document.querySelectorAll<HTMLElement>('[class*="messageList"]')
+      for (const el of els) {
+        if (getComputedStyle(el).overflowY === 'auto')
+          return el.scrollHeight - el.scrollTop - el.clientHeight < 32
+      }
+      return false
+    })
+    expect(wasAtBottom).toBe(true)
+
+    // Create a second agent tab (switches to it automatically).
+    await page.locator('[data-testid="new-agent-button"]').click()
+    await page.waitForTimeout(2000)
+
+    // Switch back to the first agent tab.
+    const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
+    await agentTabs.first().click()
+    await page.waitForTimeout(500)
+
+    // The chat should still be scrolled to the bottom.
+    const isAtBottom = await page.evaluate(() => {
+      const els = document.querySelectorAll<HTMLElement>('[class*="messageList"]')
+      for (const el of els) {
+        if (getComputedStyle(el).overflowY === 'auto')
+          return el.scrollHeight - el.scrollTop - el.clientHeight < 32
+      }
+      return false
+    })
+    expect(isAtBottom).toBe(true)
+  })
+
+  test('should scroll to bottom when turn completes while tab is hidden', async ({ page, authenticatedWorkspace }) => {
+    // Use a small viewport so the response overflows.
+    await page.setViewportSize({ width: 1280, height: 400 })
+    await ensureAgentTab(page)
+
+    // Send a message that generates a long response.
+    await sendMessage(page, 'Write a numbered list of 30 programming languages, one per line. Include a brief one-sentence description for each.')
+
+    // Wait for the agent to start responding (thinking indicator or streaming).
+    await expect(
+      page.locator('[data-testid="thinking-indicator"], [data-testid="interrupt-button"]').first(),
+    ).toBeVisible({ timeout: 10_000 })
+
+    // Switch to a new agent tab while the turn is still in progress.
+    await page.locator('[data-testid="new-agent-button"]').click()
+    await page.waitForTimeout(1000)
+
+    // Wait for the first agent's turn to complete while its tab is hidden.
+    // We can't use the UI indicators directly since they're on the hidden tab,
+    // so poll until no agent is in ACTIVE+working state on the first tab.
+    const firstAgentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
+
+    // Switch back briefly to check, then away again — or just wait long enough.
+    // The simplest approach: wait for the turn to complete (the turn-complete
+    // indicators are still tracked even when the tab is hidden).
+    await page.waitForTimeout(30_000)
+
+    // Switch back to the first agent tab.
+    await firstAgentTab.click()
+    await page.waitForTimeout(500)
+
+    // Verify the turn actually completed and content overflows.
+    await waitForTurnComplete(page)
+    const isScrollable = await page.evaluate(() => {
+      const els = document.querySelectorAll<HTMLElement>('[class*="messageList"]')
+      for (const el of els) {
+        if (getComputedStyle(el).overflowY === 'auto')
+          return el.scrollHeight > el.clientHeight + 16
+      }
+      return false
+    })
+    expect(isScrollable).toBe(true)
+
+    // The chat should be scrolled to the bottom despite the turn having
+    // completed while the tab was hidden.
+    const isAtBottom = await page.evaluate(() => {
+      const els = document.querySelectorAll<HTMLElement>('[class*="messageList"]')
+      for (const el of els) {
+        if (getComputedStyle(el).overflowY === 'auto')
+          return el.scrollHeight - el.scrollTop - el.clientHeight < 32
+      }
+      return false
+    })
+    expect(isAtBottom).toBe(true)
+  })
+
   test('should load initial messages when opening existing agent', async ({ page, authenticatedWorkspace }) => {
     await ensureAgentTab(page)
 

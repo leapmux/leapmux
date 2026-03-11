@@ -39,6 +39,31 @@ test.describe('Worker Registration', () => {
     await expect(page.locator('select').first()).toContainText('Local')
   })
 
+  test('should not spin refresh button when selecting a directory', async ({ page }) => {
+    await loginViaUI(page)
+
+    // Open the new workspace dialog
+    await page.getByTitle(/New workspace/).first().click()
+    await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
+
+    // Wait for initial load to find the worker and directory tree
+    await expect(page.locator('select').first()).toContainText('Local')
+    await expect(page.getByTestId('tree-root-node')).toBeVisible()
+
+    // Locate the "Refresh directory tree" button's icon
+    const refreshBtn = page.getByTitle('Refresh directory tree')
+    const refreshIcon = refreshBtn.locator('svg')
+
+    // Click a directory node in the tree (the root node)
+    await page.getByTestId('tree-root-node').click()
+
+    // The refresh button's icon should NOT have a spinning animation
+    const animation = await refreshIcon.evaluate(
+      el => window.getComputedStyle(el).animationName,
+    )
+    expect(animation).toBe('none')
+  })
+
   test('should show updated worker list when dialog is re-opened', async ({ page }) => {
     await loginViaUI(page)
 

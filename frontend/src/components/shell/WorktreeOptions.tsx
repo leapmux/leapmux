@@ -125,7 +125,7 @@ export const WorktreeOptions: Component<WorktreeOptionsProps> = (props) => {
             The selected working copy has uncommitted changes that will not be transferred to the new worktree.
           </div>
         </Show>
-        <label>
+        <div>
           <div class={labelRow}>
             Branch Name
             <RefreshButton onClick={randomizeBranch} title="Generate random name" />
@@ -139,7 +139,7 @@ export const WorktreeOptions: Component<WorktreeOptionsProps> = (props) => {
           <Show when={branchError()}>
             <div class={errorText}>{branchError()}</div>
           </Show>
-        </label>
+        </div>
         <Show when={worktreePath()}>
           <div class={pathPreview}>
             Worktree path:

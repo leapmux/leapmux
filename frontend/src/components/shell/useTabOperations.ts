@@ -6,7 +6,7 @@ import type { createChatStore } from '~/stores/chat.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, FileOpenSource, Tab } from '~/stores/tab.store'
 import type { createTerminalStore } from '~/stores/terminal.store'
-import { createEffect, createSignal } from 'solid-js'
+import { batch, createEffect, createSignal } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
@@ -67,17 +67,30 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     })
 
   const handleTabSelect = (tab: Tab) => {
+    // Read scroll state before any store updates so the DOM measurement
+    // happens while the previous tab is still visible.
     const prevAgentId = agentStore.state.activeAgentId
-    if (prevAgentId) {
-      const scrollState = getScrollState()
-      if (scrollState !== undefined) {
+    const scrollState = prevAgentId ? getScrollState() : undefined
+
+    // Batch the scroll-save and tab-switch store updates so that
+    // SolidJS defers effects until both are applied.  Without this,
+    // the savedViewportScroll effect fires while the old tab is still
+    // visible, schedules a rAF that clears the saved state, and by the
+    // time the user switches back the saved state is gone.
+    batch(() => {
+      if (prevAgentId && scrollState !== undefined) {
         chatStore.saveViewportScroll(prevAgentId, scrollState.distFromBottom, scrollState.atBottom)
       }
-    }
+      tabStore.setActiveTab(tab.type, tab.id)
+      if (tab.type === TabType.AGENT) {
+        agentStore.setActiveAgent(tab.id)
+      }
+      else if (tab.type === TabType.TERMINAL) {
+        terminalStore.setActiveTerminal(tab.id)
+      }
+    })
 
-    tabStore.setActiveTab(tab.type, tab.id)
     if (tab.type === TabType.AGENT) {
-      agentStore.setActiveAgent(tab.id)
       requestAnimationFrame(() => {
         if (isTabEditing())
           return
@@ -85,7 +98,6 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       })
     }
     else if (tab.type === TabType.TERMINAL) {
-      terminalStore.setActiveTerminal(tab.id)
       requestAnimationFrame(() => {
         if (isTabEditing())
           return

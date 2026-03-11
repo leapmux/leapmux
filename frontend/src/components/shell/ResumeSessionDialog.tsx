@@ -93,7 +93,7 @@ export const ResumeSessionDialog: Component<ResumeSessionDialogProps> = (props) 
       <form onSubmit={handleSubmit}>
         <section>
           <div class="vstack gap-4">
-            <label>
+            <div>
               <div class={labelRow}>
                 Worker
                 <RefreshButton onClick={handleRefresh} disabled={refreshing()} title="Refresh workers" />
@@ -109,7 +109,7 @@ export const ResumeSessionDialog: Component<ResumeSessionDialogProps> = (props) 
                   {b => <option value={b.id}>{workerInfoStore.workerInfo(b.id)?.name ?? b.id}</option>}
                 </For>
               </select>
-            </label>
+            </div>
             <label>
               Session ID
               <input

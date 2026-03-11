@@ -91,7 +91,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
         <section>
           <div class="vstack gap-4">
             <WorkerSelector state={state} />
-            <label>
+            <div>
               <div class={labelRow}>
                 Title
                 <RefreshButton onClick={() => setTitle(randomTitle())} title="Generate random name" />
@@ -105,7 +105,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
               <Show when={titleError()}>
                 <div class={errorText}>{titleError()}</div>
               </Show>
-            </label>
+            </div>
             <DirectorySelector state={state} />
             <Show when={state.workerId()}>
               <WorktreeOptions

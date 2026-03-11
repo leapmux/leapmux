@@ -11,7 +11,7 @@ interface DirectorySelectorProps {
 
 export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
   return (
-    <label>
+    <div>
       <div class={labelRow}>
         Working Directory
         <RefreshButton onClick={() => props.state.refreshTree()} title="Refresh directory tree" />
@@ -28,6 +28,6 @@ export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
           />
         </div>
       </Show>
-    </label>
+    </div>
   )
 }

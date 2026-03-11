@@ -205,39 +205,16 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     }
   })
 
-  // Viewport restoration on tab switch.
+  // Re-check atBottom after the ResizeObserver clears saved scroll state.
+  // Restoration itself is handled exclusively by the ResizeObserver's
+  // hidden→visible path so that we avoid a race where this effect runs
+  // before the tab is actually hidden (clearing saved state too early).
   createEffect(on(
     () => props.savedViewportScroll,
     (saved) => {
-      if (!messageListRef)
-        return
-      // Don't consume saved state while hidden — wait until the tab is
-      // visible so the ResizeObserver can apply the correct scroll position.
-      if (messageListRef.clientHeight === 0)
-        return
-      if (!saved) {
+      if (!saved && messageListRef && messageListRef.clientHeight > 0) {
         requestAnimationFrame(() => checkAtBottom())
-        return
       }
-      requestAnimationFrame(() => {
-        if (!messageListRef)
-          return
-        if (saved.atBottom) {
-          messageListRef.scrollTop = messageListRef.scrollHeight
-          setAtBottom(true)
-        }
-        else {
-          const maxScroll = messageListRef.scrollHeight - messageListRef.clientHeight
-          if (saved.distFromBottom > maxScroll) {
-            messageListRef.scrollTop = 0
-          }
-          else {
-            messageListRef.scrollTop = maxScroll - saved.distFromBottom
-          }
-          setAtBottom(false)
-        }
-        props.onClearSavedViewportScroll?.()
-      })
     },
   ))
 
@@ -258,31 +235,36 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     let prevClientHeight = messageListRef?.clientHeight ?? 0
     const handleResize = () => {
       cancelAnimationFrame(resizeRafId)
+      // Capture hidden→visible state and atBottom NOW (in the
+      // ResizeObserver callback), before browser scroll-restoration
+      // events can fire and corrupt the atBottom signal.
+      const ch = messageListRef?.clientHeight ?? 0
+      const wasHidden = prevClientHeight === 0 && ch > 0
+      const savedAtBottom = atBottom()
+      const savedScroll = wasHidden ? props.savedViewportScroll : undefined
       resizeRafId = requestAnimationFrame(() => {
         if (!messageListRef || scrollAnimationId !== null || autoScrollPending)
           return
-        // Detect hidden → visible transition (e.g. tab switch).
-        const ch = messageListRef.clientHeight
-        const wasHidden = prevClientHeight === 0 && ch > 0
         prevClientHeight = ch
         if (wasHidden) {
-          // Restore saved viewport scroll if available; otherwise use atBottom.
-          const saved = props.savedViewportScroll
-          if (saved) {
-            if (saved.atBottom) {
+          // Restore saved viewport scroll if available; otherwise use
+          // the atBottom value captured before scroll events could fire.
+          if (savedScroll) {
+            if (savedScroll.atBottom) {
               messageListRef.scrollTop = messageListRef.scrollHeight
               setAtBottom(true)
             }
             else {
               const maxScroll = messageListRef.scrollHeight - messageListRef.clientHeight
-              messageListRef.scrollTop = saved.distFromBottom > maxScroll ? 0 : maxScroll - saved.distFromBottom
+              messageListRef.scrollTop = savedScroll.distFromBottom > maxScroll ? 0 : maxScroll - savedScroll.distFromBottom
               setAtBottom(false)
             }
             props.onClearSavedViewportScroll?.()
             return
           }
-          if (atBottom()) {
+          if (savedAtBottom) {
             messageListRef.scrollTop = messageListRef.scrollHeight
+            setAtBottom(true)
             return
           }
         }
