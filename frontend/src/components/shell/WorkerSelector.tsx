@@ -10,7 +10,7 @@ interface WorkerSelectorProps {
 
 export const WorkerSelector: Component<WorkerSelectorProps> = (props) => {
   return (
-    <label>
+    <div>
       <div class={labelRow}>
         Worker
         <RefreshButton onClick={props.state.handleRefresh} disabled={props.state.refreshing()} title="Refresh workers" />
@@ -36,6 +36,6 @@ export const WorkerSelector: Component<WorkerSelectorProps> = (props) => {
           }}
         </For>
       </select>
-    </label>
+    </div>
   )
 }
