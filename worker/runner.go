@@ -108,12 +108,9 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		client.SetChannelMgr(channelMgr)
 		client.EncryptionMode = cfg.EncryptionMode
 		client.PublicKey = cfg.CompositeKey.X25519Public
-		if cfg.EncryptionMode != leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC &&
-			cfg.EncryptionMode != leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED {
-			client.MlkemPublicKey = cfg.CompositeKey.MlkemPublicKeyBytes()
-			slhdsaPub, _ := cfg.CompositeKey.SlhdsaPublicKeyBytes()
-			client.SlhdsaPublicKey = slhdsaPub
-		}
+		client.MlkemPublicKey = cfg.CompositeKey.MlkemPublicKeyBytes()
+		slhdsaPub, _ := cfg.CompositeKey.SlhdsaPublicKeyBytes()
+		client.SlhdsaPublicKey = slhdsaPub
 
 		// Provide workspace tab sync data on connect.
 		queries := db.New(sqlDB)

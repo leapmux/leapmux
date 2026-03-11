@@ -3,6 +3,8 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
+	"os"
 
 	_ "modernc.org/sqlite"
 )
@@ -26,6 +28,13 @@ func Open(path string, maxConns ...int) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
+	}
+
+	// Restrict file permissions to owner-only (0600).
+	if path != ":memory:" {
+		if err := os.Chmod(path, 0o600); err != nil {
+			slog.Warn("failed to chmod database file", "path", path, "error", err)
+		}
 	}
 
 	// Enable WAL mode for better concurrent read performance.

@@ -334,10 +334,18 @@ func (s *WorkerConnectorService) processWorkerMessage(
 		conn.EncryptionMode = encMode
 		// Persist worker's public keys if provided (sent with the initial heartbeat).
 		if pk := hb.GetPublicKey(); len(pk) > 0 {
+			mlkemPK := hb.GetMlkemPublicKey()
+			if mlkemPK == nil {
+				mlkemPK = []byte{}
+			}
+			slhdsaPK := hb.GetSlhdsaPublicKey()
+			if slhdsaPK == nil {
+				slhdsaPK = []byte{}
+			}
 			if err := s.queries.UpdateWorkerPublicKey(ctx, db.UpdateWorkerPublicKeyParams{
 				PublicKey:       pk,
-				MlkemPublicKey:  hb.GetMlkemPublicKey(),
-				SlhdsaPublicKey: hb.GetSlhdsaPublicKey(),
+				MlkemPublicKey:  mlkemPK,
+				SlhdsaPublicKey: slhdsaPK,
 				ID:              workerID,
 			}); err != nil {
 				slog.Warn("failed to update worker public key", "worker_id", workerID, "error", err)

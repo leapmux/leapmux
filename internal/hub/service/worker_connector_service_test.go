@@ -286,6 +286,28 @@ func TestProcessWorkerMessage_PostQuantumModeAccepted(t *testing.T) {
 	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, conn.EncryptionMode)
 }
 
+func TestProcessWorkerMessage_PublicKeyUpdateWithNilMlkem(t *testing.T) {
+	svc, conn := setupEncryptionModeTest(t, true)
+	ctx := context.Background()
+
+	// Simulate a heartbeat with X25519 public key but nil ML-KEM key,
+	// which used to trigger a NOT NULL constraint failure on workers.mlkem_public_key.
+	err := svc.processWorkerMessage(ctx, conn, "w1", &leapmuxv1.ConnectRequest{
+		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
+			Heartbeat: &leapmuxv1.Heartbeat{
+				PublicKey:      []byte("fake-x25519-public-key"),
+				EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED,
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	// Verify the public key was persisted without constraint errors.
+	pk, dbErr := svc.queries.GetWorkerPublicKey(ctx, "w1")
+	require.NoError(t, dbErr)
+	assert.Equal(t, []byte("fake-x25519-public-key"), pk.PublicKey)
+}
+
 func TestProcessWorkerMessage_UnspecifiedDefaultsToPostQuantum(t *testing.T) {
 	svc, conn := setupEncryptionModeTest(t, false)
 	ctx := context.Background()
