@@ -47,10 +47,17 @@ func runSolo(args []string, soloMode bool) error {
 		defaultAddr = ":4327"
 	}
 
+	defaultConfigDir := "~/.config/leapmux/" + modeName
+	defaultConfigFile := defaultConfigDir + "/" + modeName + ".yaml"
+
+	// Pre-scan for -config flag.
+	configPath := internalconfig.ExtractConfigFlag(args, defaultConfigFile)
+
 	// Define CLI flags.
 	fs := flag.NewFlagSet("leapmux", flag.ContinueOnError)
+	fs.String("config", defaultConfigFile, "path to config file")
 	fs.String("addr", defaultAddr, "TCP listen address")
-	fs.String("data-dir", defaultSoloDataDir(), "data directory")
+	fs.String("data-dir", ".", "data directory")
 	fs.String("dev-frontend", "", "Vite dev server URL (dev mode)")
 	fs.Int("db-max-conns", hubdb.DefaultMaxConns, "maximum number of open database connections")
 	fs.String("log-level", "info", "log level (debug, info, warn, error)")
@@ -76,7 +83,7 @@ func runSolo(args []string, soloMode bool) error {
 
 	defaults := map[string]interface{}{
 		"addr":                            defaultAddr,
-		"data_dir":                        defaultSoloDataDir(),
+		"data_dir":                        ".",
 		"dev_frontend":                    "",
 		"db_max_conns":                    hubdb.DefaultMaxConns,
 		"log_level":                       "info",
@@ -96,18 +103,17 @@ func runSolo(args []string, soloMode bool) error {
 	k := koanf.New(".")
 	fp := internalconfig.NewFlagProvider(fs, fieldMap)
 
-	if err := internalconfig.Load(k, defaults, "", "LEAPMUX_HUB_", fp); err != nil {
+	if err := internalconfig.Load(k, defaults, configPath, "LEAPMUX_HUB_", fp); err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
 
 	addr := k.String("addr")
-	dataDir := k.String("data_dir")
 	devFrontend := k.String("dev_frontend")
 	dbMaxConns := k.Int("db_max_conns")
 	logLevel := k.String("log_level")
 
-	// Expand ~ in data dir.
-	dataDir = internalconfig.ExpandHome(dataDir)
+	// Resolve relative data_dir against config file directory.
+	dataDir := internalconfig.ResolveDataDir(k.String("data_dir"), configPath, defaultConfigDir)
 
 	level, err := logging.ParseLevel(logLevel)
 	if err != nil {
@@ -314,12 +320,4 @@ func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath,
 	}
 
 	return state, nil
-}
-
-func defaultSoloDataDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(".config", "leapmux")
-	}
-	return filepath.Join(home, ".config", "leapmux")
 }
