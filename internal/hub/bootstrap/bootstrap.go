@@ -13,9 +13,16 @@ import (
 )
 
 const (
-	defaultUsername = "admin"
 	defaultPassword = "admin"
 )
+
+// Username returns the default admin username for the given mode.
+func Username(soloMode bool) string {
+	if soloMode {
+		return "solo"
+	}
+	return "admin"
+}
 
 // Run creates the personal org and admin user if no organizations
 // exist yet. This is a no-op if the database already has data.
@@ -29,10 +36,12 @@ func Run(ctx context.Context, q *db.Queries, soloMode bool) error {
 		return nil
 	}
 
+	username := Username(soloMode)
+
 	orgID := id.Generate()
 	if err := q.CreateOrg(ctx, db.CreateOrgParams{
 		ID:         orgID,
-		Name:       defaultUsername,
+		Name:       username,
 		IsPersonal: 1,
 	}); err != nil {
 		return fmt.Errorf("create personal org: %w", err)
@@ -47,13 +56,18 @@ func Run(ctx context.Context, q *db.Queries, soloMode bool) error {
 		passwordHash = string(hash)
 	}
 
+	displayName := "Admin"
+	if soloMode {
+		displayName = "Solo"
+	}
+
 	userID := id.Generate()
 	if err := q.CreateUser(ctx, db.CreateUserParams{
 		ID:           userID,
 		OrgID:        orgID,
-		Username:     defaultUsername,
+		Username:     username,
 		PasswordHash: passwordHash,
-		DisplayName:  "Admin",
+		DisplayName:  displayName,
 		Email:        "",
 		IsAdmin:      1,
 	}); err != nil {
@@ -77,7 +91,7 @@ func Run(ctx context.Context, q *db.Queries, soloMode bool) error {
 	slog.Info("bootstrap: created personal org and admin user",
 		"org_id", orgID,
 		"user_id", userID,
-		"username", defaultUsername,
+		"username", username,
 	)
 
 	return nil

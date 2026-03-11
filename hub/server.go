@@ -238,7 +238,8 @@ func (s *Server) GetWorkerByID(ctx context.Context, workerID string) error {
 
 // GetAdminUser returns the admin user's ID and org ID.
 func (s *Server) GetAdminUser(ctx context.Context) (userID, orgID string, err error) {
-	user, err := s.queries.GetUserByUsername(ctx, "admin")
+	username := bootstrap.Username(s.cfg.SoloMode)
+	user, err := s.queries.GetUserByUsername(ctx, username)
 	if err != nil {
 		return "", "", fmt.Errorf("get admin user: %w", err)
 	}

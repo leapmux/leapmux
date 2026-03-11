@@ -123,6 +123,90 @@ log_level: "debug"
 	})
 }
 
+func TestLoadWithOptions(t *testing.T) {
+	t.Run("custom DefaultAddr applied", func(t *testing.T) {
+		cfg, _, err := LoadWithOptions(nil, LoadOptions{
+			DefaultAddr: "127.0.0.1:4327",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "127.0.0.1:4327", cfg.Addr)
+	})
+
+	t.Run("SoloMode set on output", func(t *testing.T) {
+		cfg, _, err := LoadWithOptions(nil, LoadOptions{
+			SoloMode: true,
+		})
+		require.NoError(t, err)
+		assert.True(t, cfg.SoloMode)
+	})
+
+	t.Run("SoloMode false by default", func(t *testing.T) {
+		cfg, _, err := LoadWithOptions(nil, LoadOptions{})
+		require.NoError(t, err)
+		assert.False(t, cfg.SoloMode)
+	})
+
+	t.Run("CLIFlags restriction rejects unlisted flags", func(t *testing.T) {
+		_, _, err := LoadWithOptions([]string{"-signup-enabled"}, LoadOptions{
+			CLIFlags: []string{"addr", "data-dir", "log-level"},
+		})
+		assert.Error(t, err)
+	})
+
+	t.Run("CLIFlags restriction allows listed flags", func(t *testing.T) {
+		cfg, _, err := LoadWithOptions([]string{"-addr", ":9999"}, LoadOptions{
+			CLIFlags: []string{"addr", "data-dir", "log-level"},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, ":9999", cfg.Addr)
+	})
+
+	t.Run("config file values for all fields work with CLIFlags restriction", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "solo.yaml")
+		yamlContent := `max_message_size: 1024
+max_incomplete_chunked: 8
+signup_enabled: true
+`
+		require.NoError(t, os.WriteFile(configPath, []byte(yamlContent), 0o644))
+
+		cfg, _, err := LoadWithOptions([]string{"-config", configPath}, LoadOptions{
+			CLIFlags: []string{"addr", "data-dir", "log-level"},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 1024, cfg.MaxMessageSize)
+		assert.Equal(t, 8, cfg.MaxIncompleteChunked)
+		assert.True(t, cfg.SignupEnabled)
+	})
+
+	t.Run("custom DefaultConfigDir used for data dir resolution", func(t *testing.T) {
+		home, err := os.UserHomeDir()
+		require.NoError(t, err)
+
+		cfg, _, err := LoadWithOptions(nil, LoadOptions{
+			DefaultConfigDir: "~/.config/leapmux/solo",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Join(home, ".config/leapmux/solo"), cfg.DataDir)
+	})
+
+	t.Run("custom FlagSetName", func(t *testing.T) {
+		// Verify it doesn't error (flag set name is internal).
+		_, _, err := LoadWithOptions(nil, LoadOptions{
+			FlagSetName: "leapmux",
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("version flag works with options", func(t *testing.T) {
+		_, showVersion, err := LoadWithOptions([]string{"-version"}, LoadOptions{
+			CLIFlags: []string{"addr"},
+		})
+		require.NoError(t, err)
+		assert.True(t, showVersion)
+	})
+}
+
 func TestValidate(t *testing.T) {
 	t.Run("empty addr returns error", func(t *testing.T) {
 		cfg := &Config{Addr: ""}
