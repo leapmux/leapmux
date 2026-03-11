@@ -27,5 +27,12 @@ export const compass = style({
 
 export const verb = style({
   fontSize: 'var(--text-7)',
+  fontWeight: 600,
   userSelect: 'none',
+})
+
+export const char = style({
+  display: 'inline-block',
+  whiteSpace: 'pre',
+  transition: 'transform 0.5s ease-out',
 })
