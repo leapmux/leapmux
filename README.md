@@ -215,6 +215,11 @@ The `task dev` command uses `mprocs` to run two processes concurrently:
 - **Backend** — Runs Hub + Worker together in dev mode (with `-dev-frontend` flag to proxy to the frontend dev server)
 - **Frontend** — Bun dev server for the SolidJS web application
 
+To run in solo mode (localhost-only, no login) instead of dev mode during development:
+```bash
+task dev-solo
+```
+
 ---
 
 ## Development
@@ -345,10 +350,14 @@ By default this builds for `linux/amd64` and `linux/arm64`. You can override the
 task docker-build-alpine PLATFORM=linux/amd64 TAG=leapmux:dev
 ```
 
-The image uses a multi-stage build (buf, Bun, Go) and runs with [s6-overlay](https://github.com/just-containers/s6-overlay) for process supervision. The Hub listens on port 4327 and data is stored in the `/data` volume.
+The image uses a multi-stage build (buf, Bun, Go) and runs with [s6-overlay](https://github.com/just-containers/s6-overlay) for process supervision. The `LEAPMUX_MODE` environment variable selects the subcommand (`hub`, `worker`, `dev`, etc.) and is required. Data is stored in the `/data` volume.
 
 ```bash
-docker run -p 4327:4327 -v leapmux-data:/data leapmux:latest
+# Run as a hub (central service only)
+docker run -p 4327:4327 -e LEAPMUX_MODE=hub -v leapmux-data:/data leapmux:latest
+
+# Run as hub + worker together (dev mode)
+docker run -p 4327:4327 -e LEAPMUX_MODE=dev -v leapmux-data:/data leapmux:latest
 ```
 
 Pre-built images are published to GHCR in two variants:
@@ -490,7 +499,8 @@ leapmux/
 │
 ├── buf.gen.yaml            # Protocol Buffer code generation targets
 ├── buf.yaml                # Protocol Buffer linting configuration
-├── mprocs.yaml             # Development process configuration
+├── mprocs.yaml             # Dev mode process configuration (task dev)
+├── mprocs-solo.yaml        # Solo mode process configuration (task dev-solo)
 ├── README.md               # This file
 ├── Taskfile.yaml           # Build orchestration (go-task.dev)
 └── versions.yaml           # Version string and tool/image versions
