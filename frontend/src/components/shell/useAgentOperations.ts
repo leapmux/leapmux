@@ -274,23 +274,25 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     try {
       const workerId = getAgentWorkerId(agentId)
       props.controlStore.clearAgent(agentId)
-      const resp = await workerRpc.closeAgent(workerId, { agentId })
+      if (workerId) {
+        const resp = await workerRpc.closeAgent(workerId, { agentId })
+        // Auto-handle worktree cleanup if the pre-close check stored a choice.
+        if (resp.worktreeCleanupPending && resp.worktreeId) {
+          if (props.pendingWorktreeChoice() === 'remove') {
+            workerRpc.forceRemoveWorktree(workerId, { worktreeId: resp.worktreeId }).catch(() => {})
+          }
+          else {
+            // Default to keep (if somehow no choice was stored)
+            workerRpc.keepWorktree(workerId, { worktreeId: resp.worktreeId }).catch(() => {})
+          }
+        }
+      }
       props.agentStore.removeAgent(agentId)
       props.tabStore.removeTab(TabType.AGENT, agentId)
       // Unregister tab from hub.
       const ws = props.activeWorkspace()
       if (ws) {
         workspaceClient.removeTab({ workspaceId: ws.id, tabType: TabType.AGENT, tabId: agentId }).catch(() => {})
-      }
-      // Auto-handle worktree cleanup if the pre-close check stored a choice.
-      if (resp.worktreeCleanupPending && resp.worktreeId) {
-        if (props.pendingWorktreeChoice() === 'remove') {
-          workerRpc.forceRemoveWorktree(workerId, { worktreeId: resp.worktreeId }).catch(() => {})
-        }
-        else {
-          // Default to keep (if somehow no choice was stored)
-          workerRpc.keepWorktree(workerId, { worktreeId: resp.worktreeId }).catch(() => {})
-        }
       }
     }
     catch (err) {
