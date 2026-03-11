@@ -1,40 +1,41 @@
 import type { Component } from 'solid-js'
+import type { IconButtonSize } from './IconButton'
 import type { IconSizeName } from '~/components/common/Icon'
 import RefreshCw from 'lucide-solid/icons/refresh-cw'
-import { createSignal } from 'solid-js'
-import { Icon } from '~/components/common/Icon'
-import { refreshButton } from '~/styles/shared.css'
+import { createSignal, splitProps } from 'solid-js'
+import { IconButton, IconButtonState } from './IconButton'
 import * as styles from './RefreshButton.css'
 
 interface RefreshButtonProps {
-  onClick: () => void
-  disabled?: boolean
-  title?: string
-  size?: IconSizeName
+  'onClick': () => void
+  'disabled'?: boolean
+  'title'?: string
+  /** Icon size token. Default: 'sm' */
+  'iconSize'?: IconSizeName
+  /** Container size token. Default: none (intrinsic sizing). */
+  'size'?: IconButtonSize
+  'data-testid'?: string
 }
 
 export const RefreshButton: Component<RefreshButtonProps> = (props) => {
+  const [local, rest] = splitProps(props, ['onClick', 'disabled', 'iconSize', 'size'])
   const [animating, setAnimating] = createSignal(false)
 
   const handleClick = () => {
     setAnimating(true)
-    props.onClick()
+    local.onClick()
   }
 
   return (
-    <button
-      type="button"
-      class={refreshButton}
+    <IconButton
+      icon={RefreshCw}
+      iconSize={local.iconSize ?? 'sm'}
+      size={local.size}
+      state={local.disabled ? IconButtonState.Disabled : IconButtonState.Enabled}
       onClick={handleClick}
-      disabled={props.disabled}
-      title={props.title}
-    >
-      <Icon
-        icon={RefreshCw}
-        size={props.size ?? 'sm'}
-        class={animating() ? styles.spinning : ''}
-        onAnimationEnd={() => setAnimating(false)}
-      />
-    </button>
+      class={animating() ? styles.spinning : ''}
+      onAnimationEnd={() => setAnimating(false)}
+      {...rest}
+    />
   )
 }
