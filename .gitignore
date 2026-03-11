@@ -20,6 +20,7 @@ node_modules/
 frontend/dist/
 frontend/public/leapmux-service-worker-*
 frontend/app.config.timestamp_*
+frontend/src/spinners/
 
 # IDE
 .idea/
