@@ -80,6 +80,11 @@ globalStyle(':root', {
     '--input': 'rgb(213 209 203)',
     '--ring': 'rgb(13 148 136)',
 
+    // Scrollbar
+    '--scrollbar-thumb': 'rgb(from var(--muted-foreground) r g b / 0.35)',
+    '--scrollbar-thumb-hover': 'rgb(from var(--muted-foreground) r g b / 0.55)',
+    '--scrollbar-track': 'transparent',
+
     // LeapMux-specific custom variables
     '--lm-bg-translucent': 'rgba(255, 255, 255, 0.5)',
     '--lm-danger-subtle': 'rgb(253 235 233)',
@@ -130,6 +135,11 @@ globalStyle('[data-theme="dark"]', {
     '--input': 'rgb(61 58 54)',
     '--ring': 'rgb(20 184 166)',
 
+    // Scrollbar
+    '--scrollbar-thumb': 'rgb(from var(--muted-foreground) r g b / 0.35)',
+    '--scrollbar-thumb-hover': 'rgb(from var(--muted-foreground) r g b / 0.55)',
+    '--scrollbar-track': 'transparent',
+
     // LeapMux-specific custom variables
     '--lm-bg-translucent': 'rgba(26, 25, 23, 0.5)',
     '--lm-danger-subtle': 'rgb(50 30 28)',
@@ -167,4 +177,35 @@ globalStyle('button, [role="button"]', {
       transition: 'none',
     },
   },
+})
+
+// Consistent thin scrollbars across browsers (standard CSS — Firefox & Chrome 121+).
+globalStyle('*', {
+  scrollbarWidth: 'thin',
+  scrollbarColor: 'var(--scrollbar-thumb) var(--scrollbar-track)',
+})
+
+// WebKit scrollbar styling (Safari & older Chrome).
+globalStyle('*::-webkit-scrollbar', {
+  width: '8px',
+  height: '8px',
+})
+
+globalStyle('*::-webkit-scrollbar-track', {
+  background: 'transparent',
+})
+
+globalStyle('*::-webkit-scrollbar-thumb', {
+  backgroundColor: 'var(--scrollbar-thumb)',
+  borderRadius: '4px',
+  border: '2px solid transparent',
+  backgroundClip: 'content-box',
+})
+
+globalStyle('*::-webkit-scrollbar-thumb:hover', {
+  backgroundColor: 'var(--scrollbar-thumb-hover)',
+})
+
+globalStyle('*::-webkit-scrollbar-corner', {
+  background: 'transparent',
 })

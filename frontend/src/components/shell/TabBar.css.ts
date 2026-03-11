@@ -28,6 +28,10 @@ export const tabList = style({
   borderRadius: 0,
 })
 
+globalStyle(`${tabList}::-webkit-scrollbar`, {
+  display: 'none',
+})
+
 export const tab = style({
   'all': 'unset',
   'display': 'flex',
