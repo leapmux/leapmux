@@ -184,25 +184,6 @@ export const labelRow = style({
   gap: '6px',
 })
 
-export const refreshButton = style({
-  'all': 'unset',
-  'display': 'inline-flex',
-  'alignItems': 'center',
-  'justifyContent': 'center',
-  'padding': '2px',
-  'cursor': 'pointer',
-  'borderRadius': 'var(--radius-small)',
-  'color': 'var(--muted-foreground)',
-  ':hover': {
-    color: 'var(--foreground)',
-    backgroundColor: 'var(--card)',
-  },
-  ':disabled': {
-    cursor: 'not-allowed',
-    opacity: 0.6,
-  },
-})
-
 export const treeContainer = style({
   flex: 1,
   minHeight: 0,

@@ -7,10 +7,10 @@ import FileIcon from 'lucide-solid/icons/file'
 import FolderTree from 'lucide-solid/icons/folder-tree'
 import List from 'lucide-solid/icons/list'
 import LocateFixed from 'lucide-solid/icons/locate-fixed'
-import RefreshCw from 'lucide-solid/icons/refresh-cw'
 import { createEffect, createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
+import { RefreshButton } from '~/components/common/RefreshButton'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { DirectoryTree } from './DirectoryTree'
 import * as styles from './FilesSection.css'
@@ -112,8 +112,7 @@ export const FilesSectionHeaderActions: Component<FilesSectionHeaderActionsProps
         onClick={() => props.onCollapseAll()}
         data-testid="files-collapse-all"
       />
-      <IconButton
-        icon={RefreshCw}
+      <RefreshButton
         iconSize="xs"
         size="sm"
         title="Refresh"
