@@ -1,13 +1,12 @@
 import type { Component } from 'solid-js'
-import RefreshCw from 'lucide-solid/icons/refresh-cw'
 import { generateSlug } from 'random-word-slugs'
 import { createEffect, createMemo, createSignal, on, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { tildify } from '~/components/chat/messageUtils'
-import { Icon } from '~/components/common/Icon'
+import { RefreshButton } from '~/components/common/RefreshButton'
 import { useOrg } from '~/context/OrgContext'
 import { validateBranchName } from '~/lib/validate'
-import { checkboxRow, errorText, labelRow, pathPreview, refreshButton, warningText } from '~/styles/shared.css'
+import { checkboxRow, errorText, labelRow, pathPreview, warningText } from '~/styles/shared.css'
 
 interface WorktreeOptionsProps {
   workerId: string
@@ -129,14 +128,7 @@ export const WorktreeOptions: Component<WorktreeOptionsProps> = (props) => {
         <label>
           <div class={labelRow}>
             Branch Name
-            <button
-              type="button"
-              class={refreshButton}
-              onClick={randomizeBranch}
-              title="Generate random name"
-            >
-              <Icon icon={RefreshCw} size="sm" />
-            </button>
+            <RefreshButton onClick={randomizeBranch} title="Generate random name" />
           </div>
           <input
             type="text"

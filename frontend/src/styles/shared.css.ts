@@ -1,5 +1,4 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { spin } from '~/styles/animations.css'
 
 export const errorText = style({
   color: 'var(--danger)',
@@ -202,10 +201,6 @@ export const refreshButton = style({
     cursor: 'not-allowed',
     opacity: 0.6,
   },
-})
-
-export const spinning = style({
-  animation: `${spin} 1s linear infinite`,
 })
 
 export const treeContainer = style({
