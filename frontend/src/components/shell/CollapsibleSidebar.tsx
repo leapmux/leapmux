@@ -4,7 +4,7 @@ import { createDraggable, createDroppable, useDragDropContext } from '@thisbeyon
 import GripVertical from 'lucide-solid/icons/grip-vertical'
 import PanelLeftClose from 'lucide-solid/icons/panel-left-close'
 import PanelRightClose from 'lucide-solid/icons/panel-right-close'
-import { createEffect, createMemo, createSignal, For, Show } from 'solid-js'
+import { createMemo, createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
 import * as styles from './CollapsibleSidebar.css'
@@ -50,7 +50,7 @@ export interface SidebarSectionDef {
   railElement?: JSX.Element
   /** Rail position: 'top' (default) or 'bottom'. */
   railPosition?: 'top' | 'bottom'
-  /** data-testid for the section details element. */
+  /** data-testid for the section container element. */
   testId?: string
   /** Whether the section can be dragged/reordered. Default: false. */
   draggable?: boolean
@@ -309,15 +309,6 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
               return -1
             }
 
-            // Use a ref + createEffect to fully control the <details> open
-            // state.  This prevents the browser's session-history restoration
-            // from overriding our persisted collapsed preferences on reload.
-            let detailsRef!: HTMLDetailsElement
-            createEffect(() => {
-              if (detailsRef)
-                detailsRef.open = sectionOpen()
-            })
-
             return (
               <>
                 {/* Resize handle between expanded panes */}
@@ -335,9 +326,8 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                   <div class={styles.dropIndicatorLine} data-testid="drop-indicator" />
                 </Show>
 
-                <details
+                <div
                   ref={(el) => {
-                    detailsRef = el
                     // Attach draggable + droppable refs for DnD
                     if (draggable)
                       draggable.ref(el)
@@ -347,15 +337,13 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                   class={`${styles.collapsiblePane} ${sectionOpen() ? styles.collapsiblePaneExpanded : ''} ${draggable?.isActiveDraggable ? styles.collapsiblePaneDragging : ''}`}
                   style={flexStyle()}
                   data-testid={section().testId}
+                  data-closed={sectionOpen() ? undefined : ''}
                 >
-                  <summary
+                  <div
+                    role="button"
                     class={`${styles.collapsibleTrigger} ${props.side === 'right' ? styles.collapsibleTriggerRight : ''} ${isStatic() || !canCollapse() ? styles.collapsibleTriggerStatic : ''} ${index() === 0 && props.side === 'right' ? styles.collapsibleTriggerNoChevron : ''}`}
                     data-testid={section().testId ? `${section().testId}-summary` : undefined}
-                    onClick={(e) => {
-                      // Prevent native <details> toggle -- we control state
-                      // entirely via signals to avoid browser auto-restoration
-                      // issues on page reload.
-                      e.preventDefault()
+                    onClick={() => {
                       if (sectionOpen() && !canCollapse())
                         return
                       handleToggle(id, section().collapsible, !sectionOpen())
@@ -416,7 +404,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                         }}
                       />
                     </Show>
-                  </summary>
+                  </div>
                   <div class={`${styles.collapsibleContent}${sectionOpen() ? ` ${styles.collapsibleContentExpanded}` : ''}`}>
                     <div class={styles.collapsibleContentInner}>
                       <div class={styles.sidebarContent}>
@@ -424,7 +412,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                       </div>
                     </div>
                   </div>
-                </details>
+                </div>
 
                 {/* Drop indicator: after this section */}
                 <Show when={currentDropIndicator()?.targetSectionId === id && currentDropIndicator()?.position === 'after'}>

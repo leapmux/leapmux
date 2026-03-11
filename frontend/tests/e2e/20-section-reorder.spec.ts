@@ -16,8 +16,8 @@ function waitForMoveSection(page: import('@playwright/test').Page) {
  * If `side` is given, only returns sections within that sidebar.
  */
 async function getSectionOrder(page: import('@playwright/test').Page, side?: 'left' | 'right') {
-  // Each section has a data-testid on the <details> element (section-header-*).
-  // The <summary> also has a data-testid ending with "-summary", so we
+  // Each section has a data-testid on the container element (section-header-*).
+  // The trigger also has a data-testid ending with "-summary", so we
   // exclude those to avoid double-counting.
   const root = side
     ? page.locator(`[data-testid="sidebar-${side}"]`)

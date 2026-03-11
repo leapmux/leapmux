@@ -120,7 +120,6 @@ export function createLeftSidebarElement(opts: SidebarElementsOpts, display?: Si
 export function createRightSidebarElement(opts: SidebarElementsOpts, display?: SidebarDisplayOpts): JSX.Element {
   return (
     <RightSidebar
-      workspaceId={opts.activeWorkspaceId ?? ''}
       workerId={opts.getCurrentTabContext().workerId}
       workingDir={opts.getCurrentTabContext().workingDir}
       homeDir={opts.getCurrentTabContext().homeDir}
@@ -164,6 +163,10 @@ export function createRightSidebarElement(opts: SidebarElementsOpts, display?: S
       onTabClick={opts.onTabClick}
       onTabRename={opts.onTabRename}
       onExpandWorkspace={opts.onExpandWorkspace}
+      workers={opts.workers}
+      workerInfoFn={opts.workerInfoFn}
+      channelStatusFn={opts.channelStatusFn}
+      onDeregisterWorker={opts.onDeregisterWorker}
     />
   )
 }
