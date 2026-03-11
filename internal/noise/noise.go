@@ -221,12 +221,18 @@ func (ss *symmetricState) hybridSplit(extraKeyMaterial []byte) (*CipherState, *C
 
 // CipherState manages a key and nonce for post-handshake encryption/decryption.
 type CipherState struct {
-	k [keyLen]byte
-	n uint64
+	k           [keyLen]byte
+	n           uint64
+	passthrough bool // when true, data passes through without encryption
 }
 
 // Encrypt encrypts plaintext using the cipher key.
 func (cs *CipherState) Encrypt(plaintext []byte) ([]byte, error) {
+	if cs.passthrough {
+		out := make([]byte, len(plaintext))
+		copy(out, plaintext)
+		return out, nil
+	}
 	if len(plaintext) > MaxPlaintextSize {
 		return nil, fmt.Errorf("noise: plaintext too large (%d > %d)", len(plaintext), MaxPlaintextSize)
 	}
@@ -243,6 +249,11 @@ func (cs *CipherState) Encrypt(plaintext []byte) ([]byte, error) {
 
 // Decrypt decrypts ciphertext using the cipher key.
 func (cs *CipherState) Decrypt(ciphertext []byte) ([]byte, error) {
+	if cs.passthrough {
+		out := make([]byte, len(ciphertext))
+		copy(out, ciphertext)
+		return out, nil
+	}
 	if cs.n > HardNonceLimit {
 		return nil, fmt.Errorf("noise: receive nonce exceeded hard limit")
 	}
@@ -261,6 +272,9 @@ func (cs *CipherState) Nonce() uint64 {
 
 // NeedsRekey returns true if the nonce has exceeded the soft limit.
 func (cs *CipherState) NeedsRekey() bool {
+	if cs.passthrough {
+		return false
+	}
 	return cs.n > SoftNonceLimit
 }
 
@@ -286,6 +300,15 @@ func (s *Session) Decrypt(ciphertext []byte) ([]byte, error) {
 // NeedsRekey returns true if the send nonce has exceeded the soft limit.
 func (s *Session) NeedsRekey() bool {
 	return s.Send.NeedsRekey()
+}
+
+// NewPassthroughSession creates a Session that passes data through without encryption.
+// Used when encryption is disabled (solo mode only).
+func NewPassthroughSession() *Session {
+	return &Session{
+		Send:    &CipherState{passthrough: true},
+		Receive: &CipherState{passthrough: true},
+	}
 }
 
 // ---- Handshake State (for two-step initiator) ----
@@ -512,6 +535,130 @@ func InitiatorHandshake2(hs *HandshakeState, message2 []byte, remoteSlhdsaPub []
 	return &Session{Send: cs2, Receive: cs1}, nil
 }
 
+// ---- Classical Responder Handshake (Worker, X25519 only) ----
+
+// ClassicalResponderHandshake performs the responder side of the classical Noise_NK handshake.
+// message1 = noise_msg1 (48 bytes), response = noise_msg2 (48 bytes).
+func ClassicalResponderHandshake(x25519Pub, x25519Priv []byte, message1 []byte) (response []byte, session *Session, err error) {
+	noiseMsg1Len := dhLen + chacha20poly1305.Overhead // 48
+	if len(message1) != noiseMsg1Len {
+		return nil, nil, fmt.Errorf("noise: classical message1 wrong size: got %d, want %d", len(message1), noiseMsg1Len)
+	}
+
+	ss := newSymmetricState()
+	ss.mixHash(nil)
+	ss.mixHash(x25519Pub)
+
+	re := message1[:dhLen]
+	ss.mixHash(re)
+
+	reKey, err := ecdh.X25519().NewPublicKey(re)
+	if err != nil {
+		return nil, nil, fmt.Errorf("noise: invalid initiator ephemeral key: %w", err)
+	}
+	sPriv, err := ecdh.X25519().NewPrivateKey(x25519Priv)
+	if err != nil {
+		return nil, nil, fmt.Errorf("noise: invalid responder static private key: %w", err)
+	}
+	dhES, err := sPriv.ECDH(reKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("noise: es DH failed: %w", err)
+	}
+	ss.mixKey(dhES)
+
+	if _, err = ss.decryptAndHash(message1[dhLen:]); err != nil {
+		return nil, nil, fmt.Errorf("noise: decrypt message1 payload: %w", err)
+	}
+
+	ePriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, nil, fmt.Errorf("noise: generate responder ephemeral: %w", err)
+	}
+	ePub := ePriv.PublicKey().Bytes()
+	ss.mixHash(ePub)
+
+	dhEE, err := ePriv.ECDH(reKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("noise: ee DH failed: %w", err)
+	}
+	ss.mixKey(dhEE)
+
+	encPayload, err := ss.encryptAndHash(nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("noise: encrypt message2 payload: %w", err)
+	}
+
+	send, recv := ss.split()
+	return append(ePub, encPayload...), &Session{Send: send, Receive: recv}, nil
+}
+
+// ---- Classical Initiator Handshake (Frontend, Go side for testing) ----
+
+// ClassicalInitiatorHandshake1 creates the first message for the classical Noise_NK initiator.
+func ClassicalInitiatorHandshake1(remoteX25519Pub []byte) (*HandshakeState, []byte, error) {
+	ss := newSymmetricState()
+	ss.mixHash(nil)
+	ss.mixHash(remoteX25519Pub)
+
+	ePriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, nil, fmt.Errorf("noise: generate initiator ephemeral: %w", err)
+	}
+	ePub := ePriv.PublicKey().Bytes()
+	ss.mixHash(ePub)
+
+	rsKey, err := ecdh.X25519().NewPublicKey(remoteX25519Pub)
+	if err != nil {
+		return nil, nil, fmt.Errorf("noise: invalid remote static public key: %w", err)
+	}
+	dhES, err := ePriv.ECDH(rsKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("noise: es DH failed: %w", err)
+	}
+	ss.mixKey(dhES)
+
+	encPayload, err := ss.encryptAndHash(nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("noise: encrypt message1 payload: %w", err)
+	}
+
+	return &HandshakeState{
+		ss:    ss,
+		ePriv: ePriv,
+		rs:    remoteX25519Pub,
+	}, append(ePub, encPayload...), nil
+}
+
+// ClassicalInitiatorHandshake2 completes the classical Noise_NK initiator handshake.
+func ClassicalInitiatorHandshake2(hs *HandshakeState, message2 []byte) (*Session, error) {
+	noiseMsg2Len := dhLen + chacha20poly1305.Overhead // 48
+	if len(message2) != noiseMsg2Len {
+		return nil, fmt.Errorf("noise: classical message2 wrong size: got %d, want %d", len(message2), noiseMsg2Len)
+	}
+
+	ss := hs.ss
+
+	re := message2[:dhLen]
+	ss.mixHash(re)
+
+	reKey, err := ecdh.X25519().NewPublicKey(re)
+	if err != nil {
+		return nil, fmt.Errorf("noise: invalid responder ephemeral key: %w", err)
+	}
+	dhEE, err := hs.ePriv.ECDH(reKey)
+	if err != nil {
+		return nil, fmt.Errorf("noise: ee DH failed: %w", err)
+	}
+	ss.mixKey(dhEE)
+
+	if _, err = ss.decryptAndHash(message2[dhLen:]); err != nil {
+		return nil, fmt.Errorf("noise: decrypt message2 payload: %w", err)
+	}
+
+	cs1, cs2 := ss.split()
+	return &Session{Send: cs2, Receive: cs1}, nil
+}
+
 // ---- Crypto primitives ----
 
 func blake2bHash() hash.Hash {
@@ -579,5 +726,3 @@ func computeTranscript(handshakeHash, mlkemCT, mlkemSS []byte) []byte {
 	h.Write(mlkemSS)
 	return h.Sum(nil)
 }
-
-

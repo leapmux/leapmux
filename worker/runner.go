@@ -12,7 +12,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/noise"
+	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -22,16 +22,17 @@ import (
 
 // RunConfig holds configuration for running the worker as a library.
 type RunConfig struct {
-	HubURL              string                 // Hub server URL (e.g. "http://localhost:4327") or "unix:<socket-path>"
-	DataDir             string                 // Directory for persistent state
-	AuthToken           string                 // Pre-provisioned auth token (skip registration)
-	HTTPClient          *http.Client           // Custom HTTP client (e.g. for Unix socket transport)
-	CompositeKey        *noise.CompositeKeypair // Worker's composite keypair for E2EE channels
-	WorkerID            string                 // Worker ID (from registration)
-	Name                string                 // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
-	Version             string                 // Build-time version string
-	DBMaxConns          int                    // Maximum number of open database connections (0 = default)
-	AgentStartupTimeout time.Duration          // Timeout for agent startup handshake (0 = 30s default)
+	HubURL              string                      // Hub server URL (e.g. "http://localhost:4327") or "unix:<socket-path>"
+	DataDir             string                      // Directory for persistent state
+	AuthToken           string                      // Pre-provisioned auth token (skip registration)
+	HTTPClient          *http.Client                // Custom HTTP client (e.g. for Unix socket transport)
+	CompositeKey        *noiseutil.CompositeKeypair // Worker's composite keypair for E2EE channels
+	WorkerID            string                      // Worker ID (from registration)
+	Name                string                      // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
+	Version             string                      // Build-time version string
+	DBMaxConns          int                         // Maximum number of open database connections (0 = default)
+	AgentStartupTimeout time.Duration               // Timeout for agent startup handshake (0 = 30s default)
+	EncryptionMode      leapmuxv1.EncryptionMode    // Encryption mode (disabled, classic, post-quantum)
 }
 
 // Run starts the worker and blocks until ctx is cancelled.
@@ -64,7 +65,7 @@ func Run(ctx context.Context, cfg RunConfig) error {
 
 	// Set up E2EE channel manager if composite key is provided.
 	if cfg.CompositeKey != nil {
-		channelMgr := channel.NewManager(cfg.CompositeKey, client.Send)
+		channelMgr := channel.NewManager(cfg.CompositeKey, cfg.EncryptionMode, client.Send)
 
 		homeDir, _ := os.UserHomeDir()
 
@@ -105,10 +106,14 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		})
 
 		client.SetChannelMgr(channelMgr)
+		client.EncryptionMode = cfg.EncryptionMode
 		client.PublicKey = cfg.CompositeKey.X25519Public
-		client.MlkemPublicKey = cfg.CompositeKey.MlkemPublicKeyBytes()
-		slhdsaPub, _ := cfg.CompositeKey.SlhdsaPublicKeyBytes()
-		client.SlhdsaPublicKey = slhdsaPub
+		if cfg.EncryptionMode != leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC &&
+			cfg.EncryptionMode != leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED {
+			client.MlkemPublicKey = cfg.CompositeKey.MlkemPublicKeyBytes()
+			slhdsaPub, _ := cfg.CompositeKey.SlhdsaPublicKeyBytes()
+			client.SlhdsaPublicKey = slhdsaPub
+		}
 
 		// Provide workspace tab sync data on connect.
 		queries := db.New(sqlDB)

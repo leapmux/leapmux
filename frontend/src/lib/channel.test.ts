@@ -5,6 +5,7 @@ import { chacha20poly1305 } from '@noble/ciphers/chacha.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   ChannelMessageSchema,
+  EncryptionMode,
   InnerMessageSchema,
   InnerRpcRequestSchema,
   InnerRpcResponseSchema,
@@ -183,6 +184,9 @@ function createMockTransport(mockWs: MockWebSocket): ChannelTransport {
         mlkemPublicKey: new Uint8Array(1568),
         slhdsaPublicKey: new Uint8Array(64),
       }
+    },
+    async getWorkerEncryptionMode(_workerId: string): Promise<EncryptionMode> {
+      return EncryptionMode.POST_QUANTUM
     },
     async openChannel(_workerId: string, _handshakePayload: Uint8Array) {
       const channelId = `ch-${Math.random().toString(36).slice(2, 8)}`
@@ -986,6 +990,194 @@ describe('channelManager', () => {
       // Close the channel — should not crash and should clean up.
       await mgr.closeChannel(channelId)
       expect(mgr.isOpen(channelId)).toBe(false)
+    })
+  })
+
+  describe('encryption modes', () => {
+    it('should open a channel with disabled encryption (passthrough)', async () => {
+      // Create a transport that returns DISABLED mode.
+      const disabledWs = new MockWebSocket()
+      const disabledTransport: ChannelTransport = {
+        async getWorkerPublicKey(_workerId: string): Promise<WorkerKeyBundle> {
+          return {
+            x25519PublicKey: new Uint8Array(32),
+            mlkemPublicKey: new Uint8Array(0),
+            slhdsaPublicKey: new Uint8Array(0),
+          }
+        },
+        async getWorkerEncryptionMode(_workerId: string): Promise<EncryptionMode> {
+          return EncryptionMode.DISABLED
+        },
+        async openChannel(_workerId: string, handshakePayload: Uint8Array) {
+          // Disabled mode sends empty handshake.
+          expect(handshakePayload.length).toBe(0)
+          const channelId = `ch-disabled-${Math.random().toString(36).slice(2, 8)}`
+          return { channelId, handshakePayload: new Uint8Array(0) }
+        },
+        async closeChannel(_channelId: string) {},
+        createWebSocket(): WebSocket {
+          return disabledWs as any
+        },
+        async confirmKeyPin(): Promise<KeyPinDecision> {
+          return 'accept'
+        },
+        getUserId(): string {
+          return 'test-user-id'
+        },
+      }
+
+      const disabledMgr = new ChannelManager(disabledTransport)
+
+      const openPromise = disabledMgr.openChannel('w-disabled')
+      await flushMicrotasks()
+      disabledWs.readyState = MockWebSocket.OPEN
+      disabledWs.simulateOpen()
+      await flushMicrotasks()
+
+      // Simulate claim accept — passthrough means plaintext is sent as-is.
+      const lastSent = disabledWs.sent.at(-1)
+      const sentMsg = decodeWireMessage(lastSent)
+      const chId = sentMsg.channelId
+
+      // In disabled mode, ciphertext IS the plaintext (passthrough).
+      const claimPlaintext = sentMsg.ciphertext
+      const claimEnvelope = fromBinary(InnerMessageSchema, claimPlaintext)
+      expect(claimEnvelope.kind.case).toBe('userIdClaim')
+
+      // Send back a successful claim response — also in plaintext.
+      const claimResp = create(UserIdClaimResponseSchema, { success: true })
+      const respEnv = create(InnerMessageSchema, {
+        kind: { case: 'userIdClaimResponse', value: claimResp },
+      })
+      const respPlaintext = toBinary(InnerMessageSchema, respEnv)
+      disabledWs.simulateMessage(encodeWireMessage(chId, respPlaintext))
+
+      const channelId = await openPromise
+      expect(disabledMgr.isOpen(channelId)).toBe(true)
+
+      // Send a call and verify it works with passthrough.
+      const callPromise = disabledMgr.call(channelId, 'TestMethod', new Uint8Array([1, 2, 3]))
+
+      const reqSentMsg = decodeWireMessage(disabledWs.sent.at(-1))
+      const reqPlaintext = reqSentMsg.ciphertext // passthrough: ciphertext = plaintext
+      const reqEnvelope = fromBinary(InnerMessageSchema, reqPlaintext)
+      expect(reqEnvelope.kind.case).toBe('request')
+
+      // Respond in plaintext.
+      const rpcResp = create(InnerRpcResponseSchema, {
+        payload: new Uint8Array([4, 5, 6]),
+        isError: false,
+      })
+      const rpcRespEnv = create(InnerMessageSchema, {
+        kind: { case: 'response', value: rpcResp },
+      })
+      const rpcRespPt = toBinary(InnerMessageSchema, rpcRespEnv)
+      disabledWs.simulateMessage(encodeWireMessage(channelId, rpcRespPt, { id: 1 }))
+
+      const resp = await callPromise
+      expect(resp.payload).toEqual(new Uint8Array([4, 5, 6]))
+
+      disabledMgr.closeAll()
+    })
+
+    it('should open a channel with classic encryption (X25519 only)', async () => {
+      // Create a transport that returns CLASSIC mode.
+      const classicWs = new MockWebSocket()
+      const classicSessions = new Map<string, { initiator: Session, responder: Session }>()
+
+      const classicTransport: ChannelTransport = {
+        async getWorkerPublicKey(_workerId: string): Promise<WorkerKeyBundle> {
+          return {
+            x25519PublicKey: new Uint8Array(32),
+            mlkemPublicKey: new Uint8Array(0),
+            slhdsaPublicKey: new Uint8Array(0),
+          }
+        },
+        async getWorkerEncryptionMode(_workerId: string): Promise<EncryptionMode> {
+          return EncryptionMode.CLASSIC
+        },
+        async openChannel(_workerId: string, _handshakePayload: Uint8Array) {
+          const channelId = `ch-classic-${Math.random().toString(36).slice(2, 8)}`
+          const pair = createTestSession()
+          classicSessions.set(channelId, pair)
+          return { channelId, handshakePayload: new Uint8Array(48) }
+        },
+        async closeChannel(_channelId: string) {},
+        createWebSocket(): WebSocket {
+          return classicWs as any
+        },
+        async confirmKeyPin(): Promise<KeyPinDecision> {
+          return 'accept'
+        },
+        getUserId(): string {
+          return 'test-user-id'
+        },
+      }
+
+      // Mock classic handshake functions.
+      function mockClassicHS1(_remoteX25519Pub: Uint8Array) {
+        return {
+          handshakeState: {} as any,
+          message1: new Uint8Array(48),
+        }
+      }
+
+      function mockClassicHS2(_state: any, _message2: Uint8Array) {
+        const entries = [...classicSessions.entries()]
+        const lastEntry = entries.at(-1)
+        if (!lastEntry)
+          throw new Error('No session registered')
+        return lastEntry[1].initiator
+      }
+
+      const classicMgr = new ChannelManager(classicTransport, {
+        classicHandshake1: mockClassicHS1,
+        classicHandshake2: mockClassicHS2,
+      })
+
+      const openPromise = classicMgr.openChannel('w-classic')
+      await flushMicrotasks()
+      classicWs.readyState = MockWebSocket.OPEN
+      classicWs.simulateOpen()
+      await flushMicrotasks()
+
+      // Simulate claim accept (encrypted with test session).
+      const lastSent = classicWs.sent.at(-1)
+      const sentMsg = decodeWireMessage(lastSent)
+      const chId = sentMsg.channelId
+      const pair = classicSessions.get(chId)!
+
+      pair.responder.receive.decrypt(sentMsg.ciphertext)
+
+      const claimResp = create(UserIdClaimResponseSchema, { success: true })
+      const claimEnv = create(InnerMessageSchema, {
+        kind: { case: 'userIdClaimResponse', value: claimResp },
+      })
+      const claimPt = toBinary(InnerMessageSchema, claimEnv)
+      const claimCt = pair.responder.send.encrypt(claimPt)
+      classicWs.simulateMessage(encodeWireMessage(chId, claimCt))
+
+      const channelId = await openPromise
+      expect(classicMgr.isOpen(channelId)).toBe(true)
+
+      // Verify a call works through the encrypted channel.
+      const callPromise = classicMgr.call(channelId, 'TestMethod', new Uint8Array([1, 2]))
+
+      const resp = create(InnerRpcResponseSchema, {
+        payload: new Uint8Array([3, 4]),
+        isError: false,
+      })
+      const respEnv = create(InnerMessageSchema, {
+        kind: { case: 'response', value: resp },
+      })
+      const respPt = toBinary(InnerMessageSchema, respEnv)
+      const respCt = pair.responder.send.encrypt(respPt)
+      classicWs.simulateMessage(encodeWireMessage(channelId, respCt, { id: 1 }))
+
+      const result = await callPromise
+      expect(result.payload).toEqual(new Uint8Array([3, 4]))
+
+      classicMgr.closeAll()
     })
   })
 

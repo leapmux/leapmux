@@ -20,7 +20,7 @@ import type {
   SendControlResponseResponse,
   UpdateAgentSettingsResponse,
 } from '~/generated/leapmux/v1/agent_pb'
-import type { InnerStreamMessage } from '~/generated/leapmux/v1/channel_pb'
+import type { EncryptionMode, InnerStreamMessage } from '~/generated/leapmux/v1/channel_pb'
 import type {
   ListDirectoryResponse,
   ReadFileResponse,
@@ -160,6 +160,11 @@ class BrowserChannelTransport implements ChannelTransport {
       mlkemPublicKey: resp.mlkemPublicKey,
       slhdsaPublicKey: resp.slhdsaPublicKey,
     }
+  }
+
+  async getWorkerEncryptionMode(workerId: string): Promise<EncryptionMode> {
+    const resp = await channelRpcClient.getWorkerEncryptionMode({ workerId })
+    return resp.encryptionMode
   }
 
   async openChannel(workerId: string, handshakePayload: Uint8Array): Promise<{ channelId: string, handshakePayload: Uint8Array }> {

@@ -211,6 +211,137 @@ func TestNeedsRekey(t *testing.T) {
 	assert.False(t, session.NeedsRekey(), "NeedsRekey should be false at nonce 0")
 }
 
+func TestClassicalHandshakeRoundtrip(t *testing.T) {
+	// Worker generates composite keypair (only X25519 used for classical).
+	workerKey, err := GenerateCompositeKeypair()
+	require.NoError(t, err)
+
+	// Initiator starts classical handshake.
+	hs, msg1, err := ClassicalInitiatorHandshake1(workerKey.X25519Public)
+	require.NoError(t, err)
+	assert.Equal(t, 48, len(msg1), "classical message1 should be 48 bytes")
+
+	// Worker processes msg1 and returns msg2.
+	msg2, workerSession, err := ClassicalResponderHandshake(workerKey.X25519Public, workerKey.X25519Private, msg1)
+	require.NoError(t, err)
+	assert.Equal(t, 48, len(msg2), "classical message2 should be 48 bytes")
+	assert.NotNil(t, workerSession)
+
+	// Initiator completes handshake.
+	initiatorSession, err := ClassicalInitiatorHandshake2(hs, msg2)
+	require.NoError(t, err)
+	assert.NotNil(t, initiatorSession)
+
+	// Test bidirectional encryption.
+	t.Run("initiator_to_responder", func(t *testing.T) {
+		plaintext := []byte("hello from initiator (classical)")
+		ciphertext, err := initiatorSession.Encrypt(plaintext)
+		require.NoError(t, err)
+		assert.NotEqual(t, plaintext, ciphertext)
+
+		decrypted, err := workerSession.Decrypt(ciphertext)
+		require.NoError(t, err)
+		assert.Equal(t, plaintext, decrypted)
+	})
+
+	t.Run("responder_to_initiator", func(t *testing.T) {
+		plaintext := []byte("hello from responder (classical)")
+		ciphertext, err := workerSession.Encrypt(plaintext)
+		require.NoError(t, err)
+		assert.NotEqual(t, plaintext, ciphertext)
+
+		decrypted, err := initiatorSession.Decrypt(ciphertext)
+		require.NoError(t, err)
+		assert.Equal(t, plaintext, decrypted)
+	})
+}
+
+func TestClassicalMultipleMessages(t *testing.T) {
+	workerKey, err := GenerateCompositeKeypair()
+	require.NoError(t, err)
+
+	hs, msg1, err := ClassicalInitiatorHandshake1(workerKey.X25519Public)
+	require.NoError(t, err)
+
+	msg2, workerSession, err := ClassicalResponderHandshake(workerKey.X25519Public, workerKey.X25519Private, msg1)
+	require.NoError(t, err)
+
+	initiatorSession, err := ClassicalInitiatorHandshake2(hs, msg2)
+	require.NoError(t, err)
+
+	for i := 0; i < 100; i++ {
+		msg := []byte(fmt.Sprintf("classical message %d from initiator", i))
+		ct, err := initiatorSession.Encrypt(msg)
+		require.NoError(t, err)
+		pt, err := workerSession.Decrypt(ct)
+		require.NoError(t, err)
+		assert.Equal(t, msg, pt)
+
+		msg = []byte(fmt.Sprintf("classical message %d from responder", i))
+		ct, err = workerSession.Encrypt(msg)
+		require.NoError(t, err)
+		pt, err = initiatorSession.Decrypt(ct)
+		require.NoError(t, err)
+		assert.Equal(t, msg, pt)
+	}
+}
+
+func TestClassicalWrongKey(t *testing.T) {
+	workerKey, err := GenerateCompositeKeypair()
+	require.NoError(t, err)
+
+	wrongKey, err := GenerateCompositeKeypair()
+	require.NoError(t, err)
+
+	// Initiator targets workerKey, but responder uses wrongKey's private key.
+	// The DH will produce different shared secrets, so decrypt fails.
+	hs, msg1, err := ClassicalInitiatorHandshake1(workerKey.X25519Public)
+	require.NoError(t, err)
+
+	msg2, _, err := ClassicalResponderHandshake(wrongKey.X25519Public, wrongKey.X25519Private, msg1)
+	// Responder decryption of message1 fails because DH(wrongPriv, initiatorEphemeral)
+	// produces a different key than DH(correctPriv, initiatorEphemeral).
+	require.Error(t, err)
+	_ = msg2
+	_ = hs
+}
+
+func TestPassthroughSession(t *testing.T) {
+	session := NewPassthroughSession()
+
+	t.Run("encrypt_is_copy", func(t *testing.T) {
+		plaintext := []byte("hello passthrough")
+		ciphertext, err := session.Encrypt(plaintext)
+		require.NoError(t, err)
+		assert.Equal(t, plaintext, ciphertext)
+		// Verify it's a copy, not the same slice.
+		ciphertext[0] = 0xFF
+		assert.NotEqual(t, plaintext[0], ciphertext[0])
+	})
+
+	t.Run("decrypt_is_copy", func(t *testing.T) {
+		data := []byte("hello passthrough decrypt")
+		decrypted, err := session.Decrypt(data)
+		require.NoError(t, err)
+		assert.Equal(t, data, decrypted)
+		decrypted[0] = 0xFF
+		assert.NotEqual(t, data[0], decrypted[0])
+	})
+
+	t.Run("needs_rekey_false", func(t *testing.T) {
+		assert.False(t, session.NeedsRekey())
+	})
+
+	t.Run("bidirectional", func(t *testing.T) {
+		msg := []byte("roundtrip through passthrough")
+		ct, err := session.Send.Encrypt(msg)
+		require.NoError(t, err)
+		pt, err := session.Receive.Decrypt(ct)
+		require.NoError(t, err)
+		assert.Equal(t, msg, pt)
+	})
+}
+
 func TestNonceLimitsConst(t *testing.T) {
 	assert.Equal(t, uint64(1<<31-1), SoftNonceLimit, "SoftNonceLimit should be 2^31-1")
 	assert.Equal(t, uint64(1<<32-1), HardNonceLimit, "HardNonceLimit should be 2^32-1")

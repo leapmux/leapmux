@@ -78,11 +78,13 @@ func setupWorkspaceTest(t *testing.T) *workspaceTestEnv {
 	})
 
 	_ = queries.CreateWorker(context.Background(), gendb.CreateWorkerParams{
-		ID:           "w1",
-		OrgID:        orgID,
-		AuthToken:    "tok",
-		RegisteredBy: userID,
-		PublicKey:    []byte("key"),
+		ID:              "w1",
+		OrgID:           orgID,
+		AuthToken:       "tok",
+		RegisteredBy:    userID,
+		PublicKey:       []byte("key"),
+		MlkemPublicKey:  []byte{},
+		SlhdsaPublicKey: []byte{},
 	})
 
 	token, _, err := auth.Login(context.Background(), queries, "testuser", "pass")

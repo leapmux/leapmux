@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/logging"
@@ -162,6 +163,10 @@ func runSolo(args []string, soloMode bool) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		encMode := leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM
+		if soloMode {
+			encMode = leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED
+		}
 		if err := worker.Run(ctx, worker.RunConfig{
 			HubURL:              "unix:" + socketPath,
 			DataDir:             workerDataDir,
@@ -171,6 +176,7 @@ func runSolo(args []string, soloMode bool) error {
 			Version:             version,
 			DBMaxConns:          hubCfg.DBMaxConns,
 			AgentStartupTimeout: hubCfg.AgentStartupTimeout(),
+			EncryptionMode:      encMode,
 		}); err != nil {
 			slog.Error("worker error", "error", err)
 		}

@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/knadh/koanf/v2"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
@@ -36,6 +38,26 @@ type Config struct {
 	MaxMessageSize             int    `koanf:"max_message_size" json:"max_message_size"`
 	AgentStartupTimeoutSeconds int    `koanf:"agent_startup_timeout_seconds" json:"agent_startup_timeout_seconds"`
 	LogLevel                   string `koanf:"log_level" json:"log_level"`
+	EncryptionMode             string `koanf:"encryption_mode" json:"encryption_mode"`
+}
+
+// EncryptionModeProto returns the protobuf EncryptionMode value.
+func (c *Config) EncryptionModeProto() leapmuxv1.EncryptionMode {
+	return ParseEncryptionMode(c.EncryptionMode)
+}
+
+// ParseEncryptionMode parses a string encryption mode to its protobuf enum value.
+func ParseEncryptionMode(s string) leapmuxv1.EncryptionMode {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "disabled":
+		return leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED
+	case "classic":
+		return leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC
+	case "post-quantum", "post_quantum", "pq", "":
+		return leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM
+	default:
+		return leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM
+	}
 }
 
 // AgentStartupTimeout returns the agent startup timeout as a duration.
@@ -49,15 +71,15 @@ func (c *Config) AgentStartupTimeout() time.Duration {
 
 // State holds the worker's persistent state (saved to disk after registration).
 type State struct {
-	WorkerID        string `json:"worker_id"`
-	AuthToken       string `json:"auth_token"`
-	OrgID           string `json:"org_id"`
-	PublicKey       string `json:"public_key,omitempty"`        // Base64-encoded X25519 public key
-	PrivateKey      string `json:"private_key,omitempty"`       // Base64-encoded X25519 private key
-	MlkemPublicKey  string `json:"mlkem_public_key,omitempty"`  // Base64-encoded ML-KEM-1024 decapsulation key
-	SlhdsaPublicKey string `json:"slhdsa_public_key,omitempty"` // Base64-encoded SLH-DSA public key
+	WorkerID         string `json:"worker_id"`
+	AuthToken        string `json:"auth_token"`
+	OrgID            string `json:"org_id"`
+	PublicKey        string `json:"public_key,omitempty"`         // Base64-encoded X25519 public key
+	PrivateKey       string `json:"private_key,omitempty"`        // Base64-encoded X25519 private key
+	MlkemPublicKey   string `json:"mlkem_public_key,omitempty"`   // Base64-encoded ML-KEM-1024 decapsulation key
+	SlhdsaPublicKey  string `json:"slhdsa_public_key,omitempty"`  // Base64-encoded SLH-DSA public key
 	SlhdsaPrivateKey string `json:"slhdsa_private_key,omitempty"` // Base64-encoded SLH-DSA private key
-	MlkemPrivateKey string `json:"mlkem_private_key,omitempty"` // Base64-encoded ML-KEM-1024 decapsulation key (serialized)
+	MlkemPrivateKey  string `json:"mlkem_private_key,omitempty"`  // Base64-encoded ML-KEM-1024 decapsulation key (serialized)
 }
 
 // EnsureCompositeKeypair generates a composite keypair if one doesn't exist.
@@ -122,6 +144,7 @@ func Load(args []string) (*Config, bool, error) {
 	fs.Int("max-message-size", 0, "maximum reassembled channel message size in bytes (default 16 MiB)")
 	fs.Int("agent-startup-timeout-seconds", DefaultAgentStartupTimeoutSeconds, "agent startup timeout in seconds")
 	fs.String("log-level", defaultLogLevel, "log level (debug, info, warn, error)")
+	fs.String("encryption-mode", "post-quantum", "encryption mode (disabled, classic, post-quantum)")
 	showVersion := fs.Bool("version", false, "print version and exit")
 
 	if err := fs.Parse(args); err != nil {
@@ -141,6 +164,7 @@ func Load(args []string) (*Config, bool, error) {
 		"max-message-size":              "max_message_size",
 		"agent-startup-timeout-seconds": "agent_startup_timeout_seconds",
 		"log-level":                     "log_level",
+		"encryption-mode":               "encryption_mode",
 	}
 
 	defaults := map[string]interface{}{
@@ -151,6 +175,7 @@ func Load(args []string) (*Config, bool, error) {
 		"max_message_size":              0,
 		"agent_startup_timeout_seconds": DefaultAgentStartupTimeoutSeconds,
 		"log_level":                     defaultLogLevel,
+		"encryption_mode":               "post-quantum",
 	}
 
 	k := koanf.New(".")

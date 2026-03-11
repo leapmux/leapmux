@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/config"
@@ -96,6 +97,7 @@ func runWorker(args []string) error {
 		"worker_id", state.WorkerID,
 		"hub", cfg.HubURL,
 		"key_fingerprint", compositeKey.Fingerprint(),
+		"encryption_mode", cfg.EncryptionMode,
 	)
 
 	// Open the Worker-local database for persistent state.
@@ -119,7 +121,8 @@ func runWorker(args []string) error {
 	homeDir, _ := os.UserHomeDir()
 
 	// Set up E2EE channel manager with service handlers.
-	channelMgr := channel.NewManager(compositeKey, client.Send)
+	encMode := cfg.EncryptionModeProto()
+	channelMgr := channel.NewManager(compositeKey, encMode, client.Send)
 	if cfg.MaxMessageSize > 0 {
 		channelMgr.SetMaxMessageSize(cfg.MaxMessageSize)
 	}
@@ -152,10 +155,14 @@ func runWorker(args []string) error {
 	})
 
 	client.SetChannelMgr(channelMgr)
+	client.EncryptionMode = encMode
 	client.PublicKey = compositeKey.X25519Public
-	client.MlkemPublicKey = compositeKey.MlkemPublicKeyBytes()
-	slhdsaPub, _ := compositeKey.SlhdsaPublicKeyBytes()
-	client.SlhdsaPublicKey = slhdsaPub
+	if encMode != leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC &&
+		encMode != leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED {
+		client.MlkemPublicKey = compositeKey.MlkemPublicKeyBytes()
+		slhdsaPub, _ := compositeKey.SlhdsaPublicKeyBytes()
+		client.SlhdsaPublicKey = slhdsaPub
+	}
 
 	client.OnDeregister = func() {
 		slog.Info("worker deregistered by hub, clearing state and shutting down")

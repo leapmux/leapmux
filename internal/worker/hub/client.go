@@ -44,6 +44,8 @@ type Client struct {
 	MlkemPublicKey []byte
 	// SlhdsaPublicKey is the Worker's SLH-DSA-SHAKE-256f public key.
 	SlhdsaPublicKey []byte
+	// EncryptionMode is the Worker's encryption mode.
+	EncryptionMode leapmuxv1.EncryptionMode
 
 	// TabSyncProvider returns the current tab state for WorkspaceTabsSync
 	// on connect. Set by the runner after initializing the service context.
@@ -217,6 +219,7 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 				PublicKey:       c.PublicKey,
 				MlkemPublicKey:  c.MlkemPublicKey,
 				SlhdsaPublicKey: c.SlhdsaPublicKey,
+				EncryptionMode:  c.EncryptionMode,
 			},
 		},
 	}); err != nil {

@@ -56,7 +56,7 @@ func setupTestManager(t *testing.T) (*Manager, *noiseutil.CompositeKeypair, *col
 	require.NoError(t, err)
 
 	sender := newCollectSender()
-	mgr := NewManager(ck, sender.send)
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send)
 	return mgr, ck, sender
 }
 
@@ -472,7 +472,7 @@ func TestHandleMessage_NonBlocking(t *testing.T) {
 	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 
-	mgr := NewManager(ck, blockingSend)
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, blockingSend)
 
 	// Set up a dispatcher with a handler that sends a response.
 	dispatcher := NewDispatcher()

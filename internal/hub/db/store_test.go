@@ -120,11 +120,13 @@ func TestWorkers_CRUD(t *testing.T) {
 	workerID := makeID()
 	token := makeID()
 	err := q.CreateWorker(ctx, gendb.CreateWorkerParams{
-		ID:           workerID,
-		OrgID:        orgID,
-		AuthToken:    token,
-		RegisteredBy: userID,
-		PublicKey:    []byte{},
+		ID:              workerID,
+		OrgID:           orgID,
+		AuthToken:       token,
+		RegisteredBy:    userID,
+		PublicKey:       []byte{},
+		MlkemPublicKey:  []byte{},
+		SlhdsaPublicKey: []byte{},
 	})
 	require.NoError(t, err)
 
@@ -179,16 +181,18 @@ func TestRegistrations(t *testing.T) {
 	_ = q.CreateWorker(ctx, gendb.CreateWorkerParams{
 		ID: workerID, OrgID: orgID,
 		AuthToken: makeID(), RegisteredBy: userID,
-		PublicKey: []byte{},
+		PublicKey: []byte{}, MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
 	})
 
 	regID := makeID()
 	expires := time.Now().Add(10 * time.Minute).UTC()
 	err := q.CreateRegistration(ctx, gendb.CreateRegistrationParams{
-		ID:        regID,
-		Version:   "0.1.0",
-		PublicKey: []byte("test-public-key"),
-		ExpiresAt: expires,
+		ID:              regID,
+		Version:         "0.1.0",
+		PublicKey:       []byte("test-public-key"),
+		MlkemPublicKey:  []byte("test-mlkem-key"),
+		SlhdsaPublicKey: []byte("test-slhdsa-key"),
+		ExpiresAt:       expires,
 	})
 	require.NoError(t, err)
 
@@ -221,7 +225,7 @@ func TestRegistrations_Expire(t *testing.T) {
 	expires := time.Now().Add(-1 * time.Minute).UTC()
 	_ = q.CreateRegistration(ctx, gendb.CreateRegistrationParams{
 		ID: regID, Version: "v",
-		PublicKey: []byte("test-key"),
+		PublicKey: []byte("test-key"), MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
 		ExpiresAt: expires,
 	})
 

@@ -11,6 +11,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	hubdb "github.com/leapmux/leapmux/internal/hub/db"
 	db "github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/workermgr"
 )
 
 // setupSyncTest creates a WorkerConnectorService with an in-memory hub DB
@@ -213,4 +214,89 @@ func TestHandleWorkspaceTabsSync_EmptyHubState(t *testing.T) {
 	tabs, err := q.ListWorkspaceTabsByWorker(ctx, "w1")
 	require.NoError(t, err)
 	assert.Empty(t, tabs, "hub should not gain tabs from worker-only entries")
+}
+
+// --- Encryption mode validation tests ---
+
+func setupEncryptionModeTest(t *testing.T, soloMode bool) (*WorkerConnectorService, *workermgr.Conn) {
+	t.Helper()
+	svc, _ := setupSyncTest(t, []string{"w1"}, nil)
+	svc.soloMode = soloMode
+	conn := &workermgr.Conn{WorkerID: "w1", OrgID: "org-1"}
+	return svc, conn
+}
+
+func TestProcessWorkerMessage_DisabledModeRejectedInNonSolo(t *testing.T) {
+	svc, conn := setupEncryptionModeTest(t, false)
+	ctx := context.Background()
+
+	err := svc.processWorkerMessage(ctx, conn, "w1", &leapmuxv1.ConnectRequest{
+		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
+			Heartbeat: &leapmuxv1.Heartbeat{
+				EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED,
+			},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "solo mode")
+}
+
+func TestProcessWorkerMessage_DisabledModeAllowedInSolo(t *testing.T) {
+	svc, conn := setupEncryptionModeTest(t, true)
+	ctx := context.Background()
+
+	err := svc.processWorkerMessage(ctx, conn, "w1", &leapmuxv1.ConnectRequest{
+		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
+			Heartbeat: &leapmuxv1.Heartbeat{
+				EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED,
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED, conn.EncryptionMode)
+}
+
+func TestProcessWorkerMessage_ClassicModeAccepted(t *testing.T) {
+	svc, conn := setupEncryptionModeTest(t, false)
+	ctx := context.Background()
+
+	err := svc.processWorkerMessage(ctx, conn, "w1", &leapmuxv1.ConnectRequest{
+		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
+			Heartbeat: &leapmuxv1.Heartbeat{
+				EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, conn.EncryptionMode)
+}
+
+func TestProcessWorkerMessage_PostQuantumModeAccepted(t *testing.T) {
+	svc, conn := setupEncryptionModeTest(t, false)
+	ctx := context.Background()
+
+	err := svc.processWorkerMessage(ctx, conn, "w1", &leapmuxv1.ConnectRequest{
+		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
+			Heartbeat: &leapmuxv1.Heartbeat{
+				EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, conn.EncryptionMode)
+}
+
+func TestProcessWorkerMessage_UnspecifiedDefaultsToPostQuantum(t *testing.T) {
+	svc, conn := setupEncryptionModeTest(t, false)
+	ctx := context.Background()
+
+	err := svc.processWorkerMessage(ctx, conn, "w1", &leapmuxv1.ConnectRequest{
+		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
+			Heartbeat: &leapmuxv1.Heartbeat{
+				EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED,
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, conn.EncryptionMode)
 }

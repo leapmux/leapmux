@@ -76,6 +76,41 @@ func (s *ChannelService) GetWorkerPublicKey(
 	}), nil
 }
 
+func (s *ChannelService) GetWorkerEncryptionMode(
+	ctx context.Context,
+	req *connect.Request[leapmuxv1.GetWorkerEncryptionModeRequest],
+) (*connect.Response[leapmuxv1.GetWorkerEncryptionModeResponse], error) {
+	user, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workerID := req.Msg.GetWorkerId()
+	if workerID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))
+	}
+
+	// Verify user has access to this worker.
+	if _, err := s.verifyWorkerAccess(ctx, user, workerID); err != nil {
+		return nil, err
+	}
+
+	// Read encryption mode from the live connection (not DB).
+	conn := s.workerMgr.Get(workerID)
+	if conn == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("worker is offline"))
+	}
+
+	encMode := conn.EncryptionMode
+	if encMode == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED {
+		encMode = leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM
+	}
+
+	return connect.NewResponse(&leapmuxv1.GetWorkerEncryptionModeResponse{
+		EncryptionMode: encMode,
+	}), nil
+}
+
 func (s *ChannelService) OpenChannel(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.OpenChannelRequest],
@@ -90,9 +125,7 @@ func (s *ChannelService) OpenChannel(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))
 	}
 
-	if len(req.Msg.GetHandshakePayload()) == 0 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("handshake_payload is required"))
-	}
+	// handshake_payload may be empty for disabled encryption mode (solo/loopback).
 
 	// Verify user has access to this worker and get the worker's org.
 	worker, err := s.verifyWorkerAccess(ctx, user, workerID)
