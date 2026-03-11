@@ -1,20 +1,18 @@
 import type { Component } from 'solid-js'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
-import RefreshCw from 'lucide-solid/icons/refresh-cw'
-import { createEffect, createSignal, For, on, onMount, Show } from 'solid-js'
-import { workerClient } from '~/api/clients'
+import { createEffect, createSignal, For, on, Show } from 'solid-js'
 import { apiLoadingTimeoutMs } from '~/api/transport'
 import * as workerRpc from '~/api/workerRpc'
 import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
 import { isTerminalCreateDisabled } from '~/components/shell/dialogValidation'
+import { DirectorySelector } from '~/components/shell/DirectorySelector'
+import { WorkerSelector } from '~/components/shell/WorkerSelector'
 import { WorktreeOptions } from '~/components/shell/WorktreeOptions'
-import { DirectoryTree } from '~/components/tree/DirectoryTree'
-import { useOrg } from '~/context/OrgContext'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
-import { createWorkerInfoStore } from '~/stores/workerInfo.store'
+import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
 import { spinner } from '~/styles/animations.css'
-import { errorText, labelRow, refreshButton, spinning, treeContainer } from '~/styles/shared.css'
+import { errorText } from '~/styles/shared.css'
 
 interface NewTerminalDialogProps {
   workspaceId: string
@@ -25,75 +23,18 @@ interface NewTerminalDialogProps {
 }
 
 export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
-  const org = useOrg()
-  const workerInfoStore = createWorkerInfoStore()
-  const [workers, setWorkers] = createSignal<import('~/generated/leapmux/v1/worker_pb').Worker[]>([])
-  const [workerId, setWorkerId] = createSignal('')
-  const [workingDir, setWorkingDir] = createSignal(props.defaultWorkingDir ?? '')
+  const state = createWorkerDialogState({
+    preselectedWorkerId: props.defaultWorkerId,
+    defaultWorkingDir: props.defaultWorkingDir,
+    resolveWorktree: true,
+  })
   const [shells, setShells] = createSignal<string[]>([])
   const [shell, setShell] = createSignal('')
   const [shellsLoading, setShellsLoading] = createSignal(false)
   const submitting = createLoadingSignal(apiLoadingTimeoutMs())
-  const [error, setError] = createSignal<string | null>(null)
-  const [refreshing, setRefreshing] = createSignal(false)
-  const [createWorktree, setCreateWorktree] = createSignal(false)
-  const [worktreeBranch, setWorktreeBranch] = createSignal('')
-  const [worktreeBranchError, setWorktreeBranchError] = createSignal<string | null>(null)
-
-  const fetchWorkers = async () => {
-    try {
-      const resp = await workerClient.listWorkers({ orgId: org.orgId() })
-      const online = resp.workers.filter(b => b.online)
-      setWorkers(online)
-      if (online.length > 0 && !workerId()) {
-        setWorkerId(online[0].id)
-      }
-      // Fetch system info for homeDir via E2EE.
-      for (const w of online) {
-        workerInfoStore.fetchWorkerInfo(w.id)
-      }
-      return online.length > 0
-    }
-    catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load workers')
-      return false
-    }
-  }
-
-  // Fetch on mount only
-  onMount(async () => {
-    await fetchWorkers()
-    // Pre-select worker if specified and online
-    if (props.defaultWorkerId) {
-      const match = workers().find(b => b.id === props.defaultWorkerId)
-      if (match) {
-        setWorkerId(match.id)
-      }
-    }
-  })
-
-  // If the default working directory is a worktree, resolve to the original repo root.
-  {
-    let resolved = false
-    createEffect(on(() => workerId(), async (wid) => {
-      if (resolved || !wid || !props.defaultWorkingDir)
-        return
-      resolved = true
-      try {
-        const resp = await workerRpc.getGitInfo(wid, {
-          workerId: wid,
-          path: props.defaultWorkingDir,
-          orgId: org.orgId(),
-        })
-        if (resp.isWorktreeRoot && resp.repoRoot)
-          setWorkingDir(resp.repoRoot)
-      }
-      catch {}
-    }))
-  }
 
   // Fetch available shells when worker changes
-  createEffect(on(() => workerId(), async (id) => {
+  createEffect(on(() => state.workerId(), async (id) => {
     if (!id)
       return
 
@@ -102,7 +43,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
     setShell('')
     try {
       const resp = await workerRpc.listAvailableShells(id, {
-        orgId: org.orgId(),
+        orgId: state.org.orgId(),
         workspaceId: props.workspaceId,
         workerId: id,
       })
@@ -110,42 +51,36 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
       setShell(resp.defaultShell || (resp.shells.length > 0 ? resp.shells[0] : ''))
     }
     catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load shells')
+      state.setError(e instanceof Error ? e.message : 'Failed to load shells')
     }
     finally {
       setShellsLoading(false)
     }
   }))
 
-  const handleRefresh = async () => {
-    setRefreshing(true)
-    await fetchWorkers()
-    setRefreshing(false)
-  }
-
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
-    if (!workerId() || !workingDir().trim() || !shell())
+    if (!state.workerId() || !state.workingDir().trim() || !shell())
       return
 
     submitting.start()
-    setError(null)
+    state.setError(null)
     try {
-      const resp = await workerRpc.openTerminal(workerId(), {
-        orgId: org.orgId(),
+      const resp = await workerRpc.openTerminal(state.workerId(), {
+        orgId: state.org.orgId(),
         workspaceId: props.workspaceId,
         cols: 80,
         rows: 24,
-        workingDir: workingDir(),
+        workingDir: state.workingDir(),
         shell: shell(),
-        workerId: workerId(),
-        createWorktree: createWorktree(),
-        worktreeBranch: worktreeBranch(),
+        workerId: state.workerId(),
+        createWorktree: state.createWorktree(),
+        worktreeBranch: state.worktreeBranch(),
       })
-      props.onCreated(resp.terminalId, workerId(), workingDir())
+      props.onCreated(resp.terminalId, state.workerId(), state.workingDir())
     }
     catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create terminal')
+      state.setError(err instanceof Error ? err.message : 'Failed to create terminal')
     }
     finally {
       submitting.stop()
@@ -157,65 +92,14 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
       <form onSubmit={handleSubmit}>
         <section>
           <div class="vstack gap-4">
-            <label>
-              <div class={labelRow}>
-                Worker
-                <button
-                  type="button"
-                  class={refreshButton}
-                  onClick={handleRefresh}
-                  disabled={refreshing()}
-                  title="Refresh workers"
-                >
-                  <Icon icon={RefreshCw} size="sm" class={refreshing() ? spinning : ''} />
-                </button>
-              </div>
-              <select
-                value={workerId()}
-                onChange={e => setWorkerId(e.currentTarget.value)}
-              >
-                <Show when={workers().length === 0}>
-                  <option value="">No workers online</option>
-                </Show>
-                <For each={workers()}>
-                  {(b) => {
-                    const info = () => workerInfoStore.workerInfo(b.id)
-                    const label = () => {
-                      const i = info()
-                      if (!i)
-                        return b.id
-                      const details = [i.version, i.os, i.arch].filter(Boolean).join(', ')
-                      return details ? `${i.name} (${details})` : i.name
-                    }
-                    return <option value={b.id}>{label()}</option>
-                  }}
-                </For>
-              </select>
-            </label>
-            <label>
-              Working Directory
-              <Show when={workerId()}>
-                <div class={treeContainer}>
-                  <DirectoryTree
-                    workerId={workerId()}
-                    selectedPath={workingDir()}
-                    onSelect={setWorkingDir}
-                    rootPath="~"
-                    homeDir={workerInfoStore.getHomeDir(workerId())}
-                  />
-                </div>
-              </Show>
-            </label>
-            <Show when={workerId()}>
+            <WorkerSelector state={state} />
+            <DirectorySelector state={state} />
+            <Show when={state.workerId()}>
               <WorktreeOptions
-                workerId={workerId()}
-                selectedPath={workingDir()}
-                homeDir={workerInfoStore.getHomeDir(workerId())}
-                onWorktreeChange={(create, branch, branchError) => {
-                  setCreateWorktree(create)
-                  setWorktreeBranch(branch)
-                  setWorktreeBranchError(branchError)
-                }}
+                workerId={state.workerId()}
+                selectedPath={state.workingDir()}
+                homeDir={state.workerInfoStore.getHomeDir(state.workerId())}
+                onWorktreeChange={state.handleWorktreeChange}
               />
             </Show>
             <label>
@@ -236,8 +120,8 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
                 </For>
               </select>
             </label>
-            <Show when={error()}>
-              <div class={errorText}>{error()}</div>
+            <Show when={state.error()}>
+              <div class={errorText}>{state.error()}</div>
             </Show>
           </div>
         </section>
@@ -247,7 +131,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
           </button>
           <button
             type="submit"
-            disabled={isTerminalCreateDisabled({ submitting: submitting.loading(), workerId: workerId(), workingDir: workingDir(), shell: shell(), createWorktree: createWorktree(), worktreeBranchError: worktreeBranchError() })}
+            disabled={isTerminalCreateDisabled({ submitting: submitting.loading(), workerId: state.workerId(), workingDir: state.workingDir(), shell: shell(), createWorktree: state.createWorktree(), worktreeBranchError: state.worktreeBranchError() })}
           >
             <Show when={submitting.loading()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
             {submitting.loading() ? 'Creating...' : 'Create'}
