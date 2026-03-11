@@ -1,5 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { node, nodeSelected } from './sharedTree.css'
+import { node } from './sharedTree.css'
 
 export {
   chevron,
@@ -98,6 +98,12 @@ export const nodeActions = style({
   flexShrink: 0,
   position: 'sticky',
   right: 'var(--space-2)',
+  backgroundColor: 'transparent',
+})
+
+/** Give nodeActions a background on hover so it covers scrolled text underneath. */
+globalStyle(`${node}:hover ${nodeActions}`, {
+  backgroundColor: 'inherit',
 })
 
 export const nodeMenuTrigger = style({
@@ -107,21 +113,6 @@ export const nodeMenuTrigger = style({
     [`${node}:hover &`]: { opacity: 1 },
     '&[aria-expanded="true"]': { opacity: 1 },
   },
-})
-
-/** Give nodeActions a background on hover so it covers scrolled text underneath. */
-globalStyle(`${node}:hover ${nodeActions}`, {
-  backgroundColor: 'var(--card)',
-})
-
-/** Match selected node background. */
-globalStyle(`${node}${nodeSelected} ${nodeActions}`, {
-  backgroundColor: 'var(--secondary)',
-})
-
-/** Match selected + hover node background. */
-globalStyle(`${node}${nodeSelected}:hover ${nodeActions}`, {
-  backgroundColor: 'var(--muted)',
 })
 
 export const pathInput = style({

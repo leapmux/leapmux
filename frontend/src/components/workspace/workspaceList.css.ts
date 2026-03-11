@@ -171,21 +171,12 @@ export const itemActions = style({
   marginLeft: 'auto',
   position: 'sticky',
   right: 'var(--space-2)',
+  backgroundColor: 'transparent',
 })
 
 /** Give itemActions a background on hover so it covers scrolled text underneath. */
 globalStyle(`${item}:hover:not(${itemDropTarget}) ${itemActions}`, {
-  backgroundColor: 'var(--card)',
-})
-
-/** Match active item background. */
-globalStyle(`${item}${itemActive}:not(${itemDropTarget}) ${itemActions}`, {
-  backgroundColor: 'var(--secondary)',
-})
-
-/** Match active + hover item background. */
-globalStyle(`${item}${itemActive}:hover:not(${itemDropTarget}) ${itemActions}`, {
-  backgroundColor: 'var(--muted)',
+  backgroundColor: 'inherit',
 })
 
 export const itemMenuTrigger = style({
