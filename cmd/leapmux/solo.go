@@ -53,7 +53,7 @@ func runSolo(args []string, soloMode bool) error {
 		DefaultConfigDir:  defaultConfigDir,
 		DefaultConfigFile: defaultConfigFile,
 		FlagSetName:       "leapmux",
-		CLIFlags:          []string{"addr", "data-dir", "dev-frontend", "db-max-conns", "max-message-size", "api-timeout-seconds", "agent-startup-timeout-seconds", "worktree-create-timeout-seconds", "log-level"},
+		CLIFlags:          []string{"addr", "data-dir", "dev-frontend", "db-max-conns", "max-message-size", "max-incomplete-chunked", "api-timeout-seconds", "agent-startup-timeout-seconds", "worktree-create-timeout-seconds", "log-level"},
 		ExtraFlags: []hubconfig.ExtraFlagDef{
 			{Name: "encryption-mode", KoanfKey: "encryption_mode", Usage: "encryption mode (classic, post-quantum)", StrDefault: "post-quantum"},
 		},
@@ -167,16 +167,17 @@ func runSolo(args []string, soloMode bool) error {
 	go func() {
 		defer wg.Done()
 		if err := worker.Run(ctx, worker.RunConfig{
-			HubURL:              "unix:" + socketPath,
-			DataDir:             workerDataDir,
-			AuthToken:           state.AuthToken,
-			CompositeKey:        compositeKey,
-			WorkerID:            state.WorkerID,
-			Version:             version,
-			DBMaxConns:          hubCfg.DBMaxConns,
-			MaxMessageSize:      hubCfg.MaxMessageSize,
-			AgentStartupTimeout: hubCfg.AgentStartupTimeout(),
-			EncryptionMode:      workerconfig.ParseEncryptionMode(hubCfg.Extras["encryption_mode"]),
+			HubURL:               "unix:" + socketPath,
+			DataDir:              workerDataDir,
+			AuthToken:            state.AuthToken,
+			CompositeKey:         compositeKey,
+			WorkerID:             state.WorkerID,
+			Version:              version,
+			DBMaxConns:           hubCfg.DBMaxConns,
+			MaxMessageSize:       hubCfg.MaxMessageSize,
+			MaxIncompleteChunked: hubCfg.MaxIncompleteChunked,
+			AgentStartupTimeout:  hubCfg.AgentStartupTimeout(),
+			EncryptionMode:       workerconfig.ParseEncryptionMode(hubCfg.Extras["encryption_mode"]),
 		}); err != nil {
 			slog.Error("worker error", "error", err)
 		}

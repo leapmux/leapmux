@@ -51,12 +51,16 @@ func (c *collectSender) waitForMessages(n int) []*leapmuxv1.ConnectRequest {
 }
 
 func setupTestManager(t *testing.T) (*Manager, *noiseutil.CompositeKeypair, *collectSender) {
+	return setupTestManagerWith(t, 0, 0)
+}
+
+func setupTestManagerWith(t *testing.T, maxMessageSize, maxIncompleteChunked int) (*Manager, *noiseutil.CompositeKeypair, *collectSender) {
 	t.Helper()
 	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 
 	sender := newCollectSender()
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send)
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, maxMessageSize, maxIncompleteChunked, nil)
 	return mgr, ck, sender
 }
 
@@ -472,7 +476,7 @@ func TestHandleMessage_NonBlocking(t *testing.T) {
 	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, blockingSend)
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, blockingSend, 0, 0, nil)
 
 	// Set up a dispatcher with a handler that sends a response.
 	dispatcher := NewDispatcher()
@@ -802,9 +806,7 @@ func TestReassembly_E2E(t *testing.T) {
 }
 
 func TestReassembly_MaxSizeExceeded(t *testing.T) {
-	mgr, kp, sender := setupTestManager(t)
-	// Set a small max message size to trigger the limit.
-	mgr.SetMaxMessageSize(100)
+	mgr, kp, sender := setupTestManagerWith(t, 100, 0)
 
 	dispatcher := NewDispatcher()
 	mgr.SetDispatcher(dispatcher)
@@ -846,8 +848,7 @@ func TestReassembly_MaxSizeExceeded(t *testing.T) {
 }
 
 func TestReassembly_MaxIncompleteExceeded(t *testing.T) {
-	mgr, kp, sender := setupTestManager(t)
-	mgr.SetMaxIncompleteChunked(2)
+	mgr, kp, sender := setupTestManagerWith(t, 0, 2)
 
 	dispatcher := NewDispatcher()
 	mgr.SetDispatcher(dispatcher)
@@ -899,8 +900,7 @@ func TestReassembly_MaxIncompleteExceeded(t *testing.T) {
 }
 
 func TestSendEncrypted_MaxMessageSizeExceeded(t *testing.T) {
-	mgr, kp, sender := setupTestManager(t)
-	mgr.SetMaxMessageSize(100) // Very small limit.
+	mgr, kp, sender := setupTestManagerWith(t, 100, 0) // Very small limit.
 
 	// Register a handler that tries to send a response larger than the limit.
 	dispatcher := NewDispatcher()
@@ -931,8 +931,7 @@ func TestSendEncrypted_MaxMessageSizeExceeded(t *testing.T) {
 }
 
 func TestReassembly_FinalChunkExceedsMaxSize(t *testing.T) {
-	mgr, kp, sender := setupTestManager(t)
-	mgr.SetMaxMessageSize(100)
+	mgr, kp, sender := setupTestManagerWith(t, 100, 0)
 
 	dispatcher := NewDispatcher()
 	mgr.SetDispatcher(dispatcher)
@@ -978,8 +977,7 @@ func TestReassembly_FinalChunkExceedsMaxSize(t *testing.T) {
 }
 
 func TestReassembly_ErrorResponseContent(t *testing.T) {
-	mgr, kp, sender := setupTestManager(t)
-	mgr.SetMaxMessageSize(100)
+	mgr, kp, sender := setupTestManagerWith(t, 100, 0)
 
 	dispatcher := NewDispatcher()
 	mgr.SetDispatcher(dispatcher)
@@ -1028,8 +1026,7 @@ func TestReassembly_ErrorResponseContent(t *testing.T) {
 }
 
 func TestReassembly_MaxIncompleteErrorResponse(t *testing.T) {
-	mgr, kp, sender := setupTestManager(t)
-	mgr.SetMaxIncompleteChunked(2)
+	mgr, kp, sender := setupTestManagerWith(t, 0, 2)
 
 	dispatcher := NewDispatcher()
 	mgr.SetDispatcher(dispatcher)

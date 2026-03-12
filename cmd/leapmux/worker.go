@@ -122,11 +122,8 @@ func runWorker(args []string) error {
 
 	// Set up E2EE channel manager with service handlers.
 	encMode := cfg.EncryptionModeProto()
-	channelMgr := channel.NewManager(compositeKey, encMode, client.Send)
-	if cfg.MaxMessageSize > 0 {
-		channelMgr.SetMaxMessageSize(cfg.MaxMessageSize)
-	}
 
+	// Create the service context first so the close callback can reference it.
 	svcCtx := service.NewContext(
 		sqlDB,
 		client.AgentManager(),
@@ -134,6 +131,13 @@ func runWorker(args []string) error {
 		homeDir,
 		cfg.DataDir,
 	)
+
+	channelMgr := channel.NewManager(
+		compositeKey, encMode, client.Send,
+		cfg.MaxMessageSize, cfg.MaxIncompleteChunked,
+		func(channelID string) { svcCtx.Watchers.UnwatchAll(channelID) },
+	)
+
 	svcCtx.WorkerID = state.WorkerID
 	svcCtx.Name = cfg.Name
 	svcCtx.Version = version
@@ -148,11 +152,6 @@ func runWorker(args []string) error {
 	dispatcher := channel.NewDispatcher()
 	service.RegisterAll(dispatcher, svcCtx)
 	channelMgr.SetDispatcher(dispatcher)
-
-	// Clean up watchers when a channel closes.
-	channelMgr.SetCloseCallback(func(channelID string) {
-		svcCtx.Watchers.UnwatchAll(channelID)
-	})
 
 	client.SetChannelMgr(channelMgr)
 	client.EncryptionMode = encMode

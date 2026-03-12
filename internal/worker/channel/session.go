@@ -45,31 +45,30 @@ type Manager struct {
 }
 
 // NewManager creates a new channel Manager.
-func NewManager(compositeKey *noiseutil.CompositeKeypair, encryptionMode leapmuxv1.EncryptionMode, sendFn SendFunc) *Manager {
+// Pass 0 for maxMessageSize or maxIncompleteChunked to use defaults.
+func NewManager(
+	compositeKey *noiseutil.CompositeKeypair,
+	encryptionMode leapmuxv1.EncryptionMode,
+	sendFn SendFunc,
+	maxMessageSize int,
+	maxIncompleteChunked int,
+	closeCallback CloseCallback,
+) *Manager {
+	if maxMessageSize <= 0 {
+		maxMessageSize = DefaultMaxMessageSize
+	}
+	if maxIncompleteChunked <= 0 {
+		maxIncompleteChunked = DefaultMaxIncompleteChunked
+	}
 	return &Manager{
 		sessions:             make(map[string]*channelSession),
 		compositeKey:         compositeKey,
 		encryptionMode:       encryptionMode,
 		sendFn:               sendFn,
-		maxMessageSize:       DefaultMaxMessageSize,
-		maxIncompleteChunked: DefaultMaxIncompleteChunked,
+		maxMessageSize:       maxMessageSize,
+		maxIncompleteChunked: maxIncompleteChunked,
+		closeCallback:        closeCallback,
 	}
-}
-
-// SetMaxMessageSize sets the maximum reassembled message size.
-func (m *Manager) SetMaxMessageSize(size int) {
-	m.maxMessageSize = size
-}
-
-// SetMaxIncompleteChunked sets the maximum number of in-flight chunked
-// sequences per channel.
-func (m *Manager) SetMaxIncompleteChunked(n int) {
-	m.maxIncompleteChunked = n
-}
-
-// SetCloseCallback registers a callback for channel close events.
-func (m *Manager) SetCloseCallback(cb CloseCallback) {
-	m.closeCallback = cb
 }
 
 // SetDispatcher sets the inner RPC dispatcher for handling decrypted requests.

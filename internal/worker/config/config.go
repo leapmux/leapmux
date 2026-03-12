@@ -36,6 +36,7 @@ type Config struct {
 	DataDir                    string `koanf:"data_dir" json:"data_dir"`
 	DBMaxConns                 int    `koanf:"db_max_conns" json:"db_max_conns"`
 	MaxMessageSize             int    `koanf:"max_message_size" json:"max_message_size"`
+	MaxIncompleteChunked       int    `koanf:"max_incomplete_chunked" json:"max_incomplete_chunked"`
 	AgentStartupTimeoutSeconds int    `koanf:"agent_startup_timeout_seconds" json:"agent_startup_timeout_seconds"`
 	LogLevel                   string `koanf:"log_level" json:"log_level"`
 	EncryptionMode             string `koanf:"encryption_mode" json:"encryption_mode"`
@@ -140,6 +141,7 @@ func Load(args []string) (*Config, bool, error) {
 	fs.String("data-dir", ".", "data directory")
 	fs.Int("db-max-conns", workerdb.DefaultMaxConns, "maximum number of open database connections")
 	fs.Int("max-message-size", 0, "maximum reassembled channel message size in bytes (default 16 MiB)")
+	fs.Int("max-incomplete-chunked", 0, "maximum in-flight chunked sequences per channel (default 4)")
 	fs.Int("agent-startup-timeout-seconds", DefaultAgentStartupTimeoutSeconds, "agent startup timeout in seconds")
 	fs.String("log-level", defaultLogLevel, "log level (debug, info, warn, error)")
 	fs.String("encryption-mode", "post-quantum", "encryption mode (classic, post-quantum)")
@@ -160,6 +162,7 @@ func Load(args []string) (*Config, bool, error) {
 		"data-dir":                      "data_dir",
 		"db-max-conns":                  "db_max_conns",
 		"max-message-size":              "max_message_size",
+		"max-incomplete-chunked":        "max_incomplete_chunked",
 		"agent-startup-timeout-seconds": "agent_startup_timeout_seconds",
 		"log-level":                     "log_level",
 		"encryption-mode":               "encryption_mode",
@@ -171,6 +174,7 @@ func Load(args []string) (*Config, bool, error) {
 		"data_dir":                      ".",
 		"db_max_conns":                  workerdb.DefaultMaxConns,
 		"max_message_size":              0,
+		"max_incomplete_chunked":        0,
 		"agent_startup_timeout_seconds": DefaultAgentStartupTimeoutSeconds,
 		"log_level":                     defaultLogLevel,
 		"encryption_mode":               "post-quantum",
