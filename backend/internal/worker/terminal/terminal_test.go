@@ -512,14 +512,14 @@ func TestDetectDefaultShell(t *testing.T) {
 func TestResolveDefaultShell_PrefersLeapmuxEnv(t *testing.T) {
 	t.Setenv("LEAPMUX_DEFAULT_SHELL", "/bin/test-leapmux-shell")
 	t.Setenv("SHELL", "/bin/other-shell")
-	shell := resolveDefaultShell()
+	shell := ResolveDefaultShell()
 	assert.Equal(t, "/bin/test-leapmux-shell", shell)
 }
 
 func TestResolveDefaultShell_LeapmuxEnvBareName(t *testing.T) {
 	t.Setenv("LEAPMUX_DEFAULT_SHELL", "sh")
 	t.Setenv("SHELL", "/bin/other-shell")
-	shell := resolveDefaultShell()
+	shell := ResolveDefaultShell()
 	assert.NotEmpty(t, shell, "bare name should be resolved")
 	assert.True(t, strings.HasPrefix(shell, "/"), "resolved path should be absolute")
 	assert.True(t, strings.HasSuffix(shell, "/sh"), "resolved path should end with /sh")
@@ -528,23 +528,23 @@ func TestResolveDefaultShell_LeapmuxEnvBareName(t *testing.T) {
 func TestResolveDefaultShell_LeapmuxEnvInvalidBareName(t *testing.T) {
 	t.Setenv("LEAPMUX_DEFAULT_SHELL", "nonexistent-shell-xyz")
 	t.Setenv("SHELL", "/bin/fallback-shell")
-	shell := resolveDefaultShell()
+	shell := ResolveDefaultShell()
 	assert.Equal(t, "/bin/fallback-shell", shell, "should fall back to $SHELL when LEAPMUX_DEFAULT_SHELL is unresolvable")
 }
 
 func TestResolveDefaultShell_UsesEnvWhenSet(t *testing.T) {
 	t.Setenv("LEAPMUX_DEFAULT_SHELL", "")
 	t.Setenv("SHELL", "/bin/test-shell")
-	shell := resolveDefaultShell()
-	assert.Equal(t, "/bin/test-shell", shell, "resolveDefaultShell should prefer $SHELL")
+	shell := ResolveDefaultShell()
+	assert.Equal(t, "/bin/test-shell", shell, "ResolveDefaultShell should prefer $SHELL")
 }
 
 func TestResolveDefaultShell_FallsBackWhenEnvUnset(t *testing.T) {
 	t.Setenv("LEAPMUX_DEFAULT_SHELL", "")
 	t.Setenv("SHELL", "")
-	shell := resolveDefaultShell()
-	assert.NotEmpty(t, shell, "resolveDefaultShell should return a shell even without $SHELL")
-	assert.True(t, strings.HasPrefix(shell, "/"), "resolveDefaultShell should return an absolute path")
+	shell := ResolveDefaultShell()
+	assert.NotEmpty(t, shell, "ResolveDefaultShell should return a shell even without $SHELL")
+	assert.True(t, strings.HasPrefix(shell, "/"), "ResolveDefaultShell should return an absolute path")
 }
 
 func TestResolveShellEnv_Empty(t *testing.T) {

@@ -19,9 +19,19 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
+	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
+
+// loginShell returns the user's default login shell path if UseLoginShell is
+// enabled, or an empty string otherwise.
+func (svc *Context) loginShell() string {
+	if !svc.UseLoginShell {
+		return ""
+	}
+	return terminal.ResolveDefaultShell()
+}
 
 // registerAgentHandlers registers all agent-related inner RPC handlers.
 func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
@@ -85,6 +95,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			WorkingDir:      workingDir,
 			ResumeSessionID: r.GetAgentSessionId(),
 			StartupTimeout:  svc.agentStartupTimeout(),
+			LoginShell:      svc.loginShell(),
 		}
 
 		outputFn := agentOutputFn(svc.Output, agentID, r.GetWorkspaceId(), workingDir)
@@ -502,6 +513,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 				ResumeSessionID: dbAgent.AgentSessionID,
 				PermissionMode:  dbAgent.PermissionMode,
 				StartupTimeout:  svc.agentStartupTimeout(),
+				LoginShell:      svc.loginShell(),
 			}
 
 			outputFn := agentOutputFn(svc.Output, agentID, dbAgent.WorkspaceID, dbAgent.WorkingDir)
@@ -832,6 +844,7 @@ func (svc *Context) handleClearContext(agentID string) {
 		WorkingDir:     dbAgent.WorkingDir,
 		PermissionMode: dbAgent.PermissionMode,
 		StartupTimeout: svc.agentStartupTimeout(),
+		LoginShell:     svc.loginShell(),
 	}, outputFn); err != nil {
 		slog.Error("clear context: failed to restart agent", "agent_id", agentID, "error", err)
 		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
@@ -875,6 +888,7 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 		ResumeSessionID: dbAgent.AgentSessionID,
 		PermissionMode:  dbAgent.PermissionMode,
 		StartupTimeout:  svc.agentStartupTimeout(),
+		LoginShell:      svc.loginShell(),
 	}, outputFn); err != nil {
 		slog.Error("ensureAgentRunning: failed to start agent", "agent_id", agentID, "error", err)
 		return err
@@ -1128,6 +1142,7 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 		WorkingDir:     dbAgent.WorkingDir,
 		PermissionMode: targetMode,
 		StartupTimeout: svc.agentStartupTimeout(),
+		LoginShell:     svc.loginShell(),
 	}, outputFn); err != nil {
 		slog.Error("plan exec: failed to restart agent", "agent_id", agentID, "error", err)
 		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{

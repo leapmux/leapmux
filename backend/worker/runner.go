@@ -35,6 +35,7 @@ type RunConfig struct {
 	MaxIncompleteChunked int                         // Maximum in-flight chunked sequences per channel (0 = 4 default)
 	AgentStartupTimeout  time.Duration               // Timeout for agent startup handshake (0 = 30s default)
 	EncryptionMode       leapmuxv1.EncryptionMode    // Encryption mode (classic, post-quantum)
+	UseLoginShell        bool                        // Wrap claude invocation in user's login shell
 }
 
 // Run starts the worker and blocks until ctx is cancelled.
@@ -96,6 +97,7 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		}
 		svcCtx.Version = cfg.Version
 		svcCtx.AgentStartupTimeout = cfg.AgentStartupTimeout
+		svcCtx.UseLoginShell = cfg.UseLoginShell
 		svcCtx.Send = client.Send
 		svcCtx.Channels = channelMgr
 		svcCtx.Init()

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -89,7 +90,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 
 	cliFlags := cfg.CLIFlags
 	if cliFlags == nil {
-		cliFlags = []string{"addr", "data-dir", "dev-frontend", "db-max-conns", "max-message-size", "max-incomplete-chunked", "api-timeout-seconds", "agent-startup-timeout-seconds", "worktree-create-timeout-seconds", "log-level"}
+		cliFlags = []string{"addr", "data-dir", "dev-frontend", "db-max-conns", "max-message-size", "max-incomplete-chunked", "api-timeout-seconds", "agent-startup-timeout-seconds", "worktree-create-timeout-seconds", "log-level", "use-login-shell"}
 	}
 
 	hubCfg, _, err := hubconfig.LoadWithOptions(cfg.Args, hubconfig.LoadOptions{
@@ -100,6 +101,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 		CLIFlags:          cliFlags,
 		ExtraFlags: []hubconfig.ExtraFlagDef{
 			{Name: "encryption-mode", KoanfKey: "encryption_mode", Usage: "encryption mode (classic, post-quantum)", StrDefault: "post-quantum"},
+			{Name: "use-login-shell", KoanfKey: "use_login_shell", Usage: "wrap claude invocation in user's login shell", StrDefault: "true"},
 		},
 		SoloMode: !cfg.DevMode,
 	})
@@ -219,6 +221,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 			MaxIncompleteChunked: hubCfg.MaxIncompleteChunked,
 			AgentStartupTimeout:  hubCfg.AgentStartupTimeout(),
 			EncryptionMode:       workerconfig.ParseEncryptionMode(hubCfg.Extras["encryption_mode"]),
+			UseLoginShell:        parseBool(hubCfg.Extras["use_login_shell"], true),
 		}); wErr != nil {
 			slog.Error("worker error", "error", wErr)
 		}
@@ -314,4 +317,17 @@ func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath,
 func mustDecode64(s string) []byte {
 	b, _ := base64.StdEncoding.DecodeString(s)
 	return b
+}
+
+// parseBool parses a string as a boolean, returning defaultVal if the string
+// is empty or not recognized.
+func parseBool(s string, defaultVal bool) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "true", "1", "yes":
+		return true
+	case "false", "0", "no":
+		return false
+	default:
+		return defaultVal
+	}
 }

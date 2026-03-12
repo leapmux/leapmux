@@ -142,6 +142,7 @@ func runWorker(args []string) error {
 	svcCtx.Name = cfg.Name
 	svcCtx.Version = version
 	svcCtx.AgentStartupTimeout = cfg.AgentStartupTimeout()
+	svcCtx.UseLoginShell = cfg.UseLoginShell
 	svcCtx.Send = client.Send
 	svcCtx.Channels = channelMgr
 	svcCtx.Init()

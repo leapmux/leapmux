@@ -40,6 +40,7 @@ type Config struct {
 	AgentStartupTimeoutSeconds int    `koanf:"agent_startup_timeout_seconds" json:"agent_startup_timeout_seconds"`
 	LogLevel                   string `koanf:"log_level" json:"log_level"`
 	EncryptionMode             string `koanf:"encryption_mode" json:"encryption_mode"`
+	UseLoginShell              bool   `koanf:"use_login_shell" json:"use_login_shell"`
 }
 
 // EncryptionModeProto returns the protobuf EncryptionMode value.
@@ -145,6 +146,7 @@ func Load(args []string) (*Config, bool, error) {
 	fs.Int("agent-startup-timeout-seconds", DefaultAgentStartupTimeoutSeconds, "agent startup timeout in seconds")
 	fs.String("log-level", defaultLogLevel, "log level (debug, info, warn, error)")
 	fs.String("encryption-mode", "post-quantum", "encryption mode (classic, post-quantum)")
+	fs.Bool("use-login-shell", true, "wrap claude invocation in user's login shell")
 	showVersion := fs.Bool("version", false, "print version and exit")
 
 	if err := fs.Parse(args); err != nil {
@@ -166,6 +168,7 @@ func Load(args []string) (*Config, bool, error) {
 		"agent-startup-timeout-seconds": "agent_startup_timeout_seconds",
 		"log-level":                     "log_level",
 		"encryption-mode":               "encryption_mode",
+		"use-login-shell":               "use_login_shell",
 	}
 
 	defaults := map[string]interface{}{
@@ -178,6 +181,7 @@ func Load(args []string) (*Config, bool, error) {
 		"agent_startup_timeout_seconds": DefaultAgentStartupTimeoutSeconds,
 		"log_level":                     defaultLogLevel,
 		"encryption_mode":               "post-quantum",
+		"use_login_shell":               true,
 	}
 
 	k := koanf.New(".")

@@ -41,6 +41,7 @@ type Context struct {
 	Watchers            *WatcherManager // Fan-out manager for event broadcasting
 	Output              *OutputHandler  // Agent output NDJSON processor
 	AgentStartupTimeout time.Duration   // Timeout for agent startup handshake (default: 30s)
+	UseLoginShell       bool            // Wrap claude invocation in user's login shell
 }
 
 // agentStartupTimeout returns the configured agent startup timeout,
