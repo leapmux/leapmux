@@ -82,23 +82,23 @@ Run `leapmux` with no subcommand for a zero-config, single-user setup. Hub and W
 For multi-user and remote setups, run `leapmux hub` and `leapmux worker` separately. The Hub handles authentication and relays end-to-end encrypted traffic between the Frontend and Workers. Workers can be on different machines, behind NATs — they initiate outbound connections to the Hub.
 
 ```
-┌─────────────────┐              ┌─────────────────┐                 ┌───────────────────┐
-│                 │  ConnectRPC  │                 │   gRPC (bidi)   │  Worker 1         │
-│    Frontend     │◄────────────►│      Hub        │◄───────────────►│  ┌─────────────┐  │
-│   (Browser /    │  WebSocket   │    (Relay)      │                 │  │ Claude Code │  │
-│   Desktop App)  │              │                 │                 │  │ (multiple)  │  │
-│                 │              │   Go Service    │                 │  └─────────────┘  │
-└─────────────────┘              │   + Database    │                 │  + SQLite         │
-                                 │                 │                 └───────────────────┘
-                                 └─────────────────┘                           ⋮
-                                                                     ┌───────────────────┐
-                                                                     │  Worker N         │
-                                                                     │  ┌─────────────┐  │
-                                                                     │  │ Claude Code │  │
-                                                                     │  │ (multiple)  │  │
-                                                                     │  └─────────────┘  │
-                                                                     │  + SQLite         │
-                                                                     └───────────────────┘
+┌─────────────────┐              ┌──────────────────┐              ┌───────────────────┐
+│                 │  ConnectRPC  │                  │     gRPC     │  Worker 1         │
+│    Frontend     │◄────────────►│       Hub        │◄────────────►│  ┌─────────────┐  │
+│   (Browser /    │  WebSocket   │     (Relay)      │              │  │ Claude Code │  │
+│   Desktop App)  │              │                  │              │  │ (multiple)  │  │
+│                 │              │    Go Service    │              │  └─────────────┘  │
+└─────────────────┘              │    + Database    │              │  + SQLite         │
+                                 │                  │              └───────────────────┘
+                                 └──────────────────┘                        ⋮
+                                                                   ┌───────────────────┐
+                                                                   │  Worker N         │
+                                                                   │  ┌─────────────┐  │
+                                                                   │  │ Claude Code │  │
+                                                                   │  │ (multiple)  │  │
+                                                                   │  └─────────────┘  │
+                                                                   │  + SQLite         │
+                                                                   └───────────────────┘
 ```
 
 ### Modes
