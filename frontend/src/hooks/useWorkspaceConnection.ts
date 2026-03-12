@@ -234,6 +234,10 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           settingsLoading.stop()
         }
         if (sc.status === AgentStatus.INACTIVE) {
+          // Agent is no longer running — clear any stale control requests
+          // so the user can send a regular message (which auto-starts the
+          // agent) instead of being stuck on an unanswerable prompt.
+          controlStore.clearAgent(agentId)
           if (
             catchUpPhase === 'live'
             && sc.agentSessionId
@@ -565,6 +569,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     }
     for (const a of agentStore.state.agents) {
       chatStore.clearStreamingText(a.id)
+      controlStore.clearAgent(a.id)
       if (a.status === AgentStatus.ACTIVE) {
         agentStore.updateAgent(a.id, { status: AgentStatus.INACTIVE })
       }
