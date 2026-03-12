@@ -13,7 +13,7 @@
 // Requires @resvg/resvg-js (installed with frontend dependencies).
 
 import { Buffer } from 'node:buffer'
-import { copyFileSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { Resvg } from '@resvg/resvg-js'
@@ -55,6 +55,9 @@ copyFileSync(faviconSvgPath, join(publicDir, 'favicon.svg'))
 // Generate favicon.ico (48x48) from the favicon SVG.
 const ico48Png = renderPng(faviconSvg, 48)
 writeFileSync(join(publicDir, 'favicon.ico'), buildIco(ico48Png, 48))
+
+// Ensure the icons output directory exists.
+mkdirSync(join(publicDir, 'icons'), { recursive: true })
 
 // Generate app icon PNGs from the app icon SVG.
 writeFileSync(join(publicDir, 'icons', 'icon-192.png'), renderPng(appIconSvg, 192))
