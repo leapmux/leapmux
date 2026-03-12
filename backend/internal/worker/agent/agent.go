@@ -41,10 +41,14 @@ type Agent struct {
 	cmd         *exec.Cmd
 	stdin       io.WriteCloser
 	stderrBuf   *bytes.Buffer
+	stderrMu    sync.Mutex // protects stderrBuf when drained via goroutine
 	ctx         context.Context
 	cancel      context.CancelFunc
 	processDone chan struct{} // closed when the process exits
 	waitErr     error         // set before processDone is closed
+
+	preambleDelimiter string   // if set, readOutput skips lines until this delimiter
+	preambleOutput    []string // captured preamble lines (before delimiter)
 
 	mu      sync.Mutex
 	stopped bool
@@ -63,6 +67,7 @@ type Options struct {
 	ResumeSessionID string        // If set, uses --resume to resume a previous session
 	PermissionMode  string        // Permission mode to set on startup (default, acceptEdits, plan, bypassPermissions)
 	StartupTimeout  time.Duration // Timeout for the startup handshake (default: 30s)
+	LoginShell      string        // If non-empty, wraps claude invocation in this login shell
 }
 
 // Start spawns a new Claude Code process and begins reading its output.
@@ -101,10 +106,23 @@ func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, e
 		args = append(args, "--resume", opts.ResumeSessionID)
 	}
 
-	cmd := exec.CommandContext(ctx, "claude", args...)
-	cmd.Dir = opts.WorkingDir
+	var cmd *exec.Cmd
+	var preambleDelimiter string
+	if opts.LoginShell != "" {
+		cmd, preambleDelimiter = buildShellWrappedCommand(ctx, opts.LoginShell, args, opts.WorkingDir)
+	} else {
+		cmd = exec.CommandContext(ctx, "claude", args...)
+		cmd.Dir = opts.WorkingDir
+	}
+
 	cmd.Env = filterEnv(cmd.Environ(), "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
-	cmd.Env = append(cmd.Env, "CLAUDE_CODE_ENTRYPOINT=sdk-ts")
+	cmd.Env = append(cmd.Env, "CLAUDE_CODE_ENTRYPOINT=sdk-ts", "LEAPMUX_WORKER=1")
+	if opts.LoginShell != "" {
+		// Set CLAUDECODE=1 so the user's shell rc files can detect they are
+		// being sourced inside Claude Code and skip conflicting aliases.
+		// The inner command unsets it before invoking claude.
+		cmd.Env = append(cmd.Env, "CLAUDECODE=1")
+	}
 
 	// Send SIGTERM (instead of the default SIGKILL) when the context is
 	// cancelled, giving Claude Code a chance to persist its session state.
@@ -127,27 +145,45 @@ func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, e
 		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 
-	// Capture stderr for debugging. If the process crashes, we want to know why.
-	var stderrBuf bytes.Buffer
-	cmd.Stderr = &stderrBuf
+	// Capture stderr via a goroutine that actively drains the pipe. This
+	// prevents the process from blocking if stderr output exceeds the OS
+	// pipe buffer (~64KB). Buffer is capped at 1MB.
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("stderr pipe: %w", err)
+	}
 
+	var stderrBuf bytes.Buffer
 	a := &Agent{
-		agentID:        opts.AgentID,
-		model:          opts.Model,
-		workingDir:     opts.WorkingDir,
-		cmd:            cmd,
-		stdin:          stdin,
-		ctx:            ctx,
-		cancel:         cancel,
-		stderrBuf:      &stderrBuf,
-		processDone:    make(chan struct{}),
-		pendingControl: make(map[string]chan<- controlResult),
+		agentID:           opts.AgentID,
+		model:             opts.Model,
+		workingDir:        opts.WorkingDir,
+		cmd:               cmd,
+		stdin:             stdin,
+		ctx:               ctx,
+		cancel:            cancel,
+		stderrBuf:         &stderrBuf,
+		preambleDelimiter: preambleDelimiter,
+		processDone:       make(chan struct{}),
+		pendingControl:    make(map[string]chan<- controlResult),
 	}
 
 	if err := cmd.Start(); err != nil {
 		cancel()
 		return nil, fmt.Errorf("start claude: %w", err)
 	}
+
+	// Drain stderr in a background goroutine.
+	const maxStderrSize = 1 << 20 // 1MB
+	go func() {
+		limited := io.LimitReader(stderrPipe, maxStderrSize)
+		a.stderrMu.Lock()
+		_, _ = io.Copy(&stderrBuf, limited)
+		a.stderrMu.Unlock()
+		// Discard any remaining stderr beyond the limit.
+		_, _ = io.Copy(io.Discard, stderrPipe)
+	}()
 
 	// Read stdout in a background goroutine. Output will only arrive after
 	// the first message is sent to stdin (Claude Code behavior with
@@ -163,6 +199,19 @@ func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, e
 		_ = a.Wait()
 	}
 
+	// formatStartupError returns a descriptive error including stderr and
+	// preamble output (if any) for frontend diagnostics.
+	formatStartupError := func(phase string, err error) error {
+		parts := []string{fmt.Sprintf("%s: %s", phase, err)}
+		if stderr := strings.TrimSpace(a.Stderr()); stderr != "" {
+			parts = append(parts, "stderr: "+stderr)
+		}
+		if preamble := strings.TrimSpace(a.PreambleOutput()); preamble != "" {
+			parts = append(parts, "shell preamble: "+preamble)
+		}
+		return fmt.Errorf("%s", strings.Join(parts, "; "))
+	}
+
 	timeout := opts.startupTimeout()
 
 	// Send "initialize" as the first control request, matching the Agent SDK
@@ -170,7 +219,7 @@ func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, e
 	// (which contains the session_id) and establishes the control protocol.
 	if _, err := a.sendControlAndWait(ctx, `{"subtype":"initialize"}`, timeout); err != nil {
 		cleanup()
-		return nil, fmt.Errorf("initialize: %w", err)
+		return nil, formatStartupError("initialize", err)
 	}
 
 	// Send set_permission_mode to configure the agent's permission mode.
@@ -184,7 +233,7 @@ func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, e
 		fmt.Sprintf(`{"subtype":"set_permission_mode","mode":"%s"}`, mode), timeout)
 	if err != nil {
 		cleanup()
-		return nil, fmt.Errorf("set_permission_mode: %w", err)
+		return nil, formatStartupError("set_permission_mode", err)
 	}
 	a.confirmedPermissionMode = resp.Mode
 
@@ -295,10 +344,22 @@ func (a *Agent) AgentID() string {
 
 // Stderr returns the captured stderr output from the agent process.
 func (a *Agent) Stderr() string {
+	a.stderrMu.Lock()
+	defer a.stderrMu.Unlock()
 	if a.stderrBuf == nil {
 		return ""
 	}
 	return a.stderrBuf.String()
+}
+
+// PreambleOutput returns the captured stdout preamble lines (before the
+// delimiter) when running under a login shell wrapper. Returns empty string
+// if no preamble was captured.
+func (a *Agent) PreambleOutput() string {
+	if len(a.preambleOutput) == 0 {
+		return ""
+	}
+	return strings.Join(a.preambleOutput, "\n")
 }
 
 // ConfirmedPermissionMode returns the permission mode confirmed by the agent
@@ -400,6 +461,23 @@ func (a *Agent) handlePendingControlResponse(line []byte) bool {
 }
 
 func (a *Agent) readOutput(scanner *bufio.Scanner, outputFn OutputHandler) {
+	// If a preamble delimiter is set, skip lines until the delimiter is found.
+	// This handles shell login preamble (motd, .zshrc output, etc.) that
+	// appears before claude's NDJSON stream.
+	if a.preambleDelimiter != "" {
+		delimBytes := []byte(a.preambleDelimiter)
+		const maxPreambleLines = 50
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			if bytes.Equal(bytes.TrimSpace(line), delimBytes) {
+				break
+			}
+			if len(a.preambleOutput) < maxPreambleLines {
+				a.preambleOutput = append(a.preambleOutput, string(line))
+			}
+		}
+	}
+
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {

@@ -90,7 +90,7 @@ type Options struct {
 func Start(opts Options, outputFn OutputHandler) (*Terminal, error) {
 	shell := opts.Shell
 	if shell == "" {
-		shell = resolveDefaultShell()
+		shell = ResolveDefaultShell()
 	}
 
 	cmd := exec.Command(shell)

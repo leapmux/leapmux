@@ -14,12 +14,12 @@ var shellCache struct {
 	defaultShell string
 }
 
-// resolveDefaultShell returns the user's default shell.  It checks the
+// ResolveDefaultShell returns the user's default shell.  It checks the
 // LEAPMUX_DEFAULT_SHELL environment variable first (accepting either a bare
 // command name like "zsh" or an absolute path like "/bin/zsh"), then the SHELL
 // environment variable, and finally falls back to platform-specific detection
 // (e.g. dscl on macOS, /etc/passwd on Linux).
-func resolveDefaultShell() string {
+func ResolveDefaultShell() string {
 	if shell := resolveShellEnv("LEAPMUX_DEFAULT_SHELL"); shell != "" {
 		slog.Info("default shell from LEAPMUX_DEFAULT_SHELL", "shell", shell)
 		return shell
@@ -62,7 +62,7 @@ func resolveShellEnv(name string) string {
 // invoking as "sh" activates POSIX mode.
 func ListAvailableShells() (shells []string, defaultShell string) {
 	shellCache.once.Do(func() {
-		shellCache.defaultShell = resolveDefaultShell()
+		shellCache.defaultShell = ResolveDefaultShell()
 
 		// Place the default shell first so it appears at the top of
 		// the UI dropdown.

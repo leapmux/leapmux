@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -500,4 +501,178 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 		"error should include the stderr message from the crashed process")
 	assert.Less(t, elapsed, 2*time.Second,
 		"should detect early exit quickly, not wait for the full 5s timeout")
+}
+
+// TestHelperProcessWithPreamble is a test helper that outputs preamble lines
+// to both stdout and stderr, then a delimiter on stdout, then NDJSON.
+func TestHelperProcessWithPreamble(t *testing.T) {
+	if os.Getenv("GO_WANT_HELPER_PROCESS_PREAMBLE") != "1" {
+		return
+	}
+
+	delimiter := os.Getenv("GO_PREAMBLE_DELIMITER")
+
+	// Output preamble to stdout.
+	_, _ = fmt.Fprintln(os.Stdout, "Welcome to my shell")
+	_, _ = fmt.Fprintln(os.Stdout, "Loading .zshrc ...")
+
+	// Output preamble to stderr.
+	_, _ = fmt.Fprintln(os.Stderr, "stderr preamble line 1")
+	_, _ = fmt.Fprintln(os.Stderr, "stderr preamble line 2")
+
+	// Output delimiter on stdout.
+	_, _ = fmt.Fprintln(os.Stdout, delimiter)
+
+	// Then echo stdin as NDJSON.
+	buf := make([]byte, 4096)
+	for {
+		n, err := os.Stdin.Read(buf)
+		if err != nil {
+			break
+		}
+		_, _ = os.Stdout.Write(buf[:n])
+	}
+	os.Exit(0)
+}
+
+func TestAgent_PreambleSkipping(t *testing.T) {
+	ctx := context.Background()
+
+	delimiter := "__LEAPMUX_READY_testdelimiter__"
+
+	var mu sync.Mutex
+	var lines []string
+	outputFn := func(line []byte) {
+		mu.Lock()
+		lines = append(lines, string(line))
+		mu.Unlock()
+	}
+
+	// Start process with preamble.
+	ctx2, cancel := context.WithCancel(ctx)
+	cmd := exec.CommandContext(ctx2, os.Args[0], "-test.run=TestHelperProcessWithPreamble", "--")
+	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS_PREAMBLE=1", "GO_PREAMBLE_DELIMITER="+delimiter)
+	cmd.Dir = t.TempDir()
+
+	stdin, err := cmd.StdinPipe()
+	require.NoError(t, err)
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	stderrPipe, err := cmd.StderrPipe()
+	require.NoError(t, err)
+
+	var stderrBuf bytes.Buffer
+	a := &Agent{
+		agentID:           "preamble-test",
+		model:             "test",
+		workingDir:        t.TempDir(),
+		cmd:               cmd,
+		stdin:             stdin,
+		ctx:               ctx2,
+		cancel:            cancel,
+		stderrBuf:         &stderrBuf,
+		preambleDelimiter: delimiter,
+		processDone:       make(chan struct{}),
+		pendingControl:    make(map[string]chan<- controlResult),
+	}
+
+	require.NoError(t, cmd.Start())
+
+	// Drain stderr in background.
+	go func() {
+		a.stderrMu.Lock()
+		_, _ = fmt.Fprintf(&stderrBuf, "")
+		a.stderrMu.Unlock()
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := stderrPipe.Read(buf)
+			if n > 0 {
+				a.stderrMu.Lock()
+				stderrBuf.Write(buf[:n])
+				a.stderrMu.Unlock()
+			}
+			if readErr != nil {
+				break
+			}
+		}
+	}()
+
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
+	go a.readOutput(scanner, outputFn)
+
+	// Send some input to trigger output after delimiter.
+	require.NoError(t, a.SendInput("hello"))
+
+	// Wait for output to arrive.
+	testutil.AssertEventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(lines) > 0
+	}, "expected output after preamble")
+
+	// Verify preamble was captured.
+	preamble := a.PreambleOutput()
+	assert.Contains(t, preamble, "Welcome to my shell")
+	assert.Contains(t, preamble, "Loading .zshrc ...")
+
+	// Verify preamble lines were NOT forwarded to outputFn.
+	mu.Lock()
+	for _, line := range lines {
+		assert.NotContains(t, line, "Welcome to my shell")
+		assert.NotContains(t, line, "Loading .zshrc ...")
+	}
+	mu.Unlock()
+
+	// Verify stderr was captured.
+	testutil.AssertEventually(t, func() bool {
+		return strings.Contains(a.Stderr(), "stderr preamble line 1")
+	}, "expected stderr to be captured")
+
+	a.Stop()
+	_ = a.Wait()
+}
+
+func TestAgent_LeapmuxWorkerEnvAlwaysSet(t *testing.T) {
+	// Verify that LEAPMUX_WORKER=1 is always present in the environment
+	// when starting an agent (both with and without login shell).
+	ctx := context.Background()
+	args := []string{"--model", "test", "--output-format", "stream-json"}
+
+	// Without login shell.
+	cmd := exec.CommandContext(ctx, "echo", "test")
+	cmd.Dir = t.TempDir()
+	cmd.Env = filterEnv(cmd.Environ(), "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
+	cmd.Env = append(cmd.Env, "CLAUDE_CODE_ENTRYPOINT=sdk-ts", "LEAPMUX_WORKER=1")
+
+	foundWorker := false
+	foundClaudeCode := false
+	for _, e := range cmd.Env {
+		if e == "LEAPMUX_WORKER=1" {
+			foundWorker = true
+		}
+		if e == "CLAUDECODE=1" {
+			foundClaudeCode = true
+		}
+	}
+	assert.True(t, foundWorker, "LEAPMUX_WORKER=1 should be in env")
+	assert.False(t, foundClaudeCode, "CLAUDECODE=1 should NOT be in env without login shell")
+
+	// With login shell - verify the env is set on the command.
+	shellCmd, _ := buildShellWrappedCommand(ctx, "/bin/sh", args, t.TempDir())
+	shellCmd.Env = filterEnv(shellCmd.Environ(), "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
+	shellCmd.Env = append(shellCmd.Env, "CLAUDE_CODE_ENTRYPOINT=sdk-ts", "LEAPMUX_WORKER=1", "CLAUDECODE=1")
+
+	foundWorker = false
+	foundClaudeCode = false
+	for _, e := range shellCmd.Env {
+		if e == "LEAPMUX_WORKER=1" {
+			foundWorker = true
+		}
+		if e == "CLAUDECODE=1" {
+			foundClaudeCode = true
+		}
+	}
+	assert.True(t, foundWorker, "LEAPMUX_WORKER=1 should be in shell-wrapped env")
+	assert.True(t, foundClaudeCode, "CLAUDECODE=1 should be in shell-wrapped env")
 }
