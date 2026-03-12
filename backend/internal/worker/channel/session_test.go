@@ -458,7 +458,7 @@ func TestCloseAll(t *testing.T) {
 // the send mutex and block the receive loop, causing a deadlock cascade.
 func TestHandleMessage_NonBlocking(t *testing.T) {
 	// Create a sendFn that blocks until explicitly released.
-	blockCh := make(chan struct{})
+	blockCh := make(chan struct{}, 1)
 	releaseCh := make(chan struct{})
 
 	sender := newCollectSender()
