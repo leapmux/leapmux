@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Solid teal background -->
+  <rect width="64" height="64" rx="14" fill="#0D9488"/>
+
+  <!-- Bold prompt chevron ">" -->
+  <path d="M16 20 L30 32 L16 44" fill="none" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- AI sparkle - 4-point star -->
+  <path d="M44 17 L48 28 L58 32 L48 36 L44 47 L40 36 L30 32 L40 28 Z" fill="#F59E0B"/>
+</svg>

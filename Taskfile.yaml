@@ -149,9 +149,25 @@ tasks:
     cmds:
       - go build -ldflags "-X main.version={{.VERSION}}" -o ./leapmux ./cmd/leapmux
 
+  generate-web-icons:
+    desc: Generate web favicon and PNG icons from SVG sources
+    deps: [prepare-frontend]
+    sources:
+      - icons/leapmux-favicon.svg
+      - icons/leapmux-icon-light.svg
+    generates:
+      - frontend/public/favicon.ico
+      - frontend/public/favicon.svg
+      - frontend/public/icons/icon-192.png
+      - frontend/public/icons/icon-512.png
+      - frontend/public/icons/icon-512-maskable.png
+      - frontend/public/icons/apple-touch-icon.png
+    cmds:
+      - NODE_PATH=frontend/node_modules bun frontend/scripts/generate-icons.mjs icons/leapmux-favicon.svg icons/leapmux-icon-light.svg frontend/public
+
   build-frontend:
     desc: Build frontend assets
-    deps: [prepare-frontend]
+    deps: [prepare-frontend, generate-web-icons]
     sources:
       - frontend/package.json
       - frontend/bun.lock

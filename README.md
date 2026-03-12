@@ -1,7 +1,7 @@
 [![License: FSL-1.1-ALv2](https://img.shields.io/badge/License-FSL--1.1--ALv2-blue.svg)](LICENSE.md)
 
 <p align="center">
-  <img src="icons/leapmux-icon.svg" alt="LeapMux" width="128" height="128">
+  <img src="icons/leapmux-icon-light.svg" alt="LeapMux" width="128" height="128">
 </p>
 
 # LeapMux
