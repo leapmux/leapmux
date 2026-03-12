@@ -105,10 +105,17 @@ tasks:
   # --- Build ---
 
   build:
-    desc: Build all (backend + frontend)
+    desc: Build all (backend + frontend + desktop)
     cmds:
       - task: generate
       - task: build-backend
+      - |
+        if command -v wails >/dev/null 2>&1; then
+          task build-desktop
+        else
+          echo "⚠ Skipping desktop build: 'wails' is not installed."
+          echo "  Install it with your package manager (e.g. brew install wails) to build the desktop app."
+        fi
 
   embed-frontend:
     desc: Embed frontend assets for go:embed
