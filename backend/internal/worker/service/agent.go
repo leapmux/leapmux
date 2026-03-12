@@ -563,74 +563,6 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		sendProtoResponse(sender, &leapmuxv1.SendControlResponseResponse{})
 	})
 
-	d.Register("RetryAgentMessage", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.RetryAgentMessageRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
-
-		agentID := r.GetAgentId()
-		messageID := r.GetMessageId()
-
-		// Fetch the message to get its content.
-		msg, err := svc.Queries.GetMessageByAgentAndID(bgCtx(), db.GetMessageByAgentAndIDParams{
-			AgentID: agentID,
-			ID:      messageID,
-		})
-		if err != nil {
-			slog.Error("failed to fetch message for retry", "agent_id", agentID, "message_id", messageID, "error", err)
-			sendNotFoundError(sender, "message not found")
-			return
-		}
-
-		// Clear the delivery error.
-		if err := svc.Queries.SetMessageDeliveryError(bgCtx(), db.SetMessageDeliveryErrorParams{
-			DeliveryError: "",
-			ID:            messageID,
-			AgentID:       agentID,
-		}); err != nil {
-			slog.Error("failed to clear delivery error", "agent_id", agentID, "message_id", messageID, "error", err)
-			sendInternalError(sender, "failed to clear delivery error")
-			return
-		}
-
-		// Extract the original user text from the wrapped content envelope.
-		userText, err := extractUserText(msg.Content, leapmuxv1.ContentCompression(msg.ContentCompression))
-		if err != nil {
-			slog.Error("failed to extract user text for retry", "agent_id", agentID, "message_id", messageID, "error", err)
-			sendInternalError(sender, "failed to extract message content")
-			return
-		}
-
-		// Re-send the message to the agent.
-		var retryError string
-		if sendErr := svc.Agents.SendInput(agentID, userText); sendErr != nil {
-			slog.Error("failed to re-send message to agent", "agent_id", agentID, "error", sendErr)
-			retryError = sendErr.Error()
-			// Mark delivery error again.
-			_ = svc.Queries.SetMessageDeliveryError(bgCtx(), db.SetMessageDeliveryErrorParams{
-				DeliveryError: retryError,
-				ID:            messageID,
-				AgentID:       agentID,
-			})
-		}
-
-		sendProtoResponse(sender, &leapmuxv1.RetryAgentMessageResponse{})
-
-		// Broadcast the updated error state (cleared or new error).
-		svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
-			AgentId: agentID,
-			Event: &leapmuxv1.AgentEvent_MessageError{
-				MessageError: &leapmuxv1.AgentMessageError{
-					AgentId:   agentID,
-					MessageId: messageID,
-					Error:     retryError, // empty = cleared
-				},
-			},
-		})
-	})
-
 	// WatchEvents registers the channel as a watcher for agent/terminal events.
 	// It replays messages since afterSeq, sends a statusChange marker,
 	// replays pending control requests, then streams live events.
@@ -872,30 +804,6 @@ func gitStatusToProto(gs *gitutil.GitStatus) *leapmuxv1.AgentGitStatus {
 		Untracked:   gs.Untracked,
 		OriginUrl:   gs.OriginURL,
 	}
-}
-
-// extractUserText extracts the original user text from a persisted user
-// message. The content is stored as a compressed threadWrapper envelope
-// containing {"content":"..."} inner JSON.
-func extractUserText(data []byte, compression leapmuxv1.ContentCompression) (string, error) {
-	decompressed, err := msgcodec.Decompress(data, compression)
-	if err != nil {
-		return "", fmt.Errorf("decompress: %w", err)
-	}
-
-	wrapper, err := unwrapContent(decompressed)
-	if err != nil || len(wrapper.Messages) == 0 {
-		// Fallback: treat raw content as the user text (legacy format).
-		return string(decompressed), nil
-	}
-
-	var inner struct {
-		Content string `json:"content"`
-	}
-	if err := json.Unmarshal(wrapper.Messages[0], &inner); err != nil {
-		return "", fmt.Errorf("parse inner message: %w", err)
-	}
-	return inner.Content, nil
 }
 
 // handleClearContext implements the /clear command by restarting the agent

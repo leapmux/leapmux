@@ -7,6 +7,7 @@
 
 import type { ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '../../../src/lib/channel'
 import { Buffer } from 'node:buffer'
+import { EncryptionMode } from '../../../src/generated/leapmux/v1/channel_pb'
 import { ChannelManager } from '../../../src/lib/channel'
 
 // ---- Base64 helpers for JSON ↔ bytes conversion ----
@@ -49,6 +50,27 @@ class FetchChannelTransport implements ChannelTransport {
       mlkemPublicKey: base64ToBytes(data.mlkemPublicKey),
       slhdsaPublicKey: base64ToBytes(data.slhdsaPublicKey),
     }
+  }
+
+  async getWorkerEncryptionMode(workerId: string): Promise<EncryptionMode> {
+    const resp = await fetch(`${this.hubUrl}/leapmux.v1.ChannelService/GetWorkerEncryptionMode`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.token}`,
+      },
+      body: JSON.stringify({ workerId }),
+    })
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '')
+      throw new Error(`GetWorkerEncryptionMode failed: ${resp.status} ${body}`)
+    }
+    const data = await resp.json() as { encryptionMode: string }
+    // Map string enum to numeric value.
+    if (data.encryptionMode === 'ENCRYPTION_MODE_CLASSIC')
+      return EncryptionMode.CLASSIC
+    // UNSPECIFIED and POST_QUANTUM both use hybrid PQ.
+    return EncryptionMode.POST_QUANTUM
   }
 
   async openChannel(workerId: string, handshakePayload: Uint8Array): Promise<{ channelId: string, handshakePayload: Uint8Array }> {
