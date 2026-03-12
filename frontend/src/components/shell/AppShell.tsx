@@ -151,6 +151,7 @@ export const AppShell: ParentComponent = (props) => {
   // Debounced turn-end handler
   const TURN_END_SOUND_COOLDOWN_MS = 60_000
   let lastSoundPlayedAt = 0
+  const turnEndAudio = new Audio('/sounds/benkirb-electronic-doorbell-262895.mp3')
   // Late-bound ref: set once useTabOperations is initialized (after useWorkspaceConnection).
   let isAgentClosing: (agentId: string) => boolean = () => false
   const handleTurnEnd = (agentId: string) => {
@@ -163,9 +164,9 @@ export const AppShell: ParentComponent = (props) => {
     const sound = preferences.turnEndSound()
     if (sound === 'ding-dong') {
       lastSoundPlayedAt = now
-      const audio = new Audio('/sounds/benkirb-electronic-doorbell-262895.mp3')
-      audio.volume = preferences.turnEndSoundVolume() / 100
-      audio.play().catch(() => {})
+      turnEndAudio.currentTime = 0
+      turnEndAudio.volume = preferences.turnEndSoundVolume() / 100
+      turnEndAudio.play().catch(() => {})
     }
   }
 
