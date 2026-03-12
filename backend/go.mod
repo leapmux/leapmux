@@ -5,6 +5,7 @@ go 1.26.1
 require (
 	connectrpc.com/connect v1.19.1
 	github.com/cenkalti/backoff/v5 v5.0.3
+	github.com/cloudflare/circl v1.6.3
 	github.com/coder/websocket v1.8.14
 	github.com/creack/pty v1.1.24
 	github.com/klauspost/compress v1.18.4
@@ -32,7 +33,6 @@ require (
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect

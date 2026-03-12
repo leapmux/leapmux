@@ -34,7 +34,7 @@ RUN bun run build
 # ------------------------------------------------------------------
 # Stage 3: Build Go binary (cross-compiled, CGO_ENABLED=0)
 # ------------------------------------------------------------------
-FROM golang:1.25-alpine AS go-builder
+FROM golang:1.26-alpine AS go-builder
 
 ARG VERSION=dev
 ARG TARGETOS=linux
