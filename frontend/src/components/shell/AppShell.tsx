@@ -107,7 +107,6 @@ export const AppShell: ParentComponent = (props) => {
       try {
         const resp = await workerClient.listWorkers({ orgId })
         setWorkers(resp.workers)
-        workerChannelStatusStore.setWorkerIds(resp.workers.map(w => w.id))
         for (const w of resp.workers) {
           if (w.online) {
             workerInfoStore.fetchWorkerInfo(w.id)
@@ -1086,7 +1085,6 @@ export const AppShell: ParentComponent = (props) => {
             onClose={() => setDeregisterTarget(null)}
             onDeregistered={() => {
               setWorkers(prev => prev.filter(w => w.id !== target().id))
-              workerChannelStatusStore.setWorkerIds(workers().map(w => w.id))
               setDeregisterTarget(null)
             }}
           />

@@ -242,6 +242,7 @@ test.describe('Agent Settings', () => {
     await expect(page.locator('[data-testid="effort-low"]')).not.toHaveAttribute('data-disabled', '')
     await expect(page.locator('[data-testid="effort-medium"]')).not.toHaveAttribute('data-disabled', '')
     await expect(page.locator('[data-testid="effort-high"]')).not.toHaveAttribute('data-disabled', '')
+    await expect(page.locator('[data-testid="effort-max"]')).not.toHaveAttribute('data-disabled', '')
 
     // Verify permission mode items are enabled when idle
     await expect(page.locator('[data-testid="permission-mode-default"]')).not.toHaveAttribute('data-disabled', '')

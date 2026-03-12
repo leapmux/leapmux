@@ -5,6 +5,7 @@ import ChevronsDown from 'lucide-solid/icons/chevrons-down'
 import ChevronsUp from 'lucide-solid/icons/chevrons-up'
 import Dot from 'lucide-solid/icons/dot'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
+import Zap from 'lucide-solid/icons/zap'
 import { createUniqueId, For, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
@@ -35,6 +36,39 @@ export interface EditorSettingsDropdownProps {
   onPermissionModeChange?: (mode: PermissionMode) => void
 }
 
+function RadioGroup(props: {
+  label: string
+  items: { label: string, value: string }[]
+  testIdPrefix: string
+  name: string
+  current: string
+  onChange: (value: string) => void
+}): JSX.Element {
+  return (
+    <fieldset>
+      <legend class={styles.settingsGroupLabel}>{props.label}</legend>
+      <For each={props.items}>
+        {item => (
+          <label
+            role="menuitemradio"
+            class={styles.settingsRadioItem}
+            data-testid={`${props.testIdPrefix}-${item.value}`}
+          >
+            <input
+              type="radio"
+              name={props.name}
+              value={item.value}
+              checked={props.current === item.value}
+              onChange={() => props.onChange(item.value)}
+            />
+            {item.label}
+          </label>
+        )}
+      </For>
+    </fieldset>
+  )
+}
+
 export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.Element {
   let settingsPopoverEl: HTMLElement | undefined
   const menuId = createUniqueId()
@@ -47,6 +81,7 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
     switch (currentEffort()) {
       case 'low': return <Icon icon={ChevronsDown} size="xs" />
       case 'high': return <Icon icon={ChevronsUp} size="xs" />
+      case 'max': return <Icon icon={Zap} size="xs" />
       default: return <Icon icon={Dot} size="xs" />
     }
   }
@@ -72,83 +107,39 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
       class={styles.settingsMenu}
       data-testid="agent-settings-menu"
     >
-      {/* Effort */}
-      <fieldset>
-        <legend class={styles.settingsGroupLabel}>Effort</legend>
-        <For each={EFFORTS}>
-          {effort => (
-            <label
-              role="menuitemradio"
-              class={styles.settingsRadioItem}
-              data-testid={`effort-${effort.value}`}
-            >
-              <input
-                type="radio"
-                name={`${menuId}-effort`}
-                value={effort.value}
-                checked={currentEffort() === effort.value}
-                onChange={() => {
-                  props.onEffortChange?.(effort.value)
-                  settingsPopoverEl?.hidePopover()
-                }}
-              />
-              {effort.label}
-            </label>
-          )}
-        </For>
-      </fieldset>
-
-      {/* Model */}
-      <fieldset>
-        <legend class={styles.settingsGroupLabel}>Model</legend>
-        <For each={MODELS}>
-          {model => (
-            <label
-              role="menuitemradio"
-              class={styles.settingsRadioItem}
-              data-testid={`model-${model.value}`}
-            >
-              <input
-                type="radio"
-                name={`${menuId}-model`}
-                value={model.value}
-                checked={currentModel() === model.value}
-                onChange={() => {
-                  props.onModelChange?.(model.value)
-                  settingsPopoverEl?.hidePopover()
-                }}
-              />
-              {model.label}
-            </label>
-          )}
-        </For>
-      </fieldset>
-
-      {/* Permission Mode */}
-      <fieldset>
-        <legend class={styles.settingsGroupLabel}>Permission Mode</legend>
-        <For each={PERMISSION_MODES}>
-          {mode => (
-            <label
-              role="menuitemradio"
-              class={styles.settingsRadioItem}
-              data-testid={`permission-mode-${mode.value}`}
-            >
-              <input
-                type="radio"
-                name={`${menuId}-mode`}
-                value={mode.value}
-                checked={currentMode() === mode.value}
-                onChange={() => {
-                  props.onPermissionModeChange?.(mode.value as PermissionMode)
-                  settingsPopoverEl?.hidePopover()
-                }}
-              />
-              {mode.label}
-            </label>
-          )}
-        </For>
-      </fieldset>
+      <RadioGroup
+        label="Effort"
+        items={EFFORTS}
+        testIdPrefix="effort"
+        name={`${menuId}-effort`}
+        current={currentEffort()}
+        onChange={(v) => {
+          props.onEffortChange?.(v)
+          settingsPopoverEl?.hidePopover()
+        }}
+      />
+      <RadioGroup
+        label="Model"
+        items={MODELS}
+        testIdPrefix="model"
+        name={`${menuId}-model`}
+        current={currentModel()}
+        onChange={(v) => {
+          props.onModelChange?.(v)
+          settingsPopoverEl?.hidePopover()
+        }}
+      />
+      <RadioGroup
+        label="Permission Mode"
+        items={PERMISSION_MODES}
+        testIdPrefix="permission-mode"
+        name={`${menuId}-mode`}
+        current={currentMode()}
+        onChange={(v) => {
+          props.onPermissionModeChange?.(v as PermissionMode)
+          settingsPopoverEl?.hidePopover()
+        }}
+      />
     </DropdownMenu>
   )
 }

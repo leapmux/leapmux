@@ -58,7 +58,7 @@ type Agent struct {
 type Options struct {
 	AgentID         string
 	Model           string
-	Effort          string // Effort level (low, medium, high)
+	Effort          string // Effort level (low, medium, high, max)
 	WorkingDir      string
 	ResumeSessionID string        // If set, uses --resume to resume a previous session
 	PermissionMode  string        // Permission mode to set on startup (default, acceptEdits, plan, bypassPermissions)
