@@ -15,7 +15,6 @@ import type {
   ListAgentsResponse,
   OpenAgentResponse,
   RenameAgentResponse,
-  RetryAgentMessageResponse,
   SendAgentMessageResponse,
   SendControlResponseResponse,
   UpdateAgentSettingsResponse,
@@ -68,8 +67,6 @@ import {
   OpenAgentResponseSchema,
   RenameAgentRequestSchema,
   RenameAgentResponseSchema,
-  RetryAgentMessageRequestSchema,
-  RetryAgentMessageResponseSchema,
   SendAgentMessageRequestSchema,
   SendAgentMessageResponseSchema,
   SendControlResponseRequestSchema,
@@ -279,10 +276,6 @@ export function renameAgent(workerId: string, req: MessageInitShape<typeof Renam
 
 export function sendControlResponse(workerId: string, req: MessageInitShape<typeof SendControlResponseRequestSchema>): Promise<SendControlResponseResponse> {
   return callWorker(workerId, 'SendControlResponse', SendControlResponseRequestSchema, SendControlResponseResponseSchema, req)
-}
-
-export function retryAgentMessage(workerId: string, req: MessageInitShape<typeof RetryAgentMessageRequestSchema>): Promise<RetryAgentMessageResponse> {
-  return callWorker(workerId, 'RetryAgentMessage', RetryAgentMessageRequestSchema, RetryAgentMessageResponseSchema, req)
 }
 
 export function deleteAgentMessage(workerId: string, req: MessageInitShape<typeof DeleteAgentMessageRequestSchema>): Promise<DeleteAgentMessageResponse> {

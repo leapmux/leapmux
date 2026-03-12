@@ -223,28 +223,29 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
-  // Retry a failed message delivery
+  // Retry a failed message delivery.
+  // Always re-sends via sendAgentMessage (which auto-starts the agent
+  // if needed), then removes the old failed message.
   const handleRetryMessage = async (agentId: string, messageId: string) => {
     try {
       const workerId = getAgentWorkerId(agentId)
+      const message = props.chatStore.getMessages(agentId).find(m => m.id === messageId)
+      if (!message)
+        return
+      const parsed = parseMessageContent(message)
+      const inner = getInnerMessage(parsed)
+      const content = inner?.content
+      if (typeof content !== 'string')
+        return
+
+      await workerRpc.sendAgentMessage(workerId, { agentId, content })
+      // Success: delete the old failed message. The new one arrives via WatchEvents.
       if (messageId.startsWith('local-')) {
-        // Local optimistic message was never stored on the Worker.
-        // Extract the original content and re-send it.
-        const message = props.chatStore.getMessages(agentId).find(m => m.id === messageId)
-        if (!message)
-          return
-        const parsed = parseMessageContent(message)
-        const inner = getInnerMessage(parsed)
-        const content = inner?.content
-        if (typeof content !== 'string')
-          return
-        await workerRpc.sendAgentMessage(workerId, { agentId, content })
-        // Success: remove local message; the real one arrives via WatchEvents.
         props.chatStore.removeMessage(agentId, messageId)
       }
       else {
-        await workerRpc.retryAgentMessage(workerId, { agentId, messageId })
-        props.chatStore.clearMessageError(messageId)
+        await workerRpc.deleteAgentMessage(workerId, { agentId, messageId })
+        props.chatStore.removeMessage(agentId, messageId)
       }
     }
     catch (err) {

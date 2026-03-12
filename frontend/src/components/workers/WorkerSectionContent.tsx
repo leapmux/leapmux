@@ -16,7 +16,6 @@ export interface WorkerSectionContentProps {
 
 const statusClass: Record<ChannelStatus, string> = {
   connected: styles.statusConnected,
-  warning: styles.statusWarning,
   disconnected: styles.statusDisconnected,
 }
 

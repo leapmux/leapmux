@@ -11,10 +11,6 @@ export const statusConnected = style({
   background: 'var(--success)',
 })
 
-export const statusWarning = style({
-  background: 'var(--warning)',
-})
-
 export const statusDisconnected = style({
   background: 'var(--danger)',
 })

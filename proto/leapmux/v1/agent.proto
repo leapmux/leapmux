@@ -197,13 +197,6 @@ message AgentMessageDeleted {
   string message_id = 2;
 }
 
-message RetryAgentMessageRequest {
-  string agent_id = 1;
-  string message_id = 2;
-}
-
-message RetryAgentMessageResponse {}
-
 message DeleteAgentMessageRequest {
   string agent_id = 1;
   string message_id = 2;
