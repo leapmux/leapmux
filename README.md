@@ -58,7 +58,7 @@ Run `leapmux` with no subcommand for a zero-config, single-user setup. Hub and W
 │  └─────────────┘               │  └────────────┘  │  │
 │         ▲                      │  + SQLite        │  │
 │         │                      └──────────────────┘  │
-│         │ ConnectRPC + WebSocket                      │
+│         │ ConnectRPC + WebSocket                     │
 └─────────┼────────────────────────────────────────────┘
           │
           ▼
@@ -73,13 +73,13 @@ Run `leapmux` with no subcommand for a zero-config, single-user setup. Hub and W
 For multi-user and remote setups, run `leapmux hub` and `leapmux worker` separately. The Hub handles authentication and relays end-to-end encrypted traffic between the Frontend and Workers. Workers can be on different machines, behind NATs — they initiate outbound connections to the Hub.
 
 ```
-┌─────────────────┐  ConnectRPC  ┌─────────────────┐                 ┌───────────────────┐
-│                 │  WebSocket   │                 │   gRPC (bidi)   │  Worker 1         │
+┌─────────────────┐              ┌─────────────────┐                 ┌───────────────────┐
+│                 │  ConnectRPC  │                 │   gRPC (bidi)   │  Worker 1         │
 │    Frontend     │◄────────────►│      Hub        │◄───────────────►│  ┌─────────────┐  │
-│    (Browser)    │    (E2EE)    │    (Relay)      │                 │  │ Claude Code │  │
+│    (Browser)    │  WebSocket   │    (Relay)      │                 │  │ Claude Code │  │
 │                 │              │                 │                 │  │ (multiple)  │  │
 │    SolidJS      │              │   Go Service    │                 │  └─────────────┘  │
-│    Web App      │              │   + SQLite      │                 │  + SQLite         │
+│    Web App      │              │   + Database    │                 │  + SQLite         │
 │                 │              │                 │                 └───────────────────┘
 └─────────────────┘              └─────────────────┘                           ⋮
                                                                      ┌───────────────────┐
