@@ -1,6 +1,6 @@
 module github.com/leapmux/leapmux
 
-go 1.25.7
+go 1.26.1
 
 require (
 	connectrpc.com/connect v1.19.1
