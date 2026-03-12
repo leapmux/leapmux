@@ -365,7 +365,7 @@ tasks:
     dir: desktop
     deps: [prepare-desktop]
     cmds:
-      - wails build -ldflags "-X main.version={{.VERSION}}"
+      - wails build -tags devtools -ldflags "-X main.version={{.VERSION}}"
       - task: package-desktop-dmg
 
   build-desktop-darwin:
@@ -373,7 +373,7 @@ tasks:
     dir: desktop
     deps: [prepare-desktop]
     cmds:
-      - wails build -platform darwin/universal -ldflags "-X main.version={{.VERSION}}"
+      - wails build -tags devtools -platform darwin/universal -ldflags "-X main.version={{.VERSION}}"
       - task: package-desktop-dmg
 
   package-desktop-dmg:
@@ -393,21 +393,21 @@ tasks:
     dir: desktop
     deps: [prepare-desktop]
     cmds:
-      - wails build -platform linux/amd64 -ldflags "-X main.version={{.VERSION}}"
+      - wails build -tags devtools -platform linux/amd64 -ldflags "-X main.version={{.VERSION}}"
 
   build-desktop-linux-arm64:
     desc: Build LeapMux desktop app for Linux (arm64)
     dir: desktop
     deps: [prepare-desktop]
     cmds:
-      - wails build -platform linux/arm64 -ldflags "-X main.version={{.VERSION}}"
+      - wails build -tags devtools -platform linux/arm64 -ldflags "-X main.version={{.VERSION}}"
 
   build-desktop-windows:
     desc: Build LeapMux desktop app for Windows
     dir: desktop
     deps: [prepare-desktop]
     cmds:
-      - wails build -platform windows/amd64 -ldflags "-X main.version={{.VERSION}}"
+      - wails build -tags devtools -platform windows/amd64 -ldflags "-X main.version={{.VERSION}}"
 
   lint-desktop:
     desc: Lint desktop Go code

@@ -58,6 +58,8 @@ html, body {
   align-items: center;
   justify-content: center;
   min-height: 100vh;
+  max-width: 720px;
+  margin: 0 auto;
   padding: 2rem;
   gap: 2rem;
   opacity: 0;
