@@ -16,12 +16,11 @@ func DevProxy(target string) (http.Handler, error) {
 		return nil, fmt.Errorf("parse dev frontend URL: %w", err)
 	}
 
-	proxy := httputil.NewSingleHostReverseProxy(u)
-
-	// Ensure WebSocket upgrades are forwarded correctly to the Vite dev server.
-	proxy.Rewrite = func(r *httputil.ProxyRequest) {
-		r.SetURL(u)
-		r.Out.Host = u.Host
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(r *httputil.ProxyRequest) {
+			r.SetURL(u)
+			r.Out.Host = u.Host
+		},
 	}
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
