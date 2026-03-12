@@ -6,17 +6,17 @@
 
 # LeapMux
 
-LeapMux is an **AI coding agent multiplexer** that enables developers to run multiple Claude Code instances simultaneously from a single web interface. Connect remote development backends (even behind NATs), organize work across tiling workspaces, interact with terminals, browse and diff files with full git and worktree awareness, and collaborate with your team, all with end-to-end encrypted communication.
+LeapMux is a **multiplexer for AI coding agents**. Run multiple agent instances in parallel from a single workspace, in the browser or as a native desktop app. Connect local and remote development backends (even behind NATs), organize work across tiling workspaces, interact with terminals, browse and diff files with full git awareness, and collaborate with your team, all with end-to-end encrypted communication.
 
 ## Key Features
 
 - **Multi-Agent Workspaces**: Run multiple local or remote Claude Code instances simultaneously
 - **Tiling Layout**: Split the workspace into resizable horizontal/vertical panes — run chats and terminals side by side
+- **Desktop App**: Native macOS, Linux, and Windows desktop application (optional)
 - **Git-Aware File Browser**: Browse files on remote backends with real-time git status, change/staged/unstaged filters, and inline diffs
 - **Rich File Viewer**: Syntax-highlighted source, image preview with zoom/pan, hex view for binaries, and side-by-side or unified diffs
 - **Git Worktree Management**: Agents and terminals auto-create isolated git worktrees per task, with dirty-worktree protection
 - **End-to-End Encryption**: All Frontend-Worker traffic is encrypted via hybrid post-quantum Noise_NK (X25519 + ML-KEM-1024 + SLH-DSA) over multiplexed WebSocket channels
-- **Desktop App**: Native macOS, Linux, and Windows desktop application (optional)
 - **Multi-Organization Support**: Create teams with role-based access control (Owner/Admin/Member)
 - **Workspace Sharing**: Collaborate by sharing workspaces with specific users or organization members
 - **Backend Management**: Register and manage multiple development backends with approval workflow
