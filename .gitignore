@@ -5,6 +5,10 @@
 
 # Build output
 /backend/leapmux
+/desktop/build/bin/
+/desktop/build/appicon.png
+/desktop/build/windows/icon.ico
+/desktop/leapmux-desktop
 .task/
 
 # Generated code
@@ -12,6 +16,7 @@ generated/
 
 # Go
 vendor/
+go.work.sum
 
 # Node/Bun
 node_modules/

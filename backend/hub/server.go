@@ -53,13 +53,14 @@ type Server struct {
 	queries    *gendb.Queries
 	server     *http.Server
 	sqlDB      *sql.DB
+	tcpLn      net.Listener
 	shutdownCh chan struct{}
 	workerMgr  *workermgr.Manager
 }
 
-// NewServer creates a new Hub server. It opens the database, runs
-// migrations, bootstraps defaults, and wires all services. Call
-// Serve() to start listening.
+// NewServer creates a new Hub server. It binds the TCP port (to fail
+// fast on conflicts), opens the database, runs migrations, bootstraps
+// defaults, and wires all services. Call Serve() to start listening.
 func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	var so serverOptions
 	for _, opt := range opts {
@@ -70,13 +71,33 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		return nil, fmt.Errorf("validate config: %w", err)
 	}
 
+	// Bind the TCP port before any database work so that concurrent
+	// instances (e.g. solo + CLI) fail fast on port conflict without
+	// a TOCTOU window.
+	var tcpLn net.Listener
+	if cfg.Addr != "" {
+		var listenErr error
+		tcpLn, listenErr = net.Listen("tcp", cfg.Addr)
+		if listenErr != nil {
+			return nil, fmt.Errorf("listen tcp: %w", listenErr)
+		}
+	}
+
+	closeTCP := func() {
+		if tcpLn != nil {
+			_ = tcpLn.Close()
+		}
+	}
+
 	sqlDB, err := db.Open(cfg.DBPath(), cfg.DBMaxConns)
 	if err != nil {
+		closeTCP()
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
 	if err := db.Migrate(sqlDB); err != nil {
 		_ = sqlDB.Close()
+		closeTCP()
 		return nil, fmt.Errorf("migrate database: %w", err)
 	}
 
@@ -84,6 +105,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 
 	if err := bootstrap.Run(context.Background(), queries, cfg.SoloMode); err != nil {
 		_ = sqlDB.Close()
+		closeTCP()
 		return nil, fmt.Errorf("bootstrap: %w", err)
 	}
 
@@ -175,6 +197,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		devProxy, proxyErr := frontend.DevProxy(cfg.DevFrontend)
 		if proxyErr != nil {
 			_ = sqlDB.Close()
+			closeTCP()
 			return nil, fmt.Errorf("create dev proxy: %w", proxyErr)
 		}
 		mux.Handle("/", devProxy)
@@ -197,6 +220,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		queries:    queries,
 		server:     server,
 		sqlDB:      sqlDB,
+		tcpLn:      tcpLn,
 		shutdownCh: shutdownCh,
 		workerMgr:  wMgr,
 	}, nil
@@ -269,15 +293,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		return fmt.Errorf("remove stale socket: %w", err)
 	}
 
-	var tcpLn net.Listener
-	if s.cfg.Addr != "" {
-		var err error
-		tcpLn, err = net.Listen("tcp", s.cfg.Addr)
-		if err != nil {
-			_ = s.sqlDB.Close()
-			return fmt.Errorf("listen tcp: %w", err)
-		}
-	}
+	tcpLn := s.tcpLn
 
 	unixLn, err := net.Listen("unix", sockPath)
 	if err != nil {

@@ -63,8 +63,10 @@
   "devDependencies": {
     "@antfu/eslint-config": "^7.7.0",
     "@playwright/test": "^1.58.2",
+    "@resvg/resvg-js": "^2.6.2",
     "@solidjs/testing-library": "^0.8.10",
     "@vanilla-extract/vite-plugin": "^5.1.4",
+    "ds-store": "^0.1.6",
     "eslint": "^10.0.3",
     "eslint-plugin-solid": "^0.14.5",
     "jiti": "^2.6.1",

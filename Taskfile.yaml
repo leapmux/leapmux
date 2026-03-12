@@ -105,10 +105,17 @@ tasks:
   # --- Build ---
 
   build:
-    desc: Build all (backend + frontend)
+    desc: Build all (backend + frontend + desktop)
     cmds:
       - task: generate
       - task: build-backend
+      - |
+        if command -v wails >/dev/null 2>&1; then
+          task build-desktop
+        else
+          echo "⚠ Skipping desktop build: 'wails' is not installed."
+          echo "  Install it with your package manager (e.g. brew install wails) to build the desktop app."
+        fi
 
   embed-frontend:
     desc: Embed frontend assets for go:embed
@@ -201,6 +208,13 @@ tasks:
   _lint:
     internal: true
     deps: [lint-proto, lint-backend, lint-frontend]
+    cmds:
+      - |
+        if command -v wails >/dev/null 2>&1; then
+          task lint-desktop
+        else
+          echo "⚠ Skipping desktop lint: 'wails' is not installed."
+        fi
 
   lint-proto:
     desc: Lint Protocol Buffer definitions
@@ -247,6 +261,13 @@ tasks:
   _lint-fix:
     internal: true
     deps: [lint-fix-backend, lint-fix-frontend]
+    cmds:
+      - |
+        if command -v wails >/dev/null 2>&1; then
+          task lint-fix-desktop
+        else
+          echo "⚠ Skipping desktop lint-fix: 'wails' is not installed."
+        fi
 
   lint-fix-backend:
     desc: Auto-fix Go lint violations
@@ -319,6 +340,138 @@ tasks:
         -t {{.TAG}}
         .
 
+  # --- Desktop ---
+
+  generate-desktop-icons:
+    desc: Convert SVG icon to PNG (appicon) and ICO (Windows)
+    deps: [prepare-frontend]
+    sources:
+      - icons/leapmux-icon-light.svg
+    generates:
+      - desktop/build/appicon.png
+      - desktop/build/windows/icon.ico
+    cmds:
+      - bun desktop/scripts/generate-icons.mjs icons/leapmux-icon-light.svg desktop/build/appicon.png desktop/build/windows/icon.ico
+
+  prepare-desktop:
+    desc: Prepare desktop build dependencies
+    cmds:
+      - task: generate
+      - task: embed-frontend
+      - task: generate-desktop-icons
+
+  build-desktop:
+    desc: Build LeapMux desktop app for current platform
+    cmds:
+      - task: build-desktop-{{if eq OS "darwin"}}darwin{{else if eq OS "windows"}}windows{{else}}{{OS}}-{{ARCH}}{{end}}
+
+  build-desktop-darwin:
+    desc: Build LeapMux desktop app for macOS
+    dir: desktop
+    deps: [prepare-desktop]
+    method: timestamp
+    sources:
+      - desktop/go.mod
+      - desktop/go.sum
+      - "desktop/**/*.go"
+      - desktop/frontend/**/*
+      - desktop/build/appicon.png
+      - backend/go.mod
+      - backend/go.sum
+      - "backend/**/*.go"
+    generates:
+      - desktop/build/bin/LeapMux.app/Contents/MacOS/LeapMux
+    cmds:
+      - wails build -tags devtools -platform darwin/universal -ldflags "-X main.version={{.VERSION}}"
+      - task: package-desktop-dmg
+
+  package-desktop-dmg:
+    desc: Package LeapMux.app into a .dmg (macOS only)
+    platforms: [darwin]
+    deps: [prepare-frontend]
+    method: timestamp
+    sources:
+      - desktop/build/bin/LeapMux.app/Contents/MacOS/LeapMux
+      - desktop/scripts/create-dmg.sh
+    generates:
+      - desktop/build/bin/LeapMux-{{.VERSION}}.dmg
+    cmds:
+      - cd frontend && npm rebuild macos-alias 2>/dev/null || true
+      - >-
+        desktop/scripts/create-dmg.sh
+        "{{.VERSION}}"
+        desktop/build/bin/LeapMux.app
+        desktop/build/bin/LeapMux-{{.VERSION}}.dmg
+
+  build-desktop-linux-amd64:
+    desc: Build LeapMux desktop app for Linux (amd64)
+    dir: desktop
+    deps: [prepare-desktop]
+    method: timestamp
+    sources:
+      - desktop/go.mod
+      - desktop/go.sum
+      - "desktop/**/*.go"
+      - desktop/frontend/**/*
+      - backend/go.mod
+      - backend/go.sum
+      - "backend/**/*.go"
+    generates:
+      - desktop/build/bin/leapmux-desktop
+    cmds:
+      - wails build -tags devtools -o leapmux-desktop -platform linux/amd64 -ldflags "-X main.version={{.VERSION}}"
+
+  build-desktop-linux-arm64:
+    desc: Build LeapMux desktop app for Linux (arm64)
+    dir: desktop
+    deps: [prepare-desktop]
+    method: timestamp
+    sources:
+      - desktop/go.mod
+      - desktop/go.sum
+      - "desktop/**/*.go"
+      - desktop/frontend/**/*
+      - backend/go.mod
+      - backend/go.sum
+      - "backend/**/*.go"
+    generates:
+      - desktop/build/bin/leapmux-desktop
+    cmds:
+      - wails build -tags devtools -o leapmux-desktop -platform linux/arm64 -ldflags "-X main.version={{.VERSION}}"
+
+  build-desktop-windows:
+    desc: Build LeapMux desktop app for Windows
+    dir: desktop
+    deps: [prepare-desktop]
+    method: timestamp
+    sources:
+      - desktop/go.mod
+      - desktop/go.sum
+      - "desktop/**/*.go"
+      - desktop/frontend/**/*
+      - desktop/build/windows/icon.ico
+      - backend/go.mod
+      - backend/go.sum
+      - "backend/**/*.go"
+    generates:
+      - desktop/build/bin/LeapMux.exe
+    cmds:
+      - wails build -tags devtools -platform windows/amd64 -ldflags "-X main.version={{.VERSION}}"
+
+  lint-desktop:
+    desc: Lint desktop Go code
+    deps: [prepare-desktop]
+    dir: desktop
+    cmds:
+      - golangci-lint run ./...
+
+  lint-fix-desktop:
+    desc: Auto-fix desktop Go lint violations
+    deps: [prepare-desktop]
+    dir: desktop
+    cmds:
+      - golangci-lint run --fix ./...
+
   # --- Clean ---
 
   clean:
@@ -328,4 +481,5 @@ tasks:
       - rm -rf backend/generated/ backend/*/generated/ backend/*/*/generated/
       - rm -rf frontend/.output/ frontend/.vinxi/ frontend/node_modules/
       - rm -rf frontend/src/spinners/
+      - rm -rf desktop/build/bin/ desktop/build/appicon.png desktop/build/windows/icon.ico
       - rm -rf .task/

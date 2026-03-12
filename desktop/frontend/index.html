@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LeapMux</title>
+  <link rel="stylesheet" href="vendor/oat.min.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>LeapMux</h1>
+      <p>Choose how you'd like to connect</p>
+    </div>
+
+    <div class="mode-cards">
+      <div class="mode-card selected" data-mode="solo" onclick="selectMode('solo')">
+        <div class="radio"></div>
+        <div class="icon">&#x1F4BB;</div>
+        <h3>Solo</h3>
+        <p>Run LeapMux entirely on this machine. A Hub and Worker start together in a single process &mdash; no network setup required. Your data stays local. Ideal for personal use, local development, or trying out LeapMux.</p>
+      </div>
+      <div class="mode-card" data-mode="distributed" onclick="selectMode('distributed')">
+        <div class="radio"></div>
+        <div class="icon">&#x1F310;</div>
+        <h3>Distributed</h3>
+        <p>Connect to a remote LeapMux Hub shared across your team. Multiple workers can connect to a centralized hub for collaborative workflows. Requires a Hub server already running and accessible at the URL you provide.</p>
+      </div>
+    </div>
+
+    <div class="hub-url-section" id="hubUrlSection">
+      <div class="hub-url-inner">
+        <label for="hubUrl">Hub URL</label>
+        <input type="text" id="hubUrl" placeholder="https://hub.example.com" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+      </div>
+    </div>
+
+    <div class="connect-section">
+      <button class="connect-btn" id="connectBtn" onclick="connect()">Connect</button>
+      <div class="spinner" id="spinner"></div>
+      <div class="error-msg" id="errorMsg"><span id="errorMsgText"></span></div>
+    </div>
+
+    <div class="version" id="version"></div>
+  </div>
+
+  <script src="vendor/oat.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

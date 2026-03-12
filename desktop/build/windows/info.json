@@ -1,0 +1,19 @@
+{
+  "fixed": {
+    "file_version": "{{.Info.ProductVersion}}"
+  },
+  "info": {
+    "0409": {
+      "04B0": {
+        "CompanyName": "Event Loop, Inc.",
+        "FileDescription": "LeapMux Desktop",
+        "FileVersion": "{{.Info.ProductVersion}}",
+        "InternalName": "LeapMux",
+        "LegalCopyright": "Copyright Event Loop, Inc.",
+        "OriginalFilename": "LeapMux.exe",
+        "ProductName": "LeapMux",
+        "ProductVersion": "{{.Info.ProductVersion}}"
+      }
+    }
+  }
+}

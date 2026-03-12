@@ -1,0 +1,281 @@
+/* LeapMux Desktop — Light theme (warm sand base, teal primary) */
+:root {
+  --background: rgb(253 252 250);
+  --foreground: rgb(34 32 30);
+  --card: rgb(247 245 242);
+  --card-foreground: rgb(34 32 30);
+  --primary: rgb(13 148 136);
+  --primary-foreground: rgb(255 255 255);
+  --secondary: rgb(232 230 225);
+  --secondary-foreground: rgb(46 43 40);
+  --muted: rgb(237 235 231);
+  --muted-foreground: rgb(120 117 111);
+  --border: rgb(221 217 211);
+  --input: rgb(213 209 203);
+  --ring: rgb(13 148 136);
+  --danger: rgb(220 74 68);
+  --danger-foreground: rgb(255 255 255);
+}
+
+/* Dark theme */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: rgb(26 25 23);
+    --foreground: rgb(232 230 225);
+    --card: rgb(42 40 38);
+    --card-foreground: rgb(232 230 225);
+    --primary: rgb(20 184 166);
+    --primary-foreground: rgb(12 12 11);
+    --secondary: rgb(51 48 45);
+    --secondary-foreground: rgb(224 221 216);
+    --muted: rgb(46 43 40);
+    --muted-foreground: rgb(138 134 128);
+    --border: rgb(61 58 54);
+    --input: rgb(61 58 54);
+    --ring: rgb(20 184 166);
+    --danger: rgb(239 83 80);
+    --danger-foreground: rgb(255 255 255);
+  }
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--background);
+  color: var(--foreground);
+}
+
+/* Main container — starts invisible; faded in by JS when ready. */
+.container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 2rem;
+  gap: 2rem;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.container.visible {
+  opacity: 1;
+}
+
+/* Header */
+.header {
+  text-align: center;
+}
+
+.header h1 {
+  font-size: 1.75rem;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+.header p {
+  color: var(--muted-foreground);
+  font-size: 0.9rem;
+}
+
+/* Mode cards grid */
+.mode-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  width: 100%;
+  max-width: 640px;
+}
+
+/* Individual mode card */
+.mode-card {
+  position: relative;
+  background: var(--card);
+  border: 2px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 1.5rem;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.mode-card:hover {
+  border-color: var(--muted-foreground);
+}
+
+.mode-card.selected {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+.mode-card .icon {
+  font-size: 1.75rem;
+  line-height: 1;
+}
+
+.mode-card h3 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.mode-card p {
+  font-size: 0.8rem;
+  color: var(--muted-foreground);
+  line-height: 1.5;
+}
+
+/* Radio indicator */
+.mode-card .radio {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.15s;
+}
+
+.mode-card.selected .radio {
+  border-color: var(--primary);
+}
+
+.mode-card.selected .radio::after {
+  content: '';
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--primary);
+}
+
+/* Hub URL input area — animated height via grid 0fr → 1fr */
+.hub-url-section {
+  width: 100%;
+  max-width: 640px;
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.3s ease;
+}
+
+.hub-url-section.visible {
+  grid-template-rows: 1fr;
+}
+
+.hub-url-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+.hub-url-section label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 500;
+  margin-bottom: 0.4rem;
+}
+
+.hub-url-section input {
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--input);
+  border-radius: 0.5rem;
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 0.9rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.hub-url-section input:focus {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 2px rgb(from var(--ring) r g b / 0.2);
+}
+
+/* Connect button */
+.connect-section {
+  width: 100%;
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.connect-btn {
+  width: 100%;
+  padding: 0.7rem 1.5rem;
+  border: none;
+  border-radius: 0.5rem;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: 0.95rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.connect-btn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.connect-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Loading spinner */
+.spinner {
+  display: none;
+  width: 24px;
+  height: 24px;
+  border: 3px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+.spinner.visible {
+  display: inline-block;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Error message — animated height via grid 0fr → 1fr */
+.error-msg {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.3s ease;
+}
+
+.error-msg.visible {
+  grid-template-rows: 1fr;
+}
+
+.error-msg > span {
+  overflow: hidden;
+  min-height: 0;
+  color: var(--danger);
+  font-size: 0.85rem;
+  text-align: center;
+  word-break: break-word;
+}
+
+/* Version footer */
+.version {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+}

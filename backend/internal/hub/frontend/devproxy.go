@@ -18,12 +18,10 @@ func DevProxy(target string) (http.Handler, error) {
 
 	proxy := httputil.NewSingleHostReverseProxy(u)
 
-	// Preserve the original Director and ensure WebSocket upgrades
-	// are forwarded correctly to the Vite dev server.
-	originalDirector := proxy.Director
-	proxy.Director = func(r *http.Request) {
-		originalDirector(r)
-		r.Host = u.Host
+	// Ensure WebSocket upgrades are forwarded correctly to the Vite dev server.
+	proxy.Rewrite = func(r *httputil.ProxyRequest) {
+		r.SetURL(u)
+		r.Out.Host = u.Host
 	}
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
