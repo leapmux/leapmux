@@ -31,8 +31,9 @@ type RunConfig struct {
 	Name                string                      // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
 	Version             string                      // Build-time version string
 	DBMaxConns          int                         // Maximum number of open database connections (0 = default)
+	MaxMessageSize      int                         // Maximum reassembled channel message size in bytes (0 = 16 MiB default)
 	AgentStartupTimeout time.Duration               // Timeout for agent startup handshake (0 = 30s default)
-	EncryptionMode      leapmuxv1.EncryptionMode    // Encryption mode (disabled, classic, post-quantum)
+	EncryptionMode      leapmuxv1.EncryptionMode    // Encryption mode (classic, post-quantum)
 }
 
 // Run starts the worker and blocks until ctx is cancelled.
@@ -66,6 +67,9 @@ func Run(ctx context.Context, cfg RunConfig) error {
 	// Set up E2EE channel manager if composite key is provided.
 	if cfg.CompositeKey != nil {
 		channelMgr := channel.NewManager(cfg.CompositeKey, cfg.EncryptionMode, client.Send)
+		if cfg.MaxMessageSize > 0 {
+			channelMgr.SetMaxMessageSize(cfg.MaxMessageSize)
+		}
 
 		homeDir, _ := os.UserHomeDir()
 

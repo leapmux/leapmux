@@ -14,11 +14,11 @@ import (
 	"syscall"
 	"time"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/logging"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
+	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/worker"
 )
 
@@ -53,8 +53,11 @@ func runSolo(args []string, soloMode bool) error {
 		DefaultConfigDir:  defaultConfigDir,
 		DefaultConfigFile: defaultConfigFile,
 		FlagSetName:       "leapmux",
-		CLIFlags:          []string{"addr", "data-dir", "dev-frontend", "db-max-conns", "log-level"},
-		SoloMode:          soloMode,
+		CLIFlags:          []string{"addr", "data-dir", "dev-frontend", "db-max-conns", "max-message-size", "api-timeout-seconds", "agent-startup-timeout-seconds", "worktree-create-timeout-seconds", "log-level"},
+		ExtraFlags: []hubconfig.ExtraFlagDef{
+			{Name: "encryption-mode", KoanfKey: "encryption_mode", Usage: "encryption mode (classic, post-quantum)", StrDefault: "post-quantum"},
+		},
+		SoloMode: soloMode,
 	})
 	if err != nil {
 		return err
@@ -171,8 +174,9 @@ func runSolo(args []string, soloMode bool) error {
 			WorkerID:            state.WorkerID,
 			Version:             version,
 			DBMaxConns:          hubCfg.DBMaxConns,
+			MaxMessageSize:      hubCfg.MaxMessageSize,
 			AgentStartupTimeout: hubCfg.AgentStartupTimeout(),
-			EncryptionMode:      leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+			EncryptionMode:      workerconfig.ParseEncryptionMode(hubCfg.Extras["encryption_mode"]),
 		}); err != nil {
 			slog.Error("worker error", "error", err)
 		}
