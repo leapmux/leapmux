@@ -4,8 +4,8 @@
   "description": "Multi-agent workspace manager",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#ffffff",
+  "background_color": "#FDFCFA",
+  "theme_color": "#0D9488",
   "icons": [
     {
       "src": "/icons/icon-192.png",

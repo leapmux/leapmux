@@ -23,6 +23,9 @@ node_modules/
 .vinxi/
 .output/
 frontend/dist/
+frontend/public/favicon.ico
+frontend/public/favicon.svg
+frontend/public/icons/
 frontend/public/leapmux-service-worker-*
 frontend/app.config.timestamp_*
 frontend/src/spinners/
