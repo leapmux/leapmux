@@ -208,6 +208,13 @@ tasks:
   _lint:
     internal: true
     deps: [lint-proto, lint-backend, lint-frontend]
+    cmds:
+      - |
+        if command -v wails >/dev/null 2>&1; then
+          task lint-desktop
+        else
+          echo "⚠ Skipping desktop lint: 'wails' is not installed."
+        fi
 
   lint-proto:
     desc: Lint Protocol Buffer definitions
@@ -254,6 +261,13 @@ tasks:
   _lint-fix:
     internal: true
     deps: [lint-fix-backend, lint-fix-frontend]
+    cmds:
+      - |
+        if command -v wails >/dev/null 2>&1; then
+          task lint-fix-desktop
+        else
+          echo "⚠ Skipping desktop lint-fix: 'wails' is not installed."
+        fi
 
   lint-fix-backend:
     desc: Auto-fix Go lint violations
@@ -397,9 +411,17 @@ tasks:
 
   lint-desktop:
     desc: Lint desktop Go code
+    deps: [prepare-desktop]
     dir: desktop
     cmds:
       - golangci-lint run ./...
+
+  lint-fix-desktop:
+    desc: Auto-fix desktop Go lint violations
+    deps: [prepare-desktop]
+    dir: desktop
+    cmds:
+      - golangci-lint run --fix ./...
 
   # --- Clean ---
 
