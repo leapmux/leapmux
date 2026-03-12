@@ -362,16 +362,25 @@ tasks:
 
   build-desktop:
     desc: Build LeapMux desktop app for current platform
-    dir: desktop
-    deps: [prepare-desktop]
     cmds:
-      - wails build -tags devtools -ldflags "-X main.version={{.VERSION}}"
-      - task: package-desktop-dmg
+      - task: build-desktop-{{if eq OS "darwin"}}darwin{{else if eq OS "windows"}}windows{{else}}{{OS}}-{{ARCH}}{{end}}
 
   build-desktop-darwin:
     desc: Build LeapMux desktop app for macOS
     dir: desktop
     deps: [prepare-desktop]
+    method: timestamp
+    sources:
+      - desktop/go.mod
+      - desktop/go.sum
+      - "desktop/**/*.go"
+      - desktop/frontend/**/*
+      - desktop/build/appicon.png
+      - backend/go.mod
+      - backend/go.sum
+      - "backend/**/*.go"
+    generates:
+      - desktop/build/bin/LeapMux.app/Contents/MacOS/LeapMux
     cmds:
       - wails build -tags devtools -platform darwin/universal -ldflags "-X main.version={{.VERSION}}"
       - task: package-desktop-dmg
@@ -380,6 +389,12 @@ tasks:
     desc: Package LeapMux.app into a .dmg (macOS only)
     platforms: [darwin]
     deps: [prepare-frontend]
+    method: timestamp
+    sources:
+      - desktop/build/bin/LeapMux.app/Contents/MacOS/LeapMux
+      - desktop/scripts/create-dmg.sh
+    generates:
+      - desktop/build/bin/LeapMux-{{.VERSION}}.dmg
     cmds:
       - cd frontend && npm rebuild macos-alias 2>/dev/null || true
       - >-
@@ -392,20 +407,54 @@ tasks:
     desc: Build LeapMux desktop app for Linux (amd64)
     dir: desktop
     deps: [prepare-desktop]
+    method: timestamp
+    sources:
+      - desktop/go.mod
+      - desktop/go.sum
+      - "desktop/**/*.go"
+      - desktop/frontend/**/*
+      - backend/go.mod
+      - backend/go.sum
+      - "backend/**/*.go"
+    generates:
+      - desktop/build/bin/leapmux-desktop
     cmds:
-      - wails build -tags devtools -platform linux/amd64 -ldflags "-X main.version={{.VERSION}}"
+      - wails build -tags devtools -o leapmux-desktop -platform linux/amd64 -ldflags "-X main.version={{.VERSION}}"
 
   build-desktop-linux-arm64:
     desc: Build LeapMux desktop app for Linux (arm64)
     dir: desktop
     deps: [prepare-desktop]
+    method: timestamp
+    sources:
+      - desktop/go.mod
+      - desktop/go.sum
+      - "desktop/**/*.go"
+      - desktop/frontend/**/*
+      - backend/go.mod
+      - backend/go.sum
+      - "backend/**/*.go"
+    generates:
+      - desktop/build/bin/leapmux-desktop
     cmds:
-      - wails build -tags devtools -platform linux/arm64 -ldflags "-X main.version={{.VERSION}}"
+      - wails build -tags devtools -o leapmux-desktop -platform linux/arm64 -ldflags "-X main.version={{.VERSION}}"
 
   build-desktop-windows:
     desc: Build LeapMux desktop app for Windows
     dir: desktop
     deps: [prepare-desktop]
+    method: timestamp
+    sources:
+      - desktop/go.mod
+      - desktop/go.sum
+      - "desktop/**/*.go"
+      - desktop/frontend/**/*
+      - desktop/build/windows/icon.ico
+      - backend/go.mod
+      - backend/go.sum
+      - "backend/**/*.go"
+    generates:
+      - desktop/build/bin/LeapMux.exe
     cmds:
       - wails build -tags devtools -platform windows/amd64 -ldflags "-X main.version={{.VERSION}}"
 
