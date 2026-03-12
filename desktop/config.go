@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 )
 
-// DesktopConfig persists the user's last connection mode and hub URL.
+// DesktopConfig persists the user's last connection mode, hub URL, and window size.
 type DesktopConfig struct {
-	Mode   string `json:"mode"`    // "solo" or "distributed"
-	HubURL string `json:"hub_url"` // Only for distributed
+	Mode         string `json:"mode"`                    // "solo" or "distributed"
+	HubURL       string `json:"hub_url"`                 // Only for distributed
+	WindowWidth  int    `json:"window_width,omitempty"`  // Saved window width
+	WindowHeight int    `json:"window_height,omitempty"` // Saved window height
 }
 
 func configPath() (string, error) {

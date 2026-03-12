@@ -51,7 +51,7 @@ html, body {
   color: var(--foreground);
 }
 
-/* Main container */
+/* Main container — starts invisible; faded in by JS when ready. */
 .container {
   display: flex;
   flex-direction: column;
@@ -60,6 +60,12 @@ html, body {
   min-height: 100vh;
   padding: 2rem;
   gap: 2rem;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.container.visible {
+  opacity: 1;
 }
 
 /* Header */
@@ -153,19 +159,22 @@ html, body {
   background: var(--primary);
 }
 
-/* Hub URL input area */
+/* Hub URL input area — animated height via grid 0fr → 1fr */
 .hub-url-section {
   width: 100%;
   max-width: 640px;
-  opacity: 0;
-  max-height: 0;
-  overflow: hidden;
-  transition: opacity 0.2s, max-height 0.2s;
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.3s ease;
 }
 
 .hub-url-section.visible {
-  opacity: 1;
-  max-height: 80px;
+  grid-template-rows: 1fr;
+}
+
+.hub-url-inner {
+  overflow: hidden;
+  min-height: 0;
 }
 
 .hub-url-section label {
@@ -243,17 +252,24 @@ html, body {
   to { transform: rotate(360deg); }
 }
 
-/* Error message */
+/* Error message — animated height via grid 0fr → 1fr */
 .error-msg {
-  display: none;
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.3s ease;
+}
+
+.error-msg.visible {
+  grid-template-rows: 1fr;
+}
+
+.error-msg > span {
+  overflow: hidden;
+  min-height: 0;
   color: var(--danger);
   font-size: 0.85rem;
   text-align: center;
   word-break: break-word;
-}
-
-.error-msg.visible {
-  display: block;
 }
 
 /* Version footer */

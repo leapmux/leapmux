@@ -30,14 +30,16 @@
     </div>
 
     <div class="hub-url-section" id="hubUrlSection">
-      <label for="hubUrl">Hub URL</label>
-      <input type="text" id="hubUrl" placeholder="https://hub.example.com">
+      <div class="hub-url-inner">
+        <label for="hubUrl">Hub URL</label>
+        <input type="text" id="hubUrl" placeholder="https://hub.example.com" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+      </div>
     </div>
 
     <div class="connect-section">
       <button class="connect-btn" id="connectBtn" onclick="connect()">Connect</button>
       <div class="spinner" id="spinner"></div>
-      <div class="error-msg" id="errorMsg"></div>
+      <div class="error-msg" id="errorMsg"><span id="errorMsgText"></span></div>
     </div>
 
     <div class="version" id="version"></div>

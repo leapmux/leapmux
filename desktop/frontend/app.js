@@ -1,13 +1,66 @@
 // Current selected mode.
 let selectedMode = 'solo';
 
+// Saved config (populated during init).
+let savedConfig = null;
+
+// Whether the container UI is currently visible.
+let uiVisible = false;
+
 // DOM references.
+const container = document.querySelector('.container');
 const hubUrlSection = document.getElementById('hubUrlSection');
 const hubUrlInput = document.getElementById('hubUrl');
 const connectBtn = document.getElementById('connectBtn');
 const spinner = document.getElementById('spinner');
 const errorMsg = document.getElementById('errorMsg');
+const errorMsgText = document.getElementById('errorMsgText');
 const versionEl = document.getElementById('version');
+
+// Fade the container in. Returns a promise that resolves after the transition.
+function fadeIn() {
+  if (uiVisible) return Promise.resolve();
+  uiVisible = true;
+  container.classList.add('visible');
+  return new Promise(function (resolve) {
+    container.addEventListener('transitionend', resolve, { once: true });
+  });
+}
+
+// Fade the container out. Returns a promise that resolves after the transition.
+function fadeOut() {
+  if (!uiVisible) return Promise.resolve();
+  uiVisible = false;
+  container.classList.remove('visible');
+  return new Promise(function (resolve) {
+    container.addEventListener('transitionend', resolve, { once: true });
+  });
+}
+
+// Check whether the Hub URL looks like a valid http(s) URL.
+function isValidHubUrl(value) {
+  var s = value.trim();
+  if (!s) return false;
+  // Accept with explicit scheme or bare hostname (we prepend https:// later).
+  if (!/^https?:\/\//i.test(s)) {
+    s = 'https://' + s;
+  }
+  try {
+    var u = new URL(s);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch (_) {
+    return false;
+  }
+}
+
+// Update the Connect button's enabled state based on the current mode and input.
+function updateConnectBtn() {
+  if (selectedMode === 'distributed') {
+    connectBtn.disabled = !isValidHubUrl(hubUrlInput.value);
+  } else {
+    connectBtn.disabled = false;
+  }
+}
 
 // Select a connection mode (solo or distributed).
 function selectMode(mode) {
@@ -19,60 +72,134 @@ function selectMode(mode) {
 
   hubUrlSection.classList.toggle('visible', mode === 'distributed');
   clearError();
+  updateConnectBtn();
 }
+
+// Listen for input changes on the Hub URL field.
+hubUrlInput.addEventListener('input', function () {
+  clearError();
+  updateConnectBtn();
+});
 
 // Show an error message.
 function showError(msg) {
-  errorMsg.textContent = msg;
+  errorMsgText.textContent = msg;
   errorMsg.classList.add('visible');
 }
 
 // Clear error message.
 function clearError() {
-  errorMsg.textContent = '';
+  errorMsgText.textContent = '';
   errorMsg.classList.remove('visible');
 }
 
 // Set loading state.
 function setLoading(loading) {
-  connectBtn.disabled = loading;
   spinner.classList.toggle('visible', loading);
   if (loading) {
+    connectBtn.disabled = true;
     clearError();
+  } else {
+    updateConnectBtn();
   }
 }
 
-// Connect to LeapMux.
-async function connect() {
-  setLoading(true);
+// Animate the window from its current size to the target size over the given
+// duration (ms), keeping it centered. Uses an ease-out cubic curve.
+function animateWindowResize(targetW, targetH, durationMs) {
+  const rt = window.runtime;
+  if (!rt || !rt.WindowGetSize) {
+    return Promise.resolve();
+  }
+
+  return rt.WindowGetSize().then(function (cur) {
+    const startW = cur.w;
+    const startH = cur.h;
+
+    // Nothing to do if already at or larger than target.
+    if (startW >= targetW && startH >= targetH) {
+      return;
+    }
+
+    // Only grow dimensions that are smaller than the target.
+    const endW = Math.max(startW, targetW);
+    const endH = Math.max(startH, targetH);
+
+    return new Promise(function (resolve) {
+      const startTime = performance.now();
+
+      function step(now) {
+        const elapsed = now - startTime;
+        const t = Math.min(elapsed / durationMs, 1);
+        // Ease-out cubic: 1 - (1 - t)^3
+        const eased = 1 - Math.pow(1 - t, 3);
+
+        const w = Math.round(startW + (endW - startW) * eased);
+        const h = Math.round(startH + (endH - startH) * eased);
+
+        rt.WindowSetSize(w, h);
+        rt.WindowCenter();
+
+        if (t < 1) {
+          requestAnimationFrame(step);
+        } else {
+          resolve();
+        }
+      }
+
+      requestAnimationFrame(step);
+    });
+  });
+}
+
+// Perform the post-connection transition: fade out UI if visible, resize, navigate.
+async function navigateAfterConnect(url) {
+  if (uiVisible) {
+    await fadeOut();
+  }
+
+  var targetW = 1280;
+  var targetH = 800;
+  if (savedConfig && savedConfig.window_width > 0 && savedConfig.window_height > 0) {
+    targetW = savedConfig.window_width;
+    targetH = savedConfig.window_height;
+  }
+  await animateWindowResize(targetW, targetH, 400);
+
+  window.location.href = url;
+}
+
+// Connect to LeapMux. If showUI is true, the UI is already visible and loading
+// indicators are managed here. If false, this is a silent auto-connect attempt.
+async function connect(showUI) {
+  if (showUI) {
+    setLoading(true);
+  }
 
   try {
     let url;
     if (selectedMode === 'solo') {
       url = await window.go.main.App.ConnectSolo();
     } else {
-      const hubUrl = hubUrlInput.value.trim();
-      if (!hubUrl) {
-        showError('Please enter a Hub URL.');
-        setLoading(false);
-        return;
-      }
-      url = await window.go.main.App.ConnectDistributed(hubUrl);
+      url = await window.go.main.App.ConnectDistributed(hubUrlInput.value.trim());
     }
 
-    // Navigate the WebView to the LeapMux URL.
-    window.location.href = url;
+    await navigateAfterConnect(url);
   } catch (err) {
-    showError(err.message || String(err));
+    // On failure, ensure the UI is visible so the user can see the error and retry.
+    await fadeIn();
     setLoading(false);
+    showError(err.message || String(err));
   }
 }
 
-// Initialize on load: restore saved config and display version.
+// Initialize on load: restore saved config, display version, and auto-connect
+// if the user has previously connected successfully.
 async function init() {
   try {
     const config = await window.go.main.App.GetConfig();
     if (config && config.mode) {
+      savedConfig = config;
       selectMode(config.mode);
       if (config.mode === 'distributed' && config.hub_url) {
         hubUrlInput.value = config.hub_url;
@@ -89,6 +216,22 @@ async function init() {
     }
   } catch (_) {
     // Ignore version fetch errors.
+  }
+
+  if (savedConfig) {
+    // Returning user: try auto-connect silently. Show the UI only if it takes
+    // longer than 1 second (e.g. solo mode startup).
+    var showTimer = setTimeout(function () {
+      setLoading(true);
+      fadeIn();
+    }, 1000);
+
+    // connect() will fade in on error, or navigate on success.
+    await connect(false);
+    clearTimeout(showTimer);
+  } else {
+    // First launch: show the mode selection UI immediately.
+    fadeIn();
   }
 }
 

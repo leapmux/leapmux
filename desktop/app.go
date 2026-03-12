@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/solo"
+	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // App is the main application struct bound to the frontend via Wails.
@@ -31,8 +32,23 @@ func (a *App) startup(ctx context.Context) {
 	a.config = cfg
 }
 
+// domReady is called after the frontend DOM is loaded. Center the window here
+// so it takes effect after the window is fully laid out.
+func (a *App) domReady(_ context.Context) {
+	wailsRuntime.WindowCenter(a.ctx)
+}
+
 // shutdown is called when the app is closing.
 func (a *App) shutdown(_ context.Context) {
+	// Save the current window size if the user has connected at least once.
+	if a.config != nil && a.config.Mode != "" {
+		w, h := wailsRuntime.WindowGetSize(a.ctx)
+		if w > 0 && h > 0 {
+			a.config.WindowWidth = w
+			a.config.WindowHeight = h
+			_ = SaveConfig(a.config)
+		}
+	}
 	a.stopSolo()
 }
 
