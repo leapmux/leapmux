@@ -285,13 +285,15 @@ Run specific linters:
 task lint-proto      # Lint Protocol Buffer definitions
 task lint-backend    # Lint Go code (hub + worker)
 task lint-frontend   # Lint frontend code (ESLint)
+task lint-desktop    # Lint desktop Go code (requires wails)
 ```
 
 Auto-fix lint violations:
 ```bash
-task lint-fix            # Fix both Go and frontend
+task lint-fix            # Fix all (Go, frontend, desktop)
 task lint-fix-backend    # Fix Go code (golangci-lint --fix)
 task lint-fix-frontend   # Fix frontend code (ESLint --fix)
+task lint-fix-desktop    # Fix desktop Go code (requires wails)
 ```
 
 ### Code Generation
