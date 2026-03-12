@@ -39,9 +39,8 @@ message GetWorkerEncryptionModeResponse {
 // EncryptionMode specifies which E2EE handshake protocol the Worker uses.
 enum EncryptionMode {
   ENCRYPTION_MODE_UNSPECIFIED = 0;    // Treated as POST_QUANTUM
-  ENCRYPTION_MODE_DISABLED = 1;       // No encryption (solo mode only)
-  ENCRYPTION_MODE_CLASSIC = 2;        // Classical Noise_NK (X25519 only)
-  ENCRYPTION_MODE_POST_QUANTUM = 3;   // Hybrid PQ Noise_NK (X25519 + ML-KEM + SLH-DSA)
+  ENCRYPTION_MODE_CLASSIC = 1;        // Classical Noise_NK (X25519 only)
+  ENCRYPTION_MODE_POST_QUANTUM = 2;   // Hybrid PQ Noise_NK (X25519 + ML-KEM + SLH-DSA)
 }
 
 message OpenChannelRequest {

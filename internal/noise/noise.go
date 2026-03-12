@@ -221,18 +221,12 @@ func (ss *symmetricState) hybridSplit(extraKeyMaterial []byte) (*CipherState, *C
 
 // CipherState manages a key and nonce for post-handshake encryption/decryption.
 type CipherState struct {
-	k           [keyLen]byte
-	n           uint64
-	passthrough bool // when true, data passes through without encryption
+	k [keyLen]byte
+	n uint64
 }
 
 // Encrypt encrypts plaintext using the cipher key.
 func (cs *CipherState) Encrypt(plaintext []byte) ([]byte, error) {
-	if cs.passthrough {
-		out := make([]byte, len(plaintext))
-		copy(out, plaintext)
-		return out, nil
-	}
 	if len(plaintext) > MaxPlaintextSize {
 		return nil, fmt.Errorf("noise: plaintext too large (%d > %d)", len(plaintext), MaxPlaintextSize)
 	}
@@ -249,11 +243,6 @@ func (cs *CipherState) Encrypt(plaintext []byte) ([]byte, error) {
 
 // Decrypt decrypts ciphertext using the cipher key.
 func (cs *CipherState) Decrypt(ciphertext []byte) ([]byte, error) {
-	if cs.passthrough {
-		out := make([]byte, len(ciphertext))
-		copy(out, ciphertext)
-		return out, nil
-	}
 	if cs.n > HardNonceLimit {
 		return nil, fmt.Errorf("noise: receive nonce exceeded hard limit")
 	}
@@ -272,9 +261,6 @@ func (cs *CipherState) Nonce() uint64 {
 
 // NeedsRekey returns true if the nonce has exceeded the soft limit.
 func (cs *CipherState) NeedsRekey() bool {
-	if cs.passthrough {
-		return false
-	}
 	return cs.n > SoftNonceLimit
 }
 
@@ -300,15 +286,6 @@ func (s *Session) Decrypt(ciphertext []byte) ([]byte, error) {
 // NeedsRekey returns true if the send nonce has exceeded the soft limit.
 func (s *Session) NeedsRekey() bool {
 	return s.Send.NeedsRekey()
-}
-
-// NewPassthroughSession creates a Session that passes data through without encryption.
-// Used when encryption is disabled (solo mode only).
-func NewPassthroughSession() *Session {
-	return &Session{
-		Send:    &CipherState{passthrough: true},
-		Receive: &CipherState{passthrough: true},
-	}
 }
 
 // ---- Handshake State (for two-step initiator) ----

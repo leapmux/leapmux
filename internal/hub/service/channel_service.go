@@ -125,8 +125,6 @@ func (s *ChannelService) OpenChannel(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))
 	}
 
-	// handshake_payload may be empty for disabled encryption mode (solo/loopback).
-
 	// Verify user has access to this worker and get the worker's org.
 	worker, err := s.verifyWorkerAccess(ctx, user, workerID)
 	if err != nil {

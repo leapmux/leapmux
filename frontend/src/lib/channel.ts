@@ -133,33 +133,6 @@ export interface ChannelManagerOpts {
   rpcTimeout?: number
 }
 
-/** A no-op cipher that passes data through without encryption (disabled mode). */
-class PassthroughCipher {
-  encrypt(plaintext: Uint8Array): Uint8Array {
-    const out = new Uint8Array(plaintext.length)
-    out.set(plaintext)
-    return out
-  }
-
-  decrypt(ciphertext: Uint8Array): Uint8Array {
-    const out = new Uint8Array(ciphertext.length)
-    out.set(ciphertext)
-    return out
-  }
-
-  needsRekey(): boolean {
-    return false
-  }
-}
-
-/** Create a passthrough session that passes data through without encryption. */
-function createPassthroughSession(): Session {
-  return {
-    send: new PassthroughCipher() as any,
-    receive: new PassthroughCipher() as any,
-  }
-}
-
 /** ChannelManager manages encrypted E2EE channels to Workers. */
 export class ChannelManager {
   private transport: ChannelTransport
@@ -230,53 +203,40 @@ export class ChannelManager {
   async openChannel(workerId: string): Promise<string> {
     // 1. Get Worker's encryption mode from live connection, then fetch keys.
     const mode = await this.transport.getWorkerEncryptionMode(workerId)
-    const keyBundle = mode !== EncryptionMode.DISABLED
-      ? await this.transport.getWorkerPublicKey(workerId)
-      : { x25519PublicKey: new Uint8Array(0), mlkemPublicKey: new Uint8Array(0), slhdsaPublicKey: new Uint8Array(0) }
+    const keyBundle = await this.transport.getWorkerPublicKey(workerId)
 
-    // 2. Key pinning (TOFU model) — pin composite key (skip for disabled mode).
-    let pinKey = ''
-    let pinned: { publicKeyHex: string, firstSeen: number } | null = null
-    let publicKeyHex = ''
+    // 2. Key pinning (TOFU model) — pin composite key.
+    const compositeKeyBytes = concatBytes(keyBundle.x25519PublicKey, keyBundle.mlkemPublicKey, keyBundle.slhdsaPublicKey)
+    const publicKeyHex = bytesToHex(compositeKeyBytes)
+    const pinKey = `leapmux:key-pin:${workerId}`
+    const pinned = safeGetJson<{ publicKeyHex: string, firstSeen: number }>(pinKey) ?? null
 
-    if (mode !== EncryptionMode.DISABLED) {
-      const compositeKeyBytes = concatBytes(keyBundle.x25519PublicKey, keyBundle.mlkemPublicKey, keyBundle.slhdsaPublicKey)
-      publicKeyHex = bytesToHex(compositeKeyBytes)
-      pinKey = `leapmux:key-pin:${workerId}`
-      pinned = safeGetJson<{ publicKeyHex: string, firstSeen: number }>(pinKey) ?? null
-
-      if (pinned && pinned.publicKeyHex !== publicKeyHex) {
-        // Auto-reject if the user already rejected this worker in this session.
-        if (this.rejectedWorkers.has(workerId)) {
-          throw new ChannelError('client', 'Worker public key rejected by user')
-        }
-
-        // Key mismatch — ask user.
-        const { keyFingerprintHex } = await import('./fingerprint')
-        const decision = await this.transport.confirmKeyPin(
-          workerId,
-          keyFingerprintHex(pinned.publicKeyHex),
-          keyFingerprintHex(publicKeyHex),
-        )
-        if (decision === 'reject') {
-          this.rejectedWorkers.add(workerId)
-          throw new ChannelError('client', 'Worker public key rejected by user')
-        }
-        // User accepted the new key.
-        safeSetJson(pinKey, { publicKeyHex, firstSeen: Date.now() })
+    if (pinned && pinned.publicKeyHex !== publicKeyHex) {
+      // Auto-reject if the user already rejected this worker in this session.
+      if (this.rejectedWorkers.has(workerId)) {
+        throw new ChannelError('client', 'Worker public key rejected by user')
       }
+
+      // Key mismatch — ask user.
+      const { keyFingerprintHex } = await import('./fingerprint')
+      const decision = await this.transport.confirmKeyPin(
+        workerId,
+        keyFingerprintHex(pinned.publicKeyHex),
+        keyFingerprintHex(publicKeyHex),
+      )
+      if (decision === 'reject') {
+        this.rejectedWorkers.add(workerId)
+        throw new ChannelError('client', 'Worker public key rejected by user')
+      }
+      // User accepted the new key.
+      safeSetJson(pinKey, { publicKeyHex, firstSeen: Date.now() })
     }
 
     // 3. Perform handshake based on encryption mode.
     let session: Session
     let result: { channelId: string, handshakePayload: Uint8Array }
 
-    if (mode === EncryptionMode.DISABLED) {
-      // No encryption — open channel with empty handshake, use passthrough session.
-      result = await this.transport.openChannel(workerId, new Uint8Array(0))
-      session = createPassthroughSession()
-    }
-    else if (mode === EncryptionMode.CLASSIC) {
+    if (mode === EncryptionMode.CLASSIC) {
       // Classical Noise_NK (X25519 only).
       const hs = this.classicHS1(keyBundle.x25519PublicKey)
       result = await this.transport.openChannel(workerId, hs.message1)
@@ -306,8 +266,8 @@ export class ChannelManager {
 
     this.channels.set(result.channelId, channel)
 
-    // 5. Pin key on first use (TOFU) — skip for disabled mode.
-    if (mode !== EncryptionMode.DISABLED && !pinned) {
+    // 5. Pin key on first use (TOFU).
+    if (!pinned) {
       safeSetJson(pinKey, { publicKeyHex, firstSeen: Date.now() })
     }
 

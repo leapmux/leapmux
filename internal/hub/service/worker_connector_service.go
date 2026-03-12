@@ -332,10 +332,6 @@ func (s *WorkerConnectorService) processWorkerMessage(
 			}
 			encMode = leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM
 		}
-		// Reject disabled encryption in non-solo mode.
-		if encMode == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED && !s.soloMode {
-			return fmt.Errorf("disabled encryption mode is only allowed in solo mode")
-		}
 		conn.EncryptionMode = encMode
 		// Persist worker's public keys if provided (sent with the initial heartbeat).
 		if pk := hb.GetPublicKey(); len(pk) > 0 {

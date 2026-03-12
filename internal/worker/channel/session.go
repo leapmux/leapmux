@@ -90,9 +90,6 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 	var err error
 
 	switch m.encryptionMode {
-	case leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED:
-		// No encryption — use passthrough session.
-		session = noiseutil.NewPassthroughSession()
 	case leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC:
 		// Classical Noise_NK (X25519 only, no PQ).
 		handshakeResp, session, err = noiseutil.ClassicalResponderHandshake(

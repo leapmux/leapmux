@@ -157,8 +157,7 @@ func runWorker(args []string) error {
 	client.SetChannelMgr(channelMgr)
 	client.EncryptionMode = encMode
 	client.PublicKey = compositeKey.X25519Public
-	if encMode != leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC &&
-		encMode != leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED {
+	if encMode != leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC {
 		client.MlkemPublicKey = compositeKey.MlkemPublicKeyBytes()
 		slhdsaPub, _ := compositeKey.SlhdsaPublicKeyBytes()
 		client.SlhdsaPublicKey = slhdsaPub

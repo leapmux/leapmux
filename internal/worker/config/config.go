@@ -49,8 +49,6 @@ func (c *Config) EncryptionModeProto() leapmuxv1.EncryptionMode {
 // ParseEncryptionMode parses a string encryption mode to its protobuf enum value.
 func ParseEncryptionMode(s string) leapmuxv1.EncryptionMode {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "disabled":
-		return leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED
 	case "classic":
 		return leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC
 	case "post-quantum", "post_quantum", "pq", "":
@@ -144,7 +142,7 @@ func Load(args []string) (*Config, bool, error) {
 	fs.Int("max-message-size", 0, "maximum reassembled channel message size in bytes (default 16 MiB)")
 	fs.Int("agent-startup-timeout-seconds", DefaultAgentStartupTimeoutSeconds, "agent startup timeout in seconds")
 	fs.String("log-level", defaultLogLevel, "log level (debug, info, warn, error)")
-	fs.String("encryption-mode", "post-quantum", "encryption mode (disabled, classic, post-quantum)")
+	fs.String("encryption-mode", "post-quantum", "encryption mode (classic, post-quantum)")
 	showVersion := fs.Bool("version", false, "print version and exit")
 
 	if err := fs.Parse(args); err != nil {
