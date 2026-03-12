@@ -351,7 +351,7 @@ tasks:
       - desktop/build/appicon.png
       - desktop/build/windows/icon.ico
     cmds:
-      - bun desktop/scripts/generate-icons.mjs icons/leapmux-icon-light.svg desktop/build/appicon.png desktop/build/windows/icon.ico
+      - NODE_PATH=frontend/node_modules bun desktop/scripts/generate-icons.mjs icons/leapmux-icon-light.svg desktop/build/appicon.png desktop/build/windows/icon.ico
 
   prepare-desktop:
     desc: Prepare desktop build dependencies
