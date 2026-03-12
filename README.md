@@ -10,17 +10,24 @@ LeapMux is a **multiplexer for AI coding agents**. Run multiple agent instances 
 
 ## Key Features
 
-- **Multi-Agent Workspaces**: Run multiple local or remote Claude Code instances simultaneously
-- **Tiling Layout**: Split the workspace into resizable horizontal/vertical panes — run chats and terminals side by side
-- **Desktop App**: Native macOS, Linux, and Windows desktop application (optional)
-- **Git-Aware File Browser**: Browse files on remote backends with real-time git status, change/staged/unstaged filters, and inline diffs
-- **Rich File Viewer**: Syntax-highlighted source, image preview with zoom/pan, hex view for binaries, and side-by-side or unified diffs
-- **Git Worktree Management**: Agents and terminals auto-create isolated git worktrees per task, with dirty-worktree protection
-- **End-to-End Encryption**: All Frontend-Worker traffic is encrypted via hybrid post-quantum Noise_NK (X25519 + ML-KEM-1024 + SLH-DSA) over multiplexed WebSocket channels
-- **Multi-Organization Support**: Create teams with role-based access control (Owner/Admin/Member)
-- **Workspace Sharing**: Collaborate by sharing workspaces with specific users or organization members
-- **Backend Management**: Register and manage multiple development backends with approval workflow
-- **NAT Traversal**: Workers initiate outbound connections, so they run behind firewalls without port forwarding
+- **Multi-Agent Workspaces**
+  - Run multiple local or remote Claude Code instances simultaneously
+- **Tiling Layout**
+  - Split the workspace into resizable horizontal/vertical panes — run chats and terminals side by side
+- **Desktop App**
+  - Native macOS, Linux, and Windows desktop application (optional)
+- **Git-Aware File Browser**
+  - Browse files on remote backends with real-time git status, change/staged/unstaged filters, and inline diffs
+- **Git Worktree Management**
+  - Agents and terminals auto-create isolated git worktrees per task, with dirty-worktree protection
+- **End-to-End Encryption**
+  - All Frontend-Worker traffic is encrypted via hybrid post-quantum Noise_NK (X25519 + ML-KEM-1024 + SLH-DSA) over multiplexed WebSocket channels
+- **Multi-Organization Support**
+  - Create teams with role-based access control (Owner/Admin/Member)
+- **Workspace Sharing**
+  - Collaborate by sharing workspaces with specific users or organization members
+- **NAT Traversal**
+  - Workers initiate outbound connections, so they run behind firewalls without port forwarding
 
 ---
 
@@ -63,11 +70,11 @@ Run `leapmux` with no subcommand for a zero-config, single-user setup. Hub and W
 └─────────┼────────────────────────────────────────────┘
           │
           ▼
-   ┌──────────────┐
-   │   Frontend   │
-   │  (Browser /  │
-   │  Desktop App)│
-   └──────────────┘
+  ┌───────────────┐
+  │   Frontend    │
+  │  (Browser /   │
+  │  Desktop App) │
+  └───────────────┘
 ```
 
 ### Distributed Mode
@@ -78,12 +85,12 @@ For multi-user and remote setups, run `leapmux hub` and `leapmux worker` separat
 ┌─────────────────┐              ┌─────────────────┐                 ┌───────────────────┐
 │                 │  ConnectRPC  │                 │   gRPC (bidi)   │  Worker 1         │
 │    Frontend     │◄────────────►│      Hub        │◄───────────────►│  ┌─────────────┐  │
-│    (Browser)    │  WebSocket   │    (Relay)      │                 │  │ Claude Code │  │
-│                 │              │                 │                 │  │ (multiple)  │  │
-│    SolidJS      │              │   Go Service    │                 │  └─────────────┘  │
-│    Web App      │              │   + Database    │                 │  + SQLite         │
-│                 │              │                 │                 └───────────────────┘
-└─────────────────┘              └─────────────────┘                           ⋮
+│   (Browser /    │  WebSocket   │    (Relay)      │                 │  │ Claude Code │  │
+│   Desktop App)  │              │                 │                 │  │ (multiple)  │  │
+│                 │              │   Go Service    │                 │  └─────────────┘  │
+└─────────────────┘              │   + Database    │                 │  + SQLite         │
+                                 │                 │                 └───────────────────┘
+                                 └─────────────────┘                           ⋮
                                                                      ┌───────────────────┐
                                                                      │  Worker N         │
                                                                      │  ┌─────────────┐  │
