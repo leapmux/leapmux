@@ -4,7 +4,7 @@
 *~
 
 # Build output
-/leapmux
+/backend/leapmux
 .task/
 
 # Generated code

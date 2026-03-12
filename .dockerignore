@@ -4,7 +4,7 @@
 
 # Build artifacts
 .task/
-leapmux
+backend/leapmux
 *.db
 *.db-journal
 *.db-wal

@@ -30,10 +30,10 @@ tasks:
       - buf.gen.yaml
       - buf.yaml
     generates:
-      - generated/proto/**/*
+      - backend/generated/proto/**/*
       - frontend/src/generated/**/*
     cmds:
-      - rm -rf generated/proto/ frontend/src/generated/
+      - rm -rf backend/generated/proto/ frontend/src/generated/
       - buf generate
 
   generate-sqlc:
@@ -44,25 +44,25 @@ tasks:
     desc: Generate type-safe SQL code for Hub
     deps: [generate-proto]
     sources:
-      - generated/proto/**/*
-      - internal/hub/db/**/*.sql
-      - internal/hub/sqlc.yaml
+      - backend/generated/proto/**/*
+      - backend/internal/hub/db/**/*.sql
+      - backend/internal/hub/sqlc.yaml
     generates:
-      - internal/hub/generated/db/**/*
+      - backend/internal/hub/generated/db/**/*
     cmds:
-      - cd internal/hub && sqlc generate
+      - cd backend/internal/hub && sqlc generate
 
   generate-sqlc-worker:
     desc: Generate type-safe SQL code for Worker
     deps: [generate-proto]
     sources:
-      - generated/proto/**/*
-      - internal/worker/db/**/*.sql
-      - internal/worker/sqlc.yaml
+      - backend/generated/proto/**/*
+      - backend/internal/worker/db/**/*.sql
+      - backend/internal/worker/sqlc.yaml
     generates:
-      - internal/worker/generated/db/**/*
+      - backend/internal/worker/generated/db/**/*
     cmds:
-      - cd internal/worker && sqlc generate
+      - cd backend/internal/worker && sqlc generate
 
   # --- Preparation ---
 
@@ -114,30 +114,31 @@ tasks:
     desc: Embed frontend assets for go:embed
     deps: [build-frontend]
     sources:
-      - internal/hub/frontend.embed
+      - backend/internal/hub/frontend.embed
       - frontend/.output/public/**/*
     generates:
-      - internal/hub/generated/frontend/embed.go
-      - internal/hub/generated/frontend/public/**/*
+      - backend/internal/hub/generated/frontend/embed.go
+      - backend/internal/hub/generated/frontend/public/**/*
     cmds:
-      - mkdir -p internal/hub/generated/frontend/public
-      - rsync -a internal/hub/frontend.embed internal/hub/generated/frontend/embed.go
-      - rsync -a --delete frontend/.output/public/ internal/hub/generated/frontend/public/
+      - mkdir -p backend/internal/hub/generated/frontend/public
+      - rsync -a backend/internal/hub/frontend.embed backend/internal/hub/generated/frontend/embed.go
+      - rsync -a --delete frontend/.output/public/ backend/internal/hub/generated/frontend/public/
 
   build-backend:
     desc: Build leapmux binary
     deps: [prepare-backend, embed-frontend]
+    dir: backend
     sources:
-      - go.mod
-      - go.sum
-      - cmd/**/*
-      - generated/**/*
-      - hub/**/*
-      - internal/**/*
-      - worker/**/*
-      - "**/*.go"
+      - backend/go.mod
+      - backend/go.sum
+      - backend/cmd/**/*
+      - backend/generated/**/*
+      - backend/hub/**/*
+      - backend/internal/**/*
+      - backend/worker/**/*
+      - "backend/**/*.go"
     generates:
-      - ./leapmux
+      - backend/leapmux
     cmds:
       - go build -ldflags "-X main.version={{.VERSION}}" -o ./leapmux ./cmd/leapmux
 
@@ -172,6 +173,7 @@ tasks:
   test-backend:
     desc: Run Go tests (unit + integration)
     deps: [lint-backend]
+    dir: backend
     cmds:
       - go test -tags integration {{.CLI_ARGS | default "./..."}}
 
@@ -211,11 +213,12 @@ tasks:
   lint-backend:
     desc: Lint Go code
     deps: [prepare-backend, embed-frontend]
+    dir: backend
     sources:
-      - go.mod
-      - go.sum
-      - "**/*.go"
-      - .golangci.yml
+      - backend/go.mod
+      - backend/go.sum
+      - "backend/**/*.go"
+      - backend/.golangci.yml
     cmds:
       - golangci-lint run ./...
 
@@ -248,6 +251,7 @@ tasks:
   lint-fix-backend:
     desc: Auto-fix Go lint violations
     deps: [prepare-backend, embed-frontend]
+    dir: backend
     cmds:
       - golangci-lint run --fix ./...
 
@@ -320,8 +324,8 @@ tasks:
   clean:
     desc: Remove all build artifacts and generated code
     cmds:
-      - rm -f ./leapmux
-      - rm -rf generated/ */generated/ */*/generated/
+      - rm -f backend/leapmux
+      - rm -rf backend/generated/ backend/*/generated/ backend/*/*/generated/
       - rm -rf frontend/.output/ frontend/.vinxi/ frontend/node_modules/
       - rm -rf frontend/src/spinners/
       - rm -rf .task/

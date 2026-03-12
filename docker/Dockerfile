@@ -44,20 +44,20 @@ ARG SQLC_VERSION
 WORKDIR /src
 
 # Download Go dependencies first (cache layer)
-COPY go.mod go.sum ./
+COPY backend/go.mod backend/go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
 # Copy generated proto Go code
-COPY --from=proto-gen /src/generated/ generated/
+COPY --from=proto-gen /src/backend/generated/ generated/
 
 # Generate sqlc code
-COPY internal/hub/sqlc.yaml internal/hub/sqlc.yaml
-COPY internal/hub/db/queries/ internal/hub/db/queries/
-COPY internal/hub/db/migrations/ internal/hub/db/migrations/
-COPY internal/worker/sqlc.yaml internal/worker/sqlc.yaml
-COPY internal/worker/db/queries/ internal/worker/db/queries/
-COPY internal/worker/db/migrations/ internal/worker/db/migrations/
+COPY backend/internal/hub/sqlc.yaml internal/hub/sqlc.yaml
+COPY backend/internal/hub/db/queries/ internal/hub/db/queries/
+COPY backend/internal/hub/db/migrations/ internal/hub/db/migrations/
+COPY backend/internal/worker/sqlc.yaml internal/worker/sqlc.yaml
+COPY backend/internal/worker/db/queries/ internal/worker/db/queries/
+COPY backend/internal/worker/db/migrations/ internal/worker/db/migrations/
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     go install github.com/sqlc-dev/sqlc/cmd/sqlc@v${SQLC_VERSION} && \
@@ -65,14 +65,14 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     cd /src/internal/worker && sqlc generate
 
 # Embed frontend assets
-COPY internal/hub/frontend.embed internal/hub/generated/frontend/embed.go
+COPY backend/internal/hub/frontend.embed internal/hub/generated/frontend/embed.go
 COPY --from=frontend-builder /src/frontend/.output/public/ internal/hub/generated/frontend/public/
 
 # Copy remaining Go source
-COPY cmd/ cmd/
-COPY hub/ hub/
-COPY worker/ worker/
-COPY internal/ internal/
+COPY backend/cmd/ cmd/
+COPY backend/hub/ hub/
+COPY backend/worker/ worker/
+COPY backend/internal/ internal/
 
 # Build statically linked binary (enables native cross-compilation)
 RUN --mount=type=cache,target=/go/pkg/mod \

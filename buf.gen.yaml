@@ -7,11 +7,11 @@ managed:
 plugins:
   # Go protobuf types
   - remote: buf.build/protocolbuffers/go
-    out: generated/proto
+    out: backend/generated/proto
     opt: paths=source_relative
   # Go ConnectRPC stubs (supports both Connect + gRPC protocols)
   - remote: buf.build/connectrpc/go
-    out: generated/proto
+    out: backend/generated/proto
     opt: paths=source_relative
   # TypeScript protobuf message types
   - remote: buf.build/bufbuild/es
