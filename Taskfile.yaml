@@ -410,4 +410,5 @@ tasks:
       - rm -rf backend/generated/ backend/*/generated/ backend/*/*/generated/
       - rm -rf frontend/.output/ frontend/.vinxi/ frontend/node_modules/
       - rm -rf frontend/src/spinners/
+      - rm -rf desktop/build/bin/ desktop/build/appicon.png desktop/build/windows/icon.ico
       - rm -rf .task/

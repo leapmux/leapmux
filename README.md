@@ -16,6 +16,7 @@ LeapMux is an **AI coding agent multiplexer** that enables developers to run mul
 - **Rich File Viewer**: Syntax-highlighted source, image preview with zoom/pan, hex view for binaries, and side-by-side or unified diffs
 - **Git Worktree Management**: Agents and terminals auto-create isolated git worktrees per task, with dirty-worktree protection
 - **End-to-End Encryption**: All Frontend-Worker traffic is encrypted via hybrid post-quantum Noise_NK (X25519 + ML-KEM-1024 + SLH-DSA) over multiplexed WebSocket channels
+- **Desktop App**: Native macOS, Linux, and Windows desktop application (optional)
 - **Multi-Organization Support**: Create teams with role-based access control (Owner/Admin/Member)
 - **Workspace Sharing**: Collaborate by sharing workspaces with specific users or organization members
 - **Backend Management**: Register and manage multiple development backends with approval workflow
@@ -40,7 +41,7 @@ LeapMux is an **AI coding agent multiplexer** that enables developers to run mul
 
 ## Architecture
 
-LeapMux is built as a single Go binary (`leapmux`) that runs in two deployment modes:
+LeapMux is built as a Go binary (`leapmux`) that runs in two deployment modes. A native desktop app is also available as an alternative way to run solo mode.
 
 ### Solo Mode (default)
 
@@ -64,7 +65,8 @@ Run `leapmux` with no subcommand for a zero-config, single-user setup. Hub and W
           ▼
    ┌──────────────┐
    │   Frontend   │
-   │  (Browser)   │
+   │  (Browser /  │
+   │  Desktop App)│
    └──────────────┘
 ```
 
@@ -103,6 +105,7 @@ LeapMux is a single binary with these subcommands:
 | `leapmux worker` | Worker | Connects to a remote Hub |
 | `leapmux dev` | Dev | Hub + Worker on `:4327` (all interfaces), login required, all features |
 | `leapmux version` | — | Prints version and exits |
+| Desktop app | Solo | Native desktop app — runs solo mode in an embedded WebView |
 
 ### Components
 
@@ -307,7 +310,7 @@ task generate-sqlc    # Generate type-safe SQL code for the hub
 Task uses checksums to skip generation when source files haven't changed. To force regeneration, use `task --force generate`.
 
 Always run `task generate-proto` after modifying `.proto` files in `/proto/leapmux/v1/`.
-Always run `task generate-sqlc` after modifying `.sql` files in `/internal/hub/db/queries/` or `/internal/worker/db/queries/`.
+Always run `task generate-sqlc` after modifying `.sql` files in `/backend/internal/hub/db/queries/` or `/backend/internal/worker/db/queries/`.
 
 ### Preparation
 
