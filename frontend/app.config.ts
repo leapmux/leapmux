@@ -139,6 +139,8 @@ export default defineConfig({
         '@noble/curves/ed25519.js',
         '@noble/hashes/blake2.js',
         '@noble/hashes/hmac.js',
+        '@noble/post-quantum/ml-kem.js',
+        '@noble/post-quantum/slh-dsa.js',
         // UI / misc
         '@knadh/oat/oat.min.js',
         'diff',
