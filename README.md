@@ -142,7 +142,7 @@ LeapMux is a single binary with these subcommands:
 
 Before you begin, ensure you have the following installed:
 
-- **Go** 1.25.7 or later
+- **Go** 1.26.1 or later
 - **Bun** (latest version) - JavaScript runtime and package manager
 - **Task** - Task runner (replaces Make)
 - **buf** CLI - Protocol Buffer code generation ([authentication](https://buf.build/docs/bsr/authentication/) recommended to avoid rate-limit errors)
@@ -152,6 +152,7 @@ Before you begin, ensure you have the following installed:
 - **SQLite** (usually pre-installed on most systems)
 - **Docker** - Required for building Docker images (on macOS, [Rancher Desktop](https://rancherdesktop.io/) is recommended)
 - **mprocs** (optional, for easier multi-process development)
+- **Wails** (optional, for building the desktop app)
 
 ### macOS
 
@@ -160,7 +161,7 @@ Install [Bun](https://bun.sh/) by following the instructions at https://bun.sh/.
 Install the remaining dependencies with [Homebrew](https://brew.sh/):
 
 ```bash
-brew install buf go go-task golangci-lint mprocs sqlc yq
+brew install buf go go-task golangci-lint mprocs sqlc wails yq
 ```
 
 ### Arch Linux
@@ -181,7 +182,7 @@ alias task=go-task
 Install the remaining dependencies from the [AUR](https://wiki.archlinux.org/title/Arch_User_Repository) (using [yay](https://github.com/Jguer/yay) or your preferred AUR helper):
 
 ```bash
-yay -S mprocs-bin
+yay -S mprocs-bin wails
 ```
 
 ### Operating System
@@ -235,9 +236,12 @@ Build individual components:
 ```bash
 task build-backend    # Build leapmux binary (Go)
 task build-frontend   # Build frontend assets
+task build-desktop    # Build desktop app for current platform (requires wails)
 ```
 
-The `leapmux` binary is output to the project root.
+The `leapmux` binary is output to `backend/leapmux`. The desktop app is output to `desktop/build/bin/`. On macOS, a `.dmg` installer is also created.
+
+`task build` skips the desktop build automatically if `wails` is not installed.
 
 ### Testing
 
@@ -409,6 +413,10 @@ Tool and base image versions are centralized in the `versions.yaml` file at the 
 - **[gRPC](https://grpc.io/)** - Communication with Hub
 - **[SQLite](https://sqlite.org/)** - Embedded database for agent and terminal state
 
+### Desktop (optional)
+
+- **[Wails](https://wails.io/)** - Desktop application framework (Go + WebView)
+
 ### Build Tools
 
 - **[buf](https://buf.build/)** - Protocol Buffer tooling
@@ -425,11 +433,63 @@ Tool and base image versions are centralized in the `versions.yaml` file at the 
 leapmux/
 ├── .github/workflows/      # CI, Docker, and release workflows
 │
-├── cmd/leapmux/            # Unified binary entry point
-│   ├── hub.go              # Hub mode
-│   ├── main.go             # Subcommand routing (hub, worker, solo, dev)
-│   ├── solo.go             # Solo/dev mode (hub + worker, default)
-│   └── worker.go           # Worker mode
+├── backend/                # Go backend module
+│   ├── cmd/leapmux/        # Unified binary entry point
+│   │   ├── hub.go          # Hub mode
+│   │   ├── main.go         # Subcommand routing (hub, worker, solo, dev)
+│   │   ├── solo.go         # Solo/dev mode (hub + worker, default)
+│   │   └── worker.go       # Worker mode
+│   │
+│   ├── generated/proto/    # Generated Go protobuf code (gitignored)
+│   │
+│   ├── hub/                # Hub public API (thin wrapper)
+│   │   └── server.go       # NewServer(), Serve(), RegisterBackend(), etc.
+│   │
+│   ├── internal/
+│   │   ├── config/         # Shared configuration loading (koanf-based)
+│   │   │
+│   │   ├── hub/            # Hub implementation
+│   │   │   ├── agentmgr/   # Agent event broadcasting
+│   │   │   ├── auth/       # Session-based authentication
+│   │   │   ├── bootstrap/  # Database initialization and seeding
+│   │   │   ├── channelmgr/ # E2EE channel routing and chunk validation
+│   │   │   ├── config/     # Hub configuration
+│   │   │   ├── db/         # Database driver, migrations, and queries
+│   │   │   ├── frontend/   # Frontend asset embedding and dev proxy
+│   │   │   ├── generated/  # sqlc-generated code (gitignored)
+│   │   │   ├── layout/     # Workspace tiling layout management
+│   │   │   ├── notifier/   # Worker notification queue (persistent delivery with retries)
+│   │   │   ├── service/    # RPC service implementations (auth, workspace, channel relay)
+│   │   │   ├── terminalmgr/# Terminal session management
+│   │   │   ├── timeout/    # Timeout configuration
+│   │   │   ├── validate/   # Input validation
+│   │   │   └── workermgr/  # Worker connection registry and pending approvals
+│   │   │
+│   │   ├── logging/        # Structured logging and middleware
+│   │   ├── metrics/        # Prometheus metrics and interceptors
+│   │   ├── noise/          # Noise_NK protocol and key fingerprinting
+│   │   ├── util/           # Shared utilities (id, lexorank, msgcodec, timefmt, testutil)
+│   │   │
+│   │   └── worker/         # Worker implementation
+│   │       ├── agent/      # Claude Code process management
+│   │       ├── channel/    # E2EE channel session management and dispatch
+│   │       ├── config/     # Worker configuration
+│   │       ├── db/         # Worker database driver, migrations, and queries
+│   │       ├── filebrowser/# File system access
+│   │       ├── gitutil/    # Git repository utilities
+│   │       ├── hub/        # gRPC client to Hub (with auto-reconnect)
+│   │       ├── service/    # Agent, terminal, file, and git service handlers
+│   │       └── terminal/   # PTY session management
+│   │
+│   ├── solo/               # Shared solo mode startup logic
+│   │
+│   └── worker/             # Worker public API (thin wrapper)
+│       └── runner.go       # Run(), RunConfig
+│
+├── desktop/                # Wails desktop application (optional)
+│   ├── build/              # Build resources (icons, platform manifests)
+│   ├── frontend/           # Minimal loader page (redirects to embedded UI)
+│   └── scripts/            # Icon generation, DMG creation
 │
 ├── docker/                 # Dockerfile and s6-overlay service definitions
 │
@@ -448,57 +508,14 @@ leapmux/
 │   │   └── utils/          # Shared utility functions
 │   └── tests/              # Unit tests (Vitest) and E2E tests (Playwright)
 │
-├── generated/proto/        # Generated Go protobuf code (gitignored)
-│
-├── hub/                    # Hub public API (thin wrapper)
-│   └── server.go           # NewServer(), Serve(), RegisterBackend(), etc.
-│
 ├── icons/                  # SVG icons (light, dark, and default variants)
 │
-├── internal/
-│   ├── config/            # Shared configuration loading (koanf-based)
-│   │
-│   ├── hub/               # Hub implementation
-│   │   ├── agentmgr/      # Agent event broadcasting
-│   │   ├── auth/          # Session-based authentication
-│   │   ├── bootstrap/     # Database initialization and seeding
-│   │   ├── channelmgr/    # E2EE channel routing and chunk validation
-│   │   ├── config/        # Hub configuration
-│   │   ├── db/            # Database driver, migrations, and queries
-│   │   ├── frontend/      # Frontend asset embedding and dev proxy
-│   │   ├── generated/     # sqlc-generated code (gitignored)
-│   │   ├── layout/        # Workspace tiling layout management
-│   │   ├── notifier/      # Worker notification queue (persistent delivery with retries)
-│   │   ├── service/       # RPC service implementations (auth, workspace, channel relay)
-│   │   ├── terminalmgr/   # Terminal session management
-│   │   ├── timeout/       # Timeout configuration
-│   │   ├── validate/      # Input validation
-│   │   └── workermgr/     # Worker connection registry and pending approvals
-│   │
-│   ├── logging/           # Structured logging and middleware
-│   ├── metrics/           # Prometheus metrics and interceptors
-│   ├── noise/             # Noise_NK protocol and key fingerprinting
-│   ├── util/              # Shared utilities (id, lexorank, msgcodec, timefmt, testutil)
-│   │
-│   └── worker/            # Worker implementation
-│       ├── agent/         # Claude Code process management
-│       ├── channel/       # E2EE channel session management and dispatch
-│       ├── config/        # Worker configuration
-│       ├── db/            # Worker database driver, migrations, and queries
-│       ├── filebrowser/   # File system access
-│       ├── gitutil/       # Git repository utilities
-│       ├── hub/           # gRPC client to Hub (with auto-reconnect)
-│       ├── service/       # Agent, terminal, file, and git service handlers
-│       └── terminal/      # PTY session management
-│
 ├── proto/                  # Protocol Buffer definitions
-│   └── leapmux/v1/         # Service and message definitions
-│
-├── worker/                 # Worker public API (thin wrapper)
-│   └── runner.go           # Run(), RunConfig
+│   └── leapmux/v1/        # Service and message definitions
 │
 ├── buf.gen.yaml            # Protocol Buffer code generation targets
 ├── buf.yaml                # Protocol Buffer linting configuration
+├── go.work                 # Go workspace (backend + desktop modules)
 ├── mprocs.yaml             # Dev mode process configuration (task dev)
 ├── mprocs-solo.yaml        # Solo mode process configuration (task dev-solo)
 ├── README.md               # This file
