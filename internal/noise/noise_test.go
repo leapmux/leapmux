@@ -352,42 +352,6 @@ func TestClassicalWrongKey(t *testing.T) {
 	_ = hs
 }
 
-func TestPassthroughSession(t *testing.T) {
-	session := NewPassthroughSession()
-
-	t.Run("encrypt_is_copy", func(t *testing.T) {
-		plaintext := []byte("hello passthrough")
-		ciphertext, err := session.Encrypt(plaintext)
-		require.NoError(t, err)
-		assert.Equal(t, plaintext, ciphertext)
-		// Verify it's a copy, not the same slice.
-		ciphertext[0] = 0xFF
-		assert.NotEqual(t, plaintext[0], ciphertext[0])
-	})
-
-	t.Run("decrypt_is_copy", func(t *testing.T) {
-		data := []byte("hello passthrough decrypt")
-		decrypted, err := session.Decrypt(data)
-		require.NoError(t, err)
-		assert.Equal(t, data, decrypted)
-		decrypted[0] = 0xFF
-		assert.NotEqual(t, data[0], decrypted[0])
-	})
-
-	t.Run("needs_rekey_false", func(t *testing.T) {
-		assert.False(t, session.NeedsRekey())
-	})
-
-	t.Run("bidirectional", func(t *testing.T) {
-		msg := []byte("roundtrip through passthrough")
-		ct, err := session.Send.Encrypt(msg)
-		require.NoError(t, err)
-		pt, err := session.Receive.Decrypt(ct)
-		require.NoError(t, err)
-		assert.Equal(t, msg, pt)
-	})
-}
-
 func TestNonceLimitsConst(t *testing.T) {
 	assert.Equal(t, uint64(1<<31-1), SoftNonceLimit, "SoftNonceLimit should be 2^31-1")
 	assert.Equal(t, uint64(1<<32-1), HardNonceLimit, "HardNonceLimit should be 2^32-1")

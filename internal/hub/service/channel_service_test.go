@@ -509,45 +509,6 @@ func TestOpenChannel_ClassicHandshake(t *testing.T) {
 	}
 }
 
-func TestOpenChannel_DisabledHandshake(t *testing.T) {
-	env := setupChannelTestServer(t)
-	ctx := context.Background()
-	token := env.adminToken(t)
-
-	workerID := env.createWorkerWithKey(t, token, []byte("key"))
-
-	sentCh := make(chan *leapmuxv1.ConnectResponse, 1)
-	conn := &workermgr.Conn{
-		WorkerID:       workerID,
-		OrgID:          "test-org",
-		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED,
-		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
-			sentCh <- msg
-			return nil
-		},
-	}
-	env.workerMgr.Register(conn)
-
-	shortCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
-	defer cancel()
-
-	// Disabled mode sends empty handshake payload.
-	_, err := env.channelClient.OpenChannel(shortCtx, authedReq(
-		&leapmuxv1.OpenChannelRequest{
-			WorkerId:         workerID,
-			HandshakePayload: []byte{},
-		}, token))
-	require.Error(t, err)
-
-	select {
-	case sentMsg := <-sentCh:
-		assert.NotNil(t, sentMsg.GetChannelOpen())
-		assert.Empty(t, sentMsg.GetChannelOpen().GetHandshakePayload())
-	default:
-		t.Fatal("expected a message to be sent to worker")
-	}
-}
-
 func (e *channelTestEnv) createSecondUser(t *testing.T) (userID, token string) {
 	t.Helper()
 	ctx := context.Background()

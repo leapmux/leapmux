@@ -14,11 +14,11 @@ import (
 	"syscall"
 	"time"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/logging"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
+	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/worker"
 )
 
@@ -53,8 +53,11 @@ func runSolo(args []string, soloMode bool) error {
 		DefaultConfigDir:  defaultConfigDir,
 		DefaultConfigFile: defaultConfigFile,
 		FlagSetName:       "leapmux",
-		CLIFlags:          []string{"addr", "data-dir", "dev-frontend", "db-max-conns", "log-level"},
-		SoloMode:          soloMode,
+		CLIFlags:          []string{"addr", "data-dir", "dev-frontend", "db-max-conns", "max-message-size", "max-incomplete-chunked", "api-timeout-seconds", "agent-startup-timeout-seconds", "worktree-create-timeout-seconds", "log-level"},
+		ExtraFlags: []hubconfig.ExtraFlagDef{
+			{Name: "encryption-mode", KoanfKey: "encryption_mode", Usage: "encryption mode (classic, post-quantum)", StrDefault: "post-quantum"},
+		},
+		SoloMode: soloMode,
 	})
 	if err != nil {
 		return err
@@ -163,20 +166,18 @@ func runSolo(args []string, soloMode bool) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		encMode := leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM
-		if soloMode {
-			encMode = leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED
-		}
 		if err := worker.Run(ctx, worker.RunConfig{
-			HubURL:              "unix:" + socketPath,
-			DataDir:             workerDataDir,
-			AuthToken:           state.AuthToken,
-			CompositeKey:        compositeKey,
-			WorkerID:            state.WorkerID,
-			Version:             version,
-			DBMaxConns:          hubCfg.DBMaxConns,
-			AgentStartupTimeout: hubCfg.AgentStartupTimeout(),
-			EncryptionMode:      encMode,
+			HubURL:               "unix:" + socketPath,
+			DataDir:              workerDataDir,
+			AuthToken:            state.AuthToken,
+			CompositeKey:         compositeKey,
+			WorkerID:             state.WorkerID,
+			Version:              version,
+			DBMaxConns:           hubCfg.DBMaxConns,
+			MaxMessageSize:       hubCfg.MaxMessageSize,
+			MaxIncompleteChunked: hubCfg.MaxIncompleteChunked,
+			AgentStartupTimeout:  hubCfg.AgentStartupTimeout(),
+			EncryptionMode:       workerconfig.ParseEncryptionMode(hubCfg.Extras["encryption_mode"]),
 		}); err != nil {
 			slog.Error("worker error", "error", err)
 		}

@@ -226,36 +226,6 @@ func setupEncryptionModeTest(t *testing.T, soloMode bool) (*WorkerConnectorServi
 	return svc, conn
 }
 
-func TestProcessWorkerMessage_DisabledModeRejectedInNonSolo(t *testing.T) {
-	svc, conn := setupEncryptionModeTest(t, false)
-	ctx := context.Background()
-
-	err := svc.processWorkerMessage(ctx, conn, "w1", &leapmuxv1.ConnectRequest{
-		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
-			Heartbeat: &leapmuxv1.Heartbeat{
-				EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED,
-			},
-		},
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "solo mode")
-}
-
-func TestProcessWorkerMessage_DisabledModeAllowedInSolo(t *testing.T) {
-	svc, conn := setupEncryptionModeTest(t, true)
-	ctx := context.Background()
-
-	err := svc.processWorkerMessage(ctx, conn, "w1", &leapmuxv1.ConnectRequest{
-		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
-			Heartbeat: &leapmuxv1.Heartbeat{
-				EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED,
-			},
-		},
-	})
-	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED, conn.EncryptionMode)
-}
-
 func TestProcessWorkerMessage_ClassicModeAccepted(t *testing.T) {
 	svc, conn := setupEncryptionModeTest(t, false)
 	ctx := context.Background()
@@ -296,7 +266,7 @@ func TestProcessWorkerMessage_PublicKeyUpdateWithNilMlkem(t *testing.T) {
 		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
 			Heartbeat: &leapmuxv1.Heartbeat{
 				PublicKey:      []byte("fake-x25519-public-key"),
-				EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED,
+				EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
 			},
 		},
 	})
@@ -312,16 +282,16 @@ func TestProcessWorkerMessage_UnspecifiedHeartbeatRejectedAfterModeSet(t *testin
 	svc, conn := setupEncryptionModeTest(t, true)
 	ctx := context.Background()
 
-	// Initial heartbeat sets DISABLED mode (solo mode).
+	// Initial heartbeat sets POST_QUANTUM mode.
 	err := svc.processWorkerMessage(ctx, conn, "w1", &leapmuxv1.ConnectRequest{
 		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
 			Heartbeat: &leapmuxv1.Heartbeat{
-				EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED,
+				EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
 			},
 		},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_DISABLED, conn.EncryptionMode)
+	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, conn.EncryptionMode)
 
 	// Subsequent heartbeat without encryption_mode set (UNSPECIFIED)
 	// should be rejected — a worker must always include its encryption mode.

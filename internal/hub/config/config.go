@@ -47,6 +47,7 @@ type Config struct {
 	AgentStartupTimeoutSeconds   int    `koanf:"agent_startup_timeout_seconds"`
 	WorktreeCreateTimeoutSeconds int    `koanf:"worktree_create_timeout_seconds"`
 	SoloMode                     bool
+	Extras                       map[string]string // Extra flag values not in the hub Config struct
 }
 
 // APITimeout returns the general API timeout as a duration.
@@ -76,14 +77,25 @@ func (c *Config) WorktreeCreateTimeout() time.Duration {
 	return time.Duration(v) * time.Second
 }
 
+// ExtraFlagDef defines a string CLI flag that is not part of the hub's own
+// config but should be parsed alongside it (e.g. worker-specific flags in
+// solo mode).
+type ExtraFlagDef struct {
+	Name       string
+	KoanfKey   string
+	Usage      string
+	StrDefault string // used when the flag is a string
+}
+
 // LoadOptions parameterizes differences between hub and solo/dev mode config loading.
 type LoadOptions struct {
-	DefaultAddr       string   // default listen address (hub: ":4327", solo: "127.0.0.1:4327")
-	DefaultConfigDir  string   // for data_dir resolution (e.g. "~/.config/leapmux/solo")
-	DefaultConfigFile string   // default config file path
-	FlagSetName       string   // flag.NewFlagSet name ("hub" vs "leapmux")
-	CLIFlags          []string // if non-nil, only register these flags (solo exposes a subset)
-	SoloMode          bool     // set on resulting Config
+	DefaultAddr       string         // default listen address (hub: ":4327", solo: "127.0.0.1:4327")
+	DefaultConfigDir  string         // for data_dir resolution (e.g. "~/.config/leapmux/solo")
+	DefaultConfigFile string         // default config file path
+	FlagSetName       string         // flag.NewFlagSet name ("hub" vs "leapmux")
+	CLIFlags          []string       // if non-nil, only register these flags (solo exposes a subset)
+	ExtraFlags        []ExtraFlagDef // additional flags not in the hub's allFlags list
+	SoloMode          bool           // set on resulting Config
 }
 
 // Load parses hub configuration from defaults, config file, env vars, and CLI flags.
@@ -191,6 +203,13 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 			fs.Bool(fd.name, *fd.boolDefault, fd.usage)
 		}
 	}
+	// Register extra flags (e.g. worker-specific flags in solo mode).
+	for _, ef := range opts.ExtraFlags {
+		fieldMap[ef.Name] = ef.KoanfKey
+		defaults[ef.KoanfKey] = ef.StrDefault
+		fs.String(ef.Name, ef.StrDefault, ef.Usage)
+	}
+
 	showVersion := fs.Bool("version", false, "print version and exit")
 
 	if err := fs.Parse(args); err != nil {
@@ -216,6 +235,14 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	// Resolve relative data_dir against config file directory.
 	cfg.DataDir = internalconfig.ResolveDataDir(cfg.DataDir, configPath, configDir)
 	cfg.SoloMode = opts.SoloMode
+
+	// Populate extra flag values.
+	if len(opts.ExtraFlags) > 0 {
+		cfg.Extras = make(map[string]string, len(opts.ExtraFlags))
+		for _, ef := range opts.ExtraFlags {
+			cfg.Extras[ef.KoanfKey] = k.String(ef.KoanfKey)
+		}
+	}
 
 	return &cfg, false, nil
 }
