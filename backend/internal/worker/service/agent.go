@@ -24,13 +24,14 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// loginShell returns the user's default login shell path if UseLoginShell is
-// enabled, or an empty string otherwise.
-func (svc *Context) loginShell() string {
-	if !svc.UseLoginShell {
-		return ""
-	}
+// agentShell returns the resolved default shell path for agent options.
+func (svc *Context) agentShell() string {
 	return terminal.ResolveDefaultShell()
+}
+
+// agentLoginShell returns whether the agent should use interactive+login shell flags.
+func (svc *Context) agentLoginShell() bool {
+	return svc.UseLoginShell
 }
 
 // registerAgentHandlers registers all agent-related inner RPC handlers.
@@ -95,7 +96,9 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			WorkingDir:      workingDir,
 			ResumeSessionID: r.GetAgentSessionId(),
 			StartupTimeout:  svc.agentStartupTimeout(),
-			LoginShell:      svc.loginShell(),
+			Shell:           svc.agentShell(),
+			LoginShell:      svc.agentLoginShell(),
+			HomeDir:         svc.HomeDir,
 		}
 
 		outputFn := agentOutputFn(svc.Output, agentID, r.GetWorkspaceId(), workingDir)
@@ -136,7 +139,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.OpenAgentResponse{
-			Agent: agentToProto(&dbAgent, permissionMode, svc.WorkerID, true, gitutil.GetGitStatus(dbAgent.WorkingDir)),
+			Agent: agentToProto(&dbAgent, permissionMode, svc.WorkerID, true, gitutil.GetGitStatus(dbAgent.WorkingDir), svc.Agents.SupportsModelEffort(agentID)),
 		})
 	})
 
@@ -329,7 +332,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			if accessibleWsIDs != nil && !accessibleWsIDs[agents[i].WorkspaceID] {
 				continue
 			}
-			protoAgents = append(protoAgents, agentToProto(&agents[i], agents[i].PermissionMode, svc.WorkerID, svc.Agents.HasAgent(agents[i].ID), gitStatuses[i]))
+			protoAgents = append(protoAgents, agentToProto(&agents[i], agents[i].PermissionMode, svc.WorkerID, svc.Agents.HasAgent(agents[i].ID), gitStatuses[i], svc.Agents.SupportsModelEffort(agents[i].ID)))
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.ListAgentsResponse{
@@ -513,7 +516,9 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 				ResumeSessionID: dbAgent.AgentSessionID,
 				PermissionMode:  dbAgent.PermissionMode,
 				StartupTimeout:  svc.agentStartupTimeout(),
-				LoginShell:      svc.loginShell(),
+				Shell:           svc.agentShell(),
+				LoginShell:      svc.agentLoginShell(),
+				HomeDir:         svc.HomeDir,
 			}
 
 			outputFn := agentOutputFn(svc.Output, agentID, dbAgent.WorkspaceID, dbAgent.WorkingDir)
@@ -685,14 +690,15 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 					status = leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE
 				}
 				sc := &leapmuxv1.AgentStatusChange{
-					AgentId:        agentID,
-					Status:         status,
-					AgentSessionId: dbAgent.AgentSessionID,
-					WorkerOnline:   true,
-					PermissionMode: dbAgent.PermissionMode,
-					Model:          modelOrDefault(dbAgent.Model),
-					Effort:         dbAgent.Effort,
-					GitStatus:      gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
+					AgentId:             agentID,
+					Status:              status,
+					AgentSessionId:      dbAgent.AgentSessionID,
+					WorkerOnline:        true,
+					PermissionMode:      dbAgent.PermissionMode,
+					Model:               modelOrDefault(dbAgent.Model),
+					Effort:              dbAgent.Effort,
+					GitStatus:           gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
+					SupportsModelEffort: svc.Agents.SupportsModelEffort(agentID),
 				}
 				broadcastWatchEvent(sender, &leapmuxv1.WatchEventsResponse{
 					Event: &leapmuxv1.WatchEventsResponse_AgentEvent{
@@ -768,25 +774,26 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 }
 
 // agentToProto converts a DB Agent to a proto AgentInfo.
-func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, gs *gitutil.GitStatus) *leapmuxv1.AgentInfo {
+func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, gs *gitutil.GitStatus, supportsModelEffort bool) *leapmuxv1.AgentInfo {
 	status := leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE
 	if isRunning {
 		status = leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE
 	}
 	info := &leapmuxv1.AgentInfo{
-		Id:             a.ID,
-		WorkspaceId:    a.WorkspaceID,
-		Title:          a.Title,
-		Model:          modelOrDefault(a.Model),
-		Status:         status,
-		WorkingDir:     a.WorkingDir,
-		PermissionMode: permissionMode,
-		Effort:         a.Effort,
-		AgentSessionId: a.AgentSessionID,
-		HomeDir:        a.HomeDir,
-		WorkerId:       workerID,
-		CreatedAt:      timefmt.Format(a.CreatedAt),
-		GitStatus:      gitStatusToProto(gs),
+		Id:                  a.ID,
+		WorkspaceId:         a.WorkspaceID,
+		Title:               a.Title,
+		Model:               modelOrDefault(a.Model),
+		Status:              status,
+		WorkingDir:          a.WorkingDir,
+		PermissionMode:      permissionMode,
+		Effort:              a.Effort,
+		AgentSessionId:      a.AgentSessionID,
+		HomeDir:             a.HomeDir,
+		WorkerId:            workerID,
+		CreatedAt:           timefmt.Format(a.CreatedAt),
+		GitStatus:           gitStatusToProto(gs),
+		SupportsModelEffort: supportsModelEffort,
 	}
 
 	if a.ClosedAt.Valid {
@@ -844,7 +851,9 @@ func (svc *Context) handleClearContext(agentID string) {
 		WorkingDir:     dbAgent.WorkingDir,
 		PermissionMode: dbAgent.PermissionMode,
 		StartupTimeout: svc.agentStartupTimeout(),
-		LoginShell:     svc.loginShell(),
+		Shell:          svc.agentShell(),
+		LoginShell:     svc.agentLoginShell(),
+		HomeDir:        svc.HomeDir,
 	}, outputFn); err != nil {
 		slog.Error("clear context: failed to restart agent", "agent_id", agentID, "error", err)
 		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
@@ -888,7 +897,9 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 		ResumeSessionID: dbAgent.AgentSessionID,
 		PermissionMode:  dbAgent.PermissionMode,
 		StartupTimeout:  svc.agentStartupTimeout(),
-		LoginShell:      svc.loginShell(),
+		Shell:           svc.agentShell(),
+		LoginShell:      svc.agentLoginShell(),
+		HomeDir:         svc.HomeDir,
 	}, outputFn); err != nil {
 		slog.Error("ensureAgentRunning: failed to start agent", "agent_id", agentID, "error", err)
 		return err
@@ -949,14 +960,15 @@ func (svc *Context) setAgentPermissionMode(agentID, mode string) {
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_StatusChange{
 			StatusChange: &leapmuxv1.AgentStatusChange{
-				AgentId:        agentID,
-				Status:         leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED,
-				AgentSessionId: dbAgent.AgentSessionID,
-				WorkerOnline:   true,
-				PermissionMode: mode,
-				Model:          modelOrDefault(dbAgent.Model),
-				Effort:         dbAgent.Effort,
-				GitStatus:      gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
+				AgentId:             agentID,
+				Status:              leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED,
+				AgentSessionId:      dbAgent.AgentSessionID,
+				WorkerOnline:        true,
+				PermissionMode:      mode,
+				Model:               modelOrDefault(dbAgent.Model),
+				Effort:              dbAgent.Effort,
+				GitStatus:           gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
+				SupportsModelEffort: svc.Agents.SupportsModelEffort(agentID),
 			},
 		},
 	})
@@ -1142,7 +1154,9 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 		WorkingDir:     dbAgent.WorkingDir,
 		PermissionMode: targetMode,
 		StartupTimeout: svc.agentStartupTimeout(),
-		LoginShell:     svc.loginShell(),
+		Shell:          svc.agentShell(),
+		LoginShell:     svc.agentLoginShell(),
+		HomeDir:        svc.HomeDir,
 	}, outputFn); err != nil {
 		slog.Error("plan exec: failed to restart agent", "agent_id", agentID, "error", err)
 		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{

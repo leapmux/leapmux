@@ -164,6 +164,20 @@ func (m *Manager) StopAndWaitAgent(agentID string) bool {
 	return true
 }
 
+// SupportsModelEffort returns whether the agent supports --model/--effort CLI args.
+// Returns true as default (agent not found = safe fallback for Anthropic API).
+func (m *Manager) SupportsModelEffort(agentID string) bool {
+	m.mu.RLock()
+	a, ok := m.agents[agentID]
+	m.mu.RUnlock()
+
+	if !ok {
+		return true
+	}
+
+	return a.SupportsModelEffort()
+}
+
 // HasAgent returns true if an agent is running with the given agent ID.
 func (m *Manager) HasAgent(agentID string) bool {
 	m.mu.RLock()

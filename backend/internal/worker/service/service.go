@@ -57,7 +57,7 @@ func (svc *Context) agentStartupTimeout() time.Duration {
 func NewContext(sqlDB *sql.DB, agents *agent.Manager, terminals *terminal.Manager, homeDir, dataDir string) *Context {
 	queries := db.New(sqlDB)
 	watchers := NewWatcherManager()
-	output := NewOutputHandler(queries, watchers)
+	output := NewOutputHandler(queries, watchers, agents)
 	return &Context{
 		DB:        sqlDB,
 		Queries:   queries,

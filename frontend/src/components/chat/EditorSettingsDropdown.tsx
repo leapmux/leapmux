@@ -31,6 +31,7 @@ export interface EditorSettingsDropdownProps {
   model?: string
   effort?: string
   permissionMode?: string
+  supportsModelEffort?: boolean
   onModelChange?: (model: string) => void
   onEffortChange?: (effort: string) => void
   onPermissionModeChange?: (mode: PermissionMode) => void
@@ -95,8 +96,10 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
           disabled={props.disabled}
           {...triggerProps}
         >
-          {modelLabel(currentModel())}
-          {effortIcon()}
+          <Show when={props.supportsModelEffort !== false}>
+            {modelLabel(currentModel())}
+            {effortIcon()}
+          </Show>
           {modeLabel(currentMode())}
           <Show when={props.settingsLoading} fallback={<Icon icon={ChevronDown} size="xs" />}>
             <Icon icon={LoaderCircle} size="xs" class={spinner} data-testid="settings-loading-spinner" />
@@ -107,28 +110,30 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
       class={styles.settingsMenu}
       data-testid="agent-settings-menu"
     >
-      <RadioGroup
-        label="Effort"
-        items={EFFORTS}
-        testIdPrefix="effort"
-        name={`${menuId}-effort`}
-        current={currentEffort()}
-        onChange={(v) => {
-          props.onEffortChange?.(v)
-          settingsPopoverEl?.hidePopover()
-        }}
-      />
-      <RadioGroup
-        label="Model"
-        items={MODELS}
-        testIdPrefix="model"
-        name={`${menuId}-model`}
-        current={currentModel()}
-        onChange={(v) => {
-          props.onModelChange?.(v)
-          settingsPopoverEl?.hidePopover()
-        }}
-      />
+      <Show when={props.supportsModelEffort !== false}>
+        <RadioGroup
+          label="Effort"
+          items={EFFORTS}
+          testIdPrefix="effort"
+          name={`${menuId}-effort`}
+          current={currentEffort()}
+          onChange={(v) => {
+            props.onEffortChange?.(v)
+            settingsPopoverEl?.hidePopover()
+          }}
+        />
+        <RadioGroup
+          label="Model"
+          items={MODELS}
+          testIdPrefix="model"
+          name={`${menuId}-model`}
+          current={currentModel()}
+          onChange={(v) => {
+            props.onModelChange?.(v)
+            settingsPopoverEl?.hidePopover()
+          }}
+        />
+      </Show>
       <RadioGroup
         label="Permission Mode"
         items={PERMISSION_MODES}

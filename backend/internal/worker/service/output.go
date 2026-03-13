@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 )
@@ -71,6 +72,7 @@ type notifThreadRef struct {
 type OutputHandler struct {
 	queries *db.Queries
 	watcher *WatcherManager
+	agents  *agent.Manager
 
 	// Per-agent state (concurrent access from agent goroutines).
 	notifMu         sync.Map // agentID -> *sync.Mutex
@@ -92,10 +94,11 @@ type contextUsageSnapshot struct {
 }
 
 // NewOutputHandler creates a new OutputHandler.
-func NewOutputHandler(queries *db.Queries, watcher *WatcherManager) *OutputHandler {
+func NewOutputHandler(queries *db.Queries, watcher *WatcherManager, agents *agent.Manager) *OutputHandler {
 	return &OutputHandler{
 		queries: queries,
 		watcher: watcher,
+		agents:  agents,
 	}
 }
 
@@ -291,14 +294,15 @@ func (h *OutputHandler) handleSystemInit(agentID string, content []byte) {
 	// Always broadcast ACTIVE so the frontend learns the agent is running
 	// (even on resume where the session ID hasn't changed).
 	sc := &leapmuxv1.AgentStatusChange{
-		AgentId:        agentID,
-		Status:         leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE,
-		AgentSessionId: initMsg.SessionID,
-		WorkerOnline:   true,
-		PermissionMode: existingAgent.PermissionMode,
-		Model:          existingAgent.Model,
-		Effort:         existingAgent.Effort,
-		GitStatus:      gitStatusToProto(gitutil.GetGitStatus(existingAgent.WorkingDir)),
+		AgentId:             agentID,
+		Status:              leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE,
+		AgentSessionId:      initMsg.SessionID,
+		WorkerOnline:        true,
+		PermissionMode:      existingAgent.PermissionMode,
+		Model:               existingAgent.Model,
+		Effort:              existingAgent.Effort,
+		GitStatus:           gitStatusToProto(gitutil.GetGitStatus(existingAgent.WorkingDir)),
+		SupportsModelEffort: h.agents.SupportsModelEffort(agentID),
 	}
 	h.watcher.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
@@ -404,14 +408,15 @@ func (h *OutputHandler) handleControlResponse(agentID string, content []byte) {
 					AgentId: agentID,
 					Event: &leapmuxv1.AgentEvent_StatusChange{
 						StatusChange: &leapmuxv1.AgentStatusChange{
-							AgentId:        agentID,
-							Status:         leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE,
-							AgentSessionId: dbAgent.AgentSessionID,
-							WorkerOnline:   true,
-							PermissionMode: newMode,
-							Model:          dbAgent.Model,
-							Effort:         dbAgent.Effort,
-							GitStatus:      gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
+							AgentId:             agentID,
+							Status:              leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE,
+							AgentSessionId:      dbAgent.AgentSessionID,
+							WorkerOnline:        true,
+							PermissionMode:      newMode,
+							Model:               dbAgent.Model,
+							Effort:              dbAgent.Effort,
+							GitStatus:           gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
+							SupportsModelEffort: h.agents.SupportsModelEffort(agentID),
 						},
 					},
 				})

@@ -572,6 +572,7 @@ func TestAgent_PreambleSkipping(t *testing.T) {
 		cancel:            cancel,
 		stderrBuf:         &stderrBuf,
 		preambleDelimiter: delimiter,
+		preambleMeta:      make(map[string]string),
 		processDone:       make(chan struct{}),
 		pendingControl:    make(map[string]chan<- controlResult),
 	}
@@ -633,11 +634,139 @@ func TestAgent_PreambleSkipping(t *testing.T) {
 	_ = a.Wait()
 }
 
+// TestHelperProcessWithPreambleMeta is a test helper that outputs metadata lines,
+// preamble, delimiter, then echoes stdin.
+func TestHelperProcessWithPreambleMeta(t *testing.T) {
+	if os.Getenv("GO_WANT_HELPER_PROCESS_PREAMBLE_META") != "1" {
+		return
+	}
+
+	delimiter := os.Getenv("GO_PREAMBLE_DELIMITER")
+	metaPrefix := os.Getenv("GO_META_PREFIX")
+
+	// Output preamble
+	_, _ = fmt.Fprintln(os.Stdout, "shell preamble line")
+	// Output metadata line
+	_, _ = fmt.Fprintln(os.Stdout, metaPrefix+"supports_model_effort=false")
+	// Output delimiter
+	_, _ = fmt.Fprintln(os.Stdout, delimiter)
+
+	// Echo stdin
+	buf := make([]byte, 4096)
+	for {
+		n, err := os.Stdin.Read(buf)
+		if err != nil {
+			break
+		}
+		_, _ = os.Stdout.Write(buf[:n])
+	}
+	os.Exit(0)
+}
+
+func TestAgent_PreambleMetaParsing(t *testing.T) {
+	ctx := context.Background()
+
+	delimiter := "__LEAPMUX_READY_testmeta__"
+	metaPrefix := "__LEAPMUX_META_testmeta__ "
+
+	var mu sync.Mutex
+	var lines []string
+	outputFn := func(line []byte) {
+		mu.Lock()
+		lines = append(lines, string(line))
+		mu.Unlock()
+	}
+
+	ctx2, cancel := context.WithCancel(ctx)
+	cmd := exec.CommandContext(ctx2, os.Args[0], "-test.run=TestHelperProcessWithPreambleMeta", "--")
+	cmd.Env = append(os.Environ(),
+		"GO_WANT_HELPER_PROCESS_PREAMBLE_META=1",
+		"GO_PREAMBLE_DELIMITER="+delimiter,
+		"GO_META_PREFIX="+metaPrefix,
+	)
+	cmd.Dir = t.TempDir()
+
+	stdin, err := cmd.StdinPipe()
+	require.NoError(t, err)
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+
+	a := &Agent{
+		agentID:            "meta-test",
+		model:              "test",
+		workingDir:         t.TempDir(),
+		cmd:                cmd,
+		stdin:              stdin,
+		ctx:                ctx2,
+		cancel:             cancel,
+		preambleDelimiter:  delimiter,
+		preambleMetaPrefix: metaPrefix,
+		preambleMeta:       make(map[string]string),
+		processDone:        make(chan struct{}),
+		pendingControl:     make(map[string]chan<- controlResult),
+	}
+
+	require.NoError(t, cmd.Start())
+
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
+	go a.readOutput(scanner, outputFn)
+
+	// Send input to trigger post-preamble output.
+	require.NoError(t, a.SendInput("hello"))
+
+	testutil.AssertEventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(lines) > 0
+	}, "expected output after preamble")
+
+	// Verify metadata was parsed.
+	assert.False(t, a.SupportsModelEffort(), "should be false when env var set")
+	assert.Equal(t, "false", a.preambleMeta["supports_model_effort"])
+
+	// Verify preamble output does NOT contain the metadata line.
+	preamble := a.PreambleOutput()
+	assert.Contains(t, preamble, "shell preamble line")
+	assert.NotContains(t, preamble, "supports_model_effort")
+
+	// Verify metadata was NOT forwarded to outputFn.
+	mu.Lock()
+	for _, line := range lines {
+		assert.NotContains(t, line, "supports_model_effort")
+	}
+	mu.Unlock()
+
+	a.Stop()
+	_ = a.Wait()
+}
+
+func TestAgent_SupportsModelEffortDefaultFalse(t *testing.T) {
+	a := &Agent{preambleMeta: make(map[string]string)}
+	assert.False(t, a.SupportsModelEffort())
+}
+
+func TestAgent_SupportsModelEffortTrue(t *testing.T) {
+	a := &Agent{preambleMeta: map[string]string{"supports_model_effort": "true"}}
+	assert.True(t, a.SupportsModelEffort())
+}
+
+func TestAgent_SupportsModelEffortFalseFromShell(t *testing.T) {
+	// Shell detected third-party provider env var at runtime.
+	a := &Agent{preambleMeta: map[string]string{"supports_model_effort": "false"}}
+	assert.False(t, a.SupportsModelEffort())
+}
+
+func TestAgent_SupportsModelEffortFalseNoMeta(t *testing.T) {
+	// Settings detected third-party → no metadata emitted → empty map.
+	a := &Agent{preambleMeta: make(map[string]string)}
+	assert.False(t, a.SupportsModelEffort())
+}
+
 func TestAgent_LeapmuxWorkerEnvAlwaysSet(t *testing.T) {
 	// Verify that LEAPMUX_WORKER=1 is always present in the environment
 	// when starting an agent (both with and without login shell).
 	ctx := context.Background()
-	args := []string{"--model", "test", "--output-format", "stream-json"}
 
 	// Without login shell.
 	cmd := exec.CommandContext(ctx, "echo", "test")
@@ -659,7 +788,7 @@ func TestAgent_LeapmuxWorkerEnvAlwaysSet(t *testing.T) {
 	assert.False(t, foundClaudeCode, "CLAUDECODE=1 should NOT be in env without login shell")
 
 	// With login shell - verify the env is set on the command.
-	shellCmd, _ := buildShellWrappedCommand(ctx, "/bin/sh", args, t.TempDir())
+	shellCmd, _, _ := buildShellWrappedCommand(ctx, "/bin/sh", true, []string{"--output-format", "stream-json"}, []string{"--model", "test"}, t.TempDir())
 	shellCmd.Env = filterEnv(shellCmd.Environ(), "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
 	shellCmd.Env = append(shellCmd.Env, "CLAUDE_CODE_ENTRYPOINT=sdk-ts", "LEAPMUX_WORKER=1", "CLAUDECODE=1")
 

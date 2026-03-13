@@ -9,11 +9,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestBuildShellWrappedCommand_Bash(t *testing.T) {
-	cmd, delimiter := buildShellWrappedCommand(context.Background(), "/bin/bash", []string{"--model", "opus"}, "/tmp")
+func TestBuildShellWrappedCommand_Bash_Interactive(t *testing.T) {
+	cmd, delimiter, metaPrefix := buildShellWrappedCommand(
+		context.Background(), "/bin/bash", true,
+		[]string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+	)
 	require.NotEmpty(t, delimiter)
 	assert.True(t, strings.HasPrefix(delimiter, "__LEAPMUX_READY_"))
 	assert.True(t, strings.HasSuffix(delimiter, "__"))
+	require.NotEmpty(t, metaPrefix)
+	assert.True(t, strings.HasPrefix(metaPrefix, "__LEAPMUX_META_"))
 
 	assert.Equal(t, "/bin/bash", cmd.Path)
 	assert.Equal(t, "/tmp", cmd.Dir)
@@ -24,12 +29,32 @@ func TestBuildShellWrappedCommand_Bash(t *testing.T) {
 	assert.Contains(t, cmd.Args[4], "echo '"+delimiter+"'")
 	assert.Contains(t, cmd.Args[4], "unset CLAUDECODE")
 	assert.Contains(t, cmd.Args[4], "exec claude")
+	assert.Contains(t, cmd.Args[4], "'--output-format'")
 	assert.Contains(t, cmd.Args[4], "'--model'")
 	assert.Contains(t, cmd.Args[4], "'opus'")
+	// Verify conditional structure
+	assert.Contains(t, cmd.Args[4], "CLAUDE_CODE_USE_BEDROCK")
+	assert.Contains(t, cmd.Args[4], "supports_model_effort=false")
+	assert.Contains(t, cmd.Args[4], "supports_model_effort=true")
+	assert.Contains(t, cmd.Args[4], metaPrefix+"supports_model_effort=")
+}
+
+func TestBuildShellWrappedCommand_Bash_NonInteractive(t *testing.T) {
+	cmd, _, _ := buildShellWrappedCommand(
+		context.Background(), "/bin/bash", false,
+		[]string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+	)
+	assert.Equal(t, "/bin/bash", cmd.Path)
+	require.Len(t, cmd.Args, 3) // bash -c <cmd>
+	assert.Equal(t, "-c", cmd.Args[1])
+	assert.Contains(t, cmd.Args[2], "exec claude")
 }
 
 func TestBuildShellWrappedCommand_Zsh(t *testing.T) {
-	cmd, delimiter := buildShellWrappedCommand(context.Background(), "/bin/zsh", []string{"--verbose"}, "/home/user")
+	cmd, delimiter, _ := buildShellWrappedCommand(
+		context.Background(), "/bin/zsh", true,
+		[]string{"--verbose"}, []string{"--model", "sonnet"}, "/home/user",
+	)
 	assert.Equal(t, "/bin/zsh", cmd.Path)
 	require.Len(t, cmd.Args, 5) // zsh -i -l -c <cmd>
 	assert.Equal(t, "-i", cmd.Args[1])
@@ -41,7 +66,10 @@ func TestBuildShellWrappedCommand_Zsh(t *testing.T) {
 }
 
 func TestBuildShellWrappedCommand_Fish(t *testing.T) {
-	cmd, _ := buildShellWrappedCommand(context.Background(), "/usr/bin/fish", []string{"--model", "sonnet"}, "/tmp")
+	cmd, _, _ := buildShellWrappedCommand(
+		context.Background(), "/usr/bin/fish", true,
+		[]string{"--model", "sonnet"}, []string{}, "/tmp",
+	)
 	assert.Equal(t, "/usr/bin/fish", cmd.Path)
 	require.Len(t, cmd.Args, 5) // fish -i -l -c <cmd>
 	assert.Equal(t, "-i", cmd.Args[1])
@@ -49,10 +77,15 @@ func TestBuildShellWrappedCommand_Fish(t *testing.T) {
 	assert.Equal(t, "-c", cmd.Args[3])
 	assert.Contains(t, cmd.Args[4], "unset CLAUDECODE")
 	assert.Contains(t, cmd.Args[4], "exec claude")
+	// No conditional (empty modelEffortArgs)
+	assert.NotContains(t, cmd.Args[4], "CLAUDE_CODE_USE_BEDROCK")
 }
 
-func TestBuildShellWrappedCommand_Tcsh(t *testing.T) {
-	cmd, delimiter := buildShellWrappedCommand(context.Background(), "/bin/tcsh", []string{"--model", "opus"}, "/tmp")
+func TestBuildShellWrappedCommand_Tcsh_Interactive(t *testing.T) {
+	cmd, delimiter, _ := buildShellWrappedCommand(
+		context.Background(), "/bin/tcsh", true,
+		[]string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+	)
 	assert.Equal(t, "/bin/tcsh", cmd.Path)
 	require.Len(t, cmd.Args, 3) // tcsh -ic <cmd>
 	assert.Equal(t, "-ic", cmd.Args[1])
@@ -61,8 +94,21 @@ func TestBuildShellWrappedCommand_Tcsh(t *testing.T) {
 	assert.Contains(t, cmd.Args[2], "exec claude")
 }
 
+func TestBuildShellWrappedCommand_Tcsh_NonInteractive(t *testing.T) {
+	cmd, _, _ := buildShellWrappedCommand(
+		context.Background(), "/bin/tcsh", false,
+		[]string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+	)
+	assert.Equal(t, "/bin/tcsh", cmd.Path)
+	require.Len(t, cmd.Args, 3) // tcsh -c <cmd>
+	assert.Equal(t, "-c", cmd.Args[1])
+}
+
 func TestBuildShellWrappedCommand_Csh(t *testing.T) {
-	cmd, _ := buildShellWrappedCommand(context.Background(), "/bin/csh", []string{"--verbose"}, "/tmp")
+	cmd, _, _ := buildShellWrappedCommand(
+		context.Background(), "/bin/csh", true,
+		[]string{"--verbose"}, []string{"--model", "opus"}, "/tmp",
+	)
 	assert.Equal(t, "/bin/csh", cmd.Path)
 	require.Len(t, cmd.Args, 3) // csh -ic <cmd>
 	assert.Equal(t, "-ic", cmd.Args[1])
@@ -70,8 +116,11 @@ func TestBuildShellWrappedCommand_Csh(t *testing.T) {
 	assert.Contains(t, cmd.Args[2], "exec claude")
 }
 
-func TestBuildShellWrappedCommand_Nu(t *testing.T) {
-	cmd, delimiter := buildShellWrappedCommand(context.Background(), "/usr/bin/nu", []string{"--model", "opus"}, "/tmp")
+func TestBuildShellWrappedCommand_Nu_Interactive(t *testing.T) {
+	cmd, delimiter, _ := buildShellWrappedCommand(
+		context.Background(), "/usr/bin/nu", true,
+		[]string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+	)
 	assert.Equal(t, "/usr/bin/nu", cmd.Path)
 	require.Len(t, cmd.Args, 5) // nu -i -l -c <cmd>
 	assert.Equal(t, "-i", cmd.Args[1])
@@ -81,12 +130,26 @@ func TestBuildShellWrappedCommand_Nu(t *testing.T) {
 	assert.Contains(t, cmd.Args[4], "hide-env CLAUDECODE")
 	assert.Contains(t, cmd.Args[4], "^claude")
 	assert.NotContains(t, cmd.Args[4], "exec")
+	assert.Contains(t, cmd.Args[4], "CLAUDE_CODE_USE_BEDROCK")
 }
 
-func TestBuildShellWrappedCommand_Pwsh(t *testing.T) {
+func TestBuildShellWrappedCommand_Nu_NonInteractive(t *testing.T) {
+	cmd, _, _ := buildShellWrappedCommand(
+		context.Background(), "/usr/bin/nu", false,
+		[]string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+	)
+	assert.Equal(t, "/usr/bin/nu", cmd.Path)
+	require.Len(t, cmd.Args, 3) // nu -c <cmd>
+	assert.Equal(t, "-c", cmd.Args[1])
+}
+
+func TestBuildShellWrappedCommand_Pwsh_Interactive(t *testing.T) {
 	for _, shell := range []string{"/usr/bin/pwsh", "/usr/bin/powershell", "/usr/bin/pwsh-preview", "/usr/bin/powershell-preview"} {
 		t.Run(shell, func(t *testing.T) {
-			cmd, delimiter := buildShellWrappedCommand(context.Background(), shell, []string{"--model", "opus"}, "/tmp")
+			cmd, delimiter, _ := buildShellWrappedCommand(
+				context.Background(), shell, true,
+				[]string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+			)
 			assert.Equal(t, shell, cmd.Path)
 			require.Len(t, cmd.Args, 4) // pwsh -Login -Command <cmd>
 			assert.Equal(t, "-Login", cmd.Args[1])
@@ -95,12 +158,26 @@ func TestBuildShellWrappedCommand_Pwsh(t *testing.T) {
 			assert.Contains(t, cmd.Args[3], "Remove-Item Env:CLAUDECODE")
 			assert.Contains(t, cmd.Args[3], "& claude")
 			assert.NotContains(t, cmd.Args[3], "exec")
+			assert.Contains(t, cmd.Args[3], "CLAUDE_CODE_USE_BEDROCK")
 		})
 	}
 }
 
+func TestBuildShellWrappedCommand_Pwsh_NonInteractive(t *testing.T) {
+	cmd, _, _ := buildShellWrappedCommand(
+		context.Background(), "/usr/bin/pwsh", false,
+		[]string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+	)
+	assert.Equal(t, "/usr/bin/pwsh", cmd.Path)
+	require.Len(t, cmd.Args, 3) // pwsh -Command <cmd>
+	assert.Equal(t, "-Command", cmd.Args[1])
+}
+
 func TestBuildShellWrappedCommand_UnknownShell(t *testing.T) {
-	cmd, _ := buildShellWrappedCommand(context.Background(), "/usr/bin/xonsh", []string{"--verbose"}, "/tmp")
+	cmd, _, _ := buildShellWrappedCommand(
+		context.Background(), "/usr/bin/xonsh", true,
+		[]string{"--verbose"}, []string{"--model", "opus"}, "/tmp",
+	)
 	assert.Equal(t, "/usr/bin/xonsh", cmd.Path)
 	require.Len(t, cmd.Args, 5) // defaults to -i -l -c
 	assert.Equal(t, "-i", cmd.Args[1])
@@ -108,6 +185,54 @@ func TestBuildShellWrappedCommand_UnknownShell(t *testing.T) {
 	assert.Equal(t, "-c", cmd.Args[3])
 	assert.Contains(t, cmd.Args[4], "unset CLAUDECODE")
 	assert.Contains(t, cmd.Args[4], "exec claude")
+}
+
+func TestBuildShellWrappedCommand_NoModelEffort(t *testing.T) {
+	// When third-party provider was detected from settings, modelEffortArgs is nil.
+	// No conditional logic should be generated.
+	cmd, _, metaPrefix := buildShellWrappedCommand(
+		context.Background(), "/bin/bash", true,
+		[]string{"--output-format", "stream-json"}, nil, "/tmp",
+	)
+	assert.Empty(t, metaPrefix)
+	assert.Contains(t, cmd.Args[4], "'--output-format'")
+	assert.NotContains(t, cmd.Args[4], "'--model'")
+	assert.NotContains(t, cmd.Args[4], "CLAUDE_CODE_USE_BEDROCK")
+	assert.NotContains(t, cmd.Args[4], "supports_model_effort")
+}
+
+func TestBuildShellWrappedCommand_NoModelEffort_Nu(t *testing.T) {
+	cmd, _, metaPrefix := buildShellWrappedCommand(
+		context.Background(), "/usr/bin/nu", true,
+		[]string{"--output-format", "stream-json"}, nil, "/tmp",
+	)
+	assert.Empty(t, metaPrefix)
+	assert.NotContains(t, cmd.Args[4], "CLAUDE_CODE_USE_BEDROCK")
+}
+
+func TestBuildShellWrappedCommand_NoModelEffort_Pwsh(t *testing.T) {
+	cmd, _, metaPrefix := buildShellWrappedCommand(
+		context.Background(), "/usr/bin/pwsh", true,
+		[]string{"--output-format", "stream-json"}, nil, "/tmp",
+	)
+	assert.Empty(t, metaPrefix)
+	assert.NotContains(t, cmd.Args[3], "CLAUDE_CODE_USE_BEDROCK")
+}
+
+func TestBuildShellWrappedCommand_ModelEffortInElseBranch(t *testing.T) {
+	inner := buildPosixCommand("__DELIM__", "__META__ ", []string{"--output-format", "stream-json"}, []string{"--model", "opus", "--effort", "high"}, true)
+
+	// The else branch should contain model/effort args
+	parts := strings.SplitN(inner, "else", 2)
+	require.Len(t, parts, 2, "expected if/else structure")
+	assert.Contains(t, parts[1], "'--model'")
+	assert.Contains(t, parts[1], "'--effort'")
+	assert.Contains(t, parts[1], "'opus'")
+	assert.Contains(t, parts[1], "'high'")
+
+	// The if branch (third-party provider) should NOT contain model/effort args
+	assert.NotContains(t, parts[0], "'--model'")
+	assert.NotContains(t, parts[0], "'--effort'")
 }
 
 func TestPosixQuote(t *testing.T) {
