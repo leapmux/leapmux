@@ -47,8 +47,10 @@ type Agent struct {
 	processDone chan struct{} // closed when the process exits
 	waitErr     error         // set before processDone is closed
 
-	preambleDelimiter string   // if set, readOutput skips lines until this delimiter
-	preambleOutput    []string // captured preamble lines (before delimiter)
+	preambleDelimiter  string            // if set, readOutput skips lines until this delimiter
+	preambleMetaPrefix string            // prefix for metadata lines (before delimiter)
+	preambleMeta       map[string]string // parsed key=value metadata from preamble
+	preambleOutput     []string          // captured preamble lines (before delimiter)
 
 	mu      sync.Mutex
 	stopped bool
@@ -67,7 +69,9 @@ type Options struct {
 	ResumeSessionID string        // If set, uses --resume to resume a previous session
 	PermissionMode  string        // Permission mode to set on startup (default, acceptEdits, plan, bypassPermissions)
 	StartupTimeout  time.Duration // Timeout for the startup handshake (default: 30s)
-	LoginShell      string        // If non-empty, wraps claude invocation in this login shell
+	Shell           string        // Default shell path (always set when using shell wrapper)
+	LoginShell      bool          // If true, use interactive+login shell flags
+	HomeDir         string        // User's home directory (for reading Claude Code settings)
 }
 
 // Start spawns a new Claude Code process and begins reading its output.
@@ -88,8 +92,13 @@ func (o Options) startupTimeout() time.Duration {
 func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
-	args := []string{
-		"--model", opts.Model,
+	// Check Claude Code settings files for third-party LLM provider env vars.
+	// If detected, we omit --model/--effort entirely (simple command).
+	// If not detected, we use a conditional shell command that checks env
+	// vars at runtime (the user may have them in their shell profile).
+	thirdPartyFromSettings := detectThirdPartyProvider(opts.HomeDir, opts.WorkingDir)
+
+	baseArgs := []string{
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--verbose",
@@ -98,26 +107,25 @@ func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, e
 		"--setting-sources", "user,project,local",
 	}
 
-	if opts.Effort != "" {
-		args = append(args, "--effort", opts.Effort)
-	}
-
 	if opts.ResumeSessionID != "" {
-		args = append(args, "--resume", opts.ResumeSessionID)
+		baseArgs = append(baseArgs, "--resume", opts.ResumeSessionID)
 	}
 
-	var cmd *exec.Cmd
-	var preambleDelimiter string
-	if opts.LoginShell != "" {
-		cmd, preambleDelimiter = buildShellWrappedCommand(ctx, opts.LoginShell, args, opts.WorkingDir)
-	} else {
-		cmd = exec.CommandContext(ctx, "claude", args...)
-		cmd.Dir = opts.WorkingDir
+	var modelEffortArgs []string
+	if !thirdPartyFromSettings {
+		modelEffortArgs = []string{"--model", opts.Model}
+		if opts.Effort != "" {
+			modelEffortArgs = append(modelEffortArgs, "--effort", opts.Effort)
+		}
 	}
+
+	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
+		ctx, opts.Shell, opts.LoginShell, baseArgs, modelEffortArgs, opts.WorkingDir,
+	)
 
 	cmd.Env = filterEnv(cmd.Environ(), "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
 	cmd.Env = append(cmd.Env, "CLAUDE_CODE_ENTRYPOINT=sdk-ts", "LEAPMUX_WORKER=1")
-	if opts.LoginShell != "" {
+	if opts.LoginShell {
 		// Set CLAUDECODE=1 so the user's shell rc files can detect they are
 		// being sourced inside Claude Code and skip conflicting aliases.
 		// The inner command unsets it before invoking claude.
@@ -156,17 +164,19 @@ func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, e
 
 	var stderrBuf bytes.Buffer
 	a := &Agent{
-		agentID:           opts.AgentID,
-		model:             opts.Model,
-		workingDir:        opts.WorkingDir,
-		cmd:               cmd,
-		stdin:             stdin,
-		ctx:               ctx,
-		cancel:            cancel,
-		stderrBuf:         &stderrBuf,
-		preambleDelimiter: preambleDelimiter,
-		processDone:       make(chan struct{}),
-		pendingControl:    make(map[string]chan<- controlResult),
+		agentID:            opts.AgentID,
+		model:              opts.Model,
+		workingDir:         opts.WorkingDir,
+		cmd:                cmd,
+		stdin:              stdin,
+		ctx:                ctx,
+		cancel:             cancel,
+		stderrBuf:          &stderrBuf,
+		preambleDelimiter:  preambleDelimiter,
+		preambleMetaPrefix: metaPrefix,
+		preambleMeta:       make(map[string]string),
+		processDone:        make(chan struct{}),
+		pendingControl:     make(map[string]chan<- controlResult),
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -362,6 +372,15 @@ func (a *Agent) PreambleOutput() string {
 	return strings.Join(a.preambleOutput, "\n")
 }
 
+// SupportsModelEffort returns whether the agent supports --model/--effort CLI args.
+// When a third-party provider was detected from settings files at startup,
+// the shell wrapper runs without conditional logic and no metadata is emitted,
+// so this returns false. Otherwise, the shell wrapper checks env vars at
+// runtime and reports the result via preamble metadata.
+func (a *Agent) SupportsModelEffort() bool {
+	return a.preambleMeta["supports_model_effort"] == "true"
+}
+
 // ConfirmedPermissionMode returns the permission mode confirmed by the agent
 // during the startup handshake.
 func (a *Agent) ConfirmedPermissionMode() string {
@@ -466,11 +485,21 @@ func (a *Agent) readOutput(scanner *bufio.Scanner, outputFn OutputHandler) {
 	// appears before claude's NDJSON stream.
 	if a.preambleDelimiter != "" {
 		delimBytes := []byte(a.preambleDelimiter)
+		metaPrefixBytes := []byte(a.preambleMetaPrefix)
 		const maxPreambleLines = 50
 		for scanner.Scan() {
 			line := scanner.Bytes()
-			if bytes.Equal(bytes.TrimSpace(line), delimBytes) {
+			trimmed := bytes.TrimSpace(line)
+			if bytes.Equal(trimmed, delimBytes) {
 				break
+			}
+			// Parse metadata lines (e.g. "__LEAPMUX_META_xxx__ key=value").
+			if len(metaPrefixBytes) > 0 && bytes.HasPrefix(trimmed, metaPrefixBytes) {
+				kv := string(trimmed[len(metaPrefixBytes):])
+				if eqIdx := strings.IndexByte(kv, '='); eqIdx >= 0 {
+					a.preambleMeta[kv[:eqIdx]] = kv[eqIdx+1:]
+				}
+				continue
 			}
 			if len(a.preambleOutput) < maxPreambleLines {
 				a.preambleOutput = append(a.preambleOutput, string(line))

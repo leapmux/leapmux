@@ -85,6 +85,7 @@ message AgentInfo {
   string working_dir = 13;      // Working directory on the worker
   AgentGitStatus git_status = 14; // Git status for the agent's working directory
   string home_dir = 15;         // Worker's home directory for tilde path display
+  bool supports_model_effort = 16; // Whether the agent supports --model/--effort CLI args
 }
 
 // --- Agent Messaging ---
@@ -129,6 +130,7 @@ message AgentStatusChange {
   string model = 6;
   string effort = 7;
   AgentGitStatus git_status = 8; // Git status for the agent's working directory
+  bool supports_model_effort = 9; // Whether the agent supports --model/--effort CLI args
 }
 
 // AgentGitStatus holds git repository status for an agent's working directory.

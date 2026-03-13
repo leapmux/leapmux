@@ -160,6 +160,8 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     const agent = props.agentStore.state.agents.find(a => a.id === agentId)
     if (!agent)
       return
+    if (agent.supportsModelEffort === false)
+      return
     const previous = agent[field] || (field === 'model' ? DEFAULT_MODEL : DEFAULT_EFFORT)
     // Optimistic update
     props.agentStore.updateAgent(agentId, { [field]: value })

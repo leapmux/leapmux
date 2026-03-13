@@ -222,6 +222,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
                 ...(sc.effort ? { effort: sc.effort } : {}),
               }),
           gitStatus: sc.gitStatus,
+          supportsModelEffort: sc.supportsModelEffort,
         })
         if (sc.gitStatus) {
           const gs = sc.gitStatus
