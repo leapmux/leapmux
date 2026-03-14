@@ -448,7 +448,7 @@ tasks:
       - wails build -tags devtools -o leapmux-desktop -platform linux/amd64 -ldflags "-X main.version={{.VERSION}}"
       - cp build/linux/leapmux-desktop.desktop build/bin/
       - cp build/appicon.png build/bin/leapmux-desktop.png
-      - cp ../icons/leapmux-icon.svg build/bin/leapmux-desktop.svg
+      - cp ../icons/leapmux-icon-light.svg build/bin/leapmux-desktop.svg
 
   build-desktop-linux-arm64:
     desc: Build LeapMux desktop app for Linux (arm64)
@@ -470,7 +470,7 @@ tasks:
       - wails build -tags devtools -o leapmux-desktop -platform linux/arm64 -ldflags "-X main.version={{.VERSION}}"
       - cp build/linux/leapmux-desktop.desktop build/bin/
       - cp build/appicon.png build/bin/leapmux-desktop.png
-      - cp ../icons/leapmux-icon.svg build/bin/leapmux-desktop.svg
+      - cp ../icons/leapmux-icon-light.svg build/bin/leapmux-desktop.svg
 
   build-desktop-windows:
     desc: Build LeapMux desktop app for Windows
