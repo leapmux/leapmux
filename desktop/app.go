@@ -75,6 +75,10 @@ func (a *App) domReady(_ context.Context) {
 			window.WailsInvoke('wails:openInspector');
 			window.WailsInvoke('wails:showInspector');
 		}
+		if (e.key === 'q' && (e.ctrlKey || e.metaKey)) {
+			e.preventDefault();
+			window.runtime.Quit();
+		}
 	}, true);
 })();
 `)
