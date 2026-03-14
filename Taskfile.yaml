@@ -515,9 +515,9 @@ tasks:
   clean:
     desc: Remove all build artifacts and generated code
     cmds:
-      - rm -rf backend/bin/
+      - rm -rf backend/bin/ backend/leapmux
       - rm -rf backend/generated/ backend/*/generated/ backend/*/*/generated/
       - rm -rf frontend/.output/ frontend/.vinxi/ frontend/node_modules/
       - rm -rf frontend/src/spinners/
-      - rm -rf desktop/bin/ desktop/build/appicon.png desktop/build/windows/icon.ico
+      - rm -rf desktop/bin/ desktop/leapmux-desktop desktop/build/appicon.png desktop/build/windows/icon.ico
       - rm -rf .task/

@@ -5,7 +5,9 @@
 
 # Build output
 /backend/bin/
+/backend/leapmux
 /desktop/bin/
+/desktop/leapmux-desktop
 /desktop/build/appicon.png
 /desktop/build/windows/icon.ico
 .task/
