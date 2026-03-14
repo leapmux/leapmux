@@ -3,15 +3,12 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
 )
-
-var errAlreadyRunning = errors.New("another instance is already running")
 
 func socketPath() string {
 	if runtime.GOOS == "linux" {

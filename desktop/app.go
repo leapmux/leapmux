@@ -58,7 +58,7 @@ func (a *App) domReady(_ context.Context) {
 	// manager ("external" handler) is attached to the webview, so
 	// webkit.messageHandlers.external.postMessage is always available,
 	// even on pages not served via the wails:// scheme.
-	var post = (function() {
+	window.__lm_post = (function() {
 		// Windows (WebView2)
 		if (window.chrome && window.chrome.webview && window.chrome.webview.postMessage)
 			return function(m) { window.chrome.webview.postMessage(m); };
@@ -81,16 +81,16 @@ func (a *App) domReady(_ context.Context) {
 		if (href && /^https?:\/\//.test(href)) {
 			e.preventDefault();
 			e.stopPropagation();
-			if (post) post('BO:' + href);
+			if (window.__lm_post) window.__lm_post('BO:' + href);
 		}
 	}, true);
 	document.addEventListener('keydown', function(e) {
 		if (e.key === 'F12') {
-			if (post) post('%s');
+			if (window.__lm_post) window.__lm_post('%s');
 		}
 		if (e.key === 'q' && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
-			if (post) post('Q');
+			if (window.__lm_post) window.__lm_post('Q');
 		}
 	}, true);
 })();
