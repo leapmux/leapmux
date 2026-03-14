@@ -53,6 +53,7 @@ html, body {
 
 /* Main container — starts invisible; faded in by JS when ready. */
 .container {
+  --container-gap: 2rem;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -61,7 +62,7 @@ html, body {
   max-width: 720px;
   margin: 0 auto;
   padding: 2rem;
-  gap: 2rem;
+  gap: var(--container-gap);
   opacity: 0;
   transition: opacity 0.3s ease;
 }
@@ -161,22 +162,31 @@ html, body {
   background: var(--primary);
 }
 
-/* Hub URL input area — animated height via grid 0fr → 1fr */
-.hub-url-section {
-  width: 100%;
-  max-width: 640px;
+/* Collapsible section — animated height via grid 0fr → 1fr */
+.collapsible {
   display: grid;
   grid-template-rows: 0fr;
-  transition: grid-template-rows 0.3s ease;
+  transition: grid-template-rows 0.3s ease, margin-top 0.3s ease;
 }
 
-.hub-url-section.visible {
+.collapsible.visible {
   grid-template-rows: 1fr;
 }
 
-.hub-url-inner {
+/* Negate the parent container's gap when a collapsible is hidden. */
+.container > .collapsible:not(.visible) {
+  margin-top: calc(-1 * var(--container-gap));
+}
+
+.collapsible-inner {
   overflow: hidden;
   min-height: 0;
+}
+
+/* Hub URL input area */
+.hub-url-section {
+  width: 100%;
+  max-width: 640px;
 }
 
 .hub-url-section label {
@@ -254,24 +264,75 @@ html, body {
   to { transform: rotate(360deg); }
 }
 
-/* Error message — animated height via grid 0fr → 1fr */
-.error-msg {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows 0.3s ease;
-}
-
-.error-msg.visible {
-  grid-template-rows: 1fr;
-}
-
+/* Error message */
 .error-msg > span {
-  overflow: hidden;
-  min-height: 0;
   color: var(--danger);
   font-size: 0.85rem;
   text-align: center;
   word-break: break-word;
+}
+
+/* Full Disk Access section */
+.full-disk-access-section {
+  width: 100%;
+  max-width: 640px;
+}
+
+.full-disk-access-card {
+  background: var(--card);
+  border: 2px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.full-disk-access-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.full-disk-access-header h4 {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.full-disk-access-icon {
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.full-disk-access-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.full-disk-access-body > p {
+  flex: 1;
+  font-size: 0.8rem;
+  color: var(--muted-foreground);
+  line-height: 1.5;
+}
+
+.full-disk-access-settings-btn {
+  flex-shrink: 0;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+}
+
+.full-disk-access-settings-btn:hover {
+  opacity: 0.85;
 }
 
 /* Version footer */

@@ -412,6 +412,7 @@ tasks:
       - desktop/build/bin/LeapMux.app/Contents/MacOS/LeapMux
     cmds:
       - wails build -tags devtools -platform darwin/universal -ldflags "-X main.version={{.VERSION}}"
+      - codesign --force --sign - --identifier dev.leapmux.desktop --options runtime build/bin/LeapMux.app
       - task: package-desktop-dmg
 
   package-desktop-dmg:

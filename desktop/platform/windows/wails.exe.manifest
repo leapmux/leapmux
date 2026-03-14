@@ -2,7 +2,7 @@
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity
     type="win32"
-    name="com.leapmux.desktop"
+    name="dev.leapmux.desktop"
     version="{{.Info.ProductVersion}}.0"
     processorArchitecture="*"/>
   <dependency>

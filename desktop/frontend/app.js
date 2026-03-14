@@ -7,6 +7,10 @@ let savedConfig = null;
 // Whether the container UI is currently visible.
 let uiVisible = false;
 
+// Full Disk Access state.
+let fullDiskAccessGranted = true;
+let fullDiskAccessPollTimer = null;
+
 // DOM references.
 const container = document.querySelector('.container');
 const hubUrlSection = document.getElementById('hubUrlSection');
@@ -16,6 +20,7 @@ const spinner = document.getElementById('spinner');
 const errorMsg = document.getElementById('errorMsg');
 const errorMsgText = document.getElementById('errorMsgText');
 const versionEl = document.getElementById('version');
+const fullDiskAccessSection = document.getElementById('fullDiskAccessSection');
 
 // Fade the container in. Returns a promise that resolves after the transition.
 function fadeIn() {
@@ -58,7 +63,52 @@ function updateConnectBtn() {
   if (selectedMode === 'distributed') {
     connectBtn.disabled = !isValidHubUrl(hubUrlInput.value);
   } else {
-    connectBtn.disabled = false;
+    connectBtn.disabled = !fullDiskAccessGranted;
+  }
+}
+
+// Check Full Disk Access and update status UI.
+async function checkFullDiskAccess() {
+  var prev = fullDiskAccessGranted;
+  try {
+    fullDiskAccessGranted = await window.go.main.App.CheckFullDiskAccess();
+  } catch (_) {
+    fullDiskAccessGranted = true;
+  }
+
+  if (fullDiskAccessGranted === prev) return;
+
+  if (fullDiskAccessGranted) {
+    stopFullDiskAccessPoll();
+    restartApp();
+  } else {
+    fullDiskAccessSection.classList.add('visible');
+  }
+
+  updateConnectBtn();
+}
+
+// Open System Settings to the Full Disk Access pane.
+function openFullDiskAccessSettings() {
+  window.go.main.App.OpenFullDiskAccessSettings();
+}
+
+// Restart the app.
+function restartApp() {
+  window.go.main.App.Restart();
+}
+
+// Start polling for Full Disk Access status.
+function startFullDiskAccessPoll() {
+  stopFullDiskAccessPoll();
+  fullDiskAccessPollTimer = setInterval(checkFullDiskAccess, 5000);
+}
+
+// Stop polling for Full Disk Access status.
+function stopFullDiskAccessPoll() {
+  if (fullDiskAccessPollTimer !== null) {
+    clearInterval(fullDiskAccessPollTimer);
+    fullDiskAccessPollTimer = null;
   }
 }
 
@@ -71,6 +121,18 @@ function selectMode(mode) {
   });
 
   hubUrlSection.classList.toggle('visible', mode === 'distributed');
+
+  if (mode === 'solo') {
+    checkFullDiskAccess().then(function () {
+      if (!fullDiskAccessGranted) {
+        startFullDiskAccessPoll();
+      }
+    });
+  } else {
+    fullDiskAccessSection.classList.remove('visible');
+    stopFullDiskAccessPoll();
+  }
+
   clearError();
   updateConnectBtn();
 }
@@ -219,6 +281,16 @@ async function init() {
   }
 
   if (savedConfig) {
+    // For solo mode, check Full Disk Access before auto-connecting.
+    if (savedConfig.mode === 'solo') {
+      await checkFullDiskAccess();
+      if (!fullDiskAccessGranted) {
+        startFullDiskAccessPoll();
+        fadeIn();
+        return;
+      }
+    }
+
     // Returning user: try auto-connect silently. Show the UI only if it takes
     // longer than 1 second (e.g. solo mode startup).
     var showTimer = setTimeout(function () {
@@ -230,7 +302,12 @@ async function init() {
     await connect(false);
     clearTimeout(showTimer);
   } else {
-    // First launch: show the mode selection UI immediately.
+    // First launch: check Full Disk Access for the default solo mode.
+    await checkFullDiskAccess();
+    if (!fullDiskAccessGranted) {
+      startFullDiskAccessPoll();
+    }
+    // Show the mode selection UI immediately.
     fadeIn();
   }
 }

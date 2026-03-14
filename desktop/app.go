@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"runtime"
 	"strings"
 
@@ -12,10 +14,11 @@ import (
 
 // App is the main application struct bound to the frontend via Wails.
 type App struct {
-	ctx     context.Context
-	version string
-	config  *DesktopConfig
-	solo    *solo.Instance
+	ctx       context.Context
+	version   string
+	config    *DesktopConfig
+	solo      *solo.Instance
+	connected bool // true after a successful Connect call
 }
 
 // NewApp creates a new App instance.
@@ -110,8 +113,9 @@ func (a *App) bringToFront() {
 
 // shutdown is called when the app is closing.
 func (a *App) shutdown(_ context.Context) {
-	// Save the current window size if the user has connected at least once.
-	if a.config != nil && a.config.Mode != "" {
+	// Save the current window size only if the app connected this session
+	// (not if we're still on the picker UI with its smaller window).
+	if a.connected {
 		w, h := wailsRuntime.WindowGetSize(a.ctx)
 		if w > 0 && h > 0 {
 			a.config.WindowWidth = w
@@ -132,6 +136,28 @@ func (a *App) GetVersion() string {
 	return a.version
 }
 
+// CheckFullDiskAccess returns true if the app has Full Disk Access (macOS only).
+// On other platforms it always returns true.
+func (a *App) CheckFullDiskAccess() bool {
+	return checkFullDiskAccess()
+}
+
+// OpenFullDiskAccessSettings opens the system settings pane for Full Disk Access (macOS only).
+// On other platforms this is a no-op.
+func (a *App) OpenFullDiskAccessSettings() {
+	_ = openFullDiskAccessSettings()
+}
+
+// Restart re-launches the app and quits the current process.
+func (a *App) Restart() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	_ = exec.Command(exe).Start()
+	wailsRuntime.Quit(a.ctx)
+}
+
 // ConnectSolo starts the in-process Hub and Worker, waits for readiness,
 // saves the config, and returns the local URL.
 func (a *App) ConnectSolo() (string, error) {
@@ -149,6 +175,7 @@ func (a *App) ConnectSolo() (string, error) {
 		fmt.Printf("warning: failed to save config: %v\n", err)
 	}
 
+	a.connected = true
 	return "http://127.0.0.1:4327", nil
 }
 
@@ -173,5 +200,6 @@ func (a *App) ConnectDistributed(hubURL string) (string, error) {
 		fmt.Printf("warning: failed to save config: %v\n", err)
 	}
 
+	a.connected = true
 	return hubURL, nil
 }
