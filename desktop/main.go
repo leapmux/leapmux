@@ -58,7 +58,7 @@ func main() {
 		// page to the real frontend (e.g. http://127.0.0.1:4327). Allow
 		// that origin so JS→Go IPC (keyboard shortcuts, external links)
 		// continues to work on the navigated page.
-		BindingsAllowedOrigins: "http://127.0.0.1:*,http://*,https://*",
+		BindingsAllowedOrigins: "http://*,https://*",
 		OnStartup:              app.startup,
 		OnDomReady:             app.domReady,
 		OnShutdown:             app.shutdown,
