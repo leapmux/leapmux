@@ -42,7 +42,7 @@ func handleCleanupWorkspace(svc *Context) channel.HandlerFunc {
 			_ = svc.Queries.CloseAgent(bgCtx(), row)
 
 			// Unregister worktree tab and collect dirty worktree info.
-			cleanup := svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_AGENT, row)
+			cleanup := svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_AGENT, row, leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED)
 			if cleanup.NeedsConfirmation {
 				worktrees = append(worktrees, &leapmuxv1.WorktreeInfo{
 					WorktreeId:   cleanup.WorktreeID,
@@ -68,7 +68,7 @@ func handleCleanupWorkspace(svc *Context) channel.HandlerFunc {
 				svc.Terminals.RemoveTerminal(ts.ID)
 			}
 
-			cleanup := svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_TERMINAL, ts.ID)
+			cleanup := svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_TERMINAL, ts.ID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED)
 			if cleanup.NeedsConfirmation {
 				worktrees = append(worktrees, &leapmuxv1.WorktreeInfo{
 					WorktreeId:   cleanup.WorktreeID,

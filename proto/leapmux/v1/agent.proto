@@ -1,6 +1,8 @@
 syntax = "proto3";
 package leapmux.v1;
 
+import "leapmux/v1/common.proto";
+
 // AgentStatus tracks the lifecycle state of an agent.
 enum AgentStatus {
   AGENT_STATUS_UNSPECIFIED = 0;
@@ -49,6 +51,7 @@ message OpenAgentResponse {
 
 message CloseAgentRequest {
   string agent_id = 1;
+  WorktreeAction worktree_action = 2;
 }
 
 message CloseAgentResponse {

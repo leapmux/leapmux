@@ -9,6 +9,7 @@ import type { createTerminalStore } from '~/stores/terminal.store'
 import { batch, createEffect, createSignal } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
+import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { tabKey } from '~/stores/tab.store'
 
@@ -25,7 +26,6 @@ interface UseTabOperationsOpts {
   focusEditor: () => void
   getScrollState: () => { distFromBottom: number, atBottom: boolean } | undefined
   setFileTreePath: (path: string) => void
-  pendingWorktreeChoiceRef: { current: 'keep' | 'remove' | null }
 }
 
 export function useTabOperations(opts: UseTabOperationsOpts) {
@@ -42,7 +42,6 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     focusEditor,
     getScrollState,
     setFileTreePath,
-    pendingWorktreeChoiceRef,
   } = opts
 
   const [closingTabKeys, setClosingTabKeys] = createSignal<Set<string>>(new Set())
@@ -124,16 +123,19 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       return
     }
 
+    // Determine the worktree action from a pre-close dirty check.
+    let worktreeAction = WorktreeAction.UNSPECIFIED
     try {
       const tabType = tab.type === TabType.AGENT ? TabType.AGENT : TabType.TERMINAL
-      const ctx = getCurrentTabContext()
-      const status = await workerRpc.checkWorktreeStatus(ctx.workerId, { tabType, tabId: tab.id })
+      // Use the closing tab's own workerId, not the active tab's context.
+      const workerId = tab.workerId ?? ''
+      const status = await workerRpc.checkWorktreeStatus(workerId, { tabType, tabId: tab.id })
       if (status.hasWorktree && status.isLastTab && status.isDirty) {
         const choice = await askWorktreeConfirmation(status)
         if (choice === 'cancel') {
           return
         }
-        pendingWorktreeChoiceRef.current = choice
+        worktreeAction = choice === 'keep' ? WorktreeAction.KEEP : WorktreeAction.REMOVE
       }
     }
     catch {
@@ -144,19 +146,18 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     addClosingTabKey(key)
     try {
       if (tab.type === TabType.AGENT) {
-        await agentOps.handleCloseAgent(tab.id)
+        await agentOps.handleCloseAgent(tab.id, worktreeAction)
       }
       else {
         const instance = getTerminalInstance(tab.id)
         if (instance) {
           instance.dispose()
         }
-        await termOps.handleTerminalClose(tab.id)
+        await termOps.handleTerminalClose(tab.id, worktreeAction)
       }
     }
     finally {
       removeClosingTabKey(key)
-      pendingWorktreeChoiceRef.current = null
     }
   }
 

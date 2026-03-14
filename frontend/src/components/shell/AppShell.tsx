@@ -392,9 +392,6 @@ export const AppShell: ParentComponent = (props) => {
     workspaceLoading,
   })
 
-  // Shared pending worktree choice (used by agentOps, termOps, and tabOps)
-  const pendingWorktreeChoiceRef: { current: 'keep' | 'remove' | null } = { current: null }
-
   // Agent operations hook
   const agentOps = useAgentOperations({
     agentStore,
@@ -406,7 +403,6 @@ export const AppShell: ParentComponent = (props) => {
     isActiveWorkspaceMutatable,
     activeWorkspace,
     getCurrentTabContext,
-    pendingWorktreeChoice: () => pendingWorktreeChoiceRef.current,
     setShowNewAgentDialog,
     setNewAgentLoading,
     setShowResumeDialog,
@@ -427,7 +423,6 @@ export const AppShell: ParentComponent = (props) => {
     setShowNewTerminalDialog,
     setNewTerminalLoading,
     setNewShellLoading,
-    pendingWorktreeChoice: () => pendingWorktreeChoiceRef.current,
     persistLayout,
   })
 
@@ -445,7 +440,6 @@ export const AppShell: ParentComponent = (props) => {
     focusEditor: () => focusEditorRef.current?.(),
     getScrollState: () => getScrollStateRef.current?.(),
     setFileTreePath,
-    pendingWorktreeChoiceRef,
   })
   // Bind the closing-agent check now that tabOps is available.
   isAgentClosing = (agentId: string) =>
