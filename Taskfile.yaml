@@ -145,10 +145,10 @@ tasks:
       - backend/worker/**/*
       - "backend/**/*.go"
     generates:
-      - backend/bin/leapmux
+      - backend/build/bin/leapmux
     cmds:
-      - mkdir -p bin
-      - go build -ldflags "-X main.version={{.VERSION}}" -o ./bin/leapmux ./cmd/leapmux
+      - mkdir -p build/bin
+      - go build -ldflags "-X main.version={{.VERSION}}" -o ./build/bin/leapmux ./cmd/leapmux
 
   generate-web-icons:
     desc: Generate web favicon and PNG icons from SVG sources
@@ -368,6 +368,7 @@ tasks:
       - desktop/build/appicon.png
       - desktop/build/windows/icon.ico
     cmds:
+      - mkdir -p desktop/build/windows
       - NODE_PATH=frontend/node_modules bun desktop/scripts/generate-icons.mjs icons/leapmux-icon-light.svg desktop/build/appicon.png desktop/build/windows/icon.ico
 
   prepare-desktop:
@@ -375,6 +376,7 @@ tasks:
     cmds:
       - task: generate
       - task: embed-frontend
+      - rsync -a desktop/platform/ desktop/build/
       - task: generate-desktop-icons
 
   build-desktop:
@@ -407,10 +409,9 @@ tasks:
       - backend/go.sum
       - "backend/**/*.go"
     generates:
-      - desktop/bin/LeapMux.app/Contents/MacOS/LeapMux
+      - desktop/build/bin/LeapMux.app/Contents/MacOS/LeapMux
     cmds:
       - wails build -tags devtools -platform darwin/universal -ldflags "-X main.version={{.VERSION}}"
-      - rm -rf bin && mv build/bin bin
       - task: package-desktop-dmg
 
   package-desktop-dmg:
@@ -418,17 +419,17 @@ tasks:
     platforms: [darwin]
     deps: [prepare-frontend]
     sources:
-      - desktop/bin/LeapMux.app/Contents/MacOS/LeapMux
+      - desktop/build/bin/LeapMux.app/Contents/MacOS/LeapMux
       - desktop/scripts/create-dmg.sh
     generates:
-      - desktop/bin/LeapMux-{{.VERSION}}.dmg
+      - desktop/build/bin/LeapMux-{{.VERSION}}.dmg
     cmds:
       - cd frontend && npm rebuild macos-alias 2>/dev/null || true
       - >-
         desktop/scripts/create-dmg.sh
         "{{.VERSION}}"
-        desktop/bin/LeapMux.app
-        desktop/bin/LeapMux-{{.VERSION}}.dmg
+        desktop/build/bin/LeapMux.app
+        desktop/build/bin/LeapMux-{{.VERSION}}.dmg
 
   build-desktop-linux-amd64:
     desc: Build LeapMux desktop app for Linux (amd64)
@@ -445,13 +446,12 @@ tasks:
       - backend/go.sum
       - "backend/**/*.go"
     generates:
-      - desktop/bin/leapmux-desktop
+      - desktop/build/bin/leapmux-desktop
     cmds:
       - wails build -tags devtools -o leapmux-desktop -platform linux/amd64 -ldflags "-X main.version={{.VERSION}}"
-      - rm -rf bin && mv build/bin bin
-      - cp build/linux/leapmux-desktop.desktop bin/
-      - cp build/appicon.png bin/leapmux-desktop.png
-      - cp ../icons/leapmux-icon-light.svg bin/leapmux-desktop.svg
+      - cp build/linux/leapmux-desktop.desktop build/bin/
+      - cp build/appicon.png build/bin/leapmux-desktop.png
+      - cp ../icons/leapmux-icon-light.svg build/bin/leapmux-desktop.svg
 
   build-desktop-linux-arm64:
     desc: Build LeapMux desktop app for Linux (arm64)
@@ -468,13 +468,12 @@ tasks:
       - backend/go.sum
       - "backend/**/*.go"
     generates:
-      - desktop/bin/leapmux-desktop
+      - desktop/build/bin/leapmux-desktop
     cmds:
       - wails build -tags devtools -o leapmux-desktop -platform linux/arm64 -ldflags "-X main.version={{.VERSION}}"
-      - rm -rf bin && mv build/bin bin
-      - cp build/linux/leapmux-desktop.desktop bin/
-      - cp build/appicon.png bin/leapmux-desktop.png
-      - cp ../icons/leapmux-icon-light.svg bin/leapmux-desktop.svg
+      - cp build/linux/leapmux-desktop.desktop build/bin/
+      - cp build/appicon.png build/bin/leapmux-desktop.png
+      - cp ../icons/leapmux-icon-light.svg build/bin/leapmux-desktop.svg
 
   build-desktop-windows:
     desc: Build LeapMux desktop app for Windows
@@ -491,10 +490,9 @@ tasks:
       - backend/go.sum
       - "backend/**/*.go"
     generates:
-      - desktop/bin/LeapMux.exe
+      - desktop/build/bin/LeapMux.exe
     cmds:
       - wails build -tags devtools -platform windows/amd64 -ldflags "-X main.version={{.VERSION}}"
-      - rm -rf bin && mv build/bin bin
 
   lint-desktop:
     desc: Lint desktop Go code
@@ -515,9 +513,9 @@ tasks:
   clean:
     desc: Remove all build artifacts and generated code
     cmds:
-      - rm -rf backend/bin/ backend/leapmux
+      - rm -rf backend/build/ backend/leapmux
       - rm -rf backend/generated/ backend/*/generated/ backend/*/*/generated/
       - rm -rf frontend/.output/ frontend/.vinxi/ frontend/node_modules/
       - rm -rf frontend/src/spinners/
-      - rm -rf desktop/bin/ desktop/leapmux-desktop desktop/build/appicon.png desktop/build/windows/icon.ico
+      - rm -rf desktop/build/ desktop/leapmux-desktop
       - rm -rf .task/

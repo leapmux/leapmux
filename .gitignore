@@ -4,12 +4,10 @@
 *~
 
 # Build output
-/backend/bin/
+/backend/build/
 /backend/leapmux
-/desktop/bin/
+/desktop/build/
 /desktop/leapmux-desktop
-/desktop/build/appicon.png
-/desktop/build/windows/icon.ico
 .task/
 
 # Generated code

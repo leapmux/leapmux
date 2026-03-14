@@ -249,7 +249,7 @@ task build-frontend   # Build frontend assets
 task build-desktop    # Build desktop app for current platform (requires wails)
 ```
 
-The `leapmux` binary is output to `backend/bin/`. The desktop app is output to `desktop/bin/`. On macOS, a `.dmg` installer is also created.
+The `leapmux` binary is output to `backend/build/bin/`. The desktop app is output to `desktop/build/bin/`. On macOS, a `.dmg` installer is also created.
 
 `task build` skips the desktop build automatically if `wails` is not installed.
 
@@ -446,6 +446,8 @@ leapmux/
 ├── .github/workflows/      # CI, Docker, and release workflows
 │
 ├── backend/                # Go backend module
+│   ├── build/              # Build output (gitignored)
+│   │
 │   ├── cmd/leapmux/        # Unified binary entry point
 │   │   ├── hub.go          # Hub mode
 │   │   ├── main.go         # Subcommand routing (hub, worker, solo, dev)
@@ -499,8 +501,9 @@ leapmux/
 │       └── runner.go       # Run(), RunConfig
 │
 ├── desktop/                # Wails desktop application (optional)
-│   ├── build/              # Build resources (icons, platform manifests)
+│   ├── build/              # Build output (gitignored)
 │   ├── frontend/           # Minimal loader page (redirects to embedded UI)
+│   ├── platform/           # Platform-specific build resources (icons, manifests)
 │   └── scripts/            # Icon generation, DMG creation
 │
 ├── docker/                 # Dockerfile and s6-overlay service definitions
