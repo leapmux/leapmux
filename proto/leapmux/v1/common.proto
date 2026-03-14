@@ -21,6 +21,14 @@ message PageResponse {
   bool has_more = 2;
 }
 
+// WorktreeAction conveys the user's pre-close choice so the backend
+// can skip its own dirty-check and honor the decision atomically.
+enum WorktreeAction {
+  WORKTREE_ACTION_UNSPECIFIED = 0;  // No prior user choice — backend decides
+  WORKTREE_ACTION_KEEP = 1;         // User chose Keep
+  WORKTREE_ACTION_REMOVE = 2;       // User chose Remove
+}
+
 // --- Per-file git status ---
 
 // GitFileStatusCode describes the status of a file in the index or working tree.

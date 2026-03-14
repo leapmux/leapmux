@@ -163,7 +163,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		// Handle worktree cleanup.
-		cleanup := svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
+		cleanup := svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, r.GetWorktreeAction())
 		sendProtoResponse(sender, &leapmuxv1.CloseAgentResponse{
 			WorktreeCleanupPending: cleanup.NeedsConfirmation,
 			WorktreePath:           cleanup.WorktreePath,
