@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
+import { resolveTaskBin } from '../../scripts/resolve-task-bin'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..', '..', '..')
@@ -47,7 +48,7 @@ export default async function globalSetup() {
 
   // Build the leapmux binary (includes embedded frontend)
   console.log('[e2e] Building leapmux...')
-  execSync('task build-backend', { cwd: ROOT, stdio: 'inherit' })
+  execSync(`${resolveTaskBin()} build-backend`, { cwd: ROOT, stdio: 'inherit' })
 
   const binaryPath = join(ROOT, 'backend', 'leapmux')
 

@@ -235,6 +235,76 @@ func TestBuildShellWrappedCommand_ModelEffortInElseBranch(t *testing.T) {
 	assert.NotContains(t, parts[0], "'--effort'")
 }
 
+func TestBuildModelEffortArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		model    string
+		effort   string
+		expected []string
+	}{
+		{
+			name:     "opus with max effort",
+			model:    "opus",
+			effort:   "max",
+			expected: []string{"--model", "opus", "--effort", "max"},
+		},
+		{
+			name:     "opus[1m] with max effort",
+			model:    "opus[1m]",
+			effort:   "max",
+			expected: []string{"--model", "opus[1m]", "--effort", "max"},
+		},
+		{
+			name:     "sonnet with max effort falls back to high",
+			model:    "sonnet",
+			effort:   "max",
+			expected: []string{"--model", "sonnet", "--effort", "high"},
+		},
+		{
+			name:     "sonnet[1m] with max effort falls back to high",
+			model:    "sonnet[1m]",
+			effort:   "max",
+			expected: []string{"--model", "sonnet[1m]", "--effort", "high"},
+		},
+		{
+			name:     "sonnet with high effort unchanged",
+			model:    "sonnet",
+			effort:   "high",
+			expected: []string{"--model", "sonnet", "--effort", "high"},
+		},
+		{
+			name:     "haiku omits effort entirely",
+			model:    "haiku",
+			effort:   "high",
+			expected: []string{"--model", "haiku"},
+		},
+		{
+			name:     "haiku omits max effort",
+			model:    "haiku",
+			effort:   "max",
+			expected: []string{"--model", "haiku"},
+		},
+		{
+			name:     "empty effort omitted",
+			model:    "sonnet",
+			effort:   "",
+			expected: []string{"--model", "sonnet"},
+		},
+		{
+			name:     "auto effort",
+			model:    "sonnet",
+			effort:   "auto",
+			expected: []string{"--model", "sonnet", "--effort", "auto"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := buildModelEffortArgs(tt.model, tt.effort)
+			assert.Equal(t, tt.expected, args)
+		})
+	}
+}
+
 func TestPosixQuote(t *testing.T) {
 	assert.Equal(t, "'hello'", posixQuote("hello"))
 	assert.Equal(t, "'it'\\''s'", posixQuote("it's"))

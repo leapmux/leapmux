@@ -75,12 +75,15 @@ export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
 }
 
 export const MODEL_LABELS: Record<string, string> = {
-  opus: 'Opus',
-  sonnet: 'Sonnet',
-  haiku: 'Haiku',
+  'opus': 'Opus',
+  'opus[1m]': 'Opus[1m]',
+  'sonnet': 'Sonnet',
+  'sonnet[1m]': 'Sonnet[1m]',
+  'haiku': 'Haiku',
 }
 
 export const EFFORT_LABELS: Record<string, string> = {
+  auto: 'Auto',
   max: 'Max',
   high: 'High',
   medium: 'Medium',
