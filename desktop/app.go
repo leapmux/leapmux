@@ -39,8 +39,9 @@ func (a *App) domReady(_ context.Context) {
 	wailsRuntime.WindowCenter(a.ctx)
 	installTabKeyHandler()
 
-	// Intercept clicks on external links and open them in the default browser
-	// instead of navigating inside the WebView.
+	// Inject JS handlers for external links, keyboard shortcuts (F12, Ctrl+Q),
+	// using native postMessage since Wails runtime JS is unavailable after
+	// the WebView navigates away from the wails:// launcher page.
 	// The inspector message differs per platform:
 	//   macOS:   "wails:openInspector"
 	//   Linux:   "wails:showInspector"
@@ -69,6 +70,7 @@ func (a *App) domReady(_ context.Context) {
 		return null;
 	})();
 
+	// Intercept clicks on external links and open them in the default browser.
 	document.addEventListener('click', function(e) {
 		var el = e.target;
 		while (el && el.tagName !== 'A') {
