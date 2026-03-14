@@ -294,10 +294,28 @@ async function waitForWorker(page: Page) {
   }
 }
 
+/**
+ * Set the working directory in a dialog by filling the path input and pressing Enter.
+ * SolidJS uses event delegation (document-level listeners keyed by `$$eventType`).
+ * Playwright's fill() sets el.value directly but may not trigger a bubbling InputEvent
+ * that SolidJS's delegation picks up. We dispatch a real InputEvent manually to ensure
+ * the SolidJS signal updates before pressing Enter.
+ */
+async function setWorkingDir(page: Page, dirPath: string) {
+  const dialog = page.getByRole('dialog')
+  const pathInput = dialog.getByPlaceholder('Enter path...')
+  await pathInput.click()
+  await pathInput.evaluate((el: HTMLInputElement, value: string) => {
+    el.value = value
+    el.dispatchEvent(new InputEvent('input', { bubbles: true }))
+  }, dirPath)
+  await pathInput.press('Enter')
+}
+
 // ─── UI Detection Tests ─────────────────────────────────────────────
 
 test.describe('Worktree Support', () => {
-  test('non-git directory hides worktree option in new workspace dialog', async ({
+  test('non-git directory hides git options in new workspace dialog', async ({
     page,
     leapmuxServer,
   }) => {
@@ -315,21 +333,19 @@ test.describe('Worktree Support', () => {
     await waitForWorker(page)
 
     // Set working directory to a known non-git directory
-    const dialog = page.getByRole('dialog')
-    const pathInput = dialog.getByPlaceholder('Enter path...')
-    await pathInput.fill(nonGitDir)
-    await pathInput.press('Enter')
+    await setWorkingDir(page, nonGitDir)
 
     // Wait for the git info check to complete.
     await page.waitForTimeout(2000)
 
-    // Verify worktree checkbox is not visible
+    // Verify git mode radio options are not visible
+    await expect(page.getByText('Use current state')).not.toBeVisible()
     await expect(page.getByText('Create new worktree')).not.toBeVisible()
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })
 
-  test('subdirectory of git repo hides worktree option in new workspace dialog', async ({
+  test('subdirectory of git repo hides git options in new workspace dialog', async ({
     page,
     leapmuxServer,
   }) => {
@@ -348,21 +364,19 @@ test.describe('Worktree Support', () => {
     await waitForWorker(page)
 
     // Set working directory to a subdirectory of the git repo
-    const dialog = page.getByRole('dialog')
-    const pathInput = dialog.getByPlaceholder('Enter path...')
-    await pathInput.fill(subDir)
-    await pathInput.press('Enter')
+    await setWorkingDir(page, subDir)
 
     // Wait for the git info check to complete.
     await page.waitForTimeout(2000)
 
-    // Verify worktree checkbox is not visible (even though it's inside a git repo)
+    // Verify git mode radio options are not visible (even though it's inside a git repo)
+    await expect(page.getByText('Use current state')).not.toBeVisible()
     await expect(page.getByText('Create new worktree')).not.toBeVisible()
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })
 
-  test('worktree checkbox appears for git repo directory in new workspace dialog', async ({
+  test('four git mode radio options appear for git repo directory in new workspace dialog', async ({
     page,
     leapmuxServer,
   }) => {
@@ -375,24 +389,27 @@ test.describe('Worktree Support', () => {
 
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
+    await setWorkingDir(page, repoDir)
 
-    // Set working directory to the git repo
-    const dialog = page.getByRole('dialog')
-    const pathInput = dialog.getByPlaceholder('Enter path...')
-    await pathInput.fill(repoDir)
-    await pathInput.press('Enter')
+    // All four radio options should appear
+    await expect(page.getByText('Use current state')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Switch to branch')).toBeVisible()
+    await expect(page.getByText('Create new worktree')).toBeVisible()
+    await expect(page.getByText('Use existing worktree')).toBeVisible()
 
-    // Worktree checkbox should appear and be checked by default
-    await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
+    // Default should be "Use current state" — branch name input should NOT be visible
+    await expect(page.getByText('Branch Name')).not.toBeVisible()
+    await expect(page.getByText('Worktree path:')).not.toBeVisible()
 
-    // Branch name input and path preview should appear (checkbox is checked by default)
+    // Select "Create new worktree" — sub-controls should appear
+    await page.getByText('Create new worktree').click()
     await expect(page.getByText('Branch Name')).toBeVisible()
     await expect(page.getByText('Worktree path:')).toBeVisible()
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })
 
-  test('worktree checkbox appears in new agent dialog for git repo', async ({
+  test('git mode radio options appear in new agent dialog for git repo', async ({
     page,
     leapmuxServer,
   }) => {
@@ -409,17 +426,15 @@ test.describe('Worktree Support', () => {
     await openNewAgentDialog(page)
     await waitForWorker(page)
 
-    const dialog = page.getByRole('dialog')
-    const pathInput = dialog.getByPlaceholder('Enter path...')
-    await pathInput.fill(repoDir)
-    await pathInput.press('Enter')
+    await setWorkingDir(page, repoDir)
 
-    await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Use current state')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Create new worktree')).toBeVisible()
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })
 
-  test('worktree checkbox appears in new terminal dialog for git repo', async ({
+  test('git mode radio options appear in new terminal dialog for git repo', async ({
     page,
     leapmuxServer,
   }) => {
@@ -441,12 +456,10 @@ test.describe('Worktree Support', () => {
 
     await waitForWorker(page)
 
-    const dialog = page.getByRole('dialog')
-    const pathInput = dialog.getByPlaceholder('Enter path...')
-    await pathInput.fill(repoDir)
-    await pathInput.press('Enter')
+    await setWorkingDir(page, repoDir)
 
-    await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Use current state')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Create new worktree')).toBeVisible()
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })
@@ -470,12 +483,11 @@ test.describe('Worktree Support', () => {
     await page.getByPlaceholder('New Workspace').fill('Worktree Test WS')
 
     const dialog = page.getByRole('dialog')
-    const pathInput = dialog.getByPlaceholder('Enter path...')
-    await pathInput.fill(repoDir)
-    await pathInput.press('Enter')
+    await setWorkingDir(page, repoDir)
 
-    // Worktree checkbox is checked by default
+    // Wait for git options to load, then select "Create new worktree"
     await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
+    await page.getByText('Create new worktree').click()
 
     const branchInput = dialog.locator('input[type="text"][placeholder="feature-branch"]')
     await branchInput.clear()
@@ -878,7 +890,7 @@ test.describe('Worktree Support', () => {
 
     // Dialog appears BEFORE tab closes
     await expect(page.getByRole('heading', { name: 'Dirty Worktree' })).toBeVisible({ timeout: 10000 })
-    await expect(page.getByText('test-repo-dialog-worktrees/dialog-branch')).toBeVisible()
+    await expect(page.getByRole('dialog').getByText('test-repo-dialog-worktrees/dialog-branch')).toBeVisible()
 
     // Dialog should show the branch name
     await expect(page.getByRole('dialog').getByText('dialog-branch', { exact: true })).toBeVisible()
@@ -954,7 +966,7 @@ test.describe('Worktree Support', () => {
 
   // ─── Worktree-from-Worktree ──────────────────────────────────────
 
-  test('worktree checkbox appears for existing worktree root', async ({
+  test('git mode options appear for existing worktree root', async ({
     page,
     leapmuxServer,
   }) => {
@@ -975,13 +987,11 @@ test.describe('Worktree Support', () => {
     await waitForWorker(page)
 
     // Set working directory to the worktree root
-    const dialog = page.getByRole('dialog')
-    const pathInput = dialog.getByPlaceholder('Enter path...')
-    await pathInput.fill(worktreeDir)
-    await pathInput.press('Enter')
+    await setWorkingDir(page, worktreeDir)
 
-    // Worktree checkbox should appear for an existing worktree root
-    await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
+    // Git mode radio options should appear for an existing worktree root
+    await expect(page.getByText('Use current state')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Create new worktree')).toBeVisible()
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })
@@ -1003,15 +1013,13 @@ test.describe('Worktree Support', () => {
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
 
-    const dialog = page.getByRole('dialog')
-    const pathInput = dialog.getByPlaceholder('Enter path...')
-    await pathInput.fill(repoDir)
-    await pathInput.press('Enter')
+    await setWorkingDir(page, repoDir)
 
-    // Worktree checkbox is checked by default
+    // Wait for git options to load, then select "Create new worktree"
     await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
+    await page.getByText('Create new worktree').click()
 
-    // Warning about uncommitted changes should be visible (checkbox is checked by default)
+    // Warning about uncommitted changes should be visible
     await expect(page.getByText('uncommitted changes that will not be transferred')).toBeVisible()
 
     await page.getByRole('button', { name: 'Cancel' }).click()
@@ -1081,12 +1089,11 @@ test.describe('Worktree Support', () => {
     await page.getByPlaceholder('New Workspace').fill('Error Test WS')
 
     const dialog = page.getByRole('dialog')
-    const pathInput = dialog.getByPlaceholder('Enter path...')
-    await pathInput.fill(repoDir)
-    await pathInput.press('Enter')
+    await setWorkingDir(page, repoDir)
 
-    // Worktree checkbox is checked by default
+    // Wait for git options to load, then select "Create new worktree"
     await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
+    await page.getByText('Create new worktree').click()
 
     const branchInput = dialog.locator('input[type="text"][placeholder="feature-branch"]')
     const createBtn = dialog.getByRole('button', { name: 'Create', exact: true })
@@ -1134,12 +1141,11 @@ test.describe('Worktree Support', () => {
     await waitForWorker(page)
 
     const dialog = page.getByRole('dialog')
-    const pathInput = dialog.getByPlaceholder('Enter path...')
-    await pathInput.fill(repoDir)
-    await pathInput.press('Enter')
+    await setWorkingDir(page, repoDir)
 
-    // Worktree checkbox is checked by default
+    // Wait for git options to load, then select "Create new worktree"
     await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
+    await page.getByText('Create new worktree').click()
 
     // Read initial branch name
     const branchInput = dialog.locator('input[type="text"][placeholder="feature-branch"]')
@@ -1233,6 +1239,500 @@ test.describe('Worktree Support', () => {
 
     // The path should resolve to the original repo root, not the worktree path.
     await expect(pathInput).toHaveValue(realRepoDir, { timeout: 10000 })
+
+    await page.getByRole('button', { name: 'Cancel' }).click()
+  })
+
+  // ─── Git Mode: Switch to Branch ─────────────────────────────────────
+
+  test('switch-to-branch mode via UI: branch dropdown loads and submit checks out branch', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    const { adminToken, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-switch-ui')
+
+    // Create a second branch to switch to.
+    execSync('git branch feature-switch', { cwd: repoDir })
+
+    await loginViaToken(page, adminToken)
+    await page.goto('/o/admin')
+    await waitForOrgPageReady(page)
+
+    await openNewWorkspaceDialog(page)
+    await waitForWorker(page)
+
+    await page.getByPlaceholder('New Workspace').fill('Switch Branch WS')
+
+    const dialog = page.getByRole('dialog')
+    await setWorkingDir(page, repoDir)
+
+    // Wait for git options and select "Switch to branch"
+    await expect(page.getByText('Switch to branch')).toBeVisible({ timeout: 10000 })
+    await page.getByText('Switch to branch').click()
+
+    // Branch dropdown should load with local branches
+    const branchSelect = dialog.locator('select').last()
+    await expect(branchSelect).toBeEnabled({ timeout: 10000 })
+    await branchSelect.selectOption('feature-switch')
+
+    // Submit
+    await dialog.getByRole('button', { name: 'Create', exact: true }).click()
+    await expect(page.getByRole('dialog')).not.toBeVisible({ timeout: 30000 })
+    await expect(page).toHaveURL(WORKSPACE_URL_RE, { timeout: 30000 })
+
+    // Verify the repo is now on the feature-switch branch
+    const currentBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoDir }).toString().trim()
+    expect(currentBranch).toBe('feature-switch')
+  })
+
+  test('switch-to-branch mode via API: verifies checkout on disk', async ({
+    leapmuxServer,
+  }) => {
+    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-switch-api')
+
+    // Create a second branch.
+    execSync('git branch api-switch-target', { cwd: repoDir })
+
+    // Verify we start on main.
+    const before = execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoDir }).toString().trim()
+    expect(before).toBe('main')
+
+    // Create workspace with checkout_branch.
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Switch API WS', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir, {
+      checkoutBranch: 'api-switch-target',
+    })
+
+    // Verify the repo is now on the target branch.
+    const after = execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoDir }).toString().trim()
+    expect(after).toBe('api-switch-target')
+  })
+
+  test('switch-to-branch with dirty workdir shows warning in UI', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    const { adminToken, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-switch-dirty')
+
+    execSync('git branch dirty-switch-target', { cwd: repoDir })
+    writeFileSync(join(repoDir, 'dirty.txt'), 'uncommitted\n')
+
+    await loginViaToken(page, adminToken)
+    await page.goto('/o/admin')
+    await waitForOrgPageReady(page)
+
+    await openNewWorkspaceDialog(page)
+    await waitForWorker(page)
+
+    await setWorkingDir(page, repoDir)
+
+    await expect(page.getByText('Switch to branch')).toBeVisible({ timeout: 10000 })
+    await page.getByText('Switch to branch').click()
+
+    // Warning about uncommitted changes should appear
+    await expect(page.getByText('uncommitted changes')).toBeVisible()
+
+    await page.getByRole('button', { name: 'Cancel' }).click()
+  })
+
+  // ─── Git Mode: Use Existing Worktree ────────────────────────────────
+
+  test('use-existing-worktree mode via API: switches working dir to worktree', async ({
+    leapmuxServer,
+  }) => {
+    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-use-wt-api')
+    const realDataDir = realpathSync(dataDir)
+
+    // Create an existing worktree manually.
+    const worktreeDir = join(realDataDir, 'test-repo-use-wt-api-existing')
+    execSync(`git worktree add ${join(dataDir, 'test-repo-use-wt-api-existing')} -b existing-wt-branch`, { cwd: repoDir })
+    expect(existsSync(worktreeDir)).toBe(true)
+
+    // Create workspace using the use_worktree_path field.
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Use WT API WS', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir, {
+      useWorktreePath: worktreeDir,
+    })
+
+    // Verify the agent's working dir is the worktree path.
+    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
+    expect(agents.length).toBeGreaterThan(0)
+    expect(agents[0].workingDir).toBe(worktreeDir)
+  })
+
+  test('use-existing-worktree on managed worktree: tracks tab correctly', async ({
+    leapmuxServer,
+  }) => {
+    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-use-wt-managed')
+    const realDataDir = realpathSync(dataDir)
+    const worktreeDir = join(realDataDir, 'test-repo-use-wt-managed-worktrees', 'managed-branch')
+
+    // Create workspace with a managed worktree (via create-worktree mode).
+    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+      hubUrl,
+      adminToken,
+      workerId,
+      'Managed WT WS',
+      adminOrgId,
+      repoDir,
+      'managed-branch',
+    )
+    expect(existsSync(worktreeDir)).toBe(true)
+
+    // Now open a second agent using "use existing worktree" pointing to the same managed worktree.
+    const secondAgentId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir, {
+      useWorktreePath: worktreeDir,
+    })
+
+    // Close the first agent — worktree should persist because second agent still references it.
+    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
+    const firstAgent = agents.find(a => a.id !== secondAgentId)!
+    expect(firstAgent).toBeTruthy()
+    const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, firstAgent.id)
+    expect(resp.worktreeCleanupPending).toBeFalsy()
+    expect(existsSync(worktreeDir)).toBe(true)
+
+    // Close the second agent — last tab, clean worktree → auto-delete.
+    const resp2 = await closeAgentViaAPI(hubUrl, adminToken, workerId, secondAgentId)
+    expect(resp2.worktreeCleanupPending).toBeFalsy()
+    await waitForPathDeleted(worktreeDir)
+  })
+
+  test('use-existing-worktree on unmanaged worktree: does NOT auto-delete on close', async ({
+    leapmuxServer,
+  }) => {
+    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-use-wt-unmanaged')
+    const realDataDir = realpathSync(dataDir)
+
+    // Create a worktree manually (not via LeapMux).
+    const worktreeDir = join(realDataDir, 'test-repo-use-wt-unmanaged-ext')
+    execSync(`git worktree add ${join(dataDir, 'test-repo-use-wt-unmanaged-ext')} -b ext-branch`, { cwd: repoDir })
+    expect(existsSync(worktreeDir)).toBe(true)
+
+    // Create workspace using "use existing worktree" pointing to the unmanaged worktree.
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Unmanaged WT WS', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir, {
+      useWorktreePath: worktreeDir,
+    })
+
+    // Close the agent.
+    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
+    expect(agents.length).toBeGreaterThan(0)
+    const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+
+    // Unmanaged worktree should NOT be cleaned up.
+    expect(resp.worktreeCleanupPending).toBeFalsy()
+    expect(existsSync(worktreeDir)).toBe(true)
+    expect(branchExists(repoDir, 'ext-branch')).toBe(true)
+  })
+
+  test('use-existing-worktree via UI: dropdown loads and submit uses worktree dir', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    const { adminToken, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-use-wt-ui')
+
+    // Create a worktree manually.
+    execSync(`git worktree add ${join(dataDir, 'test-repo-use-wt-ui-wt')} -b ui-wt-branch`, { cwd: repoDir })
+
+    await loginViaToken(page, adminToken)
+    await page.goto('/o/admin')
+    await waitForOrgPageReady(page)
+
+    await openNewWorkspaceDialog(page)
+    await waitForWorker(page)
+
+    await page.getByPlaceholder('New Workspace').fill('Use WT UI WS')
+
+    const dialog = page.getByRole('dialog')
+    await setWorkingDir(page, repoDir)
+
+    // Wait for git options and select "Use existing worktree"
+    await expect(page.getByText('Use existing worktree')).toBeVisible({ timeout: 10000 })
+    await page.getByText('Use existing worktree').click()
+
+    // Worktree dropdown should load
+    const wtSelect = dialog.locator('select').last()
+    await expect(wtSelect).toBeEnabled({ timeout: 10000 })
+
+    // Select the worktree entry (format: "branch — path")
+    const options = await wtSelect.locator('option').allTextContents()
+    const wtOption = options.find(o => o.includes('ui-wt-branch'))
+    expect(wtOption).toBeTruthy()
+    await wtSelect.selectOption({ label: wtOption! })
+
+    // Submit
+    await dialog.getByRole('button', { name: 'Create', exact: true }).click()
+    await expect(page.getByRole('dialog')).not.toBeVisible({ timeout: 30000 })
+    await expect(page).toHaveURL(WORKSPACE_URL_RE, { timeout: 30000 })
+  })
+
+  // ─── Git Mode: Use Current State ────────────────────────────────────
+
+  test('use-current-state on managed worktree: registers tab so worktree is not prematurely deleted', async ({
+    leapmuxServer,
+  }) => {
+    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-current-managed')
+    const realDataDir = realpathSync(dataDir)
+    const worktreeDir = join(realDataDir, 'test-repo-current-managed-worktrees', 'current-branch')
+
+    // Create a workspace with a managed worktree.
+    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+      hubUrl,
+      adminToken,
+      workerId,
+      'Current Managed WS',
+      adminOrgId,
+      repoDir,
+      'current-branch',
+    )
+    expect(existsSync(worktreeDir)).toBe(true)
+
+    // Open a second agent using "use current state" (no git mode fields) pointing directly
+    // at the managed worktree path. The backend should detect it's a managed worktree and
+    // register this tab.
+    const secondAgentId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, worktreeDir)
+
+    // Close the first agent — worktree should persist because second agent registered.
+    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
+    const firstAgent = agents.find(a => a.id !== secondAgentId)!
+    expect(firstAgent).toBeTruthy()
+    const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, firstAgent.id)
+    expect(resp.worktreeCleanupPending).toBeFalsy()
+    expect(existsSync(worktreeDir)).toBe(true)
+
+    // Close the second agent — last tab, clean worktree → auto-delete.
+    const resp2 = await closeAgentViaAPI(hubUrl, adminToken, workerId, secondAgentId)
+    expect(resp2.worktreeCleanupPending).toBeFalsy()
+    await waitForPathDeleted(worktreeDir)
+  })
+
+  test('use-current-state on unmanaged worktree: does NOT register or track', async ({
+    leapmuxServer,
+  }) => {
+    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-current-unmanaged')
+    const realDataDir = realpathSync(dataDir)
+
+    // Create a worktree manually (not via LeapMux).
+    const worktreeDir = join(realDataDir, 'test-repo-current-unmanaged-ext')
+    execSync(`git worktree add ${join(dataDir, 'test-repo-current-unmanaged-ext')} -b ext-branch`, { cwd: repoDir })
+    expect(existsSync(worktreeDir)).toBe(true)
+
+    // Create workspace using "use current state" (default) pointing at the manual worktree.
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Current Unmanaged WS', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, worktreeDir)
+
+    // Close the agent.
+    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
+    expect(agents.length).toBeGreaterThan(0)
+    const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+
+    // No cleanup — unmanaged worktree should still exist.
+    expect(resp.worktreeCleanupPending).toBeFalsy()
+    expect(existsSync(worktreeDir)).toBe(true)
+    expect(branchExists(repoDir, 'ext-branch')).toBe(true)
+  })
+
+  // ─── Git Mode: Create Worktree with Base Branch ─────────────────────
+
+  test('create-worktree with base branch: new worktree starts from specified base', async ({
+    leapmuxServer,
+  }) => {
+    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-base-branch')
+    const realDataDir = realpathSync(dataDir)
+
+    // Create a feature branch with an extra commit.
+    execSync('git checkout -b feature-base', { cwd: repoDir })
+    execSync('git config user.email "test@test.com"', { cwd: repoDir })
+    execSync('git config user.name "Test"', { cwd: repoDir })
+    writeFileSync(join(repoDir, 'feature.txt'), 'feature content\n')
+    execSync('git add .', { cwd: repoDir })
+    execSync('git commit -m "feature commit"', { cwd: repoDir })
+    const featureHead = execSync('git rev-parse HEAD', { cwd: repoDir }).toString().trim()
+
+    // Go back to main.
+    execSync('git checkout main', { cwd: repoDir })
+    const mainHead = execSync('git rev-parse HEAD', { cwd: repoDir }).toString().trim()
+    expect(featureHead).not.toBe(mainHead)
+
+    // Create workspace with worktree based on feature-base branch.
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Base Branch WS', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir, {
+      createWorktree: true,
+      worktreeBranch: 'derived-from-feature',
+      worktreeBaseBranch: 'feature-base',
+    })
+
+    // Verify worktree was created.
+    const worktreeDir = join(realDataDir, 'test-repo-base-branch-worktrees', 'derived-from-feature')
+    expect(existsSync(worktreeDir)).toBe(true)
+
+    // Verify the new worktree's HEAD matches the feature branch HEAD (not main).
+    const derivedHead = execSync('git rev-parse HEAD', { cwd: worktreeDir }).toString().trim()
+    expect(derivedHead).toBe(featureHead)
+    expect(derivedHead).not.toBe(mainHead)
+  })
+
+  test('create-worktree with base branch via UI: base branch selector works', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    const { adminToken, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-base-branch-ui')
+    const realDataDir = realpathSync(dataDir)
+
+    // Create a feature branch.
+    execSync('git checkout -b feature-ui-base', { cwd: repoDir })
+    execSync('git config user.email "test@test.com"', { cwd: repoDir })
+    execSync('git config user.name "Test"', { cwd: repoDir })
+    writeFileSync(join(repoDir, 'feature.txt'), 'feature content\n')
+    execSync('git add .', { cwd: repoDir })
+    execSync('git commit -m "feature commit"', { cwd: repoDir })
+    execSync('git checkout main', { cwd: repoDir })
+
+    await loginViaToken(page, adminToken)
+    await page.goto('/o/admin')
+    await waitForOrgPageReady(page)
+
+    await openNewWorkspaceDialog(page)
+    await waitForWorker(page)
+
+    await page.getByPlaceholder('New Workspace').fill('Base Branch UI WS')
+
+    const dialog = page.getByRole('dialog')
+    await setWorkingDir(page, repoDir)
+
+    // Wait for git options, select "Create new worktree"
+    await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
+    await page.getByText('Create new worktree').click()
+
+    // Base Branch label and selector should be visible
+    await expect(dialog.getByText('Base Branch')).toBeVisible({ timeout: 10000 })
+
+    // The base branch selector should default to "main" (current)
+    // and include "feature-ui-base"
+    const baseBranchSelect = dialog.locator('select').last()
+    await expect(baseBranchSelect).toBeEnabled({ timeout: 10000 })
+    const options = await baseBranchSelect.locator('option').allTextContents()
+    expect(options.some(o => o.includes('feature-ui-base'))).toBe(true)
+
+    // Select feature-ui-base as base branch
+    await baseBranchSelect.selectOption('feature-ui-base')
+
+    // Set a branch name and submit
+    const branchInput = dialog.locator('input[type="text"][placeholder="feature-branch"]')
+    await branchInput.clear()
+    await branchInput.fill('from-feature-base')
+
+    await dialog.getByRole('button', { name: 'Create', exact: true }).click()
+    await expect(page.getByRole('dialog')).not.toBeVisible({ timeout: 30000 })
+    await expect(page).toHaveURL(WORKSPACE_URL_RE, { timeout: 30000 })
+
+    // Verify the worktree was created from the feature branch
+    const worktreeDir = join(realDataDir, 'test-repo-base-branch-ui-worktrees', 'from-feature-base')
+    expect(existsSync(worktreeDir)).toBe(true)
+    expect(existsSync(join(worktreeDir, 'feature.txt'))).toBe(true)
+  })
+
+  // ─── Git Mode: Validation ──────────────────────────────────────────
+
+  test('switch-branch mode disables submit when no branch selected', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    const { adminToken, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-switch-validate')
+
+    await loginViaToken(page, adminToken)
+    await page.goto('/o/admin')
+    await waitForOrgPageReady(page)
+
+    await openNewWorkspaceDialog(page)
+    await waitForWorker(page)
+
+    await page.getByPlaceholder('New Workspace').fill('Switch Validate WS')
+
+    const dialog = page.getByRole('dialog')
+    await setWorkingDir(page, repoDir)
+
+    await expect(page.getByText('Switch to branch')).toBeVisible({ timeout: 10000 })
+    await page.getByText('Switch to branch').click()
+
+    // Create button should be disabled until a branch is selected
+    const createBtn = dialog.getByRole('button', { name: 'Create', exact: true })
+    await expect(createBtn).toBeDisabled()
+
+    await page.getByRole('button', { name: 'Cancel' }).click()
+  })
+
+  test('use-worktree mode disables submit when no worktree selected', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    const { adminToken, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-use-wt-validate')
+
+    // Create a worktree so the dropdown has entries
+    execSync(`git worktree add ${join(dataDir, 'test-repo-use-wt-validate-wt')} -b validate-wt`, { cwd: repoDir })
+
+    await loginViaToken(page, adminToken)
+    await page.goto('/o/admin')
+    await waitForOrgPageReady(page)
+
+    await openNewWorkspaceDialog(page)
+    await waitForWorker(page)
+
+    await page.getByPlaceholder('New Workspace').fill('Use WT Validate WS')
+
+    const dialog = page.getByRole('dialog')
+    await setWorkingDir(page, repoDir)
+
+    await expect(page.getByText('Use existing worktree')).toBeVisible({ timeout: 10000 })
+    await page.getByText('Use existing worktree').click()
+
+    // Create button should be disabled until a worktree is selected
+    const createBtn = dialog.getByRole('button', { name: 'Create', exact: true })
+    await expect(createBtn).toBeDisabled()
+
+    await page.getByRole('button', { name: 'Cancel' }).click()
+  })
+
+  test('use-current-state mode enables submit immediately', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    const { adminToken, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-current-validate')
+
+    await loginViaToken(page, adminToken)
+    await page.goto('/o/admin')
+    await waitForOrgPageReady(page)
+
+    await openNewWorkspaceDialog(page)
+    await waitForWorker(page)
+
+    await page.getByPlaceholder('New Workspace').fill('Current Validate WS')
+
+    const dialog = page.getByRole('dialog')
+    await setWorkingDir(page, repoDir)
+
+    // "Use current state" is default — submit should be enabled immediately
+    await expect(page.getByText('Use current state')).toBeVisible({ timeout: 10000 })
+    const createBtn = dialog.getByRole('button', { name: 'Create', exact: true })
+    await expect(createBtn).toBeEnabled()
+
+    // Current branch info should be displayed
+    await expect(page.getByText('Currently on branch:')).toBeVisible()
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })

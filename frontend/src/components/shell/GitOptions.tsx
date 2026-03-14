@@ -70,9 +70,16 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   const remoteBranches = createMemo(() => branches().filter(b => b.isRemote))
 
   // Notify parent about visibility changes.
+  // `defer: true` skips the initial mount callback. Without it, when the parent
+  // switches layout (e.g. Show fallback → main branch) and remounts GitOptions,
+  // the new instance immediately fires onVisibilityChange(false), which resets
+  // the parent's showGitOptions flag back to false, causing an infinite cycle.
   createEffect(on(
     () => !loading() && showGitOptions(),
-    (visible) => { props.onVisibilityChange?.(visible) },
+    (visible) => {
+      props.onVisibilityChange?.(visible)
+    },
+    { defer: true },
   ))
 
   // Fetch git info when worker or path changes.

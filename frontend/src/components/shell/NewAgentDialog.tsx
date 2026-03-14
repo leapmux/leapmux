@@ -75,45 +75,28 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
     </>
   )
 
-  const gitOptionsEl = () => (
-    <Show when={state.workerId()}>
-      <GitOptions
-        workerId={state.workerId()}
-        selectedPath={state.workingDir()}
-        homeDir={state.workerInfoStore.getHomeDir(state.workerId())}
-        onGitModeChange={state.handleGitModeChange}
-        onVisibilityChange={state.setShowGitOptions}
-      />
-    </Show>
-  )
-
   return (
     <Dialog title="New Agent" tall onClose={() => props.onClose()}>
       <form onSubmit={handleSubmit}>
         <section>
-          <Show
-            when={state.showGitOptions()}
-            fallback={(
-              <div class="vstack gap-4">
-                {leftContent()}
-                {gitOptionsEl()}
-                <Show when={state.error()}>
-                  <div class={errorText}>{state.error()}</div>
-                </Show>
-              </div>
-            )}
-          >
-            <div class={dialogTwoColumn}>
-              <div class={dialogLeftPanel}>
-                {leftContent()}
-              </div>
-              <div class={dialogRightPanel}>
-                {gitOptionsEl()}
-              </div>
+          <div class={state.showGitOptions() ? dialogTwoColumn : 'vstack gap-4'}>
+            <div class={state.showGitOptions() ? dialogLeftPanel : undefined}>
+              {leftContent()}
             </div>
-            <Show when={state.error()}>
-              <div class={errorText}>{state.error()}</div>
-            </Show>
+            <div class={state.showGitOptions() ? dialogRightPanel : undefined}>
+              <Show when={state.workerId()}>
+                <GitOptions
+                  workerId={state.workerId()}
+                  selectedPath={state.workingDir()}
+                  homeDir={state.workerInfoStore.getHomeDir(state.workerId())}
+                  onGitModeChange={state.handleGitModeChange}
+                  onVisibilityChange={state.setShowGitOptions}
+                />
+              </Show>
+            </div>
+          </div>
+          <Show when={state.error()}>
+            <div class={errorText}>{state.error()}</div>
           </Show>
         </section>
         <footer>
