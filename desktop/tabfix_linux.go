@@ -3,27 +3,61 @@
 package main
 
 /*
-#cgo linux pkg-config: gtk+-3.0
+#cgo linux pkg-config: gtk+-3.0 webkit2gtk-4.1
 
 #include <gtk/gtk.h>
+#include <webkit2/webkit2.h>
 
-// Intercept Tab/Shift+Tab at the GTK level to prevent focus traversal.
+// Intercept Tab/Shift+Tab at the GTK level to prevent focus traversal,
+// then inject a synthetic JS KeyboardEvent so ProseMirror can handle it.
 //
-// In GTK3, the GtkWindow's default key-press-event handler first propagates
-// the event to the focused widget (WebKitWebView), then does focus traversal
-// for Tab if the event wasn't consumed. WebKitGTK returns FALSE for Tab,
-// so GTK moves focus away from the WebView.
+// We cannot use gtk_window_propagate_key_event() because it walks up the
+// widget hierarchy, and each parent's GtkWidget base handler checks key
+// bindings — the Tab binding triggers move-focus, causing focus traversal
+// despite our handler returning TRUE.
 //
-// This handler runs before the default handler (G_SIGNAL_RUN_LAST).
-// It manually propagates Tab to the focused widget so WebKitGTK generates
-// the JS keydown event for ProseMirror, then returns TRUE to suppress
-// GTK's focus traversal.
+// Instead, we suppress the GTK event entirely and dispatch a synthetic
+// keydown event to document.activeElement via JS. If ProseMirror is
+// focused, it handles Tab (heading convert, list indent, plan mode toggle,
+// etc.). If not, we manually move focus to the next/previous focusable
+// HTML element.
 static gboolean on_tab_key_press(GtkWidget *widget, GdkEventKey *event, gpointer data) {
-	if (event->keyval == GDK_KEY_Tab || event->keyval == GDK_KEY_ISO_Left_Tab) {
-		gtk_window_propagate_key_event(GTK_WINDOW(widget), event);
-		return TRUE;
-	}
-	return FALSE;
+	if (event->keyval != GDK_KEY_Tab && event->keyval != GDK_KEY_ISO_Left_Tab)
+		return FALSE;
+
+	GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(widget));
+	if (!focus || !WEBKIT_IS_WEB_VIEW(focus))
+		return FALSE;
+
+	gboolean shift = (event->state & GDK_SHIFT_MASK) != 0;
+
+	const char *js = shift ?
+		"(function(){"
+		"var e=new KeyboardEvent('keydown',{key:'Tab',code:'Tab',shiftKey:true,bubbles:true,cancelable:true});"
+		"if(document.activeElement.dispatchEvent(e)){"
+		"var f=Array.from(document.querySelectorAll("
+		"'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),"
+		"textarea:not([disabled]),[tabindex]:not([tabindex=\"-1\"]),[contenteditable]'"
+		")).filter(function(x){return x.offsetParent!==null});"
+		"var i=f.indexOf(document.activeElement);"
+		"if(i>0)f[i-1].focus();"
+		"}"
+		"})()"
+		:
+		"(function(){"
+		"var e=new KeyboardEvent('keydown',{key:'Tab',code:'Tab',shiftKey:false,bubbles:true,cancelable:true});"
+		"if(document.activeElement.dispatchEvent(e)){"
+		"var f=Array.from(document.querySelectorAll("
+		"'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),"
+		"textarea:not([disabled]),[tabindex]:not([tabindex=\"-1\"]),[contenteditable]'"
+		")).filter(function(x){return x.offsetParent!==null});"
+		"var i=f.indexOf(document.activeElement);"
+		"if(i>=0&&i<f.length-1)f[i+1].focus();"
+		"}"
+		"})()";
+
+	webkit_web_view_evaluate_javascript(WEBKIT_WEB_VIEW(focus), js, -1, NULL, NULL, NULL, NULL, NULL);
+	return TRUE;
 }
 
 static int tab_handler_installed = 0;
