@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"strings"
 
 	"github.com/leapmux/leapmux/solo"
@@ -45,8 +46,34 @@ func (a *App) domReady(_ context.Context) {
 	// this, the keydown event never reaches ProseMirror's handleKeyDown on
 	// Linux, so Shift+Tab (plan mode toggle) and Tab (heading conversion)
 	// do not work.
-	wailsRuntime.WindowExecJS(a.ctx, `
+	// The inspector message differs per platform:
+	//   macOS:   "wails:openInspector"
+	//   Linux:   "wails:showInspector"
+	//   Windows: handled natively by WebView2 (F12 key), no message needed
+	inspectorMsg := "wails:showInspector"
+	if runtime.GOOS == "darwin" {
+		inspectorMsg = "wails:openInspector"
+	}
+
+	wailsRuntime.WindowExecJS(a.ctx, fmt.Sprintf(`
 (function() {
+	// Build a postMessage helper that works whether or not the Wails
+	// runtime JS has been loaded into this page. The WebKit user-content
+	// manager ("external" handler) is attached to the webview, so
+	// webkit.messageHandlers.external.postMessage is always available,
+	// even on pages not served via the wails:// scheme.
+	var post = (function() {
+		// Windows (WebView2)
+		if (window.chrome && window.chrome.webview && window.chrome.webview.postMessage)
+			return function(m) { window.chrome.webview.postMessage(m); };
+		// macOS / Linux (WebKit)
+		if (window.webkit && window.webkit.messageHandlers &&
+		    window.webkit.messageHandlers.external &&
+		    window.webkit.messageHandlers.external.postMessage)
+			return function(m) { window.webkit.messageHandlers.external.postMessage(m); };
+		return null;
+	})();
+
 	document.addEventListener('click', function(e) {
 		var el = e.target;
 		while (el && el.tagName !== 'A') {
@@ -57,7 +84,7 @@ func (a *App) domReady(_ context.Context) {
 		if (href && /^https?:\/\//.test(href)) {
 			e.preventDefault();
 			e.stopPropagation();
-			window.runtime.BrowserOpenURL(href);
+			if (post) post('BO:' + href);
 		}
 	}, true);
 	document.addEventListener('keydown', function(e) {
@@ -72,16 +99,15 @@ func (a *App) domReady(_ context.Context) {
 			}
 		}
 		if (e.key === 'F12') {
-			window.WailsInvoke('wails:openInspector');
-			window.WailsInvoke('wails:showInspector');
+			if (post) post('%s');
 		}
 		if (e.key === 'q' && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
-			window.runtime.Quit();
+			if (post) post('Q');
 		}
 	}, true);
 })();
-`)
+`, inspectorMsg))
 }
 
 // shutdown is called when the app is closing.
