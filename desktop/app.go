@@ -37,15 +37,10 @@ func (a *App) startup(ctx context.Context) {
 // so it takes effect after the window is fully laid out.
 func (a *App) domReady(_ context.Context) {
 	wailsRuntime.WindowCenter(a.ctx)
+	installTabKeyHandler()
 
 	// Intercept clicks on external links and open them in the default browser
 	// instead of navigating inside the WebView.
-	//
-	// Prevent WebKitGTK from intercepting Tab/Shift+Tab for native focus
-	// traversal when the user is typing in the ProseMirror editor. Without
-	// this, the keydown event never reaches ProseMirror's handleKeyDown on
-	// Linux, so Shift+Tab (plan mode toggle) and Tab (heading conversion)
-	// do not work.
 	// The inspector message differs per platform:
 	//   macOS:   "wails:openInspector"
 	//   Linux:   "wails:showInspector"
@@ -88,16 +83,6 @@ func (a *App) domReady(_ context.Context) {
 		}
 	}, true);
 	document.addEventListener('keydown', function(e) {
-		if (e.key === 'Tab') {
-			var el = e.target;
-			while (el) {
-				if (el.classList && el.classList.contains('ProseMirror')) {
-					e.preventDefault();
-					return;
-				}
-				el = el.parentElement;
-			}
-		}
 		if (e.key === 'F12') {
 			if (post) post('%s');
 		}
