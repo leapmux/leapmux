@@ -249,7 +249,7 @@ task build-frontend   # Build frontend assets
 task build-desktop    # Build desktop app for current platform (requires wails)
 ```
 
-The `leapmux` binary is output to `backend/leapmux`. The desktop app is output to `desktop/build/bin/`. On macOS, a `.dmg` installer is also created.
+The `leapmux` binary is output to `backend/bin/`. The desktop app is output to `desktop/bin/`. On macOS, a `.dmg` installer is also created.
 
 `task build` skips the desktop build automatically if `wails` is not installed.
 

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=LeapMux
+Comment=LeapMux Desktop
+Exec=leapmux-desktop
+Icon=leapmux-desktop
+Type=Application
+Categories=Development;

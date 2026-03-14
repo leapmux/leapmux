@@ -319,7 +319,7 @@ func (s *WorkerConnectorService) processWorkerMessage(
 ) error {
 	// Update last seen periodically on heartbeats.
 	if hb := msg.GetHeartbeat(); hb != nil {
-		if err := s.queries.UpdateWorkerLastSeen(ctx, workerID); err != nil {
+		if err := s.queries.UpdateWorkerLastSeen(ctx, workerID); err != nil && ctx.Err() == nil {
 			slog.Warn("failed to update worker last seen on heartbeat", "worker_id", workerID, "error", err)
 		}
 		// Cache encryption mode on the live connection (not persisted to DB).
