@@ -3,11 +3,46 @@
 package main
 
 /*
-#cgo linux !webkit2_41 pkg-config: gtk+-3.0 webkit2gtk-4.0
-#cgo linux webkit2_41 pkg-config: gtk+-3.0 webkit2gtk-4.1
+#cgo linux pkg-config: gtk+-3.0
+#cgo LDFLAGS: -ldl
 
+#include <dlfcn.h>
 #include <gtk/gtk.h>
-#include <webkit2/webkit2.h>
+
+// Resolve WebKitGTK symbols at runtime via dlsym(RTLD_DEFAULT, ...) so we
+// don't need to pkg-config webkit2gtk ourselves (which causes libsoup2/3
+// conflicts when the webkit2_41 build tag doesn't match Wails).
+// The symbols are already loaded by Wails.
+
+typedef void (*evaluate_js_fn)(void *web_view, const char *script,
+	gssize length, const char *world_name, const char *source_uri,
+	GCancellable *cancellable, GAsyncReadyCallback callback,
+	gpointer user_data);
+
+static GType get_webkit_web_view_type() {
+	static GType cached = 0;
+	if (cached) return cached;
+	GType (*fn)(void) = dlsym(RTLD_DEFAULT, "webkit_web_view_get_type");
+	if (fn) cached = fn();
+	return cached;
+}
+
+static void eval_js(void *web_view, const char *script) {
+	static evaluate_js_fn fn = NULL;
+	static int resolved = 0;
+	if (!resolved) {
+		resolved = 1;
+		// Try the newer API first, fall back to the deprecated one.
+		fn = (evaluate_js_fn)dlsym(RTLD_DEFAULT, "webkit_web_view_evaluate_javascript");
+		if (!fn) {
+			// webkit_web_view_run_javascript has a simpler signature:
+			// (WebKitWebView*, const char*, GCancellable*, GAsyncReadyCallback, gpointer)
+			// We can cast safely because extra trailing NULLs are harmless in the C ABI.
+			fn = (evaluate_js_fn)dlsym(RTLD_DEFAULT, "webkit_web_view_run_javascript");
+		}
+	}
+	if (fn) fn(web_view, script, -1, NULL, NULL, NULL, NULL, NULL);
+}
 
 // Intercept Tab/Shift+Tab at the GTK level to prevent focus traversal,
 // then inject a synthetic JS KeyboardEvent so ProseMirror can handle it.
@@ -26,8 +61,11 @@ static gboolean on_tab_key_press(GtkWidget *widget, GdkEventKey *event, gpointer
 	if (event->keyval != GDK_KEY_Tab && event->keyval != GDK_KEY_ISO_Left_Tab)
 		return FALSE;
 
+	GType wv_type = get_webkit_web_view_type();
+	if (!wv_type) return FALSE;
+
 	GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(widget));
-	if (!focus || !WEBKIT_IS_WEB_VIEW(focus))
+	if (!focus || !G_TYPE_CHECK_INSTANCE_TYPE(focus, wv_type))
 		return FALSE;
 
 	gboolean shift = (event->state & GDK_SHIFT_MASK) != 0;
@@ -57,7 +95,7 @@ static gboolean on_tab_key_press(GtkWidget *widget, GdkEventKey *event, gpointer
 		"}"
 		"})()";
 
-	webkit_web_view_evaluate_javascript(WEBKIT_WEB_VIEW(focus), js, -1, NULL, NULL, NULL, NULL, NULL);
+	eval_js(focus, js);
 	return TRUE;
 }
 
