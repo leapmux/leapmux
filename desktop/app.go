@@ -95,6 +95,17 @@ func (a *App) domReady(_ context.Context) {
 `, inspectorMsg))
 }
 
+// bringToFront shows and raises the window so it appears above other windows.
+func (a *App) bringToFront() {
+	if a.ctx == nil {
+		return
+	}
+	wailsRuntime.WindowUnminimise(a.ctx)
+	wailsRuntime.WindowShow(a.ctx)
+	wailsRuntime.WindowSetAlwaysOnTop(a.ctx, true)
+	wailsRuntime.WindowSetAlwaysOnTop(a.ctx, false)
+}
+
 // shutdown is called when the app is closing.
 func (a *App) shutdown(_ context.Context) {
 	// Save the current window size if the user has connected at least once.

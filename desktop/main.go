@@ -2,6 +2,9 @@ package main
 
 import (
 	"embed"
+	"errors"
+	"fmt"
+	"os"
 	"runtime"
 
 	"github.com/wailsapp/wails/v2"
@@ -20,6 +23,17 @@ var version = "dev"
 
 func main() {
 	app := NewApp(version)
+
+	release, err := acquireSingleInstance(app.bringToFront)
+	if errors.Is(err, errAlreadyRunning) {
+		return
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "single instance check: %v\n", err)
+	}
+	if release != nil {
+		defer release()
+	}
 
 	// Build the application menu. On macOS the menu lives in the system
 	// menu bar and costs no window space. On Windows and Linux the menu
