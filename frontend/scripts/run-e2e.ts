@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
+import { resolveTaskBin } from './resolve-task-bin'
 
 function run(cmd: string, args: string[]): Promise<number> {
   return new Promise((resolve) => {
@@ -16,7 +17,8 @@ function run(cmd: string, args: string[]): Promise<number> {
 
 async function main() {
   // Always clean and build before running e2e tests
-  const buildCode = await run('task', ['build-frontend', 'build-backend'])
+  const taskBin = resolveTaskBin()
+  const buildCode = await run(taskBin, ['build-frontend', 'build-backend'])
   if (buildCode !== 0) {
     console.error('`task clean build` failed with exit code', buildCode)
     process.exit(buildCode)

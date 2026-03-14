@@ -113,10 +113,7 @@ func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, e
 
 	var modelEffortArgs []string
 	if !thirdPartyFromSettings {
-		modelEffortArgs = []string{"--model", opts.Model}
-		if opts.Effort != "" {
-			modelEffortArgs = append(modelEffortArgs, "--effort", opts.Effort)
-		}
+		modelEffortArgs = buildModelEffortArgs(opts.Model, opts.Effort)
 	}
 
 	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
@@ -568,4 +565,19 @@ func filterEnv(environ []string, keys ...string) []string {
 		}
 	}
 	return filtered
+}
+
+// buildModelEffortArgs constructs the --model and --effort CLI arguments for
+// Claude Code. Haiku does not support effort levels, and max effort is only
+// supported for opus models (falls back to high for others).
+func buildModelEffortArgs(model, effort string) []string {
+	args := []string{"--model", model}
+	if effort != "" && model != "haiku" {
+		// Max effort is only supported for opus models; fall back to high.
+		if effort == "max" && !strings.HasPrefix(model, "opus") {
+			effort = "high"
+		}
+		args = append(args, "--effort", effort)
+	}
+	return args
 }

@@ -85,6 +85,31 @@ test.describe('Agent Settings', () => {
     await page.keyboard.press('Escape')
   })
 
+  test('effort hidden when haiku selected', async ({ authenticatedWorkspace, page }) => {
+    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    await expect(trigger).toBeVisible()
+
+    // Default model is Sonnet — effort section should be visible; switch to Haiku
+    await openSettingsMenu(page)
+    await expect(page.locator('[data-testid="effort-high"]')).toBeVisible()
+    await page.locator('[data-testid="model-haiku"]').click()
+    await expect(trigger).toContainText('Haiku')
+    await waitForSettingsIdle(page)
+
+    // Effort section should be hidden for Haiku
+    await openSettingsMenu(page)
+    await expect(page.locator('[data-testid="effort-high"]')).not.toBeVisible()
+
+    // Switch back to Sonnet — effort should reappear
+    await page.locator('[data-testid="model-sonnet"]').click()
+    await expect(trigger).toContainText('Sonnet')
+    await waitForSettingsIdle(page)
+
+    await openSettingsMenu(page)
+    await expect(page.locator('[data-testid="effort-high"]')).toBeVisible()
+    await page.keyboard.press('Escape')
+  })
+
   test('permission mode persistence across refresh', async ({ authenticatedWorkspace, page }) => {
     // Wait for the editor to be ready (agent is started)
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
@@ -236,13 +261,17 @@ test.describe('Agent Settings', () => {
     // Verify all model items are enabled (not disabled) when idle
     await expect(page.locator('[data-testid="model-haiku"]')).not.toHaveAttribute('data-disabled', '')
     await expect(page.locator('[data-testid="model-sonnet"]')).not.toHaveAttribute('data-disabled', '')
+    await expect(page.locator('[data-testid="model-sonnet\\[1m\\]"]')).not.toHaveAttribute('data-disabled', '')
     await expect(page.locator('[data-testid="model-opus"]')).not.toHaveAttribute('data-disabled', '')
+    await expect(page.locator('[data-testid="model-opus\\[1m\\]"]')).not.toHaveAttribute('data-disabled', '')
 
-    // Verify all effort items are enabled when idle
+    // Verify effort items are enabled when idle (max is only shown for opus)
+    await expect(page.locator('[data-testid="effort-auto"]')).not.toHaveAttribute('data-disabled', '')
     await expect(page.locator('[data-testid="effort-low"]')).not.toHaveAttribute('data-disabled', '')
     await expect(page.locator('[data-testid="effort-medium"]')).not.toHaveAttribute('data-disabled', '')
     await expect(page.locator('[data-testid="effort-high"]')).not.toHaveAttribute('data-disabled', '')
-    await expect(page.locator('[data-testid="effort-max"]')).not.toHaveAttribute('data-disabled', '')
+    // Max effort is hidden for non-opus models (default is Sonnet)
+    await expect(page.locator('[data-testid="effort-max"]')).not.toBeVisible()
 
     // Verify permission mode items are enabled when idle
     await expect(page.locator('[data-testid="permission-mode-default"]')).not.toHaveAttribute('data-disabled', '')
@@ -307,15 +336,15 @@ test.describe('Agent Settings', () => {
     await expect(trigger).toContainText('Plan Mode')
     await waitForSettingsIdle(page)
 
-    // Switch model to Haiku
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="model-haiku"]').click()
-    await expect(trigger).toContainText('Haiku')
-    await waitForSettingsIdle(page)
-
     // Switch effort to High
     await openSettingsMenu(page)
     await page.locator('[data-testid="effort-high"]').click()
+    await waitForSettingsIdle(page)
+
+    // Switch model to Haiku (effort section hidden for Haiku)
+    await openSettingsMenu(page)
+    await page.locator('[data-testid="model-haiku"]').click()
+    await expect(trigger).toContainText('Haiku')
     await waitForSettingsIdle(page)
 
     // Wait a moment for any delayed status events

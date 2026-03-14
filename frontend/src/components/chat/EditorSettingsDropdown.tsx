@@ -5,6 +5,7 @@ import ChevronsDown from 'lucide-solid/icons/chevrons-down'
 import ChevronsUp from 'lucide-solid/icons/chevrons-up'
 import Dot from 'lucide-solid/icons/dot'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
+import Sparkles from 'lucide-solid/icons/sparkles'
 import Zap from 'lucide-solid/icons/zap'
 import { createUniqueId, For, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
@@ -78,8 +79,12 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
   const currentEffort = () => props.effort || DEFAULT_EFFORT
   const currentMode = () => props.permissionMode || 'default'
 
+  const isOpus = () => currentModel().startsWith('opus')
+  const availableEfforts = () => isOpus() ? EFFORTS : EFFORTS.filter(e => e.value !== 'max')
+
   const effortIcon = () => {
     switch (currentEffort()) {
+      case 'auto': return <Icon icon={Sparkles} size="xs" />
       case 'low': return <Icon icon={ChevronsDown} size="xs" />
       case 'high': return <Icon icon={ChevronsUp} size="xs" />
       case 'max': return <Icon icon={Zap} size="xs" />
@@ -98,7 +103,7 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
         >
           <Show when={props.supportsModelEffort !== false}>
             {modelLabel(currentModel())}
-            {effortIcon()}
+            <Show when={currentModel() !== 'haiku'}>{effortIcon()}</Show>
           </Show>
           {modeLabel(currentMode())}
           <Show when={props.settingsLoading} fallback={<Icon icon={ChevronDown} size="xs" />}>
@@ -111,17 +116,19 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
       data-testid="agent-settings-menu"
     >
       <Show when={props.supportsModelEffort !== false}>
-        <RadioGroup
-          label="Effort"
-          items={EFFORTS}
-          testIdPrefix="effort"
-          name={`${menuId}-effort`}
-          current={currentEffort()}
-          onChange={(v) => {
-            props.onEffortChange?.(v)
-            settingsPopoverEl?.hidePopover()
-          }}
-        />
+        <Show when={currentModel() !== 'haiku'}>
+          <RadioGroup
+            label="Effort"
+            items={availableEfforts()}
+            testIdPrefix="effort"
+            name={`${menuId}-effort`}
+            current={currentEffort()}
+            onChange={(v) => {
+              props.onEffortChange?.(v)
+              settingsPopoverEl?.hidePopover()
+            }}
+          />
+        </Show>
         <RadioGroup
           label="Model"
           items={MODELS}
@@ -130,6 +137,10 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
           current={currentModel()}
           onChange={(v) => {
             props.onModelChange?.(v)
+            // Fall back from max to high when switching away from opus
+            if (!v.startsWith('opus') && currentEffort() === 'max') {
+              props.onEffortChange?.('high')
+            }
             settingsPopoverEl?.hidePopover()
           }}
         />
