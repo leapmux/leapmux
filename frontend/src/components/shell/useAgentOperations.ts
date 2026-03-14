@@ -9,6 +9,7 @@ import type { PermissionMode } from '~/utils/controlResponse'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
+import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
 import { buildInterruptRequest, buildSetPermissionModeRequest, DEFAULT_EFFORT, DEFAULT_MODEL } from '~/utils/controlResponse'
@@ -39,7 +40,6 @@ export interface UseAgentOperationsProps {
   isActiveWorkspaceMutatable: () => boolean
   activeWorkspace: () => Workspace | null
   getCurrentTabContext: () => { workerId: string, workingDir: string }
-  pendingWorktreeChoice: () => 'keep' | 'remove' | null
   setShowNewAgentDialog: (show: boolean) => void
   setNewAgentLoading: (loading: boolean) => void
   setShowResumeDialog: (show: boolean) => void
@@ -273,22 +273,17 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   }
 
   // Close an agent
-  const handleCloseAgent = async (agentId: string) => {
+  const handleCloseAgent = async (agentId: string, worktreeChoice?: 'keep' | 'remove') => {
     try {
       const workerId = getAgentWorkerId(agentId)
       props.controlStore.clearAgent(agentId)
       if (workerId) {
-        const resp = await workerRpc.closeAgent(workerId, { agentId })
-        // Auto-handle worktree cleanup if the pre-close check stored a choice.
-        if (resp.worktreeCleanupPending && resp.worktreeId) {
-          if (props.pendingWorktreeChoice() === 'remove') {
-            workerRpc.forceRemoveWorktree(workerId, { worktreeId: resp.worktreeId }).catch(() => {})
-          }
-          else {
-            // Default to keep (if somehow no choice was stored)
-            workerRpc.keepWorktree(workerId, { worktreeId: resp.worktreeId }).catch(() => {})
-          }
-        }
+        const worktreeAction = worktreeChoice === 'keep'
+          ? WorktreeAction.KEEP
+          : worktreeChoice === 'remove'
+            ? WorktreeAction.REMOVE
+            : WorktreeAction.UNSPECIFIED
+        await workerRpc.closeAgent(workerId, { agentId, worktreeAction })
       }
       props.agentStore.removeAgent(agentId)
       props.tabStore.removeTab(TabType.AGENT, agentId)

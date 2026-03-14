@@ -138,10 +138,47 @@ func (svc *Context) registerTabForWorktree(worktreeID string, tabType leapmuxv1.
 	}
 }
 
+// isWorktreeDirty checks whether a worktree has uncommitted changes or
+// unpushed commits. For branches without an upstream, it checks for commits
+// not reachable from any other local branch (conservative heuristic).
+func isWorktreeDirty(worktreePath string) bool {
+	ctx := bgCtx()
+
+	// Check for uncommitted changes.
+	if status, err := gitOutput(ctx, worktreePath, "status", "--porcelain"); err == nil {
+		if strings.TrimSpace(status) != "" {
+			return true
+		}
+	}
+
+	// Check for unpushed commits.
+	unpushed, err := gitOutput(ctx, worktreePath, "log", "@{upstream}..HEAD", "--oneline")
+	if err == nil {
+		// Upstream exists — check if there are commits ahead.
+		return strings.TrimSpace(unpushed) != ""
+	}
+
+	// No upstream configured. Check if the branch has commits
+	// that aren't reachable from any other local branch.
+	currentBranch, branchErr := gitOutput(ctx, worktreePath, "branch", "--show-current")
+	if branchErr == nil {
+		currentBranch = strings.TrimSpace(currentBranch)
+		if currentBranch != "" {
+			unique, uniqueErr := gitOutput(ctx, worktreePath,
+				"log", "HEAD", "--not", "--exclude="+currentBranch, "--branches", "--oneline")
+			if uniqueErr == nil && strings.TrimSpace(unique) != "" {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 // unregisterTabAndCleanup removes a tab's worktree association and cleans up
-// the worktree if it was the last tab. Returns cleanup result indicating if
-// user confirmation is needed (dirty worktree).
-func (svc *Context) unregisterTabAndCleanup(tabType leapmuxv1.TabType, tabID string) worktreeCleanupResult {
+// the worktree if it was the last tab. The action parameter conveys the user's
+// pre-close choice; when UNSPECIFIED the backend decides based on dirtiness.
+func (svc *Context) unregisterTabAndCleanup(tabType leapmuxv1.TabType, tabID string, action leapmuxv1.WorktreeAction) worktreeCleanupResult {
 	ctx := bgCtx()
 
 	// Find the worktree for this tab.
@@ -173,46 +210,45 @@ func (svc *Context) unregisterTabAndCleanup(tabType leapmuxv1.TabType, tabID str
 		return worktreeCleanupResult{}
 	}
 	if count > 0 {
-		// Other tabs still using the worktree.
+		// Other tabs still using the worktree — never delete, regardless
+		// of the user's choice. This guards against the TOCTOU race where
+		// a new tab is registered between the frontend dialog and close RPC.
 		return worktreeCleanupResult{}
 	}
 
-	// Last tab closed — check if worktree is dirty.
-	isDirty := false
-
-	// Check for uncommitted changes.
-	if status, err := gitOutput(ctx, wt.WorktreePath, "status", "--porcelain"); err == nil {
-		if strings.TrimSpace(status) != "" {
-			isDirty = true
+	// Last tab closed — branch on the user's pre-close action.
+	switch action {
+	case leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP:
+		// User chose to keep the worktree+branch on disk. Delete DB record only.
+		if err := svc.Queries.DeleteWorktree(ctx, wt.ID); err != nil {
+			slog.Warn("failed to delete worktree record",
+				"worktree_id", wt.ID, "error", err)
 		}
-	}
+		return worktreeCleanupResult{}
 
-	// Check for unpushed commits.
-	if !isDirty {
-		unpushed, err := gitOutput(ctx, wt.WorktreePath, "log", "@{upstream}..HEAD", "--oneline")
-		if err == nil {
-			// Upstream exists — check if there are commits ahead.
-			if strings.TrimSpace(unpushed) != "" {
-				isDirty = true
-			}
-		} else {
-			// No upstream configured. Check if the branch has commits
-			// that aren't reachable from any other local branch.
-			currentBranch, branchErr := gitOutput(ctx, wt.WorktreePath, "branch", "--show-current")
-			if branchErr == nil {
-				currentBranch = strings.TrimSpace(currentBranch)
-				if currentBranch != "" {
-					unique, uniqueErr := gitOutput(ctx, wt.WorktreePath,
-						"log", "HEAD", "--not", "--exclude="+currentBranch, "--branches", "--oneline")
-					if uniqueErr == nil && strings.TrimSpace(unique) != "" {
-						isDirty = true
-					}
-				}
+	case leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE:
+		// User chose to force-remove the worktree and branch.
+		if err := gitCommand(ctx, wt.RepoRoot, "worktree", "remove", "--force", wt.WorktreePath); err != nil {
+			slog.Warn("failed to force-remove worktree",
+				"worktree_path", wt.WorktreePath, "error", err)
+		}
+		if wt.BranchName != "" {
+			if err := gitCommand(ctx, wt.RepoRoot, "branch", "-D", wt.BranchName); err != nil {
+				slog.Debug("failed to delete branch",
+					"branch", wt.BranchName, "error", err)
 			}
 		}
+		if err := svc.Queries.DeleteWorktree(ctx, wt.ID); err != nil {
+			slog.Warn("failed to delete worktree record",
+				"worktree_id", wt.ID, "error", err)
+		}
+		return worktreeCleanupResult{}
+
+	default:
+		// UNSPECIFIED — no prior user choice; backend decides based on dirtiness.
 	}
 
-	if isDirty {
+	if isWorktreeDirty(wt.WorktreePath) {
 		// Dirty worktree — needs user confirmation.
 		return worktreeCleanupResult{
 			NeedsConfirmation: true,

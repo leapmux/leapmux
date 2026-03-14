@@ -189,7 +189,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		_ = svc.Queries.CloseTerminal(bgCtx(), terminalID)
 
 		// Handle worktree cleanup.
-		cleanup := svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID)
+		cleanup := svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, r.GetWorktreeAction())
 		sendProtoResponse(sender, &leapmuxv1.CloseTerminalResponse{
 			WorktreeCleanupPending: cleanup.NeedsConfirmation,
 			WorktreePath:           cleanup.WorktreePath,

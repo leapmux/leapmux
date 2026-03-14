@@ -260,28 +260,8 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 		resp.IsLastTab = tabCount <= 1
 
-		// Check dirty status (uncommitted changes).
-		if status, err := gitOutput(ctx, wt.WorktreePath, "status", "--porcelain"); err == nil {
-			if strings.TrimSpace(status) != "" {
-				resp.IsDirty = true
-			}
-		}
-
-		// Check for unpushed commits.
-		if !resp.IsDirty {
-			// Try upstream first.
-			unpushed, err := gitOutput(ctx, wt.WorktreePath, "log", "@{u}..HEAD", "--oneline")
-			if err != nil {
-				// No upstream configured; check if there are any commits at all.
-				if commits, err2 := gitOutput(ctx, wt.WorktreePath, "log", "--oneline", "-1"); err2 == nil {
-					if strings.TrimSpace(commits) != "" {
-						resp.IsDirty = true
-					}
-				}
-			} else if strings.TrimSpace(unpushed) != "" {
-				resp.IsDirty = true
-			}
-		}
+		// Check dirty status using the unified heuristic.
+		resp.IsDirty = isWorktreeDirty(wt.WorktreePath)
 
 		sendProtoResponse(sender, resp)
 	})

@@ -1,6 +1,8 @@
 syntax = "proto3";
 package leapmux.v1;
 
+import "leapmux/v1/common.proto";
+
 message OpenTerminalRequest {
   string org_id = 1;
   string workspace_id = 2;
@@ -24,6 +26,7 @@ message CloseTerminalRequest {
   string org_id = 1;
   string workspace_id = 2;
   string terminal_id = 3;
+  WorktreeAction worktree_action = 4;
 }
 
 message CloseTerminalResponse {

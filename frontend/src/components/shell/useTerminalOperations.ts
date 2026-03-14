@@ -8,6 +8,7 @@ import { createEffect, createSignal, on } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
+import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 
 import { nextTabNumber } from './useAgentOperations'
@@ -23,7 +24,6 @@ export interface UseTerminalOperationsProps {
   setShowNewTerminalDialog: (v: boolean) => void
   setNewTerminalLoading: (v: boolean) => void
   setNewShellLoading: (v: boolean) => void
-  pendingWorktreeChoice: () => 'keep' | 'remove' | null
   persistLayout?: () => void
 }
 
@@ -241,22 +241,18 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     }
   }
 
-  const handleTerminalClose = async (terminalId: string) => {
+  const handleTerminalClose = async (terminalId: string, worktreeChoice?: 'keep' | 'remove') => {
     const ws = props.activeWorkspace()
     try {
       if (!ws)
         return
       const workerId = getTerminalWorkerId(terminalId)
-      const resp = await workerRpc.closeTerminal(workerId, { orgId: props.org.orgId(), workspaceId: ws.id, terminalId })
-      // Auto-handle worktree cleanup if the pre-close check stored a choice.
-      if (resp.worktreeCleanupPending && resp.worktreeId) {
-        if (props.pendingWorktreeChoice() === 'remove') {
-          workerRpc.forceRemoveWorktree(workerId, { worktreeId: resp.worktreeId }).catch(() => {})
-        }
-        else {
-          workerRpc.keepWorktree(workerId, { worktreeId: resp.worktreeId }).catch(() => {})
-        }
-      }
+      const worktreeAction = worktreeChoice === 'keep'
+        ? WorktreeAction.KEEP
+        : worktreeChoice === 'remove'
+          ? WorktreeAction.REMOVE
+          : WorktreeAction.UNSPECIFIED
+      await workerRpc.closeTerminal(workerId, { orgId: props.org.orgId(), workspaceId: ws.id, terminalId, worktreeAction })
     }
     catch {
       // Ignore errors (e.g. terminal already exited or not tracked by worker)
