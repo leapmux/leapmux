@@ -29,17 +29,37 @@
       </div>
     </div>
 
-    <div class="hub-url-section" id="hubUrlSection">
-      <div class="hub-url-inner">
+    <div class="hub-url-section collapsible" id="hubUrlSection">
+      <div class="collapsible-inner">
         <label for="hubUrl">Hub URL</label>
         <input type="text" id="hubUrl" placeholder="https://hub.example.com" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+      </div>
+    </div>
+
+    <div class="full-disk-access-section collapsible" id="fullDiskAccessSection">
+      <div class="collapsible-inner">
+        <div class="full-disk-access-card">
+          <div class="full-disk-access-header">
+            <span class="full-disk-access-icon">&#x1F512;</span>
+            <h4>Full Disk Access Required</h4>
+          </div>
+          <div class="full-disk-access-body">
+            <p>Solo mode needs Full Disk Access to traverse directories and
+               files in your home directory. Grant access in System Settings
+               and the app will restart automatically.</p>
+            <button class="full-disk-access-settings-btn"
+                    onclick="openFullDiskAccessSettings()">
+              Open System Settings
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 
     <div class="connect-section">
       <button class="connect-btn" id="connectBtn" onclick="connect()">Connect</button>
       <div class="spinner" id="spinner"></div>
-      <div class="error-msg" id="errorMsg"><span id="errorMsgText"></span></div>
+      <div class="error-msg collapsible" id="errorMsg"><span class="collapsible-inner" id="errorMsgText"></span></div>
     </div>
 
     <div class="version" id="version"></div>

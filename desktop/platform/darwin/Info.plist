@@ -8,7 +8,7 @@
   <key>CFBundleDisplayName</key>
   <string>LeapMux</string>
   <key>CFBundleIdentifier</key>
-  <string>com.leapmux.desktop</string>
+  <string>dev.leapmux.desktop</string>
   <key>CFBundleVersion</key>
   <string>{{.Info.ProductVersion}}</string>
   <key>CFBundleShortVersionString</key>
