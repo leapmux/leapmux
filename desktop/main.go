@@ -54,9 +54,14 @@ func main() {
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
-		OnStartup:  app.startup,
-		OnDomReady: app.domReady,
-		OnShutdown: app.shutdown,
+		// After connecting, the WebView navigates from the wails:// launcher
+		// page to the real frontend (e.g. http://127.0.0.1:4327). Allow
+		// that origin so JS→Go IPC (keyboard shortcuts, external links)
+		// continues to work on the navigated page.
+		BindingsAllowedOrigins: "http://127.0.0.1:*,https://*",
+		OnStartup:              app.startup,
+		OnDomReady:             app.domReady,
+		OnShutdown:             app.shutdown,
 		Mac: &mac.Options{
 			Preferences: &mac.Preferences{
 				FullscreenEnabled: mac.Enabled,
