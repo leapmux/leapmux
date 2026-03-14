@@ -21,9 +21,13 @@ const DefaultMaxConns = 4
 // If maxConns is provided, it sets the maximum number of open connections;
 // otherwise DefaultMaxConns is used.
 func Open(path string, maxConns ...int) (*sql.DB, error) {
+	// Use _pragma DSN parameters so they are applied to every new
+	// connection from the pool (not just the first one).
 	dsn := path
-	if path != ":memory:" {
-		dsn = path + "?_busy_timeout=5000"
+	if path == ":memory:" {
+		dsn = path + "?_pragma=foreign_keys(1)"
+	} else {
+		dsn = path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
 	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -35,18 +39,6 @@ func Open(path string, maxConns ...int) (*sql.DB, error) {
 		if err := os.Chmod(path, 0o600); err != nil {
 			slog.Warn("failed to chmod database file", "path", path, "error", err)
 		}
-	}
-
-	// Enable WAL mode for better concurrent read performance.
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("set WAL mode: %w", err)
-	}
-
-	// Enable foreign key enforcement.
-	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 
 	// In-memory databases must use a single connection because each
