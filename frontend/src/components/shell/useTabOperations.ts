@@ -9,6 +9,7 @@ import type { createTerminalStore } from '~/stores/terminal.store'
 import { batch, createEffect, createSignal } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
+import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { tabKey } from '~/stores/tab.store'
 
@@ -123,7 +124,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     }
 
     // Determine the worktree action from a pre-close dirty check.
-    let worktreeChoice: 'keep' | 'remove' | undefined
+    let worktreeAction = WorktreeAction.UNSPECIFIED
     try {
       const tabType = tab.type === TabType.AGENT ? TabType.AGENT : TabType.TERMINAL
       // Use the closing tab's own workerId, not the active tab's context.
@@ -134,7 +135,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
         if (choice === 'cancel') {
           return
         }
-        worktreeChoice = choice
+        worktreeAction = choice === 'keep' ? WorktreeAction.KEEP : WorktreeAction.REMOVE
       }
     }
     catch {
@@ -145,14 +146,14 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     addClosingTabKey(key)
     try {
       if (tab.type === TabType.AGENT) {
-        await agentOps.handleCloseAgent(tab.id, worktreeChoice)
+        await agentOps.handleCloseAgent(tab.id, worktreeAction)
       }
       else {
         const instance = getTerminalInstance(tab.id)
         if (instance) {
           instance.dispose()
         }
-        await termOps.handleTerminalClose(tab.id, worktreeChoice)
+        await termOps.handleTerminalClose(tab.id, worktreeAction)
       }
     }
     finally {

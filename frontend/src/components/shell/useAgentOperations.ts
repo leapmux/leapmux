@@ -273,16 +273,11 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   }
 
   // Close an agent
-  const handleCloseAgent = async (agentId: string, worktreeChoice?: 'keep' | 'remove') => {
+  const handleCloseAgent = async (agentId: string, worktreeAction: WorktreeAction = WorktreeAction.UNSPECIFIED) => {
     try {
       const workerId = getAgentWorkerId(agentId)
       props.controlStore.clearAgent(agentId)
       if (workerId) {
-        const worktreeAction = worktreeChoice === 'keep'
-          ? WorktreeAction.KEEP
-          : worktreeChoice === 'remove'
-            ? WorktreeAction.REMOVE
-            : WorktreeAction.UNSPECIFIED
         await workerRpc.closeAgent(workerId, { agentId, worktreeAction })
       }
       props.agentStore.removeAgent(agentId)

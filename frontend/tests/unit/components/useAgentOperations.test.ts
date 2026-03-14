@@ -116,7 +116,7 @@ describe('useAgentOperations', () => {
 
           mockCloseAgent.mockResolvedValueOnce({ worktreeCleanupPending: false, worktreeId: '' } as CloseAgentResponse)
 
-          await ops.handleCloseAgent('a-1', 'keep')
+          await ops.handleCloseAgent('a-1', WorktreeAction.KEEP)
 
           expect(mockCloseAgent).toHaveBeenCalledWith('w-1', { agentId: 'a-1', worktreeAction: WorktreeAction.KEEP })
         }
@@ -136,7 +136,7 @@ describe('useAgentOperations', () => {
 
           mockCloseAgent.mockResolvedValueOnce({ worktreeCleanupPending: false, worktreeId: '' } as CloseAgentResponse)
 
-          await ops.handleCloseAgent('a-1', 'remove')
+          await ops.handleCloseAgent('a-1', WorktreeAction.REMOVE)
 
           expect(mockCloseAgent).toHaveBeenCalledWith('w-1', { agentId: 'a-1', worktreeAction: WorktreeAction.REMOVE })
         }

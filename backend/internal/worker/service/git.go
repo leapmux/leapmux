@@ -12,9 +12,9 @@ import (
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	db "github.com/leapmux/leapmux/internal/worker/generated/db"
-
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/gitutil"
 )
 
 // registerGitHandlers registers handlers for git operations on the local filesystem.
@@ -260,8 +260,9 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 		resp.IsLastTab = tabCount <= 1
 
-		// Check dirty status using the unified heuristic.
-		resp.IsDirty = isWorktreeDirty(wt.WorktreePath)
+		// Check dirty status.
+		clean, _ := gitutil.IsWorktreeClean(wt.WorktreePath)
+		resp.IsDirty = !clean
 
 		sendProtoResponse(sender, resp)
 	})

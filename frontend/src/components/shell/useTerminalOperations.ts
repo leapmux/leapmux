@@ -241,17 +241,12 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     }
   }
 
-  const handleTerminalClose = async (terminalId: string, worktreeChoice?: 'keep' | 'remove') => {
+  const handleTerminalClose = async (terminalId: string, worktreeAction: WorktreeAction = WorktreeAction.UNSPECIFIED) => {
     const ws = props.activeWorkspace()
     try {
       if (!ws)
         return
       const workerId = getTerminalWorkerId(terminalId)
-      const worktreeAction = worktreeChoice === 'keep'
-        ? WorktreeAction.KEEP
-        : worktreeChoice === 'remove'
-          ? WorktreeAction.REMOVE
-          : WorktreeAction.UNSPECIFIED
       await workerRpc.closeTerminal(workerId, { orgId: props.org.orgId(), workspaceId: ws.id, terminalId, worktreeAction })
     }
     catch {
