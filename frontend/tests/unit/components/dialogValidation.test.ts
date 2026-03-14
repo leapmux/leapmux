@@ -9,8 +9,10 @@ const validBase = {
   submitting: false,
   workerId: 'worker-1',
   workingDir: '/home/user/project',
-  createWorktree: false,
+  gitMode: 'current' as const,
   worktreeBranchError: null,
+  checkoutBranch: '',
+  useWorktreePath: '',
 }
 
 describe('isWorkspaceCreateDisabled', () => {
@@ -40,12 +42,28 @@ describe('isWorkspaceCreateDisabled', () => {
     expect(isWorkspaceCreateDisabled({ ...valid, titleError: 'Name must not be empty' })).toBe(true)
   })
 
-  it('returns true when worktree branch has an error', () => {
-    expect(isWorkspaceCreateDisabled({ ...valid, createWorktree: true, worktreeBranchError: 'Invalid branch' })).toBe(true)
+  it('returns true when worktree branch has an error in create-worktree mode', () => {
+    expect(isWorkspaceCreateDisabled({ ...valid, gitMode: 'create-worktree', worktreeBranchError: 'Invalid branch' })).toBe(true)
   })
 
-  it('ignores worktree branch error when worktree is not enabled', () => {
-    expect(isWorkspaceCreateDisabled({ ...valid, createWorktree: false, worktreeBranchError: 'Invalid branch' })).toBe(false)
+  it('ignores worktree branch error when mode is current', () => {
+    expect(isWorkspaceCreateDisabled({ ...valid, gitMode: 'current', worktreeBranchError: 'Invalid branch' })).toBe(false)
+  })
+
+  it('returns true when switch-branch mode has no branch selected', () => {
+    expect(isWorkspaceCreateDisabled({ ...valid, gitMode: 'switch-branch', checkoutBranch: '' })).toBe(true)
+  })
+
+  it('returns false when switch-branch mode has a branch selected', () => {
+    expect(isWorkspaceCreateDisabled({ ...valid, gitMode: 'switch-branch', checkoutBranch: 'main' })).toBe(false)
+  })
+
+  it('returns true when use-worktree mode has no path selected', () => {
+    expect(isWorkspaceCreateDisabled({ ...valid, gitMode: 'use-worktree', useWorktreePath: '' })).toBe(true)
+  })
+
+  it('returns false when use-worktree mode has a path selected', () => {
+    expect(isWorkspaceCreateDisabled({ ...valid, gitMode: 'use-worktree', useWorktreePath: '/path/to/wt' })).toBe(false)
   })
 })
 
@@ -70,12 +88,12 @@ describe('isAgentCreateDisabled', () => {
     expect(isAgentCreateDisabled({ ...validBase, workingDir: '  ' })).toBe(true)
   })
 
-  it('returns true when worktree branch has an error', () => {
-    expect(isAgentCreateDisabled({ ...validBase, createWorktree: true, worktreeBranchError: 'Invalid branch' })).toBe(true)
+  it('returns true when worktree branch has an error in create-worktree mode', () => {
+    expect(isAgentCreateDisabled({ ...validBase, gitMode: 'create-worktree', worktreeBranchError: 'Invalid branch' })).toBe(true)
   })
 
-  it('ignores worktree branch error when worktree is not enabled', () => {
-    expect(isAgentCreateDisabled({ ...validBase, createWorktree: false, worktreeBranchError: 'err' })).toBe(false)
+  it('ignores worktree branch error when mode is current', () => {
+    expect(isAgentCreateDisabled({ ...validBase, gitMode: 'current', worktreeBranchError: 'err' })).toBe(false)
   })
 })
 
@@ -106,11 +124,11 @@ describe('isTerminalCreateDisabled', () => {
     expect(isTerminalCreateDisabled({ ...valid, shell: '' })).toBe(true)
   })
 
-  it('returns true when worktree branch has an error', () => {
-    expect(isTerminalCreateDisabled({ ...valid, createWorktree: true, worktreeBranchError: 'err' })).toBe(true)
+  it('returns true when worktree branch has an error in create-worktree mode', () => {
+    expect(isTerminalCreateDisabled({ ...valid, gitMode: 'create-worktree', worktreeBranchError: 'err' })).toBe(true)
   })
 
-  it('ignores worktree branch error when worktree is not enabled', () => {
-    expect(isTerminalCreateDisabled({ ...valid, createWorktree: false, worktreeBranchError: 'err' })).toBe(false)
+  it('ignores worktree branch error when mode is current', () => {
+    expect(isTerminalCreateDisabled({ ...valid, gitMode: 'current', worktreeBranchError: 'err' })).toBe(false)
   })
 })

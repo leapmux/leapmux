@@ -3,6 +3,7 @@ package service
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,7 @@ func (svc *Context) createWorktreeIfRequested(
 	workingDir string,
 	createWorktree bool,
 	branchName string,
+	baseBranch string,
 ) (finalWorkingDir string, worktreeID string, err error) {
 	if !createWorktree {
 		return workingDir, "", nil
@@ -79,9 +81,11 @@ func (svc *Context) createWorktreeIfRequested(
 
 	repoDirName := filepath.Base(repoRoot)
 
-	// Get current branch for the start point.
+	// Determine the start point: use baseBranch if provided, otherwise current branch.
 	startPoint := "HEAD"
-	if branch, err := gitOutput(ctx, workingDir, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
+	if baseBranch != "" {
+		startPoint = baseBranch
+	} else if branch, err := gitOutput(ctx, workingDir, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
 		if b := strings.TrimSpace(branch); b != "" {
 			startPoint = b
 		}
@@ -242,6 +246,77 @@ func (svc *Context) unregisterTabAndCleanup(tabType leapmuxv1.TabType, tabID str
 	}
 
 	return worktreeCleanupResult{}
+}
+
+// checkoutBranchIfRequested runs `git checkout <branch>` in the given working directory.
+// No-op if branch is empty.
+func (svc *Context) checkoutBranchIfRequested(workingDir, branch string) error {
+	if branch == "" {
+		return nil
+	}
+
+	ctx := bgCtx()
+	if err := gitCommand(ctx, workingDir, "checkout", branch); err != nil {
+		// Capture stderr for a more descriptive error.
+		stderr, _ := gitOutputStderr(ctx, workingDir, "checkout", branch)
+		if stderr != "" {
+			return errors.New(strings.TrimSpace(stderr))
+		}
+		return fmt.Errorf("git checkout failed: %w", err)
+	}
+	return nil
+}
+
+// useExistingWorktreeIfRequested switches to an existing worktree directory.
+// Returns the final working directory and the worktree DB ID (if managed).
+func (svc *Context) useExistingWorktreeIfRequested(workingDir, worktreePath string) (string, string, error) {
+	if worktreePath == "" {
+		return workingDir, "", nil
+	}
+
+	sanitized, err := sanitizePath(worktreePath, svc.HomeDir)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid worktree path: %w", err)
+	}
+
+	ctx := bgCtx()
+
+	// Verify the path appears in the worktree list (security: prevent arbitrary path access).
+	worktrees, err := listGitWorktrees(ctx, workingDir)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to list worktrees: %w", err)
+	}
+
+	// Resolve symlinks for the sanitized path for accurate comparison.
+	resolvedSanitized := sanitized
+	if r, err := filepath.EvalSymlinks(sanitized); err == nil {
+		resolvedSanitized = r
+	}
+
+	found := false
+	for _, wt := range worktrees {
+		resolvedWt := wt.Path
+		if r, err := filepath.EvalSymlinks(wt.Path); err == nil {
+			resolvedWt = r
+		}
+		if resolvedWt == resolvedSanitized {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return "", "", fmt.Errorf("path %q is not a known worktree", sanitized)
+	}
+
+	// Check if already tracked in DB.
+	var wtID string
+	if existing, err := svc.Queries.GetWorktreeByPath(ctx, sanitized); err == nil {
+		if count, err := svc.Queries.CountWorktreeTabs(ctx, existing.ID); err == nil && count > 0 {
+			wtID = existing.ID
+		}
+	}
+
+	return sanitized, wtID, nil
 }
 
 var errNotGitRepo = errors.New("path is not inside a git repository")

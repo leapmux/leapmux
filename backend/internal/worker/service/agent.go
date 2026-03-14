@@ -54,7 +54,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		var worktreeID string
 		if r.GetCreateWorktree() {
 			finalDir, wtID, wtErr := svc.createWorktreeIfRequested(
-				workingDir, true, r.GetWorktreeBranch(),
+				workingDir, true, r.GetWorktreeBranch(), r.GetWorktreeBaseBranch(),
 			)
 			if wtErr != nil {
 				slog.Error("failed to create worktree for agent",
@@ -64,6 +64,36 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			}
 			workingDir = finalDir
 			worktreeID = wtID
+		}
+
+		// Checkout branch if requested.
+		if branch := r.GetCheckoutBranch(); branch != "" {
+			if err := svc.checkoutBranchIfRequested(workingDir, branch); err != nil {
+				sendInternalError(sender, "failed to checkout branch: "+err.Error())
+				return
+			}
+		}
+
+		// Use existing worktree if requested.
+		if wtPath := r.GetUseWorktreePath(); wtPath != "" {
+			finalDir, wtID, err := svc.useExistingWorktreeIfRequested(workingDir, wtPath)
+			if err != nil {
+				sendInternalError(sender, "failed to use worktree: "+err.Error())
+				return
+			}
+			workingDir = finalDir
+			if wtID != "" {
+				worktreeID = wtID
+			}
+		}
+
+		// "Use current state" — if the selected dir is an already-managed worktree, register this tab.
+		if !r.GetCreateWorktree() && r.GetCheckoutBranch() == "" && r.GetUseWorktreePath() == "" {
+			if existing, err := svc.Queries.GetWorktreeByPath(bgCtx(), workingDir); err == nil {
+				if count, err := svc.Queries.CountWorktreeTabs(bgCtx(), existing.ID); err == nil && count > 0 {
+					worktreeID = existing.ID
+				}
+			}
 		}
 
 		model := modelOrDefault(r.GetModel())

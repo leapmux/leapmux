@@ -38,6 +38,9 @@ message OpenAgentRequest {
   string working_dir = 8;       // Working directory on the worker (required)
   bool create_worktree = 9;     // If true, create a git worktree before starting
   string worktree_branch = 10;  // Branch name for the worktree
+  string checkout_branch = 11;      // "Switch to branch" mode
+  string use_worktree_path = 12;    // "Use existing worktree" mode
+  string worktree_base_branch = 13; // Base branch for "Create new worktree" (default: current branch)
 }
 
 message OpenAgentResponse {
