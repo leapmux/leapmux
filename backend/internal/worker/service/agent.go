@@ -502,17 +502,20 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		if svc.Agents.HasAgent(agentID) {
 			svc.Agents.StopAndWaitAgent(agentID)
 
+			// Don't resume the old session — it may not have been persisted
+			// (e.g. no user messages were sent before the settings change).
+			// On success, handleSystemInit will overwrite the session ID with
+			// the new one. On failure, we clear it below.
 			agentOpts := agent.Options{
-				AgentID:         agentID,
-				Model:           newModel,
-				Effort:          newEffort,
-				WorkingDir:      dbAgent.WorkingDir,
-				ResumeSessionID: dbAgent.AgentSessionID,
-				PermissionMode:  dbAgent.PermissionMode,
-				StartupTimeout:  svc.agentStartupTimeout(),
-				Shell:           svc.agentShell(),
-				LoginShell:      svc.agentLoginShell(),
-				HomeDir:         svc.HomeDir,
+				AgentID:        agentID,
+				Model:          newModel,
+				Effort:         newEffort,
+				WorkingDir:     dbAgent.WorkingDir,
+				PermissionMode: dbAgent.PermissionMode,
+				StartupTimeout: svc.agentStartupTimeout(),
+				Shell:          svc.agentShell(),
+				LoginShell:     svc.agentLoginShell(),
+				HomeDir:        svc.HomeDir,
 			}
 
 			outputFn := agentOutputFn(svc.Output, agentID, dbAgent.WorkspaceID, dbAgent.WorkingDir)
@@ -520,6 +523,12 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			if _, err := svc.Agents.StartAgent(bgCtx(), agentOpts, outputFn); err != nil {
 				slog.Error("failed to restart agent with new settings",
 					"agent_id", agentID, "error", err)
+				// Clear stale session ID so ensureAgentRunning won't try
+				// to resume a non-existent session on the next message.
+				_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
+					AgentSessionID: "",
+					ID:             agentID,
+				})
 				svc.Output.BroadcastNotification(agentID, map[string]interface{}{
 					"type":  "agent_error",
 					"error": "Failed to restart agent with new settings: " + err.Error(),
