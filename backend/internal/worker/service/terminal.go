@@ -46,21 +46,15 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			workingDir = svc.HomeDir
 		}
 
-		// Create a worktree if requested.
-		var worktreeID string
-		if r.GetCreateWorktree() {
-			finalDir, wtID, wtErr := svc.createWorktreeIfRequested(
-				workingDir, true, r.GetWorktreeBranch(),
-			)
-			if wtErr != nil {
-				slog.Error("failed to create worktree for terminal",
-					"error", wtErr)
-				sendInternalError(sender, "failed to create worktree: "+wtErr.Error())
-				return
-			}
-			workingDir = finalDir
-			worktreeID = wtID
+		// Apply git-mode options (create-worktree, checkout-branch, etc.).
+		gm, gmErr := svc.applyGitMode(workingDir, &r)
+		if gmErr != nil {
+			slog.Error("failed to apply git mode for terminal", "error", gmErr)
+			sendInternalError(sender, gmErr.Error())
+			return
 		}
+		workingDir = gm.WorkingDir
+		worktreeID := gm.WorktreeID
 
 		terminalID := id.Generate()
 

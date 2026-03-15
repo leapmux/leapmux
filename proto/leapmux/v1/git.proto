@@ -78,3 +78,35 @@ message ReadGitFileResponse {
   bytes content = 2;
   bool exists = 3;
 }
+
+message ListGitBranchesRequest {
+  string org_id = 1;
+  string worker_id = 2;
+  string path = 3;
+}
+
+message GitBranchEntry {
+  string name = 1;       // e.g. "main" or "origin/feature"
+  bool is_remote = 2;    // true for remote tracking branches
+}
+
+message ListGitBranchesResponse {
+  repeated GitBranchEntry branches = 1;
+  string current_branch = 2;
+}
+
+message GitWorktreeEntry {
+  string path = 1;
+  string branch = 2;
+  bool is_main = 3;  // true for the main working tree
+}
+
+message ListGitWorktreesRequest {
+  string org_id = 1;
+  string worker_id = 2;
+  string path = 3;
+}
+
+message ListGitWorktreesResponse {
+  repeated GitWorktreeEntry worktrees = 1;
+}

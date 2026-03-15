@@ -7,12 +7,12 @@ import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
 import { isTerminalCreateDisabled } from '~/components/shell/dialogValidation'
 import { DirectorySelector } from '~/components/shell/DirectorySelector'
+import { GitOptions } from '~/components/shell/GitOptions'
 import { WorkerSelector } from '~/components/shell/WorkerSelector'
-import { WorktreeOptions } from '~/components/shell/WorktreeOptions'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
 import { spinner } from '~/styles/animations.css'
-import { errorText } from '~/styles/shared.css'
+import { dialogLeftPanel, dialogRightPanel, dialogSingleColumn, dialogTopSection, dialogTwoColumn, dialogWide, errorText } from '~/styles/shared.css'
 
 interface NewTerminalDialogProps {
   workspaceId: string
@@ -74,8 +74,13 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
         workingDir: state.workingDir(),
         shell: shell(),
         workerId: state.workerId(),
-        createWorktree: state.createWorktree(),
+        createWorktree: state.gitMode() === 'create-worktree',
         worktreeBranch: state.worktreeBranch(),
+        worktreeBaseBranch: state.gitMode() === 'create-worktree' ? state.worktreeBaseBranch() : '',
+        checkoutBranch: state.gitMode() === 'switch-branch' ? state.checkoutBranch() : '',
+        createBranch: state.gitMode() === 'create-branch' ? state.createBranch() : '',
+        createBranchBase: state.gitMode() === 'create-branch' ? state.createBranchBase() : '',
+        useWorktreePath: state.gitMode() === 'use-worktree' ? state.useWorktreePath() : '',
       })
       props.onCreated(resp.terminalId, state.workerId(), state.workingDir())
     }
@@ -87,43 +92,57 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
     }
   }
 
+  const shellSelector = () => (
+    <label>
+      Shell
+      <select
+        value={shell()}
+        onChange={e => setShell(e.currentTarget.value)}
+        disabled={shellsLoading() || shells().length === 0}
+      >
+        <Show when={shellsLoading()}>
+          <option value="">Loading shells...</option>
+        </Show>
+        <Show when={!shellsLoading() && shells().length === 0}>
+          <option value="">No shells available</option>
+        </Show>
+        <For each={shells()}>
+          {s => <option value={s}>{s}</option>}
+        </For>
+      </select>
+    </label>
+  )
+
   return (
-    <Dialog title="New Terminal" tall onClose={() => props.onClose()}>
+    <Dialog title="New Terminal" tall class={dialogWide} onClose={() => props.onClose()}>
       <form onSubmit={handleSubmit}>
         <section>
           <div class="vstack gap-4">
-            <WorkerSelector state={state} />
-            <DirectorySelector state={state} />
-            <Show when={state.workerId()}>
-              <WorktreeOptions
-                workerId={state.workerId()}
-                selectedPath={state.workingDir()}
-                homeDir={state.workerInfoStore.getHomeDir(state.workerId())}
-                onWorktreeChange={state.handleWorktreeChange}
-              />
-            </Show>
-            <label>
-              Shell
-              <select
-                value={shell()}
-                onChange={e => setShell(e.currentTarget.value)}
-                disabled={shellsLoading() || shells().length === 0}
-              >
-                <Show when={shellsLoading()}>
-                  <option value="">Loading shells...</option>
+            <div class={state.showGitOptions() ? dialogTopSection : undefined}>
+              <WorkerSelector state={state} />
+              {shellSelector()}
+            </div>
+            <div class={state.showGitOptions() ? dialogTwoColumn : dialogSingleColumn}>
+              <div class={dialogLeftPanel}>
+                <DirectorySelector state={state} />
+              </div>
+              <div class={state.showGitOptions() ? dialogRightPanel : undefined}>
+                <Show when={state.workerId()}>
+                  <GitOptions
+                    workerId={state.workerId()}
+                    selectedPath={state.workingDir()}
+                    homeDir={state.workerInfoStore.getHomeDir(state.workerId())}
+                    refreshKey={state.refreshKey()}
+                    onGitModeChange={state.handleGitModeChange}
+                    onVisibilityChange={state.setShowGitOptions}
+                  />
                 </Show>
-                <Show when={!shellsLoading() && shells().length === 0}>
-                  <option value="">No shells available</option>
-                </Show>
-                <For each={shells()}>
-                  {s => <option value={s}>{s}</option>}
-                </For>
-              </select>
-            </label>
-            <Show when={state.error()}>
-              <div class={errorText}>{state.error()}</div>
-            </Show>
+              </div>
+            </div>
           </div>
+          <Show when={state.error()}>
+            <div class={errorText}>{state.error()}</div>
+          </Show>
         </section>
         <footer>
           <button type="button" class="outline" onClick={() => props.onClose()}>
@@ -131,7 +150,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
           </button>
           <button
             type="submit"
-            disabled={isTerminalCreateDisabled({ submitting: submitting.loading(), workerId: state.workerId(), workingDir: state.workingDir(), shell: shell(), createWorktree: state.createWorktree(), worktreeBranchError: state.worktreeBranchError() })}
+            disabled={isTerminalCreateDisabled({ submitting: submitting.loading(), workerId: state.workerId(), workingDir: state.workingDir(), shell: shell(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), createBranchError: state.createBranchError(), useWorktreePath: state.useWorktreePath() })}
           >
             <Show when={submitting.loading()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
             {submitting.loading() ? 'Creating...' : 'Create'}

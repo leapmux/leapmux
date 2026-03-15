@@ -6,6 +6,8 @@ import * as workerRpc from '~/api/workerRpc'
 import { useOrg } from '~/context/OrgContext'
 import { createWorkerInfoStore } from '~/stores/workerInfo.store'
 
+export type GitMode = 'current' | 'switch-branch' | 'create-branch' | 'create-worktree' | 'use-worktree'
+
 interface WorkerDialogStateOptions {
   preselectedWorkerId?: string
   defaultWorkingDir?: string
@@ -21,9 +23,17 @@ export function createWorkerDialogState(options: WorkerDialogStateOptions = {}) 
   const [workingDir, setWorkingDir] = createSignal(options.defaultWorkingDir ?? '')
   const [error, setError] = createSignal<string | null>(null)
   const [refreshing, setRefreshing] = createSignal(false)
-  const [createWorktree, setCreateWorktree] = createSignal(false)
+  const [gitMode, setGitMode] = createSignal<GitMode>('current')
   const [worktreeBranch, setWorktreeBranch] = createSignal('')
   const [worktreeBranchError, setWorktreeBranchError] = createSignal<string | null>(null)
+  const [checkoutBranch, setCheckoutBranch] = createSignal('')
+  const [useWorktreePath, setUseWorktreePath] = createSignal('')
+  const [worktreeBaseBranch, setWorktreeBaseBranch] = createSignal('')
+  const [createBranch, setCreateBranch] = createSignal('')
+  const [createBranchError, setCreateBranchError] = createSignal<string | null>(null)
+  const [createBranchBase, setCreateBranchBase] = createSignal('')
+  const [showGitOptions, setShowGitOptions] = createSignal(false)
+  const [refreshKey, setRefreshKey] = createSignal(0)
   let treeHandle: DirectoryTreeHandle | undefined
 
   const fetchWorkers = async () => {
@@ -86,10 +96,36 @@ export function createWorkerDialogState(options: WorkerDialogStateOptions = {}) 
     setRefreshing(false)
   }
 
-  const handleWorktreeChange = (create: boolean, branch: string, branchError: string | null) => {
-    setCreateWorktree(create)
-    setWorktreeBranch(branch)
-    setWorktreeBranchError(branchError)
+  const handleGitModeChange = (
+    mode: GitMode,
+    opts: {
+      checkoutBranch?: string
+      worktreeBranch?: string
+      worktreeBranchError?: string | null
+      useWorktreePath?: string
+      worktreeBaseBranch?: string
+      createBranch?: string
+      createBranchError?: string | null
+      createBranchBase?: string
+    },
+  ) => {
+    setGitMode(mode)
+    if (opts.checkoutBranch !== undefined)
+      setCheckoutBranch(opts.checkoutBranch)
+    if (opts.worktreeBranch !== undefined)
+      setWorktreeBranch(opts.worktreeBranch)
+    if (opts.worktreeBranchError !== undefined)
+      setWorktreeBranchError(opts.worktreeBranchError)
+    if (opts.useWorktreePath !== undefined)
+      setUseWorktreePath(opts.useWorktreePath)
+    if (opts.worktreeBaseBranch !== undefined)
+      setWorktreeBaseBranch(opts.worktreeBaseBranch)
+    if (opts.createBranch !== undefined)
+      setCreateBranch(opts.createBranch)
+    if (opts.createBranchError !== undefined)
+      setCreateBranchError(opts.createBranchError)
+    if (opts.createBranchBase !== undefined)
+      setCreateBranchBase(opts.createBranchBase)
   }
 
   return {
@@ -104,12 +140,24 @@ export function createWorkerDialogState(options: WorkerDialogStateOptions = {}) 
     setError,
     refreshing,
     handleRefresh,
-    createWorktree,
+    gitMode,
     worktreeBranch,
     worktreeBranchError,
-    handleWorktreeChange,
+    checkoutBranch,
+    useWorktreePath,
+    worktreeBaseBranch,
+    createBranch,
+    createBranchError,
+    createBranchBase,
+    showGitOptions,
+    setShowGitOptions,
+    handleGitModeChange,
+    refreshKey,
     treeRef: (h: DirectoryTreeHandle) => { treeHandle = h },
-    refreshTree: () => treeHandle?.refresh(),
+    refreshTree: () => {
+      treeHandle?.refresh()
+      setRefreshKey(k => k + 1)
+    },
   }
 }
 

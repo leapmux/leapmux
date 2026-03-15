@@ -116,3 +116,64 @@ func TestGetGitFileStatusEntries_NonGitDir(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, files)
 }
+
+func TestResolveMainRepoRoot_RegularRepo(t *testing.T) {
+	dir := initRepo(t)
+	resolved, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+
+	root, err := resolveMainRepoRoot(context.Background(), dir)
+	require.NoError(t, err)
+	assert.Equal(t, resolved, root)
+}
+
+func TestResolveMainRepoRoot_NonGitDir(t *testing.T) {
+	dir := t.TempDir()
+	_, err := resolveMainRepoRoot(context.Background(), dir)
+	assert.ErrorIs(t, err, errNotGitRepo)
+}
+
+func TestResolveMainRepoRoot_Subdirectory(t *testing.T) {
+	dir := initRepo(t)
+	resolved, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+
+	subDir := filepath.Join(dir, "sub")
+	require.NoError(t, os.MkdirAll(subDir, 0o755))
+
+	root, err := resolveMainRepoRoot(context.Background(), subDir)
+	require.NoError(t, err)
+	assert.Equal(t, resolved, root)
+}
+
+func TestResolveMainRepoRoot_LinkedWorktree(t *testing.T) {
+	dir := initRepo(t)
+	resolved, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+
+	// Create a linked worktree.
+	wtDir := filepath.Join(t.TempDir(), "my-worktree")
+	run(t, dir, "git", "worktree", "add", "-b", "wt-branch", wtDir)
+
+	// resolveMainRepoRoot from the worktree should return the main repo root.
+	root, err := resolveMainRepoRoot(context.Background(), wtDir)
+	require.NoError(t, err)
+	assert.Equal(t, resolved, root)
+}
+
+func TestResolveMainRepoRoot_NestedWorktree(t *testing.T) {
+	dir := initRepo(t)
+	resolved, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+
+	// Create a worktree, then resolve from a subdirectory within it.
+	wtDir := filepath.Join(t.TempDir(), "nested-wt")
+	run(t, dir, "git", "worktree", "add", "-b", "nested-branch", wtDir)
+
+	subDir := filepath.Join(wtDir, "deep")
+	require.NoError(t, os.MkdirAll(subDir, 0o755))
+
+	root, err := resolveMainRepoRoot(context.Background(), subDir)
+	require.NoError(t, err)
+	assert.Equal(t, resolved, root)
+}

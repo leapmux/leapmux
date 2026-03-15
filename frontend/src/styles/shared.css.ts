@@ -88,7 +88,7 @@ export const authCardXWide = style({
 export const dialogStandard = style({
   'position': 'relative',
   'minWidth': '360px',
-  'maxWidth': '640px',
+  'maxWidth': '900px',
   'display': 'flex',
   'flexDirection': 'column',
   '@media': {
@@ -98,6 +98,10 @@ export const dialogStandard = style({
       width: '100vw',
     },
   },
+})
+
+export const dialogWide = style({
+  width: 'min(900px, 90vw)',
 })
 
 export const dialogTall = style({
@@ -193,14 +197,15 @@ export const treeContainer = style({
 })
 
 // The element wrapping the DirectoryTree needs to grow and use flex layout.
-globalStyle(`${dialogStandard} > .${dialogBody} > form > section > .vstack > :has(.${treeContainer})`, {
+// This targets both single-column (.vstack > div > div) and two-column (.vstack > grid > panel) layouts.
+globalStyle(`${dialogStandard} > .${dialogBody} > form > section > .vstack :has(> .${treeContainer})`, {
   display: 'flex',
   flexDirection: 'column',
   flex: 1,
   minHeight: 0,
 })
 
-// Worktree options
+// Git mode options
 
 export const checkboxRow = style({
   display: 'flex',
@@ -213,4 +218,71 @@ export const pathPreview = style({
   fontSize: 'var(--text-8)',
   color: 'var(--muted-foreground)',
   wordBreak: 'break-all',
+})
+
+export const dialogTopSection = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--space-4)',
+})
+
+export const dialogTwoColumn = style({
+  'display': 'grid',
+  'gridTemplateColumns': '1fr 1fr',
+  'gap': 'var(--space-4)',
+  'flex': 1,
+  'minHeight': 0,
+  '@media': {
+    '(max-width: 639px)': {
+      gridTemplateColumns: '1fr',
+    },
+  },
+})
+
+export const dialogSingleColumn = style({
+  display: 'flex',
+  flexDirection: 'column',
+  flex: 1,
+  minHeight: 0,
+})
+
+export const dialogLeftPanel = style({
+  display: 'flex',
+  flexDirection: 'column',
+  minHeight: 0,
+  overflow: 'hidden',
+  gap: 'var(--space-4)',
+})
+
+export const dialogRightPanel = style({
+  display: 'flex',
+  flexDirection: 'column',
+  minHeight: 0,
+  overflowY: 'auto',
+})
+
+// In two-column layout, the grid and its left panel must fill remaining height.
+globalStyle(`${dialogStandard} > .${dialogBody} > form > section > .vstack > .${dialogTwoColumn}`, {
+  flex: 1,
+  minHeight: 0,
+})
+
+export const radioGroup = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--space-3)',
+})
+
+export const radioRow = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 'var(--space-2)',
+  cursor: 'pointer',
+})
+
+export const radioSubContent = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--space-2)',
+  paddingLeft: 'var(--space-6)',
 })

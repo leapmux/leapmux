@@ -217,6 +217,95 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 		})
 	})
 
+	d.Register("ListGitBranches", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+		var r leapmuxv1.ListGitBranchesRequest
+		if err := unmarshalRequest(req, &r); err != nil {
+			sendInvalidArgument(sender, "invalid request")
+			return
+		}
+
+		dirPath, err := sanitizePath(r.GetPath(), svc.HomeDir)
+		if err != nil {
+			sendPermissionDenied(sender, "access denied")
+			return
+		}
+
+		ctx := bgCtx()
+
+		// Resolve the main repo root (works for both regular repos and linked worktrees).
+		repoRoot, err := resolveMainRepoRoot(ctx, dirPath)
+		if err != nil {
+			sendInternalError(sender, "not a git repository")
+			return
+		}
+
+		// Get local branches.
+		localOut, err := gitOutput(ctx, repoRoot, "branch", "--list", "--format=%(refname:short)")
+		if err != nil {
+			sendInternalError(sender, "failed to list local branches")
+			return
+		}
+
+		localBranches := parseGitLines(localOut)
+		localSet := make(map[string]bool, len(localBranches))
+		var branches []*leapmuxv1.GitBranchEntry
+		for _, b := range localBranches {
+			localSet[b] = true
+			branches = append(branches, &leapmuxv1.GitBranchEntry{Name: b, IsRemote: false})
+		}
+
+		// Get remote tracking branches.
+		remoteOut, _ := gitOutput(ctx, repoRoot, "branch", "-r", "--list", "--format=%(refname:short)")
+		for _, b := range parseGitLines(remoteOut) {
+			// Skip HEAD pointers and branches that already have a local counterpart.
+			if strings.HasSuffix(b, "/HEAD") {
+				continue
+			}
+			// e.g. "origin/main" -> check if "main" exists locally.
+			parts := strings.SplitN(b, "/", 2)
+			if len(parts) == 2 && localSet[parts[1]] {
+				continue
+			}
+			branches = append(branches, &leapmuxv1.GitBranchEntry{Name: b, IsRemote: true})
+		}
+
+		// Get current branch of the main repo root.
+		currentBranch := ""
+		if branch, err := gitOutput(ctx, repoRoot, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
+			currentBranch = strings.TrimSpace(branch)
+		}
+
+		sendProtoResponse(sender, &leapmuxv1.ListGitBranchesResponse{
+			Branches:      branches,
+			CurrentBranch: currentBranch,
+		})
+	})
+
+	d.Register("ListGitWorktrees", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+		var r leapmuxv1.ListGitWorktreesRequest
+		if err := unmarshalRequest(req, &r); err != nil {
+			sendInvalidArgument(sender, "invalid request")
+			return
+		}
+
+		dirPath, err := sanitizePath(r.GetPath(), svc.HomeDir)
+		if err != nil {
+			sendPermissionDenied(sender, "access denied")
+			return
+		}
+
+		ctx := bgCtx()
+		worktrees, err := listGitWorktrees(ctx, dirPath)
+		if err != nil {
+			sendInternalError(sender, "failed to list worktrees: "+err.Error())
+			return
+		}
+
+		sendProtoResponse(sender, &leapmuxv1.ListGitWorktreesResponse{
+			Worktrees: worktrees,
+		})
+	})
+
 	d.Register("CheckWorktreeStatus", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.CheckWorktreeStatusRequest
 		if err := unmarshalRequest(req, &r); err != nil {
@@ -409,6 +498,17 @@ func gitOutputBytes(ctx context.Context, dir string, args ...string) ([]byte, er
 		return nil, err
 	}
 	return stdout.Bytes(), nil
+}
+
+// gitOutputStderr runs a git command and returns its stderr as a string.
+func gitOutputStderr(ctx context.Context, dir string, args ...string) (string, error) {
+	fullArgs := append([]string{"-C", dir}, args...)
+	cmd := exec.CommandContext(ctx, "git", fullArgs...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return stderr.String(), err
 }
 
 // gitCommand runs a git command and returns an error if it fails.
@@ -618,6 +718,95 @@ func applyNumstat(data []byte, fileMap map[string]*leapmuxv1.GitFileStatusEntry,
 			}
 		}
 	}
+}
+
+// resolveMainRepoRoot resolves to the main repository root, even if dirPath is
+// inside a linked worktree. For regular repos, returns the toplevel directory.
+// Uses a single `git rev-parse` invocation for all three values.
+func resolveMainRepoRoot(ctx context.Context, dirPath string) (string, error) {
+	// Query all three values in one subprocess call.
+	output, err := gitOutput(ctx, dirPath, "rev-parse", "--show-toplevel", "--git-dir", "--git-common-dir")
+	if err != nil {
+		return "", errNotGitRepo
+	}
+
+	lines := strings.SplitN(strings.TrimSpace(output), "\n", 3)
+	if len(lines) < 3 {
+		return "", errNotGitRepo
+	}
+
+	topLevel := strings.TrimSpace(lines[0])
+	gitDir := strings.TrimSpace(lines[1])
+	commonDir := strings.TrimSpace(lines[2])
+
+	if resolved, err := filepath.EvalSymlinks(topLevel); err == nil {
+		topLevel = resolved
+	}
+
+	repoRoot := topLevel
+
+	// If --git-dir contains ".git/worktrees", this is a linked worktree.
+	// Resolve the main repo root through --git-common-dir.
+	if strings.Contains(gitDir, filepath.Join(".git", "worktrees")) {
+		if !filepath.IsAbs(commonDir) {
+			commonDir = filepath.Join(topLevel, commonDir)
+		}
+		mainRepoRoot := filepath.Dir(filepath.Clean(commonDir))
+		if resolved, err := filepath.EvalSymlinks(mainRepoRoot); err == nil {
+			mainRepoRoot = resolved
+		}
+		repoRoot = mainRepoRoot
+	}
+
+	return repoRoot, nil
+}
+
+// parseGitLines splits git output by newlines, trimming whitespace and filtering empty lines.
+func parseGitLines(output string) []string {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	var result []string
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l != "" {
+			result = append(result, l)
+		}
+	}
+	return result
+}
+
+// listGitWorktrees parses `git worktree list --porcelain` output into proto entries.
+func listGitWorktrees(ctx context.Context, dirPath string) ([]*leapmuxv1.GitWorktreeEntry, error) {
+	output, err := gitOutput(ctx, dirPath, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, fmt.Errorf("git worktree list: %w", err)
+	}
+
+	var worktrees []*leapmuxv1.GitWorktreeEntry
+	isFirst := true
+
+	// Porcelain output: entries separated by blank lines.
+	blocks := strings.Split(strings.TrimSpace(output), "\n\n")
+	for _, block := range blocks {
+		if strings.TrimSpace(block) == "" {
+			continue
+		}
+
+		entry := &leapmuxv1.GitWorktreeEntry{IsMain: isFirst}
+		for _, line := range strings.Split(block, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "worktree ") {
+				entry.Path = strings.TrimPrefix(line, "worktree ")
+			} else if strings.HasPrefix(line, "branch refs/heads/") {
+				entry.Branch = strings.TrimPrefix(line, "branch refs/heads/")
+			}
+		}
+		if entry.Path != "" {
+			worktrees = append(worktrees, entry)
+		}
+		isFirst = false
+	}
+
+	return worktrees, nil
 }
 
 // splitNUL splits data by NUL bytes, discarding a trailing empty element.

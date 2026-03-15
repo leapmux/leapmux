@@ -31,6 +31,8 @@ import type {
   GetGitFileStatusResponse,
   GetGitInfoResponse,
   KeepWorktreeResponse,
+  ListGitBranchesResponse,
+  ListGitWorktreesResponse,
   ReadGitFileResponse,
 } from '~/generated/leapmux/v1/git_pb'
 import type {
@@ -94,6 +96,10 @@ import {
   GetGitInfoResponseSchema,
   KeepWorktreeRequestSchema,
   KeepWorktreeResponseSchema,
+  ListGitBranchesRequestSchema,
+  ListGitBranchesResponseSchema,
+  ListGitWorktreesRequestSchema,
+  ListGitWorktreesResponseSchema,
   ReadGitFileRequestSchema,
   ReadGitFileResponseSchema,
 } from '~/generated/leapmux/v1/git_pb'
@@ -360,6 +366,14 @@ export function forceRemoveWorktree(workerId: string, req: MessageInitShape<type
 
 export function keepWorktree(workerId: string, req: MessageInitShape<typeof KeepWorktreeRequestSchema>): Promise<KeepWorktreeResponse> {
   return callWorker(workerId, 'KeepWorktree', KeepWorktreeRequestSchema, KeepWorktreeResponseSchema, req)
+}
+
+export function listGitBranches(workerId: string, req: MessageInitShape<typeof ListGitBranchesRequestSchema>): Promise<ListGitBranchesResponse> {
+  return callWorker(workerId, 'ListGitBranches', ListGitBranchesRequestSchema, ListGitBranchesResponseSchema, req)
+}
+
+export function listGitWorktrees(workerId: string, req: MessageInitShape<typeof ListGitWorktreesRequestSchema>): Promise<ListGitWorktreesResponse> {
+  return callWorker(workerId, 'ListGitWorktrees', ListGitWorktreesRequestSchema, ListGitWorktreesResponseSchema, req)
 }
 
 // ---------------------------------------------------------------------------

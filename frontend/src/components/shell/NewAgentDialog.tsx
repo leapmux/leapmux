@@ -8,12 +8,12 @@ import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
 import { isAgentCreateDisabled } from '~/components/shell/dialogValidation'
 import { DirectorySelector } from '~/components/shell/DirectorySelector'
+import { GitOptions } from '~/components/shell/GitOptions'
 import { WorkerSelector } from '~/components/shell/WorkerSelector'
-import { WorktreeOptions } from '~/components/shell/WorktreeOptions'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
 import { spinner } from '~/styles/animations.css'
-import { errorText } from '~/styles/shared.css'
+import { dialogLeftPanel, dialogRightPanel, dialogSingleColumn, dialogTopSection, dialogTwoColumn, dialogWide, errorText } from '~/styles/shared.css'
 
 interface NewAgentDialogProps {
   workspaceId: string
@@ -49,8 +49,13 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
         systemPrompt: '',
         workerId: state.workerId(),
         workingDir: state.workingDir(),
-        createWorktree: state.createWorktree(),
+        createWorktree: state.gitMode() === 'create-worktree',
         worktreeBranch: state.worktreeBranch(),
+        worktreeBaseBranch: state.gitMode() === 'create-worktree' ? state.worktreeBaseBranch() : '',
+        checkoutBranch: state.gitMode() === 'switch-branch' ? state.checkoutBranch() : '',
+        createBranch: state.gitMode() === 'create-branch' ? state.createBranch() : '',
+        createBranchBase: state.gitMode() === 'create-branch' ? state.createBranchBase() : '',
+        useWorktreePath: state.gitMode() === 'use-worktree' ? state.useWorktreePath() : '',
         ...(props.sessionId ? { agentSessionId: props.sessionId } : {}),
       })
       if (resp.agent) {
@@ -66,24 +71,34 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
   }
 
   return (
-    <Dialog title="New Agent" tall onClose={() => props.onClose()}>
+    <Dialog title="New Agent" tall class={dialogWide} onClose={() => props.onClose()}>
       <form onSubmit={handleSubmit}>
         <section>
           <div class="vstack gap-4">
-            <WorkerSelector state={state} />
-            <DirectorySelector state={state} />
-            <Show when={state.workerId()}>
-              <WorktreeOptions
-                workerId={state.workerId()}
-                selectedPath={state.workingDir()}
-                homeDir={state.workerInfoStore.getHomeDir(state.workerId())}
-                onWorktreeChange={state.handleWorktreeChange}
-              />
-            </Show>
-            <Show when={state.error()}>
-              <div class={errorText}>{state.error()}</div>
-            </Show>
+            <div class={state.showGitOptions() ? dialogTopSection : undefined}>
+              <WorkerSelector state={state} />
+            </div>
+            <div class={state.showGitOptions() ? dialogTwoColumn : dialogSingleColumn}>
+              <div class={dialogLeftPanel}>
+                <DirectorySelector state={state} />
+              </div>
+              <div class={state.showGitOptions() ? dialogRightPanel : undefined}>
+                <Show when={state.workerId()}>
+                  <GitOptions
+                    workerId={state.workerId()}
+                    selectedPath={state.workingDir()}
+                    homeDir={state.workerInfoStore.getHomeDir(state.workerId())}
+                    refreshKey={state.refreshKey()}
+                    onGitModeChange={state.handleGitModeChange}
+                    onVisibilityChange={state.setShowGitOptions}
+                  />
+                </Show>
+              </div>
+            </div>
           </div>
+          <Show when={state.error()}>
+            <div class={errorText}>{state.error()}</div>
+          </Show>
         </section>
         <footer>
           <button type="button" class="outline" onClick={() => props.onClose()}>
@@ -91,7 +106,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
           </button>
           <button
             type="submit"
-            disabled={isAgentCreateDisabled({ submitting: submitting.loading(), workerId: state.workerId(), workingDir: state.workingDir(), createWorktree: state.createWorktree(), worktreeBranchError: state.worktreeBranchError() })}
+            disabled={isAgentCreateDisabled({ submitting: submitting.loading(), workerId: state.workerId(), workingDir: state.workingDir(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), createBranchError: state.createBranchError(), useWorktreePath: state.useWorktreePath() })}
           >
             <Show when={submitting.loading()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
             {submitting.loading() ? 'Creating...' : 'Create'}

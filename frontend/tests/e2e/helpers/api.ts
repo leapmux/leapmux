@@ -223,7 +223,13 @@ export async function openAgentViaAPI(
   workerId: string,
   workspaceId: string,
   workingDir?: string,
-  options?: { createWorktree?: boolean, worktreeBranch?: string },
+  options?: {
+    createWorktree?: boolean
+    worktreeBranch?: string
+    worktreeBaseBranch?: string
+    checkoutBranch?: string
+    useWorktreePath?: string
+  },
 ): Promise<string> {
   const { OpenAgentRequestSchema, OpenAgentResponseSchema } = await import('../../../src/generated/leapmux/v1/agent_pb')
   const channel = await getTestChannel(hubUrl, token)
@@ -237,6 +243,9 @@ export async function openAgentViaAPI(
       workerId,
       workingDir: workingDir ?? '',
       ...(options?.createWorktree ? { createWorktree: true, worktreeBranch: options.worktreeBranch ?? '' } : {}),
+      ...(options?.worktreeBaseBranch ? { worktreeBaseBranch: options.worktreeBaseBranch } : {}),
+      ...(options?.checkoutBranch ? { checkoutBranch: options.checkoutBranch } : {}),
+      ...(options?.useWorktreePath ? { useWorktreePath: options.useWorktreePath } : {}),
     },
   )
   if (!resp.agent) {

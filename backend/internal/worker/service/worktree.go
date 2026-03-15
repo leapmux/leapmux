@@ -1,8 +1,10 @@
 package service
 
 import (
+	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -27,6 +29,7 @@ func (svc *Context) createWorktreeIfRequested(
 	workingDir string,
 	createWorktree bool,
 	branchName string,
+	baseBranch string,
 ) (finalWorkingDir string, worktreeID string, err error) {
 	if !createWorktree {
 		return workingDir, "", nil
@@ -38,50 +41,24 @@ func (svc *Context) createWorktreeIfRequested(
 
 	ctx := bgCtx()
 
-	// Get git info for the working directory.
-	isWorkTree, err := gitOutput(ctx, workingDir, "rev-parse", "--is-inside-work-tree")
-	if err != nil || strings.TrimSpace(isWorkTree) != "true" {
-		return "", "", errNotGitRepo
+	// Fail early if a local branch with this name already exists.
+	if branchExists(ctx, workingDir, branchName) {
+		return "", "", fmt.Errorf("branch %q already exists", branchName)
 	}
 
-	topLevel, err := gitOutput(ctx, workingDir, "rev-parse", "--show-toplevel")
+	// Resolve to the main repo root (handles linked worktrees).
+	repoRoot, err := resolveMainRepoRoot(ctx, workingDir)
 	if err != nil {
 		return "", "", errNotGitRepo
-	}
-	topLevel = strings.TrimSpace(topLevel)
-
-	// Resolve symlinks for consistency.
-	if resolved, err := filepath.EvalSymlinks(topLevel); err == nil {
-		topLevel = resolved
-	}
-
-	// Determine the main repo root. For linked worktrees, --show-toplevel
-	// returns the worktree root, not the main repo root. We need the main
-	// repo root so we can place sibling worktrees next to the original repo.
-	repoRoot := topLevel
-	if gitDir, err := gitOutput(ctx, workingDir, "rev-parse", "--git-dir"); err == nil {
-		gitDir = strings.TrimSpace(gitDir)
-		if strings.Contains(gitDir, filepath.Join(".git", "worktrees")) {
-			// This is a linked worktree. Resolve main repo through --git-common-dir.
-			if commonDir, err := gitOutput(ctx, workingDir, "rev-parse", "--git-common-dir"); err == nil {
-				commonDir = strings.TrimSpace(commonDir)
-				if !filepath.IsAbs(commonDir) {
-					commonDir = filepath.Join(topLevel, commonDir)
-				}
-				mainRepoRoot := filepath.Dir(filepath.Clean(commonDir))
-				if resolved, err := filepath.EvalSymlinks(mainRepoRoot); err == nil {
-					mainRepoRoot = resolved
-				}
-				repoRoot = mainRepoRoot
-			}
-		}
 	}
 
 	repoDirName := filepath.Base(repoRoot)
 
-	// Get current branch for the start point.
+	// Determine the start point: use baseBranch if provided, otherwise current branch.
 	startPoint := "HEAD"
-	if branch, err := gitOutput(ctx, workingDir, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
+	if baseBranch != "" {
+		startPoint = baseBranch
+	} else if branch, err := gitOutput(ctx, workingDir, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
 		if b := strings.TrimSpace(branch); b != "" {
 			startPoint = b
 		}
@@ -237,6 +214,186 @@ func (svc *Context) unregisterTabAndCleanup(tabType leapmuxv1.TabType, tabID str
 	// Clean worktree — remove it automatically.
 	svc.removeWorktreeFromDisk(wt, false)
 	return worktreeCleanupResult{}
+}
+
+// checkoutBranchIfRequested runs `git checkout <branch>` in the given working directory.
+// No-op if branch is empty.
+func (svc *Context) checkoutBranchIfRequested(workingDir, branch string) error {
+	if branch == "" {
+		return nil
+	}
+
+	ctx := bgCtx()
+	stderr, err := gitOutputStderr(ctx, workingDir, "checkout", branch)
+	if err != nil {
+		if msg := strings.TrimSpace(stderr); msg != "" {
+			return errors.New(msg)
+		}
+		return fmt.Errorf("git checkout failed: %w", err)
+	}
+	return nil
+}
+
+// branchExists checks if a local branch with the given name already exists.
+func branchExists(ctx context.Context, workingDir, branch string) bool {
+	_, err := gitOutput(ctx, workingDir, "rev-parse", "--verify", "refs/heads/"+branch)
+	return err == nil
+}
+
+// createBranchIfRequested runs `git checkout -b <branch> [base]` in the given working directory.
+// No-op if branch is empty. Returns an error if the branch already exists.
+func (svc *Context) createBranchIfRequested(workingDir, branch, base string) error {
+	if branch == "" {
+		return nil
+	}
+
+	if err := gitutil.ValidateBranchName(branch); err != nil {
+		return err
+	}
+
+	ctx := bgCtx()
+	if branchExists(ctx, workingDir, branch) {
+		return fmt.Errorf("branch %q already exists", branch)
+	}
+
+	args := []string{"checkout", "-b", branch}
+	if base != "" {
+		args = append(args, base)
+	}
+	stderr, err := gitOutputStderr(ctx, workingDir, args...)
+	if err != nil {
+		if msg := strings.TrimSpace(stderr); msg != "" {
+			return errors.New(msg)
+		}
+		return fmt.Errorf("git checkout -b failed: %w", err)
+	}
+	return nil
+}
+
+// useExistingWorktreeIfRequested switches to an existing worktree directory.
+// Returns the final working directory and the worktree DB ID (if managed).
+func (svc *Context) useExistingWorktreeIfRequested(workingDir, worktreePath string) (string, string, error) {
+	if worktreePath == "" {
+		return workingDir, "", nil
+	}
+
+	sanitized, err := sanitizePath(worktreePath, svc.HomeDir)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid worktree path: %w", err)
+	}
+
+	ctx := bgCtx()
+
+	// Verify the path appears in the worktree list (security: prevent arbitrary path access).
+	worktrees, err := listGitWorktrees(ctx, workingDir)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to list worktrees: %w", err)
+	}
+
+	// Resolve symlinks for the sanitized path for accurate comparison.
+	resolvedSanitized := sanitized
+	if r, err := filepath.EvalSymlinks(sanitized); err == nil {
+		resolvedSanitized = r
+	}
+
+	found := false
+	for _, wt := range worktrees {
+		resolvedWt := wt.Path
+		if r, err := filepath.EvalSymlinks(wt.Path); err == nil {
+			resolvedWt = r
+		}
+		if resolvedWt == resolvedSanitized {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return "", "", fmt.Errorf("path %q is not a known worktree", sanitized)
+	}
+
+	// Check if already tracked in DB.
+	var wtID string
+	if existing, err := svc.Queries.GetWorktreeByPath(ctx, sanitized); err == nil {
+		if count, err := svc.Queries.CountWorktreeTabs(ctx, existing.ID); err == nil && count > 0 {
+			wtID = existing.ID
+		}
+	}
+
+	return sanitized, wtID, nil
+}
+
+// gitModeRequest is the common interface for proto messages that carry
+// git-mode fields (OpenAgentRequest, OpenTerminalRequest, etc.).
+type gitModeRequest interface {
+	GetCreateWorktree() bool
+	GetWorktreeBranch() string
+	GetWorktreeBaseBranch() string
+	GetCheckoutBranch() string
+	GetCreateBranch() string
+	GetCreateBranchBase() string
+	GetUseWorktreePath() string
+}
+
+// gitModeResult holds the final working directory and worktree ID after
+// applying git-mode options (create-worktree, checkout-branch, etc.).
+type gitModeResult struct {
+	WorkingDir string
+	WorktreeID string
+}
+
+// applyGitMode applies the git-mode options from a request to the working
+// directory, returning the (possibly changed) working directory and worktree ID.
+func (svc *Context) applyGitMode(workingDir string, r gitModeRequest) (gitModeResult, error) {
+	var worktreeID string
+
+	// Create a worktree if requested.
+	if r.GetCreateWorktree() {
+		finalDir, wtID, err := svc.createWorktreeIfRequested(
+			workingDir, true, r.GetWorktreeBranch(), r.GetWorktreeBaseBranch(),
+		)
+		if err != nil {
+			return gitModeResult{}, fmt.Errorf("failed to create worktree: %w", err)
+		}
+		workingDir = finalDir
+		worktreeID = wtID
+	}
+
+	// Checkout branch if requested.
+	if branch := r.GetCheckoutBranch(); branch != "" {
+		if err := svc.checkoutBranchIfRequested(workingDir, branch); err != nil {
+			return gitModeResult{}, fmt.Errorf("failed to checkout branch: %w", err)
+		}
+	}
+
+	// Create new branch if requested.
+	if branch := r.GetCreateBranch(); branch != "" {
+		if err := svc.createBranchIfRequested(workingDir, branch, r.GetCreateBranchBase()); err != nil {
+			return gitModeResult{}, fmt.Errorf("failed to create branch: %w", err)
+		}
+	}
+
+	// Use existing worktree if requested.
+	if wtPath := r.GetUseWorktreePath(); wtPath != "" {
+		finalDir, wtID, err := svc.useExistingWorktreeIfRequested(workingDir, wtPath)
+		if err != nil {
+			return gitModeResult{}, fmt.Errorf("failed to use worktree: %w", err)
+		}
+		workingDir = finalDir
+		if wtID != "" {
+			worktreeID = wtID
+		}
+	}
+
+	// "Use current state" — if the selected dir is an already-managed worktree, register this tab.
+	if !r.GetCreateWorktree() && r.GetCheckoutBranch() == "" && r.GetCreateBranch() == "" && r.GetUseWorktreePath() == "" {
+		if existing, err := svc.Queries.GetWorktreeByPath(bgCtx(), workingDir); err == nil {
+			if count, err := svc.Queries.CountWorktreeTabs(bgCtx(), existing.ID); err == nil && count > 0 {
+				worktreeID = existing.ID
+			}
+		}
+	}
+
+	return gitModeResult{WorkingDir: workingDir, WorktreeID: worktreeID}, nil
 }
 
 var errNotGitRepo = errors.New("path is not inside a git repository")
