@@ -31,11 +31,12 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   })
 
   let expandRafId = 0
+  let tickRafId = 0
 
   createEffect(() => {
     if (props.visible) {
       setVerb(getRandomVerb())
-      requestAnimationFrame(() => setExpanded(true))
+      expandRafId = requestAnimationFrame(() => setExpanded(true))
       sim.start()
       // Notify parent on each frame during the height transition so it can
       // keep the scroll position pinned to the bottom.
@@ -43,13 +44,14 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
       const tick = () => {
         props.onExpandTick?.()
         if (performance.now() - start < 700) {
-          expandRafId = requestAnimationFrame(tick)
+          tickRafId = requestAnimationFrame(tick)
         }
       }
-      expandRafId = requestAnimationFrame(tick)
+      tickRafId = requestAnimationFrame(tick)
     }
     else {
       cancelAnimationFrame(expandRafId)
+      cancelAnimationFrame(tickRafId)
       setExpanded(false)
       sim.stop()
     }
@@ -57,6 +59,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
 
   onCleanup(() => {
     cancelAnimationFrame(expandRafId)
+    cancelAnimationFrame(tickRafId)
     sim.stop()
   })
 

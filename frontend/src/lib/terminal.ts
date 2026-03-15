@@ -19,6 +19,8 @@ export interface TerminalInstance {
   fitAddon: FitAddon
   /** True after a screen snapshot has been written (prevents duplicate writes). */
   screenRestored: boolean
+  /** When true, onData responses are suppressed (e.g. during snapshot replay). */
+  suppressInput: boolean
   dispose: () => void
 }
 
@@ -136,6 +138,7 @@ export function createTerminalInstance(opts?: TerminalFontOptions): TerminalInst
     terminal,
     fitAddon,
     screenRestored: false,
+    suppressInput: false,
     dispose() {
       terminal.dispose()
     },

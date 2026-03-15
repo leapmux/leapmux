@@ -80,7 +80,9 @@ const TerminalContainer: Component<{
       const onTitleChange = props.onTitleChange
       const onBell = props.onBell
       instance.terminal.onData((data) => {
-        onInput(id, new TextEncoder().encode(data))
+        if (!instances.get(id)?.suppressInput) {
+          onInput(id, new TextEncoder().encode(data))
+        }
       })
       instance.terminal.onTitleChange((title) => {
         onTitleChange(id, title)
@@ -92,9 +94,15 @@ const TerminalContainer: Component<{
 
     instance.terminal.open(ref)
 
-    // Write screen snapshot if available (restore on refresh)
+    // Write screen snapshot if available (restore on refresh).
+    // Suppress onData during replay to prevent xterm.js query responses
+    // (DECRPM, DA, DECRQSS, OSC) from being forwarded to the PTY,
+    // where the shell's echo would display them as visible text.
     if (props.screen && props.screen.length > 0) {
-      instance.terminal.write(props.screen)
+      instance.suppressInput = true
+      instance.terminal.write(props.screen, () => {
+        instance!.suppressInput = false
+      })
       instance.screenRestored = true
     }
 
