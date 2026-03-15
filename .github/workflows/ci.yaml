@@ -72,3 +72,36 @@ jobs:
 
       - name: Test
         run: task test
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read tool versions
+        run: |
+          echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
+          echo "SQLC_VERSION=$(yq '.sqlc-version' versions.yaml)" >> $GITHUB_ENV
+          echo "TASK_VERSION=$(yq '.task-version' versions.yaml)" >> $GITHUB_ENV
+          echo "S6_OVERLAY_VERSION=$(yq '.s6-overlay-version' versions.yaml)" >> $GITHUB_ENV
+          echo "ALPINE_IMAGE=$(yq '.alpine-image' versions.yaml)" >> $GITHUB_ENV
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker build (dry run)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64
+          push: false
+          build-args: |
+            BASE_IMAGE=${{ env.ALPINE_IMAGE }}
+            BUF_VERSION=${{ env.BUF_VERSION }}
+            SQLC_VERSION=${{ env.SQLC_VERSION }}
+            TASK_VERSION=${{ env.TASK_VERSION }}
+            S6_OVERLAY_VERSION=${{ env.S6_OVERLAY_VERSION }}
+            VERSION=ci
+          cache-from: type=gha,scope=alpine
+          cache-to: type=gha,mode=max,scope=ci-docker

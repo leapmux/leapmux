@@ -2,6 +2,10 @@
 .git/
 .gitignore
 
+# Go workspace (local dev only; Docker builds use backend/go.mod directly)
+go.work
+go.work.sum
+
 # Build artifacts
 .task/
 backend/leapmux
