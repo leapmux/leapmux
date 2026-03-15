@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, loginViaUI, waitForWorkspaceReady } from './helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, firstAssistantBubble, loginViaToken, loginViaUI, waitForWorkspaceReady } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Message Delivery Error', () => {
@@ -24,9 +24,7 @@ test.describe('Message Delivery Error', () => {
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 
-      await expect(
-        page.locator('[data-testid="message-bubble"][data-role="assistant"]').first(),
-      ).toBeVisible()
+      await expect(firstAssistantBubble(page)).toBeVisible()
 
       // Stop the worker and wait for the hub to confirm it's offline.
       await stopWorker()
@@ -57,10 +55,10 @@ test.describe('Message Delivery Error', () => {
       await expect(errorIndicator).not.toBeVisible()
 
       // Wait for agent response (confirming message was delivered)
-      await page.waitForFunction(() => {
-        const bubbles = document.querySelectorAll('[data-testid="message-bubble"][data-role="assistant"]')
+      await page.waitForFunction((sel: string) => {
+        const bubbles = document.querySelectorAll(sel)
         return bubbles.length >= 2
-      })
+      }, ASSISTANT_BUBBLE_SELECTOR)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
@@ -86,9 +84,7 @@ test.describe('Message Delivery Error', () => {
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 
-      await expect(
-        page.locator('[data-testid="message-bubble"][data-role="assistant"]').first(),
-      ).toBeVisible()
+      await expect(firstAssistantBubble(page)).toBeVisible()
 
       // Stop the worker and wait for the hub to confirm it's offline
       await stopWorker()
@@ -145,9 +141,7 @@ test.describe('Message Delivery Error', () => {
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 
-      await expect(
-        page.locator('[data-testid="message-bubble"][data-role="assistant"]').first(),
-      ).toBeVisible()
+      await expect(firstAssistantBubble(page)).toBeVisible()
 
       // Stop the worker and wait for the hub to confirm it's offline
       await stopWorker()

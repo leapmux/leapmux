@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
 
 /**
@@ -9,13 +9,13 @@ import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as t
  */
 async function waitForAssistantMessage(page: import('@playwright/test').Page, text: string) {
   await page.waitForFunction(
-    (t: string) => {
+    ({ t, sel }: { t: string, sel: string }) => {
       const msgs = document.querySelectorAll(
-        '[data-testid="message-bubble"][data-role="assistant"] [data-testid="message-content"]',
+        `${sel} [data-testid="message-content"]`,
       )
       return [...msgs].some(m => m.textContent?.includes(t))
     },
-    text,
+    { t: text, sel: ASSISTANT_BUBBLE_SELECTOR },
     { timeout: 60_000 },
   )
 }

@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Settings and /clear after Worker restart', () => {
@@ -25,14 +25,14 @@ test.describe('Settings and /clear after Worker restart', () => {
       await expect(editor).toHaveText('')
 
       // Wait for the assistant's response containing "4"
-      await page.waitForFunction(() => {
-        const bubbles = document.querySelectorAll('[data-testid="message-bubble"][data-role="assistant"]')
+      await page.waitForFunction((sel: string) => {
+        const bubbles = document.querySelectorAll(sel)
         for (const b of bubbles) {
           if (b.textContent?.includes('4'))
             return true
         }
         return false
-      })
+      }, ASSISTANT_BUBBLE_SELECTOR)
 
       // Step 2: Restart the Worker (stop + start). All persistent data
       // (workspaces, agents, messages) is stored on the Worker's SQLite DB,
@@ -43,9 +43,9 @@ test.describe('Settings and /clear after Worker restart', () => {
 
       // Wait for the E2EE channels to reconnect and messages to reload.
       // The original conversation should be visible (loaded from Worker DB).
-      await page.waitForFunction(() => {
+      await page.waitForFunction((sel: string) => {
         const userBubbles = document.querySelectorAll('[data-testid="message-bubble"][data-role="user"]')
-        const assistantBubbles = document.querySelectorAll('[data-testid="message-bubble"][data-role="assistant"]')
+        const assistantBubbles = document.querySelectorAll(sel)
         let hasUserMsg = false
         let hasAssistantResp = false
         for (const b of userBubbles) {
@@ -57,7 +57,7 @@ test.describe('Settings and /clear after Worker restart', () => {
             hasAssistantResp = true
         }
         return hasUserMsg && hasAssistantResp
-      })
+      }, ASSISTANT_BUBBLE_SELECTOR)
 
       // Helper: wait for a notification bubble to contain the expected text.
       const waitForNotification = (text: string) =>

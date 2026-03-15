@@ -1,4 +1,5 @@
 import { expect, test } from './fixtures'
+import { lastAssistantBubble } from './helpers/ui'
 
 test.describe('Clear Command', () => {
   test('slash clear clears context and shows notification', async ({ page, authenticatedWorkspace }) => {
@@ -9,10 +10,8 @@ test.describe('Clear Command', () => {
     await editor.click()
     await page.keyboard.type('What is 1+1? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
-    await page.waitForFunction(() => {
-      const body = document.body.textContent || ''
-      return body.includes('2') && !body.includes('Send a message to start')
-    })
+    const lastAssistant1 = lastAssistantBubble(page)
+    await expect(lastAssistant1).toContainText('2', { timeout: 30000 })
 
     // Send /clear
     await editor.click()
@@ -26,10 +25,8 @@ test.describe('Clear Command', () => {
     await editor.click()
     await page.keyboard.type('What is 3+3? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
-    await page.waitForFunction(() => {
-      const body = document.body.textContent || ''
-      return body.includes('6')
-    })
+    const lastAssistant2 = lastAssistantBubble(page)
+    await expect(lastAssistant2).toContainText('6', { timeout: 30000 })
 
     // Verify context usage indicator shows the fallback info icon (cleared).
     // The ContextUsageGrid falls back to an <Info> icon when contextUsage is null.

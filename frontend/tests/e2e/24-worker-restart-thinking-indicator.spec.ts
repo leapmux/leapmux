@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, assistantBubbles, loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Worker Restart Thinking Indicator', () => {
@@ -25,7 +25,7 @@ test.describe('Worker Restart Thinking Indicator', () => {
 
       // Wait for thinking indicator or streaming to appear (agent is processing)
       const thinkingIndicator = page.locator('[data-testid="thinking-indicator"]')
-      const streamingText = page.locator('[data-testid="message-bubble"][data-role="assistant"]')
+      const streamingText = assistantBubbles(page)
       await expect(thinkingIndicator.or(streamingText)).toBeVisible({ timeout: 30_000 })
 
       // Stop the worker while agent is working
@@ -64,14 +64,14 @@ test.describe('Worker Restart Thinking Indicator', () => {
       await page.keyboard.press('Meta+Enter')
 
       // Wait for the assistant's response
-      await page.waitForFunction(() => {
-        const bubbles = document.querySelectorAll('[data-testid="message-bubble"][data-role="assistant"]')
+      await page.waitForFunction((sel: string) => {
+        const bubbles = document.querySelectorAll(sel)
         for (const b of bubbles) {
           if (b.textContent?.includes('4'))
             return true
         }
         return false
-      }, { timeout: 60_000 })
+      }, ASSISTANT_BUBBLE_SELECTOR, { timeout: 60_000 })
 
       // Stop the worker
       await stopWorker()
@@ -111,14 +111,14 @@ test.describe('Worker Restart Thinking Indicator', () => {
       await page.keyboard.press('Meta+Enter')
 
       // Wait for the assistant's response containing "6"
-      await page.waitForFunction(() => {
-        const bubbles = document.querySelectorAll('[data-testid="message-bubble"][data-role="assistant"]')
+      await page.waitForFunction((sel: string) => {
+        const bubbles = document.querySelectorAll(sel)
         for (const b of bubbles) {
           if (b.textContent?.includes('6'))
             return true
         }
         return false
-      }, { timeout: 60_000 })
+      }, ASSISTANT_BUBBLE_SELECTOR, { timeout: 60_000 })
 
       // Verify that the thinking indicator was shown at some point during
       // the turn, even if only briefly before streaming began.

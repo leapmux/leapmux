@@ -450,6 +450,9 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 		var stderrBuf bytes.Buffer
 		cmd.Stderr = &stderrBuf
 
+		stderrDone := make(chan struct{})
+		close(stderrDone) // stderr is captured synchronously via cmd.Stderr
+
 		a := &Agent{
 			agentID:        opts.AgentID,
 			model:          opts.Model,
@@ -459,6 +462,7 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 			ctx:            ctx2,
 			cancel:         cancel,
 			stderrBuf:      &stderrBuf,
+			stderrDone:     stderrDone,
 			processDone:    make(chan struct{}),
 			pendingControl: make(map[string]chan<- controlResult),
 		}
@@ -480,7 +484,7 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 		// Attempt the initialize handshake — should detect early exit.
 		if _, err := a.sendControlAndWait(ctx2, `{"subtype":"initialize"}`, opts.startupTimeout()); err != nil {
 			cleanup()
-			return nil, fmt.Errorf("initialize: %w", err)
+			return nil, a.formatStartupError("initialize", err)
 		}
 
 		return a, nil
@@ -497,6 +501,8 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 
 	assert.Nil(t, agent, "agent should be nil on early exit")
 	require.Error(t, err, "expected error from early exit")
+	assert.Contains(t, err.Error(), "agent process exited with code",
+		"error should include the exit code")
 	assert.Contains(t, err.Error(), "cannot be launched inside another Claude Code session",
 		"error should include the stderr message from the crashed process")
 	assert.Less(t, elapsed, 2*time.Second,
@@ -562,6 +568,7 @@ func TestAgent_PreambleSkipping(t *testing.T) {
 	require.NoError(t, err)
 
 	var stderrBuf bytes.Buffer
+	stderrDone := make(chan struct{})
 	a := &Agent{
 		agentID:           "preamble-test",
 		model:             "test",
@@ -571,6 +578,7 @@ func TestAgent_PreambleSkipping(t *testing.T) {
 		ctx:               ctx2,
 		cancel:            cancel,
 		stderrBuf:         &stderrBuf,
+		stderrDone:        stderrDone,
 		preambleDelimiter: delimiter,
 		preambleMeta:      make(map[string]string),
 		processDone:       make(chan struct{}),
@@ -581,6 +589,7 @@ func TestAgent_PreambleSkipping(t *testing.T) {
 
 	// Drain stderr in background.
 	go func() {
+		defer close(stderrDone)
 		a.stderrMu.Lock()
 		_, _ = fmt.Fprintf(&stderrBuf, "")
 		a.stderrMu.Unlock()

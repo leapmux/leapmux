@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
+import { assistantBubbles, firstAssistantBubble } from './helpers/ui'
 
 async function sendAndWaitForReply(page: Page, message: string) {
   const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
@@ -9,9 +10,7 @@ async function sendAndWaitForReply(page: Page, message: string) {
   await page.keyboard.press('Meta+Enter')
 
   // Wait for at least one assistant bubble to appear
-  await expect(
-    page.locator('[data-testid="message-bubble"][data-role="assistant"]').first(),
-  ).toBeVisible()
+  await expect(firstAssistantBubble(page)).toBeVisible()
 }
 
 test.describe('Chat Message Rendering', () => {
@@ -34,9 +33,7 @@ test.describe('Chat Message Rendering', () => {
 
     // Find an assistant bubble whose message-content contains <p> tags
     // (skip thinking bubbles and turn-end indicators which have no <p>)
-    const assistantBubble = page.locator(
-      '[data-testid="message-bubble"][data-role="assistant"]',
-    ).filter({
+    const assistantBubble = assistantBubbles(page).filter({
       has: page.locator('[data-testid="message-content"] p'),
     }).first()
 
