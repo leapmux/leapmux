@@ -118,6 +118,52 @@ describe('gitFileStatusStore', () => {
     })
   })
 
+  describe('originUrl and currentBranch', () => {
+    it('stores originUrl and currentBranch after successful refresh', async () => {
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          originUrl: 'https://github.com/test/repo.git',
+          currentBranch: 'main',
+          files: [],
+        })
+
+        await store.refresh('worker1', '/repo')
+
+        expect(store.state.originUrl).toBe('https://github.com/test/repo.git')
+        expect(store.state.currentBranch).toBe('main')
+
+        dispose()
+      })
+    })
+
+    it('clears originUrl and currentBranch on refresh error', async () => {
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+
+        // First, populate with valid data.
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          originUrl: 'https://github.com/test/repo.git',
+          currentBranch: 'main',
+          files: [],
+        })
+        await store.refresh('worker1', '/repo')
+
+        // Now simulate an error.
+        mockGetGitFileStatus.mockRejectedValueOnce(new Error('network error'))
+        await store.refresh('worker1', '/repo')
+
+        expect(store.state.originUrl).toBe('')
+        expect(store.state.currentBranch).toBe('')
+
+        dispose()
+      })
+    })
+  })
+
   describe('getChangedFiles', () => {
     it('includes untracked files in changed and unstaged filters', async () => {
       await createRoot(async (dispose) => {

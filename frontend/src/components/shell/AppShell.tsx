@@ -338,6 +338,8 @@ export const AppShell: ParentComponent = (props) => {
   createEffect(() => {
     const files = gitFileStatusStore.state.files
     const repoRoot = gitFileStatusStore.state.repoRoot
+    const originUrl = gitFileStatusStore.state.originUrl
+    const currentBranch = gitFileStatusStore.state.currentBranch
     if (!repoRoot)
       return
     let added = 0
@@ -352,14 +354,29 @@ export const AppShell: ParentComponent = (props) => {
         deleted += f.linesDeleted + f.stagedLinesDeleted
       }
     }
+    const gitFields = {
+      gitDiffAdded: added,
+      gitDiffDeleted: deleted,
+      gitDiffUntracked: untracked,
+      gitOriginUrl: originUrl || undefined,
+      gitBranch: currentBranch || undefined,
+    }
     for (const tab of untrack(() => tabStore.state.tabs)) {
-      if (tab.type !== TabType.AGENT)
-        continue
-      const agent = untrack(() => agentStore.state.agents.find(a => a.id === tab.id))
-      if (!agent?.workingDir)
-        continue
-      if (agent.workingDir === repoRoot || agent.workingDir.startsWith(`${repoRoot}/`)) {
-        tabStore.updateTab(TabType.AGENT, tab.id, { gitDiffAdded: added, gitDiffDeleted: deleted, gitDiffUntracked: untracked })
+      if (tab.type === TabType.AGENT) {
+        const agent = untrack(() => agentStore.state.agents.find(a => a.id === tab.id))
+        if (!agent?.workingDir)
+          continue
+        if (agent.workingDir === repoRoot || agent.workingDir.startsWith(`${repoRoot}/`)) {
+          tabStore.updateTab(TabType.AGENT, tab.id, gitFields)
+        }
+      }
+      else if (tab.type === TabType.TERMINAL) {
+        const workingDir = tab.workingDir
+        if (!workingDir)
+          continue
+        if (workingDir === repoRoot || workingDir.startsWith(`${repoRoot}/`)) {
+          tabStore.updateTab(TabType.TERMINAL, tab.id, gitFields)
+        }
       }
     }
   })
