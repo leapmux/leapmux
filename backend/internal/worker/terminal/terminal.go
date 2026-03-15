@@ -93,7 +93,8 @@ func Start(opts Options, outputFn OutputHandler) (*Terminal, error) {
 		shell = ResolveDefaultShell()
 	}
 
-	cmd := exec.Command(shell)
+	args := LoginShellArgs(shell)
+	cmd := exec.Command(shell, args...)
 	cmd.Dir = opts.WorkingDir
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color",
@@ -136,6 +137,7 @@ func Start(opts Options, outputFn OutputHandler) (*Terminal, error) {
 	slog.Info("terminal started",
 		"terminal_id", opts.ID,
 		"shell", shell,
+		"args", args,
 		"pid", cmd.Process.Pid,
 	)
 

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -318,11 +319,11 @@ func TestPwshQuote(t *testing.T) {
 }
 
 func TestIsPwsh(t *testing.T) {
-	assert.True(t, isPwsh("pwsh"))
-	assert.True(t, isPwsh("powershell"))
-	assert.True(t, isPwsh("pwsh-preview"))
-	assert.True(t, isPwsh("powershell-preview"))
-	assert.False(t, isPwsh("bash"))
-	assert.False(t, isPwsh("zsh"))
-	assert.False(t, isPwsh("pwsh-extra-stuff"))
+	assert.True(t, terminal.IsPwsh("pwsh"))
+	assert.True(t, terminal.IsPwsh("powershell"))
+	assert.True(t, terminal.IsPwsh("pwsh-preview"))
+	assert.True(t, terminal.IsPwsh("powershell-preview"))
+	assert.False(t, terminal.IsPwsh("bash"))
+	assert.False(t, terminal.IsPwsh("zsh"))
+	assert.False(t, terminal.IsPwsh("pwsh-extra-stuff"))
 }
