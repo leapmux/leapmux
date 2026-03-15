@@ -46,6 +46,7 @@ Thumbs.db
 # Environment
 .env
 .env.local
+mise.toml
 
 # Test artifacts
 test-results/
