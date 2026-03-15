@@ -87,18 +87,19 @@ test.describe('Settings and /clear after Worker restart', () => {
       await waitForNotification('Mode (Default \u2192 Plan Mode)')
       await waitForSettingsIdle()
 
-      // Step 4: Change model (Sonnet → Haiku)
-      await openSettingsMenu()
-      await page.locator('[data-testid="model-haiku"]').click()
-
-      await waitForNotification('Model (Sonnet \u2192 Haiku)')
-      await waitForSettingsIdle()
-
-      // Step 5: Change effort (Low → Medium, default overridden via LEAPMUX_DEFAULT_EFFORT in e2e)
+      // Step 4: Change effort (Low → Medium, default overridden via LEAPMUX_DEFAULT_EFFORT in e2e)
+      // Must happen before switching to Haiku, which hides the effort section.
       await openSettingsMenu()
       await page.locator('[data-testid="effort-medium"]').click()
 
       await waitForNotification('Effort (Low \u2192 Medium)')
+      await waitForSettingsIdle()
+
+      // Step 5: Change model (Sonnet → Haiku)
+      await openSettingsMenu()
+      await page.locator('[data-testid="model-haiku"]').click()
+
+      await waitForNotification('Model (Sonnet \u2192 Haiku)')
 
       // Step 6: Send /clear
       await editor.click()

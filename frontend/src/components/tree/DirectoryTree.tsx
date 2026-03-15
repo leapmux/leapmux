@@ -362,6 +362,7 @@ const TreeNode: Component<{
     }
     await doLoad()
     const willExpand = !expanded()
+
     // Set expanded state before onSelect so that the scroll-on-select
     // effect sees the correct state and skips scrolling on collapse.
     tree.setNodeExpanded(props.node.path, willExpand)

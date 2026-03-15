@@ -353,15 +353,20 @@ test.describe('Agent Settings', () => {
     await expect(trigger).toContainText('Plan Mode')
     await waitForSettingsIdle(page)
 
-    // Switch effort to High
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="effort-high"]').click()
-    await waitForSettingsIdle(page)
-
     // Switch model to Haiku (effort section hidden for Haiku)
     await openSettingsMenu(page)
     await page.locator('[data-testid="model-haiku"]').click()
     await expect(trigger).toContainText('Haiku')
+    await waitForSettingsIdle(page)
+
+    // Switch model back to Sonnet so effort section re-appears, then switch effort to High
+    await openSettingsMenu(page)
+    await page.locator('[data-testid="model-sonnet"]').click()
+    await expect(trigger).toContainText('Sonnet')
+    await waitForSettingsIdle(page)
+
+    await openSettingsMenu(page)
+    await page.locator('[data-testid="effort-high"]').click()
     await waitForSettingsIdle(page)
 
     // Wait a moment for any delayed status events

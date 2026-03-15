@@ -31,19 +31,17 @@ export const collapsiblePaneExpanded = style({
 export const collapsibleContent = style({
   display: 'grid',
   gridTemplateRows: '0fr',
+  visibility: 'hidden',
+  overflow: 'hidden',
   minHeight: 0,
   margin: 0,
   padding: 0,
-  selectors: {
-    '[data-closed] &': {
-      flex: '0 0 0px',
-    },
-  },
 })
 
 /** Expanded content — grid row grows to fill available space. */
 export const collapsibleContentExpanded = style({
   gridTemplateRows: '1fr',
+  visibility: 'visible',
   flex: 1,
 })
 

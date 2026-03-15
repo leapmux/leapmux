@@ -23,7 +23,8 @@ test.describe('Key Pinning', () => {
     expect(pin).not.toBeNull()
     expect(pin.publicKeyHex).toBeTruthy()
     expect(typeof pin.publicKeyHex).toBe('string')
-    expect(pin.publicKeyHex.length).toBe(64) // 32-byte key = 64 hex chars
+    // Composite key: X25519 (32) + ML-KEM-1024 (1568) + SLH-DSA (64) = 1664 bytes = 3328 hex chars
+    expect(pin.publicKeyHex.length).toBe(3328)
     expect(pin.firstSeen).toBeGreaterThan(0)
   })
 
@@ -87,7 +88,8 @@ test.describe('Key Pinning', () => {
     }, pinKey)
     expect(updatedPin).not.toBeNull()
     expect(updatedPin.publicKeyHex).not.toBe('aa'.repeat(32))
-    expect(updatedPin.publicKeyHex.length).toBe(64)
+    // Composite key: X25519 (32) + ML-KEM-1024 (1568) + SLH-DSA (64) = 1664 bytes = 3328 hex chars
+    expect(updatedPin.publicKeyHex.length).toBe(3328)
   })
 
   test('reject: key mismatch dialog appears, user rejects, channel not opened', async ({

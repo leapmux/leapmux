@@ -238,7 +238,10 @@ test.describe('DirectoryTree', () => {
       // Collapse "src" — should NOT change scroll position.
       // selectedPath changes from the file to src, which would trigger
       // the scroll-on-select effect without the fix.
-      await srcNode.click()
+      // Use dispatchEvent instead of Playwright's click() to avoid
+      // auto-scroll-into-view which would change scrollTop before the
+      // toggle handler captures it.
+      await srcNode.dispatchEvent('click')
       // Wait for rAF (the scroll-on-select effect fires in requestAnimationFrame)
       await page.waitForTimeout(300)
 

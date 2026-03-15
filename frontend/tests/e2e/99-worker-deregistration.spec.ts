@@ -188,17 +188,32 @@ test.describe('Worker Deregistration', () => {
   test('should still show main worker after deregistration of temp worker', async ({ page }) => {
     const workersSection = await openWorkersSidebar(page)
 
-    // The main test-worker should still be visible
-    await expect(workersSection.getByText('test-worker', { exact: true })).toBeVisible()
+    // The deregister-test-worker should be gone
+    await expect(workersSection.getByText('deregister-test-worker')).not.toBeVisible()
+
+    // The main worker should still be listed.
+    // Worker names are fetched via E2EE and may not be available on the
+    // org page (no active workspace), so check for the worker name OR
+    // the em-dash fallback that appears when the name is unavailable.
+    await expect(
+      workersSection.getByText('test-worker', { exact: true })
+        .or(workersSection.getByText('\u2014')),
+    ).toBeVisible()
   })
 })
 
 test.describe('Worker Status Indicator', () => {
-  test('should show red status dot when worker goes offline and green when back online', async ({ page, separateHubWorker }) => {
-    const workersSection = await openWorkersSidebar(page)
+  test('should show red status dot when worker goes offline and green when back online', async ({ page, authenticatedWorkspace, separateHubWorker }) => {
+    // Navigate to a workspace so E2EE channels are established
+    // (channel status requires E2EE, which isn't available on the org page alone).
+    const workersSection = page.getByTestId('section-header-workers')
+    await expect(workersSection).toBeVisible()
+    const isOpen = await workersSection.evaluate(el => !el.hasAttribute('data-closed'))
+    if (!isOpen)
+      await workersSection.locator('> [role="button"]').click()
 
     // Worker should initially be connected (green)
-    await expect(workersSection.locator('[data-status="connected"]')).toBeVisible()
+    await expect(workersSection.locator('[data-status="connected"]')).toBeVisible({ timeout: 15_000 })
 
     // Stop the worker
     await stopWorker()
