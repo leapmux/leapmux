@@ -284,13 +284,15 @@ const TreeNode: Component<{
   const isSelected = () => props.selectedPath === props.node.path
   const allChildren = () => tree.getChildren(props.node.path) ?? []
   const children = () => {
-    let result = allChildren()
-    if (!tree.showHiddenFiles)
-      result = result.filter(c => !c.hidden)
+    const all = allChildren()
+    const showHidden = tree.showHiddenFiles
     const visible = tree.visiblePaths()
-    if (visible)
-      result = result.filter(c => visible.has(c.path))
-    return result
+    if (showHidden && !visible)
+      return all
+    return all.filter(c =>
+      (showHidden || !c.hidden)
+      && (!visible || visible.has(c.path)),
+    )
   }
   const loaded = () => tree.getChildren(props.node.path) !== undefined
 
@@ -638,15 +640,17 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   // Root children derived from the centralized cache, optionally filtered.
   const showHidden = () => props.showHiddenFiles ?? true
   const rootChildren = () => {
-    let all = getChildren(rootPath())
+    const all = getChildren(rootPath())
     if (!all)
       return undefined
-    if (!showHidden())
-      all = all.filter(c => !c.hidden)
+    const sh = showHidden()
     const visible = props.visiblePaths
-    if (!visible)
+    if (sh && !visible)
       return all
-    return all.filter(c => visible.has(c.path))
+    return all.filter(c =>
+      (sh || !c.hidden)
+      && (!visible || visible.has(c.path)),
+    )
   }
 
   // Sync external selectedPath to input (tildified for display)

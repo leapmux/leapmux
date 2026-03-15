@@ -2,7 +2,7 @@ import type { Component } from 'solid-js'
 import type { WorkerDialogState } from '~/hooks/createWorkerDialogState'
 import Eye from 'lucide-solid/icons/eye'
 import EyeOff from 'lucide-solid/icons/eye-off'
-import { createEffect, createSignal, Show } from 'solid-js'
+import { createEffect, createSignal, on, Show } from 'solid-js'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
@@ -18,9 +18,9 @@ const SHOW_HIDDEN_KEY = 'directorySelector:showHidden'
 export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
   const [showHiddenFiles, setShowHiddenFiles] = createSignal(safeGetJson<boolean>(SHOW_HIDDEN_KEY) ?? true)
 
-  createEffect(() => {
-    safeSetJson(SHOW_HIDDEN_KEY, showHiddenFiles())
-  })
+  createEffect(on(showHiddenFiles, (value) => {
+    safeSetJson(SHOW_HIDDEN_KEY, value)
+  }, { defer: true }))
 
   return (
     <div>

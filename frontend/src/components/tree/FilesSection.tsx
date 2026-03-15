@@ -9,7 +9,7 @@ import FileIcon from 'lucide-solid/icons/file'
 import FolderTree from 'lucide-solid/icons/folder-tree'
 import List from 'lucide-solid/icons/list'
 import LocateFixed from 'lucide-solid/icons/locate-fixed'
-import { createEffect, createSignal, For, Show } from 'solid-js'
+import { createEffect, createSignal, For, on, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { RefreshButton } from '~/components/common/RefreshButton'
@@ -88,6 +88,7 @@ export const FileDiffStatsBadge: Component<{ entry: GitFileStatusEntry }> = (pro
 
 /** Toolbar buttons rendered in the section header. */
 export const FilesSectionHeaderActions: Component<FilesSectionHeaderActionsProps> = (props) => {
+  const showingHidden = () => props.showHiddenFiles?.() ?? true
   return (
     <>
       <Show when={props.isFiltered?.()}>
@@ -120,11 +121,11 @@ export const FilesSectionHeaderActions: Component<FilesSectionHeaderActionsProps
         data-testid="files-collapse-all"
       />
       <IconButton
-        icon={(props.showHiddenFiles?.() ?? true) ? Eye : EyeOff}
+        icon={showingHidden() ? Eye : EyeOff}
         iconSize="xs"
         size="sm"
-        title={(props.showHiddenFiles?.() ?? true) ? 'Hide hidden files' : 'Show hidden files'}
-        state={(props.showHiddenFiles?.() ?? true) ? IconButtonState.Enabled : IconButtonState.Active}
+        title={showingHidden() ? 'Hide hidden files' : 'Show hidden files'}
+        state={showingHidden() ? IconButtonState.Enabled : IconButtonState.Active}
         onClick={() => props.onToggleShowHidden?.()}
         data-testid="files-show-hidden-toggle"
       />
@@ -146,10 +147,15 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
   const [showHiddenFiles, setShowHiddenFiles] = createSignal(safeGetJson<boolean>(showHiddenStorageKey()) ?? true)
   let treeHandle: DirectoryTreeHandle | undefined
 
-  // Persist showHiddenFiles when it changes.
-  createEffect(() => {
-    safeSetJson(showHiddenStorageKey(), showHiddenFiles())
-  })
+  // Re-read from localStorage when the storage key changes (workerId/workingDir changed).
+  createEffect(on(showHiddenStorageKey, (key) => {
+    setShowHiddenFiles(safeGetJson<boolean>(key) ?? true)
+  }, { defer: true }))
+
+  // Persist showHiddenFiles when it changes (skip initial mount).
+  createEffect(on(showHiddenFiles, (value) => {
+    safeSetJson(showHiddenStorageKey(), value)
+  }, { defer: true }))
 
   const isFiltered = () => activeFilter() !== 'all'
 
