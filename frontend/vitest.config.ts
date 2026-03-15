@@ -14,8 +14,5 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     exclude: ['tests/e2e/**', 'node_modules/**'],
-    transformMode: {
-      web: [/\.[jt]sx?$/],
-    },
   },
 })

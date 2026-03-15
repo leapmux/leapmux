@@ -73,11 +73,14 @@
     "jsdom": "^28.1.0",
     "magic-string": "^0.30.21",
     "typescript": "^5.9.3",
-    "vite": "^7.3.1",
-    "vite-plugin-solid": "^2.11.10",
-    "vitest": "^4.0.18"
+    "vite": "^8.0.0",
+    "vite-plugin-solid": "^2.11.11",
+    "vitest": "^4.1.0"
   },
   "overrides": {
     "vite": "$vite"
+  },
+  "patchedDependencies": {
+    "vinxi@0.5.11": "patches/vinxi@0.5.11.patch"
   }
 }
