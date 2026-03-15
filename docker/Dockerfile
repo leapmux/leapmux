@@ -18,7 +18,7 @@ ARG TASK_VERSION
 WORKDIR /src
 
 # Install build tools
-RUN apk add --no-cache bash rsync yq && \
+RUN apk add --no-cache bash curl rsync yq && \
     wget -qO- "https://github.com/go-task/task/releases/download/v${TASK_VERSION}/task_linux_$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/').tar.gz" | tar -xz -C /usr/local/bin task && \
     wget -qO /usr/local/bin/buf "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-$(uname -m)" && chmod +x /usr/local/bin/buf && \
     go install github.com/sqlc-dev/sqlc/cmd/sqlc@v${SQLC_VERSION}
