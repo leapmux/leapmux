@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
+import { firstAssistantBubble } from './helpers/ui'
 
 /**
  * Wait for an agent tab to be present. If none exists, create one.
@@ -25,9 +26,7 @@ async function sendMessage(page: Page, message: string) {
 }
 
 async function waitForAssistantReply(page: Page) {
-  await expect(
-    page.locator('[data-testid="message-bubble"][data-role="assistant"]').first(),
-  ).toBeVisible({ timeout: 30_000 })
+  await expect(firstAssistantBubble(page)).toBeVisible({ timeout: 30_000 })
 }
 
 /** Wait for the agent to finish its turn (no more streaming/thinking indicators). */

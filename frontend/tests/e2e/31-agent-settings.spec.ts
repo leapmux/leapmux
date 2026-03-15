@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test'
+import { lastAssistantBubble } from './helpers/ui'
 import { expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
 
 /** Open the settings menu, retrying if it was caught mid-close animation. */
@@ -70,6 +71,30 @@ test.describe('Agent Settings', () => {
     await openSettingsMenu(page)
     await page.locator('[data-testid="model-haiku"]').click()
     await expect(trigger).toContainText('Haiku')
+  })
+
+  test('switch to model with bracket characters', async ({ authenticatedWorkspace, page }) => {
+    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    await expect(trigger).toBeVisible()
+
+    // Switch to Sonnet[1m] — model name contains brackets that must be
+    // properly escaped in the shell command when spawning Claude Code.
+    await openSettingsMenu(page)
+    await page.locator('[data-testid="model-sonnet\\[1m\\]"]').click()
+    await expect(trigger).toContainText('Sonnet[1m]')
+    await waitForSettingsIdle(page)
+
+    // Verify agent restarted successfully by sending a message
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+    await page.keyboard.type('What is 3+4? Reply with just the number, nothing else.')
+    await page.keyboard.press('Meta+Enter')
+
+    // Wait for an assistant response — if the agent failed to start, we
+    // would see an error notification instead.
+    const lastAssistant = lastAssistantBubble(page)
+    await expect(lastAssistant).toContainText('7', { timeout: 30000 })
   })
 
   test('switch effort', async ({ authenticatedWorkspace, page }) => {
@@ -190,10 +215,8 @@ test.describe('Agent Settings', () => {
     await page.keyboard.press('Meta+Enter')
 
     // Wait for a response (ensures init message and session ID are stored)
-    await page.waitForFunction(() => {
-      const body = document.body.textContent || ''
-      return body.includes('2') && !body.includes('Send a message to start')
-    })
+    const lastAssistant1 = lastAssistantBubble(page)
+    await expect(lastAssistant1).toContainText('2', { timeout: 30000 })
 
     // Switch to Plan Mode (dropdown auto-closes on select)
     await openSettingsMenu(page)
@@ -219,10 +242,8 @@ test.describe('Agent Settings', () => {
     await page.keyboard.press('Meta+Enter')
 
     // Wait for a response (agent resumed successfully)
-    await page.waitForFunction(() => {
-      const body = document.body.textContent || ''
-      return body.includes('4') && !body.includes('Send a message to start')
-    })
+    const lastAssistant2 = lastAssistantBubble(page)
+    await expect(lastAssistant2).toContainText('4', { timeout: 30000 })
 
     // Verify Plan Mode is still selected after worker restart
     await expect(trigger).toContainText('Plan Mode')
@@ -236,19 +257,15 @@ test.describe('Agent Settings', () => {
     await editor.click()
     await page.keyboard.type('What is 1+1? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
-    await page.waitForFunction(() => {
-      const body = document.body.textContent || ''
-      return body.includes('2') && !body.includes('Send a message to start')
-    })
+    const lastAssistant1 = lastAssistantBubble(page)
+    await expect(lastAssistant1).toContainText('2', { timeout: 30000 })
 
     // Verify the agent is still responsive after interrupt by sending another message
     await editor.click()
     await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
-    await page.waitForFunction(() => {
-      const body = document.body.textContent || ''
-      return body.includes('4')
-    })
+    const lastAssistant2 = lastAssistantBubble(page)
+    await expect(lastAssistant2).toContainText('4', { timeout: 30000 })
   })
 
   test('model/effort items not disabled when idle', async ({ authenticatedWorkspace, page }) => {

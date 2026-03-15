@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, waitForLayoutSave, waitForWorkspaceReady } from './helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, assistantBubbles, loginViaToken, waitForLayoutSave, waitForWorkspaceReady } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Full Hub+Worker Restart', () => {
@@ -24,14 +24,14 @@ test.describe('Full Hub+Worker Restart', () => {
       await expect(editor).toHaveText('')
 
       // Wait for the assistant's response containing "4"
-      await page.waitForFunction(() => {
-        const bubbles = document.querySelectorAll('[data-testid="message-bubble"][data-role="assistant"]')
+      await page.waitForFunction((sel: string) => {
+        const bubbles = document.querySelectorAll(sel)
         for (const b of bubbles) {
           if (b.textContent?.includes('4'))
             return true
         }
         return false
-      })
+      }, ASSISTANT_BUBBLE_SELECTOR)
 
       // Verify the user message is also visible
       const userBubbles = page.locator('[data-testid="message-bubble"][data-role="user"]')
@@ -55,21 +55,21 @@ test.describe('Full Hub+Worker Restart', () => {
       await expect(editor).toBeVisible()
 
       // Verify the first conversation is still visible after restart (loaded from DB)
-      await page.waitForFunction(() => {
+      await page.waitForFunction((sel: string) => {
         const userBubbles = document.querySelectorAll('[data-testid="message-bubble"][data-role="user"]')
-        const assistantBubbles = document.querySelectorAll('[data-testid="message-bubble"][data-role="assistant"]')
+        const asstBubbles = document.querySelectorAll(sel)
         let hasUserMsg = false
         let hasAssistantResp = false
         for (const b of userBubbles) {
           if (b.textContent?.includes('2+2'))
             hasUserMsg = true
         }
-        for (const b of assistantBubbles) {
+        for (const b of asstBubbles) {
           if (b.textContent?.includes('4'))
             hasAssistantResp = true
         }
         return hasUserMsg && hasAssistantResp
-      })
+      }, ASSISTANT_BUBBLE_SELECTOR)
 
       // Step 4: Send another message and wait for response.
       await editor.click()
@@ -77,14 +77,14 @@ test.describe('Full Hub+Worker Restart', () => {
       await page.keyboard.press('Meta+Enter')
 
       // Wait for the assistant's response containing "6"
-      await page.waitForFunction(() => {
-        const bubbles = document.querySelectorAll('[data-testid="message-bubble"][data-role="assistant"]')
+      await page.waitForFunction((sel: string) => {
+        const bubbles = document.querySelectorAll(sel)
         for (const b of bubbles) {
           if (b.textContent?.includes('6'))
             return true
         }
         return false
-      })
+      }, ASSISTANT_BUBBLE_SELECTOR)
 
       // Step 5: Verify both conversations are visible in chat history.
       await page.waitForFunction(() => {
@@ -102,11 +102,11 @@ test.describe('Full Hub+Worker Restart', () => {
       })
 
       // Verify both assistant responses are present
-      await page.waitForFunction(() => {
-        const assistantBubbles = document.querySelectorAll('[data-testid="message-bubble"][data-role="assistant"]')
+      await page.waitForFunction((sel: string) => {
+        const asstBubbles = document.querySelectorAll(sel)
         let has4 = false
         let has6 = false
-        for (const b of assistantBubbles) {
+        for (const b of asstBubbles) {
           const text = b.textContent || ''
           if (text.includes('4'))
             has4 = true
@@ -114,7 +114,7 @@ test.describe('Full Hub+Worker Restart', () => {
             has6 = true
         }
         return has4 && has6
-      })
+      }, ASSISTANT_BUBBLE_SELECTOR)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
@@ -247,7 +247,7 @@ test.describe('Full Hub+Worker Restart', () => {
 
       // Wait for the thinking indicator or streaming to appear (agent is processing)
       const thinkingIndicator = page.locator('[data-testid="thinking-indicator"]')
-      const streamingText = page.locator('[data-testid="message-bubble"][data-role="assistant"]')
+      const streamingText = assistantBubbles(page)
       await expect(thinkingIndicator.or(streamingText)).toBeVisible({ timeout: 30_000 })
 
       // Remember the workspace URL so we can navigate back after restart

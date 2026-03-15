@@ -1,4 +1,5 @@
 import { expect, test } from './fixtures'
+import { lastAssistantBubble } from './helpers/ui'
 
 const CONTEXT_PERCENTAGE_RE = /(\d+)%/
 
@@ -12,10 +13,8 @@ test.describe('Clear Command – Context Usage Reset', () => {
     await editor.click()
     await page.keyboard.type('What is 1+1? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
-    await page.waitForFunction(() => {
-      const body = document.body.textContent || ''
-      return body.includes('2') && !body.includes('Send a message to start')
-    })
+    const lastAssistant = lastAssistantBubble(page)
+    await expect(lastAssistant).toContainText('2', { timeout: 30000 })
 
     // Wait for the ContextUsageGrid to show the 3x3 SVG grid (non-zero
     // context usage), confirming the agent has sent context info.

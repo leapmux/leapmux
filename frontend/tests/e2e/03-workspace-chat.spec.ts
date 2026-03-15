@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
+import { lastAssistantBubble } from './helpers/ui'
 
 /**
  * Ensure at least one agent tab exists after workspace creation
@@ -35,12 +36,8 @@ test.describe('Workspace Chat', () => {
     // Editor should be cleared after sending
     await expect(editor).toHaveText('')
 
-    // Wait for Claude's response: the page should contain "4" (the answer)
-    // and the empty state should be gone.
-    await page.waitForFunction(() => {
-      const body = document.body.textContent || ''
-      return body.includes('4') && !body.includes('Send a message to start')
-    })
+    // Wait for Claude's response in the last assistant message bubble.
+    await expect(lastAssistantBubble(page)).toContainText('4', { timeout: 30000 })
   })
 
   test('should show workspace in sidebar after creation', async ({ page, authenticatedWorkspace }) => {

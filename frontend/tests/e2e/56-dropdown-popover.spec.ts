@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { openAgentViaUI } from './helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, openAgentViaUI } from './helpers/ui'
 
 const HAS_TEXT_RE = /.+/
 
@@ -28,7 +28,7 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
 
     // Wait for the assistant response in the active chat view
     await expect(
-      page.locator('[data-testid="message-bubble"][data-role="assistant"] [data-testid="message-content"]')
+      page.locator(`${ASSISTANT_BUBBLE_SELECTOR} [data-testid="message-content"]`)
         .filter({ hasText: '2' }),
     ).toBeVisible({ timeout: 60_000 })
 
@@ -108,7 +108,7 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
 
     // Wait for the assistant response in the active chat view
     await expect(
-      page.locator('[data-testid="message-bubble"][data-role="assistant"] [data-testid="message-content"]')
+      page.locator(`${ASSISTANT_BUBBLE_SELECTOR} [data-testid="message-content"]`)
         .filter({ hasText: '2' }),
     ).toBeVisible({ timeout: 60_000 })
 

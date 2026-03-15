@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, sendMessage, waitForAgentIdle, waitForWorkspaceReady } from './helpers/ui'
+import { firstAssistantBubble, loginViaToken, sendMessage, waitForAgentIdle, waitForWorkspaceReady } from './helpers/ui'
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
 
@@ -16,7 +16,7 @@ test.describe('Quote and Mention', () => {
     await waitForAgentIdle(page)
 
     // Find an assistant bubble row
-    const assistantBubble = page.locator('[data-testid="message-bubble"][data-role="assistant"]').first()
+    const assistantBubble = firstAssistantBubble(page)
     await expect(assistantBubble).toBeVisible()
 
     // Hover the row to reveal the reply button (it's hidden by default via opacity: 0)
@@ -43,7 +43,7 @@ test.describe('Quote and Mention', () => {
     await waitForAgentIdle(page)
 
     // Find an assistant bubble and click the quote button
-    const assistantBubble = page.locator('[data-testid="message-bubble"][data-role="assistant"]').first()
+    const assistantBubble = firstAssistantBubble(page)
     await expect(assistantBubble).toBeVisible()
     const messageRow = assistantBubble.locator('..')
     await messageRow.hover()
@@ -75,7 +75,7 @@ test.describe('Quote and Mention', () => {
     await waitForAgentIdle(page)
 
     // Find the assistant message content
-    const assistantBubble = page.locator('[data-testid="message-bubble"][data-role="assistant"]').first()
+    const assistantBubble = firstAssistantBubble(page)
     await expect(assistantBubble).toBeVisible()
 
     const messageContent = assistantBubble.locator('[data-testid="message-content"]')
@@ -105,7 +105,7 @@ test.describe('Quote and Mention', () => {
     await waitForAgentIdle(page)
 
     // Find the assistant message content
-    const assistantBubble = page.locator('[data-testid="message-bubble"][data-role="assistant"]').first()
+    const assistantBubble = firstAssistantBubble(page)
     await expect(assistantBubble).toBeVisible()
 
     const messageContent = assistantBubble.locator('[data-testid="message-content"]')

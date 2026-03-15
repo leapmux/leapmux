@@ -28,6 +28,24 @@ export async function waitForControlBanner(page: Page) {
   return banner
 }
 
+/** CSS selector for assistant message bubbles. Exported for use in browser-context code (e.g. waitForFunction). */
+export const ASSISTANT_BUBBLE_SELECTOR = '[data-testid="message-bubble"][data-role="assistant"]'
+
+/** Return a locator for all assistant message bubbles. */
+export function assistantBubbles(page: Page) {
+  return page.locator(ASSISTANT_BUBBLE_SELECTOR)
+}
+
+/** Return a locator for the first assistant message bubble. */
+export function firstAssistantBubble(page: Page) {
+  return page.locator(ASSISTANT_BUBBLE_SELECTOR).first()
+}
+
+/** Return a locator for the last assistant message bubble. */
+export function lastAssistantBubble(page: Page) {
+  return page.locator(ASSISTANT_BUBBLE_SELECTOR).last()
+}
+
 /** Wait for the agent to finish its current turn (thinking indicator gone). */
 export async function waitForAgentIdle(page: Page, timeoutMs = 120_000) {
   // Brief delay so the thinking indicator has time to appear before we

@@ -41,7 +41,8 @@ type Agent struct {
 	cmd         *exec.Cmd
 	stdin       io.WriteCloser
 	stderrBuf   *bytes.Buffer
-	stderrMu    sync.Mutex // protects stderrBuf when drained via goroutine
+	stderrMu    sync.Mutex    // protects stderrBuf when drained via goroutine
+	stderrDone  chan struct{} // closed when the stderr goroutine finishes
 	ctx         context.Context
 	cancel      context.CancelFunc
 	processDone chan struct{} // closed when the process exits
@@ -169,6 +170,7 @@ func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, e
 		ctx:                ctx,
 		cancel:             cancel,
 		stderrBuf:          &stderrBuf,
+		stderrDone:         make(chan struct{}),
 		preambleDelimiter:  preambleDelimiter,
 		preambleMetaPrefix: metaPrefix,
 		preambleMeta:       make(map[string]string),
@@ -184,6 +186,7 @@ func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, e
 	// Drain stderr in a background goroutine.
 	const maxStderrSize = 1 << 20 // 1MB
 	go func() {
+		defer close(a.stderrDone)
 		limited := io.LimitReader(stderrPipe, maxStderrSize)
 		a.stderrMu.Lock()
 		_, _ = io.Copy(&stderrBuf, limited)
@@ -206,19 +209,6 @@ func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, e
 		_ = a.Wait()
 	}
 
-	// formatStartupError returns a descriptive error including stderr and
-	// preamble output (if any) for frontend diagnostics.
-	formatStartupError := func(phase string, err error) error {
-		parts := []string{fmt.Sprintf("%s: %s", phase, err)}
-		if stderr := strings.TrimSpace(a.Stderr()); stderr != "" {
-			parts = append(parts, "stderr: "+stderr)
-		}
-		if preamble := strings.TrimSpace(a.PreambleOutput()); preamble != "" {
-			parts = append(parts, "shell preamble: "+preamble)
-		}
-		return fmt.Errorf("%s", strings.Join(parts, "; "))
-	}
-
 	timeout := opts.startupTimeout()
 
 	// Send "initialize" as the first control request, matching the Agent SDK
@@ -226,7 +216,7 @@ func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, e
 	// (which contains the session_id) and establishes the control protocol.
 	if _, err := a.sendControlAndWait(ctx, `{"subtype":"initialize"}`, timeout); err != nil {
 		cleanup()
-		return nil, formatStartupError("initialize", err)
+		return nil, a.formatStartupError("initialize", err)
 	}
 
 	// Send set_permission_mode to configure the agent's permission mode.
@@ -240,7 +230,7 @@ func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, e
 		fmt.Sprintf(`{"subtype":"set_permission_mode","mode":"%s"}`, mode), timeout)
 	if err != nil {
 		cleanup()
-		return nil, formatStartupError("set_permission_mode", err)
+		return nil, a.formatStartupError("set_permission_mode", err)
 	}
 	a.confirmedPermissionMode = resp.Mode
 
@@ -350,7 +340,13 @@ func (a *Agent) AgentID() string {
 }
 
 // Stderr returns the captured stderr output from the agent process.
+// It waits for the stderr goroutine to finish draining the pipe (up to
+// 3 seconds) to avoid racing with the goroutine after process exit.
 func (a *Agent) Stderr() string {
+	select {
+	case <-a.stderrDone:
+	case <-time.After(3 * time.Second):
+	}
 	a.stderrMu.Lock()
 	defer a.stderrMu.Unlock()
 	if a.stderrBuf == nil {
@@ -367,6 +363,32 @@ func (a *Agent) PreambleOutput() string {
 		return ""
 	}
 	return strings.Join(a.preambleOutput, "\n")
+}
+
+// processExitError returns a descriptive error for a process that exited
+// unexpectedly. It includes the exit code when available. Callers that
+// need stderr and preamble details should read them separately (e.g. via
+// a.formatStartupError).
+func (a *Agent) processExitError() error {
+	if a.waitErr != nil {
+		if exitErr, ok := a.waitErr.(*exec.ExitError); ok {
+			return fmt.Errorf("agent process exited with code %d", exitErr.ExitCode())
+		}
+	}
+	return fmt.Errorf("agent process exited unexpectedly")
+}
+
+// formatStartupError returns a descriptive error including stderr and
+// preamble output (if any) for frontend diagnostics.
+func (a *Agent) formatStartupError(phase string, err error) error {
+	parts := []string{fmt.Sprintf("%s: %s", phase, err)}
+	if stderr := strings.TrimSpace(a.Stderr()); stderr != "" {
+		parts = append(parts, "stderr: "+stderr)
+	}
+	if preamble := strings.TrimSpace(a.PreambleOutput()); preamble != "" {
+		parts = append(parts, "shell preamble: "+preamble)
+	}
+	return fmt.Errorf("%s", strings.Join(parts, "; "))
 }
 
 // SupportsModelEffort returns whether the agent supports --model/--effort CLI args.
@@ -408,11 +430,7 @@ func (a *Agent) sendControlAndWait(ctx context.Context, requestBody string, time
 		return resp, nil
 	case <-a.processDone:
 		a.unregisterPendingControl(requestID)
-		stderr := strings.TrimSpace(a.Stderr())
-		if stderr != "" {
-			return controlResult{}, fmt.Errorf("agent process exited: %s", stderr)
-		}
-		return controlResult{}, fmt.Errorf("agent process exited unexpectedly")
+		return controlResult{}, a.processExitError()
 	case <-ctx.Done():
 		a.unregisterPendingControl(requestID)
 		return controlResult{}, ctx.Err()
