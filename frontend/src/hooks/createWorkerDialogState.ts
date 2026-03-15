@@ -6,7 +6,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { useOrg } from '~/context/OrgContext'
 import { createWorkerInfoStore } from '~/stores/workerInfo.store'
 
-export type GitMode = 'current' | 'switch-branch' | 'create-worktree' | 'use-worktree'
+export type GitMode = 'current' | 'switch-branch' | 'create-branch' | 'create-worktree' | 'use-worktree'
 
 interface WorkerDialogStateOptions {
   preselectedWorkerId?: string
@@ -29,7 +29,11 @@ export function createWorkerDialogState(options: WorkerDialogStateOptions = {}) 
   const [checkoutBranch, setCheckoutBranch] = createSignal('')
   const [useWorktreePath, setUseWorktreePath] = createSignal('')
   const [worktreeBaseBranch, setWorktreeBaseBranch] = createSignal('')
+  const [createBranch, setCreateBranch] = createSignal('')
+  const [createBranchError, setCreateBranchError] = createSignal<string | null>(null)
+  const [createBranchBase, setCreateBranchBase] = createSignal('')
   const [showGitOptions, setShowGitOptions] = createSignal(false)
+  const [refreshKey, setRefreshKey] = createSignal(0)
   let treeHandle: DirectoryTreeHandle | undefined
 
   const fetchWorkers = async () => {
@@ -100,6 +104,9 @@ export function createWorkerDialogState(options: WorkerDialogStateOptions = {}) 
       worktreeBranchError?: string | null
       useWorktreePath?: string
       worktreeBaseBranch?: string
+      createBranch?: string
+      createBranchError?: string | null
+      createBranchBase?: string
     },
   ) => {
     setGitMode(mode)
@@ -113,6 +120,12 @@ export function createWorkerDialogState(options: WorkerDialogStateOptions = {}) 
       setUseWorktreePath(opts.useWorktreePath)
     if (opts.worktreeBaseBranch !== undefined)
       setWorktreeBaseBranch(opts.worktreeBaseBranch)
+    if (opts.createBranch !== undefined)
+      setCreateBranch(opts.createBranch)
+    if (opts.createBranchError !== undefined)
+      setCreateBranchError(opts.createBranchError)
+    if (opts.createBranchBase !== undefined)
+      setCreateBranchBase(opts.createBranchBase)
   }
 
   return {
@@ -133,11 +146,18 @@ export function createWorkerDialogState(options: WorkerDialogStateOptions = {}) 
     checkoutBranch,
     useWorktreePath,
     worktreeBaseBranch,
+    createBranch,
+    createBranchError,
+    createBranchBase,
     showGitOptions,
     setShowGitOptions,
     handleGitModeChange,
+    refreshKey,
     treeRef: (h: DirectoryTreeHandle) => { treeHandle = h },
-    refreshTree: () => treeHandle?.refresh(),
+    refreshTree: () => {
+      treeHandle?.refresh()
+      setRefreshKey(k => k + 1)
+    },
   }
 }
 

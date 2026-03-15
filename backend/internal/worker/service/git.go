@@ -722,37 +722,40 @@ func applyNumstat(data []byte, fileMap map[string]*leapmuxv1.GitFileStatusEntry,
 
 // resolveMainRepoRoot resolves to the main repository root, even if dirPath is
 // inside a linked worktree. For regular repos, returns the toplevel directory.
+// Uses a single `git rev-parse` invocation for all three values.
 func resolveMainRepoRoot(ctx context.Context, dirPath string) (string, error) {
-	isWorkTree, err := gitOutput(ctx, dirPath, "rev-parse", "--is-inside-work-tree")
-	if err != nil || strings.TrimSpace(isWorkTree) != "true" {
-		return "", errNotGitRepo
-	}
-
-	topLevel, err := gitOutput(ctx, dirPath, "rev-parse", "--show-toplevel")
+	// Query all three values in one subprocess call.
+	output, err := gitOutput(ctx, dirPath, "rev-parse", "--show-toplevel", "--git-dir", "--git-common-dir")
 	if err != nil {
 		return "", errNotGitRepo
 	}
-	topLevel = strings.TrimSpace(topLevel)
+
+	lines := strings.SplitN(strings.TrimSpace(output), "\n", 3)
+	if len(lines) < 3 {
+		return "", errNotGitRepo
+	}
+
+	topLevel := strings.TrimSpace(lines[0])
+	gitDir := strings.TrimSpace(lines[1])
+	commonDir := strings.TrimSpace(lines[2])
+
 	if resolved, err := filepath.EvalSymlinks(topLevel); err == nil {
 		topLevel = resolved
 	}
 
 	repoRoot := topLevel
-	if gitDir, err := gitOutput(ctx, dirPath, "rev-parse", "--git-dir"); err == nil {
-		gitDir = strings.TrimSpace(gitDir)
-		if strings.Contains(gitDir, filepath.Join(".git", "worktrees")) {
-			if commonDir, err := gitOutput(ctx, dirPath, "rev-parse", "--git-common-dir"); err == nil {
-				commonDir = strings.TrimSpace(commonDir)
-				if !filepath.IsAbs(commonDir) {
-					commonDir = filepath.Join(topLevel, commonDir)
-				}
-				mainRepoRoot := filepath.Dir(filepath.Clean(commonDir))
-				if resolved, err := filepath.EvalSymlinks(mainRepoRoot); err == nil {
-					mainRepoRoot = resolved
-				}
-				repoRoot = mainRepoRoot
-			}
+
+	// If --git-dir contains ".git/worktrees", this is a linked worktree.
+	// Resolve the main repo root through --git-common-dir.
+	if strings.Contains(gitDir, filepath.Join(".git", "worktrees")) {
+		if !filepath.IsAbs(commonDir) {
+			commonDir = filepath.Join(topLevel, commonDir)
 		}
+		mainRepoRoot := filepath.Dir(filepath.Clean(commonDir))
+		if resolved, err := filepath.EvalSymlinks(mainRepoRoot); err == nil {
+			mainRepoRoot = resolved
+		}
+		repoRoot = mainRepoRoot
 	}
 
 	return repoRoot, nil

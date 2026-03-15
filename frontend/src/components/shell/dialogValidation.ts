@@ -9,6 +9,7 @@ interface BaseDialogState {
   gitMode: GitMode
   worktreeBranchError: string | null
   checkoutBranch: string
+  createBranchError: string | null
   useWorktreePath: string
 }
 
@@ -26,6 +27,8 @@ function isGitModeInvalid(state: BaseDialogState): boolean {
       return false
     case 'switch-branch':
       return !state.checkoutBranch
+    case 'create-branch':
+      return !!state.createBranchError
     case 'create-worktree':
       return !!state.worktreeBranchError
     case 'use-worktree':

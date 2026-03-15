@@ -17,6 +17,8 @@ message OpenTerminalRequest {
   string checkout_branch = 11;      // "Switch to branch" mode
   string use_worktree_path = 12;    // "Use existing worktree" mode
   string worktree_base_branch = 13; // Base branch for "Create new worktree" (default: current branch)
+  string create_branch = 14;        // "Create new branch" mode — branch name to create
+  string create_branch_base = 15;   // Base branch for "Create new branch" (default: current branch)
 }
 
 message OpenTerminalResponse {

@@ -13,7 +13,7 @@ import { WorkerSelector } from '~/components/shell/WorkerSelector'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
 import { spinner } from '~/styles/animations.css'
-import { dialogLeftPanel, dialogRightPanel, dialogTwoColumn, errorText } from '~/styles/shared.css'
+import { dialogLeftPanel, dialogRightPanel, dialogSingleColumn, dialogTopSection, dialogTwoColumn, dialogWide, errorText } from '~/styles/shared.css'
 
 interface NewAgentDialogProps {
   workspaceId: string
@@ -53,6 +53,8 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
         worktreeBranch: state.worktreeBranch(),
         worktreeBaseBranch: state.gitMode() === 'create-worktree' ? state.worktreeBaseBranch() : '',
         checkoutBranch: state.gitMode() === 'switch-branch' ? state.checkoutBranch() : '',
+        createBranch: state.gitMode() === 'create-branch' ? state.createBranch() : '',
+        createBranchBase: state.gitMode() === 'create-branch' ? state.createBranchBase() : '',
         useWorktreePath: state.gitMode() === 'use-worktree' ? state.useWorktreePath() : '',
         ...(props.sessionId ? { agentSessionId: props.sessionId } : {}),
       })
@@ -68,31 +70,30 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
     }
   }
 
-  const leftContent = () => (
-    <>
-      <WorkerSelector state={state} />
-      <DirectorySelector state={state} />
-    </>
-  )
-
   return (
-    <Dialog title="New Agent" tall onClose={() => props.onClose()}>
+    <Dialog title="New Agent" tall class={dialogWide} onClose={() => props.onClose()}>
       <form onSubmit={handleSubmit}>
         <section>
-          <div class={state.showGitOptions() ? dialogTwoColumn : 'vstack gap-4'}>
-            <div class={state.showGitOptions() ? dialogLeftPanel : undefined}>
-              {leftContent()}
+          <div class="vstack gap-4">
+            <div class={state.showGitOptions() ? dialogTopSection : undefined}>
+              <WorkerSelector state={state} />
             </div>
-            <div class={state.showGitOptions() ? dialogRightPanel : undefined}>
-              <Show when={state.workerId()}>
-                <GitOptions
-                  workerId={state.workerId()}
-                  selectedPath={state.workingDir()}
-                  homeDir={state.workerInfoStore.getHomeDir(state.workerId())}
-                  onGitModeChange={state.handleGitModeChange}
-                  onVisibilityChange={state.setShowGitOptions}
-                />
-              </Show>
+            <div class={state.showGitOptions() ? dialogTwoColumn : dialogSingleColumn}>
+              <div class={dialogLeftPanel}>
+                <DirectorySelector state={state} />
+              </div>
+              <div class={state.showGitOptions() ? dialogRightPanel : undefined}>
+                <Show when={state.workerId()}>
+                  <GitOptions
+                    workerId={state.workerId()}
+                    selectedPath={state.workingDir()}
+                    homeDir={state.workerInfoStore.getHomeDir(state.workerId())}
+                    refreshKey={state.refreshKey()}
+                    onGitModeChange={state.handleGitModeChange}
+                    onVisibilityChange={state.setShowGitOptions}
+                  />
+                </Show>
+              </div>
             </div>
           </div>
           <Show when={state.error()}>
@@ -105,7 +106,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
           </button>
           <button
             type="submit"
-            disabled={isAgentCreateDisabled({ submitting: submitting.loading(), workerId: state.workerId(), workingDir: state.workingDir(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), useWorktreePath: state.useWorktreePath() })}
+            disabled={isAgentCreateDisabled({ submitting: submitting.loading(), workerId: state.workerId(), workingDir: state.workingDir(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), createBranchError: state.createBranchError(), useWorktreePath: state.useWorktreePath() })}
           >
             <Show when={submitting.loading()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
             {submitting.loading() ? 'Creating...' : 'Create'}

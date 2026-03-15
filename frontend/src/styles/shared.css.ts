@@ -100,6 +100,10 @@ export const dialogStandard = style({
   },
 })
 
+export const dialogWide = style({
+  width: 'min(900px, 90vw)',
+})
+
 export const dialogTall = style({
   'height': '80vh',
   '@media': {
@@ -193,7 +197,8 @@ export const treeContainer = style({
 })
 
 // The element wrapping the DirectoryTree needs to grow and use flex layout.
-globalStyle(`${dialogStandard} > .${dialogBody} > form > section > .vstack > :has(.${treeContainer})`, {
+// This targets both single-column (.vstack > div > div) and two-column (.vstack > grid > panel) layouts.
+globalStyle(`${dialogStandard} > .${dialogBody} > form > section > .vstack :has(> .${treeContainer})`, {
   display: 'flex',
   flexDirection: 'column',
   flex: 1,
@@ -213,6 +218,12 @@ export const pathPreview = style({
   fontSize: 'var(--text-8)',
   color: 'var(--muted-foreground)',
   wordBreak: 'break-all',
+})
+
+export const dialogTopSection = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--space-4)',
 })
 
 export const dialogTwoColumn = style({
@@ -250,10 +261,8 @@ export const dialogRightPanel = style({
   overflowY: 'auto',
 })
 
-// The element wrapping the DirectoryTree in the two-column layout needs to grow and use flex layout.
-globalStyle(`${dialogStandard} > .${dialogBody} > form > section > .${dialogTwoColumn} > .${dialogLeftPanel} > :has(.${treeContainer})`, {
-  display: 'flex',
-  flexDirection: 'column',
+// In two-column layout, the grid and its left panel must fill remaining height.
+globalStyle(`${dialogStandard} > .${dialogBody} > form > section > .vstack > .${dialogTwoColumn}`, {
   flex: 1,
   minHeight: 0,
 })
