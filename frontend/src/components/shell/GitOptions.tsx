@@ -127,7 +127,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
         return
       setBranches(resp.branches)
       // Default the base branch to the current branch.
-      const cur = currentBranch() || resp.currentBranch
+      const cur = resp.currentBranch || currentBranch()
       if (!selectedBaseBranch() && cur) {
         setSelectedBaseBranch(cur)
       }
