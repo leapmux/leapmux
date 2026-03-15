@@ -153,8 +153,6 @@ const TreeContextMenu: Component<{
   isDir: boolean
 }> = (props) => {
   const tree = useTree()
-  let popoverRef: HTMLElement | undefined
-  const closeMenu = () => popoverRef?.hidePopover()
 
   return (
     <DropdownMenu
@@ -177,16 +175,12 @@ const TreeContextMenu: Component<{
           data-testid="tree-context-button"
         />
       )}
-      popoverRef={(el) => { popoverRef = el }}
     >
       <Show when={tree.onMention}>
         <button
           role="menuitem"
           data-testid="tree-mention-button"
-          onClick={() => {
-            tree.onMention?.(props.path)
-            closeMenu()
-          }}
+          onClick={() => tree.onMention?.(props.path)}
         >
           <Icon icon={AtSign} size="sm" />
           Mention in chat
@@ -196,10 +190,7 @@ const TreeContextMenu: Component<{
         <button
           role="menuitem"
           data-testid="tree-open-terminal-button"
-          onClick={() => {
-            tree.onOpenTerminal?.(props.path)
-            closeMenu()
-          }}
+          onClick={() => tree.onOpenTerminal?.(props.path)}
         >
           <Icon icon={TerminalIcon} size="sm" />
           Open a terminal tab here
@@ -208,10 +199,7 @@ const TreeContextMenu: Component<{
       <button
         role="menuitem"
         data-testid="tree-copy-path-button"
-        onClick={() => {
-          navigator.clipboard.writeText(props.path)
-          closeMenu()
-        }}
+        onClick={() => navigator.clipboard.writeText(props.path)}
       >
         <Icon icon={Copy} size="sm" />
         Copy path
@@ -224,7 +212,6 @@ const TreeContextMenu: Component<{
             ? '.'
             : relativizePath(props.path, tree.rootPath, tree.homeDir)
           navigator.clipboard.writeText(rel)
-          closeMenu()
         }}
       >
         <Icon icon={ClipboardCopy} size="sm" />

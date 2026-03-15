@@ -15,8 +15,6 @@ interface WorkerContextMenuProps {
 }
 
 export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
-  let popoverEl: HTMLElement | undefined
-
   const infoText = () => {
     const info = props.workerInfo
     if (!info)
@@ -26,7 +24,6 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
 
   return (
     <DropdownMenu
-      popoverRef={el => popoverEl = el}
       trigger={triggerProps => (
         <IconButton
           icon={MoreHorizontal}
@@ -52,7 +49,6 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
             onClick={() => {
               navigator.clipboard.writeText(text())
               showInfoToast('Worker info copied to clipboard')
-              popoverEl?.hidePopover()
             }}
           >
             {text()}

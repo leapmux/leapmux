@@ -187,7 +187,16 @@ export function DropdownMenu(props: DropdownMenuProps) {
     // Capture the popover's open state before light-dismiss has a chance
     // to close it. The browser records the pointerdown target and runs
     // the light-dismiss algorithm just before dispatching the click event.
-    wasOpenOnPointerDown = isOpen()
+    //
+    // Read the actual DOM state via :popover-open instead of the isOpen
+    // signal, because showModal() on a <dialog> auto-dismisses
+    // popover="auto" elements WITHOUT firing a toggle event, leaving
+    // isOpen stale.
+    const actuallyOpen = popoverEl?.matches(':popover-open') ?? false
+    if (isOpen() !== actuallyOpen) {
+      setIsOpen(actuallyOpen)
+    }
+    wasOpenOnPointerDown = actuallyOpen
   }
 
   const handleTriggerClick = () => {
