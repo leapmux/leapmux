@@ -254,7 +254,10 @@ export function DropdownMenu(props: DropdownMenuProps) {
             ref={popoverRefCallback /* eslint-disable-line solid/reactivity -- ref callback, not a signal */}
             class={props.class}
             data-testid={props['data-testid']}
-            onClick={e => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              popoverEl?.hidePopover()
+            }}
           >
             {props.children}
           </menu>
@@ -266,7 +269,10 @@ export function DropdownMenu(props: DropdownMenuProps) {
           ref={popoverRefCallback /* eslint-disable-line solid/reactivity -- ref callback, not a signal */}
           class={props.class}
           data-testid={props['data-testid']}
-          onClick={e => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation()
+            popoverEl?.hidePopover()
+          }}
         >
           {props.children}
         </div>

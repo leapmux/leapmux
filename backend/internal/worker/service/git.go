@@ -257,8 +257,11 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 		// Get remote tracking branches.
 		remoteOut, _ := gitOutput(ctx, repoRoot, "branch", "-r", "--list", "--format=%(refname:short)")
 		for _, b := range parseGitLines(remoteOut) {
-			// Skip HEAD pointers and branches that already have a local counterpart.
+			// Skip HEAD pointers, bare remote names, and branches that already have a local counterpart.
 			if strings.HasSuffix(b, "/HEAD") {
+				continue
+			}
+			if !strings.Contains(b, "/") {
 				continue
 			}
 			// e.g. "origin/main" -> check if "main" exists locally.
