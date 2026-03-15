@@ -173,6 +173,66 @@ func TestListDirectory_TruncationKeepsDirsFirst(t *testing.T) {
 	}
 }
 
+func TestFileInfoToProto_Hidden(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a hidden file and a regular file.
+	hiddenPath := filepath.Join(dir, ".hidden")
+	regularPath := filepath.Join(dir, "visible.txt")
+	if err := os.WriteFile(hiddenPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(regularPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	hiddenInfo, err := os.Stat(hiddenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regularInfo, err := os.Stat(regularPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hiddenProto := fileInfoToProto(hiddenInfo, hiddenPath)
+	if !hiddenProto.Hidden {
+		t.Errorf("expected Hidden=true for %q", hiddenPath)
+	}
+
+	regularProto := fileInfoToProto(regularInfo, regularPath)
+	if regularProto.Hidden {
+		t.Errorf("expected Hidden=false for %q", regularPath)
+	}
+}
+
+func TestListDirectory_HiddenField(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a mix of hidden and regular entries.
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, ".config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "readme.md"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, _, err := listDirectory(dir, dir, 0, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, e := range entries {
+		expectHidden := e.Name[0] == '.'
+		if e.Hidden != expectHidden {
+			t.Errorf("entry %q: Hidden=%v, want %v", e.Name, e.Hidden, expectHidden)
+		}
+	}
+}
+
 func TestListDirectory_DirsOnly(t *testing.T) {
 	t.Run("filters out files", func(t *testing.T) {
 		dir := t.TempDir()

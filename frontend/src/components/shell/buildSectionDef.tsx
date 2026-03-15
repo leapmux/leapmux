@@ -181,6 +181,8 @@ export function buildSectionDef(
           isFiltered={() => ctx.filesSectionHandle()?.isFiltered() ?? false}
           flatListMode={() => ctx.filesSectionHandle()?.flatListMode() ?? false}
           onToggleFlatList={() => ctx.filesSectionHandle()?.toggleFlatListMode()}
+          showHiddenFiles={() => ctx.filesSectionHandle()?.showHiddenFiles() ?? true}
+          onToggleShowHidden={() => ctx.filesSectionHandle()?.toggleShowHiddenFiles()}
         />
       ),
       content: () => (

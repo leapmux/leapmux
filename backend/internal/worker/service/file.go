@@ -218,6 +218,7 @@ func fileInfoToProto(info os.FileInfo, absPath string) *leapmuxv1.FileInfo {
 		Size:        info.Size(),
 		ModTime:     info.ModTime().UTC().Format(time.RFC3339),
 		Permissions: fmt.Sprintf("%04o", info.Mode().Perm()),
+		Hidden:      isHidden(absPath, info.Name()),
 	}
 }
 
