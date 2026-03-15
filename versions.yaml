@@ -6,3 +6,4 @@ buf-version: 1.65.0
 sqlc-version: 1.30.0
 golangci-lint-version: 2.10.1
 s6-overlay-version: 3.2.0.2
+task-version: 3.49.1

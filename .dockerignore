@@ -34,6 +34,9 @@ frontend/tests/e2e/playwright-report/
 # Docker files (not needed in build context except rootfs)
 docker/Dockerfile
 
+# Desktop app (not needed for Docker builds)
+desktop/
+
 # Misc
 .DS_Store
 *.log
