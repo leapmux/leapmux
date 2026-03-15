@@ -221,6 +221,19 @@ func fileInfoToProto(info os.FileInfo, absPath string) *leapmuxv1.FileInfo {
 	}
 }
 
+// isDirEntry reports whether de is a directory or a symlink to a directory
+// under parentDir. It follows symlinks, unlike de.IsDir().
+func isDirEntry(de os.DirEntry, parentDir string) bool {
+	if de.IsDir() {
+		return true
+	}
+	if de.Type()&os.ModeSymlink == 0 {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(parentDir, de.Name()))
+	return err == nil && info.IsDir()
+}
+
 // listDirectory reads directory entries, sorts them (directories first, then
 // alphabetically), truncates to maxDirEntries, and optionally merges
 // single-child directories. Sorting and truncating happen on the lightweight
@@ -237,7 +250,7 @@ func listDirectory(dirPath, basePath string, maxDepth int32, currentDepth int32,
 	if dirsOnly {
 		n := 0
 		for _, de := range dirEntries {
-			if de.IsDir() {
+			if isDirEntry(de, dirPath) {
 				dirEntries[n] = de
 				n++
 			}
@@ -247,7 +260,7 @@ func listDirectory(dirPath, basePath string, maxDepth int32, currentDepth int32,
 
 	// Sort using DirEntry metadata (no extra syscalls).
 	sort.Slice(dirEntries, func(i, j int) bool {
-		iDir, jDir := dirEntries[i].IsDir(), dirEntries[j].IsDir()
+		iDir, jDir := isDirEntry(dirEntries[i], dirPath), isDirEntry(dirEntries[j], dirPath)
 		if iDir != jDir {
 			return iDir
 		}

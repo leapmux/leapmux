@@ -238,4 +238,76 @@ func TestListDirectory_DirsOnly(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("includes symlinked directories", func(t *testing.T) {
+		dir := t.TempDir()
+		// Create a real directory and a symlink pointing to it.
+		realDir := filepath.Join(dir, "realdir")
+		if err := os.Mkdir(realDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(realDir, filepath.Join(dir, "linkdir")); err != nil {
+			t.Fatal(err)
+		}
+		// Also create a regular file and a symlink to a file (both should be excluded).
+		if err := os.WriteFile(filepath.Join(dir, "file.txt"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		fileTarget := filepath.Join(dir, "file.txt")
+		if err := os.Symlink(fileTarget, filepath.Join(dir, "linkfile")); err != nil {
+			t.Fatal(err)
+		}
+
+		entries, _, err := listDirectory(dir, dir, 0, 0, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 2 {
+			t.Fatalf("expected 2 entries (realdir + linkdir), got %d", len(entries))
+		}
+		for _, e := range entries {
+			if !e.IsDir {
+				t.Errorf("expected only directories, got non-dir %q", e.Name)
+			}
+		}
+	})
+
+	t.Run("symlinked directories sort with real directories", func(t *testing.T) {
+		dir := t.TempDir()
+		// Create: aaa_file (file), bbb_dir (dir), ccc_link (symlink->dir), ddd_file (file).
+		if err := os.WriteFile(filepath.Join(dir, "aaa_file"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(dir, "bbb_dir"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(dir, "bbb_dir")
+		if err := os.Symlink(target, filepath.Join(dir, "ccc_link")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "ddd_file"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		entries, _, err := listDirectory(dir, dir, 0, 0, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Directories (real + symlinked) should come first.
+		if len(entries) < 2 {
+			t.Fatalf("expected at least 2 entries, got %d", len(entries))
+		}
+		// First two entries should be directories (bbb_dir and ccc_link, both dirs).
+		for _, e := range entries[:2] {
+			if !e.IsDir {
+				t.Errorf("expected directory in first two entries, got file %q", e.Name)
+			}
+		}
+		// Last two entries should be files.
+		for _, e := range entries[2:] {
+			if e.IsDir {
+				t.Errorf("expected file in last two entries, got dir %q", e.Name)
+			}
+		}
+	})
 }
