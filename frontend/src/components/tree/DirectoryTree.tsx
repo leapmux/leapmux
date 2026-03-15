@@ -42,6 +42,8 @@ export interface DirectoryTreeProps {
   visiblePaths?: Set<string>
   /** Signal bumped on agent turn-end; drives directory tree refresh. */
   turnEndTrigger?: number
+  /** When false, entries with hidden=true are filtered out. Defaults to true. */
+  showHiddenFiles?: boolean
   /** Ref callback for imperative actions (collapse all, etc.). */
   ref?: (handle: DirectoryTreeHandle) => void
 }
@@ -50,6 +52,7 @@ interface TreeNodeData {
   path: string
   displayName: string
   isDir: boolean
+  hidden: boolean
 }
 
 // -------------------------------------------------------------------------
@@ -63,6 +66,7 @@ interface TreeContextValue {
   homeDir?: string
   scrollContainer?: HTMLDivElement
   gitStatusStore: () => ReturnType<typeof createGitFileStatusStore> | undefined
+  showHiddenFiles: boolean
   visiblePaths: () => Set<string> | undefined
   refreshVersion: () => number
   onSelect: (path: string) => void
@@ -142,6 +146,7 @@ async function loadChildren(
       path: entry.path,
       displayName: entry.name,
       isDir: entry.isDir,
+      hidden: entry.hidden,
     })),
     truncated: resp.truncated,
   }
@@ -279,10 +284,13 @@ const TreeNode: Component<{
   const isSelected = () => props.selectedPath === props.node.path
   const allChildren = () => tree.getChildren(props.node.path) ?? []
   const children = () => {
+    let result = allChildren()
+    if (!tree.showHiddenFiles)
+      result = result.filter(c => !c.hidden)
     const visible = tree.visiblePaths()
-    if (!visible)
-      return allChildren()
-    return allChildren().filter(c => visible.has(c.path))
+    if (visible)
+      result = result.filter(c => visible.has(c.path))
+    return result
   }
   const loaded = () => tree.getChildren(props.node.path) !== undefined
 
@@ -628,10 +636,13 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   }
 
   // Root children derived from the centralized cache, optionally filtered.
+  const showHidden = () => props.showHiddenFiles ?? true
   const rootChildren = () => {
-    const all = getChildren(rootPath())
+    let all = getChildren(rootPath())
     if (!all)
       return undefined
+    if (!showHidden())
+      all = all.filter(c => !c.hidden)
     const visible = props.visiblePaths
     if (!visible)
       return all
@@ -730,6 +741,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     get rootPath() { return rootPath() },
     get homeDir() { return props.homeDir },
     get scrollContainer() { return treeRef },
+    get showHiddenFiles() { return showHidden() },
     gitStatusStore: () => props.gitStatusStore,
     visiblePaths: () => props.visiblePaths,
     refreshVersion,

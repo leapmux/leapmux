@@ -3,6 +3,8 @@ import type { DirectoryTreeHandle } from './DirectoryTree'
 import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import ChevronsDownUp from 'lucide-solid/icons/chevrons-down-up'
+import Eye from 'lucide-solid/icons/eye'
+import EyeOff from 'lucide-solid/icons/eye-off'
 import FileIcon from 'lucide-solid/icons/file'
 import FolderTree from 'lucide-solid/icons/folder-tree'
 import List from 'lucide-solid/icons/list'
@@ -12,6 +14,7 @@ import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
+import { safeGetJson, safeSetJson } from '~/lib/safeStorage'
 import { DirectoryTree } from './DirectoryTree'
 import * as styles from './FilesSection.css'
 import { DiffStatsBadge, getGitFileIconClass } from './gitStatusUtils'
@@ -22,6 +25,8 @@ export interface FilesSectionHandle {
   isFiltered: () => boolean
   flatListMode: () => boolean
   toggleFlatListMode: () => void
+  showHiddenFiles: () => boolean
+  toggleShowHiddenFiles: () => void
 }
 
 export interface FilesSectionProps {
@@ -52,6 +57,8 @@ export interface FilesSectionHeaderActionsProps {
   isFiltered?: () => boolean
   flatListMode?: () => boolean
   onToggleFlatList?: () => void
+  showHiddenFiles?: () => boolean
+  onToggleShowHidden?: () => void
 }
 
 const FILTER_TABS: { key: GitFilterTab, label: string }[] = [
@@ -112,6 +119,15 @@ export const FilesSectionHeaderActions: Component<FilesSectionHeaderActionsProps
         onClick={() => props.onCollapseAll()}
         data-testid="files-collapse-all"
       />
+      <IconButton
+        icon={(props.showHiddenFiles?.() ?? true) ? Eye : EyeOff}
+        iconSize="xs"
+        size="sm"
+        title={(props.showHiddenFiles?.() ?? true) ? 'Hide hidden files' : 'Show hidden files'}
+        state={(props.showHiddenFiles?.() ?? true) ? IconButtonState.Enabled : IconButtonState.Active}
+        onClick={() => props.onToggleShowHidden?.()}
+        data-testid="files-show-hidden-toggle"
+      />
       <RefreshButton
         iconSize="xs"
         size="sm"
@@ -126,7 +142,14 @@ export const FilesSectionHeaderActions: Component<FilesSectionHeaderActionsProps
 export const FilesSection: Component<FilesSectionProps> = (props) => {
   const [activeFilter, setActiveFilter] = createSignal<GitFilterTab>('all')
   const [flatListMode, setFlatListMode] = createSignal(false)
+  const showHiddenStorageKey = () => `files:showHidden:${props.workerId}:${props.workingDir}`
+  const [showHiddenFiles, setShowHiddenFiles] = createSignal(safeGetJson<boolean>(showHiddenStorageKey()) ?? true)
   let treeHandle: DirectoryTreeHandle | undefined
+
+  // Persist showHiddenFiles when it changes.
+  createEffect(() => {
+    safeSetJson(showHiddenStorageKey(), showHiddenFiles())
+  })
 
   const isFiltered = () => activeFilter() !== 'all'
 
@@ -138,6 +161,8 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
       isFiltered,
       flatListMode,
       toggleFlatListMode: () => setFlatListMode(prev => !prev),
+      showHiddenFiles,
+      toggleShowHiddenFiles: () => setShowHiddenFiles(prev => !prev),
     })
   })
 
@@ -215,6 +240,7 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
               homeDir={props.homeDir}
               gitStatusStore={props.gitStatusStore}
               visiblePaths={visiblePaths()}
+              showHiddenFiles={showHiddenFiles()}
               turnEndTrigger={props.turnEndTrigger}
               ref={(h) => { treeHandle = h }}
             />

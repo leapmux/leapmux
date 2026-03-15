@@ -46,4 +46,5 @@ message FileInfo {
   int64 size = 4;
   string mod_time = 5;
   string permissions = 6;
+  bool hidden = 7;
 }
