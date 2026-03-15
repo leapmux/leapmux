@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -87,11 +88,12 @@ func TestBuildShellWrappedCommand_Tcsh_Interactive(t *testing.T) {
 		[]string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
 	)
 	assert.Equal(t, "/bin/tcsh", cmd.Path)
-	require.Len(t, cmd.Args, 3) // tcsh -ic <cmd>
-	assert.Equal(t, "-ic", cmd.Args[1])
-	assert.Contains(t, cmd.Args[2], "echo '"+delimiter+"'")
-	assert.Contains(t, cmd.Args[2], "unset CLAUDECODE")
-	assert.Contains(t, cmd.Args[2], "exec claude")
+	require.Len(t, cmd.Args, 4) // tcsh -i -c <cmd>
+	assert.Equal(t, "-i", cmd.Args[1])
+	assert.Equal(t, "-c", cmd.Args[2])
+	assert.Contains(t, cmd.Args[3], "echo '"+delimiter+"'")
+	assert.Contains(t, cmd.Args[3], "unset CLAUDECODE")
+	assert.Contains(t, cmd.Args[3], "exec claude")
 }
 
 func TestBuildShellWrappedCommand_Tcsh_NonInteractive(t *testing.T) {
@@ -110,10 +112,11 @@ func TestBuildShellWrappedCommand_Csh(t *testing.T) {
 		[]string{"--verbose"}, []string{"--model", "opus"}, "/tmp",
 	)
 	assert.Equal(t, "/bin/csh", cmd.Path)
-	require.Len(t, cmd.Args, 3) // csh -ic <cmd>
-	assert.Equal(t, "-ic", cmd.Args[1])
-	assert.Contains(t, cmd.Args[2], "unset CLAUDECODE")
-	assert.Contains(t, cmd.Args[2], "exec claude")
+	require.Len(t, cmd.Args, 4) // csh -i -c <cmd>
+	assert.Equal(t, "-i", cmd.Args[1])
+	assert.Equal(t, "-c", cmd.Args[2])
+	assert.Contains(t, cmd.Args[3], "unset CLAUDECODE")
+	assert.Contains(t, cmd.Args[3], "exec claude")
 }
 
 func TestBuildShellWrappedCommand_Nu_Interactive(t *testing.T) {
@@ -318,11 +321,11 @@ func TestPwshQuote(t *testing.T) {
 }
 
 func TestIsPwsh(t *testing.T) {
-	assert.True(t, isPwsh("pwsh"))
-	assert.True(t, isPwsh("powershell"))
-	assert.True(t, isPwsh("pwsh-preview"))
-	assert.True(t, isPwsh("powershell-preview"))
-	assert.False(t, isPwsh("bash"))
-	assert.False(t, isPwsh("zsh"))
-	assert.False(t, isPwsh("pwsh-extra-stuff"))
+	assert.True(t, terminal.IsPwsh("pwsh"))
+	assert.True(t, terminal.IsPwsh("powershell"))
+	assert.True(t, terminal.IsPwsh("pwsh-preview"))
+	assert.True(t, terminal.IsPwsh("powershell-preview"))
+	assert.False(t, terminal.IsPwsh("bash"))
+	assert.False(t, terminal.IsPwsh("zsh"))
+	assert.False(t, terminal.IsPwsh("pwsh-extra-stuff"))
 }

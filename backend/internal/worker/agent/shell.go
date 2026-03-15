@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
+
+	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
 // buildShellWrappedCommand constructs an exec.Cmd that launches the claude
@@ -36,24 +37,24 @@ func buildShellWrappedCommand(ctx context.Context, shellPath string, interactive
 
 	var cmdArgs []string
 	switch {
-	case isPwsh(shellName):
+	case terminal.IsPwsh(shellName):
 		inner := buildPwshCommand(delimiter, metaPrefix, baseArgs, modelEffortArgs)
 		if interactive {
-			cmdArgs = []string{"-Login", "-Command", inner}
+			cmdArgs = append(terminal.LoginShellArgs(shellPath), "-Command", inner)
 		} else {
 			cmdArgs = []string{"-Command", inner}
 		}
 	case shellName == "tcsh" || shellName == "csh":
 		inner := buildPosixCommand(delimiter, metaPrefix, baseArgs, modelEffortArgs, true)
 		if interactive {
-			cmdArgs = []string{"-ic", inner}
+			cmdArgs = []string{"-i", "-c", inner} // tcsh: -l must be the only flag
 		} else {
 			cmdArgs = []string{"-c", inner}
 		}
 	case shellName == "nu":
 		inner := buildNuCommand(delimiter, metaPrefix, baseArgs, modelEffortArgs)
 		if interactive {
-			cmdArgs = []string{"-i", "-l", "-c", inner}
+			cmdArgs = append(terminal.LoginShellArgs(shellPath), "-c", inner)
 		} else {
 			cmdArgs = []string{"-c", inner}
 		}
@@ -61,7 +62,7 @@ func buildShellWrappedCommand(ctx context.Context, shellPath string, interactive
 		// bash, zsh, fish, sh, ash, dash, ksh, xonsh, and unknown shells
 		inner := buildPosixCommand(delimiter, metaPrefix, baseArgs, modelEffortArgs, true)
 		if interactive {
-			cmdArgs = []string{"-i", "-l", "-c", inner}
+			cmdArgs = append(terminal.LoginShellArgs(shellPath), "-c", inner)
 		} else {
 			cmdArgs = []string{"-c", inner}
 		}
@@ -233,11 +234,4 @@ func posixQuote(s string) string {
 // Single quotes within the string are escaped by doubling them (").
 func pwshQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
-}
-
-var pwshPattern = regexp.MustCompile(`^(?:pwsh|powershell)(?:-preview)?$`)
-
-// isPwsh returns true if the shell name matches PowerShell variants.
-func isPwsh(name string) bool {
-	return pwshPattern.MatchString(name)
 }
