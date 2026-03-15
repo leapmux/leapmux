@@ -28,10 +28,10 @@ test.describe('Clear Command', () => {
     const lastAssistant2 = lastAssistantBubble(page)
     await expect(lastAssistant2).toContainText('6', { timeout: 30000 })
 
-    // Verify context usage indicator shows the fallback info icon (cleared).
-    // The ContextUsageGrid falls back to an <Info> icon when contextUsage is null.
-    // After /clear, the 3x3 grid SVG should not be visible.
+    // After /clear and a new response, context usage is repopulated by the
+    // new session's system prompt tokens.  Verify the grid is visible again
+    // (indicating the new session has active context).
     const grid = page.locator('svg[viewBox="0 0 11 11"]')
-    await expect(grid).not.toBeVisible()
+    await expect(grid).toBeVisible()
   })
 })

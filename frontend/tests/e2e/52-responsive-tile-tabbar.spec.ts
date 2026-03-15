@@ -150,8 +150,17 @@ test.describe('Responsive Tile TabBar', () => {
 
     // Workspace starts with an active tab — tooltips should indicate the working directory
     await openAgentViaUI(page)
-    await expect(agentBtn.locator('..')).toHaveAttribute('data-tooltip', 'New agent at the current working directory')
-    await expect(terminalBtn.locator('..')).toHaveAttribute('data-tooltip', 'New terminal at the current working directory')
+
+    // Hover to trigger portal-based tooltip and verify text
+    await agentBtn.hover()
+    await expect(page.getByRole('tooltip')).toHaveText('New agent at the current working directory', { timeout: 5000 })
+    await page.mouse.move(0, 0)
+    await page.waitForTimeout(200)
+
+    await terminalBtn.hover()
+    await expect(page.getByRole('tooltip')).toHaveText('New terminal at the current working directory', { timeout: 5000 })
+    await page.mouse.move(0, 0)
+    await page.waitForTimeout(200)
 
     // Close all tabs to remove active tab context
     while (await page.locator('[data-testid="tab-close"]').count() > 0) {
@@ -160,8 +169,13 @@ test.describe('Responsive Tile TabBar', () => {
     }
 
     // Now tooltips should show the "..." variant
-    await expect(agentBtn.locator('..')).toHaveAttribute('data-tooltip', 'New agent...')
-    await expect(terminalBtn.locator('..')).toHaveAttribute('data-tooltip', 'New terminal...')
+    await agentBtn.hover()
+    await expect(page.getByRole('tooltip')).toHaveText('New agent...', { timeout: 5000 })
+    await page.mouse.move(0, 0)
+    await page.waitForTimeout(200)
+
+    await terminalBtn.hover()
+    await expect(page.getByRole('tooltip')).toHaveText('New terminal...', { timeout: 5000 })
   })
 
   test('short height: tab bar height reduced when tile is short', async ({ page, authenticatedWorkspace }) => {

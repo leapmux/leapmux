@@ -56,7 +56,8 @@ test.describe('Workspace Lifecycle', () => {
     await expect(
       page.locator('[data-testid="create-workspace-button"]')
         .or(page.locator('[data-testid="section-header-workspaces_in_progress"]'))
-        .or(page.locator('[data-testid="section-header-workspaces_archived"]')),
+        .or(page.locator('[data-testid="section-header-workspaces_archived"]'))
+        .first(),
     ).toBeVisible()
   })
 })
