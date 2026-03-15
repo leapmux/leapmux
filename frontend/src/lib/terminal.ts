@@ -19,55 +19,59 @@ export interface TerminalInstance {
   fitAddon: FitAddon
   /** True after a screen snapshot has been written (prevents duplicate writes). */
   screenRestored: boolean
+  /** When true, onData responses are suppressed (e.g. during snapshot replay). */
+  suppressInput: boolean
   dispose: () => void
 }
 
 const DEFAULT_FONT_SIZE = 13
 
 const darkTerminalTheme: ITheme = {
-  background: '#0d1117',
-  foreground: '#e6edf3',
-  cursor: '#58a6ff',
-  selectionBackground: '#264f78',
-  black: '#0d1117',
-  red: '#f85149',
-  green: '#3fb950',
-  yellow: '#d29922',
-  blue: '#58a6ff',
-  magenta: '#bc8cff',
-  cyan: '#39c5cf',
-  white: '#e6edf3',
-  brightBlack: '#6e7681',
-  brightRed: '#ff7b72',
-  brightGreen: '#56d364',
-  brightYellow: '#e3b341',
-  brightBlue: '#79c0ff',
-  brightMagenta: '#d2a8ff',
-  brightCyan: '#56d4dd',
-  brightWhite: '#f0f6fc',
+  background: '#1a1917', // --background
+  foreground: '#e8e6e1', // --foreground
+  cursor: '#14b8a6', // --primary
+  selectionBackground: '#2d3e32', // --accent
+  // Dimidium color scheme (https://github.com/dofuuz/dimidium)
+  black: '#000000',
+  red: '#cf494c',
+  green: '#60b442',
+  yellow: '#db9c11',
+  blue: '#0575d8',
+  magenta: '#af5ed2',
+  cyan: '#1db6bb',
+  white: '#bab7b6',
+  brightBlack: '#817e7e',
+  brightRed: '#ff643b',
+  brightGreen: '#37e57b',
+  brightYellow: '#fccd1a',
+  brightBlue: '#688dfd',
+  brightMagenta: '#ed6fe9',
+  brightCyan: '#32e0fb',
+  brightWhite: '#dee3e4',
 }
 
 const lightTerminalTheme: ITheme = {
-  background: '#ffffff',
-  foreground: '#1f2328',
-  cursor: '#0969da',
-  selectionBackground: '#b6d5f0',
-  black: '#24292f',
-  red: '#cf222e',
-  green: '#1a7f37',
-  yellow: '#9a6700',
-  blue: '#0969da',
-  magenta: '#8250df',
-  cyan: '#1b7c83',
-  white: '#6e7781',
-  brightBlack: '#57606a',
-  brightRed: '#a40e26',
-  brightGreen: '#2da44e',
-  brightYellow: '#bf8700',
-  brightBlue: '#218bff',
-  brightMagenta: '#a475f9',
-  brightCyan: '#3192aa',
-  brightWhite: '#8c959f',
+  background: '#fdfcfa', // --background
+  foreground: '#22201e', // --foreground
+  cursor: '#0d9488', // --primary
+  selectionBackground: '#deebe1', // --accent
+  // Dimidium Light color scheme (https://github.com/dofuuz/dimidium)
+  black: '#000000',
+  red: '#b83d41',
+  green: '#4d9833',
+  yellow: '#ba8300',
+  blue: '#0464ba',
+  magenta: '#9c50bd',
+  cyan: '#019a9f',
+  white: '#9c9998',
+  brightBlack: '#737575',
+  brightRed: '#e0532e',
+  brightGreen: '#1fbd62',
+  brightYellow: '#d0a803',
+  brightBlue: '#4a74ed',
+  brightMagenta: '#d05dce',
+  brightCyan: '#19b8d0',
+  brightWhite: '#b8bdbe',
 }
 
 /** Get the stored terminal theme preference from localStorage. */
@@ -78,24 +82,29 @@ export function getTerminalThemePreference(): TerminalThemePreference {
   return 'match-ui'
 }
 
-/** Resolve the effective terminal theme based on the preference. */
-export function resolveTerminalTheme(pref: TerminalThemePreference): ITheme {
+/** Resolve the terminal theme preference to 'dark' or 'light'. */
+export function resolveTerminalThemeMode(pref: TerminalThemePreference): 'dark' | 'light' {
   if (pref === 'light')
-    return lightTerminalTheme
+    return 'light'
   if (pref === 'dark')
-    return darkTerminalTheme
+    return 'dark'
   // match-ui: check the current UI theme
   // The sentinel 'account-default' means "use the account default" which defaults to 'system'.
   const raw = localStorage.getItem('leapmux-theme')
   const uiTheme = (!raw || raw === 'account-default') ? 'system' : raw
   if (uiTheme === 'light')
-    return lightTerminalTheme
+    return 'light'
   if (uiTheme === 'system') {
     return window.matchMedia('(prefers-color-scheme: dark)').matches
-      ? darkTerminalTheme
-      : lightTerminalTheme
+      ? 'dark'
+      : 'light'
   }
-  return darkTerminalTheme
+  return 'dark'
+}
+
+/** Resolve the effective terminal theme based on the preference. */
+export function resolveTerminalTheme(pref: TerminalThemePreference): ITheme {
+  return resolveTerminalThemeMode(pref) === 'dark' ? darkTerminalTheme : lightTerminalTheme
 }
 
 export function createTerminalInstance(opts?: TerminalFontOptions): TerminalInstance {
@@ -129,6 +138,7 @@ export function createTerminalInstance(opts?: TerminalFontOptions): TerminalInst
     terminal,
     fitAddon,
     screenRestored: false,
+    suppressInput: false,
     dispose() {
       terminal.dispose()
     },

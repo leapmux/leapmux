@@ -73,8 +73,6 @@ export const EditorToolbar: Component<EditorToolbarProps> = (props) => {
   let linkTriggerRef: HTMLButtonElement | undefined
   let linkInputRef: HTMLInputElement | undefined
 
-  let headingMenuRef: HTMLElement | undefined
-
   const runCommand = (cmd: Parameters<typeof callCommand>[0], payload?: unknown) => {
     const editor = props.editorInstance()
     if (editor) {
@@ -291,76 +289,54 @@ export const EditorToolbar: Component<EditorToolbarProps> = (props) => {
             <Icon icon={ChevronDown} size="xxs" />
           </IconButton>
         )}
-        popoverRef={(el) => { headingMenuRef = el }}
         data-testid="heading-menu"
       >
         <button
           role="menuitem"
           data-testid="heading-paragraph"
-          onClick={() => {
-            runCommand(wrapInHeadingCommand.key, 0)
-            headingMenuRef?.hidePopover()
-          }}
+          onClick={() => runCommand(wrapInHeadingCommand.key, 0)}
         >
           <p class={styles.headingPreviewItem}>Paragraph</p>
         </button>
         <button
           role="menuitem"
           data-testid="heading-1"
-          onClick={() => {
-            runCommand(wrapInHeadingCommand.key, 1)
-            headingMenuRef?.hidePopover()
-          }}
+          onClick={() => runCommand(wrapInHeadingCommand.key, 1)}
         >
           <h1 class={styles.headingPreviewItem}>Heading 1</h1>
         </button>
         <button
           role="menuitem"
           data-testid="heading-2"
-          onClick={() => {
-            runCommand(wrapInHeadingCommand.key, 2)
-            headingMenuRef?.hidePopover()
-          }}
+          onClick={() => runCommand(wrapInHeadingCommand.key, 2)}
         >
           <h2 class={styles.headingPreviewItem}>Heading 2</h2>
         </button>
         <button
           role="menuitem"
           data-testid="heading-3"
-          onClick={() => {
-            runCommand(wrapInHeadingCommand.key, 3)
-            headingMenuRef?.hidePopover()
-          }}
+          onClick={() => runCommand(wrapInHeadingCommand.key, 3)}
         >
           <h3 class={styles.headingPreviewItem}>Heading 3</h3>
         </button>
         <button
           role="menuitem"
           data-testid="heading-4"
-          onClick={() => {
-            runCommand(wrapInHeadingCommand.key, 4)
-            headingMenuRef?.hidePopover()
-          }}
+          onClick={() => runCommand(wrapInHeadingCommand.key, 4)}
         >
           <h4 class={styles.headingPreviewItem}>Heading 4</h4>
         </button>
         <button
           role="menuitem"
           data-testid="heading-5"
-          onClick={() => {
-            runCommand(wrapInHeadingCommand.key, 5)
-            headingMenuRef?.hidePopover()
-          }}
+          onClick={() => runCommand(wrapInHeadingCommand.key, 5)}
         >
           <h5 class={styles.headingPreviewItem}>Heading 5</h5>
         </button>
         <button
           role="menuitem"
           data-testid="heading-6"
-          onClick={() => {
-            runCommand(wrapInHeadingCommand.key, 6)
-            headingMenuRef?.hidePopover()
-          }}
+          onClick={() => runCommand(wrapInHeadingCommand.key, 6)}
         >
           <h6 class={styles.headingPreviewItem}>Heading 6</h6>
         </button>

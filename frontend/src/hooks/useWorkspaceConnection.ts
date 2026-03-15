@@ -327,7 +327,10 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             // screen hasn't already been restored (e.g. from the
             // listTerminals snapshot written during component mount).
             if (!instance.screenRestored) {
-              instance.terminal.write(termEvent.event.value.data)
+              instance.suppressInput = true
+              instance.terminal.write(termEvent.event.value.data, () => {
+                instance!.suppressInput = false
+              })
               instance.screenRestored = true
             }
           }

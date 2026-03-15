@@ -72,7 +72,6 @@ function RadioGroup(props: {
 }
 
 export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.Element {
-  let settingsPopoverEl: HTMLElement | undefined
   const menuId = createUniqueId()
 
   const currentModel = () => props.model || DEFAULT_MODEL
@@ -111,7 +110,6 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
           </Show>
         </button>
       )}
-      popoverRef={(el) => { settingsPopoverEl = el }}
       class={styles.settingsMenu}
       data-testid="agent-settings-menu"
     >
@@ -123,10 +121,7 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
             testIdPrefix="effort"
             name={`${menuId}-effort`}
             current={currentEffort()}
-            onChange={(v) => {
-              props.onEffortChange?.(v)
-              settingsPopoverEl?.hidePopover()
-            }}
+            onChange={v => props.onEffortChange?.(v)}
           />
         </Show>
         <RadioGroup
@@ -141,7 +136,6 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
             if (!v.startsWith('opus') && currentEffort() === 'max') {
               props.onEffortChange?.('high')
             }
-            settingsPopoverEl?.hidePopover()
           }}
         />
       </Show>
@@ -151,10 +145,7 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
         testIdPrefix="permission-mode"
         name={`${menuId}-mode`}
         current={currentMode()}
-        onChange={(v) => {
-          props.onPermissionModeChange?.(v as PermissionMode)
-          settingsPopoverEl?.hidePopover()
-        }}
+        onChange={v => props.onPermissionModeChange?.(v as PermissionMode)}
       />
     </DropdownMenu>
   )

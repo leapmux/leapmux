@@ -3,7 +3,7 @@ import type { TerminalInstance } from '~/lib/terminal'
 import type { TerminalInfo } from '~/stores/terminal.store'
 import { createEffect, For, onCleanup, onMount } from 'solid-js'
 import { usePreferences } from '~/context/PreferencesContext'
-import { createTerminalInstance } from '~/lib/terminal'
+import { createTerminalInstance, resolveTerminalTheme, resolveTerminalThemeMode } from '~/lib/terminal'
 import * as styles from './TerminalView.css'
 import '@xterm/xterm/css/xterm.css'
 
@@ -80,7 +80,9 @@ const TerminalContainer: Component<{
       const onTitleChange = props.onTitleChange
       const onBell = props.onBell
       instance.terminal.onData((data) => {
-        onInput(id, new TextEncoder().encode(data))
+        if (!instances.get(id)?.suppressInput) {
+          onInput(id, new TextEncoder().encode(data))
+        }
       })
       instance.terminal.onTitleChange((title) => {
         onTitleChange(id, title)
@@ -92,9 +94,15 @@ const TerminalContainer: Component<{
 
     instance.terminal.open(ref)
 
-    // Write screen snapshot if available (restore on refresh)
+    // Write screen snapshot if available (restore on refresh).
+    // Suppress onData during replay to prevent xterm.js query responses
+    // (DECRPM, DA, DECRQSS, OSC) from being forwarded to the PTY,
+    // where the shell's echo would display them as visible text.
     if (props.screen && props.screen.length > 0) {
-      instance.terminal.write(props.screen)
+      instance.suppressInput = true
+      instance.terminal.write(props.screen, () => {
+        instance!.suppressInput = false
+      })
       instance.screenRestored = true
     }
 
@@ -159,6 +167,14 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
     }
   })
 
+  // React to terminal theme preference changes
+  createEffect(() => {
+    const theme = resolveTerminalTheme(preferences.terminalTheme())
+    for (const [, instance] of instances) {
+      instance.terminal.options.theme = theme
+    }
+  })
+
   // Clean up instances when component unmounts
   onCleanup(() => {
     for (const [, instance] of instances) {
@@ -167,8 +183,10 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
     instances.clear()
   })
 
+  const terminalThemeMode = () => resolveTerminalThemeMode(preferences.terminalTheme())
+
   return (
-    <div class={styles.container}>
+    <div class={styles.container} data-theme={terminalThemeMode()}>
       <div class={styles.terminalInner}>
         <For each={props.terminals}>
           {terminal => (

@@ -136,7 +136,7 @@ globalStyle(`${dialogHeader} > h2`, {
 export const dialogBody = style({
   display: 'flex',
   flexDirection: 'column',
-  flex: 1,
+  flex: '1 1 auto',
   minHeight: 0,
   overflow: 'hidden',
   padding: 'var(--space-6)',
