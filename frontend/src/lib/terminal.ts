@@ -107,9 +107,8 @@ export function resolveTerminalTheme(pref: TerminalThemePreference): ITheme {
   return resolveTerminalThemeMode(pref) === 'dark' ? darkTerminalTheme : lightTerminalTheme
 }
 
-export function createTerminalInstance(opts?: TerminalFontOptions): TerminalInstance {
-  const termThemePref = getTerminalThemePreference()
-  const theme = resolveTerminalTheme(termThemePref)
+export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: ITheme }): TerminalInstance {
+  const theme = opts?.theme ?? resolveTerminalTheme(getTerminalThemePreference())
 
   const terminal = new Terminal({
     cursorBlink: true,

@@ -1,3 +1,4 @@
+import type { ITheme } from '@xterm/xterm'
 import type { Component } from 'solid-js'
 import type { TerminalInstance } from '~/lib/terminal'
 import type { TerminalInfo } from '~/stores/terminal.store'
@@ -54,6 +55,7 @@ const TerminalContainer: Component<{
   rows?: number
   fontFamily: string
   fontSize: number
+  theme: ITheme
   onInput: (id: string, data: Uint8Array) => void
   onResize: (id: string, cols: number, rows: number) => void
   onTitleChange: (id: string, title: string) => void
@@ -72,6 +74,7 @@ const TerminalContainer: Component<{
         fontSize: props.fontSize,
         cols: props.cols,
         rows: props.rows,
+        theme: props.theme,
       })
       instances.set(props.terminalId, instance)
 
@@ -183,6 +186,7 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
     instances.clear()
   })
 
+  const terminalTheme = () => resolveTerminalTheme(preferences.terminalTheme())
   const terminalThemeMode = () => resolveTerminalThemeMode(preferences.terminalTheme())
 
   return (
@@ -199,6 +203,7 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
               rows={terminal.rows}
               fontFamily={preferences.monoFontFamily()}
               fontSize={13}
+              theme={terminalTheme()}
               onInput={props.onInput}
               onResize={props.onResize}
               onTitleChange={props.onTitleChange}

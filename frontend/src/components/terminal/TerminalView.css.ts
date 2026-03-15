@@ -26,3 +26,8 @@ export const terminalWrapper = style({
 globalStyle(`${terminalWrapper} .xterm`, {
   padding: 'var(--space-1)',
 })
+
+// Override xterm.css default background (#000) so the themed wrapper background shows through.
+globalStyle(`${terminalWrapper} .xterm .xterm-viewport`, {
+  backgroundColor: 'transparent',
+})
