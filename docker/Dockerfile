@@ -34,6 +34,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Install frontend dependencies (cache layer)
 # scripts/only-bun.mjs is needed by the preinstall hook in package.json.
 COPY frontend/package.json frontend/bun.lock frontend/
+COPY frontend/patches/ frontend/patches/
 COPY frontend/scripts/ frontend/scripts/
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     cd frontend && bun install --frozen-lockfile
