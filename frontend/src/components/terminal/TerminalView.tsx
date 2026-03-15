@@ -3,7 +3,7 @@ import type { TerminalInstance } from '~/lib/terminal'
 import type { TerminalInfo } from '~/stores/terminal.store'
 import { createEffect, For, onCleanup, onMount } from 'solid-js'
 import { usePreferences } from '~/context/PreferencesContext'
-import { createTerminalInstance } from '~/lib/terminal'
+import { createTerminalInstance, resolveTerminalTheme, resolveTerminalThemeMode } from '~/lib/terminal'
 import * as styles from './TerminalView.css'
 import '@xterm/xterm/css/xterm.css'
 
@@ -159,6 +159,14 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
     }
   })
 
+  // React to terminal theme preference changes
+  createEffect(() => {
+    const theme = resolveTerminalTheme(preferences.terminalTheme())
+    for (const [, instance] of instances) {
+      instance.terminal.options.theme = theme
+    }
+  })
+
   // Clean up instances when component unmounts
   onCleanup(() => {
     for (const [, instance] of instances) {
@@ -167,8 +175,10 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
     instances.clear()
   })
 
+  const terminalThemeMode = () => resolveTerminalThemeMode(preferences.terminalTheme())
+
   return (
-    <div class={styles.container}>
+    <div class={styles.container} data-theme={terminalThemeMode()}>
       <div class={styles.terminalInner}>
         <For each={props.terminals}>
           {terminal => (

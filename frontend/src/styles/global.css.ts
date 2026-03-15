@@ -1,28 +1,28 @@
 import { globalFontFace, globalStyle } from '@vanilla-extract/css'
 
 globalFontFace('Hack NF', {
-  src: 'local("Hack Nerd Font"), local("HackNerdFont-Regular"), local("Hack NF"), local("HackNF-Regular"), url("/fonts/HackNerdFont-3.003-Regular.woff2") format("woff2")',
+  src: 'local("Hack NF"), local("HackNF-Regular"), url("/fonts/HackNerdFont-3.003-Regular.woff2") format("woff2")',
   fontWeight: 400,
   fontStyle: 'normal',
   fontDisplay: 'swap',
 })
 
 globalFontFace('Hack NF', {
-  src: 'local("Hack Nerd Font Bold"), local("HackNerdFont-Bold"), local("Hack NF Bold"), local("HackNF-Bold"), url("/fonts/HackNerdFont-3.003-Bold.woff2") format("woff2")',
+  src: 'local("Hack NF Bold"), local("HackNF-Bold"), url("/fonts/HackNerdFont-3.003-Bold.woff2") format("woff2")',
   fontWeight: 700,
   fontStyle: 'normal',
   fontDisplay: 'swap',
 })
 
 globalFontFace('Hack NF', {
-  src: 'local("Hack Nerd Font Italic"), local("HackNerdFont-Italic"), local("Hack NF Italic"), local("HackNF-Italic"), url("/fonts/HackNerdFont-3.003-Italic.woff2") format("woff2")',
+  src: 'local("Hack NF Italic"), local("HackNF-Italic"), url("/fonts/HackNerdFont-3.003-Italic.woff2") format("woff2")',
   fontWeight: 400,
   fontStyle: 'italic',
   fontDisplay: 'swap',
 })
 
 globalFontFace('Hack NF', {
-  src: 'local("Hack Nerd Font Bold Italic"), local("HackNerdFont-BoldItalic"), local("Hack NF Bold Italic"), local("HackNF-BoldItalic"), url("/fonts/HackNerdFont-3.003-BoldItalic.woff2") format("woff2")',
+  src: 'local("Hack NF Bold Italic"), local("HackNF-BoldItalic"), url("/fonts/HackNerdFont-3.003-BoldItalic.woff2") format("woff2")',
   fontWeight: 700,
   fontStyle: 'italic',
   fontDisplay: 'swap',
