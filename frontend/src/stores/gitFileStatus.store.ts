@@ -12,6 +12,8 @@ export type GitFilterTab = 'all' | 'changed' | 'staged' | 'unstaged'
 interface GitFileStatusState {
   isGitRepo: boolean
   repoRoot: string
+  originUrl: string
+  currentBranch: string
   files: GitFileStatusEntry[]
 }
 
@@ -19,6 +21,8 @@ export function createGitFileStatusStore() {
   const [state, setState] = createStore<GitFileStatusState>({
     isGitRepo: false,
     repoRoot: '',
+    originUrl: '',
+    currentBranch: '',
     files: [],
   })
 
@@ -33,6 +37,8 @@ export function createGitFileStatusStore() {
       setState(produce((s) => {
         s.isGitRepo = true
         s.repoRoot = resp.repoRoot
+        s.originUrl = resp.originUrl
+        s.currentBranch = resp.currentBranch
         s.files = resp.files
       }))
     }
@@ -40,6 +46,8 @@ export function createGitFileStatusStore() {
       setState(produce((s) => {
         s.isGitRepo = false
         s.repoRoot = ''
+        s.originUrl = ''
+        s.currentBranch = ''
         s.files = []
       }))
     }
@@ -49,7 +57,7 @@ export function createGitFileStatusStore() {
   }
 
   const clear = () => {
-    setState({ isGitRepo: false, repoRoot: '', files: [] })
+    setState({ isGitRepo: false, repoRoot: '', originUrl: '', currentBranch: '', files: [] })
   }
 
   const getFileStatus = (absPath: string): GitFileStatusEntry | undefined => {

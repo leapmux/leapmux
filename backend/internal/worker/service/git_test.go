@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -115,6 +116,42 @@ func TestGetGitFileStatusEntries_NonGitDir(t *testing.T) {
 	files, err := getGitFileStatusEntries(context.Background(), dir)
 	require.NoError(t, err)
 	assert.Nil(t, files)
+}
+
+func TestGetGitFileStatus_ReturnsOriginUrlAndCurrentBranch(t *testing.T) {
+	dir := initRepo(t)
+	ctx := context.Background()
+
+	// Set a remote origin URL.
+	run(t, dir, "git", "remote", "add", "origin", "https://github.com/test/repo.git")
+
+	// Create a file so there's something in the status.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "file.txt"), []byte("hello\n"), 0o644))
+
+	// Resolve repo root (matches what the handler does).
+	repoRoot, err := gitOutput(ctx, dir, "rev-parse", "--show-toplevel")
+	require.NoError(t, err)
+	repoRoot = strings.TrimSpace(repoRoot)
+
+	// Simulate what the handler does: get files, then branch/origin.
+	files, err := getGitFileStatusEntries(ctx, repoRoot)
+	require.NoError(t, err)
+	require.NotEmpty(t, files)
+
+	resp := &leapmuxv1.GetGitFileStatusResponse{
+		RepoRoot: repoRoot,
+		Files:    files,
+	}
+	if branch, err := gitOutput(ctx, repoRoot, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
+		resp.CurrentBranch = strings.TrimSpace(branch)
+	}
+	if originURL, err := gitOutput(ctx, repoRoot, "config", "--get", "remote.origin.url"); err == nil {
+		resp.OriginUrl = strings.TrimSpace(originURL)
+	}
+
+	// The default branch name depends on git config; just verify it's non-empty.
+	assert.NotEmpty(t, resp.CurrentBranch)
+	assert.Equal(t, "https://github.com/test/repo.git", resp.OriginUrl)
 }
 
 func TestResolveMainRepoRoot_RegularRepo(t *testing.T) {

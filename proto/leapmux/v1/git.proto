@@ -56,7 +56,9 @@ message GetGitFileStatusRequest {
 
 message GetGitFileStatusResponse {
   string repo_root = 1;
-  repeated GitFileStatusEntry files = 2;  // Paths are relative to repo root
+  string origin_url = 2;
+  string current_branch = 3;
+  repeated GitFileStatusEntry files = 4;  // Paths are relative to repo root
 }
 
 // GitFileRef specifies which version of a file to read.

@@ -150,10 +150,17 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		sendProtoResponse(sender, &leapmuxv1.GetGitFileStatusResponse{
+		resp := &leapmuxv1.GetGitFileStatusResponse{
 			RepoRoot: repoRoot,
 			Files:    files,
-		})
+		}
+		if branch, err := gitOutput(ctx, repoRoot, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
+			resp.CurrentBranch = strings.TrimSpace(branch)
+		}
+		if originURL, err := gitOutput(ctx, repoRoot, "config", "--get", "remote.origin.url"); err == nil {
+			resp.OriginUrl = strings.TrimSpace(originURL)
+		}
+		sendProtoResponse(sender, resp)
 	})
 
 	d.Register("ReadGitFile", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
