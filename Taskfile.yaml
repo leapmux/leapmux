@@ -15,6 +15,8 @@ vars:
     sh: yq '.sqlc-version' versions.yaml
   S6_OVERLAY_VERSION:
     sh: yq '.s6-overlay-version' versions.yaml
+  TASK_VERSION:
+    sh: yq '.task-version' versions.yaml
 
 # --- Code Generation ---
 
@@ -149,6 +151,17 @@ tasks:
     cmds:
       - mkdir -p build/bin
       - go build -ldflags "-X main.version={{.VERSION}}" -o ./build/bin/leapmux ./cmd/leapmux
+
+  build-backend-docker:
+    desc: Build leapmux binary for Docker (static, cross-compiled)
+    deps: [prepare-backend, embed-frontend]
+    dir: backend
+    cmds:
+      - mkdir -p build/bin
+      - >-
+        CGO_ENABLED=0 GOOS={{.GOOS | default "linux"}} GOARCH={{.GOARCH | default "amd64"}}
+        go build -ldflags "-s -w -X main.version={{.VERSION}}"
+        -o ./build/bin/leapmux ./cmd/leapmux
 
   generate-web-icons:
     desc: Generate web favicon and PNG icons from SVG sources
@@ -333,6 +346,7 @@ tasks:
         --build-arg BASE_IMAGE={{.ALPINE_IMAGE}}
         --build-arg BUF_VERSION={{.BUF_VERSION}}
         --build-arg SQLC_VERSION={{.SQLC_VERSION}}
+        --build-arg TASK_VERSION={{.TASK_VERSION}}
         --build-arg S6_OVERLAY_VERSION={{.S6_OVERLAY_VERSION}}
         --build-arg VERSION={{.VERSION}}
         -f docker/Dockerfile
@@ -351,6 +365,7 @@ tasks:
         --build-arg BASE_IMAGE={{.UBUNTU_IMAGE}}
         --build-arg BUF_VERSION={{.BUF_VERSION}}
         --build-arg SQLC_VERSION={{.SQLC_VERSION}}
+        --build-arg TASK_VERSION={{.TASK_VERSION}}
         --build-arg S6_OVERLAY_VERSION={{.S6_OVERLAY_VERSION}}
         --build-arg VERSION={{.VERSION}}
         -f docker/Dockerfile

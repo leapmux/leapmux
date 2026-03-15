@@ -36,6 +36,7 @@ jobs:
         run: |
           echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
           echo "SQLC_VERSION=$(yq '.sqlc-version' versions.yaml)" >> $GITHUB_ENV
+          echo "TASK_VERSION=$(yq '.task-version' versions.yaml)" >> $GITHUB_ENV
           echo "S6_OVERLAY_VERSION=$(yq '.s6-overlay-version' versions.yaml)" >> $GITHUB_ENV
           echo "ALPINE_IMAGE=$(yq '.alpine-image' versions.yaml)" >> $GITHUB_ENV
           echo "UBUNTU_IMAGE=$(yq '.ubuntu-image' versions.yaml)" >> $GITHUB_ENV
@@ -76,6 +77,7 @@ jobs:
             BASE_IMAGE=${{ matrix.variant == 'alpine' && env.ALPINE_IMAGE || env.UBUNTU_IMAGE }}
             BUF_VERSION=${{ env.BUF_VERSION }}
             SQLC_VERSION=${{ env.SQLC_VERSION }}
+            TASK_VERSION=${{ env.TASK_VERSION }}
             S6_OVERLAY_VERSION=${{ env.S6_OVERLAY_VERSION }}
             VERSION=${{ github.ref_name }}
           cache-from: type=gha,scope=${{ matrix.variant }}

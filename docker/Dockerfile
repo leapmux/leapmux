@@ -2,87 +2,56 @@
 
 # Global ARGs — versions are defined in versions.yaml (no defaults here).
 ARG BASE_IMAGE
-ARG BUF_VERSION
 
 # ------------------------------------------------------------------
-# Stage 1: Generate Protocol Buffer code (Go + TypeScript)
+# Stage 1: Build everything via `task build-backend-docker`
 # ------------------------------------------------------------------
-FROM bufbuild/buf:${BUF_VERSION} AS proto-gen
-WORKDIR /src
-COPY buf.yaml buf.gen.yaml ./
-COPY proto/ proto/
-RUN buf generate
-
-# ------------------------------------------------------------------
-# Stage 2: Build frontend (TypeScript/SolidJS via Bun)
-# ------------------------------------------------------------------
-FROM oven/bun:latest AS frontend-builder
-WORKDIR /src/frontend
-
-# Install dependencies first (cache layer)
-# scripts/only-bun.mjs is needed by the preinstall hook in package.json.
-COPY frontend/package.json frontend/bun.lock ./
-COPY frontend/scripts/ scripts/
-RUN --mount=type=cache,target=/root/.bun/install/cache \
-    bun install --frozen-lockfile
-
-# Copy generated TS proto code + frontend source
-COPY --from=proto-gen /src/frontend/src/generated/ src/generated/
-COPY frontend/ .
-RUN bun run build
-
-# ------------------------------------------------------------------
-# Stage 3: Build Go binary (cross-compiled, CGO_ENABLED=0)
-# ------------------------------------------------------------------
-FROM golang:1.26-alpine AS go-builder
+FROM golang:1.26-alpine AS builder
 
 ARG VERSION=dev
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
+ARG BUF_VERSION
 ARG SQLC_VERSION
+ARG TASK_VERSION
 
 WORKDIR /src
 
-# Download Go dependencies first (cache layer)
-COPY backend/go.mod backend/go.sum ./
+# Install build tools
+RUN apk add --no-cache bash rsync yq && \
+    wget -qO- "https://github.com/go-task/task/releases/download/v${TASK_VERSION}/task_linux_$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/').tar.gz" | tar -xz -C /usr/local/bin task && \
+    wget -qO /usr/local/bin/buf "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-$(uname -m)" && chmod +x /usr/local/bin/buf && \
+    go install github.com/sqlc-dev/sqlc/cmd/sqlc@v${SQLC_VERSION}
+
+# Install Bun
+RUN wget -qO- https://bun.sh/install | BUN_INSTALL=/usr bash
+
+# Download Go dependencies (cache layer)
+COPY backend/go.mod backend/go.sum backend/
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download
+    cd backend && go mod download
 
-# Copy generated proto Go code
-COPY --from=proto-gen /src/backend/generated/ generated/
+# Install frontend dependencies (cache layer)
+# scripts/only-bun.mjs is needed by the preinstall hook in package.json.
+COPY frontend/package.json frontend/bun.lock frontend/
+COPY frontend/scripts/ frontend/scripts/
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    cd frontend && bun install --frozen-lockfile
 
-# Generate sqlc code
-COPY backend/internal/hub/sqlc.yaml internal/hub/sqlc.yaml
-COPY backend/internal/hub/db/queries/ internal/hub/db/queries/
-COPY backend/internal/hub/db/migrations/ internal/hub/db/migrations/
-COPY backend/internal/worker/sqlc.yaml internal/worker/sqlc.yaml
-COPY backend/internal/worker/db/queries/ internal/worker/db/queries/
-COPY backend/internal/worker/db/migrations/ internal/worker/db/migrations/
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    go install github.com/sqlc-dev/sqlc/cmd/sqlc@v${SQLC_VERSION} && \
-    cd internal/hub && sqlc generate && \
-    cd /src/internal/worker && sqlc generate
+# Copy all remaining source
+COPY . .
 
-# Embed frontend assets
-COPY backend/internal/hub/frontend.embed internal/hub/generated/frontend/embed.go
-COPY --from=frontend-builder /src/frontend/.output/public/ internal/hub/generated/frontend/public/
+# Create empty spinners directory to satisfy generate-spinners status check
+# (avoids git clone in Docker; spinners are optional)
+RUN mkdir -p frontend/src/spinners
 
-# Copy remaining Go source
-COPY backend/cmd/ cmd/
-COPY backend/hub/ hub/
-COPY backend/worker/ worker/
-COPY backend/internal/ internal/
-
-# Build statically linked binary (enables native cross-compilation)
+# Build the backend binary via task (single source of truth)
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -ldflags "-s -w -X main.version=${VERSION}" \
-    -o /leapmux ./cmd/leapmux
+    task build-backend-docker GOOS=${TARGETOS} GOARCH=${TARGETARCH} VERSION=${VERSION}
 
 # ------------------------------------------------------------------
-# Stage 4: Runtime image with s6-overlay
+# Stage 2: Runtime image with s6-overlay
 # ------------------------------------------------------------------
 FROM ${BASE_IMAGE}
 
@@ -130,7 +99,7 @@ RUN if [ -f /etc/alpine-release ]; then \
     fi
 
 # Copy binary
-COPY --from=go-builder /leapmux /usr/local/bin/leapmux
+COPY --from=builder /src/backend/build/bin/leapmux /usr/local/bin/leapmux
 
 # Copy s6 service definitions
 COPY docker/rootfs/ /
