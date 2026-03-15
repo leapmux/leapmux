@@ -47,7 +47,7 @@ func buildShellWrappedCommand(ctx context.Context, shellPath string, interactive
 	case shellName == "tcsh" || shellName == "csh":
 		inner := buildPosixCommand(delimiter, metaPrefix, baseArgs, modelEffortArgs, true)
 		if interactive {
-			cmdArgs = []string{"-i", "-c", inner} // tcsh: -l must be the only flag
+			cmdArgs = []string{"-ic", inner} // tcsh: -l must be the only flag
 		} else {
 			cmdArgs = []string{"-c", inner}
 		}

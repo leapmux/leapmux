@@ -88,12 +88,11 @@ func TestBuildShellWrappedCommand_Tcsh_Interactive(t *testing.T) {
 		[]string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
 	)
 	assert.Equal(t, "/bin/tcsh", cmd.Path)
-	require.Len(t, cmd.Args, 4) // tcsh -i -c <cmd>
-	assert.Equal(t, "-i", cmd.Args[1])
-	assert.Equal(t, "-c", cmd.Args[2])
-	assert.Contains(t, cmd.Args[3], "echo '"+delimiter+"'")
-	assert.Contains(t, cmd.Args[3], "unset CLAUDECODE")
-	assert.Contains(t, cmd.Args[3], "exec claude")
+	require.Len(t, cmd.Args, 3) // tcsh -ic <cmd>
+	assert.Equal(t, "-ic", cmd.Args[1])
+	assert.Contains(t, cmd.Args[2], "echo '"+delimiter+"'")
+	assert.Contains(t, cmd.Args[2], "unset CLAUDECODE")
+	assert.Contains(t, cmd.Args[2], "exec claude")
 }
 
 func TestBuildShellWrappedCommand_Tcsh_NonInteractive(t *testing.T) {
@@ -112,11 +111,10 @@ func TestBuildShellWrappedCommand_Csh(t *testing.T) {
 		[]string{"--verbose"}, []string{"--model", "opus"}, "/tmp",
 	)
 	assert.Equal(t, "/bin/csh", cmd.Path)
-	require.Len(t, cmd.Args, 4) // csh -i -c <cmd>
-	assert.Equal(t, "-i", cmd.Args[1])
-	assert.Equal(t, "-c", cmd.Args[2])
-	assert.Contains(t, cmd.Args[3], "unset CLAUDECODE")
-	assert.Contains(t, cmd.Args[3], "exec claude")
+	require.Len(t, cmd.Args, 3) // csh -ic <cmd>
+	assert.Equal(t, "-ic", cmd.Args[1])
+	assert.Contains(t, cmd.Args[2], "unset CLAUDECODE")
+	assert.Contains(t, cmd.Args[2], "exec claude")
 }
 
 func TestBuildShellWrappedCommand_Nu_Interactive(t *testing.T) {
