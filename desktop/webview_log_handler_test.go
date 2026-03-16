@@ -230,3 +230,30 @@ func TestWithGroupAppearsInOutput(t *testing.T) {
 		t.Errorf("expected server.addr=:8080 in output, got %s", calls[0])
 	}
 }
+
+func TestWithAttrsSiblingIsolation(t *testing.T) {
+	mock := &mockExecJS{}
+	parent := newWebviewHandler(&noopHandler{}, mock.fn)
+	parent.SetReady()
+
+	// Create two children from the same parent with different attrs.
+	child1 := parent.WithAttrs([]slog.Attr{slog.String("child", "1")})
+	child2 := parent.WithAttrs([]slog.Attr{slog.String("child", "2")})
+
+	_ = child1.Handle(context.TODO(), newTestRecord(slog.LevelInfo, "from1"))
+	_ = child2.Handle(context.TODO(), newTestRecord(slog.LevelInfo, "from2"))
+
+	calls := mock.getCalls()
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 calls, got %d", len(calls))
+	}
+	if !strings.Contains(calls[0], "child=1") {
+		t.Errorf("child1 should have child=1, got %s", calls[0])
+	}
+	if strings.Contains(calls[0], "child=2") {
+		t.Errorf("child1 should NOT have child=2, got %s", calls[0])
+	}
+	if !strings.Contains(calls[1], "child=2") {
+		t.Errorf("child2 should have child=2, got %s", calls[1])
+	}
+}

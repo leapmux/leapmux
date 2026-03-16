@@ -69,7 +69,7 @@ func (h *webviewHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &webviewHandler{
 		inner:  h.inner.WithAttrs(attrs),
 		shared: h.shared,
-		attrs:  append(h.attrs, attrs...),
+		attrs:  append(append([]slog.Attr(nil), h.attrs...), attrs...),
 		group:  h.group,
 	}
 }
