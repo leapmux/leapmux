@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/leapmux/leapmux/solo"
+	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // startSolo launches a Hub and Worker in-process via the solo package.
@@ -18,6 +20,15 @@ func (a *App) startSolo() error {
 		return err
 	}
 	a.solo = inst
+
+	// Wrap the default slog handler so log records are also forwarded
+	// to the WebView console (for Web Inspector / F12).
+	a.logHandler = newWebviewHandler(
+		slog.Default().Handler(),
+		func(js string) { wailsRuntime.WindowExecJS(a.ctx, js) },
+	)
+	slog.SetDefault(slog.New(a.logHandler))
+
 	return nil
 }
 
@@ -25,6 +36,11 @@ func (a *App) startSolo() error {
 func (a *App) stopSolo() {
 	if a.solo == nil {
 		return
+	}
+	// Restore the original inner handler before stopping.
+	if a.logHandler != nil {
+		slog.SetDefault(slog.New(a.logHandler.inner))
+		a.logHandler = nil
 	}
 	a.solo.Stop()
 	a.solo = nil

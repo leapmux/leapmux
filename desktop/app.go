@@ -14,11 +14,12 @@ import (
 
 // App is the main application struct bound to the frontend via Wails.
 type App struct {
-	ctx       context.Context
-	version   string
-	config    *DesktopConfig
-	solo      *solo.Instance
-	connected bool // true after a successful Connect call
+	ctx        context.Context
+	version    string
+	config     *DesktopConfig
+	solo       *solo.Instance
+	logHandler *webviewHandler
+	connected  bool // true after a successful Connect call
 }
 
 // NewApp creates a new App instance.
@@ -98,6 +99,13 @@ func (a *App) domReady(_ context.Context) {
 	}, true);
 })();
 `, inspectorMsg))
+
+	// Flush buffered log records to the WebView console now that the
+	// navigated page's DOM is ready and WindowExecJS calls will land.
+	// On the initial launcher page load logHandler is nil (no-op).
+	if a.logHandler != nil {
+		a.logHandler.SetReady()
+	}
 }
 
 // bringToFront shows and raises the window so it appears above other windows.
