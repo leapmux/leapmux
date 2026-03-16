@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/leapmux/leapmux/solo"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -100,6 +99,13 @@ func (a *App) domReady(_ context.Context) {
 	}, true);
 })();
 `, inspectorMsg))
+
+	// Flush buffered log records to the WebView console now that the
+	// navigated page's DOM is ready and WindowExecJS calls will land.
+	// On the initial launcher page load logHandler is nil (no-op).
+	if a.logHandler != nil {
+		a.logHandler.SetReady()
+	}
 }
 
 // bringToFront shows and raises the window so it appears above other windows.
@@ -178,18 +184,6 @@ func (a *App) ConnectSolo() (string, error) {
 	}
 
 	a.connected = true
-
-	// Give the WebView time to navigate to the frontend before flushing
-	// buffered log records. WindowExecJS calls during navigation may be
-	// lost, so we wait a few seconds.
-	if a.logHandler != nil {
-		h := a.logHandler
-		go func() {
-			time.Sleep(3 * time.Second)
-			h.SetReady()
-		}()
-	}
-
 	return "http://127.0.0.1:4327", nil
 }
 
