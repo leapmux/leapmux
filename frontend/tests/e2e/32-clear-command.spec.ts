@@ -2,6 +2,33 @@ import { expect, test } from './fixtures'
 import { lastAssistantBubble } from './helpers/ui'
 
 test.describe('Clear Command', () => {
+  test('slash reset clears context (alias for /clear)', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+
+    // Send a message to establish a session
+    await editor.click()
+    await page.keyboard.type('What is 1+1? Reply with just the number, nothing else.')
+    await page.keyboard.press('Meta+Enter')
+    const lastAssistant1 = lastAssistantBubble(page)
+    await expect(lastAssistant1).toContainText('2', { timeout: 30000 })
+
+    // Send /reset (alias for /clear)
+    await editor.click()
+    await page.keyboard.type('/reset')
+    await page.keyboard.press('Meta+Enter')
+
+    // Verify notification bubble appears
+    await expect(page.getByText('Context cleared')).toBeVisible()
+
+    // Verify agent is still responsive (new session)
+    await editor.click()
+    await page.keyboard.type('What is 4+4? Reply with just the number, nothing else.')
+    await page.keyboard.press('Meta+Enter')
+    const lastAssistant2 = lastAssistantBubble(page)
+    await expect(lastAssistant2).toContainText('8', { timeout: 30000 })
+  })
+
   test('slash clear clears context and shows notification', async ({ page, authenticatedWorkspace }) => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
