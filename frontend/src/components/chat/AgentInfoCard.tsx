@@ -3,9 +3,10 @@ import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import Check from 'lucide-solid/icons/check'
 import Copy from 'lucide-solid/icons/copy'
 import { createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
-import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
+import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { Icon } from '~/components/common/Icon'
-import { formatRateLimitSummary, pickUrgentRateLimit, RATE_LIMIT_POPOVER_LABELS } from '~/lib/rateLimitUtils'
+import { Tooltip } from '~/components/common/Tooltip'
+import { formatCountdown, formatResetTimestamp, getResetsAt, pickUrgentRateLimit, RATE_LIMIT_POPOVER_LABELS } from '~/lib/rateLimitUtils'
 import * as styles from './ChatView.css'
 import { computePercentage, contextSize, DEFAULT_BUFFER_PCT } from './ContextUsageGrid'
 import { tildify } from './messageUtils'
@@ -23,23 +24,41 @@ function formatTokenCount(tokens: number): string {
   return String(tokens)
 }
 
-export function useAgentInfoCard(props: AgentInfoCardProps) {
-  const [sessionIdCopied, setSessionIdCopied] = createSignal(false)
-
-  const handleCopySessionId = async () => {
-    const sid = props.agent?.agentSessionId
-    if (!sid)
+function useCopyButton(getText: () => string | undefined) {
+  const [copied, setCopied] = createSignal(false)
+  const handleCopy = async () => {
+    const text = getText()
+    if (!text)
       return
     try {
-      await navigator.clipboard.writeText(sid)
-      setSessionIdCopied(true)
-      setTimeout(setSessionIdCopied, 2000, false)
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      setTimeout(setCopied, 2000, false)
     }
     catch {
       // ignore clipboard errors
     }
   }
+  return { copied, handleCopy }
+}
 
+function CopyButton(props: { getText: () => string | undefined, title: string, testId?: string }) {
+  const { copied, handleCopy } = useCopyButton(() => props.getText())
+  return (
+    <button
+      class={styles.infoCopyButton}
+      onClick={handleCopy}
+      title={props.title}
+      data-testid={props.testId}
+    >
+      <Show when={copied()} fallback={<Icon icon={Copy} size="xs" />}>
+        <Icon icon={Check} size="xs" />
+      </Show>
+    </button>
+  )
+}
+
+export function useAgentInfoCard(props: AgentInfoCardProps) {
   const hasContextInfo = () => {
     return props.agentSessionInfo?.totalCostUsd != null
       || props.agentSessionInfo?.contextUsage
@@ -67,7 +86,10 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
       <Show when={props.agent?.agentProvider != null}>
         <div class={styles.infoRow} data-testid="info-row-agent-type">
           <span class={styles.infoLabel}>Agent</span>
-          <span class={styles.infoValue}>{agentProviderLabel(props.agent!.agentProvider)}</span>
+          <span class={styles.infoValueText} style={{ 'display': 'inline-flex', 'align-items': 'center', 'gap': 'var(--space-1)' }}>
+            <AgentProviderIcon provider={props.agent!.agentProvider} size={12} />
+            {agentProviderLabel(props.agent!.agentProvider)}
+          </span>
         </div>
       </Show>
       <Show when={props.agent?.workerName}>
@@ -80,16 +102,11 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
         <div class={styles.infoRow}>
           <span class={styles.infoLabel}>Session ID</span>
           <span class={styles.infoValue} data-testid="session-id-value">{props.agent?.agentSessionId}</span>
-          <button
-            class={styles.infoCopyButton}
-            onClick={handleCopySessionId}
+          <CopyButton
+            getText={() => props.agent?.agentSessionId}
             title="Copy session ID"
-            data-testid="session-id-copy"
-          >
-            <Show when={sessionIdCopied()} fallback={<Icon icon={Copy} size="xs" />}>
-              <Icon icon={Check} size="xs" />
-            </Show>
-          </button>
+            testId="session-id-copy"
+          />
         </div>
       </Show>
       <Show when={props.agent?.gitStatus?.branch}>
@@ -107,6 +124,10 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
               return parts.length > 0 ? ` [${parts.join(' ')}]` : ''
             })()}
           </span>
+          <CopyButton
+            getText={() => props.agent!.gitStatus!.branch}
+            title="Copy branch name"
+          />
         </div>
         {(() => {
           const gs = props.agent!.gitStatus!
@@ -131,7 +152,7 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
             <Show when={flags.length > 0}>
               <div class={styles.infoRow}>
                 <span class={styles.infoLabel}>Status</span>
-                <span class={styles.infoValue}>{flags.join(', ')}</span>
+                <span class={styles.infoValueText}>{flags.join(', ')}</span>
               </div>
             </Show>
           )
@@ -141,6 +162,10 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
         <div class={styles.infoRow} data-testid="info-row-directory">
           <span class={styles.infoLabel}>Directory</span>
           <span class={styles.infoValue}>{tildify(props.agent!.workingDir!, props.agent!.homeDir)}</span>
+          <CopyButton
+            getText={() => props.agent!.workingDir!}
+            title="Copy directory path"
+          />
         </div>
       </Show>
       <Show when={props.agentSessionInfo?.planFilePath}>
@@ -149,6 +174,10 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
           <span class={styles.infoValue}>
             {tildify(props.agentSessionInfo!.planFilePath!, props.agent?.homeDir)}
           </span>
+          <CopyButton
+            getText={() => props.agentSessionInfo!.planFilePath!}
+            title="Copy plan file path"
+          />
         </div>
       </Show>
       <Show when={props.agentSessionInfo?.contextUsage}>
@@ -160,7 +189,7 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
           return (
             <div class={styles.infoRow}>
               <span class={styles.infoLabel}>Context</span>
-              <span class={styles.infoValue}>
+              <span class={styles.infoValueText}>
                 {formatTokenCount(total)}
                 {` / ${formatTokenCount(ctxWindow)}`}
                 {pct != null ? ` (${Math.round(pct)}% with ${DEFAULT_BUFFER_PCT}% buffer)` : ''}
@@ -172,7 +201,7 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
       <Show when={props.agentSessionInfo?.totalCostUsd != null}>
         <div class={styles.infoRow}>
           <span class={styles.infoLabel}>Cost</span>
-          <span class={styles.infoValue}>
+          <span class={styles.infoValueText}>
             $
             {props.agentSessionInfo!.totalCostUsd!.toFixed(4)}
           </span>
@@ -183,10 +212,37 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
           {(info) => {
             const typeLabel = RATE_LIMIT_POPOVER_LABELS[info.rateLimitType ?? '']
               ?? (info.rateLimitType ? `Rate Limit (${info.rateLimitType})` : 'Rate Limit')
+
+            const status = info.status
+            const exceeded = !!status && status !== 'allowed' && status !== 'allowed_warning'
+            const resetsAt = getResetsAt(info)
+
+            const statusParts: string[] = []
+            if (status === 'allowed')
+              statusParts.push('Allowed')
+            else if (status === 'allowed_warning')
+              statusParts.push('Warning')
+            else if (exceeded)
+              statusParts.push('Exceeded')
+            if (typeof info.utilization === 'number' && !exceeded)
+              statusParts.push(`${Math.round(info.utilization * 100)}% used`)
+            if (info.isUsingOverage)
+              statusParts.push('overage')
+
+            const countdown = typeof resetsAt === 'number' ? formatCountdown(resetsAt) : null
+
             return (
               <div class={styles.infoRow}>
                 <span class={styles.infoLabel}>{typeLabel}</span>
-                <span class={styles.infoValue}>{formatRateLimitSummary(info)}</span>
+                <span class={styles.infoValueText}>
+                  {statusParts.length > 0 ? statusParts.join(', ') : 'Unknown'}
+                  <Show when={countdown}>
+                    {', '}
+                    <Tooltip text={typeof resetsAt === 'number' ? formatResetTimestamp(resetsAt) : undefined}>
+                      <span>{`resets in ${countdown}`}</span>
+                    </Tooltip>
+                  </Show>
+                </span>
               </div>
             )
           }}

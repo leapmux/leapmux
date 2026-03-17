@@ -12,7 +12,7 @@ import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
-import { getResetsAt } from '~/lib/rateLimitUtils'
+import { formatResetTimestamp, getResetsAt } from '~/lib/rateLimitUtils'
 import { safeGetString, safeRemoveItem, safeSetString } from '~/lib/safeStorage'
 import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store'
 import { spinner } from '~/styles/animations.css'
@@ -309,7 +309,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                                       <Tooltip
                                         text={(() => {
                                           const resetsAt = getResetsAt(rl().info)
-                                          return resetsAt ? `Resets at ${new Date(resetsAt * 1000).toLocaleString()}` : undefined
+                                          return resetsAt ? formatResetTimestamp(resetsAt) : undefined
                                         })()}
                                       >
                                         <span class={styles.rateLimitCountdown}>
@@ -362,7 +362,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                                   <Tooltip
                                     text={(() => {
                                       const resetsAt = getResetsAt(rl().info)
-                                      return resetsAt ? `Resets at ${new Date(resetsAt * 1000).toLocaleString()}` : undefined
+                                      return resetsAt ? formatResetTimestamp(resetsAt) : undefined
                                     })()}
                                   >
                                     <span class={styles.rateLimitCountdown}>

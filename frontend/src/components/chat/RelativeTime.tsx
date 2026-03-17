@@ -15,6 +15,7 @@ import Clock12 from 'lucide-solid/icons/clock-12'
 import { createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
+import { formatLocalDateTime } from '~/lib/dateFormat'
 
 const clockIcons: Component<{ size: number }>[] = [
   Clock12,
@@ -52,12 +53,6 @@ function formatCompact(ts: Date): string {
   return `${diffYr}y`
 }
 
-/** Format a Date as "YYYY-MM-DD HH:mm:ss". */
-function formatFull(d: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-}
-
 interface RelativeTimeProps {
   timestamp: string
   class?: string
@@ -66,7 +61,7 @@ interface RelativeTimeProps {
 export function RelativeTime(props: RelativeTimeProps) {
   const parsed = () => new Date(props.timestamp)
   const isValid = () => props.timestamp !== '' && !Number.isNaN(parsed().getTime())
-  const fullText = () => formatFull(parsed())
+  const fullText = () => formatLocalDateTime(parsed())
   const hour12 = () => parsed().getHours() % 12
   const [relative, setRelative] = createSignal(isValid() ? formatCompact(parsed()) : '')
 
