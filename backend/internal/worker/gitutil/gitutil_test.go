@@ -125,3 +125,22 @@ func TestGetGitStatus_NonGitDir(t *testing.T) {
 	status := GetGitStatus(dir)
 	assert.Nil(t, status)
 }
+
+func TestGetGitStatus_DetachedHEAD(t *testing.T) {
+	dir := initRepo(t)
+
+	// Get the current commit SHA.
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "--short", "HEAD")
+	out, err := cmd.Output()
+	require.NoError(t, err)
+	expectedSHA := string(out[:len(out)-1]) // trim newline
+
+	// Detach HEAD by checking out the commit directly.
+	cmd = exec.Command("git", "-C", dir, "checkout", "--detach", "HEAD")
+	require.NoError(t, cmd.Run())
+
+	status := GetGitStatus(dir)
+	require.NotNil(t, status)
+	// Should show short SHA, not empty string or "HEAD".
+	assert.Equal(t, expectedSHA, status.Branch)
+}

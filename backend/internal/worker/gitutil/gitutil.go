@@ -42,6 +42,11 @@ func GetGitStatus(dir string) *GitStatus {
 	}
 	parseStatusV2(output, status)
 
+	// If detached, resolve to short SHA.
+	if status.Branch == "" {
+		status.Branch = getShortHEAD(dir)
+	}
+
 	// Check for stashes (separate command, not included in status output).
 	checkStash(dir, status)
 
@@ -177,6 +182,11 @@ func getGitStatusV1(dir string) *GitStatus {
 		}
 	}
 
+	// If detached, resolve to short SHA.
+	if status.Branch == "" || status.Branch == "HEAD (no branch)" {
+		status.Branch = getShortHEAD(dir)
+	}
+
 	// Check for stashes.
 	checkStash(dir, status)
 
@@ -192,6 +202,16 @@ func checkStash(dir string, status *GitStatus) {
 	if err := cmd.Run(); err == nil {
 		status.Stashed = true
 	}
+}
+
+// getShortHEAD returns the short commit SHA for HEAD, or empty string on failure.
+func getShortHEAD(dir string) string {
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "--short", "HEAD")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
 }
 
 // GetOriginURL returns the remote origin URL for the given directory.

@@ -154,6 +154,98 @@ func TestGetGitFileStatus_ReturnsOriginUrlAndCurrentBranch(t *testing.T) {
 	assert.Equal(t, "https://github.com/test/repo.git", resp.OriginUrl)
 }
 
+func TestIsRemoteRef(t *testing.T) {
+	dir := initRepo(t)
+	ctx := context.Background()
+
+	// Add a remote and create a remote tracking branch.
+	remoteDir := initRepo(t)
+	run(t, remoteDir, "git", "checkout", "-b", "feature/test")
+	run(t, remoteDir, "git", "commit", "--allow-empty", "-m", "feature commit")
+	run(t, dir, "git", "remote", "add", "origin", remoteDir)
+	run(t, dir, "git", "fetch", "origin")
+
+	// "origin/feature/test" should be a remote ref.
+	assert.True(t, isRemoteRef(ctx, dir, "origin/feature/test"))
+
+	// A local branch name should not be a remote ref.
+	assert.False(t, isRemoteRef(ctx, dir, "main"))
+	assert.False(t, isRemoteRef(ctx, dir, "nonexistent"))
+}
+
+func TestCheckoutBranchIfRequested_RemoteBranch(t *testing.T) {
+	dir := initRepo(t)
+
+	// Create a "remote" repo with a branch.
+	remoteDir := initRepo(t)
+	run(t, remoteDir, "git", "checkout", "-b", "feature/remote-test")
+	run(t, remoteDir, "git", "commit", "--allow-empty", "-m", "remote commit")
+
+	// Add as origin and fetch.
+	run(t, dir, "git", "remote", "add", "origin", remoteDir)
+	run(t, dir, "git", "fetch", "origin")
+
+	// Checkout the remote branch via the service method.
+	svc := &Context{}
+	err := svc.checkoutBranchIfRequested(dir, "origin/feature/remote-test")
+	require.NoError(t, err)
+
+	// Verify we're on a local branch (not detached HEAD).
+	ctx := context.Background()
+	branch, err := gitOutput(ctx, dir, "rev-parse", "--abbrev-ref", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, "feature/remote-test", strings.TrimSpace(branch))
+
+	// Verify the local branch tracks the remote.
+	upstream, err := gitOutput(ctx, dir, "rev-parse", "--abbrev-ref", "feature/remote-test@{upstream}")
+	require.NoError(t, err)
+	assert.Equal(t, "origin/feature/remote-test", strings.TrimSpace(upstream))
+}
+
+func TestCheckoutBranchIfRequested_LocalBranch(t *testing.T) {
+	dir := initRepo(t)
+
+	// Create a local branch.
+	run(t, dir, "git", "checkout", "-b", "my-feature")
+	run(t, dir, "git", "commit", "--allow-empty", "-m", "feature commit")
+	run(t, dir, "git", "checkout", "-") // go back to default branch
+
+	// Checkout the local branch.
+	svc := &Context{}
+	err := svc.checkoutBranchIfRequested(dir, "my-feature")
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	branch, err := gitOutput(ctx, dir, "rev-parse", "--abbrev-ref", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, "my-feature", strings.TrimSpace(branch))
+}
+
+func TestDetachedHEAD_ShowsShortSHA(t *testing.T) {
+	dir := initRepo(t)
+	ctx := context.Background()
+
+	// Get short SHA before detaching.
+	expectedSHA, err := gitOutput(ctx, dir, "rev-parse", "--short", "HEAD")
+	require.NoError(t, err)
+	expectedSHA = strings.TrimSpace(expectedSHA)
+
+	// Detach HEAD.
+	run(t, dir, "git", "checkout", "--detach", "HEAD")
+
+	// Simulate what the handler does.
+	branch, err := gitOutput(ctx, dir, "rev-parse", "--abbrev-ref", "HEAD")
+	require.NoError(t, err)
+	branch = strings.TrimSpace(branch)
+	if branch == "HEAD" {
+		sha, err := gitOutput(ctx, dir, "rev-parse", "--short", "HEAD")
+		require.NoError(t, err)
+		branch = strings.TrimSpace(sha)
+	}
+
+	assert.Equal(t, expectedSHA, branch)
+}
+
 func TestResolveMainRepoRoot_RegularRepo(t *testing.T) {
 	dir := initRepo(t)
 	resolved, err := filepath.EvalSymlinks(dir)

@@ -105,6 +105,12 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 		// Current branch.
 		if branch, err := gitOutput(ctx, dirPath, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
 			resp.CurrentBranch = strings.TrimSpace(branch)
+			if resp.CurrentBranch == "HEAD" {
+				// Detached HEAD — show short SHA instead.
+				if sha, err := gitOutput(ctx, dirPath, "rev-parse", "--short", "HEAD"); err == nil {
+					resp.CurrentBranch = strings.TrimSpace(sha)
+				}
+			}
 		}
 
 		// Origin URL.
@@ -156,6 +162,11 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 		if branch, err := gitOutput(ctx, repoRoot, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
 			resp.CurrentBranch = strings.TrimSpace(branch)
+			if resp.CurrentBranch == "HEAD" {
+				if sha, err := gitOutput(ctx, repoRoot, "rev-parse", "--short", "HEAD"); err == nil {
+					resp.CurrentBranch = strings.TrimSpace(sha)
+				}
+			}
 		}
 		if originURL, err := gitOutput(ctx, repoRoot, "config", "--get", "remote.origin.url"); err == nil {
 			resp.OriginUrl = strings.TrimSpace(originURL)
@@ -283,6 +294,11 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 		currentBranch := ""
 		if branch, err := gitOutput(ctx, repoRoot, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
 			currentBranch = strings.TrimSpace(branch)
+			if currentBranch == "HEAD" {
+				if sha, err := gitOutput(ctx, repoRoot, "rev-parse", "--short", "HEAD"); err == nil {
+					currentBranch = strings.TrimSpace(sha)
+				}
+			}
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.ListGitBranchesResponse{

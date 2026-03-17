@@ -217,6 +217,8 @@ func (svc *Context) unregisterTabAndCleanup(tabType leapmuxv1.TabType, tabID str
 }
 
 // checkoutBranchIfRequested runs `git checkout <branch>` in the given working directory.
+// When the branch is a remote tracking ref (e.g. "origin/feature"), it creates a local
+// branch that tracks the remote branch instead of checking out a detached HEAD.
 // No-op if branch is empty.
 func (svc *Context) checkoutBranchIfRequested(workingDir, branch string) error {
 	if branch == "" {
@@ -224,6 +226,25 @@ func (svc *Context) checkoutBranchIfRequested(workingDir, branch string) error {
 	}
 
 	ctx := bgCtx()
+
+	// Check if this is a remote tracking branch (e.g. "origin/feature").
+	// If so, create a local branch that tracks it.
+	if isRemoteRef(ctx, workingDir, branch) {
+		// Extract local branch name by stripping the remote prefix (e.g. "origin/feature" -> "feature").
+		parts := strings.SplitN(branch, "/", 2)
+		if len(parts) == 2 {
+			localName := parts[1]
+			stderr, err := gitOutputStderr(ctx, workingDir, "checkout", "-b", localName, "--track", branch)
+			if err != nil {
+				if msg := strings.TrimSpace(stderr); msg != "" {
+					return errors.New(msg)
+				}
+				return fmt.Errorf("git checkout failed: %w", err)
+			}
+			return nil
+		}
+	}
+
 	stderr, err := gitOutputStderr(ctx, workingDir, "checkout", branch)
 	if err != nil {
 		if msg := strings.TrimSpace(stderr); msg != "" {
@@ -232,6 +253,12 @@ func (svc *Context) checkoutBranchIfRequested(workingDir, branch string) error {
 		return fmt.Errorf("git checkout failed: %w", err)
 	}
 	return nil
+}
+
+// isRemoteRef checks if the given name is a remote tracking ref (e.g. "origin/feature").
+func isRemoteRef(ctx context.Context, workingDir, name string) bool {
+	_, err := gitOutput(ctx, workingDir, "rev-parse", "--verify", "refs/remotes/"+name)
+	return err == nil
 }
 
 // branchExists checks if a local branch with the given name already exists.
