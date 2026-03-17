@@ -59,8 +59,7 @@ test.describe('Empty State Buttons', () => {
   })
 
   test('multi-tile: unfocused empty tile shows hint, focused shows buttons', async ({ page, authenticatedWorkspace }) => {
-    // Start with a tab, then split to create a second tile
-    await page.locator('[data-testid="new-agent-button"]').click()
+    // The workspace fixture already opens one agent tab. Split to create a second (empty) tile.
     await page.locator('[data-testid="tab"]').first().waitFor()
     await page.locator('[data-testid="split-horizontal"]').first().click()
     await expect(page.locator('[data-testid="tile"]')).toHaveCount(2)
