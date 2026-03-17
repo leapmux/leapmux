@@ -101,7 +101,16 @@ export function Tooltip(props: TooltipProps) {
         <Portal>
           <div
             id={`tooltip-${tooltipId}`}
-            ref={tooltipEl}
+            ref={(el) => {
+              tooltipEl = el
+              // Enter the top layer so the tooltip renders above native
+              // popover="auto" elements (e.g. DropdownMenu).
+              requestAnimationFrame(() => {
+                if (el.isConnected)
+                  el.showPopover()
+              })
+            }}
+            popover="manual"
             role="tooltip"
             class={styles.tooltip}
             style={{
