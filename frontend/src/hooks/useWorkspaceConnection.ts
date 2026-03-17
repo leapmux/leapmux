@@ -108,7 +108,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
               break
 
             // Ephemeral (unwrapped) agent_session_info — not persisted, skip addMessage.
-            if (!parsed.isWrapped && parsed.topLevel.type === 'agent_session_info') {
+            if (!parsed.wrapper && parsed.topLevel.type === 'agent_session_info') {
               const info = parsed.topLevel.info as Record<string, unknown> | undefined
               const updates: Record<string, unknown> = {}
               if (info?.total_cost_usd !== undefined)

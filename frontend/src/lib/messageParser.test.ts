@@ -48,9 +48,8 @@ describe('parseMessageContent', () => {
     const msg = makeMsg(MessageRole.ASSISTANT, wrap(inner))
     const result = parseMessageContent(msg)
 
-    expect(result.isWrapped).toBe(true)
-    expect(result.parentObject).toEqual(inner)
     expect(result.wrapper).not.toBeNull()
+    expect(result.parentObject).toEqual(inner)
     expect(result.children).toEqual([])
     expect(result.rawText).toBeTruthy()
   })
@@ -69,7 +68,7 @@ describe('parseMessageContent', () => {
     const msg = makeMsg(MessageRole.ASSISTANT, wrap())
     const result = parseMessageContent(msg)
 
-    expect(result.isWrapped).toBe(true)
+    expect(result.wrapper).not.toBeNull()
     expect(result.parentObject).toBeUndefined()
     expect(result.children).toEqual([])
   })
@@ -79,7 +78,7 @@ describe('parseMessageContent', () => {
     const msg = makeMsg(MessageRole.LEAPMUX, content)
     const result = parseMessageContent(msg)
 
-    expect(result.isWrapped).toBe(false)
+    expect(result.wrapper).toBeNull()
     expect(result.parentObject).toEqual(content)
     expect(result.topLevel).toEqual(content)
     expect(result.wrapper).toBeNull()
