@@ -915,10 +915,12 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 
 	// Unified envelope — decoded once per message.
 	type envelope struct {
-		Type    string                       `json:"type"`
-		Subtype string                       `json:"subtype"`
-		Changes map[string]settingsChange    `json:"changes,omitempty"`
-		RLInfo  *struct{ RateLimitType string `json:"rateLimitType"` } `json:"rate_limit_info,omitempty"`
+		Type    string                    `json:"type"`
+		Subtype string                    `json:"subtype"`
+		Changes map[string]settingsChange `json:"changes,omitempty"`
+		RLInfo  *struct {
+			RateLimitType string `json:"rateLimitType"`
+		} `json:"rate_limit_info,omitempty"`
 	}
 
 	// Deduplication state — track the last-seen index for ordering.
