@@ -103,6 +103,31 @@ func TestListDirectory_MergeIgnoresFiles(t *testing.T) {
 	assert.Equal(t, "a", entries[0].Name)
 }
 
+func TestListDirectory_MergesHiddenDirs(t *testing.T) {
+	t.Run("hidden top-level dir is merged", func(t *testing.T) {
+		dir := t.TempDir()
+		// .github/workflows — hidden dir should be merged like any other.
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+
+		_, entries, err := ListDirectory(dir, 5)
+		require.NoError(t, err)
+		require.Len(t, entries, 1)
+		assert.Equal(t, ".github/workflows", entries[0].Name)
+		assert.True(t, entries[0].IsDir)
+	})
+
+	t.Run("hidden child is merged", func(t *testing.T) {
+		dir := t.TempDir()
+		// src/.internal/utils — all single-child, should merge through hidden.
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "src", ".internal", "utils"), 0o755))
+
+		_, entries, err := ListDirectory(dir, 5)
+		require.NoError(t, err)
+		require.Len(t, entries, 1)
+		assert.Equal(t, "src/.internal/utils", entries[0].Name)
+	})
+}
+
 func TestReadFile(t *testing.T) {
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "test.txt")

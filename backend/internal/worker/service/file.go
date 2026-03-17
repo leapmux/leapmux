@@ -288,6 +288,7 @@ func listDirectory(dirPath, basePath string, maxDepth int32, currentDepth int32,
 
 		// Merge single-child directories: if the entry is a directory, max_depth > 0,
 		// and it has exactly one child that is also a directory, collapse them.
+		// The hidden flag is propagated so the frontend can still filter merged entries.
 		if fi.IsDir && maxDepth > 0 && currentDepth < maxDepth {
 			fi = mergeSingleChildDirs(fi, entryPath, maxDepth, currentDepth)
 		}
@@ -323,6 +324,11 @@ func mergeSingleChildDirs(fi *leapmuxv1.FileInfo, dirPath string, maxDepth int32
 
 	merged := fileInfoToProto(childInfo, childPath)
 	merged.Name = fi.Name + string(filepath.Separator) + child.Name()
+	// Propagate hidden flag so the frontend can filter merged entries
+	// even when a hidden directory has been merged into the path.
+	if fi.Hidden {
+		merged.Hidden = true
+	}
 
 	// Recursively merge if still a single child directory.
 	return mergeSingleChildDirs(merged, childPath, maxDepth, currentDepth+1)
