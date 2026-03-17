@@ -25,7 +25,7 @@ export function isAgentWorking(msgs: AgentChatMessage[]): boolean {
       if (innerType === 'context_cleared')
         return false
       // Check if context_cleared is in a notification thread wrapper.
-      if (parsed.isWrapped && parsed.wrapper) {
+      if (parsed.wrapper) {
         for (const m of parsed.wrapper.messages) {
           if (typeof m === 'object' && m !== null && (m as Record<string, unknown>).type === 'context_cleared')
             return false

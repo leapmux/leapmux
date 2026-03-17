@@ -134,30 +134,12 @@ func TestConsolidateNotificationThread_SettingsMerged(t *testing.T) {
 }
 
 func TestConsolidateNotificationThread_PlanExecution(t *testing.T) {
-	t.Run("plan_execution with context_cleared both kept", func(t *testing.T) {
-		msgs := []json.RawMessage{
-			raw(t, map[string]interface{}{"type": "plan_execution", "plan_file_path": "/p.md"}),
-			raw(t, map[string]interface{}{"type": "context_cleared"}),
-		}
-		result := consolidateNotificationThread(msgs)
-		assert.Equal(t, []string{"plan_execution", "context_cleared"}, types(t, result))
-	})
-
-	t.Run("plan_execution strips context_cleared field", func(t *testing.T) {
-		msgs := []json.RawMessage{
-			raw(t, map[string]interface{}{
-				"type":            "plan_execution",
-				"context_cleared": true,
-				"plan_file_path":  "/p.md",
-			}),
-		}
-		result := consolidateNotificationThread(msgs)
-		require.Len(t, result, 1)
-		m := parseRaw(t, result[0])
-		assert.Equal(t, "plan_execution", m["type"])
-		assert.Nil(t, m["context_cleared"], "context_cleared field should be stripped")
-		assert.Equal(t, "/p.md", m["plan_file_path"])
-	})
+	msgs := []json.RawMessage{
+		raw(t, map[string]interface{}{"type": "plan_execution", "plan_file_path": "/p.md"}),
+		raw(t, map[string]interface{}{"type": "context_cleared"}),
+	}
+	result := consolidateNotificationThread(msgs)
+	assert.Equal(t, []string{"plan_execution", "context_cleared"}, types(t, result))
 }
 
 func TestConsolidateNotificationThread_NoContextClearedOnSettingsChanged(t *testing.T) {

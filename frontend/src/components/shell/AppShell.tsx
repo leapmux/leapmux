@@ -157,8 +157,9 @@ export const AppShell: ParentComponent = (props) => {
   const handleTurnEnd = (agentId: string, numTurns?: number) => {
     if (isAgentClosing(agentId))
       return
+    // Always bump the trigger (drives git status and directory tree refresh),
+    // but skip the audible notification for trivial single-exchange turns.
     setTurnEndTrigger(v => v + 1)
-    // Skip sound for trivial turns (single exchange or less).
     if (numTurns !== undefined && numTurns <= 1)
       return
     const now = Date.now()

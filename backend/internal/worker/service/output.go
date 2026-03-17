@@ -908,14 +908,17 @@ func extractStatusValue(content []byte) (status string, ok bool) {
 // the last occurrence's data wins. Output is ordered by the position of each
 // type's last occurrence in the input.
 func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage {
-	type envelope struct {
-		Type    string `json:"type"`
-		Subtype string `json:"subtype"`
-	}
-
 	type settingsChange struct {
 		Old string `json:"old"`
 		New string `json:"new"`
+	}
+
+	// Unified envelope — decoded once per message.
+	type envelope struct {
+		Type    string                       `json:"type"`
+		Subtype string                       `json:"subtype"`
+		Changes map[string]settingsChange    `json:"changes,omitempty"`
+		RLInfo  *struct{ RateLimitType string `json:"rateLimitType"` } `json:"rate_limit_info,omitempty"`
 	}
 
 	// Deduplication state — track the last-seen index for ordering.
@@ -953,16 +956,11 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 
 		switch {
 		case env.Type == "settings_changed":
-			var sc struct {
-				Changes map[string]settingsChange `json:"changes"`
-			}
-			if json.Unmarshal(raw, &sc) == nil {
-				for key, val := range sc.Changes {
-					if existing, ok := mergedChanges[key]; ok {
-						mergedChanges[key] = settingsChange{Old: existing.Old, New: val.New}
-					} else {
-						mergedChanges[key] = val
-					}
+			for key, val := range env.Changes {
+				if existing, ok := mergedChanges[key]; ok {
+					mergedChanges[key] = settingsChange{Old: existing.Old, New: val.New}
+				} else {
+					mergedChanges[key] = val
 				}
 			}
 			settingsLastIdx = i
@@ -972,15 +970,6 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 			contextClearedLastIdx = i
 
 		case env.Type == "plan_execution":
-			// Strip context_cleared field — context clearing is always
-			// represented by a standalone context_cleared message.
-			var pe map[string]interface{}
-			if json.Unmarshal(raw, &pe) == nil {
-				delete(pe, "context_cleared")
-				if data, err := json.Marshal(pe); err == nil {
-					raw = data
-				}
-			}
 			planExecRaw = raw
 			planExecLastIdx = i
 
@@ -989,18 +978,11 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 			interruptedLastIdx = i
 
 		case env.Type == "rate_limit":
-			var rl struct {
-				RateLimitInfo struct {
-					RateLimitType string `json:"rateLimitType"`
-				} `json:"rate_limit_info"`
+			key := "unknown"
+			if env.RLInfo != nil && env.RLInfo.RateLimitType != "" {
+				key = env.RLInfo.RateLimitType
 			}
-			if json.Unmarshal(raw, &rl) == nil {
-				key := rl.RateLimitInfo.RateLimitType
-				if key == "" {
-					key = "unknown"
-				}
-				rateLimitByType[key] = raw
-			}
+			rateLimitByType[key] = raw
 			rateLimitLastIdx = i
 
 		case env.Type == "system" && env.Subtype == "status":
