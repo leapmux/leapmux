@@ -16,10 +16,6 @@ import (
 	"time"
 )
 
-// OutputHandler is called for each NDJSON line produced by the Claude Code process.
-// The line is passed verbatim (not parsed).
-type OutputHandler func(line []byte)
-
 // ExitHandler is called when an agent process exits.
 // agentID identifies the agent, exitCode is the process exit code,
 // and err is non-nil if the process exited with an error.
@@ -37,6 +33,12 @@ type Agent struct {
 	agentID    string
 	model      string
 	workingDir string
+	homeDir    string
+	sink       OutputSink
+
+	// Claude Code-specific state.
+	contextUsage    *contextUsageSnapshot
+	lastAgentStatus string
 
 	cmd         *exec.Cmd
 	stdin       io.WriteCloser
@@ -76,7 +78,7 @@ type Options struct {
 }
 
 // Start spawns a new Claude Code process and begins reading its output.
-// The outputFn callback is called for each NDJSON line.
+// The sink receives parsed output events via the Provider.HandleOutput method.
 //
 // Claude Code with --input-format stream-json does not produce any output
 // (including the init message) until it receives input on stdin. Therefore,
@@ -90,7 +92,7 @@ func (o Options) startupTimeout() time.Duration {
 	return 30 * time.Second
 }
 
-func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, error) {
+func Start(ctx context.Context, opts Options, sink OutputSink) (*Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	// Check Claude Code settings files for third-party LLM provider env vars.
@@ -165,6 +167,8 @@ func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, e
 		agentID:            opts.AgentID,
 		model:              opts.Model,
 		workingDir:         opts.WorkingDir,
+		homeDir:            opts.HomeDir,
+		sink:               sink,
 		cmd:                cmd,
 		stdin:              stdin,
 		ctx:                ctx,
@@ -200,7 +204,7 @@ func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, e
 	// --input-format stream-json).
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutput(scanner, outputFn)
+	go a.readOutput(scanner)
 
 	// cleanup terminates the agent process and waits for it to exit.
 	// This ensures no orphaned process or goroutine is left behind.
@@ -494,7 +498,7 @@ func (a *Agent) handlePendingControlResponse(line []byte) bool {
 	return true
 }
 
-func (a *Agent) readOutput(scanner *bufio.Scanner, outputFn OutputHandler) {
+func (a *Agent) readOutput(scanner *bufio.Scanner) {
 	// If a preamble delimiter is set, skip lines until the delimiter is found.
 	// This handles shell login preamble (motd, .zshrc output, etc.) that
 	// appears before claude's NDJSON stream.
@@ -538,7 +542,7 @@ func (a *Agent) readOutput(scanner *bufio.Scanner, outputFn OutputHandler) {
 			continue
 		}
 
-		outputFn(lineCopy)
+		a.HandleOutput(lineCopy)
 	}
 
 	if err := scanner.Err(); err != nil {

@@ -342,6 +342,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                         effort={props.agent?.effort}
                         permissionMode={props.agent?.permissionMode}
                         supportsModelEffort={props.agent?.supportsModelEffort}
+                        agentProvider={props.agent?.agentProvider}
                         onModelChange={props.onModelChange}
                         onEffortChange={props.onEffortChange}
                         onPermissionModeChange={props.onPermissionModeChange}

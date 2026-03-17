@@ -111,7 +111,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const parsed = createMemo((): ParsedMessageContent => parseMessageContent(props.message))
 
   // Single-pass classification: replaces ~15 individual boolean flags.
-  const category = createMemo(() => classifyMessage(parsed().parentObject, parsed().wrapper))
+  const category = createMemo(() => classifyMessage(parsed().parentObject, parsed().wrapper, props.message.agentProvider))
 
   // Full raw JSON for the Raw JSON display (only stringified on demand for "Copy Raw JSON").
   const rawJson = (): string => {

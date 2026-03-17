@@ -12,6 +12,7 @@ import { isWorkspaceCreateDisabled } from '~/components/shell/dialogValidation'
 import { DirectorySelector } from '~/components/shell/DirectorySelector'
 import { GitOptions } from '~/components/shell/GitOptions'
 import { WorkerSelector } from '~/components/shell/WorkerSelector'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
 import { sanitizeName } from '~/lib/validate'
@@ -52,6 +53,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       const wid = state.workerId()
       const agentResp = await workerRpc.openAgent(wid, {
         workspaceId: wsResp.workspace.id,
+        agentProvider: AgentProvider.CLAUDE_CODE,
         model: '',
         title: 'Agent 1',
         systemPrompt: '',

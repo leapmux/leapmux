@@ -216,15 +216,6 @@ func sendInvalidArgument(sender *channel.Sender, msg string) {
 	_ = sender.SendError(3, msg)
 }
 
-// agentOutputFn creates a callback that processes agent output lines via
-// the OutputHandler, which persists messages and broadcasts events to
-// watching E2EE channels.
-func agentOutputFn(output *OutputHandler, agentID, workspaceID, workingDir string) func([]byte) {
-	return func(line []byte) {
-		output.HandleAgentOutput(agentID, workspaceID, workingDir, line)
-	}
-}
-
 // expandTilde expands a leading "~" or "~/" in a path to the user's home
 // directory. Other forms (e.g. "~user/", "~~") are left unchanged.
 func expandTilde(path string) string {
