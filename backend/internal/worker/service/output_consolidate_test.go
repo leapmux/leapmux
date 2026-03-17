@@ -204,6 +204,54 @@ func TestConsolidateNotificationThread_SystemStatus(t *testing.T) {
 	assert.Equal(t, "idle", m["status"])
 }
 
+func TestConsolidateNotificationThread_CompactionSupersedes_ContextCleared(t *testing.T) {
+	t.Run("compact_boundary after context_cleared drops context_cleared", func(t *testing.T) {
+		msgs := []json.RawMessage{
+			raw(t, map[string]interface{}{"type": "context_cleared"}),
+			raw(t, map[string]interface{}{"type": "system", "subtype": "compact_boundary"}),
+		}
+		result := consolidateNotificationThread(msgs)
+		assert.Equal(t, []string{"system"}, types(t, result))
+	})
+
+	t.Run("microcompact_boundary after context_cleared drops context_cleared", func(t *testing.T) {
+		msgs := []json.RawMessage{
+			raw(t, map[string]interface{}{"type": "context_cleared"}),
+			raw(t, map[string]interface{}{"type": "system", "subtype": "microcompact_boundary"}),
+		}
+		result := consolidateNotificationThread(msgs)
+		assert.Equal(t, []string{"system"}, types(t, result))
+	})
+
+	t.Run("context_cleared after compact_boundary drops compact_boundary", func(t *testing.T) {
+		msgs := []json.RawMessage{
+			raw(t, map[string]interface{}{"type": "system", "subtype": "compact_boundary"}),
+			raw(t, map[string]interface{}{"type": "context_cleared"}),
+		}
+		result := consolidateNotificationThread(msgs)
+		assert.Equal(t, []string{"context_cleared"}, types(t, result))
+	})
+
+	t.Run("context_cleared after microcompact_boundary drops microcompact_boundary", func(t *testing.T) {
+		msgs := []json.RawMessage{
+			raw(t, map[string]interface{}{"type": "system", "subtype": "microcompact_boundary"}),
+			raw(t, map[string]interface{}{"type": "context_cleared"}),
+		}
+		result := consolidateNotificationThread(msgs)
+		assert.Equal(t, []string{"context_cleared"}, types(t, result))
+	})
+
+	t.Run("settings_changed preserved when compaction supersedes context_cleared", func(t *testing.T) {
+		msgs := []json.RawMessage{
+			raw(t, settingsChanged("A", "B")),
+			raw(t, map[string]interface{}{"type": "context_cleared"}),
+			raw(t, map[string]interface{}{"type": "system", "subtype": "compact_boundary"}),
+		}
+		result := consolidateNotificationThread(msgs)
+		assert.Equal(t, []string{"settings_changed", "system"}, types(t, result))
+	})
+}
+
 func TestConsolidateNotificationThread_Empty(t *testing.T) {
 	result := consolidateNotificationThread(nil)
 	assert.Equal(t, []json.RawMessage{}, result)

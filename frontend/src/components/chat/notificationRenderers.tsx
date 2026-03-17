@@ -268,8 +268,6 @@ function formatCompactionTokens(preTokens: number | undefined, tokensSaved: numb
 export function renderNotificationThread(messages: unknown[]): JSXElement {
   // Accumulate state across all messages in the thread.
   const settingsParts: string[] = []
-  let contextCleared = false
-  let interrupted = false
   let compacting = false
   let compactLabel: string | null = null
   let compactPreTokens: number | undefined
@@ -278,9 +276,6 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
   let microcompactPreTokens: number | undefined
   let microcompactTokensSaved: number | undefined
   const rateLimitByType: Record<string, Record<string, unknown>> = {}
-  // Track whether the most recent context-affecting event is compaction or context_cleared.
-  // true = compaction came last, false = context_cleared came last.
-  let lastContextEventIsCompaction = false
 
   for (const msg of messages) {
     if (!isObject(msg))
@@ -307,8 +302,7 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
       }
     }
     else if (t === 'context_cleared') {
-      contextCleared = true
-      lastContextEventIsCompaction = false
+      settingsParts.push('Context cleared')
     }
     else if (t === 'plan_execution') {
       settingsParts.push('Executing plan')
@@ -318,7 +312,7 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
       settingsParts.push(error)
     }
     else if (t === 'interrupted') {
-      interrupted = true
+      settingsParts.push('Interrupted')
     }
     else if (t === 'agent_renamed') {
       const title = typeof m.title === 'string' ? m.title : ''
@@ -327,12 +321,9 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
     }
     else if (t === 'system' && st === 'status') {
       compacting = m.status === 'compacting'
-      if (compacting)
-        lastContextEventIsCompaction = true
     }
     else if (t === 'system' && st === 'compact_boundary') {
       compacting = false
-      lastContextEventIsCompaction = true
       const meta = (isObject(m.compact_metadata) ? m.compact_metadata : m.compactMetadata) as Record<string, unknown> | undefined
       compactPreTokens = (typeof meta?.pre_tokens === 'number' ? meta.pre_tokens : meta?.preTokens) as number | undefined
       compactTokensSaved = (typeof meta?.tokens_saved === 'number' ? meta.tokens_saved : meta?.tokensSaved) as number | undefined
@@ -340,18 +331,12 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
     }
     else if (t === 'system' && st === 'microcompact_boundary') {
       compacting = false
-      lastContextEventIsCompaction = true
       const meta = (isObject(m.microcompactMetadata) ? m.microcompactMetadata : m.microcompact_metadata) as Record<string, unknown> | undefined
       microcompactPreTokens = (typeof meta?.preTokens === 'number' ? meta.preTokens : meta?.pre_tokens) as number | undefined
       microcompactTokensSaved = (typeof meta?.tokensSaved === 'number' ? meta.tokensSaved : meta?.tokens_saved) as number | undefined
       microcompactLabel = `Context microcompacted${formatCompactionTokens(microcompactPreTokens, microcompactTokensSaved)}`
     }
   }
-
-  if (contextCleared && !lastContextEventIsCompaction)
-    settingsParts.push('Context cleared')
-  if (interrupted)
-    settingsParts.push('Interrupted')
 
   // Add rate limit messages (one per rateLimitType), skipping "allowed" status.
   for (const info of Object.values(rateLimitByType)) {
@@ -361,13 +346,10 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
 
   const settingsLine = settingsParts.length > 0 ? settingsParts.join(', ') : null
 
-  // Show compaction when there's no context_cleared, or when compaction came after context_cleared.
-  const showCompaction = !contextCleared || lastContextEventIsCompaction
-
   const elements: JSXElement[] = []
 
   // Compaction in progress (spinner).
-  if (showCompaction && compacting && !compactLabel && !microcompactLabel) {
+  if (compacting && !compactLabel && !microcompactLabel) {
     elements.push(
       <div class={resultDivider}>
         <Icon icon={LoaderCircle} size="sm" class={spinner} />
@@ -377,7 +359,7 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
   }
 
   // Compact boundary result.
-  if (showCompaction && compactLabel) {
+  if (compactLabel) {
     elements.push(
       <div class={resultDivider}>
         <Icon icon={ArrowDownToLine} size="sm" />
@@ -387,7 +369,7 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
   }
 
   // Microcompact boundary result.
-  if (showCompaction && microcompactLabel) {
+  if (microcompactLabel) {
     elements.push(
       <div class={resultDivider}>
         <Icon icon={ArrowDownToLine} size="sm" />

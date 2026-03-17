@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -970,6 +971,14 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 		case env.Type == "context_cleared":
 			contextClearedRaw = raw
 			contextClearedLastIdx = i
+			// context_cleared supersedes any earlier compaction boundaries.
+			keepAll = slices.DeleteFunc(keepAll, func(ir indexedRaw) bool {
+				var e envelope
+				if json.Unmarshal(ir.raw, &e) != nil {
+					return false
+				}
+				return e.Type == "system" && (e.Subtype == "compact_boundary" || e.Subtype == "microcompact_boundary")
+			})
 
 		case env.Type == "plan_execution":
 			planExecRaw = raw
@@ -992,6 +1001,11 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 			statusLastIdx = i
 
 		case env.Type == "system" && (env.Subtype == "compact_boundary" || env.Subtype == "microcompact_boundary"):
+			// Compaction supersedes any earlier context_cleared.
+			if contextClearedLastIdx >= 0 && i > contextClearedLastIdx {
+				contextClearedRaw = nil
+				contextClearedLastIdx = -1
+			}
 			keepAll = append(keepAll, indexedRaw{i, raw})
 
 		default:

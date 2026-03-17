@@ -24,7 +24,10 @@ function renderedContains(messages: unknown[], text: string): boolean {
   return renderText(messages).includes(text)
 }
 
-describe('renderNotificationThread: compaction vs context_cleared ordering', () => {
+describe('renderNotificationThread: compaction and context_cleared rendering', () => {
+  // Note: The backend consolidation handles mutual exclusion between
+  // compaction and context_cleared. The frontend simply renders what it receives.
+
   const contextClearedMsg = { type: 'context_cleared' }
   const compactBoundaryMsg = {
     type: 'system',
@@ -37,35 +40,6 @@ describe('renderNotificationThread: compaction vs context_cleared ordering', () 
     status: 'compacting',
   }
 
-  it('compaction AFTER context_cleared: shows compaction, hides "Context cleared"', () => {
-    const messages = [contextClearedMsg, compactBoundaryMsg]
-    expect(renderedContains(messages, 'Context compacted')).toBe(true)
-    expect(renderedContains(messages, 'Context cleared')).toBe(false)
-  })
-
-  it('compaction BEFORE context_cleared: hides compaction, shows "Context cleared"', () => {
-    const messages = [compactBoundaryMsg, contextClearedMsg]
-    expect(renderedContains(messages, 'Context compacted')).toBe(false)
-    expect(renderedContains(messages, 'Context cleared')).toBe(true)
-  })
-
-  it('plan_execution renders together with compaction', () => {
-    const planExecMsg = {
-      type: 'plan_execution',
-      plan_file_path: '/path/plan.md',
-    }
-    const messages = [contextClearedMsg, planExecMsg, compactBoundaryMsg]
-    const text = renderText(messages)
-    expect(text).toContain('Executing plan')
-    expect(text).toContain('Context compacted')
-  })
-
-  it('compacting spinner AFTER context_cleared: shows spinner, hides "Context cleared"', () => {
-    const messages = [contextClearedMsg, compactingStatusMsg]
-    expect(renderedContains(messages, 'Compacting context...')).toBe(true)
-    expect(renderedContains(messages, 'Context cleared')).toBe(false)
-  })
-
   it('context_cleared alone: shows "Context cleared"', () => {
     const messages = [contextClearedMsg]
     expect(renderedContains(messages, 'Context cleared')).toBe(true)
@@ -77,28 +51,72 @@ describe('renderNotificationThread: compaction vs context_cleared ordering', () 
     expect(renderedContains(messages, 'Context cleared')).toBe(false)
   })
 
-  it('settings_changed + context_cleared BEFORE compaction: shows compaction, hides "Context cleared"', () => {
-    const settingsMsg = {
-      type: 'settings_changed',
-      changes: { model: { old: 'A', new: 'B' } },
-    }
-    const messages = [settingsMsg, contextClearedMsg, compactBoundaryMsg]
-    const text = renderText(messages)
-    expect(text).toContain('Context compacted')
-    expect(text).not.toContain('Context cleared')
-    expect(text).toContain('Model')
+  it('compacting spinner: shows spinner', () => {
+    const messages = [compactingStatusMsg]
+    expect(renderedContains(messages, 'Compacting context...')).toBe(true)
   })
 
-  it('compaction BEFORE settings_changed + context_cleared: hides compaction, shows "Context cleared"', () => {
+  it('plan_execution renders together with compaction', () => {
+    const planExecMsg = {
+      type: 'plan_execution',
+      plan_file_path: '/path/plan.md',
+    }
+    const messages = [planExecMsg, compactBoundaryMsg]
+    const text = renderText(messages)
+    expect(text).toContain('Executing plan')
+    expect(text).toContain('Context compacted')
+  })
+
+  it('settings_changed with compaction renders both', () => {
     const settingsMsg = {
       type: 'settings_changed',
       changes: { model: { old: 'A', new: 'B' } },
     }
-    const messages = [compactBoundaryMsg, settingsMsg, contextClearedMsg]
+    const messages = [settingsMsg, compactBoundaryMsg]
     const text = renderText(messages)
-    expect(text).not.toContain('Context compacted')
-    expect(text).toContain('Context cleared')
+    expect(text).toContain('Context compacted')
     expect(text).toContain('Model')
+  })
+})
+
+describe('renderNotificationThread: message ordering', () => {
+  it('context_cleared before settings_changed preserves order', () => {
+    const messages = [
+      { type: 'context_cleared' },
+      { type: 'settings_changed', changes: { permissionMode: { old: 'default', new: 'plan' } } },
+    ]
+    const text = renderText(messages)
+    const clearedIdx = text.indexOf('Context cleared')
+    const modeIdx = text.indexOf('Mode')
+    expect(clearedIdx).toBeGreaterThanOrEqual(0)
+    expect(modeIdx).toBeGreaterThan(clearedIdx)
+  })
+
+  it('settings_changed before context_cleared preserves order', () => {
+    const messages = [
+      { type: 'settings_changed', changes: { permissionMode: { old: 'default', new: 'plan' } } },
+      { type: 'context_cleared' },
+    ]
+    const text = renderText(messages)
+    const modeIdx = text.indexOf('Mode')
+    const clearedIdx = text.indexOf('Context cleared')
+    expect(modeIdx).toBeGreaterThanOrEqual(0)
+    expect(clearedIdx).toBeGreaterThan(modeIdx)
+  })
+
+  it('interrupted appears in order among other messages', () => {
+    const messages = [
+      { type: 'context_cleared' },
+      { type: 'interrupted' },
+      { type: 'settings_changed', changes: { model: { old: 'A', new: 'B' } } },
+    ]
+    const text = renderText(messages)
+    const clearedIdx = text.indexOf('Context cleared')
+    const interruptedIdx = text.indexOf('Interrupted')
+    const modelIdx = text.indexOf('Model')
+    expect(clearedIdx).toBeGreaterThanOrEqual(0)
+    expect(interruptedIdx).toBeGreaterThan(clearedIdx)
+    expect(modelIdx).toBeGreaterThan(interruptedIdx)
   })
 })
 
