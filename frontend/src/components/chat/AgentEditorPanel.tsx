@@ -12,7 +12,7 @@ import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
-import { getResetsAt } from '~/lib/rateLimitUtils'
+import { formatResetTimestamp, getResetsAt } from '~/lib/rateLimitUtils'
 import { safeGetString, safeRemoveItem, safeSetString } from '~/lib/safeStorage'
 import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store'
 import { spinner } from '~/styles/animations.css'
@@ -300,7 +300,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                               trigger={triggerProps => (
                                 <button
                                   class={styles.infoTrigger}
-                                  data-testid="session-id-trigger"
+                                  data-testid="agent-info-trigger"
                                   {...triggerProps}
                                 >
                                   <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} size={iconSize.xs} />
@@ -309,7 +309,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                                       <Tooltip
                                         text={(() => {
                                           const resetsAt = getResetsAt(rl().info)
-                                          return resetsAt ? `Resets at ${new Date(resetsAt * 1000).toLocaleString()}` : undefined
+                                          return resetsAt ? formatResetTimestamp(resetsAt) : undefined
                                         })()}
                                       >
                                         <span class={styles.rateLimitCountdown}>
@@ -321,7 +321,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                                 </button>
                               )}
                               class="card"
-                              data-testid="session-id-popover"
+                              data-testid="agent-info-popover"
                             >
                               <div class={styles.infoRows}>
                                 {info.infoHoverCardContent()}
@@ -342,6 +342,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                         effort={props.agent?.effort}
                         permissionMode={props.agent?.permissionMode}
                         supportsModelEffort={props.agent?.supportsModelEffort}
+                        agentProvider={props.agent?.agentProvider}
                         onModelChange={props.onModelChange}
                         onEffortChange={props.onEffortChange}
                         onPermissionModeChange={props.onPermissionModeChange}
@@ -352,7 +353,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                           trigger={triggerProps => (
                             <button
                               class={styles.infoTrigger}
-                              data-testid="session-id-trigger"
+                              data-testid="agent-info-trigger"
                               {...triggerProps}
                             >
                               <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} size={iconSize.xs} />
@@ -361,7 +362,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                                   <Tooltip
                                     text={(() => {
                                       const resetsAt = getResetsAt(rl().info)
-                                      return resetsAt ? `Resets at ${new Date(resetsAt * 1000).toLocaleString()}` : undefined
+                                      return resetsAt ? formatResetTimestamp(resetsAt) : undefined
                                     })()}
                                   >
                                     <span class={styles.rateLimitCountdown}>
@@ -373,7 +374,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                             </button>
                           )}
                           class="card"
-                          data-testid="session-id-popover"
+                          data-testid="agent-info-popover"
                         >
                           <div class={styles.infoRows}>
                             {info.infoHoverCardContent()}

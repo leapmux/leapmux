@@ -8,6 +8,7 @@ import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { useAuth } from '~/context/AuthContext'
 import { useOrg } from '~/context/OrgContext'
 import { OrgMemberRole } from '~/generated/leapmux/v1/org_pb'
+import { formatLocalDateTime } from '~/lib/dateFormat'
 import { isSoloMode } from '~/lib/systemInfo'
 import { sanitizeSlug } from '~/lib/validate'
 import * as styles from './OrgManagementPage.css'
@@ -221,7 +222,7 @@ export const OrgManagementPage: Component = () => {
       return '-'
     const ts = timestamp as { seconds?: bigint }
     if (ts.seconds) {
-      return new Date(Number(ts.seconds) * 1000).toLocaleDateString()
+      return formatLocalDateTime(new Date(Number(ts.seconds) * 1000))
     }
     return '-'
   }

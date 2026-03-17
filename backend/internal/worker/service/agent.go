@@ -67,15 +67,21 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		svc.Channels.AddAccessibleWorkspaceID(sender.ChannelID(), r.GetWorkspaceId())
 
 		// Create the agent record in the database.
+		agentProvider := r.GetAgentProvider()
+		if agentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
+			agentProvider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+		}
+
 		if err := svc.Queries.CreateAgent(bgCtx(), db.CreateAgentParams{
-			ID:           agentID,
-			WorkspaceID:  r.GetWorkspaceId(),
-			WorkingDir:   workingDir,
-			HomeDir:      svc.HomeDir,
-			Title:        r.GetTitle(),
-			Model:        model,
-			SystemPrompt: r.GetSystemPrompt(),
-			Effort:       r.GetEffort(),
+			ID:            agentID,
+			WorkspaceID:   r.GetWorkspaceId(),
+			WorkingDir:    workingDir,
+			HomeDir:       svc.HomeDir,
+			Title:         r.GetTitle(),
+			Model:         model,
+			SystemPrompt:  r.GetSystemPrompt(),
+			Effort:        r.GetEffort(),
+			AgentProvider: agentProvider,
 		}); err != nil {
 			slog.Error("failed to create agent", "error", err)
 			sendInternalError(sender, "failed to create agent")
@@ -95,9 +101,9 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			HomeDir:         svc.HomeDir,
 		}
 
-		outputFn := agentOutputFn(svc.Output, agentID, r.GetWorkspaceId(), workingDir)
+		sink := svc.Output.NewSink(agentID, agentProvider)
 
-		confirmedMode, err := svc.Agents.StartAgent(bgCtx(), agentOpts, outputFn)
+		confirmedMode, err := svc.Agents.StartAgent(bgCtx(), agentOpts, sink)
 		if err != nil {
 			slog.Error("failed to start agent", "agent_id", agentID, "error", err)
 			// Mark the agent as closed since the process failed to start.
@@ -191,6 +197,12 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
+		dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+		if err != nil {
+			sendInternalError(sender, "agent not found")
+			return
+		}
+
 		messageID := id.Generate()
 		now := time.Now().UTC()
 
@@ -210,6 +222,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			Content:            compressed,
 			ContentCompression: compressionType,
 			ThreadID:           "",
+			AgentProvider:      dbAgent.AgentProvider,
 			CreatedAt:          now,
 		})
 		if err != nil {
@@ -259,6 +272,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			ContentCompression: compressionType,
 			Seq:                seq,
 			DeliveryError:      deliveryError,
+			AgentProvider:      dbAgent.AgentProvider,
 			CreatedAt:          timefmt.Format(now),
 		}
 		svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
@@ -518,9 +532,9 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 				HomeDir:        svc.HomeDir,
 			}
 
-			outputFn := agentOutputFn(svc.Output, agentID, dbAgent.WorkspaceID, dbAgent.WorkingDir)
+			sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 
-			if _, err := svc.Agents.StartAgent(bgCtx(), agentOpts, outputFn); err != nil {
+			if _, err := svc.Agents.StartAgent(bgCtx(), agentOpts, sink); err != nil {
 				slog.Error("failed to restart agent with new settings",
 					"agent_id", agentID, "error", err)
 				// Clear stale session ID so ensureAgentRunning won't try
@@ -529,7 +543,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 					AgentSessionID: "",
 					ID:             agentID,
 				})
-				svc.Output.BroadcastNotification(agentID, map[string]interface{}{
+				svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 					"type":  "agent_error",
 					"error": "Failed to restart agent with new settings: " + err.Error(),
 				})
@@ -548,7 +562,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			changes["effort"] = map[string]string{"old": effortOrDefault(dbAgent.Effort), "new": newEffort}
 		}
 		if len(changes) > 0 {
-			svc.Output.BroadcastNotification(agentID, map[string]interface{}{
+			svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 				"type":    "settings_changed",
 				"changes": changes,
 			})
@@ -702,6 +716,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 					Effort:              dbAgent.Effort,
 					GitStatus:           gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
 					SupportsModelEffort: svc.Agents.SupportsModelEffort(agentID),
+					AgentProvider:       dbAgent.AgentProvider,
 				}
 				broadcastWatchEvent(sender, &leapmuxv1.WatchEventsResponse{
 					Event: &leapmuxv1.WatchEventsResponse_AgentEvent{
@@ -797,6 +812,7 @@ func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, 
 		CreatedAt:           timefmt.Format(a.CreatedAt),
 		GitStatus:           gitStatusToProto(gs),
 		SupportsModelEffort: supportsModelEffort,
+		AgentProvider:       a.AgentProvider,
 	}
 
 	if a.ClosedAt.Valid {
@@ -846,7 +862,7 @@ func (svc *Context) handleClearContext(agentID string) {
 	// isWatchable. On success, handleSystemInit will overwrite it with the
 	// new session ID. On failure, clear it so ensureAgentRunning won't try
 	// to resume a stale session.
-	outputFn := agentOutputFn(svc.Output, agentID, dbAgent.WorkspaceID, dbAgent.WorkingDir)
+	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	if _, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
 		AgentID:        agentID,
 		Model:          modelOrDefault(dbAgent.Model),
@@ -857,13 +873,13 @@ func (svc *Context) handleClearContext(agentID string) {
 		Shell:          svc.agentShell(),
 		LoginShell:     svc.agentLoginShell(),
 		HomeDir:        svc.HomeDir,
-	}, outputFn); err != nil {
+	}, sink); err != nil {
 		slog.Error("clear context: failed to restart agent", "agent_id", agentID, "error", err)
 		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
 			AgentSessionID: "",
 			ID:             agentID,
 		})
-		svc.Output.BroadcastNotification(agentID, map[string]interface{}{
+		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 			"type":  "agent_error",
 			"error": "Failed to restart agent after clearing context: " + err.Error(),
 		})
@@ -872,7 +888,7 @@ func (svc *Context) handleClearContext(agentID string) {
 	}
 
 	// Broadcast a context_cleared notification.
-	svc.Output.BroadcastNotification(agentID, map[string]interface{}{
+	svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 		"type": "context_cleared",
 	})
 }
@@ -891,7 +907,7 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 		return fmt.Errorf("agent not found: %w", err)
 	}
 
-	outputFn := agentOutputFn(svc.Output, agentID, dbAgent.WorkspaceID, dbAgent.WorkingDir)
+	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	if _, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
 		AgentID:         agentID,
 		Model:           modelOrDefault(dbAgent.Model),
@@ -903,7 +919,7 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 		Shell:           svc.agentShell(),
 		LoginShell:      svc.agentLoginShell(),
 		HomeDir:         svc.HomeDir,
-	}, outputFn); err != nil {
+	}, sink); err != nil {
 		slog.Error("ensureAgentRunning: failed to start agent", "agent_id", agentID, "error", err)
 		return err
 	}
@@ -972,13 +988,14 @@ func (svc *Context) setAgentPermissionMode(agentID, mode string) {
 				Effort:              dbAgent.Effort,
 				GitStatus:           gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
 				SupportsModelEffort: svc.Agents.SupportsModelEffort(agentID),
+				AgentProvider:       dbAgent.AgentProvider,
 			},
 		},
 	})
 
 	// Broadcast settings_changed notification for the chat view.
 	if oldMode != "" && oldMode != mode {
-		svc.Output.BroadcastNotification(agentID, map[string]interface{}{
+		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 			"type": "settings_changed",
 			"changes": map[string]interface{}{
 				"permissionMode": map[string]string{"old": oldMode, "new": mode},
@@ -1032,6 +1049,12 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 	toolName := crBody.Request.ToolName
 	toolUseID := crBody.Request.ToolUseID
 
+	// Look up the agent's provider for message persistence.
+	dbAgent, dbErr := svc.Queries.GetAgentByID(bgCtx(), agentID)
+	if dbErr != nil {
+		return
+	}
+
 	// Persist a display message for the control response.
 	action := "approved"
 	if crPayload.Response.Response.Behavior == "deny" {
@@ -1047,10 +1070,10 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 	displayJSON, _ := json.Marshal(displayContent)
 	merged := false
 	if toolUseID != "" {
-		merged = svc.Output.mergeIntoThread(agentID, toolUseID, displayJSON)
+		merged = svc.Output.mergeIntoThread(agentID, dbAgent.AgentProvider, toolUseID, displayJSON)
 	}
 	if !merged {
-		if err := svc.Output.persistAndBroadcast(agentID, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, displayJSON, ""); err != nil {
+		if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, displayJSON, ""); err != nil {
 			slog.Warn("failed to persist control response notification", "agent_id", agentID, "error", err)
 		}
 	}
@@ -1115,7 +1138,7 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 	if planContent == "" {
 		slog.Warn("plan exec: no plan content found, broadcasting notification without restart",
 			"agent_id", agentID)
-		svc.Output.BroadcastNotification(agentID, map[string]interface{}{
+		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 			"type":           "plan_execution",
 			"plan_file_path": dbAgent.PlanFilePath,
 		})
@@ -1132,10 +1155,10 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 	svc.Agents.StopAndWaitAgent(agentID)
 
 	// Broadcast context_cleared and plan_execution as separate notifications.
-	svc.Output.BroadcastNotification(agentID, map[string]interface{}{
+	svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 		"type": "context_cleared",
 	})
-	svc.Output.BroadcastNotification(agentID, map[string]interface{}{
+	svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 		"type":           "plan_execution",
 		"plan_file_path": dbAgent.PlanFilePath,
 	})
@@ -1150,7 +1173,7 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 		planMsg += "\n\n---\n\nThe above plan has been written to " + dbAgent.PlanFilePath + " — re-read it if needed."
 	}
 
-	outputFn := agentOutputFn(svc.Output, agentID, dbAgent.WorkspaceID, dbAgent.WorkingDir)
+	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	if _, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
 		AgentID:        agentID,
 		Model:          modelOrDefault(dbAgent.Model),
@@ -1161,13 +1184,13 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 		Shell:          svc.agentShell(),
 		LoginShell:     svc.agentLoginShell(),
 		HomeDir:        svc.HomeDir,
-	}, outputFn); err != nil {
+	}, sink); err != nil {
 		slog.Error("plan exec: failed to restart agent", "agent_id", agentID, "error", err)
 		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
 			AgentSessionID: "",
 			ID:             agentID,
 		})
-		svc.Output.BroadcastNotification(agentID, map[string]interface{}{
+		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 			"type":  "agent_error",
 			"error": "Failed to restart agent for plan execution: " + err.Error(),
 		})
@@ -1248,6 +1271,7 @@ func messageToProto(m *db.Message) *leapmuxv1.AgentChatMessage {
 		Seq:                m.Seq,
 		DeliveryError:      m.DeliveryError,
 		ContentCompression: leapmuxv1.ContentCompression(m.ContentCompression),
+		AgentProvider:      m.AgentProvider,
 		CreatedAt:          timefmt.Format(m.CreatedAt),
 	}
 

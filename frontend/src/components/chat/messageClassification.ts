@@ -1,5 +1,6 @@
-import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import * as chatStyles from './messageStyles.css'
+import { getProviderPlugin } from './providers'
 
 // ---------------------------------------------------------------------------
 // MessageCategory — discriminated union for single-pass message classification
@@ -45,7 +46,16 @@ function isNotificationThreadWrapper(wrapper: { messages: unknown[] } | null): w
 export function classifyMessage(
   parentObject: Record<string, unknown> | undefined,
   wrapper: { old_seqs: number[], messages: unknown[] } | null,
+  agentProvider?: AgentProvider,
 ): MessageCategory {
+  // Delegate to provider plugin if available and not the default Claude Code.
+  if (agentProvider != null
+    && agentProvider !== AgentProvider.UNSPECIFIED
+    && agentProvider !== AgentProvider.CLAUDE_CODE) {
+    const plugin = getProviderPlugin(agentProvider)
+    if (plugin)
+      return plugin.classify(parentObject, wrapper)
+  }
   // 0. Empty wrapper (all notifications consolidated to no-ops) — hide.
   if (wrapper && wrapper.messages.length === 0)
     return { kind: 'hidden' }

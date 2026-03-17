@@ -16,6 +16,7 @@ CREATE TABLE agents (
     agent_session_id TEXT NOT NULL DEFAULT '',
     permission_mode  TEXT NOT NULL DEFAULT 'default',
     effort           TEXT NOT NULL DEFAULT 'high',
+    agent_provider   INTEGER NOT NULL DEFAULT 1,
     created_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     closed_at        DATETIME
 );
@@ -31,6 +32,7 @@ CREATE TABLE messages (
     content_compression INTEGER NOT NULL,
     delivery_error      TEXT NOT NULL DEFAULT '',
     thread_id           TEXT NOT NULL DEFAULT '',
+    agent_provider      INTEGER NOT NULL DEFAULT 1,
     created_at          DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at          DATETIME,
     UNIQUE(agent_id, seq)

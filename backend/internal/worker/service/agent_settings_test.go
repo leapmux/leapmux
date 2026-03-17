@@ -43,7 +43,7 @@ func TestUpdateAgentSettings_ClearsSessionIDOnRestartFailure(t *testing.T) {
 		AgentID:    "agent-1",
 		Model:      "opus",
 		WorkingDir: workDir,
-	}, func([]byte) {})
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 

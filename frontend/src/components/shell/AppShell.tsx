@@ -784,6 +784,7 @@ export const AppShell: ParentComponent = (props) => {
           title: a.title || undefined,
           workerId: a.workerId,
           workingDir: a.workingDir,
+          agentProvider: a.agentProvider,
           gitBranch: a.gitStatus?.branch || undefined,
           gitOriginUrl: a.gitStatus?.originUrl || undefined,
         })

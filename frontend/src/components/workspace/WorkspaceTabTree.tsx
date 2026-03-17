@@ -1,12 +1,12 @@
 import type { Component } from 'solid-js'
 import type { Tab } from '~/stores/tab.store'
 import { createDraggable } from '@thisbeyond/solid-dnd'
-import Bot from 'lucide-solid/icons/bot'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FolderGit from 'lucide-solid/icons/folder-git'
 import GitBranch from 'lucide-solid/icons/git-branch'
 import Terminal from 'lucide-solid/icons/terminal'
 import { createMemo, createSignal, For, Show } from 'solid-js'
+import { AgentProviderIcon } from '~/components/common/AgentProviderIcon'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/CrossTileDragContext'
 import { tabKey, TabType } from '~/stores/tab.store'
 import { DiffStatsBadge } from '../tree/gitStatusUtils'
@@ -54,7 +54,7 @@ const TabLeaf: Component<{
     >
       <div class={shared.chevronPlaceholder} />
       <Show when={props.tab.type === TabType.AGENT} fallback={<Terminal size={14} class={css.tabIcon} />}>
-        <Bot size={14} class={css.tabIcon} />
+        <AgentProviderIcon provider={props.tab.agentProvider} size={14} class={css.tabIcon} />
       </Show>
       <Show
         when={!props.isEditing}

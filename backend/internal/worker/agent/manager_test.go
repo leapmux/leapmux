@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"os/exec"
-	"sync"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -12,10 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// patchStartForTest replaces the Start function behavior by providing
-// a function that creates agents using the test helper process.
-func startMockAgent(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, error) {
-	return mockStart(ctx, opts, outputFn)
+// startMockAgent wraps mockStart to satisfy the startFunc signature.
+func startMockAgent(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+	return mockStart(ctx, opts, sink)
 }
 
 func TestManager_StartAndStop(t *testing.T) {
@@ -26,7 +24,7 @@ func TestManager_StartAndStop(t *testing.T) {
 		AgentID:    "s1",
 		Model:      "test",
 		WorkingDir: t.TempDir(),
-	}, func([]byte) {}, startMockAgent)
+	}, noopSink{}, startMockAgent)
 	require.NoError(t, err, "StartAgent")
 
 	assert.True(t, m.HasAgent("s1"), "expected HasAgent(s1) = true")
@@ -36,7 +34,7 @@ func TestManager_StartAndStop(t *testing.T) {
 		AgentID:    "s1",
 		Model:      "test",
 		WorkingDir: t.TempDir(),
-	}, func([]byte) {}, startMockAgent)
+	}, noopSink{}, startMockAgent)
 	assert.Error(t, err, "expected error for duplicate agent")
 
 	// Stop and verify cleanup.
@@ -51,28 +49,23 @@ func TestManager_StartAndStop(t *testing.T) {
 func TestManager_SendInput(t *testing.T) {
 	m := NewManager(nil)
 	ctx := context.Background()
-
-	var mu sync.Mutex
-	var lines []string
+	sink := &testSink{}
 
 	_, err := m.startAgentWith(ctx, Options{
 		AgentID:    "s2",
 		Model:      "test",
 		WorkingDir: t.TempDir(),
-	}, func(line []byte) {
-		mu.Lock()
-		lines = append(lines, string(line))
-		mu.Unlock()
-	}, startMockAgent)
+	}, sink, startMockAgent)
 	require.NoError(t, err, "StartAgent")
 	defer m.StopAgent("s2")
 
-	require.NoError(t, m.SendInput("s2", "test message"), "SendInput")
+	// SendInput sends a user JSON message; the mock echoes it back.
+	// Since it's a simple user text echo, HandleOutput drops it.
+	// Send raw assistant NDJSON to verify the full pipeline.
+	require.NoError(t, m.SendRawInput("s2", []byte(`{"type":"assistant","message":{"role":"assistant","content":"hi"}}`+"\n")), "SendRawInput")
 
 	testutil.AssertEventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(lines) > 0
+		return sink.MessageCount() > 0
 	}, "expected output from agent")
 }
 
@@ -91,7 +84,7 @@ func TestManager_StopAll(t *testing.T) {
 			AgentID:    id,
 			Model:      "test",
 			WorkingDir: t.TempDir(),
-		}, func([]byte) {}, startMockAgent)
+		}, noopSink{}, startMockAgent)
 		require.NoError(t, err, "StartAgent(%s)", id)
 	}
 
@@ -114,7 +107,7 @@ func TestManager_StopAndWaitAgent(t *testing.T) {
 		AgentID:    "s1",
 		Model:      "test",
 		WorkingDir: t.TempDir(),
-	}, func([]byte) {}, startMockAgent)
+	}, noopSink{}, startMockAgent)
 	require.NoError(t, err, "StartAgent")
 
 	// StopAndWaitAgent should block until the agent is fully removed.
@@ -126,7 +119,7 @@ func TestManager_StopAndWaitAgent(t *testing.T) {
 		AgentID:    "s1",
 		Model:      "test",
 		WorkingDir: t.TempDir(),
-	}, func([]byte) {}, startMockAgent)
+	}, noopSink{}, startMockAgent)
 	require.NoError(t, err, "StartAgent after StopAndWaitAgent should succeed")
 	m.StopAgent("s1")
 }
@@ -151,7 +144,7 @@ func TestManager_AgentExitCleanup(t *testing.T) {
 		AgentID:    "auto-exit",
 		Model:      "test",
 		WorkingDir: t.TempDir(),
-	}, func([]byte) {}, func(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, error) {
+	}, noopSink{}, func(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
 		// Create a process that exits immediately.
 		ctx2, cancel := context.WithCancel(ctx)
 		cmd := exec.CommandContext(ctx2, "true")
@@ -165,6 +158,7 @@ func TestManager_AgentExitCleanup(t *testing.T) {
 			agentID:        opts.AgentID,
 			model:          opts.Model,
 			workingDir:     opts.WorkingDir,
+			sink:           sink,
 			cmd:            cmd,
 			stdin:          stdin,
 			ctx:            ctx2,
@@ -180,7 +174,7 @@ func TestManager_AgentExitCleanup(t *testing.T) {
 
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-		go a.readOutput(scanner, outputFn)
+		go a.readOutput(scanner)
 		return a, nil
 	})
 	require.NoError(t, err, "StartAgent")

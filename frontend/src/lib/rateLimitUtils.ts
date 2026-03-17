@@ -1,4 +1,5 @@
 import type { RateLimitInfo } from '~/stores/agentSession.store'
+import { formatLocalDateTime } from '~/lib/dateFormat'
 
 export const RATE_LIMIT_TYPE_LABELS: Record<string, string> = {
   five_hour: '5-hour',
@@ -86,6 +87,11 @@ export function formatRateLimitMessage(info: Record<string, unknown>): string {
   }
 
   return parts.length > 0 ? `${prefix}: ${parts.join(' \u2014 ')}` : `${prefix} update`
+}
+
+/** Format a reset timestamp as a human-readable local date string. */
+export function formatResetTimestamp(unixSec: number): string {
+  return `Resets at ${formatLocalDateTime(new Date(unixSec * 1000))}`
 }
 
 /** Build a concise single-line summary for the popover card. */

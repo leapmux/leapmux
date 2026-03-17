@@ -97,6 +97,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
               tileId,
               workerId: agent.workerId,
               workingDir: agent.workingDir,
+              agentProvider: agent.agentProvider,
             })
             props.tabStore.setActiveTabForTile(tileId, TabType.AGENT, agent.id)
             props.persistLayout()

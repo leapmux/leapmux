@@ -33,13 +33,13 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     ).toBeVisible({ timeout: 60_000 })
 
     // Wait for the ContextUsageGrid trigger to appear
-    const infoTrigger = page.locator('[data-testid="session-id-trigger"]')
+    const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
     const contextGrid = infoTrigger.locator('svg[viewBox="0 0 11 11"]')
     await expect(contextGrid).toBeVisible({ timeout: 60_000 })
 
     // Open the popover by clicking the trigger
     await infoTrigger.click()
-    const popover = page.locator('[data-testid="session-id-popover"]')
+    const popover = page.locator('[data-testid="agent-info-popover"]')
     await expect(popover).toBeVisible()
 
     // Verify directory is shown in the popover (worker name may not be
@@ -89,7 +89,7 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
   /**
    * Problem 2: Popover repositions when selecting text by dragging.
    *
-   * When the session-id popover is open and the user drags to select text
+   * When the agent-info popover is open and the user drags to select text
    * inside the popover content, the popover suddenly changes position.
    * This happens because the drag/selection causes scroll events that
    * trigger the reposition logic.
@@ -117,18 +117,18 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     // context info, git status) that cause the trigger to re-render.
     // Wait for the session ID to be set in the popover content as a signal
     // that all status updates have been applied.
-    const infoTrigger = page.locator('[data-testid="session-id-trigger"]')
+    const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
     const contextGrid = infoTrigger.locator('svg[viewBox="0 0 11 11"]')
     await expect(contextGrid).toBeVisible({ timeout: 60_000 })
 
-    // Wait for the session-id-trigger to be stable (no re-renders) by
+    // Wait for the agent-info-trigger to be stable (no re-renders) by
     // checking that it stays visible for a brief period.
     await page.waitForTimeout(1000)
     await expect(infoTrigger).toBeVisible()
 
     // Open the popover
     await infoTrigger.click()
-    const popover = page.locator('[data-testid="session-id-popover"]')
+    const popover = page.locator('[data-testid="agent-info-popover"]')
     await expect(popover).toBeVisible()
 
     // Wait for initial positioning to stabilize

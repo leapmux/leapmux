@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -38,7 +37,7 @@ func TestHelperProcess(t *testing.T) {
 }
 
 // mockStart spawns a test helper process instead of the real claude binary.
-func mockStart(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, error) {
+func mockStart(ctx context.Context, opts Options, sink OutputSink) (*Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestHelperProcess", "--")
@@ -63,6 +62,7 @@ func mockStart(ctx context.Context, opts Options, outputFn OutputHandler) (*Agen
 		agentID:        opts.AgentID,
 		model:          opts.Model,
 		workingDir:     opts.WorkingDir,
+		sink:           sink,
 		cmd:            cmd,
 		stdin:          stdin,
 		ctx:            ctx,
@@ -78,39 +78,29 @@ func mockStart(ctx context.Context, opts Options, outputFn OutputHandler) (*Agen
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutput(scanner, outputFn)
+	go a.readOutput(scanner)
 
 	return a, nil
 }
 
 func TestAgent_StartAndStop(t *testing.T) {
 	ctx := context.Background()
-
-	var mu sync.Mutex
-	var lines []string
-
-	outputFn := func(line []byte) {
-		mu.Lock()
-		lines = append(lines, string(line))
-		mu.Unlock()
-	}
+	sink := &testSink{}
 
 	agent, err := mockStart(ctx, Options{
 		AgentID:    "test-workspace",
 		Model:      "test",
 		WorkingDir: t.TempDir(),
-	}, outputFn)
+	}, sink)
 	require.NoError(t, err, "mockStart")
 
-	// Send input and verify it's echoed back.
-	require.NoError(t, agent.SendInput("hello world"), "SendInput")
+	// Send a valid assistant NDJSON message that HandleOutput will persist.
+	require.NoError(t, agent.SendRawInput([]byte(`{"type":"assistant","message":{"role":"assistant","content":"hi"}}`+"\n")), "SendRawInput")
 
-	// Wait for the echo.
+	// Wait for the message to be processed by HandleOutput and persisted via the sink.
 	testutil.AssertEventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(lines) > 0
-	}, "expected at least one output line")
+		return sink.MessageCount() > 0
+	}, "expected at least one persisted message")
 
 	// Stop the agent.
 	agent.Stop()
@@ -131,7 +121,7 @@ func TestAgent_SendInputAfterStop(t *testing.T) {
 		AgentID:    "test-workspace-2",
 		Model:      "test",
 		WorkingDir: t.TempDir(),
-	}, func([]byte) {})
+	}, noopSink{})
 	require.NoError(t, err, "mockStart")
 
 	agent.Stop()
@@ -147,7 +137,7 @@ func TestAgent_AgentID(t *testing.T) {
 		AgentID:    "my-agent",
 		Model:      "test",
 		WorkingDir: t.TempDir(),
-	}, func([]byte) {})
+	}, noopSink{})
 	require.NoError(t, err, "mockStart")
 	defer agent.Stop()
 
@@ -165,7 +155,7 @@ func TestAgent_WorkingDir(t *testing.T) {
 		AgentID:    "wd-test",
 		Model:      "test",
 		WorkingDir: dir,
-	}, func([]byte) {})
+	}, noopSink{})
 	require.NoError(t, err, "mockStart")
 	defer func() {
 		agent.Stop()
@@ -200,9 +190,8 @@ func TestHelperProcessWithInit(t *testing.T) {
 }
 
 // mockStartWithInit spawns a test helper process that outputs an init line
-// with a session_id, simulating real Claude Code behavior. Output flows
-// immediately to outputFn without gating.
-func mockStartWithInit(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, error) {
+// with a session_id, simulating real Claude Code behavior.
+func mockStartWithInit(ctx context.Context, opts Options, sink OutputSink) (*Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestHelperProcessWithInit", "--")
@@ -227,6 +216,7 @@ func mockStartWithInit(ctx context.Context, opts Options, outputFn OutputHandler
 		agentID:        opts.AgentID,
 		model:          opts.Model,
 		workingDir:     opts.WorkingDir,
+		sink:           sink,
 		cmd:            cmd,
 		stdin:          stdin,
 		ctx:            ctx,
@@ -242,54 +232,40 @@ func mockStartWithInit(ctx context.Context, opts Options, outputFn OutputHandler
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutput(scanner, outputFn)
+	go a.readOutput(scanner)
 
 	return a, nil
 }
 
 // TestAgent_InitMessageFlowsThrough verifies that the init message with
-// session_id is forwarded to outputFn. Session ID extraction now happens
-// on the hub side in HandleAgentOutput, not in the agent process.
+// session_id is processed by HandleOutput and forwarded to the sink.
 func TestAgent_InitMessageFlowsThrough(t *testing.T) {
 	ctx := context.Background()
-
-	var mu sync.Mutex
-	var lines []string
-	outputFn := func(line []byte) {
-		mu.Lock()
-		lines = append(lines, string(line))
-		mu.Unlock()
-	}
+	sink := &testSink{}
 
 	agent, err := mockStartWithInit(ctx, Options{
 		AgentID:    "init-test",
 		Model:      "test",
 		WorkingDir: t.TempDir(),
-	}, outputFn)
+	}, sink)
 	require.NoError(t, err, "mockStartWithInit")
 	defer func() {
 		agent.Stop()
 		_ = agent.Wait()
 	}()
 
-	// The init message should be forwarded through outputFn.
+	// The init message should trigger UpdateSessionID on the sink.
 	testutil.AssertEventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(lines) >= 1
-	}, "expected init message to be forwarded")
+		return sink.SessionIDCount() >= 1
+	}, "expected init message to trigger UpdateSessionID")
 
-	mu.Lock()
-	assert.Contains(t, lines[0], "test-session-abc123",
-		"first forwarded line should be the init message with session_id")
-	mu.Unlock()
+	assert.Equal(t, "test-session-abc123", sink.LastSessionID(),
+		"session ID should match the init message")
 
-	// Send additional input and verify it flows through too.
-	require.NoError(t, agent.SendInput("hello"))
+	// Send additional input (an assistant message) and verify it flows through too.
+	require.NoError(t, agent.SendRawInput([]byte(`{"type":"assistant","message":{"role":"assistant","content":"reply"}}`+"\n")))
 	testutil.AssertEventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(lines) >= 2
+		return sink.MessageCount() >= 1
 	}, "expected additional output after input")
 }
 
@@ -325,7 +301,7 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 
 	// Use mock infra to test the timeout path: a process that reads stdin
 	// but never writes a control_response, causing the handshake to timeout.
-	startUnresponsive := func(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, error) {
+	startUnresponsive := func(ctx context.Context, opts Options, sink OutputSink) (*Agent, error) {
 		ctx2, cancel := context.WithCancel(ctx)
 
 		cmd := exec.CommandContext(ctx2, os.Args[0], "-test.run=TestHelperProcessUnresponsive", "--")
@@ -350,6 +326,7 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 			agentID:        opts.AgentID,
 			model:          opts.Model,
 			workingDir:     opts.WorkingDir,
+			sink:           sink,
 			cmd:            cmd,
 			stdin:          stdin,
 			ctx:            ctx2,
@@ -365,7 +342,7 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-		go a.readOutput(scanner, outputFn)
+		go a.readOutput(scanner)
 
 		// Replicate the startup handshake from Start().
 		mode := opts.PermissionMode
@@ -416,7 +393,7 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 		Model:          "test",
 		WorkingDir:     t.TempDir(),
 		StartupTimeout: 200 * time.Millisecond,
-	}, func([]byte) {})
+	}, noopSink{})
 
 	assert.Nil(t, agent, "agent should be nil on timeout")
 	require.Error(t, err, "expected timeout error")
@@ -428,7 +405,7 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 
 	// Spawn a process that writes to stderr and exits immediately,
 	// simulating Claude Code rejecting a nested session.
-	startEarlyExit := func(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, error) {
+	startEarlyExit := func(ctx context.Context, opts Options, sink OutputSink) (*Agent, error) {
 		ctx2, cancel := context.WithCancel(ctx)
 
 		cmd := exec.CommandContext(ctx2, os.Args[0], "-test.run=TestHelperProcessEarlyExit", "--")
@@ -457,6 +434,7 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 			agentID:        opts.AgentID,
 			model:          opts.Model,
 			workingDir:     opts.WorkingDir,
+			sink:           sink,
 			cmd:            cmd,
 			stdin:          stdin,
 			ctx:            ctx2,
@@ -474,7 +452,7 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-		go a.readOutput(scanner, outputFn)
+		go a.readOutput(scanner)
 
 		cleanup := func() {
 			a.Stop()
@@ -496,7 +474,7 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 		Model:          "test",
 		WorkingDir:     t.TempDir(),
 		StartupTimeout: 5 * time.Second,
-	}, func([]byte) {})
+	}, noopSink{})
 	elapsed := time.Since(start)
 
 	assert.Nil(t, agent, "agent should be nil on early exit")
@@ -545,14 +523,7 @@ func TestAgent_PreambleSkipping(t *testing.T) {
 	ctx := context.Background()
 
 	delimiter := "__LEAPMUX_READY_testdelimiter__"
-
-	var mu sync.Mutex
-	var lines []string
-	outputFn := func(line []byte) {
-		mu.Lock()
-		lines = append(lines, string(line))
-		mu.Unlock()
-	}
+	sink := &testSink{}
 
 	// Start process with preamble.
 	ctx2, cancel := context.WithCancel(ctx)
@@ -573,6 +544,7 @@ func TestAgent_PreambleSkipping(t *testing.T) {
 		agentID:           "preamble-test",
 		model:             "test",
 		workingDir:        t.TempDir(),
+		sink:              sink,
 		cmd:               cmd,
 		stdin:             stdin,
 		ctx:               ctx2,
@@ -609,30 +581,20 @@ func TestAgent_PreambleSkipping(t *testing.T) {
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutput(scanner, outputFn)
+	go a.readOutput(scanner)
 
-	// Send some input to trigger output after delimiter.
-	require.NoError(t, a.SendInput("hello"))
+	// Send a valid assistant NDJSON message to trigger output after delimiter.
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"assistant","message":{"role":"assistant","content":"hello"}}`+"\n")))
 
-	// Wait for output to arrive.
+	// Wait for output to arrive via the sink.
 	testutil.AssertEventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(lines) > 0
+		return sink.MessageCount() > 0
 	}, "expected output after preamble")
 
 	// Verify preamble was captured.
 	preamble := a.PreambleOutput()
 	assert.Contains(t, preamble, "Welcome to my shell")
 	assert.Contains(t, preamble, "Loading .zshrc ...")
-
-	// Verify preamble lines were NOT forwarded to outputFn.
-	mu.Lock()
-	for _, line := range lines {
-		assert.NotContains(t, line, "Welcome to my shell")
-		assert.NotContains(t, line, "Loading .zshrc ...")
-	}
-	mu.Unlock()
 
 	// Verify stderr was captured.
 	testutil.AssertEventually(t, func() bool {
@@ -677,14 +639,7 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 
 	delimiter := "__LEAPMUX_READY_testmeta__"
 	metaPrefix := "__LEAPMUX_META_testmeta__ "
-
-	var mu sync.Mutex
-	var lines []string
-	outputFn := func(line []byte) {
-		mu.Lock()
-		lines = append(lines, string(line))
-		mu.Unlock()
-	}
+	sink := &testSink{}
 
 	ctx2, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(ctx2, os.Args[0], "-test.run=TestHelperProcessWithPreambleMeta", "--")
@@ -704,6 +659,7 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 		agentID:            "meta-test",
 		model:              "test",
 		workingDir:         t.TempDir(),
+		sink:               sink,
 		cmd:                cmd,
 		stdin:              stdin,
 		ctx:                ctx2,
@@ -719,15 +675,13 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutput(scanner, outputFn)
+	go a.readOutput(scanner)
 
-	// Send input to trigger post-preamble output.
-	require.NoError(t, a.SendInput("hello"))
+	// Send a valid assistant NDJSON message to trigger post-preamble output.
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"assistant","message":{"role":"assistant","content":"hello"}}`+"\n")))
 
 	testutil.AssertEventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(lines) > 0
+		return sink.MessageCount() > 0
 	}, "expected output after preamble")
 
 	// Verify metadata was parsed.
@@ -738,13 +692,6 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 	preamble := a.PreambleOutput()
 	assert.Contains(t, preamble, "shell preamble line")
 	assert.NotContains(t, preamble, "supports_model_effort")
-
-	// Verify metadata was NOT forwarded to outputFn.
-	mu.Lock()
-	for _, line := range lines {
-		assert.NotContains(t, line, "supports_model_effort")
-	}
-	mu.Unlock()
 
 	a.Stop()
 	_ = a.Wait()

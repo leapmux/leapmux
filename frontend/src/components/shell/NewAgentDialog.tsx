@@ -10,6 +10,7 @@ import { isAgentCreateDisabled } from '~/components/shell/dialogValidation'
 import { DirectorySelector } from '~/components/shell/DirectorySelector'
 import { GitOptions } from '~/components/shell/GitOptions'
 import { WorkerSelector } from '~/components/shell/WorkerSelector'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
 import { spinner } from '~/styles/animations.css'
@@ -44,6 +45,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
     try {
       const resp = await workerRpc.openAgent(state.workerId(), {
         workspaceId: props.workspaceId,
+        agentProvider: AgentProvider.CLAUDE_CODE,
         model: props.defaultModel ?? '',
         title: props.defaultTitle ?? '',
         systemPrompt: '',

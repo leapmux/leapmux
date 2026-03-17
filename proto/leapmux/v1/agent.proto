@@ -3,6 +3,14 @@ package leapmux.v1;
 
 import "leapmux/v1/common.proto";
 
+// AgentProvider identifies the coding agent backend.
+enum AgentProvider {
+  AGENT_PROVIDER_UNSPECIFIED = 0;
+  AGENT_PROVIDER_CLAUDE_CODE = 1;
+  AGENT_PROVIDER_CODEX = 2;
+  AGENT_PROVIDER_OPENCODE = 3;
+}
+
 // AgentStatus tracks the lifecycle state of an agent.
 enum AgentStatus {
   AGENT_STATUS_UNSPECIFIED = 0;
@@ -45,6 +53,7 @@ message OpenAgentRequest {
   string worktree_base_branch = 13; // Base branch for "Create new worktree" (default: current branch)
   string create_branch = 14;        // "Create new branch" mode — branch name to create
   string create_branch_base = 15;   // Base branch for "Create new branch" (default: current branch)
+  AgentProvider agent_provider = 16; // Coding agent provider (default: CLAUDE_CODE)
 }
 
 message OpenAgentResponse {
@@ -94,6 +103,7 @@ message AgentInfo {
   AgentGitStatus git_status = 14; // Git status for the agent's working directory
   string home_dir = 15;         // Worker's home directory for tilde path display
   bool supports_model_effort = 16; // Whether the agent supports --model/--effort CLI args
+  AgentProvider agent_provider = 17; // Coding agent provider
 }
 
 // --- Agent Messaging ---
@@ -115,12 +125,14 @@ message AgentChatMessage {
   string delivery_error = 6; // Non-empty if worker delivery failed
   ContentCompression content_compression = 7; // Compression algorithm used for content
   string updated_at = 8; // Set when message is updated (e.g. thread merge)
+  AgentProvider agent_provider = 9; // Provider that produced this message
 }
 
 // AgentStreamChunk provides token-by-token streaming.
 message AgentStreamChunk {
   string message_id = 1;
   bytes delta = 2; // Verbatim NDJSON line (stream_event from Claude Code)
+  AgentProvider agent_provider = 3; // Provider that produced this chunk
 }
 
 // AgentStreamEnd signals that streaming for a message is complete.
@@ -139,6 +151,7 @@ message AgentStatusChange {
   string effort = 7;
   AgentGitStatus git_status = 8; // Git status for the agent's working directory
   bool supports_model_effort = 9; // Whether the agent supports --model/--effort CLI args
+  AgentProvider agent_provider = 10; // Provider for this agent
 }
 
 // AgentGitStatus holds git repository status for an agent's working directory.
@@ -178,6 +191,7 @@ message AgentControlRequest {
   string agent_id = 1;
   string request_id = 2;
   bytes payload = 3;  // Full JSON of the control_request (verbatim)
+  AgentProvider agent_provider = 4; // Provider for this agent
 }
 
 // AgentControlCancelRequest is sent when Claude Code cancels a pending control request.

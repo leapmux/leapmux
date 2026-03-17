@@ -13,6 +13,7 @@ import Rows2 from 'lucide-solid/icons/rows-2'
 import Terminal from 'lucide-solid/icons/terminal'
 import X from 'lucide-solid/icons/x'
 import { createSignal, ErrorBoundary, For, Show } from 'solid-js'
+import { AgentProviderIcon } from '~/components/common/AgentProviderIcon'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
@@ -197,7 +198,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
       }}
     >
       <span class={styles.tabIcon}>
-        {tab.type === TabType.AGENT ? <Icon icon={Bot} size="sm" /> : tab.type === TabType.FILE ? <Icon icon={FileText} size="sm" /> : <Icon icon={Terminal} size="sm" />}
+        {tab.type === TabType.AGENT ? <AgentProviderIcon provider={tab.agentProvider} size={14} /> : tab.type === TabType.FILE ? <Icon icon={FileText} size="sm" /> : <Icon icon={Terminal} size="sm" />}
       </span>
       <Show
         when={editingTabKey() === tabKey(tab)}

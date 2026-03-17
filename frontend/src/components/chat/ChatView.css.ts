@@ -212,6 +212,12 @@ export const infoValue = style({
   wordBreak: 'break-all',
 })
 
+export const infoValueText = style({
+  fontSize: 'var(--text-8)',
+  color: 'var(--foreground)',
+  wordBreak: 'break-all',
+})
+
 export const infoCopyButton = style({
   'all': 'unset',
   'boxSizing': 'border-box',

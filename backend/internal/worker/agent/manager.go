@@ -15,7 +15,7 @@ var ErrAgentNotFound = errors.New("agent not found")
 // Manager tracks active agents and routes messages.
 type Manager struct {
 	mu     sync.RWMutex
-	agents map[string]*Agent // agentID -> Agent
+	agents map[string]Provider // agentID -> Provider
 	onExit ExitHandler
 }
 
@@ -23,22 +23,27 @@ type Manager struct {
 // The optional onExit handler is called when any agent process exits.
 func NewManager(onExit ExitHandler) *Manager {
 	return &Manager{
-		agents: make(map[string]*Agent),
+		agents: make(map[string]Provider),
 		onExit: onExit,
 	}
 }
 
 // startFunc is the function signature for starting an agent process.
-type startFunc func(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, error)
+type startFunc func(ctx context.Context, opts Options, sink OutputSink) (Provider, error)
 
 // StartAgent spawns a new Claude Code agent for the given agent ID.
-// The outputFn callback receives each NDJSON line of output.
+// The sink receives parsed output events.
 // Returns the confirmed permission mode from the startup handshake.
-func (m *Manager) StartAgent(ctx context.Context, opts Options, outputFn OutputHandler) (string, error) {
-	return m.startAgentWith(ctx, opts, outputFn, Start)
+func (m *Manager) StartAgent(ctx context.Context, opts Options, sink OutputSink) (string, error) {
+	return m.startAgentWith(ctx, opts, sink, startClaudeCode)
 }
 
-func (m *Manager) startAgentWith(ctx context.Context, opts Options, outputFn OutputHandler, start startFunc) (string, error) {
+// startClaudeCode wraps Start() to satisfy the startFunc signature.
+func startClaudeCode(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+	return Start(ctx, opts, sink)
+}
+
+func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputSink, start startFunc) (string, error) {
 	m.mu.Lock()
 	if _, exists := m.agents[opts.AgentID]; exists {
 		m.mu.Unlock()
@@ -46,20 +51,20 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, outputFn Out
 	}
 	m.mu.Unlock()
 
-	agent, err := start(ctx, opts, outputFn)
+	provider, err := start(ctx, opts, sink)
 	if err != nil {
 		return "", err
 	}
 
-	confirmedMode := agent.ConfirmedPermissionMode()
+	confirmedMode := provider.ConfirmedPermissionMode()
 
 	m.mu.Lock()
-	m.agents[opts.AgentID] = agent
+	m.agents[opts.AgentID] = provider
 	m.mu.Unlock()
 
 	// Wait for the agent to exit in the background, then clean up.
 	go func() {
-		err := agent.Wait()
+		err := provider.Wait()
 		m.mu.Lock()
 		delete(m.agents, opts.AgentID)
 		m.mu.Unlock()
@@ -73,12 +78,12 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, outputFn Out
 			}
 		}
 
-		if agent.IsStopped() {
+		if provider.IsStopped() {
 			slog.Info("agent stopped",
 				"agent_id", opts.AgentID,
 			)
 		} else if err != nil {
-			stderr := agent.Stderr()
+			stderr := provider.Stderr()
 			slog.Warn("agent exited with error",
 				"agent_id", opts.AgentID,
 				"error", err,
@@ -101,28 +106,28 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, outputFn Out
 // SendInput routes a user message to the specified agent.
 func (m *Manager) SendInput(agentID, content string) error {
 	m.mu.RLock()
-	agent, ok := m.agents[agentID]
+	p, ok := m.agents[agentID]
 	m.mu.RUnlock()
 
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrAgentNotFound, agentID)
 	}
 
-	return agent.SendInput(content)
+	return p.SendInput(content)
 }
 
 // SendRawInput writes raw bytes directly to the specified agent's stdin
 // without wrapping in a UserInputMessage.
 func (m *Manager) SendRawInput(agentID string, data []byte) error {
 	m.mu.RLock()
-	agent, ok := m.agents[agentID]
+	p, ok := m.agents[agentID]
 	m.mu.RUnlock()
 
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrAgentNotFound, agentID)
 	}
 
-	return agent.SendRawInput(data)
+	return p.SendRawInput(data)
 }
 
 // StopAgent stops the agent with the given agent ID.
@@ -130,11 +135,11 @@ func (m *Manager) SendRawInput(agentID string, data []byte) error {
 // false if the agent had already exited.
 func (m *Manager) StopAgent(agentID string) bool {
 	m.mu.RLock()
-	agent, ok := m.agents[agentID]
+	p, ok := m.agents[agentID]
 	m.mu.RUnlock()
 
 	if ok {
-		agent.Stop()
+		p.Stop()
 	}
 	return ok
 }
@@ -145,15 +150,15 @@ func (m *Manager) StopAgent(agentID string) bool {
 // Returns true if the agent was found and stopped, false if it was not running.
 func (m *Manager) StopAndWaitAgent(agentID string) bool {
 	m.mu.RLock()
-	agent, ok := m.agents[agentID]
+	p, ok := m.agents[agentID]
 	m.mu.RUnlock()
 
 	if !ok {
 		return false
 	}
 
-	agent.Stop()
-	_ = agent.Wait()
+	p.Stop()
+	_ = p.Wait()
 
 	// Remove the map entry eagerly so that StartAgent can proceed
 	// immediately. The background goroutine's delete will be a no-op.
@@ -168,14 +173,14 @@ func (m *Manager) StopAndWaitAgent(agentID string) bool {
 // Returns true as default (agent not found = safe fallback for Anthropic API).
 func (m *Manager) SupportsModelEffort(agentID string) bool {
 	m.mu.RLock()
-	a, ok := m.agents[agentID]
+	p, ok := m.agents[agentID]
 	m.mu.RUnlock()
 
 	if !ok {
 		return true
 	}
 
-	return a.SupportsModelEffort()
+	return p.SupportsModelEffort()
 }
 
 // HasAgent returns true if an agent is running with the given agent ID.
@@ -200,13 +205,13 @@ func (m *Manager) ListAgentIDs() []string {
 // StopAll stops all running agents.
 func (m *Manager) StopAll() {
 	m.mu.Lock()
-	agents := make([]*Agent, 0, len(m.agents))
-	for _, a := range m.agents {
-		agents = append(agents, a)
+	providers := make([]Provider, 0, len(m.agents))
+	for _, p := range m.agents {
+		providers = append(providers, p)
 	}
 	m.mu.Unlock()
 
-	for _, a := range agents {
-		a.Stop()
+	for _, p := range providers {
+		p.Stop()
 	}
 }

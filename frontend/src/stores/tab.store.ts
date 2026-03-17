@@ -1,3 +1,4 @@
+import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createStore } from 'solid-js/store'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { after, first, mid } from '~/lib/lexorank'
@@ -22,6 +23,7 @@ export interface Tab {
   fileViewMode?: FileViewMode
   fileDiffBase?: FileDiffBase
   fileOpenSource?: FileOpenSource
+  agentProvider?: AgentProvider
   gitBranch?: string
   gitOriginUrl?: string
   gitDiffAdded?: number

@@ -9,6 +9,7 @@ import type { PermissionMode } from '~/utils/controlResponse'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
@@ -60,6 +61,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       const title = `Agent ${nextTabNumber(props.tabStore.state.tabs, TabType.AGENT, 'Agent')}`
       const resp = await workerRpc.openAgent(workerId, {
         workspaceId,
+        agentProvider: AgentProvider.CLAUDE_CODE,
         model: DEFAULT_MODEL,
         title,
         systemPrompt: '',
@@ -77,6 +79,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
           tileId,
           workerId: resp.agent.workerId,
           workingDir: resp.agent.workingDir,
+          agentProvider: resp.agent.agentProvider,
         })
         props.tabStore.setActiveTabForTile(tileId, TabType.AGENT, resp.agent.id)
         props.persistLayout?.()

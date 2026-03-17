@@ -13,14 +13,14 @@ import (
 //
 // This is intended for use in tests outside the agent package that need a
 // running agent registered in the manager (e.g. to make HasAgent return true).
-func (m *Manager) MockStartAgent(ctx context.Context, opts Options, outputFn OutputHandler) (string, error) {
-	return m.startAgentWith(ctx, opts, outputFn, mockStartForTest)
+func (m *Manager) MockStartAgent(ctx context.Context, opts Options, sink OutputSink) (string, error) {
+	return m.startAgentWith(ctx, opts, sink, mockStartForTest)
 }
 
 // mockStartForTest spawns a test helper process (simple cat) instead of the
 // real claude binary. Unlike the internal mockStart used in agent_test.go,
 // this does not depend on TestHelperProcess and uses a plain "cat" command.
-func mockStartForTest(ctx context.Context, opts Options, outputFn OutputHandler) (*Agent, error) {
+func mockStartForTest(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	cmd := exec.CommandContext(ctx, "cat")
@@ -45,6 +45,8 @@ func mockStartForTest(ctx context.Context, opts Options, outputFn OutputHandler)
 		agentID:        opts.AgentID,
 		model:          opts.Model,
 		workingDir:     opts.WorkingDir,
+		homeDir:        opts.HomeDir,
+		sink:           sink,
 		cmd:            cmd,
 		stdin:          stdin,
 		ctx:            ctx,
@@ -60,7 +62,7 @@ func mockStartForTest(ctx context.Context, opts Options, outputFn OutputHandler)
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutput(scanner, outputFn)
+	go a.readOutput(scanner)
 
 	return a, nil
 }

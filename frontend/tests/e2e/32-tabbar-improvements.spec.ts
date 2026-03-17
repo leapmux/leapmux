@@ -122,13 +122,13 @@ test.describe('TabBar Improvements', () => {
     await expect(page.locator('[data-testid="message-content"]', { hasText: 'hello' })).toBeVisible()
 
     // The session ID trigger button should now be visible in the footer
-    await expect(page.locator('[data-testid="session-id-trigger"]')).toBeVisible()
+    await expect(page.locator('[data-testid="agent-info-trigger"]')).toBeVisible()
 
     // Click to open the popover
-    await page.locator('[data-testid="session-id-trigger"]').click()
+    await page.locator('[data-testid="agent-info-trigger"]').click()
 
     // Verify popover shows session ID
-    await expect(page.locator('[data-testid="session-id-popover"]')).toBeVisible()
+    await expect(page.locator('[data-testid="agent-info-popover"]')).toBeVisible()
     await expect(page.locator('[data-testid="session-id-value"]')).toBeVisible()
 
     // Session ID should be non-empty

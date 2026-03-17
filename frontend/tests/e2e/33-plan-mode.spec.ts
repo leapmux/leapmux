@@ -60,10 +60,10 @@ test.describe('Plan Mode', () => {
     await expect(trigger).toContainText('Accept Edits')
 
     // ── Step 6: Verify Plan File is shown in the popover ──
-    const infoTrigger = page.locator('[data-testid="session-id-trigger"]')
+    const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
     await expect(infoTrigger).toBeVisible({ timeout: 30_000 })
     await infoTrigger.click()
-    const popover = page.locator('[data-testid="session-id-popover"]')
+    const popover = page.locator('[data-testid="agent-info-popover"]')
     await expect(popover).toBeVisible()
     await expect(popover.locator('[data-testid="info-row-plan-file"]')).toBeVisible()
   })
