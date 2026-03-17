@@ -33,7 +33,7 @@ export interface WorkspaceConnectionParams {
   /** Returns the worker ID for the active workspace. */
   getWorkerId: () => string
   /** Called when an agent turn ends (turn completed or control request received). */
-  onTurnEnd?: (agentId: string) => void
+  onTurnEnd?: (agentId: string, numTurns?: number) => void
 }
 
 export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
@@ -168,7 +168,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             const meta = extractResultMetadata(parseMessageContent(msg))
             if (meta) {
               if (meta.subtype && catchUpPhase === 'live')
-                params.onTurnEnd?.(agentId)
+                params.onTurnEnd?.(agentId, meta.numTurns)
               if (meta.contextWindow !== undefined) {
                 const existingUsage = agentSessionStore.getInfo(agentId).contextUsage
                 if (existingUsage) {

@@ -162,11 +162,12 @@ export function extractAssistantUsage(parsed: ParsedMessageContent): {
   return Object.keys(result).length > 0 ? result : null
 }
 
-/** Extract result-message metadata: subtype, contextWindow, totalCostUsd. */
+/** Extract result-message metadata: subtype, contextWindow, totalCostUsd, numTurns. */
 export function extractResultMetadata(parsed: ParsedMessageContent): {
   subtype?: string
   contextWindow?: number
   totalCostUsd?: number
+  numTurns?: number
 } | null {
   const inner = getInnerMessage(parsed)
   if (!inner)
@@ -175,7 +176,7 @@ export function extractResultMetadata(parsed: ParsedMessageContent): {
   if (inner.parent_tool_use_id)
     return null
 
-  const result: { subtype?: string, contextWindow?: number, totalCostUsd?: number } = {}
+  const result: { subtype?: string, contextWindow?: number, totalCostUsd?: number, numTurns?: number } = {}
 
   if (inner.subtype)
     result.subtype = inner.subtype as string
@@ -192,6 +193,9 @@ export function extractResultMetadata(parsed: ParsedMessageContent): {
 
   if (typeof inner.total_cost_usd === 'number')
     result.totalCostUsd = inner.total_cost_usd as number
+
+  if (typeof inner.num_turns === 'number')
+    result.numTurns = inner.num_turns as number
 
   return Object.keys(result).length > 0 ? result : null
 }

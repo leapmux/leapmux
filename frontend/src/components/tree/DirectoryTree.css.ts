@@ -52,6 +52,11 @@ export const nodeName = style({
   whiteSpace: 'nowrap',
 })
 
+export const nodeNameMuted = style({
+  whiteSpace: 'nowrap',
+  color: 'var(--muted-foreground)',
+})
+
 export const loadingState = style({
   display: 'flex',
   alignItems: 'center',

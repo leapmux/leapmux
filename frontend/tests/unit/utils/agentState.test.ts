@@ -168,4 +168,18 @@ describe('isAgentWorking', () => {
       makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'context_cleared' }])),
     ])).toBe(false)
   })
+
+  it('treats LEAPMUX wrapper with [settings_changed, context_cleared] as turn boundary', () => {
+    expect(isAgentWorking([
+      makeMsg(MessageRole.ASSISTANT),
+      makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'settings_changed' }, { type: 'context_cleared' }])),
+    ])).toBe(false)
+  })
+
+  it('treats LEAPMUX wrapper with [context_cleared, settings_changed] as turn boundary', () => {
+    expect(isAgentWorking([
+      makeMsg(MessageRole.ASSISTANT),
+      makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'context_cleared' }, { type: 'settings_changed' }])),
+    ])).toBe(false)
+  })
 })

@@ -52,12 +52,11 @@ describe('renderNotificationThread: compaction vs context_cleared ordering', () 
   it('plan_execution renders together with compaction', () => {
     const planExecMsg = {
       type: 'plan_execution',
-      context_cleared: true,
       plan_file_path: '/path/plan.md',
     }
-    const messages = [planExecMsg, compactBoundaryMsg]
+    const messages = [contextClearedMsg, planExecMsg, compactBoundaryMsg]
     const text = renderText(messages)
-    expect(text).toContain('Executing plan with clean context')
+    expect(text).toContain('Executing plan')
     expect(text).toContain('Context compacted')
   })
 
@@ -78,26 +77,24 @@ describe('renderNotificationThread: compaction vs context_cleared ordering', () 
     expect(renderedContains(messages, 'Context cleared')).toBe(false)
   })
 
-  it('settings_changed with contextCleared BEFORE compaction: shows compaction, hides "Context cleared"', () => {
+  it('settings_changed + context_cleared BEFORE compaction: shows compaction, hides "Context cleared"', () => {
     const settingsMsg = {
       type: 'settings_changed',
       changes: { model: { old: 'A', new: 'B' } },
-      contextCleared: true,
     }
-    const messages = [settingsMsg, compactBoundaryMsg]
+    const messages = [settingsMsg, contextClearedMsg, compactBoundaryMsg]
     const text = renderText(messages)
     expect(text).toContain('Context compacted')
     expect(text).not.toContain('Context cleared')
     expect(text).toContain('Model')
   })
 
-  it('compaction BEFORE settings_changed with contextCleared: hides compaction, shows "Context cleared"', () => {
+  it('compaction BEFORE settings_changed + context_cleared: hides compaction, shows "Context cleared"', () => {
     const settingsMsg = {
       type: 'settings_changed',
       changes: { model: { old: 'A', new: 'B' } },
-      contextCleared: true,
     }
-    const messages = [compactBoundaryMsg, settingsMsg]
+    const messages = [compactBoundaryMsg, settingsMsg, contextClearedMsg]
     const text = renderText(messages)
     expect(text).not.toContain('Context compacted')
     expect(text).toContain('Context cleared')

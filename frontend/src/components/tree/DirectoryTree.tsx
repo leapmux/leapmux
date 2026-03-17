@@ -468,7 +468,7 @@ const TreeNode: Component<{
             <Icon icon={FolderOpen} size="sm" class={gitIcon().class || styles.folderIcon} data-testid={gitIcon().testId} />
           </Show>
         </Show>
-        <span class={styles.nodeName}>{props.node.displayName}</span>
+        <span class={props.node.hidden ? styles.nodeNameMuted : styles.nodeName}>{props.node.displayName}</span>
         {renderNodeDiffStats(props.node, tree.gitStatusStore())}
         <div class={styles.nodeActions}>
           <TreeContextMenu

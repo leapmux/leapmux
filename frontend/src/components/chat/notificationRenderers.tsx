@@ -39,7 +39,7 @@ function displayValue(key: string, value: string): string {
   return DISPLAY_VALUE_MAPS[key]?.[value] ?? value
 }
 
-/** Handles settings change notifications: {"type":"settings_changed","changes":{...},"contextCleared"?:true} */
+/** Handles settings change notifications: {"type":"settings_changed","changes":{...}} */
 export const settingsChangedRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
     if (!isObject(parsed) || parsed.type !== 'settings_changed')
@@ -52,9 +52,6 @@ export const settingsChangedRenderer: MessageContentRenderer = {
       if (val.old !== val.new) {
         parts.push(`${displayLabel(key)} (${displayValue(key, val.old)} → ${displayValue(key, val.new)})`)
       }
-    }
-    if (parsed.contextCleared) {
-      parts.push('Context cleared')
     }
     if (parts.length === 0)
       return null
@@ -272,7 +269,6 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
   // Accumulate state across all messages in the thread.
   const settingsParts: string[] = []
   let contextCleared = false
-  let planExecContextCleared = false
   let interrupted = false
   let compacting = false
   let compactLabel: string | null = null
@@ -309,23 +305,13 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
             settingsParts.push(`${displayLabel(key)} (${displayValue(key, val.old)} → ${displayValue(key, val.new)})`)
         }
       }
-      if (m.contextCleared) {
-        contextCleared = true
-        lastContextEventIsCompaction = false
-      }
     }
     else if (t === 'context_cleared') {
       contextCleared = true
       lastContextEventIsCompaction = false
     }
     else if (t === 'plan_execution') {
-      if (m.context_cleared === true) {
-        planExecContextCleared = true
-        settingsParts.push('Executing plan with clean context')
-      }
-      else {
-        settingsParts.push('Executing plan retaining context')
-      }
+      settingsParts.push('Executing plan')
     }
     else if (t === 'agent_error') {
       const error = typeof m.error === 'string' ? m.error : 'Unknown error'
@@ -362,7 +348,7 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
     }
   }
 
-  if (contextCleared && !planExecContextCleared && !lastContextEventIsCompaction)
+  if (contextCleared && !lastContextEventIsCompaction)
     settingsParts.push('Context cleared')
   if (interrupted)
     settingsParts.push('Interrupted')
