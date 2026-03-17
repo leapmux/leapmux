@@ -202,6 +202,34 @@ func TestCheckoutBranchIfRequested_RemoteBranch(t *testing.T) {
 	assert.Equal(t, "origin/feature/remote-test", strings.TrimSpace(upstream))
 }
 
+func TestCheckoutBranchIfRequested_RemoteBranchWithExistingLocal(t *testing.T) {
+	dir := initRepo(t)
+
+	// Create a "remote" repo with a branch.
+	remoteDir := initRepo(t)
+	run(t, remoteDir, "git", "checkout", "-b", "feature/existing")
+	run(t, remoteDir, "git", "commit", "--allow-empty", "-m", "remote commit")
+
+	// Add as origin and fetch.
+	run(t, dir, "git", "remote", "add", "origin", remoteDir)
+	run(t, dir, "git", "fetch", "origin")
+
+	// Create a local branch with the same name.
+	run(t, dir, "git", "checkout", "-b", "feature/existing")
+	run(t, dir, "git", "commit", "--allow-empty", "-m", "local commit")
+	run(t, dir, "git", "checkout", "-") // go back to default branch
+
+	// Checkout the remote branch — should switch to existing local branch, not error.
+	svc := &Context{}
+	err := svc.checkoutBranchIfRequested(dir, "origin/feature/existing")
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	branch, err := gitOutput(ctx, dir, "rev-parse", "--abbrev-ref", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, "feature/existing", strings.TrimSpace(branch))
+}
+
 func TestCheckoutBranchIfRequested_LocalBranch(t *testing.T) {
 	dir := initRepo(t)
 

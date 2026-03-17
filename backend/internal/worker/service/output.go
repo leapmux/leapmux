@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log/slog"
+	"slices"
+	"sort"
 	"sync"
 	"time"
 
@@ -600,91 +602,120 @@ func (h *OutputHandler) updatePlan(agentID, filePath string, compressed []byte, 
 }
 
 // consolidateNotificationThread consolidates a notification thread's messages.
+// Each message type appears at most once in the output (except compaction
+// boundaries and unknown types, which are always kept). When duplicates exist,
+// the last occurrence's data wins. Output is ordered by the position of each
+// type's last occurrence in the input.
 func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage {
-	type envelope struct {
-		Type    string `json:"type"`
-		Subtype string `json:"subtype"`
-	}
-
 	type settingsChange struct {
 		Old string `json:"old"`
 		New string `json:"new"`
 	}
-	mergedChanges := map[string]settingsChange{}
-	hasContextCleared := false
-	contextClearedRaw := json.RawMessage(nil)
-	hasInterrupted := false
-	interruptedRaw := json.RawMessage(nil)
-	var latestStatusRaw json.RawMessage
-	rateLimitByType := map[string]json.RawMessage{}
-	var compactionBoundaries []json.RawMessage
-	var planExecRaw json.RawMessage
 
-	for _, raw := range messages {
+	// Unified envelope — decoded once per message.
+	type envelope struct {
+		Type    string                    `json:"type"`
+		Subtype string                    `json:"subtype"`
+		Changes map[string]settingsChange `json:"changes,omitempty"`
+		RLInfo  *struct {
+			RateLimitType string `json:"rateLimitType"`
+		} `json:"rate_limit_info,omitempty"`
+	}
+
+	// Deduplication state — track the last-seen index for ordering.
+	mergedChanges := map[string]settingsChange{}
+	settingsLastIdx := -1
+
+	contextClearedRaw := json.RawMessage(nil)
+	contextClearedLastIdx := -1
+
+	interruptedRaw := json.RawMessage(nil)
+	interruptedLastIdx := -1
+
+	planExecRaw := json.RawMessage(nil)
+	planExecLastIdx := -1
+
+	rateLimitByType := map[string]json.RawMessage{}
+	rateLimitLastIdx := -1
+
+	var latestStatusRaw json.RawMessage
+	statusLastIdx := -1
+
+	// Compaction boundaries and unknown types: always kept, in order.
+	type indexedRaw struct {
+		idx int
+		raw json.RawMessage
+	}
+	var keepAll []indexedRaw
+
+	for i, raw := range messages {
 		var env envelope
 		if json.Unmarshal(raw, &env) != nil {
-			compactionBoundaries = append(compactionBoundaries, raw)
+			keepAll = append(keepAll, indexedRaw{i, raw})
 			continue
 		}
 
 		switch {
 		case env.Type == "settings_changed":
-			var sc struct {
-				Changes        map[string]settingsChange `json:"changes"`
-				ContextCleared bool                      `json:"contextCleared"`
-			}
-			if json.Unmarshal(raw, &sc) == nil {
-				for key, val := range sc.Changes {
-					if existing, ok := mergedChanges[key]; ok {
-						mergedChanges[key] = settingsChange{Old: existing.Old, New: val.New}
-					} else {
-						mergedChanges[key] = val
-					}
-				}
-				if sc.ContextCleared {
-					hasContextCleared = true
+			for key, val := range env.Changes {
+				if existing, ok := mergedChanges[key]; ok {
+					mergedChanges[key] = settingsChange{Old: existing.Old, New: val.New}
+				} else {
+					mergedChanges[key] = val
 				}
 			}
+			settingsLastIdx = i
 
 		case env.Type == "context_cleared":
-			hasContextCleared = true
 			contextClearedRaw = raw
+			contextClearedLastIdx = i
+			// context_cleared supersedes any earlier compaction boundaries.
+			keepAll = slices.DeleteFunc(keepAll, func(ir indexedRaw) bool {
+				var e envelope
+				if json.Unmarshal(ir.raw, &e) != nil {
+					return false
+				}
+				return e.Type == "system" && (e.Subtype == "compact_boundary" || e.Subtype == "microcompact_boundary")
+			})
 
 		case env.Type == "plan_execution":
 			planExecRaw = raw
+			planExecLastIdx = i
 
 		case env.Type == "interrupted":
-			hasInterrupted = true
 			interruptedRaw = raw
+			interruptedLastIdx = i
 
 		case env.Type == "rate_limit":
-			var rl struct {
-				RateLimitInfo struct {
-					RateLimitType string `json:"rateLimitType"`
-				} `json:"rate_limit_info"`
+			key := "unknown"
+			if env.RLInfo != nil && env.RLInfo.RateLimitType != "" {
+				key = env.RLInfo.RateLimitType
 			}
-			if json.Unmarshal(raw, &rl) == nil {
-				key := rl.RateLimitInfo.RateLimitType
-				if key == "" {
-					key = "unknown"
-				}
-				rateLimitByType[key] = raw
-			}
+			rateLimitByType[key] = raw
+			rateLimitLastIdx = i
 
 		case env.Type == "system" && env.Subtype == "status":
 			latestStatusRaw = raw
+			statusLastIdx = i
 
 		case env.Type == "system" && (env.Subtype == "compact_boundary" || env.Subtype == "microcompact_boundary"):
-			compactionBoundaries = append(compactionBoundaries, raw)
+			// Compaction supersedes any earlier context_cleared.
+			if contextClearedLastIdx >= 0 && i > contextClearedLastIdx {
+				contextClearedRaw = nil
+				contextClearedLastIdx = -1
+			}
+			keepAll = append(keepAll, indexedRaw{i, raw})
 
 		default:
-			compactionBoundaries = append(compactionBoundaries, raw)
+			keepAll = append(keepAll, indexedRaw{i, raw})
 		}
 	}
 
-	var result []json.RawMessage
+	// Build deduped entries with their ordering index.
+	var entries []indexedRaw
 
-	if len(mergedChanges) > 0 {
+	// settings_changed: merge all changes, drop if old==new for all keys.
+	if settingsLastIdx >= 0 {
 		effective := map[string]settingsChange{}
 		for key, val := range mergedChanges {
 			if val.Old != val.New {
@@ -696,67 +727,44 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 				"type":    "settings_changed",
 				"changes": effective,
 			}
-			if hasContextCleared {
-				entry["contextCleared"] = true
-			}
 			if data, err := json.Marshal(entry); err == nil {
-				result = append(result, data)
+				entries = append(entries, indexedRaw{settingsLastIdx, data})
 			}
-		} else if hasContextCleared {
-			entry := map[string]interface{}{
-				"type": "context_cleared",
-			}
-			if data, err := json.Marshal(entry); err == nil {
-				result = append(result, data)
-			}
-			hasContextCleared = false
 		}
 	}
 
-	if hasContextCleared && contextClearedRaw != nil {
-		result = append(result, contextClearedRaw)
+	if contextClearedLastIdx >= 0 {
+		entries = append(entries, indexedRaw{contextClearedLastIdx, contextClearedRaw})
 	}
 
-	if planExecRaw != nil {
-		var pe struct {
-			ContextCleared bool `json:"context_cleared"`
-		}
-		if json.Unmarshal(planExecRaw, &pe) == nil && pe.ContextCleared {
-			filtered := result[:0]
-			for _, r := range result {
-				var e envelope
-				if json.Unmarshal(r, &e) == nil && e.Type == "context_cleared" {
-					continue
-				}
-				if json.Unmarshal(r, &e) == nil && e.Type == "settings_changed" {
-					var sc map[string]interface{}
-					if json.Unmarshal(r, &sc) == nil {
-						delete(sc, "contextCleared")
-						if data, err := json.Marshal(sc); err == nil {
-							r = data
-						}
-					}
-				}
-				filtered = append(filtered, r)
-			}
-			result = filtered
-		}
-		result = append(result, planExecRaw)
+	if planExecLastIdx >= 0 {
+		entries = append(entries, indexedRaw{planExecLastIdx, planExecRaw})
 	}
 
-	if hasInterrupted && interruptedRaw != nil {
-		result = append(result, interruptedRaw)
+	if interruptedLastIdx >= 0 {
+		entries = append(entries, indexedRaw{interruptedLastIdx, interruptedRaw})
 	}
 
 	for _, raw := range rateLimitByType {
-		result = append(result, raw)
+		entries = append(entries, indexedRaw{rateLimitLastIdx, raw})
 	}
 
-	if latestStatusRaw != nil {
-		result = append(result, latestStatusRaw)
+	if statusLastIdx >= 0 {
+		entries = append(entries, indexedRaw{statusLastIdx, latestStatusRaw})
 	}
 
-	result = append(result, compactionBoundaries...)
+	// Merge keepAll entries.
+	entries = append(entries, keepAll...)
+
+	// Sort by input index (ascending) to preserve chronological order.
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].idx < entries[j].idx
+	})
+
+	result := make([]json.RawMessage, 0, len(entries))
+	for _, e := range entries {
+		result = append(result, e.raw)
+	}
 
 	if len(result) == 0 {
 		return []json.RawMessage{}

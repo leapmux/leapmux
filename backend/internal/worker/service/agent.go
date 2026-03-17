@@ -233,7 +233,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		// Check for leapmux-level slash commands (e.g. /clear) that
 		// Claude Code does not handle natively.
-		isSlashClear := strings.TrimSpace(content) == "/clear"
+		isSlashClear := trimmed == "/clear" || trimmed == "/reset"
 
 		// Attempt to send the message to the agent process (unless it's
 		// a command that leapmux handles itself).
@@ -1139,9 +1139,8 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 		slog.Warn("plan exec: no plan content found, broadcasting notification without restart",
 			"agent_id", agentID)
 		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type":            "plan_execution",
-			"context_cleared": false,
-			"plan_file_path":  dbAgent.PlanFilePath,
+			"type":           "plan_execution",
+			"plan_file_path": dbAgent.PlanFilePath,
 		})
 		return
 	}
@@ -1155,11 +1154,13 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 	// StartAgent below doesn't fail with "agent already running".
 	svc.Agents.StopAndWaitAgent(agentID)
 
-	// Broadcast plan_execution notification.
+	// Broadcast context_cleared and plan_execution as separate notifications.
 	svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-		"type":            "plan_execution",
-		"context_cleared": true,
-		"plan_file_path":  dbAgent.PlanFilePath,
+		"type": "context_cleared",
+	})
+	svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+		"type":           "plan_execution",
+		"plan_file_path": dbAgent.PlanFilePath,
 	})
 
 	// Restart agent with plan content.

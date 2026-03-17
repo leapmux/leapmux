@@ -154,10 +154,14 @@ export const AppShell: ParentComponent = (props) => {
   const turnEndAudio = new Audio('/sounds/benkirb-electronic-doorbell-262895.mp3')
   // Late-bound ref: set once useTabOperations is initialized (after useWorkspaceConnection).
   let isAgentClosing: (agentId: string) => boolean = () => false
-  const handleTurnEnd = (agentId: string) => {
+  const handleTurnEnd = (agentId: string, numTurns?: number) => {
     if (isAgentClosing(agentId))
       return
+    // Always bump the trigger (drives git status and directory tree refresh),
+    // but skip the audible notification for trivial single-exchange turns.
     setTurnEndTrigger(v => v + 1)
+    if (numTurns !== undefined && numTurns <= 1)
+      return
     const now = Date.now()
     if (now - lastSoundPlayedAt < TURN_END_SOUND_COOLDOWN_MS)
       return

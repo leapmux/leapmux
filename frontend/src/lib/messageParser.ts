@@ -13,8 +13,6 @@ export interface ParsedMessageContent {
   rawText: string
   /** The top-level parsed JSON object, or null on parse failure. */
   topLevel: Record<string, unknown> | null
-  /** Whether topLevel is a thread-wrapper envelope ({messages: [...]}) */
-  isWrapped: boolean
   /** The first (parent) inner message object, or undefined. */
   parentObject: Record<string, unknown> | undefined
   /** Thread children (messages after the first), empty array if none. */
@@ -26,7 +24,6 @@ export interface ParsedMessageContent {
 const EMPTY_PARSED: ParsedMessageContent = {
   rawText: '',
   topLevel: null,
-  isWrapped: false,
   parentObject: undefined,
   children: [],
   wrapper: null,
@@ -48,7 +45,7 @@ export function parseMessageContent(message: AgentChatMessage): ParsedMessageCon
       // An empty messages array can occur when notification consolidation
       // cancels out all changes (e.g. plan mode toggled back).
       if (obj.messages.length === 0)
-        return { rawText: text, topLevel: obj, isWrapped: true, parentObject: undefined, children: [], wrapper: obj }
+        return { rawText: text, topLevel: obj, parentObject: undefined, children: [], wrapper: obj }
 
       const first = obj.messages[0]
       const parent = (typeof first === 'object' && first !== null && !Array.isArray(first))
@@ -57,7 +54,6 @@ export function parseMessageContent(message: AgentChatMessage): ParsedMessageCon
       return {
         rawText: text,
         topLevel: obj,
-        isWrapped: true,
         parentObject: parent,
         children: obj.messages.length > 1 ? obj.messages.slice(1) : [],
         wrapper: obj,
@@ -67,10 +63,10 @@ export function parseMessageContent(message: AgentChatMessage): ParsedMessageCon
     const parent = (typeof obj === 'object' && obj !== null && !Array.isArray(obj))
       ? obj as Record<string, unknown>
       : undefined
-    return { rawText: text, topLevel: obj, isWrapped: false, parentObject: parent, children: [], wrapper: null }
+    return { rawText: text, topLevel: obj, parentObject: parent, children: [], wrapper: null }
   }
   catch {
-    return { rawText: text, topLevel: null, isWrapped: false, parentObject: undefined, children: [], wrapper: null }
+    return { rawText: text, topLevel: null, parentObject: undefined, children: [], wrapper: null }
   }
 }
 
@@ -162,11 +158,12 @@ export function extractAssistantUsage(parsed: ParsedMessageContent): {
   return Object.keys(result).length > 0 ? result : null
 }
 
-/** Extract result-message metadata: subtype, contextWindow, totalCostUsd. */
+/** Extract result-message metadata: subtype, contextWindow, totalCostUsd, numTurns. */
 export function extractResultMetadata(parsed: ParsedMessageContent): {
   subtype?: string
   contextWindow?: number
   totalCostUsd?: number
+  numTurns?: number
 } | null {
   const inner = getInnerMessage(parsed)
   if (!inner)
@@ -175,7 +172,7 @@ export function extractResultMetadata(parsed: ParsedMessageContent): {
   if (inner.parent_tool_use_id)
     return null
 
-  const result: { subtype?: string, contextWindow?: number, totalCostUsd?: number } = {}
+  const result: { subtype?: string, contextWindow?: number, totalCostUsd?: number, numTurns?: number } = {}
 
   if (inner.subtype)
     result.subtype = inner.subtype as string
@@ -192,6 +189,9 @@ export function extractResultMetadata(parsed: ParsedMessageContent): {
 
   if (typeof inner.total_cost_usd === 'number')
     result.totalCostUsd = inner.total_cost_usd as number
+
+  if (typeof inner.num_turns === 'number')
+    result.numTurns = inner.num_turns as number
 
   return Object.keys(result).length > 0 ? result : null
 }

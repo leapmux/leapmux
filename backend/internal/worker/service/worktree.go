@@ -234,14 +234,19 @@ func (svc *Context) checkoutBranchIfRequested(workingDir, branch string) error {
 		parts := strings.SplitN(branch, "/", 2)
 		if len(parts) == 2 {
 			localName := parts[1]
-			stderr, err := gitOutputStderr(ctx, workingDir, "checkout", "-b", localName, "--track", branch)
-			if err != nil {
-				if msg := strings.TrimSpace(stderr); msg != "" {
-					return errors.New(msg)
+			if branchExists(ctx, workingDir, localName) {
+				// Local branch already exists — just switch to it.
+				branch = localName
+			} else {
+				stderr, err := gitOutputStderr(ctx, workingDir, "checkout", "-b", localName, "--track", branch)
+				if err != nil {
+					if msg := strings.TrimSpace(stderr); msg != "" {
+						return errors.New(msg)
+					}
+					return fmt.Errorf("git checkout failed: %w", err)
 				}
-				return fmt.Errorf("git checkout failed: %w", err)
+				return nil
 			}
-			return nil
 		}
 	}
 

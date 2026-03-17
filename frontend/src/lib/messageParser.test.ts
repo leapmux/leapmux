@@ -48,9 +48,8 @@ describe('parseMessageContent', () => {
     const msg = makeMsg(MessageRole.ASSISTANT, wrap(inner))
     const result = parseMessageContent(msg)
 
-    expect(result.isWrapped).toBe(true)
-    expect(result.parentObject).toEqual(inner)
     expect(result.wrapper).not.toBeNull()
+    expect(result.parentObject).toEqual(inner)
     expect(result.children).toEqual([])
     expect(result.rawText).toBeTruthy()
   })
@@ -69,7 +68,7 @@ describe('parseMessageContent', () => {
     const msg = makeMsg(MessageRole.ASSISTANT, wrap())
     const result = parseMessageContent(msg)
 
-    expect(result.isWrapped).toBe(true)
+    expect(result.wrapper).not.toBeNull()
     expect(result.parentObject).toBeUndefined()
     expect(result.children).toEqual([])
   })
@@ -79,7 +78,7 @@ describe('parseMessageContent', () => {
     const msg = makeMsg(MessageRole.LEAPMUX, content)
     const result = parseMessageContent(msg)
 
-    expect(result.isWrapped).toBe(false)
+    expect(result.wrapper).toBeNull()
     expect(result.parentObject).toEqual(content)
     expect(result.topLevel).toEqual(content)
     expect(result.wrapper).toBeNull()
@@ -399,6 +398,17 @@ describe('extractResultMetadata', () => {
     const msg = makeMsg(MessageRole.RESULT, wrap(content))
     expect(extractResultMetadata(parseMessageContent(msg))).toBeNull()
   })
+
+  it('extracts numTurns from result message', () => {
+    const content = {
+      type: 'result',
+      subtype: 'turn_end',
+      num_turns: 5,
+    }
+    const msg = makeMsg(MessageRole.RESULT, wrap(content))
+    const result = extractResultMetadata(parseMessageContent(msg))
+    expect(result).toEqual({ subtype: 'turn_end', numTurns: 5 })
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -527,7 +537,6 @@ describe('extractPlanFilePath', () => {
   it('extracts plan file path from wrapped plan_execution message', () => {
     const content = {
       type: 'plan_execution',
-      context_cleared: true,
       plan_file_path: '/home/user/.claude/plans/plan.md',
     }
     const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
@@ -538,7 +547,6 @@ describe('extractPlanFilePath', () => {
     const ccMsg = { type: 'context_cleared' }
     const peMsg = {
       type: 'plan_execution',
-      context_cleared: true,
       plan_file_path: '/path/to/plan.md',
     }
     const msg = makeMsg(MessageRole.LEAPMUX, wrap(ccMsg, peMsg))
@@ -548,7 +556,6 @@ describe('extractPlanFilePath', () => {
   it('extracts plan file path from unwrapped plan_execution message', () => {
     const content = {
       type: 'plan_execution',
-      context_cleared: false,
       plan_file_path: '/path/plan.md',
     }
     const msg = makeMsg(MessageRole.LEAPMUX, content)
@@ -558,7 +565,6 @@ describe('extractPlanFilePath', () => {
   it('returns undefined when plan_file_path is empty', () => {
     const content = {
       type: 'plan_execution',
-      context_cleared: false,
       plan_file_path: '',
     }
     const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))

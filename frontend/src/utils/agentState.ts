@@ -20,9 +20,17 @@ export function isAgentWorking(msgs: AgentChatMessage[]): boolean {
     // context_cleared is a turn boundary: the agent restarted with a fresh
     // context and is now idle, so stop scanning into the old history.
     if (msg.role === MessageRole.LEAPMUX) {
-      const innerType = getInnerMessageType(parseMessageContent(msg))
+      const parsed = parseMessageContent(msg)
+      const innerType = getInnerMessageType(parsed)
       if (innerType === 'context_cleared')
         return false
+      // Check if context_cleared is in a notification thread wrapper.
+      if (parsed.wrapper) {
+        for (const m of parsed.wrapper.messages) {
+          if (typeof m === 'object' && m !== null && (m as Record<string, unknown>).type === 'context_cleared')
+            return false
+        }
+      }
       continue
     }
     if (msg.role !== MessageRole.RESULT)

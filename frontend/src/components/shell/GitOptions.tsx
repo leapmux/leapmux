@@ -12,6 +12,7 @@ import { validateBranchName } from '~/lib/validate'
 import { errorText, labelRow, pathPreview, radioGroup, radioRow, radioSubContent, warningText } from '~/styles/shared.css'
 
 const LAST_PATH_SEGMENT_RE = /\/[^/]+$/
+const REMOTE_PREFIX_RE = /^[^/]+\//
 
 interface GitOptionsProps {
   workerId: string
@@ -93,6 +94,21 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
 
   const localBranches = createMemo(() => branches().filter(b => !b.isRemote))
   const remoteBranches = createMemo(() => branches().filter(b => b.isRemote))
+  const localBranchNames = createMemo(() => new Set(localBranches().map(b => b.name)))
+
+  // Warn when a remote branch is selected but a local branch with the same name already exists.
+  const checkoutBranchWarning = createMemo(() => {
+    const selected = selectedCheckoutBranch()
+    if (!selected)
+      return null
+    const entry = branches().find(b => b.name === selected)
+    if (!entry?.isRemote)
+      return null
+    const localName = selected.replace(REMOTE_PREFIX_RE, '')
+    if (localBranchNames().has(localName))
+      return `Local branch "${localName}" already exists and will be checked out instead.`
+    return null
+  })
 
   // Notify parent about visibility changes.
   // `defer: true` skips the initial mount callback. Without it, when the parent
@@ -366,6 +382,9 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
               </div>
             </Show>
             <BranchSelect value={selectedCheckoutBranch} setValue={setSelectedCheckoutBranch} showPrompt />
+            <Show when={checkoutBranchWarning()}>
+              <div class={warningText}>{checkoutBranchWarning()}</div>
+            </Show>
           </div>
         </Show>
 
