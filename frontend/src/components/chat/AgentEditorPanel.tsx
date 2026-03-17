@@ -300,7 +300,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                               trigger={triggerProps => (
                                 <button
                                   class={styles.infoTrigger}
-                                  data-testid="session-id-trigger"
+                                  data-testid="agent-info-trigger"
                                   {...triggerProps}
                                 >
                                   <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} size={iconSize.xs} />
@@ -321,7 +321,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                                 </button>
                               )}
                               class="card"
-                              data-testid="session-id-popover"
+                              data-testid="agent-info-popover"
                             >
                               <div class={styles.infoRows}>
                                 {info.infoHoverCardContent()}
@@ -353,7 +353,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                           trigger={triggerProps => (
                             <button
                               class={styles.infoTrigger}
-                              data-testid="session-id-trigger"
+                              data-testid="agent-info-trigger"
                               {...triggerProps}
                             >
                               <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} size={iconSize.xs} />
@@ -374,7 +374,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                             </button>
                           )}
                           class="card"
-                          data-testid="session-id-popover"
+                          data-testid="agent-info-popover"
                         >
                           <div class={styles.infoRows}>
                             {info.infoHoverCardContent()}

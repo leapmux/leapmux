@@ -18,7 +18,7 @@ test.describe('Clear Command – Context Usage Reset', () => {
 
     // Wait for the ContextUsageGrid to show the 3x3 SVG grid (non-zero
     // context usage), confirming the agent has sent context info.
-    const infoTrigger = page.locator('[data-testid="session-id-trigger"]')
+    const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
     const contextGrid = infoTrigger.locator('svg[viewBox="0 0 11 11"]')
     await expect(contextGrid).toBeVisible({ timeout: 60_000 })
 
@@ -34,7 +34,7 @@ test.describe('Clear Command – Context Usage Reset', () => {
     // Click the trigger to open the popover and verify it shows
     // the structured context usage info with the "Context" label.
     await infoTrigger.click()
-    const popover = page.locator('[data-testid="session-id-popover"]')
+    const popover = page.locator('[data-testid="agent-info-popover"]')
     await expect(popover).toBeVisible()
     await expect(popover.getByText('Context')).toBeVisible()
     // Dismiss the popover with Escape (clicking the trigger may be

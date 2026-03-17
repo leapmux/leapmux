@@ -3,6 +3,7 @@ import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import Check from 'lucide-solid/icons/check'
 import Copy from 'lucide-solid/icons/copy'
 import { createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
+import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { Icon } from '~/components/common/Icon'
 import { formatRateLimitSummary, pickUrgentRateLimit, RATE_LIMIT_POPOVER_LABELS } from '~/lib/rateLimitUtils'
 import * as styles from './ChatView.css'
@@ -63,6 +64,12 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
 
   const infoHoverCardContent = () => (
     <>
+      <Show when={props.agent?.agentProvider != null}>
+        <div class={styles.infoRow} data-testid="info-row-agent-type">
+          <span class={styles.infoLabel}>Agent</span>
+          <span class={styles.infoValue}>{agentProviderLabel(props.agent!.agentProvider)}</span>
+        </div>
+      </Show>
       <Show when={props.agent?.workerName}>
         <div class={styles.infoRow} data-testid="info-row-worker">
           <span class={styles.infoLabel}>Worker</span>

@@ -79,6 +79,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
           tileId,
           workerId: resp.agent.workerId,
           workingDir: resp.agent.workingDir,
+          agentProvider: resp.agent.agentProvider,
         })
         props.tabStore.setActiveTabForTile(tileId, TabType.AGENT, resp.agent.id)
         props.persistLayout?.()

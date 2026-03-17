@@ -231,6 +231,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
           tileId,
           workerId: a.workerId,
           workingDir: a.workingDir,
+          agentProvider: a.agentProvider,
           gitBranch: a.gitStatus?.branch || undefined,
           gitOriginUrl: a.gitStatus?.originUrl || undefined,
         }, false)
