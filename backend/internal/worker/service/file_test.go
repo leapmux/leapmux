@@ -233,6 +233,77 @@ func TestListDirectory_HiddenField(t *testing.T) {
 	}
 }
 
+func TestListDirectory_MergeHiddenDirs(t *testing.T) {
+	t.Run("hidden top-level dir is merged with hidden flag", func(t *testing.T) {
+		dir := t.TempDir()
+		// .github/workflows — hidden dir should be merged, with hidden flag propagated.
+		if err := os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		entries, _, err := listDirectory(dir, dir, 5, 0, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("expected 1 entry, got %d", len(entries))
+		}
+		expected := filepath.Join(".github", "workflows")
+		if entries[0].Name != expected {
+			t.Errorf("expected name %q, got %q", expected, entries[0].Name)
+		}
+		if !entries[0].Hidden {
+			t.Error("expected Hidden=true for merged .github/workflows")
+		}
+	})
+
+	t.Run("hidden child propagates hidden flag through merge", func(t *testing.T) {
+		dir := t.TempDir()
+		// src/.internal/utils — merge should go through .internal, propagating hidden.
+		if err := os.MkdirAll(filepath.Join(dir, "src", ".internal", "utils"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		entries, _, err := listDirectory(dir, dir, 5, 0, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("expected 1 entry, got %d", len(entries))
+		}
+		expected := filepath.Join("src", ".internal", "utils")
+		if entries[0].Name != expected {
+			t.Errorf("expected name %q, got %q", expected, entries[0].Name)
+		}
+		if !entries[0].Hidden {
+			t.Error("expected Hidden=true when a hidden dir is in the merged path")
+		}
+	})
+
+	t.Run("non-hidden single-child dirs merge without hidden flag", func(t *testing.T) {
+		dir := t.TempDir()
+		// src/main/java — all visible, should merge normally, not hidden.
+		if err := os.MkdirAll(filepath.Join(dir, "src", "main", "java"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		entries, _, err := listDirectory(dir, dir, 5, 0, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("expected 1 entry, got %d", len(entries))
+		}
+		expected := filepath.Join("src", "main", "java")
+		if entries[0].Name != expected {
+			t.Errorf("expected name %q, got %q", expected, entries[0].Name)
+		}
+		if entries[0].Hidden {
+			t.Error("expected Hidden=false for non-hidden merged path")
+		}
+	})
+}
+
 func TestListDirectory_DirsOnly(t *testing.T) {
 	t.Run("filters out files", func(t *testing.T) {
 		dir := t.TempDir()
