@@ -8,6 +8,7 @@ import Ellipsis from 'lucide-solid/icons/ellipsis'
 import FileText from 'lucide-solid/icons/file-text'
 import Menu from 'lucide-solid/icons/menu'
 import PanelRight from 'lucide-solid/icons/panel-right'
+import PictureInPicture2 from 'lucide-solid/icons/picture-in-picture-2'
 import Plus from 'lucide-solid/icons/plus'
 import Rows2 from 'lucide-solid/icons/rows-2'
 import Terminal from 'lucide-solid/icons/terminal'
@@ -430,6 +431,17 @@ export const TabBar: Component<TabBarProps> = (props) => {
               onClick={() => props.onNewTerminal()}
             />
           </TabBarTooltip>
+          <Show when={!props.isInFloatingWindow && props.onDetachTab && activeTabInTile()}>
+            <TabBarTooltip text="Pop out to floating window">
+              <IconButton
+                icon={PictureInPicture2}
+                iconSize="md"
+                size="md"
+                data-testid="pop-out-button"
+                onClick={() => props.onDetachTab?.(activeTabInTile()!)}
+              />
+            </TabBarTooltip>
+          </Show>
           <DropdownMenu
             trigger={triggerProps => (
               <TabBarTooltip text="More options">
