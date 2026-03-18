@@ -187,7 +187,7 @@ function addSiblingInSameDirectionSplit(
   return [root, false]
 }
 
-function removeNode(
+export function removeNode(
   root: LayoutNodeLocal,
   tileId: string,
 ): LayoutNodeLocal | null {

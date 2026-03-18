@@ -58,6 +58,11 @@ export interface TileActions {
   onClose: () => void
 }
 
+export interface FloatingWindowInfo {
+  id: string
+  title: string
+}
+
 interface TabBarProps {
   tileId: string
   tabs: Tab[]
@@ -85,6 +90,12 @@ interface TabBarProps {
   onToggleRightSidebar?: () => void
   tileActions?: TileActions
   readOnly?: boolean
+  // Floating window support
+  isInFloatingWindow?: boolean
+  floatingWindows?: FloatingWindowInfo[]
+  onDetachTab?: (tab: Tab) => void
+  onMoveTabToMainArea?: (tab: Tab) => void
+  onMoveTabToWindow?: (tab: Tab, windowId: string) => void
 }
 
 export const TabBar: Component<TabBarProps> = (props) => {
@@ -146,6 +157,46 @@ export const TabBar: Component<TabBarProps> = (props) => {
     setEditingTabKey(null)
   }
 
+  // Context menu state for right-click on tabs
+  const [contextMenuTab, setContextMenuTab] = createSignal<Tab | null>(null)
+  const [contextMenuAnchor, setContextMenuAnchor] = createSignal<HTMLElement | undefined>(undefined)
+  let contextMenuPopoverRef: HTMLElement | undefined
+
+  const handleTabContextMenu = (tab: Tab, e: MouseEvent) => {
+    e.preventDefault()
+    // Only show context menu if floating window actions are available
+    if (!props.onDetachTab && !props.onMoveTabToMainArea)
+      return
+
+    // Create a virtual anchor element at mouse position
+    const anchor = document.createElement('div')
+    anchor.style.position = 'fixed'
+    anchor.style.left = `${e.clientX}px`
+    anchor.style.top = `${e.clientY}px`
+    anchor.style.width = '1px'
+    anchor.style.height = '1px'
+    anchor.style.pointerEvents = 'none'
+    document.body.appendChild(anchor)
+
+    setContextMenuTab(tab)
+    setContextMenuAnchor(anchor)
+
+    // Show the popover
+    requestAnimationFrame(() => {
+      contextMenuPopoverRef?.showPopover()
+    })
+
+    // Clean up the anchor when the popover closes
+    const cleanup = () => {
+      anchor.remove()
+      setContextMenuTab(null)
+    }
+    contextMenuPopoverRef?.addEventListener('toggle', (ev) => {
+      if ((ev as ToggleEvent).newState === 'closed')
+        cleanup()
+    }, { once: true })
+  }
+
   const ids = () => props.tabs.map(t => tabKey(t))
 
   const handleTabChange = (value: string) => {
@@ -190,6 +241,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
           props.onClose(tab)
         }
       }}
+      onContextMenu={(e: MouseEvent) => handleTabContextMenu(tab, e)}
       onDblClick={(e: MouseEvent) => {
         e.preventDefault()
         e.stopPropagation()
@@ -248,6 +300,40 @@ export const TabBar: Component<TabBarProps> = (props) => {
       </Show>
     </div>
   )
+
+  // Floating window menu items for a given tab
+  const renderWindowMenuItems = (tab: Tab) => (
+    <>
+      <hr />
+      <li class={menuSectionHeader}>Window</li>
+      <Show when={!props.isInFloatingWindow && props.onDetachTab}>
+        <button role="menuitem" onClick={() => props.onDetachTab?.(tab)}>
+          Move to New Window
+        </button>
+      </Show>
+      <Show when={props.isInFloatingWindow && props.onMoveTabToMainArea}>
+        <button role="menuitem" onClick={() => props.onMoveTabToMainArea?.(tab)}>
+          Move to Main Area
+        </button>
+      </Show>
+      <Show when={!props.isInFloatingWindow}>
+        <For each={props.floatingWindows ?? []}>
+          {fw => (
+            <button role="menuitem" onClick={() => props.onMoveTabToWindow?.(tab, fw.id)}>
+              {'Move to Window: '}
+              {fw.title}
+            </button>
+          )}
+        </For>
+      </Show>
+    </>
+  )
+
+  // Active tab for this tile (for "more" menus that act on the active tab)
+  const activeTabInTile = () => {
+    const key = props.activeTabKey
+    return props.tabs.find(t => tabKey(t) === key) ?? null
+  }
 
   // Shared menu items for "More options" (used in full, collapsed-new-tab, and collapsed-overflow menus)
   const renderMoreMenuItems = () => (
@@ -426,6 +512,9 @@ export const TabBar: Component<TabBarProps> = (props) => {
                 </>
               )}
             </Show>
+            <Show when={activeTabInTile() && (props.onDetachTab || props.onMoveTabToMainArea)}>
+              {renderWindowMenuItems(activeTabInTile()!)}
+            </Show>
           </DropdownMenu>
         </div>
       </Show>
@@ -437,6 +526,28 @@ export const TabBar: Component<TabBarProps> = (props) => {
           aria-label="Toggle files"
           onClick={() => props.onToggleRightSidebar?.()}
         />
+      </Show>
+
+      {/* Right-click context menu for floating window actions */}
+      <Show when={props.onDetachTab || props.onMoveTabToMainArea}>
+        <menu
+          popover="auto"
+          ref={(el) => { contextMenuPopoverRef = el }}
+          data-testid="tab-context-menu"
+          onClick={(e) => {
+            e.stopPropagation()
+            contextMenuPopoverRef?.hidePopover()
+          }}
+          style={{
+            position: 'fixed',
+            left: `${contextMenuAnchor()?.style.left ?? '0px'}`,
+            top: `${contextMenuAnchor()?.style.top ?? '0px'}`,
+          }}
+        >
+          <Show when={contextMenuTab()}>
+            {tab => renderWindowMenuItems(tab())}
+          </Show>
+        </menu>
       </Show>
     </div>
   )

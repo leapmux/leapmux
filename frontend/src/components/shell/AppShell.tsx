@@ -26,6 +26,7 @@ import { createAgentStore } from '~/stores/agent.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
+import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
 import { createLayoutStore, getAllTileIds } from '~/stores/layout.store'
 import { createSectionStore } from '~/stores/section.store'
@@ -38,6 +39,7 @@ import { createWorkspaceStoreRegistry } from '~/stores/workspaceStoreRegistry'
 import * as styles from './AppShell.css'
 import { AppShellDialogs } from './AppShellDialogs'
 import { DesktopLayout } from './DesktopLayout'
+import { FloatingWindowLayer } from './FloatingWindowLayer'
 import { MobileLayout } from './MobileLayout'
 import { createLeftSidebarElement, createRightSidebarElement } from './SidebarElements'
 import { createTileRenderer } from './TileRenderer'
@@ -75,6 +77,7 @@ export const AppShell: ParentComponent = (props) => {
   const controlStore = createControlStore()
   const agentSessionStore = createAgentSessionStore()
   const layoutStore = createLayoutStore()
+  const floatingWindowStore = createFloatingWindowStore()
   const gitFileStatusStore = createGitFileStatusStore()
   const [fileTreePath, setFileTreePath] = createSignal('')
   const [showNewWorkspace, setShowNewWorkspace] = createSignal(false)
@@ -406,6 +409,7 @@ export const AppShell: ParentComponent = (props) => {
   const { persistLayout, persistMultiLayout } = useTabPersistence({
     tabStore,
     layoutStore,
+    floatingWindowStore,
     registry,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
     getOrgId: () => org.orgId(),
@@ -474,6 +478,7 @@ export const AppShell: ParentComponent = (props) => {
     terminalStore,
     tabStore,
     layoutStore,
+    floatingWindowStore,
     chatStore,
     controlStore,
     agentSessionStore,
@@ -483,6 +488,82 @@ export const AppShell: ParentComponent = (props) => {
 
   // Tile drag-and-drop
   const tileDrag = useTileDragDrop({ tabStore, layoutStore, persistLayout })
+
+  // --- Floating window tab movement operations ---
+  const handleDetachTab = (tab: import('~/stores/tab.store').Tab) => {
+    const { tileId } = floatingWindowStore.addWindow()
+    tabStore.moveTabToTile(tabKey(tab), tileId)
+    tabStore.setActiveTabForTile(tileId, tab.type, tab.id)
+    persistLayout()
+  }
+
+  const handleMoveTabToMainArea = (tab: import('~/stores/tab.store').Tab) => {
+    const mainTileId = layoutStore.focusedTileId()
+    const oldTileId = tab.tileId
+    tabStore.moveTabToTile(tabKey(tab), mainTileId)
+    tabStore.setActiveTabForTile(mainTileId, tab.type, tab.id)
+    // Check if the source floating window is now empty
+    if (oldTileId) {
+      const windowId = floatingWindowStore.getWindowForTile(oldTileId)
+      if (windowId && floatingWindowStore.isWindowEmpty(windowId, tId => tabStore.getTabsForTile(tId))) {
+        floatingWindowStore.removeWindow(windowId)
+      }
+    }
+    persistLayout()
+  }
+
+  const handleMoveTabToWindow = (tab: import('~/stores/tab.store').Tab, windowId: string) => {
+    const win = floatingWindowStore.getWindow(windowId)
+    if (!win)
+      return
+    const targetTileId = win.focusedTileId ?? floatingWindowStore.getWindowTileIds(windowId)[0]
+    if (!targetTileId)
+      return
+    const oldTileId = tab.tileId
+    tabStore.moveTabToTile(tabKey(tab), targetTileId)
+    tabStore.setActiveTabForTile(targetTileId, tab.type, tab.id)
+    // Check if the source floating window is now empty
+    if (oldTileId) {
+      const srcWindowId = floatingWindowStore.getWindowForTile(oldTileId)
+      if (srcWindowId && floatingWindowStore.isWindowEmpty(srcWindowId, tId => tabStore.getTabsForTile(tId))) {
+        floatingWindowStore.removeWindow(srcWindowId)
+      }
+    }
+    persistLayout()
+  }
+
+  const handleCloseFloatingWindow = (windowId: string) => {
+    const tileIds = floatingWindowStore.getWindowTileIds(windowId)
+    let tabCount = 0
+    for (const tId of tileIds) {
+      tabCount += tabStore.getTabsForTile(tId).length
+    }
+    const doClose = () => {
+      // Close all tabs in the window
+      for (const tId of tileIds) {
+        const tileTabs = tabStore.getTabsForTile(tId)
+        for (const t of tileTabs) {
+          void tabOps.handleTabClose(t)
+        }
+      }
+      floatingWindowStore.removeWindow(windowId)
+      persistLayout()
+    }
+    if (tabCount <= 1) {
+      doClose()
+    }
+    else {
+      // For now, close directly. A confirmation dialog can be added later.
+      doClose()
+    }
+  }
+
+  const floatingWindowInfos = () => floatingWindowStore.state.windows.map((w) => {
+    const focusedTileId = w.focusedTileId
+    const activeKey = focusedTileId ? tabStore.getActiveTabKeyForTile(focusedTileId) : null
+    const tab = activeKey ? tabStore.state.tabs.find(t => tabKey(t) === activeKey) : null
+    return { id: w.id, title: tab?.title || 'Window' }
+  })
 
   // Cross-workspace tab move handler (drag a tab to another workspace in the sidebar)
   const handleCrossWorkspaceMove = (targetWorkspaceId: string, draggedKey: string, sourceWorkspaceId?: string) => {
@@ -900,6 +981,10 @@ export const AppShell: ParentComponent = (props) => {
     getScrollStateRef,
     forceScrollToBottomRef,
     gitFileStatusStore,
+    floatingWindows: floatingWindowInfos,
+    onDetachTab: handleDetachTab,
+    onMoveTabToMainArea: handleMoveTabToMainArea,
+    onMoveTabToWindow: handleMoveTabToWindow,
   })
 
   // Sidebar element factories
@@ -1002,7 +1087,7 @@ export const AppShell: ParentComponent = (props) => {
         when={isWorkspaceRoute() && !workspaceNotFound()}
         fallback={<Show when={!workspaceNotFound()}><div class={styles.fullWindow}>{props.children}</div></Show>}
       >
-        <div style={{ '--mono-font-family': preferences.monoFontFamily(), '--ui-font-family': preferences.uiFontFamily(), 'display': 'contents' }}>
+        <div style={{ '--mono-font-family': preferences.monoFontFamily(), '--ui-font-family': preferences.uiFontFamily(), 'position': 'relative', 'height': '100%', 'width': '100%' }}>
           <Show
             when={!isMobile()}
             fallback={(
@@ -1054,6 +1139,20 @@ export const AppShell: ParentComponent = (props) => {
                 tileRenderer.focusedAgentId() && !isActiveWorkspaceArchived()
                 && <tileRenderer.FocusedAgentEditorPanel containerHeight={centerPanelHeight()} />
               }
+            />
+            <FloatingWindowLayer
+              floatingWindowStore={floatingWindowStore}
+              tabStore={tabStore}
+              renderTile={tileRenderer.renderTile}
+              onRatioChange={(windowId, splitId, ratios) => {
+                floatingWindowStore.updateRatios(windowId, splitId, ratios)
+                persistLayout()
+              }}
+              onCloseWindow={handleCloseFloatingWindow}
+              onIntraTileReorder={tileDrag.handleIntraTileReorder}
+              onCrossTileMove={tileDrag.handleCrossTileMove}
+              lookupTileIdForTab={tileDrag.lookupTileIdForTab}
+              renderDragOverlay={tileDrag.renderDragOverlay}
             />
           </Show>
         </div>

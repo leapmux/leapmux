@@ -1,3 +1,4 @@
+import type { FloatingWindowStoreState } from './floatingWindow.store'
 import type { LayoutStoreState } from './layout.store'
 import type { TabStoreState } from './tab.store'
 import type { TerminalInfo } from './terminal.store'
@@ -12,6 +13,7 @@ export interface WorkspaceSnapshot {
   workspaceId: string
   tabs: TabStoreState
   layout: LayoutStoreState
+  floatingWindows?: FloatingWindowStoreState
   agents: AgentInfo[]
   terminals: TerminalInfo[]
   restored: boolean

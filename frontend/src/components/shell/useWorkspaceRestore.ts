@@ -2,6 +2,7 @@ import type { createAgentStore } from '~/stores/agent.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
+import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { createTerminalStore } from '~/stores/terminal.store'
@@ -22,6 +23,7 @@ interface UseWorkspaceRestoreOpts {
   terminalStore: ReturnType<typeof createTerminalStore>
   tabStore: ReturnType<typeof createTabStore>
   layoutStore: ReturnType<typeof createLayoutStore>
+  floatingWindowStore?: FloatingWindowStoreType
   chatStore: ReturnType<typeof createChatStore>
   controlStore: ReturnType<typeof createControlStore>
   agentSessionStore: ReturnType<typeof createAgentSessionStore>
@@ -56,6 +58,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         workspaceId: previousWorkspaceId,
         tabs: tabStore.snapshot(),
         layout: layoutStore.snapshot(),
+        floatingWindows: opts.floatingWindowStore?.snapshot(),
         agents: [...agentStore.state.agents],
         terminals: [...terminalStore.state.terminals],
         restored: true,
@@ -69,6 +72,9 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
     if (cached?.restored) {
       tabStore.restore(cached.tabs)
       layoutStore.restore(cached.layout)
+      if (cached.floatingWindows && opts.floatingWindowStore) {
+        opts.floatingWindowStore.restore(cached.floatingWindows)
+      }
       agentStore.setAgents(cached.agents)
       terminalStore.setTerminals(cached.terminals)
 
@@ -214,7 +220,14 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         layoutStore.initSingleTile()
       }
 
-      const validTileIds = new Set(layoutStore.getAllTileIds())
+      // Restore floating windows from hub
+      if (opts.floatingWindowStore && layoutResp?.floatingWindows && layoutResp.floatingWindows.length > 0) {
+        opts.floatingWindowStore.fromProto(layoutResp.floatingWindows)
+      }
+
+      // Collect tile IDs from both main layout and floating windows
+      const allFloatingTileIds = opts.floatingWindowStore?.getAllTileIds() ?? []
+      const validTileIds = new Set([...layoutStore.getAllTileIds(), ...allFloatingTileIds])
       const defaultTileId = layoutStore.focusedTileId()
 
       const addedTabKeys = new Set<string>()
@@ -382,6 +395,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         workspaceId: activeId,
         tabs: tabStore.snapshot(),
         layout: layoutStore.snapshot(),
+        floatingWindows: opts.floatingWindowStore?.snapshot(),
         agents: [...agentStore.state.agents],
         terminals: [...terminalStore.state.terminals],
         restored: true,
