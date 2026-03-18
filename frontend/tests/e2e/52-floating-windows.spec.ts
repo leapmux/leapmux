@@ -202,6 +202,66 @@ test.describe('Floating Windows', () => {
     expect(geoAfter.height).toBe(geoBefore.height)
   })
 
+  test('dragging floating window snaps to left edge', async ({ page, authenticatedWorkspace }) => {
+    await openAgentViaUI(page)
+    await popOutActiveTab(page)
+
+    const fw = floatingWindows(page).first()
+
+    // Drag the title bar far to the left so the window's left edge nears x=0
+    const titleBar = fw.locator('div').first()
+    const titleBox = await titleBar.boundingBox()
+    const fwBox = await fw.boundingBox()
+    expect(titleBox).toBeTruthy()
+    expect(fwBox).toBeTruthy()
+
+    const startX = titleBox!.x + titleBox!.width / 2
+    const startY = titleBox!.y + titleBox!.height / 2
+
+    // Move left by the window's current x offset (plus a little extra but within snap threshold)
+    await page.mouse.move(startX, startY)
+    await page.mouse.down()
+    await page.mouse.move(startX - fwBox!.x + 5, startY, { steps: 10 })
+    await page.mouse.up()
+
+    const geoAfter = await getFloatingWindowGeometry(page)
+    // Should snap to left edge (0%)
+    expect(geoAfter.left).toBe('0%')
+  })
+
+  test('dragging floating window snaps to top edge', async ({ page, authenticatedWorkspace }) => {
+    await openAgentViaUI(page)
+    await popOutActiveTab(page)
+
+    const fw = floatingWindows(page).first()
+
+    // Drag the title bar far upward so the window's top edge nears y=0
+    const titleBar = fw.locator('div').first()
+    const titleBox = await titleBar.boundingBox()
+    const fwBox = await fw.boundingBox()
+    expect(titleBox).toBeTruthy()
+    expect(fwBox).toBeTruthy()
+
+    const startX = titleBox!.x + titleBox!.width / 2
+    const startY = titleBox!.y + titleBox!.height / 2
+
+    // The floating window layer starts at the parent's top edge
+    // Move up by the window's current y offset within the parent (plus a bit within snap threshold)
+    const parentBox = await fw.evaluate((el: HTMLElement) => {
+      const parent = el.parentElement!
+      const rect = parent.getBoundingClientRect()
+      return { x: rect.x, y: rect.y }
+    })
+    await page.mouse.move(startX, startY)
+    await page.mouse.down()
+    await page.mouse.move(startX, startY - (fwBox!.y - parentBox.y) + 5, { steps: 10 })
+    await page.mouse.up()
+
+    const geoAfter = await getFloatingWindowGeometry(page)
+    // Should snap to top edge (0%)
+    expect(geoAfter.top).toBe('0%')
+  })
+
   // ──────────────────────────────────────────────
   // Resize
   // ──────────────────────────────────────────────
@@ -311,6 +371,52 @@ test.describe('Floating Windows', () => {
     const geoAfterReload = await getFloatingWindowGeometry(page)
     expect(geoAfterReload.width).toBe(geoAfterResize.width)
     expect(geoAfterReload.height).toBe(geoAfterResize.height)
+  })
+
+  test('resizing via W handle past minimum clamps instead of snapping back', async ({ page, authenticatedWorkspace }) => {
+    await openAgentViaUI(page)
+    await popOutActiveTab(page)
+
+    const fw = floatingWindows(page).first()
+    const geoBefore = await getFloatingWindowGeometry(page)
+    const fwBox = await fw.boundingBox()
+    expect(fwBox).toBeTruthy()
+
+    // Drag the W (left) edge far to the right — past the minimum width threshold
+    const wX = fwBox!.x + 2
+    const wY = fwBox!.y + fwBox!.height / 2
+    await page.mouse.move(wX, wY)
+    await page.mouse.down()
+    // Move 400px to the right — more than enough to exceed minimum
+    await page.mouse.move(wX + 400, wY, { steps: 10 })
+    await page.mouse.up()
+
+    const geoAfter = await getFloatingWindowGeometry(page)
+    // Width should be smaller than before (clamped at minimum), not snapped back to original
+    expect(Number.parseFloat(geoAfter.width)).toBeLessThan(Number.parseFloat(geoBefore.width))
+  })
+
+  test('resizing via N handle past minimum clamps instead of snapping back', async ({ page, authenticatedWorkspace }) => {
+    await openAgentViaUI(page)
+    await popOutActiveTab(page)
+
+    const fw = floatingWindows(page).first()
+    const geoBefore = await getFloatingWindowGeometry(page)
+    const fwBox = await fw.boundingBox()
+    expect(fwBox).toBeTruthy()
+
+    // Drag the N (top) edge far downward — past the minimum height threshold
+    const nX = fwBox!.x + fwBox!.width / 2
+    const nY = fwBox!.y + 2
+    await page.mouse.move(nX, nY)
+    await page.mouse.down()
+    // Move 400px down — more than enough to exceed minimum
+    await page.mouse.move(nX, nY + 400, { steps: 10 })
+    await page.mouse.up()
+
+    const geoAfter = await getFloatingWindowGeometry(page)
+    // Height should be smaller than before (clamped at minimum), not snapped back to original
+    expect(Number.parseFloat(geoAfter.height)).toBeLessThan(Number.parseFloat(geoBefore.height))
   })
 
   // ──────────────────────────────────────────────

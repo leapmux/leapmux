@@ -1119,10 +1119,10 @@ export const AppShell: ParentComponent = (props) => {
               }}
               createLeftSidebar={displayOpts => createLeftSidebarElement(sidebarOpts(), displayOpts)}
               createRightSidebar={displayOpts => createRightSidebarElement(sidebarOpts(), displayOpts)}
-              editorPanel={
+              editorPanel={(
                 tileRenderer.focusedAgentId() && !isActiveWorkspaceArchived()
                 && <tileRenderer.FocusedAgentEditorPanel containerHeight={centerPanelHeight()} />
-              }
+              )}
               floatingWindowLayer={(
                 <FloatingWindowLayer
                   floatingWindowStore={floatingWindowStore}

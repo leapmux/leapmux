@@ -33,6 +33,33 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
     return { fx: pxX / rect.width, fy: pxY / rect.height }
   }
 
+  // --- Edge snapping ---
+  const SNAP_THRESHOLD_PX = 15
+
+  const snapPosition = (x: number, y: number, w: number, h: number, parentW: number, parentH: number) => {
+    const snapX = SNAP_THRESHOLD_PX / parentW
+    const snapY = SNAP_THRESHOLD_PX / parentH
+
+    let snappedX = x
+    let snappedY = y
+
+    // Snap left edge
+    if (Math.abs(x) < snapX)
+      snappedX = 0
+    // Snap right edge
+    else if (Math.abs(x + w - 1) < snapX)
+      snappedX = 1 - w
+
+    // Snap top edge
+    if (Math.abs(y) < snapY)
+      snappedY = 0
+    // Snap bottom edge
+    else if (Math.abs(y + h - 1) < snapY)
+      snappedY = 1 - h
+
+    return { x: snappedX, y: snappedY }
+  }
+
   // --- Drag ---
   const handleDragStart = (e: PointerEvent) => {
     if ((e.target as HTMLElement).closest('button'))
@@ -45,11 +72,18 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
     const startFx = props.x
     const startFy = props.y
 
+    const parent = getContainerParent()
+    const parentW = parent?.getBoundingClientRect().width ?? 1
+    const parentH = parent?.getBoundingClientRect().height ?? 1
+
     const handleMove = (me: PointerEvent) => {
       const dx = me.clientX - startX
       const dy = me.clientY - startY
       const { fx: dfx, fy: dfy } = toFractional(dx, dy)
-      props.floatingWindowStore.updatePosition(props.windowId, startFx + dfx, startFy + dfy)
+      const rawX = startFx + dfx
+      const rawY = startFy + dfy
+      const snapped = snapPosition(rawX, rawY, props.width, props.height, parentW, parentH)
+      props.floatingWindowStore.updatePosition(props.windowId, snapped.x, snapped.y)
     }
 
     const handleUp = () => {
@@ -79,9 +113,8 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
     const parentW = parent?.getBoundingClientRect().width ?? 1
     const parentH = parent?.getBoundingClientRect().height ?? 1
 
-    // Minimum size in fractions (300px / 200px approximation)
-    const minW = 300 / parentW
-    const minH = 200 / parentH
+    const minW = 0.05
+    const minH = 0.05
 
     const handleMove = (me: PointerEvent) => {
       const dxPx = me.clientX - startX
@@ -98,21 +131,15 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
         newW = Math.max(startFw + dfx, minW)
       }
       if (dir.includes('w')) {
-        const proposedW = startFw - dfx
-        if (proposedW >= minW) {
-          newW = proposedW
-          newX = startFx + dfx
-        }
+        newW = Math.max(startFw - dfx, minW)
+        newX = startFx + startFw - newW
       }
       if (dir.includes('s')) {
         newH = Math.max(startFh + dfy, minH)
       }
       if (dir.includes('n')) {
-        const proposedH = startFh - dfy
-        if (proposedH >= minH) {
-          newH = proposedH
-          newY = startFy + dfy
-        }
+        newH = Math.max(startFh - dfy, minH)
+        newY = startFy + startFh - newH
       }
 
       props.floatingWindowStore.updatePosition(props.windowId, newX, newY)
