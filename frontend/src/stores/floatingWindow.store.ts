@@ -11,6 +11,7 @@ export interface FloatingWindowState {
   y: number
   width: number
   height: number
+  opacity: number
   zIndex: number
   layoutRoot: LayoutNodeLocal
   focusedTileId: string | null
@@ -56,6 +57,7 @@ export function createFloatingWindowStore() {
           y: opts?.y ?? 0.15,
           width: opts?.width ?? 0.4,
           height: opts?.height ?? 0.5,
+          opacity: 1,
           zIndex: s.nextZIndex,
           layoutRoot: { type: 'leaf', id: tileId },
           focusedTileId: tileId,
@@ -87,6 +89,13 @@ export function createFloatingWindowStore() {
         w.width = Math.max(width, 0.05)
         w.height = Math.max(height, 0.05)
       }))
+    },
+
+    updateOpacity(id: string, opacity: number) {
+      const idx = findWindowIndex(id)
+      if (idx < 0)
+        return
+      setState('windows', idx, 'opacity', Math.max(0.2, Math.min(1, opacity)))
     },
 
     bringToFront(id: string) {
@@ -210,6 +219,7 @@ export function createFloatingWindowStore() {
           y: p.y,
           width: p.width || 0.4,
           height: p.height || 0.5,
+          opacity: p.opacity || 1,
           zIndex: maxZ,
           layoutRoot,
           focusedTileId: getAllTileIds(layoutRoot)[0] ?? null,
@@ -249,6 +259,7 @@ export function floatingWindowsToProto(windows: FloatingWindowState[]): Floating
     y: w.y,
     width: w.width,
     height: w.height,
+    opacity: w.opacity,
     layout: toProto(w.layoutRoot),
   }))
 }

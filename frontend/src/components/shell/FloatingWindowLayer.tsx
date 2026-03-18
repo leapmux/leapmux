@@ -42,6 +42,7 @@ export const FloatingWindowLayer: Component<FloatingWindowLayerProps> = (props) 
             y={win.y}
             width={win.width}
             height={win.height}
+            opacity={win.opacity}
             zIndex={win.zIndex}
             title={getWindowTitle(win.id)}
             floatingWindowStore={props.floatingWindowStore}

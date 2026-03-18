@@ -180,6 +180,7 @@ message FloatingWindow {
   double width = 4;   // fraction of viewport width, must be > 0
   double height = 5;  // fraction of viewport height, must be > 0
   LayoutNode layout = 6;
+  double opacity = 7; // window opacity (0.0–1.0), 0 means default (1.0)
 }
 
 message GetLayoutRequest {

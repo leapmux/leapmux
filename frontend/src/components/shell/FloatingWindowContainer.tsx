@@ -1,6 +1,7 @@
 import type { Component, JSX } from 'solid-js'
 import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
 import X from 'lucide-solid/icons/x'
+import { onCleanup, onMount } from 'solid-js'
 import { IconButton } from '~/components/common/IconButton'
 import * as styles from './FloatingWindowContainer.css'
 
@@ -10,6 +11,7 @@ interface FloatingWindowContainerProps {
   y: number
   width: number
   height: number
+  opacity: number
   zIndex: number
   title: string
   floatingWindowStore: FloatingWindowStoreType
@@ -22,6 +24,7 @@ type ResizeDir = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
 export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = (props) => {
   let containerRef: HTMLDivElement | undefined
+  let titleBarRef: HTMLDivElement | undefined
 
   const getContainerParent = () => containerRef?.parentElement
 
@@ -59,6 +62,22 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
 
     return { x: snappedX, y: snappedY }
   }
+
+  // --- Opacity (scroll on titlebar) ---
+  const handleTitleBarWheel = (e: WheelEvent) => {
+    e.preventDefault()
+    const delta = e.deltaY > 0 ? -0.05 : 0.05
+    const newOpacity = props.opacity + delta
+    props.floatingWindowStore.updateOpacity(props.windowId, newOpacity)
+    props.onGeometryChange?.()
+  }
+
+  onMount(() => {
+    titleBarRef?.addEventListener('wheel', handleTitleBarWheel, { passive: false })
+    onCleanup(() => {
+      titleBarRef?.removeEventListener('wheel', handleTitleBarWheel)
+    })
+  })
 
   // --- Drag ---
   const handleDragStart = (e: PointerEvent) => {
@@ -166,6 +185,7 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
         'width': `${props.width * 100}%`,
         'height': `${props.height * 100}%`,
         'z-index': props.zIndex,
+        'opacity': props.opacity,
       }}
       onMouseDown={() => props.floatingWindowStore.bringToFront(props.windowId)}
       data-testid="floating-window"
@@ -173,6 +193,7 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
     >
       {/* Title bar (drag handle) */}
       <div
+        ref={titleBarRef}
         class={styles.titleBar}
         onPointerDown={handleDragStart}
       >
