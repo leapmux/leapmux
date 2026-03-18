@@ -78,6 +78,30 @@ export function useTabPersistence(opts: UseTabPersistenceOpts) {
     }
   })
 
+  // Persist per-tile active tabs to sessionStorage
+  createEffect(() => {
+    const tileActiveTabKeys = tabStore.state.tileActiveTabKeys
+    const wsId = getActiveWorkspaceId()
+    if (wsId && !workspaceLoading()) {
+      const entries = Object.entries(tileActiveTabKeys).filter(([, v]) => v != null)
+      if (entries.length > 0) {
+        sessionStorage.setItem(`leapmux:tileActiveTabs:${wsId}`, JSON.stringify(Object.fromEntries(entries)))
+      }
+      else {
+        sessionStorage.removeItem(`leapmux:tileActiveTabs:${wsId}`)
+      }
+    }
+  })
+
+  // Persist focused tile to sessionStorage
+  createEffect(() => {
+    const focusedTileId = layoutStore.focusedTileId()
+    const wsId = getActiveWorkspaceId()
+    if (wsId && focusedTileId && !workspaceLoading()) {
+      sessionStorage.setItem(`leapmux:focusedTile:${wsId}`, focusedTileId)
+    }
+  })
+
   // Persist ephemeral (local) tabs to sessionStorage
   createEffect(() => {
     const wsId = getActiveWorkspaceId()

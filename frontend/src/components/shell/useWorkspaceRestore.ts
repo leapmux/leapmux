@@ -78,6 +78,10 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       agentStore.setAgents(cached.agents)
       terminalStore.setTerminals(cached.terminals)
 
+      // Ensure every tile with tabs has an active tab (in case snapshot was
+      // taken before per-tile active tabs were properly tracked).
+      tabStore.initMissingTileActiveTabs()
+
       // Activate the tab the user clicked in the sidebar (if any).
       const savedKey = sessionStorage.getItem(`leapmux:activeTab:${activeId}`)
       if (savedKey && tabStore.state.tabs.some(t => tabKey(t) === savedKey)) {
@@ -362,6 +366,26 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         // Ignore corrupt sessionStorage data
       }
 
+      // Restore per-tile active tabs from sessionStorage
+      try {
+        const tileActiveJson = sessionStorage.getItem(`leapmux:tileActiveTabs:${activeId}`)
+        if (tileActiveJson) {
+          const tileActiveTabs = JSON.parse(tileActiveJson) as Record<string, string>
+          for (const [tileId, key] of Object.entries(tileActiveTabs)) {
+            if (tabStore.state.tabs.some(t => tabKey(t) === key && t.tileId === tileId)) {
+              const parts = key.split(':')
+              tabStore.setActiveTabForTile(tileId, Number(parts[0]) as TabType, parts[1])
+            }
+          }
+        }
+      }
+      catch {
+        // Ignore corrupt sessionStorage data
+      }
+
+      // Ensure every tile with tabs has an active tab
+      tabStore.initMissingTileActiveTabs()
+
       const savedKey = sessionStorage.getItem(`leapmux:activeTab:${activeId}`)
       if (savedKey && tabStore.state.tabs.some(t => tabKey(t) === savedKey)) {
         const parts = savedKey.split(':')
@@ -388,6 +412,12 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         if (firstTab.type === TabType.AGENT) {
           agentStore.setActiveAgent(firstTab.id)
         }
+      }
+
+      // Restore focused tile from sessionStorage
+      const savedFocusedTile = sessionStorage.getItem(`leapmux:focusedTile:${activeId}`)
+      if (savedFocusedTile && validTileIds.has(savedFocusedTile)) {
+        layoutStore.setFocusedTile(savedFocusedTile)
       }
 
       // Cache the restored state in the registry.
