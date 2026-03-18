@@ -491,14 +491,14 @@ export function createTileRenderer(opts: TileRendererOpts) {
         layoutStore.closeTile(tileId)
         persistLayout()
       }}
-      onPopOut={!opts.isFloatingWindowTile?.(tileId) && opts.onDetachTab
+      onPopOut={!opts.isFloatingWindowTile?.(tileId) && opts.onDetachTab && getActiveTabForTile(tileId)
         ? () => {
             const tab = getActiveTabForTile(tileId)
             if (tab)
               opts.onDetachTab!(tab)
           }
         : undefined}
-      onPopIn={opts.isFloatingWindowTile?.(tileId) && opts.onMoveTabToMainArea
+      onPopIn={opts.isFloatingWindowTile?.(tileId) && opts.onMoveTabToMainArea && getActiveTabForTile(tileId)
         ? () => {
             const tab = getActiveTabForTile(tileId)
             if (tab)
