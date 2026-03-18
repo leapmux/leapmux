@@ -435,10 +435,10 @@ export function createTileRenderer(opts: TileRendererOpts) {
         focusRef={(fn) => { focusEditorRef.current = fn }}
         controlRequests={controlStore.getRequests(agentId())}
         onControlResponse={agentOps.handleControlResponse}
-        onPermissionModeChange={agentOps.handlePermissionModeChange}
-        onModelChange={v => agentOps.handleModelOrEffortChange('model', v)}
-        onEffortChange={v => agentOps.handleModelOrEffortChange('effort', v)}
-        onInterrupt={agentOps.handleInterrupt}
+        onPermissionModeChange={mode => agentOps.handlePermissionModeChange(agentId(), mode)}
+        onModelChange={v => agentOps.handleModelOrEffortChange(agentId(), 'model', v)}
+        onEffortChange={v => agentOps.handleModelOrEffortChange(agentId(), 'effort', v)}
+        onInterrupt={() => agentOps.handleInterrupt(agentId())}
         settingsLoading={settingsLoading.loading()}
         agentSessionInfo={agentSessionStore.getInfo(agentId())}
         agentWorking={agentStore.state.agents.find(a => a.id === agentId())?.status === AgentStatus.ACTIVE && isAgentWorking(chatStore.getMessages(agentId()))}

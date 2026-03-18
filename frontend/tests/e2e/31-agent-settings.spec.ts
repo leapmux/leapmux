@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { lastAssistantBubble } from './helpers/ui'
+import { lastAssistantBubble, openAgentViaUI } from './helpers/ui'
 import { expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
 
 /** Open the settings menu, retrying if it was caught mid-close animation. */
@@ -381,6 +381,39 @@ test.describe('Agent Settings', () => {
 
     // Direct check too
     await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible()
+  })
+
+  test('permission mode change in new agent tab targets correct agent', async ({ authenticatedWorkspace, page }) => {
+    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    await expect(trigger).toBeVisible()
+
+    // Verify first agent starts with Default mode
+    const firstTriggerText = await getTriggerText(page)
+    expect(firstTriggerText).toContain('Default')
+
+    // Open a second agent tab
+    await openAgentViaUI(page)
+
+    // The new tab should also start with Default mode
+    await expect(trigger).toContainText('Default')
+
+    // Switch the new agent to Plan Mode
+    await openSettingsMenu(page)
+    await page.locator('[data-testid="permission-mode-plan"]').click()
+    await expect(trigger).toContainText('Plan Mode')
+    await waitForSettingsIdle(page)
+
+    // Verify the notification appears in the new agent's chat (not the first agent's)
+    await expect(page.getByText('Mode (Default → Plan Mode)')).toBeVisible()
+
+    // Switch back to the first agent tab
+    const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
+    await agentTabs.first().click()
+
+    // First agent should still be in Default mode
+    await expect(trigger).toContainText('Default')
+    // And should NOT have the permission mode notification
+    await expect(page.getByText('Mode (Default → Plan Mode)')).not.toBeVisible()
   })
 
   test('settings loading indicator on trigger', async ({ authenticatedWorkspace, page }) => {
