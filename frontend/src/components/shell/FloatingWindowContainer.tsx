@@ -14,6 +14,7 @@ interface FloatingWindowContainerProps {
   title: string
   floatingWindowStore: FloatingWindowStoreType
   onClose: () => void
+  onGeometryChange?: () => void
   children: JSX.Element
 }
 
@@ -54,6 +55,7 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
     const handleUp = () => {
       document.removeEventListener('pointermove', handleMove)
       document.removeEventListener('pointerup', handleUp)
+      props.onGeometryChange?.()
     }
 
     document.addEventListener('pointermove', handleMove)
@@ -120,6 +122,7 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
     const handleUp = () => {
       document.removeEventListener('pointermove', handleMove)
       document.removeEventListener('pointerup', handleUp)
+      props.onGeometryChange?.()
     }
 
     document.addEventListener('pointermove', handleMove)

@@ -14,6 +14,7 @@ interface FloatingWindowLayerProps {
   renderTile: (tileId: string) => JSX.Element
   onRatioChange: (windowId: string, splitId: string, ratios: number[]) => void
   onCloseWindow: (windowId: string) => void
+  onGeometryChange?: () => void
   onIntraTileReorder: (tileId: string, fromKey: string, toKey: string) => void
   onCrossTileMove: (fromTileId: string, toTileId: string, draggedTabKey: string, nearTabKey: string | null) => void
   lookupTileIdForTab: (key: string) => string | undefined
@@ -50,6 +51,7 @@ export const FloatingWindowLayer: Component<FloatingWindowLayerProps> = (props) 
             title={getWindowTitle(win.id)}
             floatingWindowStore={props.floatingWindowStore}
             onClose={() => props.onCloseWindow(win.id)}
+            onGeometryChange={props.onGeometryChange}
           >
             <CrossTileDragProvider
               onIntraTileReorder={props.onIntraTileReorder}

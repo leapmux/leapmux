@@ -1158,6 +1158,7 @@ export const AppShell: ParentComponent = (props) => {
                 persistLayout()
               }}
               onCloseWindow={handleCloseFloatingWindow}
+              onGeometryChange={persistLayout}
               onIntraTileReorder={tileDrag.handleIntraTileReorder}
               onCrossTileMove={tileDrag.handleCrossTileMove}
               lookupTileIdForTab={tileDrag.lookupTileIdForTab}
