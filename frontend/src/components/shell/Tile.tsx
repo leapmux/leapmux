@@ -1,6 +1,8 @@
 import type { Component, JSX } from 'solid-js'
 import Columns2 from 'lucide-solid/icons/columns-2'
+import Dock from 'lucide-solid/icons/dock'
 import Ellipsis from 'lucide-solid/icons/ellipsis'
+import PictureInPicture2 from 'lucide-solid/icons/picture-in-picture-2'
 import Rows2 from 'lucide-solid/icons/rows-2'
 import X from 'lucide-solid/icons/x'
 import { Show } from 'solid-js'
@@ -20,6 +22,8 @@ interface TileProps {
   onSplitHorizontal: () => void
   onSplitVertical: () => void
   onClose: () => void
+  onPopOut?: () => void
+  onPopIn?: () => void
 }
 
 export const Tile: Component<TileProps> = (props) => {
@@ -43,6 +47,30 @@ export const Tile: Component<TileProps> = (props) => {
           {props.tabBar}
         </div>
         <div class={styles.splitActions}>
+          <Show when={props.onPopIn}>
+            <IconButton
+              icon={Dock}
+              size="md"
+              onClick={(e) => {
+                e.stopPropagation()
+                props.onPopIn!()
+              }}
+              data-testid="pop-in-button"
+              title="Move to main area"
+            />
+          </Show>
+          <Show when={props.onPopOut}>
+            <IconButton
+              icon={PictureInPicture2}
+              size="md"
+              onClick={(e) => {
+                e.stopPropagation()
+                props.onPopOut!()
+              }}
+              data-testid="pop-out-button"
+              title="Pop out to floating window"
+            />
+          </Show>
           <Show when={props.canSplit}>
             <IconButton
               icon={Columns2}
@@ -93,6 +121,22 @@ export const Tile: Component<TileProps> = (props) => {
             />
           )}
         >
+          <Show when={props.onPopIn}>
+            <button
+              role="menuitem"
+              onClick={() => props.onPopIn!()}
+            >
+              Move to main area
+            </button>
+          </Show>
+          <Show when={props.onPopOut}>
+            <button
+              role="menuitem"
+              onClick={() => props.onPopOut!()}
+            >
+              Pop out to floating window
+            </button>
+          </Show>
           <Show when={props.canSplit}>
             <button
               role="menuitem"

@@ -989,6 +989,7 @@ export const AppShell: ParentComponent = (props) => {
     getScrollStateRef,
     forceScrollToBottomRef,
     gitFileStatusStore,
+    isFloatingWindowTile: (tileId: string) => !!floatingWindowStore.getWindowForTile(tileId),
     floatingWindows: floatingWindowInfos,
     onDetachTab: handleDetachTab,
     onMoveTabToMainArea: handleMoveTabToMainArea,

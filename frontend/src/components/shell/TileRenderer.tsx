@@ -69,7 +69,7 @@ interface TileRendererOpts {
   forceScrollToBottomRef: { current: (() => void) | undefined }
   gitFileStatusStore?: ReturnType<typeof createGitFileStatusStore>
   // Floating window support
-  isInFloatingWindow?: boolean
+  isFloatingWindowTile?: (tileId: string) => boolean
   floatingWindows?: () => FloatingWindowInfo[]
   onDetachTab?: (tab: Tab) => void
   onMoveTabToMainArea?: (tab: Tab) => void
@@ -159,7 +159,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       isMobile={isMobile()}
       onToggleLeftSidebar={toggleLeftSidebar}
       onToggleRightSidebar={toggleRightSidebar}
-      isInFloatingWindow={opts.isInFloatingWindow}
+      isInFloatingWindow={opts.isFloatingWindowTile?.(tileId) ?? false}
       floatingWindows={opts.floatingWindows?.()}
       onDetachTab={opts.onDetachTab}
       onMoveTabToMainArea={opts.onMoveTabToMainArea}
@@ -491,6 +491,20 @@ export function createTileRenderer(opts: TileRendererOpts) {
         layoutStore.closeTile(tileId)
         persistLayout()
       }}
+      onPopOut={!opts.isFloatingWindowTile?.(tileId) && opts.onDetachTab
+        ? () => {
+            const tab = getActiveTabForTile(tileId)
+            if (tab)
+              opts.onDetachTab!(tab)
+          }
+        : undefined}
+      onPopIn={opts.isFloatingWindowTile?.(tileId) && opts.onMoveTabToMainArea
+        ? () => {
+            const tab = getActiveTabForTile(tileId)
+            if (tab)
+              opts.onMoveTabToMainArea!(tab)
+          }
+        : undefined}
     >
       {renderTileContent(tileId)}
     </Tile>
