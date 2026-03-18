@@ -491,9 +491,17 @@ export const AppShell: ParentComponent = (props) => {
 
   // --- Floating window tab movement operations ---
   const handleDetachTab = (tab: import('~/stores/tab.store').Tab) => {
+    const sourceTileId = tab.tileId
     const { tileId } = floatingWindowStore.addWindow()
     tabStore.moveTabToTile(tabKey(tab), tileId)
     tabStore.setActiveTabForTile(tileId, tab.type, tab.id)
+    // Close the source tile if it's now empty and the main layout has multiple tiles
+    if (sourceTileId && tabStore.getTabsForTile(sourceTileId).length === 0) {
+      const mainTileIds = layoutStore.getAllTileIds()
+      if (mainTileIds.length > 1) {
+        layoutStore.closeTile(sourceTileId)
+      }
+    }
     persistLayout()
   }
 
