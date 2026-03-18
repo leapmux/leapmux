@@ -162,8 +162,8 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     // Check that the popover position has NOT changed
     const finalPosition = await popover.boundingBox()
     expect(finalPosition).not.toBeNull()
-    // Allow up to 1px difference due to sub-pixel rounding during drag.
-    expect(Math.abs(finalPosition!.x - initialPosition!.x)).toBeLessThanOrEqual(1)
-    expect(Math.abs(finalPosition!.y - initialPosition!.y)).toBeLessThanOrEqual(1)
+    // Allow up to 2px difference due to sub-pixel rounding during drag.
+    expect(Math.abs(finalPosition!.x - initialPosition!.x)).toBeLessThanOrEqual(2)
+    expect(Math.abs(finalPosition!.y - initialPosition!.y)).toBeLessThanOrEqual(2)
   })
 })

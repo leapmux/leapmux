@@ -89,9 +89,11 @@ test.describe('Turn End Sound Preferences', () => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
-    // Send a message
+    // Send a message that triggers tool use (numTurns > 1) so the turn-end sound fires.
+    // Simple Q&A like "What is 2+2?" completes in 1 turn, which is suppressed by the
+    // numTurns <= 1 guard in handleTurnEnd.
     await editor.click()
-    await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
+    await page.keyboard.type('Run the command `pwd` and tell me the result.')
     await page.keyboard.press('Meta+Enter')
 
     // Wait for the interrupt button to appear (turn starts)
@@ -170,9 +172,9 @@ test.describe('Turn End Sound Preferences', () => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
-    // Send a message and wait for the turn to complete
+    // Send a message that triggers tool use (numTurns > 1) so the turn-end sound fires.
     await editor.click()
-    await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
+    await page.keyboard.type('Run the command `pwd` and tell me the result.')
     await page.keyboard.press('Meta+Enter')
     await expect(page.locator('[data-testid="interrupt-button"]')).toBeVisible()
     await page.waitForFunction(() => {
@@ -219,9 +221,9 @@ test.describe('Turn End Sound Preferences', () => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
-    // Send a message in the first agent tab and wait for the turn to complete
+    // Send a message that triggers tool use (numTurns > 1) so the turn-end sound fires.
     await editor.click()
-    await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
+    await page.keyboard.type('Run the command `pwd` and tell me the result.')
     await page.keyboard.press('Meta+Enter')
     await expect(page.locator('[data-testid="interrupt-button"]')).toBeVisible()
     await page.waitForFunction(() => {
@@ -273,9 +275,9 @@ test.describe('Turn End Sound Preferences', () => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
-    // Send a message and wait for the turn to complete
+    // Send a message that triggers tool use (numTurns > 1) so the turn-end sound fires.
     await editor.click()
-    await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
+    await page.keyboard.type('Run the command `pwd` and tell me the result.')
     await page.keyboard.press('Meta+Enter')
     await expect(page.locator('[data-testid="interrupt-button"]')).toBeVisible()
     await page.waitForFunction(() => {
@@ -318,9 +320,9 @@ test.describe('Turn End Sound Preferences', () => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
-    // Send a message in the first agent tab and wait for the turn to complete
+    // Send a message that triggers tool use (numTurns > 1) so the turn-end sound fires.
     await editor.click()
-    await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
+    await page.keyboard.type('Run the command `pwd` and tell me the result.')
     await page.keyboard.press('Meta+Enter')
     await expect(page.locator('[data-testid="interrupt-button"]')).toBeVisible()
     await page.waitForFunction(() => {
