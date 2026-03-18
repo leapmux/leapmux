@@ -1,6 +1,5 @@
 import type { Component, JSX } from 'solid-js'
 import Columns2 from 'lucide-solid/icons/columns-2'
-import Dock from 'lucide-solid/icons/dock'
 import Ellipsis from 'lucide-solid/icons/ellipsis'
 import PictureInPicture2 from 'lucide-solid/icons/picture-in-picture-2'
 import Rows2 from 'lucide-solid/icons/rows-2'
@@ -23,7 +22,6 @@ interface TileProps {
   onSplitVertical: () => void
   onClose: () => void
   onPopOut?: () => void
-  onPopIn?: () => void
 }
 
 export const Tile: Component<TileProps> = (props) => {
@@ -47,18 +45,6 @@ export const Tile: Component<TileProps> = (props) => {
           {props.tabBar}
         </div>
         <div class={styles.splitActions}>
-          <Show when={props.onPopIn}>
-            <IconButton
-              icon={Dock}
-              size="md"
-              onClick={(e) => {
-                e.stopPropagation()
-                props.onPopIn!()
-              }}
-              data-testid="pop-in-button"
-              title="Move to main area"
-            />
-          </Show>
           <Show when={props.onPopOut}>
             <IconButton
               icon={PictureInPicture2}
@@ -121,14 +107,6 @@ export const Tile: Component<TileProps> = (props) => {
             />
           )}
         >
-          <Show when={props.onPopIn}>
-            <button
-              role="menuitem"
-              onClick={() => props.onPopIn!()}
-            >
-              Move to main area
-            </button>
-          </Show>
           <Show when={props.onPopOut}>
             <button
               role="menuitem"

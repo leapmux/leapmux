@@ -1,5 +1,4 @@
 import type { Component } from 'solid-js'
-import type { FloatingWindowInfo } from './TabBar'
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
@@ -70,10 +69,7 @@ interface TileRendererOpts {
   gitFileStatusStore?: ReturnType<typeof createGitFileStatusStore>
   // Floating window support
   isFloatingWindowTile?: (tileId: string) => boolean
-  floatingWindows?: () => FloatingWindowInfo[]
   onDetachTab?: (tab: Tab) => void
-  onMoveTabToMainArea?: (tab: Tab) => void
-  onMoveTabToWindow?: (tab: Tab, windowId: string) => void
 }
 
 export function createTileRenderer(opts: TileRendererOpts) {
@@ -159,11 +155,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
       isMobile={isMobile()}
       onToggleLeftSidebar={toggleLeftSidebar}
       onToggleRightSidebar={toggleRightSidebar}
-      isInFloatingWindow={opts.isFloatingWindowTile?.(tileId) ?? false}
-      floatingWindows={opts.floatingWindows?.()}
-      onDetachTab={opts.onDetachTab}
-      onMoveTabToMainArea={opts.onMoveTabToMainArea}
-      onMoveTabToWindow={opts.onMoveTabToWindow}
       tileActions={{
         canSplit: layoutStore.canSplitTile(tileId),
         canClose: hasMultipleTiles(),
@@ -496,13 +487,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
             const tab = getActiveTabForTile(tileId)
             if (tab)
               opts.onDetachTab!(tab)
-          }
-        : undefined}
-      onPopIn={opts.isFloatingWindowTile?.(tileId) && opts.onMoveTabToMainArea && getActiveTabForTile(tileId)
-        ? () => {
-            const tab = getActiveTabForTile(tileId)
-            if (tab)
-              opts.onMoveTabToMainArea!(tab)
           }
         : undefined}
     >

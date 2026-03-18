@@ -3,7 +3,6 @@ import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
 import type { createTabStore } from '~/stores/tab.store'
 import { For } from 'solid-js'
 import { tabKey } from '~/stores/tab.store'
-import { CrossTileDragProvider } from './CrossTileDragContext'
 import { FloatingWindowContainer } from './FloatingWindowContainer'
 import * as styles from './FloatingWindowContainer.css'
 import { TilingLayout } from './TilingLayout'
@@ -15,10 +14,6 @@ interface FloatingWindowLayerProps {
   onRatioChange: (windowId: string, splitId: string, ratios: number[]) => void
   onCloseWindow: (windowId: string) => void
   onGeometryChange?: () => void
-  onIntraTileReorder: (tileId: string, fromKey: string, toKey: string) => void
-  onCrossTileMove: (fromTileId: string, toTileId: string, draggedTabKey: string, nearTabKey: string | null) => void
-  lookupTileIdForTab: (key: string) => string | undefined
-  renderDragOverlay: (key: string) => JSX.Element
   editorPanel?: (windowId: string) => JSX.Element | false
 }
 
@@ -53,18 +48,11 @@ export const FloatingWindowLayer: Component<FloatingWindowLayerProps> = (props) 
             onClose={() => props.onCloseWindow(win.id)}
             onGeometryChange={props.onGeometryChange}
           >
-            <CrossTileDragProvider
-              onIntraTileReorder={props.onIntraTileReorder}
-              onCrossTileMove={props.onCrossTileMove}
-              lookupTileIdForTab={props.lookupTileIdForTab}
-              renderDragOverlay={props.renderDragOverlay}
-            >
-              <TilingLayout
-                root={win.layoutRoot}
-                renderTile={props.renderTile}
-                onRatioChange={(splitId, ratios) => props.onRatioChange(win.id, splitId, ratios)}
-              />
-            </CrossTileDragProvider>
+            <TilingLayout
+              root={win.layoutRoot}
+              renderTile={props.renderTile}
+              onRatioChange={(splitId, ratios) => props.onRatioChange(win.id, splitId, ratios)}
+            />
             {props.editorPanel?.(win.id)}
           </FloatingWindowContainer>
         )}

@@ -11,10 +11,10 @@ vi.mock('@thisbeyond/solid-dnd', () => ({
   transformStyle: () => undefined,
 }))
 
-// Mock CrossTileDragContext
-vi.mock('~/components/shell/CrossTileDragContext', () => ({
+// Mock TabDragContext
+vi.mock('~/components/shell/TabDragContext', () => ({
   TABBAR_ZONE_PREFIX: 'tabbar:',
-  useCrossTileDrag: () => {
+  useTabDrag: () => {
     throw new Error('not in provider')
   },
 }))

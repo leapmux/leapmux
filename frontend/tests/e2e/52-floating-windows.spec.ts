@@ -8,7 +8,6 @@ import { openAgentViaUI, waitForLayoutSave } from './helpers/ui'
 
 const floatingWindows = (page: Page) => page.locator('[data-testid="floating-window"]')
 const popOutButton = (page: Page) => page.locator('[data-testid="pop-out-button"]')
-const popInButton = (page: Page) => page.locator('[data-testid="pop-in-button"]')
 const tiles = (page: Page) => page.locator('[data-testid="tile"]')
 const tabs = (page: Page) => page.locator('[data-testid="tab"]')
 
@@ -33,9 +32,32 @@ async function getFloatingWindowGeometry(page: Page, index = 0) {
   })
 }
 
+/**
+ * Drag a tab element to a target element's tab bar using mouse events.
+ * Uses pointer-based drag to match solid-dnd's drag sensors.
+ */
+async function dragTabTo(page: Page, sourceTab: ReturnType<typeof page.locator>, targetTabBar: ReturnType<typeof page.locator>) {
+  const sourceBox = await sourceTab.boundingBox()
+  const targetBox = await targetTabBar.boundingBox()
+  expect(sourceBox).toBeTruthy()
+  expect(targetBox).toBeTruthy()
+
+  const startX = sourceBox!.x + sourceBox!.width / 2
+  const startY = sourceBox!.y + sourceBox!.height / 2
+  const endX = targetBox!.x + targetBox!.width / 2
+  const endY = targetBox!.y + targetBox!.height / 2
+
+  await page.mouse.move(startX, startY)
+  await page.mouse.down()
+  // Move in small steps to trigger DnD sensors
+  await page.mouse.move(startX + 5, startY + 5, { steps: 2 })
+  await page.mouse.move(endX, endY, { steps: 10 })
+  await page.mouse.up()
+}
+
 test.describe('Floating Windows', () => {
   // ──────────────────────────────────────────────
-  // Basic pop-out / pop-in
+  // Basic pop-out
   // ──────────────────────────────────────────────
 
   test('pop-out button creates a floating window', async ({ page, authenticatedWorkspace }) => {
@@ -57,42 +79,6 @@ test.describe('Floating Windows', () => {
     await expect(fwTabs).toHaveCount(1)
   })
 
-  test('pop-in button moves tab back to main area', async ({ page, authenticatedWorkspace }) => {
-    await openAgentViaUI(page)
-    const initialTabCount = await tabs(page).count()
-
-    // Pop out
-    await popOutActiveTab(page)
-    await expect(floatingWindows(page)).toHaveCount(1)
-
-    // Pop-in button should be visible inside the floating window
-    const fwPopIn = floatingWindows(page).first().locator('[data-testid="pop-in-button"]')
-    await expect(fwPopIn).toBeVisible()
-
-    // Pop in
-    await fwPopIn.click()
-
-    // Floating window should be removed (empty after tab moved out)
-    await expect(floatingWindows(page)).toHaveCount(0)
-    // Tab should be back in the main area
-    await expect(tabs(page)).toHaveCount(initialTabCount)
-  })
-
-  test('pop-out then pop-in round-trip preserves the tab', async ({ page, authenticatedWorkspace }) => {
-    await openAgentViaUI(page)
-
-    // Remember the tab title
-    const tabTitle = await tabs(page).first().textContent()
-
-    // Pop out and back in
-    await popOutActiveTab(page)
-    await floatingWindows(page).first().locator('[data-testid="pop-in-button"]').click()
-    await expect(floatingWindows(page)).toHaveCount(0)
-
-    // The tab should still be present in the main area with the same title
-    await expect(tabs(page).first()).toContainText(tabTitle)
-  })
-
   // ──────────────────────────────────────────────
   // Button visibility rules
   // ──────────────────────────────────────────────
@@ -101,18 +87,9 @@ test.describe('Floating Windows', () => {
     await openAgentViaUI(page)
     await popOutActiveTab(page)
 
-    // Inside the floating window: pop-out should NOT be present, pop-in should
+    // Inside the floating window: pop-out should NOT be present
     const fw = floatingWindows(page).first()
     await expect(fw.locator('[data-testid="pop-out-button"]')).toHaveCount(0)
-    await expect(fw.locator('[data-testid="pop-in-button"]')).toBeVisible()
-  })
-
-  test('pop-in button is hidden in main area tiles', async ({ page, authenticatedWorkspace }) => {
-    await openAgentViaUI(page)
-
-    // Main area: pop-in should NOT be present, pop-out should
-    await expect(popInButton(page)).toHaveCount(0)
-    await expect(popOutButton(page).first()).toBeVisible()
   })
 
   test('pop-out button hidden when tile has no active tab', async ({ page, authenticatedWorkspace }) => {
@@ -140,21 +117,54 @@ test.describe('Floating Windows', () => {
     await expect(floatingWindows(page)).toHaveCount(0)
   })
 
+  test('closing last tab in floating window removes it', async ({ page, authenticatedWorkspace }) => {
+    await openAgentViaUI(page)
+    await popOutActiveTab(page)
+    await expect(floatingWindows(page)).toHaveCount(1)
+
+    // Close the tab via the tab close button (not the floating window X)
+    const fwTabClose = floatingWindows(page).first().locator('[data-testid="tab-close"]').first()
+    await fwTabClose.click()
+    await expect(floatingWindows(page)).toHaveCount(0)
+  })
+
+  test('closing floating window tab restores editor panel for main area agent', async ({ page, authenticatedWorkspace }) => {
+    // Start with two agent tabs in the main area
+    await openAgentViaUI(page)
+    await expect(tabs(page)).toHaveCount(2)
+    await expect(page.locator('[data-testid="agent-editor-panel"]')).toBeVisible()
+
+    // Pop out the active tab into a floating window
+    await popOutActiveTab(page)
+    await expect(floatingWindows(page)).toHaveCount(1)
+
+    // Click on the floating window tile to focus it (simulates real user interaction)
+    const fwTile = floatingWindows(page).first().locator('[data-testid="tile"]')
+    await fwTile.click()
+
+    // Close the floating window tab via tab close button
+    const fwTabClose = floatingWindows(page).first().locator('[data-testid="tab-close"]').first()
+    await fwTabClose.click()
+    await expect(floatingWindows(page)).toHaveCount(0)
+
+    // The editor panel should be visible for the remaining main area agent tab
+    await expect(page.locator('[data-testid="agent-editor-panel"]')).toBeVisible()
+  })
+
   // ──────────────────────────────────────────────
   // Multiple floating windows
   // ──────────────────────────────────────────────
 
   test('can create multiple floating windows', async ({ page, authenticatedWorkspace }) => {
-    // Create two agents, pop each out
-    await openAgentViaUI(page)
+    // Fixture already has 1 agent; create one more so we have 2 to pop out
     await openAgentViaUI(page)
     await expect(tabs(page)).toHaveCount(2)
 
-    // Pop out the active tab (second agent)
+    // Pop out the active tab
     await popOutActiveTab(page)
     await expect(floatingWindows(page)).toHaveCount(1)
 
-    // The first agent tab should still be in the main area; pop it out too
+    // The other agent tab should still be in the main area; pop it out too
     await popOutActiveTab(page)
     await expect(floatingWindows(page)).toHaveCount(2)
   })
@@ -304,71 +314,65 @@ test.describe('Floating Windows', () => {
   })
 
   // ──────────────────────────────────────────────
-  // Context menu: Move to Main Area / Move to Window
+  // Cross-scope drag-and-drop
   // ──────────────────────────────────────────────
 
-  test('right-click context menu shows "Move to Main Area" inside floating window', async ({ page, authenticatedWorkspace }) => {
+  test('drag tab from floating window to main area tab bar', async ({ page, authenticatedWorkspace }) => {
+    // Fixture already has 1 agent; create one more so main area keeps one after pop-out
     await openAgentViaUI(page)
-    await popOutActiveTab(page)
+    await expect(tabs(page)).toHaveCount(2)
 
-    // Right-click the tab inside the floating window
-    const fwTab = floatingWindows(page).first().locator('[data-testid="tab"]').first()
-    await fwTab.click({ button: 'right' })
-
-    // Context menu should have "Move to Main Area"
-    await expect(page.getByRole('menuitem', { name: 'Move to Main Area' })).toBeVisible()
-  })
-
-  test('right-click "Move to Main Area" works like pop-in', async ({ page, authenticatedWorkspace }) => {
-    await openAgentViaUI(page)
+    // Pop out the active tab
     await popOutActiveTab(page)
     await expect(floatingWindows(page)).toHaveCount(1)
 
-    // Right-click tab and choose "Move to Main Area"
     const fwTab = floatingWindows(page).first().locator('[data-testid="tab"]').first()
-    await fwTab.click({ button: 'right' })
-    await page.getByRole('menuitem', { name: 'Move to Main Area' }).click()
+    const mainTabBar = page.locator('[data-testid="tile"]').first().locator('[data-testid="tab-list"]')
 
-    // Floating window should be gone
+    // Drag from floating window to main area
+    await dragTabTo(page, fwTab, mainTabBar)
+
+    // Floating window should auto-remove (now empty)
     await expect(floatingWindows(page)).toHaveCount(0)
-  })
-
-  test('right-click context menu shows "Move to New Window" in main area', async ({ page, authenticatedWorkspace }) => {
-    await openAgentViaUI(page)
-
-    // Right-click the tab in the main area
-    const mainTab = tabs(page).first()
-    await mainTab.click({ button: 'right' })
-
-    // Context menu should have "Move to New Window"
-    await expect(page.getByRole('menuitem', { name: 'Move to New Window' })).toBeVisible()
-  })
-
-  // ──────────────────────────────────────────────
-  // Edge case: pop-in targets main layout tile
-  // ──────────────────────────────────────────────
-
-  test('pop-in moves tab to main layout even after clicking inside floating window', async ({ page, authenticatedWorkspace }) => {
-    // This tests the fix where clicking a floating window tile used to set
-    // layoutStore.focusedTileId to the floating window's tile, causing pop-in
-    // to move the tab back to the same floating window tile (no-op).
-    await openAgentViaUI(page)
-    await openAgentViaUI(page)
-    const tabCount = await tabs(page).count()
-
-    // Pop out one tab
-    await popOutActiveTab(page)
-    await expect(floatingWindows(page)).toHaveCount(1)
-
-    // Click inside the floating window to focus it (simulating user interaction)
-    const fwTile = floatingWindows(page).first().locator('[data-testid="tile"]').first()
-    await fwTile.click()
-
-    // Now pop in
-    await floatingWindows(page).first().locator('[data-testid="pop-in-button"]').click()
-    await expect(floatingWindows(page)).toHaveCount(0)
-
     // All tabs should be in the main area
-    await expect(tabs(page)).toHaveCount(tabCount)
+    await expect(tabs(page)).toHaveCount(2)
+  })
+
+  test('drag tab from main area to floating window tab bar', async ({ page, authenticatedWorkspace }) => {
+    // Fixture already has 1 agent; create one more, pop one out
+    await openAgentViaUI(page)
+    await expect(tabs(page)).toHaveCount(2)
+
+    await popOutActiveTab(page)
+    await expect(floatingWindows(page)).toHaveCount(1)
+
+    // The remaining main tab
+    const mainTab = page.locator('[data-testid="tile"]').first().locator('[data-testid="tab"]').first()
+    const fwTabBar = floatingWindows(page).first().locator('[data-testid="tab-list"]')
+
+    // Drag from main area to floating window
+    await dragTabTo(page, mainTab, fwTabBar)
+
+    // Floating window should now have 2 tabs
+    const fwTabs = floatingWindows(page).first().locator('[data-testid="tab"]')
+    await expect(fwTabs).toHaveCount(2)
+  })
+
+  test('empty floating window auto-removes when last tab dragged out', async ({ page, authenticatedWorkspace }) => {
+    // Fixture already has 1 agent; create one more so main keeps a tab after pop-out
+    await openAgentViaUI(page)
+    await expect(tabs(page)).toHaveCount(2)
+
+    // Pop out the active tab
+    await popOutActiveTab(page)
+    await expect(floatingWindows(page)).toHaveCount(1)
+
+    const fwTab = floatingWindows(page).first().locator('[data-testid="tab"]').first()
+    const mainTabBar = page.locator('[data-testid="tile"]').first().locator('[data-testid="tab-list"]')
+
+    await dragTabTo(page, fwTab, mainTabBar)
+
+    // Floating window should auto-remove
+    await expect(floatingWindows(page)).toHaveCount(0)
   })
 })

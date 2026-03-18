@@ -134,3 +134,8 @@ globalStyle(`${windowContent} > *`, {
   flex: 1,
   minHeight: 0,
 })
+
+// Drag overlay must render above floating windows
+export const dragOverlayAboveFloating = style({
+  zIndex: 100,
+})
