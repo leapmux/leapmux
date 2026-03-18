@@ -82,6 +82,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
           agentProvider: resp.agent.agentProvider,
         })
         props.tabStore.setActiveTabForTile(tileId, TabType.AGENT, resp.agent.id)
+        props.agentStore.setActiveAgent(resp.agent.id)
         props.persistLayout?.()
         // Register tab with hub.
         workspaceClient.addTab({
@@ -155,11 +156,8 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
-  // Change model or effort for the active agent (requires agent restart)
-  const handleModelOrEffortChange = async (field: 'model' | 'effort', value: string) => {
-    const agentId = props.agentStore.state.activeAgentId
-    if (!agentId)
-      return
+  // Change model or effort for the given agent (requires agent restart)
+  const handleModelOrEffortChange = async (agentId: string, field: 'model' | 'effort', value: string) => {
     const agent = props.agentStore.state.agents.find(a => a.id === agentId)
     if (!agent)
       return
@@ -184,11 +182,8 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
-  // Interrupt the active agent's current turn
-  const handleInterrupt = async () => {
-    const agentId = props.agentStore.state.activeAgentId
-    if (!agentId)
-      return
+  // Interrupt the given agent's current turn
+  const handleInterrupt = async (agentId: string) => {
     try {
       const workerId = getAgentWorkerId(agentId)
       await workerRpc.sendAgentMessage(workerId, {
@@ -201,11 +196,8 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
-  // Change permission mode for the active agent
-  const handlePermissionModeChange = async (mode: PermissionMode) => {
-    const agentId = props.agentStore.state.activeAgentId
-    if (!agentId)
-      return
+  // Change permission mode for the given agent
+  const handlePermissionModeChange = async (agentId: string, mode: PermissionMode) => {
     const agent = props.agentStore.state.agents.find(a => a.id === agentId)
     if (!agent)
       return
