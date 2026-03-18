@@ -1,7 +1,7 @@
 import type { WorkspaceSnapshot } from '~/stores/workspaceStoreRegistry'
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { SIDEBAR_TAB_PREFIX } from '~/components/shell/CrossTileDragContext'
+import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createTabStore } from '~/stores/tab.store'
 import { createWorkspaceStoreRegistry } from '~/stores/workspaceStoreRegistry'

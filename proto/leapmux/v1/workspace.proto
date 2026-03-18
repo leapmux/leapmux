@@ -172,6 +172,17 @@ message LayoutLeaf {
   string id = 1;
 }
 
+// FloatingWindow represents a detached floating window overlay.
+message FloatingWindow {
+  string id = 1;
+  double x = 2;      // fraction of viewport width (can be negative)
+  double y = 3;      // fraction of viewport height (can be negative)
+  double width = 4;   // fraction of viewport width, must be > 0
+  double height = 5;  // fraction of viewport height, must be > 0
+  LayoutNode layout = 6;
+  double opacity = 7; // window opacity (0.0–1.0), 0 means default (1.0)
+}
+
 message GetLayoutRequest {
   string org_id = 1;
   string workspace_id = 2;
@@ -179,6 +190,7 @@ message GetLayoutRequest {
 
 message GetLayoutResponse {
   LayoutNode layout = 1;
+  repeated FloatingWindow floating_windows = 2;
 }
 
 message SaveLayoutRequest {
@@ -186,6 +198,7 @@ message SaveLayoutRequest {
   string workspace_id = 2;
   LayoutNode layout = 3;
   repeated WorkspaceTab tabs = 4;
+  repeated FloatingWindow floating_windows = 5;
 }
 
 message SaveLayoutResponse {}
@@ -196,6 +209,7 @@ message WorkspaceLayoutEntry {
   string workspace_id = 1;
   LayoutNode layout = 2;
   repeated WorkspaceTab tabs = 3;
+  repeated FloatingWindow floating_windows = 4;
 }
 
 message SaveMultiLayoutRequest {

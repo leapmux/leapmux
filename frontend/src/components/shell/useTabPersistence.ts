@@ -1,15 +1,18 @@
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
+import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
 import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 import { createEffect, onCleanup } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { floatingWindowsToProto } from '~/stores/floatingWindow.store'
 import { toProto } from '~/stores/layout.store'
 
 interface UseTabPersistenceOpts {
   tabStore: ReturnType<typeof createTabStore>
   layoutStore: ReturnType<typeof createLayoutStore>
+  floatingWindowStore?: FloatingWindowStoreType
   registry: WorkspaceStoreRegistryType
   getActiveWorkspaceId: () => string | null | undefined
   getOrgId: () => string | undefined
@@ -52,6 +55,7 @@ export function useTabPersistence(opts: UseTabPersistenceOpts) {
       workspaceId: ws.id,
       layout: layoutStore.toProto(),
       tabs,
+      floatingWindows: opts.floatingWindowStore?.toProto() ?? [],
     }).then(() => {
       // Dispatch a custom event so E2E tests can detect layout save completion.
       window.dispatchEvent(new CustomEvent('leapmux:layout-saved'))
@@ -71,6 +75,30 @@ export function useTabPersistence(opts: UseTabPersistenceOpts) {
     const wsId = getActiveWorkspaceId()
     if (wsId && activeKey && !workspaceLoading()) {
       sessionStorage.setItem(`leapmux:activeTab:${wsId}`, activeKey)
+    }
+  })
+
+  // Persist per-tile active tabs to sessionStorage
+  createEffect(() => {
+    const tileActiveTabKeys = tabStore.state.tileActiveTabKeys
+    const wsId = getActiveWorkspaceId()
+    if (wsId && !workspaceLoading()) {
+      const entries = Object.entries(tileActiveTabKeys).filter(([, v]) => v != null)
+      if (entries.length > 0) {
+        sessionStorage.setItem(`leapmux:tileActiveTabs:${wsId}`, JSON.stringify(Object.fromEntries(entries)))
+      }
+      else {
+        sessionStorage.removeItem(`leapmux:tileActiveTabs:${wsId}`)
+      }
+    }
+  })
+
+  // Persist focused tile to sessionStorage
+  createEffect(() => {
+    const focusedTileId = layoutStore.focusedTileId()
+    const wsId = getActiveWorkspaceId()
+    if (wsId && focusedTileId && !workspaceLoading()) {
+      sessionStorage.setItem(`leapmux:focusedTile:${wsId}`, focusedTileId)
     }
   })
 
@@ -144,6 +172,7 @@ export function useTabPersistence(opts: UseTabPersistenceOpts) {
             tileId: t.tileId ?? '',
             workerId: t.workerId ?? '',
           })),
+        floatingWindows: opts.floatingWindowStore?.toProto() ?? [],
       })
     }
 
@@ -156,6 +185,10 @@ export function useTabPersistence(opts: UseTabPersistenceOpts) {
       if (!snap.restored && !snap.tabsLoaded)
         continue
       const snapLayout = snap.layout
+      // Convert floating windows from snapshot to proto
+      const snapFloatingWindows = snap.floatingWindows
+        ? floatingWindowsToProto(snap.floatingWindows.windows)
+        : []
       entries.push({
         workspaceId: snap.workspaceId,
         layout: toProto(snapLayout.root),
@@ -168,6 +201,7 @@ export function useTabPersistence(opts: UseTabPersistenceOpts) {
             tileId: t.tileId ?? '',
             workerId: t.workerId ?? '',
           })),
+        floatingWindows: snapFloatingWindows,
       })
     }
 

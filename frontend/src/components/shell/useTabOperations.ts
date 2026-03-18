@@ -3,6 +3,7 @@ import type { useTerminalOperations } from './useTerminalOperations'
 import type { CheckWorktreeStatusResponse } from '~/generated/leapmux/v1/git_pb'
 import type { createAgentStore } from '~/stores/agent.store'
 import type { createChatStore } from '~/stores/chat.store'
+import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, FileOpenSource, Tab } from '~/stores/tab.store'
 import type { createTerminalStore } from '~/stores/terminal.store'
@@ -19,6 +20,7 @@ interface UseTabOperationsOpts {
   terminalStore: ReturnType<typeof createTerminalStore>
   chatStore: ReturnType<typeof createChatStore>
   layoutStore: ReturnType<typeof createLayoutStore>
+  floatingWindowStore?: ReturnType<typeof createFloatingWindowStore>
   agentOps: ReturnType<typeof useAgentOperations>
   termOps: ReturnType<typeof useTerminalOperations>
   activeTab: () => Tab | undefined
@@ -35,6 +37,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     terminalStore,
     chatStore,
     layoutStore,
+    floatingWindowStore,
     agentOps,
     termOps,
     activeTab,
@@ -117,9 +120,25 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     })
   }
 
+  const removeEmptyFloatingWindow = (tileId: string | undefined) => {
+    if (!tileId || !floatingWindowStore)
+      return
+    const windowId = floatingWindowStore.getWindowForTile(tileId)
+    if (windowId) {
+      floatingWindowStore.removeIfEmpty(
+        windowId,
+        tId => tabStore.getTabsForTile(tId),
+        layoutStore.focusedTileId(),
+        tId => layoutStore.setFocusedTile(tId),
+        layoutStore.getAllTileIds(),
+      )
+    }
+  }
+
   const handleTabClose = async (tab: Tab) => {
     if (tab.type === TabType.FILE) {
       tabStore.removeTabFromTile(tab.type, tab.id, tab.tileId ?? '')
+      removeEmptyFloatingWindow(tab.tileId)
       return
     }
 
@@ -155,6 +174,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
         }
         await termOps.handleTerminalClose(tab.id, worktreeAction)
       }
+      removeEmptyFloatingWindow(tab.tileId)
     }
     finally {
       removeClosingTabKey(key)

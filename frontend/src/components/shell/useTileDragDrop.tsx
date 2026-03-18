@@ -1,3 +1,4 @@
+import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
 import { createMemo } from 'solid-js'
@@ -9,11 +10,12 @@ import * as styles from './AppShell.css'
 interface UseTileDragDropOpts {
   tabStore: ReturnType<typeof createTabStore>
   layoutStore: ReturnType<typeof createLayoutStore>
+  floatingWindowStore: FloatingWindowStoreType
   persistLayout: () => void
 }
 
 export function useTileDragDrop(opts: UseTileDragDropOpts) {
-  const { tabStore, layoutStore, persistLayout } = opts
+  const { tabStore, layoutStore, floatingWindowStore, persistLayout } = opts
 
   const hasMultipleTiles = createMemo(() => layoutStore.getAllTileIds().length > 1)
 
@@ -48,6 +50,18 @@ export function useTileDragDrop(opts: UseTileDragDropOpts) {
     const parts = draggedTabKey.split(':')
     if (parts.length === 2) {
       tabStore.setActiveTabForTile(toTileId, Number(parts[0]) as TabType, parts[1])
+    }
+
+    // Remove the source floating window if it's now empty.
+    const srcWindowId = floatingWindowStore.getWindowForTile(fromTileId)
+    if (srcWindowId) {
+      floatingWindowStore.removeIfEmpty(
+        srcWindowId,
+        tId => tabStore.getTabsForTile(tId),
+        layoutStore.focusedTileId(),
+        tId => layoutStore.setFocusedTile(tId),
+        layoutStore.getAllTileIds(),
+      )
     }
 
     persistLayout()

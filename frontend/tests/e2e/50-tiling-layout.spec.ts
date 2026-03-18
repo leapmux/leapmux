@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { waitForLayoutSave } from './helpers/ui'
+import { openAgentViaUI as openAgentViaUIHelper, waitForLayoutSave } from './helpers/ui'
 
 /** Open a new agent via the tab bar add menu. */
 async function openAgentViaUI(page: import('@playwright/test').Page) {
@@ -357,5 +357,34 @@ test.describe('Tiling Layout', () => {
 
     // 3 resize handles total: 1 horizontal (between left/right) + 2 vertical (between stacked tiles)
     await expect(page.locator('[data-testid="tile-resize-handle"]')).toHaveCount(3)
+  })
+
+  test('per-tile active tabs persist across page reload', async ({ page, authenticatedWorkspace }) => {
+    // Fixture already creates one agent tab; create one more
+    await openAgentViaUIHelper(page)
+
+    // Split horizontally to get 2 tiles
+    await page.locator('[data-testid="split-horizontal"]').first().click()
+    const tiles = page.locator('[data-testid="tile"]')
+    await expect(tiles).toHaveCount(2)
+
+    // Open a new agent in the second tile so it has its own tab.
+    // Set up the layout save listener BEFORE clicking, so we don't miss the event.
+    const saved = waitForLayoutSave(page)
+    await tiles.nth(1).locator('[data-testid="new-agent-button"]').click()
+    await expect(tiles.nth(1).locator('[data-testid="tab"]')).toHaveCount(1)
+
+    // Verify no empty tile actions are showing
+    await expect(page.locator('[data-testid="empty-tile-actions"]')).toHaveCount(0)
+
+    // Wait for the layout save triggered by the new agent creation
+    await saved
+    await page.reload()
+    await page.locator('[data-testid="tile"]').first().waitFor({ timeout: 10_000 })
+
+    // After reload, both tiles should still have active tabs (no empty-tile pages)
+    await expect(page.locator('[data-testid="tile"]')).toHaveCount(2)
+    await expect(page.locator('[data-testid="empty-tile-actions"]')).toHaveCount(0)
+    await expect(page.locator('[data-testid="empty-tile-hint"]')).toHaveCount(0)
   })
 })

@@ -1,6 +1,6 @@
 import type { Tab } from '~/stores/tab.store'
 import { describe, expect, it } from 'vitest'
-import { SIDEBAR_TAB_PREFIX } from '~/components/shell/CrossTileDragContext'
+import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
 import { TabType } from '~/stores/tab.store'
 import { buildTree, formatGitOriginUrl } from './WorkspaceTabTree'
 
@@ -162,7 +162,7 @@ describe('buildTree', () => {
 describe('tabLeaf draggable ID format', () => {
   // TabLeaf creates draggable IDs with the format:
   //   `${SIDEBAR_TAB_PREFIX}${workspaceId}:${tabType}:${tabId}`
-  // CrossTileDragContext parses these IDs to extract workspaceId and tabKey.
+  // TabDragContext parses these IDs to extract workspaceId and tabKey.
   // These tests verify the encoding/parsing roundtrip is correct.
 
   function encodeDraggableId(workspaceId: string, tabType: TabType, tabId: string): string {

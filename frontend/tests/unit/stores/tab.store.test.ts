@@ -493,4 +493,50 @@ describe('createTabStore', () => {
       dispose()
     })
   })
+
+  it('initMissingTileActiveTabs activates first tab for tiles without active tab', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      // Add tabs without activation (simulates restore)
+      store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' }, false)
+      store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 'tile-1' }, false)
+      store.addTab({ type: TabType.AGENT, id: 'a3', tileId: 'tile-2' }, false)
+      store.addTab({ type: TabType.TERMINAL, id: 't1', tileId: 'tile-3' }, false)
+
+      // No tiles should have an active tab yet
+      expect(store.getActiveTabKeyForTile('tile-1')).toBeNull()
+      expect(store.getActiveTabKeyForTile('tile-2')).toBeNull()
+      expect(store.getActiveTabKeyForTile('tile-3')).toBeNull()
+
+      store.initMissingTileActiveTabs()
+
+      // Each tile should now have its first tab active
+      expect(store.getActiveTabKeyForTile('tile-1')).toBe('1:a1')
+      expect(store.getActiveTabKeyForTile('tile-2')).toBe('1:a3')
+      expect(store.getActiveTabKeyForTile('tile-3')).toBe('2:t1')
+
+      dispose()
+    })
+  })
+
+  it('initMissingTileActiveTabs skips tiles that already have active tab', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' }, false)
+      store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 'tile-1' }, false)
+      store.addTab({ type: TabType.AGENT, id: 'a3', tileId: 'tile-2' }, false)
+
+      // Manually set a2 as active in tile-1
+      store.setActiveTabForTile('tile-1', TabType.AGENT, 'a2')
+
+      store.initMissingTileActiveTabs()
+
+      // tile-1 should still have a2 active (not overridden)
+      expect(store.getActiveTabKeyForTile('tile-1')).toBe('1:a2')
+      // tile-2 should now have a3 active (was missing)
+      expect(store.getActiveTabKeyForTile('tile-2')).toBe('1:a3')
+
+      dispose()
+    })
+  })
 })

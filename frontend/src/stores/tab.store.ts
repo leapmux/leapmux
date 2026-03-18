@@ -262,6 +262,21 @@ export function createTabStore() {
       setState('tabs', t => tabKey(t) === key, prev => ({ ...prev, ...fields }))
     },
 
+    /** For each tile that has tabs but no active tab, activate the first tab. */
+    initMissingTileActiveTabs() {
+      const tileIds = new Set(state.tabs.map(t => t.tileId).filter(Boolean) as string[])
+      for (const tileId of tileIds) {
+        if (!state.tileActiveTabKeys[tileId]) {
+          const firstTab = state.tabs.find(t => t.tileId === tileId)
+          if (firstTab) {
+            const key = tabKey(firstTab)
+            setState('tileActiveTabKeys', tileId, key)
+            setState('tileMruOrder', tileId, prev => [key, ...(prev ?? []).filter(k => k !== key)])
+          }
+        }
+      }
+    },
+
     /** Move a tab to a different tile, cleaning up source tile state. */
     moveTabToTile(key: string, targetTileId: string) {
       // Find the tab's current tile before moving

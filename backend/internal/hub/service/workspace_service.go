@@ -19,7 +19,28 @@ import (
 
 // layoutJSON is the structure persisted in the workspace_layouts table.
 type layoutJSON struct {
-	Layout json.RawMessage `json:"layout"`
+	Layout          json.RawMessage   `json:"layout"`
+	FloatingWindows []json.RawMessage `json:"floating_windows,omitempty"`
+}
+
+// serializeLayoutJSON marshals a layout node and floating windows into a layoutJSON struct.
+func serializeLayoutJSON(marshaler protojson.MarshalOptions, layout *leapmuxv1.LayoutNode, floatingWindows []*leapmuxv1.FloatingWindow) (layoutJSON, error) {
+	var stored layoutJSON
+	if layout != nil {
+		layoutBytes, err := marshaler.Marshal(layout)
+		if err != nil {
+			return stored, connect.NewError(connect.CodeInternal, fmt.Errorf("serialize layout: %w", err))
+		}
+		stored.Layout = layoutBytes
+	}
+	for _, fw := range floatingWindows {
+		fwBytes, err := marshaler.Marshal(fw)
+		if err != nil {
+			return stored, connect.NewError(connect.CodeInternal, fmt.Errorf("serialize floating window: %w", err))
+		}
+		stored.FloatingWindows = append(stored.FloatingWindows, fwBytes)
+	}
+	return stored, nil
 }
 
 // WorkspaceService implements the WorkspaceServiceHandler interface.
@@ -405,6 +426,14 @@ func (s *WorkspaceService) GetLayout(
 		}
 	}
 
+	for _, fwJSON := range stored.FloatingWindows {
+		fw := &leapmuxv1.FloatingWindow{}
+		if err := protojson.Unmarshal(fwJSON, fw); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("parse floating window: %w", err))
+		}
+		resp.FloatingWindows = append(resp.FloatingWindows, fw)
+	}
+
 	return connect.NewResponse(resp), nil
 }
 
@@ -431,14 +460,9 @@ func (s *WorkspaceService) SaveLayout(
 
 	marshaler := protojson.MarshalOptions{EmitUnpopulated: false}
 
-	var stored layoutJSON
-
-	if req.Msg.GetLayout() != nil {
-		layoutBytes, err := marshaler.Marshal(req.Msg.GetLayout())
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("serialize layout: %w", err))
-		}
-		stored.Layout = layoutBytes
+	stored, err := serializeLayoutJSON(marshaler, req.Msg.GetLayout(), req.Msg.GetFloatingWindows())
+	if err != nil {
+		return nil, err
 	}
 
 	layoutJSONBytes, err := json.Marshal(stored)
@@ -512,13 +536,9 @@ func (s *WorkspaceService) SaveMultiLayout(
 		}
 
 		// Serialize layout.
-		var stored layoutJSON
-		if entry.GetLayout() != nil {
-			layoutBytes, err := marshaler.Marshal(entry.GetLayout())
-			if err != nil {
-				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("serialize layout for %s: %w", wsID, err))
-			}
-			stored.Layout = layoutBytes
+		stored, err := serializeLayoutJSON(marshaler, entry.GetLayout(), entry.GetFloatingWindows())
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("serialize layout for %s: %w", wsID, err))
 		}
 
 		layoutJSONBytes, err := json.Marshal(stored)

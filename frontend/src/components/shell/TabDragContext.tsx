@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
 import { createContext, createSignal, onCleanup, useContext } from 'solid-js'
-import { useSectionDrag } from './SectionDragContext'
+import { useOptionalSectionDrag } from './SectionDragContext'
 
 /** Prefix used for tab-bar zone droppable IDs. */
 export const TABBAR_ZONE_PREFIX = 'tabbar-zone:'
@@ -11,7 +11,7 @@ export const WORKSPACE_DROP_PREFIX = 'workspace-drop:'
 /** Prefix used for draggable sidebar tab tree leaves. Format: `sidebar-tab:{workspaceId}:{tabType}:{tabId}` */
 export const SIDEBAR_TAB_PREFIX = 'sidebar-tab:'
 
-interface CrossTileDragState {
+interface TabDragState {
   /** Tile ID where the drag started. */
   dragSourceTileId: () => string | null
   /** Tile ID currently being hovered over. */
@@ -20,19 +20,19 @@ interface CrossTileDragState {
   draggedTabKey: () => string | null
 }
 
-const CrossTileDragContext = createContext<CrossTileDragState>()
+const TabDragContext = createContext<TabDragState>()
 
-export function useCrossTileDrag(): CrossTileDragState {
-  const ctx = useContext(CrossTileDragContext)
+export function useTabDrag(): TabDragState {
+  const ctx = useContext(TabDragContext)
   if (!ctx)
-    throw new Error('useCrossTileDrag must be used within CrossTileDragProvider')
+    throw new Error('useTabDrag must be used within TabDragProvider')
   return ctx
 }
 
-interface CrossTileDragProviderProps {
+interface TabDragProviderProps {
   onIntraTileReorder: (tileId: string, fromKey: string, toKey: string) => void
   onCrossTileMove: (fromTileId: string, toTileId: string, tabKey: string, nearTabKey: string | null) => void
-  onCrossWorkspaceMove?: (targetWorkspaceId: string, tabKey: string, sourceWorkspaceId?: string) => void
+  onCrossWorkspaceMove?: (targetWorkspaceId: string, tabKey: string, sourceWorkspaceId?: string, targetTileId?: string) => void
   lookupTileIdForTab: (tabKey: string) => string | undefined
   renderDragOverlay: (tabKey: string) => JSX.Element
   children: JSX.Element
@@ -45,21 +45,29 @@ interface CrossTileDragProviderProps {
  * SectionDragProvider and prevent cross-scope interactions), this component
  * registers its drag handlers as external handlers on SectionDragProvider.
  * Tab draggables and droppables register with the single shared provider,
- * enabling tabs to be dragged onto workspace items in the sidebar.
+ * enabling tabs to be dragged between the main area, floating windows, and
+ * workspace items in the sidebar.
  */
-export function CrossTileDragProvider(props: CrossTileDragProviderProps) {
+export function TabDragProvider(props: TabDragProviderProps) {
+  const sectionDrag = useOptionalSectionDrag()
+  if (!sectionDrag)
+    throw new Error('TabDragProvider must be used within SectionDragProvider')
+  return <DelegatingTabDragProvider sectionDrag={sectionDrag} {...props} />
+}
+
+/**
+ * Registers tab drag handlers on the parent SectionDragProvider.
+ * Used in the main layout where a SectionDragProvider exists.
+ */
+function DelegatingTabDragProvider(props: TabDragProviderProps & { sectionDrag: NonNullable<ReturnType<typeof useOptionalSectionDrag>> }) {
   const [dragSourceTileId, setDragSourceTileId] = createSignal<string | null>(null)
   const [dragOverTileId, setDragOverTileId] = createSignal<string | null>(null)
   const [draggedTabKey, setDraggedTabKey] = createSignal<string | null>(null)
   /** Source workspace ID when dragging a sidebar tab from a non-active workspace. */
   const [dragSourceWorkspaceId, setDragSourceWorkspaceId] = createSignal<string | null>(null)
 
-  const {
-    addExternalDragHandler,
-    addExternalDragStartHandler,
-    addExternalDragOverHandler,
-    addExternalOverlayRenderer,
-  } = useSectionDrag()
+  // eslint-disable-next-line solid/reactivity -- sectionDrag is a context value passed once, never changes
+  const { addExternalDragHandler, addExternalDragStartHandler, addExternalDragOverHandler, addExternalOverlayRenderer } = props.sectionDrag
 
   /* eslint-disable solid/reactivity -- handler callbacks are stable, invoked by SectionDragProvider events */
 
@@ -148,10 +156,28 @@ export function CrossTileDragProvider(props: CrossTileDragProviderProps) {
 
     // Sidebar tab dropped onto tabbar zone or tabbar tab → move to active workspace.
     if (sourceWsId) {
-      if (droppableId.startsWith(TABBAR_ZONE_PREFIX) || props.lookupTileIdForTab(droppableId)) {
-        // Move from source workspace to active workspace (target = active).
-        // Pass undefined as targetWorkspaceId — AppShell interprets it as "active workspace".
-        props.onCrossWorkspaceMove?.('__active__', tabKeyVal, sourceWsId)
+      // Determine target tile from the drop target.
+      let targetTileId: string | undefined
+      if (droppableId.startsWith(TABBAR_ZONE_PREFIX)) {
+        targetTileId = droppableId.slice(TABBAR_ZONE_PREFIX.length)
+      }
+      else {
+        targetTileId = props.lookupTileIdForTab(droppableId)
+      }
+      if (!targetTileId)
+        return
+
+      // Check if the tab already exists in the current workspace (same-workspace drag).
+      const existingTileId = props.lookupTileIdForTab(tabKeyVal)
+      if (existingTileId) {
+        // Same workspace: use cross-tile move to relocate the tab.
+        if (existingTileId !== targetTileId) {
+          props.onCrossTileMove(existingTileId, targetTileId, tabKeyVal, null)
+        }
+      }
+      else {
+        // Cross-workspace: move with the specific target tile.
+        props.onCrossWorkspaceMove?.('__active__', tabKeyVal, sourceWsId, targetTileId)
       }
       return
     }
@@ -224,15 +250,15 @@ export function CrossTileDragProvider(props: CrossTileDragProviderProps) {
     disposeOverlayRenderer()
   })
 
-  const ctxValue: CrossTileDragState = {
+  const ctxValue: TabDragState = {
     dragSourceTileId,
     dragOverTileId,
     draggedTabKey,
   }
 
   return (
-    <CrossTileDragContext.Provider value={ctxValue}>
+    <TabDragContext.Provider value={ctxValue}>
       {props.children}
-    </CrossTileDragContext.Provider>
+    </TabDragContext.Provider>
   )
 }

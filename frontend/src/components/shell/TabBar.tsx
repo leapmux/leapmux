@@ -20,8 +20,8 @@ import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
 import { tabKey, TabType } from '~/stores/tab.store'
 import { menuSectionHeader, monoFont } from '~/styles/shared.css'
-import { TABBAR_ZONE_PREFIX, useCrossTileDrag } from './CrossTileDragContext'
 import * as styles from './TabBar.css'
+import { TABBAR_ZONE_PREFIX, useTabDrag } from './TabDragContext'
 
 const TabBarTooltip: Component<{ text: string, children: JSX.Element }> = tipProps => (
   <Tooltip text={tipProps.text}>
@@ -95,9 +95,9 @@ export const TabBar: Component<TabBarProps> = (props) => {
   const [editingValue, setEditingValue] = createSignal('')
 
   // Cross-tile drag context (may not be available on mobile single-tile layout)
-  let crossTileDrag: ReturnType<typeof useCrossTileDrag> | undefined
+  let crossTileDrag: ReturnType<typeof useTabDrag> | undefined
   try {
-    crossTileDrag = useCrossTileDrag()
+    crossTileDrag = useTabDrag()
   }
   catch { /* not wrapped in provider */ }
 
@@ -190,6 +190,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
           props.onClose(tab)
         }
       }}
+      onContextMenu={(e: MouseEvent) => e.preventDefault()}
       onDblClick={(e: MouseEvent) => {
         e.preventDefault()
         e.stopPropagation()

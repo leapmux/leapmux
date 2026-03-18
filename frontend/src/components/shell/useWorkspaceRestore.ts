@@ -2,6 +2,7 @@ import type { createAgentStore } from '~/stores/agent.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
+import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { createTerminalStore } from '~/stores/terminal.store'
@@ -22,6 +23,7 @@ interface UseWorkspaceRestoreOpts {
   terminalStore: ReturnType<typeof createTerminalStore>
   tabStore: ReturnType<typeof createTabStore>
   layoutStore: ReturnType<typeof createLayoutStore>
+  floatingWindowStore?: FloatingWindowStoreType
   chatStore: ReturnType<typeof createChatStore>
   controlStore: ReturnType<typeof createControlStore>
   agentSessionStore: ReturnType<typeof createAgentSessionStore>
@@ -56,6 +58,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         workspaceId: previousWorkspaceId,
         tabs: tabStore.snapshot(),
         layout: layoutStore.snapshot(),
+        floatingWindows: opts.floatingWindowStore?.snapshot(),
         agents: [...agentStore.state.agents],
         terminals: [...terminalStore.state.terminals],
         restored: true,
@@ -69,8 +72,15 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
     if (cached?.restored) {
       tabStore.restore(cached.tabs)
       layoutStore.restore(cached.layout)
+      if (cached.floatingWindows && opts.floatingWindowStore) {
+        opts.floatingWindowStore.restore(cached.floatingWindows)
+      }
       agentStore.setAgents(cached.agents)
       terminalStore.setTerminals(cached.terminals)
+
+      // Ensure every tile with tabs has an active tab (in case snapshot was
+      // taken before per-tile active tabs were properly tracked).
+      tabStore.initMissingTileActiveTabs()
 
       // Activate the tab the user clicked in the sidebar (if any).
       const savedKey = sessionStorage.getItem(`leapmux:activeTab:${activeId}`)
@@ -214,7 +224,14 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         layoutStore.initSingleTile()
       }
 
-      const validTileIds = new Set(layoutStore.getAllTileIds())
+      // Restore floating windows from hub
+      if (opts.floatingWindowStore && layoutResp?.floatingWindows && layoutResp.floatingWindows.length > 0) {
+        opts.floatingWindowStore.fromProto(layoutResp.floatingWindows)
+      }
+
+      // Collect tile IDs from both main layout and floating windows
+      const allFloatingTileIds = opts.floatingWindowStore?.getAllTileIds() ?? []
+      const validTileIds = new Set([...layoutStore.getAllTileIds(), ...allFloatingTileIds])
       const defaultTileId = layoutStore.focusedTileId()
 
       const addedTabKeys = new Set<string>()
@@ -349,6 +366,26 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         // Ignore corrupt sessionStorage data
       }
 
+      // Restore per-tile active tabs from sessionStorage
+      try {
+        const tileActiveJson = sessionStorage.getItem(`leapmux:tileActiveTabs:${activeId}`)
+        if (tileActiveJson) {
+          const tileActiveTabs = JSON.parse(tileActiveJson) as Record<string, string>
+          for (const [tileId, key] of Object.entries(tileActiveTabs)) {
+            if (tabStore.state.tabs.some(t => tabKey(t) === key && t.tileId === tileId)) {
+              const parts = key.split(':')
+              tabStore.setActiveTabForTile(tileId, Number(parts[0]) as TabType, parts[1])
+            }
+          }
+        }
+      }
+      catch {
+        // Ignore corrupt sessionStorage data
+      }
+
+      // Ensure every tile with tabs has an active tab
+      tabStore.initMissingTileActiveTabs()
+
       const savedKey = sessionStorage.getItem(`leapmux:activeTab:${activeId}`)
       if (savedKey && tabStore.state.tabs.some(t => tabKey(t) === savedKey)) {
         const parts = savedKey.split(':')
@@ -377,11 +414,18 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         }
       }
 
+      // Restore focused tile from sessionStorage
+      const savedFocusedTile = sessionStorage.getItem(`leapmux:focusedTile:${activeId}`)
+      if (savedFocusedTile && validTileIds.has(savedFocusedTile)) {
+        layoutStore.setFocusedTile(savedFocusedTile)
+      }
+
       // Cache the restored state in the registry.
       registry.set(activeId, {
         workspaceId: activeId,
         tabs: tabStore.snapshot(),
         layout: layoutStore.snapshot(),
+        floatingWindows: opts.floatingWindowStore?.snapshot(),
         agents: [...agentStore.state.agents],
         terminals: [...terminalStore.state.terminals],
         restored: true,

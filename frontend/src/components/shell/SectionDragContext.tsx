@@ -4,6 +4,7 @@ import { closestCenter, DragDropProvider, DragDropSensors, DragOverlay } from '@
 import { createContext, createSignal, useContext } from 'solid-js'
 import { Sidebar } from '~/generated/leapmux/v1/section_pb'
 import { mid } from '~/lib/lexorank'
+import { dragOverlayAboveFloating } from './FloatingWindowContainer.css'
 import {
   computeInsertPosition,
   findClosestSectionDroppable,
@@ -404,7 +405,7 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
       >
         <DragDropSensors />
         {props.children}
-        <DragOverlay>
+        <DragOverlay class={dragOverlayAboveFloating}>
           {(draggable: any) => {
             if (!draggable)
               return <></>

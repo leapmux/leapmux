@@ -123,7 +123,7 @@ export function getAllTileIds(node: LayoutNodeLocal): string[] {
 
 // --- Helper: find and replace a node by tile ID ---
 
-function replaceNode(
+export function replaceNode(
   root: LayoutNodeLocal,
   tileId: string,
   replacer: (leaf: LeafNode) => LayoutNodeLocal,
@@ -141,7 +141,7 @@ function replaceNode(
 // Returns [newRoot, true] if the tile's parent split matches the direction
 // and the sibling was added; [root, false] otherwise.
 
-function addSiblingInSameDirectionSplit(
+export function addSiblingInSameDirectionSplit(
   root: LayoutNodeLocal,
   tileId: string,
   newTileId: string,
@@ -187,7 +187,7 @@ function addSiblingInSameDirectionSplit(
   return [root, false]
 }
 
-function removeNode(
+export function removeNode(
   root: LayoutNodeLocal,
   tileId: string,
 ): LayoutNodeLocal | null {

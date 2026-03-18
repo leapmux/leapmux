@@ -67,6 +67,9 @@ interface TileRendererOpts {
   getScrollStateRef: { current: (() => { distFromBottom: number, atBottom: boolean } | undefined) | undefined }
   forceScrollToBottomRef: { current: (() => void) | undefined }
   gitFileStatusStore?: ReturnType<typeof createGitFileStatusStore>
+  // Floating window support
+  isFloatingWindowTile?: (tileId: string) => boolean
+  onDetachTab?: (tab: Tab) => void
 }
 
 export function createTileRenderer(opts: TileRendererOpts) {
@@ -479,6 +482,13 @@ export function createTileRenderer(opts: TileRendererOpts) {
         layoutStore.closeTile(tileId)
         persistLayout()
       }}
+      onPopOut={!opts.isFloatingWindowTile?.(tileId) && opts.onDetachTab && getActiveTabForTile(tileId)
+        ? () => {
+            const tab = getActiveTabForTile(tileId)
+            if (tab)
+              opts.onDetachTab!(tab)
+          }
+        : undefined}
     >
       {renderTileContent(tileId)}
     </Tile>
