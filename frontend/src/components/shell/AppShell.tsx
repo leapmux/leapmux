@@ -506,7 +506,12 @@ export const AppShell: ParentComponent = (props) => {
   }
 
   const handleMoveTabToMainArea = (tab: import('~/stores/tab.store').Tab) => {
-    const mainTileId = layoutStore.focusedTileId()
+    // Ensure we pick a tile from the main layout, not a floating window tile
+    const mainTileIds = layoutStore.getAllTileIds()
+    const focused = layoutStore.focusedTileId()
+    const mainTileId = mainTileIds.includes(focused) ? focused : mainTileIds[0]
+    if (!mainTileId)
+      return
     const oldTileId = tab.tileId
     tabStore.moveTabToTile(tabKey(tab), mainTileId)
     tabStore.setActiveTabForTile(mainTileId, tab.type, tab.id)
