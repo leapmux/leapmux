@@ -508,36 +508,23 @@ export const AppShell: ParentComponent = (props) => {
 
   const handleCloseFloatingWindow = (windowId: string) => {
     const tileIds = floatingWindowStore.getWindowTileIds(windowId)
-    let tabCount = 0
+    // Close all tabs in the window
     for (const tId of tileIds) {
-      tabCount += tabStore.getTabsForTile(tId).length
-    }
-    const doClose = () => {
-      // Close all tabs in the window
-      for (const tId of tileIds) {
-        const tileTabs = tabStore.getTabsForTile(tId)
-        for (const t of tileTabs) {
-          void tabOps.handleTabClose(t)
-        }
+      const tileTabs = tabStore.getTabsForTile(tId)
+      for (const t of tileTabs) {
+        void tabOps.handleTabClose(t)
       }
-      const windowTileIdSet = new Set(tileIds)
-      floatingWindowStore.removeWindow(windowId)
-      // Reset focus to a main layout tile if it was on the removed window
-      if (windowTileIdSet.has(layoutStore.focusedTileId())) {
-        const mainTileIds = layoutStore.getAllTileIds()
-        if (mainTileIds.length > 0) {
-          layoutStore.setFocusedTile(mainTileIds[0])
-        }
+    }
+    const windowTileIdSet = new Set(tileIds)
+    floatingWindowStore.removeWindow(windowId)
+    // Reset focus to a main layout tile if it was on the removed window
+    if (windowTileIdSet.has(layoutStore.focusedTileId())) {
+      const mainTileIds = layoutStore.getAllTileIds()
+      if (mainTileIds.length > 0) {
+        layoutStore.setFocusedTile(mainTileIds[0])
       }
-      persistLayout()
     }
-    if (tabCount <= 1) {
-      doClose()
-    }
-    else {
-      // For now, close directly. A confirmation dialog can be added later.
-      doClose()
-    }
+    persistLayout()
   }
 
   // Cross-workspace tab move handler (drag a tab to another workspace in the sidebar)
@@ -608,8 +595,14 @@ export const AppShell: ParentComponent = (props) => {
       const srcTileId = tab.tileId
       if (srcTileId) {
         const srcWindowId = floatingWindowStore.getWindowForTile(srcTileId)
-        if (srcWindowId && floatingWindowStore.isWindowEmpty(srcWindowId, tId => tabStore.getTabsForTile(tId))) {
-          floatingWindowStore.removeWindow(srcWindowId)
+        if (srcWindowId) {
+          floatingWindowStore.removeIfEmpty(
+            srcWindowId,
+            tId => tabStore.getTabsForTile(tId),
+            layoutStore.focusedTileId(),
+            tId => layoutStore.setFocusedTile(tId),
+            layoutStore.getAllTileIds(),
+          )
         }
       }
     }

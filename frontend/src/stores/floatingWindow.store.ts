@@ -3,7 +3,7 @@ import type { FloatingWindow as FloatingWindowProto } from '~/generated/leapmux/
 import { create } from '@bufbuild/protobuf'
 import { createStore, produce } from 'solid-js/store'
 import { FloatingWindowSchema } from '~/generated/leapmux/v1/workspace_pb'
-import { fromProto, getAllTileIds, optimize, removeNode, toProto } from './layout.store'
+import { addSiblingInSameDirectionSplit, fromProto, getAllTileIds, optimize, removeNode, replaceNode, toProto } from './layout.store'
 
 export interface FloatingWindowState {
   id: string
@@ -121,13 +121,21 @@ export function createFloatingWindowStore() {
         return null
       const newTileId = generateFwTileId()
       setState('windows', idx, produce((w) => {
-        const { addSiblingInSameDirectionSplit, replaceNodeForSplit } = getSplitHelpers()
         const [newRoot, added] = addSiblingInSameDirectionSplit(w.layoutRoot, tileId, newTileId, direction)
         if (added) {
           w.layoutRoot = optimize(newRoot)
         }
         else {
-          w.layoutRoot = optimize(replaceNodeForSplit(w.layoutRoot, tileId, newTileId, direction))
+          w.layoutRoot = optimize(replaceNode(w.layoutRoot, tileId, leaf => ({
+            type: 'split' as const,
+            id: generateFwTileId(),
+            direction,
+            ratios: [0.5, 0.5],
+            children: [
+              { type: 'leaf' as const, id: leaf.id },
+              { type: 'leaf' as const, id: newTileId },
+            ],
+          })))
         }
       }))
       return newTileId
@@ -203,6 +211,32 @@ export function createFloatingWindowStore() {
       return tileIds.every(id => getTabsForTile(id).length === 0)
     },
 
+    /**
+     * Remove a floating window if it's empty, and reset focus to a main layout
+     * tile when the focused tile belonged to the removed window.
+     * Returns true if the window was removed.
+     */
+    removeIfEmpty(
+      windowId: string,
+      getTabsForTile: (tileId: string) => unknown[],
+      focusedTileId: string,
+      resetFocus: (tileId: string) => void,
+      mainTileIds: string[],
+    ): boolean {
+      const win = state.windows.find(w => w.id === windowId)
+      if (!win)
+        return false
+      const tileIds = getAllTileIds(win.layoutRoot)
+      if (!tileIds.every(id => getTabsForTile(id).length === 0))
+        return false
+      const windowTileIdSet = new Set(tileIds)
+      setState('windows', w => w.filter(ww => ww.id !== windowId))
+      if (windowTileIdSet.has(focusedTileId) && mainTileIds.length > 0) {
+        resetFocus(mainTileIds[0])
+      }
+      return true
+    },
+
     toProto(): FloatingWindowProto[] {
       return floatingWindowsToProto([...state.windows])
     },
@@ -262,80 +296,4 @@ export function floatingWindowsToProto(windows: FloatingWindowState[]): Floating
     opacity: w.opacity,
     layout: toProto(w.layoutRoot),
   }))
-}
-
-// We need split helpers that work on LayoutNodeLocal but are not exported from layout.store.
-// Re-implement the necessary ones as pure functions here:
-function getSplitHelpers() {
-  function addSiblingInSameDirectionSplit(
-    root: LayoutNodeLocal,
-    tileId: string,
-    newTileId: string,
-    direction: 'horizontal' | 'vertical',
-  ): [LayoutNodeLocal, boolean] {
-    if (root.type === 'leaf')
-      return [root, false]
-
-    if (root.direction === direction) {
-      const childIndex = root.children.findIndex(
-        c => c.type === 'leaf' && c.id === tileId,
-      )
-      if (childIndex >= 0) {
-        const newChildren = [...root.children]
-        newChildren.splice(childIndex + 1, 0, { type: 'leaf', id: newTileId })
-        const equalRatio = 1 / newChildren.length
-        return [{
-          ...root,
-          children: newChildren,
-          ratios: newChildren.map(() => equalRatio),
-        }, true]
-      }
-    }
-
-    for (let i = 0; i < root.children.length; i++) {
-      const [newChild, found] = addSiblingInSameDirectionSplit(
-        root.children[i],
-        tileId,
-        newTileId,
-        direction,
-      )
-      if (found) {
-        return [{
-          ...root,
-          children: root.children.map((c, j) => j === i ? newChild : c),
-        }, true]
-      }
-    }
-
-    return [root, false]
-  }
-
-  function replaceNodeForSplit(
-    root: LayoutNodeLocal,
-    tileId: string,
-    newTileId: string,
-    direction: 'horizontal' | 'vertical',
-  ): LayoutNodeLocal {
-    if (root.type === 'leaf') {
-      if (root.id === tileId) {
-        return {
-          type: 'split',
-          id: generateFwTileId(),
-          direction,
-          ratios: [0.5, 0.5],
-          children: [
-            { type: 'leaf', id: root.id },
-            { type: 'leaf', id: newTileId },
-          ],
-        }
-      }
-      return root
-    }
-    return {
-      ...root,
-      children: root.children.map(c => replaceNodeForSplit(c, tileId, newTileId, direction)),
-    }
-  }
-
-  return { addSiblingInSameDirectionSplit, replaceNodeForSplit }
 }

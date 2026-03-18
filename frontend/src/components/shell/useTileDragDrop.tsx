@@ -54,8 +54,14 @@ export function useTileDragDrop(opts: UseTileDragDropOpts) {
 
     // Remove the source floating window if it's now empty.
     const srcWindowId = floatingWindowStore.getWindowForTile(fromTileId)
-    if (srcWindowId && floatingWindowStore.isWindowEmpty(srcWindowId, tId => tabStore.getTabsForTile(tId))) {
-      floatingWindowStore.removeWindow(srcWindowId)
+    if (srcWindowId) {
+      floatingWindowStore.removeIfEmpty(
+        srcWindowId,
+        tId => tabStore.getTabsForTile(tId),
+        layoutStore.focusedTileId(),
+        tId => layoutStore.setFocusedTile(tId),
+        layoutStore.getAllTileIds(),
+      )
     }
 
     persistLayout()

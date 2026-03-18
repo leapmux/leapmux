@@ -124,16 +124,14 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     if (!tileId || !floatingWindowStore)
       return
     const windowId = floatingWindowStore.getWindowForTile(tileId)
-    if (windowId && floatingWindowStore.isWindowEmpty(windowId, tId => tabStore.getTabsForTile(tId))) {
-      const windowTileIds = new Set(floatingWindowStore.getWindowTileIds(windowId))
-      floatingWindowStore.removeWindow(windowId)
-      // Reset focus to a main layout tile if it was on the removed window
-      if (windowTileIds.has(layoutStore.focusedTileId())) {
-        const mainTileIds = layoutStore.getAllTileIds()
-        if (mainTileIds.length > 0) {
-          layoutStore.setFocusedTile(mainTileIds[0])
-        }
-      }
+    if (windowId) {
+      floatingWindowStore.removeIfEmpty(
+        windowId,
+        tId => tabStore.getTabsForTile(tId),
+        layoutStore.focusedTileId(),
+        tId => layoutStore.setFocusedTile(tId),
+        layoutStore.getAllTileIds(),
+      )
     }
   }
 

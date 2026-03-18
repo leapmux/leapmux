@@ -1,7 +1,7 @@
 import type { Component, JSX } from 'solid-js'
 import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
 import X from 'lucide-solid/icons/x'
-import { onCleanup, onMount } from 'solid-js'
+import { For, onCleanup, onMount } from 'solid-js'
 import { IconButton } from '~/components/common/IconButton'
 import * as styles from './FloatingWindowContainer.css'
 
@@ -20,11 +20,39 @@ interface FloatingWindowContainerProps {
   children: JSX.Element
 }
 
-type ResizeDir = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
+const RESIZE_HANDLES = [
+  { dir: 'n', class: styles.resizeN },
+  { dir: 's', class: styles.resizeS },
+  { dir: 'e', class: styles.resizeE },
+  { dir: 'w', class: styles.resizeW },
+  { dir: 'ne', class: styles.resizeNE },
+  { dir: 'nw', class: styles.resizeNW },
+  { dir: 'se', class: styles.resizeSE },
+  { dir: 'sw', class: styles.resizeSW },
+] as const
+
+type ResizeDir = typeof RESIZE_HANDLES[number]['dir']
 
 export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = (props) => {
   let containerRef: HTMLDivElement | undefined
   let titleBarRef: HTMLDivElement | undefined
+
+  // Track active pointer listeners for cleanup on unmount
+  let activeMoveHandler: ((e: PointerEvent) => void) | null = null
+  let activeUpHandler: (() => void) | null = null
+
+  const cleanupPointerListeners = () => {
+    if (activeMoveHandler) {
+      document.removeEventListener('pointermove', activeMoveHandler)
+      activeMoveHandler = null
+    }
+    if (activeUpHandler) {
+      document.removeEventListener('pointerup', activeUpHandler)
+      activeUpHandler = null
+    }
+  }
+
+  onCleanup(cleanupPointerListeners)
 
   const getContainerParent = () => containerRef?.parentElement
 
@@ -106,11 +134,13 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
     }
 
     const handleUp = () => {
-      document.removeEventListener('pointermove', handleMove)
-      document.removeEventListener('pointerup', handleUp)
+      cleanupPointerListeners()
       props.onGeometryChange?.()
     }
 
+    cleanupPointerListeners()
+    activeMoveHandler = handleMove
+    activeUpHandler = handleUp
     document.addEventListener('pointermove', handleMove)
     document.addEventListener('pointerup', handleUp)
   }
@@ -166,11 +196,13 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
     }
 
     const handleUp = () => {
-      document.removeEventListener('pointermove', handleMove)
-      document.removeEventListener('pointerup', handleUp)
+      cleanupPointerListeners()
       props.onGeometryChange?.()
     }
 
+    cleanupPointerListeners()
+    activeMoveHandler = handleMove
+    activeUpHandler = handleUp
     document.addEventListener('pointermove', handleMove)
     document.addEventListener('pointerup', handleUp)
   }
@@ -217,14 +249,9 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
       </div>
 
       {/* Resize handles */}
-      <div class={styles.resizeN} onPointerDown={e => handleResizeStart('n', e)} />
-      <div class={styles.resizeS} onPointerDown={e => handleResizeStart('s', e)} />
-      <div class={styles.resizeE} onPointerDown={e => handleResizeStart('e', e)} />
-      <div class={styles.resizeW} onPointerDown={e => handleResizeStart('w', e)} />
-      <div class={styles.resizeNE} onPointerDown={e => handleResizeStart('ne', e)} />
-      <div class={styles.resizeNW} onPointerDown={e => handleResizeStart('nw', e)} />
-      <div class={styles.resizeSE} onPointerDown={e => handleResizeStart('se', e)} />
-      <div class={styles.resizeSW} onPointerDown={e => handleResizeStart('sw', e)} />
+      <For each={RESIZE_HANDLES}>
+        {h => <div class={h.class} onPointerDown={e => handleResizeStart(h.dir, e)} />}
+      </For>
     </div>
   )
 }
