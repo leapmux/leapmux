@@ -6,7 +6,7 @@ import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry
 import { createEffect, onCleanup } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
+import { floatingWindowsToProto } from '~/stores/floatingWindow.store'
 import { toProto } from '~/stores/layout.store'
 
 interface UseTabPersistenceOpts {
@@ -162,12 +162,9 @@ export function useTabPersistence(opts: UseTabPersistenceOpts) {
         continue
       const snapLayout = snap.layout
       // Convert floating windows from snapshot to proto
-      let snapFloatingWindows: ReturnType<FloatingWindowStoreType['toProto']> = []
-      if (snap.floatingWindows) {
-        const tempStore = createFloatingWindowStore()
-        tempStore.restore(snap.floatingWindows)
-        snapFloatingWindows = tempStore.toProto()
-      }
+      const snapFloatingWindows = snap.floatingWindows
+        ? floatingWindowsToProto(snap.floatingWindows.windows)
+        : []
       entries.push({
         workspaceId: snap.workspaceId,
         layout: toProto(snapLayout.root),

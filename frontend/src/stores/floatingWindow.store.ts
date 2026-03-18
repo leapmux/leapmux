@@ -195,14 +195,7 @@ export function createFloatingWindowStore() {
     },
 
     toProto(): FloatingWindowProto[] {
-      return state.windows.map(w => create(FloatingWindowSchema, {
-        id: w.id,
-        x: w.x,
-        y: w.y,
-        width: w.width,
-        height: w.height,
-        layout: toProto(w.layoutRoot),
-      }))
+      return floatingWindowsToProto([...state.windows])
     },
 
     fromProto(protos: FloatingWindowProto[]) {
@@ -247,6 +240,18 @@ export function createFloatingWindowStore() {
 }
 
 export type FloatingWindowStoreType = ReturnType<typeof createFloatingWindowStore>
+
+/** Pure function to convert floating window state to proto, usable outside a reactive root. */
+export function floatingWindowsToProto(windows: FloatingWindowState[]): FloatingWindowProto[] {
+  return windows.map(w => create(FloatingWindowSchema, {
+    id: w.id,
+    x: w.x,
+    y: w.y,
+    width: w.width,
+    height: w.height,
+    layout: toProto(w.layoutRoot),
+  }))
+}
 
 // We need split helpers that work on LayoutNodeLocal but are not exported from layout.store.
 // Re-implement the necessary ones as pure functions here:
