@@ -6,7 +6,7 @@ export const floatingWindow = style({
   flexDirection: 'column',
   border: '1px solid var(--border)',
   borderRadius: '8px',
-  backgroundColor: 'var(--card)',
+  backgroundColor: 'var(--background)',
   boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.2)',
   overflow: 'hidden',
   pointerEvents: 'auto',
