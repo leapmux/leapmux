@@ -156,11 +156,11 @@ export function buildCodexApprovalResponse(requestId: number, approved: boolean,
   })
 }
 
-/** Codex permission modes mapped to Codex approval policies. */
+/** Codex approval policy labels (using Codex-native kebab-case values). */
 export const CODEX_PERMISSION_MODE_LABELS: Record<string, string> = {
-  bypassPermissions: 'Full Auto',
-  default: 'Suggest & Approve',
-  acceptEdits: 'Auto-edit',
+  'never': 'Full Auto',
+  'on-request': 'Suggest & Approve',
+  'untrusted': 'Auto-edit',
 }
 
 /** Returns the default model for the given agent provider. */

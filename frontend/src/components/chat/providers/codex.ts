@@ -147,7 +147,7 @@ const codexPlugin: ProviderPlugin = {
           const opt = document.createElement('option')
           opt.value = value
           opt.textContent = label
-          if (value === (props.permissionMode || 'bypassPermissions'))
+          if (value === (props.permissionMode || 'never'))
             opt.selected = true
           select.appendChild(opt)
         }

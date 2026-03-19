@@ -40,7 +40,7 @@ type CodexAgent struct {
 	turnID       string       // currently active turn ID
 	nextReqID    atomic.Int64 // JSON-RPC request ID counter
 	pendingReqs  sync.Map     // reqID (int64) -> chan json.RawMessage
-	approvalMode string       // mapped permission mode ("never", "onRequest", "unlessTrusted")
+	approvalPolicy string // Codex approval policy (stored as-is from DB)
 }
 
 // StartCodex starts a Codex agent process and performs the JSON-RPC handshake.
@@ -135,9 +135,13 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 		return nil, a.formatStartupError("initialized notification", err)
 	}
 
-	// 3. Map permission mode to Codex approval policy.
-	approvalPolicy := mapPermissionModeToApprovalPolicy(opts.PermissionMode)
-	a.approvalMode = mapApprovalPolicyToPermissionMode(approvalPolicy)
+	// 3. Use the permission mode directly as the Codex approval policy.
+	// The DB stores provider-native values (e.g. "never", "on-request", "untrusted" for Codex).
+	approvalPolicy := opts.PermissionMode
+	if approvalPolicy == "" {
+		approvalPolicy = "never"
+	}
+	a.approvalPolicy = approvalPolicy
 
 	// 4. Send "thread/start" or "thread/resume" request.
 	var threadMethod string
@@ -149,7 +153,7 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 			"model":          opts.Model,
 			"cwd":            opts.WorkingDir,
 			"approvalPolicy": approvalPolicy,
-			"sandbox":        "dangerFullAccess",
+			"sandbox":        "danger-full-access",
 		}
 	} else {
 		threadMethod = "thread/start"
@@ -157,7 +161,7 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 			"model":          opts.Model,
 			"cwd":            opts.WorkingDir,
 			"approvalPolicy": approvalPolicy,
-			"sandbox":        "dangerFullAccess",
+			"sandbox":        "danger-full-access",
 		}
 	}
 	threadParamsJSON, _ := json.Marshal(threadParams)
@@ -171,7 +175,7 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 				"model":          opts.Model,
 				"cwd":            opts.WorkingDir,
 				"approvalPolicy": approvalPolicy,
-				"sandbox":        "dangerFullAccess",
+				"sandbox":        "danger-full-access",
 			}
 			threadParamsJSON, _ = json.Marshal(threadParams)
 			threadResp, err = a.sendRequest("thread/start", threadParamsJSON, timeout)
@@ -197,33 +201,6 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	return a, nil
 }
 
-// mapPermissionModeToApprovalPolicy maps LeapMux permission modes to Codex approval policies.
-func mapPermissionModeToApprovalPolicy(mode string) string {
-	switch mode {
-	case "bypassPermissions", "":
-		return "never"
-	case "default":
-		return "onRequest"
-	case "acceptEdits":
-		return "unlessTrusted"
-	default:
-		return "never"
-	}
-}
-
-// mapApprovalPolicyToPermissionMode maps Codex approval policies back to LeapMux permission modes.
-func mapApprovalPolicyToPermissionMode(policy string) string {
-	switch policy {
-	case "never":
-		return "bypassPermissions"
-	case "onRequest":
-		return "default"
-	case "unlessTrusted":
-		return "acceptEdits"
-	default:
-		return "bypassPermissions"
-	}
-}
 
 // AgentID returns the unique identifier for this agent.
 func (a *CodexAgent) AgentID() string {
@@ -352,7 +329,7 @@ func (a *CodexAgent) SupportsModelEffort() bool {
 
 // ConfirmedPermissionMode returns the mapped permission mode.
 func (a *CodexAgent) ConfirmedPermissionMode() string {
-	return a.approvalMode
+	return a.approvalPolicy
 }
 
 // HandleOutput processes a single JSONL notification from Codex.
