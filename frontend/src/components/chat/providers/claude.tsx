@@ -8,6 +8,7 @@ import Dot from 'lucide-solid/icons/dot'
 import Sparkles from 'lucide-solid/icons/sparkles'
 import Zap from 'lucide-solid/icons/zap'
 import { createUniqueId, Show } from 'solid-js'
+import * as workerRpc from '~/api/workerRpc'
 import { Icon } from '~/components/common/Icon'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { isNotificationThreadWrapper, isObject } from '../messageUtils'
@@ -21,6 +22,15 @@ function generateRandomId(): string {
     result += chars[Math.floor(Math.random() * chars.length)]
   }
   return result
+}
+
+function buildSetPermissionModeRequest(mode: PermissionMode): string {
+  const requestId = generateRandomId()
+  return JSON.stringify({
+    type: 'control_request',
+    request_id: requestId,
+    request: { subtype: 'set_permission_mode', mode },
+  })
 }
 
 function buildInterruptRequest(): string {
@@ -241,6 +251,15 @@ const claudeCodePlugin: ProviderPlugin = {
   // return null to signal "send as-is".
   buildControlResponse(): Uint8Array | null {
     return null
+  },
+
+  // Claude Code supports runtime permission mode changes via control_request
+  // (lightweight, no agent restart needed).
+  async changePermissionMode(workerId: string, agentId: string, mode: PermissionMode): Promise<void> {
+    await workerRpc.sendAgentMessage(workerId, {
+      agentId,
+      content: buildSetPermissionModeRequest(mode),
+    })
   },
 
   SettingsPanel: ClaudeCodeSettingsPanel,

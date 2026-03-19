@@ -527,20 +527,15 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		if svc.Agents.HasAgent(agentID) {
 			svc.Agents.StopAndWaitAgent(agentID)
 
-			// For Codex agents, resume the thread to preserve context.
-			// For Claude Code, don't resume — the old session may not have
-			// been persisted (e.g. no user messages sent before settings change).
-			var resumeSessionID string
-			if dbAgent.AgentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
-				resumeSessionID = dbAgent.AgentSessionID
-			}
-
+			// Resume the session if one was recorded (i.e. at least one message
+			// was exchanged). This preserves conversation context across restarts.
+			// If no session exists yet, start fresh.
 			agentOpts := agent.Options{
 				AgentID:         agentID,
 				Model:           newModel,
 				Effort:          newEffort,
 				WorkingDir:      dbAgent.WorkingDir,
-				ResumeSessionID: resumeSessionID,
+				ResumeSessionID: dbAgent.AgentSessionID,
 				PermissionMode:  newPermissionMode,
 				StartupTimeout:  svc.agentStartupTimeout(),
 				Shell:           svc.agentShell(),

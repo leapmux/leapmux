@@ -231,23 +231,23 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   }
 
   // Change permission mode for the given agent.
-  // Uses UpdateAgentSettings for all providers — the backend persists the mode
-  // and restarts the agent with the new setting (resuming context for Codex).
+  // Dispatches through the provider plugin — each provider handles this
+  // differently (Claude Code: control_request, Codex: UpdateAgentSettings).
   const handlePermissionModeChange = async (agentId: string, mode: PermissionMode) => {
     const agent = props.agentStore.state.agents.find(a => a.id === agentId)
     if (!agent)
       return
     const previousMode = (agent.permissionMode || 'default') as PermissionMode
-    // Optimistic update
     props.agentStore.updateAgent(agentId, { permissionMode: mode })
     props.settingsLoading.start()
     try {
-      await workerRpc.updateAgentSettings(agent.workerId, {
-        agentId,
-        model: '',
-        effort: '',
-        permissionMode: mode,
-      })
+      const plugin = getProviderPlugin(agent.agentProvider)
+      if (plugin?.changePermissionMode) {
+        await plugin.changePermissionMode(agent.workerId, agentId, mode)
+      }
+      else {
+        logger.error('No changePermissionMode handler for provider', agent.agentProvider)
+      }
       props.settingsLoading.stop()
     }
     catch (err) {

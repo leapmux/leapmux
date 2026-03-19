@@ -56,6 +56,16 @@ export interface ProviderPlugin {
    */
   buildControlResponse?: (parsed: Record<string, unknown>) => Uint8Array | null
 
+  /**
+   * Change the agent's permission mode. Claude Code sends a lightweight
+   * control_request (no restart), Codex restarts via UpdateAgentSettings.
+   */
+  changePermissionMode?: (
+    workerId: string,
+    agentId: string,
+    mode: PermissionMode,
+  ) => Promise<void>
+
   /** Optional settings panel component for this provider's agent settings dropdown. */
   SettingsPanel?: Component<ProviderSettingsPanelProps>
 

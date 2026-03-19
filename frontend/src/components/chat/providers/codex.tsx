@@ -4,6 +4,7 @@ import type { ProviderPlugin, ProviderSettingsPanelProps, RenderContext } from '
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
 import { createUniqueId } from 'solid-js'
+import * as workerRpc from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import {
   EFFORT_LABELS,
@@ -228,6 +229,17 @@ const codexPlugin: ProviderPlugin = {
     const behavior = ((parsed?.response as Record<string, unknown>)?.response as Record<string, unknown>)?.behavior
     const approved = behavior === 'allow'
     return new TextEncoder().encode(buildCodexApprovalResponse(rpcId as number, approved))
+  },
+
+  // Codex sets approvalPolicy at thread/start time — changing it requires
+  // a restart via UpdateAgentSettings (which resumes the thread).
+  async changePermissionMode(workerId: string, agentId: string, mode: PermissionMode): Promise<void> {
+    await workerRpc.updateAgentSettings(workerId, {
+      agentId,
+      model: '',
+      effort: '',
+      permissionMode: mode,
+    })
   },
 
   SettingsPanel: CodexSettingsPanel,
