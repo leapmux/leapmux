@@ -65,8 +65,8 @@ export function buildDenyResponse(
 export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'
 
 /** Default model and effort level for new Claude Code agents. */
-export const DEFAULT_MODEL = import.meta.env.LEAPMUX_DEFAULT_CLAUDE_MODEL || 'opus'
-export const DEFAULT_EFFORT = import.meta.env.LEAPMUX_DEFAULT_EFFORT || 'high'
+export const DEFAULT_CLAUDE_MODEL = import.meta.env.LEAPMUX_DEFAULT_CLAUDE_MODEL || 'opus'
+export const DEFAULT_CLAUDE_EFFORT = import.meta.env.LEAPMUX_DEFAULT_CLAUDE_EFFORT || 'high'
 
 /** Default model for Codex agents. */
 export const DEFAULT_CODEX_MODEL = import.meta.env.LEAPMUX_DEFAULT_CODEX_MODEL || 'gpt-5.4'
@@ -169,12 +169,12 @@ export const CODEX_PERMISSION_MODE_LABELS: Record<string, string> = {
 export function defaultModelForProvider(provider: AgentProvider): string {
   if (provider === AgentProvider.CODEX)
     return DEFAULT_CODEX_MODEL
-  return DEFAULT_MODEL
+  return DEFAULT_CLAUDE_MODEL
 }
 
 /** Returns the default effort for the given agent provider. */
 export function defaultEffortForProvider(provider: AgentProvider): string {
   if (provider === AgentProvider.CODEX)
     return DEFAULT_CODEX_EFFORT
-  return DEFAULT_EFFORT
+  return DEFAULT_CLAUDE_EFFORT
 }

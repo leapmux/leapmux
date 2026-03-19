@@ -4,25 +4,16 @@ import type { JSX } from 'solid-js'
 import type { StructuredPatchHunk } from './diffUtils'
 import type { MessageCategory } from './messageClassification'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
-import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import Bot from 'lucide-solid/icons/bot'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import { createSignal, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createLogger } from '~/lib/logger'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
-import {
-  codexAgentMessageRenderer,
-  codexCommandExecutionRenderer,
-  codexFileChangeRenderer,
-  codexMcpToolCallRenderer,
-  codexReasoningRenderer,
-  codexTurnCompletedRenderer,
-} from './codexRenderers'
 import { markdownContent } from './markdownContent.css'
 import { thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
 import { isObject } from './messageUtils'
@@ -40,6 +31,7 @@ import {
   systemInitRenderer,
 } from './notificationRenderers'
 import { exitPlanModeRenderer, renderExitPlanMode } from './planModeRenderers'
+import { getProviderPlugin } from './providers'
 import {
   askUserQuestionRenderer,
   renderAskUserQuestion,
@@ -395,35 +387,6 @@ function getFallbackRenderers(): MessageContentRenderer[] {
   return _fallbackRenderers
 }
 
-/** Codex-specific renderer dispatch for native Codex item formats. */
-const CODEX_KIND_RENDERERS: Record<string, (parsed: unknown, role: MessageRole, context?: RenderContext) => JSX.Element | null> = {
-  assistant_text: codexAgentMessageRenderer,
-  assistant_thinking: codexReasoningRenderer,
-  result_divider: codexTurnCompletedRenderer,
-}
-
-/** Codex tool_use dispatcher — routes by Codex item type name. */
-function dispatchCodexToolUse(
-  category: Extract<MessageCategory, { kind: 'tool_use' }>,
-  parsed: unknown,
-  role: MessageRole,
-  context?: RenderContext,
-): JSX.Element | null {
-  switch (category.toolName) {
-    case 'commandExecution':
-      return codexCommandExecutionRenderer(parsed, role, context)
-    case 'fileChange':
-      return codexFileChangeRenderer(parsed, role, context)
-    case 'mcpToolCall':
-    case 'dynamicToolCall':
-    case 'mcpTool':
-    case 'dynamicTool':
-      return codexMcpToolCallRenderer(parsed, role, context)
-    default:
-      return codexMcpToolCallRenderer(parsed, role, context)
-  }
-}
-
 /**
  * Render a message's content.
  *
@@ -431,6 +394,10 @@ function dispatchCodexToolUse(
  * dispatch instead of iterating through the renderer chain. The linear scan is
  * used as a fallback for 'unknown' categories and for thread children that don't
  * have a pre-computed category.
+ *
+ * When `agentProvider` is set and the provider has a `renderMessage` method,
+ * that is tried first — allowing providers to render their native message
+ * formats without any hardcoded dispatch here.
  */
 export function renderMessageContent(
   parsedOrRawJson: unknown,
@@ -446,16 +413,11 @@ export function renderMessageContent(
 
     // Fast path: O(1) dispatch when category is available
     if (category && category.kind !== 'unknown') {
-      // Use Codex-specific renderers for Codex agents.
-      if (agentProvider === AgentProvider.CODEX) {
-        if (category.kind === 'tool_use') {
-          const result = dispatchCodexToolUse(category as Extract<MessageCategory, { kind: 'tool_use' }>, parsed, role, context)
-          if (result !== null)
-            return result
-        }
-        const codexRenderer = CODEX_KIND_RENDERERS[category.kind]
-        if (codexRenderer) {
-          const result = codexRenderer(parsed, role, context)
+      // Try provider-specific renderer first.
+      if (agentProvider != null) {
+        const plugin = getProviderPlugin(agentProvider)
+        if (plugin?.renderMessage) {
+          const result = plugin.renderMessage(category, parsed, role, context)
           if (result !== null)
             return result
         }

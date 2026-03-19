@@ -1,6 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import type { MessageCategory } from '../messageClassification'
-import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
 
 export interface ProviderSettingsPanelProps {
@@ -15,12 +15,41 @@ export interface ProviderSettingsPanelProps {
   onPermissionModeChange?: (mode: PermissionMode) => void
 }
 
+/** Context for rendering a message — forwarded from MessageBubble. */
+export interface RenderContext {
+  [key: string]: unknown
+}
+
 export interface ProviderPlugin {
   /** Classify a parsed message into a rendering category. */
   classify: (
     parent: Record<string, unknown> | undefined,
     wrapper: { old_seqs: number[], messages: unknown[] } | null,
   ) => MessageCategory
+
+  /**
+   * Render a message given its category and parsed content.
+   * Return null to fall through to the default renderer chain.
+   */
+  renderMessage?: (
+    category: MessageCategory,
+    parsed: unknown,
+    role: MessageRole,
+    context?: RenderContext,
+  ) => JSX.Element | null
+
+  /**
+   * Build the wire-format content string to interrupt the agent.
+   * Returns null if interrupt is not supported or not applicable.
+   */
+  buildInterruptContent?: (agentSessionId: string, codexTurnId?: string) => string | null
+
+  /**
+   * Build the wire-format content bytes to respond to an approval request.
+   * The parsed Claude Code control_response is passed; the plugin translates
+   * it to the provider's native format. Return null to send the original as-is.
+   */
+  buildControlResponse?: (parsed: Record<string, unknown>) => Uint8Array | null
 
   /** Optional settings panel component for this provider's agent settings dropdown. */
   SettingsPanel?: Component<ProviderSettingsPanelProps>

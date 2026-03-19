@@ -9,12 +9,13 @@ import type { PermissionMode } from '~/utils/controlResponse'
 
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
+import { getProviderPlugin } from '~/components/chat/providers'
 import { showWarnToast } from '~/components/common/Toast'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
-import { buildCodexApprovalResponse, buildCodexInterruptRequest, buildInterruptRequest, defaultEffortForProvider, defaultModelForProvider } from '~/utils/controlResponse'
+import { buildInterruptRequest, defaultEffortForProvider, defaultModelForProvider } from '~/utils/controlResponse'
 
 /** Find the smallest unused number for auto-naming tabs (gap-filling). */
 export function nextTabNumber(tabs: Tab[], type: TabType, prefix: string): number {
@@ -154,27 +155,20 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       const parsed = JSON.parse(new TextDecoder().decode(content))
       const requestId = parsed?.response?.request_id
 
-      if (agent?.agentProvider === AgentProvider.CODEX) {
-        // Codex: translate the Claude Code control_response into a JSON-RPC response.
-        if (requestId) {
-          const numId = Number(requestId)
-          const rpcId = Number.isFinite(numId) ? numId : requestId
-          const approved = parsed?.response?.response?.behavior === 'allow'
-          const codexResp = buildCodexApprovalResponse(rpcId as number, approved)
-          await workerRpc.sendControlResponse(workerId, {
-            agentId,
-            content: new TextEncoder().encode(codexResp),
-          })
-          props.controlStore.removeRequest(agentId, requestId)
-        }
+      // Try provider-specific control response builder.
+      const plugin = agent ? getProviderPlugin(agent.agentProvider) : undefined
+      const translatedContent = plugin?.buildControlResponse?.(parsed)
+
+      if (translatedContent) {
+        await workerRpc.sendControlResponse(workerId, { agentId, content: translatedContent })
       }
       else {
-        // Claude Code: send the control_response as-is.
+        // Default: send the control_response as-is (Claude Code format).
         await workerRpc.sendControlResponse(workerId, { agentId, content })
-        if (requestId) {
-          props.controlStore.removeRequest(agentId, requestId)
-        }
       }
+
+      if (requestId)
+        props.controlStore.removeRequest(agentId, requestId)
     }
     catch (err) {
       showWarnToast('Failed to send response', err)
@@ -215,24 +209,19 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       const agent = props.agentStore.state.agents.find(a => a.id === agentId)
       const workerId = getAgentWorkerId(agentId)
 
-      if (agent?.agentProvider === AgentProvider.CODEX) {
-        // Codex: send JSON-RPC turn/interrupt with threadId and turnId.
-        const threadId = agent.agentSessionId || ''
+      // Try provider-specific interrupt builder first.
+      const plugin = agent ? getProviderPlugin(agent.agentProvider) : undefined
+      let content: string | null = null
+      if (plugin?.buildInterruptContent) {
+        const sessionId = agent?.agentSessionId || ''
         const turnId = props.agentSessionStore.getInfo(agentId).codexTurnId || ''
-        if (threadId && turnId) {
-          await workerRpc.sendAgentMessage(workerId, {
-            agentId,
-            content: buildCodexInterruptRequest(threadId, turnId),
-          })
-        }
+        content = plugin.buildInterruptContent(sessionId, turnId)
       }
-      else {
-        // Claude Code: send control_request interrupt.
-        await workerRpc.sendAgentMessage(workerId, {
-          agentId,
-          content: buildInterruptRequest(),
-        })
-      }
+      // Fall back to Claude Code control_request interrupt.
+      if (!content)
+        content = buildInterruptRequest()
+
+      await workerRpc.sendAgentMessage(workerId, { agentId, content })
     }
     catch (err) {
       showWarnToast('Failed to interrupt', err)

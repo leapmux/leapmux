@@ -1,15 +1,26 @@
 import type { JSX } from 'solid-js'
 import type { MessageCategory } from '../messageClassification'
-import type { ProviderPlugin, ProviderSettingsPanelProps } from './registry'
+import type { ProviderPlugin, ProviderSettingsPanelProps, RenderContext } from './registry'
+import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import {
+  buildCodexApprovalResponse,
+  buildCodexInterruptRequest,
   CODEX_MODEL_LABELS,
   CODEX_PERMISSION_MODE_LABELS,
   DEFAULT_CODEX_EFFORT,
   DEFAULT_CODEX_MODEL,
   EFFORT_LABELS,
 } from '~/utils/controlResponse'
+import {
+  codexAgentMessageRenderer,
+  codexCommandExecutionRenderer,
+  codexFileChangeRenderer,
+  codexMcpToolCallRenderer,
+  codexReasoningRenderer,
+  codexTurnCompletedRenderer,
+} from '../codexRenderers'
 import { isObject } from '../messageUtils'
 import { registerProvider } from './registry'
 
@@ -90,6 +101,41 @@ const codexPlugin: ProviderPlugin = {
     }
 
     return { kind: 'unknown' }
+  },
+
+  renderMessage(category: MessageCategory, parsed: unknown, role: MessageRole, context?: RenderContext): JSX.Element | null {
+    if (category.kind === 'assistant_text')
+      return codexAgentMessageRenderer(parsed, role, context)
+    if (category.kind === 'assistant_thinking')
+      return codexReasoningRenderer(parsed, role, context)
+    if (category.kind === 'result_divider')
+      return codexTurnCompletedRenderer(parsed, role, context)
+    if (category.kind === 'tool_use') {
+      const toolName = (category as { toolName: string }).toolName
+      if (toolName === 'commandExecution')
+        return codexCommandExecutionRenderer(parsed, role, context)
+      if (toolName === 'fileChange')
+        return codexFileChangeRenderer(parsed, role, context)
+      return codexMcpToolCallRenderer(parsed, role, context)
+    }
+    return null
+  },
+
+  buildInterruptContent(agentSessionId: string, codexTurnId?: string): string | null {
+    if (!agentSessionId || !codexTurnId)
+      return null
+    return buildCodexInterruptRequest(agentSessionId, codexTurnId)
+  },
+
+  buildControlResponse(parsed: Record<string, unknown>): Uint8Array | null {
+    const requestId = (parsed?.response as Record<string, unknown>)?.request_id as string | undefined
+    if (!requestId)
+      return null
+    const numId = Number(requestId)
+    const rpcId = Number.isFinite(numId) ? numId : requestId
+    const behavior = ((parsed?.response as Record<string, unknown>)?.response as Record<string, unknown>)?.behavior
+    const approved = behavior === 'allow'
+    return new TextEncoder().encode(buildCodexApprovalResponse(rpcId as number, approved))
   },
 
   SettingsPanel: ((props: ProviderSettingsPanelProps) => {

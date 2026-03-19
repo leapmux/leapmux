@@ -14,7 +14,7 @@ import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { spinner } from '~/styles/animations.css'
-import { DEFAULT_EFFORT, DEFAULT_MODEL, EFFORT_LABELS, MODEL_LABELS, PERMISSION_MODE_LABELS } from '~/utils/controlResponse'
+import { DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL, EFFORT_LABELS, MODEL_LABELS, PERMISSION_MODE_LABELS } from '~/utils/controlResponse'
 import * as styles from './ChatView.css'
 import { getProviderPlugin } from './providers'
 
@@ -79,8 +79,8 @@ export function RadioGroup(props: {
 /** Default Claude Code settings panel (model, effort, permission mode). */
 function ClaudeCodeSettingsPanel(props: EditorSettingsDropdownProps): JSX.Element {
   const menuId = createUniqueId()
-  const currentModel = () => props.model || DEFAULT_MODEL
-  const currentEffort = () => props.effort || DEFAULT_EFFORT
+  const currentModel = () => props.model || DEFAULT_CLAUDE_MODEL
+  const currentEffort = () => props.effort || DEFAULT_CLAUDE_EFFORT
   const currentMode = () => props.permissionMode || 'default'
   const isOpus = () => currentModel().startsWith('opus')
   const availableEfforts = () => isOpus() ? EFFORTS : EFFORTS.filter(e => e.value !== 'max')
@@ -126,8 +126,8 @@ function ClaudeCodeSettingsPanel(props: EditorSettingsDropdownProps): JSX.Elemen
 
 /** Default Claude Code trigger label (model, effort icon, permission mode). */
 function ClaudeCodeTriggerLabel(props: EditorSettingsDropdownProps): JSX.Element {
-  const currentModel = () => props.model || DEFAULT_MODEL
-  const currentEffort = () => props.effort || DEFAULT_EFFORT
+  const currentModel = () => props.model || DEFAULT_CLAUDE_MODEL
+  const currentEffort = () => props.effort || DEFAULT_CLAUDE_EFFORT
   const currentMode = () => props.permissionMode || 'default'
 
   const effortIcon = () => {

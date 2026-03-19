@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"os/exec"
 	"sync"
@@ -17,30 +16,18 @@ import (
 
 // CodexAgent manages a single Codex app-server process.
 type CodexAgent struct {
-	agentID    string
+	processBase // shared process lifecycle (Stop, Wait, Stderr, etc.)
+
 	model      string
 	workingDir string
 	sink       OutputSink
 
-	cmd         *exec.Cmd
-	stdin       io.WriteCloser
-	stderrBuf   *bytes.Buffer
-	stderrMu    sync.Mutex
-	stderrDone  chan struct{}
-	ctx         context.Context
-	cancel      context.CancelFunc
-	processDone chan struct{}
-	waitErr     error
-
-	mu      sync.Mutex
-	stopped bool
-
 	// Codex-specific state.
-	threadID     string       // from thread/start response
-	turnID       string       // currently active turn ID
-	nextReqID    atomic.Int64 // JSON-RPC request ID counter
-	pendingReqs  sync.Map     // reqID (int64) -> chan json.RawMessage
-	approvalPolicy string // Codex approval policy (stored as-is from DB)
+	threadID       string       // from thread/start response
+	turnID         string       // currently active turn ID
+	nextReqID      atomic.Int64 // JSON-RPC request ID counter
+	pendingReqs    sync.Map     // reqID (int64) -> chan json.RawMessage
+	approvalPolicy string       // Codex approval policy (stored as-is from DB)
 }
 
 // StartCodex starts a Codex agent process and performs the JSON-RPC handshake.
@@ -75,19 +62,19 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 		return nil, fmt.Errorf("stderr pipe: %w", err)
 	}
 
-	var stderrBuf bytes.Buffer
 	a := &CodexAgent{
-		agentID:     opts.AgentID,
-		model:       opts.Model,
-		workingDir:  opts.WorkingDir,
-		sink:        sink,
-		cmd:         cmd,
-		stdin:       stdin,
-		ctx:         ctx,
-		cancel:      cancel,
-		stderrBuf:   &stderrBuf,
-		stderrDone:  make(chan struct{}),
-		processDone: make(chan struct{}),
+		processBase: processBase{
+			agentID:     opts.AgentID,
+			cmd:         cmd,
+			stdin:       stdin,
+			ctx:         ctx,
+			cancel:      cancel,
+			stderrDone:  make(chan struct{}),
+			processDone: make(chan struct{}),
+		},
+		model:      opts.Model,
+		workingDir: opts.WorkingDir,
+		sink:       sink,
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -96,15 +83,7 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	}
 
 	// Drain stderr in background.
-	const maxStderrSize = 1 << 20
-	go func() {
-		defer close(a.stderrDone)
-		limited := io.LimitReader(stderrPipe, maxStderrSize)
-		a.stderrMu.Lock()
-		_, _ = io.Copy(&stderrBuf, limited)
-		a.stderrMu.Unlock()
-		_, _ = io.Copy(io.Discard, stderrPipe)
-	}()
+	a.drainStderr(stderrPipe)
 
 	// Read stdout JSONL in background.
 	scanner := bufio.NewScanner(stdout)
@@ -237,77 +216,6 @@ func (a *CodexAgent) SendInput(content string) error {
 	}
 
 	return nil
-}
-
-// SendRawInput writes raw bytes directly to the agent's stdin.
-// The frontend is responsible for sending provider-specific protocol messages
-// (e.g., JSON-RPC for Codex, control_request for Claude Code).
-func (a *CodexAgent) SendRawInput(data []byte) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if a.stopped {
-		return fmt.Errorf("agent is stopped")
-	}
-
-	if len(data) == 0 || data[len(data)-1] != '\n' {
-		data = append(data, '\n')
-	}
-
-	if _, err := a.stdin.Write(data); err != nil {
-		return fmt.Errorf("write stdin: %w", err)
-	}
-
-	return nil
-}
-
-// Stop terminates the agent process gracefully.
-func (a *CodexAgent) Stop() {
-	a.mu.Lock()
-	if a.stopped {
-		a.mu.Unlock()
-		return
-	}
-	a.stopped = true
-	a.mu.Unlock()
-
-	_ = a.stdin.Close()
-
-	select {
-	case <-a.processDone:
-		return
-	case <-time.After(3 * time.Second):
-		a.cancel()
-	}
-
-	<-a.processDone
-}
-
-// IsStopped returns true if the agent was intentionally stopped.
-func (a *CodexAgent) IsStopped() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.stopped
-}
-
-// Wait blocks until the agent process exits.
-func (a *CodexAgent) Wait() error {
-	<-a.processDone
-	return a.waitErr
-}
-
-// Stderr returns the captured stderr output.
-func (a *CodexAgent) Stderr() string {
-	select {
-	case <-a.stderrDone:
-	case <-time.After(3 * time.Second):
-	}
-	a.stderrMu.Lock()
-	defer a.stderrMu.Unlock()
-	if a.stderrBuf == nil {
-		return ""
-	}
-	return a.stderrBuf.String()
 }
 
 // SupportsModelEffort returns true — Codex supports model/effort via turn/start params.
@@ -467,25 +375,7 @@ func (a *CodexAgent) handleJSONRPCResponse(line []byte) bool {
 	return true
 }
 
-// processExitError returns a descriptive error for unexpected process exit.
-func (a *CodexAgent) processExitError() error {
-	if a.waitErr != nil {
-		if exitErr, ok := a.waitErr.(*exec.ExitError); ok {
-			return fmt.Errorf("codex process exited with code %d", exitErr.ExitCode())
-		}
-	}
-	return fmt.Errorf("codex process exited unexpectedly")
-}
-
-// formatStartupError returns a descriptive error including stderr.
+// formatStartupError delegates to processBase (no preamble for Codex).
 func (a *CodexAgent) formatStartupError(phase string, err error) error {
-	parts := []string{fmt.Sprintf("%s: %s", phase, err)}
-	if stderr := a.Stderr(); stderr != "" {
-		parts = append(parts, "stderr: "+stderr)
-	}
-	msg := parts[0]
-	for i := 1; i < len(parts); i++ {
-		msg += "; " + parts[i]
-	}
-	return fmt.Errorf("%s", msg)
+	return a.processBase.formatStartupError(phase, err, "")
 }

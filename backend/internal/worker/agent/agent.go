@@ -6,10 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"math/rand/v2"
-	"os/exec"
 	"strings"
 	"sync"
 	"syscall"
@@ -32,7 +30,8 @@ type controlResult struct {
 
 // Agent manages a single Claude Code process.
 type Agent struct {
-	agentID    string
+	processBase // shared process lifecycle (Stop, Wait, Stderr, etc.)
+
 	model      string
 	workingDir string
 	homeDir    string
@@ -42,23 +41,10 @@ type Agent struct {
 	contextUsage    *contextUsageSnapshot
 	lastAgentStatus string
 
-	cmd         *exec.Cmd
-	stdin       io.WriteCloser
-	stderrBuf   *bytes.Buffer
-	stderrMu    sync.Mutex    // protects stderrBuf when drained via goroutine
-	stderrDone  chan struct{} // closed when the stderr goroutine finishes
-	ctx         context.Context
-	cancel      context.CancelFunc
-	processDone chan struct{} // closed when the process exits
-	waitErr     error         // set before processDone is closed
-
 	preambleDelimiter  string            // if set, readOutput skips lines until this delimiter
 	preambleMetaPrefix string            // prefix for metadata lines (before delimiter)
 	preambleMeta       map[string]string // parsed key=value metadata from preamble
 	preambleOutput     []string          // captured preamble lines (before delimiter)
-
-	mu      sync.Mutex
-	stopped bool
 
 	pendingControlMu        sync.Mutex
 	pendingControl          map[string]chan<- controlResult
@@ -165,23 +151,23 @@ func Start(ctx context.Context, opts Options, sink OutputSink) (*Agent, error) {
 		return nil, fmt.Errorf("stderr pipe: %w", err)
 	}
 
-	var stderrBuf bytes.Buffer
 	a := &Agent{
-		agentID:            opts.AgentID,
+		processBase: processBase{
+			agentID:    opts.AgentID,
+			cmd:        cmd,
+			stdin:      stdin,
+			ctx:        ctx,
+			cancel:     cancel,
+			stderrDone: make(chan struct{}),
+			processDone: make(chan struct{}),
+		},
 		model:              opts.Model,
 		workingDir:         opts.WorkingDir,
 		homeDir:            opts.HomeDir,
 		sink:               sink,
-		cmd:                cmd,
-		stdin:              stdin,
-		ctx:                ctx,
-		cancel:             cancel,
-		stderrBuf:          &stderrBuf,
-		stderrDone:         make(chan struct{}),
 		preambleDelimiter:  preambleDelimiter,
 		preambleMetaPrefix: metaPrefix,
 		preambleMeta:       make(map[string]string),
-		processDone:        make(chan struct{}),
 		pendingControl:     make(map[string]chan<- controlResult),
 	}
 
@@ -191,16 +177,7 @@ func Start(ctx context.Context, opts Options, sink OutputSink) (*Agent, error) {
 	}
 
 	// Drain stderr in a background goroutine.
-	const maxStderrSize = 1 << 20 // 1MB
-	go func() {
-		defer close(a.stderrDone)
-		limited := io.LimitReader(stderrPipe, maxStderrSize)
-		a.stderrMu.Lock()
-		_, _ = io.Copy(&stderrBuf, limited)
-		a.stderrMu.Unlock()
-		// Discard any remaining stderr beyond the limit.
-		_, _ = io.Copy(io.Discard, stderrPipe)
-	}()
+	a.drainStderr(stderrPipe)
 
 	// Read stdout in a background goroutine. Output will only arrive after
 	// the first message is sent to stdin (Claude Code behavior with
@@ -274,94 +251,6 @@ func (a *Agent) SendInput(content string) error {
 	return nil
 }
 
-// SendRawInput writes raw bytes directly to the agent's stdin without
-// wrapping in a UserInputMessage. Used for control_response messages.
-func (a *Agent) SendRawInput(data []byte) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if a.stopped {
-		return fmt.Errorf("agent is stopped")
-	}
-
-	// Ensure the data ends with a newline.
-	if len(data) == 0 || data[len(data)-1] != '\n' {
-		data = append(data, '\n')
-	}
-
-	if _, err := a.stdin.Write(data); err != nil {
-		return fmt.Errorf("write stdin: %w", err)
-	}
-
-	return nil
-}
-
-// Stop terminates the agent process gracefully. It closes stdin to signal
-// EOF and gives the process a short grace period to persist its session
-// state before cancelling the context (which sends SIGTERM, then SIGKILL
-// after WaitDelay).
-func (a *Agent) Stop() {
-	a.mu.Lock()
-	if a.stopped {
-		a.mu.Unlock()
-		return
-	}
-	a.stopped = true
-	a.mu.Unlock()
-
-	// Close stdin to signal EOF — Claude Code treats this as a shutdown signal.
-	_ = a.stdin.Close()
-
-	// Give the process a moment to save session state and exit on its own.
-	select {
-	case <-a.processDone:
-		// Process exited cleanly after stdin EOF.
-		return
-	case <-time.After(3 * time.Second):
-		// Process didn't exit in time; cancel context to send SIGTERM.
-		// Go's exec.CommandContext will then send SIGKILL after WaitDelay
-		// if the process still hasn't exited.
-		a.cancel()
-	}
-
-	// Wait for the process to actually exit after SIGTERM/SIGKILL.
-	<-a.processDone
-}
-
-// IsStopped returns true if the agent was intentionally stopped via Stop().
-func (a *Agent) IsStopped() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.stopped
-}
-
-// Wait blocks until the agent process exits and returns its exit error.
-func (a *Agent) Wait() error {
-	<-a.processDone
-	return a.waitErr
-}
-
-// AgentID returns the unique identifier for this agent.
-func (a *Agent) AgentID() string {
-	return a.agentID
-}
-
-// Stderr returns the captured stderr output from the agent process.
-// It waits for the stderr goroutine to finish draining the pipe (up to
-// 3 seconds) to avoid racing with the goroutine after process exit.
-func (a *Agent) Stderr() string {
-	select {
-	case <-a.stderrDone:
-	case <-time.After(3 * time.Second):
-	}
-	a.stderrMu.Lock()
-	defer a.stderrMu.Unlock()
-	if a.stderrBuf == nil {
-		return ""
-	}
-	return a.stderrBuf.String()
-}
-
 // PreambleOutput returns the captured stdout preamble lines (before the
 // delimiter) when running under a login shell wrapper. Returns empty string
 // if no preamble was captured.
@@ -372,30 +261,10 @@ func (a *Agent) PreambleOutput() string {
 	return strings.Join(a.preambleOutput, "\n")
 }
 
-// processExitError returns a descriptive error for a process that exited
-// unexpectedly. It includes the exit code when available. Callers that
-// need stderr and preamble details should read them separately (e.g. via
-// a.formatStartupError).
-func (a *Agent) processExitError() error {
-	if a.waitErr != nil {
-		if exitErr, ok := a.waitErr.(*exec.ExitError); ok {
-			return fmt.Errorf("agent process exited with code %d", exitErr.ExitCode())
-		}
-	}
-	return fmt.Errorf("agent process exited unexpectedly")
-}
-
 // formatStartupError returns a descriptive error including stderr and
 // preamble output (if any) for frontend diagnostics.
 func (a *Agent) formatStartupError(phase string, err error) error {
-	parts := []string{fmt.Sprintf("%s: %s", phase, err)}
-	if stderr := strings.TrimSpace(a.Stderr()); stderr != "" {
-		parts = append(parts, "stderr: "+stderr)
-	}
-	if preamble := strings.TrimSpace(a.PreambleOutput()); preamble != "" {
-		parts = append(parts, "shell preamble: "+preamble)
-	}
-	return fmt.Errorf("%s", strings.Join(parts, "; "))
+	return a.processBase.formatStartupError(phase, err, a.PreambleOutput())
 }
 
 // SupportsModelEffort returns whether the agent supports --model/--effort CLI args.

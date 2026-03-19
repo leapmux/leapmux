@@ -155,17 +155,21 @@ func TestManager_AgentExitCleanup(t *testing.T) {
 		cmd.Stderr = nil
 
 		a := &Agent{
-			agentID:        opts.AgentID,
+			processBase: processBase{
+				agentID:     opts.AgentID,
+				cmd:         cmd,
+				stdin:       stdin,
+				ctx:         ctx2,
+				cancel:      cancel,
+				processDone: make(chan struct{}),
+				stderrDone:  make(chan struct{}),
+			},
 			model:          opts.Model,
 			workingDir:     opts.WorkingDir,
 			sink:           sink,
-			cmd:            cmd,
-			stdin:          stdin,
-			ctx:            ctx2,
-			cancel:         cancel,
-			processDone:    make(chan struct{}),
 			pendingControl: make(map[string]chan<- controlResult),
 		}
+		close(a.stderrDone)
 
 		if err := cmd.Start(); err != nil {
 			cancel()

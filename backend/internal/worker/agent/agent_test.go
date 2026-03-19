@@ -2,7 +2,6 @@ package agent
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -59,17 +58,21 @@ func mockStart(ctx context.Context, opts Options, sink OutputSink) (*Agent, erro
 	cmd.Stderr = nil
 
 	a := &Agent{
-		agentID:        opts.AgentID,
+		processBase: processBase{
+			agentID:     opts.AgentID,
+			cmd:         cmd,
+			stdin:       stdin,
+			ctx:         ctx,
+			cancel:      cancel,
+			processDone: make(chan struct{}),
+			stderrDone:  make(chan struct{}),
+		},
 		model:          opts.Model,
 		workingDir:     opts.WorkingDir,
 		sink:           sink,
-		cmd:            cmd,
-		stdin:          stdin,
-		ctx:            ctx,
-		cancel:         cancel,
-		processDone:    make(chan struct{}),
 		pendingControl: make(map[string]chan<- controlResult),
 	}
+	close(a.stderrDone)
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -213,17 +216,21 @@ func mockStartWithInit(ctx context.Context, opts Options, sink OutputSink) (*Age
 	cmd.Stderr = nil
 
 	a := &Agent{
-		agentID:        opts.AgentID,
+		processBase: processBase{
+			agentID:     opts.AgentID,
+			cmd:         cmd,
+			stdin:       stdin,
+			ctx:         ctx,
+			cancel:      cancel,
+			processDone: make(chan struct{}),
+			stderrDone:  make(chan struct{}),
+		},
 		model:          opts.Model,
 		workingDir:     opts.WorkingDir,
 		sink:           sink,
-		cmd:            cmd,
-		stdin:          stdin,
-		ctx:            ctx,
-		cancel:         cancel,
-		processDone:    make(chan struct{}),
 		pendingControl: make(map[string]chan<- controlResult),
 	}
+	close(a.stderrDone)
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -323,17 +330,21 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 		cmd.Stderr = nil
 
 		a := &Agent{
-			agentID:        opts.AgentID,
+			processBase: processBase{
+				agentID:     opts.AgentID,
+				cmd:         cmd,
+				stdin:       stdin,
+				ctx:         ctx2,
+				cancel:      cancel,
+				processDone: make(chan struct{}),
+				stderrDone:  make(chan struct{}),
+			},
 			model:          opts.Model,
 			workingDir:     opts.WorkingDir,
 			sink:           sink,
-			cmd:            cmd,
-			stdin:          stdin,
-			ctx:            ctx2,
-			cancel:         cancel,
-			processDone:    make(chan struct{}),
 			pendingControl: make(map[string]chan<- controlResult),
 		}
+		close(a.stderrDone)
 
 		if err := cmd.Start(); err != nil {
 			cancel()
@@ -424,26 +435,23 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 			return nil, err
 		}
 
-		var stderrBuf bytes.Buffer
-		cmd.Stderr = &stderrBuf
-
-		stderrDone := make(chan struct{})
-		close(stderrDone) // stderr is captured synchronously via cmd.Stderr
-
 		a := &Agent{
-			agentID:        opts.AgentID,
+			processBase: processBase{
+				agentID:     opts.AgentID,
+				cmd:         cmd,
+				stdin:       stdin,
+				ctx:         ctx2,
+				cancel:      cancel,
+				processDone: make(chan struct{}),
+				stderrDone:  make(chan struct{}),
+			},
 			model:          opts.Model,
 			workingDir:     opts.WorkingDir,
 			sink:           sink,
-			cmd:            cmd,
-			stdin:          stdin,
-			ctx:            ctx2,
-			cancel:         cancel,
-			stderrBuf:      &stderrBuf,
-			stderrDone:     stderrDone,
-			processDone:    make(chan struct{}),
 			pendingControl: make(map[string]chan<- controlResult),
 		}
+		cmd.Stderr = &a.stderrBuf
+		close(a.stderrDone) // stderr is captured synchronously via cmd.Stderr
 
 		if err := cmd.Start(); err != nil {
 			cancel()
@@ -538,22 +546,22 @@ func TestAgent_PreambleSkipping(t *testing.T) {
 	stderrPipe, err := cmd.StderrPipe()
 	require.NoError(t, err)
 
-	var stderrBuf bytes.Buffer
 	stderrDone := make(chan struct{})
 	a := &Agent{
-		agentID:           "preamble-test",
+		processBase: processBase{
+			agentID:     "preamble-test",
+			cmd:         cmd,
+			stdin:       stdin,
+			ctx:         ctx2,
+			cancel:      cancel,
+			processDone: make(chan struct{}),
+			stderrDone:  stderrDone,
+		},
 		model:             "test",
 		workingDir:        t.TempDir(),
 		sink:              sink,
-		cmd:               cmd,
-		stdin:             stdin,
-		ctx:               ctx2,
-		cancel:            cancel,
-		stderrBuf:         &stderrBuf,
-		stderrDone:        stderrDone,
 		preambleDelimiter: delimiter,
 		preambleMeta:      make(map[string]string),
-		processDone:       make(chan struct{}),
 		pendingControl:    make(map[string]chan<- controlResult),
 	}
 
@@ -562,15 +570,12 @@ func TestAgent_PreambleSkipping(t *testing.T) {
 	// Drain stderr in background.
 	go func() {
 		defer close(stderrDone)
-		a.stderrMu.Lock()
-		_, _ = fmt.Fprintf(&stderrBuf, "")
-		a.stderrMu.Unlock()
 		buf := make([]byte, 4096)
 		for {
 			n, readErr := stderrPipe.Read(buf)
 			if n > 0 {
 				a.stderrMu.Lock()
-				stderrBuf.Write(buf[:n])
+				a.stderrBuf.Write(buf[:n])
 				a.stderrMu.Unlock()
 			}
 			if readErr != nil {
@@ -656,20 +661,24 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 	require.NoError(t, err)
 
 	a := &Agent{
-		agentID:            "meta-test",
+		processBase: processBase{
+			agentID:     "meta-test",
+			cmd:         cmd,
+			stdin:       stdin,
+			ctx:         ctx2,
+			cancel:      cancel,
+			processDone: make(chan struct{}),
+			stderrDone:  make(chan struct{}),
+		},
 		model:              "test",
 		workingDir:         t.TempDir(),
 		sink:               sink,
-		cmd:                cmd,
-		stdin:              stdin,
-		ctx:                ctx2,
-		cancel:             cancel,
 		preambleDelimiter:  delimiter,
 		preambleMetaPrefix: metaPrefix,
 		preambleMeta:       make(map[string]string),
-		processDone:        make(chan struct{}),
 		pendingControl:     make(map[string]chan<- controlResult),
 	}
+	close(a.stderrDone)
 
 	require.NoError(t, cmd.Start())
 
