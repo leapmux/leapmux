@@ -174,7 +174,6 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	return a, nil
 }
 
-
 // SendInput writes a user message to the agent via turn/start.
 func (a *CodexAgent) SendInput(content string) error {
 	// Read shared state under lock, then release before the blocking RPC.

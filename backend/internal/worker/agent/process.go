@@ -17,7 +17,7 @@ import (
 const maxStderrSize = 1 << 20 // 1MB
 
 // processBase contains the shared process lifecycle state and methods
-// used by both Agent (Claude Code) and CodexAgent (Codex).
+// used by both ClaudeCodeAgent (Claude Code) and CodexAgent (Codex).
 type processBase struct {
 	agentID string
 	stdin   io.WriteCloser

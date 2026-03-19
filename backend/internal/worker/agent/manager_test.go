@@ -154,7 +154,7 @@ func TestManager_AgentExitCleanup(t *testing.T) {
 		stdout, _ := cmd.StdoutPipe()
 		cmd.Stderr = nil
 
-		a := &Agent{
+		a := &ClaudeCodeAgent{
 			processBase: processBase{
 				agentID:     opts.AgentID,
 				cmd:         cmd,
@@ -167,7 +167,7 @@ func TestManager_AgentExitCleanup(t *testing.T) {
 			model:          opts.Model,
 			workingDir:     opts.WorkingDir,
 			sink:           sink,
-			pendingControl: make(map[string]chan<- controlResult),
+			pendingControl: make(map[string]chan<- claudeCodeControlResult),
 		}
 		close(a.stderrDone)
 

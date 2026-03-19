@@ -21,15 +21,15 @@ import (
 // and err is non-nil if the process exited with an error.
 type ExitHandler func(agentID string, exitCode int, err error)
 
-// controlResult holds the outcome of a pending control request.
-type controlResult struct {
+// claudeCodeControlResult holds the outcome of a pending control request.
+type claudeCodeControlResult struct {
 	Success bool
 	Mode    string
 	Error   string
 }
 
-// Agent manages a single Claude Code process.
-type Agent struct {
+// ClaudeCodeAgent manages a single Claude Code process.
+type ClaudeCodeAgent struct {
 	processBase // shared process lifecycle (Stop, Wait, Stderr, etc.)
 
 	model      string
@@ -42,11 +42,11 @@ type Agent struct {
 	lastAgentStatus string
 
 	pendingControlMu        sync.Mutex
-	pendingControl          map[string]chan<- controlResult
+	pendingControl          map[string]chan<- claudeCodeControlResult
 	confirmedPermissionMode string
 }
 
-// Options configures a new Agent.
+// Options configures a new ClaudeCodeAgent.
 type Options struct {
 	AgentID         string
 	Model           string
@@ -61,12 +61,12 @@ type Options struct {
 	AgentProvider   leapmuxv1.AgentProvider // Coding agent provider (default: CLAUDE_CODE)
 }
 
-// Start spawns a new Claude Code process and begins reading its output.
+// StartClaudeCode spawns a new Claude Code process and begins reading its output.
 // The sink receives parsed output events via the Provider.HandleOutput method.
 //
 // Claude Code with --input-format stream-json does not produce any output
 // (including the init message) until it receives input on stdin. Therefore,
-// Start returns immediately without waiting for output. The session ID is
+// StartClaudeCode returns immediately without waiting for output. The session ID is
 // extracted later from the init message when the first user message triggers
 // output from Claude.
 func (o Options) startupTimeout() time.Duration {
@@ -76,7 +76,7 @@ func (o Options) startupTimeout() time.Duration {
 	return 30 * time.Second
 }
 
-func Start(ctx context.Context, opts Options, sink OutputSink) (*Agent, error) {
+func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*ClaudeCodeAgent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	// Check Claude Code settings files for third-party LLM provider env vars.
@@ -146,7 +146,7 @@ func Start(ctx context.Context, opts Options, sink OutputSink) (*Agent, error) {
 		return nil, fmt.Errorf("stderr pipe: %w", err)
 	}
 
-	a := &Agent{
+	a := &ClaudeCodeAgent{
 		processBase: processBase{
 			agentID:            opts.AgentID,
 			cmd:                cmd,
@@ -163,7 +163,7 @@ func Start(ctx context.Context, opts Options, sink OutputSink) (*Agent, error) {
 		workingDir:     opts.WorkingDir,
 		homeDir:        opts.HomeDir,
 		sink:           sink,
-		pendingControl: make(map[string]chan<- controlResult),
+		pendingControl: make(map[string]chan<- claudeCodeControlResult),
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -217,7 +217,7 @@ func Start(ctx context.Context, opts Options, sink OutputSink) (*Agent, error) {
 }
 
 // SendInput writes a user message to the agent's stdin.
-func (a *Agent) SendInput(content string) error {
+func (a *ClaudeCodeAgent) SendInput(content string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -248,7 +248,7 @@ func (a *Agent) SendInput(content string) error {
 
 // formatStartupError returns a descriptive error including stderr and
 // preamble output (if any) for frontend diagnostics.
-func (a *Agent) formatStartupError(phase string, err error) error {
+func (a *ClaudeCodeAgent) formatStartupError(phase string, err error) error {
 	return a.processBase.formatStartupError(phase, err, a.PreambleOutput())
 }
 
@@ -257,13 +257,13 @@ func (a *Agent) formatStartupError(phase string, err error) error {
 // the shell wrapper runs without conditional logic and no metadata is emitted,
 // so this returns false. Otherwise, the shell wrapper checks env vars at
 // runtime and reports the result via preamble metadata.
-func (a *Agent) SupportsModelEffort() bool {
+func (a *ClaudeCodeAgent) SupportsModelEffort() bool {
 	return a.preambleMeta["supports_model_effort"] == "true"
 }
 
 // ConfirmedPermissionMode returns the permission mode confirmed by the agent
 // during the startup handshake.
-func (a *Agent) ConfirmedPermissionMode() string {
+func (a *ClaudeCodeAgent) ConfirmedPermissionMode() string {
 	return a.confirmedPermissionMode
 }
 
@@ -271,15 +271,15 @@ func (a *Agent) ConfirmedPermissionMode() string {
 // response. The requestBody should be the JSON for the "request" field only
 // (e.g. `{"subtype":"initialize"}`). Returns the control result or an error
 // on timeout/cancellation/failure.
-func (a *Agent) sendControlAndWait(ctx context.Context, requestBody string, timeout time.Duration) (controlResult, error) {
+func (a *ClaudeCodeAgent) sendControlAndWait(ctx context.Context, requestBody string, timeout time.Duration) (claudeCodeControlResult, error) {
 	requestID := generateRequestID()
-	ch := make(chan controlResult, 1)
+	ch := make(chan claudeCodeControlResult, 1)
 	a.registerPendingControl(requestID, ch)
 
 	msg := fmt.Sprintf(`{"type":"control_request","request_id":"%s","request":%s}`, requestID, requestBody)
 	if err := a.SendRawInput([]byte(msg)); err != nil {
 		a.unregisterPendingControl(requestID)
-		return controlResult{}, err
+		return claudeCodeControlResult{}, err
 	}
 
 	select {
@@ -291,23 +291,23 @@ func (a *Agent) sendControlAndWait(ctx context.Context, requestBody string, time
 		return resp, nil
 	case <-a.processDone:
 		a.unregisterPendingControl(requestID)
-		return controlResult{}, a.processExitError()
+		return claudeCodeControlResult{}, a.processExitError()
 	case <-ctx.Done():
 		a.unregisterPendingControl(requestID)
-		return controlResult{}, ctx.Err()
+		return claudeCodeControlResult{}, ctx.Err()
 	case <-time.After(timeout):
 		a.unregisterPendingControl(requestID)
-		return controlResult{}, fmt.Errorf("timeout waiting for agent to respond")
+		return claudeCodeControlResult{}, fmt.Errorf("timeout waiting for agent to respond")
 	}
 }
 
-func (a *Agent) registerPendingControl(requestID string, ch chan<- controlResult) {
+func (a *ClaudeCodeAgent) registerPendingControl(requestID string, ch chan<- claudeCodeControlResult) {
 	a.pendingControlMu.Lock()
 	defer a.pendingControlMu.Unlock()
 	a.pendingControl[requestID] = ch
 }
 
-func (a *Agent) unregisterPendingControl(requestID string) {
+func (a *ClaudeCodeAgent) unregisterPendingControl(requestID string) {
 	a.pendingControlMu.Lock()
 	defer a.pendingControlMu.Unlock()
 	delete(a.pendingControl, requestID)
@@ -316,7 +316,7 @@ func (a *Agent) unregisterPendingControl(requestID string) {
 // handlePendingControlResponse checks if a line is a control_response matching
 // a pending request. If so, it sends the result to the waiting channel and
 // returns true (the line should be consumed, not forwarded).
-func (a *Agent) handlePendingControlResponse(line []byte) bool {
+func (a *ClaudeCodeAgent) handlePendingControlResponse(line []byte) bool {
 	// Quick check to avoid parsing non-control_response lines.
 	if !bytes.Contains(line, []byte(`"control_response"`)) {
 		return false
@@ -346,7 +346,7 @@ func (a *Agent) handlePendingControlResponse(line []byte) bool {
 		return false
 	}
 
-	result := controlResult{
+	result := claudeCodeControlResult{
 		Success: envelope.Response.Subtype == "success",
 		Mode:    envelope.Response.Response.Mode,
 		Error:   envelope.Response.Error,
@@ -355,7 +355,7 @@ func (a *Agent) handlePendingControlResponse(line []byte) bool {
 	return true
 }
 
-func (a *Agent) readOutput(scanner *bufio.Scanner) {
+func (a *ClaudeCodeAgent) readOutput(scanner *bufio.Scanner) {
 	a.skipPreamble(scanner)
 
 	for scanner.Scan() {

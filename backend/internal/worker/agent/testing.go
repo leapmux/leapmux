@@ -41,7 +41,7 @@ func mockStartForTest(ctx context.Context, opts Options, sink OutputSink) (Provi
 
 	cmd.Stderr = nil
 
-	a := &Agent{
+	a := &ClaudeCodeAgent{
 		processBase: processBase{
 			agentID:     opts.AgentID,
 			cmd:         cmd,
@@ -55,7 +55,7 @@ func mockStartForTest(ctx context.Context, opts Options, sink OutputSink) (Provi
 		workingDir:     opts.WorkingDir,
 		homeDir:        opts.HomeDir,
 		sink:           sink,
-		pendingControl: make(map[string]chan<- controlResult),
+		pendingControl: make(map[string]chan<- claudeCodeControlResult),
 	}
 	close(a.stderrDone) // no stderr pipe in mock
 

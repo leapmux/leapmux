@@ -26,7 +26,7 @@ type contextUsageSnapshot struct {
 
 // HandleOutput processes a single NDJSON line from Claude Code.
 // This is the Claude Code-specific implementation of the Provider interface.
-func (a *Agent) HandleOutput(content []byte) {
+func (a *ClaudeCodeAgent) HandleOutput(content []byte) {
 	var envelope struct {
 		Type string `json:"type"`
 	}
@@ -64,16 +64,16 @@ func (a *Agent) HandleOutput(content []byte) {
 		}
 
 	case "control_request":
-		a.ccHandleControlRequest(content)
+		a.claudeCodeHandleControlRequest(content)
 
 	case "control_cancel_request":
-		a.ccHandleControlCancel(content)
+		a.claudeCodeHandleControlCancel(content)
 
 	case "control_response":
-		a.ccHandleControlResponse(content)
+		a.claudeCodeHandleControlResponse(content)
 
 	case "rate_limit_event":
-		a.ccHandleRateLimitEvent(content)
+		a.claudeCodeHandleRateLimitEvent(content)
 
 	default:
 		a.sink.BroadcastStreamChunk(content)
@@ -81,9 +81,9 @@ func (a *Agent) HandleOutput(content []byte) {
 }
 
 // handlePersistableMessage handles assistant, system, user, and result messages.
-func (a *Agent) handlePersistableMessage(content []byte, msgType string, role leapmuxv1.MessageRole) {
+func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType string, role leapmuxv1.MessageRole) {
 	if msgType == "system" {
-		a.ccHandleSystemInit(content)
+		a.claudeCodeHandleSystemInit(content)
 
 		if isNotificationThreadable(content, role) {
 			if statusVal, ok := extractStatusValue(content); ok {
@@ -142,8 +142,8 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string, role le
 	}
 }
 
-// ccHandleSystemInit extracts session_id from system init messages.
-func (a *Agent) ccHandleSystemInit(content []byte) {
+// claudeCodeHandleSystemInit extracts session_id from system init messages.
+func (a *ClaudeCodeAgent) claudeCodeHandleSystemInit(content []byte) {
 	var initMsg struct {
 		SessionID string `json:"session_id"`
 	}
@@ -154,8 +154,8 @@ func (a *Agent) ccHandleSystemInit(content []byte) {
 	a.sink.BroadcastStatusActive(initMsg.SessionID)
 }
 
-// ccHandleControlRequest persists and broadcasts a control_request.
-func (a *Agent) ccHandleControlRequest(content []byte) {
+// claudeCodeHandleControlRequest persists and broadcasts a control_request.
+func (a *ClaudeCodeAgent) claudeCodeHandleControlRequest(content []byte) {
 	var cr struct {
 		RequestID string `json:"request_id"`
 	}
@@ -167,8 +167,8 @@ func (a *Agent) ccHandleControlRequest(content []byte) {
 	a.sink.BroadcastControlRequest(cr.RequestID, content)
 }
 
-// ccHandleControlCancel persists and broadcasts a control_cancel_request.
-func (a *Agent) ccHandleControlCancel(content []byte) {
+// claudeCodeHandleControlCancel persists and broadcasts a control_cancel_request.
+func (a *ClaudeCodeAgent) claudeCodeHandleControlCancel(content []byte) {
 	var cc struct {
 		RequestID string `json:"request_id"`
 	}
@@ -180,8 +180,8 @@ func (a *Agent) ccHandleControlCancel(content []byte) {
 	a.sink.BroadcastControlCancel(cc.RequestID)
 }
 
-// ccHandleControlResponse handles control_response from Claude Code.
-func (a *Agent) ccHandleControlResponse(content []byte) {
+// claudeCodeHandleControlResponse handles control_response from Claude Code.
+func (a *ClaudeCodeAgent) claudeCodeHandleControlResponse(content []byte) {
 	var reqID struct {
 		RequestID string `json:"request_id"`
 	}
@@ -204,8 +204,8 @@ func (a *Agent) ccHandleControlResponse(content []byte) {
 	}
 }
 
-// ccHandleRateLimitEvent broadcasts rate_limit_event and persists as notification.
-func (a *Agent) ccHandleRateLimitEvent(content []byte) {
+// claudeCodeHandleRateLimitEvent broadcasts rate_limit_event and persists as notification.
+func (a *ClaudeCodeAgent) claudeCodeHandleRateLimitEvent(content []byte) {
 	var rle struct {
 		RateLimitInfo json.RawMessage `json:"rate_limit_info"`
 	}
@@ -238,7 +238,7 @@ func (a *Agent) ccHandleRateLimitEvent(content []byte) {
 }
 
 // extractAndBroadcastUsage extracts token usage from assistant/result messages.
-func (a *Agent) extractAndBroadcastUsage(content []byte, msgType string) {
+func (a *ClaudeCodeAgent) extractAndBroadcastUsage(content []byte, msgType string) {
 	var infoFields struct {
 		CostUSD *float64 `json:"total_cost_usd"`
 	}
@@ -323,7 +323,7 @@ func (a *Agent) extractAndBroadcastUsage(content []byte, msgType string) {
 	}
 }
 
-func (a *Agent) getOrCreateUsageSnapshot() *contextUsageSnapshot {
+func (a *ClaudeCodeAgent) getOrCreateUsageSnapshot() *contextUsageSnapshot {
 	if a.contextUsage == nil {
 		a.contextUsage = &contextUsageSnapshot{}
 	}
@@ -332,7 +332,7 @@ func (a *Agent) getOrCreateUsageSnapshot() *contextUsageSnapshot {
 
 // trackPlanModeToolUse inspects an assistant message for EnterPlanMode or
 // ExitPlanMode tool_use blocks.
-func (a *Agent) trackPlanModeToolUse(content []byte) {
+func (a *ClaudeCodeAgent) trackPlanModeToolUse(content []byte) {
 	var msg struct {
 		Message struct {
 			Content []struct {
@@ -360,7 +360,7 @@ func (a *Agent) trackPlanModeToolUse(content []byte) {
 
 // trackPlanFilePath inspects an assistant message for Write or Edit tool_use
 // blocks whose file_path targets the agent's ~/.claude/plans/ directory.
-func (a *Agent) trackPlanFilePath(content []byte) {
+func (a *ClaudeCodeAgent) trackPlanFilePath(content []byte) {
 	var msg struct {
 		Message struct {
 			Content []struct {
@@ -426,7 +426,7 @@ func (a *Agent) trackPlanFilePath(content []byte) {
 
 // detectPlanModeFromToolResult inspects a user message (tool_result) for
 // confirmation of a previously tracked EnterPlanMode or ExitPlanMode tool_use.
-func (a *Agent) detectPlanModeFromToolResult(content []byte) {
+func (a *ClaudeCodeAgent) detectPlanModeFromToolResult(content []byte) {
 	var msg struct {
 		Message struct {
 			Content []struct {

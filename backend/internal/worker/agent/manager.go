@@ -50,9 +50,9 @@ func (m *Manager) StartAgent(ctx context.Context, opts Options, sink OutputSink)
 	return m.startAgentWith(ctx, opts, sink, start)
 }
 
-// startClaudeCode wraps Start() to satisfy the startFunc signature.
+// startClaudeCode wraps StartClaudeCode() to satisfy the startFunc signature.
 func startClaudeCode(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
-	return Start(ctx, opts, sink)
+	return StartClaudeCode(ctx, opts, sink)
 }
 
 // startCodex wraps StartCodex() to satisfy the startFunc signature.

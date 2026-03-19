@@ -36,7 +36,7 @@ func TestHelperProcess(t *testing.T) {
 }
 
 // mockStart spawns a test helper process instead of the real claude binary.
-func mockStart(ctx context.Context, opts Options, sink OutputSink) (*Agent, error) {
+func mockStart(ctx context.Context, opts Options, sink OutputSink) (*ClaudeCodeAgent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestHelperProcess", "--")
@@ -57,7 +57,7 @@ func mockStart(ctx context.Context, opts Options, sink OutputSink) (*Agent, erro
 
 	cmd.Stderr = nil
 
-	a := &Agent{
+	a := &ClaudeCodeAgent{
 		processBase: processBase{
 			agentID:     opts.AgentID,
 			cmd:         cmd,
@@ -70,7 +70,7 @@ func mockStart(ctx context.Context, opts Options, sink OutputSink) (*Agent, erro
 		model:          opts.Model,
 		workingDir:     opts.WorkingDir,
 		sink:           sink,
-		pendingControl: make(map[string]chan<- controlResult),
+		pendingControl: make(map[string]chan<- claudeCodeControlResult),
 	}
 	close(a.stderrDone)
 
@@ -194,7 +194,7 @@ func TestHelperProcessWithInit(t *testing.T) {
 
 // mockStartWithInit spawns a test helper process that outputs an init line
 // with a session_id, simulating real Claude Code behavior.
-func mockStartWithInit(ctx context.Context, opts Options, sink OutputSink) (*Agent, error) {
+func mockStartWithInit(ctx context.Context, opts Options, sink OutputSink) (*ClaudeCodeAgent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestHelperProcessWithInit", "--")
@@ -215,7 +215,7 @@ func mockStartWithInit(ctx context.Context, opts Options, sink OutputSink) (*Age
 
 	cmd.Stderr = nil
 
-	a := &Agent{
+	a := &ClaudeCodeAgent{
 		processBase: processBase{
 			agentID:     opts.AgentID,
 			cmd:         cmd,
@@ -228,7 +228,7 @@ func mockStartWithInit(ctx context.Context, opts Options, sink OutputSink) (*Age
 		model:          opts.Model,
 		workingDir:     opts.WorkingDir,
 		sink:           sink,
-		pendingControl: make(map[string]chan<- controlResult),
+		pendingControl: make(map[string]chan<- claudeCodeControlResult),
 	}
 	close(a.stderrDone)
 
@@ -308,7 +308,7 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 
 	// Use mock infra to test the timeout path: a process that reads stdin
 	// but never writes a control_response, causing the handshake to timeout.
-	startUnresponsive := func(ctx context.Context, opts Options, sink OutputSink) (*Agent, error) {
+	startUnresponsive := func(ctx context.Context, opts Options, sink OutputSink) (*ClaudeCodeAgent, error) {
 		ctx2, cancel := context.WithCancel(ctx)
 
 		cmd := exec.CommandContext(ctx2, os.Args[0], "-test.run=TestHelperProcessUnresponsive", "--")
@@ -329,7 +329,7 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 
 		cmd.Stderr = nil
 
-		a := &Agent{
+		a := &ClaudeCodeAgent{
 			processBase: processBase{
 				agentID:     opts.AgentID,
 				cmd:         cmd,
@@ -342,7 +342,7 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 			model:          opts.Model,
 			workingDir:     opts.WorkingDir,
 			sink:           sink,
-			pendingControl: make(map[string]chan<- controlResult),
+			pendingControl: make(map[string]chan<- claudeCodeControlResult),
 		}
 		close(a.stderrDone)
 
@@ -355,13 +355,13 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 		scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
 		go a.readOutput(scanner)
 
-		// Replicate the startup handshake from Start().
+		// Replicate the startup handshake from StartClaudeCode().
 		mode := opts.PermissionMode
 		if mode == "" {
 			mode = "default"
 		}
 		requestID := generateRequestID()
-		ch := make(chan controlResult, 1)
+		ch := make(chan claudeCodeControlResult, 1)
 		a.registerPendingControl(requestID, ch)
 
 		msg := fmt.Sprintf(`{"type":"control_request","request_id":"%s","request":{"subtype":"set_permission_mode","mode":"%s"}}`,
@@ -416,7 +416,7 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 
 	// Spawn a process that writes to stderr and exits immediately,
 	// simulating Claude Code rejecting a nested session.
-	startEarlyExit := func(ctx context.Context, opts Options, sink OutputSink) (*Agent, error) {
+	startEarlyExit := func(ctx context.Context, opts Options, sink OutputSink) (*ClaudeCodeAgent, error) {
 		ctx2, cancel := context.WithCancel(ctx)
 
 		cmd := exec.CommandContext(ctx2, os.Args[0], "-test.run=TestHelperProcessEarlyExit", "--")
@@ -435,7 +435,7 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 			return nil, err
 		}
 
-		a := &Agent{
+		a := &ClaudeCodeAgent{
 			processBase: processBase{
 				agentID:     opts.AgentID,
 				cmd:         cmd,
@@ -448,7 +448,7 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 			model:          opts.Model,
 			workingDir:     opts.WorkingDir,
 			sink:           sink,
-			pendingControl: make(map[string]chan<- controlResult),
+			pendingControl: make(map[string]chan<- claudeCodeControlResult),
 		}
 		cmd.Stderr = &a.stderrBuf
 		close(a.stderrDone) // stderr is captured synchronously via cmd.Stderr
@@ -547,7 +547,7 @@ func TestAgent_PreambleSkipping(t *testing.T) {
 	require.NoError(t, err)
 
 	stderrDone := make(chan struct{})
-	a := &Agent{
+	a := &ClaudeCodeAgent{
 		processBase: processBase{
 			agentID:     "preamble-test",
 			cmd:         cmd,
@@ -560,7 +560,7 @@ func TestAgent_PreambleSkipping(t *testing.T) {
 		model:          "test",
 		workingDir:     t.TempDir(),
 		sink:           sink,
-		pendingControl: make(map[string]chan<- controlResult),
+		pendingControl: make(map[string]chan<- claudeCodeControlResult),
 	}
 	a.preambleDelimiter = delimiter
 	a.preambleMeta = make(map[string]string)
@@ -660,7 +660,7 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 	stdout, err := cmd.StdoutPipe()
 	require.NoError(t, err)
 
-	a := &Agent{
+	a := &ClaudeCodeAgent{
 		processBase: processBase{
 			agentID:     "meta-test",
 			cmd:         cmd,
@@ -673,7 +673,7 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 		model:          "test",
 		workingDir:     t.TempDir(),
 		sink:           sink,
-		pendingControl: make(map[string]chan<- controlResult),
+		pendingControl: make(map[string]chan<- claudeCodeControlResult),
 	}
 	a.preambleDelimiter = delimiter
 	a.preambleMetaPrefix = metaPrefix
@@ -707,27 +707,27 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 }
 
 func TestAgent_SupportsModelEffortDefaultFalse(t *testing.T) {
-	a := &Agent{}
+	a := &ClaudeCodeAgent{}
 	a.preambleMeta = make(map[string]string)
 	assert.False(t, a.SupportsModelEffort())
 }
 
 func TestAgent_SupportsModelEffortTrue(t *testing.T) {
-	a := &Agent{}
+	a := &ClaudeCodeAgent{}
 	a.preambleMeta = map[string]string{"supports_model_effort": "true"}
 	assert.True(t, a.SupportsModelEffort())
 }
 
 func TestAgent_SupportsModelEffortFalseFromShell(t *testing.T) {
 	// Shell detected third-party provider env var at runtime.
-	a := &Agent{}
+	a := &ClaudeCodeAgent{}
 	a.preambleMeta = map[string]string{"supports_model_effort": "false"}
 	assert.False(t, a.SupportsModelEffort())
 }
 
 func TestAgent_SupportsModelEffortFalseNoMeta(t *testing.T) {
 	// Settings detected third-party → no metadata emitted → empty map.
-	a := &Agent{}
+	a := &ClaudeCodeAgent{}
 	a.preambleMeta = make(map[string]string)
 	assert.False(t, a.SupportsModelEffort())
 }
