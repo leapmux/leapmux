@@ -19,16 +19,13 @@ import {
   thinkingContent,
   thinkingHeader,
 } from './messageStyles.css'
+import { isObject } from './messageUtils'
 import {
   toolInputText,
   toolMessage,
   toolUseHeader,
   toolUseIcon,
 } from './toolStyles.css'
-
-function isObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
 
 /** Extract the item from Codex native params: {item: {...}, threadId, turnId} */
 function extractItem(parsed: unknown): Record<string, unknown> | null {

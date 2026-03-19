@@ -144,26 +144,19 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	a.approvalPolicy = approvalPolicy
 
 	// 4. Send "thread/start" or "thread/resume" request.
-	var threadMethod string
-	var threadParams map[string]interface{}
+	threadParams := map[string]interface{}{
+		"model":          opts.Model,
+		"cwd":            opts.WorkingDir,
+		"approvalPolicy": approvalPolicy,
+		"sandbox":        "danger-full-access",
+	}
+
+	threadMethod := "thread/start"
 	if opts.ResumeSessionID != "" {
 		threadMethod = "thread/resume"
-		threadParams = map[string]interface{}{
-			"threadId":       opts.ResumeSessionID,
-			"model":          opts.Model,
-			"cwd":            opts.WorkingDir,
-			"approvalPolicy": approvalPolicy,
-			"sandbox":        "danger-full-access",
-		}
-	} else {
-		threadMethod = "thread/start"
-		threadParams = map[string]interface{}{
-			"model":          opts.Model,
-			"cwd":            opts.WorkingDir,
-			"approvalPolicy": approvalPolicy,
-			"sandbox":        "danger-full-access",
-		}
+		threadParams["threadId"] = opts.ResumeSessionID
 	}
+
 	threadParamsJSON, _ := json.Marshal(threadParams)
 	threadResp, err := a.sendRequest(threadMethod, threadParamsJSON, timeout)
 	if err != nil {
@@ -171,12 +164,7 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 		if threadMethod == "thread/resume" {
 			slog.Warn("codex thread/resume failed, falling back to thread/start",
 				"agent_id", opts.AgentID, "error", err)
-			threadParams = map[string]interface{}{
-				"model":          opts.Model,
-				"cwd":            opts.WorkingDir,
-				"approvalPolicy": approvalPolicy,
-				"sandbox":        "danger-full-access",
-			}
+			delete(threadParams, "threadId")
 			threadParamsJSON, _ = json.Marshal(threadParams)
 			threadResp, err = a.sendRequest("thread/start", threadParamsJSON, timeout)
 		}
@@ -366,6 +354,9 @@ func (a *CodexAgent) sendRequest(method string, params json.RawMessage, timeout 
 		return nil, fmt.Errorf("write request: %w", err)
 	}
 
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
 	select {
 	case resp := <-ch:
 		return resp, nil
@@ -373,7 +364,7 @@ func (a *CodexAgent) sendRequest(method string, params json.RawMessage, timeout 
 		return nil, a.processExitError()
 	case <-a.ctx.Done():
 		return nil, a.ctx.Err()
-	case <-time.After(timeout):
+	case <-timer.C:
 		return nil, fmt.Errorf("timeout waiting for %s response", method)
 	}
 }
@@ -433,9 +424,12 @@ func (a *CodexAgent) readOutput(scanner *bufio.Scanner) {
 }
 
 // handleJSONRPCResponse checks if a line is a JSON-RPC response and routes it.
+// JSON-RPC responses have an "id" field but no "method" field. Notifications
+// have "method" but no "id". We check for "method" absence first (cheap string
+// check) since most lines are notifications.
 func (a *CodexAgent) handleJSONRPCResponse(line []byte) bool {
-	// Quick check: responses have "result" or "error" at the top level.
-	if !bytes.Contains(line, []byte(`"result"`)) && !bytes.Contains(line, []byte(`"error"`)) {
+	// Notifications always have "method" — skip them fast.
+	if bytes.Contains(line, []byte(`"method"`)) {
 		return false
 	}
 
@@ -443,14 +437,8 @@ func (a *CodexAgent) handleJSONRPCResponse(line []byte) bool {
 		ID     *json.Number    `json:"id"`
 		Result json.RawMessage `json:"result"`
 		Error  json.RawMessage `json:"error"`
-		Method string          `json:"method"`
 	}
 	if err := json.Unmarshal(line, &envelope); err != nil {
-		return false
-	}
-
-	// If it has a "method" field, it's a notification or request, not a response.
-	if envelope.Method != "" {
 		return false
 	}
 

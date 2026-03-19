@@ -10,11 +10,8 @@ import {
   DEFAULT_CODEX_MODEL,
   EFFORT_LABELS,
 } from '~/utils/controlResponse'
+import { isObject } from '../messageUtils'
 import { registerProvider } from './registry'
-
-function isObj(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
 
 /** Check whether the wrapper envelope represents a notification thread. */
 function isNotificationThreadWrapper(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
@@ -45,7 +42,7 @@ const codexPlugin: ProviderPlugin = {
     const itemType = item?.type as string | undefined
 
     // turn/completed → result divider
-    if (parent.turn && isObj(parent.turn) && (parent.turn as Record<string, unknown>).status)
+    if (parent.turn && isObject(parent.turn) && (parent.turn as Record<string, unknown>).status)
       return { kind: 'result_divider' }
 
     if (item && itemType) {

@@ -268,6 +268,7 @@ func (a *CodexAgent) handleErrorNotification(params json.RawMessage) {
 }
 
 // extractCodexItem extracts the item type and ID from item/started or item/completed params.
+// Two unmarshals are needed: one to extract the raw item JSON, another to read type/ID from it.
 func extractCodexItem(params json.RawMessage) (json.RawMessage, string, string) {
 	var wrapper struct {
 		Item json.RawMessage `json:"item"`
@@ -276,13 +277,13 @@ func extractCodexItem(params json.RawMessage) (json.RawMessage, string, string) 
 		return nil, "", ""
 	}
 
-	var item struct {
+	var header struct {
 		Type string `json:"type"`
 		ID   string `json:"id"`
 	}
-	if json.Unmarshal(wrapper.Item, &item) != nil {
+	if json.Unmarshal(wrapper.Item, &header) != nil {
 		return nil, "", ""
 	}
 
-	return wrapper.Item, item.Type, item.ID
+	return wrapper.Item, header.Type, header.ID
 }

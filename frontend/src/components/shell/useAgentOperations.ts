@@ -14,7 +14,7 @@ import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
-import { buildCodexInterruptRequest, buildInterruptRequest, defaultEffortForProvider, defaultModelForProvider } from '~/utils/controlResponse'
+import { buildCodexApprovalResponse, buildCodexInterruptRequest, buildInterruptRequest, defaultEffortForProvider, defaultModelForProvider } from '~/utils/controlResponse'
 
 /** Find the smallest unused number for auto-naming tabs (gap-filling). */
 export function nextTabNumber(tabs: Tab[], type: TabType, prefix: string): number {
@@ -151,24 +151,16 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     try {
       const workerId = getAgentWorkerId(agentId)
       const agent = props.agentStore.state.agents.find(a => a.id === agentId)
+      const parsed = JSON.parse(new TextDecoder().decode(content))
+      const requestId = parsed?.response?.request_id
 
       if (agent?.agentProvider === AgentProvider.CODEX) {
-        // Codex: the content is a Claude Code control_response. Extract the
-        // request_id and behavior, then build a JSON-RPC response.
-        const parsed = JSON.parse(new TextDecoder().decode(content))
-        const requestId = parsed?.response?.request_id
-        const behavior = parsed?.response?.response?.behavior
-        const approved = behavior === 'allow'
-
+        // Codex: translate the Claude Code control_response into a JSON-RPC response.
         if (requestId) {
-          // Parse requestId as a number for JSON-RPC (Codex uses integer IDs).
           const numId = Number(requestId)
           const rpcId = Number.isFinite(numId) ? numId : requestId
-          const codexResp = JSON.stringify({
-            jsonrpc: '2.0',
-            id: rpcId,
-            result: { decision: approved ? 'allow' : 'deny' },
-          })
+          const approved = parsed?.response?.response?.behavior === 'allow'
+          const codexResp = buildCodexApprovalResponse(rpcId as number, approved)
           await workerRpc.sendControlResponse(workerId, {
             agentId,
             content: new TextEncoder().encode(codexResp),
@@ -179,8 +171,6 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       else {
         // Claude Code: send the control_response as-is.
         await workerRpc.sendControlResponse(workerId, { agentId, content })
-        const parsed = JSON.parse(new TextDecoder().decode(content))
-        const requestId = parsed?.response?.request_id
         if (requestId) {
           props.controlStore.removeRequest(agentId, requestId)
         }

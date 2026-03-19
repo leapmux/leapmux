@@ -1,3 +1,5 @@
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+
 /** Extract the tool_name from a control_request payload */
 export function getToolName(payload: Record<string, unknown>): string {
   const request = payload.request as Record<string, unknown> | undefined
@@ -164,16 +166,15 @@ export const CODEX_PERMISSION_MODE_LABELS: Record<string, string> = {
 }
 
 /** Returns the default model for the given agent provider. */
-export function defaultModelForProvider(provider: number): string {
-  // AgentProvider.CODEX = 2
-  if (provider === 2)
+export function defaultModelForProvider(provider: AgentProvider): string {
+  if (provider === AgentProvider.CODEX)
     return DEFAULT_CODEX_MODEL
   return DEFAULT_MODEL
 }
 
 /** Returns the default effort for the given agent provider. */
-export function defaultEffortForProvider(provider: number): string {
-  if (provider === 2)
+export function defaultEffortForProvider(provider: AgentProvider): string {
+  if (provider === AgentProvider.CODEX)
     return DEFAULT_CODEX_EFFORT
   return DEFAULT_EFFORT
 }
