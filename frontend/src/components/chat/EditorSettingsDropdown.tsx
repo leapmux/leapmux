@@ -2,33 +2,18 @@ import type { JSX } from 'solid-js'
 import type { ProviderSettingsPanelProps } from './providers/registry'
 import type { PermissionMode } from '~/utils/controlResponse'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
-import ChevronsDown from 'lucide-solid/icons/chevrons-down'
-import ChevronsUp from 'lucide-solid/icons/chevrons-up'
-import Dot from 'lucide-solid/icons/dot'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
-import Sparkles from 'lucide-solid/icons/sparkles'
-import Zap from 'lucide-solid/icons/zap'
-import { createMemo, createUniqueId, For, Show } from 'solid-js'
+import { createMemo, Show } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { spinner } from '~/styles/animations.css'
-import { DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL, EFFORT_LABELS, MODEL_LABELS, PERMISSION_MODE_LABELS } from '~/utils/controlResponse'
 import * as styles from './ChatView.css'
 import { getProviderPlugin } from './providers'
 
-export const PERMISSION_MODES = Object.entries(PERMISSION_MODE_LABELS).map(([value, label]) => ({ label, value }))
-export const MODELS = Object.entries(MODEL_LABELS).map(([value, label]) => ({ label, value }))
-export const EFFORTS = Object.entries(EFFORT_LABELS).map(([value, label]) => ({ label, value }))
-
-export function modeLabel(mode: string): string {
-  return PERMISSION_MODE_LABELS[mode as keyof typeof PERMISSION_MODE_LABELS] ?? 'Default'
-}
-
-export function modelLabel(model: string): string {
-  return MODELS.find(m => m.value === model)?.label ?? 'Sonnet'
-}
+// Re-export shared settings utilities for external consumers.
+export { EFFORTS, modeLabel, modelLabel, MODELS, PERMISSION_MODES, RadioGroup } from './settingsShared'
 
 export interface EditorSettingsDropdownProps {
   disabled?: boolean
@@ -41,114 +26,6 @@ export interface EditorSettingsDropdownProps {
   onModelChange?: (model: string) => void
   onEffortChange?: (effort: string) => void
   onPermissionModeChange?: (mode: PermissionMode) => void
-}
-
-export function RadioGroup(props: {
-  label: string
-  items: { label: string, value: string }[]
-  testIdPrefix: string
-  name: string
-  current: string
-  onChange: (value: string) => void
-}): JSX.Element {
-  return (
-    <fieldset>
-      <legend class={styles.settingsGroupLabel}>{props.label}</legend>
-      <For each={props.items}>
-        {item => (
-          <label
-            role="menuitemradio"
-            class={styles.settingsRadioItem}
-            data-testid={`${props.testIdPrefix}-${item.value}`}
-          >
-            <input
-              type="radio"
-              name={props.name}
-              value={item.value}
-              checked={props.current === item.value}
-              onChange={() => props.onChange(item.value)}
-            />
-            {item.label}
-          </label>
-        )}
-      </For>
-    </fieldset>
-  )
-}
-
-/** Default Claude Code settings panel (model, effort, permission mode). */
-function ClaudeCodeSettingsPanel(props: EditorSettingsDropdownProps): JSX.Element {
-  const menuId = createUniqueId()
-  const currentModel = () => props.model || DEFAULT_CLAUDE_MODEL
-  const currentEffort = () => props.effort || DEFAULT_CLAUDE_EFFORT
-  const currentMode = () => props.permissionMode || 'default'
-  const isOpus = () => currentModel().startsWith('opus')
-  const availableEfforts = () => isOpus() ? EFFORTS : EFFORTS.filter(e => e.value !== 'max')
-
-  return (
-    <>
-      <Show when={props.supportsModelEffort !== false}>
-        <Show when={currentModel() !== 'haiku'}>
-          <RadioGroup
-            label="Effort"
-            items={availableEfforts()}
-            testIdPrefix="effort"
-            name={`${menuId}-effort`}
-            current={currentEffort()}
-            onChange={v => props.onEffortChange?.(v)}
-          />
-        </Show>
-        <RadioGroup
-          label="Model"
-          items={MODELS}
-          testIdPrefix="model"
-          name={`${menuId}-model`}
-          current={currentModel()}
-          onChange={(v) => {
-            props.onModelChange?.(v)
-            if (!v.startsWith('opus') && currentEffort() === 'max') {
-              props.onEffortChange?.('high')
-            }
-          }}
-        />
-      </Show>
-      <RadioGroup
-        label="Permission Mode"
-        items={PERMISSION_MODES}
-        testIdPrefix="permission-mode"
-        name={`${menuId}-mode`}
-        current={currentMode()}
-        onChange={v => props.onPermissionModeChange?.(v as PermissionMode)}
-      />
-    </>
-  )
-}
-
-/** Default Claude Code trigger label (model, effort icon, permission mode). */
-function ClaudeCodeTriggerLabel(props: EditorSettingsDropdownProps): JSX.Element {
-  const currentModel = () => props.model || DEFAULT_CLAUDE_MODEL
-  const currentEffort = () => props.effort || DEFAULT_CLAUDE_EFFORT
-  const currentMode = () => props.permissionMode || 'default'
-
-  const effortIcon = () => {
-    switch (currentEffort()) {
-      case 'auto': return <Icon icon={Sparkles} size="xs" />
-      case 'low': return <Icon icon={ChevronsDown} size="xs" />
-      case 'high': return <Icon icon={ChevronsUp} size="xs" />
-      case 'max': return <Icon icon={Zap} size="xs" />
-      default: return <Icon icon={Dot} size="xs" />
-    }
-  }
-
-  return (
-    <>
-      <Show when={props.supportsModelEffort !== false}>
-        {modelLabel(currentModel())}
-        <Show when={currentModel() !== 'haiku'}>{effortIcon()}</Show>
-      </Show>
-      {modeLabel(currentMode())}
-    </>
-  )
 }
 
 export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.Element {
@@ -176,9 +53,7 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
           disabled={props.disabled}
           {...triggerProps}
         >
-          {plugin()?.settingsTriggerLabel
-            ? plugin()!.settingsTriggerLabel!(settingsPanelProps())
-            : <ClaudeCodeTriggerLabel {...props} />}
+          {plugin()?.settingsTriggerLabel?.(settingsPanelProps())}
           <Show when={props.settingsLoading} fallback={<Icon icon={ChevronDown} size="xs" />}>
             <Icon icon={LoaderCircle} size="xs" class={spinner} data-testid="settings-loading-spinner" />
           </Show>
@@ -187,9 +62,7 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
       class={styles.settingsMenu}
       data-testid="agent-settings-menu"
     >
-      {plugin()?.SettingsPanel
-        ? <Dynamic component={plugin()!.SettingsPanel!} {...settingsPanelProps()} />
-        : <ClaudeCodeSettingsPanel {...props} />}
+      {plugin()?.SettingsPanel && <Dynamic component={plugin()!.SettingsPanel!} {...settingsPanelProps()} />}
     </DropdownMenu>
   )
 }

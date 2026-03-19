@@ -1,9 +1,41 @@
+import type { JSX } from 'solid-js'
 import type { MessageCategory } from '../messageClassification'
-import type { ProviderPlugin } from './registry'
+import type { ProviderPlugin, ProviderSettingsPanelProps } from './registry'
+import type { PermissionMode } from '~/utils/controlResponse'
+import ChevronsDown from 'lucide-solid/icons/chevrons-down'
+import ChevronsUp from 'lucide-solid/icons/chevrons-up'
+import Dot from 'lucide-solid/icons/dot'
+import Sparkles from 'lucide-solid/icons/sparkles'
+import Zap from 'lucide-solid/icons/zap'
+import { createUniqueId, Show } from 'solid-js'
+import { Icon } from '~/components/common/Icon'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { buildInterruptRequest } from '~/utils/controlResponse'
 import { isObject } from '../messageUtils'
+import { EFFORTS, modeLabel, modelLabel, MODELS, PERMISSION_MODES, RadioGroup } from '../settingsShared'
 import { registerProvider } from './registry'
+
+function generateRandomId(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+  let result = '01'
+  for (let i = 0; i < 22; i++) {
+    result += chars[Math.floor(Math.random() * chars.length)]
+  }
+  return result
+}
+
+/**
+ * Builds a control_request JSON string for interrupting a running agent turn.
+ */
+function buildInterruptRequest(): string {
+  const requestId = generateRandomId()
+  return JSON.stringify({
+    type: 'control_request',
+    request_id: requestId,
+    request: {
+      subtype: 'interrupt',
+    },
+  })
+}
 
 /** Check whether the wrapper envelope represents a Claude Code notification thread. */
 function isNotificationThreadWrapper(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
@@ -126,7 +158,88 @@ function classifyClaudeCodeMessage(
   return { kind: 'unknown' }
 }
 
+const DEFAULT_CLAUDE_MODEL = import.meta.env.LEAPMUX_DEFAULT_CLAUDE_MODEL || 'opus'
+const DEFAULT_CLAUDE_EFFORT = import.meta.env.LEAPMUX_DEFAULT_CLAUDE_EFFORT || 'high'
+
+/** Claude Code settings panel (model, effort, permission mode). */
+function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
+  const menuId = createUniqueId()
+  const currentModel = () => props.model || DEFAULT_CLAUDE_MODEL
+  const currentEffort = () => props.effort || DEFAULT_CLAUDE_EFFORT
+  const currentMode = () => props.permissionMode || 'default'
+  const isOpus = () => currentModel().startsWith('opus')
+  const availableEfforts = () => isOpus() ? EFFORTS : EFFORTS.filter(e => e.value !== 'max')
+
+  return (
+    <>
+      <Show when={props.supportsModelEffort !== false}>
+        <Show when={currentModel() !== 'haiku'}>
+          <RadioGroup
+            label="Effort"
+            items={availableEfforts()}
+            testIdPrefix="effort"
+            name={`${menuId}-effort`}
+            current={currentEffort()}
+            onChange={v => props.onEffortChange?.(v)}
+          />
+        </Show>
+        <RadioGroup
+          label="Model"
+          items={MODELS}
+          testIdPrefix="model"
+          name={`${menuId}-model`}
+          current={currentModel()}
+          onChange={(v) => {
+            props.onModelChange?.(v)
+            if (!v.startsWith('opus') && currentEffort() === 'max') {
+              props.onEffortChange?.('high')
+            }
+          }}
+        />
+      </Show>
+      <RadioGroup
+        label="Permission Mode"
+        items={PERMISSION_MODES}
+        testIdPrefix="permission-mode"
+        name={`${menuId}-mode`}
+        current={currentMode()}
+        onChange={v => props.onPermissionModeChange?.(v as PermissionMode)}
+      />
+    </>
+  )
+}
+
+/** Claude Code trigger label (model, effort icon, permission mode). */
+function ClaudeCodeTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
+  const currentModel = () => props.model || DEFAULT_CLAUDE_MODEL
+  const currentEffort = () => props.effort || DEFAULT_CLAUDE_EFFORT
+  const currentMode = () => props.permissionMode || 'default'
+
+  const effortIcon = () => {
+    switch (currentEffort()) {
+      case 'auto': return <Icon icon={Sparkles} size="xs" />
+      case 'low': return <Icon icon={ChevronsDown} size="xs" />
+      case 'high': return <Icon icon={ChevronsUp} size="xs" />
+      case 'max': return <Icon icon={Zap} size="xs" />
+      default: return <Icon icon={Dot} size="xs" />
+    }
+  }
+
+  return (
+    <>
+      <Show when={props.supportsModelEffort !== false}>
+        {modelLabel(currentModel())}
+        <Show when={currentModel() !== 'haiku'}>{effortIcon()}</Show>
+      </Show>
+      {modeLabel(currentMode())}
+    </>
+  )
+}
+
 const claudeCodePlugin: ProviderPlugin = {
+  defaultModel: DEFAULT_CLAUDE_MODEL,
+  defaultEffort: DEFAULT_CLAUDE_EFFORT,
+
   classify: classifyClaudeCodeMessage,
 
   buildInterruptContent(): string | null {
@@ -138,6 +251,10 @@ const claudeCodePlugin: ProviderPlugin = {
   buildControlResponse(): Uint8Array | null {
     return null
   },
+
+  SettingsPanel: ClaudeCodeSettingsPanel,
+
+  settingsTriggerLabel: ClaudeCodeTriggerLabel,
 }
 
 registerProvider(AgentProvider.CLAUDE_CODE, claudeCodePlugin)

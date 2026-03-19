@@ -1,4 +1,8 @@
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+// Import directly from registry (not providers/index) to avoid circular dependency.
+// providers/index re-exports from registry but also side-effect-imports claude/codex,
+// which import settingsShared, which imports this module's constants.
+import { getProviderPlugin } from '~/components/chat/providers/registry'
 
 /** Extract the tool_name from a control_request payload */
 export function getToolName(payload: Record<string, unknown>): string {
@@ -64,14 +68,6 @@ export function buildDenyResponse(
  */
 export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'
 
-/** Default model and effort level for new Claude Code agents. */
-export const DEFAULT_CLAUDE_MODEL = import.meta.env.LEAPMUX_DEFAULT_CLAUDE_MODEL || 'opus'
-export const DEFAULT_CLAUDE_EFFORT = import.meta.env.LEAPMUX_DEFAULT_CLAUDE_EFFORT || 'high'
-
-/** Default model for Codex agents. */
-export const DEFAULT_CODEX_MODEL = import.meta.env.LEAPMUX_DEFAULT_CODEX_MODEL || 'gpt-5.4'
-export const DEFAULT_CODEX_EFFORT = 'medium'
-
 /** Display labels for permission modes, models, and effort levels. */
 export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
   default: 'Default',
@@ -88,13 +84,6 @@ export const MODEL_LABELS: Record<string, string> = {
   'haiku': 'Haiku',
 }
 
-export const CODEX_MODEL_LABELS: Record<string, string> = {
-  'o4-mini': 'o4-mini',
-  'o3': 'o3',
-  'gpt-5.4': 'GPT-5.4',
-  'codex-mini': 'Codex Mini',
-}
-
 export const EFFORT_LABELS: Record<string, string> = {
   auto: 'Auto',
   max: 'Max',
@@ -103,78 +92,12 @@ export const EFFORT_LABELS: Record<string, string> = {
   low: 'Low',
 }
 
-/**
- * Builds a control_request JSON string for interrupting a running agent turn.
- */
-export function buildInterruptRequest(): string {
-  const requestId = generateRandomId()
-  return JSON.stringify({
-    type: 'control_request',
-    request_id: requestId,
-    request: {
-      subtype: 'interrupt',
-    },
-  })
-}
-
-function generateRandomId(): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
-  let result = '01'
-  for (let i = 0; i < 22; i++) {
-    result += chars[Math.floor(Math.random() * chars.length)]
-  }
-  return result
-}
-
-let codexReqIdCounter = 1000
-
-/**
- * Builds a JSON-RPC request for interrupting a Codex turn.
- */
-export function buildCodexInterruptRequest(threadId: string, turnId: string): string {
-  return JSON.stringify({
-    jsonrpc: '2.0',
-    id: ++codexReqIdCounter,
-    method: 'turn/interrupt',
-    params: { threadId, turnId },
-  })
-}
-
-/**
- * Builds a JSON-RPC response for a Codex approval request (allow).
- */
-export function buildCodexApprovalResponse(requestId: number, approved: boolean, decision?: string): string {
-  if (approved) {
-    return JSON.stringify({
-      jsonrpc: '2.0',
-      id: requestId,
-      result: { decision: decision || 'allow' },
-    })
-  }
-  return JSON.stringify({
-    jsonrpc: '2.0',
-    id: requestId,
-    result: { decision: 'deny', reason: 'Rejected by user.' },
-  })
-}
-
-/** Codex approval policy labels (using Codex-native kebab-case values). */
-export const CODEX_PERMISSION_MODE_LABELS: Record<string, string> = {
-  'never': 'Full Auto',
-  'on-request': 'Suggest & Approve',
-  'untrusted': 'Auto-edit',
-}
-
 /** Returns the default model for the given agent provider. */
 export function defaultModelForProvider(provider: AgentProvider): string {
-  if (provider === AgentProvider.CODEX)
-    return DEFAULT_CODEX_MODEL
-  return DEFAULT_CLAUDE_MODEL
+  return getProviderPlugin(provider)?.defaultModel ?? 'opus'
 }
 
 /** Returns the default effort for the given agent provider. */
 export function defaultEffortForProvider(provider: AgentProvider): string {
-  if (provider === AgentProvider.CODEX)
-    return DEFAULT_CODEX_EFFORT
-  return DEFAULT_CLAUDE_EFFORT
+  return getProviderPlugin(provider)?.defaultEffort ?? 'high'
 }

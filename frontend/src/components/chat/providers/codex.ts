@@ -5,14 +5,9 @@ import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import {
-  buildCodexApprovalResponse,
-  buildCodexInterruptRequest,
-  CODEX_MODEL_LABELS,
-  CODEX_PERMISSION_MODE_LABELS,
-  DEFAULT_CODEX_EFFORT,
-  DEFAULT_CODEX_MODEL,
   EFFORT_LABELS,
 } from '~/utils/controlResponse'
+import { isObject } from '../messageUtils'
 import {
   codexAgentMessageRenderer,
   codexCommandExecutionRenderer,
@@ -20,9 +15,58 @@ import {
   codexMcpToolCallRenderer,
   codexReasoningRenderer,
   codexTurnCompletedRenderer,
-} from '../codexRenderers'
-import { isObject } from '../messageUtils'
+} from './codexRenderers'
 import { registerProvider } from './registry'
+
+/** Default model for Codex agents. */
+const DEFAULT_CODEX_MODEL = import.meta.env.LEAPMUX_DEFAULT_CODEX_MODEL || 'gpt-5.4'
+const DEFAULT_CODEX_EFFORT = 'medium'
+
+const CODEX_MODEL_LABELS: Record<string, string> = {
+  'o4-mini': 'o4-mini',
+  'o3': 'o3',
+  'gpt-5.4': 'GPT-5.4',
+  'codex-mini': 'Codex Mini',
+}
+
+/** Codex approval policy labels (using Codex-native kebab-case values). */
+const CODEX_PERMISSION_MODE_LABELS: Record<string, string> = {
+  'never': 'Full Auto',
+  'on-request': 'Suggest & Approve',
+  'untrusted': 'Auto-edit',
+}
+
+let codexReqIdCounter = 1000
+
+/**
+ * Builds a JSON-RPC request for interrupting a Codex turn.
+ */
+function buildCodexInterruptRequest(threadId: string, turnId: string): string {
+  return JSON.stringify({
+    jsonrpc: '2.0',
+    id: ++codexReqIdCounter,
+    method: 'turn/interrupt',
+    params: { threadId, turnId },
+  })
+}
+
+/**
+ * Builds a JSON-RPC response for a Codex approval request (allow).
+ */
+function buildCodexApprovalResponse(requestId: number, approved: boolean, decision?: string): string {
+  if (approved) {
+    return JSON.stringify({
+      jsonrpc: '2.0',
+      id: requestId,
+      result: { decision: decision || 'allow' },
+    })
+  }
+  return JSON.stringify({
+    jsonrpc: '2.0',
+    id: requestId,
+    result: { decision: 'deny', reason: 'Rejected by user.' },
+  })
+}
 
 /** Check whether the wrapper envelope represents a notification thread. */
 function isNotificationThreadWrapper(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
@@ -35,6 +79,8 @@ function isNotificationThreadWrapper(wrapper: { messages: unknown[] } | null): w
 }
 
 const codexPlugin: ProviderPlugin = {
+  defaultModel: DEFAULT_CODEX_MODEL,
+  defaultEffort: DEFAULT_CODEX_EFFORT,
   classify(parent, wrapper): MessageCategory {
     // Notification threads (settings_changed, context_cleared, etc.)
     if (isNotificationThreadWrapper(wrapper))

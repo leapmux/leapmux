@@ -1,6 +1,6 @@
 /* eslint-disable solid/no-innerhtml -- HTML is produced via remark, not arbitrary user input */
 import type { JSX } from 'solid-js'
-import type { RenderContext } from './messageRenderers'
+import type { RenderContext } from '../messageRenderers'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
@@ -12,20 +12,20 @@ import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
-import { markdownContent } from './markdownContent.css'
+import { markdownContent } from '../markdownContent.css'
 import {
   thinkingChevron,
   thinkingChevronExpanded,
   thinkingContent,
   thinkingHeader,
-} from './messageStyles.css'
-import { isObject } from './messageUtils'
+} from '../messageStyles.css'
+import { isObject } from '../messageUtils'
 import {
   toolInputText,
   toolMessage,
   toolUseHeader,
   toolUseIcon,
-} from './toolStyles.css'
+} from '../toolStyles.css'
 
 /** Extract the item from Codex native params: {item: {...}, threadId, turnId} */
 function extractItem(parsed: unknown): Record<string, unknown> | null {

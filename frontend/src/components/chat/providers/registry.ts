@@ -21,6 +21,11 @@ export interface RenderContext {
 }
 
 export interface ProviderPlugin {
+  /** Default model identifier for this provider. */
+  defaultModel?: string
+  /** Default effort level for this provider. */
+  defaultEffort?: string
+
   /** Classify a parsed message into a rendering category. */
   classify: (
     parent: Record<string, unknown> | undefined,
