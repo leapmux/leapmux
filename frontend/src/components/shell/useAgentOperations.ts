@@ -14,8 +14,11 @@ import { showWarnToast } from '~/components/common/Toast'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { createLogger } from '~/lib/logger'
 import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
-import { buildInterruptRequest, defaultEffortForProvider, defaultModelForProvider } from '~/utils/controlResponse'
+import { defaultEffortForProvider, defaultModelForProvider } from '~/utils/controlResponse'
+
+const logger = createLogger('useAgentOperations')
 
 /** Find the smallest unused number for auto-naming tabs (gap-filling). */
 export function nextTabNumber(tabs: Tab[], type: TabType, prefix: string): number {
@@ -152,20 +155,20 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     try {
       const workerId = getAgentWorkerId(agentId)
       const agent = props.agentStore.state.agents.find(a => a.id === agentId)
+      const plugin = agent ? getProviderPlugin(agent.agentProvider) : undefined
+      if (!plugin?.buildControlResponse) {
+        logger.error('No control response handler for provider', agent?.agentProvider)
+        return
+      }
+
       const parsed = JSON.parse(new TextDecoder().decode(content))
       const requestId = parsed?.response?.request_id
+      const translatedContent = plugin.buildControlResponse(parsed)
 
-      // Try provider-specific control response builder.
-      const plugin = agent ? getProviderPlugin(agent.agentProvider) : undefined
-      const translatedContent = plugin?.buildControlResponse?.(parsed)
-
-      if (translatedContent) {
-        await workerRpc.sendControlResponse(workerId, { agentId, content: translatedContent })
-      }
-      else {
-        // Default: send the control_response as-is (Claude Code format).
-        await workerRpc.sendControlResponse(workerId, { agentId, content })
-      }
+      await workerRpc.sendControlResponse(workerId, {
+        agentId,
+        content: translatedContent ?? content,
+      })
 
       if (requestId)
         props.controlStore.removeRequest(agentId, requestId)
@@ -208,18 +211,17 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     try {
       const agent = props.agentStore.state.agents.find(a => a.id === agentId)
       const workerId = getAgentWorkerId(agentId)
-
-      // Try provider-specific interrupt builder first.
       const plugin = agent ? getProviderPlugin(agent.agentProvider) : undefined
-      let content: string | null = null
-      if (plugin?.buildInterruptContent) {
-        const sessionId = agent?.agentSessionId || ''
-        const turnId = props.agentSessionStore.getInfo(agentId).codexTurnId || ''
-        content = plugin.buildInterruptContent(sessionId, turnId)
+      if (!plugin?.buildInterruptContent) {
+        logger.error('No interrupt handler for provider', agent?.agentProvider)
+        return
       }
-      // Fall back to Claude Code control_request interrupt.
+
+      const sessionId = agent?.agentSessionId || ''
+      const turnId = props.agentSessionStore.getInfo(agentId).codexTurnId || ''
+      const content = plugin.buildInterruptContent(sessionId, turnId)
       if (!content)
-        content = buildInterruptRequest()
+        return
 
       await workerRpc.sendAgentMessage(workerId, { agentId, content })
     }
