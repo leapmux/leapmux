@@ -29,7 +29,7 @@ test.describe('Agent Settings', () => {
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     await expect(trigger).toBeVisible()
 
-    // Default: Sonnet model (overridden via LEAPMUX_DEFAULT_MODEL in e2e), Default permission mode
+    // Default: Sonnet model (overridden via LEAPMUX_DEFAULT_CLAUDE_MODEL in e2e), Default permission mode
     const text = await getTriggerText(page)
     expect(text).toContain('Sonnet')
     expect(text).toContain('Default')

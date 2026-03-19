@@ -420,6 +420,7 @@ export const AppShell: ParentComponent = (props) => {
   // Agent operations hook
   const agentOps = useAgentOperations({
     agentStore,
+    agentSessionStore,
     chatStore,
     controlStore,
     tabStore,

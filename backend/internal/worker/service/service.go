@@ -147,15 +147,34 @@ func RegisterAll(d *channel.Dispatcher, svc *Context) {
 }
 
 // modelOrDefault returns the given model, or falls back to the
-// LEAPMUX_DEFAULT_MODEL environment variable, or "opus" if unset.
+// LEAPMUX_DEFAULT_CLAUDE_MODEL environment variable, or "opus" if unset.
+// This is used for Claude Code agents. For provider-aware defaults,
+// use modelOrDefaultForProvider.
 func modelOrDefault(model string) string {
 	if model != "" {
 		return model
 	}
-	if env := os.Getenv("LEAPMUX_DEFAULT_MODEL"); env != "" {
+	if env := os.Getenv("LEAPMUX_DEFAULT_CLAUDE_MODEL"); env != "" {
 		return env
 	}
 	return "opus"
+}
+
+// modelOrDefaultForProvider returns the given model, or falls back to a
+// provider-specific default from environment variables.
+func modelOrDefaultForProvider(model string, provider leapmuxv1.AgentProvider) string {
+	if model != "" {
+		return model
+	}
+	switch provider {
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:
+		if env := os.Getenv("LEAPMUX_DEFAULT_CODEX_MODEL"); env != "" {
+			return env
+		}
+		return "gpt-5.4"
+	default:
+		return modelOrDefault(model)
+	}
 }
 
 // effortOrDefault returns the given effort, or falls back to the

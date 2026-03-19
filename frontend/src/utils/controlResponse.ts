@@ -62,9 +62,13 @@ export function buildDenyResponse(
  */
 export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'
 
-/** Default model and effort level for new agents. */
-export const DEFAULT_MODEL = import.meta.env.LEAPMUX_DEFAULT_MODEL || 'opus'
+/** Default model and effort level for new Claude Code agents. */
+export const DEFAULT_MODEL = import.meta.env.LEAPMUX_DEFAULT_CLAUDE_MODEL || 'opus'
 export const DEFAULT_EFFORT = import.meta.env.LEAPMUX_DEFAULT_EFFORT || 'high'
+
+/** Default model for Codex agents. */
+export const DEFAULT_CODEX_MODEL = import.meta.env.LEAPMUX_DEFAULT_CODEX_MODEL || 'gpt-5.4'
+export const DEFAULT_CODEX_EFFORT = 'medium'
 
 /** Display labels for permission modes, models, and effort levels. */
 export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
@@ -82,24 +86,19 @@ export const MODEL_LABELS: Record<string, string> = {
   'haiku': 'Haiku',
 }
 
+export const CODEX_MODEL_LABELS: Record<string, string> = {
+  'o4-mini': 'o4-mini',
+  'o3': 'o3',
+  'gpt-5.4': 'GPT-5.4',
+  'codex-mini': 'Codex Mini',
+}
+
 export const EFFORT_LABELS: Record<string, string> = {
   auto: 'Auto',
   max: 'Max',
   high: 'High',
   medium: 'Medium',
   low: 'Low',
-}
-
-export function buildSetPermissionModeRequest(mode: PermissionMode): string {
-  const requestId = generateRandomId()
-  return JSON.stringify({
-    type: 'control_request',
-    request_id: requestId,
-    request: {
-      subtype: 'set_permission_mode',
-      mode,
-    },
-  })
 }
 
 /**
@@ -123,4 +122,58 @@ function generateRandomId(): string {
     result += chars[Math.floor(Math.random() * chars.length)]
   }
   return result
+}
+
+let codexReqIdCounter = 1000
+
+/**
+ * Builds a JSON-RPC request for interrupting a Codex turn.
+ */
+export function buildCodexInterruptRequest(threadId: string, turnId: string): string {
+  return JSON.stringify({
+    jsonrpc: '2.0',
+    id: ++codexReqIdCounter,
+    method: 'turn/interrupt',
+    params: { threadId, turnId },
+  })
+}
+
+/**
+ * Builds a JSON-RPC response for a Codex approval request (allow).
+ */
+export function buildCodexApprovalResponse(requestId: number, approved: boolean, decision?: string): string {
+  if (approved) {
+    return JSON.stringify({
+      jsonrpc: '2.0',
+      id: requestId,
+      result: { decision: decision || 'allow' },
+    })
+  }
+  return JSON.stringify({
+    jsonrpc: '2.0',
+    id: requestId,
+    result: { decision: 'deny', reason: 'Rejected by user.' },
+  })
+}
+
+/** Codex permission modes mapped to Codex approval policies. */
+export const CODEX_PERMISSION_MODE_LABELS: Record<string, string> = {
+  bypassPermissions: 'Full Auto',
+  default: 'Suggest & Approve',
+  acceptEdits: 'Auto-edit',
+}
+
+/** Returns the default model for the given agent provider. */
+export function defaultModelForProvider(provider: number): string {
+  // AgentProvider.CODEX = 2
+  if (provider === 2)
+    return DEFAULT_CODEX_MODEL
+  return DEFAULT_MODEL
+}
+
+/** Returns the default effort for the given agent provider. */
+export function defaultEffortForProvider(provider: number): string {
+  if (provider === 2)
+    return DEFAULT_CODEX_EFFORT
+  return DEFAULT_EFFORT
 }

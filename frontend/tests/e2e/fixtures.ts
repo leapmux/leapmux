@@ -62,7 +62,7 @@ export const test = base.extend<
       dataDir,
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low', LEAPMUX_WORKER_NAME: 'Local', LEAPMUX_HUB_SIGNUP_ENABLED: 'true' },
+      env: { ...process.env, LEAPMUX_DEFAULT_CLAUDE_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low', LEAPMUX_DEFAULT_CODEX_MODEL: 'o4-mini', LEAPMUX_WORKER_NAME: 'Local', LEAPMUX_HUB_SIGNUP_ENABLED: 'true' },
     })
 
     // Drain server output to prevent backpressure.

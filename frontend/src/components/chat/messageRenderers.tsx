@@ -11,9 +11,18 @@ import ChevronRight from 'lucide-solid/icons/chevron-right'
 import { createSignal, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createLogger } from '~/lib/logger'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
+import {
+  codexAgentMessageRenderer,
+  codexCommandExecutionRenderer,
+  codexFileChangeRenderer,
+  codexMcpToolCallRenderer,
+  codexReasoningRenderer,
+  codexTurnCompletedRenderer,
+} from './codexRenderers'
 import { markdownContent } from './markdownContent.css'
 import { thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
 import { isObject } from './messageUtils'
@@ -38,6 +47,7 @@ import {
   taskNotificationRenderer,
   todoWriteRenderer,
 } from './taskRenderers'
+
 import {
   ToolHeaderActions,
   toolResultRenderer,
@@ -385,6 +395,35 @@ function getFallbackRenderers(): MessageContentRenderer[] {
   return _fallbackRenderers
 }
 
+/** Codex-specific renderer dispatch for native Codex item formats. */
+const CODEX_KIND_RENDERERS: Record<string, (parsed: unknown, role: MessageRole, context?: RenderContext) => JSX.Element | null> = {
+  assistant_text: codexAgentMessageRenderer,
+  assistant_thinking: codexReasoningRenderer,
+  result_divider: codexTurnCompletedRenderer,
+}
+
+/** Codex tool_use dispatcher — routes by Codex item type name. */
+function dispatchCodexToolUse(
+  category: Extract<MessageCategory, { kind: 'tool_use' }>,
+  parsed: unknown,
+  role: MessageRole,
+  context?: RenderContext,
+): JSX.Element | null {
+  switch (category.toolName) {
+    case 'commandExecution':
+      return codexCommandExecutionRenderer(parsed, role, context)
+    case 'fileChange':
+      return codexFileChangeRenderer(parsed, role, context)
+    case 'mcpToolCall':
+    case 'dynamicToolCall':
+    case 'mcpTool':
+    case 'dynamicTool':
+      return codexMcpToolCallRenderer(parsed, role, context)
+    default:
+      return codexMcpToolCallRenderer(parsed, role, context)
+  }
+}
+
 /**
  * Render a message's content.
  *
@@ -398,6 +437,7 @@ export function renderMessageContent(
   role: MessageRole,
   context?: RenderContext,
   category?: MessageCategory,
+  agentProvider?: AgentProvider,
 ): JSX.Element {
   try {
     const parsed = typeof parsedOrRawJson === 'string'
@@ -406,6 +446,21 @@ export function renderMessageContent(
 
     // Fast path: O(1) dispatch when category is available
     if (category && category.kind !== 'unknown') {
+      // Use Codex-specific renderers for Codex agents.
+      if (agentProvider === AgentProvider.CODEX) {
+        if (category.kind === 'tool_use') {
+          const result = dispatchCodexToolUse(category as Extract<MessageCategory, { kind: 'tool_use' }>, parsed, role, context)
+          if (result !== null)
+            return result
+        }
+        const codexRenderer = CODEX_KIND_RENDERERS[category.kind]
+        if (codexRenderer) {
+          const result = codexRenderer(parsed, role, context)
+          if (result !== null)
+            return result
+        }
+      }
+
       const result = dispatchRender(category, parsed, role, context)
       if (result !== null)
         return result

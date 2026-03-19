@@ -145,7 +145,7 @@ export async function restartWorker(serverInfo: SeparateServerInfo) {
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
-    env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low', LEAPMUX_WORKER_NAME: 'test-worker' },
+    env: { ...process.env, LEAPMUX_DEFAULT_CLAUDE_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low', LEAPMUX_WORKER_NAME: 'test-worker' },
   })
   workerProc.unref()
 
@@ -206,7 +206,7 @@ export async function restartHub(serverInfo: SeparateServerInfo) {
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
-    env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low', LEAPMUX_HUB_SIGNUP_ENABLED: 'true' },
+    env: { ...process.env, LEAPMUX_DEFAULT_CLAUDE_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low', LEAPMUX_HUB_SIGNUP_ENABLED: 'true' },
   })
   hubProc.unref()
 
@@ -270,7 +270,7 @@ export const processTest = base.extend<
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
-      env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low', LEAPMUX_HUB_SIGNUP_ENABLED: 'true' },
+      env: { ...process.env, LEAPMUX_DEFAULT_CLAUDE_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low', LEAPMUX_HUB_SIGNUP_ENABLED: 'true' },
     })
     hubProc.unref()
     hubProc.stdout?.on('data', (c: Buffer) => process.stderr.write(`[HUB-OUT] ${c}`))
@@ -295,7 +295,7 @@ export const processTest = base.extend<
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
-      env: { ...process.env, LEAPMUX_DEFAULT_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low', LEAPMUX_WORKER_NAME: 'test-worker' },
+      env: { ...process.env, LEAPMUX_DEFAULT_CLAUDE_MODEL: 'sonnet', LEAPMUX_DEFAULT_EFFORT: 'low', LEAPMUX_WORKER_NAME: 'test-worker' },
     })
     workerProc.unref()
 

@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os/exec"
 	"sync"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 // ErrAgentNotFound is returned when an agent process does not exist.
@@ -31,16 +33,36 @@ func NewManager(onExit ExitHandler) *Manager {
 // startFunc is the function signature for starting an agent process.
 type startFunc func(ctx context.Context, opts Options, sink OutputSink) (Provider, error)
 
-// StartAgent spawns a new Claude Code agent for the given agent ID.
+// StartAgent spawns an agent for the given agent ID, dispatching based on
+// opts.AgentProvider.
 // The sink receives parsed output events.
 // Returns the confirmed permission mode from the startup handshake.
 func (m *Manager) StartAgent(ctx context.Context, opts Options, sink OutputSink) (string, error) {
-	return m.startAgentWith(ctx, opts, sink, startClaudeCode)
+	var start startFunc
+	switch opts.AgentProvider {
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:
+		start = startCodex
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:
+		start = startOpenCode
+	default:
+		start = startClaudeCode
+	}
+	return m.startAgentWith(ctx, opts, sink, start)
 }
 
 // startClaudeCode wraps Start() to satisfy the startFunc signature.
 func startClaudeCode(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
 	return Start(ctx, opts, sink)
+}
+
+// startCodex wraps StartCodex() to satisfy the startFunc signature.
+func startCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+	return StartCodex(ctx, opts, sink)
+}
+
+// startOpenCode wraps StartOpenCode() to satisfy the startFunc signature.
+func startOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+	return StartOpenCode(ctx, opts, sink)
 }
 
 func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputSink, start startFunc) (string, error) {

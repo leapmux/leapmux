@@ -18,6 +18,7 @@ import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
 import { sanitizeName } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
 import { dialogLeftPanel, dialogRightPanel, dialogSingleColumn, dialogTopSection, dialogTwoColumn, dialogWide, errorText, labelRow } from '~/styles/shared.css'
+import { defaultModelForProvider } from '~/utils/controlResponse'
 
 interface NewWorkspaceDialogProps {
   onCreated: (workspace: Workspace, workerId: string) => void
@@ -31,6 +32,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
   const randomTitle = () => generateSlug(3, { format: 'title' })
   const [title, setTitle] = createSignal(randomTitle())
   const [submitting, setSubmitting] = createSignal(false)
+  const [agentProvider, setAgentProvider] = createSignal<AgentProvider>(AgentProvider.CLAUDE_CODE)
   const titleError = createMemo(() => sanitizeName(title()).error)
 
   const handleSubmit = async (e: Event) => {
@@ -53,8 +55,8 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       const wid = state.workerId()
       const agentResp = await workerRpc.openAgent(wid, {
         workspaceId: wsResp.workspace.id,
-        agentProvider: AgentProvider.CLAUDE_CODE,
-        model: '',
+        agentProvider: agentProvider(),
+        model: defaultModelForProvider(agentProvider()),
         title: 'Agent 1',
         systemPrompt: '',
         workerId: wid,
@@ -95,6 +97,16 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
           <div class="vstack gap-4">
             <div class={state.showGitOptions() ? dialogTopSection : undefined}>
               <WorkerSelector state={state} />
+              <div>
+                <label>Agent Provider</label>
+                <select
+                  value={agentProvider()}
+                  onChange={e => setAgentProvider(Number(e.currentTarget.value) as AgentProvider)}
+                >
+                  <option value={AgentProvider.CLAUDE_CODE}>Claude Code</option>
+                  <option value={AgentProvider.CODEX}>Codex</option>
+                </select>
+              </div>
               <div>
                 <div class={labelRow}>
                   Title

@@ -230,8 +230,9 @@ message DeleteAgentMessageResponse {}
 
 message UpdateAgentSettingsRequest {
   string agent_id = 1;
-  string model = 2;   // Empty = don't change
-  string effort = 3;  // Empty = don't change
+  string model = 2;            // Empty = don't change
+  string effort = 3;           // Empty = don't change
+  string permission_mode = 4;  // Empty = don't change
 }
 
 message UpdateAgentSettingsResponse {}

@@ -8,8 +8,8 @@ import (
 )
 
 // DefaultModel is the model used when none is specified.
-// Configurable via LEAPMUX_DEFAULT_MODEL environment variable.
-var DefaultModel = getEnvOrDefault("LEAPMUX_DEFAULT_MODEL", "opus")
+// Configurable via LEAPMUX_DEFAULT_CLAUDE_MODEL environment variable.
+var DefaultModel = getEnvOrDefault("LEAPMUX_DEFAULT_CLAUDE_MODEL", "opus")
 
 // DefaultEffort is the effort level used when none is specified.
 // Configurable via LEAPMUX_DEFAULT_EFFORT environment variable.

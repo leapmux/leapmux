@@ -14,6 +14,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 // ExitHandler is called when an agent process exits.
@@ -69,12 +71,13 @@ type Options struct {
 	Model           string
 	Effort          string // Effort level (low, medium, high, max)
 	WorkingDir      string
-	ResumeSessionID string        // If set, uses --resume to resume a previous session
-	PermissionMode  string        // Permission mode to set on startup (default, acceptEdits, plan, bypassPermissions)
-	StartupTimeout  time.Duration // Timeout for the startup handshake (default: 30s)
-	Shell           string        // Default shell path (always set when using shell wrapper)
-	LoginShell      bool          // If true, use interactive+login shell flags
-	HomeDir         string        // User's home directory (for reading Claude Code settings)
+	ResumeSessionID string                  // If set, uses --resume to resume a previous session
+	PermissionMode  string                  // Permission mode to set on startup (default, acceptEdits, plan, bypassPermissions)
+	StartupTimeout  time.Duration           // Timeout for the startup handshake (default: 30s)
+	Shell           string                  // Default shell path (always set when using shell wrapper)
+	LoginShell      bool                    // If true, use interactive+login shell flags
+	HomeDir         string                  // User's home directory (for reading Claude Code settings)
+	AgentProvider   leapmuxv1.AgentProvider // Coding agent provider (default: CLAUDE_CODE)
 }
 
 // Start spawns a new Claude Code process and begins reading its output.

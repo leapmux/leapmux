@@ -9,5 +9,4 @@ const stubPlugin: ProviderPlugin = {
   },
 }
 
-registerProvider(AgentProvider.CODEX, stubPlugin)
 registerProvider(AgentProvider.OPENCODE, stubPlugin)

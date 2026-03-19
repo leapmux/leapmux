@@ -60,18 +60,18 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		workingDir = gm.WorkingDir
 		worktreeID := gm.WorktreeID
 
-		model := modelOrDefault(r.GetModel())
+		// Resolve default model based on agent provider.
+		agentProvider := r.GetAgentProvider()
+		if agentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
+			agentProvider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+		}
+		model := modelOrDefaultForProvider(r.GetModel(), agentProvider)
 
 		// Ensure the channel knows about this workspace so that
 		// subsequent WatchEvents calls can access the agent.
 		svc.Channels.AddAccessibleWorkspaceID(sender.ChannelID(), r.GetWorkspaceId())
 
 		// Create the agent record in the database.
-		agentProvider := r.GetAgentProvider()
-		if agentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
-			agentProvider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
-		}
-
 		if err := svc.Queries.CreateAgent(bgCtx(), db.CreateAgentParams{
 			ID:            agentID,
 			WorkspaceID:   r.GetWorkspaceId(),
@@ -99,6 +99,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			Shell:           svc.agentShell(),
 			LoginShell:      svc.agentLoginShell(),
 			HomeDir:         svc.HomeDir,
+			AgentProvider:   agentProvider,
 		}
 
 		sink := svc.Output.NewSink(agentID, agentProvider)
@@ -500,6 +501,10 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		if newEffort == "" {
 			newEffort = dbAgent.Effort
 		}
+		newPermissionMode := r.GetPermissionMode()
+		if newPermissionMode == "" {
+			newPermissionMode = dbAgent.PermissionMode
+		}
 
 		// Update the DB.
 		if err := svc.Queries.UpdateAgentModelAndEffort(bgCtx(), db.UpdateAgentModelAndEffortParams{
@@ -511,25 +516,37 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			sendInternalError(sender, "failed to update agent settings")
 			return
 		}
+		if newPermissionMode != dbAgent.PermissionMode {
+			_ = svc.Queries.SetAgentPermissionMode(bgCtx(), db.SetAgentPermissionModeParams{
+				PermissionMode: newPermissionMode,
+				ID:             agentID,
+			})
+		}
 
 		// If the agent is currently running, restart it with new settings.
 		if svc.Agents.HasAgent(agentID) {
 			svc.Agents.StopAndWaitAgent(agentID)
 
-			// Don't resume the old session — it may not have been persisted
-			// (e.g. no user messages were sent before the settings change).
-			// On success, handleSystemInit will overwrite the session ID with
-			// the new one. On failure, we clear it below.
+			// For Codex agents, resume the thread to preserve context.
+			// For Claude Code, don't resume — the old session may not have
+			// been persisted (e.g. no user messages sent before settings change).
+			var resumeSessionID string
+			if dbAgent.AgentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
+				resumeSessionID = dbAgent.AgentSessionID
+			}
+
 			agentOpts := agent.Options{
-				AgentID:        agentID,
-				Model:          newModel,
-				Effort:         newEffort,
-				WorkingDir:     dbAgent.WorkingDir,
-				PermissionMode: dbAgent.PermissionMode,
-				StartupTimeout: svc.agentStartupTimeout(),
-				Shell:          svc.agentShell(),
-				LoginShell:     svc.agentLoginShell(),
-				HomeDir:        svc.HomeDir,
+				AgentID:         agentID,
+				Model:           newModel,
+				Effort:          newEffort,
+				WorkingDir:      dbAgent.WorkingDir,
+				ResumeSessionID: resumeSessionID,
+				PermissionMode:  newPermissionMode,
+				StartupTimeout:  svc.agentStartupTimeout(),
+				Shell:           svc.agentShell(),
+				LoginShell:      svc.agentLoginShell(),
+				HomeDir:         svc.HomeDir,
+				AgentProvider:   dbAgent.AgentProvider,
 			}
 
 			sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
@@ -560,6 +577,9 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 		if dbAgent.Effort != newEffort {
 			changes["effort"] = map[string]string{"old": effortOrDefault(dbAgent.Effort), "new": newEffort}
+		}
+		if dbAgent.PermissionMode != newPermissionMode {
+			changes["permissionMode"] = map[string]string{"old": dbAgent.PermissionMode, "new": newPermissionMode}
 		}
 		if len(changes) > 0 {
 			svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
@@ -865,7 +885,7 @@ func (svc *Context) handleClearContext(agentID string) {
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	if _, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
 		AgentID:        agentID,
-		Model:          modelOrDefault(dbAgent.Model),
+		Model:          modelOrDefaultForProvider(dbAgent.Model, dbAgent.AgentProvider),
 		Effort:         dbAgent.Effort,
 		WorkingDir:     dbAgent.WorkingDir,
 		PermissionMode: dbAgent.PermissionMode,
@@ -873,6 +893,7 @@ func (svc *Context) handleClearContext(agentID string) {
 		Shell:          svc.agentShell(),
 		LoginShell:     svc.agentLoginShell(),
 		HomeDir:        svc.HomeDir,
+		AgentProvider:  dbAgent.AgentProvider,
 	}, sink); err != nil {
 		slog.Error("clear context: failed to restart agent", "agent_id", agentID, "error", err)
 		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
@@ -910,7 +931,7 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	if _, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
 		AgentID:         agentID,
-		Model:           modelOrDefault(dbAgent.Model),
+		Model:           modelOrDefaultForProvider(dbAgent.Model, dbAgent.AgentProvider),
 		Effort:          dbAgent.Effort,
 		WorkingDir:      dbAgent.WorkingDir,
 		ResumeSessionID: dbAgent.AgentSessionID,
@@ -919,6 +940,7 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 		Shell:           svc.agentShell(),
 		LoginShell:      svc.agentLoginShell(),
 		HomeDir:         svc.HomeDir,
+		AgentProvider:   dbAgent.AgentProvider,
 	}, sink); err != nil {
 		slog.Error("ensureAgentRunning: failed to start agent", "agent_id", agentID, "error", err)
 		return err

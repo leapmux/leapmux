@@ -392,7 +392,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
               <ErrorBoundary fallback={renderErrorFallback('Failed to render message:')}>
                 {category().kind === 'notification_thread'
                   ? renderNotificationThread((category() as { kind: 'notification_thread', messages: unknown[] }).messages)
-                  : renderMessageContent(parsed().parentObject ?? parsed().rawText, props.message.role, renderContext(), category())}
+                  : renderMessageContent(parsed().parentObject ?? parsed().rawText, props.message.role, renderContext(), category(), props.message.agentProvider)}
               </ErrorBoundary>
             </div>
           </div>
