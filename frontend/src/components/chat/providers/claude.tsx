@@ -10,7 +10,7 @@ import Zap from 'lucide-solid/icons/zap'
 import { createUniqueId, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { isObject } from '../messageUtils'
+import { isNotificationThreadWrapper, isObject } from '../messageUtils'
 import { EFFORTS, modeLabel, modelLabel, MODELS, PERMISSION_MODES, RadioGroup } from '../settingsShared'
 import { registerProvider } from './registry'
 
@@ -23,29 +23,20 @@ function generateRandomId(): string {
   return result
 }
 
-/**
- * Builds a control_request JSON string for interrupting a running agent turn.
- */
 function buildInterruptRequest(): string {
   const requestId = generateRandomId()
   return JSON.stringify({
     type: 'control_request',
     request_id: requestId,
-    request: {
-      subtype: 'interrupt',
-    },
+    request: { subtype: 'interrupt' },
   })
 }
 
-/** Check whether the wrapper envelope represents a Claude Code notification thread. */
-function isNotificationThreadWrapper(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
-  if (!wrapper || wrapper.messages.length < 1)
-    return false
-  const first = wrapper.messages[0] as Record<string, unknown>
-  const t = first.type as string | undefined
-  const st = first.subtype as string | undefined
-  return t === 'settings_changed' || t === 'context_cleared' || t === 'interrupted' || t === 'rate_limit' || t === 'plan_execution' || t === 'agent_renamed'
-    || (t === 'system' && st !== 'init' && st !== 'task_notification')
+/** Extra notification types for Claude Code (plan_execution, system subtypes). */
+const CLAUDE_EXTRA_TYPES = new Set(['plan_execution'])
+function isClaudeNotifThread(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
+  return isNotificationThreadWrapper(wrapper, CLAUDE_EXTRA_TYPES, (t, st) =>
+    t === 'system' && st !== 'init' && st !== 'task_notification')
 }
 
 /** Claude Code message classification. */
@@ -58,7 +49,7 @@ function classifyClaudeCodeMessage(
     return { kind: 'hidden' }
 
   // 1. Notification thread (wrapper with notification-type first message)
-  if (isNotificationThreadWrapper(wrapper)) {
+  if (isClaudeNotifThread(wrapper)) {
     const msgs = wrapper.messages.filter((m) => {
       if (!isObject(m))
         return true

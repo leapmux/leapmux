@@ -2,7 +2,6 @@ package agent
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -98,15 +97,13 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	timeout := opts.startupTimeout()
 
 	// 1. Send "initialize" request.
-	initResp, err := a.sendRequest("initialize", json.RawMessage(`{
+	if _, err := a.sendRequest("initialize", json.RawMessage(`{
 		"clientInfo": {"name": "leapmux", "version": "1.0.0"},
 		"capabilities": {"experimentalApi": true}
-	}`), timeout)
-	if err != nil {
+	}`), timeout); err != nil {
 		cleanup()
 		return nil, a.formatStartupError("initialize", err)
 	}
-	_ = initResp
 
 	// 2. Send "initialized" notification.
 	if err := a.sendNotification("initialized", nil); err != nil {
@@ -169,26 +166,23 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 }
 
 
-// AgentID returns the unique identifier for this agent.
-func (a *CodexAgent) AgentID() string {
-	return a.agentID
-}
-
 // SendInput writes a user message to the agent via turn/start.
 func (a *CodexAgent) SendInput(content string) error {
+	// Read shared state under lock, then release before the blocking RPC.
 	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	if a.stopped {
+		a.mu.Unlock()
 		return fmt.Errorf("agent is stopped")
 	}
+	threadID := a.threadID
+	a.mu.Unlock()
 
-	if a.threadID == "" {
+	if threadID == "" {
 		return fmt.Errorf("codex agent has no active thread")
 	}
 
 	params := map[string]interface{}{
-		"threadId": a.threadID,
+		"threadId": threadID,
 		"input": []map[string]interface{}{
 			{"type": "text", "text": content},
 		},
@@ -198,8 +192,8 @@ func (a *CodexAgent) SendInput(content string) error {
 		return fmt.Errorf("marshal turn/start params: %w", err)
 	}
 
-	// Send turn/start as a request (don't wait for the full turn to complete
-	// since we get streaming notifications). Use a generous timeout.
+	// Send turn/start — the response arrives quickly (just the turn ID),
+	// streaming content comes via notifications.
 	resp, err := a.sendRequest("turn/start", paramsJSON, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("turn/start: %w", err)
@@ -212,7 +206,9 @@ func (a *CodexAgent) SendInput(content string) error {
 		} `json:"turn"`
 	}
 	if err := json.Unmarshal(resp, &turnResult); err == nil && turnResult.Turn.ID != "" {
+		a.mu.Lock()
 		a.turnID = turnResult.Turn.ID
+		a.mu.Unlock()
 	}
 
 	return nil
@@ -332,17 +328,13 @@ func (a *CodexAgent) readOutput(scanner *bufio.Scanner) {
 }
 
 // handleJSONRPCResponse checks if a line is a JSON-RPC response and routes it.
-// JSON-RPC responses have an "id" field but no "method" field. Notifications
-// have "method" but no "id". We check for "method" absence first (cheap string
-// check) since most lines are notifications.
+// JSON-RPC responses have a numeric "id" field. Notifications do not.
+// We unmarshal just the top-level id/method fields — notifications bail out
+// quickly at the nil-ID check without inspecting the payload.
 func (a *CodexAgent) handleJSONRPCResponse(line []byte) bool {
-	// Notifications always have "method" — skip them fast.
-	if bytes.Contains(line, []byte(`"method"`)) {
-		return false
-	}
-
 	var envelope struct {
 		ID     *json.Number    `json:"id"`
+		Method string          `json:"method"`
 		Result json.RawMessage `json:"result"`
 		Error  json.RawMessage `json:"error"`
 	}
@@ -350,7 +342,8 @@ func (a *CodexAgent) handleJSONRPCResponse(line []byte) bool {
 		return false
 	}
 
-	if envelope.ID == nil {
+	// Notifications have "method" but no "id"; responses have "id" but no "method".
+	if envelope.ID == nil || envelope.Method != "" {
 		return false
 	}
 

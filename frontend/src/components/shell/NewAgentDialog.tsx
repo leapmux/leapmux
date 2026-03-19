@@ -6,6 +6,7 @@ import { agentLoadingTimeoutMs } from '~/api/transport'
 import * as workerRpc from '~/api/workerRpc'
 import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
+import { AgentProviderSelector } from '~/components/shell/AgentProviderSelector'
 import { isAgentCreateDisabled } from '~/components/shell/dialogValidation'
 import { DirectorySelector } from '~/components/shell/DirectorySelector'
 import { GitOptions } from '~/components/shell/GitOptions'
@@ -82,16 +83,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
           <div class="vstack gap-4">
             <div class={state.showGitOptions() ? dialogTopSection : undefined}>
               <WorkerSelector state={state} />
-              <div>
-                <label>Agent Provider</label>
-                <select
-                  value={agentProvider()}
-                  onChange={e => setAgentProvider(Number(e.currentTarget.value) as AgentProvider)}
-                >
-                  <option value={AgentProvider.CLAUDE_CODE}>Claude Code</option>
-                  <option value={AgentProvider.CODEX}>Codex</option>
-                </select>
-              </div>
+              <AgentProviderSelector value={agentProvider} onChange={setAgentProvider} />
             </div>
             <div class={state.showGitOptions() ? dialogTwoColumn : dialogSingleColumn}>
               <div class={dialogLeftPanel}>

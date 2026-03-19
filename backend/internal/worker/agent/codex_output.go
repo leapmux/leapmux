@@ -74,14 +74,21 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 	if json.Unmarshal(params, &notif) == nil && notif.Turn.ID != "" {
 		a.mu.Lock()
 		a.turnID = notif.Turn.ID
+		threadID := a.threadID
 		a.mu.Unlock()
 
 		// Broadcast the turn ID so the frontend can use it for interrupts.
 		a.sink.BroadcastSessionInfo(map[string]interface{}{
 			"codexTurnId": notif.Turn.ID,
 		})
+		a.sink.BroadcastStatusActive(threadID)
+		return
 	}
-	a.sink.BroadcastStatusActive(a.threadID)
+
+	a.mu.Lock()
+	threadID := a.threadID
+	a.mu.Unlock()
+	a.sink.BroadcastStatusActive(threadID)
 }
 
 // handleAgentMessageDelta processes item/agentMessage/delta — streaming text.

@@ -3,11 +3,13 @@ import type { MessageCategory } from '../messageClassification'
 import type { ProviderPlugin, ProviderSettingsPanelProps, RenderContext } from './registry'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
+import { createUniqueId } from 'solid-js'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import {
   EFFORT_LABELS,
 } from '~/utils/controlResponse'
-import { isObject } from '../messageUtils'
+import { isNotificationThreadWrapper, isObject } from '../messageUtils'
+import { RadioGroup } from '../settingsShared'
 import {
   codexAgentMessageRenderer,
   codexCommandExecutionRenderer,
@@ -29,12 +31,17 @@ const CODEX_MODEL_LABELS: Record<string, string> = {
   'codex-mini': 'Codex Mini',
 }
 
+const CODEX_MODELS = Object.entries(CODEX_MODEL_LABELS).map(([value, label]) => ({ label, value }))
+const CODEX_EFFORTS = Object.entries(EFFORT_LABELS).map(([value, label]) => ({ label, value }))
+
 /** Codex approval policy labels (using Codex-native kebab-case values). */
 const CODEX_PERMISSION_MODE_LABELS: Record<string, string> = {
   'never': 'Full Auto',
   'on-request': 'Suggest & Approve',
   'untrusted': 'Auto-edit',
 }
+
+const CODEX_PERMISSION_MODES = Object.entries(CODEX_PERMISSION_MODE_LABELS).map(([value, label]) => ({ label, value }))
 
 let codexReqIdCounter = 1000
 
@@ -68,14 +75,53 @@ function buildCodexApprovalResponse(requestId: number, approved: boolean, decisi
   })
 }
 
-/** Check whether the wrapper envelope represents a notification thread. */
-function isNotificationThreadWrapper(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
-  if (!wrapper || wrapper.messages.length < 1)
-    return false
-  const first = wrapper.messages[0] as Record<string, unknown>
-  const t = first.type as string | undefined
-  return t === 'settings_changed' || t === 'context_cleared' || t === 'interrupted'
-    || t === 'rate_limit' || t === 'agent_renamed' || t === 'agent_error'
+/** Extra notification types for Codex (agent_error). */
+const CODEX_EXTRA_NOTIF_TYPES = new Set(['agent_error'])
+function isCodexNotifThread(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
+  return isNotificationThreadWrapper(wrapper, CODEX_EXTRA_NOTIF_TYPES)
+}
+
+/** Codex settings panel (model, effort, approval policy). */
+function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
+  const menuId = createUniqueId()
+  const currentModel = () => props.model || DEFAULT_CODEX_MODEL
+  const currentEffort = () => props.effort || DEFAULT_CODEX_EFFORT
+  const currentMode = () => props.permissionMode || 'never'
+
+  return (
+    <>
+      <RadioGroup
+        label="Model"
+        items={CODEX_MODELS}
+        testIdPrefix="model"
+        name={`${menuId}-model`}
+        current={currentModel()}
+        onChange={v => props.onModelChange?.(v)}
+      />
+      <RadioGroup
+        label="Reasoning Effort"
+        items={CODEX_EFFORTS}
+        testIdPrefix="effort"
+        name={`${menuId}-effort`}
+        current={currentEffort()}
+        onChange={v => props.onEffortChange?.(v)}
+      />
+      <RadioGroup
+        label="Approval Policy"
+        items={CODEX_PERMISSION_MODES}
+        testIdPrefix="permission-mode"
+        name={`${menuId}-mode`}
+        current={currentMode()}
+        onChange={v => props.onPermissionModeChange?.(v as PermissionMode)}
+      />
+    </>
+  )
+}
+
+/** Codex trigger label (model name). */
+function CodexTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
+  const currentModel = () => props.model || DEFAULT_CODEX_MODEL
+  return <>{CODEX_MODEL_LABELS[currentModel()] || currentModel()}</>
 }
 
 const codexPlugin: ProviderPlugin = {
@@ -83,7 +129,7 @@ const codexPlugin: ProviderPlugin = {
   defaultEffort: DEFAULT_CODEX_EFFORT,
   classify(parent, wrapper): MessageCategory {
     // Notification threads (settings_changed, context_cleared, etc.)
-    if (isNotificationThreadWrapper(wrapper))
+    if (isCodexNotifThread(wrapper))
       return { kind: 'notification_thread', messages: wrapper.messages }
 
     // Empty wrapper — hide.
@@ -184,74 +230,9 @@ const codexPlugin: ProviderPlugin = {
     return new TextEncoder().encode(buildCodexApprovalResponse(rpcId as number, approved))
   },
 
-  SettingsPanel: ((props: ProviderSettingsPanelProps) => {
-    const models = Object.entries(CODEX_MODEL_LABELS)
-    const efforts = Object.entries(EFFORT_LABELS)
-    const permModes = Object.entries(CODEX_PERMISSION_MODE_LABELS)
+  SettingsPanel: CodexSettingsPanel,
 
-    return [
-      // Model selector
-      (() => {
-        const el = document.createElement('div')
-        el.innerHTML = `<label>Model</label>`
-        const select = document.createElement('select')
-        select.disabled = !!props.disabled || !!props.settingsLoading
-        for (const [value, label] of models) {
-          const opt = document.createElement('option')
-          opt.value = value
-          opt.textContent = label
-          if (value === (props.model || DEFAULT_CODEX_MODEL))
-            opt.selected = true
-          select.appendChild(opt)
-        }
-        select.addEventListener('change', () => props.onModelChange?.(select.value))
-        el.appendChild(select)
-        return el
-      })(),
-      // Effort selector
-      (() => {
-        const el = document.createElement('div')
-        el.innerHTML = `<label>Reasoning Effort</label>`
-        const select = document.createElement('select')
-        select.disabled = !!props.disabled || !!props.settingsLoading
-        for (const [value, label] of efforts) {
-          const opt = document.createElement('option')
-          opt.value = value
-          opt.textContent = label
-          if (value === (props.effort || DEFAULT_CODEX_EFFORT))
-            opt.selected = true
-          select.appendChild(opt)
-        }
-        select.addEventListener('change', () => props.onEffortChange?.(select.value))
-        el.appendChild(select)
-        return el
-      })(),
-      // Permission mode selector
-      (() => {
-        const el = document.createElement('div')
-        el.innerHTML = `<label>Approval Policy</label>`
-        const select = document.createElement('select')
-        select.disabled = !!props.disabled || !!props.settingsLoading
-        for (const [value, label] of permModes) {
-          const opt = document.createElement('option')
-          opt.value = value
-          opt.textContent = label
-          if (value === (props.permissionMode || 'never'))
-            opt.selected = true
-          select.appendChild(opt)
-        }
-        select.addEventListener('change', () => props.onPermissionModeChange?.(select.value as PermissionMode))
-        el.appendChild(select)
-        return el
-      })(),
-    ] as unknown as JSX.Element
-  }) as unknown as ProviderPlugin['SettingsPanel'],
-
-  settingsTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
-    const model = props.model || DEFAULT_CODEX_MODEL
-    const label = CODEX_MODEL_LABELS[model] || model
-    return label as unknown as JSX.Element
-  },
+  settingsTriggerLabel: CodexTriggerLabel,
 }
 
 registerProvider(AgentProvider.CODEX, codexPlugin)
