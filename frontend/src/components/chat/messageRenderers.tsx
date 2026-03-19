@@ -11,6 +11,7 @@ import ChevronRight from 'lucide-solid/icons/chevron-right'
 import { createSignal, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
+import { createLogger } from '~/lib/logger'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { markdownContent } from './markdownContent.css'
@@ -51,6 +52,8 @@ import {
 
 export { ToolHeaderActions }
 export { firstNonEmptyLine, formatTaskStatus } from './rendererUtils'
+
+const logger = createLogger('messageRenderers')
 
 /** Context passed to renderers from MessageBubble. */
 export interface RenderContext {
@@ -415,6 +418,6 @@ export function renderMessageContent(
         return result
     }
   }
-  catch { /* fall through to raw text */ }
+  catch (err) { logger.warn('Failed to render message content:', err) }
   return <span>{typeof parsedOrRawJson === 'string' ? parsedOrRawJson : JSON.stringify(parsedOrRawJson)}</span>
 }

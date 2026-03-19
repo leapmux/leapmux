@@ -66,6 +66,11 @@ export const systemMessage = style([messageBubble, {
   fontSize: 'var(--text-7)',
 }])
 
+globalStyle(`${systemMessage} pre`, {
+  whiteSpace: 'pre-wrap',
+  margin: 0,
+})
+
 export const metaMessage = style({
   alignSelf: 'stretch',
   minWidth: 0,

@@ -11,6 +11,7 @@ import { render } from 'solid-js/web'
 import { IconButton } from '~/components/common/IconButton'
 import { usePreferences } from '~/context/PreferencesContext'
 import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { createLogger } from '~/lib/logger'
 import { parseMessageContent } from '~/lib/messageParser'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import * as styles from './MessageBubble.css'
@@ -19,6 +20,26 @@ import { renderMessageContent, ToolHeaderActions } from './messageRenderers'
 import * as chatStyles from './messageStyles.css'
 import { getAssistantContent } from './messageUtils'
 import { renderNotificationThread } from './notificationRenderers'
+
+const logger = createLogger('MessageBubble')
+
+function errorDetail(err: unknown): string {
+  if (err instanceof Error)
+    return err.stack ?? err.message
+  return String(err)
+}
+
+function renderErrorFallback(label: string) {
+  return (err: unknown) => {
+    logger.warn(label, err)
+    return (
+      <span class={chatStyles.systemMessage}>
+        {'Failed to render message: '}
+        <pre>{errorDetail(err)}</pre>
+      </span>
+    )
+  }
+}
 
 function roleLabel(role: MessageRole): string {
   switch (role) {
@@ -368,7 +389,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
             data-role={roleLabel(props.message.role)}
           >
             <div ref={contentRef} data-testid="message-content">
-              <ErrorBoundary fallback={<span class={chatStyles.systemMessage}>Failed to render message</span>}>
+              <ErrorBoundary fallback={renderErrorFallback('Failed to render message:')}>
                 {category().kind === 'notification_thread'
                   ? renderNotificationThread((category() as { kind: 'notification_thread', messages: unknown[] }).messages)
                   : renderMessageContent(parsed().parentObject ?? parsed().rawText, props.message.role, renderContext(), category())}
@@ -405,7 +426,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
                         class={chatStyles.metaMessage}
                         data-testid="thread-child-bubble"
                       >
-                        <ErrorBoundary fallback={<span class={chatStyles.systemMessage}>Failed to render message</span>}>
+                        <ErrorBoundary fallback={renderErrorFallback('Failed to render thread child message:')}>
                           {renderMessageContent(child, childRole(), {
                             workingDir: props.workingDir,
                             homeDir: props.homeDir,
