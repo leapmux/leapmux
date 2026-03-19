@@ -557,13 +557,13 @@ func TestAgent_PreambleSkipping(t *testing.T) {
 			processDone: make(chan struct{}),
 			stderrDone:  stderrDone,
 		},
-		model:             "test",
-		workingDir:        t.TempDir(),
-		sink:              sink,
-		preambleDelimiter: delimiter,
-		preambleMeta:      make(map[string]string),
-		pendingControl:    make(map[string]chan<- controlResult),
+		model:          "test",
+		workingDir:     t.TempDir(),
+		sink:           sink,
+		pendingControl: make(map[string]chan<- controlResult),
 	}
+	a.preambleDelimiter = delimiter
+	a.preambleMeta = make(map[string]string)
 
 	require.NoError(t, cmd.Start())
 
@@ -670,14 +670,14 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 			processDone: make(chan struct{}),
 			stderrDone:  make(chan struct{}),
 		},
-		model:              "test",
-		workingDir:         t.TempDir(),
-		sink:               sink,
-		preambleDelimiter:  delimiter,
-		preambleMetaPrefix: metaPrefix,
-		preambleMeta:       make(map[string]string),
-		pendingControl:     make(map[string]chan<- controlResult),
+		model:          "test",
+		workingDir:     t.TempDir(),
+		sink:           sink,
+		pendingControl: make(map[string]chan<- controlResult),
 	}
+	a.preambleDelimiter = delimiter
+	a.preambleMetaPrefix = metaPrefix
+	a.preambleMeta = make(map[string]string)
 	close(a.stderrDone)
 
 	require.NoError(t, cmd.Start())
@@ -707,24 +707,28 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 }
 
 func TestAgent_SupportsModelEffortDefaultFalse(t *testing.T) {
-	a := &Agent{preambleMeta: make(map[string]string)}
+	a := &Agent{}
+	a.preambleMeta = make(map[string]string)
 	assert.False(t, a.SupportsModelEffort())
 }
 
 func TestAgent_SupportsModelEffortTrue(t *testing.T) {
-	a := &Agent{preambleMeta: map[string]string{"supports_model_effort": "true"}}
+	a := &Agent{}
+	a.preambleMeta = map[string]string{"supports_model_effort": "true"}
 	assert.True(t, a.SupportsModelEffort())
 }
 
 func TestAgent_SupportsModelEffortFalseFromShell(t *testing.T) {
 	// Shell detected third-party provider env var at runtime.
-	a := &Agent{preambleMeta: map[string]string{"supports_model_effort": "false"}}
+	a := &Agent{}
+	a.preambleMeta = map[string]string{"supports_model_effort": "false"}
 	assert.False(t, a.SupportsModelEffort())
 }
 
 func TestAgent_SupportsModelEffortFalseNoMeta(t *testing.T) {
 	// Settings detected third-party → no metadata emitted → empty map.
-	a := &Agent{preambleMeta: make(map[string]string)}
+	a := &Agent{}
+	a.preambleMeta = make(map[string]string)
 	assert.False(t, a.SupportsModelEffort())
 }
 
@@ -753,7 +757,7 @@ func TestAgent_LeapmuxWorkerEnvAlwaysSet(t *testing.T) {
 	assert.False(t, foundClaudeCode, "CLAUDECODE=1 should NOT be in env without login shell")
 
 	// With login shell - verify the env is set on the command.
-	shellCmd, _, _ := buildShellWrappedCommand(ctx, "/bin/sh", true, []string{"--output-format", "stream-json"}, []string{"--model", "test"}, t.TempDir())
+	shellCmd, _, _ := buildShellWrappedCommand(ctx, "/bin/sh", true, "claude", []string{"--output-format", "stream-json"}, []string{"--model", "test"}, t.TempDir())
 	shellCmd.Env = filterEnv(shellCmd.Environ(), "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
 	shellCmd.Env = append(shellCmd.Env, "CLAUDE_CODE_ENTRYPOINT=sdk-ts", "LEAPMUX_WORKER=1", "CLAUDECODE=1")
 

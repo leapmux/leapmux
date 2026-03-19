@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -33,10 +32,17 @@ type CodexAgent struct {
 func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
-	cmd := exec.CommandContext(ctx, "codex", "app-server")
-	cmd.Dir = opts.WorkingDir
+	// Codex doesn't have third-party provider detection or model/effort
+	// conditional args, so we pass empty modelEffortArgs for a simple command.
+	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
+		ctx, opts.Shell, opts.LoginShell, "codex", []string{"app-server"}, nil, opts.WorkingDir,
+	)
+
 	cmd.Env = filterEnv(cmd.Environ(), "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
 	cmd.Env = append(cmd.Env, "LEAPMUX_WORKER=1")
+	if opts.LoginShell {
+		cmd.Env = append(cmd.Env, "CLAUDECODE=1")
+	}
 
 	cmd.Cancel = func() error {
 		return cmd.Process.Signal(syscall.SIGTERM)
@@ -63,13 +69,16 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 
 	a := &CodexAgent{
 		processBase: processBase{
-			agentID:     opts.AgentID,
-			cmd:         cmd,
-			stdin:       stdin,
-			ctx:         ctx,
-			cancel:      cancel,
-			stderrDone:  make(chan struct{}),
-			processDone: make(chan struct{}),
+			agentID:            opts.AgentID,
+			cmd:                cmd,
+			stdin:              stdin,
+			ctx:                ctx,
+			cancel:             cancel,
+			stderrDone:         make(chan struct{}),
+			processDone:        make(chan struct{}),
+			preambleDelimiter:  preambleDelimiter,
+			preambleMetaPrefix: metaPrefix,
+			preambleMeta:       make(map[string]string),
 		},
 		model:      opts.Model,
 		workingDir: opts.WorkingDir,
@@ -298,6 +307,8 @@ func (a *CodexAgent) sendNotification(method string, params json.RawMessage) err
 
 // readOutput reads JSONL lines from stdout and dispatches them.
 func (a *CodexAgent) readOutput(scanner *bufio.Scanner) {
+	a.skipPreamble(scanner)
+
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -307,12 +318,10 @@ func (a *CodexAgent) readOutput(scanner *bufio.Scanner) {
 		lineCopy := make([]byte, len(line))
 		copy(lineCopy, line)
 
-		// Check if this is a JSON-RPC response (has "id" + "result"/"error" but no "method").
 		if a.handleJSONRPCResponse(lineCopy) {
 			continue
 		}
 
-		// Otherwise it's a notification — forward to HandleOutput.
 		a.HandleOutput(lineCopy)
 	}
 
@@ -368,7 +377,7 @@ func (a *CodexAgent) handleJSONRPCResponse(line []byte) bool {
 	return true
 }
 
-// formatStartupError delegates to processBase (no preamble for Codex).
+// formatStartupError includes stderr and preamble output for diagnostics.
 func (a *CodexAgent) formatStartupError(phase string, err error) error {
-	return a.processBase.formatStartupError(phase, err, "")
+	return a.processBase.formatStartupError(phase, err, a.PreambleOutput())
 }

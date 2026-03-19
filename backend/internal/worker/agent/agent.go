@@ -41,11 +41,6 @@ type Agent struct {
 	contextUsage    *contextUsageSnapshot
 	lastAgentStatus string
 
-	preambleDelimiter  string            // if set, readOutput skips lines until this delimiter
-	preambleMetaPrefix string            // prefix for metadata lines (before delimiter)
-	preambleMeta       map[string]string // parsed key=value metadata from preamble
-	preambleOutput     []string          // captured preamble lines (before delimiter)
-
 	pendingControlMu        sync.Mutex
 	pendingControl          map[string]chan<- controlResult
 	confirmedPermissionMode string
@@ -109,7 +104,7 @@ func Start(ctx context.Context, opts Options, sink OutputSink) (*Agent, error) {
 	}
 
 	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
-		ctx, opts.Shell, opts.LoginShell, baseArgs, modelEffortArgs, opts.WorkingDir,
+		ctx, opts.Shell, opts.LoginShell, "claude", baseArgs, modelEffortArgs, opts.WorkingDir,
 	)
 
 	cmd.Env = filterEnv(cmd.Environ(), "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
@@ -153,22 +148,22 @@ func Start(ctx context.Context, opts Options, sink OutputSink) (*Agent, error) {
 
 	a := &Agent{
 		processBase: processBase{
-			agentID:    opts.AgentID,
-			cmd:        cmd,
-			stdin:      stdin,
-			ctx:        ctx,
-			cancel:     cancel,
-			stderrDone: make(chan struct{}),
-			processDone: make(chan struct{}),
+			agentID:            opts.AgentID,
+			cmd:                cmd,
+			stdin:              stdin,
+			ctx:                ctx,
+			cancel:             cancel,
+			stderrDone:         make(chan struct{}),
+			processDone:        make(chan struct{}),
+			preambleDelimiter:  preambleDelimiter,
+			preambleMetaPrefix: metaPrefix,
+			preambleMeta:       make(map[string]string),
 		},
-		model:              opts.Model,
-		workingDir:         opts.WorkingDir,
-		homeDir:            opts.HomeDir,
-		sink:               sink,
-		preambleDelimiter:  preambleDelimiter,
-		preambleMetaPrefix: metaPrefix,
-		preambleMeta:       make(map[string]string),
-		pendingControl:     make(map[string]chan<- controlResult),
+		model:          opts.Model,
+		workingDir:     opts.WorkingDir,
+		homeDir:        opts.HomeDir,
+		sink:           sink,
+		pendingControl: make(map[string]chan<- controlResult),
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -249,16 +244,6 @@ func (a *Agent) SendInput(content string) error {
 	}
 
 	return nil
-}
-
-// PreambleOutput returns the captured stdout preamble lines (before the
-// delimiter) when running under a login shell wrapper. Returns empty string
-// if no preamble was captured.
-func (a *Agent) PreambleOutput() string {
-	if len(a.preambleOutput) == 0 {
-		return ""
-	}
-	return strings.Join(a.preambleOutput, "\n")
 }
 
 // formatStartupError returns a descriptive error including stderr and
@@ -371,32 +356,7 @@ func (a *Agent) handlePendingControlResponse(line []byte) bool {
 }
 
 func (a *Agent) readOutput(scanner *bufio.Scanner) {
-	// If a preamble delimiter is set, skip lines until the delimiter is found.
-	// This handles shell login preamble (motd, .zshrc output, etc.) that
-	// appears before claude's NDJSON stream.
-	if a.preambleDelimiter != "" {
-		delimBytes := []byte(a.preambleDelimiter)
-		metaPrefixBytes := []byte(a.preambleMetaPrefix)
-		const maxPreambleLines = 50
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			trimmed := bytes.TrimSpace(line)
-			if bytes.Equal(trimmed, delimBytes) {
-				break
-			}
-			// Parse metadata lines (e.g. "__LEAPMUX_META_xxx__ key=value").
-			if len(metaPrefixBytes) > 0 && bytes.HasPrefix(trimmed, metaPrefixBytes) {
-				kv := string(trimmed[len(metaPrefixBytes):])
-				if eqIdx := strings.IndexByte(kv, '='); eqIdx >= 0 {
-					a.preambleMeta[kv[:eqIdx]] = kv[eqIdx+1:]
-				}
-				continue
-			}
-			if len(a.preambleOutput) < maxPreambleLines {
-				a.preambleOutput = append(a.preambleOutput, string(line))
-			}
-		}
-	}
+	a.skipPreamble(scanner)
 
 	for scanner.Scan() {
 		line := scanner.Bytes()

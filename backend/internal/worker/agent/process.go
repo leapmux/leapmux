@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -33,6 +34,12 @@ type processBase struct {
 
 	mu      sync.Mutex
 	stopped bool
+
+	// Preamble handling (from shell wrapper).
+	preambleDelimiter  string            // if set, skipPreamble skips lines until this delimiter
+	preambleMetaPrefix string            // prefix for metadata lines (before delimiter)
+	preambleMeta       map[string]string // parsed key=value metadata from preamble
+	preambleOutput     []string          // captured preamble lines (before delimiter)
 }
 
 // SendRawInput writes raw bytes directly to the process's stdin without
@@ -133,6 +140,46 @@ func (p *processBase) formatStartupError(phase string, err error, preambleOutput
 		parts = append(parts, "shell preamble: "+preamble)
 	}
 	return fmt.Errorf("%s", strings.Join(parts, "; "))
+}
+
+// skipPreamble reads lines from the scanner until the preamble delimiter is
+// found. Shell login preamble (motd, .zshrc output, etc.) appears before the
+// agent's JSONL stream. Metadata lines (key=value pairs prefixed with
+// preambleMetaPrefix) are parsed and stored; other preamble lines are captured
+// for diagnostics. This is a no-op if preambleDelimiter is empty.
+func (p *processBase) skipPreamble(scanner *bufio.Scanner) {
+	if p.preambleDelimiter == "" {
+		return
+	}
+	delimBytes := []byte(p.preambleDelimiter)
+	metaPrefixBytes := []byte(p.preambleMetaPrefix)
+	const maxPreambleLines = 50
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		trimmed := bytes.TrimSpace(line)
+		if bytes.Equal(trimmed, delimBytes) {
+			break
+		}
+		if len(metaPrefixBytes) > 0 && bytes.HasPrefix(trimmed, metaPrefixBytes) {
+			kv := string(trimmed[len(metaPrefixBytes):])
+			if eqIdx := strings.IndexByte(kv, '='); eqIdx >= 0 {
+				p.preambleMeta[kv[:eqIdx]] = kv[eqIdx+1:]
+			}
+			continue
+		}
+		if len(p.preambleOutput) < maxPreambleLines {
+			p.preambleOutput = append(p.preambleOutput, string(line))
+		}
+	}
+}
+
+// PreambleOutput returns the captured stdout preamble lines (before the
+// delimiter) when running under a login shell wrapper.
+func (p *processBase) PreambleOutput() string {
+	if len(p.preambleOutput) == 0 {
+		return ""
+	}
+	return strings.Join(p.preambleOutput, "\n")
 }
 
 // drainStderr starts a goroutine that reads from the given reader into
