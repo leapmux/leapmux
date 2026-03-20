@@ -623,7 +623,7 @@ func TestHelperProcessWithPreambleMeta(t *testing.T) {
 	// Output preamble
 	_, _ = fmt.Fprintln(os.Stdout, "shell preamble line")
 	// Output metadata line
-	_, _ = fmt.Fprintln(os.Stdout, metaPrefix+"supports_model_effort=false")
+	_, _ = fmt.Fprintln(os.Stdout, metaPrefix+"can_change_model_and_effort=false")
 	// Output delimiter
 	_, _ = fmt.Fprintln(os.Stdout, delimiter)
 
@@ -694,12 +694,12 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 	}, "expected output after preamble")
 
 	// Verify metadata was parsed.
-	assert.Equal(t, "false", a.preambleMeta["supports_model_effort"])
+	assert.Equal(t, "false", a.preambleMeta["can_change_model_and_effort"])
 
 	// Verify preamble output does NOT contain the metadata line.
 	preamble := a.PreambleOutput()
 	assert.Contains(t, preamble, "shell preamble line")
-	assert.NotContains(t, preamble, "supports_model_effort")
+	assert.NotContains(t, preamble, "can_change_model_and_effort")
 
 	a.Stop()
 	_ = a.Wait()

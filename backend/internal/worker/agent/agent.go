@@ -39,8 +39,9 @@ type ClaudeCodeAgent struct {
 	sink       OutputSink
 
 	// Claude Code-specific state.
-	contextUsage    *contextUsageSnapshot
-	lastAgentStatus string
+	contextUsage          *contextUsageSnapshot
+	lastAgentStatus       string
+	thirdPartyFromSettings bool // third-party LLM provider detected from settings at startup
 
 	pendingControlMu        sync.Mutex
 	pendingControl          map[string]chan<- claudeCodeControlResult
@@ -161,11 +162,12 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 			preambleMetaPrefix: metaPrefix,
 			preambleMeta:       make(map[string]string),
 		},
-		model:          opts.Model,
-		workingDir:     opts.WorkingDir,
-		homeDir:        opts.HomeDir,
-		sink:           sink,
-		pendingControl: make(map[string]chan<- claudeCodeControlResult),
+		model:                  opts.Model,
+		workingDir:             opts.WorkingDir,
+		homeDir:                opts.HomeDir,
+		sink:                   sink,
+		thirdPartyFromSettings: thirdPartyFromSettings,
+		pendingControl:         make(map[string]chan<- claudeCodeControlResult),
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -263,7 +265,14 @@ func (a *ClaudeCodeAgent) CurrentSettings() *leapmuxv1.UpdateAgentSettingsReques
 }
 
 // AvailableModels returns the hardcoded Claude Code model/effort list.
+// Returns nil when a third-party LLM provider is detected (either from
+// settings at startup, or from the shell wrapper's
+// can_change_model_and_effort=false metadata), which tells the frontend
+// to hide model and effort settings.
 func (a *ClaudeCodeAgent) AvailableModels() []*leapmuxv1.AvailableModel {
+	if a.thirdPartyFromSettings || a.preambleMeta["can_change_model_and_effort"] == "false" {
+		return nil
+	}
 	return claudeCodeAvailableModels
 }
 

@@ -106,10 +106,10 @@ func buildPosixCommand(binaryName, delimiter, metaPrefix string, baseArgs, model
 	return fmt.Sprintf(
 		"unset CLAUDECODE && "+
 			"if "+posixEnvCondition()+"; then "+
-			"echo '%ssupports_model_effort=false' && "+
+			"echo '%scan_change_model_and_effort=false' && "+
 			"echo '%s' && %s%s %s; "+
 			"else "+
-			"echo '%ssupports_model_effort=true' && "+
+			"echo '%scan_change_model_and_effort=true' && "+
 			"echo '%s' && %s%s %s %s; "+
 			"fi",
 		metaPrefix, delimiter, execPrefix, binaryName, baseArgsStr,
@@ -142,10 +142,10 @@ func buildNuCommand(binaryName, delimiter, metaPrefix string, baseArgs, modelEff
 	return fmt.Sprintf(
 		"hide-env CLAUDECODE; "+
 			"if ("+nuEnvCondition()+") { "+
-			"echo '%ssupports_model_effort=false'; "+
+			"echo '%scan_change_model_and_effort=false'; "+
 			"echo '%s'; ^%s %s "+
 			"} else { "+
-			"echo '%ssupports_model_effort=true'; "+
+			"echo '%scan_change_model_and_effort=true'; "+
 			"echo '%s'; ^%s %s %s "+
 			"}",
 		metaPrefix, delimiter, binaryName, baseArgsStr,
@@ -179,10 +179,10 @@ func buildPwshCommand(binaryName, delimiter, metaPrefix string, baseArgs, modelE
 	return fmt.Sprintf(
 		"Remove-Item Env:CLAUDECODE -ErrorAction SilentlyContinue; "+
 			"if ("+pwshEnvCondition()+") { "+
-			"Write-Output '%ssupports_model_effort=false'; "+
+			"Write-Output '%scan_change_model_and_effort=false'; "+
 			"Write-Output '%s'; & %s %s "+
 			"} else { "+
-			"Write-Output '%ssupports_model_effort=true'; "+
+			"Write-Output '%scan_change_model_and_effort=true'; "+
 			"Write-Output '%s'; & %s %s %s "+
 			"}",
 		metaPrefix, delimiter, binaryName, baseArgsStr,

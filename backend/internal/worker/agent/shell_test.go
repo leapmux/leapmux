@@ -35,9 +35,9 @@ func TestBuildShellWrappedCommand_Bash_Interactive(t *testing.T) {
 	assert.Contains(t, cmd.Args[4], "'opus'")
 	// Verify conditional structure
 	assert.Contains(t, cmd.Args[4], "CLAUDE_CODE_USE_BEDROCK")
-	assert.Contains(t, cmd.Args[4], "supports_model_effort=false")
-	assert.Contains(t, cmd.Args[4], "supports_model_effort=true")
-	assert.Contains(t, cmd.Args[4], metaPrefix+"supports_model_effort=")
+	assert.Contains(t, cmd.Args[4], "can_change_model_and_effort=false")
+	assert.Contains(t, cmd.Args[4], "can_change_model_and_effort=true")
+	assert.Contains(t, cmd.Args[4], metaPrefix+"can_change_model_and_effort=")
 }
 
 func TestBuildShellWrappedCommand_Bash_NonInteractive(t *testing.T) {
@@ -199,7 +199,7 @@ func TestBuildShellWrappedCommand_NoModelEffort(t *testing.T) {
 	assert.Contains(t, cmd.Args[4], "'--output-format'")
 	assert.NotContains(t, cmd.Args[4], "'--model'")
 	assert.NotContains(t, cmd.Args[4], "CLAUDE_CODE_USE_BEDROCK")
-	assert.NotContains(t, cmd.Args[4], "supports_model_effort")
+	assert.NotContains(t, cmd.Args[4], "can_change_model_and_effort")
 }
 
 func TestBuildShellWrappedCommand_NoModelEffort_Nu(t *testing.T) {
