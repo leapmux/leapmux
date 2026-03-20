@@ -257,8 +257,8 @@ func (a *ClaudeCodeAgent) formatStartupError(phase string, err error) error {
 }
 
 // CurrentSettings returns the current settings for this agent.
-func (a *ClaudeCodeAgent) CurrentSettings() *leapmuxv1.UpdateAgentSettingsRequest {
-	return &leapmuxv1.UpdateAgentSettingsRequest{
+func (a *ClaudeCodeAgent) CurrentSettings() *leapmuxv1.AgentSettings {
+	return &leapmuxv1.AgentSettings{
 		Model:          a.model,
 		PermissionMode: a.confirmedPermissionMode,
 	}
@@ -277,7 +277,7 @@ func (a *ClaudeCodeAgent) AvailableModels() []*leapmuxv1.AvailableModel {
 }
 
 // UpdateSettings is a no-op for Claude Code — settings changes require a restart.
-func (a *ClaudeCodeAgent) UpdateSettings(_ *leapmuxv1.UpdateAgentSettingsRequest) bool {
+func (a *ClaudeCodeAgent) UpdateSettings(_ *leapmuxv1.AgentSettings) bool {
 	return false
 }
 

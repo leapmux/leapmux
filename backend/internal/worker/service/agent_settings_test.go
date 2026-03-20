@@ -54,8 +54,8 @@ func TestUpdateAgentSettings_ClearsSessionIDOnRestartFailure(t *testing.T) {
 	svc.AgentStartupTimeout = 1 * time.Nanosecond // forces immediate timeout
 
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
-		AgentId: "agent-1",
-		Model:   "sonnet",
+		AgentId:  "agent-1",
+		Settings: &leapmuxv1.AgentSettings{Model: "sonnet"},
 	}, w)
 
 	// Verify the session ID was cleared from the DB.
@@ -91,8 +91,8 @@ func TestUpdateAgentSettings_DoesNotResumeSessionOnRestart(t *testing.T) {
 	// Agent is NOT running (HasAgent returns false), so the restart
 	// block is skipped. Verify the DB update works correctly.
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
-		AgentId: "agent-1",
-		Model:   "sonnet",
+		AgentId:  "agent-1",
+		Settings: &leapmuxv1.AgentSettings{Model: "sonnet"},
 	}, w)
 
 	// Verify the response was successful (no errors).

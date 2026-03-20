@@ -263,12 +263,18 @@ message DeleteAgentMessageRequest {
 
 message DeleteAgentMessageResponse {}
 
+// AgentSettings holds agent setting values. Empty strings mean "no change"
+// when used in UpdateAgentSettingsRequest.
+message AgentSettings {
+  string model = 1;
+  string effort = 2;
+  string permission_mode = 3;
+  string codex_sandbox_policy = 4;
+}
+
 message UpdateAgentSettingsRequest {
   string agent_id = 1;
-  string model = 2;            // Empty = don't change
-  string effort = 3;           // Empty = don't change
-  string permission_mode = 4;  // Empty = don't change
-  string codex_sandbox_policy = 5;  // Empty = don't change
+  AgentSettings settings = 2;
 }
 
 message UpdateAgentSettingsResponse {}

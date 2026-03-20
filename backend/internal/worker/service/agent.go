@@ -495,19 +495,20 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		newModel := r.GetModel()
+		s := r.GetSettings()
+		newModel := s.GetModel()
 		if newModel == "" {
 			newModel = dbAgent.Model
 		}
-		newEffort := r.GetEffort()
+		newEffort := s.GetEffort()
 		if newEffort == "" {
 			newEffort = dbAgent.Effort
 		}
-		newPermissionMode := r.GetPermissionMode()
+		newPermissionMode := s.GetPermissionMode()
 		if newPermissionMode == "" {
 			newPermissionMode = dbAgent.PermissionMode
 		}
-		newCodexSandboxPolicy := r.GetCodexSandboxPolicy()
+		newCodexSandboxPolicy := s.GetCodexSandboxPolicy()
 		if newCodexSandboxPolicy == "" {
 			newCodexSandboxPolicy = dbAgent.CodexSandboxPolicy
 		}
@@ -540,7 +541,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// next turn without a restart. Providers that don't (e.g. Claude
 		// Code) return false and we fall back to stop+restart.
 		if svc.Agents.HasAgent(agentID) {
-			updated := svc.Agents.UpdateSettings(agentID, &leapmuxv1.UpdateAgentSettingsRequest{
+			updated := svc.Agents.UpdateSettings(agentID, &leapmuxv1.AgentSettings{
 				Model:              newModel,
 				Effort:             newEffort,
 				PermissionMode:     newPermissionMode,

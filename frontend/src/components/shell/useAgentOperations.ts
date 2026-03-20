@@ -194,8 +194,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     try {
       await workerRpc.updateAgentSettings(agent.workerId, {
         agentId,
-        model: field === 'model' ? value : '',
-        effort: field === 'effort' ? value : '',
+        settings: { [field]: value },
       })
       props.settingsLoading.stop()
     }
@@ -268,9 +267,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     try {
       await workerRpc.updateAgentSettings(agent.workerId, {
         agentId,
-        model: '',
-        effort: '',
-        codexSandboxPolicy: policy,
+        settings: { codexSandboxPolicy: policy },
       })
       props.settingsLoading.stop()
     }

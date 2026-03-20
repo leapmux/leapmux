@@ -329,9 +329,7 @@ const codexPlugin: ProviderPlugin = {
   async changePermissionMode(workerId: string, agentId: string, mode: PermissionMode): Promise<void> {
     await workerRpc.updateAgentSettings(workerId, {
       agentId,
-      model: '',
-      effort: '',
-      permissionMode: mode,
+      settings: { permissionMode: mode },
     })
   },
 

@@ -350,10 +350,10 @@ func codexSandboxPolicyObject(policy string) map[string]interface{} {
 }
 
 // CurrentSettings returns the current settings for this agent.
-func (a *CodexAgent) CurrentSettings() *leapmuxv1.UpdateAgentSettingsRequest {
+func (a *CodexAgent) CurrentSettings() *leapmuxv1.AgentSettings {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return &leapmuxv1.UpdateAgentSettingsRequest{
+	return &leapmuxv1.AgentSettings{
 		Model:              a.model,
 		Effort:             a.effort,
 		PermissionMode:     a.approvalPolicy,
@@ -367,7 +367,7 @@ func (a *CodexAgent) AvailableModels() []*leapmuxv1.AvailableModel {
 }
 
 // UpdateSettings stores new settings so the next turn/start picks them up.
-func (a *CodexAgent) UpdateSettings(s *leapmuxv1.UpdateAgentSettingsRequest) bool {
+func (a *CodexAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if s.GetModel() != "" {

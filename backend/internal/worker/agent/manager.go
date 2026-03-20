@@ -217,7 +217,7 @@ func AvailableOptionGroupsForProvider(provider leapmuxv1.AgentProvider) []*leapm
 // UpdateSettings applies setting changes to a running agent so that
 // the next turn picks them up without a restart. Returns true if the
 // provider accepted the update, false if it requires a restart.
-func (m *Manager) UpdateSettings(agentID string, s *leapmuxv1.UpdateAgentSettingsRequest) bool {
+func (m *Manager) UpdateSettings(agentID string, s *leapmuxv1.AgentSettings) bool {
 	m.mu.RLock()
 	p, ok := m.agents[agentID]
 	m.mu.RUnlock()
