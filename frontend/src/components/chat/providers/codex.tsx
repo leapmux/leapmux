@@ -20,7 +20,7 @@ import {
   codexTurnCompletedRenderer,
 } from '../codexRenderers'
 import { isNotificationThreadWrapper, isObject } from '../messageUtils'
-import { RadioGroup } from '../settingsShared'
+import { effortItems, hasEfforts, modeLabel, modelDisplayName, modelItems, permissionModeGroup, permissionModeItems, RadioGroup } from '../settingsShared'
 import { registerProvider } from './registry'
 
 /** Default model for Codex agents. */
@@ -72,49 +72,28 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
   const currentEffort = () => props.effort || DEFAULT_CODEX_EFFORT
   const currentMode = () => props.permissionMode || 'on-request'
   const currentSandbox = () => props.codexSandboxPolicy || 'workspace-write'
+  const currentNetwork = () => props.codexNetworkAccess || 'restricted'
 
-  const modelItems = () => {
-    const models = props.availableModels
-    if (models && models.length > 0)
-      return models.map(m => ({ label: m.displayName || m.id, value: m.id, tooltip: m.description || undefined }))
-    return []
-  }
+  const models = () => modelItems(props.availableModels)
+  const efforts = () => effortItems(props.availableModels, currentModel())
+  const modeGroup = () => permissionModeGroup(props.availableOptionGroups)
+  const modeItems = () => permissionModeItems(props.availableOptionGroups)
 
-  const effortItems = () => {
-    const models = props.availableModels
-    if (models && models.length > 0) {
-      const model = models.find(m => m.id === currentModel())
-      if (model)
-        return model.supportedEfforts.map(e => ({ label: e.name || e.id, value: e.id, tooltip: e.description || undefined }))
-    }
-    return []
-  }
-
-  const permissionModeGroup = () =>
-    props.availableOptionGroups?.find(g => g.key === 'permissionMode')
-
-  const permissionModeItems = () => {
-    const group = permissionModeGroup()
+  const optionGroupItems = (key: string) => {
+    const group = props.availableOptionGroups?.find(g => g.key === key)
     if (group && group.options.length > 0)
-      return group.options.map(o => ({ label: o.name || o.id, value: o.id, tooltip: o.description || undefined }))
-    return []
+      return { label: group.label, items: group.options.map(o => ({ label: o.name || o.id, value: o.id, tooltip: o.description || undefined })) }
+    return null
   }
 
-  const sandboxGroup = () =>
-    props.availableOptionGroups?.find(g => g.key === 'codexSandboxPolicy')
-
-  const sandboxItems = () => {
-    const group = sandboxGroup()
-    if (group && group.options.length > 0)
-      return group.options.map(o => ({ label: o.name || o.id, value: o.id, tooltip: o.description || undefined }))
-    return []
-  }
+  const sandbox = () => optionGroupItems('codexSandboxPolicy')
+  const network = () => optionGroupItems('codexNetworkAccess')
 
   return (
     <>
       <RadioGroup
         label="Model"
-        items={modelItems()}
+        items={models()}
         testIdPrefix="model"
         name={`${menuId}-model`}
         current={currentModel()}
@@ -122,28 +101,38 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
       />
       <RadioGroup
         label="Reasoning Effort"
-        items={effortItems()}
+        items={efforts()}
         testIdPrefix="effort"
         name={`${menuId}-effort`}
         current={currentEffort()}
         onChange={v => props.onEffortChange?.(v)}
       />
       <RadioGroup
-        label={permissionModeGroup()?.label || 'Approval Policy'}
-        items={permissionModeItems()}
+        label={modeGroup()?.label || 'Approval Policy'}
+        items={modeItems()}
         testIdPrefix="permission-mode"
         name={`${menuId}-mode`}
         current={currentMode()}
         onChange={v => props.onPermissionModeChange?.(v as PermissionMode)}
       />
-      <Show when={sandboxItems().length > 0}>
+      <Show when={sandbox()}>
         <RadioGroup
-          label={sandboxGroup()?.label || 'Sandbox'}
-          items={sandboxItems()}
+          label={sandbox()!.label || 'Sandbox'}
+          items={sandbox()!.items}
           testIdPrefix="sandbox"
           name={`${menuId}-sandbox`}
           current={currentSandbox()}
           onChange={v => props.onCodexSandboxPolicyChange?.(v)}
+        />
+      </Show>
+      <Show when={network()}>
+        <RadioGroup
+          label={network()!.label || 'Network Access'}
+          items={network()!.items}
+          testIdPrefix="network"
+          name={`${menuId}-network`}
+          current={currentNetwork()}
+          onChange={v => props.onCodexNetworkAccessChange?.(v)}
         />
       </Show>
     </>
@@ -155,15 +144,7 @@ function CodexTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
   const currentModel = () => props.model || DEFAULT_CODEX_MODEL
   const currentEffort = () => props.effort || DEFAULT_CODEX_EFFORT
   const currentMode = () => props.permissionMode || 'on-request'
-  const displayName = () => {
-    const models = props.availableModels
-    if (models && models.length > 0) {
-      const model = models.find(m => m.id === currentModel())
-      if (model)
-        return model.displayName || model.id
-    }
-    return currentModel()
-  }
+  const displayName = () => modelDisplayName(props.availableModels, currentModel())
 
   const effortIcon = () => {
     switch (currentEffort()) {
@@ -176,30 +157,14 @@ function CodexTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
     }
   }
 
-  const hasEfforts = () => {
-    const models = props.availableModels
-    if (models && models.length > 0) {
-      const model = models.find(m => m.id === currentModel())
-      return model ? model.supportedEfforts.length > 0 : false
-    }
-    return false
-  }
-
-  const modeLabel = () => {
-    const group = props.availableOptionGroups?.find(g => g.key === 'permissionMode')
-    if (group) {
-      const opt = group.options.find(o => o.id === currentMode())
-      if (opt)
-        return opt.name || opt.id
-    }
-    return currentMode()
-  }
+  const hasEffort = () => hasEfforts(props.availableModels, currentModel())
+  const mode = () => modeLabel(props.availableOptionGroups, currentMode())
   return (
     <>
       {displayName()}
-      <Show when={hasEfforts()}>{effortIcon()}</Show>
+      <Show when={hasEffort()}>{effortIcon()}</Show>
       {' '}
-      {modeLabel()}
+      {mode()}
     </>
   )
 }

@@ -10,12 +10,14 @@ export interface ProviderSettingsPanelProps {
   effort?: string
   permissionMode?: string
   codexSandboxPolicy?: string
+  codexNetworkAccess?: string
   availableModels?: AvailableModel[]
   availableOptionGroups?: AvailableOptionGroup[]
   onModelChange?: (model: string) => void
   onEffortChange?: (effort: string) => void
   onPermissionModeChange?: (mode: PermissionMode) => void
   onCodexSandboxPolicyChange?: (policy: string) => void
+  onCodexNetworkAccessChange?: (access: string) => void
 }
 
 /** Context for rendering a message — forwarded from MessageBubble. */
@@ -26,7 +28,7 @@ export interface RenderContext {
 export interface ProviderPlugin {
   /** Default model identifier for this provider. */
   defaultModel?: string
-  /** Default effort level for this provider. */
+  /** Default effort for this provider. */
   defaultEffort?: string
 
   /** Classify a parsed message into a rendering category. */

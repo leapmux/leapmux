@@ -74,6 +74,7 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 		err := provider.Wait()
 		m.mu.Lock()
 		delete(m.agents, opts.AgentID)
+		delete(m.cachedModels, opts.AgentID)
 		m.mu.Unlock()
 
 		exitCode := 0

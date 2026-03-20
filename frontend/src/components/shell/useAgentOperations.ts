@@ -278,6 +278,28 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
+  // Change Codex network access for the given agent.
+  const handleCodexNetworkAccessChange = async (agentId: string, access: string) => {
+    const agent = props.agentStore.state.agents.find(a => a.id === agentId)
+    if (!agent)
+      return
+    const previous = agent.codexNetworkAccess || 'restricted'
+    props.agentStore.updateAgent(agentId, { codexNetworkAccess: access })
+    props.settingsLoading.start()
+    try {
+      await workerRpc.updateAgentSettings(agent.workerId, {
+        agentId,
+        settings: { codexNetworkAccess: access },
+      })
+      props.settingsLoading.stop()
+    }
+    catch (err) {
+      props.agentStore.updateAgent(agentId, { codexNetworkAccess: previous })
+      props.settingsLoading.stop()
+      showWarnToast('Failed to change network access', err)
+    }
+  }
+
   // Retry a failed message delivery.
   // Always re-sends via sendAgentMessage (which auto-starts the agent
   // if needed), then removes the old failed message.
@@ -355,6 +377,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     handleInterrupt,
     handlePermissionModeChange,
     handleCodexSandboxPolicyChange,
+    handleCodexNetworkAccessChange,
     handleRetryMessage,
     handleDeleteMessage,
     handleCloseAgent,

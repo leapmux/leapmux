@@ -31,6 +31,7 @@ type CodexAgent struct {
 	pendingReqs     sync.Map     // reqID (int64) -> chan json.RawMessage
 	approvalPolicy  string       // Codex approval policy (stored as-is from DB)
 	sandboxPolicy   string       // Codex sandbox policy (e.g. "workspace-write")
+	networkAccess   string       // Codex network access ("restricted" or "enabled")
 	availableModels []*leapmuxv1.AvailableModel
 }
 
@@ -141,6 +142,12 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	}
 	a.sandboxPolicy = sandboxPolicy
 
+	networkAccess := opts.CodexNetworkAccess
+	if networkAccess == "" {
+		networkAccess = "restricted"
+	}
+	a.networkAccess = networkAccess
+
 	// 4. Send "thread/start" or "thread/resume" request.
 	threadParams := map[string]interface{}{
 		"model":          opts.Model,
@@ -248,6 +255,7 @@ func (a *CodexAgent) SendInput(content string) error {
 	effort := a.effort
 	approvalPolicy := a.approvalPolicy
 	sandboxPolicy := a.sandboxPolicy
+	networkAccess := a.networkAccess
 	a.mu.Unlock()
 
 	if threadID == "" {
@@ -263,14 +271,14 @@ func (a *CodexAgent) SendInput(content string) error {
 		return a.sendTurnSteer(threadID, turnID, input)
 	}
 
-	return a.sendTurnStart(threadID, input, model, effort, approvalPolicy, sandboxPolicy)
+	return a.sendTurnStart(threadID, input, model, effort, approvalPolicy, sandboxPolicy, networkAccess)
 }
 
 // sendTurnStart sends a turn/start request with all current settings.
 func (a *CodexAgent) sendTurnStart(
 	threadID string,
 	input []map[string]interface{},
-	model, effort, approvalPolicy, sandboxPolicy string,
+	model, effort, approvalPolicy, sandboxPolicy, networkAccess string,
 ) error {
 	params := map[string]interface{}{
 		"threadId": threadID,
@@ -285,7 +293,7 @@ func (a *CodexAgent) sendTurnStart(
 	if approvalPolicy != "" {
 		params["approvalPolicy"] = approvalPolicy
 	}
-	if sp := codexSandboxPolicyObject(sandboxPolicy); sp != nil {
+	if sp := codexSandboxPolicyObject(sandboxPolicy, networkAccess); sp != nil {
 		params["sandboxPolicy"] = sp
 	}
 	paramsJSON, err := json.Marshal(params)
@@ -335,18 +343,23 @@ func (a *CodexAgent) sendTurnSteer(threadID, turnID string, input []map[string]i
 // codexSandboxPolicyObject converts a simple sandbox policy string
 // (e.g. "danger-full-access") to the tagged object format expected by
 // turn/start's sandboxPolicy field (e.g. {"type": "dangerFullAccess"}).
+// networkAccess is included as a boolean for workspaceWrite/readOnly or
+// as a string ("restricted"/"enabled") for dangerFullAccess.
 // Returns nil if the policy is empty or unrecognized.
-func codexSandboxPolicyObject(policy string) map[string]interface{} {
+func codexSandboxPolicyObject(policy, networkAccess string) map[string]interface{} {
+	var obj map[string]interface{}
 	switch policy {
 	case "danger-full-access":
-		return map[string]interface{}{"type": "dangerFullAccess"}
+		obj = map[string]interface{}{"type": "dangerFullAccess"}
 	case "workspace-write":
-		return map[string]interface{}{"type": "workspaceWrite"}
+		obj = map[string]interface{}{"type": "workspaceWrite"}
 	case "read-only":
-		return map[string]interface{}{"type": "readOnly"}
+		obj = map[string]interface{}{"type": "readOnly"}
 	default:
 		return nil
 	}
+	obj["networkAccess"] = networkAccess == "enabled"
+	return obj
 }
 
 // CurrentSettings returns the current settings for this agent.
@@ -358,6 +371,7 @@ func (a *CodexAgent) CurrentSettings() *leapmuxv1.AgentSettings {
 		Effort:             a.effort,
 		PermissionMode:     a.approvalPolicy,
 		CodexSandboxPolicy: a.sandboxPolicy,
+		CodexNetworkAccess: a.networkAccess,
 	}
 }
 
@@ -381,6 +395,9 @@ func (a *CodexAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	}
 	if s.GetCodexSandboxPolicy() != "" {
 		a.sandboxPolicy = s.GetCodexSandboxPolicy()
+	}
+	if s.GetCodexNetworkAccess() != "" {
+		a.networkAccess = s.GetCodexNetworkAccess()
 	}
 	return true
 }
@@ -443,13 +460,16 @@ func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*leapmuxv1.Av
 			}
 		}
 
-		displayName := m.DisplayName
+		// Prefer our curated display name over the API's, which often
+		// returns the raw model ID (e.g. "gpt-5.4" instead of "GPT-5.4").
+		var displayName string
 		var description string
 		if d, ok := defaultsByID[id]; ok {
-			if displayName == "" {
-				displayName = d.DisplayName
-			}
+			displayName = d.DisplayName
 			description = d.Description
+		}
+		if displayName == "" {
+			displayName = m.DisplayName
 		}
 		if displayName == "" {
 			displayName = codexModelDisplayName(id)
@@ -506,11 +526,19 @@ func init() {
 			},
 			{
 				Key:   "codexSandboxPolicy",
-				Label: "Sandbox",
+				Label: "Sandbox Policy",
 				Options: []*leapmuxv1.AvailableOption{
 					{Id: "danger-full-access", Name: "Full Access", Description: "No filesystem restrictions"},
 					{Id: "workspace-write", Name: "Workspace Write", Description: "Write only within the working directory"},
 					{Id: "read-only", Name: "Read Only", Description: "No write access to the filesystem"},
+				},
+			},
+			{
+				Key:   "codexNetworkAccess",
+				Label: "Network Access",
+				Options: []*leapmuxv1.AvailableOption{
+					{Id: "restricted", Name: "Restricted", Description: "No network access from the sandbox"},
+					{Id: "enabled", Name: "Enabled", Description: "Allow network access from the sandbox"},
 				},
 			},
 		},
@@ -545,22 +573,12 @@ func codexModelDisplayName(id string) string {
 
 // codexEffortName returns a short human-readable label for a Codex effort ID.
 func codexEffortName(id string) string {
-	switch id {
-	case "xhigh":
-		return "Extra High"
-	case "high":
-		return "High"
-	case "medium":
-		return "Medium"
-	case "low":
-		return "Low"
-	case "minimal":
-		return "Minimal"
-	case "none":
-		return "None"
-	default:
-		return id
+	for _, e := range codexDefaultEfforts {
+		if e.Id == id {
+			return e.Name
+		}
 	}
+	return id
 }
 
 // HandleOutput processes a single JSONL notification from Codex.

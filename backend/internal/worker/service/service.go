@@ -156,13 +156,31 @@ func modelOrDefault(model string, provider leapmuxv1.AgentProvider) string {
 	return agent.DefaultModel(provider)
 }
 
-// effortOrDefault returns the effort if non-empty, otherwise the provider's
-// default effort from the agent registry.
+// effortOrDefault returns the effort if non-empty, otherwise the
+// provider's default effort from the agent registry.
 func effortOrDefault(effort string, provider leapmuxv1.AgentProvider) string {
 	if effort != "" {
 		return effort
 	}
 	return agent.DefaultEffort(provider)
+}
+
+// codexSandboxPolicyOrDefault returns the sandbox policy if non-empty,
+// otherwise "workspace-write" (the Codex default).
+func codexSandboxPolicyOrDefault(policy string) string {
+	if policy != "" {
+		return policy
+	}
+	return "workspace-write"
+}
+
+// codexNetworkAccessOrDefault returns the network access if non-empty,
+// otherwise "restricted" (the Codex default).
+func codexNetworkAccessOrDefault(access string) string {
+	if access != "" {
+		return access
+	}
+	return "restricted"
 }
 
 // settingsDisplayLabels returns lookup functions for model and effort display

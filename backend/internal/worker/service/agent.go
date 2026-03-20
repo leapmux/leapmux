@@ -82,6 +82,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			SystemPrompt:       r.GetSystemPrompt(),
 			Effort:             r.GetEffort(),
 			CodexSandboxPolicy: r.GetCodexSandboxPolicy(),
+			CodexNetworkAccess: r.GetCodexNetworkAccess(),
 			AgentProvider:      agentProvider,
 		}); err != nil {
 			slog.Error("failed to create agent", "error", err)
@@ -97,6 +98,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			WorkingDir:         workingDir,
 			ResumeSessionID:    r.GetAgentSessionId(),
 			CodexSandboxPolicy: r.GetCodexSandboxPolicy(),
+			CodexNetworkAccess: r.GetCodexNetworkAccess(),
 			StartupTimeout:     svc.agentStartupTimeout(),
 			Shell:              svc.agentShell(),
 			LoginShell:         svc.agentLoginShell(),
@@ -338,12 +340,17 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 		wg.Wait()
 
+		optionGroupCache := make(map[leapmuxv1.AgentProvider][]*leapmuxv1.AvailableOptionGroup)
 		protoAgents := make([]*leapmuxv1.AgentInfo, 0, len(agents))
 		for i := range agents {
 			if accessibleWsIDs != nil && !accessibleWsIDs[agents[i].WorkspaceID] {
 				continue
 			}
-			protoAgents = append(protoAgents, agentToProto(&agents[i], agents[i].PermissionMode, svc.WorkerID, svc.Agents.HasAgent(agents[i].ID), gitStatuses[i], svc.Agents.AvailableModels(agents[i].ID, agents[i].AgentProvider), svc.Agents.AvailableOptionGroups(agents[i].AgentProvider)))
+			p := agents[i].AgentProvider
+			if _, ok := optionGroupCache[p]; !ok {
+				optionGroupCache[p] = svc.Agents.AvailableOptionGroups(p)
+			}
+			protoAgents = append(protoAgents, agentToProto(&agents[i], agents[i].PermissionMode, svc.WorkerID, svc.Agents.HasAgent(agents[i].ID), gitStatuses[i], svc.Agents.AvailableModels(agents[i].ID, agents[i].AgentProvider), optionGroupCache[p]))
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.ListAgentsResponse{
@@ -512,6 +519,10 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		if newCodexSandboxPolicy == "" {
 			newCodexSandboxPolicy = dbAgent.CodexSandboxPolicy
 		}
+		newCodexNetworkAccess := s.GetCodexNetworkAccess()
+		if newCodexNetworkAccess == "" {
+			newCodexNetworkAccess = dbAgent.CodexNetworkAccess
+		}
 
 		// Update the DB.
 		if err := svc.Queries.UpdateAgentModelAndEffort(bgCtx(), db.UpdateAgentModelAndEffortParams{
@@ -535,6 +546,12 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 				ID:                 agentID,
 			})
 		}
+		if newCodexNetworkAccess != dbAgent.CodexNetworkAccess {
+			_ = svc.Queries.SetAgentCodexNetworkAccess(bgCtx(), db.SetAgentCodexNetworkAccessParams{
+				CodexNetworkAccess: newCodexNetworkAccess,
+				ID:                 agentID,
+			})
+		}
 
 		// If the agent is currently running, try a live update first.
 		// Providers that support it (e.g. Codex) apply settings to the
@@ -546,6 +563,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 				Effort:             newEffort,
 				PermissionMode:     newPermissionMode,
 				CodexSandboxPolicy: newCodexSandboxPolicy,
+				CodexNetworkAccess: newCodexNetworkAccess,
 			})
 
 			if !updated {
@@ -572,6 +590,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 					ResumeSessionID:    resumeSessionID,
 					PermissionMode:     newPermissionMode,
 					CodexSandboxPolicy: newCodexSandboxPolicy,
+					CodexNetworkAccess: newCodexNetworkAccess,
 					StartupTimeout:     svc.agentStartupTimeout(),
 					Shell:              svc.agentShell(),
 					LoginShell:         svc.agentLoginShell(),
@@ -627,9 +646,17 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			}
 		}
 		if dbAgent.CodexSandboxPolicy != newCodexSandboxPolicy {
+			oldPolicy := codexSandboxPolicyOrDefault(dbAgent.CodexSandboxPolicy)
 			changes["codexSandboxPolicy"] = map[string]string{
-				"old": dbAgent.CodexSandboxPolicy, "new": newCodexSandboxPolicy,
-				"oldLabel": optionLabel("codexSandboxPolicy", dbAgent.CodexSandboxPolicy, dbAgent.AgentProvider), "newLabel": optionLabel("codexSandboxPolicy", newCodexSandboxPolicy, dbAgent.AgentProvider),
+				"old": oldPolicy, "new": newCodexSandboxPolicy,
+				"oldLabel": optionLabel("codexSandboxPolicy", oldPolicy, dbAgent.AgentProvider), "newLabel": optionLabel("codexSandboxPolicy", newCodexSandboxPolicy, dbAgent.AgentProvider),
+			}
+		}
+		if dbAgent.CodexNetworkAccess != newCodexNetworkAccess {
+			oldAccess := codexNetworkAccessOrDefault(dbAgent.CodexNetworkAccess)
+			changes["codexNetworkAccess"] = map[string]string{
+				"old": oldAccess, "new": newCodexNetworkAccess,
+				"oldLabel": optionLabel("codexNetworkAccess", oldAccess, dbAgent.AgentProvider), "newLabel": optionLabel("codexNetworkAccess", newCodexNetworkAccess, dbAgent.AgentProvider),
 			}
 		}
 		if len(changes) > 0 {
@@ -885,6 +912,7 @@ func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, 
 		AvailableModels:       availableModels,
 		AvailableOptionGroups: availableOptionGroups,
 		CodexSandboxPolicy:    a.CodexSandboxPolicy,
+		CodexNetworkAccess:    a.CodexNetworkAccess,
 	}
 
 	if a.ClosedAt.Valid {
@@ -921,6 +949,7 @@ func (svc *Context) handleClearContext(agentID string) {
 		WorkingDir:         dbAgent.WorkingDir,
 		PermissionMode:     dbAgent.PermissionMode,
 		CodexSandboxPolicy: dbAgent.CodexSandboxPolicy,
+		CodexNetworkAccess: dbAgent.CodexNetworkAccess,
 		StartupTimeout:     svc.agentStartupTimeout(),
 		Shell:              svc.agentShell(),
 		LoginShell:         svc.agentLoginShell(),
@@ -980,6 +1009,7 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 		ResumeSessionID:    resumeSessionID,
 		PermissionMode:     dbAgent.PermissionMode,
 		CodexSandboxPolicy: dbAgent.CodexSandboxPolicy,
+		CodexNetworkAccess: dbAgent.CodexNetworkAccess,
 		StartupTimeout:     svc.agentStartupTimeout(),
 		Shell:              svc.agentShell(),
 		LoginShell:         svc.agentLoginShell(),
@@ -1249,6 +1279,7 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 		WorkingDir:         dbAgent.WorkingDir,
 		PermissionMode:     targetMode,
 		CodexSandboxPolicy: dbAgent.CodexSandboxPolicy,
+		CodexNetworkAccess: dbAgent.CodexNetworkAccess,
 		StartupTimeout:     svc.agentStartupTimeout(),
 		Shell:              svc.agentShell(),
 		LoginShell:         svc.agentLoginShell(),

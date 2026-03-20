@@ -36,6 +36,7 @@ export interface AgentEditorPanelProps {
   onControlResponse?: (agentId: string, content: Uint8Array) => Promise<void>
   onPermissionModeChange?: (mode: PermissionMode) => void
   onCodexSandboxPolicyChange?: (policy: string) => void
+  onCodexNetworkAccessChange?: (access: string) => void
   onModelChange?: (model: string) => void
   onEffortChange?: (effort: string) => void
   onInterrupt?: () => void
@@ -345,6 +346,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                         effort={props.agent?.effort}
                         permissionMode={props.agent?.permissionMode}
                         codexSandboxPolicy={props.agent?.codexSandboxPolicy}
+                        codexNetworkAccess={props.agent?.codexNetworkAccess}
                         availableModels={props.agent?.availableModels}
                         availableOptionGroups={props.agent?.availableOptionGroups}
                         agentProvider={props.agent?.agentProvider}
@@ -352,6 +354,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                         onEffortChange={props.onEffortChange}
                         onPermissionModeChange={props.onPermissionModeChange}
                         onCodexSandboxPolicyChange={props.onCodexSandboxPolicyChange}
+                        onCodexNetworkAccessChange={props.onCodexNetworkAccessChange}
                       />
                       <Show when={info.showInfoTrigger()}>
                         <DropdownMenu

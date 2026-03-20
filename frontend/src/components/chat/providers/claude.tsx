@@ -12,7 +12,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { Icon } from '~/components/common/Icon'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { isNotificationThreadWrapper, isObject } from '../messageUtils'
-import { RadioGroup } from '../settingsShared'
+import { effortItems, hasEfforts, modeLabel, modelDisplayName, modelItems, permissionModeGroup, permissionModeItems, RadioGroup } from '../settingsShared'
 import { registerProvider } from './registry'
 
 function generateRandomId(): string {
@@ -169,42 +169,19 @@ function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element
   const currentEffort = () => props.effort || DEFAULT_CLAUDE_EFFORT
   const currentMode = () => props.permissionMode || 'default'
 
-  const modelItems = () => {
-    const models = props.availableModels
-    if (models && models.length > 0)
-      return models.map(m => ({ label: m.displayName || m.id, value: m.id, tooltip: m.description || undefined }))
-    return []
-  }
-
-  const effortItems = () => {
-    const models = props.availableModels
-    if (models && models.length > 0) {
-      const model = models.find(m => m.id === currentModel())
-      if (model)
-        return model.supportedEfforts.map(e => ({ label: e.name || e.id, value: e.id, tooltip: e.description || undefined }))
-    }
-    return []
-  }
-
-  const hasEfforts = () => effortItems().length > 0
-
-  const permissionModeGroup = () =>
-    props.availableOptionGroups?.find(g => g.key === 'permissionMode')
-
-  const permissionModeItems = () => {
-    const group = permissionModeGroup()
-    if (group && group.options.length > 0)
-      return group.options.map(o => ({ label: o.name || o.id, value: o.id, tooltip: o.description || undefined }))
-    return []
-  }
+  const models = () => modelItems(props.availableModels)
+  const efforts = () => effortItems(props.availableModels, currentModel())
+  const hasEffort = () => efforts().length > 0
+  const modeGroup = () => permissionModeGroup(props.availableOptionGroups)
+  const modeItems = () => permissionModeItems(props.availableOptionGroups)
 
   return (
     <>
       <Show when={props.availableModels && props.availableModels.length > 0}>
-        <Show when={hasEfforts()}>
+        <Show when={hasEffort()}>
           <RadioGroup
             label="Effort"
-            items={effortItems()}
+            items={efforts()}
             testIdPrefix="effort"
             name={`${menuId}-effort`}
             current={currentEffort()}
@@ -213,7 +190,7 @@ function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element
         </Show>
         <RadioGroup
           label="Model"
-          items={modelItems()}
+          items={models()}
           testIdPrefix="model"
           name={`${menuId}-model`}
           current={currentModel()}
@@ -227,8 +204,8 @@ function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element
         />
       </Show>
       <RadioGroup
-        label={permissionModeGroup()?.label || 'Permission Mode'}
-        items={permissionModeItems()}
+        label={modeGroup()?.label || 'Permission Mode'}
+        items={modeItems()}
         testIdPrefix="permission-mode"
         name={`${menuId}-mode`}
         current={currentMode()}
@@ -244,15 +221,7 @@ function ClaudeCodeTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element 
   const currentEffort = () => props.effort || DEFAULT_CLAUDE_EFFORT
   const currentMode = () => props.permissionMode || 'default'
 
-  const displayName = () => {
-    const models = props.availableModels
-    if (models && models.length > 0) {
-      const model = models.find(m => m.id === currentModel())
-      if (model)
-        return model.displayName || model.id
-    }
-    return currentModel()
-  }
+  const displayName = () => modelDisplayName(props.availableModels, currentModel())
 
   const effortIcon = () => {
     switch (currentEffort()) {
@@ -264,32 +233,16 @@ function ClaudeCodeTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element 
     }
   }
 
-  const hasEfforts = () => {
-    const models = props.availableModels
-    if (models && models.length > 0) {
-      const model = models.find(m => m.id === currentModel())
-      return model ? model.supportedEfforts.length > 0 : false
-    }
-    return false
-  }
-
-  const modeLabel = () => {
-    const group = props.availableOptionGroups?.find(g => g.key === 'permissionMode')
-    if (group) {
-      const opt = group.options.find(o => o.id === currentMode())
-      if (opt)
-        return opt.name || opt.id
-    }
-    return currentMode()
-  }
+  const hasEffort = () => hasEfforts(props.availableModels, currentModel())
+  const mode = () => modeLabel(props.availableOptionGroups, currentMode())
 
   return (
     <>
       <Show when={props.availableModels && props.availableModels.length > 0}>
         {displayName()}
-        <Show when={hasEfforts()}>{effortIcon()}</Show>
+        <Show when={hasEffort()}>{effortIcon()}</Show>
       </Show>
-      {modeLabel()}
+      {mode()}
     </>
   )
 }

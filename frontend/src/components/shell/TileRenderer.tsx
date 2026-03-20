@@ -440,6 +440,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         onControlResponse={agentOps.handleControlResponse}
         onPermissionModeChange={mode => agentOps.handlePermissionModeChange(agentId(), mode)}
         onCodexSandboxPolicyChange={policy => agentOps.handleCodexSandboxPolicyChange(agentId(), policy)}
+        onCodexNetworkAccessChange={access => agentOps.handleCodexNetworkAccessChange(agentId(), access)}
         onModelChange={v => agentOps.handleModelOrEffortChange(agentId(), 'model', v)}
         onEffortChange={v => agentOps.handleModelOrEffortChange(agentId(), 'effort', v)}
         onInterrupt={() => agentOps.handleInterrupt(agentId())}

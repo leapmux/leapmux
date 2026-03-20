@@ -52,11 +52,12 @@ type ClaudeCodeAgent struct {
 type Options struct {
 	AgentID            string
 	Model              string
-	Effort             string // Effort level (low, medium, high, max)
+	Effort             string // Effort (low, medium, high, max)
 	WorkingDir         string
 	ResumeSessionID    string                  // If set, uses --resume to resume a previous session
 	PermissionMode     string                  // Permission mode to set on startup (default, acceptEdits, plan, bypassPermissions)
 	CodexSandboxPolicy string                  // Codex sandbox policy (e.g. "danger-full-access", "workspace-write")
+	CodexNetworkAccess string                  // Codex network access ("restricted" or "enabled")
 	StartupTimeout     time.Duration           // Timeout for the startup handshake (default: 30s)
 	Shell              string                  // Default shell path (always set when using shell wrapper)
 	LoginShell         bool                    // If true, use interactive+login shell flags
@@ -283,7 +284,7 @@ func (a *ClaudeCodeAgent) UpdateSettings(_ *leapmuxv1.AgentSettings) bool {
 
 // claudeCodeEfforts shared across models (except haiku gets none, and only opus gets max).
 var claudeCodeEffortAll = []*leapmuxv1.AvailableEffort{
-	{Id: "auto", Name: "Auto", Description: "Let Claude decide the appropriate effort level"},
+	{Id: "auto", Name: "Auto", Description: "Let Claude decide the appropriate effort"},
 	{Id: "max", Name: "Max", Description: "Deepest reasoning; uses extended thinking"},
 	{Id: "high", Name: "High", Description: "Thorough reasoning for complex tasks"},
 	{Id: "medium", Name: "Medium", Description: "Balanced speed and reasoning depth"},
@@ -291,7 +292,7 @@ var claudeCodeEffortAll = []*leapmuxv1.AvailableEffort{
 }
 
 var claudeCodeEffortNoMax = []*leapmuxv1.AvailableEffort{
-	{Id: "auto", Name: "Auto", Description: "Let Claude decide the appropriate effort level"},
+	{Id: "auto", Name: "Auto", Description: "Let Claude decide the appropriate effort"},
 	{Id: "high", Name: "High", Description: "Thorough reasoning for complex tasks"},
 	{Id: "medium", Name: "Medium", Description: "Balanced speed and reasoning depth"},
 	{Id: "low", Name: "Low", Description: "Faster responses with lighter reasoning"},
@@ -560,7 +561,7 @@ func filterEnv(environ []string, keys ...string) []string {
 }
 
 // buildModelEffortArgs constructs the --model and --effort CLI arguments for
-// Claude Code. Haiku does not support effort levels, and max effort is only
+// Claude Code. Haiku does not support effort, and max effort is only
 // supported for opus models (falls back to high for others).
 func buildModelEffortArgs(model, effort string) []string {
 	args := []string{"--model", model}
