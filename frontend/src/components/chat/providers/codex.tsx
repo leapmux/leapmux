@@ -19,6 +19,7 @@ import {
   codexReasoningRenderer,
   codexTurnCompletedRenderer,
 } from '../codexRenderers'
+import { CodexControlActions, CodexControlContent } from '../controls/CodexControlRequest'
 import { isNotificationThreadWrapper, isObject } from '../messageUtils'
 import { effortItems, hasEfforts, modeLabel, modelDisplayName, modelItems, permissionModeGroup, permissionModeItems, RadioGroup } from '../settingsShared'
 import { registerProvider } from './registry'
@@ -42,20 +43,13 @@ function buildCodexInterruptRequest(threadId: string, turnId: string): string {
 }
 
 /**
- * Builds a JSON-RPC response for a Codex approval request (allow).
+ * Builds a JSON-RPC response for a Codex approval request.
  */
-function buildCodexApprovalResponse(requestId: number, approved: boolean, decision?: string): string {
-  if (approved) {
-    return JSON.stringify({
-      jsonrpc: '2.0',
-      id: requestId,
-      result: { decision: decision || 'approved' },
-    })
-  }
+function buildCodexApprovalResponse(requestId: number | string, decision: Record<string, unknown> | string): string {
   return JSON.stringify({
     jsonrpc: '2.0',
     id: requestId,
-    result: { decision: 'denied', reason: 'Rejected by user.' },
+    result: { decision },
   })
 }
 
@@ -185,6 +179,11 @@ const codexPlugin: ProviderPlugin = {
     if (!parent)
       return { kind: 'unknown' }
 
+    // thread/status/changed notifications are transient status signals
+    // (e.g. waitingOnApproval). Persisted but not displayed.
+    if (parent.method === 'thread/status/changed')
+      return { kind: 'hidden' }
+
     // Codex wrapper messages represent state updates of the same item
     // (e.g. inProgress → completed). Use the last message as the effective parent.
     const effective = (wrapper && wrapper.messages.length > 1)
@@ -279,14 +278,20 @@ const codexPlugin: ProviderPlugin = {
   },
 
   buildControlResponse(parsed: Record<string, unknown>): Uint8Array | null {
-    const requestId = (parsed?.response as Record<string, unknown>)?.request_id as string | undefined
+    const response = parsed?.response as Record<string, unknown> | undefined
+    const requestId = response?.request_id as string | undefined
     if (!requestId)
       return null
     const numId = Number(requestId)
     const rpcId = Number.isFinite(numId) ? numId : requestId
-    const behavior = ((parsed?.response as Record<string, unknown>)?.response as Record<string, unknown>)?.behavior
-    const approved = behavior === 'allow'
-    return new TextEncoder().encode(buildCodexApprovalResponse(rpcId as number, approved))
+    // Provider-specific decision (set by Codex ControlActions) — pass through as-is.
+    const inner = response?.response as Record<string, unknown> | undefined
+    const codexDecision = inner?.codexDecision as Record<string, unknown> | string | undefined
+    if (codexDecision)
+      return new TextEncoder().encode(buildCodexApprovalResponse(rpcId, codexDecision))
+    // Generic allow/deny from GenericToolActions — translate to accept/decline.
+    const behavior = inner?.behavior
+    return new TextEncoder().encode(buildCodexApprovalResponse(rpcId, behavior === 'allow' ? 'accept' : 'decline'))
   },
 
   // Codex applies the new approval policy on the next turn/start.
@@ -296,6 +301,9 @@ const codexPlugin: ProviderPlugin = {
       settings: { permissionMode: mode },
     })
   },
+
+  ControlContent: CodexControlContent,
+  ControlActions: CodexControlActions,
 
   SettingsPanel: CodexSettingsPanel,
 

@@ -263,6 +263,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       }
       case 'controlRequest': {
         const cr = inner.value
+        // During catch-up, the INACTIVE statusChange may have already been
+        // processed before this replayed controlRequest arrives. Skip adding
+        // the request so the user isn't stuck on an unanswerable prompt.
+        const agentEntry = agentStore.state.agents.find(a => a.id === cr.agentId)
+        if (agentEntry?.status === AgentStatus.INACTIVE)
+          break
         const payload = JSON.parse(new TextDecoder().decode(cr.payload))
         controlStore.addRequest(cr.agentId, {
           requestId: cr.requestId,
