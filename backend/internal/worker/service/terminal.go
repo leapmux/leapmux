@@ -158,7 +158,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 		if gs := gitutil.GetGitStatus(gitDir); gs != nil {
 			resp.GitBranch = gs.Branch
-			resp.GitOriginUrl = gs.OriginURL
+			resp.GitOriginUrl = gs.OriginUrl
 		}
 		sendProtoResponse(sender, resp)
 	})
@@ -425,6 +425,6 @@ func populateTerminalGitInfo(ti *leapmuxv1.TerminalInfo, shellStartDir string) {
 	gs := gitutil.GetGitStatus(dir)
 	if gs != nil {
 		ti.GitBranch = gs.Branch
-		ti.GitOriginUrl = gs.OriginURL
+		ti.GitOriginUrl = gs.OriginUrl
 	}
 }

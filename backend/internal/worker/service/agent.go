@@ -327,7 +327,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		// Compute git status concurrently for all agents.
-		gitStatuses := make([]*gitutil.GitStatus, len(agents))
+		gitStatuses := make([]*leapmuxv1.AgentGitStatus, len(agents))
 		var wg sync.WaitGroup
 		for i := range agents {
 			wg.Add(1)
@@ -785,7 +785,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 					PermissionMode: dbAgent.PermissionMode,
 					Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
 					Effort:         dbAgent.Effort,
-					GitStatus:      gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
+					GitStatus:      gitutil.GetGitStatus(dbAgent.WorkingDir),
 					AgentProvider:  dbAgent.AgentProvider,
 				}
 				broadcastWatchEvent(sender, &leapmuxv1.WatchEventsResponse{
@@ -862,7 +862,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 }
 
 // agentToProto converts a DB Agent to a proto AgentInfo.
-func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, gs *gitutil.GitStatus, availableModels []*leapmuxv1.AvailableModel, availableOptionGroups []*leapmuxv1.AvailableOptionGroup) *leapmuxv1.AgentInfo {
+func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, gs *leapmuxv1.AgentGitStatus, availableModels []*leapmuxv1.AvailableModel, availableOptionGroups []*leapmuxv1.AvailableOptionGroup) *leapmuxv1.AgentInfo {
 	status := leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE
 	if isRunning {
 		status = leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE
@@ -880,7 +880,7 @@ func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, 
 		HomeDir:               a.HomeDir,
 		WorkerId:              workerID,
 		CreatedAt:             timefmt.Format(a.CreatedAt),
-		GitStatus:             gitStatusToProto(gs),
+		GitStatus:             gs,
 		AgentProvider:         a.AgentProvider,
 		AvailableModels:       availableModels,
 		AvailableOptionGroups: availableOptionGroups,
@@ -894,27 +894,6 @@ func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, 
 	return info
 }
 
-// gitStatusToProto converts a gitutil.GitStatus to a proto AgentGitStatus.
-// Returns nil if gs is nil.
-func gitStatusToProto(gs *gitutil.GitStatus) *leapmuxv1.AgentGitStatus {
-	if gs == nil {
-		return nil
-	}
-	return &leapmuxv1.AgentGitStatus{
-		Branch:      gs.Branch,
-		Ahead:       int32(gs.Ahead),
-		Behind:      int32(gs.Behind),
-		Conflicted:  gs.Conflicted,
-		Stashed:     gs.Stashed,
-		Deleted:     gs.Deleted,
-		Renamed:     gs.Renamed,
-		Modified:    gs.Modified,
-		TypeChanged: gs.TypeChanged,
-		Added:       gs.Added,
-		Untracked:   gs.Untracked,
-		OriginUrl:   gs.OriginURL,
-	}
-}
 
 // handleClearContext implements the /clear command by restarting the agent
 // without resuming the previous session, giving it a fresh context window.
@@ -1073,7 +1052,7 @@ func (svc *Context) setAgentPermissionMode(agentID, mode string) {
 				PermissionMode: mode,
 				Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
 				Effort:         dbAgent.Effort,
-				GitStatus:      gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
+				GitStatus:      gitutil.GetGitStatus(dbAgent.WorkingDir),
 				AgentProvider:  dbAgent.AgentProvider,
 			},
 		},

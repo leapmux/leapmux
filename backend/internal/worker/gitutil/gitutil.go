@@ -8,30 +8,16 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 var errNotGitRepo = errors.New("not a git repository")
 
-// GitStatus holds comprehensive git status information for a working directory.
-type GitStatus struct {
-	Branch      string
-	Ahead       int
-	Behind      int
-	Conflicted  bool   // Has merge conflicts (unmerged paths)
-	Stashed     bool   // Has stashed changes
-	Deleted     bool   // Has staged deletions
-	Renamed     bool   // Has staged renames
-	Modified    bool   // Has modifications in working directory
-	TypeChanged bool   // Has type changes in staging area
-	Added       bool   // Has staged additions
-	Untracked   bool   // Has untracked files
-	OriginURL   string // Remote origin URL
-}
-
 // GetGitStatus returns the git status for the given directory.
 // Best-effort: returns nil if git is not available or the path is not a git repo.
-func GetGitStatus(dir string) *GitStatus {
-	status := &GitStatus{}
+func GetGitStatus(dir string) *leapmuxv1.AgentGitStatus {
+	status := &leapmuxv1.AgentGitStatus{}
 
 	// Try porcelain v2 first (git 2.13.2+).
 	cmd := exec.Command("git", "-C", dir, "status", "--porcelain=v2", "--branch")
@@ -51,13 +37,13 @@ func GetGitStatus(dir string) *GitStatus {
 	checkStash(dir, status)
 
 	// Get the remote origin URL.
-	status.OriginURL = GetOriginURL(dir)
+	status.OriginUrl = GetOriginURL(dir)
 
 	return status
 }
 
 // parseStatusV2 parses the output of `git status --porcelain=v2 --branch`.
-func parseStatusV2(output []byte, status *GitStatus) {
+func parseStatusV2(output []byte, status *leapmuxv1.AgentGitStatus) {
 	for _, line := range strings.Split(string(output), "\n") {
 		if line == "" {
 			continue
@@ -103,7 +89,7 @@ func parseStatusV2(output []byte, status *GitStatus) {
 }
 
 // parseXY parses the X (staging) and Y (worktree) status codes.
-func parseXY(x, y byte, status *GitStatus) {
+func parseXY(x, y byte, status *leapmuxv1.AgentGitStatus) {
 	for _, c := range []byte{x, y} {
 		switch c {
 		case 'M':
@@ -121,14 +107,14 @@ func parseXY(x, y byte, status *GitStatus) {
 }
 
 // getGitStatusV1 is the fallback for git versions that don't support --porcelain=v2.
-func getGitStatusV1(dir string) *GitStatus {
+func getGitStatusV1(dir string) *leapmuxv1.AgentGitStatus {
 	cmd := exec.Command("git", "-C", dir, "status", "--porcelain", "--branch")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil
 	}
 
-	status := &GitStatus{}
+	status := &leapmuxv1.AgentGitStatus{}
 	for _, line := range strings.Split(string(output), "\n") {
 		if line == "" {
 			continue
@@ -191,13 +177,13 @@ func getGitStatusV1(dir string) *GitStatus {
 	checkStash(dir, status)
 
 	// Get the remote origin URL.
-	status.OriginURL = GetOriginURL(dir)
+	status.OriginUrl = GetOriginURL(dir)
 
 	return status
 }
 
 // checkStash checks if the repository has any stashed changes.
-func checkStash(dir string, status *GitStatus) {
+func checkStash(dir string, status *leapmuxv1.AgentGitStatus) {
 	cmd := exec.Command("git", "-C", dir, "rev-parse", "--verify", "refs/stash")
 	if err := cmd.Run(); err == nil {
 		status.Stashed = true
