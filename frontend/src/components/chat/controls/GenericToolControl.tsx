@@ -44,7 +44,8 @@ export const GenericToolActions: Component<ActionsProps> = (props) => {
   const handleBypassPermissions = () => {
     // Allow the current request first, then switch to bypass mode.
     sendResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId))
-    props.onPermissionModeChange?.('bypassPermissions')
+    if (props.bypassPermissionMode)
+      props.onPermissionModeChange?.(props.bypassPermissionMode)
   }
 
   return (
@@ -64,14 +65,16 @@ export const GenericToolActions: Component<ActionsProps> = (props) => {
           >
             Allow
           </button>
-          <button
-            data-variant="secondary"
-            onClick={handleBypassPermissions}
-            data-testid="control-bypass-btn"
-            title="Allow this request and stop asking for permissions"
-          >
-            & Bypass Permissions
-          </button>
+          <Show when={props.bypassPermissionMode}>
+            <button
+              data-variant="secondary"
+              onClick={handleBypassPermissions}
+              data-testid="control-bypass-btn"
+              title="Allow this request and stop asking for permissions"
+            >
+              & Bypass Permissions
+            </button>
+          </Show>
         </ButtonGroup>
       </Show>
     </>

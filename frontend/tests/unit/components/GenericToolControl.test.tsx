@@ -31,6 +31,7 @@ describe('genericToolActions', () => {
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={false}
         onTriggerSend={() => {}}
+        bypassPermissionMode="bypassPermissions"
         onPermissionModeChange={vi.fn()}
       />
     ))
@@ -71,6 +72,7 @@ describe('genericToolActions', () => {
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
+        bypassPermissionMode="bypassPermissions"
         onPermissionModeChange={onPermissionModeChange}
       />
     ))
@@ -98,6 +100,7 @@ describe('genericToolActions', () => {
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={false}
         onTriggerSend={() => {}}
+        bypassPermissionMode="bypassPermissions"
         onPermissionModeChange={vi.fn()}
       />
     ))

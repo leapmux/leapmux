@@ -207,6 +207,7 @@ function CodexTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
 const codexPlugin: ProviderPlugin = {
   defaultModel: DEFAULT_CODEX_MODEL,
   defaultEffort: DEFAULT_CODEX_EFFORT,
+  bypassPermissionMode: 'never',
   classify(parent, wrapper): MessageCategory {
     // Notification threads (settings_changed, context_cleared, etc.)
     if (isCodexNotifThread(wrapper))

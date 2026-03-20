@@ -24,6 +24,7 @@ import { ControlRequestActions, ControlRequestContent } from './ControlRequestBa
 import { useControlResponseHandling } from './controlResponseHandling'
 import { EditorSettingsDropdown } from './EditorSettingsDropdown'
 import { MarkdownEditor } from './MarkdownEditor'
+import { getProviderPlugin } from './providers/registry'
 
 export interface AgentEditorPanelProps {
   agentId: string
@@ -292,6 +293,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                     hasEditorContent={hasContent()}
                     onTriggerSend={() => triggerSend?.()}
                     editorContentRef={editorContentRef}
+                    bypassPermissionMode={getProviderPlugin(props.agent?.agentProvider)?.bypassPermissionMode}
                     onPermissionModeChange={props.onPermissionModeChange}
                     infoTrigger={
                       info.showInfoTrigger()

@@ -297,6 +297,7 @@ function ClaudeCodeTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element 
 const claudeCodePlugin: ProviderPlugin = {
   defaultModel: DEFAULT_CLAUDE_MODEL,
   defaultEffort: DEFAULT_CLAUDE_EFFORT,
+  bypassPermissionMode: 'bypassPermissions',
 
   classify: classifyClaudeCodeMessage,
 

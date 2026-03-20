@@ -61,6 +61,13 @@ export interface ProviderPlugin {
   buildControlResponse?: (parsed: Record<string, unknown>) => Uint8Array | null
 
   /**
+   * The permission mode value that disables all approval prompts.
+   * Used by the "& Bypass Permissions" button in approval controls.
+   * E.g. "bypassPermissions" for Claude Code, "never" for Codex.
+   */
+  bypassPermissionMode?: PermissionMode
+
+  /**
    * Change the agent's permission mode. Claude Code sends a lightweight
    * control_request (no restart), Codex restarts via UpdateAgentSettings.
    */

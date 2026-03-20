@@ -84,7 +84,7 @@ export const ExitPlanModeActions: Component<ActionsProps> = (props) => {
     sendResponse(
       props.request.agentId,
       props.onRespond,
-      buildAllowResponse(props.request.requestId, undefined, 'bypassPermissions'),
+      buildAllowResponse(props.request.requestId, undefined, props.bypassPermissionMode || 'bypassPermissions'),
     )
   }
 
