@@ -49,17 +49,18 @@ type ClaudeCodeAgent struct {
 
 // Options configures a new ClaudeCodeAgent.
 type Options struct {
-	AgentID         string
-	Model           string
-	Effort          string // Effort level (low, medium, high, max)
-	WorkingDir      string
-	ResumeSessionID string                  // If set, uses --resume to resume a previous session
-	PermissionMode  string                  // Permission mode to set on startup (default, acceptEdits, plan, bypassPermissions)
-	StartupTimeout  time.Duration           // Timeout for the startup handshake (default: 30s)
-	Shell           string                  // Default shell path (always set when using shell wrapper)
-	LoginShell      bool                    // If true, use interactive+login shell flags
-	HomeDir         string                  // User's home directory (for reading Claude Code settings)
-	AgentProvider   leapmuxv1.AgentProvider // Coding agent provider (default: CLAUDE_CODE)
+	AgentID            string
+	Model              string
+	Effort             string // Effort level (low, medium, high, max)
+	WorkingDir         string
+	ResumeSessionID    string                  // If set, uses --resume to resume a previous session
+	PermissionMode     string                  // Permission mode to set on startup (default, acceptEdits, plan, bypassPermissions)
+	CodexSandboxPolicy string                  // Codex sandbox policy (e.g. "danger-full-access", "workspace-write")
+	StartupTimeout     time.Duration           // Timeout for the startup handshake (default: 30s)
+	Shell              string                  // Default shell path (always set when using shell wrapper)
+	LoginShell         bool                    // If true, use interactive+login shell flags
+	HomeDir            string                  // User's home directory (for reading Claude Code settings)
+	AgentProvider      leapmuxv1.AgentProvider // Coding agent provider (default: CLAUDE_CODE)
 }
 
 // StartClaudeCode spawns a new Claude Code process and begins reading its output.
@@ -289,13 +290,14 @@ var claudeCodeEffortNoMax = []*leapmuxv1.AvailableEffort{
 	{Id: "low", Name: "Low", Description: "Faster responses with lighter reasoning"},
 }
 
-// providerRegistration holds the factory function, default model list, and
-// environment variable keys for a provider.
+// providerRegistration holds the factory function, default model list,
+// option groups, and environment variable keys for a provider.
 type providerRegistration struct {
-	start         startFunc
+	start        startFunc
 	defaultModels []*leapmuxv1.AvailableModel
-	envModelKey   string // e.g. "LEAPMUX_CLAUDE_DEFAULT_MODEL"
-	envEffortKey  string // e.g. "LEAPMUX_CLAUDE_DEFAULT_EFFORT"
+	optionGroups []*leapmuxv1.AvailableOptionGroup
+	envModelKey  string // e.g. "LEAPMUX_CLAUDE_DEFAULT_MODEL"
+	envEffortKey string // e.g. "LEAPMUX_CLAUDE_DEFAULT_EFFORT"
 }
 
 // providerRegistry maps each AgentProvider to its registration.
@@ -303,16 +305,18 @@ type providerRegistration struct {
 var providerRegistry = map[leapmuxv1.AgentProvider]providerRegistration{}
 
 // registerProvider registers a provider's factory function, default model list,
-// and environment variable keys for overriding defaults.
+// option groups, and environment variable keys for overriding defaults.
 func registerProvider(
 	provider leapmuxv1.AgentProvider,
 	start startFunc,
 	defaultModels []*leapmuxv1.AvailableModel,
+	optionGroups []*leapmuxv1.AvailableOptionGroup,
 	envModelKey, envEffortKey string,
 ) {
 	providerRegistry[provider] = providerRegistration{
 		start:         start,
 		defaultModels: defaultModels,
+		optionGroups:  optionGroups,
 		envModelKey:   envModelKey,
 		envEffortKey:  envEffortKey,
 	}
@@ -371,6 +375,16 @@ func init() {
 			return StartClaudeCode(ctx, opts, sink)
 		},
 		claudeCodeAvailableModels,
+		[]*leapmuxv1.AvailableOptionGroup{{
+			Key:   "permissionMode",
+			Label: "Permission Mode",
+			Options: []*leapmuxv1.AvailableOption{
+				{Id: "default", Name: "Default"},
+				{Id: "plan", Name: "Plan Mode"},
+				{Id: "acceptEdits", Name: "Accept Edits"},
+				{Id: "bypassPermissions", Name: "Bypass Permissions"},
+			},
+		}},
 		"LEAPMUX_CLAUDE_DEFAULT_MODEL",
 		"LEAPMUX_CLAUDE_DEFAULT_EFFORT",
 	)

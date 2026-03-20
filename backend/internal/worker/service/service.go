@@ -200,29 +200,26 @@ func (svc *Context) settingsDisplayLabels(agentID string, provider leapmuxv1.Age
 	return
 }
 
-// permissionModeLabel returns a human-readable label for a permission mode ID.
-// Covers both Claude Code and Codex permission modes.
-func permissionModeLabel(mode string) string {
-	switch mode {
-	// Claude Code
-	case "default":
-		return "Default"
-	case "plan":
-		return "Plan Mode"
-	case "acceptEdits":
-		return "Accept Edits"
-	case "bypassPermissions":
-		return "Bypass Permissions"
-	// Codex
-	case "never":
-		return "Full Auto"
-	case "on-request":
-		return "Suggest & Approve"
-	case "untrusted":
-		return "Auto-edit"
-	default:
-		return mode
+// permissionModeLabel returns a human-readable label for a permission mode ID
+// by looking up the "permissionMode" option group in the provider registry.
+func permissionModeLabel(mode string, provider leapmuxv1.AgentProvider) string {
+	return optionLabel("permissionMode", mode, provider)
+}
+
+// optionLabel looks up a human-readable label for an option value from the
+// provider registry's option groups. Falls back to the raw value if not found.
+func optionLabel(key, value string, provider leapmuxv1.AgentProvider) string {
+	for _, group := range agent.AvailableOptionGroupsForProvider(provider) {
+		if group.Key == key {
+			for _, opt := range group.Options {
+				if opt.Id == value {
+					return opt.Name
+				}
+			}
+			return value
+		}
 	}
+	return value
 }
 
 // sendProtoResponse is a helper that serializes a proto response and sends it.

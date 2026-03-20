@@ -212,6 +212,22 @@ func (m *Manager) AvailableModels(agentID string, provider leapmuxv1.AgentProvid
 	return nil
 }
 
+// AvailableOptionGroups returns the static option groups for a provider
+// from the provider registry (e.g. permission modes, sandbox policies).
+func (m *Manager) AvailableOptionGroups(provider leapmuxv1.AgentProvider) []*leapmuxv1.AvailableOptionGroup {
+	return AvailableOptionGroupsForProvider(provider)
+}
+
+// AvailableOptionGroupsForProvider returns the static option groups for a
+// provider from the provider registry. This is a package-level function
+// that does not require a Manager instance.
+func AvailableOptionGroupsForProvider(provider leapmuxv1.AgentProvider) []*leapmuxv1.AvailableOptionGroup {
+	if reg, ok := providerRegistry[provider]; ok {
+		return reg.optionGroups
+	}
+	return nil
+}
+
 // HasAgent returns true if an agent is running with the given agent ID.
 func (m *Manager) HasAgent(agentID string) bool {
 	m.mu.RLock()

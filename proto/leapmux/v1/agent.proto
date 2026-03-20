@@ -54,6 +54,7 @@ message OpenAgentRequest {
   string create_branch = 14;        // "Create new branch" mode — branch name to create
   string create_branch_base = 15;   // Base branch for "Create new branch" (default: current branch)
   AgentProvider agent_provider = 16; // Coding agent provider (default: CLAUDE_CODE)
+  string codex_sandbox_policy = 17;  // Codex sandbox policy (optional, for future use)
 }
 
 message OpenAgentResponse {
@@ -105,6 +106,8 @@ message AgentInfo {
   bool supports_model_effort = 16; // Whether the agent supports --model/--effort CLI args
   AgentProvider agent_provider = 17; // Coding agent provider
   repeated AvailableModel available_models = 18; // Models reported by the agent process
+  repeated AvailableOptionGroup available_option_groups = 19; // Option groups (e.g. permission modes, sandbox policies)
+  string codex_sandbox_policy = 20; // Codex sandbox policy (e.g. "danger-full-access", "workspace-write")
 }
 
 // AvailableModel describes a model reported by the agent process (e.g. Codex model/list).
@@ -122,6 +125,20 @@ message AvailableEffort {
   string id = 1;               // Effort identifier (passed as "effort" in requests)
   string name = 2;             // Human-readable short label (e.g. "High")
   string description = 3;      // Tooltip / description text shown on hover
+}
+
+// AvailableOption describes a single selectable option (e.g. a permission mode value).
+message AvailableOption {
+  string id = 1;           // Value stored/sent in requests (e.g. "default", "never")
+  string name = 2;         // Human-readable label (e.g. "Default", "Full Auto")
+  string description = 3;  // Tooltip text
+}
+
+// AvailableOptionGroup describes a named group of options (e.g. "Permission Mode", "Approval Policy").
+message AvailableOptionGroup {
+  string key = 1;                        // Identifier (e.g. "permissionMode")
+  string label = 2;                      // Display label (e.g. "Permission Mode")
+  repeated AvailableOption options = 3;   // The options in this group
 }
 
 // --- Agent Messaging ---
@@ -251,6 +268,7 @@ message UpdateAgentSettingsRequest {
   string model = 2;            // Empty = don't change
   string effort = 3;           // Empty = don't change
   string permission_mode = 4;  // Empty = don't change
+  string codex_sandbox_policy = 5;  // Empty = don't change
 }
 
 message UpdateAgentSettingsResponse {}

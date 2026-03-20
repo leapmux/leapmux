@@ -5,7 +5,7 @@ import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 function cacheLabels(agents: AgentInfo[]) {
   for (const a of agents) {
     if (a.availableModels && a.availableModels.length > 0)
-      updateSettingsLabelCache(a.availableModels)
+      updateSettingsLabelCache(a.availableModels, a.availableOptionGroups)
   }
 }
 
@@ -44,7 +44,7 @@ export function createAgentStore() {
     updateAgent(id: string, updates: Partial<AgentInfo>) {
       setState('agents', a => a.id === id, updates)
       if (updates.availableModels && updates.availableModels.length > 0)
-        updateSettingsLabelCache(updates.availableModels)
+        updateSettingsLabelCache(updates.availableModels, updates.availableOptionGroups)
     },
 
     setActiveAgent(id: string | null) {

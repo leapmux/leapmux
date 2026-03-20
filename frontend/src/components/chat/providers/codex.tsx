@@ -27,15 +27,6 @@ import { registerProvider } from './registry'
 const DEFAULT_CODEX_MODEL = import.meta.env.LEAPMUX_CODEX_DEFAULT_MODEL || 'gpt-5.4'
 const DEFAULT_CODEX_EFFORT = 'medium'
 
-/** Codex approval policy labels (using Codex-native kebab-case values). */
-const CODEX_PERMISSION_MODE_LABELS: Record<string, string> = {
-  'never': 'Full Auto',
-  'on-request': 'Suggest & Approve',
-  'untrusted': 'Auto-edit',
-}
-
-const CODEX_PERMISSION_MODES = Object.entries(CODEX_PERMISSION_MODE_LABELS).map(([value, label]) => ({ label, value }))
-
 let codexReqIdCounter = 1000
 
 /**
@@ -74,12 +65,13 @@ function isCodexNotifThread(wrapper: { messages: unknown[] } | null): wrapper is
   return isNotificationThreadWrapper(wrapper, CODEX_EXTRA_NOTIF_TYPES)
 }
 
-/** Codex settings panel (model, effort, approval policy). */
+/** Codex settings panel (model, effort, approval policy, sandbox). */
 function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
   const menuId = createUniqueId()
   const currentModel = () => props.model || DEFAULT_CODEX_MODEL
   const currentEffort = () => props.effort || DEFAULT_CODEX_EFFORT
   const currentMode = () => props.permissionMode || 'on-request'
+  const currentSandbox = () => props.codexSandboxPolicy || 'workspace-write'
 
   const modelItems = () => {
     const models = props.availableModels
@@ -95,6 +87,26 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
       if (model)
         return model.supportedEfforts.map(e => ({ label: e.name || e.id, value: e.id, tooltip: e.description || undefined }))
     }
+    return []
+  }
+
+  const permissionModeGroup = () =>
+    props.availableOptionGroups?.find(g => g.key === 'permissionMode')
+
+  const permissionModeItems = () => {
+    const group = permissionModeGroup()
+    if (group && group.options.length > 0)
+      return group.options.map(o => ({ label: o.name || o.id, value: o.id, tooltip: o.description || undefined }))
+    return []
+  }
+
+  const sandboxGroup = () =>
+    props.availableOptionGroups?.find(g => g.key === 'codexSandboxPolicy')
+
+  const sandboxItems = () => {
+    const group = sandboxGroup()
+    if (group && group.options.length > 0)
+      return group.options.map(o => ({ label: o.name || o.id, value: o.id, tooltip: o.description || undefined }))
     return []
   }
 
@@ -117,13 +129,23 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
         onChange={v => props.onEffortChange?.(v)}
       />
       <RadioGroup
-        label="Approval Policy"
-        items={CODEX_PERMISSION_MODES}
+        label={permissionModeGroup()?.label || 'Approval Policy'}
+        items={permissionModeItems()}
         testIdPrefix="permission-mode"
         name={`${menuId}-mode`}
         current={currentMode()}
         onChange={v => props.onPermissionModeChange?.(v as PermissionMode)}
       />
+      <Show when={sandboxItems().length > 0}>
+        <RadioGroup
+          label={sandboxGroup()?.label || 'Sandbox'}
+          items={sandboxItems()}
+          testIdPrefix="sandbox"
+          name={`${menuId}-sandbox`}
+          current={currentSandbox()}
+          onChange={v => props.onCodexSandboxPolicyChange?.(v)}
+        />
+      </Show>
     </>
   )
 }
@@ -163,7 +185,15 @@ function CodexTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
     return false
   }
 
-  const modeLabel = () => CODEX_PERMISSION_MODE_LABELS[currentMode()] || currentMode()
+  const modeLabel = () => {
+    const group = props.availableOptionGroups?.find(g => g.key === 'permissionMode')
+    if (group) {
+      const opt = group.options.find(o => o.id === currentMode())
+      if (opt)
+        return opt.name || opt.id
+    }
+    return currentMode()
+  }
   return (
     <>
       {displayName()}

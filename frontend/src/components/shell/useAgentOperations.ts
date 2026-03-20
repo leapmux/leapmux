@@ -257,6 +257,30 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
+  // Change Codex sandbox policy for the given agent (requires restart).
+  const handleCodexSandboxPolicyChange = async (agentId: string, policy: string) => {
+    const agent = props.agentStore.state.agents.find(a => a.id === agentId)
+    if (!agent)
+      return
+    const previous = agent.codexSandboxPolicy || 'workspace-write'
+    props.agentStore.updateAgent(agentId, { codexSandboxPolicy: policy })
+    props.settingsLoading.start()
+    try {
+      await workerRpc.updateAgentSettings(agent.workerId, {
+        agentId,
+        model: '',
+        effort: '',
+        codexSandboxPolicy: policy,
+      })
+      props.settingsLoading.stop()
+    }
+    catch (err) {
+      props.agentStore.updateAgent(agentId, { codexSandboxPolicy: previous })
+      props.settingsLoading.stop()
+      showWarnToast('Failed to change sandbox policy', err)
+    }
+  }
+
   // Retry a failed message delivery.
   // Always re-sends via sendAgentMessage (which auto-starts the agent
   // if needed), then removes the old failed message.
@@ -333,6 +357,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     handleModelOrEffortChange,
     handleInterrupt,
     handlePermissionModeChange,
+    handleCodexSandboxPolicyChange,
     handleRetryMessage,
     handleDeleteMessage,
     handleCloseAgent,

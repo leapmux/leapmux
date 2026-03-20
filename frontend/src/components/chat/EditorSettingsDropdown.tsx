@@ -13,7 +13,7 @@ import * as styles from './ChatView.css'
 import { getProviderPlugin } from './providers'
 
 // Re-export shared settings utilities for external consumers.
-export { modeLabel, PERMISSION_MODES, RadioGroup } from './settingsShared'
+export { RadioGroup } from './settingsShared'
 
 export interface EditorSettingsDropdownProps {
   disabled?: boolean
@@ -21,12 +21,15 @@ export interface EditorSettingsDropdownProps {
   model?: string
   effort?: string
   permissionMode?: string
+  codexSandboxPolicy?: string
   supportsModelEffort?: boolean
   availableModels?: import('~/generated/leapmux/v1/agent_pb').AvailableModel[]
+  availableOptionGroups?: import('~/generated/leapmux/v1/agent_pb').AvailableOptionGroup[]
   agentProvider?: AgentProvider
   onModelChange?: (model: string) => void
   onEffortChange?: (effort: string) => void
   onPermissionModeChange?: (mode: PermissionMode) => void
+  onCodexSandboxPolicyChange?: (policy: string) => void
 }
 
 export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.Element {
@@ -39,11 +42,14 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
     model: props.model,
     effort: props.effort,
     permissionMode: props.permissionMode,
+    codexSandboxPolicy: props.codexSandboxPolicy,
     supportsModelEffort: props.supportsModelEffort,
     availableModels: props.availableModels,
+    availableOptionGroups: props.availableOptionGroups,
     onModelChange: props.onModelChange,
     onEffortChange: props.onEffortChange,
     onPermissionModeChange: props.onPermissionModeChange,
+    onCodexSandboxPolicyChange: props.onCodexSandboxPolicyChange,
   })
 
   return (

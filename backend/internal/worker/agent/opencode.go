@@ -14,6 +14,7 @@ func init() {
 			return nil, fmt.Errorf("opencode provider is not implemented yet")
 		},
 		nil,
+		nil,
 		"LEAPMUX_OPENCODE_DEFAULT_MODEL",
 		"LEAPMUX_OPENCODE_DEFAULT_EFFORT",
 	)

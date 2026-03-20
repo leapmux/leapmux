@@ -73,15 +73,16 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		// Create the agent record in the database.
 		if err := svc.Queries.CreateAgent(bgCtx(), db.CreateAgentParams{
-			ID:            agentID,
-			WorkspaceID:   r.GetWorkspaceId(),
-			WorkingDir:    workingDir,
-			HomeDir:       svc.HomeDir,
-			Title:         r.GetTitle(),
-			Model:         model,
-			SystemPrompt:  r.GetSystemPrompt(),
-			Effort:        r.GetEffort(),
-			AgentProvider: agentProvider,
+			ID:                 agentID,
+			WorkspaceID:        r.GetWorkspaceId(),
+			WorkingDir:         workingDir,
+			HomeDir:            svc.HomeDir,
+			Title:              r.GetTitle(),
+			Model:              model,
+			SystemPrompt:       r.GetSystemPrompt(),
+			Effort:             r.GetEffort(),
+			CodexSandboxPolicy: r.GetCodexSandboxPolicy(),
+			AgentProvider:      agentProvider,
 		}); err != nil {
 			slog.Error("failed to create agent", "error", err)
 			sendInternalError(sender, "failed to create agent")
@@ -90,16 +91,17 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		// Start the agent process.
 		agentOpts := agent.Options{
-			AgentID:         agentID,
-			Model:           model,
-			Effort:          r.GetEffort(),
-			WorkingDir:      workingDir,
-			ResumeSessionID: r.GetAgentSessionId(),
-			StartupTimeout:  svc.agentStartupTimeout(),
-			Shell:           svc.agentShell(),
-			LoginShell:      svc.agentLoginShell(),
-			HomeDir:         svc.HomeDir,
-			AgentProvider:   agentProvider,
+			AgentID:            agentID,
+			Model:              model,
+			Effort:             r.GetEffort(),
+			WorkingDir:         workingDir,
+			ResumeSessionID:    r.GetAgentSessionId(),
+			CodexSandboxPolicy: r.GetCodexSandboxPolicy(),
+			StartupTimeout:     svc.agentStartupTimeout(),
+			Shell:              svc.agentShell(),
+			LoginShell:         svc.agentLoginShell(),
+			HomeDir:            svc.HomeDir,
+			AgentProvider:      agentProvider,
 		}
 
 		sink := svc.Output.NewSink(agentID, agentProvider)
@@ -140,7 +142,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.OpenAgentResponse{
-			Agent: agentToProto(&dbAgent, permissionMode, svc.WorkerID, true, gitutil.GetGitStatus(dbAgent.WorkingDir), svc.Agents.SupportsModelEffort(agentID), svc.Agents.AvailableModels(agentID, dbAgent.AgentProvider)),
+			Agent: agentToProto(&dbAgent, permissionMode, svc.WorkerID, true, gitutil.GetGitStatus(dbAgent.WorkingDir), svc.Agents.SupportsModelEffort(agentID), svc.Agents.AvailableModels(agentID, dbAgent.AgentProvider), svc.Agents.AvailableOptionGroups(dbAgent.AgentProvider)),
 		})
 	})
 
@@ -341,7 +343,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			if accessibleWsIDs != nil && !accessibleWsIDs[agents[i].WorkspaceID] {
 				continue
 			}
-			protoAgents = append(protoAgents, agentToProto(&agents[i], agents[i].PermissionMode, svc.WorkerID, svc.Agents.HasAgent(agents[i].ID), gitStatuses[i], svc.Agents.SupportsModelEffort(agents[i].ID), svc.Agents.AvailableModels(agents[i].ID, agents[i].AgentProvider)))
+			protoAgents = append(protoAgents, agentToProto(&agents[i], agents[i].PermissionMode, svc.WorkerID, svc.Agents.HasAgent(agents[i].ID), gitStatuses[i], svc.Agents.SupportsModelEffort(agents[i].ID), svc.Agents.AvailableModels(agents[i].ID, agents[i].AgentProvider), svc.Agents.AvailableOptionGroups(agents[i].AgentProvider)))
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.ListAgentsResponse{
@@ -505,6 +507,10 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		if newPermissionMode == "" {
 			newPermissionMode = dbAgent.PermissionMode
 		}
+		newCodexSandboxPolicy := r.GetCodexSandboxPolicy()
+		if newCodexSandboxPolicy == "" {
+			newCodexSandboxPolicy = dbAgent.CodexSandboxPolicy
+		}
 
 		// Update the DB.
 		if err := svc.Queries.UpdateAgentModelAndEffort(bgCtx(), db.UpdateAgentModelAndEffortParams{
@@ -520,6 +526,12 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			_ = svc.Queries.SetAgentPermissionMode(bgCtx(), db.SetAgentPermissionModeParams{
 				PermissionMode: newPermissionMode,
 				ID:             agentID,
+			})
+		}
+		if newCodexSandboxPolicy != dbAgent.CodexSandboxPolicy {
+			_ = svc.Queries.SetAgentCodexSandboxPolicy(bgCtx(), db.SetAgentCodexSandboxPolicyParams{
+				CodexSandboxPolicy: newCodexSandboxPolicy,
+				ID:                 agentID,
 			})
 		}
 
@@ -541,17 +553,18 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			}
 
 			agentOpts := agent.Options{
-				AgentID:         agentID,
-				Model:           newModel,
-				Effort:          newEffort,
-				WorkingDir:      dbAgent.WorkingDir,
-				ResumeSessionID: resumeSessionID,
-				PermissionMode:  newPermissionMode,
-				StartupTimeout:  svc.agentStartupTimeout(),
-				Shell:           svc.agentShell(),
-				LoginShell:      svc.agentLoginShell(),
-				HomeDir:         svc.HomeDir,
-				AgentProvider:   dbAgent.AgentProvider,
+				AgentID:            agentID,
+				Model:              newModel,
+				Effort:             newEffort,
+				WorkingDir:         dbAgent.WorkingDir,
+				ResumeSessionID:    resumeSessionID,
+				PermissionMode:     newPermissionMode,
+				CodexSandboxPolicy: newCodexSandboxPolicy,
+				StartupTimeout:     svc.agentStartupTimeout(),
+				Shell:              svc.agentShell(),
+				LoginShell:         svc.agentLoginShell(),
+				HomeDir:            svc.HomeDir,
+				AgentProvider:      dbAgent.AgentProvider,
 			}
 
 			sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
@@ -597,7 +610,13 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		if dbAgent.PermissionMode != newPermissionMode {
 			changes["permissionMode"] = map[string]string{
 				"old": dbAgent.PermissionMode, "new": newPermissionMode,
-				"oldLabel": permissionModeLabel(dbAgent.PermissionMode), "newLabel": permissionModeLabel(newPermissionMode),
+				"oldLabel": permissionModeLabel(dbAgent.PermissionMode, dbAgent.AgentProvider), "newLabel": permissionModeLabel(newPermissionMode, dbAgent.AgentProvider),
+			}
+		}
+		if dbAgent.CodexSandboxPolicy != newCodexSandboxPolicy {
+			changes["codexSandboxPolicy"] = map[string]string{
+				"old": dbAgent.CodexSandboxPolicy, "new": newCodexSandboxPolicy,
+				"oldLabel": optionLabel("codexSandboxPolicy", dbAgent.CodexSandboxPolicy, dbAgent.AgentProvider), "newLabel": optionLabel("codexSandboxPolicy", newCodexSandboxPolicy, dbAgent.AgentProvider),
 			}
 		}
 		if len(changes) > 0 {
@@ -831,28 +850,30 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 }
 
 // agentToProto converts a DB Agent to a proto AgentInfo.
-func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, gs *gitutil.GitStatus, supportsModelEffort bool, availableModels []*leapmuxv1.AvailableModel) *leapmuxv1.AgentInfo {
+func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, gs *gitutil.GitStatus, supportsModelEffort bool, availableModels []*leapmuxv1.AvailableModel, availableOptionGroups []*leapmuxv1.AvailableOptionGroup) *leapmuxv1.AgentInfo {
 	status := leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE
 	if isRunning {
 		status = leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE
 	}
 	info := &leapmuxv1.AgentInfo{
-		Id:                  a.ID,
-		WorkspaceId:         a.WorkspaceID,
-		Title:               a.Title,
-		Model:               modelOrDefault(a.Model, a.AgentProvider),
-		Status:              status,
-		WorkingDir:          a.WorkingDir,
-		PermissionMode:      permissionMode,
-		Effort:              a.Effort,
-		AgentSessionId:      a.AgentSessionID,
-		HomeDir:             a.HomeDir,
-		WorkerId:            workerID,
-		CreatedAt:           timefmt.Format(a.CreatedAt),
-		GitStatus:           gitStatusToProto(gs),
-		SupportsModelEffort: supportsModelEffort,
-		AgentProvider:       a.AgentProvider,
-		AvailableModels:     availableModels,
+		Id:                    a.ID,
+		WorkspaceId:           a.WorkspaceID,
+		Title:                 a.Title,
+		Model:                 modelOrDefault(a.Model, a.AgentProvider),
+		Status:                status,
+		WorkingDir:            a.WorkingDir,
+		PermissionMode:        permissionMode,
+		Effort:                a.Effort,
+		AgentSessionId:        a.AgentSessionID,
+		HomeDir:               a.HomeDir,
+		WorkerId:              workerID,
+		CreatedAt:             timefmt.Format(a.CreatedAt),
+		GitStatus:             gitStatusToProto(gs),
+		SupportsModelEffort:   supportsModelEffort,
+		AgentProvider:         a.AgentProvider,
+		AvailableModels:       availableModels,
+		AvailableOptionGroups: availableOptionGroups,
+		CodexSandboxPolicy:    a.CodexSandboxPolicy,
 	}
 
 	if a.ClosedAt.Valid {
@@ -904,16 +925,17 @@ func (svc *Context) handleClearContext(agentID string) {
 	// to resume a stale session.
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	if _, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
-		AgentID:        agentID,
-		Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
-		Effort:         dbAgent.Effort,
-		WorkingDir:     dbAgent.WorkingDir,
-		PermissionMode: dbAgent.PermissionMode,
-		StartupTimeout: svc.agentStartupTimeout(),
-		Shell:          svc.agentShell(),
-		LoginShell:     svc.agentLoginShell(),
-		HomeDir:        svc.HomeDir,
-		AgentProvider:  dbAgent.AgentProvider,
+		AgentID:            agentID,
+		Model:              modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
+		Effort:             dbAgent.Effort,
+		WorkingDir:         dbAgent.WorkingDir,
+		PermissionMode:     dbAgent.PermissionMode,
+		CodexSandboxPolicy: dbAgent.CodexSandboxPolicy,
+		StartupTimeout:     svc.agentStartupTimeout(),
+		Shell:              svc.agentShell(),
+		LoginShell:         svc.agentLoginShell(),
+		HomeDir:            svc.HomeDir,
+		AgentProvider:      dbAgent.AgentProvider,
 	}, sink); err != nil {
 		slog.Error("clear context: failed to restart agent", "agent_id", agentID, "error", err)
 		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
@@ -961,17 +983,18 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	if _, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
-		AgentID:         agentID,
-		Model:           modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
-		Effort:          dbAgent.Effort,
-		WorkingDir:      dbAgent.WorkingDir,
-		ResumeSessionID: resumeSessionID,
-		PermissionMode:  dbAgent.PermissionMode,
-		StartupTimeout:  svc.agentStartupTimeout(),
-		Shell:           svc.agentShell(),
-		LoginShell:      svc.agentLoginShell(),
-		HomeDir:         svc.HomeDir,
-		AgentProvider:   dbAgent.AgentProvider,
+		AgentID:            agentID,
+		Model:              modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
+		Effort:             dbAgent.Effort,
+		WorkingDir:         dbAgent.WorkingDir,
+		ResumeSessionID:    resumeSessionID,
+		PermissionMode:     dbAgent.PermissionMode,
+		CodexSandboxPolicy: dbAgent.CodexSandboxPolicy,
+		StartupTimeout:     svc.agentStartupTimeout(),
+		Shell:              svc.agentShell(),
+		LoginShell:         svc.agentLoginShell(),
+		HomeDir:            svc.HomeDir,
+		AgentProvider:      dbAgent.AgentProvider,
 	}, sink); err != nil {
 		slog.Error("ensureAgentRunning: failed to start agent", "agent_id", agentID, "error", err)
 		return err
@@ -1053,7 +1076,7 @@ func (svc *Context) setAgentPermissionMode(agentID, mode string) {
 			"changes": map[string]interface{}{
 				"permissionMode": map[string]string{
 					"old": oldMode, "new": mode,
-					"oldLabel": permissionModeLabel(oldMode), "newLabel": permissionModeLabel(mode),
+					"oldLabel": permissionModeLabel(oldMode, dbAgent.AgentProvider), "newLabel": permissionModeLabel(mode, dbAgent.AgentProvider),
 				},
 			},
 		})
@@ -1231,15 +1254,17 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	if _, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
-		AgentID:        agentID,
-		Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
-		Effort:         dbAgent.Effort,
-		WorkingDir:     dbAgent.WorkingDir,
-		PermissionMode: targetMode,
-		StartupTimeout: svc.agentStartupTimeout(),
-		Shell:          svc.agentShell(),
-		LoginShell:     svc.agentLoginShell(),
-		HomeDir:        svc.HomeDir,
+		AgentID:            agentID,
+		Model:              modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
+		Effort:             dbAgent.Effort,
+		WorkingDir:         dbAgent.WorkingDir,
+		PermissionMode:     targetMode,
+		CodexSandboxPolicy: dbAgent.CodexSandboxPolicy,
+		StartupTimeout:     svc.agentStartupTimeout(),
+		Shell:              svc.agentShell(),
+		LoginShell:         svc.agentLoginShell(),
+		HomeDir:            svc.HomeDir,
+		AgentProvider:      dbAgent.AgentProvider,
 	}, sink); err != nil {
 		slog.Error("plan exec: failed to restart agent", "agent_id", agentID, "error", err)
 		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{

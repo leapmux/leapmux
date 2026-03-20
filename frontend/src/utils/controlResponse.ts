@@ -66,15 +66,7 @@ export function buildDenyResponse(
  * The hub detects this format and sends it as raw input to Claude Code's stdin.
  * Uses the same wire protocol as the Agent SDK's setPermissionMode().
  */
-export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'
-
-/** Display labels for permission modes. */
-export const CLAUDE_PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
-  default: 'Default',
-  plan: 'Plan Mode',
-  acceptEdits: 'Accept Edits',
-  bypassPermissions: 'Bypass Permissions',
-}
+export type PermissionMode = string
 
 /** Returns the default model for the given agent provider. */
 export function defaultModelForProvider(provider: AgentProvider): string {

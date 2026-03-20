@@ -30,6 +30,7 @@ type CodexAgent struct {
 	nextReqID       atomic.Int64 // JSON-RPC request ID counter
 	pendingReqs     sync.Map     // reqID (int64) -> chan json.RawMessage
 	approvalPolicy  string       // Codex approval policy (stored as-is from DB)
+	sandboxPolicy   string       // Codex sandbox policy (e.g. "workspace-write")
 	availableModels []*leapmuxv1.AvailableModel
 }
 
@@ -134,12 +135,18 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	}
 	a.approvalPolicy = approvalPolicy
 
+	sandboxPolicy := opts.CodexSandboxPolicy
+	if sandboxPolicy == "" {
+		sandboxPolicy = "workspace-write"
+	}
+	a.sandboxPolicy = sandboxPolicy
+
 	// 4. Send "thread/start" or "thread/resume" request.
 	threadParams := map[string]interface{}{
 		"model":          opts.Model,
 		"cwd":            opts.WorkingDir,
 		"approvalPolicy": approvalPolicy,
-		"sandbox":        "danger-full-access",
+		"sandbox":        sandboxPolicy,
 	}
 
 	threadMethod := "thread/start"
@@ -400,6 +407,26 @@ func init() {
 			return StartCodex(ctx, opts, sink)
 		},
 		codexDefaultModels,
+		[]*leapmuxv1.AvailableOptionGroup{
+			{
+				Key:   "permissionMode",
+				Label: "Approval Policy",
+				Options: []*leapmuxv1.AvailableOption{
+					{Id: "never", Name: "Full Auto"},
+					{Id: "on-request", Name: "Suggest & Approve"},
+					{Id: "untrusted", Name: "Auto-edit"},
+				},
+			},
+			{
+				Key:   "codexSandboxPolicy",
+				Label: "Sandbox",
+				Options: []*leapmuxv1.AvailableOption{
+					{Id: "danger-full-access", Name: "Full Access", Description: "No filesystem restrictions"},
+					{Id: "workspace-write", Name: "Workspace Write", Description: "Write only within the working directory"},
+					{Id: "read-only", Name: "Read Only", Description: "No write access to the filesystem"},
+				},
+			},
+		},
 		"LEAPMUX_CODEX_DEFAULT_MODEL",
 		"LEAPMUX_CODEX_DEFAULT_EFFORT",
 	)

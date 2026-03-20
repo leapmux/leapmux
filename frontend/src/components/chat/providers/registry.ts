@@ -1,6 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import type { MessageCategory } from '../messageClassification'
-import type { AgentProvider, AvailableModel, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentProvider, AvailableModel, AvailableOptionGroup, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
 
 export interface ProviderSettingsPanelProps {
@@ -9,11 +9,14 @@ export interface ProviderSettingsPanelProps {
   model?: string
   effort?: string
   permissionMode?: string
+  codexSandboxPolicy?: string
   supportsModelEffort?: boolean
   availableModels?: AvailableModel[]
+  availableOptionGroups?: AvailableOptionGroup[]
   onModelChange?: (model: string) => void
   onEffortChange?: (effort: string) => void
   onPermissionModeChange?: (mode: PermissionMode) => void
+  onCodexSandboxPolicyChange?: (policy: string) => void
 }
 
 /** Context for rendering a message — forwarded from MessageBubble. */

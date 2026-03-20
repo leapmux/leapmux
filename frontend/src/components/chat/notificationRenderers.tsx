@@ -9,7 +9,6 @@ import { formatRateLimitMessage } from '~/lib/rateLimitUtils'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { spinner } from '~/styles/animations.css'
-import { CLAUDE_PERMISSION_MODE_LABELS } from '~/utils/controlResponse'
 import { markdownContent } from './markdownContent.css'
 import {
   controlResponseMessage,
@@ -26,22 +25,13 @@ function displayLabel(key: string): string {
     case 'model': return 'Model'
     case 'effort': return 'Effort'
     case 'permissionMode': return 'Mode'
+    case 'codexSandboxPolicy': return 'Sandbox'
     default: return key
   }
 }
 
-const CODEX_PERMISSION_MODE_LABELS: Record<string, string> = {
-  'never': 'Full Auto',
-  'on-request': 'Suggest & Approve',
-  'untrusted': 'Auto-edit',
-}
-
-const DISPLAY_VALUE_MAPS: Record<string, Record<string, string>> = {
-  permissionMode: { ...CLAUDE_PERMISSION_MODE_LABELS, ...CODEX_PERMISSION_MODE_LABELS },
-}
-
 function displayValue(key: string, value: string): string {
-  return DISPLAY_VALUE_MAPS[key]?.[value] ?? getCachedSettingsLabel(key, value) ?? value
+  return getCachedSettingsLabel(key, value) ?? value
 }
 
 /** Handles settings change notifications: {"type":"settings_changed","changes":{...}} */

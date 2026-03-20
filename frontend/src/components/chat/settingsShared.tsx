@@ -1,14 +1,7 @@
 import type { JSX } from 'solid-js'
 import { For } from 'solid-js'
 import { Tooltip } from '~/components/common/Tooltip'
-import { CLAUDE_PERMISSION_MODE_LABELS } from '~/utils/controlResponse'
 import * as styles from './ChatView.css'
-
-export const PERMISSION_MODES = Object.entries(CLAUDE_PERMISSION_MODE_LABELS).map(([value, label]) => ({ label, value }))
-
-export function modeLabel(mode: string): string {
-  return CLAUDE_PERMISSION_MODE_LABELS[mode as keyof typeof CLAUDE_PERMISSION_MODE_LABELS] ?? 'Default'
-}
 
 export function RadioGroup(props: {
   label: string

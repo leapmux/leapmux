@@ -12,7 +12,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { Icon } from '~/components/common/Icon'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { isNotificationThreadWrapper, isObject } from '../messageUtils'
-import { modeLabel, PERMISSION_MODES, RadioGroup } from '../settingsShared'
+import { RadioGroup } from '../settingsShared'
 import { registerProvider } from './registry'
 
 function generateRandomId(): string {
@@ -188,6 +188,16 @@ function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element
 
   const hasEfforts = () => effortItems().length > 0
 
+  const permissionModeGroup = () =>
+    props.availableOptionGroups?.find(g => g.key === 'permissionMode')
+
+  const permissionModeItems = () => {
+    const group = permissionModeGroup()
+    if (group && group.options.length > 0)
+      return group.options.map(o => ({ label: o.name || o.id, value: o.id, tooltip: o.description || undefined }))
+    return []
+  }
+
   return (
     <>
       <Show when={props.supportsModelEffort !== false}>
@@ -217,8 +227,8 @@ function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element
         />
       </Show>
       <RadioGroup
-        label="Permission Mode"
-        items={PERMISSION_MODES}
+        label={permissionModeGroup()?.label || 'Permission Mode'}
+        items={permissionModeItems()}
         testIdPrefix="permission-mode"
         name={`${menuId}-mode`}
         current={currentMode()}
@@ -263,13 +273,23 @@ function ClaudeCodeTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element 
     return false
   }
 
+  const modeLabel = () => {
+    const group = props.availableOptionGroups?.find(g => g.key === 'permissionMode')
+    if (group) {
+      const opt = group.options.find(o => o.id === currentMode())
+      if (opt)
+        return opt.name || opt.id
+    }
+    return currentMode()
+  }
+
   return (
     <>
       <Show when={props.supportsModelEffort !== false}>
         {displayName()}
         <Show when={hasEfforts()}>{effortIcon()}</Show>
       </Show>
-      {modeLabel(currentMode())}
+      {modeLabel()}
     </>
   )
 }
