@@ -324,8 +324,7 @@ const codexPlugin: ProviderPlugin = {
     return new TextEncoder().encode(buildCodexApprovalResponse(rpcId as number, approved))
   },
 
-  // Codex sets approvalPolicy at thread/start time — changing it requires
-  // a restart via UpdateAgentSettings (which resumes the thread).
+  // Codex applies the new approval policy on the next turn/start.
   async changePermissionMode(workerId: string, agentId: string, mode: PermissionMode): Promise<void> {
     await workerRpc.updateAgentSettings(workerId, {
       agentId,
