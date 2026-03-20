@@ -232,7 +232,9 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	return a, nil
 }
 
-// SendInput writes a user message to the agent via turn/start.
+// SendInput writes a user message to the agent. If a turn is already in
+// progress it uses turn/steer; otherwise it starts a new turn via turn/start
+// with the current model, effort, approval policy and sandbox policy.
 func (a *CodexAgent) SendInput(content string) error {
 	// Read shared state under lock, then release before the blocking RPC.
 	a.mu.Lock()
@@ -241,28 +243,56 @@ func (a *CodexAgent) SendInput(content string) error {
 		return fmt.Errorf("agent is stopped")
 	}
 	threadID := a.threadID
+	turnID := a.turnID
+	model := a.model
+	effort := a.effort
+	approvalPolicy := a.approvalPolicy
+	sandboxPolicy := a.sandboxPolicy
 	a.mu.Unlock()
 
 	if threadID == "" {
 		return fmt.Errorf("codex agent has no active thread")
 	}
 
+	input := []map[string]interface{}{
+		{"type": "text", "text": content},
+	}
+
+	// If a turn is active, steer it instead of starting a new one.
+	if turnID != "" {
+		return a.sendTurnSteer(threadID, turnID, input)
+	}
+
+	return a.sendTurnStart(threadID, input, model, effort, approvalPolicy, sandboxPolicy)
+}
+
+// sendTurnStart sends a turn/start request with all current settings.
+func (a *CodexAgent) sendTurnStart(
+	threadID string,
+	input []map[string]interface{},
+	model, effort, approvalPolicy, sandboxPolicy string,
+) error {
 	params := map[string]interface{}{
 		"threadId": threadID,
-		"input": []map[string]interface{}{
-			{"type": "text", "text": content},
-		},
+		"input":    input,
 	}
-	if a.effort != "" {
-		params["effort"] = a.effort
+	if model != "" {
+		params["model"] = model
+	}
+	if effort != "" {
+		params["effort"] = effort
+	}
+	if approvalPolicy != "" {
+		params["approvalPolicy"] = approvalPolicy
+	}
+	if sp := codexSandboxPolicyObject(sandboxPolicy); sp != nil {
+		params["sandboxPolicy"] = sp
 	}
 	paramsJSON, err := json.Marshal(params)
 	if err != nil {
 		return fmt.Errorf("marshal turn/start params: %w", err)
 	}
 
-	// Send turn/start — the response arrives quickly (just the turn ID),
-	// streaming content comes via notifications.
 	resp, err := a.sendRequest("turn/start", paramsJSON, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("turn/start: %w", err)
@@ -283,6 +313,42 @@ func (a *CodexAgent) SendInput(content string) error {
 	return nil
 }
 
+// sendTurnSteer steers the active turn with additional user input.
+func (a *CodexAgent) sendTurnSteer(threadID, turnID string, input []map[string]interface{}) error {
+	params := map[string]interface{}{
+		"threadId":       threadID,
+		"expectedTurnId": turnID,
+		"input":          input,
+	}
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		return fmt.Errorf("marshal turn/steer params: %w", err)
+	}
+
+	_, err = a.sendRequest("turn/steer", paramsJSON, 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("turn/steer: %w", err)
+	}
+	return nil
+}
+
+// codexSandboxPolicyObject converts a simple sandbox policy string
+// (e.g. "danger-full-access") to the tagged object format expected by
+// turn/start's sandboxPolicy field (e.g. {"type": "dangerFullAccess"}).
+// Returns nil if the policy is empty or unrecognized.
+func codexSandboxPolicyObject(policy string) map[string]interface{} {
+	switch policy {
+	case "danger-full-access":
+		return map[string]interface{}{"type": "dangerFullAccess"}
+	case "workspace-write":
+		return map[string]interface{}{"type": "workspaceWrite"}
+	case "read-only":
+		return map[string]interface{}{"type": "readOnly"}
+	default:
+		return nil
+	}
+}
+
 // SupportsModelEffort returns true — Codex supports model/effort via turn/start params.
 func (a *CodexAgent) SupportsModelEffort() bool {
 	return true
@@ -296,6 +362,25 @@ func (a *CodexAgent) ConfirmedPermissionMode() string {
 // AvailableModels returns the models reported by the Codex process.
 func (a *CodexAgent) AvailableModels() []*leapmuxv1.AvailableModel {
 	return a.availableModels
+}
+
+// UpdateSettings stores new settings so the next turn/start picks them up.
+func (a *CodexAgent) UpdateSettings(s SettingsUpdate) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if s.Model != "" {
+		a.model = s.Model
+	}
+	if s.Effort != "" {
+		a.effort = s.Effort
+	}
+	if s.PermissionMode != "" {
+		a.approvalPolicy = s.PermissionMode
+	}
+	if s.SandboxPolicy != "" {
+		a.sandboxPolicy = s.SandboxPolicy
+	}
+	return true
 }
 
 // queryAvailableModels sends a model/list request and converts the response.

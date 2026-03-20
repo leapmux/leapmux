@@ -274,6 +274,11 @@ func (a *ClaudeCodeAgent) AvailableModels() []*leapmuxv1.AvailableModel {
 	return claudeCodeAvailableModels
 }
 
+// UpdateSettings is a no-op for Claude Code — settings changes require a restart.
+func (a *ClaudeCodeAgent) UpdateSettings(_ SettingsUpdate) bool {
+	return false
+}
+
 // claudeCodeEfforts shared across models (except haiku gets none, and only opus gets max).
 var claudeCodeEffortAll = []*leapmuxv1.AvailableEffort{
 	{Id: "auto", Name: "Auto", Description: "Let Claude decide the appropriate effort level"},

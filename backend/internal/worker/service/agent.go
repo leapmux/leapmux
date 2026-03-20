@@ -535,56 +535,68 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			})
 		}
 
-		// If the agent is currently running, restart it with new settings.
+		// If the agent is currently running, try a live update first.
+		// Providers that support it (e.g. Codex) apply settings to the
+		// next turn without a restart. Providers that don't (e.g. Claude
+		// Code) return false and we fall back to stop+restart.
 		if svc.Agents.HasAgent(agentID) {
-			svc.Agents.StopAndWaitAgent(agentID)
+			updated := svc.Agents.UpdateSettings(agentID, agent.SettingsUpdate{
+				Model:          newModel,
+				Effort:         newEffort,
+				PermissionMode: newPermissionMode,
+				SandboxPolicy:  newCodexSandboxPolicy,
+			})
 
-			// Only resume the session if user messages have actually been
-			// exchanged. The agent process assigns a session ID during the
-			// initialize handshake, but no server-side conversation exists
-			// until the user sends a message. Resuming with a session ID
-			// that has no conversation causes "No conversation found" errors.
-			resumeSessionID := ""
-			if dbAgent.AgentSessionID != "" {
-				hasMessages, err := svc.Queries.HasUserMessages(bgCtx(), agentID)
-				if err == nil && hasMessages != 0 {
-					resumeSessionID = dbAgent.AgentSessionID
+			if !updated {
+				svc.Agents.StopAndWaitAgent(agentID)
+
+				// Only resume the session if user messages have actually been
+				// exchanged. The agent process assigns a session ID during the
+				// initialize handshake, but no server-side conversation exists
+				// until the user sends a message. Resuming with a session ID
+				// that has no conversation causes "No conversation found" errors.
+				resumeSessionID := ""
+				if dbAgent.AgentSessionID != "" {
+					hasMessages, err := svc.Queries.HasUserMessages(bgCtx(), agentID)
+					if err == nil && hasMessages != 0 {
+						resumeSessionID = dbAgent.AgentSessionID
+					}
 				}
-			}
 
-			agentOpts := agent.Options{
-				AgentID:            agentID,
-				Model:              newModel,
-				Effort:             newEffort,
-				WorkingDir:         dbAgent.WorkingDir,
-				ResumeSessionID:    resumeSessionID,
-				PermissionMode:     newPermissionMode,
-				CodexSandboxPolicy: newCodexSandboxPolicy,
-				StartupTimeout:     svc.agentStartupTimeout(),
-				Shell:              svc.agentShell(),
-				LoginShell:         svc.agentLoginShell(),
-				HomeDir:            svc.HomeDir,
-				AgentProvider:      dbAgent.AgentProvider,
-			}
+				agentOpts := agent.Options{
+					AgentID:            agentID,
+					Model:              newModel,
+					Effort:             newEffort,
+					WorkingDir:         dbAgent.WorkingDir,
+					ResumeSessionID:    resumeSessionID,
+					PermissionMode:     newPermissionMode,
+					CodexSandboxPolicy: newCodexSandboxPolicy,
+					StartupTimeout:     svc.agentStartupTimeout(),
+					Shell:              svc.agentShell(),
+					LoginShell:         svc.agentLoginShell(),
+					HomeDir:            svc.HomeDir,
+					AgentProvider:      dbAgent.AgentProvider,
+				}
 
-			sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
+				sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 
-			if _, err := svc.Agents.StartAgent(bgCtx(), agentOpts, sink); err != nil {
-				slog.Error("failed to restart agent with new settings",
-					"agent_id", agentID, "error", err)
-				// Clear stale session ID so ensureAgentRunning won't try
-				// to resume a non-existent session on the next message.
-				_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
-					AgentSessionID: "",
-					ID:             agentID,
-				})
-				svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-					"type":  "agent_error",
-					"error": "Failed to restart agent with new settings: " + err.Error(),
-				})
-			} else {
-				slog.Info("agent restarted with new settings",
-					"agent_id", agentID, "model", newModel, "effort", newEffort)
+				if _, err := svc.Agents.StartAgent(bgCtx(), agentOpts, sink); err != nil {
+					slog.Error("failed to restart agent with new settings",
+						"agent_id", agentID, "error", err)
+					// Clear stale session ID so ensureAgentRunning won't try
+					// to resume a non-existent session on the next message.
+					_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
+						AgentSessionID: "",
+						ID:             agentID,
+					})
+					svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+						"type":  "agent_error",
+						"error": "Failed to restart agent with new settings: " + err.Error(),
+					})
+				} else {
+					slog.Info("agent restarted with new settings",
+						"agent_id", agentID, "model", newModel, "effort", newEffort)
+				}
 			}
 		}
 
