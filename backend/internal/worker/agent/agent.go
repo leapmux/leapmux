@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"os"
 	"strings"
 	"sync"
 	"syscall"
@@ -265,6 +266,122 @@ func (a *ClaudeCodeAgent) SupportsModelEffort() bool {
 // during the startup handshake.
 func (a *ClaudeCodeAgent) ConfirmedPermissionMode() string {
 	return a.confirmedPermissionMode
+}
+
+// AvailableModels returns the hardcoded Claude Code model/effort list.
+func (a *ClaudeCodeAgent) AvailableModels() []*leapmuxv1.AvailableModel {
+	return claudeCodeAvailableModels
+}
+
+// claudeCodeEfforts shared across models (except haiku gets none, and only opus gets max).
+var claudeCodeEffortAll = []*leapmuxv1.AvailableEffort{
+	{Id: "auto", Name: "Auto", Description: "Let Claude decide the appropriate effort level"},
+	{Id: "max", Name: "Max", Description: "Deepest reasoning; uses extended thinking"},
+	{Id: "high", Name: "High", Description: "Thorough reasoning for complex tasks"},
+	{Id: "medium", Name: "Medium", Description: "Balanced speed and reasoning depth"},
+	{Id: "low", Name: "Low", Description: "Faster responses with lighter reasoning"},
+}
+
+var claudeCodeEffortNoMax = []*leapmuxv1.AvailableEffort{
+	{Id: "auto", Name: "Auto", Description: "Let Claude decide the appropriate effort level"},
+	{Id: "high", Name: "High", Description: "Thorough reasoning for complex tasks"},
+	{Id: "medium", Name: "Medium", Description: "Balanced speed and reasoning depth"},
+	{Id: "low", Name: "Low", Description: "Faster responses with lighter reasoning"},
+}
+
+// providerRegistration holds the factory function, default model list, and
+// environment variable keys for a provider.
+type providerRegistration struct {
+	start         startFunc
+	defaultModels []*leapmuxv1.AvailableModel
+	envModelKey   string // e.g. "LEAPMUX_CLAUDE_DEFAULT_MODEL"
+	envEffortKey  string // e.g. "LEAPMUX_CLAUDE_DEFAULT_EFFORT"
+}
+
+// providerRegistry maps each AgentProvider to its registration.
+// Providers register at package init time via registerProvider.
+var providerRegistry = map[leapmuxv1.AgentProvider]providerRegistration{}
+
+// registerProvider registers a provider's factory function, default model list,
+// and environment variable keys for overriding defaults.
+func registerProvider(
+	provider leapmuxv1.AgentProvider,
+	start startFunc,
+	defaultModels []*leapmuxv1.AvailableModel,
+	envModelKey, envEffortKey string,
+) {
+	providerRegistry[provider] = providerRegistration{
+		start:         start,
+		defaultModels: defaultModels,
+		envModelKey:   envModelKey,
+		envEffortKey:  envEffortKey,
+	}
+}
+
+// DefaultModel returns the default model ID for a provider, checking the
+// provider's environment variable first, then falling back to the model
+// marked IsDefault in the registered model list.
+func DefaultModel(provider leapmuxv1.AgentProvider) string {
+	reg, ok := providerRegistry[provider]
+	if !ok {
+		return ""
+	}
+	if reg.envModelKey != "" {
+		if env := os.Getenv(reg.envModelKey); env != "" {
+			return env
+		}
+	}
+	for _, m := range reg.defaultModels {
+		if m.IsDefault {
+			return m.Id
+		}
+	}
+	if len(reg.defaultModels) > 0 {
+		return reg.defaultModels[0].Id
+	}
+	return ""
+}
+
+// DefaultEffort returns the default effort ID for a provider, checking the
+// provider's environment variable first, then falling back to the default
+// effort of the default model.
+func DefaultEffort(provider leapmuxv1.AgentProvider) string {
+	reg, ok := providerRegistry[provider]
+	if !ok {
+		return ""
+	}
+	if reg.envEffortKey != "" {
+		if env := os.Getenv(reg.envEffortKey); env != "" {
+			return env
+		}
+	}
+	defaultModelID := DefaultModel(provider)
+	for _, m := range reg.defaultModels {
+		if m.Id == defaultModelID && m.DefaultEffort != "" {
+			return m.DefaultEffort
+		}
+	}
+	return ""
+}
+
+func init() {
+	registerProvider(
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		func(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+			return StartClaudeCode(ctx, opts, sink)
+		},
+		claudeCodeAvailableModels,
+		"LEAPMUX_CLAUDE_DEFAULT_MODEL",
+		"LEAPMUX_CLAUDE_DEFAULT_EFFORT",
+	)
+}
+
+var claudeCodeAvailableModels = []*leapmuxv1.AvailableModel{
+	{Id: "opus", DisplayName: "Opus", Description: "Most capable for complex work", IsDefault: true, DefaultEffort: "high", SupportedEfforts: claudeCodeEffortAll},
+	{Id: "opus[1m]", DisplayName: "Opus (1M context)", Description: "Most capable for complex work \u00b7 May be billed as extra usage", DefaultEffort: "high", SupportedEfforts: claudeCodeEffortAll},
+	{Id: "sonnet", DisplayName: "Sonnet", Description: "Best for everyday tasks", DefaultEffort: "high", SupportedEfforts: claudeCodeEffortNoMax},
+	{Id: "sonnet[1m]", DisplayName: "Sonnet (1M context)", Description: "Best for everyday tasks \u00b7 May be billed as extra usage", DefaultEffort: "high", SupportedEfforts: claudeCodeEffortNoMax},
+	{Id: "haiku", DisplayName: "Haiku", Description: "Fastest for quick answers", DefaultEffort: "high"},
 }
 
 // sendControlAndWait sends a control request to the agent and waits for the

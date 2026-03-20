@@ -8,7 +8,7 @@ codexTest.describe('Codex Agent Settings', () => {
     if (await settingsBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
       const triggerText = await settingsBtn.textContent()
       expect(triggerText).toBeTruthy()
-      // The default Codex model is o4-mini in e2e (overridden via LEAPMUX_DEFAULT_CODEX_MODEL).
+      // The default Codex model is o4-mini in e2e (overridden via LEAPMUX_CODEX_DEFAULT_MODEL).
       expect(triggerText?.toLowerCase()).toContain('o4-mini')
     }
   })

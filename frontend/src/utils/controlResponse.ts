@@ -68,28 +68,12 @@ export function buildDenyResponse(
  */
 export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'
 
-/** Display labels for permission modes, models, and effort levels. */
-export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
+/** Display labels for permission modes. */
+export const CLAUDE_PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
   default: 'Default',
   plan: 'Plan Mode',
   acceptEdits: 'Accept Edits',
   bypassPermissions: 'Bypass Permissions',
-}
-
-export const MODEL_LABELS: Record<string, string> = {
-  'opus': 'Opus',
-  'opus[1m]': 'Opus[1m]',
-  'sonnet': 'Sonnet',
-  'sonnet[1m]': 'Sonnet[1m]',
-  'haiku': 'Haiku',
-}
-
-export const EFFORT_LABELS: Record<string, string> = {
-  auto: 'Auto',
-  max: 'Max',
-  high: 'High',
-  medium: 'Medium',
-  low: 'Low',
 }
 
 /** Returns the default model for the given agent provider. */

@@ -146,47 +146,83 @@ func RegisterAll(d *channel.Dispatcher, svc *Context) {
 	registerSysInfoHandlers(d, svc)
 }
 
-// modelOrDefault returns the given model, or falls back to the
-// LEAPMUX_DEFAULT_CLAUDE_MODEL environment variable, or "opus" if unset.
-// This is used for Claude Code agents. For provider-aware defaults,
-// use modelOrDefaultForProvider.
-func modelOrDefault(model string) string {
+// modelOrDefault returns the model if non-empty, otherwise the provider's
+// default model from the agent registry (which checks env vars and the
+// registered default model list).
+func modelOrDefault(model string, provider leapmuxv1.AgentProvider) string {
 	if model != "" {
 		return model
 	}
-	if env := os.Getenv("LEAPMUX_DEFAULT_CLAUDE_MODEL"); env != "" {
-		return env
-	}
-	return "opus"
+	return agent.DefaultModel(provider)
 }
 
-// modelOrDefaultForProvider returns the given model, or falls back to a
-// provider-specific default from environment variables.
-func modelOrDefaultForProvider(model string, provider leapmuxv1.AgentProvider) string {
-	if model != "" {
-		return model
-	}
-	switch provider {
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:
-		if env := os.Getenv("LEAPMUX_DEFAULT_CODEX_MODEL"); env != "" {
-			return env
-		}
-		return "gpt-5.4"
-	default:
-		return modelOrDefault(model)
-	}
-}
-
-// effortOrDefault returns the given effort, or falls back to the
-// LEAPMUX_DEFAULT_EFFORT environment variable, or "high" if unset.
-func effortOrDefault(effort string) string {
+// effortOrDefault returns the effort if non-empty, otherwise the provider's
+// default effort from the agent registry.
+func effortOrDefault(effort string, provider leapmuxv1.AgentProvider) string {
 	if effort != "" {
 		return effort
 	}
-	if env := os.Getenv("LEAPMUX_DEFAULT_EFFORT"); env != "" {
-		return env
+	return agent.DefaultEffort(provider)
+}
+
+// settingsDisplayLabels returns lookup functions for model and effort display
+// names using the agent's AvailableModels data. If the agent is not running or
+// has no model list, the lookup functions return the raw ID as-is.
+func (svc *Context) settingsDisplayLabels(agentID string, provider leapmuxv1.AgentProvider) (modelLabel, effortLabel func(string) string) {
+	models := svc.Agents.AvailableModels(agentID, provider)
+
+	// Build model ID → displayName map.
+	modelMap := make(map[string]string, len(models))
+	effortMap := make(map[string]string)
+	for _, m := range models {
+		if m.DisplayName != "" {
+			modelMap[m.Id] = m.DisplayName
+		}
+		for _, e := range m.SupportedEfforts {
+			if e.Name != "" {
+				effortMap[e.Id] = e.Name
+			}
+		}
 	}
-	return "high"
+
+	modelLabel = func(id string) string {
+		if label, ok := modelMap[id]; ok {
+			return label
+		}
+		return id
+	}
+	effortLabel = func(id string) string {
+		if label, ok := effortMap[id]; ok {
+			return label
+		}
+		return id
+	}
+	return
+}
+
+// permissionModeLabel returns a human-readable label for a permission mode ID.
+// Covers both Claude Code and Codex permission modes.
+func permissionModeLabel(mode string) string {
+	switch mode {
+	// Claude Code
+	case "default":
+		return "Default"
+	case "plan":
+		return "Plan Mode"
+	case "acceptEdits":
+		return "Accept Edits"
+	case "bypassPermissions":
+		return "Bypass Permissions"
+	// Codex
+	case "never":
+		return "Full Auto"
+	case "on-request":
+		return "Suggest & Approve"
+	case "untrusted":
+		return "Auto-edit"
+	default:
+		return mode
+	}
 }
 
 // sendProtoResponse is a helper that serializes a proto response and sends it.

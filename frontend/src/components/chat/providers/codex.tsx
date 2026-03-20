@@ -3,14 +3,14 @@ import type { MessageCategory } from '../messageClassification'
 import type { ProviderPlugin, ProviderSettingsPanelProps, RenderContext } from './registry'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
-import { createUniqueId } from 'solid-js'
+import ChevronsDown from 'lucide-solid/icons/chevrons-down'
+import ChevronsUp from 'lucide-solid/icons/chevrons-up'
+import Dot from 'lucide-solid/icons/dot'
+import Zap from 'lucide-solid/icons/zap'
+import { createUniqueId, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
+import { Icon } from '~/components/common/Icon'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import {
-  EFFORT_LABELS,
-} from '~/utils/controlResponse'
-import { isNotificationThreadWrapper, isObject } from '../messageUtils'
-import { RadioGroup } from '../settingsShared'
 import {
   codexAgentMessageRenderer,
   codexCommandExecutionRenderer,
@@ -18,22 +18,14 @@ import {
   codexMcpToolCallRenderer,
   codexReasoningRenderer,
   codexTurnCompletedRenderer,
-} from './codexRenderers'
+} from '../codexRenderers'
+import { isNotificationThreadWrapper, isObject } from '../messageUtils'
+import { RadioGroup } from '../settingsShared'
 import { registerProvider } from './registry'
 
 /** Default model for Codex agents. */
-const DEFAULT_CODEX_MODEL = import.meta.env.LEAPMUX_DEFAULT_CODEX_MODEL || 'gpt-5.4'
+const DEFAULT_CODEX_MODEL = import.meta.env.LEAPMUX_CODEX_DEFAULT_MODEL || 'gpt-5.4'
 const DEFAULT_CODEX_EFFORT = 'medium'
-
-const CODEX_MODEL_LABELS: Record<string, string> = {
-  'o4-mini': 'o4-mini',
-  'o3': 'o3',
-  'gpt-5.4': 'GPT-5.4',
-  'codex-mini': 'Codex Mini',
-}
-
-const CODEX_MODELS = Object.entries(CODEX_MODEL_LABELS).map(([value, label]) => ({ label, value }))
-const CODEX_EFFORTS = Object.entries(EFFORT_LABELS).map(([value, label]) => ({ label, value }))
 
 /** Codex approval policy labels (using Codex-native kebab-case values). */
 const CODEX_PERMISSION_MODE_LABELS: Record<string, string> = {
@@ -87,13 +79,30 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
   const menuId = createUniqueId()
   const currentModel = () => props.model || DEFAULT_CODEX_MODEL
   const currentEffort = () => props.effort || DEFAULT_CODEX_EFFORT
-  const currentMode = () => props.permissionMode || 'never'
+  const currentMode = () => props.permissionMode || 'on-request'
+
+  const modelItems = () => {
+    const models = props.availableModels
+    if (models && models.length > 0)
+      return models.map(m => ({ label: m.displayName || m.id, value: m.id, tooltip: m.description || undefined }))
+    return []
+  }
+
+  const effortItems = () => {
+    const models = props.availableModels
+    if (models && models.length > 0) {
+      const model = models.find(m => m.id === currentModel())
+      if (model)
+        return model.supportedEfforts.map(e => ({ label: e.name || e.id, value: e.id, tooltip: e.description || undefined }))
+    }
+    return []
+  }
 
   return (
     <>
       <RadioGroup
         label="Model"
-        items={CODEX_MODELS}
+        items={modelItems()}
         testIdPrefix="model"
         name={`${menuId}-model`}
         current={currentModel()}
@@ -101,7 +110,7 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
       />
       <RadioGroup
         label="Reasoning Effort"
-        items={CODEX_EFFORTS}
+        items={effortItems()}
         testIdPrefix="effort"
         name={`${menuId}-effort`}
         current={currentEffort()}
@@ -119,10 +128,50 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
   )
 }
 
-/** Codex trigger label (model name). */
+/** Codex trigger label (model name, effort icon, approval policy). */
 function CodexTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
   const currentModel = () => props.model || DEFAULT_CODEX_MODEL
-  return <>{CODEX_MODEL_LABELS[currentModel()] || currentModel()}</>
+  const currentEffort = () => props.effort || DEFAULT_CODEX_EFFORT
+  const currentMode = () => props.permissionMode || 'on-request'
+  const displayName = () => {
+    const models = props.availableModels
+    if (models && models.length > 0) {
+      const model = models.find(m => m.id === currentModel())
+      if (model)
+        return model.displayName || model.id
+    }
+    return currentModel()
+  }
+
+  const effortIcon = () => {
+    switch (currentEffort()) {
+      case 'xhigh': return <Icon icon={Zap} size="xs" />
+      case 'high': return <Icon icon={ChevronsUp} size="xs" />
+      case 'low': return <Icon icon={ChevronsDown} size="xs" />
+      case 'minimal': return <Icon icon={ChevronsDown} size="xs" />
+      case 'none': return <Icon icon={ChevronsDown} size="xs" />
+      default: return <Icon icon={Dot} size="xs" />
+    }
+  }
+
+  const hasEfforts = () => {
+    const models = props.availableModels
+    if (models && models.length > 0) {
+      const model = models.find(m => m.id === currentModel())
+      return model ? model.supportedEfforts.length > 0 : false
+    }
+    return false
+  }
+
+  const modeLabel = () => CODEX_PERMISSION_MODE_LABELS[currentMode()] || currentMode()
+  return (
+    <>
+      {displayName()}
+      <Show when={hasEfforts()}>{effortIcon()}</Show>
+      {' '}
+      {modeLabel()}
+    </>
+  )
 }
 
 const codexPlugin: ProviderPlugin = {
@@ -140,13 +189,20 @@ const codexPlugin: ProviderPlugin = {
     if (!parent)
       return { kind: 'unknown' }
 
+    // Codex wrapper messages represent state updates of the same item
+    // (e.g. inProgress → completed). Use the last message as the effective parent.
+    const effective = (wrapper && wrapper.messages.length > 1)
+      ? wrapper.messages.at(-1) as Record<string, unknown>
+      : parent
+
     // Codex item types from item/completed notifications.
     // The params are stored natively: {item: {type: "agentMessage", ...}, threadId, turnId}
-    const item = parent.item as Record<string, unknown> | undefined
+    const item = (effective.item as Record<string, unknown> | undefined)
+      ?? (parent.item as Record<string, unknown> | undefined)
     const itemType = item?.type as string | undefined
 
     // turn/completed → result divider
-    if (parent.turn && isObject(parent.turn) && (parent.turn as Record<string, unknown>).status)
+    if (effective.turn && isObject(effective.turn) && (effective.turn as Record<string, unknown>).status)
       return { kind: 'result_divider' }
 
     if (item && itemType) {
@@ -170,13 +226,18 @@ const codexPlugin: ProviderPlugin = {
       if (itemType === 'dynamicToolCall')
         return { kind: 'tool_use', toolName: (item.tool as string) || 'dynamicTool', toolUse: item, content: [] }
 
-      // reasoning → thinking
-      if (itemType === 'reasoning')
+      // reasoning → thinking (hide if both summary and content are empty)
+      if (itemType === 'reasoning') {
+        const summary = item.summary as unknown[] | undefined
+        const content = item.content as unknown[] | undefined
+        if ((!summary || summary.length === 0) && (!content || content.length === 0))
+          return { kind: 'hidden' }
         return { kind: 'assistant_thinking' }
+      }
 
-      // userMessage → user content
+      // userMessage → hidden (echoed back by Codex; persisted but not displayed)
       if (itemType === 'userMessage')
-        return { kind: 'user_content' }
+        return { kind: 'hidden' }
     }
 
     // User message (persisted by LeapMux service layer)
@@ -204,12 +265,13 @@ const codexPlugin: ProviderPlugin = {
     if (category.kind === 'result_divider')
       return codexTurnCompletedRenderer(parsed, role, context)
     if (category.kind === 'tool_use') {
-      const toolName = (category as { toolName: string }).toolName
-      if (toolName === 'commandExecution')
-        return codexCommandExecutionRenderer(parsed, role, context)
-      if (toolName === 'fileChange')
-        return codexFileChangeRenderer(parsed, role, context)
-      return codexMcpToolCallRenderer(parsed, role, context)
+      // Use the item stored in category.toolUse (resolved to final state in classify).
+      const cat = category as { toolName: string, toolUse: Record<string, unknown> }
+      if (cat.toolName === 'commandExecution')
+        return codexCommandExecutionRenderer(cat.toolUse, role, context)
+      if (cat.toolName === 'fileChange')
+        return codexFileChangeRenderer(cat.toolUse, role, context)
+      return codexMcpToolCallRenderer(cat.toolUse, role, context)
     }
     return null
   },

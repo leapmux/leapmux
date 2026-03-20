@@ -3,9 +3,18 @@ package agent
 import (
 	"context"
 	"fmt"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-// StartOpenCode starts an OpenCode agent process. Not implemented yet.
-func StartOpenCode(_ context.Context, _ Options, _ OutputSink) (Provider, error) {
-	return nil, fmt.Errorf("opencode provider is not implemented yet")
+func init() {
+	registerProvider(
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+		func(_ context.Context, _ Options, _ OutputSink) (Provider, error) {
+			return nil, fmt.Errorf("opencode provider is not implemented yet")
+		},
+		nil,
+		"LEAPMUX_OPENCODE_DEFAULT_MODEL",
+		"LEAPMUX_OPENCODE_DEFAULT_EFFORT",
+	)
 }

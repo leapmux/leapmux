@@ -216,7 +216,7 @@ func (s *agentOutputSink) buildStatusChange(
 		AgentSessionId:      sessionID,
 		WorkerOnline:        true,
 		PermissionMode:      permissionMode,
-		Model:               modelOrDefault(dbAgent.Model),
+		Model:               modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
 		Effort:              dbAgent.Effort,
 		GitStatus:           gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
 		SupportsModelEffort: s.h.agents.SupportsModelEffort(s.agentID),

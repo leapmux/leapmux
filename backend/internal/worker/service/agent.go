@@ -65,7 +65,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		if agentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
 			agentProvider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 		}
-		model := modelOrDefaultForProvider(r.GetModel(), agentProvider)
+		model := modelOrDefault(r.GetModel(), agentProvider)
 
 		// Ensure the channel knows about this workspace so that
 		// subsequent WatchEvents calls can access the agent.
@@ -140,7 +140,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.OpenAgentResponse{
-			Agent: agentToProto(&dbAgent, permissionMode, svc.WorkerID, true, gitutil.GetGitStatus(dbAgent.WorkingDir), svc.Agents.SupportsModelEffort(agentID)),
+			Agent: agentToProto(&dbAgent, permissionMode, svc.WorkerID, true, gitutil.GetGitStatus(dbAgent.WorkingDir), svc.Agents.SupportsModelEffort(agentID), svc.Agents.AvailableModels(agentID, dbAgent.AgentProvider)),
 		})
 	})
 
@@ -341,7 +341,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			if accessibleWsIDs != nil && !accessibleWsIDs[agents[i].WorkspaceID] {
 				continue
 			}
-			protoAgents = append(protoAgents, agentToProto(&agents[i], agents[i].PermissionMode, svc.WorkerID, svc.Agents.HasAgent(agents[i].ID), gitStatuses[i], svc.Agents.SupportsModelEffort(agents[i].ID)))
+			protoAgents = append(protoAgents, agentToProto(&agents[i], agents[i].PermissionMode, svc.WorkerID, svc.Agents.HasAgent(agents[i].ID), gitStatuses[i], svc.Agents.SupportsModelEffort(agents[i].ID), svc.Agents.AvailableModels(agents[i].ID, agents[i].AgentProvider)))
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.ListAgentsResponse{
@@ -527,15 +527,25 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		if svc.Agents.HasAgent(agentID) {
 			svc.Agents.StopAndWaitAgent(agentID)
 
-			// Resume the session if one was recorded (i.e. at least one message
-			// was exchanged). This preserves conversation context across restarts.
-			// If no session exists yet, start fresh.
+			// Only resume the session if user messages have actually been
+			// exchanged. The agent process assigns a session ID during the
+			// initialize handshake, but no server-side conversation exists
+			// until the user sends a message. Resuming with a session ID
+			// that has no conversation causes "No conversation found" errors.
+			resumeSessionID := ""
+			if dbAgent.AgentSessionID != "" {
+				hasMessages, err := svc.Queries.HasUserMessages(bgCtx(), agentID)
+				if err == nil && hasMessages != 0 {
+					resumeSessionID = dbAgent.AgentSessionID
+				}
+			}
+
 			agentOpts := agent.Options{
 				AgentID:         agentID,
 				Model:           newModel,
 				Effort:          newEffort,
 				WorkingDir:      dbAgent.WorkingDir,
-				ResumeSessionID: dbAgent.AgentSessionID,
+				ResumeSessionID: resumeSessionID,
 				PermissionMode:  newPermissionMode,
 				StartupTimeout:  svc.agentStartupTimeout(),
 				Shell:           svc.agentShell(),
@@ -566,15 +576,29 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		// Broadcast settings_changed notification for the chat view.
+		// Include display labels so the frontend can show human-readable names
+		// without maintaining its own label maps.
+		modelLabel, effortLabel := svc.settingsDisplayLabels(agentID, dbAgent.AgentProvider)
 		changes := map[string]interface{}{}
 		if dbAgent.Model != newModel {
-			changes["model"] = map[string]string{"old": modelOrDefault(dbAgent.Model), "new": newModel}
+			oldID := modelOrDefault(dbAgent.Model, dbAgent.AgentProvider)
+			changes["model"] = map[string]string{
+				"old": oldID, "new": newModel,
+				"oldLabel": modelLabel(oldID), "newLabel": modelLabel(newModel),
+			}
 		}
 		if dbAgent.Effort != newEffort {
-			changes["effort"] = map[string]string{"old": effortOrDefault(dbAgent.Effort), "new": newEffort}
+			oldID := effortOrDefault(dbAgent.Effort, dbAgent.AgentProvider)
+			changes["effort"] = map[string]string{
+				"old": oldID, "new": newEffort,
+				"oldLabel": effortLabel(oldID), "newLabel": effortLabel(newEffort),
+			}
 		}
 		if dbAgent.PermissionMode != newPermissionMode {
-			changes["permissionMode"] = map[string]string{"old": dbAgent.PermissionMode, "new": newPermissionMode}
+			changes["permissionMode"] = map[string]string{
+				"old": dbAgent.PermissionMode, "new": newPermissionMode,
+				"oldLabel": permissionModeLabel(dbAgent.PermissionMode), "newLabel": permissionModeLabel(newPermissionMode),
+			}
 		}
 		if len(changes) > 0 {
 			svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
@@ -727,7 +751,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 					AgentSessionId:      dbAgent.AgentSessionID,
 					WorkerOnline:        true,
 					PermissionMode:      dbAgent.PermissionMode,
-					Model:               modelOrDefault(dbAgent.Model),
+					Model:               modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
 					Effort:              dbAgent.Effort,
 					GitStatus:           gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
 					SupportsModelEffort: svc.Agents.SupportsModelEffort(agentID),
@@ -807,7 +831,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 }
 
 // agentToProto converts a DB Agent to a proto AgentInfo.
-func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, gs *gitutil.GitStatus, supportsModelEffort bool) *leapmuxv1.AgentInfo {
+func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, gs *gitutil.GitStatus, supportsModelEffort bool, availableModels []*leapmuxv1.AvailableModel) *leapmuxv1.AgentInfo {
 	status := leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE
 	if isRunning {
 		status = leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE
@@ -816,7 +840,7 @@ func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, 
 		Id:                  a.ID,
 		WorkspaceId:         a.WorkspaceID,
 		Title:               a.Title,
-		Model:               modelOrDefault(a.Model),
+		Model:               modelOrDefault(a.Model, a.AgentProvider),
 		Status:              status,
 		WorkingDir:          a.WorkingDir,
 		PermissionMode:      permissionMode,
@@ -828,6 +852,7 @@ func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, 
 		GitStatus:           gitStatusToProto(gs),
 		SupportsModelEffort: supportsModelEffort,
 		AgentProvider:       a.AgentProvider,
+		AvailableModels:     availableModels,
 	}
 
 	if a.ClosedAt.Valid {
@@ -880,7 +905,7 @@ func (svc *Context) handleClearContext(agentID string) {
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	if _, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
 		AgentID:        agentID,
-		Model:          modelOrDefaultForProvider(dbAgent.Model, dbAgent.AgentProvider),
+		Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
 		Effort:         dbAgent.Effort,
 		WorkingDir:     dbAgent.WorkingDir,
 		PermissionMode: dbAgent.PermissionMode,
@@ -923,13 +948,24 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 		return fmt.Errorf("agent not found: %w", err)
 	}
 
+	// Only resume the session if user messages have actually been exchanged.
+	// The agent process assigns a session ID during startup, but no
+	// server-side conversation may exist until a message is sent.
+	resumeSessionID := ""
+	if dbAgent.AgentSessionID != "" {
+		hasMessages, err := svc.Queries.HasUserMessages(bgCtx(), agentID)
+		if err == nil && hasMessages != 0 {
+			resumeSessionID = dbAgent.AgentSessionID
+		}
+	}
+
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	if _, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
 		AgentID:         agentID,
-		Model:           modelOrDefaultForProvider(dbAgent.Model, dbAgent.AgentProvider),
+		Model:           modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
 		Effort:          dbAgent.Effort,
 		WorkingDir:      dbAgent.WorkingDir,
-		ResumeSessionID: dbAgent.AgentSessionID,
+		ResumeSessionID: resumeSessionID,
 		PermissionMode:  dbAgent.PermissionMode,
 		StartupTimeout:  svc.agentStartupTimeout(),
 		Shell:           svc.agentShell(),
@@ -1001,7 +1037,7 @@ func (svc *Context) setAgentPermissionMode(agentID, mode string) {
 				AgentSessionId:      dbAgent.AgentSessionID,
 				WorkerOnline:        true,
 				PermissionMode:      mode,
-				Model:               modelOrDefault(dbAgent.Model),
+				Model:               modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
 				Effort:              dbAgent.Effort,
 				GitStatus:           gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
 				SupportsModelEffort: svc.Agents.SupportsModelEffort(agentID),
@@ -1015,7 +1051,10 @@ func (svc *Context) setAgentPermissionMode(agentID, mode string) {
 		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 			"type": "settings_changed",
 			"changes": map[string]interface{}{
-				"permissionMode": map[string]string{"old": oldMode, "new": mode},
+				"permissionMode": map[string]string{
+					"old": oldMode, "new": mode,
+					"oldLabel": permissionModeLabel(oldMode), "newLabel": permissionModeLabel(mode),
+				},
 			},
 		})
 	}
@@ -1193,7 +1232,7 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	if _, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
 		AgentID:        agentID,
-		Model:          modelOrDefault(dbAgent.Model),
+		Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
 		Effort:         dbAgent.Effort,
 		WorkingDir:     dbAgent.WorkingDir,
 		PermissionMode: targetMode,

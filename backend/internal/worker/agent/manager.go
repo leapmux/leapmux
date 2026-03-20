@@ -16,17 +16,19 @@ var ErrAgentNotFound = errors.New("agent not found")
 
 // Manager tracks active agents and routes messages.
 type Manager struct {
-	mu     sync.RWMutex
-	agents map[string]Provider // agentID -> Provider
-	onExit ExitHandler
+	mu           sync.RWMutex
+	agents       map[string]Provider                    // agentID -> Provider
+	cachedModels map[string][]*leapmuxv1.AvailableModel // agentID -> last known models
+	onExit       ExitHandler
 }
 
 // NewManager creates a new agent Manager.
 // The optional onExit handler is called when any agent process exits.
 func NewManager(onExit ExitHandler) *Manager {
 	return &Manager{
-		agents: make(map[string]Provider),
-		onExit: onExit,
+		agents:       make(map[string]Provider),
+		cachedModels: make(map[string][]*leapmuxv1.AvailableModel),
+		onExit:       onExit,
 	}
 }
 
@@ -38,31 +40,11 @@ type startFunc func(ctx context.Context, opts Options, sink OutputSink) (Provide
 // The sink receives parsed output events.
 // Returns the confirmed permission mode from the startup handshake.
 func (m *Manager) StartAgent(ctx context.Context, opts Options, sink OutputSink) (string, error) {
-	var start startFunc
-	switch opts.AgentProvider {
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:
-		start = startCodex
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:
-		start = startOpenCode
-	default:
-		start = startClaudeCode
+	reg, ok := providerRegistry[opts.AgentProvider]
+	if !ok {
+		return "", fmt.Errorf("unsupported agent provider: %v", opts.AgentProvider)
 	}
-	return m.startAgentWith(ctx, opts, sink, start)
-}
-
-// startClaudeCode wraps StartClaudeCode() to satisfy the startFunc signature.
-func startClaudeCode(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
-	return StartClaudeCode(ctx, opts, sink)
-}
-
-// startCodex wraps StartCodex() to satisfy the startFunc signature.
-func startCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
-	return StartCodex(ctx, opts, sink)
-}
-
-// startOpenCode wraps StartOpenCode() to satisfy the startFunc signature.
-func startOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
-	return StartOpenCode(ctx, opts, sink)
+	return m.startAgentWith(ctx, opts, sink, reg.start)
 }
 
 func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputSink, start startFunc) (string, error) {
@@ -82,6 +64,9 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 
 	m.mu.Lock()
 	m.agents[opts.AgentID] = provider
+	if models := provider.AvailableModels(); len(models) > 0 {
+		m.cachedModels[opts.AgentID] = models
+	}
 	m.mu.Unlock()
 
 	// Wait for the agent to exit in the background, then clean up.
@@ -203,6 +188,28 @@ func (m *Manager) SupportsModelEffort(agentID string) bool {
 	}
 
 	return p.SupportsModelEffort()
+}
+
+// AvailableModels returns the models reported by the agent process.
+// Falls back to the cached model list, then to the provider's static defaults.
+func (m *Manager) AvailableModels(agentID string, provider leapmuxv1.AgentProvider) []*leapmuxv1.AvailableModel {
+	m.mu.RLock()
+	p, ok := m.agents[agentID]
+	cached := m.cachedModels[agentID]
+	m.mu.RUnlock()
+
+	if ok {
+		if models := p.AvailableModels(); len(models) > 0 {
+			return models
+		}
+	}
+	if len(cached) > 0 {
+		return cached
+	}
+	if reg, ok := providerRegistry[provider]; ok {
+		return reg.defaultModels
+	}
+	return nil
 }
 
 // HasAgent returns true if an agent is running with the given agent ID.

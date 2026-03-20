@@ -36,4 +36,5 @@ type Provider interface {
 	SupportsModelEffort() bool
 	ConfirmedPermissionMode() string
 	HandleOutput(content []byte)
+	AvailableModels() []*leapmuxv1.AvailableModel
 }

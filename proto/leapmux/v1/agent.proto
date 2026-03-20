@@ -104,6 +104,24 @@ message AgentInfo {
   string home_dir = 15;         // Worker's home directory for tilde path display
   bool supports_model_effort = 16; // Whether the agent supports --model/--effort CLI args
   AgentProvider agent_provider = 17; // Coding agent provider
+  repeated AvailableModel available_models = 18; // Models reported by the agent process
+}
+
+// AvailableModel describes a model reported by the agent process (e.g. Codex model/list).
+message AvailableModel {
+  string id = 1;               // Model identifier (passed as "model" in requests)
+  string display_name = 2;     // Human-readable label
+  bool is_default = 3;         // Whether this is the provider's default model
+  string default_effort = 4;   // Default reasoning effort for this model
+  repeated AvailableEffort supported_efforts = 5; // Effort levels this model supports
+  string description = 6;      // Tooltip / description text shown on hover
+}
+
+// AvailableEffort describes a reasoning effort level supported by a model.
+message AvailableEffort {
+  string id = 1;               // Effort identifier (passed as "effort" in requests)
+  string name = 2;             // Human-readable short label (e.g. "High")
+  string description = 3;      // Tooltip / description text shown on hover
 }
 
 // --- Agent Messaging ---

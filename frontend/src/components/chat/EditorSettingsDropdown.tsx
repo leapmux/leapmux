@@ -13,7 +13,7 @@ import * as styles from './ChatView.css'
 import { getProviderPlugin } from './providers'
 
 // Re-export shared settings utilities for external consumers.
-export { EFFORTS, modeLabel, modelLabel, MODELS, PERMISSION_MODES, RadioGroup } from './settingsShared'
+export { modeLabel, PERMISSION_MODES, RadioGroup } from './settingsShared'
 
 export interface EditorSettingsDropdownProps {
   disabled?: boolean
@@ -22,6 +22,7 @@ export interface EditorSettingsDropdownProps {
   effort?: string
   permissionMode?: string
   supportsModelEffort?: boolean
+  availableModels?: import('~/generated/leapmux/v1/agent_pb').AvailableModel[]
   agentProvider?: AgentProvider
   onModelChange?: (model: string) => void
   onEffortChange?: (effort: string) => void
@@ -39,6 +40,7 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
     effort: props.effort,
     permissionMode: props.permissionMode,
     supportsModelEffort: props.supportsModelEffort,
+    availableModels: props.availableModels,
     onModelChange: props.onModelChange,
     onEffortChange: props.onEffortChange,
     onPermissionModeChange: props.onPermissionModeChange,

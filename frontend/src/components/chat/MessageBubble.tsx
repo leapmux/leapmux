@@ -322,7 +322,17 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     const cat = category()
     if (cat.kind !== 'assistant_text' && cat.kind !== 'assistant_thinking')
       return null
-    const content = getAssistantContent(parsed().parentObject)
+    const obj = parsed().parentObject
+    if (!obj)
+      return null
+
+    // Codex format: {item: {type: 'agentMessage', text: '...'}, ...}
+    const item = obj.item as Record<string, unknown> | undefined
+    if (item?.type === 'agentMessage' && typeof item.text === 'string')
+      return item.text.trim() || null
+
+    // Claude Code format: {type: 'assistant', message: {content: [...]}}
+    const content = getAssistantContent(obj)
     if (!content)
       return null
     return content
@@ -400,9 +410,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
             <ToolHeaderActions
               createdAt={props.message.createdAt}
               updatedAt={props.message.updatedAt}
-              threadCount={nonControlChildren().length}
-              threadExpanded={threadExpanded()}
-              onToggleThread={() => setThreadExpanded(prev => !prev)}
+              expanded={threadExpanded()}
+              onToggleExpand={nonControlChildren().length > 0 ? () => setThreadExpanded(prev => !prev) : undefined}
+              expandLabel={nonControlChildren().length > 0 ? `Expand ${nonControlChildren().length} tool result${nonControlChildren().length === 1 ? '' : 's'}` : undefined}
               onCopyJson={copyJson}
               jsonCopied={jsonCopied()}
               onReply={extractQuotableText() ? handleReply : undefined}

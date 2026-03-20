@@ -12,7 +12,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { Icon } from '~/components/common/Icon'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { isNotificationThreadWrapper, isObject } from '../messageUtils'
-import { EFFORTS, modeLabel, modelLabel, MODELS, PERMISSION_MODES, RadioGroup } from '../settingsShared'
+import { modeLabel, PERMISSION_MODES, RadioGroup } from '../settingsShared'
 import { registerProvider } from './registry'
 
 function generateRandomId(): string {
@@ -159,8 +159,8 @@ function classifyClaudeCodeMessage(
   return { kind: 'unknown' }
 }
 
-const DEFAULT_CLAUDE_MODEL = import.meta.env.LEAPMUX_DEFAULT_CLAUDE_MODEL || 'opus'
-const DEFAULT_CLAUDE_EFFORT = import.meta.env.LEAPMUX_DEFAULT_CLAUDE_EFFORT || 'high'
+const DEFAULT_CLAUDE_MODEL = import.meta.env.LEAPMUX_CLAUDE_DEFAULT_MODEL || 'opus'
+const DEFAULT_CLAUDE_EFFORT = import.meta.env.LEAPMUX_CLAUDE_DEFAULT_EFFORT || 'high'
 
 /** Claude Code settings panel (model, effort, permission mode). */
 function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
@@ -168,16 +168,33 @@ function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element
   const currentModel = () => props.model || DEFAULT_CLAUDE_MODEL
   const currentEffort = () => props.effort || DEFAULT_CLAUDE_EFFORT
   const currentMode = () => props.permissionMode || 'default'
-  const isOpus = () => currentModel().startsWith('opus')
-  const availableEfforts = () => isOpus() ? EFFORTS : EFFORTS.filter(e => e.value !== 'max')
+
+  const modelItems = () => {
+    const models = props.availableModels
+    if (models && models.length > 0)
+      return models.map(m => ({ label: m.displayName || m.id, value: m.id, tooltip: m.description || undefined }))
+    return []
+  }
+
+  const effortItems = () => {
+    const models = props.availableModels
+    if (models && models.length > 0) {
+      const model = models.find(m => m.id === currentModel())
+      if (model)
+        return model.supportedEfforts.map(e => ({ label: e.name || e.id, value: e.id, tooltip: e.description || undefined }))
+    }
+    return []
+  }
+
+  const hasEfforts = () => effortItems().length > 0
 
   return (
     <>
       <Show when={props.supportsModelEffort !== false}>
-        <Show when={currentModel() !== 'haiku'}>
+        <Show when={hasEfforts()}>
           <RadioGroup
             label="Effort"
-            items={availableEfforts()}
+            items={effortItems()}
             testIdPrefix="effort"
             name={`${menuId}-effort`}
             current={currentEffort()}
@@ -186,12 +203,13 @@ function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element
         </Show>
         <RadioGroup
           label="Model"
-          items={MODELS}
+          items={modelItems()}
           testIdPrefix="model"
           name={`${menuId}-model`}
           current={currentModel()}
           onChange={(v) => {
             props.onModelChange?.(v)
+            // If switching away from opus and effort is max, downgrade to high
             if (!v.startsWith('opus') && currentEffort() === 'max') {
               props.onEffortChange?.('high')
             }
@@ -216,6 +234,16 @@ function ClaudeCodeTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element 
   const currentEffort = () => props.effort || DEFAULT_CLAUDE_EFFORT
   const currentMode = () => props.permissionMode || 'default'
 
+  const displayName = () => {
+    const models = props.availableModels
+    if (models && models.length > 0) {
+      const model = models.find(m => m.id === currentModel())
+      if (model)
+        return model.displayName || model.id
+    }
+    return currentModel()
+  }
+
   const effortIcon = () => {
     switch (currentEffort()) {
       case 'auto': return <Icon icon={Sparkles} size="xs" />
@@ -226,11 +254,20 @@ function ClaudeCodeTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element 
     }
   }
 
+  const hasEfforts = () => {
+    const models = props.availableModels
+    if (models && models.length > 0) {
+      const model = models.find(m => m.id === currentModel())
+      return model ? model.supportedEfforts.length > 0 : false
+    }
+    return false
+  }
+
   return (
     <>
       <Show when={props.supportsModelEffort !== false}>
-        {modelLabel(currentModel())}
-        <Show when={currentModel() !== 'haiku'}>{effortIcon()}</Show>
+        {displayName()}
+        <Show when={hasEfforts()}>{effortIcon()}</Show>
       </Show>
       {modeLabel(currentMode())}
     </>

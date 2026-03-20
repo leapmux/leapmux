@@ -102,10 +102,26 @@ export function ToolUseLayout(props: {
   /** Toggle diff view between unified and split. */
   onDiffViewChange?: (view: DiffViewPreference) => void
   context?: RenderContext
+  /** Whether the body is expanded. When provided, overrides context.threadExpanded. */
+  expanded?: boolean
+  /** Toggle expand/collapse. When provided, overrides context.onToggleThread. */
+  onToggleExpand?: () => void
+  /** Custom label for the expand button tooltip (e.g. "Expand 3 tool results"). */
+  expandLabel?: string
 }): JSX.Element {
-  const expanded = () => props.context?.threadExpanded ?? false
-  const hasThread = () => !props.alwaysVisible && (props.context?.threadChildCount ?? 0) > 0
-  const hasActions = () => hasThread() || !!props.context?.onCopyJson || !!props.hasDiff
+  // Unified expand: explicit props take precedence over context-derived thread expand.
+  const threadCount = () => props.alwaysVisible ? 0 : (props.context?.threadChildCount ?? 0)
+  const hasExplicitExpand = () => !!props.onToggleExpand
+  const expanded = () => hasExplicitExpand()
+    ? (props.expanded ?? false)
+    : (props.context?.threadExpanded ?? false)
+  const onToggle = () => hasExplicitExpand()
+    ? props.onToggleExpand!
+    : (threadCount() > 0 ? (props.context?.onToggleThread ?? (() => {})) : undefined)
+  const expandLabel = () => hasExplicitExpand()
+    ? props.expandLabel
+    : (threadCount() > 0 ? `Expand ${threadCount()} tool result${threadCount() === 1 ? '' : 's'}` : undefined)
+  const hasActions = () => !!onToggle() || !!props.context?.onCopyJson || !!props.hasDiff
   return (
     <div class={toolMessage}>
       <div class={toolUseHeader}>
@@ -122,9 +138,9 @@ export function ToolUseLayout(props: {
           <ToolHeaderActions
             createdAt={props.context!.createdAt}
             updatedAt={props.context!.updatedAt}
-            threadCount={props.alwaysVisible ? 0 : (props.context!.threadChildCount ?? 0)}
-            threadExpanded={expanded()}
-            onToggleThread={props.context!.onToggleThread ?? (() => {})}
+            expanded={expanded()}
+            onToggleExpand={onToggle()}
+            expandLabel={expandLabel()}
             onCopyJson={props.context!.onCopyJson}
             jsonCopied={props.context!.jsonCopied ?? false}
             hasDiff={props.hasDiff}
@@ -170,15 +186,18 @@ export function toolIconFor(name: string): LucideIcon {
   }
 }
 
-/** Actions area in tool header: Reply + Raw JSON copy + diff toggle + thread expander, all with tooltips. */
+/** Actions area in tool header: Reply + Raw JSON copy + diff toggle + expand/collapse, all with tooltips. */
 export function ToolHeaderActions(props: {
   /** ISO timestamp for relative time display. */
   createdAt?: string
   /** ISO timestamp of the last update (thread merge). Preferred over createdAt when set. */
   updatedAt?: string
-  threadCount: number
-  threadExpanded: boolean
-  onToggleThread: () => void
+  /** Whether the content is expanded. */
+  expanded?: boolean
+  /** Toggle expand/collapse. When set, shows the expand button. */
+  onToggleExpand?: () => void
+  /** Custom label for the expand tooltip (default: "Expand" / "Collapse"). */
+  expandLabel?: string
   onCopyJson?: () => void
   jsonCopied?: boolean
   /** Whether this tool has a diff to show (Edit tool). */
@@ -237,15 +256,15 @@ export function ToolHeaderActions(props: {
           title={props.diffView === 'unified' ? 'Switch to split view' : 'Switch to unified view'}
         />
       </Show>
-      <Show when={props.threadCount > 0}>
+      <Show when={props.onToggleExpand}>
         <IconButton
-          icon={props.threadExpanded ? FoldVertical : UnfoldVertical}
+          icon={props.expanded ? FoldVertical : UnfoldVertical}
           size="sm"
           onClick={(e: MouseEvent) => {
             e.stopPropagation()
-            props.onToggleThread()
+            props.onToggleExpand!()
           }}
-          title={props.threadExpanded ? 'Collapse' : `Expand ${props.threadCount} tool result${props.threadCount === 1 ? '' : 's'}`}
+          title={props.expanded ? 'Collapse' : (props.expandLabel || 'Expand')}
         />
       </Show>
     </div>

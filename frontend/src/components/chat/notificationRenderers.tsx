@@ -7,8 +7,9 @@ import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { Icon } from '~/components/common/Icon'
 import { formatRateLimitMessage } from '~/lib/rateLimitUtils'
 import { renderMarkdown } from '~/lib/renderMarkdown'
+import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { spinner } from '~/styles/animations.css'
-import { EFFORT_LABELS, MODEL_LABELS, PERMISSION_MODE_LABELS } from '~/utils/controlResponse'
+import { CLAUDE_PERMISSION_MODE_LABELS } from '~/utils/controlResponse'
 import { markdownContent } from './markdownContent.css'
 import {
   controlResponseMessage,
@@ -29,14 +30,18 @@ function displayLabel(key: string): string {
   }
 }
 
+const CODEX_PERMISSION_MODE_LABELS: Record<string, string> = {
+  'never': 'Full Auto',
+  'on-request': 'Suggest & Approve',
+  'untrusted': 'Auto-edit',
+}
+
 const DISPLAY_VALUE_MAPS: Record<string, Record<string, string>> = {
-  model: MODEL_LABELS,
-  effort: EFFORT_LABELS,
-  permissionMode: PERMISSION_MODE_LABELS,
+  permissionMode: { ...CLAUDE_PERMISSION_MODE_LABELS, ...CODEX_PERMISSION_MODE_LABELS },
 }
 
 function displayValue(key: string, value: string): string {
-  return DISPLAY_VALUE_MAPS[key]?.[value] ?? value
+  return DISPLAY_VALUE_MAPS[key]?.[value] ?? getCachedSettingsLabel(key, value) ?? value
 }
 
 /** Handles settings change notifications: {"type":"settings_changed","changes":{...}} */
@@ -44,13 +49,15 @@ export const settingsChangedRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
     if (!isObject(parsed) || parsed.type !== 'settings_changed')
       return null
-    const changes = parsed.changes as Record<string, { old: string, new: string }>
+    const changes = parsed.changes as Record<string, { old: string, new: string, oldLabel?: string, newLabel?: string }>
     if (!changes)
       return null
     const parts: string[] = []
     for (const [key, val] of Object.entries(changes)) {
       if (val.old !== val.new) {
-        parts.push(`${displayLabel(key)} (${displayValue(key, val.old)} → ${displayValue(key, val.new)})`)
+        const oldDisplay = val.oldLabel || displayValue(key, val.old)
+        const newDisplay = val.newLabel || displayValue(key, val.new)
+        parts.push(`${displayLabel(key)} (${oldDisplay} → ${newDisplay})`)
       }
     }
     if (parts.length === 0)
@@ -205,13 +212,30 @@ export const resultRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
     if (!isObject(parsed) || parsed.type !== 'result')
       return null
+
+    // Error turn: show errors array if present (e.g. "No conversation found with session ID: ...")
+    if (parsed.is_error === true) {
+      const errors = Array.isArray(parsed.errors) ? parsed.errors as string[] : []
+      const resultText = typeof parsed.result === 'string' ? parsed.result : ''
+      const errorMsg = errors.length > 0 ? errors.join('; ') : resultText || 'Unknown error'
+      return <div class={resultDivider} style={{ color: 'var(--danger)' }}>{errorMsg}</div>
+    }
+
     const durationMs = typeof parsed.duration_ms === 'number' ? parsed.duration_ms : 0
-    // Only show result text for non-success outcomes (e.g. "Unknown skill: clear").
-    // Successful turns repeat the last assistant message, which is already visible.
-    const resultText = parsed.subtype !== 'success' && typeof parsed.result === 'string' ? parsed.result : ''
+    const resultText = typeof parsed.result === 'string' ? parsed.result : ''
     const durationStr = formatDuration(durationMs)
-    const label = resultText
-      ? `${resultText} (${durationStr})`
+
+    // When stop_reason is absent (agent never produced output), show the result
+    // text as an error — e.g. "Unknown skill: update-pr".
+    if (!parsed.stop_reason && resultText) {
+      return <div class={resultDivider} style={{ color: 'var(--danger)' }}>{resultText}</div>
+    }
+
+    // For non-success subtypes, show result text with duration.
+    // For success, the result repeats the last assistant message — skip it.
+    const displayText = parsed.subtype !== 'success' ? resultText : ''
+    const label = displayText
+      ? `${displayText} (${durationStr})`
       : `Took ${durationStr}`
     return <div class={resultDivider}>{label}</div>
   },

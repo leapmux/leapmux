@@ -1,6 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import type { MessageCategory } from '../messageClassification'
-import type { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentProvider, AvailableModel, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
 
 export interface ProviderSettingsPanelProps {
@@ -10,6 +10,7 @@ export interface ProviderSettingsPanelProps {
   effort?: string
   permissionMode?: string
   supportsModelEffort?: boolean
+  availableModels?: AvailableModel[]
   onModelChange?: (model: string) => void
   onEffortChange?: (effort: string) => void
   onPermissionModeChange?: (mode: PermissionMode) => void
