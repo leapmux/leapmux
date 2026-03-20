@@ -142,7 +142,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.OpenAgentResponse{
-			Agent: agentToProto(&dbAgent, permissionMode, svc.WorkerID, true, gitutil.GetGitStatus(dbAgent.WorkingDir), svc.Agents.SupportsModelEffort(agentID), svc.Agents.AvailableModels(agentID, dbAgent.AgentProvider), svc.Agents.AvailableOptionGroups(dbAgent.AgentProvider)),
+			Agent: agentToProto(&dbAgent, permissionMode, svc.WorkerID, true, gitutil.GetGitStatus(dbAgent.WorkingDir), svc.Agents.AvailableModels(agentID, dbAgent.AgentProvider), svc.Agents.AvailableOptionGroups(dbAgent.AgentProvider)),
 		})
 	})
 
@@ -343,7 +343,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			if accessibleWsIDs != nil && !accessibleWsIDs[agents[i].WorkspaceID] {
 				continue
 			}
-			protoAgents = append(protoAgents, agentToProto(&agents[i], agents[i].PermissionMode, svc.WorkerID, svc.Agents.HasAgent(agents[i].ID), gitStatuses[i], svc.Agents.SupportsModelEffort(agents[i].ID), svc.Agents.AvailableModels(agents[i].ID, agents[i].AgentProvider), svc.Agents.AvailableOptionGroups(agents[i].AgentProvider)))
+			protoAgents = append(protoAgents, agentToProto(&agents[i], agents[i].PermissionMode, svc.WorkerID, svc.Agents.HasAgent(agents[i].ID), gitStatuses[i], svc.Agents.AvailableModels(agents[i].ID, agents[i].AgentProvider), svc.Agents.AvailableOptionGroups(agents[i].AgentProvider)))
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.ListAgentsResponse{
@@ -540,11 +540,11 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// next turn without a restart. Providers that don't (e.g. Claude
 		// Code) return false and we fall back to stop+restart.
 		if svc.Agents.HasAgent(agentID) {
-			updated := svc.Agents.UpdateSettings(agentID, agent.SettingsUpdate{
-				Model:          newModel,
-				Effort:         newEffort,
-				PermissionMode: newPermissionMode,
-				SandboxPolicy:  newCodexSandboxPolicy,
+			updated := svc.Agents.UpdateSettings(agentID, &leapmuxv1.UpdateAgentSettingsRequest{
+				Model:              newModel,
+				Effort:             newEffort,
+				PermissionMode:     newPermissionMode,
+				CodexSandboxPolicy: newCodexSandboxPolicy,
 			})
 
 			if !updated {
@@ -777,16 +777,15 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 					status = leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE
 				}
 				sc := &leapmuxv1.AgentStatusChange{
-					AgentId:             agentID,
-					Status:              status,
-					AgentSessionId:      dbAgent.AgentSessionID,
-					WorkerOnline:        true,
-					PermissionMode:      dbAgent.PermissionMode,
-					Model:               modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
-					Effort:              dbAgent.Effort,
-					GitStatus:           gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
-					SupportsModelEffort: svc.Agents.SupportsModelEffort(agentID),
-					AgentProvider:       dbAgent.AgentProvider,
+					AgentId:        agentID,
+					Status:         status,
+					AgentSessionId: dbAgent.AgentSessionID,
+					WorkerOnline:   true,
+					PermissionMode: dbAgent.PermissionMode,
+					Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
+					Effort:         dbAgent.Effort,
+					GitStatus:      gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
+					AgentProvider:  dbAgent.AgentProvider,
 				}
 				broadcastWatchEvent(sender, &leapmuxv1.WatchEventsResponse{
 					Event: &leapmuxv1.WatchEventsResponse_AgentEvent{
@@ -862,7 +861,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 }
 
 // agentToProto converts a DB Agent to a proto AgentInfo.
-func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, gs *gitutil.GitStatus, supportsModelEffort bool, availableModels []*leapmuxv1.AvailableModel, availableOptionGroups []*leapmuxv1.AvailableOptionGroup) *leapmuxv1.AgentInfo {
+func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, gs *gitutil.GitStatus, availableModels []*leapmuxv1.AvailableModel, availableOptionGroups []*leapmuxv1.AvailableOptionGroup) *leapmuxv1.AgentInfo {
 	status := leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE
 	if isRunning {
 		status = leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE
@@ -881,7 +880,6 @@ func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, 
 		WorkerId:              workerID,
 		CreatedAt:             timefmt.Format(a.CreatedAt),
 		GitStatus:             gitStatusToProto(gs),
-		SupportsModelEffort:   supportsModelEffort,
 		AgentProvider:         a.AgentProvider,
 		AvailableModels:       availableModels,
 		AvailableOptionGroups: availableOptionGroups,
@@ -1067,16 +1065,15 @@ func (svc *Context) setAgentPermissionMode(agentID, mode string) {
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_StatusChange{
 			StatusChange: &leapmuxv1.AgentStatusChange{
-				AgentId:             agentID,
-				Status:              leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED,
-				AgentSessionId:      dbAgent.AgentSessionID,
-				WorkerOnline:        true,
-				PermissionMode:      mode,
-				Model:               modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
-				Effort:              dbAgent.Effort,
-				GitStatus:           gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
-				SupportsModelEffort: svc.Agents.SupportsModelEffort(agentID),
-				AgentProvider:       dbAgent.AgentProvider,
+				AgentId:        agentID,
+				Status:         leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED,
+				AgentSessionId: dbAgent.AgentSessionID,
+				WorkerOnline:   true,
+				PermissionMode: mode,
+				Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
+				Effort:         dbAgent.Effort,
+				GitStatus:      gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
+				AgentProvider:  dbAgent.AgentProvider,
 			},
 		},
 	})

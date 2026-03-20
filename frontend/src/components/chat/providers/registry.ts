@@ -10,7 +10,6 @@ export interface ProviderSettingsPanelProps {
   effort?: string
   permissionMode?: string
   codexSandboxPolicy?: string
-  supportsModelEffort?: boolean
   availableModels?: AvailableModel[]
   availableOptionGroups?: AvailableOptionGroup[]
   onModelChange?: (model: string) => void

@@ -349,14 +349,16 @@ func codexSandboxPolicyObject(policy string) map[string]interface{} {
 	}
 }
 
-// SupportsModelEffort returns true — Codex supports model/effort via turn/start params.
-func (a *CodexAgent) SupportsModelEffort() bool {
-	return true
-}
-
-// ConfirmedPermissionMode returns the mapped permission mode.
-func (a *CodexAgent) ConfirmedPermissionMode() string {
-	return a.approvalPolicy
+// CurrentSettings returns the current settings for this agent.
+func (a *CodexAgent) CurrentSettings() *leapmuxv1.UpdateAgentSettingsRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return &leapmuxv1.UpdateAgentSettingsRequest{
+		Model:              a.model,
+		Effort:             a.effort,
+		PermissionMode:     a.approvalPolicy,
+		CodexSandboxPolicy: a.sandboxPolicy,
+	}
 }
 
 // AvailableModels returns the models reported by the Codex process.
@@ -365,20 +367,20 @@ func (a *CodexAgent) AvailableModels() []*leapmuxv1.AvailableModel {
 }
 
 // UpdateSettings stores new settings so the next turn/start picks them up.
-func (a *CodexAgent) UpdateSettings(s SettingsUpdate) bool {
+func (a *CodexAgent) UpdateSettings(s *leapmuxv1.UpdateAgentSettingsRequest) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if s.Model != "" {
-		a.model = s.Model
+	if s.GetModel() != "" {
+		a.model = s.GetModel()
 	}
-	if s.Effort != "" {
-		a.effort = s.Effort
+	if s.GetEffort() != "" {
+		a.effort = s.GetEffort()
 	}
-	if s.PermissionMode != "" {
-		a.approvalPolicy = s.PermissionMode
+	if s.GetPermissionMode() != "" {
+		a.approvalPolicy = s.GetPermissionMode()
 	}
-	if s.SandboxPolicy != "" {
-		a.sandboxPolicy = s.SandboxPolicy
+	if s.GetCodexSandboxPolicy() != "" {
+		a.sandboxPolicy = s.GetCodexSandboxPolicy()
 	}
 	return true
 }

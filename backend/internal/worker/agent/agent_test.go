@@ -694,7 +694,6 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 	}, "expected output after preamble")
 
 	// Verify metadata was parsed.
-	assert.False(t, a.SupportsModelEffort(), "should be false when env var set")
 	assert.Equal(t, "false", a.preambleMeta["supports_model_effort"])
 
 	// Verify preamble output does NOT contain the metadata line.
@@ -704,32 +703,6 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 
 	a.Stop()
 	_ = a.Wait()
-}
-
-func TestAgent_SupportsModelEffortDefaultFalse(t *testing.T) {
-	a := &ClaudeCodeAgent{}
-	a.preambleMeta = make(map[string]string)
-	assert.False(t, a.SupportsModelEffort())
-}
-
-func TestAgent_SupportsModelEffortTrue(t *testing.T) {
-	a := &ClaudeCodeAgent{}
-	a.preambleMeta = map[string]string{"supports_model_effort": "true"}
-	assert.True(t, a.SupportsModelEffort())
-}
-
-func TestAgent_SupportsModelEffortFalseFromShell(t *testing.T) {
-	// Shell detected third-party provider env var at runtime.
-	a := &ClaudeCodeAgent{}
-	a.preambleMeta = map[string]string{"supports_model_effort": "false"}
-	assert.False(t, a.SupportsModelEffort())
-}
-
-func TestAgent_SupportsModelEffortFalseNoMeta(t *testing.T) {
-	// Settings detected third-party → no metadata emitted → empty map.
-	a := &ClaudeCodeAgent{}
-	a.preambleMeta = make(map[string]string)
-	assert.False(t, a.SupportsModelEffort())
 }
 
 func TestAgent_LeapmuxWorkerEnvAlwaysSet(t *testing.T) {

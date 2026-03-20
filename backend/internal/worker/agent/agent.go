@@ -254,19 +254,12 @@ func (a *ClaudeCodeAgent) formatStartupError(phase string, err error) error {
 	return a.processBase.formatStartupError(phase, err, a.PreambleOutput())
 }
 
-// SupportsModelEffort returns whether the agent supports --model/--effort CLI args.
-// When a third-party provider was detected from settings files at startup,
-// the shell wrapper runs without conditional logic and no metadata is emitted,
-// so this returns false. Otherwise, the shell wrapper checks env vars at
-// runtime and reports the result via preamble metadata.
-func (a *ClaudeCodeAgent) SupportsModelEffort() bool {
-	return a.preambleMeta["supports_model_effort"] == "true"
-}
-
-// ConfirmedPermissionMode returns the permission mode confirmed by the agent
-// during the startup handshake.
-func (a *ClaudeCodeAgent) ConfirmedPermissionMode() string {
-	return a.confirmedPermissionMode
+// CurrentSettings returns the current settings for this agent.
+func (a *ClaudeCodeAgent) CurrentSettings() *leapmuxv1.UpdateAgentSettingsRequest {
+	return &leapmuxv1.UpdateAgentSettingsRequest{
+		Model:          a.model,
+		PermissionMode: a.confirmedPermissionMode,
+	}
 }
 
 // AvailableModels returns the hardcoded Claude Code model/effort list.
@@ -275,7 +268,7 @@ func (a *ClaudeCodeAgent) AvailableModels() []*leapmuxv1.AvailableModel {
 }
 
 // UpdateSettings is a no-op for Claude Code — settings changes require a restart.
-func (a *ClaudeCodeAgent) UpdateSettings(_ SettingsUpdate) bool {
+func (a *ClaudeCodeAgent) UpdateSettings(_ *leapmuxv1.UpdateAgentSettingsRequest) bool {
 	return false
 }
 

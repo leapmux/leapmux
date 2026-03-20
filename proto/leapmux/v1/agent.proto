@@ -103,7 +103,7 @@ message AgentInfo {
   string working_dir = 13;      // Working directory on the worker
   AgentGitStatus git_status = 14; // Git status for the agent's working directory
   string home_dir = 15;         // Worker's home directory for tilde path display
-  bool supports_model_effort = 16; // Whether the agent supports --model/--effort CLI args
+  reserved 16; // was supports_model_effort
   AgentProvider agent_provider = 17; // Coding agent provider
   repeated AvailableModel available_models = 18; // Models reported by the agent process
   repeated AvailableOptionGroup available_option_groups = 19; // Option groups (e.g. permission modes, sandbox policies)
@@ -185,7 +185,7 @@ message AgentStatusChange {
   string model = 6;
   string effort = 7;
   AgentGitStatus git_status = 8; // Git status for the agent's working directory
-  bool supports_model_effort = 9; // Whether the agent supports --model/--effort CLI args
+  reserved 9; // was supports_model_effort
   AgentProvider agent_provider = 10; // Provider for this agent
 }
 

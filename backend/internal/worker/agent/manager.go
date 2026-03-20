@@ -60,7 +60,7 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 		return "", err
 	}
 
-	confirmedMode := provider.ConfirmedPermissionMode()
+	confirmedMode := provider.CurrentSettings().GetPermissionMode()
 
 	m.mu.Lock()
 	m.agents[opts.AgentID] = provider
@@ -176,20 +176,6 @@ func (m *Manager) StopAndWaitAgent(agentID string) bool {
 	return true
 }
 
-// SupportsModelEffort returns whether the agent supports --model/--effort CLI args.
-// Returns true as default (agent not found = safe fallback for Anthropic API).
-func (m *Manager) SupportsModelEffort(agentID string) bool {
-	m.mu.RLock()
-	p, ok := m.agents[agentID]
-	m.mu.RUnlock()
-
-	if !ok {
-		return true
-	}
-
-	return p.SupportsModelEffort()
-}
-
 // AvailableModels returns the models reported by the agent process.
 // Falls back to the cached model list, then to the provider's static defaults.
 func (m *Manager) AvailableModels(agentID string, provider leapmuxv1.AgentProvider) []*leapmuxv1.AvailableModel {
@@ -231,7 +217,7 @@ func AvailableOptionGroupsForProvider(provider leapmuxv1.AgentProvider) []*leapm
 // UpdateSettings applies setting changes to a running agent so that
 // the next turn picks them up without a restart. Returns true if the
 // provider accepted the update, false if it requires a restart.
-func (m *Manager) UpdateSettings(agentID string, s SettingsUpdate) bool {
+func (m *Manager) UpdateSettings(agentID string, s *leapmuxv1.UpdateAgentSettingsRequest) bool {
 	m.mu.RLock()
 	p, ok := m.agents[agentID]
 	m.mu.RUnlock()

@@ -183,7 +183,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     const agent = props.agentStore.state.agents.find(a => a.id === agentId)
     if (!agent)
       return
-    if (agent.supportsModelEffort === false)
+    if (!agent.availableModels || agent.availableModels.length === 0)
       return
     const previous = agent[field] || (field === 'model'
       ? defaultModelForProvider(agent.agentProvider)

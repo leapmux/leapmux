@@ -24,15 +24,6 @@ type OutputSink interface {
 	UpdatePlan(filePath string, content []byte, compression leapmuxv1.ContentCompression, title string)
 }
 
-// SettingsUpdate holds optional setting overrides for a running agent.
-// Empty strings mean "no change".
-type SettingsUpdate struct {
-	Model          string
-	Effort         string
-	PermissionMode string
-	SandboxPolicy  string
-}
-
 // Provider is the interface that all coding agent providers must implement.
 type Provider interface {
 	AgentID() string
@@ -42,12 +33,11 @@ type Provider interface {
 	IsStopped() bool
 	Wait() error
 	Stderr() string
-	SupportsModelEffort() bool
-	ConfirmedPermissionMode() string
+	CurrentSettings() *leapmuxv1.UpdateAgentSettingsRequest
 	HandleOutput(content []byte)
 	AvailableModels() []*leapmuxv1.AvailableModel
 	// UpdateSettings applies setting changes to a running agent so that
 	// the next turn picks them up without a restart. Providers that do
 	// not support live updates (e.g. Claude Code) return false.
-	UpdateSettings(s SettingsUpdate) bool
+	UpdateSettings(s *leapmuxv1.UpdateAgentSettingsRequest) bool
 }

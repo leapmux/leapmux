@@ -345,7 +345,6 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                         effort={props.agent?.effort}
                         permissionMode={props.agent?.permissionMode}
                         codexSandboxPolicy={props.agent?.codexSandboxPolicy}
-                        supportsModelEffort={props.agent?.supportsModelEffort}
                         availableModels={props.agent?.availableModels}
                         availableOptionGroups={props.agent?.availableOptionGroups}
                         agentProvider={props.agent?.agentProvider}

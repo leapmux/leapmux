@@ -22,7 +22,6 @@ export interface EditorSettingsDropdownProps {
   effort?: string
   permissionMode?: string
   codexSandboxPolicy?: string
-  supportsModelEffort?: boolean
   availableModels?: import('~/generated/leapmux/v1/agent_pb').AvailableModel[]
   availableOptionGroups?: import('~/generated/leapmux/v1/agent_pb').AvailableOptionGroup[]
   agentProvider?: AgentProvider
@@ -43,7 +42,6 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
     effort: props.effort,
     permissionMode: props.permissionMode,
     codexSandboxPolicy: props.codexSandboxPolicy,
-    supportsModelEffort: props.supportsModelEffort,
     availableModels: props.availableModels,
     availableOptionGroups: props.availableOptionGroups,
     onModelChange: props.onModelChange,

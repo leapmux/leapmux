@@ -200,7 +200,7 @@ function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element
 
   return (
     <>
-      <Show when={props.supportsModelEffort !== false}>
+      <Show when={props.availableModels && props.availableModels.length > 0}>
         <Show when={hasEfforts()}>
           <RadioGroup
             label="Effort"
@@ -285,7 +285,7 @@ function ClaudeCodeTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element 
 
   return (
     <>
-      <Show when={props.supportsModelEffort !== false}>
+      <Show when={props.availableModels && props.availableModels.length > 0}>
         {displayName()}
         <Show when={hasEfforts()}>{effortIcon()}</Show>
       </Show>
