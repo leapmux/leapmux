@@ -59,8 +59,10 @@ test.describe('Chat Message Rendering', () => {
     // Toolbar should have opacity 0 initially
     await expect(toolbar).toHaveCSS('opacity', '0')
 
-    // Hover over the row — the :hover rule on messageRow reveals the toolbar
-    await row.hover()
+    // Hover over the bubble — the :hover rule on messageRow reveals the toolbar.
+    // We hover on the bubble (stable size) rather than the row to avoid the
+    // cursor landing outside the hover zone if the toolbar causes a reflow.
+    await bubble.hover()
     await expect(toolbar).toHaveCSS('opacity', '1')
 
     // Move mouse away

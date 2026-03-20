@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { lastAssistantBubble, openAgentViaUI } from './helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, lastAssistantBubble, openAgentViaUI } from './helpers/ui'
 import { expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
 
 /** Open the settings menu, retrying if it was caught mid-close animation. */
@@ -236,12 +236,18 @@ test.describe('Agent Settings', () => {
     // Wait for the editor to become visible again after worker reconnects
     await expect(editor).toBeVisible()
 
+    // Count existing assistant bubbles before sending the next message.
+    const assistantBubblesBefore = await page.locator(ASSISTANT_BUBBLE_SELECTOR).count()
+
     // Send a message to trigger agent re-launch via ensureAgentActive
     await editor.click()
     await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
 
-    // Wait for a response (agent resumed successfully)
+    // Wait for a NEW assistant bubble to appear (not the old "2" response).
+    await expect(page.locator(ASSISTANT_BUBBLE_SELECTOR)).toHaveCount(assistantBubblesBefore + 1, { timeout: 30000 })
+
+    // The new bubble (last one) should contain "4".
     const lastAssistant2 = lastAssistantBubble(page)
     await expect(lastAssistant2).toContainText('4', { timeout: 30000 })
 
