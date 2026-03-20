@@ -49,13 +49,13 @@ function buildCodexApprovalResponse(requestId: number, approved: boolean, decisi
     return JSON.stringify({
       jsonrpc: '2.0',
       id: requestId,
-      result: { decision: decision || 'allow' },
+      result: { decision: decision || 'approved' },
     })
   }
   return JSON.stringify({
     jsonrpc: '2.0',
     id: requestId,
-    result: { decision: 'deny', reason: 'Rejected by user.' },
+    result: { decision: 'denied', reason: 'Rejected by user.' },
   })
 }
 
