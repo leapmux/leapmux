@@ -121,7 +121,7 @@ func buildPosixCommand(binaryName, delimiter, metaPrefix string, baseArgs, model
 func buildNuCommand(binaryName, delimiter, metaPrefix string, baseArgs, modelEffortArgs []string) string {
 	quotedBase := make([]string, len(baseArgs))
 	for i, arg := range baseArgs {
-		quotedBase[i] = posixQuote(arg)
+		quotedBase[i] = nuQuote(arg)
 	}
 
 	baseArgsStr := strings.Join(quotedBase, " ")
@@ -135,7 +135,7 @@ func buildNuCommand(binaryName, delimiter, metaPrefix string, baseArgs, modelEff
 	// Conditional path.
 	quotedME := make([]string, len(modelEffortArgs))
 	for i, arg := range modelEffortArgs {
-		quotedME[i] = posixQuote(arg)
+		quotedME[i] = nuQuote(arg)
 	}
 	meArgsStr := strings.Join(quotedME, " ")
 
@@ -228,6 +228,14 @@ func pwshEnvCondition() string {
 // literal quote, start quote).
 func posixQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// nuQuote wraps a string in double quotes for Nushell.
+// In Nushell double-quoted strings, only \ and " need escaping.
+var nuReplacer = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+
+func nuQuote(s string) string {
+	return `"` + nuReplacer.Replace(s) + `"`
 }
 
 // pwshQuote wraps a string in single quotes for PowerShell.

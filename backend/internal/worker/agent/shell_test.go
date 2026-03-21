@@ -132,6 +132,20 @@ func TestBuildShellWrappedCommand_Nu_Interactive(t *testing.T) {
 	assert.Contains(t, cmd.Args[4], "^claude")
 	assert.NotContains(t, cmd.Args[4], "exec")
 	assert.Contains(t, cmd.Args[4], "CLAUDE_CODE_USE_BEDROCK")
+	// Args should be double-quoted (nuQuote), not single-quoted (posixQuote)
+	assert.Contains(t, cmd.Args[4], `"--output-format"`)
+	assert.Contains(t, cmd.Args[4], `"stream-json"`)
+	assert.Contains(t, cmd.Args[4], `"--model"`)
+	assert.Contains(t, cmd.Args[4], `"opus"`)
+}
+
+func TestBuildNuCommand_SingleQuoteInArgs(t *testing.T) {
+	inner := buildNuCommand("claude", "__DELIM__", "__META__ ",
+		[]string{"--output-format", "stream-json"},
+		[]string{"--model", "it's-a-model"})
+	// Single quotes in args must be safely double-quoted, not POSIX-quoted.
+	assert.Contains(t, inner, `"it's-a-model"`)
+	assert.NotContains(t, inner, `'\''`)
 }
 
 func TestBuildShellWrappedCommand_Nu_NonInteractive(t *testing.T) {
@@ -310,6 +324,14 @@ func TestPosixQuote(t *testing.T) {
 	assert.Equal(t, "'hello'", posixQuote("hello"))
 	assert.Equal(t, "'it'\\''s'", posixQuote("it's"))
 	assert.Equal(t, "''", posixQuote(""))
+}
+
+func TestNuQuote(t *testing.T) {
+	assert.Equal(t, `"hello"`, nuQuote("hello"))
+	assert.Equal(t, `"it's"`, nuQuote("it's"))
+	assert.Equal(t, `"say \"hi\""`, nuQuote(`say "hi"`))
+	assert.Equal(t, `"back\\slash"`, nuQuote(`back\slash`))
+	assert.Equal(t, `""`, nuQuote(""))
 }
 
 func TestPwshQuote(t *testing.T) {
