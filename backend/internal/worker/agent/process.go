@@ -40,6 +40,8 @@ type processBase struct {
 	preambleMetaPrefix string            // prefix for metadata lines (before delimiter)
 	preambleMeta       map[string]string // parsed key=value metadata from preamble
 	preambleOutput     []string          // captured preamble lines (before delimiter)
+
+	turnToolUses int // number of tool uses in the current turn
 }
 
 // SendRawInput writes raw bytes directly to the process's stdin without

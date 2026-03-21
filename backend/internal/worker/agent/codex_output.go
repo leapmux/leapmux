@@ -81,6 +81,7 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 	if json.Unmarshal(params, &notif) == nil && notif.Turn.ID != "" {
 		a.mu.Lock()
 		a.turnID = notif.Turn.ID
+		a.turnToolUses = 0
 		threadID := a.threadID
 		a.mu.Unlock()
 
@@ -144,6 +145,9 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 			slog.Error("codex persist agentMessage", "agent_id", a.agentID, "error", err)
 		}
 	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall":
+		a.mu.Lock()
+		a.turnToolUses++
+		a.mu.Unlock()
 		// Try to merge into the started item.
 		if itemID != "" && a.sink.MergeIntoThread(itemID, params) {
 			return
@@ -165,6 +169,22 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 
 // handleTurnCompleted processes turn/completed notifications.
 func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
+	// Enrich the params with num_tool_uses so the frontend can distinguish
+	// simple text-only exchanges from complex multi-tool turns.
+	a.mu.Lock()
+	numToolUses := a.turnToolUses
+	a.mu.Unlock()
+
+	enriched := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(params, &enriched); err == nil {
+		if b, err := json.Marshal(numToolUses); err == nil {
+			enriched["num_tool_uses"] = b
+		}
+		if b, err := json.Marshal(enriched); err == nil {
+			params = b
+		}
+	}
+
 	// Persist as a result divider.
 	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT, params, ""); err != nil {
 		slog.Error("codex persist turn/completed", "agent_id", a.agentID, "error", err)

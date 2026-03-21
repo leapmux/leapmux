@@ -159,12 +159,12 @@ export function extractAssistantUsage(parsed: ParsedMessageContent): {
   return Object.keys(result).length > 0 ? result : null
 }
 
-/** Extract result-message metadata: subtype, contextWindow, totalCostUsd, numTurns. */
+/** Extract result-message metadata: subtype, contextWindow, totalCostUsd, numToolUses. */
 export function extractResultMetadata(parsed: ParsedMessageContent): {
   subtype?: string
   contextWindow?: number
   totalCostUsd?: number
-  numTurns?: number
+  numToolUses?: number
 } | null {
   const inner = getInnerMessage(parsed)
   if (!inner)
@@ -173,10 +173,19 @@ export function extractResultMetadata(parsed: ParsedMessageContent): {
   if (inner.parent_tool_use_id)
     return null
 
-  const result: { subtype?: string, contextWindow?: number, totalCostUsd?: number, numTurns?: number } = {}
+  const result: { subtype?: string, contextWindow?: number, totalCostUsd?: number, numToolUses?: number } = {}
 
   if (inner.subtype)
     result.subtype = inner.subtype as string
+
+  // Codex turn/completed: detect via turn.status and map to the same shape.
+  const turn = inner.turn as Record<string, unknown> | undefined
+  if (!result.subtype && turn && typeof turn === 'object' && typeof turn.status === 'string')
+    result.subtype = 'turn_completed'
+
+  // num_tool_uses is injected by the backend for all providers.
+  if (typeof inner.num_tool_uses === 'number')
+    result.numToolUses = inner.num_tool_uses as number
 
   if (inner.modelUsage && typeof inner.modelUsage === 'object') {
     for (const modelData of Object.values(inner.modelUsage as Record<string, unknown>)) {
@@ -190,9 +199,6 @@ export function extractResultMetadata(parsed: ParsedMessageContent): {
 
   if (typeof inner.total_cost_usd === 'number')
     result.totalCostUsd = inner.total_cost_usd as number
-
-  if (typeof inner.num_turns === 'number')
-    result.numTurns = inner.num_turns as number
 
   return Object.keys(result).length > 0 ? result : null
 }

@@ -399,15 +399,57 @@ describe('extractResultMetadata', () => {
     expect(extractResultMetadata(parseMessageContent(msg))).toBeNull()
   })
 
-  it('extracts numTurns from result message', () => {
+  it('extracts numToolUses from Claude Code result message', () => {
     const content = {
       type: 'result',
       subtype: 'turn_end',
-      num_turns: 5,
+      num_tool_uses: 5,
     }
     const msg = makeMsg(MessageRole.RESULT, wrap(content))
     const result = extractResultMetadata(parseMessageContent(msg))
-    expect(result).toEqual({ subtype: 'turn_end', numTurns: 5 })
+    expect(result).toEqual({ subtype: 'turn_end', numToolUses: 5 })
+  })
+
+  it('extracts numToolUses=0 from Claude Code simple exchange', () => {
+    const content = {
+      type: 'result',
+      subtype: 'turn_end',
+      num_tool_uses: 0,
+    }
+    const msg = makeMsg(MessageRole.RESULT, wrap(content))
+    const result = extractResultMetadata(parseMessageContent(msg))
+    expect(result).toEqual({ subtype: 'turn_end', numToolUses: 0 })
+  })
+
+  it('extracts Codex turn/completed with tool uses as complex turn', () => {
+    // Codex turn/completed is stored unwrapped with num_tool_uses injected by backend
+    const content = {
+      turn: { status: 'completed', usage: { inputTokens: 100, outputTokens: 50 } },
+      num_tool_uses: 3,
+    }
+    const msg = makeMsg(MessageRole.RESULT, content)
+    const result = extractResultMetadata(parseMessageContent(msg))
+    expect(result).toEqual({ subtype: 'turn_completed', numToolUses: 3 })
+  })
+
+  it('extracts Codex turn/completed with zero tool uses as simple exchange', () => {
+    const content = {
+      turn: { status: 'completed', usage: { inputTokens: 100, outputTokens: 50 } },
+      num_tool_uses: 0,
+    }
+    const msg = makeMsg(MessageRole.RESULT, content)
+    const result = extractResultMetadata(parseMessageContent(msg))
+    expect(result).toEqual({ subtype: 'turn_completed', numToolUses: 0 })
+  })
+
+  it('extracts Codex turn/completed with failed status', () => {
+    const content = {
+      turn: { status: 'failed' },
+      num_tool_uses: 0,
+    }
+    const msg = makeMsg(MessageRole.RESULT, content)
+    const result = extractResultMetadata(parseMessageContent(msg))
+    expect(result).toEqual({ subtype: 'turn_completed', numToolUses: 0 })
   })
 })
 

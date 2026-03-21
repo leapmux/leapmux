@@ -54,6 +54,10 @@ func (a *ClaudeCodeAgent) HandleOutput(content []byte) {
 		a.handlePersistableMessage(content, envelope.Type, role)
 
 	case "user":
+		// Reset tool use counter at the start of each user turn.
+		a.mu.Lock()
+		a.turnToolUses = 0
+		a.mu.Unlock()
 		if !isSimpleUserTextEcho(content) {
 			a.handlePersistableMessage(content, envelope.Type, role)
 		}
@@ -77,6 +81,54 @@ func (a *ClaudeCodeAgent) HandleOutput(content []byte) {
 
 	default:
 		a.sink.BroadcastStreamChunk(content)
+	}
+}
+
+// enrichResultWithToolUses injects num_tool_uses into a result message so
+// the frontend can determine whether the turn involved tool use.
+func (a *ClaudeCodeAgent) enrichResultWithToolUses(content []byte) []byte {
+	a.mu.Lock()
+	numToolUses := a.turnToolUses
+	a.mu.Unlock()
+
+	enriched := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(content, &enriched); err != nil {
+		return content
+	}
+	b, err := json.Marshal(numToolUses)
+	if err != nil {
+		return content
+	}
+	enriched["num_tool_uses"] = b
+	out, err := json.Marshal(enriched)
+	if err != nil {
+		return content
+	}
+	return out
+}
+
+// countToolUses counts tool_use content blocks in an assistant message.
+func (a *ClaudeCodeAgent) countToolUses(content []byte) {
+	var msg struct {
+		Message struct {
+			Content []struct {
+				Type string `json:"type"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(content, &msg) != nil {
+		return
+	}
+	count := 0
+	for _, block := range msg.Message.Content {
+		if block.Type == "tool_use" {
+			count++
+		}
+	}
+	if count > 0 {
+		a.mu.Lock()
+		a.turnToolUses += count
+		a.mu.Unlock()
 	}
 }
 
@@ -108,10 +160,11 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		a.extractAndBroadcastUsage(content, msgType)
 	}
 
-	// Track plan mode tool_use and plan file paths from assistant messages.
+	// Track plan mode tool_use, plan file paths, and count tool uses from assistant messages.
 	if msgType == "assistant" {
 		a.trackPlanModeToolUse(content)
 		a.trackPlanFilePath(content)
+		a.countToolUses(content)
 	}
 
 	// Extract thread_id — try each extractor until one succeeds.
@@ -134,6 +187,11 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 			}
 			return
 		}
+	}
+
+	// Enrich result messages with num_tool_uses.
+	if msgType == "result" {
+		content = a.enrichResultWithToolUses(content)
 	}
 
 	// Standalone message or no matching parent — persist.
