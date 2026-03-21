@@ -3,7 +3,6 @@ import type { RenderContext } from './messageRenderers'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 
-import { Formatter, FracturedJsonOptions } from 'fracturedjsonjs'
 import Check from 'lucide-solid/icons/check'
 import Copy from 'lucide-solid/icons/copy'
 import { createMemo, createSignal, ErrorBoundary, For, onMount, Show } from 'solid-js'
@@ -20,6 +19,7 @@ import { renderMessageContent, ToolHeaderActions } from './messageRenderers'
 import * as chatStyles from './messageStyles.css'
 import { getAssistantContent } from './messageUtils'
 import { renderNotificationThread } from './notificationRenderers'
+import { prettifyJson } from './rendererUtils'
 
 const logger = createLogger('MessageBubble')
 
@@ -60,21 +60,6 @@ function typeToRole(type: string | undefined): MessageRole {
     case 'system': return MessageRole.SYSTEM
     case 'result': return MessageRole.RESULT
     default: return MessageRole.UNSPECIFIED
-  }
-}
-
-const formatter = new Formatter()
-const opts = new FracturedJsonOptions()
-opts.MaxTotalLineLength = 80
-opts.MaxInlineComplexity = 1
-formatter.Options = opts
-
-function prettifyJson(raw: string): string {
-  try {
-    return formatter.Reformat(raw)
-  }
-  catch {
-    return raw
   }
 }
 

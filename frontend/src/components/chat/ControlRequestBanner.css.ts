@@ -150,6 +150,7 @@ export const questionPageHeader = style({
 
 // Control request content in MarkdownEditor banner slot
 export const controlBanner = style({
+  position: 'relative',
   padding: 'var(--space-2) var(--space-3)',
   fontSize: 'var(--text-7)',
   backgroundColor: 'var(--lm-warning-subtle)',
@@ -157,6 +158,18 @@ export const controlBanner = style({
   flexShrink: 0,
   maxHeight: '200px',
   overflowY: 'auto',
+})
+
+export const controlBannerActions = style({
+  position: 'absolute',
+  top: 'var(--space-1)',
+  right: 'var(--space-1)',
+  opacity: 0,
+  transition: 'opacity 0.15s',
+})
+
+globalStyle(`${controlBanner}:hover .${controlBannerActions}`, {
+  opacity: 1,
 })
 
 export const controlBannerTitle = style({

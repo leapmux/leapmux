@@ -44,13 +44,6 @@ func handleCodexOutput(a *CodexAgent, content []byte) {
 	case "thread/name/updated":
 		a.handleThreadNameUpdated(envelope.Params)
 
-	case "thread/status/changed":
-		// Transient status signal (e.g. waitingOnApproval). Persisted for
-		// record-keeping; the frontend hides these.
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, content, ""); err != nil {
-			slog.Error("codex persist thread/status/changed", "agent_id", a.agentID, "error", err)
-		}
-
 	// Server requests (approval requests) — the server sends these as JSON-RPC
 	// requests with an "id" field, but we detect them here by method name when
 	// they arrive as notifications in the output stream.
@@ -66,8 +59,10 @@ func handleCodexOutput(a *CodexAgent, content []byte) {
 		a.handleErrorNotification(envelope.Params)
 
 	default:
-		// Forward unknown notifications as stream chunks for the frontend.
-		a.sink.BroadcastStreamChunk(content)
+		// Persist unknown notifications so the frontend can decide how to render them.
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, content, ""); err != nil {
+			slog.Error("codex persist notification", "agent_id", a.agentID, "method", envelope.Method, "error", err)
+		}
 	}
 }
 
