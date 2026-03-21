@@ -228,22 +228,13 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	// Enrich the params with num_tool_uses so the frontend can distinguish
 	// simple text-only exchanges from complex multi-tool turns.
 	a.mu.Lock()
-	numToolUses := a.turnToolUses
 	sawPlan := a.turnSawPlan
 	planText := a.turnPlanText
 	assistantText := a.turnAssistantText
 	collaborationMode := a.collaborationMode
 	a.mu.Unlock()
 
-	enriched := make(map[string]json.RawMessage)
-	if err := json.Unmarshal(params, &enriched); err == nil {
-		if b, err := json.Marshal(numToolUses); err == nil {
-			enriched["num_tool_uses"] = b
-		}
-		if b, err := json.Marshal(enriched); err == nil {
-			params = b
-		}
-	}
+	params = json.RawMessage(a.enrichWithToolUses([]byte(params)))
 
 	// Persist as a result divider.
 	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT, params, ""); err != nil {
@@ -272,7 +263,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 		if promptText == "" {
 			promptText = assistantText
 		}
-		if notif.Turn.Status == "completed" && collaborationMode == "plan" && (sawPlan || promptText != "") {
+		if notif.Turn.Status == "completed" && collaborationMode == CodexCollaborationPlan && (sawPlan || promptText != "") {
 			requestID := fmt.Sprintf("codex-plan-prompt-%s", notif.Turn.ID)
 			payload, err := json.Marshal(map[string]interface{}{
 				"type":       "control_request",

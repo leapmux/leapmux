@@ -165,30 +165,21 @@ func effortOrDefault(effort string, provider leapmuxv1.AgentProvider) string {
 }
 
 // codexSandboxPolicyOrDefault returns the sandbox policy if non-empty,
-// otherwise "workspace-write" (the Codex default).
+// otherwise the Codex default.
 func codexSandboxPolicyOrDefault(policy string) string {
-	if policy != "" {
-		return policy
-	}
-	return "workspace-write"
+	return agent.StringOrDefault(policy, agent.CodexDefaultSandboxPolicy)
 }
 
 // codexNetworkAccessOrDefault returns the network access if non-empty,
-// otherwise "restricted" (the Codex default).
+// otherwise the Codex default.
 func codexNetworkAccessOrDefault(access string) string {
-	if access != "" {
-		return access
-	}
-	return "restricted"
+	return agent.StringOrDefault(access, agent.CodexDefaultNetworkAccess)
 }
 
 // codexCollaborationModeOrDefault returns the collaboration mode if non-empty,
-// otherwise "default" (the Codex default).
+// otherwise the Codex default.
 func codexCollaborationModeOrDefault(mode string) string {
-	if mode != "" {
-		return mode
-	}
-	return "default"
+	return agent.StringOrDefault(mode, agent.CodexDefaultCollaborationMode)
 }
 
 func codexCollaborationModeForProvider(mode string, provider leapmuxv1.AgentProvider) string {

@@ -16,7 +16,7 @@ export interface ControlResponseHandlingProps {
   controlRequests?: ControlRequest[]
   onControlResponse?: (agentId: string, content: Uint8Array) => Promise<void>
   onPermissionModeChange?: (mode: PermissionMode) => void
-  onCodexCollaborationModeChange?: (mode: string) => void
+  onOptionGroupChange?: (key: string, value: string) => void
   onSendMessage: (content: string) => void
   settingsLoading?: boolean
   agentWorking?: boolean
@@ -65,11 +65,11 @@ export function useControlResponseHandling(
     if (props.agent?.agentProvider === AgentProvider.CODEX) {
       const currentMode = props.agent?.codexCollaborationMode || defaultCodexCollaborationMode()
       if (currentMode === 'plan') {
-        props.onCodexCollaborationModeChange?.(previousNonPlanCodexCollaborationMode)
+        props.onOptionGroupChange?.('codexCollaborationMode', previousNonPlanCodexCollaborationMode)
       }
       else {
         previousNonPlanCodexCollaborationMode = currentMode
-        props.onCodexCollaborationModeChange?.('plan')
+        props.onOptionGroupChange?.('codexCollaborationMode', 'plan')
       }
       return
     }

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -222,6 +223,30 @@ func (p *processBase) readOutput(scanner *bufio.Scanner, intercept outputInterce
 
 	p.waitErr = p.cmd.Wait()
 	close(p.processDone)
+}
+
+// enrichWithToolUses injects num_tool_uses into a JSON message so the
+// frontend can determine whether the turn involved tool use. Returns the
+// original content unchanged if enrichment fails.
+func (p *processBase) enrichWithToolUses(content []byte) []byte {
+	p.mu.Lock()
+	numToolUses := p.turnToolUses
+	p.mu.Unlock()
+
+	enriched := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(content, &enriched); err != nil {
+		return content
+	}
+	b, err := json.Marshal(numToolUses)
+	if err != nil {
+		return content
+	}
+	enriched["num_tool_uses"] = b
+	out, err := json.Marshal(enriched)
+	if err != nil {
+		return content
+	}
+	return out
 }
 
 // drainStderr starts a goroutine that reads from the given reader into

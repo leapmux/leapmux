@@ -356,10 +356,7 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 		go a.readOutputLoop(scanner)
 
 		// Replicate the startup handshake from StartClaudeCode().
-		mode := opts.PermissionMode
-		if mode == "" {
-			mode = "default"
-		}
+		mode := StringOrDefault(opts.PermissionMode, PermissionModeDefault)
 		requestID := generateRequestID()
 		ch := make(chan claudeCodeControlResult, 1)
 		a.registerPendingControl(requestID, ch)

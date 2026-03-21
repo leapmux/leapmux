@@ -532,38 +532,18 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		// Update the DB.
-		if err := svc.Queries.UpdateAgentModelAndEffort(bgCtx(), db.UpdateAgentModelAndEffortParams{
-			Model:  newModel,
-			Effort: newEffort,
-			ID:     agentID,
+		if err := svc.Queries.UpdateAgentAllSettings(bgCtx(), db.UpdateAgentAllSettingsParams{
+			Model:                  newModel,
+			Effort:                 newEffort,
+			PermissionMode:         newPermissionMode,
+			CodexSandboxPolicy:     newCodexSandboxPolicy,
+			CodexNetworkAccess:     newCodexNetworkAccess,
+			CodexCollaborationMode: newCodexCollaborationMode,
+			ID:                     agentID,
 		}); err != nil {
 			slog.Error("failed to update agent settings", "agent_id", agentID, "error", err)
 			sendInternalError(sender, "failed to update agent settings")
 			return
-		}
-		if newPermissionMode != dbAgent.PermissionMode {
-			_ = svc.Queries.SetAgentPermissionMode(bgCtx(), db.SetAgentPermissionModeParams{
-				PermissionMode: newPermissionMode,
-				ID:             agentID,
-			})
-		}
-		if newCodexSandboxPolicy != dbAgent.CodexSandboxPolicy {
-			_ = svc.Queries.SetAgentCodexSandboxPolicy(bgCtx(), db.SetAgentCodexSandboxPolicyParams{
-				CodexSandboxPolicy: newCodexSandboxPolicy,
-				ID:                 agentID,
-			})
-		}
-		if newCodexNetworkAccess != dbAgent.CodexNetworkAccess {
-			_ = svc.Queries.SetAgentCodexNetworkAccess(bgCtx(), db.SetAgentCodexNetworkAccessParams{
-				CodexNetworkAccess: newCodexNetworkAccess,
-				ID:                 agentID,
-			})
-		}
-		if newCodexCollaborationMode != dbAgent.CodexCollaborationMode {
-			_ = svc.Queries.SetAgentCodexCollaborationMode(bgCtx(), db.SetAgentCodexCollaborationModeParams{
-				CodexCollaborationMode: newCodexCollaborationMode,
-				ID:                     agentID,
-			})
 		}
 
 		// If the agent is currently running, try a live update first.
@@ -1312,7 +1292,7 @@ func (svc *Context) handleCodexPlanModePromptResponse(agentID string, content []
 
 	switch crPayload.Response.Response.Behavior {
 	case "allow":
-		svc.setAgentCodexCollaborationMode(agentID, "default")
+		svc.setAgentCodexCollaborationMode(agentID, agent.CodexCollaborationDefault)
 		svc.sendSyntheticUserMessage(agentID, "Implement the plan.")
 	case "deny":
 		if msg := strings.TrimSpace(crPayload.Response.Response.Message); msg != "" && msg != "Rejected by user." {
@@ -1401,10 +1381,10 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 	if crPayload.Response.Response.Behavior == "allow" {
 		switch toolName {
 		case "EnterPlanMode":
-			svc.setAgentPermissionMode(agentID, "plan")
+			svc.setAgentPermissionMode(agentID, agent.PermissionModePlan)
 		case "ExitPlanMode":
 			// Determine target permission mode from control_response.
-			targetMode := "acceptEdits"
+			targetMode := agent.PermissionModeAcceptEdits
 			if crPayload.PermissionMode != "" {
 				targetMode = crPayload.PermissionMode
 			}

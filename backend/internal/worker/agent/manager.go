@@ -215,9 +215,14 @@ func withDefaultModelMarked(models []*leapmuxv1.AvailableModel, provider leapmux
 		if model == nil {
 			continue
 		}
-		copyModel := proto.Clone(model).(*leapmuxv1.AvailableModel)
-		copyModel.IsDefault = copyModel.Id == defaultModel
-		out[i] = copyModel
+		shouldBeDefault := model.Id == defaultModel
+		if model.IsDefault == shouldBeDefault {
+			out[i] = model
+		} else {
+			c := proto.Clone(model).(*leapmuxv1.AvailableModel)
+			c.IsDefault = shouldBeDefault
+			out[i] = c
+		}
 	}
 	return out
 }

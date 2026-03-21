@@ -1,22 +1,5 @@
-import type { Page } from '@playwright/test'
 import { codexTest, expect } from './codex-fixtures'
-import { sendMessage, waitForAgentIdle } from './helpers/ui'
-
-async function openSettingsMenu(page: Page) {
-  const trigger = page.locator('[data-testid="agent-settings-trigger"]')
-  const menu = page.locator('[data-testid="agent-settings-menu"]')
-  await expect(trigger).toBeVisible()
-  await expect(async () => {
-    if (!await menu.isVisible()) {
-      await trigger.click()
-    }
-    await expect(menu).toBeVisible()
-  }).toPass({ timeout: 5000 })
-}
-
-async function waitForSettingsIdle(page: Page) {
-  await expect(page.locator('[data-testid="settings-loading-spinner"]')).not.toBeVisible()
-}
+import { openSettingsMenu, sendMessage, waitForAgentIdle, waitForSettingsIdle } from './helpers/ui'
 
 codexTest.describe('Codex requestUserInput', () => {
   codexTest('approval flow works with on-request policy', async ({ authenticatedCodexWorkspace, page }) => {

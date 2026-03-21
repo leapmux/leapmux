@@ -16,6 +16,41 @@ import (
 	"github.com/leapmux/leapmux/util/version"
 )
 
+// Codex default option values.
+const (
+	CodexDefaultApprovalPolicy    = "on-request"
+	CodexDefaultSandboxPolicy     = "workspace-write"
+	CodexDefaultNetworkAccess     = "restricted"
+	CodexDefaultCollaborationMode = "default"
+)
+
+// Codex sandbox policy values.
+const (
+	CodexSandboxDangerFullAccess = "danger-full-access"
+	CodexSandboxWorkspaceWrite   = "workspace-write"
+	CodexSandboxReadOnly         = "read-only"
+)
+
+// Codex network access values.
+const (
+	CodexNetworkRestricted = "restricted"
+	CodexNetworkEnabled    = "enabled"
+)
+
+// Codex collaboration mode values.
+const (
+	CodexCollaborationDefault = "default"
+	CodexCollaborationPlan    = "plan"
+)
+
+// StringOrDefault returns value if non-empty, otherwise fallback.
+func StringOrDefault(value, fallback string) string {
+	if value != "" {
+		return value
+	}
+	return fallback
+}
+
 // CodexAgent manages a single Codex app-server process.
 type CodexAgent struct {
 	processBase // shared process lifecycle (Stop, Wait, Stderr, etc.)
@@ -140,36 +175,17 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 
 	// 3. Use the permission mode directly as the Codex approval policy.
 	// The DB stores provider-native values (e.g. "never", "on-request", "untrusted" for Codex).
-	approvalPolicy := opts.PermissionMode
-	if approvalPolicy == "" {
-		approvalPolicy = "on-request"
-	}
-	a.approvalPolicy = approvalPolicy
-
-	sandboxPolicy := opts.CodexSandboxPolicy
-	if sandboxPolicy == "" {
-		sandboxPolicy = "workspace-write"
-	}
-	a.sandboxPolicy = sandboxPolicy
-
-	networkAccess := opts.CodexNetworkAccess
-	if networkAccess == "" {
-		networkAccess = "restricted"
-	}
-	a.networkAccess = networkAccess
-
-	collaborationMode := opts.CodexCollaborationMode
-	if collaborationMode == "" {
-		collaborationMode = "default"
-	}
-	a.collaborationMode = collaborationMode
+	a.approvalPolicy = StringOrDefault(opts.PermissionMode, CodexDefaultApprovalPolicy)
+	a.sandboxPolicy = StringOrDefault(opts.CodexSandboxPolicy, CodexDefaultSandboxPolicy)
+	a.networkAccess = StringOrDefault(opts.CodexNetworkAccess, CodexDefaultNetworkAccess)
+	a.collaborationMode = StringOrDefault(opts.CodexCollaborationMode, CodexDefaultCollaborationMode)
 
 	// 4. Send "thread/start" or "thread/resume" request.
 	threadParams := map[string]interface{}{
 		"model":          opts.Model,
 		"cwd":            opts.WorkingDir,
-		"approvalPolicy": approvalPolicy,
-		"sandbox":        sandboxPolicy,
+		"approvalPolicy": a.approvalPolicy,
+		"sandbox":        a.sandboxPolicy,
 	}
 
 	threadMethod := "thread/start"
@@ -392,16 +408,16 @@ func (a *CodexAgent) sendTurnSteer(threadID, turnID string, input []map[string]i
 func codexSandboxPolicyObject(policy, networkAccess string) map[string]interface{} {
 	var obj map[string]interface{}
 	switch policy {
-	case "danger-full-access":
+	case CodexSandboxDangerFullAccess:
 		obj = map[string]interface{}{"type": "dangerFullAccess"}
-	case "workspace-write":
+	case CodexSandboxWorkspaceWrite:
 		obj = map[string]interface{}{"type": "workspaceWrite"}
-	case "read-only":
+	case CodexSandboxReadOnly:
 		obj = map[string]interface{}{"type": "readOnly"}
 	default:
 		return nil
 	}
-	obj["networkAccess"] = networkAccess == "enabled"
+	obj["networkAccess"] = networkAccess == CodexNetworkEnabled
 	return obj
 }
 
@@ -414,7 +430,7 @@ func codexCollaborationModeObject(mode, model, effort string) map[string]interfa
 		return nil
 	}
 	switch mode {
-	case "default", "plan":
+	case CodexCollaborationDefault, CodexCollaborationPlan:
 	default:
 		return nil
 	}
@@ -593,8 +609,8 @@ func init() {
 				Key:   "codexCollaborationMode",
 				Label: "Mode",
 				Options: []*leapmuxv1.AvailableOption{
-					{Id: "default", Name: "Default"},
-					{Id: "plan", Name: "Plan Mode"},
+					{Id: CodexCollaborationDefault, Name: "Default"},
+					{Id: CodexCollaborationPlan, Name: "Plan Mode"},
 				},
 			},
 			{
@@ -602,7 +618,7 @@ func init() {
 				Label: "Approval Policy",
 				Options: []*leapmuxv1.AvailableOption{
 					{Id: "never", Name: "Full Auto"},
-					{Id: "on-request", Name: "Suggest & Approve"},
+					{Id: CodexDefaultApprovalPolicy, Name: "Suggest & Approve"},
 					{Id: "untrusted", Name: "Auto-edit"},
 				},
 			},
@@ -610,17 +626,17 @@ func init() {
 				Key:   "codexSandboxPolicy",
 				Label: "Sandbox Policy",
 				Options: []*leapmuxv1.AvailableOption{
-					{Id: "danger-full-access", Name: "Full Access", Description: "No filesystem restrictions"},
-					{Id: "workspace-write", Name: "Workspace Write", Description: "Write only within the working directory"},
-					{Id: "read-only", Name: "Read Only", Description: "No write access to the filesystem"},
+					{Id: CodexSandboxDangerFullAccess, Name: "Full Access", Description: "No filesystem restrictions"},
+					{Id: CodexSandboxWorkspaceWrite, Name: "Workspace Write", Description: "Write only within the working directory"},
+					{Id: CodexSandboxReadOnly, Name: "Read Only", Description: "No write access to the filesystem"},
 				},
 			},
 			{
 				Key:   "codexNetworkAccess",
 				Label: "Network Access",
 				Options: []*leapmuxv1.AvailableOption{
-					{Id: "restricted", Name: "Restricted", Description: "No network access from the sandbox"},
-					{Id: "enabled", Name: "Enabled", Description: "Allow network access from the sandbox"},
+					{Id: CodexNetworkRestricted, Name: "Restricted", Description: "No network access from the sandbox"},
+					{Id: CodexNetworkEnabled, Name: "Enabled", Description: "Allow network access from the sandbox"},
 				},
 			},
 		},

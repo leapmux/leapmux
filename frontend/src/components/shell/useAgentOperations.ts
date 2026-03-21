@@ -286,14 +286,19 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
-  const handleCodexSandboxPolicyChange = (agentId: string, policy: string) =>
-    handleCodexSettingChange(agentId, 'codexSandboxPolicy', policy, 'workspace-write', 'sandbox policy')
-
-  const handleCodexNetworkAccessChange = (agentId: string, access: string) =>
-    handleCodexSettingChange(agentId, 'codexNetworkAccess', access, 'restricted', 'network access')
-
-  const handleCodexCollaborationModeChange = (agentId: string, mode: string) =>
-    handleCodexSettingChange(agentId, 'codexCollaborationMode', mode, defaultCodexCollaborationMode(AgentProvider.CODEX), 'mode')
+  const handleOptionGroupChange = (agentId: string, key: string, value: string) => {
+    const labels: Record<string, string> = {
+      codexCollaborationMode: 'mode',
+      codexSandboxPolicy: 'sandbox policy',
+      codexNetworkAccess: 'network access',
+    }
+    const defaults: Record<string, string> = {
+      codexCollaborationMode: defaultCodexCollaborationMode(AgentProvider.CODEX),
+      codexSandboxPolicy: 'workspace-write',
+      codexNetworkAccess: 'restricted',
+    }
+    handleCodexSettingChange(agentId, key as 'codexCollaborationMode' | 'codexSandboxPolicy' | 'codexNetworkAccess', value, defaults[key] || value, labels[key] || key)
+  }
 
   // Retry a failed message delivery.
   // Always re-sends via sendAgentMessage (which auto-starts the agent
@@ -371,9 +376,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     handleModelOrEffortChange,
     handleInterrupt,
     handlePermissionModeChange,
-    handleCodexCollaborationModeChange,
-    handleCodexSandboxPolicyChange,
-    handleCodexNetworkAccessChange,
+    handleOptionGroupChange,
     handleRetryMessage,
     handleDeleteMessage,
     handleCloseAgent,

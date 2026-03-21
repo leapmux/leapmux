@@ -1,23 +1,6 @@
 import type { Page } from '@playwright/test'
-import { ASSISTANT_BUBBLE_SELECTOR, lastAssistantBubble, openAgentViaUI } from './helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, lastAssistantBubble, openAgentViaUI, openSettingsMenu, waitForSettingsIdle } from './helpers/ui'
 import { expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
-
-/** Open the settings menu, retrying if it was caught mid-close animation. */
-async function openSettingsMenu(page: Page) {
-  const trigger = page.locator('[data-testid="agent-settings-trigger"]')
-  const menu = page.locator('[data-testid="agent-settings-menu"]')
-  await expect(async () => {
-    if (!await menu.isVisible()) {
-      await trigger.click()
-    }
-    await expect(menu).toBeVisible()
-  }).toPass({ timeout: 5000 })
-}
-
-/** Wait for the settings loading spinner to disappear. */
-async function waitForSettingsIdle(page: Page) {
-  await expect(page.locator('[data-testid="settings-loading-spinner"]')).not.toBeVisible()
-}
 
 /** Get the trigger button's text content. */
 async function getTriggerText(page: Page): Promise<string> {

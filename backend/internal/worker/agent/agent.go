@@ -16,6 +16,14 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
+// Claude Code permission mode values.
+const (
+	PermissionModeDefault           = "default"
+	PermissionModePlan              = "plan"
+	PermissionModeAcceptEdits       = "acceptEdits"
+	PermissionModeBypassPermissions = "bypassPermissions"
+)
+
 // ExitHandler is called when an agent process exits.
 // agentID identifies the agent, exitCode is the process exit code,
 // and err is non-nil if the process exited with an error.
@@ -206,10 +214,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 	// Send set_permission_mode to configure the agent's permission mode.
 	// This serves as both a health check and permission mode sync (restores
 	// mode after worker restart).
-	mode := opts.PermissionMode
-	if mode == "" {
-		mode = "default"
-	}
+	mode := StringOrDefault(opts.PermissionMode, PermissionModeDefault)
 	resp, err := a.sendControlAndWait(ctx,
 		fmt.Sprintf(`{"subtype":"set_permission_mode","mode":"%s"}`, mode), timeout)
 	if err != nil {
@@ -387,10 +392,10 @@ func init() {
 			Key:   "permissionMode",
 			Label: "Permission Mode",
 			Options: []*leapmuxv1.AvailableOption{
-				{Id: "default", Name: "Default"},
-				{Id: "plan", Name: "Plan Mode"},
-				{Id: "acceptEdits", Name: "Accept Edits"},
-				{Id: "bypassPermissions", Name: "Bypass Permissions"},
+				{Id: PermissionModeDefault, Name: "Default"},
+				{Id: PermissionModePlan, Name: "Plan Mode"},
+				{Id: PermissionModeAcceptEdits, Name: "Accept Edits"},
+				{Id: PermissionModeBypassPermissions, Name: "Bypass Permissions"},
 			},
 		}},
 		"LEAPMUX_CLAUDE_DEFAULT_MODEL",

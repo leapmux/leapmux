@@ -123,7 +123,7 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
               testIdPrefix="codex-collaboration-mode"
               name={`${menuId}-collaboration-mode`}
               current={currentCollaborationMode()}
-              onChange={v => props.onCodexCollaborationModeChange?.(v)}
+              onChange={v => props.onOptionGroupChange?.('codexCollaborationMode', v)}
               fieldsetClass={styles.settingsFieldsetFirst}
             />
           </div>
@@ -136,7 +136,7 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
               testIdPrefix="network"
               name={`${menuId}-network`}
               current={currentNetwork()}
-              onChange={v => props.onCodexNetworkAccessChange?.(v)}
+              onChange={v => props.onOptionGroupChange?.('codexNetworkAccess', v)}
               fieldsetClass={collaborationModeItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
             />
           </div>
@@ -149,7 +149,7 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
               testIdPrefix="sandbox"
               name={`${menuId}-sandbox`}
               current={currentSandbox()}
-              onChange={v => props.onCodexSandboxPolicyChange?.(v)}
+              onChange={v => props.onOptionGroupChange?.('codexSandboxPolicy', v)}
               fieldsetClass={collaborationModeItems().length === 0 && networkItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
             />
           </div>
@@ -348,13 +348,6 @@ const codexPlugin: ProviderPlugin = {
       settings: { permissionMode: mode },
     })
   },
-  async changeCollaborationMode(workerId: string, agentId: string, mode: string): Promise<void> {
-    await workerRpc.updateAgentSettings(workerId, {
-      agentId,
-      settings: { codexCollaborationMode: mode },
-    })
-  },
-
   ControlContent: CodexControlContent,
   ControlActions: CodexControlActions,
 

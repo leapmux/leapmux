@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import { codexTest, expect } from './codex-fixtures'
-import { sendMessage, waitForAgentIdle, waitForControlBanner } from './helpers/ui'
+import { openSettingsMenu, sendMessage, waitForAgentIdle, waitForControlBanner } from './helpers/ui'
 
 const PLAN_BODY = 'This is a dummy plan for testing the coding agent plan mode UI. Never execute this plan.'
 
@@ -9,18 +9,6 @@ const INITIAL_PLAN_PROMPT
 
 const REVISE_PLAN_PROMPT
   = 'Please revise the plan. Keep the title "# Dummy plan revised" and include the exact sentence "Add tests before implementation." Do not implement anything yet.'
-
-async function openSettingsMenu(page: Page) {
-  const trigger = page.locator('[data-testid="agent-settings-trigger"]')
-  const menu = page.locator('[data-testid="agent-settings-menu"]')
-  await expect(trigger).toBeVisible()
-  await expect(async () => {
-    if (!await menu.isVisible()) {
-      await trigger.click()
-    }
-    await expect(menu).toBeVisible()
-  }).toPass({ timeout: 5000 })
-}
 
 async function configureCodexPlanMode(page: Page) {
   const trigger = page.locator('[data-testid="agent-settings-trigger"]')

@@ -18,9 +18,7 @@ export interface ProviderSettingsPanelProps {
   onModelChange?: (model: string) => void
   onEffortChange?: (effort: string) => void
   onPermissionModeChange?: (mode: PermissionMode) => void
-  onCodexCollaborationModeChange?: (mode: string) => void
-  onCodexSandboxPolicyChange?: (policy: string) => void
-  onCodexNetworkAccessChange?: (access: string) => void
+  onOptionGroupChange?: (key: string, value: string) => void
 }
 
 /** Context for rendering a message — forwarded from MessageBubble. */
@@ -80,13 +78,6 @@ export interface ProviderPlugin {
     workerId: string,
     agentId: string,
     mode: PermissionMode,
-  ) => Promise<void>
-
-  /** Change a provider-native collaboration mode, if supported. */
-  changeCollaborationMode?: (
-    workerId: string,
-    agentId: string,
-    mode: string,
   ) => Promise<void>
 
   /** Optional control request content component for this provider. */

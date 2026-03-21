@@ -87,24 +87,7 @@ func (a *ClaudeCodeAgent) HandleOutput(content []byte) {
 // enrichResultWithToolUses injects num_tool_uses into a result message so
 // the frontend can determine whether the turn involved tool use.
 func (a *ClaudeCodeAgent) enrichResultWithToolUses(content []byte) []byte {
-	a.mu.Lock()
-	numToolUses := a.turnToolUses
-	a.mu.Unlock()
-
-	enriched := make(map[string]json.RawMessage)
-	if err := json.Unmarshal(content, &enriched); err != nil {
-		return content
-	}
-	b, err := json.Marshal(numToolUses)
-	if err != nil {
-		return content
-	}
-	enriched["num_tool_uses"] = b
-	out, err := json.Marshal(enriched)
-	if err != nil {
-		return content
-	}
-	return out
+	return a.enrichWithToolUses(content)
 }
 
 // countToolUses counts tool_use content blocks in an assistant message.
@@ -409,9 +392,9 @@ func (a *ClaudeCodeAgent) trackPlanModeToolUse(content []byte) {
 		}
 		switch block.Name {
 		case "EnterPlanMode":
-			a.sink.StorePlanModeToolUse(block.ID, "plan")
+			a.sink.StorePlanModeToolUse(block.ID, PermissionModePlan)
 		case "ExitPlanMode":
-			a.sink.StorePlanModeToolUse(block.ID, "default")
+			a.sink.StorePlanModeToolUse(block.ID, PermissionModeDefault)
 		}
 	}
 }
@@ -517,9 +500,9 @@ func (a *ClaudeCodeAgent) detectPlanModeFromToolResult(content []byte) {
 
 		resultLower := strings.ToLower(resultText)
 		confirmed := false
-		if targetMode == "plan" && strings.Contains(resultLower, "entered plan mode") {
+		if targetMode == PermissionModePlan && strings.Contains(resultLower, "entered plan mode") {
 			confirmed = true
-		} else if targetMode == "default" && strings.Contains(resultLower, "approved your plan") {
+		} else if targetMode == PermissionModeDefault && strings.Contains(resultLower, "approved your plan") {
 			confirmed = true
 		}
 
