@@ -1,9 +1,13 @@
+/* eslint-disable solid/no-innerhtml -- markdown is produced from controlled plan text via remark */
 import type { Component } from 'solid-js'
 import type { ActionsProps, ContentProps } from './types'
 
-import { For, Show } from 'solid-js'
+import { For, Match, Show, Switch } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
+import { renderMarkdown } from '~/lib/renderMarkdown'
+import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
+import { markdownContent } from '../markdownContent.css'
 import { CollapsibleText } from './CollapsibleText'
 import { sendResponse } from './types'
 
@@ -35,6 +39,17 @@ function sendCodexDecision(
   })
 }
 
+function sendCodexPlanPromptResponse(
+  agentId: string,
+  onRespond: (agentId: string, content: Uint8Array) => Promise<void>,
+  response: Record<string, unknown>,
+): Promise<void> {
+  return sendResponse(agentId, onRespond, {
+    ...response,
+    codexPlanModePrompt: true,
+  })
+}
+
 /** Label for a Codex decision. */
 function decisionLabel(decision: CodexDecision): string {
   if (typeof decision === 'string') {
@@ -60,11 +75,13 @@ function isNegativeDecision(decision: CodexDecision): boolean {
 
 /** Codex-specific control request content. */
 export const CodexControlContent: Component<ContentProps> = (props) => {
+  const toolName = () => getToolName(props.request.payload)
   const params = () => getCodexParams(props.request.payload)
   const method = () => props.request.payload.method as string | undefined
   const reason = () => params()?.reason as string | undefined
   const command = () => params()?.command as string | undefined
   const cwd = () => params()?.cwd as string | undefined
+  const plan = () => getToolInput(props.request.payload).plan as string | undefined
 
   const title = () => {
     const m = method()
@@ -78,26 +95,35 @@ export const CodexControlContent: Component<ContentProps> = (props) => {
   }
 
   return (
-    <>
-      <div class={styles.controlBannerTitle}>{title()}</div>
-      <Show when={reason()}>
-        <div class={styles.codexReason}>{reason()}</div>
-      </Show>
-      <Show when={command()}>
-        <CollapsibleText text={command()!} maxLines={6} class={styles.toolSummary} />
-      </Show>
-      <Show when={cwd()}>
-        <div class={styles.codexCwd}>
-          {'cwd: '}
-          {cwd()}
-        </div>
-      </Show>
-    </>
+    <Switch>
+      <Match when={toolName() === 'CodexPlanModePrompt'}>
+        <div class={styles.controlBannerTitle}>Implement this plan?</div>
+        <Show when={plan()}>
+          <div class={markdownContent} innerHTML={renderMarkdown(plan()!)} />
+        </Show>
+      </Match>
+      <Match when={true}>
+        <div class={styles.controlBannerTitle}>{title()}</div>
+        <Show when={reason()}>
+          <div class={styles.codexReason}>{reason()}</div>
+        </Show>
+        <Show when={command()}>
+          <CollapsibleText text={command()!} maxLines={6} class={styles.toolSummary} />
+        </Show>
+        <Show when={cwd()}>
+          <div class={styles.codexCwd}>
+            {'cwd: '}
+            {cwd()}
+          </div>
+        </Show>
+      </Match>
+    </Switch>
   )
 }
 
 /** Codex-specific control request action buttons. */
 export const CodexControlActions: Component<ActionsProps> = (props) => {
+  const toolName = () => getToolName(props.request.payload)
   const params = () => getCodexParams(props.request.payload)
   const availableDecisions = () => params()?.availableDecisions as CodexDecision[] | undefined
 
@@ -113,57 +139,91 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
   }
 
   return (
-    <div class={styles.controlFooter}>
-      <div class={styles.controlFooterLeft}>
-        {props.infoTrigger}
-      </div>
-      <div class={styles.controlFooterRight}>
-        <Show
-          when={availableDecisions()}
-          fallback={(
+    <Switch>
+      <Match when={toolName() === 'CodexPlanModePrompt'}>
+        <div class={styles.controlFooter}>
+          <div class={styles.controlFooterLeft}>
+            {props.infoTrigger}
+          </div>
+          <div class={styles.controlFooterRight}>
             <ButtonGroup>
-              <button class="outline" onClick={() => handleDecision('cancel')} data-testid="control-deny-btn">Cancel</button>
-              <button onClick={() => handleDecision('accept')} data-testid="control-allow-btn">Allow</button>
-              <Show when={props.bypassPermissionMode}>
-                <button
-                  data-variant="secondary"
-                  onClick={handleBypassPermissions}
-                  data-testid="control-bypass-btn"
-                  title="Allow this request and stop asking for permissions"
-                >
-                  & Bypass Permissions
-                </button>
-              </Show>
+              <button
+                class="outline"
+                onClick={() => {
+                  if (props.hasEditorContent) {
+                    props.onTriggerSend()
+                    return
+                  }
+                  sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildDenyResponse(props.request.requestId, ''))
+                }}
+                data-testid="control-deny-btn"
+              >
+                {props.hasEditorContent ? 'Send Feedback' : 'Stay in Plan Mode'}
+              </button>
+              <button
+                onClick={() => sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId))}
+                data-testid="control-allow-btn"
+              >
+                Implement Plan
+              </button>
             </ButtonGroup>
-          )}
-        >
-          {decisions => (
-            <ButtonGroup>
-              <For each={decisions()}>
-                {decision => (
-                  <button
-                    class={isNegativeDecision(decision) ? 'outline' : undefined}
-                    onClick={() => handleDecision(decision)}
-                    data-testid={`control-decision-${typeof decision === 'string' ? decision : Object.keys(decision)[0]}`}
-                  >
-                    {decisionLabel(decision)}
-                  </button>
-                )}
-              </For>
-              <Show when={props.bypassPermissionMode}>
-                <button
-                  data-variant="secondary"
-                  onClick={handleBypassPermissions}
-                  data-testid="control-bypass-btn"
-                  title="Allow this request and stop asking for permissions"
-                >
-                  & Bypass Permissions
-                </button>
-              </Show>
-            </ButtonGroup>
-          )}
-        </Show>
-      </div>
-    </div>
+          </div>
+        </div>
+      </Match>
+      <Match when={true}>
+        <div class={styles.controlFooter}>
+          <div class={styles.controlFooterLeft}>
+            {props.infoTrigger}
+          </div>
+          <div class={styles.controlFooterRight}>
+            <Show
+              when={availableDecisions()}
+              fallback={(
+                <ButtonGroup>
+                  <button class="outline" onClick={() => handleDecision('cancel')} data-testid="control-deny-btn">Cancel</button>
+                  <button onClick={() => handleDecision('accept')} data-testid="control-allow-btn">Allow</button>
+                  <Show when={props.bypassPermissionMode}>
+                    <button
+                      data-variant="secondary"
+                      onClick={handleBypassPermissions}
+                      data-testid="control-bypass-btn"
+                      title="Allow this request and stop asking for permissions"
+                    >
+                      & Bypass Permissions
+                    </button>
+                  </Show>
+                </ButtonGroup>
+              )}
+            >
+              {decisions => (
+                <ButtonGroup>
+                  <For each={decisions()}>
+                    {decision => (
+                      <button
+                        class={isNegativeDecision(decision) ? 'outline' : undefined}
+                        onClick={() => handleDecision(decision)}
+                        data-testid={`control-decision-${typeof decision === 'string' ? decision : Object.keys(decision)[0]}`}
+                      >
+                        {decisionLabel(decision)}
+                      </button>
+                    )}
+                  </For>
+                  <Show when={props.bypassPermissionMode}>
+                    <button
+                      data-variant="secondary"
+                      onClick={handleBypassPermissions}
+                      data-testid="control-bypass-btn"
+                      title="Allow this request and stop asking for permissions"
+                    >
+                      & Bypass Permissions
+                    </button>
+                  </Show>
+                </ButtonGroup>
+              )}
+            </Show>
+          </div>
+        </div>
+      </Match>
+    </Switch>
   )
 }

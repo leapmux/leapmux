@@ -3,17 +3,20 @@ import type { AskQuestionState, EditorContentRef } from './controls/types'
 import type { ControlRequest } from '~/stores/control.store'
 import type { PermissionMode } from '~/utils/controlResponse'
 import { createEffect, createMemo, on } from 'solid-js'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { clearDraft } from '~/lib/editor/draftPersistence'
 import { safeGetJson, safeRemoveItem, safeSetJson } from '~/lib/safeStorage'
 import { buildAllowResponse, buildDenyResponse, getToolName } from '~/utils/controlResponse'
 import { trySubmitAskUserQuestion } from './controls/AskUserQuestionControl'
+import { getProviderPlugin } from './providers'
 
 export interface ControlResponseHandlingProps {
   agentId: string
-  agent?: { permissionMode?: string }
+  agent?: { permissionMode?: string, codexCollaborationMode?: string, agentProvider?: AgentProvider }
   controlRequests?: ControlRequest[]
   onControlResponse?: (agentId: string, content: Uint8Array) => Promise<void>
   onPermissionModeChange?: (mode: PermissionMode) => void
+  onCodexCollaborationModeChange?: (mode: string) => void
   onSendMessage: (content: string) => void
   settingsLoading?: boolean
   agentWorking?: boolean
@@ -37,10 +40,21 @@ export function useControlResponseHandling(
   editorContentRefAccessor: () => EditorContentRef | undefined,
   resetEditorHeightFn: () => void,
 ): ControlResponseHandlingResult {
+  const defaultPermissionMode = () => getProviderPlugin(props.agent?.agentProvider)?.defaultPermissionMode ?? 'default'
+  const defaultCodexCollaborationMode = () => 'default'
+
   // Track previous non-plan mode for Shift+Tab toggling.
-  let previousNonPlanMode: PermissionMode = 'default'
+  let previousNonPlanMode: PermissionMode = defaultPermissionMode()
+  let previousNonPlanCodexCollaborationMode = defaultCodexCollaborationMode()
   createEffect(() => {
-    const mode = (props.agent?.permissionMode || 'default') as PermissionMode
+    if (props.agent?.agentProvider === AgentProvider.CODEX) {
+      const mode = props.agent?.codexCollaborationMode || defaultCodexCollaborationMode()
+      if (mode !== 'plan') {
+        previousNonPlanCodexCollaborationMode = mode
+      }
+      return
+    }
+    const mode = (props.agent?.permissionMode || defaultPermissionMode()) as PermissionMode
     if (mode !== 'plan') {
       previousNonPlanMode = mode
     }
@@ -48,7 +62,18 @@ export function useControlResponseHandling(
   const togglePlanMode = () => {
     if (props.settingsLoading)
       return
-    const currentMode = (props.agent?.permissionMode || 'default') as PermissionMode
+    if (props.agent?.agentProvider === AgentProvider.CODEX) {
+      const currentMode = props.agent?.codexCollaborationMode || defaultCodexCollaborationMode()
+      if (currentMode === 'plan') {
+        props.onCodexCollaborationModeChange?.(previousNonPlanCodexCollaborationMode)
+      }
+      else {
+        previousNonPlanCodexCollaborationMode = currentMode
+        props.onCodexCollaborationModeChange?.('plan')
+      }
+      return
+    }
+    const currentMode = (props.agent?.permissionMode || defaultPermissionMode()) as PermissionMode
     if (currentMode === 'plan') {
       props.onPermissionModeChange?.(previousNonPlanMode)
     }
@@ -154,6 +179,8 @@ export function useControlResponseHandling(
     const response = (content || toolName === 'ExitPlanMode')
       ? buildDenyResponse(req.requestId, content)
       : buildAllowResponse(req.requestId)
+    if (toolName === 'CodexPlanModePrompt')
+      (response as Record<string, unknown>).codexPlanModePrompt = true
     const bytes = new TextEncoder().encode(JSON.stringify(response))
     sendControlResponse(req.agentId, bytes)
     cleanupControlRequestDrafts(req.requestId)

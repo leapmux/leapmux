@@ -35,6 +35,7 @@ export interface AgentEditorPanelProps {
   controlRequests?: ControlRequest[]
   onControlResponse?: (agentId: string, content: Uint8Array) => Promise<void>
   onPermissionModeChange?: (mode: PermissionMode) => void
+  onCodexCollaborationModeChange?: (mode: string) => void
   onCodexSandboxPolicyChange?: (policy: string) => void
   onCodexNetworkAccessChange?: (access: string) => void
   onModelChange?: (model: string) => void
@@ -347,6 +348,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                         model={props.agent?.model}
                         effort={props.agent?.effort}
                         permissionMode={props.agent?.permissionMode}
+                        codexCollaborationMode={props.agent?.codexCollaborationMode}
                         codexSandboxPolicy={props.agent?.codexSandboxPolicy}
                         codexNetworkAccess={props.agent?.codexNetworkAccess}
                         availableModels={props.agent?.availableModels}
@@ -355,6 +357,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                         onModelChange={props.onModelChange}
                         onEffortChange={props.onEffortChange}
                         onPermissionModeChange={props.onPermissionModeChange}
+                        onCodexCollaborationModeChange={props.onCodexCollaborationModeChange}
                         onCodexSandboxPolicyChange={props.onCodexSandboxPolicyChange}
                         onCodexNetworkAccessChange={props.onCodexNetworkAccessChange}
                       />

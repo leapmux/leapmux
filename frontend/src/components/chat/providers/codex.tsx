@@ -22,7 +22,7 @@ import {
 } from '../codexRenderers'
 import { CodexControlActions, CodexControlContent } from '../controls/CodexControlRequest'
 import { isNotificationThreadWrapper, isObject } from '../messageUtils'
-import { effortItems, hasEfforts, modeLabel, modelDisplayName, modelItems, permissionModeGroup, permissionModeItems, RadioGroup } from '../settingsShared'
+import { defaultModelId, effortItems, hasEfforts, modeLabel, modelDisplayName, modelItems, optionGroup, optionGroupItems, optionLabel, permissionModeGroup, permissionModeItems, RadioGroup } from '../settingsShared'
 import { registerProvider } from './registry'
 
 /** Default model for Codex agents. */
@@ -85,26 +85,23 @@ function isCodexRateLimitAllAllowed(m: Record<string, unknown>): boolean {
 /** Codex settings panel (model, effort, approval policy, sandbox). */
 function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
   const menuId = createUniqueId()
-  const currentModel = () => props.model || DEFAULT_CODEX_MODEL
+  const currentModel = () => props.model || defaultModelId(props.availableModels) || DEFAULT_CODEX_MODEL
   const currentEffort = () => props.effort || DEFAULT_CODEX_EFFORT
   const currentMode = () => props.permissionMode || 'on-request'
+  const currentCollaborationMode = () => props.codexCollaborationMode || 'default'
   const currentSandbox = () => props.codexSandboxPolicy || 'workspace-write'
   const currentNetwork = () => props.codexNetworkAccess || 'restricted'
 
   const models = () => modelItems(props.availableModels)
   const efforts = () => effortItems(props.availableModels, currentModel())
+  const collaborationModeGroup = () => optionGroup(props.availableOptionGroups, 'codexCollaborationMode')
+  const collaborationModeItems = () => optionGroupItems(props.availableOptionGroups, 'codexCollaborationMode')
   const modeGroup = () => permissionModeGroup(props.availableOptionGroups)
   const modeItems = () => permissionModeItems(props.availableOptionGroups)
-
-  const optionGroupItems = (key: string) => {
-    const group = props.availableOptionGroups?.find(g => g.key === key)
-    if (group && group.options.length > 0)
-      return { label: group.label, items: group.options.map(o => ({ label: o.name || o.id, value: o.id, tooltip: o.description || undefined })) }
-    return null
-  }
-
-  const sandbox = () => optionGroupItems('codexSandboxPolicy')
-  const network = () => optionGroupItems('codexNetworkAccess')
+  const sandboxGroup = () => optionGroup(props.availableOptionGroups, 'codexSandboxPolicy')
+  const sandboxItems = () => optionGroupItems(props.availableOptionGroups, 'codexSandboxPolicy')
+  const networkGroup = () => optionGroup(props.availableOptionGroups, 'codexNetworkAccess')
+  const networkItems = () => optionGroupItems(props.availableOptionGroups, 'codexNetworkAccess')
 
   return (
     <div class={styles.settingsPanelColumns}>
@@ -128,29 +125,42 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
         />
       </div>
       <div class={styles.settingsPanelColumn}>
-        <Show when={network()}>
+        <Show when={collaborationModeItems().length > 0}>
           <div>
             <RadioGroup
-              label={network()!.label || 'Network Access'}
-              items={network()!.items}
-              testIdPrefix="network"
-              name={`${menuId}-network`}
-              current={currentNetwork()}
-              onChange={v => props.onCodexNetworkAccessChange?.(v)}
+              label={collaborationModeGroup()?.label || 'Mode'}
+              items={collaborationModeItems()}
+              testIdPrefix="codex-collaboration-mode"
+              name={`${menuId}-collaboration-mode`}
+              current={currentCollaborationMode()}
+              onChange={v => props.onCodexCollaborationModeChange?.(v)}
               fieldsetClass={styles.settingsFieldsetFirst}
             />
           </div>
         </Show>
-        <Show when={sandbox()}>
+        <Show when={networkItems().length > 0}>
           <div>
             <RadioGroup
-              label={sandbox()!.label || 'Sandbox'}
-              items={sandbox()!.items}
+              label={networkGroup()?.label || 'Network Access'}
+              items={networkItems()}
+              testIdPrefix="network"
+              name={`${menuId}-network`}
+              current={currentNetwork()}
+              onChange={v => props.onCodexNetworkAccessChange?.(v)}
+              fieldsetClass={collaborationModeItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
+            />
+          </div>
+        </Show>
+        <Show when={sandboxItems().length > 0}>
+          <div>
+            <RadioGroup
+              label={sandboxGroup()?.label || 'Sandbox'}
+              items={sandboxItems()}
               testIdPrefix="sandbox"
               name={`${menuId}-sandbox`}
               current={currentSandbox()}
               onChange={v => props.onCodexSandboxPolicyChange?.(v)}
-              fieldsetClass={!network() ? styles.settingsFieldsetFirst : undefined}
+              fieldsetClass={collaborationModeItems().length === 0 && networkItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
             />
           </div>
         </Show>
@@ -162,7 +172,7 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
             name={`${menuId}-mode`}
             current={currentMode()}
             onChange={v => props.onPermissionModeChange?.(v as PermissionMode)}
-            fieldsetClass={!network() && !sandbox() ? styles.settingsFieldsetFirst : undefined}
+            fieldsetClass={collaborationModeItems().length === 0 && networkItems().length === 0 && sandboxItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
           />
         </div>
       </div>
@@ -170,11 +180,12 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
   )
 }
 
-/** Codex trigger label (model name, effort icon, approval policy). */
+/** Codex trigger label (model name, effort icon, current mode). */
 function CodexTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
-  const currentModel = () => props.model || DEFAULT_CODEX_MODEL
+  const currentModel = () => props.model || defaultModelId(props.availableModels) || DEFAULT_CODEX_MODEL
   const currentEffort = () => props.effort || DEFAULT_CODEX_EFFORT
   const currentMode = () => props.permissionMode || 'on-request'
+  const currentCollaborationMode = () => props.codexCollaborationMode || 'default'
   const displayName = () => modelDisplayName(props.availableModels, currentModel())
 
   const effortIcon = () => {
@@ -189,7 +200,9 @@ function CodexTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
   }
 
   const hasEffort = () => hasEfforts(props.availableModels, currentModel())
-  const mode = () => modeLabel(props.availableOptionGroups, currentMode())
+  const mode = () => currentCollaborationMode() === 'plan'
+    ? optionLabel(props.availableOptionGroups, 'codexCollaborationMode', currentCollaborationMode())
+    : modeLabel(props.availableOptionGroups, currentMode())
   return (
     <>
       {displayName()}
@@ -203,6 +216,7 @@ function CodexTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
 const codexPlugin: ProviderPlugin = {
   defaultModel: DEFAULT_CODEX_MODEL,
   defaultEffort: DEFAULT_CODEX_EFFORT,
+  defaultPermissionMode: 'on-request',
   bypassPermissionMode: 'never',
   classify(parent, wrapper): MessageCategory {
     // Notification threads (settings_changed, context_cleared, etc.)
@@ -244,8 +258,8 @@ const codexPlugin: ProviderPlugin = {
       return { kind: 'result_divider' }
 
     if (item && itemType) {
-      // agentMessage → assistant text
-      if (itemType === 'agentMessage')
+      // agentMessage / plan → assistant text
+      if (itemType === 'agentMessage' || itemType === 'plan')
         return { kind: 'assistant_text' }
 
       // commandExecution → tool use
@@ -328,6 +342,8 @@ const codexPlugin: ProviderPlugin = {
   },
 
   buildControlResponse(parsed: Record<string, unknown>): Uint8Array | null {
+    if (parsed?.codexPlanModePrompt === true)
+      return new TextEncoder().encode(JSON.stringify(parsed))
     const response = parsed?.response as Record<string, unknown> | undefined
     const requestId = response?.request_id as string | undefined
     if (!requestId)
@@ -349,6 +365,12 @@ const codexPlugin: ProviderPlugin = {
     await workerRpc.updateAgentSettings(workerId, {
       agentId,
       settings: { permissionMode: mode },
+    })
+  },
+  async changeCollaborationMode(workerId: string, agentId: string, mode: string): Promise<void> {
+    await workerRpc.updateAgentSettings(workerId, {
+      agentId,
+      settings: { codexCollaborationMode: mode },
     })
   },
 

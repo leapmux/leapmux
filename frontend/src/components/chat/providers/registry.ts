@@ -10,6 +10,7 @@ export interface ProviderSettingsPanelProps {
   model?: string
   effort?: string
   permissionMode?: string
+  codexCollaborationMode?: string
   codexSandboxPolicy?: string
   codexNetworkAccess?: string
   availableModels?: AvailableModel[]
@@ -17,6 +18,7 @@ export interface ProviderSettingsPanelProps {
   onModelChange?: (model: string) => void
   onEffortChange?: (effort: string) => void
   onPermissionModeChange?: (mode: PermissionMode) => void
+  onCodexCollaborationModeChange?: (mode: string) => void
   onCodexSandboxPolicyChange?: (policy: string) => void
   onCodexNetworkAccessChange?: (access: string) => void
 }
@@ -31,6 +33,8 @@ export interface ProviderPlugin {
   defaultModel?: string
   /** Default effort for this provider. */
   defaultEffort?: string
+  /** Default permission mode identifier for this provider. */
+  defaultPermissionMode?: PermissionMode
 
   /** Classify a parsed message into a rendering category. */
   classify: (
@@ -77,6 +81,13 @@ export interface ProviderPlugin {
     workerId: string,
     agentId: string,
     mode: PermissionMode,
+  ) => Promise<void>
+
+  /** Change a provider-native collaboration mode, if supported. */
+  changeCollaborationMode?: (
+    workerId: string,
+    agentId: string,
+    mode: string,
   ) => Promise<void>
 
   /** Optional control request content component for this provider. */

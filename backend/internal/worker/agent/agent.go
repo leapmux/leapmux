@@ -49,19 +49,20 @@ type ClaudeCodeAgent struct {
 
 // Options configures a new ClaudeCodeAgent.
 type Options struct {
-	AgentID            string
-	Model              string
-	Effort             string // Effort (low, medium, high, max)
-	WorkingDir         string
-	ResumeSessionID    string                  // If set, uses --resume to resume a previous session
-	PermissionMode     string                  // Permission mode to set on startup (default, acceptEdits, plan, bypassPermissions)
-	CodexSandboxPolicy string                  // Codex sandbox policy (e.g. "danger-full-access", "workspace-write")
-	CodexNetworkAccess string                  // Codex network access ("restricted" or "enabled")
-	StartupTimeout     time.Duration           // Timeout for the startup handshake (default: 30s)
-	Shell              string                  // Default shell path (always set when using shell wrapper)
-	LoginShell         bool                    // If true, use interactive+login shell flags
-	HomeDir            string                  // User's home directory (for reading Claude Code settings)
-	AgentProvider      leapmuxv1.AgentProvider // Coding agent provider (default: CLAUDE_CODE)
+	AgentID                string
+	Model                  string
+	Effort                 string // Effort (low, medium, high, max)
+	WorkingDir             string
+	ResumeSessionID        string                  // If set, uses --resume to resume a previous session
+	PermissionMode         string                  // Permission mode to set on startup (default, acceptEdits, plan, bypassPermissions)
+	CodexSandboxPolicy     string                  // Codex sandbox policy (e.g. "danger-full-access", "workspace-write")
+	CodexNetworkAccess     string                  // Codex network access ("restricted" or "enabled")
+	CodexCollaborationMode string                  // Codex collaboration mode ("default" or "plan")
+	StartupTimeout         time.Duration           // Timeout for the startup handshake (default: 30s)
+	Shell                  string                  // Default shell path (always set when using shell wrapper)
+	LoginShell             bool                    // If true, use interactive+login shell flags
+	HomeDir                string                  // User's home directory (for reading Claude Code settings)
+	AgentProvider          leapmuxv1.AgentProvider // Coding agent provider (default: CLAUDE_CODE)
 }
 
 // StartClaudeCode spawns a new Claude Code process and begins reading its output.

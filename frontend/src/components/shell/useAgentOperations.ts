@@ -61,6 +61,14 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     return props.agentStore.state.agents.find(a => a.id === agentId)?.workerId ?? ''
   }
 
+  const defaultPermissionModeForAgent = (provider: AgentProvider): PermissionMode => {
+    return getProviderPlugin(provider)?.defaultPermissionMode ?? 'default'
+  }
+
+  const defaultCodexCollaborationMode = (provider: AgentProvider): string => {
+    return provider === AgentProvider.CODEX ? 'default' : ''
+  }
+
   // Open a new agent in the given workspace
   const openAgentInWorkspace = async (workspaceId: string, workerId: string, workingDir: string, sessionId?: string, agentProvider: AgentProvider = AgentProvider.CLAUDE_CODE) => {
     try {
@@ -68,11 +76,12 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       const resp = await workerRpc.openAgent(workerId, {
         workspaceId,
         agentProvider,
-        model: defaultModelForProvider(agentProvider),
+        model: '',
         title,
         systemPrompt: '',
         workerId,
         workingDir,
+        ...(agentProvider === AgentProvider.CODEX ? { codexCollaborationMode: 'default' } : {}),
         ...(sessionId ? { agentSessionId: sessionId } : {}),
       })
       if (resp.agent) {
@@ -236,7 +245,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     const agent = props.agentStore.state.agents.find(a => a.id === agentId)
     if (!agent)
       return
-    const previousMode = (agent.permissionMode || 'default') as PermissionMode
+    const previousMode = (agent.permissionMode || defaultPermissionModeForAgent(agent.agentProvider)) as PermissionMode
     props.agentStore.updateAgent(agentId, { permissionMode: mode })
     props.settingsLoading.start()
     try {
@@ -259,7 +268,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   // Change a Codex-specific setting (sandbox policy or network access).
   const handleCodexSettingChange = async (
     agentId: string,
-    field: 'codexSandboxPolicy' | 'codexNetworkAccess',
+    field: 'codexCollaborationMode' | 'codexSandboxPolicy' | 'codexNetworkAccess',
     value: string,
     defaultValue: string,
     errorLabel: string,
@@ -289,6 +298,9 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
 
   const handleCodexNetworkAccessChange = (agentId: string, access: string) =>
     handleCodexSettingChange(agentId, 'codexNetworkAccess', access, 'restricted', 'network access')
+
+  const handleCodexCollaborationModeChange = (agentId: string, mode: string) =>
+    handleCodexSettingChange(agentId, 'codexCollaborationMode', mode, defaultCodexCollaborationMode(AgentProvider.CODEX), 'mode')
 
   // Retry a failed message delivery.
   // Always re-sends via sendAgentMessage (which auto-starts the agent
@@ -366,6 +378,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     handleModelOrEffortChange,
     handleInterrupt,
     handlePermissionModeChange,
+    handleCodexCollaborationModeChange,
     handleCodexSandboxPolicyChange,
     handleCodexNetworkAccessChange,
     handleRetryMessage,

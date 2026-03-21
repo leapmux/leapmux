@@ -49,7 +49,7 @@ function extractItem(parsed: unknown): Record<string, unknown> | null {
 /** Renders Codex agentMessage items as markdown. */
 export function codexAgentMessageRenderer(parsed: unknown, _role: MessageRole, _context?: RenderContext): JSX.Element | null {
   const item = extractItem(parsed)
-  if (!item || item.type !== 'agentMessage')
+  if (!item || (item.type !== 'agentMessage' && item.type !== 'plan'))
     return null
   const text = (item.text as string) || ''
   if (!text)

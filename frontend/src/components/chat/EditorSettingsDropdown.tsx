@@ -21,6 +21,7 @@ export interface EditorSettingsDropdownProps {
   model?: string
   effort?: string
   permissionMode?: string
+  codexCollaborationMode?: string
   codexSandboxPolicy?: string
   codexNetworkAccess?: string
   availableModels?: import('~/generated/leapmux/v1/agent_pb').AvailableModel[]
@@ -29,6 +30,7 @@ export interface EditorSettingsDropdownProps {
   onModelChange?: (model: string) => void
   onEffortChange?: (effort: string) => void
   onPermissionModeChange?: (mode: PermissionMode) => void
+  onCodexCollaborationModeChange?: (mode: string) => void
   onCodexSandboxPolicyChange?: (policy: string) => void
   onCodexNetworkAccessChange?: (access: string) => void
 }
@@ -43,6 +45,7 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
     model: props.model,
     effort: props.effort,
     permissionMode: props.permissionMode,
+    codexCollaborationMode: props.codexCollaborationMode,
     codexSandboxPolicy: props.codexSandboxPolicy,
     codexNetworkAccess: props.codexNetworkAccess,
     availableModels: props.availableModels,
@@ -50,6 +53,7 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
     onModelChange: props.onModelChange,
     onEffortChange: props.onEffortChange,
     onPermissionModeChange: props.onPermissionModeChange,
+    onCodexCollaborationModeChange: props.onCodexCollaborationModeChange,
     onCodexSandboxPolicyChange: props.onCodexSandboxPolicyChange,
     onCodexNetworkAccessChange: props.onCodexNetworkAccessChange,
   })

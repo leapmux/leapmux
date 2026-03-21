@@ -26,14 +26,18 @@ type CodexAgent struct {
 	sink       OutputSink
 
 	// Codex-specific state.
-	threadID        string       // from thread/start response
-	turnID          string       // currently active turn ID
-	nextReqID       atomic.Int64 // JSON-RPC request ID counter
-	pendingReqs     sync.Map     // reqID (int64) -> chan json.RawMessage
-	approvalPolicy  string       // Codex approval policy (stored as-is from DB)
-	sandboxPolicy   string       // Codex sandbox policy (e.g. "workspace-write")
-	networkAccess   string       // Codex network access ("restricted" or "enabled")
-	availableModels []*leapmuxv1.AvailableModel
+	threadID          string       // from thread/start response
+	turnID            string       // currently active turn ID
+	nextReqID         atomic.Int64 // JSON-RPC request ID counter
+	pendingReqs       sync.Map     // reqID (int64) -> chan json.RawMessage
+	approvalPolicy    string       // Codex approval policy (stored as-is from DB)
+	sandboxPolicy     string       // Codex sandbox policy (e.g. "workspace-write")
+	networkAccess     string       // Codex network access ("restricted" or "enabled")
+	collaborationMode string       // Codex collaboration mode ("default" or "plan")
+	turnSawPlan       bool         // whether the current turn produced a plan item
+	turnPlanText      string       // final text of the current turn's plan item
+	turnAssistantText string       // final assistant message text for the current turn
+	availableModels   []*leapmuxv1.AvailableModel
 }
 
 // StartCodex starts a Codex agent process and performs the JSON-RPC handshake.
@@ -150,6 +154,12 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	}
 	a.networkAccess = networkAccess
 
+	collaborationMode := opts.CodexCollaborationMode
+	if collaborationMode == "" {
+		collaborationMode = "default"
+	}
+	a.collaborationMode = collaborationMode
+
 	// 4. Send "thread/start" or "thread/resume" request.
 	threadParams := map[string]interface{}{
 		"model":          opts.Model,
@@ -264,6 +274,7 @@ func (a *CodexAgent) SendInput(content string) error {
 	approvalPolicy := a.approvalPolicy
 	sandboxPolicy := a.sandboxPolicy
 	networkAccess := a.networkAccess
+	collaborationMode := a.collaborationMode
 	a.mu.Unlock()
 
 	if threadID == "" {
@@ -280,21 +291,23 @@ func (a *CodexAgent) SendInput(content string) error {
 	}
 
 	return a.sendTurnStart(threadID, input, turnSettings{
-		model:          model,
-		effort:         effort,
-		approvalPolicy: approvalPolicy,
-		sandboxPolicy:  sandboxPolicy,
-		networkAccess:  networkAccess,
+		model:             model,
+		effort:            effort,
+		approvalPolicy:    approvalPolicy,
+		sandboxPolicy:     sandboxPolicy,
+		networkAccess:     networkAccess,
+		collaborationMode: collaborationMode,
 	})
 }
 
 // turnSettings groups the per-turn settings snapshotted from agent state.
 type turnSettings struct {
-	model          string
-	effort         string
-	approvalPolicy string
-	sandboxPolicy  string
-	networkAccess  string
+	model             string
+	effort            string
+	approvalPolicy    string
+	sandboxPolicy     string
+	networkAccess     string
+	collaborationMode string
 }
 
 // sendTurnStart sends a turn/start request with all current settings.
@@ -318,6 +331,9 @@ func (a *CodexAgent) sendTurnStart(
 	}
 	if sp := codexSandboxPolicyObject(s.sandboxPolicy, s.networkAccess); sp != nil {
 		params["sandboxPolicy"] = sp
+	}
+	if cm := codexCollaborationModeObject(s.collaborationMode, s.model, s.effort); cm != nil {
+		params["collaborationMode"] = cm
 	}
 	paramsJSON, err := json.Marshal(params)
 	if err != nil {
@@ -385,16 +401,44 @@ func codexSandboxPolicyObject(policy, networkAccess string) map[string]interface
 	return obj
 }
 
+// codexCollaborationModeObject converts a simple collaboration mode string to
+// the object format expected by turn/start's collaborationMode field.
+// We send developer_instructions: null so Codex applies its built-in mode
+// instructions, matching the native Codex TUI/Desktop behavior.
+func codexCollaborationModeObject(mode, model, effort string) map[string]interface{} {
+	if mode == "" {
+		return nil
+	}
+	switch mode {
+	case "default", "plan":
+	default:
+		return nil
+	}
+	reasoningEffort := interface{}(nil)
+	if effort != "" {
+		reasoningEffort = effort
+	}
+	return map[string]interface{}{
+		"mode": mode,
+		"settings": map[string]interface{}{
+			"model":                  model,
+			"reasoning_effort":       reasoningEffort,
+			"developer_instructions": nil,
+		},
+	}
+}
+
 // CurrentSettings returns the current settings for this agent.
 func (a *CodexAgent) CurrentSettings() *leapmuxv1.AgentSettings {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return &leapmuxv1.AgentSettings{
-		Model:              a.model,
-		Effort:             a.effort,
-		PermissionMode:     a.approvalPolicy,
-		CodexSandboxPolicy: a.sandboxPolicy,
-		CodexNetworkAccess: a.networkAccess,
+		Model:                  a.model,
+		Effort:                 a.effort,
+		PermissionMode:         a.approvalPolicy,
+		CodexSandboxPolicy:     a.sandboxPolicy,
+		CodexNetworkAccess:     a.networkAccess,
+		CodexCollaborationMode: a.collaborationMode,
 	}
 }
 
@@ -421,6 +465,9 @@ func (a *CodexAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	}
 	if s.GetCodexNetworkAccess() != "" {
 		a.networkAccess = s.GetCodexNetworkAccess()
+	}
+	if s.GetCodexCollaborationMode() != "" {
+		a.collaborationMode = s.GetCodexCollaborationMode()
 	}
 	return true
 }
@@ -539,12 +586,19 @@ func init() {
 		codexDefaultModels,
 		[]*leapmuxv1.AvailableOptionGroup{
 			{
+				Key:   "codexCollaborationMode",
+				Label: "Mode",
+				Options: []*leapmuxv1.AvailableOption{
+					{Id: "default", Name: "Default"},
+					{Id: "plan", Name: "Plan Mode"},
+				},
+			},
+			{
 				Key:   "permissionMode",
 				Label: "Approval Policy",
 				Options: []*leapmuxv1.AvailableOption{
 					{Id: "never", Name: "Full Auto"},
 					{Id: "on-request", Name: "Suggest & Approve"},
-					{Id: "plan", Name: "Plan Mode"},
 					{Id: "untrusted", Name: "Auto-edit"},
 				},
 			},

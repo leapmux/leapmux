@@ -18,6 +18,7 @@ CREATE TABLE agents (
     effort           TEXT NOT NULL DEFAULT 'high',
     codex_sandbox_policy TEXT NOT NULL DEFAULT '',
     codex_network_access TEXT NOT NULL DEFAULT '',
+    codex_collaboration_mode TEXT NOT NULL DEFAULT '',
     agent_provider   INTEGER NOT NULL DEFAULT 1,
     created_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     closed_at        DATETIME

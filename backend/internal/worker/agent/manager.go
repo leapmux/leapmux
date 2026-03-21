@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // ErrAgentNotFound is returned when an agent process does not exist.
@@ -187,16 +188,38 @@ func (m *Manager) AvailableModels(agentID string, provider leapmuxv1.AgentProvid
 
 	if ok {
 		if models := p.AvailableModels(); len(models) > 0 {
-			return models
+			return withDefaultModelMarked(models, provider)
 		}
 	}
 	if len(cached) > 0 {
-		return cached
+		return withDefaultModelMarked(cached, provider)
 	}
 	if reg, ok := providerRegistry[provider]; ok {
-		return reg.defaultModels
+		return withDefaultModelMarked(reg.defaultModels, provider)
 	}
 	return nil
+}
+
+func withDefaultModelMarked(models []*leapmuxv1.AvailableModel, provider leapmuxv1.AgentProvider) []*leapmuxv1.AvailableModel {
+	if len(models) == 0 {
+		return nil
+	}
+
+	defaultModel := DefaultModel(provider)
+	if defaultModel == "" {
+		return models
+	}
+
+	out := make([]*leapmuxv1.AvailableModel, len(models))
+	for i, model := range models {
+		if model == nil {
+			continue
+		}
+		copyModel := proto.Clone(model).(*leapmuxv1.AvailableModel)
+		copyModel.IsDefault = copyModel.Id == defaultModel
+		out[i] = copyModel
+	}
+	return out
 }
 
 // AvailableOptionGroups returns the static option groups for a provider

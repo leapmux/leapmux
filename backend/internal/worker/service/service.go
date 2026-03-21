@@ -182,6 +182,22 @@ func codexNetworkAccessOrDefault(access string) string {
 	return "restricted"
 }
 
+// codexCollaborationModeOrDefault returns the collaboration mode if non-empty,
+// otherwise "default" (the Codex default).
+func codexCollaborationModeOrDefault(mode string) string {
+	if mode != "" {
+		return mode
+	}
+	return "default"
+}
+
+func codexCollaborationModeForProvider(mode string, provider leapmuxv1.AgentProvider) string {
+	if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
+		return codexCollaborationModeOrDefault(mode)
+	}
+	return mode
+}
+
 // settingsDisplayLabels returns lookup functions for model and effort display
 // names using the agent's AvailableModels data. If the agent is not running or
 // has no model list, the lookup functions return the raw ID as-is.

@@ -18,6 +18,13 @@ export function modelItems(availableModels: AvailableModel[] | undefined): Setti
   return []
 }
 
+/** Resolve the default model ID from the available models list. */
+export function defaultModelId(availableModels: AvailableModel[] | undefined): string {
+  if (!availableModels || availableModels.length === 0)
+    return ''
+  return availableModels.find(m => m.isDefault)?.id || availableModels[0]?.id || ''
+}
+
 /** Build effort radio items for the current model. */
 export function effortItems(availableModels: AvailableModel[] | undefined, currentModel: string): SettingsItem[] {
   if (availableModels && availableModels.length > 0) {
@@ -28,17 +35,27 @@ export function effortItems(availableModels: AvailableModel[] | undefined, curre
   return []
 }
 
+/** Find an option group by key. */
+export function optionGroup(availableOptionGroups: AvailableOptionGroup[] | undefined, key: string) {
+  return availableOptionGroups?.find(g => g.key === key)
+}
+
+/** Build option-group radio items. */
+export function optionGroupItems(availableOptionGroups: AvailableOptionGroup[] | undefined, key: string): SettingsItem[] {
+  const group = optionGroup(availableOptionGroups, key)
+  if (group && group.options.length > 0)
+    return group.options.map(o => ({ label: o.name || o.id, value: o.id, tooltip: o.description || undefined }))
+  return []
+}
+
 /** Find the permission mode option group. */
 export function permissionModeGroup(availableOptionGroups: AvailableOptionGroup[] | undefined) {
-  return availableOptionGroups?.find(g => g.key === 'permissionMode')
+  return optionGroup(availableOptionGroups, 'permissionMode')
 }
 
 /** Build permission mode radio items. */
 export function permissionModeItems(availableOptionGroups: AvailableOptionGroup[] | undefined): SettingsItem[] {
-  const group = permissionModeGroup(availableOptionGroups)
-  if (group && group.options.length > 0)
-    return group.options.map(o => ({ label: o.name || o.id, value: o.id, tooltip: o.description || undefined }))
-  return []
+  return optionGroupItems(availableOptionGroups, 'permissionMode')
 }
 
 /** Resolve model display name from available models. */
@@ -62,13 +79,24 @@ export function hasEfforts(availableModels: AvailableModel[] | undefined, curren
 
 /** Resolve permission mode label from available option groups. */
 export function modeLabel(availableOptionGroups: AvailableOptionGroup[] | undefined, currentMode: string): string {
-  const group = availableOptionGroups?.find(g => g.key === 'permissionMode')
+  const group = optionGroup(availableOptionGroups, 'permissionMode')
   if (group) {
     const opt = group.options.find(o => o.id === currentMode)
     if (opt)
       return opt.name || opt.id
   }
   return currentMode
+}
+
+/** Resolve any option-group label from available option groups. */
+export function optionLabel(availableOptionGroups: AvailableOptionGroup[] | undefined, key: string, currentValue: string): string {
+  const group = optionGroup(availableOptionGroups, key)
+  if (group) {
+    const opt = group.options.find(o => o.id === currentValue)
+    if (opt)
+      return opt.name || opt.id
+  }
+  return currentValue
 }
 
 export function RadioGroup(props: {

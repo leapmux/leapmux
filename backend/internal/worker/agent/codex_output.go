@@ -82,6 +82,9 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 		a.mu.Lock()
 		a.turnID = notif.Turn.ID
 		a.turnToolUses = 0
+		a.turnSawPlan = false
+		a.turnPlanText = ""
+		a.turnAssistantText = ""
 		threadID := a.threadID
 		a.mu.Unlock()
 
@@ -141,8 +144,29 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 
 	switch itemType {
 	case "agentMessage":
+		var messageItem struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(item, &messageItem) == nil && messageItem.Text != "" {
+			a.mu.Lock()
+			a.turnAssistantText = messageItem.Text
+			a.mu.Unlock()
+		}
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, ""); err != nil {
 			slog.Error("codex persist agentMessage", "agent_id", a.agentID, "error", err)
+		}
+	case "plan":
+		var planItem struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(item, &planItem) == nil && planItem.Text != "" {
+			a.mu.Lock()
+			a.turnSawPlan = true
+			a.turnPlanText = planItem.Text
+			a.mu.Unlock()
+		}
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, ""); err != nil {
+			slog.Error("codex persist plan", "agent_id", a.agentID, "error", err)
 		}
 	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall":
 		a.mu.Lock()
@@ -173,6 +197,10 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	// simple text-only exchanges from complex multi-tool turns.
 	a.mu.Lock()
 	numToolUses := a.turnToolUses
+	sawPlan := a.turnSawPlan
+	planText := a.turnPlanText
+	assistantText := a.turnAssistantText
+	collaborationMode := a.collaborationMode
 	a.mu.Unlock()
 
 	enriched := make(map[string]json.RawMessage)
@@ -193,6 +221,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	// Extract usage from the turn data.
 	var notif struct {
 		Turn struct {
+			ID     string `json:"id"`
 			Status string `json:"status"`
 			Usage  *struct {
 				InputTokens  int64 `json:"inputTokens"`
@@ -207,10 +236,34 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 				"error": "Codex turn failed",
 			})
 		}
+		promptText := planText
+		if promptText == "" {
+			promptText = assistantText
+		}
+		if notif.Turn.Status == "completed" && collaborationMode == "plan" && (sawPlan || promptText != "") {
+			requestID := fmt.Sprintf("codex-plan-prompt-%s", notif.Turn.ID)
+			payload, err := json.Marshal(map[string]interface{}{
+				"type":       "control_request",
+				"request_id": requestID,
+				"request": map[string]interface{}{
+					"tool_name": "CodexPlanModePrompt",
+					"input": map[string]interface{}{
+						"plan": promptText,
+					},
+				},
+			})
+			if err == nil {
+				a.sink.PersistControlRequest(requestID, payload)
+				a.sink.BroadcastControlRequest(requestID, payload)
+			}
+		}
 	}
 
 	a.mu.Lock()
 	a.turnID = ""
+	a.turnSawPlan = false
+	a.turnPlanText = ""
+	a.turnAssistantText = ""
 	a.mu.Unlock()
 
 	// Clear the turn ID in session info.
@@ -348,9 +401,9 @@ func (a *CodexAgent) handleRateLimitsUpdated(content []byte, params json.RawMess
 
 // codexRateLimitTier represents a single tier from Codex rate limit data.
 type codexRateLimitTier struct {
-	UsedPercent       float64  `json:"usedPercent"`
+	UsedPercent        float64 `json:"usedPercent"`
 	WindowDurationMins int     `json:"windowDurationMins"`
-	ResetsAt          *int64   `json:"resetsAt"`
+	ResetsAt           *int64  `json:"resetsAt"`
 }
 
 // codexWindowToType maps a Codex window duration (minutes) to a rate limit type string.

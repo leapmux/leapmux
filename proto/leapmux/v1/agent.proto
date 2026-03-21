@@ -56,6 +56,7 @@ message OpenAgentRequest {
   AgentProvider agent_provider = 16; // Coding agent provider (default: CLAUDE_CODE)
   string codex_sandbox_policy = 17;  // Codex sandbox policy (optional, for future use)
   string codex_network_access = 18;  // Codex network access ("restricted" or "enabled")
+  string codex_collaboration_mode = 19; // Codex collaboration mode ("default" or "plan")
 }
 
 message OpenAgentResponse {
@@ -110,6 +111,7 @@ message AgentInfo {
   repeated AvailableOptionGroup available_option_groups = 19; // Option groups (e.g. permission modes, sandbox policies)
   string codex_sandbox_policy = 20; // Codex sandbox policy (e.g. "danger-full-access", "workspace-write")
   string codex_network_access = 21; // Codex network access (e.g. "restricted", "enabled")
+  string codex_collaboration_mode = 22; // Codex collaboration mode (e.g. "default", "plan")
 }
 
 // AvailableModel describes a model reported by the agent process (e.g. Codex model/list).
@@ -189,6 +191,7 @@ message AgentStatusChange {
   AgentGitStatus git_status = 8; // Git status for the agent's working directory
   reserved 9; // was supports_model_effort
   AgentProvider agent_provider = 10; // Provider for this agent
+  string codex_collaboration_mode = 11; // Codex collaboration mode for Codex agents
 }
 
 // AgentGitStatus holds git repository status for an agent's working directory.
@@ -273,6 +276,7 @@ message AgentSettings {
   string permission_mode = 3;
   string codex_sandbox_policy = 4;
   string codex_network_access = 5;
+  string codex_collaboration_mode = 6;
 }
 
 message UpdateAgentSettingsRequest {

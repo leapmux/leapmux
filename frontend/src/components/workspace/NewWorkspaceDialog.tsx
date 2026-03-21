@@ -19,7 +19,6 @@ import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
 import { sanitizeName } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
 import { dialogLeftPanel, dialogRightPanel, dialogSingleColumn, dialogTopSection, dialogTwoColumn, dialogWide, errorText, labelRow } from '~/styles/shared.css'
-import { defaultModelForProvider } from '~/utils/controlResponse'
 
 interface NewWorkspaceDialogProps {
   onCreated: (workspace: Workspace, workerId: string) => void
@@ -57,7 +56,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       const agentResp = await workerRpc.openAgent(wid, {
         workspaceId: wsResp.workspace.id,
         agentProvider: agentProvider(),
-        model: defaultModelForProvider(agentProvider()),
+        model: '',
         title: 'Agent 1',
         systemPrompt: '',
         workerId: wid,
