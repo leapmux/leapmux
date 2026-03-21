@@ -12,6 +12,7 @@ type testSink struct {
 	messages         []testSinkMessage
 	streamChunks     [][]byte
 	sessionIDs       []string
+	sessionInfos     []map[string]interface{}
 	planModeToolUses sync.Map
 }
 
@@ -48,8 +49,17 @@ func (s *testSink) UpdateSessionID(sessionID string) {
 	s.sessionIDs = append(s.sessionIDs, sessionID)
 }
 func (s *testSink) UpdatePermissionMode(string)                  {}
-func (s *testSink) BroadcastStatusActive(string)                 {}
-func (s *testSink) BroadcastSessionInfo(map[string]interface{})  {}
+func (s *testSink) BroadcastStatusActive(string) {}
+func (s *testSink) BroadcastSessionInfo(info map[string]interface{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Copy the map to avoid aliasing.
+	cp := make(map[string]interface{}, len(info))
+	for k, v := range info {
+		cp[k] = v
+	}
+	s.sessionInfos = append(s.sessionInfos, cp)
+}
 func (s *testSink) BroadcastNotification(map[string]interface{}) {}
 func (s *testSink) SoftClearNotifThread()                        {}
 
@@ -96,6 +106,23 @@ func (s *testSink) LastSessionID() string {
 		return ""
 	}
 	return s.sessionIDs[len(s.sessionIDs)-1]
+}
+
+// SessionInfoCount returns the number of BroadcastSessionInfo calls.
+func (s *testSink) SessionInfoCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.sessionInfos)
+}
+
+// LastSessionInfo returns the most recently recorded session info.
+func (s *testSink) LastSessionInfo() map[string]interface{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.sessionInfos) == 0 {
+		return nil
+	}
+	return s.sessionInfos[len(s.sessionInfos)-1]
 }
 
 // noopSink is a no-op implementation of OutputSink for tests that don't

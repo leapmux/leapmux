@@ -119,6 +119,8 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
                 updates.rateLimits = info.rateLimits as Record<string, unknown>
               if (info?.codexTurnId !== undefined)
                 updates.codexTurnId = info.codexTurnId as string
+              if (info?.streamingType !== undefined)
+                updates.streamingType = info.streamingType as string
               agentSessionStore.updateInfo(agentId, updates)
               break
             }

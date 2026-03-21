@@ -37,6 +37,7 @@ type CodexAgent struct {
 	turnSawPlan       bool         // whether the current turn produced a plan item
 	turnPlanText      string       // final text of the current turn's plan item
 	turnAssistantText string       // final assistant message text for the current turn
+	streamingPlan     bool         // whether we've sent streamingType session info for the current plan stream
 	availableModels   []*leapmuxv1.AvailableModel
 }
 

@@ -40,10 +40,13 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     await sendMessage(page, INITIAL_PLAN_PROMPT)
     await waitForAgentIdle(page)
 
+    // Plan content is rendered with plan styling (ToolUseLayout with "Proposed Plan" title).
+    // Use .last() because getByText also matches the user prompt which contains PLAN_BODY.
+    await expect(page.getByRole('heading', { name: 'Dummy plan' })).toBeVisible()
+    await expect(page.getByText(PLAN_BODY).last()).toBeVisible()
+
     const firstBanner = await waitForControlBanner(page)
-    await expect(firstBanner.getByText('Implement this plan?')).toBeVisible()
-    await expect(firstBanner.getByRole('heading', { name: 'Dummy plan' })).toBeVisible()
-    await expect(firstBanner.getByText(PLAN_BODY)).toBeVisible()
+    await expect(firstBanner.getByText('Implement the proposed plan?')).toBeVisible()
 
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
@@ -54,9 +57,13 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
 
     await waitForAgentIdle(page)
 
+    // Revised plan content appears with plan styling.
+    // Use .last() because getByText also matches the revision prompt.
+    await expect(page.getByRole('heading', { name: 'Dummy plan revised' })).toBeVisible()
+    await expect(page.getByText('Add tests before implementation.').last()).toBeVisible()
+
     const revisedBanner = await waitForControlBanner(page)
-    await expect(revisedBanner.getByRole('heading', { name: 'Dummy plan revised' })).toBeVisible()
-    await expect(revisedBanner.getByText('Add tests before implementation.')).toBeVisible()
+    await expect(revisedBanner.getByText('Implement the proposed plan?')).toBeVisible()
 
     await page.getByTestId('control-allow-btn').click()
     await expect(trigger).toContainText('Suggest & Approve', { timeout: 20_000 })

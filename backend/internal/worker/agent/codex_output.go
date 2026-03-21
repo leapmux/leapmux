@@ -30,6 +30,9 @@ func handleCodexOutput(a *CodexAgent, content []byte) {
 	case "item/agentMessage/delta":
 		a.handleAgentMessageDelta(envelope.Params)
 
+	case "item/plan/delta":
+		a.handlePlanDelta(envelope.Params)
+
 	case "item/started":
 		a.handleItemStarted(envelope.Params)
 
@@ -50,7 +53,8 @@ func handleCodexOutput(a *CodexAgent, content []byte) {
 	// they arrive as notifications in the output stream.
 	case "item/commandExecution/requestApproval",
 		"item/fileChange/requestApproval",
-		"item/permissions/requestApproval":
+		"item/permissions/requestApproval",
+		"item/tool/requestUserInput":
 		a.handleApprovalRequest(envelope.ID, content)
 
 	case "serverRequest/resolved":
@@ -85,6 +89,7 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 		a.turnSawPlan = false
 		a.turnPlanText = ""
 		a.turnAssistantText = ""
+		a.streamingPlan = false
 		threadID := a.threadID
 		a.mu.Unlock()
 
@@ -108,6 +113,26 @@ func (a *CodexAgent) handleAgentMessageDelta(params json.RawMessage) {
 		Delta string `json:"delta"`
 	}
 	if json.Unmarshal(params, &delta) == nil && delta.Delta != "" {
+		a.sink.BroadcastStreamChunk([]byte(delta.Delta))
+	}
+}
+
+// handlePlanDelta processes item/plan/delta — streaming plan text.
+func (a *CodexAgent) handlePlanDelta(params json.RawMessage) {
+	var delta struct {
+		Delta string `json:"delta"`
+	}
+	if json.Unmarshal(params, &delta) == nil && delta.Delta != "" {
+		a.mu.Lock()
+		if !a.streamingPlan {
+			a.streamingPlan = true
+			a.mu.Unlock()
+			a.sink.BroadcastSessionInfo(map[string]interface{}{
+				"streamingType": "plan",
+			})
+		} else {
+			a.mu.Unlock()
+		}
 		a.sink.BroadcastStreamChunk([]byte(delta.Delta))
 	}
 }
@@ -163,7 +188,14 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 			a.mu.Lock()
 			a.turnSawPlan = true
 			a.turnPlanText = planItem.Text
+			wasStreamingPlan := a.streamingPlan
+			a.streamingPlan = false
 			a.mu.Unlock()
+			if wasStreamingPlan {
+				a.sink.BroadcastSessionInfo(map[string]interface{}{
+					"streamingType": "",
+				})
+			}
 		}
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, ""); err != nil {
 			slog.Error("codex persist plan", "agent_id", a.agentID, "error", err)
@@ -247,9 +279,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 				"request_id": requestID,
 				"request": map[string]interface{}{
 					"tool_name": "CodexPlanModePrompt",
-					"input": map[string]interface{}{
-						"plan": promptText,
-					},
+					"input":     map[string]interface{}{},
 				},
 			})
 			if err == nil {

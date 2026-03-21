@@ -25,6 +25,7 @@ export interface AgentSessionInfo {
   rateLimits?: Record<string, RateLimitInfo> // keyed by rateLimitType
   planFilePath?: string
   codexTurnId?: string // Codex active turn ID for interrupt
+  streamingType?: string // "plan" when streaming plan text, "" otherwise
 }
 
 const STORAGE_KEY_PREFIX = 'leapmux-agent-session-'

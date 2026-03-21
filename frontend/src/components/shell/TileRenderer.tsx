@@ -232,6 +232,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     messages={chatStore.getMessages(agentId)}
                     messageVersion={chatStore.getMessageVersion(agentId)}
                     streamingText={chatStore.state.streamingText[agentId] ?? ''}
+                    streamingType={agentSessionStore.getInfo(agentId).streamingType}
                     agentWorking={agentStore.state.agents.find(a => a.id === agentId)?.status === AgentStatus.ACTIVE && isAgentWorking(chatStore.getMessages(agentId)) && controlStore.getRequests(agentId).length === 0}
                     messageErrors={chatStore.state.messageErrors}
                     onRetryMessage={messageId => agentOps.handleRetryMessage(agentId, messageId)}
