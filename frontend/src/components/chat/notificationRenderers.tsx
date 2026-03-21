@@ -246,10 +246,21 @@ export const resultRenderer: MessageContentRenderer = {
     const resultText = typeof parsed.result === 'string' ? parsed.result : ''
     const durationStr = formatDuration(durationMs)
 
-    // When stop_reason is absent (agent never produced output), show the result
-    // text as an error — e.g. "Unknown skill: update-pr".
+    // When stop_reason is absent (agent never produced output), the result text
+    // may be an error or just a repetition of the last assistant message.
     if (!parsed.stop_reason && resultText) {
-      return <div class={resultDivider} style={{ color: 'var(--danger)' }}>{resultText}</div>
+      if (parsed.subtype === 'success') {
+        // For success results, only show known error prefixes (e.g. "Unknown skill:").
+        const knownErrorPrefixes = ['Unknown skill:']
+        const isKnownError = knownErrorPrefixes.some(p => resultText.startsWith(p))
+        if (isKnownError) {
+          return <div class={resultDivider} style={{ color: 'var(--danger)' }}>{resultText}</div>
+        }
+        // Fall through to normal display logic below
+      }
+      else {
+        return <div class={resultDivider} style={{ color: 'var(--danger)' }}>{resultText}</div>
+      }
     }
 
     // For non-success subtypes, show result text with duration.
