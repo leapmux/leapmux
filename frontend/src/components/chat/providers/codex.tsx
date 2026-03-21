@@ -29,6 +29,9 @@ import { registerProvider } from './registry'
 /** Default model for Codex agents. */
 const DEFAULT_CODEX_MODEL = import.meta.env.LEAPMUX_CODEX_DEFAULT_MODEL || 'gpt-5.4'
 const DEFAULT_CODEX_EFFORT = 'medium'
+export const DEFAULT_CODEX_COLLABORATION_MODE = 'default'
+export const DEFAULT_CODEX_SANDBOX_POLICY = 'workspace-write'
+export const DEFAULT_CODEX_NETWORK_ACCESS = 'restricted'
 
 let codexReqIdCounter = 1000
 
@@ -78,9 +81,9 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
   const currentModel = () => props.model || defaultModelId(props.availableModels) || DEFAULT_CODEX_MODEL
   const currentEffort = () => props.effort || DEFAULT_CODEX_EFFORT
   const currentMode = () => props.permissionMode || 'on-request'
-  const currentCollaborationMode = () => props.codexCollaborationMode || 'default'
-  const currentSandbox = () => props.codexSandboxPolicy || 'workspace-write'
-  const currentNetwork = () => props.codexNetworkAccess || 'restricted'
+  const currentCollaborationMode = () => props.codexCollaborationMode || DEFAULT_CODEX_COLLABORATION_MODE
+  const currentSandbox = () => props.codexSandboxPolicy || DEFAULT_CODEX_SANDBOX_POLICY
+  const currentNetwork = () => props.codexNetworkAccess || DEFAULT_CODEX_NETWORK_ACCESS
 
   const models = () => modelItems(props.availableModels)
   const efforts = () => effortItems(props.availableModels, currentModel())
@@ -175,7 +178,7 @@ function CodexTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
   const currentModel = () => props.model || defaultModelId(props.availableModels) || DEFAULT_CODEX_MODEL
   const currentEffort = () => props.effort || DEFAULT_CODEX_EFFORT
   const currentMode = () => props.permissionMode || 'on-request'
-  const currentCollaborationMode = () => props.codexCollaborationMode || 'default'
+  const currentCollaborationMode = () => props.codexCollaborationMode || DEFAULT_CODEX_COLLABORATION_MODE
   const displayName = () => modelDisplayName(props.availableModels, currentModel())
 
   const effortIcon = () => {
@@ -208,6 +211,12 @@ const codexPlugin: ProviderPlugin = {
   defaultEffort: DEFAULT_CODEX_EFFORT,
   defaultPermissionMode: 'on-request',
   bypassPermissionMode: 'never',
+  planMode: {
+    currentMode: agent => agent.codexCollaborationMode || DEFAULT_CODEX_COLLABORATION_MODE,
+    planValue: 'plan',
+    defaultValue: DEFAULT_CODEX_COLLABORATION_MODE,
+    setMode: (mode, cb) => cb.onOptionGroupChange?.('codexCollaborationMode', mode),
+  },
   classify(parent, wrapper): MessageCategory {
     // Notification threads (settings_changed, context_cleared, etc.)
     if (isCodexNotifThread(wrapper)) {

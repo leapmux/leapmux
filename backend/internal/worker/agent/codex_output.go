@@ -228,32 +228,43 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	// Enrich the params with num_tool_uses so the frontend can distinguish
 	// simple text-only exchanges from complex multi-tool turns.
 	a.mu.Lock()
+	numToolUses := a.turnToolUses
 	sawPlan := a.turnSawPlan
 	planText := a.turnPlanText
 	assistantText := a.turnAssistantText
 	collaborationMode := a.collaborationMode
 	a.mu.Unlock()
 
-	params = json.RawMessage(a.enrichWithToolUses([]byte(params)))
+	// Parse once: enrich with num_tool_uses and extract turn data
+	// from the same map to avoid a second json.Unmarshal.
+	var turnStatus, turnID string
+	parsed := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(params, &parsed); err == nil {
+		if b, err := json.Marshal(numToolUses); err == nil {
+			parsed["num_tool_uses"] = b
+		}
+		if turnRaw, ok := parsed["turn"]; ok {
+			var turn struct {
+				ID     string `json:"id"`
+				Status string `json:"status"`
+			}
+			if json.Unmarshal(turnRaw, &turn) == nil {
+				turnStatus = turn.Status
+				turnID = turn.ID
+			}
+		}
+		if b, err := json.Marshal(parsed); err == nil {
+			params = json.RawMessage(b)
+		}
+	}
 
 	// Persist as a result divider.
 	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT, params, ""); err != nil {
 		slog.Error("codex persist turn/completed", "agent_id", a.agentID, "error", err)
 	}
 
-	// Extract usage from the turn data.
-	var notif struct {
-		Turn struct {
-			ID     string `json:"id"`
-			Status string `json:"status"`
-			Usage  *struct {
-				InputTokens  int64 `json:"inputTokens"`
-				OutputTokens int64 `json:"outputTokens"`
-			} `json:"usage"`
-		} `json:"turn"`
-	}
-	if json.Unmarshal(params, &notif) == nil {
-		if notif.Turn.Status == "failed" {
+	if turnStatus != "" {
+		if turnStatus == "failed" {
 			a.sink.BroadcastNotification(map[string]interface{}{
 				"type":  "agent_error",
 				"error": "Codex turn failed",
@@ -263,8 +274,8 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 		if promptText == "" {
 			promptText = assistantText
 		}
-		if notif.Turn.Status == "completed" && collaborationMode == CodexCollaborationPlan && (sawPlan || promptText != "") {
-			requestID := fmt.Sprintf("codex-plan-prompt-%s", notif.Turn.ID)
+		if turnStatus == "completed" && collaborationMode == CodexCollaborationPlan && (sawPlan || promptText != "") {
+			requestID := fmt.Sprintf("codex-plan-prompt-%s", turnID)
 			payload, err := json.Marshal(map[string]interface{}{
 				"type":       "control_request",
 				"request_id": requestID,

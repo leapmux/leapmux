@@ -257,6 +257,12 @@ const claudeCodePlugin: ProviderPlugin = {
   defaultEffort: DEFAULT_CLAUDE_EFFORT,
   defaultPermissionMode: 'default',
   bypassPermissionMode: 'bypassPermissions',
+  planMode: {
+    currentMode: agent => agent.permissionMode || 'default',
+    planValue: 'plan',
+    defaultValue: 'default',
+    setMode: (mode, cb) => cb.onPermissionModeChange?.(mode as PermissionMode),
+  },
 
   classify: classifyClaudeCodeMessage,
 

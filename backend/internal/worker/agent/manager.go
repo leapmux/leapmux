@@ -210,6 +210,18 @@ func withDefaultModelMarked(models []*leapmuxv1.AvailableModel, provider leapmux
 		return models
 	}
 
+	// Fast path: if every model already has the correct IsDefault, reuse the input.
+	needsCopy := false
+	for _, model := range models {
+		if model != nil && model.IsDefault != (model.Id == defaultModel) {
+			needsCopy = true
+			break
+		}
+	}
+	if !needsCopy {
+		return models
+	}
+
 	out := make([]*leapmuxv1.AvailableModel, len(models))
 	for i, model := range models {
 		if model == nil {

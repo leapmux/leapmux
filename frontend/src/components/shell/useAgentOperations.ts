@@ -10,6 +10,7 @@ import type { PermissionMode } from '~/utils/controlResponse'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { getProviderPlugin } from '~/components/chat/providers'
+import { DEFAULT_CODEX_NETWORK_ACCESS, DEFAULT_CODEX_SANDBOX_POLICY } from '~/components/chat/providers/codex'
 import { showWarnToast } from '~/components/common/Toast'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
@@ -294,8 +295,8 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
     const defaults: Record<string, string> = {
       codexCollaborationMode: defaultCodexCollaborationMode(AgentProvider.CODEX),
-      codexSandboxPolicy: 'workspace-write',
-      codexNetworkAccess: 'restricted',
+      codexSandboxPolicy: DEFAULT_CODEX_SANDBOX_POLICY,
+      codexNetworkAccess: DEFAULT_CODEX_NETWORK_ACCESS,
     }
     handleCodexSettingChange(agentId, key as 'codexCollaborationMode' | 'codexSandboxPolicy' | 'codexNetworkAccess', value, defaults[key] || value, labels[key] || key)
   }

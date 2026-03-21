@@ -1,9 +1,9 @@
 import type { Accessor } from 'solid-js'
 import type { AskQuestionState, EditorContentRef } from './controls/types'
+import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { ControlRequest } from '~/stores/control.store'
 import type { PermissionMode } from '~/utils/controlResponse'
 import { createEffect, createMemo, on } from 'solid-js'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { clearDraft } from '~/lib/editor/draftPersistence'
 import { safeGetJson, safeRemoveItem, safeSetJson } from '~/lib/safeStorage'
 import { buildAllowResponse, buildDenyResponse, getToolName } from '~/utils/controlResponse'
@@ -40,46 +40,33 @@ export function useControlResponseHandling(
   editorContentRefAccessor: () => EditorContentRef | undefined,
   resetEditorHeightFn: () => void,
 ): ControlResponseHandlingResult {
-  const defaultPermissionMode = () => getProviderPlugin(props.agent?.agentProvider)?.defaultPermissionMode ?? 'default'
-  const defaultCodexCollaborationMode = () => 'default'
+  const planModeConfig = () => getProviderPlugin(props.agent?.agentProvider)?.planMode
 
   // Track previous non-plan mode for Shift+Tab toggling.
-  let previousNonPlanMode: PermissionMode = defaultPermissionMode()
-  let previousNonPlanCodexCollaborationMode = defaultCodexCollaborationMode()
+  let previousNonPlanMode = planModeConfig()?.defaultValue ?? 'default'
   createEffect(() => {
-    if (props.agent?.agentProvider === AgentProvider.CODEX) {
-      const mode = props.agent?.codexCollaborationMode || defaultCodexCollaborationMode()
-      if (mode !== 'plan') {
-        previousNonPlanCodexCollaborationMode = mode
-      }
+    const pm = planModeConfig()
+    if (!pm)
       return
-    }
-    const mode = (props.agent?.permissionMode || defaultPermissionMode()) as PermissionMode
-    if (mode !== 'plan') {
+    const mode = pm.currentMode(props.agent || {})
+    if (mode !== pm.planValue) {
       previousNonPlanMode = mode
     }
   })
   const togglePlanMode = () => {
     if (props.settingsLoading)
       return
-    if (props.agent?.agentProvider === AgentProvider.CODEX) {
-      const currentMode = props.agent?.codexCollaborationMode || defaultCodexCollaborationMode()
-      if (currentMode === 'plan') {
-        props.onOptionGroupChange?.('codexCollaborationMode', previousNonPlanCodexCollaborationMode)
-      }
-      else {
-        previousNonPlanCodexCollaborationMode = currentMode
-        props.onOptionGroupChange?.('codexCollaborationMode', 'plan')
-      }
+    const pm = planModeConfig()
+    if (!pm)
       return
-    }
-    const currentMode = (props.agent?.permissionMode || defaultPermissionMode()) as PermissionMode
-    if (currentMode === 'plan') {
-      props.onPermissionModeChange?.(previousNonPlanMode)
+    const callbacks = { onPermissionModeChange: props.onPermissionModeChange, onOptionGroupChange: props.onOptionGroupChange }
+    const currentMode = pm.currentMode(props.agent || {})
+    if (currentMode === pm.planValue) {
+      pm.setMode(previousNonPlanMode, callbacks)
     }
     else {
       previousNonPlanMode = currentMode
-      props.onPermissionModeChange?.('plan')
+      pm.setMode(pm.planValue, callbacks)
     }
   }
 

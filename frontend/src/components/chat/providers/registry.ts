@@ -80,6 +80,25 @@ export interface ProviderPlugin {
     mode: PermissionMode,
   ) => Promise<void>
 
+  /**
+   * Plan mode toggle configuration. Providers define how plan mode
+   * maps to their native settings so the shared toggle logic stays
+   * provider-agnostic.
+   */
+  planMode?: {
+    /** Read the current plan-relevant mode from agent state. */
+    currentMode: (agent: { permissionMode?: string, codexCollaborationMode?: string }) => string
+    /** The value that represents "plan" mode. */
+    planValue: string
+    /** The default (non-plan) mode value. */
+    defaultValue: string
+    /** Apply a mode change via the appropriate callback. */
+    setMode: (mode: string, callbacks: {
+      onPermissionModeChange?: (mode: PermissionMode) => void
+      onOptionGroupChange?: (key: string, value: string) => void
+    }) => void
+  }
+
   /** Optional control request content component for this provider. */
   ControlContent?: Component<ContentProps>
 
