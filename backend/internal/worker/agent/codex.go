@@ -121,7 +121,10 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	// 1. Send "initialize" request.
 	initParams, _ := json.Marshal(map[string]interface{}{
 		"clientInfo":   map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
-		"capabilities": map[string]bool{"experimentalApi": true},
+		"capabilities": map[string]interface{}{
+			"experimentalApi":          true,
+			"optOutNotificationMethods": []string{"turn/diff/updated"},
+		},
 	})
 	if _, err := a.sendRequest("initialize", json.RawMessage(initParams), timeout); err != nil {
 		cleanup()
