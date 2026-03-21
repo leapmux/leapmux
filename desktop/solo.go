@@ -13,7 +13,6 @@ import (
 // startSolo launches a Hub and Worker in-process via the solo package.
 func (a *App) startSolo() error {
 	inst, err := solo.Start(a.ctx, solo.Config{
-		Version:    a.version,
 		SkipBanner: true,
 	})
 	if err != nil {

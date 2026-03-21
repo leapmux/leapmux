@@ -19,14 +19,13 @@ import (
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/logging"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
+	"github.com/leapmux/leapmux/internal/util/version"
 	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/worker"
 )
 
 // Config configures the solo launcher.
 type Config struct {
-	// Version is the build-time version string.
-	Version string
 	// Addr is the listen address (default: "127.0.0.1:4327").
 	Addr string
 	// ConfigDir overrides the default config directory.
@@ -116,7 +115,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 	logging.SetLevel(level)
 
 	if !cfg.SkipBanner {
-		logging.PrintBanner(modeName, cfg.Version, hubCfg.Addr)
+		logging.PrintBanner(modeName, version.Value, hubCfg.Addr)
 		logging.PrintAccessURL(modeName, hubCfg.Addr)
 	}
 
@@ -215,7 +214,6 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 			AuthToken:            state.AuthToken,
 			CompositeKey:         compositeKey,
 			WorkerID:             state.WorkerID,
-			Version:              cfg.Version,
 			DBMaxConns:           hubCfg.DBMaxConns,
 			MaxMessageSize:       hubCfg.MaxMessageSize,
 			MaxIncompleteChunked: hubCfg.MaxIncompleteChunked,

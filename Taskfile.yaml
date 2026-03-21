@@ -150,7 +150,7 @@ tasks:
       - backend/build/bin/leapmux
     cmds:
       - mkdir -p build/bin
-      - go build -ldflags "-X main.version={{.VERSION}}" -o ./build/bin/leapmux ./cmd/leapmux
+      - go build -ldflags "-X github.com/leapmux/leapmux/internal/util/version.Value={{.VERSION}}" -o ./build/bin/leapmux ./cmd/leapmux
 
   build-backend-docker:
     desc: Build leapmux binary for Docker (static, cross-compiled)
@@ -160,7 +160,7 @@ tasks:
       - mkdir -p build/bin
       - >-
         CGO_ENABLED=0 GOOS={{.GOOS | default "linux"}} GOARCH={{.GOARCH | default "amd64"}}
-        go build -ldflags "-s -w -X main.version={{.VERSION}}"
+        go build -ldflags "-s -w -X github.com/leapmux/leapmux/internal/util/version.Value={{.VERSION}}"
         -o ./build/bin/leapmux ./cmd/leapmux
 
   generate-web-icons:
@@ -426,7 +426,7 @@ tasks:
     generates:
       - desktop/build/bin/LeapMux.app/Contents/MacOS/LeapMux
     cmds:
-      - wails build -tags devtools -platform darwin/universal -ldflags "-X main.version={{.VERSION}}"
+      - wails build -tags devtools -platform darwin/universal -ldflags "-X github.com/leapmux/leapmux/internal/util/version.Value={{.VERSION}}"
       - codesign --force --sign - --identifier dev.leapmux.desktop --options runtime build/bin/LeapMux.app
       - task: package-desktop-dmg
 
@@ -464,7 +464,7 @@ tasks:
     generates:
       - desktop/build/bin/leapmux-desktop
     cmds:
-      - wails build -tags devtools -o leapmux-desktop -platform linux/amd64 -ldflags "-X main.version={{.VERSION}}"
+      - wails build -tags devtools -o leapmux-desktop -platform linux/amd64 -ldflags "-X github.com/leapmux/leapmux/internal/util/version.Value={{.VERSION}}"
       - cp build/linux/leapmux-desktop.desktop build/bin/
       - cp build/appicon.png build/bin/leapmux-desktop.png
       - cp ../icons/leapmux-icon-light.svg build/bin/leapmux-desktop.svg
@@ -486,7 +486,7 @@ tasks:
     generates:
       - desktop/build/bin/leapmux-desktop
     cmds:
-      - wails build -tags devtools -o leapmux-desktop -platform linux/arm64 -ldflags "-X main.version={{.VERSION}}"
+      - wails build -tags devtools -o leapmux-desktop -platform linux/arm64 -ldflags "-X github.com/leapmux/leapmux/internal/util/version.Value={{.VERSION}}"
       - cp build/linux/leapmux-desktop.desktop build/bin/
       - cp build/appicon.png build/bin/leapmux-desktop.png
       - cp ../icons/leapmux-icon-light.svg build/bin/leapmux-desktop.svg
@@ -508,7 +508,7 @@ tasks:
     generates:
       - desktop/build/bin/LeapMux.exe
     cmds:
-      - wails build -tags devtools -platform windows/amd64 -ldflags "-X main.version={{.VERSION}}"
+      - wails build -tags devtools -platform windows/amd64 -ldflags "-X github.com/leapmux/leapmux/internal/util/version.Value={{.VERSION}}"
 
   lint-desktop:
     desc: Lint desktop Go code

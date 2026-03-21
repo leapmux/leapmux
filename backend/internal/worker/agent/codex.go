@@ -13,6 +13,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/version"
 )
 
 // CodexAgent manages a single Codex app-server process.
@@ -114,10 +115,11 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	timeout := opts.startupTimeout()
 
 	// 1. Send "initialize" request.
-	if _, err := a.sendRequest("initialize", json.RawMessage(`{
-		"clientInfo": {"name": "leapmux", "version": "1.0.0"},
-		"capabilities": {"experimentalApi": true}
-	}`), timeout); err != nil {
+	initParams, _ := json.Marshal(map[string]interface{}{
+		"clientInfo":   map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
+		"capabilities": map[string]bool{"experimentalApi": true},
+	})
+	if _, err := a.sendRequest("initialize", json.RawMessage(initParams), timeout); err != nil {
 		cleanup()
 		return nil, a.formatStartupError("initialize", err)
 	}

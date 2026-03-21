@@ -9,6 +9,7 @@ import (
 	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/logging"
+	"github.com/leapmux/leapmux/internal/util/version"
 )
 
 func runHub(args []string) error {
@@ -18,7 +19,7 @@ func runHub(args []string) error {
 	}
 
 	if showVersion {
-		fmt.Println(version)
+		fmt.Println(version.Value)
 		return nil
 	}
 
@@ -28,7 +29,7 @@ func runHub(args []string) error {
 	}
 	logging.SetLevel(level)
 
-	logging.PrintBanner("hub", version, cfg.Addr)
+	logging.PrintBanner("hub", version.Value, cfg.Addr)
 	logging.PrintAccessURL("hub", cfg.Addr)
 
 	server, err := hub.NewServer(cfg)

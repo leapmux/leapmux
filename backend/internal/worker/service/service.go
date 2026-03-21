@@ -36,7 +36,6 @@ type Context struct {
 	DataDir             string
 	WorkerID            string          // This worker's ID (set after registration)
 	Name                string          // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
-	Version             string          // Build-time version string
 	Send                SendFunc        // Forwards messages to the Hub via WebSocket
 	Watchers            *WatcherManager // Fan-out manager for event broadcasting
 	Output              *OutputHandler  // Agent output NDJSON processor
