@@ -48,7 +48,7 @@ func (s *testSink) UpdateSessionID(sessionID string) {
 	defer s.mu.Unlock()
 	s.sessionIDs = append(s.sessionIDs, sessionID)
 }
-func (s *testSink) UpdatePermissionMode(string)                  {}
+func (s *testSink) UpdatePermissionMode(string)  {}
 func (s *testSink) BroadcastStatusActive(string) {}
 func (s *testSink) BroadcastSessionInfo(info map[string]interface{}) {
 	s.mu.Lock()

@@ -156,9 +156,9 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 
 	// 1. Send "initialize" request.
 	initParams, _ := json.Marshal(map[string]interface{}{
-		"clientInfo":   map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
+		"clientInfo": map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
 		"capabilities": map[string]interface{}{
-			"experimentalApi":          true,
+			"experimentalApi":           true,
 			"optOutNotificationMethods": []string{"turn/diff/updated"},
 		},
 	})
