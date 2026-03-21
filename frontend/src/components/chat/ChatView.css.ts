@@ -137,6 +137,8 @@ export const settingsMenu = style({
   padding: 'var(--space-1) var(--space-4) 0 var(--space-4)',
   zIndex: 300,
   minWidth: '180px',
+  maxHeight: 'calc(100vh - var(--space-6) * 2)',
+  overflowY: 'auto',
   boxShadow: 'var(--shadow-large)',
 })
 
@@ -144,7 +146,7 @@ export const settingsMenuWide = style({
   'minWidth': '460px',
   '@media': {
     '(max-width: 639px)': {
-      minWidth: 'min(460px, calc(100vw - var(--space-6)))',
+      minWidth: 'auto',
     },
   },
 })
