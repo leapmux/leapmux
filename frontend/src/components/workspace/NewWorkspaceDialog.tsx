@@ -8,6 +8,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
 import { RefreshButton } from '~/components/common/RefreshButton'
+import { AgentProviderSelector } from '~/components/shell/AgentProviderSelector'
 import { isWorkspaceCreateDisabled } from '~/components/shell/dialogValidation'
 import { DirectorySelector } from '~/components/shell/DirectorySelector'
 import { GitOptions } from '~/components/shell/GitOptions'
@@ -31,6 +32,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
   const randomTitle = () => generateSlug(3, { format: 'title' })
   const [title, setTitle] = createSignal(randomTitle())
   const [submitting, setSubmitting] = createSignal(false)
+  const [agentProvider, setAgentProvider] = createSignal<AgentProvider>(AgentProvider.CLAUDE_CODE)
   const titleError = createMemo(() => sanitizeName(title()).error)
 
   const handleSubmit = async (e: Event) => {
@@ -53,7 +55,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       const wid = state.workerId()
       const agentResp = await workerRpc.openAgent(wid, {
         workspaceId: wsResp.workspace.id,
-        agentProvider: AgentProvider.CLAUDE_CODE,
+        agentProvider: agentProvider(),
         model: '',
         title: 'Agent 1',
         systemPrompt: '',
@@ -95,6 +97,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
           <div class="vstack gap-4">
             <div class={state.showGitOptions() ? dialogTopSection : undefined}>
               <WorkerSelector state={state} />
+              <AgentProviderSelector value={agentProvider} onChange={setAgentProvider} />
               <div>
                 <div class={labelRow}>
                   Title

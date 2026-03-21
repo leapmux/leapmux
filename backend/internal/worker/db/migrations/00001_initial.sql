@@ -14,8 +14,12 @@ CREATE TABLE agents (
     model            TEXT NOT NULL DEFAULT 'opus',
     system_prompt    TEXT NOT NULL DEFAULT '',
     agent_session_id TEXT NOT NULL DEFAULT '',
+    resumed          INTEGER NOT NULL DEFAULT 0,
     permission_mode  TEXT NOT NULL DEFAULT 'default',
     effort           TEXT NOT NULL DEFAULT 'high',
+    codex_sandbox_policy TEXT NOT NULL DEFAULT '',
+    codex_network_access TEXT NOT NULL DEFAULT '',
+    codex_collaboration_mode TEXT NOT NULL DEFAULT '',
     agent_provider   INTEGER NOT NULL DEFAULT 1,
     created_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     closed_at        DATETIME

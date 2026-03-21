@@ -24,6 +24,7 @@ import { ControlRequestActions, ControlRequestContent } from './ControlRequestBa
 import { useControlResponseHandling } from './controlResponseHandling'
 import { EditorSettingsDropdown } from './EditorSettingsDropdown'
 import { MarkdownEditor } from './MarkdownEditor'
+import { getProviderPlugin } from './providers/registry'
 
 export interface AgentEditorPanelProps {
   agentId: string
@@ -34,6 +35,7 @@ export interface AgentEditorPanelProps {
   controlRequests?: ControlRequest[]
   onControlResponse?: (agentId: string, content: Uint8Array) => Promise<void>
   onPermissionModeChange?: (mode: PermissionMode) => void
+  onOptionGroupChange?: (key: string, value: string) => void
   onModelChange?: (model: string) => void
   onEffortChange?: (effort: string) => void
   onInterrupt?: () => void
@@ -271,6 +273,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                     request={ctrl.activeControlRequest()!}
                     askState={askState}
                     optionsDisabled={hasContent()}
+                    agentProvider={props.agent?.agentProvider}
                   />
                 )
               : undefined
@@ -281,6 +284,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                   <ControlRequestActions
                     request={ctrl.activeControlRequest()!}
                     askState={askState}
+                    agentProvider={props.agent?.agentProvider}
                     onRespond={(agentId, content) => {
                       const reqId = ctrl.activeControlRequest()?.requestId
                       if (reqId)
@@ -291,6 +295,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                     hasEditorContent={hasContent()}
                     onTriggerSend={() => triggerSend?.()}
                     editorContentRef={editorContentRef}
+                    bypassPermissionMode={getProviderPlugin(props.agent?.agentProvider)?.bypassPermissionMode}
                     onPermissionModeChange={props.onPermissionModeChange}
                     infoTrigger={
                       info.showInfoTrigger()
@@ -341,11 +346,16 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                         model={props.agent?.model}
                         effort={props.agent?.effort}
                         permissionMode={props.agent?.permissionMode}
-                        supportsModelEffort={props.agent?.supportsModelEffort}
+                        codexCollaborationMode={props.agent?.codexCollaborationMode}
+                        codexSandboxPolicy={props.agent?.codexSandboxPolicy}
+                        codexNetworkAccess={props.agent?.codexNetworkAccess}
+                        availableModels={props.agent?.availableModels}
+                        availableOptionGroups={props.agent?.availableOptionGroups}
                         agentProvider={props.agent?.agentProvider}
                         onModelChange={props.onModelChange}
                         onEffortChange={props.onEffortChange}
                         onPermissionModeChange={props.onPermissionModeChange}
+                        onOptionGroupChange={props.onOptionGroupChange}
                       />
                       <Show when={info.showInfoTrigger()}>
                         <DropdownMenu

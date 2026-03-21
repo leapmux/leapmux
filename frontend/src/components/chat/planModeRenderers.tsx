@@ -56,7 +56,7 @@ export function renderExitPlanMode(toolUse: Record<string, unknown>, context?: R
       <>
         <Show when={planText}>
           <hr />
-          <div class={markdownContent} innerHTML={renderMarkdown(planText)} />
+          <div class={markdownContent} style={{ 'font-size': 'var(--text-regular)' }} innerHTML={renderMarkdown(planText)} />
         </Show>
         <Show when={effectiveCr()}>
           {cr => (

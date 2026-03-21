@@ -1,5 +1,6 @@
 import type { Accessor } from 'solid-js'
 import type { AskQuestionState, EditorContentRef } from './controls/types'
+import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { ControlRequest } from '~/stores/control.store'
 import type { PermissionMode } from '~/utils/controlResponse'
 import { createEffect, createMemo, on } from 'solid-js'
@@ -7,13 +8,15 @@ import { clearDraft } from '~/lib/editor/draftPersistence'
 import { safeGetJson, safeRemoveItem, safeSetJson } from '~/lib/safeStorage'
 import { buildAllowResponse, buildDenyResponse, getToolName } from '~/utils/controlResponse'
 import { trySubmitAskUserQuestion } from './controls/AskUserQuestionControl'
+import { getProviderPlugin } from './providers'
 
 export interface ControlResponseHandlingProps {
   agentId: string
-  agent?: { permissionMode?: string }
+  agent?: { permissionMode?: string, codexCollaborationMode?: string, agentProvider?: AgentProvider }
   controlRequests?: ControlRequest[]
   onControlResponse?: (agentId: string, content: Uint8Array) => Promise<void>
   onPermissionModeChange?: (mode: PermissionMode) => void
+  onOptionGroupChange?: (key: string, value: string) => void
   onSendMessage: (content: string) => void
   settingsLoading?: boolean
   agentWorking?: boolean
@@ -37,24 +40,33 @@ export function useControlResponseHandling(
   editorContentRefAccessor: () => EditorContentRef | undefined,
   resetEditorHeightFn: () => void,
 ): ControlResponseHandlingResult {
+  const planModeConfig = () => getProviderPlugin(props.agent?.agentProvider)?.planMode
+
   // Track previous non-plan mode for Shift+Tab toggling.
-  let previousNonPlanMode: PermissionMode = 'default'
+  let previousNonPlanMode = planModeConfig()?.defaultValue ?? 'default'
   createEffect(() => {
-    const mode = (props.agent?.permissionMode || 'default') as PermissionMode
-    if (mode !== 'plan') {
+    const pm = planModeConfig()
+    if (!pm)
+      return
+    const mode = pm.currentMode(props.agent || {})
+    if (mode !== pm.planValue) {
       previousNonPlanMode = mode
     }
   })
   const togglePlanMode = () => {
     if (props.settingsLoading)
       return
-    const currentMode = (props.agent?.permissionMode || 'default') as PermissionMode
-    if (currentMode === 'plan') {
-      props.onPermissionModeChange?.(previousNonPlanMode)
+    const pm = planModeConfig()
+    if (!pm)
+      return
+    const callbacks = { onPermissionModeChange: props.onPermissionModeChange, onOptionGroupChange: props.onOptionGroupChange }
+    const currentMode = pm.currentMode(props.agent || {})
+    if (currentMode === pm.planValue) {
+      pm.setMode(previousNonPlanMode, callbacks)
     }
     else {
       previousNonPlanMode = currentMode
-      props.onPermissionModeChange?.('plan')
+      pm.setMode(pm.planValue, callbacks)
     }
   }
 
@@ -68,8 +80,10 @@ export function useControlResponseHandling(
     const req = activeControlRequest()
     if (!req)
       return false
-    const tool = getToolName(req.payload)
-    return tool === 'AskUserQuestion' || tool === 'request_user_input'
+    const plugin = props.agent?.agentProvider != null
+      ? getProviderPlugin(props.agent.agentProvider)
+      : undefined
+    return plugin?.isAskUserQuestion?.(req.payload) ?? false
   }
 
   // Whether the Interrupt button should be shown.
@@ -154,6 +168,8 @@ export function useControlResponseHandling(
     const response = (content || toolName === 'ExitPlanMode')
       ? buildDenyResponse(req.requestId, content)
       : buildAllowResponse(req.requestId)
+    if (toolName === 'CodexPlanModePrompt')
+      (response as Record<string, unknown>).codexPlanModePrompt = true
     const bytes = new TextEncoder().encode(JSON.stringify(response))
     sendControlResponse(req.agentId, bytes)
     cleanupControlRequestDrafts(req.requestId)

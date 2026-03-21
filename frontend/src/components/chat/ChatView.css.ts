@@ -137,16 +137,60 @@ export const settingsMenu = style({
   padding: 'var(--space-1) var(--space-4) 0 var(--space-4)',
   zIndex: 300,
   minWidth: '180px',
+  maxHeight: 'calc(100vh - var(--space-6) * 2)',
+  overflowY: 'auto',
   boxShadow: 'var(--shadow-large)',
 })
 
+export const settingsMenuWide = style({
+  'minWidth': '460px',
+  '@media': {
+    '(max-width: 639px)': {
+      minWidth: 'auto',
+    },
+  },
+})
+
+export const settingsPanelColumns = style({
+  'display': 'flex',
+  'alignItems': 'flex-start',
+  'gap': 'var(--space-6)',
+  '@media': {
+    '(max-width: 639px)': {
+      flexDirection: 'column',
+      gap: 'var(--space-1)',
+    },
+  },
+})
+
+export const settingsPanelColumn = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--space-1)',
+  flex: 1,
+  minWidth: 0,
+})
+
+export const settingsPanelColumnPrimary = style({
+  flex: 1.2,
+})
+
+export const settingsFieldset = style({
+  paddingTop: 'var(--space-3)',
+})
+
+export const settingsFieldsetFirst = style({
+  marginBlockStart: 'var(--space-2)',
+})
+
 export const settingsGroupLabel = style({
-  padding: 'var(--space-1) var(--space-2)',
+  padding: '0 var(--space-2)',
   fontSize: 'var(--text-8)',
   fontWeight: 600,
   color: 'var(--muted-foreground)',
   textTransform: 'uppercase',
   letterSpacing: '0.05em',
+  whiteSpace: 'nowrap',
 })
 
 export const settingsRadioItem = style({
@@ -160,6 +204,7 @@ export const settingsRadioItem = style({
   'color': 'var(--foreground)',
   'cursor': 'pointer',
   'userSelect': 'none',
+  'whiteSpace': 'nowrap',
   ':hover': {
     backgroundColor: 'var(--card)',
   },

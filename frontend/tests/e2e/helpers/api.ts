@@ -229,6 +229,7 @@ export async function openAgentViaAPI(
     worktreeBaseBranch?: string
     checkoutBranch?: string
     useWorktreePath?: string
+    agentProvider?: number
   },
 ): Promise<string> {
   const { OpenAgentRequestSchema, OpenAgentResponseSchema } = await import('../../../src/generated/leapmux/v1/agent_pb')
@@ -242,6 +243,7 @@ export async function openAgentViaAPI(
       workspaceId,
       workerId,
       workingDir: workingDir ?? '',
+      ...(options?.agentProvider ? { agentProvider: options.agentProvider } : {}),
       ...(options?.createWorktree ? { createWorktree: true, worktreeBranch: options.worktreeBranch ?? '' } : {}),
       ...(options?.worktreeBaseBranch ? { worktreeBaseBranch: options.worktreeBaseBranch } : {}),
       ...(options?.checkoutBranch ? { checkoutBranch: options.checkoutBranch } : {}),

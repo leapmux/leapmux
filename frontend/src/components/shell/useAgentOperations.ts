@@ -1,5 +1,6 @@
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { createAgentStore } from '~/stores/agent.store'
+import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
 import type { createLayoutStore } from '~/stores/layout.store'
@@ -8,12 +9,17 @@ import type { PermissionMode } from '~/utils/controlResponse'
 
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
+import { getProviderPlugin } from '~/components/chat/providers'
+import { DEFAULT_CODEX_NETWORK_ACCESS, DEFAULT_CODEX_SANDBOX_POLICY } from '~/components/chat/providers/codex'
 import { showWarnToast } from '~/components/common/Toast'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { createLogger } from '~/lib/logger'
 import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
-import { buildInterruptRequest, buildSetPermissionModeRequest, DEFAULT_EFFORT, DEFAULT_MODEL } from '~/utils/controlResponse'
+import { defaultEffortForProvider, defaultModelForProvider } from '~/utils/controlResponse'
+
+const logger = createLogger('useAgentOperations')
 
 /** Find the smallest unused number for auto-naming tabs (gap-filling). */
 export function nextTabNumber(tabs: Tab[], type: TabType, prefix: string): number {
@@ -33,6 +39,7 @@ export function nextTabNumber(tabs: Tab[], type: TabType, prefix: string): numbe
 
 export interface UseAgentOperationsProps {
   agentStore: ReturnType<typeof createAgentStore>
+  agentSessionStore: ReturnType<typeof createAgentSessionStore>
   chatStore: ReturnType<typeof createChatStore>
   controlStore: ReturnType<typeof createControlStore>
   tabStore: ReturnType<typeof createTabStore>
@@ -55,18 +62,27 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     return props.agentStore.state.agents.find(a => a.id === agentId)?.workerId ?? ''
   }
 
+  const defaultPermissionModeForAgent = (provider: AgentProvider): PermissionMode => {
+    return getProviderPlugin(provider)?.defaultPermissionMode ?? 'default'
+  }
+
+  const defaultCodexCollaborationMode = (provider: AgentProvider): string => {
+    return provider === AgentProvider.CODEX ? 'default' : ''
+  }
+
   // Open a new agent in the given workspace
-  const openAgentInWorkspace = async (workspaceId: string, workerId: string, workingDir: string, sessionId?: string) => {
+  const openAgentInWorkspace = async (workspaceId: string, workerId: string, workingDir: string, sessionId?: string, agentProvider: AgentProvider = AgentProvider.CLAUDE_CODE) => {
     try {
       const title = `Agent ${nextTabNumber(props.tabStore.state.tabs, TabType.AGENT, 'Agent')}`
       const resp = await workerRpc.openAgent(workerId, {
         workspaceId,
-        agentProvider: AgentProvider.CLAUDE_CODE,
-        model: DEFAULT_MODEL,
+        agentProvider,
+        model: '',
         title,
         systemPrompt: '',
         workerId,
         workingDir,
+        ...(agentProvider === AgentProvider.CODEX ? { codexCollaborationMode: 'default' } : {}),
         ...(sessionId ? { agentSessionId: sessionId } : {}),
       })
       if (resp.agent) {
@@ -99,7 +115,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   }
 
   // Open a new agent in the active workspace (for click handlers)
-  const handleOpenAgent = async () => {
+  const handleOpenAgent = async (providerOverride?: AgentProvider) => {
     if (!props.isActiveWorkspaceMutatable())
       return
     const ws = props.activeWorkspace()
@@ -110,9 +126,14 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       props.setShowNewAgentDialog(true)
       return
     }
+    // Default to the active tab's provider, then to Claude Code.
+    const activeTab = props.tabStore.state.tabs.find(
+      t => t.type === TabType.AGENT && t.id === props.agentStore.state.activeAgentId,
+    )
+    const provider = providerOverride ?? activeTab?.agentProvider ?? AgentProvider.CLAUDE_CODE
     props.setNewAgentLoading(true)
     try {
-      await openAgentInWorkspace(ws.id, ctx.workerId, ctx.workingDir)
+      await openAgentInWorkspace(ws.id, ctx.workerId, ctx.workingDir, undefined, provider)
     }
     finally {
       props.setNewAgentLoading(false)
@@ -143,13 +164,17 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     props.forceScrollToBottom?.()
     try {
       const workerId = getAgentWorkerId(agentId)
-      await workerRpc.sendControlResponse(workerId, { agentId, content })
-      // Remove from pending after successful send.
       const parsed = JSON.parse(new TextDecoder().decode(content))
       const requestId = parsed?.response?.request_id
-      if (requestId) {
+        ?? (parsed?.id != null ? String(parsed.id) : undefined)
+
+      await workerRpc.sendControlResponse(workerId, {
+        agentId,
+        content,
+      })
+
+      if (requestId)
         props.controlStore.removeRequest(agentId, requestId)
-      }
     }
     catch (err) {
       showWarnToast('Failed to send response', err)
@@ -161,17 +186,18 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     const agent = props.agentStore.state.agents.find(a => a.id === agentId)
     if (!agent)
       return
-    if (agent.supportsModelEffort === false)
+    if (!agent.availableModels || agent.availableModels.length === 0)
       return
-    const previous = agent[field] || (field === 'model' ? DEFAULT_MODEL : DEFAULT_EFFORT)
+    const previous = agent[field] || (field === 'model'
+      ? defaultModelForProvider(agent.agentProvider)
+      : defaultEffortForProvider(agent.agentProvider))
     // Optimistic update
     props.agentStore.updateAgent(agentId, { [field]: value })
     props.settingsLoading.start()
     try {
       await workerRpc.updateAgentSettings(agent.workerId, {
         agentId,
-        model: field === 'model' ? value : '',
-        effort: field === 'effort' ? value : '',
+        settings: { [field]: value },
       })
       props.settingsLoading.stop()
     }
@@ -185,39 +211,94 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   // Interrupt the given agent's current turn
   const handleInterrupt = async (agentId: string) => {
     try {
+      const agent = props.agentStore.state.agents.find(a => a.id === agentId)
       const workerId = getAgentWorkerId(agentId)
-      await workerRpc.sendAgentMessage(workerId, {
-        agentId,
-        content: buildInterruptRequest(),
-      })
+      const plugin = agent ? getProviderPlugin(agent.agentProvider) : undefined
+      if (!plugin?.buildInterruptContent) {
+        logger.error('No interrupt handler for provider', agent?.agentProvider)
+        return
+      }
+
+      const sessionId = agent?.agentSessionId || ''
+      const turnId = props.agentSessionStore.getInfo(agentId).codexTurnId || ''
+      const content = plugin.buildInterruptContent(sessionId, turnId)
+      if (!content)
+        return
+
+      await workerRpc.sendAgentMessage(workerId, { agentId, content })
     }
     catch (err) {
       showWarnToast('Failed to interrupt', err)
     }
   }
 
-  // Change permission mode for the given agent
+  // Change permission mode for the given agent.
+  // Dispatches through the provider plugin — each provider handles this
+  // differently (Claude Code: control_request, Codex: UpdateAgentSettings).
   const handlePermissionModeChange = async (agentId: string, mode: PermissionMode) => {
     const agent = props.agentStore.state.agents.find(a => a.id === agentId)
     if (!agent)
       return
-    const previousMode = (agent.permissionMode || 'default') as PermissionMode
-    // Optimistic update
+    const previousMode = (agent.permissionMode || defaultPermissionModeForAgent(agent.agentProvider)) as PermissionMode
     props.agentStore.updateAgent(agentId, { permissionMode: mode })
     props.settingsLoading.start()
     try {
-      await workerRpc.sendAgentMessage(agent.workerId, {
-        agentId,
-        content: buildSetPermissionModeRequest(mode),
-      })
+      const plugin = getProviderPlugin(agent.agentProvider)
+      if (plugin?.changePermissionMode) {
+        await plugin.changePermissionMode(agent.workerId, agentId, mode)
+      }
+      else {
+        logger.error('No changePermissionMode handler for provider', agent.agentProvider)
+      }
       props.settingsLoading.stop()
     }
     catch (err) {
-      // Revert on failure
       props.agentStore.updateAgent(agentId, { permissionMode: previousMode })
       props.settingsLoading.stop()
       showWarnToast('Failed to change permission mode', err)
     }
+  }
+
+  // Change a Codex-specific setting (sandbox policy or network access).
+  const handleCodexSettingChange = async (
+    agentId: string,
+    field: 'codexCollaborationMode' | 'codexSandboxPolicy' | 'codexNetworkAccess',
+    value: string,
+    defaultValue: string,
+    errorLabel: string,
+  ) => {
+    const agent = props.agentStore.state.agents.find(a => a.id === agentId)
+    if (!agent)
+      return
+    const previous = agent[field] || defaultValue
+    props.agentStore.updateAgent(agentId, { [field]: value })
+    props.settingsLoading.start()
+    try {
+      await workerRpc.updateAgentSettings(agent.workerId, {
+        agentId,
+        settings: { [field]: value },
+      })
+      props.settingsLoading.stop()
+    }
+    catch (err) {
+      props.agentStore.updateAgent(agentId, { [field]: previous })
+      props.settingsLoading.stop()
+      showWarnToast(`Failed to change ${errorLabel}`, err)
+    }
+  }
+
+  const handleOptionGroupChange = (agentId: string, key: string, value: string) => {
+    const labels: Record<string, string> = {
+      codexCollaborationMode: 'mode',
+      codexSandboxPolicy: 'sandbox policy',
+      codexNetworkAccess: 'network access',
+    }
+    const defaults: Record<string, string> = {
+      codexCollaborationMode: defaultCodexCollaborationMode(AgentProvider.CODEX),
+      codexSandboxPolicy: DEFAULT_CODEX_SANDBOX_POLICY,
+      codexNetworkAccess: DEFAULT_CODEX_NETWORK_ACCESS,
+    }
+    handleCodexSettingChange(agentId, key as 'codexCollaborationMode' | 'codexSandboxPolicy' | 'codexNetworkAccess', value, defaults[key] || value, labels[key] || key)
   }
 
   // Retry a failed message delivery.
@@ -296,6 +377,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     handleModelOrEffortChange,
     handleInterrupt,
     handlePermissionModeChange,
+    handleOptionGroupChange,
     handleRetryMessage,
     handleDeleteMessage,
     handleCloseAgent,

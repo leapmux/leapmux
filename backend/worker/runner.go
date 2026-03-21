@@ -29,7 +29,6 @@ type RunConfig struct {
 	CompositeKey         *noiseutil.CompositeKeypair // Worker's composite keypair for E2EE channels
 	WorkerID             string                      // Worker ID (from registration)
 	Name                 string                      // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
-	Version              string                      // Build-time version string
 	DBMaxConns           int                         // Maximum number of open database connections (0 = default)
 	MaxMessageSize       int                         // Maximum reassembled channel message size in bytes (0 = 16 MiB default)
 	MaxIncompleteChunked int                         // Maximum in-flight chunked sequences per channel (0 = 4 default)
@@ -95,7 +94,6 @@ func Run(ctx context.Context, cfg RunConfig) error {
 			hostname, _ := os.Hostname()
 			svcCtx.Name = hostname
 		}
-		svcCtx.Version = cfg.Version
 		svcCtx.AgentStartupTimeout = cfg.AgentStartupTimeout
 		svcCtx.UseLoginShell = cfg.UseLoginShell
 		svcCtx.Send = client.Send

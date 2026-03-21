@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/leapmux/leapmux/util/version"
 	"github.com/leapmux/leapmux/solo"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -15,7 +16,6 @@ import (
 // App is the main application struct bound to the frontend via Wails.
 type App struct {
 	ctx        context.Context
-	version    string
 	config     *DesktopConfig
 	solo       *solo.Instance
 	logHandler *webviewHandler
@@ -23,8 +23,8 @@ type App struct {
 }
 
 // NewApp creates a new App instance.
-func NewApp(version string) *App {
-	return &App{version: version}
+func NewApp() *App {
+	return &App{}
 }
 
 // startup is called when the app starts. The context is saved for runtime calls.
@@ -141,7 +141,7 @@ func (a *App) GetConfig() *DesktopConfig {
 
 // GetVersion returns the app version string.
 func (a *App) GetVersion() string {
-	return a.version
+	return version.Value
 }
 
 // CheckFullDiskAccess returns true if the app has Full Disk Access (macOS only).

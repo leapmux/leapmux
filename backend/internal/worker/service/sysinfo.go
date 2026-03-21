@@ -6,6 +6,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	"github.com/leapmux/leapmux/util/version"
 )
 
 func registerSysInfoHandlers(d *channel.Dispatcher, svc *Context) {
@@ -16,7 +17,7 @@ func registerSysInfoHandlers(d *channel.Dispatcher, svc *Context) {
 			Os:      runtime.GOOS,
 			Arch:    runtime.GOARCH,
 			HomeDir: homeDir,
-			Version: svc.Version,
+			Version: version.Value,
 		})
 	})
 }

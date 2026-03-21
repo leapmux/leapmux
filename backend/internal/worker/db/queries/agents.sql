@@ -1,5 +1,5 @@
 -- name: CreateAgent :exec
-INSERT INTO agents (id, workspace_id, working_dir, home_dir, title, model, system_prompt, effort, agent_provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO agents (id, workspace_id, working_dir, home_dir, title, model, system_prompt, effort, codex_sandbox_policy, codex_network_access, codex_collaboration_mode, agent_provider, resumed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetAgentByID :one
 SELECT * FROM agents WHERE id = ?;
@@ -35,6 +35,18 @@ UPDATE agents SET permission_mode = ? WHERE id = ?;
 
 -- name: UpdateAgentModelAndEffort :exec
 UPDATE agents SET model = ?, effort = ? WHERE id = ?;
+
+-- name: SetAgentCodexSandboxPolicy :exec
+UPDATE agents SET codex_sandbox_policy = ? WHERE id = ?;
+
+-- name: SetAgentCodexNetworkAccess :exec
+UPDATE agents SET codex_network_access = ? WHERE id = ?;
+
+-- name: SetAgentCodexCollaborationMode :exec
+UPDATE agents SET codex_collaboration_mode = ? WHERE id = ?;
+
+-- name: UpdateAgentAllSettings :exec
+UPDATE agents SET model = ?, effort = ?, permission_mode = ?, codex_sandbox_policy = ?, codex_network_access = ?, codex_collaboration_mode = ? WHERE id = ?;
 
 -- name: UpdateAgentHomeDir :exec
 UPDATE agents SET home_dir = ? WHERE id = ?;

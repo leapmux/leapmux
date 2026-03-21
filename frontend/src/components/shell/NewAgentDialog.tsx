@@ -1,11 +1,12 @@
 import type { Component } from 'solid-js'
 import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
-import { Show } from 'solid-js'
+import { createSignal, Show } from 'solid-js'
 import { agentLoadingTimeoutMs } from '~/api/transport'
 import * as workerRpc from '~/api/workerRpc'
 import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
+import { AgentProviderSelector } from '~/components/shell/AgentProviderSelector'
 import { isAgentCreateDisabled } from '~/components/shell/dialogValidation'
 import { DirectorySelector } from '~/components/shell/DirectorySelector'
 import { GitOptions } from '~/components/shell/GitOptions'
@@ -22,6 +23,7 @@ interface NewAgentDialogProps {
   defaultWorkingDir?: string
   defaultModel?: string
   defaultTitle?: string
+  defaultAgentProvider?: AgentProvider
   sessionId?: string
   onCreated: (agent: AgentInfo) => void
   onClose: () => void
@@ -35,6 +37,8 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
   })
   const submitting = createLoadingSignal(agentLoadingTimeoutMs(false))
 
+  const [agentProvider, setAgentProvider] = createSignal<AgentProvider>(props.defaultAgentProvider ?? AgentProvider.CLAUDE_CODE)
+
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
     if (!state.workerId() || !state.workingDir().trim())
@@ -45,7 +49,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
     try {
       const resp = await workerRpc.openAgent(state.workerId(), {
         workspaceId: props.workspaceId,
-        agentProvider: AgentProvider.CLAUDE_CODE,
+        agentProvider: agentProvider(),
         model: props.defaultModel ?? '',
         title: props.defaultTitle ?? '',
         systemPrompt: '',
@@ -79,6 +83,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
           <div class="vstack gap-4">
             <div class={state.showGitOptions() ? dialogTopSection : undefined}>
               <WorkerSelector state={state} />
+              <AgentProviderSelector value={agentProvider} onChange={setAgentProvider} />
             </div>
             <div class={state.showGitOptions() ? dialogTwoColumn : dialogSingleColumn}>
               <div class={dialogLeftPanel}>

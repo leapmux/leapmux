@@ -2,25 +2,9 @@ package service
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"unicode"
 )
-
-// DefaultModel is the model used when none is specified.
-// Configurable via LEAPMUX_DEFAULT_MODEL environment variable.
-var DefaultModel = getEnvOrDefault("LEAPMUX_DEFAULT_MODEL", "opus")
-
-// DefaultEffort is the effort level used when none is specified.
-// Configurable via LEAPMUX_DEFAULT_EFFORT environment variable.
-var DefaultEffort = getEnvOrDefault("LEAPMUX_DEFAULT_EFFORT", "high")
-
-func getEnvOrDefault(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
 
 // ValidateBranchName validates a git branch name according to git-check-ref-format rules.
 // Returns nil if valid, or an error describing the problem.

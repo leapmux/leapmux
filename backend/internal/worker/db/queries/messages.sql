@@ -57,5 +57,8 @@ RETURNING seq;
 -- name: GetLatestMessageByAgentID :one
 SELECT * FROM messages WHERE agent_id = ? ORDER BY seq DESC LIMIT 1;
 
+-- name: HasUserMessages :one
+SELECT EXISTS(SELECT 1 FROM messages WHERE agent_id = ? AND role = 1) AS has_messages;
+
 -- name: DeleteMessageByAgentAndID :exec
 DELETE FROM messages WHERE id = ? AND agent_id = ?;

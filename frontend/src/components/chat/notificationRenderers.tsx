@@ -5,10 +5,10 @@ import type { MessageContentRenderer } from './messageRenderers'
 import ArrowDownToLine from 'lucide-solid/icons/arrow-down-to-line'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { Icon } from '~/components/common/Icon'
-import { formatRateLimitMessage } from '~/lib/rateLimitUtils'
+import { codexTierToRateLimitInfo, formatRateLimitMessage } from '~/lib/rateLimitUtils'
 import { renderMarkdown } from '~/lib/renderMarkdown'
+import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { spinner } from '~/styles/animations.css'
-import { EFFORT_LABELS, MODEL_LABELS, PERMISSION_MODE_LABELS } from '~/utils/controlResponse'
 import { markdownContent } from './markdownContent.css'
 import {
   controlResponseMessage,
@@ -24,19 +24,16 @@ function displayLabel(key: string): string {
   switch (key) {
     case 'model': return 'Model'
     case 'effort': return 'Effort'
-    case 'permissionMode': return 'Mode'
+    case 'permissionMode': return 'Permission Mode'
+    case 'codexCollaborationMode': return 'Mode'
+    case 'codexSandboxPolicy': return 'Sandbox Policy'
+    case 'codexNetworkAccess': return 'Network Access'
     default: return key
   }
 }
 
-const DISPLAY_VALUE_MAPS: Record<string, Record<string, string>> = {
-  model: MODEL_LABELS,
-  effort: EFFORT_LABELS,
-  permissionMode: PERMISSION_MODE_LABELS,
-}
-
 function displayValue(key: string, value: string): string {
-  return DISPLAY_VALUE_MAPS[key]?.[value] ?? value
+  return getCachedSettingsLabel(key, value) ?? value
 }
 
 /** Handles settings change notifications: {"type":"settings_changed","changes":{...}} */
@@ -44,13 +41,15 @@ export const settingsChangedRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
     if (!isObject(parsed) || parsed.type !== 'settings_changed')
       return null
-    const changes = parsed.changes as Record<string, { old: string, new: string }>
+    const changes = parsed.changes as Record<string, { old: string, new: string, oldLabel?: string, newLabel?: string }>
     if (!changes)
       return null
     const parts: string[] = []
     for (const [key, val] of Object.entries(changes)) {
       if (val.old !== val.new) {
-        parts.push(`${displayLabel(key)} (${displayValue(key, val.old)} → ${displayValue(key, val.new)})`)
+        const oldDisplay = val.oldLabel || displayValue(key, val.old)
+        const newDisplay = val.newLabel || displayValue(key, val.new)
+        parts.push(`${displayLabel(key)} (${oldDisplay} → ${newDisplay})`)
       }
     }
     if (parts.length === 0)
@@ -103,19 +102,48 @@ export const agentRenamedRenderer: MessageContentRenderer = {
   },
 }
 
-/** Handles rate limit notifications: {"type":"rate_limit","rate_limit_info":{...}} */
+/** Handles rate limit notifications: {"type":"rate_limit","rate_limit_info":{...}} or Codex native format */
 export const rateLimitRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
-    if (!isObject(parsed) || parsed.type !== 'rate_limit')
+    if (!isObject(parsed))
       return null
-    const info = parsed.rate_limit_info
-    if (!isObject(info))
-      return <div class={controlResponseMessage}>Rate limit update</div>
-    // Hide "allowed" status from chat — the popover still shows it.
-    if ((info as Record<string, unknown>).status === 'allowed')
-      return null
-    return <div class={controlResponseMessage}>{formatRateLimitMessage(info as Record<string, unknown>)}</div>
+    // Existing Claude Code format: {type: "rate_limit", rate_limit_info: {...}}
+    if (parsed.type === 'rate_limit') {
+      const info = parsed.rate_limit_info
+      if (!isObject(info))
+        return <div class={controlResponseMessage}>Rate limit update</div>
+      // Hide "allowed" status from chat — the popover still shows it.
+      if ((info as Record<string, unknown>).status === 'allowed')
+        return null
+      return <div class={controlResponseMessage}>{formatRateLimitMessage(info as Record<string, unknown>)}</div>
+    }
+    // Codex native format: {method: "account/rateLimits/updated", params: {rateLimits: {...}}}
+    if (parsed.method === 'account/rateLimits/updated')
+      return renderCodexRateLimits(parsed)
+    return null
   },
+}
+
+/** Render Codex native rate limit notification. */
+function renderCodexRateLimits(parsed: Record<string, unknown>): JSXElement {
+  const params = parsed.params as Record<string, unknown> | undefined
+  const rl = params?.rateLimits as Record<string, unknown> | undefined
+  if (!rl)
+    return <div class={controlResponseMessage}>Rate limit update</div>
+
+  const parts: string[] = []
+  for (const tierKey of ['primary', 'secondary'] as const) {
+    const tier = rl[tierKey] as Record<string, unknown> | undefined
+    if (!tier)
+      continue
+    const info = codexTierToRateLimitInfo(tier)
+    if (info.status === 'allowed')
+      continue
+    parts.push(formatRateLimitMessage(info as unknown as Record<string, unknown>))
+  }
+  if (parts.length === 0)
+    return null
+  return <div class={controlResponseMessage}>{parts.join(', ')}</div>
 }
 
 // ---------------------------------------------------------------------------
@@ -205,13 +233,30 @@ export const resultRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
     if (!isObject(parsed) || parsed.type !== 'result')
       return null
+
+    // Error turn: show errors array if present (e.g. "No conversation found with session ID: ...")
+    if (parsed.is_error === true) {
+      const errors = Array.isArray(parsed.errors) ? parsed.errors as string[] : []
+      const resultText = typeof parsed.result === 'string' ? parsed.result : ''
+      const errorMsg = errors.length > 0 ? errors.join('; ') : resultText || 'Unknown error'
+      return <div class={resultDivider} style={{ color: 'var(--danger)' }}>{errorMsg}</div>
+    }
+
     const durationMs = typeof parsed.duration_ms === 'number' ? parsed.duration_ms : 0
-    // Only show result text for non-success outcomes (e.g. "Unknown skill: clear").
-    // Successful turns repeat the last assistant message, which is already visible.
-    const resultText = parsed.subtype !== 'success' && typeof parsed.result === 'string' ? parsed.result : ''
+    const resultText = typeof parsed.result === 'string' ? parsed.result : ''
     const durationStr = formatDuration(durationMs)
-    const label = resultText
-      ? `${resultText} (${durationStr})`
+
+    // When stop_reason is absent (agent never produced output), show the result
+    // text as an error — e.g. "Unknown skill: update-pr".
+    if (!parsed.stop_reason && resultText) {
+      return <div class={resultDivider} style={{ color: 'var(--danger)' }}>{resultText}</div>
+    }
+
+    // For non-success subtypes, show result text with duration.
+    // For success, the result repeats the last assistant message — skip it.
+    const displayText = parsed.subtype !== 'success' ? resultText : ''
+    const label = displayText
+      ? `${displayText} (${durationStr})`
       : `Took ${durationStr}`
     return <div class={resultDivider}>{label}</div>
   },
@@ -284,7 +329,19 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
     const t = m.type as string | undefined
     const st = m.subtype as string | undefined
 
-    if (t === 'rate_limit') {
+    if (m.method === 'account/rateLimits/updated') {
+      const params = m.params as Record<string, unknown> | undefined
+      const rl = params?.rateLimits as Record<string, unknown> | undefined
+      for (const tierKey of ['primary', 'secondary']) {
+        const tier = rl?.[tierKey] as Record<string, unknown> | undefined
+        if (!tier)
+          continue
+        const info = codexTierToRateLimitInfo(tier)
+        if (info.rateLimitType)
+          rateLimitByType[info.rateLimitType] = { ...info } as unknown as Record<string, unknown>
+      }
+    }
+    else if (t === 'rate_limit') {
       const info = m.rate_limit_info
       if (isObject(info)) {
         const rlInfo = info as Record<string, unknown>

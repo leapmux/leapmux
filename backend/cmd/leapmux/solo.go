@@ -19,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/internal/logging"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
+	"github.com/leapmux/leapmux/util/version"
 	"github.com/leapmux/leapmux/worker"
 )
 
@@ -64,7 +65,7 @@ func runSolo(args []string, soloMode bool) error {
 	}
 
 	if showVersion {
-		fmt.Println(version)
+		fmt.Println(version.Value)
 		return nil
 	}
 
@@ -74,7 +75,7 @@ func runSolo(args []string, soloMode bool) error {
 	}
 	logging.SetLevel(level)
 
-	logging.PrintBanner(modeName, version, hubCfg.Addr)
+	logging.PrintBanner(modeName, version.Value, hubCfg.Addr)
 	logging.PrintAccessURL(modeName, hubCfg.Addr)
 
 	// Split the data dir into hub and worker subdirectories.
@@ -172,7 +173,6 @@ func runSolo(args []string, soloMode bool) error {
 			AuthToken:            state.AuthToken,
 			CompositeKey:         compositeKey,
 			WorkerID:             state.WorkerID,
-			Version:              version,
 			DBMaxConns:           hubCfg.DBMaxConns,
 			MaxMessageSize:       hubCfg.MaxMessageSize,
 			MaxIncompleteChunked: hubCfg.MaxIncompleteChunked,

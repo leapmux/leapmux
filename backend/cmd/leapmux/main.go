@@ -6,9 +6,8 @@ import (
 	"os"
 
 	"github.com/leapmux/leapmux/internal/logging"
+	"github.com/leapmux/leapmux/util/version"
 )
-
-var version = "dev"
 
 func main() {
 	logging.Setup()
@@ -44,7 +43,7 @@ func main() {
 			os.Exit(1)
 		}
 	case "version":
-		fmt.Println(version)
+		fmt.Println(version.Value)
 	default:
 		// If the first arg starts with '-', treat as solo flags.
 		if len(os.Args[1]) > 0 && os.Args[1][0] == '-' {

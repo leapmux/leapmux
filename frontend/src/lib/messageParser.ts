@@ -3,6 +3,7 @@ import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import type { TodoItem } from '~/stores/chat.store'
 import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { decompressContentToString } from '~/lib/decompress'
+import { codexTierToRateLimitInfo } from '~/lib/rateLimitUtils'
 
 /**
  * The result of parsing a compressed AgentChatMessage. Every field is
@@ -158,12 +159,12 @@ export function extractAssistantUsage(parsed: ParsedMessageContent): {
   return Object.keys(result).length > 0 ? result : null
 }
 
-/** Extract result-message metadata: subtype, contextWindow, totalCostUsd, numTurns. */
+/** Extract result-message metadata: subtype, contextWindow, totalCostUsd, numToolUses. */
 export function extractResultMetadata(parsed: ParsedMessageContent): {
   subtype?: string
   contextWindow?: number
   totalCostUsd?: number
-  numTurns?: number
+  numToolUses?: number
 } | null {
   const inner = getInnerMessage(parsed)
   if (!inner)
@@ -172,10 +173,19 @@ export function extractResultMetadata(parsed: ParsedMessageContent): {
   if (inner.parent_tool_use_id)
     return null
 
-  const result: { subtype?: string, contextWindow?: number, totalCostUsd?: number, numTurns?: number } = {}
+  const result: { subtype?: string, contextWindow?: number, totalCostUsd?: number, numToolUses?: number } = {}
 
   if (inner.subtype)
     result.subtype = inner.subtype as string
+
+  // Codex turn/completed: detect via turn.status and map to the same shape.
+  const turn = inner.turn as Record<string, unknown> | undefined
+  if (!result.subtype && turn && typeof turn === 'object' && typeof turn.status === 'string')
+    result.subtype = 'turn_completed'
+
+  // num_tool_uses is injected by the backend for all providers.
+  if (typeof inner.num_tool_uses === 'number')
+    result.numToolUses = inner.num_tool_uses as number
 
   if (inner.modelUsage && typeof inner.modelUsage === 'object') {
     for (const modelData of Object.values(inner.modelUsage as Record<string, unknown>)) {
@@ -190,29 +200,51 @@ export function extractResultMetadata(parsed: ParsedMessageContent): {
   if (typeof inner.total_cost_usd === 'number')
     result.totalCostUsd = inner.total_cost_usd as number
 
-  if (typeof inner.num_turns === 'number')
-    result.numTurns = inner.num_turns as number
-
   return Object.keys(result).length > 0 ? result : null
 }
 
-/** Extract rate limit info from a LEAPMUX rate_limit inner message. */
+/** Extract rate limit info from a LEAPMUX rate_limit or Codex rateLimits/updated inner message. */
 export function extractRateLimitInfo(parsed: ParsedMessageContent): {
   key: string
   info: Record<string, unknown>
-} | null {
+}[] {
   const inner = getInnerMessage(parsed)
-  if (!inner || inner.type !== 'rate_limit')
-    return null
-  const rlInfo = inner.rate_limit_info as Record<string, unknown> | undefined
-  if (!rlInfo || typeof rlInfo !== 'object')
-    return null
-  const key = (rlInfo.rateLimitType as string) || 'unknown'
-  return { key, info: rlInfo }
+  if (!inner)
+    return []
+
+  // Claude Code format: {type: "rate_limit", rate_limit_info: {...}}
+  if (inner.type === 'rate_limit') {
+    const rlInfo = inner.rate_limit_info as Record<string, unknown> | undefined
+    if (!rlInfo || typeof rlInfo !== 'object')
+      return []
+    const key = (rlInfo.rateLimitType as string) || 'unknown'
+    return [{ key, info: rlInfo }]
+  }
+
+  // Codex native format: {method: "account/rateLimits/updated", params: {rateLimits: {primary: {...}, secondary: {...}}}}
+  if (inner.method === 'account/rateLimits/updated') {
+    const params = inner.params as Record<string, unknown> | undefined
+    const rl = params?.rateLimits as Record<string, unknown> | undefined
+    if (!rl)
+      return []
+    const results: { key: string, info: Record<string, unknown> }[] = []
+    for (const tierKey of ['primary', 'secondary']) {
+      const tier = rl[tierKey] as Record<string, unknown> | undefined
+      if (!tier)
+        continue
+      const info = codexTierToRateLimitInfo(tier)
+      if (info.rateLimitType)
+        results.push({ key: info.rateLimitType, info: info as unknown as Record<string, unknown> })
+    }
+    return results
+  }
+
+  return []
 }
 
 /** Extract settings changes from a LEAPMUX settings_changed inner message. */
 export function extractSettingsChanges(parsed: ParsedMessageContent): {
+  codexCollaborationMode?: { old: string, new: string }
   permissionMode?: { old: string, new: string }
 } | null {
   const inner = getInnerMessage(parsed)
@@ -221,7 +253,10 @@ export function extractSettingsChanges(parsed: ParsedMessageContent): {
   const changes = inner.changes as Record<string, unknown> | undefined
   if (!changes || typeof changes !== 'object')
     return null
-  return changes as { permissionMode?: { old: string, new: string } }
+  return changes as {
+    codexCollaborationMode?: { old: string, new: string }
+    permissionMode?: { old: string, new: string }
+  }
 }
 
 /** Extract renamed title from an agent_renamed notification (wrapped or unwrapped). */

@@ -4,7 +4,7 @@ import type { JSX } from 'solid-js'
 import type { StructuredPatchHunk } from './diffUtils'
 import type { MessageCategory } from './messageClassification'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
-import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import Bot from 'lucide-solid/icons/bot'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
@@ -31,6 +31,7 @@ import {
   systemInitRenderer,
 } from './notificationRenderers'
 import { exitPlanModeRenderer, renderExitPlanMode } from './planModeRenderers'
+import { getProviderPlugin } from './providers'
 import {
   askUserQuestionRenderer,
   renderAskUserQuestion,
@@ -38,6 +39,7 @@ import {
   taskNotificationRenderer,
   todoWriteRenderer,
 } from './taskRenderers'
+
 import {
   ToolHeaderActions,
   toolResultRenderer,
@@ -392,12 +394,17 @@ function getFallbackRenderers(): MessageContentRenderer[] {
  * dispatch instead of iterating through the renderer chain. The linear scan is
  * used as a fallback for 'unknown' categories and for thread children that don't
  * have a pre-computed category.
+ *
+ * When `agentProvider` is set and the provider has a `renderMessage` method,
+ * that is tried first — allowing providers to render their native message
+ * formats without any hardcoded dispatch here.
  */
 export function renderMessageContent(
   parsedOrRawJson: unknown,
   role: MessageRole,
   context?: RenderContext,
   category?: MessageCategory,
+  agentProvider?: AgentProvider,
 ): JSX.Element {
   try {
     const parsed = typeof parsedOrRawJson === 'string'
@@ -406,6 +413,16 @@ export function renderMessageContent(
 
     // Fast path: O(1) dispatch when category is available
     if (category && category.kind !== 'unknown') {
+      // Try provider-specific renderer first.
+      if (agentProvider != null) {
+        const plugin = getProviderPlugin(agentProvider)
+        if (plugin?.renderMessage) {
+          const result = plugin.renderMessage(category, parsed, role, context)
+          if (result !== null)
+            return result
+        }
+      }
+
       const result = dispatchRender(category, parsed, role, context)
       if (result !== null)
         return result

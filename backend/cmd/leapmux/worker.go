@@ -15,6 +15,7 @@ import (
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	"github.com/leapmux/leapmux/internal/worker/hub"
 	"github.com/leapmux/leapmux/internal/worker/service"
+	"github.com/leapmux/leapmux/util/version"
 )
 
 func runWorker(args []string) error {
@@ -24,7 +25,7 @@ func runWorker(args []string) error {
 	}
 
 	if showVersion {
-		fmt.Println(version)
+		fmt.Println(version.Value)
 		return nil
 	}
 
@@ -34,7 +35,7 @@ func runWorker(args []string) error {
 	}
 	logging.SetLevel(level)
 
-	logging.PrintBanner("worker", version, cfg.HubURL)
+	logging.PrintBanner("worker", version.Value, cfg.HubURL)
 
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("validate config: %w", err)
@@ -72,7 +73,7 @@ func runWorker(args []string) error {
 			return fmt.Errorf("restore composite keypair for registration: %w", ckErr)
 		}
 		slhdsaPub, _ := compositeKey.SlhdsaPublicKeyBytes()
-		result, regErr := hub.Register(ctx, cfg.HubURL, version, compositeKey.X25519Public, compositeKey.MlkemPublicKeyBytes(), slhdsaPub)
+		result, regErr := hub.Register(ctx, cfg.HubURL, version.Value, compositeKey.X25519Public, compositeKey.MlkemPublicKeyBytes(), slhdsaPub)
 		if regErr != nil {
 			return fmt.Errorf("registration: %w", regErr)
 		}
@@ -140,7 +141,6 @@ func runWorker(args []string) error {
 
 	svcCtx.WorkerID = state.WorkerID
 	svcCtx.Name = cfg.Name
-	svcCtx.Version = version
 	svcCtx.AgentStartupTimeout = cfg.AgentStartupTimeout()
 	svcCtx.UseLoginShell = cfg.UseLoginShell
 	svcCtx.Send = client.Send

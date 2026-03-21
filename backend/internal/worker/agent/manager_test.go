@@ -154,18 +154,22 @@ func TestManager_AgentExitCleanup(t *testing.T) {
 		stdout, _ := cmd.StdoutPipe()
 		cmd.Stderr = nil
 
-		a := &Agent{
-			agentID:        opts.AgentID,
+		a := &ClaudeCodeAgent{
+			processBase: processBase{
+				agentID:     opts.AgentID,
+				cmd:         cmd,
+				stdin:       stdin,
+				ctx:         ctx2,
+				cancel:      cancel,
+				processDone: make(chan struct{}),
+				stderrDone:  make(chan struct{}),
+			},
 			model:          opts.Model,
 			workingDir:     opts.WorkingDir,
 			sink:           sink,
-			cmd:            cmd,
-			stdin:          stdin,
-			ctx:            ctx2,
-			cancel:         cancel,
-			processDone:    make(chan struct{}),
-			pendingControl: make(map[string]chan<- controlResult),
+			pendingControl: make(map[string]chan<- claudeCodeControlResult),
 		}
+		close(a.stderrDone)
 
 		if err := cmd.Start(); err != nil {
 			cancel()
@@ -174,7 +178,7 @@ func TestManager_AgentExitCleanup(t *testing.T) {
 
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-		go a.readOutput(scanner)
+		go a.readOutputLoop(scanner)
 		return a, nil
 	})
 	require.NoError(t, err, "StartAgent")

@@ -26,7 +26,7 @@ type contextUsageSnapshot struct {
 
 // HandleOutput processes a single NDJSON line from Claude Code.
 // This is the Claude Code-specific implementation of the Provider interface.
-func (a *Agent) HandleOutput(content []byte) {
+func (a *ClaudeCodeAgent) HandleOutput(content []byte) {
 	var envelope struct {
 		Type string `json:"type"`
 	}
@@ -54,6 +54,10 @@ func (a *Agent) HandleOutput(content []byte) {
 		a.handlePersistableMessage(content, envelope.Type, role)
 
 	case "user":
+		// Reset tool use counter at the start of each user turn.
+		a.mu.Lock()
+		a.turnToolUses = 0
+		a.mu.Unlock()
 		if !isSimpleUserTextEcho(content) {
 			a.handlePersistableMessage(content, envelope.Type, role)
 		}
@@ -64,26 +68,114 @@ func (a *Agent) HandleOutput(content []byte) {
 		}
 
 	case "control_request":
-		a.ccHandleControlRequest(content)
+		a.claudeCodeHandleControlRequest(content)
 
 	case "control_cancel_request":
-		a.ccHandleControlCancel(content)
+		a.claudeCodeHandleControlCancel(content)
 
 	case "control_response":
-		a.ccHandleControlResponse(content)
+		a.claudeCodeHandleControlResponse(content)
 
 	case "rate_limit_event":
-		a.ccHandleRateLimitEvent(content)
+		a.claudeCodeHandleRateLimitEvent(content)
 
 	default:
 		a.sink.BroadcastStreamChunk(content)
 	}
 }
 
+// enrichResultWithToolUses injects num_tool_uses into a result message so
+// the frontend can determine whether the turn involved tool use.
+func (a *ClaudeCodeAgent) enrichResultWithToolUses(content []byte) []byte {
+	return a.enrichWithToolUses(content)
+}
+
+// processAssistantBlocks parses the message.content[] blocks of an assistant
+// message once and performs plan mode tracking, plan file tracking, and tool
+// use counting — replacing three separate parse passes.
+func (a *ClaudeCodeAgent) processAssistantBlocks(content []byte) {
+	var msg struct {
+		Message struct {
+			Content []struct {
+				Type  string `json:"type"`
+				ID    string `json:"id"`
+				Name  string `json:"name"`
+				Input struct {
+					FilePath  string `json:"file_path"`
+					Content   string `json:"content"`
+					OldString string `json:"old_string"`
+					NewString string `json:"new_string"`
+				} `json:"input"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(content, &msg) != nil {
+		return
+	}
+
+	toolUseCount := 0
+	planFileProcessed := false
+	for _, block := range msg.Message.Content {
+		if block.Type != "tool_use" {
+			continue
+		}
+
+		toolUseCount++
+
+		// Plan mode tracking (EnterPlanMode/ExitPlanMode).
+		if block.ID != "" {
+			switch block.Name {
+			case "EnterPlanMode":
+				a.sink.StorePlanModeToolUse(block.ID, PermissionModePlan)
+			case "ExitPlanMode":
+				a.sink.StorePlanModeToolUse(block.ID, PermissionModeDefault)
+			}
+		}
+
+		// Plan file path tracking (Write/Edit to ~/.claude/plans/).
+		if !planFileProcessed && (block.Name == "Write" || block.Name == "Edit") {
+			filePath := block.Input.FilePath
+			if filePath != "" && a.homeDir != "" {
+				planDir := a.homeDir + "/.claude/plans/"
+				if strings.HasPrefix(filePath, planDir) {
+					planFileProcessed = true
+
+					var planContentStr string
+					if block.Name == "Write" && block.Input.Content != "" {
+						planContentStr = block.Input.Content
+					} else {
+						data, readErr := os.ReadFile(filePath)
+						if readErr == nil && len(data) > 0 {
+							if block.Name == "Edit" {
+								planContentStr = strings.Replace(string(data), block.Input.OldString, block.Input.NewString, 1)
+							} else {
+								planContentStr = string(data)
+							}
+						}
+					}
+
+					var compressed []byte
+					var compression leapmuxv1.ContentCompression
+					if planContentStr != "" {
+						compressed, compression = msgcodec.Compress([]byte(planContentStr))
+					}
+					a.sink.UpdatePlan(filePath, compressed, compression, extractPlanTitle(planContentStr))
+				}
+			}
+		}
+	}
+
+	if toolUseCount > 0 {
+		a.mu.Lock()
+		a.turnToolUses += toolUseCount
+		a.mu.Unlock()
+	}
+}
+
 // handlePersistableMessage handles assistant, system, user, and result messages.
-func (a *Agent) handlePersistableMessage(content []byte, msgType string, role leapmuxv1.MessageRole) {
+func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType string, role leapmuxv1.MessageRole) {
 	if msgType == "system" {
-		a.ccHandleSystemInit(content)
+		a.claudeCodeHandleSystemInit(content)
 
 		if isNotificationThreadable(content, role) {
 			if statusVal, ok := extractStatusValue(content); ok {
@@ -108,10 +200,10 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string, role le
 		a.extractAndBroadcastUsage(content, msgType)
 	}
 
-	// Track plan mode tool_use and plan file paths from assistant messages.
+	// Parse assistant message content blocks once for plan mode tracking,
+	// plan file tracking, and tool use counting.
 	if msgType == "assistant" {
-		a.trackPlanModeToolUse(content)
-		a.trackPlanFilePath(content)
+		a.processAssistantBlocks(content)
 	}
 
 	// Extract thread_id — try each extractor until one succeeds.
@@ -136,14 +228,19 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string, role le
 		}
 	}
 
+	// Enrich result messages with num_tool_uses.
+	if msgType == "result" {
+		content = a.enrichResultWithToolUses(content)
+	}
+
 	// Standalone message or no matching parent — persist.
 	if err := a.sink.PersistMessage(role, content, threadID); err != nil {
 		slog.Error("persist agent message", "agent_id", a.agentID, "error", err)
 	}
 }
 
-// ccHandleSystemInit extracts session_id from system init messages.
-func (a *Agent) ccHandleSystemInit(content []byte) {
+// claudeCodeHandleSystemInit extracts session_id from system init messages.
+func (a *ClaudeCodeAgent) claudeCodeHandleSystemInit(content []byte) {
 	var initMsg struct {
 		SessionID string `json:"session_id"`
 	}
@@ -154,8 +251,8 @@ func (a *Agent) ccHandleSystemInit(content []byte) {
 	a.sink.BroadcastStatusActive(initMsg.SessionID)
 }
 
-// ccHandleControlRequest persists and broadcasts a control_request.
-func (a *Agent) ccHandleControlRequest(content []byte) {
+// claudeCodeHandleControlRequest persists and broadcasts a control_request.
+func (a *ClaudeCodeAgent) claudeCodeHandleControlRequest(content []byte) {
 	var cr struct {
 		RequestID string `json:"request_id"`
 	}
@@ -167,8 +264,8 @@ func (a *Agent) ccHandleControlRequest(content []byte) {
 	a.sink.BroadcastControlRequest(cr.RequestID, content)
 }
 
-// ccHandleControlCancel persists and broadcasts a control_cancel_request.
-func (a *Agent) ccHandleControlCancel(content []byte) {
+// claudeCodeHandleControlCancel persists and broadcasts a control_cancel_request.
+func (a *ClaudeCodeAgent) claudeCodeHandleControlCancel(content []byte) {
 	var cc struct {
 		RequestID string `json:"request_id"`
 	}
@@ -180,8 +277,8 @@ func (a *Agent) ccHandleControlCancel(content []byte) {
 	a.sink.BroadcastControlCancel(cc.RequestID)
 }
 
-// ccHandleControlResponse handles control_response from Claude Code.
-func (a *Agent) ccHandleControlResponse(content []byte) {
+// claudeCodeHandleControlResponse handles control_response from Claude Code.
+func (a *ClaudeCodeAgent) claudeCodeHandleControlResponse(content []byte) {
 	var reqID struct {
 		RequestID string `json:"request_id"`
 	}
@@ -204,8 +301,8 @@ func (a *Agent) ccHandleControlResponse(content []byte) {
 	}
 }
 
-// ccHandleRateLimitEvent broadcasts rate_limit_event and persists as notification.
-func (a *Agent) ccHandleRateLimitEvent(content []byte) {
+// claudeCodeHandleRateLimitEvent broadcasts rate_limit_event and persists as notification.
+func (a *ClaudeCodeAgent) claudeCodeHandleRateLimitEvent(content []byte) {
 	var rle struct {
 		RateLimitInfo json.RawMessage `json:"rate_limit_info"`
 	}
@@ -238,7 +335,7 @@ func (a *Agent) ccHandleRateLimitEvent(content []byte) {
 }
 
 // extractAndBroadcastUsage extracts token usage from assistant/result messages.
-func (a *Agent) extractAndBroadcastUsage(content []byte, msgType string) {
+func (a *ClaudeCodeAgent) extractAndBroadcastUsage(content []byte, msgType string) {
 	var infoFields struct {
 		CostUSD *float64 `json:"total_cost_usd"`
 	}
@@ -323,110 +420,16 @@ func (a *Agent) extractAndBroadcastUsage(content []byte, msgType string) {
 	}
 }
 
-func (a *Agent) getOrCreateUsageSnapshot() *contextUsageSnapshot {
+func (a *ClaudeCodeAgent) getOrCreateUsageSnapshot() *contextUsageSnapshot {
 	if a.contextUsage == nil {
 		a.contextUsage = &contextUsageSnapshot{}
 	}
 	return a.contextUsage
 }
 
-// trackPlanModeToolUse inspects an assistant message for EnterPlanMode or
-// ExitPlanMode tool_use blocks.
-func (a *Agent) trackPlanModeToolUse(content []byte) {
-	var msg struct {
-		Message struct {
-			Content []struct {
-				Type string `json:"type"`
-				ID   string `json:"id"`
-				Name string `json:"name"`
-			} `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.Unmarshal(content, &msg); err != nil {
-		return
-	}
-	for _, block := range msg.Message.Content {
-		if block.Type != "tool_use" || block.ID == "" {
-			continue
-		}
-		switch block.Name {
-		case "EnterPlanMode":
-			a.sink.StorePlanModeToolUse(block.ID, "plan")
-		case "ExitPlanMode":
-			a.sink.StorePlanModeToolUse(block.ID, "default")
-		}
-	}
-}
-
-// trackPlanFilePath inspects an assistant message for Write or Edit tool_use
-// blocks whose file_path targets the agent's ~/.claude/plans/ directory.
-func (a *Agent) trackPlanFilePath(content []byte) {
-	var msg struct {
-		Message struct {
-			Content []struct {
-				Type  string `json:"type"`
-				Name  string `json:"name"`
-				Input struct {
-					FilePath  string `json:"file_path"`
-					Content   string `json:"content"`
-					OldString string `json:"old_string"`
-					NewString string `json:"new_string"`
-				} `json:"input"`
-			} `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.Unmarshal(content, &msg); err != nil {
-		return
-	}
-
-	for _, block := range msg.Message.Content {
-		if block.Type != "tool_use" {
-			continue
-		}
-		if block.Name != "Write" && block.Name != "Edit" {
-			continue
-		}
-		filePath := block.Input.FilePath
-		if filePath == "" || a.homeDir == "" {
-			continue
-		}
-
-		planDir := a.homeDir + "/.claude/plans/"
-		if !strings.HasPrefix(filePath, planDir) {
-			continue
-		}
-
-		// Resolve plan content.
-		var planContentStr string
-		if block.Name == "Write" && block.Input.Content != "" {
-			planContentStr = block.Input.Content
-		} else {
-			data, readErr := os.ReadFile(filePath)
-			if readErr == nil && len(data) > 0 {
-				if block.Name == "Edit" {
-					planContentStr = strings.Replace(string(data), block.Input.OldString, block.Input.NewString, 1)
-				} else {
-					planContentStr = string(data)
-				}
-			}
-		}
-
-		var compressed []byte
-		var compression leapmuxv1.ContentCompression
-		if planContentStr != "" {
-			compressed, compression = msgcodec.Compress([]byte(planContentStr))
-		}
-
-		a.sink.UpdatePlan(filePath, compressed, compression, extractPlanTitle(planContentStr))
-
-		// Only track the first matching plan file per message.
-		return
-	}
-}
-
 // detectPlanModeFromToolResult inspects a user message (tool_result) for
 // confirmation of a previously tracked EnterPlanMode or ExitPlanMode tool_use.
-func (a *Agent) detectPlanModeFromToolResult(content []byte) {
+func (a *ClaudeCodeAgent) detectPlanModeFromToolResult(content []byte) {
 	var msg struct {
 		Message struct {
 			Content []struct {
@@ -459,9 +462,9 @@ func (a *Agent) detectPlanModeFromToolResult(content []byte) {
 
 		resultLower := strings.ToLower(resultText)
 		confirmed := false
-		if targetMode == "plan" && strings.Contains(resultLower, "entered plan mode") {
+		if targetMode == PermissionModePlan && strings.Contains(resultLower, "entered plan mode") {
 			confirmed = true
-		} else if targetMode == "default" && strings.Contains(resultLower, "approved your plan") {
+		} else if targetMode == PermissionModeDefault && strings.Contains(resultLower, "approved your plan") {
 			confirmed = true
 		}
 

@@ -3,7 +3,6 @@ import type { RenderContext } from './messageRenderers'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 
-import { Formatter, FracturedJsonOptions } from 'fracturedjsonjs'
 import Check from 'lucide-solid/icons/check'
 import Copy from 'lucide-solid/icons/copy'
 import { createMemo, createSignal, ErrorBoundary, For, onMount, Show } from 'solid-js'
@@ -20,6 +19,7 @@ import { renderMessageContent, ToolHeaderActions } from './messageRenderers'
 import * as chatStyles from './messageStyles.css'
 import { getAssistantContent } from './messageUtils'
 import { renderNotificationThread } from './notificationRenderers'
+import { prettifyJson } from './rendererUtils'
 
 const logger = createLogger('MessageBubble')
 
@@ -60,21 +60,6 @@ function typeToRole(type: string | undefined): MessageRole {
     case 'system': return MessageRole.SYSTEM
     case 'result': return MessageRole.RESULT
     default: return MessageRole.UNSPECIFIED
-  }
-}
-
-const formatter = new Formatter()
-const opts = new FracturedJsonOptions()
-opts.MaxTotalLineLength = 80
-opts.MaxInlineComplexity = 1
-formatter.Options = opts
-
-function prettifyJson(raw: string): string {
-  try {
-    return formatter.Reformat(raw)
-  }
-  catch {
-    return raw
   }
 }
 
@@ -322,7 +307,17 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     const cat = category()
     if (cat.kind !== 'assistant_text' && cat.kind !== 'assistant_thinking')
       return null
-    const content = getAssistantContent(parsed().parentObject)
+    const obj = parsed().parentObject
+    if (!obj)
+      return null
+
+    // Codex format: {item: {type: 'agentMessage', text: '...'}, ...}
+    const item = obj.item as Record<string, unknown> | undefined
+    if (item?.type === 'agentMessage' && typeof item.text === 'string')
+      return item.text.trim() || null
+
+    // Claude Code format: {type: 'assistant', message: {content: [...]}}
+    const content = getAssistantContent(obj)
     if (!content)
       return null
     return content
@@ -392,7 +387,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
               <ErrorBoundary fallback={renderErrorFallback('Failed to render message:')}>
                 {category().kind === 'notification_thread'
                   ? renderNotificationThread((category() as { kind: 'notification_thread', messages: unknown[] }).messages)
-                  : renderMessageContent(parsed().parentObject ?? parsed().rawText, props.message.role, renderContext(), category())}
+                  : renderMessageContent(parsed().parentObject ?? parsed().rawText, props.message.role, renderContext(), category(), props.message.agentProvider)}
               </ErrorBoundary>
             </div>
           </div>
@@ -400,9 +395,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
             <ToolHeaderActions
               createdAt={props.message.createdAt}
               updatedAt={props.message.updatedAt}
-              threadCount={nonControlChildren().length}
-              threadExpanded={threadExpanded()}
-              onToggleThread={() => setThreadExpanded(prev => !prev)}
+              expanded={threadExpanded()}
+              onToggleExpand={nonControlChildren().length > 0 ? () => setThreadExpanded(prev => !prev) : undefined}
+              expandLabel={nonControlChildren().length > 0 ? `Expand ${nonControlChildren().length} tool result${nonControlChildren().length === 1 ? '' : 's'}` : undefined}
               onCopyJson={copyJson}
               jsonCopied={jsonCopied()}
               onReply={extractQuotableText() ? handleReply : undefined}

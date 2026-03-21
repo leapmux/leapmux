@@ -1,18 +1,7 @@
-import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
+import { openSettingsMenu, waitForSettingsIdle } from './helpers/ui'
 
 const MODE_NOTIFICATION_RE = /Mode \(/
-
-/** Click the settings trigger to open the dropdown menu. */
-async function openSettingsMenu(page: Page) {
-  await page.locator('[data-testid="agent-settings-trigger"]').click()
-  await expect(page.locator('[data-testid="agent-settings-menu"]')).toBeVisible()
-}
-
-/** Wait for the settings loading spinner to disappear. */
-async function waitForSettingsIdle(page: Page) {
-  await expect(page.locator('[data-testid="settings-loading-spinner"]')).not.toBeVisible()
-}
 
 test.describe('Shift-Tab Plan Mode Toggle', () => {
   test('toggle plan mode with Shift+Tab', async ({ page, authenticatedWorkspace }) => {

@@ -1,23 +1,6 @@
 import type { Page } from '@playwright/test'
-import { lastAssistantBubble, openAgentViaUI } from './helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, lastAssistantBubble, openAgentViaUI, openSettingsMenu, waitForSettingsIdle } from './helpers/ui'
 import { expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
-
-/** Open the settings menu, retrying if it was caught mid-close animation. */
-async function openSettingsMenu(page: Page) {
-  const trigger = page.locator('[data-testid="agent-settings-trigger"]')
-  const menu = page.locator('[data-testid="agent-settings-menu"]')
-  await expect(async () => {
-    if (!await menu.isVisible()) {
-      await trigger.click()
-    }
-    await expect(menu).toBeVisible()
-  }).toPass({ timeout: 5000 })
-}
-
-/** Wait for the settings loading spinner to disappear. */
-async function waitForSettingsIdle(page: Page) {
-  await expect(page.locator('[data-testid="settings-loading-spinner"]')).not.toBeVisible()
-}
 
 /** Get the trigger button's text content. */
 async function getTriggerText(page: Page): Promise<string> {
@@ -29,7 +12,7 @@ test.describe('Agent Settings', () => {
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     await expect(trigger).toBeVisible()
 
-    // Default: Sonnet model (overridden via LEAPMUX_DEFAULT_MODEL in e2e), Default permission mode
+    // Default: Sonnet model (overridden via LEAPMUX_CLAUDE_DEFAULT_MODEL in e2e), Default permission mode
     const text = await getTriggerText(page)
     expect(text).toContain('Sonnet')
     expect(text).toContain('Default')
@@ -236,12 +219,18 @@ test.describe('Agent Settings', () => {
     // Wait for the editor to become visible again after worker reconnects
     await expect(editor).toBeVisible()
 
+    // Count existing assistant bubbles before sending the next message.
+    const assistantBubblesBefore = await page.locator(ASSISTANT_BUBBLE_SELECTOR).count()
+
     // Send a message to trigger agent re-launch via ensureAgentActive
     await editor.click()
     await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
 
-    // Wait for a response (agent resumed successfully)
+    // Wait for a NEW assistant bubble to appear (not the old "2" response).
+    await expect(page.locator(ASSISTANT_BUBBLE_SELECTOR)).toHaveCount(assistantBubblesBefore + 1, { timeout: 30000 })
+
+    // The new bubble (last one) should contain "4".
     const lastAssistant2 = lastAssistantBubble(page)
     await expect(lastAssistant2).toContainText('4', { timeout: 30000 })
 

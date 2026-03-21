@@ -54,8 +54,8 @@ func TestUpdateAgentSettings_ClearsSessionIDOnRestartFailure(t *testing.T) {
 	svc.AgentStartupTimeout = 1 * time.Nanosecond // forces immediate timeout
 
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
-		AgentId: "agent-1",
-		Model:   "sonnet",
+		AgentId:  "agent-1",
+		Settings: &leapmuxv1.AgentSettings{Model: "sonnet"},
 	}, w)
 
 	// Verify the session ID was cleared from the DB.
@@ -67,6 +67,35 @@ func TestUpdateAgentSettings_ClearsSessionIDOnRestartFailure(t *testing.T) {
 	// Verify the model was still updated in the DB.
 	assert.Equal(t, "sonnet", dbAgent.Model,
 		"model should be updated even when restart fails")
+}
+
+func TestResolveResumeSessionID_ResumedAgentPreservesSession(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t, "ws-1")
+
+	// Create an agent with resumed=1 (simulates a resumed session).
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:          "agent-resumed",
+		WorkspaceID: "ws-1",
+		WorkingDir:  t.TempDir(),
+		HomeDir:     t.TempDir(),
+		Model:       "opus",
+		Resumed:     1,
+	}))
+	// Set a session ID (simulates the init message storing it).
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
+		AgentSessionID: "session-123",
+		ID:             "agent-resumed",
+	}))
+
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-resumed")
+	require.NoError(t, err)
+
+	// No user messages have been inserted for this agent in leapmux's DB,
+	// but because the agent was resumed, the session ID should be preserved.
+	result := svc.resolveResumeSessionID("agent-resumed", dbAgent.AgentSessionID, dbAgent.Resumed)
+	assert.Equal(t, "session-123", result,
+		"resumed agent should preserve session ID even without local messages")
 }
 
 func TestUpdateAgentSettings_DoesNotResumeSessionOnRestart(t *testing.T) {
@@ -91,8 +120,8 @@ func TestUpdateAgentSettings_DoesNotResumeSessionOnRestart(t *testing.T) {
 	// Agent is NOT running (HasAgent returns false), so the restart
 	// block is skipped. Verify the DB update works correctly.
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
-		AgentId: "agent-1",
-		Model:   "sonnet",
+		AgentId:  "agent-1",
+		Settings: &leapmuxv1.AgentSettings{Model: "sonnet"},
 	}, w)
 
 	// Verify the response was successful (no errors).

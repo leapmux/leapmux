@@ -19,10 +19,8 @@ import (
 //go:embed all:frontend
 var assets embed.FS
 
-var version = "dev"
-
 func main() {
-	app := NewApp(version)
+	app := NewApp()
 
 	release, err := acquireSingleInstance(app.bringToFront)
 	if errors.Is(err, errAlreadyRunning) {

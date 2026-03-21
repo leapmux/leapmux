@@ -55,6 +55,41 @@ export function relativizePath(absPath: string, workingDir?: string, homeDir?: s
   return best
 }
 
+/** Default notification thread types recognized by LeapMux (shared across providers). */
+const BASE_NOTIFICATION_TYPES = new Set([
+  'settings_changed',
+  'context_cleared',
+  'interrupted',
+  'rate_limit',
+  'agent_renamed',
+])
+
+/**
+ * Check whether the wrapper envelope represents a notification thread.
+ * Accepts an optional set of additional types beyond the base set.
+ */
+export function isNotificationThreadWrapper(
+  wrapper: { messages: unknown[] } | null,
+  extraTypes?: Set<string>,
+  checkSubtype?: (type: string, subtype: string | undefined) => boolean,
+): wrapper is { messages: unknown[] } {
+  if (!wrapper || wrapper.messages.length < 1)
+    return false
+  const first = wrapper.messages[0] as Record<string, unknown>
+  const t = first.type as string | undefined
+  if (!t)
+    return false
+  if (BASE_NOTIFICATION_TYPES.has(t))
+    return true
+  if (extraTypes?.has(t))
+    return true
+  if (checkSubtype) {
+    const st = first.subtype as string | undefined
+    return checkSubtype(t, st)
+  }
+  return false
+}
+
 /** Extract assistant content array from parsed message, or null if not applicable. */
 export function getAssistantContent(parsed: unknown): Array<Record<string, unknown>> | null {
   if (!isObject(parsed) || parsed.type !== 'assistant')

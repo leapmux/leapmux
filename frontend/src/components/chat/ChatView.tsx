@@ -3,6 +3,7 @@ import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 
 import ArrowDown from 'lucide-solid/icons/arrow-down'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
+import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import { createEffect, createSignal, For, on, onCleanup, onMount, Show, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
@@ -14,6 +15,7 @@ import { markdownContent } from './markdownContent.css'
 import { MessageBubble } from './MessageBubble'
 import { assistantMessage } from './messageStyles.css'
 import { ThinkingIndicator } from './ThinkingIndicator'
+import { ToolUseLayout } from './toolRenderers'
 
 interface ChatViewProps {
   messages: AgentChatMessage[]
@@ -49,6 +51,8 @@ interface ChatViewProps {
   onQuote?: (text: string) => void
   /** Called when the user clicks the reply button on an assistant message. */
   onReply?: (quotedText: string) => void
+  /** When "plan", streaming text is rendered with plan styling. */
+  streamingType?: string
 }
 
 export const ChatView: Component<ChatViewProps> = (props) => {
@@ -323,10 +327,29 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                   )}
                 </For>
                 <Show when={props.streamingText}>
-                  <div class={assistantMessage}>
-                    {/* eslint-disable-next-line solid/no-innerhtml -- streaming text rendered via remark */}
-                    <div class={markdownContent} innerHTML={renderedStreamHtml()} />
-                  </div>
+                  <Show
+                    when={props.streamingType === 'plan'}
+                    fallback={(
+                      <div class={assistantMessage}>
+                        {/* eslint-disable-next-line solid/no-innerhtml -- streaming text rendered via remark */}
+                        <div class={markdownContent} innerHTML={renderedStreamHtml()} />
+                      </div>
+                    )}
+                  >
+                    <ToolUseLayout
+                      icon={PlaneTakeoff}
+                      toolName="Plan"
+                      title="Proposed Plan"
+                      alwaysVisible={true}
+                      bordered={false}
+                    >
+                      <>
+                        <hr />
+                        {/* eslint-disable-next-line solid/no-innerhtml -- streaming text rendered via remark */}
+                        <div class={markdownContent} style={{ 'font-size': 'var(--text-regular)' }} innerHTML={renderedStreamHtml()} />
+                      </>
+                    </ToolUseLayout>
+                  </Show>
                 </Show>
                 <ThinkingIndicator
                   visible={props.agentWorking && !props.streamingText}

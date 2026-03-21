@@ -36,7 +36,6 @@ type Context struct {
 	DataDir             string
 	WorkerID            string          // This worker's ID (set after registration)
 	Name                string          // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
-	Version             string          // Build-time version string
 	Send                SendFunc        // Forwards messages to the Hub via WebSocket
 	Watchers            *WatcherManager // Fan-out manager for event broadcasting
 	Output              *OutputHandler  // Agent output NDJSON processor
@@ -146,28 +145,105 @@ func RegisterAll(d *channel.Dispatcher, svc *Context) {
 	registerSysInfoHandlers(d, svc)
 }
 
-// modelOrDefault returns the given model, or falls back to the
-// LEAPMUX_DEFAULT_MODEL environment variable, or "opus" if unset.
-func modelOrDefault(model string) string {
+// modelOrDefault returns the model if non-empty, otherwise the provider's
+// default model from the agent registry (which checks env vars and the
+// registered default model list).
+func modelOrDefault(model string, provider leapmuxv1.AgentProvider) string {
 	if model != "" {
 		return model
 	}
-	if env := os.Getenv("LEAPMUX_DEFAULT_MODEL"); env != "" {
-		return env
-	}
-	return "opus"
+	return agent.DefaultModel(provider)
 }
 
-// effortOrDefault returns the given effort, or falls back to the
-// LEAPMUX_DEFAULT_EFFORT environment variable, or "high" if unset.
-func effortOrDefault(effort string) string {
+// effortOrDefault returns the effort if non-empty, otherwise the
+// provider's default effort from the agent registry.
+func effortOrDefault(effort string, provider leapmuxv1.AgentProvider) string {
 	if effort != "" {
 		return effort
 	}
-	if env := os.Getenv("LEAPMUX_DEFAULT_EFFORT"); env != "" {
-		return env
+	return agent.DefaultEffort(provider)
+}
+
+// codexSandboxPolicyOrDefault returns the sandbox policy if non-empty,
+// otherwise the Codex default.
+func codexSandboxPolicyOrDefault(policy string) string {
+	return agent.StringOrDefault(policy, agent.CodexDefaultSandboxPolicy)
+}
+
+// codexNetworkAccessOrDefault returns the network access if non-empty,
+// otherwise the Codex default.
+func codexNetworkAccessOrDefault(access string) string {
+	return agent.StringOrDefault(access, agent.CodexDefaultNetworkAccess)
+}
+
+// codexCollaborationModeOrDefault returns the collaboration mode if non-empty,
+// otherwise the Codex default.
+func codexCollaborationModeOrDefault(mode string) string {
+	return agent.StringOrDefault(mode, agent.CodexDefaultCollaborationMode)
+}
+
+func codexCollaborationModeForProvider(mode string, provider leapmuxv1.AgentProvider) string {
+	if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
+		return codexCollaborationModeOrDefault(mode)
 	}
-	return "high"
+	return mode
+}
+
+// settingsDisplayLabels returns lookup functions for model and effort display
+// names using the agent's AvailableModels data. If the agent is not running or
+// has no model list, the lookup functions return the raw ID as-is.
+func (svc *Context) settingsDisplayLabels(agentID string, provider leapmuxv1.AgentProvider) (modelLabel, effortLabel func(string) string) {
+	models := svc.Agents.AvailableModels(agentID, provider)
+
+	// Build model ID → displayName map.
+	modelMap := make(map[string]string, len(models))
+	effortMap := make(map[string]string, len(models)*4)
+	for _, m := range models {
+		if m.DisplayName != "" {
+			modelMap[m.Id] = m.DisplayName
+		}
+		for _, e := range m.SupportedEfforts {
+			if e.Name != "" {
+				effortMap[e.Id] = e.Name
+			}
+		}
+	}
+
+	modelLabel = func(id string) string {
+		if label, ok := modelMap[id]; ok {
+			return label
+		}
+		return id
+	}
+	effortLabel = func(id string) string {
+		if label, ok := effortMap[id]; ok {
+			return label
+		}
+		return id
+	}
+	return
+}
+
+// permissionModeLabel returns a human-readable label for a permission mode ID
+// by looking up the "permissionMode" option group in the provider registry.
+func permissionModeLabel(mode string, provider leapmuxv1.AgentProvider) string {
+	return optionLabel("permissionMode", mode, provider)
+}
+
+// optionLabel looks up a human-readable label for an option value from the
+// provider registry's option groups. Falls back to the raw value if not found.
+func optionLabel(key, value string, provider leapmuxv1.AgentProvider) string {
+	for _, group := range agent.AvailableOptionGroupsForProvider(provider) {
+		if group.Key == key {
+			for _, opt := range group.Options {
+				if opt.Id == value {
+					return opt.Name
+				}
+			}
+			return value
+		}
+	}
+	return value
 }
 
 // sendProtoResponse is a helper that serializes a proto response and sends it.

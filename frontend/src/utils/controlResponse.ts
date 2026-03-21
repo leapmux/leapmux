@@ -1,3 +1,9 @@
+import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+// Import directly from registry (not providers/index) to avoid circular dependency.
+// providers/index re-exports from registry but also side-effect-imports claude/codex,
+// which import settingsShared, which imports this module's constants.
+import { getProviderPlugin } from '~/components/chat/providers/registry'
+
 /** Extract the tool_name from a control_request payload */
 export function getToolName(payload: Record<string, unknown>): string {
   const request = payload.request as Record<string, unknown> | undefined
@@ -60,67 +66,14 @@ export function buildDenyResponse(
  * The hub detects this format and sends it as raw input to Claude Code's stdin.
  * Uses the same wire protocol as the Agent SDK's setPermissionMode().
  */
-export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'
+export type PermissionMode = string
 
-/** Default model and effort level for new agents. */
-export const DEFAULT_MODEL = import.meta.env.LEAPMUX_DEFAULT_MODEL || 'opus'
-export const DEFAULT_EFFORT = import.meta.env.LEAPMUX_DEFAULT_EFFORT || 'high'
-
-/** Display labels for permission modes, models, and effort levels. */
-export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
-  default: 'Default',
-  plan: 'Plan Mode',
-  acceptEdits: 'Accept Edits',
-  bypassPermissions: 'Bypass Permissions',
+/** Returns the default model for the given agent provider. */
+export function defaultModelForProvider(provider: AgentProvider): string {
+  return getProviderPlugin(provider)?.defaultModel ?? 'opus'
 }
 
-export const MODEL_LABELS: Record<string, string> = {
-  'opus': 'Opus',
-  'opus[1m]': 'Opus[1m]',
-  'sonnet': 'Sonnet',
-  'sonnet[1m]': 'Sonnet[1m]',
-  'haiku': 'Haiku',
-}
-
-export const EFFORT_LABELS: Record<string, string> = {
-  auto: 'Auto',
-  max: 'Max',
-  high: 'High',
-  medium: 'Medium',
-  low: 'Low',
-}
-
-export function buildSetPermissionModeRequest(mode: PermissionMode): string {
-  const requestId = generateRandomId()
-  return JSON.stringify({
-    type: 'control_request',
-    request_id: requestId,
-    request: {
-      subtype: 'set_permission_mode',
-      mode,
-    },
-  })
-}
-
-/**
- * Builds a control_request JSON string for interrupting a running agent turn.
- */
-export function buildInterruptRequest(): string {
-  const requestId = generateRandomId()
-  return JSON.stringify({
-    type: 'control_request',
-    request_id: requestId,
-    request: {
-      subtype: 'interrupt',
-    },
-  })
-}
-
-function generateRandomId(): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
-  let result = '01'
-  for (let i = 0; i < 22; i++) {
-    result += chars[Math.floor(Math.random() * chars.length)]
-  }
-  return result
+/** Returns the default effort for the given agent provider. */
+export function defaultEffortForProvider(provider: AgentProvider): string {
+  return getProviderPlugin(provider)?.defaultEffort ?? 'high'
 }

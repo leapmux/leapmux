@@ -203,7 +203,7 @@ func (s *agentOutputSink) UpdateSessionID(sessionID string) {
 
 // buildStatusChange constructs an AgentStatusChange from the given DB agent
 // and overrides.  Fields that are always the same across callers (agentID,
-// workerOnline, agentProvider, supportsModelEffort, gitStatus) are filled in
+// workerOnline, agentProvider, gitStatus) are filled in
 // automatically.
 func (s *agentOutputSink) buildStatusChange(
 	dbAgent db.Agent,
@@ -211,16 +211,16 @@ func (s *agentOutputSink) buildStatusChange(
 	sessionID, permissionMode string,
 ) *leapmuxv1.AgentStatusChange {
 	return &leapmuxv1.AgentStatusChange{
-		AgentId:             s.agentID,
-		Status:              status,
-		AgentSessionId:      sessionID,
-		WorkerOnline:        true,
-		PermissionMode:      permissionMode,
-		Model:               modelOrDefault(dbAgent.Model),
-		Effort:              dbAgent.Effort,
-		GitStatus:           gitStatusToProto(gitutil.GetGitStatus(dbAgent.WorkingDir)),
-		SupportsModelEffort: s.h.agents.SupportsModelEffort(s.agentID),
-		AgentProvider:       s.agentProvider,
+		AgentId:                s.agentID,
+		Status:                 status,
+		AgentSessionId:         sessionID,
+		WorkerOnline:           true,
+		PermissionMode:         permissionMode,
+		Model:                  modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
+		Effort:                 dbAgent.Effort,
+		GitStatus:              gitutil.GetGitStatus(dbAgent.WorkingDir),
+		AgentProvider:          s.agentProvider,
+		CodexCollaborationMode: codexCollaborationModeForProvider(dbAgent.CodexCollaborationMode, dbAgent.AgentProvider),
 	}
 }
 
@@ -616,6 +616,7 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 	type envelope struct {
 		Type    string                    `json:"type"`
 		Subtype string                    `json:"subtype"`
+		Method  string                    `json:"method"`
 		Changes map[string]settingsChange `json:"changes,omitempty"`
 		RLInfo  *struct {
 			RateLimitType string `json:"rateLimitType"`
@@ -637,6 +638,9 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 
 	rateLimitByType := map[string]json.RawMessage{}
 	rateLimitLastIdx := -1
+
+	var codexRateLimitRaw json.RawMessage
+	codexRateLimitLastIdx := -1
 
 	var latestStatusRaw json.RawMessage
 	statusLastIdx := -1
@@ -694,6 +698,11 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 			rateLimitByType[key] = raw
 			rateLimitLastIdx = i
 
+		case env.Method == "account/rateLimits/updated":
+			// Codex native rate limit notification: deduplicate, keep last.
+			codexRateLimitRaw = raw
+			codexRateLimitLastIdx = i
+
 		case env.Type == "system" && env.Subtype == "status":
 			latestStatusRaw = raw
 			statusLastIdx = i
@@ -747,6 +756,10 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 
 	for _, raw := range rateLimitByType {
 		entries = append(entries, indexedRaw{rateLimitLastIdx, raw})
+	}
+
+	if codexRateLimitLastIdx >= 0 {
+		entries = append(entries, indexedRaw{codexRateLimitLastIdx, codexRateLimitRaw})
 	}
 
 	if statusLastIdx >= 0 {

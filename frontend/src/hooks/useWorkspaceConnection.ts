@@ -33,7 +33,7 @@ export interface WorkspaceConnectionParams {
   /** Returns the worker ID for the active workspace. */
   getWorkerId: () => string
   /** Called when an agent turn ends (turn completed or control request received). */
-  onTurnEnd?: (agentId: string, numTurns?: number) => void
+  onTurnEnd?: (agentId: string, numToolUses?: number) => void
 }
 
 export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
@@ -117,6 +117,10 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
                 updates.contextUsage = info.contextUsage
               if (info?.rateLimits !== undefined)
                 updates.rateLimits = info.rateLimits as Record<string, unknown>
+              if (info?.codexTurnId !== undefined)
+                updates.codexTurnId = info.codexTurnId as string
+              if (info?.streamingType !== undefined)
+                updates.streamingType = info.streamingType as string
               agentSessionStore.updateInfo(agentId, updates)
               break
             }
@@ -127,9 +131,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
               agentSessionStore.clearContextUsage(agentId)
               chatStore.clearTodos(agentId)
             }
-            const rl = extractRateLimitInfo(parsed)
-            if (rl) {
-              agentSessionStore.updateInfo(agentId, { rateLimits: { [rl.key]: rl.info } } as Record<string, unknown>)
+            const rls = extractRateLimitInfo(parsed)
+            if (rls.length > 0) {
+              const rateLimits: Record<string, Record<string, unknown>> = {}
+              for (const rl of rls)
+                rateLimits[rl.key] = rl.info
+              agentSessionStore.updateInfo(agentId, { rateLimits } as Record<string, unknown>)
             }
             const sc = extractSettingsChanges(parsed)
             if (sc) {
@@ -168,7 +175,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             const meta = extractResultMetadata(parseMessageContent(msg))
             if (meta) {
               if (meta.subtype && catchUpPhase === 'live')
-                params.onTurnEnd?.(agentId, meta.numTurns)
+                params.onTurnEnd?.(agentId, meta.numToolUses)
               if (meta.contextWindow !== undefined) {
                 const existingUsage = agentSessionStore.getInfo(agentId).contextUsage
                 if (existingUsage) {
@@ -218,11 +225,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             ? {}
             : {
                 ...(sc.permissionMode ? { permissionMode: sc.permissionMode } : {}),
+                ...(sc.codexCollaborationMode ? { codexCollaborationMode: sc.codexCollaborationMode } : {}),
                 ...(sc.model ? { model: sc.model } : {}),
                 ...(sc.effort ? { effort: sc.effort } : {}),
               }),
           gitStatus: sc.gitStatus,
-          supportsModelEffort: sc.supportsModelEffort,
         })
         if (sc.gitStatus) {
           const gs = sc.gitStatus
@@ -262,6 +269,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       }
       case 'controlRequest': {
         const cr = inner.value
+        // During catch-up, the INACTIVE statusChange may have already been
+        // processed before this replayed controlRequest arrives. Skip adding
+        // the request so the user isn't stuck on an unanswerable prompt.
+        const agentEntry = agentStore.state.agents.find(a => a.id === cr.agentId)
+        if (agentEntry?.status === AgentStatus.INACTIVE)
+          break
         const payload = JSON.parse(new TextDecoder().decode(cr.payload))
         controlStore.addRequest(cr.agentId, {
           requestId: cr.requestId,

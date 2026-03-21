@@ -54,6 +54,9 @@ message OpenAgentRequest {
   string create_branch = 14;        // "Create new branch" mode — branch name to create
   string create_branch_base = 15;   // Base branch for "Create new branch" (default: current branch)
   AgentProvider agent_provider = 16; // Coding agent provider (default: CLAUDE_CODE)
+  string codex_sandbox_policy = 17;  // Codex sandbox policy (optional, for future use)
+  string codex_network_access = 18;  // Codex network access ("restricted" or "enabled")
+  string codex_collaboration_mode = 19; // Codex collaboration mode ("default" or "plan")
 }
 
 message OpenAgentResponse {
@@ -102,8 +105,44 @@ message AgentInfo {
   string working_dir = 13;      // Working directory on the worker
   AgentGitStatus git_status = 14; // Git status for the agent's working directory
   string home_dir = 15;         // Worker's home directory for tilde path display
-  bool supports_model_effort = 16; // Whether the agent supports --model/--effort CLI args
+  reserved 16; // was supports_model_effort
   AgentProvider agent_provider = 17; // Coding agent provider
+  repeated AvailableModel available_models = 18; // Models reported by the agent process
+  repeated AvailableOptionGroup available_option_groups = 19; // Option groups (e.g. permission modes, sandbox policies)
+  string codex_sandbox_policy = 20; // Codex sandbox policy (e.g. "danger-full-access", "workspace-write")
+  string codex_network_access = 21; // Codex network access (e.g. "restricted", "enabled")
+  string codex_collaboration_mode = 22; // Codex collaboration mode (e.g. "default", "plan")
+}
+
+// AvailableModel describes a model reported by the agent process (e.g. Codex model/list).
+message AvailableModel {
+  string id = 1;               // Model identifier (passed as "model" in requests)
+  string display_name = 2;     // Human-readable label
+  bool is_default = 3;         // Whether this is the provider's default model
+  string default_effort = 4;   // Default reasoning effort for this model
+  repeated AvailableEffort supported_efforts = 5; // Efforts this model supports
+  string description = 6;      // Tooltip / description text shown on hover
+}
+
+// AvailableEffort describes a reasoning effort supported by a model.
+message AvailableEffort {
+  string id = 1;               // Effort identifier (e.g. "high", "medium")
+  string name = 2;             // Human-readable short label (e.g. "High")
+  string description = 3;      // Tooltip / description text shown on hover
+}
+
+// AvailableOption describes a single selectable option (e.g. a permission mode value).
+message AvailableOption {
+  string id = 1;           // Value stored/sent in requests (e.g. "default", "never")
+  string name = 2;         // Human-readable label (e.g. "Default", "Full Auto")
+  string description = 3;  // Tooltip text
+}
+
+// AvailableOptionGroup describes a named group of options (e.g. "Permission Mode", "Approval Policy").
+message AvailableOptionGroup {
+  string key = 1;                        // Identifier (e.g. "permissionMode")
+  string label = 2;                      // Display label (e.g. "Permission Mode")
+  repeated AvailableOption options = 3;   // The options in this group
 }
 
 // --- Agent Messaging ---
@@ -150,8 +189,9 @@ message AgentStatusChange {
   string model = 6;
   string effort = 7;
   AgentGitStatus git_status = 8; // Git status for the agent's working directory
-  bool supports_model_effort = 9; // Whether the agent supports --model/--effort CLI args
+  reserved 9; // was supports_model_effort
   AgentProvider agent_provider = 10; // Provider for this agent
+  string codex_collaboration_mode = 11; // Codex collaboration mode for Codex agents
 }
 
 // AgentGitStatus holds git repository status for an agent's working directory.
@@ -228,10 +268,20 @@ message DeleteAgentMessageRequest {
 
 message DeleteAgentMessageResponse {}
 
+// AgentSettings holds agent setting values. Empty strings mean "no change"
+// when used in UpdateAgentSettingsRequest.
+message AgentSettings {
+  string model = 1;
+  string effort = 2;
+  string permission_mode = 3;
+  string codex_sandbox_policy = 4;
+  string codex_network_access = 5;
+  string codex_collaboration_mode = 6;
+}
+
 message UpdateAgentSettingsRequest {
   string agent_id = 1;
-  string model = 2;   // Empty = don't change
-  string effort = 3;  // Empty = don't change
+  AgentSettings settings = 2;
 }
 
 message UpdateAgentSettingsResponse {}

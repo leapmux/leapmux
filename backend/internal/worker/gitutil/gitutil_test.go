@@ -75,7 +75,7 @@ func TestGetGitStatus_OriginURL(t *testing.T) {
 
 		status := GetGitStatus(dir)
 		require.NotNil(t, status)
-		assert.Equal(t, expected, status.OriginURL)
+		assert.Equal(t, expected, status.OriginUrl)
 	})
 
 	t.Run("origin URL is empty when no remote", func(t *testing.T) {
@@ -83,7 +83,7 @@ func TestGetGitStatus_OriginURL(t *testing.T) {
 
 		status := GetGitStatus(dir)
 		require.NotNil(t, status)
-		assert.Empty(t, status.OriginURL)
+		assert.Empty(t, status.OriginUrl)
 	})
 }
 

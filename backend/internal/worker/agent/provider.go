@@ -33,7 +33,11 @@ type Provider interface {
 	IsStopped() bool
 	Wait() error
 	Stderr() string
-	SupportsModelEffort() bool
-	ConfirmedPermissionMode() string
+	CurrentSettings() *leapmuxv1.AgentSettings
 	HandleOutput(content []byte)
+	AvailableModels() []*leapmuxv1.AvailableModel
+	// UpdateSettings applies setting changes to a running agent so that
+	// the next turn picks them up without a restart. Providers that do
+	// not support live updates (e.g. Claude Code) return false.
+	UpdateSettings(s *leapmuxv1.AgentSettings) bool
 }
