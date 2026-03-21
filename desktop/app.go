@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/leapmux/leapmux/internal/util/version"
+	"github.com/leapmux/leapmux/util/version"
 	"github.com/leapmux/leapmux/solo"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )

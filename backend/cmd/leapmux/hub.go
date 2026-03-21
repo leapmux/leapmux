@@ -9,7 +9,7 @@ import (
 	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/logging"
-	"github.com/leapmux/leapmux/internal/util/version"
+	"github.com/leapmux/leapmux/util/version"
 )
 
 func runHub(args []string) error {

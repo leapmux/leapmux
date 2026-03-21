@@ -13,7 +13,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/util/version"
+	"github.com/leapmux/leapmux/util/version"
 )
 
 // CodexAgent manages a single Codex app-server process.

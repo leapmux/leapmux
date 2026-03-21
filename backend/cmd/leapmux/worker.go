@@ -10,7 +10,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/logging"
-	"github.com/leapmux/leapmux/internal/util/version"
+	"github.com/leapmux/leapmux/util/version"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"

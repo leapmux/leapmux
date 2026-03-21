@@ -6,7 +6,7 @@ import (
 	"os"
 
 	"github.com/leapmux/leapmux/internal/logging"
-	"github.com/leapmux/leapmux/internal/util/version"
+	"github.com/leapmux/leapmux/util/version"
 )
 
 func main() {
