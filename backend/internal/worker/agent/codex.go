@@ -521,13 +521,13 @@ var codexDefaultEfforts = []*leapmuxv1.AvailableEffort{
 }
 
 var codexDefaultModels = []*leapmuxv1.AvailableModel{
-	{Id: "gpt-5.4", DisplayName: "GPT-5.4", Description: "Latest frontier agentic coding model", IsDefault: true, DefaultEffort: "medium", SupportedEfforts: codexDefaultEfforts},
-	{Id: "gpt-5.4-mini", DisplayName: "GPT-5.4 Mini", Description: "Smaller frontier agentic coding model", DefaultEffort: "medium", SupportedEfforts: codexDefaultEfforts},
-	{Id: "gpt-5.3-codex", DisplayName: "GPT-5.3 Codex", Description: "Frontier Codex-optimized agentic coding model", DefaultEffort: "medium", SupportedEfforts: codexDefaultEfforts},
-	{Id: "gpt-5.2-codex", DisplayName: "GPT-5.2 Codex", Description: "Frontier agentic coding model", DefaultEffort: "medium", SupportedEfforts: codexDefaultEfforts},
-	{Id: "gpt-5.2", DisplayName: "GPT-5.2", Description: "Optimized for professional work and long-running agents", DefaultEffort: "medium", SupportedEfforts: codexDefaultEfforts},
-	{Id: "gpt-5.1-codex-max", DisplayName: "GPT-5.1 Codex Max", Description: "Codex-optimized model for deep and fast reasoning", DefaultEffort: "medium", SupportedEfforts: codexDefaultEfforts},
-	{Id: "gpt-5.1-codex-mini", DisplayName: "GPT-5.1 Codex Mini", Description: "Optimized for Codex; cheaper, faster, but less capable", DefaultEffort: "medium", SupportedEfforts: codexDefaultEfforts},
+	{Id: "gpt-5.4", DisplayName: "GPT-5.4", Description: "Latest frontier agentic coding model", IsDefault: true, DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts},
+	{Id: "gpt-5.4-mini", DisplayName: "GPT-5.4 Mini", Description: "Smaller frontier agentic coding model", DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts},
+	{Id: "gpt-5.3-codex", DisplayName: "GPT-5.3 Codex", Description: "Frontier Codex-optimized agentic coding model", DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts},
+	{Id: "gpt-5.2-codex", DisplayName: "GPT-5.2 Codex", Description: "Frontier agentic coding model", DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts},
+	{Id: "gpt-5.2", DisplayName: "GPT-5.2", Description: "Optimized for professional work and long-running agents", DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts},
+	{Id: "gpt-5.1-codex-max", DisplayName: "GPT-5.1 Codex Max", Description: "Codex-optimized model for deep and fast reasoning", DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts},
+	{Id: "gpt-5.1-codex-mini", DisplayName: "GPT-5.1 Codex Mini", Description: "Optimized for Codex; cheaper, faster, but less capable", DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts},
 }
 
 func init() {
@@ -544,6 +544,7 @@ func init() {
 				Options: []*leapmuxv1.AvailableOption{
 					{Id: "never", Name: "Full Auto"},
 					{Id: "on-request", Name: "Suggest & Approve"},
+					{Id: "plan", Name: "Plan Mode"},
 					{Id: "untrusted", Name: "Auto-edit"},
 				},
 			},
