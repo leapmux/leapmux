@@ -11,6 +11,23 @@ export const RATE_LIMIT_POPOVER_LABELS: Record<string, string> = {
   seven_day: '7-Day Rate Limit',
 }
 
+/** Window-duration-to-type mapping for Codex rate limits. */
+const WINDOW_DURATION_TYPES: Record<number, string> = { 300: 'five_hour', 10080: 'seven_day' }
+
+/** Convert a Codex rate limit tier to RateLimitInfo. */
+export function codexTierToRateLimitInfo(tier: Record<string, unknown>): RateLimitInfo {
+  const usedPercent = tier.usedPercent as number ?? 0
+  const windowMins = tier.windowDurationMins as number
+  const rateLimitType = WINDOW_DURATION_TYPES[windowMins]
+    ?? (windowMins >= 1440 ? `${Math.round(windowMins / 1440)}_day` : `${Math.round(windowMins / 60)}_hour`)
+  return {
+    rateLimitType,
+    utilization: usedPercent / 100,
+    resetsAt: tier.resetsAt as number | undefined,
+    status: usedPercent >= 100 ? 'exceeded' : usedPercent >= 80 ? 'allowed_warning' : 'allowed',
+  }
+}
+
 /** Format seconds remaining as d:hh:mm or h:mm. Returns null if remaining time <= 0. */
 export function formatCountdown(resetAtUnixSec: number): string | null {
   const remaining = resetAtUnixSec - Math.floor(Date.now() / 1000)

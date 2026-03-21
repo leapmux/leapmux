@@ -129,9 +129,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
               agentSessionStore.clearContextUsage(agentId)
               chatStore.clearTodos(agentId)
             }
-            const rl = extractRateLimitInfo(parsed)
-            if (rl) {
-              agentSessionStore.updateInfo(agentId, { rateLimits: { [rl.key]: rl.info } } as Record<string, unknown>)
+            const rls = extractRateLimitInfo(parsed)
+            if (rls.length > 0) {
+              const rateLimits: Record<string, Record<string, unknown>> = {}
+              for (const rl of rls)
+                rateLimits[rl.key] = rl.info
+              agentSessionStore.updateInfo(agentId, { rateLimits } as Record<string, unknown>)
             }
             const sc = extractSettingsChanges(parsed)
             if (sc) {

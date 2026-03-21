@@ -1,6 +1,6 @@
 import type { RateLimitInfo } from '~/stores/agentSession.store'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { formatCountdown, formatRateLimitMessage, formatRateLimitSummary, getResetsAt, pickUrgentRateLimit } from '~/lib/rateLimitUtils'
+import { codexTierToRateLimitInfo, formatCountdown, formatRateLimitMessage, formatRateLimitSummary, getResetsAt, pickUrgentRateLimit } from '~/lib/rateLimitUtils'
 
 const UNKNOWN_TYPE_PREFIX_RE = /^Rate limit \(unknown_type\):/
 
@@ -131,6 +131,62 @@ describe('pickUrgentRateLimit', () => {
     const result = pickUrgentRateLimit(rateLimits)
     expect(result).not.toBeNull()
     expect(result!.countdown).toBe('1:00')
+  })
+})
+
+describe('codexTierToRateLimitInfo', () => {
+  it('converts a 5-hour tier with low usage', () => {
+    const info = codexTierToRateLimitInfo({ usedPercent: 4, windowDurationMins: 300, resetsAt: 1774070211 })
+    expect(info.rateLimitType).toBe('five_hour')
+    expect(info.utilization).toBeCloseTo(0.04)
+    expect(info.resetsAt).toBe(1774070211)
+    expect(info.status).toBe('allowed')
+  })
+
+  it('converts a 7-day tier with low usage', () => {
+    const info = codexTierToRateLimitInfo({ usedPercent: 4, windowDurationMins: 10080, resetsAt: 1774525963 })
+    expect(info.rateLimitType).toBe('seven_day')
+    expect(info.utilization).toBeCloseTo(0.04)
+    expect(info.status).toBe('allowed')
+  })
+
+  it('derives allowed_warning status when usedPercent >= 80', () => {
+    const info = codexTierToRateLimitInfo({ usedPercent: 85, windowDurationMins: 300 })
+    expect(info.status).toBe('allowed_warning')
+    expect(info.utilization).toBeCloseTo(0.85)
+  })
+
+  it('derives exceeded status when usedPercent >= 100', () => {
+    const info = codexTierToRateLimitInfo({ usedPercent: 100, windowDurationMins: 300 })
+    expect(info.status).toBe('exceeded')
+    expect(info.utilization).toBe(1)
+  })
+
+  it('handles usedPercent above 100', () => {
+    const info = codexTierToRateLimitInfo({ usedPercent: 120, windowDurationMins: 300 })
+    expect(info.status).toBe('exceeded')
+    expect(info.utilization).toBeCloseTo(1.2)
+  })
+
+  it('computes day-based type for large window durations', () => {
+    const info = codexTierToRateLimitInfo({ usedPercent: 50, windowDurationMins: 2880 })
+    expect(info.rateLimitType).toBe('2_day')
+  })
+
+  it('computes hour-based type for small window durations', () => {
+    const info = codexTierToRateLimitInfo({ usedPercent: 50, windowDurationMins: 120 })
+    expect(info.rateLimitType).toBe('2_hour')
+  })
+
+  it('handles missing usedPercent as 0', () => {
+    const info = codexTierToRateLimitInfo({ windowDurationMins: 300 })
+    expect(info.utilization).toBe(0)
+    expect(info.status).toBe('allowed')
+  })
+
+  it('handles missing resetsAt', () => {
+    const info = codexTierToRateLimitInfo({ usedPercent: 50, windowDurationMins: 300 })
+    expect(info.resetsAt).toBeUndefined()
   })
 })
 

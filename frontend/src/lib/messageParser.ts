@@ -3,6 +3,7 @@ import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import type { TodoItem } from '~/stores/chat.store'
 import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { decompressContentToString } from '~/lib/decompress'
+import { codexTierToRateLimitInfo } from '~/lib/rateLimitUtils'
 
 /**
  * The result of parsing a compressed AgentChatMessage. Every field is
@@ -196,19 +197,43 @@ export function extractResultMetadata(parsed: ParsedMessageContent): {
   return Object.keys(result).length > 0 ? result : null
 }
 
-/** Extract rate limit info from a LEAPMUX rate_limit inner message. */
+/** Extract rate limit info from a LEAPMUX rate_limit or Codex rateLimits/updated inner message. */
 export function extractRateLimitInfo(parsed: ParsedMessageContent): {
   key: string
   info: Record<string, unknown>
-} | null {
+}[] {
   const inner = getInnerMessage(parsed)
-  if (!inner || inner.type !== 'rate_limit')
-    return null
-  const rlInfo = inner.rate_limit_info as Record<string, unknown> | undefined
-  if (!rlInfo || typeof rlInfo !== 'object')
-    return null
-  const key = (rlInfo.rateLimitType as string) || 'unknown'
-  return { key, info: rlInfo }
+  if (!inner)
+    return []
+
+  // Claude Code format: {type: "rate_limit", rate_limit_info: {...}}
+  if (inner.type === 'rate_limit') {
+    const rlInfo = inner.rate_limit_info as Record<string, unknown> | undefined
+    if (!rlInfo || typeof rlInfo !== 'object')
+      return []
+    const key = (rlInfo.rateLimitType as string) || 'unknown'
+    return [{ key, info: rlInfo }]
+  }
+
+  // Codex native format: {method: "account/rateLimits/updated", params: {rateLimits: {primary: {...}, secondary: {...}}}}
+  if (inner.method === 'account/rateLimits/updated') {
+    const params = inner.params as Record<string, unknown> | undefined
+    const rl = params?.rateLimits as Record<string, unknown> | undefined
+    if (!rl)
+      return []
+    const results: { key: string, info: Record<string, unknown> }[] = []
+    for (const tierKey of ['primary', 'secondary']) {
+      const tier = rl[tierKey] as Record<string, unknown> | undefined
+      if (!tier)
+        continue
+      const info = codexTierToRateLimitInfo(tier)
+      if (info.rateLimitType)
+        results.push({ key: info.rateLimitType, info: info as unknown as Record<string, unknown> })
+    }
+    return results
+  }
+
+  return []
 }
 
 /** Extract settings changes from a LEAPMUX settings_changed inner message. */

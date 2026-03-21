@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -54,6 +55,9 @@ func handleCodexOutput(a *CodexAgent, content []byte) {
 
 	case "serverRequest/resolved":
 		a.handleServerRequestResolved(envelope.Params)
+
+	case "account/rateLimits/updated":
+		a.handleRateLimitsUpdated(content, envelope.Params)
 
 	case "error":
 		a.handleErrorNotification(envelope.Params)
@@ -270,6 +274,79 @@ func (a *CodexAgent) handleErrorNotification(params json.RawMessage) {
 			"type":  "agent_error",
 			"error": notif.Message,
 		})
+	}
+}
+
+// handleRateLimitsUpdated processes account/rateLimits/updated notifications.
+// The raw content is persisted as-is via PersistNotification, and converted
+// rate limit info is broadcast via BroadcastSessionInfo for the live popover.
+func (a *CodexAgent) handleRateLimitsUpdated(content []byte, params json.RawMessage) {
+	// Persist the raw Codex notification in the notification thread.
+	if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, content); err != nil {
+		slog.Error("codex persist rateLimits", "agent_id", a.agentID, "error", err)
+	}
+
+	// Extract and convert tiers for live session info broadcast.
+	var notif struct {
+		RateLimits struct {
+			Primary   *codexRateLimitTier `json:"primary"`
+			Secondary *codexRateLimitTier `json:"secondary"`
+		} `json:"rateLimits"`
+	}
+	if json.Unmarshal(params, &notif) != nil {
+		return
+	}
+
+	rateLimits := map[string]interface{}{}
+	for _, tier := range []*codexRateLimitTier{notif.RateLimits.Primary, notif.RateLimits.Secondary} {
+		if tier == nil {
+			continue
+		}
+		rlType := codexWindowToType(tier.WindowDurationMins)
+		status := "allowed"
+		if tier.UsedPercent >= 100 {
+			status = "exceeded"
+		} else if tier.UsedPercent >= 80 {
+			status = "allowed_warning"
+		}
+		info := map[string]interface{}{
+			"rateLimitType": rlType,
+			"utilization":   float64(tier.UsedPercent) / 100,
+			"status":        status,
+		}
+		if tier.ResetsAt != nil {
+			info["resetsAt"] = *tier.ResetsAt
+		}
+		rateLimits[rlType] = info
+	}
+	if len(rateLimits) > 0 {
+		a.sink.BroadcastSessionInfo(map[string]interface{}{
+			"rateLimits": rateLimits,
+		})
+	}
+}
+
+// codexRateLimitTier represents a single tier from Codex rate limit data.
+type codexRateLimitTier struct {
+	UsedPercent       float64  `json:"usedPercent"`
+	WindowDurationMins int     `json:"windowDurationMins"`
+	ResetsAt          *int64   `json:"resetsAt"`
+}
+
+// codexWindowToType maps a Codex window duration (minutes) to a rate limit type string.
+func codexWindowToType(mins int) string {
+	switch mins {
+	case 300:
+		return "five_hour"
+	case 10080:
+		return "seven_day"
+	default:
+		if mins >= 1440 {
+			days := (mins + 720) / 1440 // round
+			return fmt.Sprintf("%d_day", days)
+		}
+		hours := (mins + 30) / 60 // round
+		return fmt.Sprintf("%d_hour", hours)
 	}
 }
 

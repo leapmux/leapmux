@@ -57,7 +57,29 @@ function buildCodexApprovalResponse(requestId: number | string, decision: Record
 /** Extra notification types for Codex (agent_error). */
 const CODEX_EXTRA_NOTIF_TYPES = new Set(['agent_error'])
 function isCodexNotifThread(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
-  return isNotificationThreadWrapper(wrapper, CODEX_EXTRA_NOTIF_TYPES)
+  if (isNotificationThreadWrapper(wrapper, CODEX_EXTRA_NOTIF_TYPES))
+    return true
+  // Codex method-based notifications (e.g. account/rateLimits/updated)
+  if (!wrapper || wrapper.messages.length < 1)
+    return false
+  const first = wrapper.messages[0] as Record<string, unknown>
+  return first.method === 'account/rateLimits/updated'
+}
+
+/** Returns true when a Codex rate limit message has all tiers below the warning threshold. */
+function isCodexRateLimitAllAllowed(m: Record<string, unknown>): boolean {
+  if (m.method !== 'account/rateLimits/updated')
+    return false
+  const params = m.params as Record<string, unknown> | undefined
+  const rl = params?.rateLimits as Record<string, unknown> | undefined
+  if (!rl)
+    return true
+  for (const tierKey of ['primary', 'secondary']) {
+    const tier = rl[tierKey] as Record<string, unknown> | undefined
+    if (tier && (tier.usedPercent as number) >= 80)
+      return false
+  }
+  return true
 }
 
 /** Codex settings panel (model, effort, approval policy, sandbox). */
@@ -184,8 +206,14 @@ const codexPlugin: ProviderPlugin = {
   bypassPermissionMode: 'never',
   classify(parent, wrapper): MessageCategory {
     // Notification threads (settings_changed, context_cleared, etc.)
-    if (isCodexNotifThread(wrapper))
-      return { kind: 'notification_thread', messages: wrapper.messages }
+    if (isCodexNotifThread(wrapper)) {
+      // Filter out Codex rate limit messages where all tiers are "allowed".
+      const msgs = wrapper.messages.filter(m =>
+        !isObject(m) || !isCodexRateLimitAllAllowed(m as Record<string, unknown>))
+      if (msgs.length === 0)
+        return { kind: 'hidden' }
+      return { kind: 'notification_thread', messages: msgs }
+    }
 
     // Empty wrapper — hide.
     if (wrapper && wrapper.messages.length === 0)
@@ -255,6 +283,13 @@ const codexPlugin: ProviderPlugin = {
       if (parent.hidden === true)
         return { kind: 'hidden' }
       return { kind: 'user_content' }
+    }
+
+    // Codex method-based notifications
+    if (parent.method === 'account/rateLimits/updated') {
+      if (isCodexRateLimitAllAllowed(parent))
+        return { kind: 'hidden' }
+      return { kind: 'notification' }
     }
 
     // LeapMux notification types
