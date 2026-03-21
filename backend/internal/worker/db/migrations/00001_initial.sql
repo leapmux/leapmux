@@ -14,6 +14,7 @@ CREATE TABLE agents (
     model            TEXT NOT NULL DEFAULT 'opus',
     system_prompt    TEXT NOT NULL DEFAULT '',
     agent_session_id TEXT NOT NULL DEFAULT '',
+    resumed          INTEGER NOT NULL DEFAULT 0,
     permission_mode  TEXT NOT NULL DEFAULT 'default',
     effort           TEXT NOT NULL DEFAULT 'high',
     codex_sandbox_policy TEXT NOT NULL DEFAULT '',

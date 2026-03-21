@@ -72,6 +72,12 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// subsequent WatchEvents calls can access the agent.
 		svc.Channels.AddAccessibleWorkspaceID(sender.ChannelID(), r.GetWorkspaceId())
 
+		// Track whether this agent was created via session resume.
+		var resumed int64
+		if r.GetAgentSessionId() != "" {
+			resumed = 1
+		}
+
 		// Create the agent record in the database.
 		if err := svc.Queries.CreateAgent(bgCtx(), db.CreateAgentParams{
 			ID:                     agentID,
@@ -86,6 +92,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			CodexNetworkAccess:     r.GetCodexNetworkAccess(),
 			CodexCollaborationMode: codexCollaborationMode,
 			AgentProvider:          agentProvider,
+			Resumed:                resumed,
 		}); err != nil {
 			slog.Error("failed to create agent", "error", err)
 			sendInternalError(sender, "failed to create agent")
@@ -563,7 +570,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			if !updated {
 				svc.Agents.StopAndWaitAgent(agentID)
 
-				resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID)
+				resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
 
 				agentOpts := agent.Options{
 					AgentID:                agentID,
@@ -972,13 +979,19 @@ func (svc *Context) handleClearContext(agentID string) {
 	})
 }
 
-// resolveResumeSessionID returns the session ID to resume if user messages have
-// been exchanged, or empty string otherwise. The agent assigns a session ID
-// during startup, but no conversation exists until the user actually sends a
-// message — resuming without messages causes errors.
-func (svc *Context) resolveResumeSessionID(agentID, currentSessionID string) string {
+// resolveResumeSessionID returns the session ID to resume if the agent was
+// originally resumed or user messages have been exchanged, or empty string
+// otherwise. The agent assigns a session ID during startup, but no conversation
+// exists until the user actually sends a message — resuming without messages
+// causes errors. When the agent was created via resume (resumed != 0), the
+// conversation lives in Claude Code's session storage so the HasUserMessages
+// check is skipped.
+func (svc *Context) resolveResumeSessionID(agentID, currentSessionID string, resumed int64) string {
 	if currentSessionID == "" {
 		return ""
+	}
+	if resumed != 0 {
+		return currentSessionID
 	}
 	hasMessages, err := svc.Queries.HasUserMessages(bgCtx(), agentID)
 	if err == nil && hasMessages != 0 {
@@ -1001,7 +1014,7 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 		return fmt.Errorf("agent not found: %w", err)
 	}
 
-	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID)
+	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
 
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	if _, err := svc.Agents.StartAgent(bgCtx(), agent.Options{

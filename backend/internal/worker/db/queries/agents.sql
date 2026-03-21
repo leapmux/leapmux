@@ -1,5 +1,5 @@
 -- name: CreateAgent :exec
-INSERT INTO agents (id, workspace_id, working_dir, home_dir, title, model, system_prompt, effort, codex_sandbox_policy, codex_network_access, codex_collaboration_mode, agent_provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO agents (id, workspace_id, working_dir, home_dir, title, model, system_prompt, effort, codex_sandbox_policy, codex_network_access, codex_collaboration_mode, agent_provider, resumed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetAgentByID :one
 SELECT * FROM agents WHERE id = ?;

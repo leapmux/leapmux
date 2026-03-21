@@ -69,6 +69,35 @@ func TestUpdateAgentSettings_ClearsSessionIDOnRestartFailure(t *testing.T) {
 		"model should be updated even when restart fails")
 }
 
+func TestResolveResumeSessionID_ResumedAgentPreservesSession(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t, "ws-1")
+
+	// Create an agent with resumed=1 (simulates a resumed session).
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:          "agent-resumed",
+		WorkspaceID: "ws-1",
+		WorkingDir:  t.TempDir(),
+		HomeDir:     t.TempDir(),
+		Model:       "opus",
+		Resumed:     1,
+	}))
+	// Set a session ID (simulates the init message storing it).
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
+		AgentSessionID: "session-123",
+		ID:             "agent-resumed",
+	}))
+
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-resumed")
+	require.NoError(t, err)
+
+	// No user messages have been inserted for this agent in leapmux's DB,
+	// but because the agent was resumed, the session ID should be preserved.
+	result := svc.resolveResumeSessionID("agent-resumed", dbAgent.AgentSessionID, dbAgent.Resumed)
+	assert.Equal(t, "session-123", result,
+		"resumed agent should preserve session ID even without local messages")
+}
+
 func TestUpdateAgentSettings_DoesNotResumeSessionOnRestart(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
