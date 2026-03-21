@@ -8,7 +8,7 @@ vi.mock('./messageRenderers', () => ({
     typeof v === 'object' && v !== null && !Array.isArray(v),
 }))
 
-const { renderNotificationThread } = await import('./notificationRenderers')
+const { renderNotificationThread, resultRenderer } = await import('./notificationRenderers')
 
 /** Extract all text content from the rendered container, trimmed. */
 function renderText(messages: unknown[]): string {
@@ -154,5 +154,55 @@ describe('renderNotificationThread: agent_renamed', () => {
     const text = renderText(messages)
     expect(text).toContain('Renamed to Test Plan')
     expect(text).toContain('Interrupted')
+  })
+})
+
+/** Render a result message via resultRenderer and return its text and style. */
+function renderResult(parsed: Record<string, unknown>): { text: string, color: string } {
+  const el = resultRenderer.render(parsed, 'assistant')
+  if (el === null)
+    return { text: '', color: '' }
+  const { container } = render(() => el)
+  const div = container.querySelector('div')
+  return {
+    text: div?.textContent?.trim() ?? '',
+    color: div?.style.color ?? '',
+  }
+}
+
+describe('resultRenderer: stop_reason null handling', () => {
+  it('success subtype with context stats does not show as error', () => {
+    const { text, color } = renderResult({
+      type: 'result',
+      subtype: 'success',
+      stop_reason: null,
+      result: 'Context usage: 50k tokens',
+      duration_ms: 1000,
+    })
+    expect(color).toBe('')
+    expect(text).toContain('Took')
+  })
+
+  it('success subtype with known error prefix shows as error', () => {
+    const { text, color } = renderResult({
+      type: 'result',
+      subtype: 'success',
+      stop_reason: null,
+      result: 'Unknown skill: foo',
+      duration_ms: 500,
+    })
+    expect(color).toBe('var(--danger)')
+    expect(text).toBe('Unknown skill: foo')
+  })
+
+  it('missing subtype with result text shows as error', () => {
+    const { text, color } = renderResult({
+      type: 'result',
+      stop_reason: null,
+      result: 'Something went wrong',
+      duration_ms: 200,
+    })
+    expect(color).toBe('var(--danger)')
+    expect(text).toBe('Something went wrong')
   })
 })
