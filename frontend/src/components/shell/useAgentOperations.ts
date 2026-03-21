@@ -256,49 +256,39 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
-  // Change Codex sandbox policy for the given agent (requires restart).
-  const handleCodexSandboxPolicyChange = async (agentId: string, policy: string) => {
+  // Change a Codex-specific setting (sandbox policy or network access).
+  const handleCodexSettingChange = async (
+    agentId: string,
+    field: 'codexSandboxPolicy' | 'codexNetworkAccess',
+    value: string,
+    defaultValue: string,
+    errorLabel: string,
+  ) => {
     const agent = props.agentStore.state.agents.find(a => a.id === agentId)
     if (!agent)
       return
-    const previous = agent.codexSandboxPolicy || 'workspace-write'
-    props.agentStore.updateAgent(agentId, { codexSandboxPolicy: policy })
+    const previous = agent[field] || defaultValue
+    props.agentStore.updateAgent(agentId, { [field]: value })
     props.settingsLoading.start()
     try {
       await workerRpc.updateAgentSettings(agent.workerId, {
         agentId,
-        settings: { codexSandboxPolicy: policy },
+        settings: { [field]: value },
       })
       props.settingsLoading.stop()
     }
     catch (err) {
-      props.agentStore.updateAgent(agentId, { codexSandboxPolicy: previous })
+      props.agentStore.updateAgent(agentId, { [field]: previous })
       props.settingsLoading.stop()
-      showWarnToast('Failed to change sandbox policy', err)
+      showWarnToast(`Failed to change ${errorLabel}`, err)
     }
   }
 
-  // Change Codex network access for the given agent.
-  const handleCodexNetworkAccessChange = async (agentId: string, access: string) => {
-    const agent = props.agentStore.state.agents.find(a => a.id === agentId)
-    if (!agent)
-      return
-    const previous = agent.codexNetworkAccess || 'restricted'
-    props.agentStore.updateAgent(agentId, { codexNetworkAccess: access })
-    props.settingsLoading.start()
-    try {
-      await workerRpc.updateAgentSettings(agent.workerId, {
-        agentId,
-        settings: { codexNetworkAccess: access },
-      })
-      props.settingsLoading.stop()
-    }
-    catch (err) {
-      props.agentStore.updateAgent(agentId, { codexNetworkAccess: previous })
-      props.settingsLoading.stop()
-      showWarnToast('Failed to change network access', err)
-    }
-  }
+  const handleCodexSandboxPolicyChange = (agentId: string, policy: string) =>
+    handleCodexSettingChange(agentId, 'codexSandboxPolicy', policy, 'workspace-write', 'sandbox policy')
+
+  const handleCodexNetworkAccessChange = (agentId: string, access: string) =>
+    handleCodexSettingChange(agentId, 'codexNetworkAccess', access, 'restricted', 'network access')
 
   // Retry a failed message delivery.
   // Always re-sends via sendAgentMessage (which auto-starts the agent

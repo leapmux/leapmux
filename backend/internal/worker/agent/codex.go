@@ -104,7 +104,7 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	// Read stdout JSONL in background.
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutput(scanner)
+	go a.readOutputLoop(scanner)
 
 	cleanup := func() {
 		a.Stop()
@@ -162,74 +162,12 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 		threadParams["threadId"] = opts.ResumeSessionID
 	}
 
-	threadParamsJSON, _ := json.Marshal(threadParams)
-	threadResp, err := a.sendRequest(threadMethod, threadParamsJSON, timeout)
+	threadID, err := a.startOrResumeThread(threadParams, threadMethod, opts.AgentID, timeout)
 	if err != nil {
-		// If thread/resume fails, fall back to thread/start.
-		if threadMethod == "thread/resume" {
-			slog.Warn("codex thread/resume failed, falling back to thread/start",
-				"agent_id", opts.AgentID, "error", err)
-			delete(threadParams, "threadId")
-			threadParamsJSON, _ = json.Marshal(threadParams)
-			threadResp, err = a.sendRequest("thread/start", threadParamsJSON, timeout)
-		}
-		if err != nil {
-			cleanup()
-			return nil, a.formatStartupError(threadMethod, err)
-		}
+		cleanup()
+		return nil, a.formatStartupError(threadMethod, err)
 	}
-
-	// Extract thread ID from response.
-	var threadResult struct {
-		Thread struct {
-			ID string `json:"id"`
-		} `json:"thread"`
-	}
-	if err := json.Unmarshal(threadResp, &threadResult); err != nil {
-		// If thread/resume response is unparseable, fall back to thread/start.
-		if threadMethod == "thread/resume" {
-			slog.Warn("codex thread/resume: failed to parse response, falling back to thread/start",
-				"agent_id", opts.AgentID, "error", err, "response", string(threadResp))
-			delete(threadParams, "threadId")
-			threadParamsJSON, _ = json.Marshal(threadParams)
-			threadResp, err = a.sendRequest("thread/start", threadParamsJSON, timeout)
-			if err != nil {
-				cleanup()
-				return nil, a.formatStartupError("thread/start", err)
-			}
-			if err := json.Unmarshal(threadResp, &threadResult); err != nil {
-				cleanup()
-				return nil, fmt.Errorf("codex thread/start: failed to parse response: %w", err)
-			}
-		} else {
-			cleanup()
-			return nil, fmt.Errorf("codex %s: failed to parse response: %w", threadMethod, err)
-		}
-	}
-	if threadResult.Thread.ID == "" {
-		// If thread/resume returned an empty thread ID, fall back to thread/start.
-		if threadMethod == "thread/resume" {
-			slog.Warn("codex thread/resume: response had empty thread ID, falling back to thread/start",
-				"agent_id", opts.AgentID, "response", string(threadResp))
-			delete(threadParams, "threadId")
-			threadParamsJSON, _ = json.Marshal(threadParams)
-			var err error
-			threadResp, err = a.sendRequest("thread/start", threadParamsJSON, timeout)
-			if err != nil {
-				cleanup()
-				return nil, a.formatStartupError("thread/start", err)
-			}
-			if err := json.Unmarshal(threadResp, &threadResult); err != nil {
-				cleanup()
-				return nil, fmt.Errorf("codex thread/start: failed to parse response: %w", err)
-			}
-		}
-		if threadResult.Thread.ID == "" {
-			cleanup()
-			return nil, fmt.Errorf("codex %s: response did not contain a thread ID", threadMethod)
-		}
-	}
-	a.threadID = threadResult.Thread.ID
+	a.threadID = threadID
 	sink.UpdateSessionID(a.threadID)
 	sink.BroadcastStatusActive(a.threadID)
 
@@ -237,6 +175,74 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	a.availableModels = a.queryAvailableModels(timeout)
 
 	return a, nil
+}
+
+// startOrResumeThread sends thread/start (or thread/resume when resuming). If
+// thread/resume fails for any reason (RPC error, unparseable response, empty
+// thread ID), it falls back to thread/start automatically.
+func (a *CodexAgent) startOrResumeThread(
+	threadParams map[string]interface{}, method, agentID string, timeout time.Duration,
+) (string, error) {
+	threadID, fallback, err := a.tryThreadRequest(threadParams, method, agentID, timeout)
+	if err != nil && !fallback {
+		return "", err
+	}
+	if threadID != "" {
+		return threadID, nil
+	}
+
+	// Fall back to thread/start.
+	delete(threadParams, "threadId")
+	threadID, _, err = a.tryThreadRequest(threadParams, "thread/start", agentID, timeout)
+	if err != nil {
+		return "", err
+	}
+	if threadID == "" {
+		return "", fmt.Errorf("codex thread/start: response did not contain a thread ID")
+	}
+	return threadID, nil
+}
+
+// tryThreadRequest sends a thread request and returns the thread ID. If the
+// request was a thread/resume that can be retried as thread/start, it returns
+// fallback=true with an empty threadID.
+func (a *CodexAgent) tryThreadRequest(
+	threadParams map[string]interface{}, method, agentID string, timeout time.Duration,
+) (threadID string, fallback bool, err error) {
+	canFallback := method == "thread/resume"
+
+	paramsJSON, _ := json.Marshal(threadParams)
+	resp, err := a.sendRequest(method, paramsJSON, timeout)
+	if err != nil {
+		if canFallback {
+			slog.Warn("codex thread/resume failed, falling back to thread/start",
+				"agent_id", agentID, "error", err)
+			return "", true, err
+		}
+		return "", false, err
+	}
+
+	var result struct {
+		Thread struct {
+			ID string `json:"id"`
+		} `json:"thread"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		if canFallback {
+			slog.Warn("codex thread/resume: failed to parse response, falling back to thread/start",
+				"agent_id", agentID, "error", err, "response", string(resp))
+			return "", true, nil
+		}
+		return "", false, fmt.Errorf("codex %s: failed to parse response: %w", method, err)
+	}
+
+	if result.Thread.ID == "" && canFallback {
+		slog.Warn("codex thread/resume: response had empty thread ID, falling back to thread/start",
+			"agent_id", agentID, "response", string(resp))
+		return "", true, nil
+	}
+
+	return result.Thread.ID, false, nil
 }
 
 // SendInput writes a user message to the agent. If a turn is already in
@@ -271,29 +277,44 @@ func (a *CodexAgent) SendInput(content string) error {
 		return a.sendTurnSteer(threadID, turnID, input)
 	}
 
-	return a.sendTurnStart(threadID, input, model, effort, approvalPolicy, sandboxPolicy, networkAccess)
+	return a.sendTurnStart(threadID, input, turnSettings{
+		model:          model,
+		effort:         effort,
+		approvalPolicy: approvalPolicy,
+		sandboxPolicy:  sandboxPolicy,
+		networkAccess:  networkAccess,
+	})
+}
+
+// turnSettings groups the per-turn settings snapshotted from agent state.
+type turnSettings struct {
+	model          string
+	effort         string
+	approvalPolicy string
+	sandboxPolicy  string
+	networkAccess  string
 }
 
 // sendTurnStart sends a turn/start request with all current settings.
 func (a *CodexAgent) sendTurnStart(
 	threadID string,
 	input []map[string]interface{},
-	model, effort, approvalPolicy, sandboxPolicy, networkAccess string,
+	s turnSettings,
 ) error {
 	params := map[string]interface{}{
 		"threadId": threadID,
 		"input":    input,
 	}
-	if model != "" {
-		params["model"] = model
+	if s.model != "" {
+		params["model"] = s.model
 	}
-	if effort != "" {
-		params["effort"] = effort
+	if s.effort != "" {
+		params["effort"] = s.effort
 	}
-	if approvalPolicy != "" {
-		params["approvalPolicy"] = approvalPolicy
+	if s.approvalPolicy != "" {
+		params["approvalPolicy"] = s.approvalPolicy
 	}
-	if sp := codexSandboxPolicyObject(sandboxPolicy, networkAccess); sp != nil {
+	if sp := codexSandboxPolicyObject(s.sandboxPolicy, s.networkAccess); sp != nil {
 		params["sandboxPolicy"] = sp
 	}
 	paramsJSON, err := json.Marshal(params)
@@ -653,35 +674,9 @@ func (a *CodexAgent) sendNotification(method string, params json.RawMessage) err
 	return nil
 }
 
-// readOutput reads JSONL lines from stdout and dispatches them.
-func (a *CodexAgent) readOutput(scanner *bufio.Scanner) {
-	a.skipPreamble(scanner)
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-
-		lineCopy := make([]byte, len(line))
-		copy(lineCopy, line)
-
-		if a.handleJSONRPCResponse(lineCopy) {
-			continue
-		}
-
-		a.HandleOutput(lineCopy)
-	}
-
-	if err := scanner.Err(); err != nil {
-		slog.Warn("codex agent stdout read error",
-			"agent_id", a.agentID,
-			"error", err,
-		)
-	}
-
-	a.waitErr = a.cmd.Wait()
-	close(a.processDone)
+// readOutputLoop reads JSONL lines from stdout and dispatches them.
+func (a *CodexAgent) readOutputLoop(scanner *bufio.Scanner) {
+	a.readOutput(scanner, a.handleJSONRPCResponse, a.HandleOutput)
 }
 
 // handleJSONRPCResponse checks if a line is a JSON-RPC response and routes it.

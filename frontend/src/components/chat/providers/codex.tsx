@@ -11,6 +11,7 @@ import { createUniqueId, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { Icon } from '~/components/common/Icon'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import * as styles from '../ChatView.css'
 import {
   codexAgentMessageRenderer,
   codexCommandExecutionRenderer,
@@ -84,52 +85,66 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
   const network = () => optionGroupItems('codexNetworkAccess')
 
   return (
-    <>
-      <RadioGroup
-        label="Model"
-        items={models()}
-        testIdPrefix="model"
-        name={`${menuId}-model`}
-        current={currentModel()}
-        onChange={v => props.onModelChange?.(v)}
-      />
-      <RadioGroup
-        label="Reasoning Effort"
-        items={efforts()}
-        testIdPrefix="effort"
-        name={`${menuId}-effort`}
-        current={currentEffort()}
-        onChange={v => props.onEffortChange?.(v)}
-      />
-      <RadioGroup
-        label={modeGroup()?.label || 'Approval Policy'}
-        items={modeItems()}
-        testIdPrefix="permission-mode"
-        name={`${menuId}-mode`}
-        current={currentMode()}
-        onChange={v => props.onPermissionModeChange?.(v as PermissionMode)}
-      />
-      <Show when={sandbox()}>
+    <div class={styles.settingsPanelColumns}>
+      <div class={[styles.settingsPanelColumn, styles.settingsPanelColumnPrimary].join(' ')}>
         <RadioGroup
-          label={sandbox()!.label || 'Sandbox'}
-          items={sandbox()!.items}
-          testIdPrefix="sandbox"
-          name={`${menuId}-sandbox`}
-          current={currentSandbox()}
-          onChange={v => props.onCodexSandboxPolicyChange?.(v)}
+          label="Reasoning Effort"
+          items={efforts()}
+          testIdPrefix="effort"
+          name={`${menuId}-effort`}
+          current={currentEffort()}
+          onChange={v => props.onEffortChange?.(v)}
+          fieldsetClass={styles.settingsFieldsetFirst}
         />
-      </Show>
-      <Show when={network()}>
         <RadioGroup
-          label={network()!.label || 'Network Access'}
-          items={network()!.items}
-          testIdPrefix="network"
-          name={`${menuId}-network`}
-          current={currentNetwork()}
-          onChange={v => props.onCodexNetworkAccessChange?.(v)}
+          label="Model"
+          items={models()}
+          testIdPrefix="model"
+          name={`${menuId}-model`}
+          current={currentModel()}
+          onChange={v => props.onModelChange?.(v)}
         />
-      </Show>
-    </>
+      </div>
+      <div class={styles.settingsPanelColumn}>
+        <Show when={network()}>
+          <div>
+            <RadioGroup
+              label={network()!.label || 'Network Access'}
+              items={network()!.items}
+              testIdPrefix="network"
+              name={`${menuId}-network`}
+              current={currentNetwork()}
+              onChange={v => props.onCodexNetworkAccessChange?.(v)}
+              fieldsetClass={styles.settingsFieldsetFirst}
+            />
+          </div>
+        </Show>
+        <Show when={sandbox()}>
+          <div>
+            <RadioGroup
+              label={sandbox()!.label || 'Sandbox'}
+              items={sandbox()!.items}
+              testIdPrefix="sandbox"
+              name={`${menuId}-sandbox`}
+              current={currentSandbox()}
+              onChange={v => props.onCodexSandboxPolicyChange?.(v)}
+              fieldsetClass={!network() ? styles.settingsFieldsetFirst : undefined}
+            />
+          </div>
+        </Show>
+        <div>
+          <RadioGroup
+            label={modeGroup()?.label || 'Approval Policy'}
+            items={modeItems()}
+            testIdPrefix="permission-mode"
+            name={`${menuId}-mode`}
+            current={currentMode()}
+            onChange={v => props.onPermissionModeChange?.(v as PermissionMode)}
+            fieldsetClass={!network() && !sandbox() ? styles.settingsFieldsetFirst : undefined}
+          />
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -306,6 +321,7 @@ const codexPlugin: ProviderPlugin = {
   ControlActions: CodexControlActions,
 
   SettingsPanel: CodexSettingsPanel,
+  settingsMenuClass: styles.settingsMenuWide,
 
   settingsTriggerLabel: CodexTriggerLabel,
 }

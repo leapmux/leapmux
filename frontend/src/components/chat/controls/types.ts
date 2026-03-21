@@ -1,4 +1,5 @@
 import type { Accessor, JSX, Setter } from 'solid-js'
+import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { ControlRequest } from '~/stores/control.store'
 import type { PermissionMode } from '~/utils/controlResponse'
 
@@ -34,6 +35,7 @@ export interface ContentProps {
   request: ControlRequest
   askState: AskQuestionState
   optionsDisabled?: boolean
+  agentProvider?: AgentProvider
 }
 
 export interface ActionsProps {
@@ -43,6 +45,7 @@ export interface ActionsProps {
   hasEditorContent: boolean
   onTriggerSend: () => void
   editorContentRef?: EditorContentRef
+  agentProvider?: AgentProvider
   /** Optional info trigger element (context usage icon) to render in the left section. */
   infoTrigger?: JSX.Element
   /** The permission mode value that disables all approval prompts for this provider. */

@@ -11,6 +11,8 @@ import { createUniqueId, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { Icon } from '~/components/common/Icon'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import * as styles from '../ChatView.css'
+import { ClaudeCodeControlActions, ClaudeCodeControlContent } from '../controls/ClaudeCodeControlRequest'
 import { isNotificationThreadWrapper, isObject } from '../messageUtils'
 import { effortItems, hasEfforts, modeLabel, modelDisplayName, modelItems, permissionModeGroup, permissionModeItems, RadioGroup } from '../settingsShared'
 import { registerProvider } from './registry'
@@ -186,6 +188,7 @@ function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element
             name={`${menuId}-effort`}
             current={currentEffort()}
             onChange={v => props.onEffortChange?.(v)}
+            fieldsetClass={styles.settingsFieldsetFirst}
           />
         </Show>
         <RadioGroup
@@ -194,6 +197,7 @@ function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element
           testIdPrefix="model"
           name={`${menuId}-model`}
           current={currentModel()}
+          fieldsetClass={!hasEffort() ? styles.settingsFieldsetFirst : undefined}
           onChange={(v) => {
             props.onModelChange?.(v)
             // If switching away from opus and effort is max, downgrade to high
@@ -272,6 +276,9 @@ const claudeCodePlugin: ProviderPlugin = {
       content: buildSetPermissionModeRequest(mode),
     })
   },
+
+  ControlContent: ClaudeCodeControlContent,
+  ControlActions: ClaudeCodeControlActions,
 
   SettingsPanel: ClaudeCodeSettingsPanel,
 

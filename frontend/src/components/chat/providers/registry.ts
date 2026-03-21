@@ -1,4 +1,5 @@
 import type { Component, JSX } from 'solid-js'
+import type { ActionsProps, ContentProps } from '../controls/types'
 import type { MessageCategory } from '../messageClassification'
 import type { AgentProvider, AvailableModel, AvailableOptionGroup, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
@@ -78,11 +79,20 @@ export interface ProviderPlugin {
     mode: PermissionMode,
   ) => Promise<void>
 
+  /** Optional control request content component for this provider. */
+  ControlContent?: Component<ContentProps>
+
+  /** Optional control request actions component for this provider. */
+  ControlActions?: Component<ActionsProps>
+
   /** Optional settings panel component for this provider's agent settings dropdown. */
   SettingsPanel?: Component<ProviderSettingsPanelProps>
 
   /** Optional trigger label renderer for the settings dropdown button. */
   settingsTriggerLabel?: (props: ProviderSettingsPanelProps) => JSX.Element
+
+  /** Optional extra class for the settings dropdown menu container. */
+  settingsMenuClass?: string
 }
 
 const registry = new Map<number, ProviderPlugin>()

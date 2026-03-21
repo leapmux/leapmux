@@ -78,9 +78,10 @@ export function RadioGroup(props: {
   name: string
   current: string
   onChange: (value: string) => void
+  fieldsetClass?: string
 }): JSX.Element {
   return (
-    <fieldset>
+    <fieldset class={[styles.settingsFieldset, props.fieldsetClass].filter(Boolean).join(' ')}>
       <legend class={styles.settingsGroupLabel}>{props.label}</legend>
       <For each={props.items}>
         {item => (

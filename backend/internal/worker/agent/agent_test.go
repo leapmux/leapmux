@@ -81,7 +81,7 @@ func mockStart(ctx context.Context, opts Options, sink OutputSink) (*ClaudeCodeA
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutput(scanner)
+	go a.readOutputLoop(scanner)
 
 	return a, nil
 }
@@ -239,7 +239,7 @@ func mockStartWithInit(ctx context.Context, opts Options, sink OutputSink) (*Cla
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutput(scanner)
+	go a.readOutputLoop(scanner)
 
 	return a, nil
 }
@@ -353,7 +353,7 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-		go a.readOutput(scanner)
+		go a.readOutputLoop(scanner)
 
 		// Replicate the startup handshake from StartClaudeCode().
 		mode := opts.PermissionMode
@@ -460,7 +460,7 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-		go a.readOutput(scanner)
+		go a.readOutputLoop(scanner)
 
 		cleanup := func() {
 			a.Stop()
@@ -586,7 +586,7 @@ func TestAgent_PreambleSkipping(t *testing.T) {
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutput(scanner)
+	go a.readOutputLoop(scanner)
 
 	// Send a valid assistant NDJSON message to trigger output after delimiter.
 	require.NoError(t, a.SendRawInput([]byte(`{"type":"assistant","message":{"role":"assistant","content":"hello"}}`+"\n")))
@@ -684,7 +684,7 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutput(scanner)
+	go a.readOutputLoop(scanner)
 
 	// Send a valid assistant NDJSON message to trigger post-preamble output.
 	require.NoError(t, a.SendRawInput([]byte(`{"type":"assistant","message":{"role":"assistant","content":"hello"}}`+"\n")))

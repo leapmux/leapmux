@@ -66,7 +66,7 @@ func mockStartForTest(ctx context.Context, opts Options, sink OutputSink) (Provi
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutput(scanner)
+	go a.readOutputLoop(scanner)
 
 	return a, nil
 }

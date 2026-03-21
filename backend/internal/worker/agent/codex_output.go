@@ -11,6 +11,7 @@ import (
 // Codex messages are stored in their native JSON-RPC format.
 func handleCodexOutput(a *CodexAgent, content []byte) {
 	var envelope struct {
+		ID     *json.Number    `json:"id"`
 		Method string          `json:"method"`
 		Params json.RawMessage `json:"params"`
 	}
@@ -56,7 +57,7 @@ func handleCodexOutput(a *CodexAgent, content []byte) {
 	case "item/commandExecution/requestApproval",
 		"item/fileChange/requestApproval",
 		"item/permissions/requestApproval":
-		a.handleApprovalRequest(content)
+		a.handleApprovalRequest(envelope.ID, content)
 
 	case "serverRequest/resolved":
 		a.handleServerRequestResolved(envelope.Params)
@@ -241,17 +242,13 @@ func (a *CodexAgent) handleThreadNameUpdated(params json.RawMessage) {
 
 // handleApprovalRequest processes server requests (approval requests from Codex).
 // These arrive as JSON-RPC requests (with an "id" field) from the server.
-func (a *CodexAgent) handleApprovalRequest(content []byte) {
-	var req struct {
-		ID     json.Number `json:"id"`
-		Method string      `json:"method"`
-	}
-	if err := json.Unmarshal(content, &req); err != nil {
-		slog.Warn("invalid codex approval request", "agent_id", a.agentID, "error", err)
+// The id is already extracted from the outer envelope to avoid re-parsing content.
+func (a *CodexAgent) handleApprovalRequest(id *json.Number, content []byte) {
+	if id == nil {
+		slog.Warn("codex approval request missing id", "agent_id", a.agentID)
 		return
 	}
-
-	requestID := req.ID.String()
+	requestID := id.String()
 	a.sink.PersistControlRequest(requestID, content)
 	a.sink.BroadcastControlRequest(requestID, content)
 }

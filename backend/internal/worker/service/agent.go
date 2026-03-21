@@ -569,18 +569,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			if !updated {
 				svc.Agents.StopAndWaitAgent(agentID)
 
-				// Only resume the session if user messages have actually been
-				// exchanged. The agent process assigns a session ID during the
-				// initialize handshake, but no server-side conversation exists
-				// until the user sends a message. Resuming with a session ID
-				// that has no conversation causes "No conversation found" errors.
-				resumeSessionID := ""
-				if dbAgent.AgentSessionID != "" {
-					hasMessages, err := svc.Queries.HasUserMessages(bgCtx(), agentID)
-					if err == nil && hasMessages != 0 {
-						resumeSessionID = dbAgent.AgentSessionID
-					}
-				}
+				resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID)
 
 				agentOpts := agent.Options{
 					AgentID:            agentID,
@@ -922,7 +911,6 @@ func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, 
 	return info
 }
 
-
 // handleClearContext implements the /clear command by restarting the agent
 // without resuming the previous session, giving it a fresh context window.
 func (svc *Context) handleClearContext(agentID string) {
@@ -975,6 +963,21 @@ func (svc *Context) handleClearContext(agentID string) {
 	})
 }
 
+// resolveResumeSessionID returns the session ID to resume if user messages have
+// been exchanged, or empty string otherwise. The agent assigns a session ID
+// during startup, but no conversation exists until the user actually sends a
+// message — resuming without messages causes errors.
+func (svc *Context) resolveResumeSessionID(agentID, currentSessionID string) string {
+	if currentSessionID == "" {
+		return ""
+	}
+	hasMessages, err := svc.Queries.HasUserMessages(bgCtx(), agentID)
+	if err == nil && hasMessages != 0 {
+		return currentSessionID
+	}
+	return ""
+}
+
 // ensureAgentRunning starts the agent process if it is not already running.
 // It fetches the agent configuration from the DB and resumes the session
 // if a session ID is stored (e.g. after worker restart).
@@ -989,16 +992,7 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 		return fmt.Errorf("agent not found: %w", err)
 	}
 
-	// Only resume the session if user messages have actually been exchanged.
-	// The agent process assigns a session ID during startup, but no
-	// server-side conversation may exist until a message is sent.
-	resumeSessionID := ""
-	if dbAgent.AgentSessionID != "" {
-		hasMessages, err := svc.Queries.HasUserMessages(bgCtx(), agentID)
-		if err == nil && hasMessages != 0 {
-			resumeSessionID = dbAgent.AgentSessionID
-		}
-	}
+	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID)
 
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	if _, err := svc.Agents.StartAgent(bgCtx(), agent.Options{

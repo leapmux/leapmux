@@ -240,7 +240,7 @@ func TestBuildModelEffortArgs(t *testing.T) {
 	tests := []struct {
 		name     string
 		model    string
-		effort string
+		effort   string
 		expected []string
 	}{
 		{

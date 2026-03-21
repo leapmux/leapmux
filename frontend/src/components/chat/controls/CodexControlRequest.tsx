@@ -113,50 +113,57 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
   }
 
   return (
-    <Show
-      when={availableDecisions()}
-      fallback={(
-        <ButtonGroup>
-          <button class="outline" onClick={() => handleDecision('cancel')} data-testid="control-deny-btn">Cancel</button>
-          <button onClick={() => handleDecision('accept')} data-testid="control-allow-btn">Allow</button>
-          <Show when={props.bypassPermissionMode}>
-            <button
-              data-variant="secondary"
-              onClick={handleBypassPermissions}
-              data-testid="control-bypass-btn"
-              title="Allow this request and stop asking for permissions"
-            >
-              & Bypass Permissions
-            </button>
-          </Show>
-        </ButtonGroup>
-      )}
-    >
-      {decisions => (
-        <ButtonGroup>
-          <For each={decisions()}>
-            {decision => (
-              <button
-                class={isNegativeDecision(decision) ? 'outline' : undefined}
-                onClick={() => handleDecision(decision)}
-                data-testid={`control-decision-${typeof decision === 'string' ? decision : Object.keys(decision)[0]}`}
-              >
-                {decisionLabel(decision)}
-              </button>
-            )}
-          </For>
-          <Show when={props.bypassPermissionMode}>
-            <button
-              data-variant="secondary"
-              onClick={handleBypassPermissions}
-              data-testid="control-bypass-btn"
-              title="Allow this request and stop asking for permissions"
-            >
-              & Bypass Permissions
-            </button>
-          </Show>
-        </ButtonGroup>
-      )}
-    </Show>
+    <div class={styles.controlFooter}>
+      <div class={styles.controlFooterLeft}>
+        {props.infoTrigger}
+      </div>
+      <div class={styles.controlFooterRight}>
+        <Show
+          when={availableDecisions()}
+          fallback={(
+            <ButtonGroup>
+              <button class="outline" onClick={() => handleDecision('cancel')} data-testid="control-deny-btn">Cancel</button>
+              <button onClick={() => handleDecision('accept')} data-testid="control-allow-btn">Allow</button>
+              <Show when={props.bypassPermissionMode}>
+                <button
+                  data-variant="secondary"
+                  onClick={handleBypassPermissions}
+                  data-testid="control-bypass-btn"
+                  title="Allow this request and stop asking for permissions"
+                >
+                  & Bypass Permissions
+                </button>
+              </Show>
+            </ButtonGroup>
+          )}
+        >
+          {decisions => (
+            <ButtonGroup>
+              <For each={decisions()}>
+                {decision => (
+                  <button
+                    class={isNegativeDecision(decision) ? 'outline' : undefined}
+                    onClick={() => handleDecision(decision)}
+                    data-testid={`control-decision-${typeof decision === 'string' ? decision : Object.keys(decision)[0]}`}
+                  >
+                    {decisionLabel(decision)}
+                  </button>
+                )}
+              </For>
+              <Show when={props.bypassPermissionMode}>
+                <button
+                  data-variant="secondary"
+                  onClick={handleBypassPermissions}
+                  data-testid="control-bypass-btn"
+                  title="Allow this request and stop asking for permissions"
+                >
+                  & Bypass Permissions
+                </button>
+              </Show>
+            </ButtonGroup>
+          )}
+        </Show>
+      </div>
+    </div>
   )
 }

@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"math/rand/v2"
 	"os"
 	"strings"
@@ -39,8 +38,8 @@ type ClaudeCodeAgent struct {
 	sink       OutputSink
 
 	// Claude Code-specific state.
-	contextUsage          *contextUsageSnapshot
-	lastAgentStatus       string
+	contextUsage           *contextUsageSnapshot
+	lastAgentStatus        string
 	thirdPartyFromSettings bool // third-party LLM provider detected from settings at startup
 
 	pendingControlMu        sync.Mutex
@@ -184,7 +183,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 	// --input-format stream-json).
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutput(scanner)
+	go a.readOutputLoop(scanner)
 
 	// cleanup terminates the agent process and waits for it to exit.
 	// This ensures no orphaned process or goroutine is left behind.
@@ -301,11 +300,11 @@ var claudeCodeEffortNoMax = []*leapmuxv1.AvailableEffort{
 // providerRegistration holds the factory function, default model list,
 // option groups, and environment variable keys for a provider.
 type providerRegistration struct {
-	start        startFunc
+	start         startFunc
 	defaultModels []*leapmuxv1.AvailableModel
-	optionGroups []*leapmuxv1.AvailableOptionGroup
-	envModelKey  string // e.g. "LEAPMUX_CLAUDE_DEFAULT_MODEL"
-	envEffortKey string // e.g. "LEAPMUX_CLAUDE_DEFAULT_EFFORT"
+	optionGroups  []*leapmuxv1.AvailableOptionGroup
+	envModelKey   string // e.g. "LEAPMUX_CLAUDE_DEFAULT_MODEL"
+	envEffortKey  string // e.g. "LEAPMUX_CLAUDE_DEFAULT_EFFORT"
 }
 
 // providerRegistry maps each AgentProvider to its registration.
@@ -494,40 +493,8 @@ func (a *ClaudeCodeAgent) handlePendingControlResponse(line []byte) bool {
 	return true
 }
 
-func (a *ClaudeCodeAgent) readOutput(scanner *bufio.Scanner) {
-	a.skipPreamble(scanner)
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-
-		// Make a copy since scanner reuses the buffer.
-		lineCopy := make([]byte, len(line))
-		copy(lineCopy, line)
-
-		// Check if this is a control_response for a pending request.
-		// If so, consume it (don't forward to hub).
-		if a.handlePendingControlResponse(lineCopy) {
-			continue
-		}
-
-		a.HandleOutput(lineCopy)
-	}
-
-	if err := scanner.Err(); err != nil {
-		slog.Warn("agent stdout read error",
-			"agent_id", a.agentID,
-			"error", err,
-		)
-	}
-
-	// Wait for the process to exit and signal completion. This must happen
-	// after stdout is fully drained (scanner loop above) to avoid a race
-	// where cmd.Wait() closes the stdout pipe while the scanner is reading.
-	a.waitErr = a.cmd.Wait()
-	close(a.processDone)
+func (a *ClaudeCodeAgent) readOutputLoop(scanner *bufio.Scanner) {
+	a.readOutput(scanner, a.handlePendingControlResponse, a.HandleOutput)
 }
 
 func generateRequestID() string {

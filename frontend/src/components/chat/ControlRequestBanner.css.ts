@@ -208,6 +208,19 @@ export const collapsibleToggle = style({
   },
 })
 
+export const codexReason = style({
+  fontSize: 'var(--text-7)',
+  color: 'var(--foreground)',
+  marginBottom: 'var(--space-2)',
+})
+
+export const codexCwd = style({
+  fontSize: 'var(--text-8)',
+  color: 'var(--muted-foreground)',
+  fontFamily: 'var(--font-mono)',
+  fontVariantLigatures: 'none',
+})
+
 // Apply markdown content styling inside the banner
 globalStyle(`${bannerContent} code`, {
   fontFamily: 'var(--font-mono)',

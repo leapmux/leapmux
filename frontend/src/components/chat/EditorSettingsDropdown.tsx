@@ -69,7 +69,7 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
           </Show>
         </button>
       )}
-      class={styles.settingsMenu}
+      class={[styles.settingsMenu, plugin()?.settingsMenuClass].filter(Boolean).join(' ')}
       data-testid="agent-settings-menu"
     >
       {plugin()?.SettingsPanel && <Dynamic component={plugin()!.SettingsPanel!} {...settingsPanelProps()} />}

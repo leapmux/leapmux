@@ -182,6 +182,46 @@ func (p *processBase) PreambleOutput() string {
 	return strings.Join(p.preambleOutput, "\n")
 }
 
+// outputInterceptor is a function that inspects a line before it is forwarded
+// to HandleOutput. If it returns true, the line is consumed (not forwarded).
+type outputInterceptor func(line []byte) bool
+
+// outputHandler processes a single output line from the agent process.
+type outputHandler func(content []byte)
+
+// readOutput reads JSONL lines from stdout, optionally intercepting responses
+// before forwarding them to the output handler. This shared implementation
+// eliminates duplication between ClaudeCodeAgent and CodexAgent.
+func (p *processBase) readOutput(scanner *bufio.Scanner, intercept outputInterceptor, handle outputHandler) {
+	p.skipPreamble(scanner)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		lineCopy := make([]byte, len(line))
+		copy(lineCopy, line)
+
+		if intercept(lineCopy) {
+			continue
+		}
+
+		handle(lineCopy)
+	}
+
+	if err := scanner.Err(); err != nil {
+		slog.Warn("agent stdout read error",
+			"agent_id", p.agentID,
+			"error", err,
+		)
+	}
+
+	p.waitErr = p.cmd.Wait()
+	close(p.processDone)
+}
+
 // drainStderr starts a goroutine that reads from the given reader into
 // the stderr buffer, capped at maxStderrSize. It closes stderrDone when
 // the reader is exhausted. The lock is only held for individual writes,

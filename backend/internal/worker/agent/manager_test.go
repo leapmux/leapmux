@@ -178,7 +178,7 @@ func TestManager_AgentExitCleanup(t *testing.T) {
 
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-		go a.readOutput(scanner)
+		go a.readOutputLoop(scanner)
 		return a, nil
 	})
 	require.NoError(t, err, "StartAgent")

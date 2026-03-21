@@ -274,6 +274,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                     request={ctrl.activeControlRequest()!}
                     askState={askState}
                     optionsDisabled={hasContent()}
+                    agentProvider={props.agent?.agentProvider}
                   />
                 )
               : undefined
@@ -284,6 +285,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                   <ControlRequestActions
                     request={ctrl.activeControlRequest()!}
                     askState={askState}
+                    agentProvider={props.agent?.agentProvider}
                     onRespond={(agentId, content) => {
                       const reqId = ctrl.activeControlRequest()?.requestId
                       if (reqId)
