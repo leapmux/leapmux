@@ -5,6 +5,7 @@ import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FileEdit from 'lucide-solid/icons/file-pen-line'
+import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import SquareTerminal from 'lucide-solid/icons/square-terminal'
 import Wrench from 'lucide-solid/icons/wrench'
 import { createSignal, For, Show } from 'solid-js'
@@ -49,12 +50,37 @@ function extractItem(parsed: unknown): Record<string, unknown> | null {
 /** Renders Codex agentMessage items as markdown. */
 export function codexAgentMessageRenderer(parsed: unknown, _role: MessageRole, _context?: RenderContext): JSX.Element | null {
   const item = extractItem(parsed)
-  if (!item || (item.type !== 'agentMessage' && item.type !== 'plan'))
+  if (!item || item.type !== 'agentMessage')
     return null
   const text = (item.text as string) || ''
   if (!text)
     return null
   return <div class={markdownContent} innerHTML={renderMarkdown(text)} />
+}
+
+/** Renders Codex plan items using ToolUseLayout without a bubble (same pattern as ExitPlanMode). */
+export function codexPlanRenderer(parsed: unknown, _role: MessageRole, context?: RenderContext): JSX.Element | null {
+  const item = extractItem(parsed)
+  if (!item || item.type !== 'plan')
+    return null
+  const text = (item.text as string) || ''
+  if (!text)
+    return null
+  return (
+    <ToolUseLayout
+      icon={PlaneTakeoff}
+      toolName="Plan"
+      title="Proposed Plan"
+      alwaysVisible={true}
+      bordered={false}
+      context={context}
+    >
+      <>
+        <hr />
+        <div class={markdownContent} style={{ 'font-size': 'var(--text-regular)' }} innerHTML={renderMarkdown(text)} />
+      </>
+    </ToolUseLayout>
+  )
 }
 
 /** Renders Codex commandExecution items using shared ToolUseLayout. */

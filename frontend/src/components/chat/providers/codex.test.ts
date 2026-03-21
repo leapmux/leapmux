@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest'
+import type { AskQuestionState, Question } from '../controls/types'
+import { createSignal } from 'solid-js'
+import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { sendCodexDecision, sendCodexUserInputResponse, toRpcId } from '../controls/CodexControlRequest'
 import { getProviderPlugin } from './registry'
 
 // Side-effect import to register the Codex plugin.
@@ -7,6 +10,31 @@ import './codex'
 
 describe('codex classify', () => {
   const plugin = getProviderPlugin(AgentProvider.CODEX)!
+
+  it('hides thread/started notifications', () => {
+    const parent = {
+      method: 'thread/started',
+      params: {
+        threadId: '019d0b79-3982-7bf2-b85c-890371421ade',
+      },
+    }
+    const result = plugin.classify(parent, null)
+    expect(result).toEqual({ kind: 'hidden' })
+  })
+
+  it('hides turn/started notifications', () => {
+    const parent = {
+      method: 'turn/started',
+      params: {
+        threadId: '019d0b79-3982-7bf2-b85c-890371421ade',
+        turn: {
+          id: 'turn_123',
+        },
+      },
+    }
+    const result = plugin.classify(parent, null)
+    expect(result).toEqual({ kind: 'hidden' })
+  })
 
   it('hides thread/status/changed notifications', () => {
     const parent = {
@@ -22,52 +50,77 @@ describe('codex classify', () => {
     const result = plugin.classify(parent, null)
     expect(result).toEqual({ kind: 'hidden' })
   })
+
+  it('keeps high-usage rate limit notifications visible', () => {
+    const parent = {
+      method: 'account/rateLimits/updated',
+      params: {
+        rateLimits: {
+          primary: {
+            usedPercent: 85,
+            windowMinutes: 300,
+          },
+        },
+      },
+    }
+    const result = plugin.classify(parent, null)
+    expect(result).toEqual({ kind: 'notification' })
+  })
 })
 
-describe('codex buildControlResponse', () => {
+describe('codex isAskUserQuestion', () => {
   const plugin = getProviderPlugin(AgentProvider.CODEX)!
 
-  function makeAllowPayload(requestId: string) {
-    return {
-      type: 'control_response',
-      response: {
-        subtype: 'success',
-        request_id: requestId,
-        response: { behavior: 'allow', updatedInput: {} },
-      },
+  it('returns true for requestUserInput method', () => {
+    const payload = {
+      method: 'item/tool/requestUserInput',
+      params: { questions: [] },
     }
-  }
+    expect(plugin.isAskUserQuestion!(payload)).toBe(true)
+  })
 
-  function makeDenyPayload(requestId: string, message: string) {
-    return {
-      type: 'control_response',
-      response: {
-        subtype: 'success',
-        request_id: requestId,
-        response: { behavior: 'deny', message },
-      },
-    }
-  }
+  it('returns false for approval methods', () => {
+    expect(plugin.isAskUserQuestion!({
+      method: 'item/commandExecution/requestApproval',
+    })).toBe(false)
+  })
 
-  function makeCodexDecisionPayload(requestId: string, codexDecision: unknown) {
-    return {
-      type: 'control_response',
-      response: {
-        subtype: 'success',
-        request_id: requestId,
-        response: { codexDecision },
-      },
-    }
-  }
+  it('returns false for payloads without method', () => {
+    expect(plugin.isAskUserQuestion!({
+      request: { tool_name: 'AskUserQuestion' },
+    })).toBe(false)
+  })
+})
 
+describe('toRpcId', () => {
+  it('converts numeric string to number', () => {
+    expect(toRpcId('42')).toBe(42)
+  })
+
+  it('preserves non-numeric string', () => {
+    expect(toRpcId('abc')).toBe('abc')
+  })
+
+  it('converts zero', () => {
+    expect(toRpcId('0')).toBe(0)
+  })
+})
+
+describe('sendCodexDecision', () => {
   function decode(bytes: Uint8Array): Record<string, unknown> {
     return JSON.parse(new TextDecoder().decode(bytes))
   }
 
-  it('translates allow to accept', () => {
-    const result = plugin.buildControlResponse!(makeAllowPayload('42'))
-    expect(result).not.toBeNull()
-    const parsed = decode(result!)
+  it('sends accept decision with numeric id', async () => {
+    let captured: Uint8Array | undefined
+    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+      captured = content
+    })
+
+    await sendCodexDecision('agent1', onRespond, '42', 'accept')
+
+    expect(onRespond).toHaveBeenCalledOnce()
+    const parsed = decode(captured!)
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
       id: 42,
@@ -75,48 +128,188 @@ describe('codex buildControlResponse', () => {
     })
   })
 
-  it('translates deny to decline', () => {
-    const result = plugin.buildControlResponse!(makeDenyPayload('42', 'No thanks'))
-    expect(result).not.toBeNull()
-    const parsed = decode(result!)
+  it('sends decline decision', async () => {
+    let captured: Uint8Array | undefined
+    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+      captured = content
+    })
+
+    await sendCodexDecision('agent1', onRespond, '7', 'decline')
+
+    const parsed = decode(captured!)
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
-      id: 42,
+      id: 7,
       result: { decision: 'decline' },
     })
   })
 
-  it('handles non-numeric request IDs', () => {
-    const result = plugin.buildControlResponse!(makeAllowPayload('abc'))
-    expect(result).not.toBeNull()
-    const parsed = decode(result!)
+  it('sends object decision', async () => {
+    let captured: Uint8Array | undefined
+    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+      captured = content
+    })
+    const decision = { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['touch'] } }
+
+    await sendCodexDecision('agent1', onRespond, '9', decision)
+
+    const parsed = decode(captured!)
+    expect(parsed).toMatchObject({
+      jsonrpc: '2.0',
+      id: 9,
+      result: { decision },
+    })
+  })
+
+  it('preserves non-numeric request id', async () => {
+    let captured: Uint8Array | undefined
+    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+      captured = content
+    })
+
+    await sendCodexDecision('agent1', onRespond, 'abc', 'accept')
+
+    const parsed = decode(captured!)
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
       id: 'abc',
       result: { decision: 'accept' },
     })
   })
+})
 
-  it('passes through string codexDecision as-is', () => {
-    const result = plugin.buildControlResponse!(makeCodexDecisionPayload('7', 'cancel'))
-    expect(result).not.toBeNull()
-    const parsed = decode(result!)
+describe('sendCodexUserInputResponse', () => {
+  function decode(bytes: Uint8Array): Record<string, unknown> {
+    return JSON.parse(new TextDecoder().decode(bytes))
+  }
+
+  function makeAskState(overrides: {
+    selections?: Record<number, string[]>
+    customTexts?: Record<number, string>
+  } = {}): AskQuestionState {
+    const [selections, setSelections] = createSignal<Record<number, string[]>>(overrides.selections ?? {})
+    const [customTexts, setCustomTexts] = createSignal<Record<number, string>>(overrides.customTexts ?? {})
+    const [currentPage, setCurrentPage] = createSignal(0)
+    return { selections, setSelections, customTexts, setCustomTexts, currentPage, setCurrentPage }
+  }
+
+  it('sends answers using question id as key', async () => {
+    let captured: Uint8Array | undefined
+    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+      captured = content
+    })
+
+    const questions: Question[] = [
+      { id: 'q1', question: 'Pick one', header: 'Header1', options: [{ label: 'A' }, { label: 'B' }] },
+    ]
+    const state = makeAskState({ selections: { 0: ['A'] } })
+
+    await sendCodexUserInputResponse('agent1', onRespond, '42', questions, state)
+
+    const parsed = decode(captured!)
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
-      id: 7,
-      result: { decision: 'cancel' },
+      id: 42,
+      result: {
+        answers: {
+          q1: { answers: ['A'] },
+        },
+      },
     })
   })
 
-  it('passes through object codexDecision as-is', () => {
-    const decision = { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['touch'] } }
-    const result = plugin.buildControlResponse!(makeCodexDecisionPayload('9', decision))
-    expect(result).not.toBeNull()
-    const parsed = decode(result!)
+  it('falls back to header as key when id is missing', async () => {
+    let captured: Uint8Array | undefined
+    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+      captured = content
+    })
+
+    const questions: Question[] = [
+      { question: 'Pick one', header: 'MyHeader', options: [{ label: 'X' }] },
+    ]
+    const state = makeAskState({ selections: { 0: ['X'] } })
+
+    await sendCodexUserInputResponse('agent1', onRespond, '5', questions, state)
+
+    const parsed = decode(captured!)
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
-      id: 9,
-      result: { decision },
+      id: 5,
+      result: {
+        answers: {
+          MyHeader: { answers: ['X'] },
+        },
+      },
     })
+  })
+
+  it('uses custom text when no selection', async () => {
+    let captured: Uint8Array | undefined
+    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+      captured = content
+    })
+
+    const questions: Question[] = [
+      { id: 'q1', question: 'Custom input', options: [] },
+    ]
+    const state = makeAskState({ customTexts: { 0: 'my custom answer' } })
+
+    await sendCodexUserInputResponse('agent1', onRespond, '10', questions, state)
+
+    const parsed = decode(captured!)
+    expect(parsed).toMatchObject({
+      jsonrpc: '2.0',
+      id: 10,
+      result: {
+        answers: {
+          q1: { answers: ['my custom answer'] },
+        },
+      },
+    })
+  })
+
+  it('joins multi-select values', async () => {
+    let captured: Uint8Array | undefined
+    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+      captured = content
+    })
+
+    const questions: Question[] = [
+      { id: 'q1', question: 'Pick multiple', options: [{ label: 'A' }, { label: 'B' }, { label: 'C' }], multiSelect: true },
+    ]
+    const state = makeAskState({ selections: { 0: ['A', 'C'] } })
+
+    await sendCodexUserInputResponse('agent1', onRespond, '11', questions, state)
+
+    const parsed = decode(captured!)
+    expect(parsed).toMatchObject({
+      jsonrpc: '2.0',
+      id: 11,
+      result: {
+        answers: {
+          q1: { answers: ['A, C'] },
+        },
+      },
+    })
+  })
+
+  it('skips unanswered questions', async () => {
+    let captured: Uint8Array | undefined
+    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+      captured = content
+    })
+
+    const questions: Question[] = [
+      { id: 'q1', question: 'First', options: [{ label: 'A' }] },
+      { id: 'q2', question: 'Second', options: [{ label: 'B' }] },
+    ]
+    const state = makeAskState({ selections: { 0: ['A'] } })
+
+    await sendCodexUserInputResponse('agent1', onRespond, '12', questions, state)
+
+    const parsed = decode(captured!)
+    const answers = (parsed.result as Record<string, unknown>).answers as Record<string, unknown>
+    expect(answers).toHaveProperty('q1')
+    expect(answers).not.toHaveProperty('q2')
   })
 })

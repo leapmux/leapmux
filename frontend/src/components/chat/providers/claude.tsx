@@ -11,6 +11,7 @@ import { createUniqueId, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { Icon } from '~/components/common/Icon'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { getToolName } from '~/utils/controlResponse'
 import * as styles from '../ChatView.css'
 import { ClaudeCodeControlActions, ClaudeCodeControlContent } from '../controls/ClaudeCodeControlRequest'
 import { isNotificationThreadWrapper, isObject } from '../messageUtils'
@@ -259,14 +260,13 @@ const claudeCodePlugin: ProviderPlugin = {
 
   classify: classifyClaudeCodeMessage,
 
-  buildInterruptContent(): string | null {
-    return buildInterruptRequest()
+  isAskUserQuestion(payload) {
+    const tool = getToolName(payload)
+    return tool === 'AskUserQuestion' || tool === 'request_user_input'
   },
 
-  // Claude Code control_response format is the native wire format —
-  // return null to signal "send as-is".
-  buildControlResponse(): Uint8Array | null {
-    return null
+  buildInterruptContent(): string | null {
+    return buildInterruptRequest()
   },
 
   // Claude Code supports runtime permission mode changes via control_request

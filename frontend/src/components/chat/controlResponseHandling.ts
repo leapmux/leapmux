@@ -93,8 +93,10 @@ export function useControlResponseHandling(
     const req = activeControlRequest()
     if (!req)
       return false
-    const tool = getToolName(req.payload)
-    return tool === 'AskUserQuestion' || tool === 'request_user_input'
+    const plugin = props.agent?.agentProvider != null
+      ? getProviderPlugin(props.agent.agentProvider)
+      : undefined
+    return plugin?.isAskUserQuestion?.(req.payload) ?? false
   }
 
   // Whether the Interrupt button should be shown.

@@ -9,6 +9,7 @@ interface QuestionOption {
 }
 
 export interface Question {
+  id?: string
   question: string
   header?: string
   options: QuestionOption[]

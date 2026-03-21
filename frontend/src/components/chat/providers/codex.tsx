@@ -17,6 +17,7 @@ import {
   codexCommandExecutionRenderer,
   codexFileChangeRenderer,
   codexMcpToolCallRenderer,
+  codexPlanRenderer,
   codexReasoningRenderer,
   codexTurnCompletedRenderer,
 } from '../codexRenderers'
@@ -40,17 +41,6 @@ function buildCodexInterruptRequest(threadId: string, turnId: string): string {
     id: ++codexReqIdCounter,
     method: 'turn/interrupt',
     params: { threadId, turnId },
-  })
-}
-
-/**
- * Builds a JSON-RPC response for a Codex approval request.
- */
-function buildCodexApprovalResponse(requestId: number | string, decision: Record<string, unknown> | string): string {
-  return JSON.stringify({
-    jsonrpc: '2.0',
-    id: requestId,
-    result: { decision },
   })
 }
 
@@ -236,9 +226,9 @@ const codexPlugin: ProviderPlugin = {
     if (!parent)
       return { kind: 'unknown' }
 
-    // thread/status/changed notifications are transient status signals
-    // (e.g. waitingOnApproval). Persisted but not displayed.
-    if (parent.method === 'thread/status/changed')
+    // Startup and status notifications are transient lifecycle signals.
+    // Persist them if needed, but keep them out of chat rendering.
+    if (parent.method === 'thread/started' || parent.method === 'turn/started' || parent.method === 'thread/status/changed')
       return { kind: 'hidden' }
 
     // Codex wrapper messages represent state updates of the same item
@@ -258,9 +248,13 @@ const codexPlugin: ProviderPlugin = {
       return { kind: 'result_divider' }
 
     if (item && itemType) {
-      // agentMessage / plan → assistant text
-      if (itemType === 'agentMessage' || itemType === 'plan')
+      // agentMessage → assistant text
+      if (itemType === 'agentMessage')
         return { kind: 'assistant_text' }
+
+      // plan → tool_use (rendered bubble-less like ExitPlanMode)
+      if (itemType === 'plan')
+        return { kind: 'tool_use', toolName: 'plan', toolUse: item, content: [] }
 
       // commandExecution → tool use
       if (itemType === 'commandExecution')
@@ -326,6 +320,8 @@ const codexPlugin: ProviderPlugin = {
     if (category.kind === 'tool_use') {
       // Use the item stored in category.toolUse (resolved to final state in classify).
       const cat = category as { toolName: string, toolUse: Record<string, unknown> }
+      if (cat.toolName === 'plan')
+        return codexPlanRenderer(cat.toolUse, role, context)
       if (cat.toolName === 'commandExecution')
         return codexCommandExecutionRenderer(cat.toolUse, role, context)
       if (cat.toolName === 'fileChange')
@@ -341,23 +337,8 @@ const codexPlugin: ProviderPlugin = {
     return buildCodexInterruptRequest(agentSessionId, codexTurnId)
   },
 
-  buildControlResponse(parsed: Record<string, unknown>): Uint8Array | null {
-    if (parsed?.codexPlanModePrompt === true)
-      return new TextEncoder().encode(JSON.stringify(parsed))
-    const response = parsed?.response as Record<string, unknown> | undefined
-    const requestId = response?.request_id as string | undefined
-    if (!requestId)
-      return null
-    const numId = Number(requestId)
-    const rpcId = Number.isFinite(numId) ? numId : requestId
-    // Provider-specific decision (set by Codex ControlActions) — pass through as-is.
-    const inner = response?.response as Record<string, unknown> | undefined
-    const codexDecision = inner?.codexDecision as Record<string, unknown> | string | undefined
-    if (codexDecision)
-      return new TextEncoder().encode(buildCodexApprovalResponse(rpcId, codexDecision))
-    // Generic allow/deny from GenericToolActions — translate to accept/decline.
-    const behavior = inner?.behavior
-    return new TextEncoder().encode(buildCodexApprovalResponse(rpcId, behavior === 'allow' ? 'accept' : 'decline'))
+  isAskUserQuestion(payload) {
+    return (payload as Record<string, unknown>).method === 'item/tool/requestUserInput'
   },
 
   // Codex applies the new approval policy on the next turn/start.

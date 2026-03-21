@@ -60,11 +60,10 @@ export interface ProviderPlugin {
   buildInterruptContent?: (agentSessionId: string, codexTurnId?: string) => string | null
 
   /**
-   * Build the wire-format content bytes to respond to an approval request.
-   * The parsed Claude Code control_response is passed; the plugin translates
-   * it to the provider's native format. Return null to send the original as-is.
+   * Returns true when the given control request payload represents an
+   * "ask user question" interaction for this provider.
    */
-  buildControlResponse?: (parsed: Record<string, unknown>) => Uint8Array | null
+  isAskUserQuestion?: (payload: Record<string, unknown>) => boolean
 
   /**
    * The permission mode value that disables all approval prompts.

@@ -163,20 +163,13 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     props.forceScrollToBottom?.()
     try {
       const workerId = getAgentWorkerId(agentId)
-      const agent = props.agentStore.state.agents.find(a => a.id === agentId)
-      const plugin = agent ? getProviderPlugin(agent.agentProvider) : undefined
-      if (!plugin?.buildControlResponse) {
-        logger.error('No control response handler for provider', agent?.agentProvider)
-        return
-      }
-
       const parsed = JSON.parse(new TextDecoder().decode(content))
       const requestId = parsed?.response?.request_id
-      const translatedContent = plugin.buildControlResponse(parsed)
+        ?? (parsed?.id != null ? String(parsed.id) : undefined)
 
       await workerRpc.sendControlResponse(workerId, {
         agentId,
-        content: translatedContent ?? content,
+        content,
       })
 
       if (requestId)

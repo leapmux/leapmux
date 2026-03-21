@@ -1,13 +1,11 @@
-/* eslint-disable solid/no-innerhtml -- markdown is produced from controlled plan text via remark */
 import type { Component } from 'solid-js'
-import type { ActionsProps, ContentProps } from './types'
+import type { ActionsProps, AskQuestionState, ContentProps, Question } from './types'
 
 import { For, Match, Show, Switch } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
-import { renderMarkdown } from '~/lib/renderMarkdown'
-import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
+import { buildAllowResponse, buildDenyResponse, getToolName } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
-import { markdownContent } from '../markdownContent.css'
+import { AskUserQuestionActions, AskUserQuestionContent } from './AskUserQuestionControl'
 import { CollapsibleText } from './CollapsibleText'
 import { sendResponse } from './types'
 
@@ -18,24 +16,25 @@ function getCodexParams(payload: Record<string, unknown>): Record<string, unknow
 
 type CodexDecision = string | Record<string, unknown>
 
+/** Convert a string request ID to a numeric JSON-RPC id when possible. */
+export function toRpcId(requestId: string): number | string {
+  const numId = Number(requestId)
+  return Number.isFinite(numId) ? numId : requestId
+}
+
 /**
- * Sends a Codex-native approval decision through the control response pipeline.
- * The `codexDecision` field is recognized by codex.tsx's buildControlResponse
- * and forwarded as-is to the JSON-RPC response.
+ * Sends a Codex-native approval decision as a JSON-RPC response directly.
  */
-function sendCodexDecision(
+export function sendCodexDecision(
   agentId: string,
   onRespond: (agentId: string, content: Uint8Array) => Promise<void>,
   requestId: string,
   decision: CodexDecision,
 ): Promise<void> {
   return sendResponse(agentId, onRespond, {
-    type: 'control_response',
-    response: {
-      subtype: 'success',
-      request_id: requestId,
-      response: { codexDecision: decision },
-    },
+    jsonrpc: '2.0',
+    id: toRpcId(requestId),
+    result: { decision },
   })
 }
 
@@ -48,6 +47,48 @@ function sendCodexPlanPromptResponse(
     ...response,
     codexPlanModePrompt: true,
   })
+}
+
+/**
+ * Sends a Codex-native requestUserInput response as a JSON-RPC response directly.
+ */
+export function sendCodexUserInputResponse(
+  agentId: string,
+  onRespond: (agentId: string, content: Uint8Array) => Promise<void>,
+  requestId: string,
+  questions: Question[],
+  askState: AskQuestionState,
+): Promise<void> {
+  const answers: Record<string, { answers: string[] }> = {}
+  for (let i = 0; i < questions.length; i++) {
+    const sel = askState.selections()[i] ?? []
+    const customText = askState.customTexts()[i]?.trim()
+    const value = sel.length > 0 ? sel.join(', ') : (customText || '')
+    if (value) {
+      const key = questions[i].id || questions[i].header || `q${i}`
+      answers[key] = { answers: [value] }
+    }
+  }
+  return sendResponse(agentId, onRespond, {
+    jsonrpc: '2.0',
+    id: toRpcId(requestId),
+    result: { answers },
+  })
+}
+
+/**
+ * Wraps a Codex requestUserInput payload into the synthetic format that
+ * AskUserQuestionContent/getToolInput expects (payload.request.input.questions).
+ */
+function wrapAsAskUserQuestion(payload: Record<string, unknown>): Record<string, unknown> {
+  const params = payload.params as Record<string, unknown> | undefined
+  return {
+    ...payload,
+    request: {
+      tool_name: 'AskUserQuestion',
+      input: { questions: params?.questions ?? [] },
+    },
+  }
 }
 
 /** Label for a Codex decision. */
@@ -81,8 +122,6 @@ export const CodexControlContent: Component<ContentProps> = (props) => {
   const reason = () => params()?.reason as string | undefined
   const command = () => params()?.command as string | undefined
   const cwd = () => params()?.cwd as string | undefined
-  const plan = () => getToolInput(props.request.payload).plan as string | undefined
-
   const title = () => {
     const m = method()
     if (m === 'item/commandExecution/requestApproval')
@@ -97,10 +136,14 @@ export const CodexControlContent: Component<ContentProps> = (props) => {
   return (
     <Switch>
       <Match when={toolName() === 'CodexPlanModePrompt'}>
-        <div class={styles.controlBannerTitle}>Implement this plan?</div>
-        <Show when={plan()}>
-          <div class={markdownContent} innerHTML={renderMarkdown(plan()!)} />
-        </Show>
+        <div class={styles.controlBannerTitle}>Implement the proposed plan?</div>
+      </Match>
+      <Match when={method() === 'item/tool/requestUserInput'}>
+        <AskUserQuestionContent
+          request={{ ...props.request, payload: wrapAsAskUserQuestion(props.request.payload) }}
+          askState={props.askState}
+          optionsDisabled={props.optionsDisabled}
+        />
       </Match>
       <Match when={true}>
         <div class={styles.controlBannerTitle}>{title()}</div>
@@ -124,8 +167,10 @@ export const CodexControlContent: Component<ContentProps> = (props) => {
 /** Codex-specific control request action buttons. */
 export const CodexControlActions: Component<ActionsProps> = (props) => {
   const toolName = () => getToolName(props.request.payload)
+  const method = () => props.request.payload.method as string | undefined
   const params = () => getCodexParams(props.request.payload)
   const availableDecisions = () => params()?.availableDecisions as CodexDecision[] | undefined
+  const questions = () => (params()?.questions as Question[] | undefined) ?? []
 
   const handleDecision = (decision: CodexDecision) => {
     sendCodexDecision(props.request.agentId, props.onRespond, props.request.requestId, decision)
@@ -136,6 +181,37 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
     sendCodexDecision(props.request.agentId, props.onRespond, props.request.requestId, 'accept')
     if (props.bypassPermissionMode)
       props.onPermissionModeChange?.(props.bypassPermissionMode)
+  }
+
+  /**
+   * Intercepting onRespond for requestUserInput: AskUserQuestionActions sends
+   * Claude Code-style responses; we intercept and re-encode as Codex JSON-RPC.
+   */
+  const userInputOnRespond = async (_agentId: string, content: Uint8Array) => {
+    const parsed = JSON.parse(new TextDecoder().decode(content))
+    // Extract answers from Claude Code format and re-send as Codex JSON-RPC.
+    const input = parsed?.response?.response?.updatedInput
+    const claudeAnswers = input?.answers as Record<string, string> | undefined
+    if (claudeAnswers) {
+      // Convert {key: "value"} to {key: {answers: ["value"]}} for Codex format.
+      const codexAnswers: Record<string, { answers: string[] }> = {}
+      const qs = questions()
+      for (const [key, value] of Object.entries(claudeAnswers)) {
+        // Use question id as key if available, falling back to header-based key
+        const qIdx = qs.findIndex(q => (q.id || q.header || '') === key || q.header === key)
+        const codexKey = qIdx >= 0 && qs[qIdx].id ? qs[qIdx].id! : key
+        codexAnswers[codexKey] = { answers: [value] }
+      }
+      await sendCodexUserInputResponse(props.request.agentId, props.onRespond, props.request.requestId, qs, props.askState)
+      return
+    }
+    // Deny / stop — translate to decline
+    if (parsed?.response?.response?.behavior === 'deny') {
+      await sendCodexDecision(props.request.agentId, props.onRespond, props.request.requestId, 'decline')
+      return
+    }
+    // Fallback: forward as-is
+    await props.onRespond(props.request.agentId, content)
   }
 
   return (
@@ -169,6 +245,13 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
             </ButtonGroup>
           </div>
         </div>
+      </Match>
+      <Match when={method() === 'item/tool/requestUserInput'}>
+        <AskUserQuestionActions
+          {...props}
+          request={{ ...props.request, payload: wrapAsAskUserQuestion(props.request.payload) }}
+          onRespond={userInputOnRespond}
+        />
       </Match>
       <Match when={true}>
         <div class={styles.controlFooter}>
