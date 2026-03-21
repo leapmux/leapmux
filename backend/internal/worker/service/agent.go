@@ -1291,10 +1291,10 @@ func (svc *Context) handleCodexPlanModePromptResponse(agentID string, content []
 	})
 
 	switch crPayload.Response.Response.Behavior {
-	case "allow":
+	case agent.ControlBehaviorAllow:
 		svc.setAgentCodexCollaborationMode(agentID, agent.CodexCollaborationDefault)
 		svc.sendSyntheticUserMessage(agentID, "Implement the plan.")
-	case "deny":
+	case agent.ControlBehaviorDeny:
 		if msg := strings.TrimSpace(crPayload.Response.Response.Message); msg != "" && msg != "Rejected by user." {
 			svc.sendSyntheticUserMessage(agentID, msg)
 		}
@@ -1356,7 +1356,7 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 
 	// Persist a display message for the control response.
 	action := "approved"
-	if crPayload.Response.Response.Behavior == "deny" {
+	if crPayload.Response.Response.Behavior == agent.ControlBehaviorDeny {
 		action = "rejected"
 	}
 	displayContent := map[string]interface{}{
@@ -1378,7 +1378,7 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 	}
 
 	// Detect plan mode changes from control responses (agent-initiated).
-	if crPayload.Response.Response.Behavior == "allow" {
+	if crPayload.Response.Response.Behavior == agent.ControlBehaviorAllow {
 		switch toolName {
 		case "EnterPlanMode":
 			svc.setAgentPermissionMode(agentID, agent.PermissionModePlan)

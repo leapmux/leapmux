@@ -24,6 +24,12 @@ const (
 	PermissionModeBypassPermissions = "bypassPermissions"
 )
 
+// Control response behavior values (shared protocol between frontend and backend).
+const (
+	ControlBehaviorAllow = "allow"
+	ControlBehaviorDeny  = "deny"
+)
+
 // ExitHandler is called when an agent process exits.
 // agentID identifies the agent, exitCode is the process exit code,
 // and err is non-nil if the process exited with an error.

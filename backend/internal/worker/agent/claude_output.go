@@ -90,27 +90,84 @@ func (a *ClaudeCodeAgent) enrichResultWithToolUses(content []byte) []byte {
 	return a.enrichWithToolUses(content)
 }
 
-// countToolUses counts tool_use content blocks in an assistant message.
-func (a *ClaudeCodeAgent) countToolUses(content []byte) {
+// processAssistantBlocks parses the message.content[] blocks of an assistant
+// message once and performs plan mode tracking, plan file tracking, and tool
+// use counting — replacing three separate parse passes.
+func (a *ClaudeCodeAgent) processAssistantBlocks(content []byte) {
 	var msg struct {
 		Message struct {
 			Content []struct {
-				Type string `json:"type"`
+				Type  string `json:"type"`
+				ID    string `json:"id"`
+				Name  string `json:"name"`
+				Input struct {
+					FilePath  string `json:"file_path"`
+					Content   string `json:"content"`
+					OldString string `json:"old_string"`
+					NewString string `json:"new_string"`
+				} `json:"input"`
 			} `json:"content"`
 		} `json:"message"`
 	}
 	if json.Unmarshal(content, &msg) != nil {
 		return
 	}
-	count := 0
+
+	toolUseCount := 0
+	planFileProcessed := false
 	for _, block := range msg.Message.Content {
-		if block.Type == "tool_use" {
-			count++
+		if block.Type != "tool_use" {
+			continue
+		}
+
+		toolUseCount++
+
+		// Plan mode tracking (EnterPlanMode/ExitPlanMode).
+		if block.ID != "" {
+			switch block.Name {
+			case "EnterPlanMode":
+				a.sink.StorePlanModeToolUse(block.ID, PermissionModePlan)
+			case "ExitPlanMode":
+				a.sink.StorePlanModeToolUse(block.ID, PermissionModeDefault)
+			}
+		}
+
+		// Plan file path tracking (Write/Edit to ~/.claude/plans/).
+		if !planFileProcessed && (block.Name == "Write" || block.Name == "Edit") {
+			filePath := block.Input.FilePath
+			if filePath != "" && a.homeDir != "" {
+				planDir := a.homeDir + "/.claude/plans/"
+				if strings.HasPrefix(filePath, planDir) {
+					planFileProcessed = true
+
+					var planContentStr string
+					if block.Name == "Write" && block.Input.Content != "" {
+						planContentStr = block.Input.Content
+					} else {
+						data, readErr := os.ReadFile(filePath)
+						if readErr == nil && len(data) > 0 {
+							if block.Name == "Edit" {
+								planContentStr = strings.Replace(string(data), block.Input.OldString, block.Input.NewString, 1)
+							} else {
+								planContentStr = string(data)
+							}
+						}
+					}
+
+					var compressed []byte
+					var compression leapmuxv1.ContentCompression
+					if planContentStr != "" {
+						compressed, compression = msgcodec.Compress([]byte(planContentStr))
+					}
+					a.sink.UpdatePlan(filePath, compressed, compression, extractPlanTitle(planContentStr))
+				}
+			}
 		}
 	}
-	if count > 0 {
+
+	if toolUseCount > 0 {
 		a.mu.Lock()
-		a.turnToolUses += count
+		a.turnToolUses += toolUseCount
 		a.mu.Unlock()
 	}
 }
@@ -143,11 +200,10 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		a.extractAndBroadcastUsage(content, msgType)
 	}
 
-	// Track plan mode tool_use, plan file paths, and count tool uses from assistant messages.
+	// Parse assistant message content blocks once for plan mode tracking,
+	// plan file tracking, and tool use counting.
 	if msgType == "assistant" {
-		a.trackPlanModeToolUse(content)
-		a.trackPlanFilePath(content)
-		a.countToolUses(content)
+		a.processAssistantBlocks(content)
 	}
 
 	// Extract thread_id — try each extractor until one succeeds.
@@ -369,100 +425,6 @@ func (a *ClaudeCodeAgent) getOrCreateUsageSnapshot() *contextUsageSnapshot {
 		a.contextUsage = &contextUsageSnapshot{}
 	}
 	return a.contextUsage
-}
-
-// trackPlanModeToolUse inspects an assistant message for EnterPlanMode or
-// ExitPlanMode tool_use blocks.
-func (a *ClaudeCodeAgent) trackPlanModeToolUse(content []byte) {
-	var msg struct {
-		Message struct {
-			Content []struct {
-				Type string `json:"type"`
-				ID   string `json:"id"`
-				Name string `json:"name"`
-			} `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.Unmarshal(content, &msg); err != nil {
-		return
-	}
-	for _, block := range msg.Message.Content {
-		if block.Type != "tool_use" || block.ID == "" {
-			continue
-		}
-		switch block.Name {
-		case "EnterPlanMode":
-			a.sink.StorePlanModeToolUse(block.ID, PermissionModePlan)
-		case "ExitPlanMode":
-			a.sink.StorePlanModeToolUse(block.ID, PermissionModeDefault)
-		}
-	}
-}
-
-// trackPlanFilePath inspects an assistant message for Write or Edit tool_use
-// blocks whose file_path targets the agent's ~/.claude/plans/ directory.
-func (a *ClaudeCodeAgent) trackPlanFilePath(content []byte) {
-	var msg struct {
-		Message struct {
-			Content []struct {
-				Type  string `json:"type"`
-				Name  string `json:"name"`
-				Input struct {
-					FilePath  string `json:"file_path"`
-					Content   string `json:"content"`
-					OldString string `json:"old_string"`
-					NewString string `json:"new_string"`
-				} `json:"input"`
-			} `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.Unmarshal(content, &msg); err != nil {
-		return
-	}
-
-	for _, block := range msg.Message.Content {
-		if block.Type != "tool_use" {
-			continue
-		}
-		if block.Name != "Write" && block.Name != "Edit" {
-			continue
-		}
-		filePath := block.Input.FilePath
-		if filePath == "" || a.homeDir == "" {
-			continue
-		}
-
-		planDir := a.homeDir + "/.claude/plans/"
-		if !strings.HasPrefix(filePath, planDir) {
-			continue
-		}
-
-		// Resolve plan content.
-		var planContentStr string
-		if block.Name == "Write" && block.Input.Content != "" {
-			planContentStr = block.Input.Content
-		} else {
-			data, readErr := os.ReadFile(filePath)
-			if readErr == nil && len(data) > 0 {
-				if block.Name == "Edit" {
-					planContentStr = strings.Replace(string(data), block.Input.OldString, block.Input.NewString, 1)
-				} else {
-					planContentStr = string(data)
-				}
-			}
-		}
-
-		var compressed []byte
-		var compression leapmuxv1.ContentCompression
-		if planContentStr != "" {
-			compressed, compression = msgcodec.Compress([]byte(planContentStr))
-		}
-
-		a.sink.UpdatePlan(filePath, compressed, compression, extractPlanTitle(planContentStr))
-
-		// Only track the first matching plan file per message.
-		return
-	}
 }
 
 // detectPlanModeFromToolResult inspects a user message (tool_result) for

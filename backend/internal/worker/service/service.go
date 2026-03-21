@@ -197,7 +197,7 @@ func (svc *Context) settingsDisplayLabels(agentID string, provider leapmuxv1.Age
 
 	// Build model ID → displayName map.
 	modelMap := make(map[string]string, len(models))
-	effortMap := make(map[string]string)
+	effortMap := make(map[string]string, len(models)*4)
 	for _, m := range models {
 		if m.DisplayName != "" {
 			modelMap[m.Id] = m.DisplayName
