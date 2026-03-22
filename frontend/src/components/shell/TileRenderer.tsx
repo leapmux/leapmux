@@ -410,12 +410,11 @@ export function createTileRenderer(opts: TileRendererOpts) {
 
           // Create an optimistic local message so it appears immediately in the chat.
           const localId = `local-${crypto.randomUUID()}`
-          const wrapped = JSON.stringify({ old_seqs: [], messages: [{ content }] })
           const localMsg = {
             $typeName: 'leapmux.v1.AgentChatMessage' as const,
             id: localId,
             role: MessageRole.USER,
-            content: new TextEncoder().encode(wrapped),
+            content: new TextEncoder().encode(JSON.stringify({ content })),
             contentCompression: ContentCompression.NONE,
             seq: 0n,
             createdAt: new Date().toISOString(),

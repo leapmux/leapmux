@@ -92,8 +92,9 @@ export function classifyParsedMessage(message: AgentChatMessage) {
   let category = classifyMessage(parsed.parentObject, parsed.wrapper, message.agentProvider)
   // Hide task_started/task_progress system messages inside spans — progress is shown via the span's context.
   if (category.kind === 'notification' && message.parentSpanId
-    && (parsed.parentObject?.subtype === 'task_started' || parsed.parentObject?.subtype === 'task_progress'))
+    && (parsed.parentObject?.subtype === 'task_started' || parsed.parentObject?.subtype === 'task_progress')) {
     category = { kind: 'hidden' }
+  }
   return { parsed, category }
 }
 
@@ -257,7 +258,10 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   }
 
   const rowClass = () => messageRowClass(category().kind, props.message.role)
-  const bubbleClass = () => messageBubbleClass(category().kind, props.message.role)
+  const isLocalPending = () => props.message.id.startsWith('local-')
+  const bubbleClass = () => isLocalPending() && props.message.role === MessageRole.USER
+    ? chatStyles.userMessagePending
+    : messageBubbleClass(category().kind, props.message.role)
 
   onMount(() => {
     if (contentRef)

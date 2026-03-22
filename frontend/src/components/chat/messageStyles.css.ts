@@ -17,6 +17,14 @@ export const userMessage = style([messageBubble, {
   alignSelf: 'flex-end',
 }])
 
+export const userMessagePending = style([messageBubble, {
+  backgroundColor: 'var(--accent)',
+  border: '1px dashed var(--border)',
+  color: 'var(--foreground)',
+  alignSelf: 'flex-end',
+  opacity: 0.7,
+}])
+
 export const assistantMessage = style([messageBubble, {
   backgroundColor: 'var(--card)',
   border: '1px solid var(--border)',
