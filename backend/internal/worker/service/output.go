@@ -92,16 +92,28 @@ func (t *ScopeTracker) CloseScope(scopeID string) {
 	})
 }
 
-// ThreadLines returns the current thread lines as a JSON string.
-func (t *ScopeTracker) ThreadLines() string {
+// Snapshot returns the depth and thread lines for a given scope ID in a single
+// atomic operation. This avoids the TOCTOU risk of calling DepthFor and
+// ThreadLines separately, and reduces mutex acquisitions.
+func (t *ScopeTracker) Snapshot(scopeID string) (depth int32, threadLines string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if len(t.scopes) == 0 {
-		return "[]"
+	// Depth lookup.
+	if scopeID != "" {
+		for _, s := range t.scopes {
+			if s.ScopeID == scopeID {
+				depth = int32(s.Depth)
+				break
+			}
+		}
 	}
 
-	// Find max column to size the array.
+	// Thread lines serialization.
+	if len(t.scopes) == 0 {
+		return depth, "[]"
+	}
+
 	maxCol := 0
 	for _, s := range t.scopes {
 		if s.Column > maxCol {
@@ -109,7 +121,6 @@ func (t *ScopeTracker) ThreadLines() string {
 		}
 	}
 
-	// Build the array with nulls for free slots.
 	lines := make([]*ThreadLine, maxCol+1)
 	for _, s := range t.scopes {
 		lines[s.Column] = &ThreadLine{
@@ -119,23 +130,7 @@ func (t *ScopeTracker) ThreadLines() string {
 	}
 
 	data, _ := json.Marshal(lines)
-	return string(data)
-}
-
-// DepthFor returns the depth for a given scope ID (0 for empty/main).
-func (t *ScopeTracker) DepthFor(scopeID string) int32 {
-	if scopeID == "" {
-		return 0
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	for _, s := range t.scopes {
-		if s.ScopeID == scopeID {
-			return int32(s.Depth)
-		}
-	}
-	return 0
+	return depth, string(data)
 }
 
 // --- Notification threading ---
@@ -442,9 +437,7 @@ func (h *OutputHandler) softClearNotifThread(agentID string) {
 
 // persistAndBroadcast persists a message and broadcasts it to watchers.
 func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, role leapmuxv1.MessageRole, contentJSON []byte, scopeID string) error {
-	tracker := h.scopeTracker(agentID)
-	depth := tracker.DepthFor(scopeID)
-	threadLines := tracker.ThreadLines()
+	depth, threadLines := h.scopeTracker(agentID).Snapshot(scopeID)
 
 	msgID := id.Generate()
 	compressed, compressionType := msgcodec.Compress(contentJSON)

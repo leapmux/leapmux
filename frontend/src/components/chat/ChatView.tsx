@@ -4,7 +4,7 @@ import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import ArrowDown from 'lucide-solid/icons/arrow-down'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
-import { createEffect, createSignal, For, on, onCleanup, onMount, Show, untrack } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
 import { formatChatQuote } from '~/lib/quoteUtils'
@@ -314,14 +314,14 @@ export const ChatView: Component<ChatViewProps> = (props) => {
               <div ref={contentRef} class={styles.messageListContent}>
                 <For each={props.messages}>
                   {(msg) => {
-                    const threadLines = () => {
+                    const threadLines = createMemo(() => {
                       try {
                         return JSON.parse(msg.threadLines || '[]')
                       }
                       catch {
                         return []
                       }
-                    }
+                    })
                     const hasThreadLines = () => threadLines().length > 0
 
                     return (

@@ -139,12 +139,12 @@ func (a *CodexAgent) handlePlanDelta(params json.RawMessage) {
 
 // handleItemStarted processes item/started notifications.
 func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
-	item, itemType, _ := extractCodexItem(params)
+	item, itemType, _, threadID := extractCodexItem(params)
 	if item == nil {
 		return
 	}
 
-	scopeID := a.codexScopeID(params)
+	scopeID := a.codexScopeID(threadID)
 
 	switch itemType {
 	case "agentMessage":
@@ -167,7 +167,7 @@ func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
 
 // handleItemCompleted processes item/completed notifications.
 func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
-	item, itemType, _ := extractCodexItem(params)
+	item, itemType, _, threadID := extractCodexItem(params)
 	if item == nil {
 		return
 	}
@@ -175,7 +175,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 	// Non-notification messages soft-clear the notification thread.
 	a.sink.SoftClearNotifThread()
 
-	scopeID := a.codexScopeID(params)
+	scopeID := a.codexScopeID(threadID)
 
 	switch itemType {
 	case "agentMessage":
@@ -496,33 +496,32 @@ func (a *CodexAgent) handleCollabAgentScope(item json.RawMessage, parentScopeID 
 	}
 }
 
-// codexScopeID determines the scope ID for a Codex notification.
-// If the notification's threadId matches the main thread, it returns ""
-// (main agent scope). Otherwise it returns the threadId as the scope ID.
-func (a *CodexAgent) codexScopeID(params json.RawMessage) string {
-	var notif struct {
-		ThreadID string `json:"threadId"`
-	}
-	if json.Unmarshal(params, &notif) != nil || notif.ThreadID == "" {
+// codexScopeID determines the scope ID from a pre-extracted threadId.
+// If the threadId matches the main thread (or is empty), returns ""
+// (main agent scope). Otherwise returns the threadId as the scope ID.
+func (a *CodexAgent) codexScopeID(threadID string) string {
+	if threadID == "" {
 		return ""
 	}
 	a.mu.Lock()
 	mainThreadID := a.threadID
 	a.mu.Unlock()
-	if notif.ThreadID == mainThreadID {
+	if threadID == mainThreadID {
 		return ""
 	}
-	return notif.ThreadID
+	return threadID
 }
 
-// extractCodexItem extracts the item type and ID from item/started or item/completed params.
-// Two unmarshals are needed: one to extract the raw item JSON, another to read type/ID from it.
-func extractCodexItem(params json.RawMessage) (json.RawMessage, string, string) {
+// extractCodexItem extracts the item type, ID, and threadId from item/started
+// or item/completed params. The threadId is returned alongside the item to
+// avoid a redundant unmarshal in codexScopeID.
+func extractCodexItem(params json.RawMessage) (item json.RawMessage, itemType, itemID, threadID string) {
 	var wrapper struct {
-		Item json.RawMessage `json:"item"`
+		Item     json.RawMessage `json:"item"`
+		ThreadID string          `json:"threadId"`
 	}
 	if json.Unmarshal(params, &wrapper) != nil || len(wrapper.Item) == 0 {
-		return nil, "", ""
+		return nil, "", "", ""
 	}
 
 	var header struct {
@@ -530,8 +529,8 @@ func extractCodexItem(params json.RawMessage) (json.RawMessage, string, string) 
 		ID   string `json:"id"`
 	}
 	if json.Unmarshal(wrapper.Item, &header) != nil {
-		return nil, "", ""
+		return nil, "", "", ""
 	}
 
-	return wrapper.Item, header.Type, header.ID
+	return wrapper.Item, header.Type, header.ID, wrapper.ThreadID
 }

@@ -55,29 +55,6 @@ export const threadLineConnector = style([threadLineColumnBase, {
   },
 }])
 
-/** Last message connector (L-shape: line stops at midpoint). */
-export const threadLineConnectorLast = style([threadLineColumnBase, {
-  '::before': {
-    content: '""',
-    position: 'absolute',
-    left: '50%',
-    top: 0,
-    bottom: '50%',
-    width: '2px',
-    transform: 'translateX(-50%)',
-    backgroundColor: 'var(--thread-line-color, var(--border))',
-  },
-  '::after': {
-    content: '""',
-    position: 'absolute',
-    left: '50%',
-    top: '50%',
-    right: 0,
-    height: '2px',
-    backgroundColor: 'var(--thread-line-color, var(--border))',
-  },
-}])
-
 /** Thread line color palette (cycled by color index). */
 const PALETTE = [
   'var(--color-blue-9)',
