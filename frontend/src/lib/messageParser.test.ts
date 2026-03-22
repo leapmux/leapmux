@@ -1,6 +1,6 @@
-import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import { describe, expect, it } from 'vitest'
-import { ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { makeMessage, rawContent } from '../../tests/unit/helpers/messageFactory'
 import {
   extractAgentRenamed,
   extractAssistantUsage,
@@ -16,26 +16,11 @@ import {
 } from './messageParser'
 
 /** Build a mock AgentChatMessage with the given JSON content (uncompressed). */
-function makeMsg(
-  role: MessageRole,
-  content: unknown,
-  opts?: { seq?: bigint },
-): AgentChatMessage {
-  return {
-    id: 'msg-1',
-    role,
-    content: new TextEncoder().encode(JSON.stringify(content)),
-    contentCompression: ContentCompression.NONE,
-    seq: opts?.seq ?? 1n,
-    createdAt: '',
-    deliveryError: '',
-    depth: 0,
-    scopeId: '',
-    threadLines: '[]',
-  } as AgentChatMessage
+function makeMsg(role: MessageRole, content: unknown, opts?: { seq?: bigint }) {
+  return makeMessage({ role, content: rawContent(content), seq: opts?.seq })
 }
 
-/** Wrap an inner message in the notification thread wrapper envelope (LEAPMUX only). */
+/** Wrap inner messages in a notification thread wrapper envelope (LEAPMUX only). */
 function wrap(...messages: unknown[]): { old_seqs: number[], messages: unknown[] } {
   return { old_seqs: [], messages }
 }
@@ -84,15 +69,7 @@ describe('parseMessageContent', () => {
   })
 
   it('returns safe defaults for invalid JSON', () => {
-    const msg = {
-      id: 'msg-1',
-      role: MessageRole.ASSISTANT,
-      content: new TextEncoder().encode('not json'),
-      contentCompression: ContentCompression.NONE,
-      seq: 1n,
-      createdAt: '',
-      deliveryError: '',
-    } as AgentChatMessage
+    const msg = makeMessage({ content: new TextEncoder().encode('not json') })
     const result = parseMessageContent(msg)
 
     expect(result.rawText).toBe('not json')
@@ -101,15 +78,7 @@ describe('parseMessageContent', () => {
   })
 
   it('returns safe defaults for empty content', () => {
-    const msg = {
-      id: 'msg-1',
-      role: MessageRole.ASSISTANT,
-      content: new Uint8Array(),
-      contentCompression: ContentCompression.NONE,
-      seq: 1n,
-      createdAt: '',
-      deliveryError: '',
-    } as AgentChatMessage
+    const msg = makeMessage({ content: new Uint8Array() })
     const result = parseMessageContent(msg)
 
     // Empty Uint8Array decodes to "" which fails JSON.parse → topLevel null

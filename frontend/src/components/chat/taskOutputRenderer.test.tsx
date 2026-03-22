@@ -15,7 +15,8 @@ vi.mock('~/lib/renderMarkdown', () => ({
   renderMarkdown: (text: string) => text,
 }))
 
-const { formatTaskStatus, firstNonEmptyLine, renderMessageContent } = await import('./messageRenderers')
+const { renderMessageContent } = await import('./messageRenderers')
+const { formatTaskStatus, firstNonEmptyLine } = await import('./rendererUtils')
 type RenderContext = import('./messageRenderers').RenderContext
 
 /** Construct a TaskOutput tool_use assistant message object. */

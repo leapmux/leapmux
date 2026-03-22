@@ -52,7 +52,6 @@ import {
 } from './toolStyles.css'
 
 export { ToolHeaderActions }
-export { firstNonEmptyLine, formatTaskStatus } from './rendererUtils'
 
 const logger = createLogger('messageRenderers')
 

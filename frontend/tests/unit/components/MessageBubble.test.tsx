@@ -1,10 +1,10 @@
-import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MessageBubble } from '~/components/chat/MessageBubble'
 import { toolBodyContent } from '~/components/chat/toolStyles.css'
 import { PreferencesProvider } from '~/context/PreferencesContext'
-import { ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { makeMessage, rawContent, wrapContent } from '../helpers/messageFactory'
 
 // jsdom does not provide ResizeObserver or Worker
 beforeAll(() => {
@@ -39,40 +39,8 @@ beforeEach(() => {
   })
 })
 
-/** Encode a JSON object as raw content (no wrapper). */
-function rawContent(obj: unknown): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify(obj))
-}
-
-/** Encode a JSON object into a notification wrapper envelope (LEAPMUX only). */
-function wrapContent(messages: unknown[], oldSeqs: number[] = []): Uint8Array {
-  const wrapper = { old_seqs: oldSeqs, messages }
-  return new TextEncoder().encode(JSON.stringify(wrapper))
-}
-
-/** Build a minimal AgentChatMessage for testing. */
-function makeMsg(overrides: Partial<{
-  id: string
-  role: MessageRole
-  seq: bigint
-  createdAt: string
-  deliveryError: string
-  content: Uint8Array
-  contentCompression: ContentCompression
-}>): AgentChatMessage {
-  return {
-    $typeName: 'leapmux.v1.AgentChatMessage' as const,
-    id: overrides.id ?? 'msg-1',
-    role: overrides.role ?? MessageRole.ASSISTANT,
-    seq: overrides.seq ?? 1n,
-    createdAt: overrides.createdAt ?? '2025-01-15T10:00:00.000Z',
-    deliveryError: overrides.deliveryError ?? '',
-    content: overrides.content ?? new Uint8Array(),
-    contentCompression: overrides.contentCompression ?? ContentCompression.NONE,
-    depth: 0,
-    scopeId: '',
-    threadLines: '[]',
-  } as AgentChatMessage
+function makeMsg(overrides: Partial<Parameters<typeof makeMessage>[0]>) {
+  return makeMessage({ createdAt: '2025-01-15T10:00:00.000Z', ...overrides })
 }
 
 /** Click the "Copy Raw JSON" button and return the parsed clipboard content. */
