@@ -343,7 +343,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     return (
                       <Show
                         when={spanLines().length > 0}
-                        fallback={<div data-seq={msg.seq.toString()}>{bubble}</div>}
+                        fallback={<div data-seq={msg.seq.toString()} style={{ display: 'contents' }}>{bubble}</div>}
                       >
                         <div data-seq={msg.seq.toString()} class={styles.messageRow}>
                           <SpanLines lines={spanLines()} spanOpener={!!msg.spanId} />
