@@ -133,10 +133,11 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(content []byte) {
 				a.sink.StorePlanModeToolUse(block.ID, PermissionModePlan)
 			case "ExitPlanMode":
 				a.sink.StorePlanModeToolUse(block.ID, PermissionModeDefault)
-			case "Agent":
-				// Open a new span for the subagent.
-				a.sink.OpenSpan(block.ID, parentSpanID)
 			}
+
+			// Open a span for every tool_use so the tool_result
+			// is visually grouped under its tool_use.
+			a.sink.OpenSpan(block.ID, parentSpanID)
 		}
 
 		// Plan file path tracking (Write/Edit to ~/.claude/plans/).
@@ -207,12 +208,6 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		a.extractAndBroadcastUsage(content, msgType)
 	}
 
-	// Parse assistant message content blocks once for plan mode tracking,
-	// plan file tracking, tool use counting, and scope management.
-	if msgType == "assistant" {
-		a.processAssistantBlocks(content)
-	}
-
 	// Determine parent span ID for hierarchy tracking.
 	parentSpanID := extractParentToolUseID(content)
 	if parentSpanID == "" {
@@ -239,12 +234,22 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	}
 
 	// Persist as a standalone message with hierarchy metadata.
+	// This MUST happen before processAssistantBlocks (which opens spans)
+	// so the assistant message stays at the parent depth.
 	if err := a.sink.PersistMessage(role, content, parentSpanID, spanID); err != nil {
 		slog.Error("persist agent message", "agent_id", a.agentID, "error", err)
 	}
 
+	// Parse assistant message content blocks for plan mode tracking,
+	// plan file tracking, tool use counting, and span management.
+	// Runs after persist so spans open AFTER the tool_use message,
+	// keeping it at parent depth while its tool_result is indented.
+	if msgType == "assistant" {
+		a.processAssistantBlocks(content)
+	}
+
 	// Close span after persisting if this is a user message (tool_result)
-	// that completes an Agent tool span.
+	// that completes a tool span.
 	if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
 		if toolResultID := extractToolResultID(content); toolResultID != "" {
 			a.sink.CloseSpan(toolResultID)

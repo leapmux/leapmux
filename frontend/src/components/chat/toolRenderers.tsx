@@ -706,7 +706,7 @@ export const toolResultRenderer: MessageContentRenderer = {
     // Wrap in ToolUseLayout when we have tool info from the linked tool_use message.
     if (toolName && context?.toolUseMessage) {
       const detail = renderToolDetail(toolName, toolInput ?? {}, context)
-      const summary = deriveToolResultSummary(toolName, toolInput ?? {}, context)
+      const summary = deriveToolSummary(toolName, toolInput ?? {}, context)
       const title = detail ?? toolName
 
       return (
@@ -725,9 +725,4 @@ export const toolResultRenderer: MessageContentRenderer = {
 
     return innerResult
   },
-}
-
-/** Derive a summary for tool_result header (reuses tool_use input for context). */
-function deriveToolResultSummary(toolName: string, input: Record<string, unknown>, context?: RenderContext): JSX.Element | undefined {
-  return deriveToolSummary(toolName, input, context)
 }

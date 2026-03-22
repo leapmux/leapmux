@@ -102,11 +102,22 @@ export function createChatStore() {
     spanIndex: {},
   })
 
-  /** Index a message by spanId if it has one. */
+  /** Index a single message by spanId if it has one. */
   function indexBySpanId(agentId: string, msg: AgentChatMessage) {
     if (msg.spanId) {
       setState('spanIndex', agentId, (prev = {}) => ({ ...prev, [msg.spanId]: msg }))
     }
+  }
+
+  /** Batch-index multiple messages by spanId in a single setState call. */
+  function indexBySpanIdBatch(agentId: string, messages: AgentChatMessage[]) {
+    const entries: Record<string, AgentChatMessage> = {}
+    for (const msg of messages) {
+      if (msg.spanId)
+        entries[msg.spanId] = msg
+    }
+    if (Object.keys(entries).length > 0)
+      setState('spanIndex', agentId, (prev = {}) => ({ ...prev, ...entries }))
   }
 
   /** Shared implementation for setMessages / loadInitialMessages. */
@@ -118,8 +129,8 @@ export function createChatStore() {
       if (msg.deliveryError) {
         setState('messageErrors', msg.id, msg.deliveryError)
       }
-      indexBySpanId(agentId, msg)
     }
+    indexBySpanIdBatch(agentId, messages)
     // Extract todos from the last TodoWrite message in the loaded history.
     const todos = findLatestTodos(messages)
     if (todos) {
@@ -328,9 +339,7 @@ export function createChatStore() {
             const newMsgs = resp.messages.filter(m => !existingSeqs.has(m.seq))
             return [...newMsgs, ...prev]
           })
-          for (const msg of resp.messages) {
-            indexBySpanId(agentId, msg)
-          }
+          indexBySpanIdBatch(agentId, resp.messages)
           // Extract todos from older messages if none found yet.
           if (!state.todosByAgent[agentId] || state.todosByAgent[agentId].length === 0) {
             const todos = findLatestTodos(resp.messages)

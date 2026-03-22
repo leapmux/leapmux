@@ -150,16 +150,19 @@ func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
 	case "agentMessage":
 		// No-op for started — wait for completed to persist.
 	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall":
-		// Persist as standalone message.
+		// Persist first at parent depth, then open span so the
+		// completed message is indented under the started message.
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, parentSpanID, itemID); err != nil {
 			slog.Error("codex persist item/started", "agent_id", a.agentID, "type", itemType, "error", err)
 		}
+		a.sink.OpenSpan(itemID, parentSpanID)
 	case "collabAgentToolCall":
-		// Open spans for SpawnAgent tool calls.
-		a.handleCollabAgentSpan(item, parentSpanID, false)
+		// Persist first at parent depth, then open spans for
+		// SpawnAgent so subagent messages are indented.
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, parentSpanID, itemID); err != nil {
 			slog.Error("codex persist collabAgentToolCall/started", "agent_id", a.agentID, "error", err)
 		}
+		a.handleCollabAgentSpan(item, parentSpanID, false)
 	case "reasoning":
 		// No-op for started — wait for completed.
 	}
@@ -214,12 +217,14 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		a.mu.Lock()
 		a.turnToolUses++
 		a.mu.Unlock()
-		// Persist as standalone message.
+		// Persist inside the span (at child depth), then close it.
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, parentSpanID, itemID); err != nil {
 			slog.Error("codex persist item/completed", "agent_id", a.agentID, "type", itemType, "error", err)
 		}
+		a.sink.CloseSpan(itemID)
 	case "collabAgentToolCall":
-		// Close spans for completed/failed SpawnAgent tool calls.
+		// Close receiver thread spans first so the completed message
+		// is persisted at parent depth (outside the subagent scope).
 		a.handleCollabAgentSpan(item, parentSpanID, true)
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, parentSpanID, itemID); err != nil {
 			slog.Error("codex persist collabAgentToolCall/completed", "agent_id", a.agentID, "error", err)
