@@ -108,12 +108,6 @@ export const toolInputSummary = style({
   whiteSpace: 'nowrap',
 })
 
-export const toolInputSummaryExpanded = style({
-  ...toolInputSummaryBase,
-  whiteSpace: 'pre-wrap',
-  wordBreak: 'break-all',
-})
-
 // Tool input detail text (natural language: descriptions, URLs, queries)
 export const toolInputText = style({
   color: 'var(--foreground)',

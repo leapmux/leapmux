@@ -322,25 +322,31 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                         return []
                       }
                     })
-                    const hasThreadLines = () => threadLines().length > 0
+
+                    const bubble = (
+                      <MessageBubble
+                        message={msg}
+                        error={props.messageErrors?.[msg.id]}
+                        onRetry={() => props.onRetryMessage?.(msg.id)}
+                        onDelete={() => props.onDeleteMessage?.(msg.id)}
+                        workingDir={props.workingDir}
+                        homeDir={props.homeDir}
+                        onReply={props.onReply}
+                      />
+                    )
 
                     return (
-                      <div data-seq={msg.seq.toString()} style={hasThreadLines() ? { display: 'flex' } : undefined}>
-                        {hasThreadLines() && (
+                      <Show
+                        when={threadLines().length > 0}
+                        fallback={<div data-seq={msg.seq.toString()}>{bubble}</div>}
+                      >
+                        <div data-seq={msg.seq.toString()} style={{ display: 'flex' }}>
                           <ThreadLines lines={threadLines()} scopeId={msg.scopeId || ''} />
-                        )}
-                        <div style={hasThreadLines() ? { 'flex': '1', 'min-width': '0' } : undefined}>
-                          <MessageBubble
-                            message={msg}
-                            error={props.messageErrors?.[msg.id]}
-                            onRetry={() => props.onRetryMessage?.(msg.id)}
-                            onDelete={() => props.onDeleteMessage?.(msg.id)}
-                            workingDir={props.workingDir}
-                            homeDir={props.homeDir}
-                            onReply={props.onReply}
-                          />
+                          <div style={{ 'flex': '1', 'min-width': '0' }}>
+                            {bubble}
+                          </div>
                         </div>
-                      </div>
+                      </Show>
                     )
                   }}
                 </For>
