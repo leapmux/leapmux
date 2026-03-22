@@ -44,11 +44,11 @@ export const SpanLines: Component<SpanLinesProps> = (props) => {
               return <div class={spanLineEmpty} />
 
             const baseClass = TYPE_STYLES[line.type] || spanLineActive
-            const colorClass = line.color >= 0
-              ? spanLineColors[`color${line.color % PALETTE_SIZE}`]
+            const colorClass = line.color > 0
+              ? spanLineColors[`color${(line.color - 1) % PALETTE_SIZE}`]
               : ''
-            const ptClass = line.passthrough_color != null && line.passthrough_color >= 0
-              ? spanPassthroughColors[`color${line.passthrough_color % PALETTE_SIZE}`]
+            const ptClass = line.passthrough_color != null && line.passthrough_color > 0
+              ? spanPassthroughColors[`color${(line.passthrough_color - 1) % PALETTE_SIZE}`]
               : ''
 
             return <div class={`${baseClass} ${colorClass} ${ptClass}`} />

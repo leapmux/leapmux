@@ -86,13 +86,13 @@ func (t *SpanTracker) OpenSpan(spanID, parentSpanID string) {
 		}
 	}
 
+	t.nextColor++
 	t.spans = append(t.spans, ActiveSpan{
 		SpanID:     spanID,
 		Depth:      depth,
 		ColorIndex: t.nextColor,
 		Column:     column,
 	})
-	t.nextColor++
 }
 
 // CloseSpan removes a span, freeing its column.
@@ -111,7 +111,7 @@ func (t *SpanTracker) CloseSpan(spanID string) {
 func (t *SpanTracker) PeekNextColor() int32 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return int32(t.nextColor)
+	return int32(t.nextColor + 1)
 }
 
 // ColorFor returns the color index of an active span, or -1 if not found.

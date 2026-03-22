@@ -140,8 +140,8 @@ export function ToolUseLayout(props: {
       </div>
       <Show when={props.summary || (props.children && (props.alwaysVisible || expanded()))}>
         <div class={props.bordered !== false
-          ? `${toolBodyContent}${props.context?.spanColor != null && props.context.spanColor >= 0
-            ? ` ${spanLineColors[`color${props.context.spanColor % PALETTE_SIZE}`]}`
+          ? `${toolBodyContent}${props.context?.spanColor != null && props.context.spanColor > 0
+            ? ` ${spanLineColors[`color${(props.context.spanColor - 1) % PALETTE_SIZE}`]}`
             : ''}`
           : undefined}
         >

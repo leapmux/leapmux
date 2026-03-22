@@ -129,7 +129,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       envelope.parent_span_id = msg.parentSpanId
     if (msg.spanLines && msg.spanLines !== '[]')
       envelope.span_lines = JSON.parse(msg.spanLines)
-    if (msg.spanColor >= 0)
+    if (msg.spanColor > 0)
       envelope.span_color = msg.spanColor
     if (p.wrapper && p.wrapper.old_seqs.length > 0)
       envelope.old_seqs = p.wrapper.old_seqs
@@ -148,12 +148,6 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     }
   }
 
-  // Whether the message is rendered by a renderer that has its own internal ToolHeaderActions.
-  // tool_use always renders its own ToolHeaderActions inside ToolUseLayout.
-  // tool_result only gets wrapped in ToolUseLayout (with internal actions) when
-  // a linked toolUseMessage is available; otherwise fall through to the outer actions.
-  const hasInternalActions = () => category().kind === 'tool_use' || (category().kind === 'tool_result' && !!toolUseMessage())
-
   const copyJson = async () => {
     await navigator.clipboard.writeText(prettifyJson(rawJson()))
     setJsonCopied(true)
@@ -169,6 +163,12 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       return undefined
     return props.getMessageBySpanId(spanId)
   })
+
+  // Whether the message is rendered by a renderer that has its own internal ToolHeaderActions.
+  // tool_use always renders its own ToolHeaderActions inside ToolUseLayout.
+  // tool_result only gets wrapped in ToolUseLayout (with internal actions) when
+  // a linked toolUseMessage is available; otherwise fall through to the outer actions.
+  const hasInternalActions = () => category().kind === 'tool_use' || (category().kind === 'tool_result' && !!toolUseMessage())
 
   // Build render context for message renderers.
   const renderContext = (): RenderContext => ({

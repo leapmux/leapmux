@@ -28,7 +28,7 @@ func TestSpanTracker_OpenClose(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
 	require.Len(t, parsed, 1)
 	assert.Equal(t, "span-1", parsed[0].SpanID)
-	assert.Equal(t, 0, parsed[0].Color)
+	assert.Equal(t, 1, parsed[0].Color)
 
 	// Close the span.
 	tracker.CloseSpan("span-1")
@@ -53,8 +53,8 @@ func TestSpanTracker_NestedSpans(t *testing.T) {
 	require.Len(t, parsed, 2)
 	assert.Equal(t, "span-1", parsed[0].SpanID)
 	assert.Equal(t, "span-2", parsed[1].SpanID)
-	assert.Equal(t, 0, parsed[0].Color)
-	assert.Equal(t, 1, parsed[1].Color)
+	assert.Equal(t, 1, parsed[0].Color)
+	assert.Equal(t, 2, parsed[1].Color)
 }
 
 func TestSpanTracker_ColumnReuse(t *testing.T) {
@@ -86,9 +86,9 @@ func TestSpanTracker_ParallelSpans(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
 	require.Len(t, parsed, 3)
 
-	assert.Equal(t, 0, parsed[0].Color)
-	assert.Equal(t, 1, parsed[1].Color)
-	assert.Equal(t, 2, parsed[2].Color)
+	assert.Equal(t, 1, parsed[0].Color)
+	assert.Equal(t, 2, parsed[1].Color)
+	assert.Equal(t, 3, parsed[2].Color)
 }
 
 func TestSpanTracker_CloseNonexistent(t *testing.T) {
@@ -116,24 +116,24 @@ func TestSpanTracker_ColorIncrements(t *testing.T) {
 	var parsed []*SpanLine
 	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
 	require.Len(t, parsed, 1)
-	assert.Equal(t, 1, parsed[0].Color)
+	assert.Equal(t, 2, parsed[0].Color)
 }
 
 func TestSpanTracker_PeekNextColor(t *testing.T) {
 	tracker := &SpanTracker{}
 
-	// First peek returns 0.
-	assert.Equal(t, int32(0), tracker.PeekNextColor())
-
-	// Opening a span consumes color 0; next peek returns 1.
-	tracker.OpenSpan("span-1", "")
+	// First peek returns 1.
 	assert.Equal(t, int32(1), tracker.PeekNextColor())
+
+	// Opening a span consumes color 1; next peek returns 2.
+	tracker.OpenSpan("span-1", "")
+	assert.Equal(t, int32(2), tracker.PeekNextColor())
 
 	// Close and reopen — peek still advances.
 	tracker.CloseSpan("span-1")
-	assert.Equal(t, int32(1), tracker.PeekNextColor())
-	tracker.OpenSpan("span-2", "")
 	assert.Equal(t, int32(2), tracker.PeekNextColor())
+	tracker.OpenSpan("span-2", "")
+	assert.Equal(t, int32(3), tracker.PeekNextColor())
 }
 
 func TestSpanTracker_ColorFor(t *testing.T) {
@@ -144,34 +144,34 @@ func TestSpanTracker_ColorFor(t *testing.T) {
 
 	// Active span returns its color.
 	tracker.OpenSpan("span-1", "")
-	assert.Equal(t, int32(0), tracker.ColorFor("span-1"))
+	assert.Equal(t, int32(1), tracker.ColorFor("span-1"))
 
 	tracker.OpenSpan("span-2", "span-1")
-	assert.Equal(t, int32(0), tracker.ColorFor("span-1"))
-	assert.Equal(t, int32(1), tracker.ColorFor("span-2"))
+	assert.Equal(t, int32(1), tracker.ColorFor("span-1"))
+	assert.Equal(t, int32(2), tracker.ColorFor("span-2"))
 
 	// Closed span returns -1.
 	tracker.CloseSpan("span-1")
 	assert.Equal(t, int32(-1), tracker.ColorFor("span-1"))
-	assert.Equal(t, int32(1), tracker.ColorFor("span-2"))
+	assert.Equal(t, int32(2), tracker.ColorFor("span-2"))
 }
 
 func TestSpanTracker_RenderingHints(t *testing.T) {
 	tracker := &SpanTracker{}
 
-	// Two parallel spans: A (col 0, color 0) and B (col 1, color 1).
+	// Two parallel spans: A (col 0, color 1) and B (col 1, color 2).
 	tracker.OpenSpan("span-A", "")
 	tracker.OpenSpan("span-B", "")
 
 	// Snapshot for a message connecting to span-A (col 0).
-	// Col 0 = connector, col 1 = active_passthrough with passthrough_color = 0.
+	// Col 0 = connector, col 1 = active_passthrough with passthrough_color = 1.
 	_, lines := tracker.Snapshot("", "span-A", false)
 	var parsed []*SpanLine
 	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
 	require.Len(t, parsed, 2)
 	assert.Equal(t, SpanLineConnector, parsed[0].Type)
 	assert.Equal(t, SpanLineActivePassthrough, parsed[1].Type)
-	assert.Equal(t, 0, parsed[1].PassthroughColor)
+	assert.Equal(t, 1, parsed[1].PassthroughColor)
 
 	// Snapshot for a message connecting to span-B (col 1).
 	// Col 0 = active (no passthrough needed), col 1 = connector.
@@ -203,6 +203,7 @@ func TestSpanTracker_ConnectorEnd(t *testing.T) {
 	require.Len(t, parsed, 2)
 	assert.Equal(t, SpanLineConnectorEnd, parsed[0].Type)
 	assert.Equal(t, SpanLineActivePassthrough, parsed[1].Type)
+	assert.Equal(t, 1, parsed[1].PassthroughColor)
 
 	// Closing snapshot for span-B: col 0 = active, col 1 = connector_end (└).
 	_, lines = tracker.Snapshot("", "span-B", true)
@@ -235,9 +236,9 @@ func TestSpanTracker_PassthroughWithNullSlot(t *testing.T) {
 	assert.Equal(t, SpanLineConnector, parsed[0].Type)
 	require.NotNil(t, parsed[1])
 	assert.Equal(t, SpanLinePassthrough, parsed[1].Type)
-	assert.Equal(t, 0, parsed[1].PassthroughColor)
+	assert.Equal(t, 1, parsed[1].PassthroughColor)
 	assert.Equal(t, SpanLineActivePassthrough, parsed[2].Type)
-	assert.Equal(t, 0, parsed[2].PassthroughColor)
+	assert.Equal(t, 1, parsed[2].PassthroughColor)
 }
 
 func TestSpanTracker_SpanLinesNullSlots(t *testing.T) {
