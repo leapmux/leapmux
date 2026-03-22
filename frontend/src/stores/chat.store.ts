@@ -105,7 +105,7 @@ export function createChatStore() {
   /** Index a single message by spanId if it has one. */
   function indexBySpanId(agentId: string, msg: AgentChatMessage) {
     if (msg.spanId) {
-      setState('spanIndex', agentId, (prev = {}) => ({ ...prev, [msg.spanId]: msg }))
+      setState('spanIndex', agentId, msg.spanId, msg)
     }
   }
 
@@ -116,8 +116,8 @@ export function createChatStore() {
       if (msg.spanId)
         entries[msg.spanId] = msg
     }
-    if (Object.keys(entries).length > 0)
-      setState('spanIndex', agentId, (prev = {}) => ({ ...prev, ...entries }))
+    for (const [spanId, msg] of Object.entries(entries))
+      setState('spanIndex', agentId, spanId, msg)
   }
 
   /** Shared implementation for setMessages / loadInitialMessages. */

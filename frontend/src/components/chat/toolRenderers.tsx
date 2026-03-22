@@ -44,6 +44,7 @@ import { getAssistantContent, isObject, relativizePath } from './messageUtils'
 import { parseCatNContent, ReadResultView } from './ReadResultView'
 import { RelativeTime } from './RelativeTime'
 import { formatToolInput } from './rendererUtils'
+import { PALETTE_SIZE, spanLineColors } from './SpanLines.css'
 import { renderToolDetail } from './toolDetailRenderers'
 import {
   controlResponseTag,
@@ -138,7 +139,12 @@ export function ToolUseLayout(props: {
         </Show>
       </div>
       <Show when={props.summary || (props.children && (props.alwaysVisible || expanded()))}>
-        <div class={props.bordered !== false ? toolBodyContent : undefined}>
+        <div class={props.bordered !== false
+          ? `${toolBodyContent}${props.context?.spanColor != null && props.context.spanColor >= 0
+            ? ` ${spanLineColors[`color${props.context.spanColor % PALETTE_SIZE}`]}`
+            : ''}`
+          : undefined}
+        >
           <Show when={props.summary}>{props.summary}</Show>
           <Show when={props.children && (props.alwaysVisible || expanded())}>
             {props.children}

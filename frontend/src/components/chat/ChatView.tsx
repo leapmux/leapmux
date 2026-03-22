@@ -317,8 +317,10 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                 <For each={props.messages}>
                   {(msg) => {
                     const spanLines = createMemo(() => {
+                      if (!msg.spanLines || msg.spanLines === '[]')
+                        return []
                       try {
-                        return JSON.parse(msg.spanLines || '[]')
+                        return JSON.parse(msg.spanLines)
                       }
                       catch {
                         return []
@@ -343,9 +345,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                         when={spanLines().length > 0}
                         fallback={<div data-seq={msg.seq.toString()}>{bubble}</div>}
                       >
-                        <div data-seq={msg.seq.toString()} style={{ display: 'flex' }}>
+                        <div data-seq={msg.seq.toString()} class={styles.messageRow}>
                           <SpanLines lines={spanLines()} parentSpanId={msg.parentSpanId || ''} />
-                          <div style={{ 'flex': '1', 'min-width': '0' }}>
+                          <div class={styles.messageRowContent}>
                             {bubble}
                           </div>
                         </div>

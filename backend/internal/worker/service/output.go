@@ -92,6 +92,27 @@ func (t *SpanTracker) CloseSpan(spanID string) {
 	})
 }
 
+// PeekNextColor returns the color index that will be assigned to the next
+// span opened via OpenSpan. Safe to call only when output processing is
+// sequential per agent (which it is for both Claude and Codex handlers).
+func (t *SpanTracker) PeekNextColor() int32 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return int32(t.nextColor)
+}
+
+// ColorFor returns the color index of an active span, or -1 if not found.
+func (t *SpanTracker) ColorFor(spanID string) int32 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, s := range t.spans {
+		if s.SpanID == spanID {
+			return int32(s.ColorIndex)
+		}
+	}
+	return -1
+}
+
 // Snapshot returns the depth and span lines for a given parentSpanID in a single
 // atomic operation. This avoids the TOCTOU risk of calling DepthFor and
 // SpanLines separately, and reduces mutex acquisitions.
@@ -221,8 +242,8 @@ type agentOutputSink struct {
 
 // --- OutputSink interface implementation ---
 
-func (s *agentOutputSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, parentSpanID string, spanID string) error {
-	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, role, content, parentSpanID, spanID)
+func (s *agentOutputSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, parentSpanID string, spanID string, spanColor int32) error {
+	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, role, content, parentSpanID, spanID, spanColor)
 }
 
 func (s *agentOutputSink) PersistNotification(role leapmuxv1.MessageRole, content []byte) error {
@@ -235,6 +256,10 @@ func (s *agentOutputSink) OpenSpan(spanID, parentSpanID string) {
 
 func (s *agentOutputSink) CloseSpan(spanID string) {
 	s.h.spanTracker(s.agentID).CloseSpan(spanID)
+}
+
+func (s *agentOutputSink) PeekNextSpanColor() int32 {
+	return s.h.spanTracker(s.agentID).PeekNextColor()
 }
 
 func (s *agentOutputSink) BroadcastStreamChunk(content []byte) {
@@ -436,8 +461,15 @@ func (h *OutputHandler) softClearNotifThread(agentID string) {
 }
 
 // persistAndBroadcast persists a message and broadcasts it to watchers.
-func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, role leapmuxv1.MessageRole, contentJSON []byte, parentSpanID string, spanID string) error {
-	depth, spanLines := h.spanTracker(agentID).Snapshot(parentSpanID)
+func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, role leapmuxv1.MessageRole, contentJSON []byte, parentSpanID string, spanID string, spanColor int32) error {
+	tracker := h.spanTracker(agentID)
+	depth, spanLines := tracker.Snapshot(parentSpanID)
+
+	// Resolve span color: if the span is already active (e.g. tool_result
+	// inside an open span), look up its color from the tracker.
+	if spanID != "" && spanColor < 0 {
+		spanColor = tracker.ColorFor(spanID)
+	}
 
 	msgID := id.Generate()
 	compressed, compressionType := msgcodec.Compress(contentJSON)
@@ -453,6 +485,7 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		SpanID:             spanID,
 		ParentSpanID:       parentSpanID,
 		SpanLines:          spanLines,
+		SpanColor:          int64(spanColor),
 		AgentProvider:      agentProvider,
 		CreatedAt:          now,
 	})
@@ -472,6 +505,7 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		SpanId:             spanID,
 		ParentSpanId:       parentSpanID,
 		SpanLines:          spanLines,
+		SpanColor:          spanColor,
 	})
 	return nil
 }
@@ -568,6 +602,7 @@ func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvid
 		SpanID:             "",
 		ParentSpanID:       "",
 		SpanLines:          "[]",
+		SpanColor:          -1,
 		AgentProvider:      agentProvider,
 		CreatedAt:          now,
 	})

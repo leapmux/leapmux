@@ -38,6 +38,7 @@ CREATE TABLE messages (
     span_id             TEXT NOT NULL DEFAULT '',
     parent_span_id      TEXT NOT NULL DEFAULT '',
     span_lines          TEXT NOT NULL DEFAULT '[]',
+    span_color          INTEGER NOT NULL DEFAULT -1,
     delivery_error      TEXT NOT NULL DEFAULT '',
     agent_provider      INTEGER NOT NULL DEFAULT 1,
     created_at          DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),

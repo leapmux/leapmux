@@ -121,6 +121,16 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     }
     if (msg.deliveryError)
       envelope.delivery_error = msg.deliveryError
+    if (msg.depth)
+      envelope.depth = msg.depth
+    if (msg.spanId)
+      envelope.span_id = msg.spanId
+    if (msg.parentSpanId)
+      envelope.parent_span_id = msg.parentSpanId
+    if (msg.spanLines && msg.spanLines !== '[]')
+      envelope.span_lines = JSON.parse(msg.spanLines)
+    if (msg.spanColor >= 0)
+      envelope.span_color = msg.spanColor
     if (p.wrapper && p.wrapper.old_seqs.length > 0)
       envelope.old_seqs = p.wrapper.old_seqs
 
@@ -166,6 +176,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     onCopyJson: copyJson,
     jsonCopied: jsonCopied(),
     toolUseMessage: toolUseMessage(),
+    spanColor: props.message.spanColor,
   })
 
   // Extract assistant text for the reply button.

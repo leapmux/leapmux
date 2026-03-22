@@ -237,6 +237,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			SpanID:             "",
 			ParentSpanID:       "",
 			SpanLines:          "[]",
+			SpanColor:          -1,
 			AgentProvider:      dbAgent.AgentProvider,
 			CreatedAt:          now,
 		})
@@ -1197,6 +1198,7 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
 		SpanID:             "",
 		ParentSpanID:       "",
 		SpanLines:          "[]",
+		SpanColor:          -1,
 		AgentProvider:      dbAgent.AgentProvider,
 		CreatedAt:          now,
 	})
@@ -1382,7 +1384,7 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 		},
 	}
 	displayJSON, _ := json.Marshal(displayContent)
-	if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, displayJSON, "", ""); err != nil {
+	if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, displayJSON, "", "", -1); err != nil {
 		slog.Warn("failed to persist control response notification", "agent_id", agentID, "error", err)
 	}
 
@@ -1589,5 +1591,6 @@ func messageToProto(m *db.Message) *leapmuxv1.AgentChatMessage {
 		SpanId:             m.SpanID,
 		ParentSpanId:       m.ParentSpanID,
 		SpanLines:          m.SpanLines,
+		SpanColor:          int32(m.SpanColor),
 	}
 }

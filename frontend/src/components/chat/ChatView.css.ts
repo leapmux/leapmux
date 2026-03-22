@@ -307,6 +307,15 @@ export const rateLimitCountdown = style({
   whiteSpace: 'nowrap',
 })
 
+export const messageRow = style({
+  display: 'flex',
+})
+
+export const messageRowContent = style({
+  flex: 1,
+  minWidth: 0,
+})
+
 export const editorPanelWrapper = style({
   flexShrink: 0,
 })

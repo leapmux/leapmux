@@ -22,8 +22,10 @@ export function makeMessage(overrides: Partial<{
   contentCompression: ContentCompression
   agentProvider: number
   depth: number
-  scopeId: string
-  threadLines: string
+  spanId: string
+  parentSpanId: string
+  spanLines: string
+  spanColor: number
 }>): AgentChatMessage {
   return {
     $typeName: 'leapmux.v1.AgentChatMessage' as const,
@@ -35,7 +37,9 @@ export function makeMessage(overrides: Partial<{
     content: overrides.content ?? new Uint8Array(),
     contentCompression: overrides.contentCompression ?? ContentCompression.NONE,
     depth: overrides.depth ?? 0,
-    scopeId: overrides.scopeId ?? '',
-    threadLines: overrides.threadLines ?? '[]',
+    spanId: overrides.spanId ?? '',
+    parentSpanId: overrides.parentSpanId ?? '',
+    spanLines: overrides.spanLines ?? '[]',
+    spanColor: overrides.spanColor ?? -1,
   } as AgentChatMessage
 }

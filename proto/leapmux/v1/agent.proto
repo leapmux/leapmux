@@ -168,6 +168,7 @@ message AgentChatMessage {
   string parent_span_id = 10; // span_id of the parent Agent/SpawnAgent that spawned this scope (empty for main)
   string span_id = 11; // Links a tool invocation with its result (tool_use ↔ tool_result, item/started ↔ item/completed)
   string span_lines = 12; // JSON array of active span lines at this message's position
+  int32 span_color = 13; // Color index assigned to this span (−1 = no color)
 }
 
 // AgentStreamChunk provides token-by-token streaming.

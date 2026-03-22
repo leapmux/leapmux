@@ -6,11 +6,12 @@ export const spanLinesContainer = style({
   flexDirection: 'row',
   alignItems: 'stretch',
   flexShrink: 0,
+  paddingRight: '5px',
 })
 
 /** Base style for a single span line column. */
 const spanLineColumnBase = style({
-  width: '20px',
+  width: '14px',
   position: 'relative',
   flexShrink: 0,
 })

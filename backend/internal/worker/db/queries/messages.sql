@@ -1,5 +1,5 @@
 -- name: CreateMessage :one
-INSERT INTO messages (id, agent_id, seq, role, content, content_compression, depth, span_id, parent_span_id, span_lines, agent_provider, created_at)
+INSERT INTO messages (id, agent_id, seq, role, content, content_compression, depth, span_id, parent_span_id, span_lines, span_color, agent_provider, created_at)
 VALUES (
   sqlc.arg(id),
   sqlc.arg(agent_id),
@@ -11,6 +11,7 @@ VALUES (
   sqlc.arg(span_id),
   sqlc.arg(parent_span_id),
   sqlc.arg(span_lines),
+  sqlc.arg(span_color),
   sqlc.arg(agent_provider),
   sqlc.arg(created_at)
 )

@@ -23,7 +23,7 @@ type testSinkMessage struct {
 	SpanID       string
 }
 
-func (s *testSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, parentSpanID string, spanID string) error {
+func (s *testSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, parentSpanID string, spanID string, _ int32) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.messages = append(s.messages, testSinkMessage{Role: role, Content: append([]byte(nil), content...), ParentSpanID: parentSpanID, SpanID: spanID})
@@ -32,8 +32,9 @@ func (s *testSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, pa
 
 func (s *testSink) PersistNotification(leapmuxv1.MessageRole, []byte) error { return nil }
 
-func (s *testSink) OpenSpan(string, string) {}
-func (s *testSink) CloseSpan(string)        {}
+func (s *testSink) OpenSpan(string, string)    {}
+func (s *testSink) CloseSpan(string)           {}
+func (s *testSink) PeekNextSpanColor() int32   { return 0 }
 
 func (s *testSink) BroadcastStreamChunk(content []byte) {
 	s.mu.Lock()
@@ -131,10 +132,13 @@ func (s *testSink) LastSessionInfo() map[string]interface{} {
 // need to verify output.
 type noopSink struct{}
 
-func (noopSink) PersistMessage(leapmuxv1.MessageRole, []byte, string, string) error { return nil }
+func (noopSink) PersistMessage(leapmuxv1.MessageRole, []byte, string, string, int32) error {
+	return nil
+}
 func (noopSink) PersistNotification(leapmuxv1.MessageRole, []byte) error            { return nil }
 func (noopSink) OpenSpan(string, string)                                            {}
 func (noopSink) CloseSpan(string)                                                   {}
+func (noopSink) PeekNextSpanColor() int32                                           { return 0 }
 func (noopSink) BroadcastStreamChunk([]byte)                                     {}
 func (noopSink) PersistControlRequest(string, []byte)                            {}
 func (noopSink) DeleteControlRequest(string)                                     {}
