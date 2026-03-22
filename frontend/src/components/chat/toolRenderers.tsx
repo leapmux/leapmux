@@ -4,6 +4,7 @@ import type { JSX } from 'solid-js'
 import type { StructuredPatchHunk } from './diffUtils'
 import type { MessageContentRenderer, RenderContext } from './messageRenderers'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
+import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { BashInput, EditInput, GrepInput, WriteInput } from '~/types/toolMessages'
 import Bot from 'lucide-solid/icons/bot'
 import Braces from 'lucide-solid/icons/braces'
@@ -34,6 +35,7 @@ import { createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
+import { parseMessageContent } from '~/lib/messageParser'
 import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
@@ -392,6 +394,25 @@ export const toolUseRenderer: MessageContentRenderer = {
   },
 }
 
+/** Extract tool name and input from a tool_use AgentChatMessage. */
+function extractToolUseInfo(msg: AgentChatMessage): { toolName: string, input: Record<string, unknown> } | null {
+  const parsed = parseMessageContent(msg)
+  const obj = parsed.parentObject
+  if (!obj)
+    return null
+  const content = getAssistantContent(obj)
+  if (!content)
+    return null
+  const toolUse = content.find(c => isObject(c) && c.type === 'tool_use')
+  if (!toolUse)
+    return null
+  const toolData = toolUse as Record<string, unknown>
+  return {
+    toolName: String(toolData.name || ''),
+    input: isObject(toolData.input) ? toolData.input as Record<string, unknown> : {},
+  }
+}
+
 /** Set of tool names whose results should be rendered as preformatted text. */
 const PRE_TEXT_TOOLS = new Set(['Bash', 'Grep', 'Glob', 'Read', 'TaskOutput'])
 
@@ -598,10 +619,11 @@ export const toolResultRenderer: MessageContentRenderer = {
           .join('')
       : String(resultData.content || '')
 
-    // Extract tool name from tool_use_result, or fall back to parent context.
-    // For standalone tool_result messages (no parent context), default to preformatted text.
+    // Extract tool name from tool_use_result, or from the linked tool_use message.
     const toolUseResult = parsed.tool_use_result as Record<string, unknown> | undefined
-    const toolName = String(toolUseResult?.tool_name || context?.parentToolName || '')
+    const toolUseInfo = context?.toolUseMessage ? extractToolUseInfo(context.toolUseMessage) : null
+    const toolName = String(toolUseResult?.tool_name || toolUseInfo?.toolName || context?.parentToolName || '')
+    const toolInput = toolUseInfo?.input
 
     // Determine whether this tool's output should be preformatted text.
     // When tool name is unknown (standalone tool_result without parent context),
@@ -609,8 +631,8 @@ export const toolResultRenderer: MessageContentRenderer = {
     const isPreText = toolName === '' || PRE_TEXT_TOOLS.has(toolName)
 
     // For WebFetch, extract the prompt from parent tool input
-    const webFetchPrompt = toolName === 'WebFetch' && context?.parentToolInput
-      ? String(context.parentToolInput.prompt || '')
+    const webFetchPrompt = toolName === 'WebFetch' && (context?.parentToolInput || toolInput)
+      ? String((context?.parentToolInput?.prompt || toolInput?.prompt) || '')
       : ''
 
     // Extract structuredPatch from tool_use_result for Edit/Write diffs.
@@ -629,13 +651,16 @@ export const toolResultRenderer: MessageContentRenderer = {
     // parent already shows the diff, and TodoWrite boilerplate messages.
     const hideContent = parentShowsDiff || toolName === 'TodoWrite'
 
+    // Build the inner result element.
+    let innerResult: JSX.Element
+
     // Grep: render structured result view when tool_use_result has data.
     if (toolName === 'Grep' && toolUseResult) {
       const numFiles = typeof toolUseResult.numFiles === 'number' ? toolUseResult.numFiles : 0
       const numLines = typeof toolUseResult.numLines === 'number' ? toolUseResult.numLines : 0
       const filenames = Array.isArray(toolUseResult.filenames) ? toolUseResult.filenames as string[] : []
       const grepContent = typeof toolUseResult.content === 'string' ? toolUseResult.content : ''
-      return (
+      innerResult = (
         <GrepResultView
           numFiles={numFiles}
           numLines={numLines}
@@ -646,17 +671,15 @@ export const toolResultRenderer: MessageContentRenderer = {
         />
       )
     }
-
     // ToolSearch: render matched tool names from tool_use_result.
-    if (toolName === 'ToolSearch' && toolUseResult) {
+    else if (toolName === 'ToolSearch' && toolUseResult) {
       const matches = Array.isArray(toolUseResult.matches) ? toolUseResult.matches as string[] : []
-      return <ToolSearchResultView matches={matches} />
+      innerResult = <ToolSearchResultView matches={matches} />
     }
-
     // Glob: render structured result view when tool_use_result has filenames.
-    if (toolName === 'Glob' && toolUseResult) {
+    else if (toolName === 'Glob' && toolUseResult) {
       const filenames = Array.isArray(toolUseResult.filenames) ? toolUseResult.filenames as string[] : []
-      return (
+      innerResult = (
         <GlobResultView
           filenames={filenames}
           fallbackContent={resultContent}
@@ -664,19 +687,47 @@ export const toolResultRenderer: MessageContentRenderer = {
         />
       )
     }
+    else {
+      innerResult = (
+        <ToolResultMessage
+          toolName={toolName}
+          resultContent={hideContent ? '' : resultContent}
+          isPreText={isPreText}
+          webFetchPrompt={webFetchPrompt}
+          structuredPatch={structuredPatch}
+          oldStr={oldStr}
+          newStr={newStr}
+          filePath={filePath}
+          context={context}
+        />
+      )
+    }
 
-    return (
-      <ToolResultMessage
-        toolName={toolName}
-        resultContent={hideContent ? '' : resultContent}
-        isPreText={isPreText}
-        webFetchPrompt={webFetchPrompt}
-        structuredPatch={structuredPatch}
-        oldStr={oldStr}
-        newStr={newStr}
-        filePath={filePath}
-        context={context}
-      />
-    )
+    // Wrap in ToolUseLayout when we have tool info from the linked tool_use message.
+    if (toolName && context?.toolUseMessage) {
+      const detail = renderToolDetail(toolName, toolInput ?? {}, context)
+      const summary = deriveToolResultSummary(toolName, toolInput ?? {}, context)
+      const title = detail ?? toolName
+
+      return (
+        <ToolUseLayout
+          icon={toolIconFor(toolName)}
+          toolName={toolName}
+          title={title}
+          summary={summary}
+          alwaysVisible={true}
+          context={context}
+        >
+          {innerResult}
+        </ToolUseLayout>
+      )
+    }
+
+    return innerResult
   },
+}
+
+/** Derive a summary for tool_result header (reuses tool_use input for context). */
+function deriveToolResultSummary(toolName: string, input: Record<string, unknown>, context?: RenderContext): JSX.Element | undefined {
+  return deriveToolSummary(toolName, input, context)
 }

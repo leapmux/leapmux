@@ -3,7 +3,7 @@
 import type { JSX } from 'solid-js'
 import type { MessageCategory } from './messageClassification'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
-import type { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentChatMessage, AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import Bot from 'lucide-solid/icons/bot'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
@@ -72,6 +72,8 @@ export interface RenderContext {
   parentToolName?: string
   /** Parent tool_use input (passed to tool_result renderers for context). */
   parentToolInput?: Record<string, unknown>
+  /** The corresponding tool_use message (looked up by spanId for tool_result messages). */
+  toolUseMessage?: AgentChatMessage
 }
 
 export interface MessageContentRenderer {

@@ -114,8 +114,8 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(content []byte) {
 		return
 	}
 
-	// Determine the parent scope for any Agent tool_use blocks.
-	parentScopeID := msg.ParentToolUseID
+	// Determine the parent span for any Agent tool_use blocks.
+	parentSpanID := msg.ParentToolUseID
 
 	toolUseCount := 0
 	planFileProcessed := false
@@ -134,8 +134,8 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(content []byte) {
 			case "ExitPlanMode":
 				a.sink.StorePlanModeToolUse(block.ID, PermissionModeDefault)
 			case "Agent":
-				// Open a new scope for the subagent.
-				a.sink.OpenScope(block.ID, parentScopeID)
+				// Open a new span for the subagent.
+				a.sink.OpenSpan(block.ID, parentSpanID)
 			}
 		}
 
@@ -213,10 +213,19 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		a.processAssistantBlocks(content)
 	}
 
-	// Determine scope ID for hierarchy tracking.
-	scopeID := extractParentToolUseID(content)
-	if scopeID == "" {
-		scopeID = extractSystemToolUseID(content)
+	// Determine parent span ID for hierarchy tracking.
+	parentSpanID := extractParentToolUseID(content)
+	if parentSpanID == "" {
+		parentSpanID = extractSystemToolUseID(content)
+	}
+
+	// Determine span ID: for tool_use messages use the block ID,
+	// for tool_result messages use the tool_use_id reference.
+	var spanID string
+	if msgType == "assistant" {
+		spanID = extractToolUseID(content)
+	} else if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
+		spanID = extractToolResultID(content)
 	}
 
 	// Detect plan mode from tool_result messages.
@@ -230,15 +239,15 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	}
 
 	// Persist as a standalone message with hierarchy metadata.
-	if err := a.sink.PersistMessage(role, content, scopeID); err != nil {
+	if err := a.sink.PersistMessage(role, content, parentSpanID, spanID); err != nil {
 		slog.Error("persist agent message", "agent_id", a.agentID, "error", err)
 	}
 
-	// Close scope after persisting if this is a user message (tool_result)
-	// that completes an Agent tool scope.
+	// Close span after persisting if this is a user message (tool_result)
+	// that completes an Agent tool span.
 	if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
 		if toolResultID := extractToolResultID(content); toolResultID != "" {
-			a.sink.CloseScope(toolResultID)
+			a.sink.CloseSpan(toolResultID)
 		}
 	}
 }
@@ -306,8 +315,8 @@ func (a *ClaudeCodeAgent) claudeCodeHandleControlResponse(content []byte) {
 	}
 
 	// Persist control response as a separate message in the timeline.
-	scopeID := cr.ParentToolUseID
-	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_USER, content, scopeID); err != nil {
+	parentSpanID := cr.ParentToolUseID
+	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_USER, content, parentSpanID, ""); err != nil {
 		slog.Error("persist control_response", "agent_id", a.agentID, "error", err)
 	}
 }

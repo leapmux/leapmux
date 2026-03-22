@@ -54,8 +54,9 @@ function hydrateLocalMessage(p: PersistedLocalMessage): AgentChatMessage {
     createdAt: p.createdAt,
     deliveryError: p.deliveryError,
     depth: 0,
-    scopeId: '',
-    threadLines: '[]',
+    parentSpanId: '',
+    spanId: '',
+    spanLines: '[]',
   } as AgentChatMessage
 }
 
@@ -82,6 +83,8 @@ interface ChatStoreState {
   initialLoadComplete: Record<string, boolean>
   /** Monotonic counter incremented on every addMessage (including notification updates). */
   messageVersion: Record<string, number>
+  /** Index of messages by spanId for tool_use ↔ tool_result lookup. */
+  spanIndex: Record<string, Record<string, AgentChatMessage>>
 }
 
 export function createChatStore() {
@@ -96,7 +99,15 @@ export function createChatStore() {
     savedViewportScroll: {},
     initialLoadComplete: {},
     messageVersion: {},
+    spanIndex: {},
   })
+
+  /** Index a message by spanId if it has one. */
+  function indexBySpanId(agentId: string, msg: AgentChatMessage) {
+    if (msg.spanId) {
+      setState('spanIndex', agentId, (prev = {}) => ({ ...prev, [msg.spanId]: msg }))
+    }
+  }
 
   /** Shared implementation for setMessages / loadInitialMessages. */
   function applyMessages(agentId: string, messages: AgentChatMessage[], hasMore: boolean) {
@@ -107,6 +118,7 @@ export function createChatStore() {
       if (msg.deliveryError) {
         setState('messageErrors', msg.id, msg.deliveryError)
       }
+      indexBySpanId(agentId, msg)
     }
     // Extract todos from the last TodoWrite message in the loaded history.
     const todos = findLatestTodos(messages)
@@ -120,6 +132,10 @@ export function createChatStore() {
 
     getMessages(agentId: string): AgentChatMessage[] {
       return state.messagesByAgent[agentId] ?? []
+    },
+
+    getMessageBySpanId(agentId: string, spanId: string): AgentChatMessage | undefined {
+      return state.spanIndex[agentId]?.[spanId]
     },
 
     setMessages(agentId: string, messages: AgentChatMessage[], hasMore = false) {
@@ -173,6 +189,9 @@ export function createChatStore() {
           return [...prev.slice(0, lo), message, ...prev.slice(lo)]
         })
       }
+
+      // Index by spanId for tool_use ↔ tool_result lookup.
+      indexBySpanId(agentId, message)
 
       // Track delivery errors
       if (message.deliveryError) {
@@ -309,6 +328,9 @@ export function createChatStore() {
             const newMsgs = resp.messages.filter(m => !existingSeqs.has(m.seq))
             return [...newMsgs, ...prev]
           })
+          for (const msg of resp.messages) {
+            indexBySpanId(agentId, msg)
+          }
           // Extract todos from older messages if none found yet.
           if (!state.todosByAgent[agentId] || state.todosByAgent[agentId].length === 0) {
             const todos = findLatestTodos(resp.messages)

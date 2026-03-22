@@ -93,6 +93,8 @@ interface MessageBubbleProps {
   workingDir?: string
   homeDir?: string
   onReply?: (quotedText: string) => void
+  /** Look up a message by its spanId (for tool_use ↔ tool_result linking). */
+  getMessageBySpanId?: (spanId: string) => AgentChatMessage | undefined
 }
 
 export const MessageBubble: Component<MessageBubbleProps> = (props) => {
@@ -137,13 +139,23 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   }
 
   // Whether the message is rendered by a renderer that has its own internal ToolHeaderActions.
-  const hasInternalActions = () => category().kind === 'tool_use'
+  const hasInternalActions = () => category().kind === 'tool_use' || category().kind === 'tool_result'
 
   const copyJson = async () => {
     await navigator.clipboard.writeText(prettifyJson(rawJson()))
     setJsonCopied(true)
     setTimeout(setJsonCopied, 2000, false)
   }
+
+  // Look up the corresponding tool_use message for tool_result messages.
+  const toolUseMessage = createMemo(() => {
+    if (category().kind !== 'tool_result')
+      return undefined
+    const spanId = props.message.spanId
+    if (!spanId || !props.getMessageBySpanId)
+      return undefined
+    return props.getMessageBySpanId(spanId)
+  })
 
   // Build render context for message renderers.
   const renderContext = (): RenderContext => ({
@@ -153,6 +165,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     diffView: prefs.diffView(),
     onCopyJson: copyJson,
     jsonCopied: jsonCopied(),
+    toolUseMessage: toolUseMessage(),
   })
 
   // Extract assistant text for the reply button.

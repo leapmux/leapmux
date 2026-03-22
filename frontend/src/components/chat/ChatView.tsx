@@ -14,8 +14,8 @@ import * as styles from './ChatView.css'
 import { markdownContent } from './markdownContent.css'
 import { MessageBubble } from './MessageBubble'
 import { assistantMessage } from './messageStyles.css'
+import { SpanLines } from './SpanLines'
 import { ThinkingIndicator } from './ThinkingIndicator'
-import { ThreadLines } from './ThreadLines'
 import { ToolUseLayout } from './toolRenderers'
 
 interface ChatViewProps {
@@ -54,6 +54,8 @@ interface ChatViewProps {
   onReply?: (quotedText: string) => void
   /** When "plan", streaming text is rendered with plan styling. */
   streamingType?: string
+  /** Look up a message by its spanId (for tool_use ↔ tool_result linking). */
+  getMessageBySpanId?: (spanId: string) => AgentChatMessage | undefined
 }
 
 export const ChatView: Component<ChatViewProps> = (props) => {
@@ -314,9 +316,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
               <div ref={contentRef} class={styles.messageListContent}>
                 <For each={props.messages}>
                   {(msg) => {
-                    const threadLines = createMemo(() => {
+                    const spanLines = createMemo(() => {
                       try {
-                        return JSON.parse(msg.threadLines || '[]')
+                        return JSON.parse(msg.spanLines || '[]')
                       }
                       catch {
                         return []
@@ -332,16 +334,17 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                         workingDir={props.workingDir}
                         homeDir={props.homeDir}
                         onReply={props.onReply}
+                        getMessageBySpanId={props.getMessageBySpanId}
                       />
                     )
 
                     return (
                       <Show
-                        when={threadLines().length > 0}
+                        when={spanLines().length > 0}
                         fallback={<div data-seq={msg.seq.toString()}>{bubble}</div>}
                       >
                         <div data-seq={msg.seq.toString()} style={{ display: 'flex' }}>
-                          <ThreadLines lines={threadLines()} scopeId={msg.scopeId || ''} />
+                          <SpanLines lines={spanLines()} parentSpanId={msg.parentSpanId || ''} />
                           <div style={{ 'flex': '1', 'min-width': '0' }}>
                             {bubble}
                           </div>

@@ -1,11 +1,11 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { ThreadLines } from '~/components/chat/ThreadLines'
+import { SpanLines } from '~/components/chat/SpanLines'
 
-describe('threadLines', () => {
+describe('spanLines', () => {
   it('renders nothing when lines array is empty', () => {
     const { container } = render(() => (
-      <ThreadLines lines={[]} scopeId="" />
+      <SpanLines lines={[]} parentSpanId="" />
     ))
     // The <Show> guard prevents rendering when lines is empty.
     expect(container.children.length).toBe(0)
@@ -13,9 +13,9 @@ describe('threadLines', () => {
 
   it('renders a container with one column per line entry', () => {
     const { container } = render(() => (
-      <ThreadLines
-        lines={[{ scope_id: 'scope-A', color: 0 }]}
-        scopeId="scope-B"
+      <SpanLines
+        lines={[{ span_id: 'span-A', color: 0 }]}
+        parentSpanId="span-B"
       />
     ))
     // Should render a container div with one child (the column).
@@ -26,9 +26,9 @@ describe('threadLines', () => {
 
   it('renders correct number of columns with null entries', () => {
     const { container } = render(() => (
-      <ThreadLines
-        lines={[{ scope_id: 'scope-A', color: 0 }, null, { scope_id: 'scope-B', color: 1 }]}
-        scopeId="scope-A"
+      <SpanLines
+        lines={[{ span_id: 'span-A', color: 0 }, null, { span_id: 'span-B', color: 1 }]}
+        parentSpanId="span-A"
       />
     ))
     const wrapper = container.firstElementChild
@@ -37,15 +37,15 @@ describe('threadLines', () => {
     expect(wrapper!.children.length).toBe(3)
   })
 
-  it('renders columns for parallel scopes', () => {
+  it('renders columns for parallel spans', () => {
     const { container } = render(() => (
-      <ThreadLines
+      <SpanLines
         lines={[
-          { scope_id: 'scope-A', color: 0 },
-          { scope_id: 'scope-B', color: 1 },
-          { scope_id: 'scope-C', color: 2 },
+          { span_id: 'span-A', color: 0 },
+          { span_id: 'span-B', color: 1 },
+          { span_id: 'span-C', color: 2 },
         ]}
-        scopeId=""
+        parentSpanId=""
       />
     ))
     const wrapper = container.firstElementChild

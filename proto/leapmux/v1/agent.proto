@@ -165,8 +165,9 @@ message AgentChatMessage {
   ContentCompression content_compression = 7; // Compression algorithm used for content
   AgentProvider agent_provider = 8; // Provider that produced this message
   int32 depth = 9; // Nesting level: 0=main agent, 1=subagent, 2=nested subagent
-  string scope_id = 10; // tool_use_id of the Agent tool that spawned this scope (empty for main)
-  string thread_lines = 11; // JSON array of active thread lines at this message's position
+  string parent_span_id = 10; // span_id of the parent Agent/SpawnAgent that spawned this scope (empty for main)
+  string span_id = 11; // Links a tool invocation with its result (tool_use ↔ tool_result, item/started ↔ item/completed)
+  string span_lines = 12; // JSON array of active span lines at this message's position
 }
 
 // AgentStreamChunk provides token-by-token streaming.

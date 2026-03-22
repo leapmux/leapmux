@@ -24,37 +24,37 @@ import (
 // remains eligible for merging.
 const notifThreadGracePeriod = time.Second
 
-// --- Scope Tracker ---
+// --- Span Tracker ---
 
-// ActiveScope tracks a single open subagent scope.
-type ActiveScope struct {
-	ScopeID    string
+// ActiveSpan tracks a single open subagent span.
+type ActiveSpan struct {
+	SpanID     string
 	Depth      int
 	ColorIndex int
 	Column     int
 }
 
-// ThreadLine represents a single thread line entry in the JSON array.
-type ThreadLine struct {
-	ScopeID string `json:"scope_id"`
-	Color   int    `json:"color"`
+// SpanLine represents a single span line entry in the JSON array.
+type SpanLine struct {
+	SpanID string `json:"span_id"`
+	Color  int    `json:"color"`
 }
 
-// ScopeTracker manages hierarchical scope state for an agent's message threading.
-type ScopeTracker struct {
+// SpanTracker manages hierarchical span state for an agent's message threading.
+type SpanTracker struct {
 	mu        sync.Mutex
-	scopes    []ActiveScope
+	spans     []ActiveSpan
 	nextColor int
 }
 
-// OpenScope registers a new subagent scope.
-func (t *ScopeTracker) OpenScope(scopeID, parentScopeID string) {
+// OpenSpan registers a new subagent span.
+func (t *SpanTracker) OpenSpan(spanID, parentSpanID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	depth := 1
-	for _, s := range t.scopes {
-		if s.ScopeID == parentScopeID {
+	for _, s := range t.spans {
+		if s.SpanID == parentSpanID {
 			depth = s.Depth + 1
 			break
 		}
@@ -62,8 +62,8 @@ func (t *ScopeTracker) OpenScope(scopeID, parentScopeID string) {
 
 	// Find first free column (null slot).
 	column := -1
-	used := make(map[int]bool, len(t.scopes))
-	for _, s := range t.scopes {
+	used := make(map[int]bool, len(t.spans))
+	for _, s := range t.spans {
 		used[s.Column] = true
 	}
 	for i := 0; ; i++ {
@@ -73,8 +73,8 @@ func (t *ScopeTracker) OpenScope(scopeID, parentScopeID string) {
 		}
 	}
 
-	t.scopes = append(t.scopes, ActiveScope{
-		ScopeID:    scopeID,
+	t.spans = append(t.spans, ActiveSpan{
+		SpanID:     spanID,
 		Depth:      depth,
 		ColorIndex: t.nextColor,
 		Column:     column,
@@ -82,50 +82,50 @@ func (t *ScopeTracker) OpenScope(scopeID, parentScopeID string) {
 	t.nextColor++
 }
 
-// CloseScope removes a scope, freeing its column.
-func (t *ScopeTracker) CloseScope(scopeID string) {
+// CloseSpan removes a span, freeing its column.
+func (t *SpanTracker) CloseSpan(spanID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	t.scopes = slices.DeleteFunc(t.scopes, func(s ActiveScope) bool {
-		return s.ScopeID == scopeID
+	t.spans = slices.DeleteFunc(t.spans, func(s ActiveSpan) bool {
+		return s.SpanID == spanID
 	})
 }
 
-// Snapshot returns the depth and thread lines for a given scope ID in a single
+// Snapshot returns the depth and span lines for a given parentSpanID in a single
 // atomic operation. This avoids the TOCTOU risk of calling DepthFor and
-// ThreadLines separately, and reduces mutex acquisitions.
-func (t *ScopeTracker) Snapshot(scopeID string) (depth int32, threadLines string) {
+// SpanLines separately, and reduces mutex acquisitions.
+func (t *SpanTracker) Snapshot(parentSpanID string) (depth int32, spanLines string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	// Depth lookup.
-	if scopeID != "" {
-		for _, s := range t.scopes {
-			if s.ScopeID == scopeID {
+	if parentSpanID != "" {
+		for _, s := range t.spans {
+			if s.SpanID == parentSpanID {
 				depth = int32(s.Depth)
 				break
 			}
 		}
 	}
 
-	// Thread lines serialization.
-	if len(t.scopes) == 0 {
+	// Span lines serialization.
+	if len(t.spans) == 0 {
 		return depth, "[]"
 	}
 
 	maxCol := 0
-	for _, s := range t.scopes {
+	for _, s := range t.spans {
 		if s.Column > maxCol {
 			maxCol = s.Column
 		}
 	}
 
-	lines := make([]*ThreadLine, maxCol+1)
-	for _, s := range t.scopes {
-		lines[s.Column] = &ThreadLine{
-			ScopeID: s.ScopeID,
-			Color:   s.ColorIndex,
+	lines := make([]*SpanLine, maxCol+1)
+	for _, s := range t.spans {
+		lines[s.Column] = &SpanLine{
+			SpanID: s.SpanID,
+			Color:  s.ColorIndex,
 		}
 	}
 
@@ -181,8 +181,8 @@ type OutputHandler struct {
 	notifMu         sync.Map // agentID -> *sync.Mutex
 	lastNotifThread sync.Map // agentID -> *notifThreadRef
 
-	// Per-agent scope tracking (concurrent access).
-	scopeTrackers sync.Map // agentID -> *ScopeTracker
+	// Per-agent span tracking (concurrent access).
+	spanTrackers sync.Map // agentID -> *SpanTracker
 
 	// Plan mode tool_use tracking (shared across agents).
 	planModeToolUse sync.Map // tool_use_id -> target mode string ("plan" or "default")
@@ -197,10 +197,10 @@ func NewOutputHandler(queries *db.Queries, watcher *WatcherManager, agents *agen
 	}
 }
 
-// scopeTracker returns the per-agent ScopeTracker, creating one if needed.
-func (h *OutputHandler) scopeTracker(agentID string) *ScopeTracker {
-	v, _ := h.scopeTrackers.LoadOrStore(agentID, &ScopeTracker{})
-	return v.(*ScopeTracker)
+// spanTracker returns the per-agent SpanTracker, creating one if needed.
+func (h *OutputHandler) spanTracker(agentID string) *SpanTracker {
+	v, _ := h.spanTrackers.LoadOrStore(agentID, &SpanTracker{})
+	return v.(*SpanTracker)
 }
 
 // NewSink creates a per-agent OutputSink backed by this OutputHandler.
@@ -221,20 +221,20 @@ type agentOutputSink struct {
 
 // --- OutputSink interface implementation ---
 
-func (s *agentOutputSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, scopeID string) error {
-	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, role, content, scopeID)
+func (s *agentOutputSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, parentSpanID string, spanID string) error {
+	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, role, content, parentSpanID, spanID)
 }
 
 func (s *agentOutputSink) PersistNotification(role leapmuxv1.MessageRole, content []byte) error {
 	return s.h.persistNotificationThreaded(s.agentID, s.agentProvider, role, content)
 }
 
-func (s *agentOutputSink) OpenScope(scopeID, parentScopeID string) {
-	s.h.scopeTracker(s.agentID).OpenScope(scopeID, parentScopeID)
+func (s *agentOutputSink) OpenSpan(spanID, parentSpanID string) {
+	s.h.spanTracker(s.agentID).OpenSpan(spanID, parentSpanID)
 }
 
-func (s *agentOutputSink) CloseScope(scopeID string) {
-	s.h.scopeTracker(s.agentID).CloseScope(scopeID)
+func (s *agentOutputSink) CloseSpan(spanID string) {
+	s.h.spanTracker(s.agentID).CloseSpan(spanID)
 }
 
 func (s *agentOutputSink) BroadcastStreamChunk(content []byte) {
@@ -436,8 +436,8 @@ func (h *OutputHandler) softClearNotifThread(agentID string) {
 }
 
 // persistAndBroadcast persists a message and broadcasts it to watchers.
-func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, role leapmuxv1.MessageRole, contentJSON []byte, scopeID string) error {
-	depth, threadLines := h.scopeTracker(agentID).Snapshot(scopeID)
+func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, role leapmuxv1.MessageRole, contentJSON []byte, parentSpanID string, spanID string) error {
+	depth, spanLines := h.spanTracker(agentID).Snapshot(parentSpanID)
 
 	msgID := id.Generate()
 	compressed, compressionType := msgcodec.Compress(contentJSON)
@@ -450,8 +450,9 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		Content:            compressed,
 		ContentCompression: compressionType,
 		Depth:              int64(depth),
-		ScopeID:            scopeID,
-		ThreadLines:        threadLines,
+		SpanID:             spanID,
+		ParentSpanID:       parentSpanID,
+		SpanLines:          spanLines,
 		AgentProvider:      agentProvider,
 		CreatedAt:          now,
 	})
@@ -468,8 +469,9 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		AgentProvider:      agentProvider,
 		CreatedAt:          timefmt.Format(now),
 		Depth:              depth,
-		ScopeId:            scopeID,
-		ThreadLines:        threadLines,
+		SpanId:             spanID,
+		ParentSpanId:       parentSpanID,
+		SpanLines:          spanLines,
 	})
 	return nil
 }
@@ -563,8 +565,9 @@ func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvid
 		Content:            compressed,
 		ContentCompression: compressionType,
 		Depth:              0,
-		ScopeID:            "",
-		ThreadLines:        "[]",
+		SpanID:             "",
+		ParentSpanID:       "",
+		SpanLines:          "[]",
 		AgentProvider:      agentProvider,
 		CreatedAt:          now,
 	})

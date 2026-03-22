@@ -14,6 +14,7 @@ import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import * as styles from '../ChatView.css'
 import {
   codexAgentMessageRenderer,
+  codexCollabAgentToolCallRenderer,
   codexCommandExecutionRenderer,
   codexFileChangeRenderer,
   codexMcpToolCallRenderer,
@@ -278,6 +279,10 @@ const codexPlugin: ProviderPlugin = {
       if (itemType === 'dynamicToolCall')
         return { kind: 'tool_use', toolName: (item.tool as string) || 'dynamicTool', toolUse: item, content: [] }
 
+      // collabAgentToolCall → tool use (SpawnAgent)
+      if (itemType === 'collabAgentToolCall')
+        return { kind: 'tool_use', toolName: 'collabAgentToolCall', toolUse: item, content: [] }
+
       // reasoning → thinking (hide if both summary and content are empty)
       if (itemType === 'reasoning') {
         const summary = item.summary as unknown[] | undefined
@@ -332,6 +337,8 @@ const codexPlugin: ProviderPlugin = {
         return codexCommandExecutionRenderer(cat.toolUse, role, context)
       if (cat.toolName === 'fileChange')
         return codexFileChangeRenderer(cat.toolUse, role, context)
+      if (cat.toolName === 'collabAgentToolCall')
+        return codexCollabAgentToolCallRenderer(cat.toolUse, role, context)
       return codexMcpToolCallRenderer(cat.toolUse, role, context)
     }
     return null
