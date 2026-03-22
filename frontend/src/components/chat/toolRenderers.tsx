@@ -710,26 +710,6 @@ export const toolResultRenderer: MessageContentRenderer = {
       )
     }
 
-    // Wrap in ToolUseLayout when we have tool info from the linked tool_use message.
-    if (toolName && context?.toolUseMessage) {
-      const detail = renderToolDetail(toolName, toolInput ?? {}, context)
-      const summary = deriveToolSummary(toolName, toolInput ?? {}, context)
-      const title = detail ?? toolName
-
-      return (
-        <ToolUseLayout
-          icon={toolIconFor(toolName)}
-          toolName={toolName}
-          title={title}
-          summary={summary}
-          alwaysVisible={true}
-          context={context}
-        >
-          {innerResult}
-        </ToolUseLayout>
-      )
-    }
-
     return innerResult
   },
 }
