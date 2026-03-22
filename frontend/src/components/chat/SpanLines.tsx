@@ -7,6 +7,7 @@ import {
   spanLineConnector,
   spanLineEmpty,
   spanLinesContainer,
+  spanLinesContainerSpanOpener,
 } from './SpanLines.css'
 
 export interface SpanLine {
@@ -17,12 +18,13 @@ export interface SpanLine {
 interface SpanLinesProps {
   lines: (SpanLine | null)[]
   parentSpanId: string
+  spanOpener?: boolean
 }
 
 export const SpanLines: Component<SpanLinesProps> = (props) => {
   return (
     <Show when={props.lines && props.lines.length > 0}>
-      <div class={spanLinesContainer}>
+      <div class={props.spanOpener ? spanLinesContainerSpanOpener : spanLinesContainer}>
         <For each={props.lines}>
           {(line) => {
             if (line === null)

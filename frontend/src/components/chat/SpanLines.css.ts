@@ -1,17 +1,23 @@
 import { style, styleVariants } from '@vanilla-extract/css'
 
 /** Container for all span line columns. */
-export const spanLinesContainer = style({
+const spanLinesContainerBase = style({
   display: 'flex',
   flexDirection: 'row',
   alignItems: 'stretch',
   flexShrink: 0,
-  paddingRight: '5px',
 })
+
+export const spanLinesContainer = style([spanLinesContainerBase, {
+  marginRight: '-4px',
+}])
+
+export const spanLinesContainerSpanOpener = style([spanLinesContainerBase])
 
 /** Base style for a single span line column. */
 const spanLineColumnBase = style({
-  width: '14px',
+  width: '24px',
+  marginLeft: '-5px',
   position: 'relative',
   flexShrink: 0,
 })
