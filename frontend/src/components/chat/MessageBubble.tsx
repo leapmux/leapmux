@@ -149,7 +149,10 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   }
 
   // Whether the message is rendered by a renderer that has its own internal ToolHeaderActions.
-  const hasInternalActions = () => category().kind === 'tool_use' || category().kind === 'tool_result'
+  // tool_use always renders its own ToolHeaderActions inside ToolUseLayout.
+  // tool_result only gets wrapped in ToolUseLayout (with internal actions) when
+  // a linked toolUseMessage is available; otherwise fall through to the outer actions.
+  const hasInternalActions = () => category().kind === 'tool_use' || (category().kind === 'tool_result' && !!toolUseMessage())
 
   const copyJson = async () => {
     await navigator.clipboard.writeText(prettifyJson(rawJson()))

@@ -1384,7 +1384,7 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 		},
 	}
 	displayJSON, _ := json.Marshal(displayContent)
-	if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, displayJSON, "", "", -1); err != nil {
+	if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, displayJSON, "", "", -1, false); err != nil {
 		slog.Warn("failed to persist control response notification", "agent_id", agentID, "error", err)
 	}
 

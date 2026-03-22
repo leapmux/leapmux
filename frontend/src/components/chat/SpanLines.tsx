@@ -6,6 +6,7 @@ import {
   spanLineActivePassthrough,
   spanLineColors,
   spanLineConnector,
+  spanLineConnectorEnd,
   spanLineEmpty,
   spanLinePassthrough,
   spanLinesContainer,
@@ -16,7 +17,7 @@ import {
 export interface SpanLine {
   span_id: string
   color: number
-  type: 'active' | 'connector' | 'passthrough' | 'active_passthrough'
+  type: 'active' | 'connector' | 'connector_end' | 'passthrough' | 'active_passthrough'
   passthrough_color?: number
 }
 
@@ -28,6 +29,7 @@ interface SpanLinesProps {
 const TYPE_STYLES: Record<string, string> = {
   active: spanLineActive,
   connector: spanLineConnector,
+  connector_end: spanLineConnectorEnd,
   passthrough: spanLinePassthrough,
   active_passthrough: spanLineActivePassthrough,
 }

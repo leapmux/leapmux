@@ -5,7 +5,7 @@ import leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 // OutputSink provides generic primitives for persisting and broadcasting
 // agent output. Implemented by the service layer and injected into providers.
 type OutputSink interface {
-	PersistMessage(role leapmuxv1.MessageRole, content []byte, parentSpanID string, spanID string, spanColor int32) error
+	PersistMessage(role leapmuxv1.MessageRole, content []byte, parentSpanID string, spanID string, spanColor int32, closing bool) error
 	PersistNotification(role leapmuxv1.MessageRole, content []byte) error
 	OpenSpan(spanID string, parentSpanID string)
 	CloseSpan(spanID string)

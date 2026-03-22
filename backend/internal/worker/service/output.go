@@ -39,7 +39,8 @@ type SpanLineType string
 
 const (
 	SpanLineActive            SpanLineType = "active"             // Vertical line only.
-	SpanLineConnector         SpanLineType = "connector"          // Vertical + horizontal branch to the message.
+	SpanLineConnector         SpanLineType = "connector"          // Vertical + horizontal branch to the message (├).
+	SpanLineConnectorEnd      SpanLineType = "connector_end"      // Bottom-corner + horizontal branch (└), span closes after this.
 	SpanLinePassthrough       SpanLineType = "passthrough"        // Horizontal line only (empty slot after connector).
 	SpanLineActivePassthrough SpanLineType = "active_passthrough" // Vertical + horizontal passthrough.
 )
@@ -128,9 +129,10 @@ func (t *SpanTracker) ColorFor(spanID string) int32 {
 // Snapshot returns the depth and span lines for a given parentSpanID in a single
 // atomic operation. connectorSpanID identifies the span this message connects to
 // (used to compute passthrough hints for columns to the right of the connector).
+// When closing is true, the connector column renders as └ instead of ├.
 // This avoids the TOCTOU risk of calling DepthFor and SpanLines separately,
 // and reduces mutex acquisitions.
-func (t *SpanTracker) Snapshot(parentSpanID, connectorSpanID string) (depth int32, spanLines string) {
+func (t *SpanTracker) Snapshot(parentSpanID, connectorSpanID string, closing bool) (depth int32, spanLines string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -173,7 +175,11 @@ func (t *SpanTracker) Snapshot(parentSpanID, connectorSpanID string) (depth int3
 			if l != nil && l.SpanID == connectorSpanID {
 				connectorCol = col
 				connectorColor = l.Color
-				l.Type = SpanLineConnector
+				if closing {
+					l.Type = SpanLineConnectorEnd
+				} else {
+					l.Type = SpanLineConnector
+				}
 				break
 			}
 		}
@@ -286,8 +292,8 @@ type agentOutputSink struct {
 
 // --- OutputSink interface implementation ---
 
-func (s *agentOutputSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, parentSpanID string, spanID string, spanColor int32) error {
-	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, role, content, parentSpanID, spanID, spanColor)
+func (s *agentOutputSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, parentSpanID string, spanID string, spanColor int32, closing bool) error {
+	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, role, content, parentSpanID, spanID, spanColor, closing)
 }
 
 func (s *agentOutputSink) PersistNotification(role leapmuxv1.MessageRole, content []byte) error {
@@ -505,7 +511,7 @@ func (h *OutputHandler) softClearNotifThread(agentID string) {
 }
 
 // persistAndBroadcast persists a message and broadcasts it to watchers.
-func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, role leapmuxv1.MessageRole, contentJSON []byte, parentSpanID string, spanID string, spanColor int32) error {
+func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, role leapmuxv1.MessageRole, contentJSON []byte, parentSpanID string, spanID string, spanColor int32, closing bool) error {
 	tracker := h.spanTracker(agentID)
 	// The connector span is the span this message visually connects to.
 	// Use spanID when the span is already open (e.g. tool_result); for
@@ -515,7 +521,7 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 	if connectorSpanID == "" {
 		connectorSpanID = parentSpanID
 	}
-	depth, spanLines := tracker.Snapshot(parentSpanID, connectorSpanID)
+	depth, spanLines := tracker.Snapshot(parentSpanID, connectorSpanID, closing)
 
 	// Resolve span color: if the span is already active (e.g. tool_result
 	// inside an open span), look up its color from the tracker.

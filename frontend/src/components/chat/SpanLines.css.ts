@@ -62,6 +62,29 @@ export const spanLineConnector = style([spanLineColumnBase, {
   },
 }])
 
+/** Bottom-corner connector (└): vertical line from top to center, then horizontal to the right. */
+export const spanLineConnectorEnd = style([spanLineColumnBase, {
+  '::before': {
+    content: '""',
+    position: 'absolute',
+    left: '50%',
+    top: 0,
+    height: '50%',
+    width: '2px',
+    transform: 'translateX(-50%)',
+    backgroundColor: 'var(--span-line-color, var(--border))',
+  },
+  '::after': {
+    content: '""',
+    position: 'absolute',
+    left: '50%',
+    top: '50%',
+    right: 0,
+    height: '2px',
+    backgroundColor: 'var(--span-line-color, var(--border))',
+  },
+}])
+
 /** Active vertical line with a horizontal pass-through from another span's connector. */
 export const spanLineActivePassthrough = style([spanLineColumnBase, {
   '::before': {

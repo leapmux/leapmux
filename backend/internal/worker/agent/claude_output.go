@@ -243,7 +243,9 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	// Persist as a standalone message with hierarchy metadata.
 	// This MUST happen before processAssistantBlocks (which opens spans)
 	// so the assistant message stays at the parent depth.
-	if err := a.sink.PersistMessage(role, content, parentSpanID, spanID, spanColor); err != nil {
+	// closing is true when this is a tool_result that will close its span.
+	closing := role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER && spanID != ""
+	if err := a.sink.PersistMessage(role, content, parentSpanID, spanID, spanColor, closing); err != nil {
 		slog.Error("persist agent message", "agent_id", a.agentID, "error", err)
 	}
 
@@ -328,7 +330,7 @@ func (a *ClaudeCodeAgent) claudeCodeHandleControlResponse(content []byte) {
 
 	// Persist control response as a separate message in the timeline.
 	parentSpanID := cr.ParentToolUseID
-	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_USER, content, parentSpanID, "", -1); err != nil {
+	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_USER, content, parentSpanID, "", -1, false); err != nil {
 		slog.Error("persist control_response", "agent_id", a.agentID, "error", err)
 	}
 }
