@@ -12,16 +12,16 @@ func TestSpanTracker_OpenClose(t *testing.T) {
 	tracker := &SpanTracker{}
 
 	// Initially empty.
-	depth, lines := tracker.Snapshot("", "", false)
+	depth, lines, _ := tracker.Snapshot("", "", false)
 	assert.Equal(t, int32(0), depth)
 	assert.Equal(t, "[]", lines)
 
-	depth, _ = tracker.Snapshot("span-1", "", false)
+	depth, _, _ = tracker.Snapshot("span-1", "", false)
 	assert.Equal(t, int32(0), depth)
 
 	// Open first span (subagent).
 	tracker.OpenSpan("span-1", "")
-	depth, lines = tracker.Snapshot("span-1", "", false)
+	depth, lines, _ = tracker.Snapshot("span-1", "", false)
 	assert.Equal(t, int32(1), depth)
 
 	var parsed []*SpanLine
@@ -32,7 +32,7 @@ func TestSpanTracker_OpenClose(t *testing.T) {
 
 	// Close the span.
 	tracker.CloseSpan("span-1")
-	depth, lines = tracker.Snapshot("span-1", "", false)
+	depth, lines, _ = tracker.Snapshot("span-1", "", false)
 	assert.Equal(t, int32(0), depth)
 	assert.Equal(t, "[]", lines)
 }
@@ -43,8 +43,8 @@ func TestSpanTracker_NestedSpans(t *testing.T) {
 	tracker.OpenSpan("span-1", "")
 	tracker.OpenSpan("span-2", "span-1")
 
-	depth1, _ := tracker.Snapshot("span-1", "", false)
-	depth2, lines := tracker.Snapshot("span-2", "", false)
+	depth1, _, _ := tracker.Snapshot("span-1", "", false)
+	depth2, lines, _ := tracker.Snapshot("span-2", "", false)
 	assert.Equal(t, int32(1), depth1)
 	assert.Equal(t, int32(2), depth2)
 
@@ -65,7 +65,7 @@ func TestSpanTracker_ColumnReuse(t *testing.T) {
 	tracker.CloseSpan("span-1")
 	tracker.OpenSpan("span-3", "")
 
-	_, lines := tracker.Snapshot("", "", false)
+	_, lines, _ := tracker.Snapshot("", "", false)
 	var parsed []*SpanLine
 	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
 	require.Len(t, parsed, 2)
@@ -81,7 +81,7 @@ func TestSpanTracker_ParallelSpans(t *testing.T) {
 	tracker.OpenSpan("span-B", "")
 	tracker.OpenSpan("span-C", "")
 
-	_, lines := tracker.Snapshot("", "", false)
+	_, lines, _ := tracker.Snapshot("", "", false)
 	var parsed []*SpanLine
 	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
 	require.Len(t, parsed, 3)
@@ -94,14 +94,14 @@ func TestSpanTracker_ParallelSpans(t *testing.T) {
 func TestSpanTracker_CloseNonexistent(t *testing.T) {
 	tracker := &SpanTracker{}
 	tracker.CloseSpan("nonexistent")
-	_, lines := tracker.Snapshot("", "", false)
+	_, lines, _ := tracker.Snapshot("", "", false)
 	assert.Equal(t, "[]", lines)
 }
 
 func TestSpanTracker_DepthForMainScope(t *testing.T) {
 	tracker := &SpanTracker{}
 	tracker.OpenSpan("span-1", "")
-	depth, _ := tracker.Snapshot("", "", false)
+	depth, _, _ := tracker.Snapshot("", "", false)
 	assert.Equal(t, int32(0), depth)
 }
 
@@ -112,7 +112,7 @@ func TestSpanTracker_ColorIncrements(t *testing.T) {
 	tracker.CloseSpan("span-1")
 	tracker.OpenSpan("span-2", "")
 
-	_, lines := tracker.Snapshot("span-2", "", false)
+	_, lines, _ := tracker.Snapshot("span-2", "", false)
 	var parsed []*SpanLine
 	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
 	require.Len(t, parsed, 1)
@@ -165,7 +165,7 @@ func TestSpanTracker_RenderingHints(t *testing.T) {
 
 	// Snapshot for a message connecting to span-A (col 0).
 	// Col 0 = connector, col 1 = active_passthrough with passthrough_color = 1.
-	_, lines := tracker.Snapshot("", "span-A", false)
+	_, lines, _ := tracker.Snapshot("", "span-A", false)
 	var parsed []*SpanLine
 	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
 	require.Len(t, parsed, 2)
@@ -175,14 +175,14 @@ func TestSpanTracker_RenderingHints(t *testing.T) {
 
 	// Snapshot for a message connecting to span-B (col 1).
 	// Col 0 = active (no passthrough needed), col 1 = connector.
-	_, lines = tracker.Snapshot("", "span-B", false)
+	_, lines, _ = tracker.Snapshot("", "span-B", false)
 	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
 	require.Len(t, parsed, 2)
 	assert.Equal(t, SpanLineActive, parsed[0].Type)
 	assert.Equal(t, SpanLineConnector, parsed[1].Type)
 
 	// No connector span — all columns are active.
-	_, lines = tracker.Snapshot("", "", false)
+	_, lines, _ = tracker.Snapshot("", "", false)
 	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
 	require.Len(t, parsed, 2)
 	assert.Equal(t, SpanLineActive, parsed[0].Type)
@@ -197,7 +197,7 @@ func TestSpanTracker_ConnectorEnd(t *testing.T) {
 	tracker.OpenSpan("span-B", "")
 
 	// Closing snapshot for span-A: col 0 = connector_end (└), col 1 = active_passthrough.
-	_, lines := tracker.Snapshot("", "span-A", true)
+	_, lines, _ := tracker.Snapshot("", "span-A", true)
 	var parsed []*SpanLine
 	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
 	require.Len(t, parsed, 2)
@@ -206,14 +206,14 @@ func TestSpanTracker_ConnectorEnd(t *testing.T) {
 	assert.Equal(t, 1, parsed[1].PassthroughColor)
 
 	// Closing snapshot for span-B: col 0 = active, col 1 = connector_end (└).
-	_, lines = tracker.Snapshot("", "span-B", true)
+	_, lines, _ = tracker.Snapshot("", "span-B", true)
 	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
 	require.Len(t, parsed, 2)
 	assert.Equal(t, SpanLineActive, parsed[0].Type)
 	assert.Equal(t, SpanLineConnectorEnd, parsed[1].Type)
 
 	// Non-closing snapshot still uses connector (├).
-	_, lines = tracker.Snapshot("", "span-A", false)
+	_, lines, _ = tracker.Snapshot("", "span-A", false)
 	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
 	assert.Equal(t, SpanLineConnector, parsed[0].Type)
 }
@@ -229,7 +229,7 @@ func TestSpanTracker_PassthroughWithNullSlot(t *testing.T) {
 
 	// Connect to span-A: col 0 = connector, col 1 = passthrough (null slot),
 	// col 2 = active_passthrough.
-	_, lines := tracker.Snapshot("", "span-A", false)
+	_, lines, _ := tracker.Snapshot("", "span-A", false)
 	var parsed []*SpanLine
 	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
 	require.Len(t, parsed, 3)
@@ -249,7 +249,7 @@ func TestSpanTracker_SpanLinesNullSlots(t *testing.T) {
 	tracker.OpenSpan("span-C", "")
 	tracker.CloseSpan("span-B")
 
-	_, lines := tracker.Snapshot("", "", false)
+	_, lines, _ := tracker.Snapshot("", "", false)
 	var parsed []json.RawMessage
 	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
 	require.Len(t, parsed, 3)

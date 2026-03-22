@@ -12,7 +12,7 @@ import { renderMarkdown } from '~/lib/renderMarkdown'
 import { spinner } from '~/styles/animations.css'
 import * as styles from './ChatView.css'
 import { markdownContent } from './markdownContent.css'
-import { MessageBubble } from './MessageBubble'
+import { classifyParsedMessage, MessageBubble } from './MessageBubble'
 import { assistantMessage } from './messageStyles.css'
 import { SpanLines } from './SpanLines'
 import { ThinkingIndicator } from './ThinkingIndicator'
@@ -316,6 +316,10 @@ export const ChatView: Component<ChatViewProps> = (props) => {
               <div ref={contentRef} class={styles.messageListContent}>
                 <For each={props.messages}>
                   {(msg) => {
+                    const { parsed, category } = classifyParsedMessage(msg)
+                    if (category.kind === 'hidden')
+                      return null
+
                     const spanLines = createMemo(() => {
                       if (!msg.spanLines || msg.spanLines === '[]')
                         return []
@@ -330,6 +334,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     const bubble = (
                       <MessageBubble
                         message={msg}
+                        parsed={parsed}
+                        category={category}
                         error={props.messageErrors?.[msg.id]}
                         onRetry={() => props.onRetryMessage?.(msg.id)}
                         onDelete={() => props.onDeleteMessage?.(msg.id)}

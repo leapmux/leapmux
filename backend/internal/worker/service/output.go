@@ -132,7 +132,8 @@ func (t *SpanTracker) ColorFor(spanID string) int32 {
 // When closing is true, the connector column renders as └ instead of ├.
 // This avoids the TOCTOU risk of calling DepthFor and SpanLines separately,
 // and reduces mutex acquisitions.
-func (t *SpanTracker) Snapshot(parentSpanID, connectorSpanID string, closing bool) (depth int32, spanLines string) {
+func (t *SpanTracker) Snapshot(parentSpanID, connectorSpanID string, closing bool) (depth int32, spanLines string, connectorColorOut int32) {
+	connectorColorOut = -1 // no connector found
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -148,7 +149,7 @@ func (t *SpanTracker) Snapshot(parentSpanID, connectorSpanID string, closing boo
 
 	// Span lines serialization.
 	if len(t.spans) == 0 {
-		return depth, "[]"
+		return depth, "[]", connectorColorOut
 	}
 
 	maxCol := 0
@@ -175,6 +176,7 @@ func (t *SpanTracker) Snapshot(parentSpanID, connectorSpanID string, closing boo
 			if l != nil && l.SpanID == connectorSpanID {
 				connectorCol = col
 				connectorColor = l.Color
+				connectorColorOut = int32(l.Color)
 				if closing {
 					l.Type = SpanLineConnectorEnd
 				} else {
@@ -201,7 +203,7 @@ func (t *SpanTracker) Snapshot(parentSpanID, connectorSpanID string, closing boo
 	}
 
 	data, _ := json.Marshal(lines)
-	return depth, string(data)
+	return depth, string(data), connectorColorOut
 }
 
 // --- Notification threading ---
@@ -270,6 +272,9 @@ func NewOutputHandler(queries *db.Queries, watcher *WatcherManager, agents *agen
 
 // spanTracker returns the per-agent SpanTracker, creating one if needed.
 func (h *OutputHandler) spanTracker(agentID string) *SpanTracker {
+	if v, ok := h.spanTrackers.Load(agentID); ok {
+		return v.(*SpanTracker)
+	}
 	v, _ := h.spanTrackers.LoadOrStore(agentID, &SpanTracker{})
 	return v.(*SpanTracker)
 }
@@ -521,12 +526,12 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 	if connectorSpanID == "" {
 		connectorSpanID = parentSpanID
 	}
-	depth, spanLines := tracker.Snapshot(parentSpanID, connectorSpanID, closing)
+	depth, spanLines, connectorColor := tracker.Snapshot(parentSpanID, connectorSpanID, closing)
 
 	// Resolve span color: if the span is already active (e.g. tool_result
-	// inside an open span), look up its color from the tracker.
-	if spanID != "" && spanColor < 0 {
-		spanColor = tracker.ColorFor(spanID)
+	// inside an open span), use the connector color from the snapshot.
+	if spanID != "" && spanColor < 0 && connectorColor >= 0 {
+		spanColor = connectorColor
 	}
 
 	msgID := id.Generate()

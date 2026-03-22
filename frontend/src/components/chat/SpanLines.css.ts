@@ -102,11 +102,22 @@ const BRIDGE_BOTTOM = `calc(${CONNECTOR_TOP} + 1px)`
 /** Overlap so horizontal segments tuck under the bridge borders (avoids sub-pixel gaps). */
 const BRIDGE_OVERLAP = '1px'
 
+/**
+ * Build the horizontal passthrough gradient with a gap for the bridge arc.
+ * @param rightEnd - CSS value for where the right segment ends (e.g. '100%' or 'calc(100% - 4px)')
+ */
+function passthroughGradient(rightEnd: string) {
+  const c = 'var(--span-passthrough-color, var(--border))'
+  const gapL = `calc(50% - ${BRIDGE_HALF} + ${BRIDGE_OVERLAP})`
+  const gapR = `calc(50% + ${BRIDGE_HALF} - ${BRIDGE_OVERLAP})`
+  return `linear-gradient(to right, ${c} 0, ${c} ${gapL}, transparent ${gapL}, transparent ${gapR}, ${c} ${gapR}, ${c} ${rightEnd}${rightEnd !== '100%' ? `, transparent ${rightEnd}` : ''})`
+}
+
 /** Active vertical line with a horizontal pass-through that hops over the vertical line. */
 export const spanLineActivePassthrough = style([spanLineColumnBase, {
   // Horizontal line segments with a gap where the bridge arc sits.
   // The gap is slightly narrower than the bridge so segments overlap its borders.
-  'backgroundImage': `linear-gradient(to right, var(--span-passthrough-color, var(--border)) 0, var(--span-passthrough-color, var(--border)) calc(50% - ${BRIDGE_HALF} + ${BRIDGE_OVERLAP}), transparent calc(50% - ${BRIDGE_HALF} + ${BRIDGE_OVERLAP}), transparent calc(50% + ${BRIDGE_HALF} - ${BRIDGE_OVERLAP}), var(--span-passthrough-color, var(--border)) calc(50% + ${BRIDGE_HALF} - ${BRIDGE_OVERLAP}), var(--span-passthrough-color, var(--border)) 100%)`,
+  'backgroundImage': passthroughGradient('100%'),
   'backgroundSize': '100% 2px',
   'backgroundPosition': `0 ${CONNECTOR_TOP}`,
   'backgroundRepeat': 'no-repeat',
@@ -152,7 +163,7 @@ export const spanLinePassthrough = style([spanLineColumnBase, {
 
 /** Shorten the rightmost passthrough column so it doesn't touch the message content. */
 globalStyle(`${spanLineActivePassthrough}:last-child`, {
-  backgroundImage: `linear-gradient(to right, var(--span-passthrough-color, var(--border)) 0, var(--span-passthrough-color, var(--border)) calc(50% - ${BRIDGE_HALF} + ${BRIDGE_OVERLAP}), transparent calc(50% - ${BRIDGE_HALF} + ${BRIDGE_OVERLAP}), transparent calc(50% + ${BRIDGE_HALF} - ${BRIDGE_OVERLAP}), var(--span-passthrough-color, var(--border)) calc(50% + ${BRIDGE_HALF} - ${BRIDGE_OVERLAP}), var(--span-passthrough-color, var(--border)) calc(100% - ${CONNECTOR_GAP}), transparent calc(100% - ${CONNECTOR_GAP}))`,
+  backgroundImage: passthroughGradient(`calc(100% - ${CONNECTOR_GAP})`),
 })
 globalStyle(`${spanLinePassthrough}:last-child::before`, {
   right: CONNECTOR_GAP,

@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { MessageCategory } from './messageClassification'
 import type { RenderContext } from './messageRenderers'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
@@ -85,8 +86,20 @@ function injectCopyButtons(container: HTMLElement) {
   }
 }
 
+/** Classify a message, returning both the parsed content and category. */
+export function classifyParsedMessage(message: AgentChatMessage) {
+  const parsed = parseMessageContent(message)
+  let category = classifyMessage(parsed.parentObject, parsed.wrapper, message.agentProvider)
+  // Hide task_progress system messages inside spans — progress is shown via the span's context.
+  if (category.kind === 'notification' && message.parentSpanId && parsed.parentObject?.subtype === 'task_progress')
+    category = { kind: 'hidden' }
+  return { parsed, category }
+}
+
 interface MessageBubbleProps {
   message: AgentChatMessage
+  parsed?: ParsedMessageContent
+  category?: MessageCategory
   error?: string
   onRetry?: () => void
   onDelete?: () => void
@@ -103,11 +116,12 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const [markdownCopied, setMarkdownCopied] = createSignal(false)
   let contentRef: HTMLDivElement | undefined
 
-  // Consolidated message parsing: decompress and parse once, derive everything from this memo.
-  const parsed = createMemo((): ParsedMessageContent => parseMessageContent(props.message))
-
-  // Single-pass classification: replaces ~15 individual boolean flags.
-  const category = createMemo(() => classifyMessage(parsed().parentObject, parsed().wrapper, props.message.agentProvider))
+  // Use pre-computed values from ChatView when available, otherwise compute on demand.
+  const classified = createMemo(() => props.parsed && props.category
+    ? { parsed: props.parsed, category: props.category }
+    : classifyParsedMessage(props.message))
+  const parsed = () => classified().parsed
+  const category = () => classified().category
 
   // Full raw JSON for the Raw JSON display (only stringified on demand for "Copy Raw JSON").
   const rawJson = (): string => {
@@ -252,47 +266,45 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   })
 
   return (
-    <Show when={category().kind !== 'hidden'}>
-      <div
-        class={props.error ? styles.messageWithError : undefined}
-        style={!props.error ? { display: 'contents' } : undefined}
-      >
-        <div class={rowClass()}>
-          <div
-            class={bubbleClass()}
-            data-testid="message-bubble"
-            data-role={roleLabel(props.message.role)}
-          >
-            <div ref={contentRef} data-testid="message-content">
-              <ErrorBoundary fallback={renderErrorFallback('Failed to render message:')}>
-                {category().kind === 'notification_thread'
-                  ? renderNotificationThread((category() as { kind: 'notification_thread', messages: unknown[] }).messages)
-                  : renderMessageContent(parsed().parentObject ?? parsed().rawText, props.message.role, renderContext(), category(), props.message.agentProvider)}
-              </ErrorBoundary>
-            </div>
+    <div
+      class={props.error ? styles.messageWithError : undefined}
+      style={!props.error ? { display: 'contents' } : undefined}
+    >
+      <div class={rowClass()}>
+        <div
+          class={bubbleClass()}
+          data-testid="message-bubble"
+          data-role={roleLabel(props.message.role)}
+        >
+          <div ref={contentRef} data-testid="message-content">
+            <ErrorBoundary fallback={renderErrorFallback('Failed to render message:')}>
+              {category().kind === 'notification_thread'
+                ? renderNotificationThread((category() as { kind: 'notification_thread', messages: unknown[] }).messages)
+                : renderMessageContent(parsed().parentObject ?? parsed().rawText, props.message.role, renderContext(), category(), props.message.agentProvider)}
+            </ErrorBoundary>
           </div>
-          <Show when={!hasInternalActions()}>
-            <ToolHeaderActions
-              createdAt={props.message.createdAt}
-              onCopyJson={copyJson}
-              jsonCopied={jsonCopied()}
-              onReply={extractQuotableText() ? handleReply : undefined}
-              onCopyMarkdown={extractQuotableText() ? copyMarkdown : undefined}
-              markdownCopied={markdownCopied()}
-            />
-          </Show>
         </div>
-
-        <Show when={props.error}>
-          <div class={styles.messageError} data-testid="message-error">
-            <span class={styles.messageErrorText}>Failed to deliver</span>
-            <span class={styles.messageErrorDot}>&middot;</span>
-            <button class={styles.messageRetryButton} onClick={() => props.onRetry?.()} data-testid="message-retry-button">Retry</button>
-            <span class={styles.messageErrorDot}>&middot;</span>
-            <button class={styles.messageDeleteButton} onClick={() => props.onDelete?.()} data-testid="message-delete-button">Delete</button>
-          </div>
+        <Show when={!hasInternalActions()}>
+          <ToolHeaderActions
+            createdAt={props.message.createdAt}
+            onCopyJson={copyJson}
+            jsonCopied={jsonCopied()}
+            onReply={extractQuotableText() ? handleReply : undefined}
+            onCopyMarkdown={extractQuotableText() ? copyMarkdown : undefined}
+            markdownCopied={markdownCopied()}
+          />
         </Show>
       </div>
-    </Show>
+
+      <Show when={props.error}>
+        <div class={styles.messageError} data-testid="message-error">
+          <span class={styles.messageErrorText}>Failed to deliver</span>
+          <span class={styles.messageErrorDot}>&middot;</span>
+          <button class={styles.messageRetryButton} onClick={() => props.onRetry?.()} data-testid="message-retry-button">Retry</button>
+          <span class={styles.messageErrorDot}>&middot;</span>
+          <button class={styles.messageDeleteButton} onClick={() => props.onDelete?.()} data-testid="message-delete-button">Delete</button>
+        </div>
+      </Show>
+    </div>
   )
 }

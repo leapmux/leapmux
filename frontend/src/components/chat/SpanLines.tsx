@@ -14,6 +14,11 @@ import {
   spanPassthroughColors,
 } from './SpanLines.css'
 
+/** Map a 1-based server color index to the corresponding CSS class key. */
+export function spanColorKey(colorIndex: number): string {
+  return `color${(colorIndex - 1) % PALETTE_SIZE}`
+}
+
 export interface SpanLine {
   span_id: string
   color: number
@@ -26,7 +31,7 @@ interface SpanLinesProps {
   spanOpener?: boolean
 }
 
-const TYPE_STYLES: Record<string, string> = {
+const TYPE_STYLES: Record<SpanLine['type'], string> = {
   active: spanLineActive,
   connector: spanLineConnector,
   connector_end: spanLineConnectorEnd,
@@ -45,10 +50,10 @@ export const SpanLines: Component<SpanLinesProps> = (props) => {
 
             const baseClass = TYPE_STYLES[line.type] || spanLineActive
             const colorClass = line.color > 0
-              ? spanLineColors[`color${(line.color - 1) % PALETTE_SIZE}`]
+              ? spanLineColors[spanColorKey(line.color)]
               : ''
             const ptClass = line.passthrough_color != null && line.passthrough_color > 0
-              ? spanPassthroughColors[`color${(line.passthrough_color - 1) % PALETTE_SIZE}`]
+              ? spanPassthroughColors[spanColorKey(line.passthrough_color)]
               : ''
 
             return <div class={`${baseClass} ${colorClass} ${ptClass}`} />
