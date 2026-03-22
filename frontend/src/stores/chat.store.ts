@@ -103,24 +103,11 @@ export function createChatStore() {
   const spanIndex = new Map<string, Map<string, AgentChatMessage>>()
 
   /**
-   * Index a single message by spanId if it has one.
-   * Only the first message per spanId is stored (the tool_use opener),
-   * so tool_result messages don't overwrite their corresponding tool_use.
+   * Index messages by spanId. Only the first message per spanId is stored
+   * (the tool_use opener), so tool_result messages don't overwrite their
+   * corresponding tool_use.
    */
-  function indexBySpanId(agentId: string, msg: AgentChatMessage) {
-    if (msg.spanId) {
-      let agentSpans = spanIndex.get(agentId)
-      if (!agentSpans) {
-        agentSpans = new Map()
-        spanIndex.set(agentId, agentSpans)
-      }
-      if (!agentSpans.has(msg.spanId))
-        agentSpans.set(msg.spanId, msg)
-    }
-  }
-
-  /** Batch-index multiple messages by spanId. */
-  function indexBySpanIdBatch(agentId: string, messages: AgentChatMessage[]) {
+  function indexBySpanId(agentId: string, ...messages: AgentChatMessage[]) {
     let agentSpans = spanIndex.get(agentId)
     for (const msg of messages) {
       if (msg.spanId) {
@@ -136,10 +123,13 @@ export function createChatStore() {
 
   /** Shared implementation for setMessages / loadInitialMessages. */
   function applyMessages(agentId: string, messages: AgentChatMessage[], hasMore: boolean) {
+    // Clear stale span index entries before re-indexing to prevent memory leaks
+    // when the message list is fully replaced (e.g. on reconnect or agent switch).
+    spanIndex.delete(agentId)
     // Index spans before setting messages so that reactive computations
     // triggered by the message list update can already look up tool_use
     // messages by spanId.
-    indexBySpanIdBatch(agentId, messages)
+    indexBySpanId(agentId, ...messages)
     setState('messagesByAgent', agentId, messages)
     setState('hasMoreOlder', agentId, hasMore)
     setState('initialLoadComplete', agentId, true)
@@ -356,7 +346,7 @@ export function createChatStore() {
             const newMsgs = resp.messages.filter(m => !existingSeqs.has(m.seq))
             return [...newMsgs, ...prev]
           })
-          indexBySpanIdBatch(agentId, resp.messages)
+          indexBySpanId(agentId, ...resp.messages)
           // Extract todos from older messages if none found yet.
           if (!state.todosByAgent[agentId] || state.todosByAgent[agentId].length === 0) {
             const todos = findLatestTodos(resp.messages)

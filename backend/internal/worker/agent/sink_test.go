@@ -23,10 +23,10 @@ type testSinkMessage struct {
 	SpanID       string
 }
 
-func (s *testSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, parentSpanID string, spanID string, _ int32, _ bool) error {
+func (s *testSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, span SpanInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.messages = append(s.messages, testSinkMessage{Role: role, Content: append([]byte(nil), content...), ParentSpanID: parentSpanID, SpanID: spanID})
+	s.messages = append(s.messages, testSinkMessage{Role: role, Content: append([]byte(nil), content...), ParentSpanID: span.ParentSpanID, SpanID: span.SpanID})
 	return nil
 }
 
@@ -132,7 +132,7 @@ func (s *testSink) LastSessionInfo() map[string]interface{} {
 // need to verify output.
 type noopSink struct{}
 
-func (noopSink) PersistMessage(leapmuxv1.MessageRole, []byte, string, string, int32, bool) error {
+func (noopSink) PersistMessage(leapmuxv1.MessageRole, []byte, SpanInfo) error {
 	return nil
 }
 func (noopSink) PersistNotification(leapmuxv1.MessageRole, []byte) error            { return nil }

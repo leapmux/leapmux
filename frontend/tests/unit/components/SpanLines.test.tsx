@@ -5,7 +5,7 @@ import { SpanLines } from '~/components/chat/SpanLines'
 describe('spanLines', () => {
   it('renders nothing when lines array is empty', () => {
     const { container } = render(() => (
-      <SpanLines lines={[]} parentSpanId="" />
+      <SpanLines lines={[]} />
     ))
     // The <Show> guard prevents rendering when lines is empty.
     expect(container.children.length).toBe(0)
@@ -15,7 +15,7 @@ describe('spanLines', () => {
     const { container } = render(() => (
       <SpanLines
         lines={[{ span_id: 'span-A', color: 0 }]}
-        parentSpanId="span-B"
+        spanOpener
       />
     ))
     // Should render a container div with one child (the column).
@@ -28,7 +28,7 @@ describe('spanLines', () => {
     const { container } = render(() => (
       <SpanLines
         lines={[{ span_id: 'span-A', color: 0 }, null, { span_id: 'span-B', color: 1 }]}
-        parentSpanId="span-A"
+        spanOpener
       />
     ))
     const wrapper = container.firstElementChild
@@ -45,7 +45,7 @@ describe('spanLines', () => {
           { span_id: 'span-B', color: 1 },
           { span_id: 'span-C', color: 2 },
         ]}
-        parentSpanId=""
+        spanOpener={false}
       />
     ))
     const wrapper = container.firstElementChild

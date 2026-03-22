@@ -114,18 +114,6 @@ func (t *SpanTracker) PeekNextColor() int32 {
 	return int32(t.nextColor + 1)
 }
 
-// ColorFor returns the color index of an active span, or -1 if not found.
-func (t *SpanTracker) ColorFor(spanID string) int32 {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	for _, s := range t.spans {
-		if s.SpanID == spanID {
-			return int32(s.ColorIndex)
-		}
-	}
-	return -1
-}
-
 // Snapshot returns the depth and span lines for a given parentSpanID in a single
 // atomic operation. connectorSpanID identifies the span this message connects to
 // (used to compute passthrough hints for columns to the right of the connector).
@@ -284,6 +272,7 @@ func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentPro
 		h:             h,
 		agentID:       agentID,
 		agentProvider: agentProvider,
+		tracker:       h.spanTracker(agentID),
 	}
 }
 
@@ -292,12 +281,13 @@ type agentOutputSink struct {
 	h             *OutputHandler
 	agentID       string
 	agentProvider leapmuxv1.AgentProvider
+	tracker       *SpanTracker
 }
 
 // --- OutputSink interface implementation ---
 
-func (s *agentOutputSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, parentSpanID string, spanID string, spanColor int32, closing bool) error {
-	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, role, content, parentSpanID, spanID, spanColor, closing)
+func (s *agentOutputSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, span agent.SpanInfo) error {
+	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, role, content, span, s.tracker)
 }
 
 func (s *agentOutputSink) PersistNotification(role leapmuxv1.MessageRole, content []byte) error {
@@ -305,15 +295,15 @@ func (s *agentOutputSink) PersistNotification(role leapmuxv1.MessageRole, conten
 }
 
 func (s *agentOutputSink) OpenSpan(spanID, parentSpanID string) {
-	s.h.spanTracker(s.agentID).OpenSpan(spanID, parentSpanID)
+	s.tracker.OpenSpan(spanID, parentSpanID)
 }
 
 func (s *agentOutputSink) CloseSpan(spanID string) {
-	s.h.spanTracker(s.agentID).CloseSpan(spanID)
+	s.tracker.CloseSpan(spanID)
 }
 
 func (s *agentOutputSink) PeekNextSpanColor() int32 {
-	return s.h.spanTracker(s.agentID).PeekNextColor()
+	return s.tracker.PeekNextColor()
 }
 
 func (s *agentOutputSink) BroadcastStreamChunk(content []byte) {
@@ -515,21 +505,25 @@ func (h *OutputHandler) softClearNotifThread(agentID string) {
 }
 
 // persistAndBroadcast persists a message and broadcasts it to watchers.
-func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, role leapmuxv1.MessageRole, contentJSON []byte, parentSpanID string, spanID string, spanColor int32, closing bool) error {
-	tracker := h.spanTracker(agentID)
+// tracker may be nil, in which case it is resolved from the agentID.
+func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, role leapmuxv1.MessageRole, contentJSON []byte, span agent.SpanInfo, tracker *SpanTracker) error {
+	if tracker == nil {
+		tracker = h.spanTracker(agentID)
+	}
 	// The connector span is the span this message visually connects to.
 	// Use spanID when the span is already open (e.g. tool_result); for
 	// span openers the span isn't open yet so Snapshot won't find it and
 	// falls back to no connector. Otherwise use parentSpanID.
-	connectorSpanID := spanID
+	connectorSpanID := span.SpanID
 	if connectorSpanID == "" {
-		connectorSpanID = parentSpanID
+		connectorSpanID = span.ParentSpanID
 	}
-	depth, spanLines, connectorColor := tracker.Snapshot(parentSpanID, connectorSpanID, closing)
+	depth, spanLines, connectorColor := tracker.Snapshot(span.ParentSpanID, connectorSpanID, span.Closing)
 
 	// Resolve span color: if the span is already active (e.g. tool_result
 	// inside an open span), use the connector color from the snapshot.
-	if spanID != "" && spanColor < 0 && connectorColor >= 0 {
+	spanColor := span.SpanColor
+	if span.SpanID != "" && spanColor < 0 && connectorColor >= 0 {
 		spanColor = connectorColor
 	}
 
@@ -544,8 +538,8 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		Content:            compressed,
 		ContentCompression: compressionType,
 		Depth:              int64(depth),
-		SpanID:             spanID,
-		ParentSpanID:       parentSpanID,
+		SpanID:             span.SpanID,
+		ParentSpanID:       span.ParentSpanID,
 		SpanLines:          spanLines,
 		SpanColor:          int64(spanColor),
 		AgentProvider:      agentProvider,
@@ -564,8 +558,8 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		AgentProvider:      agentProvider,
 		CreatedAt:          timefmt.Format(now),
 		Depth:              depth,
-		SpanId:             spanID,
-		ParentSpanId:       parentSpanID,
+		SpanId:             span.SpanID,
+		ParentSpanId:       span.ParentSpanID,
 		SpanLines:          spanLines,
 		SpanColor:          spanColor,
 	})

@@ -136,26 +136,6 @@ func TestSpanTracker_PeekNextColor(t *testing.T) {
 	assert.Equal(t, int32(3), tracker.PeekNextColor())
 }
 
-func TestSpanTracker_ColorFor(t *testing.T) {
-	tracker := &SpanTracker{}
-
-	// Non-existent span returns -1.
-	assert.Equal(t, int32(-1), tracker.ColorFor("span-1"))
-
-	// Active span returns its color.
-	tracker.OpenSpan("span-1", "")
-	assert.Equal(t, int32(1), tracker.ColorFor("span-1"))
-
-	tracker.OpenSpan("span-2", "span-1")
-	assert.Equal(t, int32(1), tracker.ColorFor("span-1"))
-	assert.Equal(t, int32(2), tracker.ColorFor("span-2"))
-
-	// Closed span returns -1.
-	tracker.CloseSpan("span-1")
-	assert.Equal(t, int32(-1), tracker.ColorFor("span-1"))
-	assert.Equal(t, int32(2), tracker.ColorFor("span-2"))
-}
-
 func TestSpanTracker_RenderingHints(t *testing.T) {
 	tracker := &SpanTracker{}
 
