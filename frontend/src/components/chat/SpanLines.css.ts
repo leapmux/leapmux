@@ -1,4 +1,4 @@
-import { style, styleVariants } from '@vanilla-extract/css'
+import { globalStyle, style, styleVariants } from '@vanilla-extract/css'
 
 /** Container for all span line columns. */
 const spanLinesContainerBase = style({
@@ -149,6 +149,14 @@ export const spanLinePassthrough = style([spanLineColumnBase, {
     backgroundColor: 'var(--span-passthrough-color, var(--border))',
   },
 }])
+
+/** Shorten the rightmost passthrough column so it doesn't touch the message content. */
+globalStyle(`${spanLineActivePassthrough}:last-child`, {
+  backgroundImage: `linear-gradient(to right, var(--span-passthrough-color, var(--border)) 0, var(--span-passthrough-color, var(--border)) calc(50% - ${BRIDGE_HALF} + ${BRIDGE_OVERLAP}), transparent calc(50% - ${BRIDGE_HALF} + ${BRIDGE_OVERLAP}), transparent calc(50% + ${BRIDGE_HALF} - ${BRIDGE_OVERLAP}), var(--span-passthrough-color, var(--border)) calc(50% + ${BRIDGE_HALF} - ${BRIDGE_OVERLAP}), var(--span-passthrough-color, var(--border)) calc(100% - ${CONNECTOR_GAP}), transparent calc(100% - ${CONNECTOR_GAP}))`,
+})
+globalStyle(`${spanLinePassthrough}:last-child::before`, {
+  right: CONNECTOR_GAP,
+})
 
 /** Span line color palette (cycled by color index). */
 const PALETTE = [
