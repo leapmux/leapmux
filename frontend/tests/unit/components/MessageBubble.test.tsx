@@ -1,10 +1,10 @@
-import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MessageBubble } from '~/components/chat/MessageBubble'
 import { toolBodyContent } from '~/components/chat/toolStyles.css'
 import { PreferencesProvider } from '~/context/PreferencesContext'
-import { ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { makeMessage, rawContent, wrapContent } from '../helpers/messageFactory'
 
 // jsdom does not provide ResizeObserver or Worker
 beforeAll(() => {
@@ -39,34 +39,8 @@ beforeEach(() => {
   })
 })
 
-/** Encode a JSON object into a wrapper envelope stored in the content field. */
-function wrapContent(messages: unknown[], oldSeqs: number[] = []): Uint8Array {
-  const wrapper = { old_seqs: oldSeqs, messages }
-  return new TextEncoder().encode(JSON.stringify(wrapper))
-}
-
-/** Build a minimal AgentChatMessage for testing. */
-function makeMsg(overrides: Partial<{
-  id: string
-  role: MessageRole
-  seq: bigint
-  createdAt: string
-  updatedAt: string
-  deliveryError: string
-  content: Uint8Array
-  contentCompression: ContentCompression
-}>): AgentChatMessage {
-  return {
-    $typeName: 'leapmux.v1.AgentChatMessage' as const,
-    id: overrides.id ?? 'msg-1',
-    role: overrides.role ?? MessageRole.ASSISTANT,
-    seq: overrides.seq ?? 1n,
-    createdAt: overrides.createdAt ?? '2025-01-15T10:00:00.000Z',
-    updatedAt: overrides.updatedAt ?? '',
-    deliveryError: overrides.deliveryError ?? '',
-    content: overrides.content ?? new Uint8Array(),
-    contentCompression: overrides.contentCompression ?? ContentCompression.NONE,
-  } as AgentChatMessage
+function makeMsg(overrides: Partial<Parameters<typeof makeMessage>[0]>) {
+  return makeMessage({ createdAt: '2025-01-15T10:00:00.000Z', ...overrides })
 }
 
 /** Click the "Copy Raw JSON" button and return the parsed clipboard content. */
@@ -105,38 +79,16 @@ function askUserQuestionToolUse(questions: Array<{ header: string }>) {
   }
 }
 
-function controlResponse(action = 'approved') {
-  return { isSynthetic: true, controlResponse: { action, comment: '' } }
-}
-
-function toolResultWithAnswers(answers: Record<string, string>) {
-  return {
-    type: 'user',
-    message: {
-      content: [{
-        type: 'tool_result',
-        content: 'User has answered your questions.',
-        tool_use_id: 'toolu_ask_1',
-      }],
-    },
-    tool_use_result: { answers },
-  }
-}
-
 // ---------------------------------------------------------------------------
 // AskUserQuestion thread rendering
 // ---------------------------------------------------------------------------
 
 describe('askUserQuestion thread rendering', () => {
-  it('shows "Submitted answers" when controlResponse precedes tool_result', () => {
+  it('shows "Waiting for answers" for standalone tool_use (no children)', () => {
     const parent = askUserQuestionToolUse([{ header: 'Uncommitted' }])
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([
-        parent,
-        controlResponse(),
-        toolResultWithAnswers({ Uncommitted: 'Commit changes' }),
-      ]),
+      content: rawContent(parent),
     })
 
     render(() => (
@@ -146,62 +98,14 @@ describe('askUserQuestion thread rendering', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('Submitted answers')
-    expect(bubble.textContent).not.toContain('Waiting for answers')
+    expect(bubble.textContent).toContain('Waiting for answers')
   })
 
-  it('renders answers as bullet list with markdown answer text', () => {
-    const parent = askUserQuestionToolUse([{ header: 'Uncommitted' }])
-    const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
-      content: wrapContent([
-        parent,
-        controlResponse(),
-        toolResultWithAnswers({ Uncommitted: 'Commit changes' }),
-      ]),
-    })
-
-    render(() => (
-      <PreferencesProvider>
-        <MessageBubble message={msg} />
-      </PreferencesProvider>
-    ))
-
-    const bubble = screen.getByTestId('message-content')
-    // Header and answer rendered as markdown unordered list
-    expect(bubble.textContent).toContain('Uncommitted:')
-    expect(bubble.textContent).toContain('Commit changes')
-  })
-
-  it('shows "Not answered" for unanswered questions', () => {
+  it('shows "Waiting for answers" for multi-question tool_use (no children)', () => {
     const parent = askUserQuestionToolUse([{ header: 'Auth' }, { header: 'Database' }])
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([
-        parent,
-        controlResponse(),
-        toolResultWithAnswers({ Auth: 'OAuth' }),
-      ]),
-    })
-
-    render(() => (
-      <PreferencesProvider>
-        <MessageBubble message={msg} />
-      </PreferencesProvider>
-    ))
-
-    const bubble = screen.getByTestId('message-content')
-    // Answered question rendered as markdown
-    expect(bubble.textContent).toContain('OAuth')
-    // Unanswered question shows "Not answered" as plain text
-    expect(bubble.textContent).toContain('Not answered')
-  })
-
-  it('shows "Waiting for answers" with no thread children', () => {
-    const parent = askUserQuestionToolUse([{ header: 'Uncommitted' }])
-    const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
-      content: wrapContent([parent]),
+      content: rawContent(parent),
     })
 
     render(() => (
@@ -231,7 +135,7 @@ describe('thinking message toolbar buttons', () => {
     }
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([innerMsg]),
+      content: rawContent(innerMsg),
     })
 
     render(() => (
@@ -252,7 +156,7 @@ describe('thinking message toolbar buttons', () => {
     }
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([innerMsg]),
+      content: rawContent(innerMsg),
     })
 
     render(() => (
@@ -283,9 +187,8 @@ describe('messageBubble rawJson', () => {
       role: MessageRole.ASSISTANT,
       seq: 3n,
       createdAt: '2025-01-15T10:00:00.000Z',
-      updatedAt: '2025-01-15T10:05:00.000Z',
       deliveryError: 'worker offline',
-      content: wrapContent([innerMsg]),
+      content: rawContent(innerMsg),
     })
 
     render(() => (
@@ -299,9 +202,10 @@ describe('messageBubble rawJson', () => {
     expect(envelope.role).toBe('assistant')
     expect(envelope.seq).toBe(3)
     expect(envelope.created_at).toBe('2025-01-15T10:00:00.000Z')
-    expect(envelope.updated_at).toBe('2025-01-15T10:05:00.000Z')
     expect(envelope.delivery_error).toBe('worker offline')
-    expect(Array.isArray(envelope.messages)).toBe(true)
+    // Raw JSON format uses content (not messages) for non-LEAPMUX messages
+    expect(envelope).toHaveProperty('content')
+    expect(envelope).not.toHaveProperty('messages')
   })
 
   it('omits empty optional fields', async () => {
@@ -312,9 +216,8 @@ describe('messageBubble rawJson', () => {
     const msg = makeMsg({
       id: 'msg-no-opts',
       role: MessageRole.ASSISTANT,
-      updatedAt: '',
       deliveryError: '',
-      content: wrapContent([innerMsg]),
+      content: rawContent(innerMsg),
     })
 
     render(() => (
@@ -324,21 +227,20 @@ describe('messageBubble rawJson', () => {
     ))
 
     const envelope = await copyRawJson()
-    expect(envelope).not.toHaveProperty('updated_at')
     expect(envelope).not.toHaveProperty('delivery_error')
     // Required fields should still be present.
     expect(envelope.id).toBe('msg-no-opts')
     expect(envelope.role).toBe('assistant')
-    expect(envelope).toHaveProperty('messages')
+    expect(envelope).toHaveProperty('content')
   })
 
-  it('wraps single message in messages array', async () => {
+  it('includes content as object for non-LEAPMUX messages', async () => {
     const innerMsg = {
       type: 'assistant',
       message: { content: [{ type: 'text', text: 'Single' }] },
     }
     const msg = makeMsg({
-      content: wrapContent([innerMsg]),
+      content: rawContent(innerMsg),
     })
 
     render(() => (
@@ -348,13 +250,11 @@ describe('messageBubble rawJson', () => {
     ))
 
     const envelope = await copyRawJson()
-    expect(Array.isArray(envelope.messages)).toBe(true)
-    const messages = envelope.messages as unknown[]
-    expect(messages).toHaveLength(1)
-    expect((messages[0] as Record<string, unknown>).type).toBe('assistant')
+    expect(envelope).toHaveProperty('content')
+    expect((envelope.content as Record<string, unknown>).type).toBe('assistant')
   })
 
-  it('includes old_seqs from thread wrapper', async () => {
+  it('includes old_seqs from LEAPMUX notification wrapper', async () => {
     const parentMsg = {
       type: 'assistant',
       message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'ls' } }] },
@@ -364,6 +264,7 @@ describe('messageBubble rawJson', () => {
       message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'file.txt' }] },
     }
     const msg = makeMsg({
+      role: MessageRole.LEAPMUX,
       content: wrapContent([parentMsg, childMsg], [5, 8]),
     })
 
@@ -397,19 +298,6 @@ function todoWriteToolUse(todos: Array<{ content: string, status: string, active
   }
 }
 
-function todoToolResult() {
-  return {
-    type: 'user',
-    message: {
-      content: [{
-        type: 'tool_result',
-        content: 'Todos have been modified successfully.',
-        tool_use_id: 'toolu_todo_1',
-      }],
-    },
-  }
-}
-
 // ---------------------------------------------------------------------------
 // TodoWrite collapse/expand
 // ---------------------------------------------------------------------------
@@ -423,7 +311,7 @@ describe('todoWrite collapse/expand', () => {
     ])
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([parent, todoToolResult()]),
+      content: rawContent(parent),
     })
 
     render(() => (
@@ -443,7 +331,7 @@ describe('todoWrite collapse/expand', () => {
     ])
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([parent, todoToolResult()]),
+      content: rawContent(parent),
     })
 
     render(() => (
@@ -466,7 +354,7 @@ describe('todoWrite collapse/expand', () => {
     ])
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([parent, todoToolResult()]),
+      content: rawContent(parent),
     })
 
     render(() => (
@@ -488,7 +376,7 @@ describe('todoWrite collapse/expand', () => {
     ])
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([parent, todoToolResult()]),
+      content: rawContent(parent),
     })
 
     render(() => (
@@ -507,7 +395,7 @@ describe('todoWrite collapse/expand', () => {
     ])
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([parent, todoToolResult()]),
+      content: rawContent(parent),
     })
 
     const { container } = render(() => (
@@ -540,37 +428,16 @@ function taskOutputToolUse() {
   }
 }
 
-function taskOutputResult(task: Record<string, unknown>) {
-  return {
-    type: 'user',
-    message: {
-      content: [{
-        type: 'tool_result',
-        content: task.output || '',
-        tool_use_id: 'toolu_task_1',
-      }],
-    },
-    tool_use_result: { task },
-  }
-}
-
 // ---------------------------------------------------------------------------
 // TaskOutput rendering
 // ---------------------------------------------------------------------------
 
 describe('taskOutput rendering', () => {
-  it('shows description only when completed', () => {
+  it('shows waiting state for standalone tool_use', () => {
     const parent = taskOutputToolUse()
-    const result = taskOutputResult({
-      task_id: 'task-123',
-      task_type: 'shell',
-      status: 'completed',
-      description: 'Build',
-      output: 'Build succeeded',
-    })
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([parent, result]),
+      content: rawContent(parent),
     })
 
     render(() => (
@@ -580,23 +447,14 @@ describe('taskOutput rendering', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('Build')
-    // When exitCode is absent but status is set, the formatted status is shown.
-    expect(bubble.textContent).toContain('Complete')
+    expect(bubble.textContent).toContain('Waiting for output')
   })
 
-  it('hides metadata when collapsed', () => {
+  it('hides metadata when no child result', () => {
     const parent = taskOutputToolUse()
-    const result = taskOutputResult({
-      task_id: 'task-123',
-      task_type: 'shell',
-      status: 'completed',
-      description: 'Build',
-      output: 'Build succeeded',
-    })
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([parent, result]),
+      content: rawContent(parent),
     })
 
     render(() => (
@@ -607,68 +465,6 @@ describe('taskOutput rendering', () => {
 
     const bubble = screen.getByTestId('message-content')
     expect(bubble.textContent).not.toContain('task_id:')
-  })
-
-  it('body has left border when expanded', () => {
-    const parent = taskOutputToolUse()
-    const result = taskOutputResult({
-      task_id: 'task-123',
-      task_type: 'shell',
-      status: 'completed',
-      description: 'Build',
-      output: 'Build succeeded',
-    })
-    const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
-      content: wrapContent([parent, result]),
-    })
-
-    const { container } = render(() => (
-      <PreferencesProvider>
-        <MessageBubble message={msg} />
-      </PreferencesProvider>
-    ))
-
-    // Click the expand button
-    const expandBtn = screen.getByRole('button', { name: 'Expand 1 tool result' })
-    fireEvent.click(expandBtn)
-
-    const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
-    expect(bodyWrapper).not.toBeNull()
-  })
-
-  it('expanded metadata omits duplicate status and description', () => {
-    const parent = taskOutputToolUse()
-    const result = taskOutputResult({
-      task_id: 'task-123',
-      task_type: 'shell',
-      status: 'completed',
-      description: 'Build',
-      output: 'Build succeeded',
-      exitCode: 0,
-    })
-    const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
-      content: wrapContent([parent, result]),
-    })
-
-    render(() => (
-      <PreferencesProvider>
-        <MessageBubble message={msg} />
-      </PreferencesProvider>
-    ))
-
-    // Click the expand button
-    const expandBtn = screen.getByRole('button', { name: 'Expand 1 tool result' })
-    fireEvent.click(expandBtn)
-
-    const bubble = screen.getByTestId('message-content')
-    // Should show exit code and task ID in summary
-    expect(bubble.textContent).toContain('Exit code 0')
-    expect(bubble.textContent).toContain('Task ID task-123')
-    // Should NOT show status: or description: in metadata (they're already in header)
-    expect(bubble.textContent).not.toContain('status: completed')
-    expect(bubble.textContent).not.toContain('description: Build')
   })
 })
 
@@ -681,11 +477,7 @@ describe('askUserQuestion left border', () => {
     const parent = askUserQuestionToolUse([{ header: 'Auth' }])
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([
-        parent,
-        controlResponse(),
-        toolResultWithAnswers({ Auth: 'OAuth' }),
-      ]),
+      content: rawContent(parent),
     })
 
     const { container } = render(() => (
@@ -718,7 +510,7 @@ describe('header-only renderers', () => {
     }
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([innerMsg]),
+      content: rawContent(innerMsg),
     })
 
     render(() => (
@@ -745,7 +537,7 @@ describe('header-only renderers', () => {
     }
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([innerMsg]),
+      content: rawContent(innerMsg),
     })
 
     render(() => (
@@ -758,7 +550,7 @@ describe('header-only renderers', () => {
     expect(bubble.textContent).toContain('Skill: /commit')
   })
 
-  it('agent renders header with description and status', () => {
+  it('agent renders header with description (no child result)', () => {
     const innerMsg = {
       type: 'assistant',
       message: {
@@ -770,20 +562,9 @@ describe('header-only renderers', () => {
         }],
       },
     }
-    const result = {
-      type: 'user',
-      message: {
-        content: [{
-          type: 'tool_result',
-          content: 'Found 3 files',
-          tool_use_id: 'toolu_agent_1',
-        }],
-      },
-      tool_use_result: { status: 'completed' },
-    }
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([innerMsg, result]),
+      content: rawContent(innerMsg),
     })
 
     render(() => (
@@ -794,7 +575,6 @@ describe('header-only renderers', () => {
 
     const bubble = screen.getByTestId('message-content')
     expect(bubble.textContent).toContain('Search codebase')
-    expect(bubble.textContent).toContain('Complete')
     expect(bubble.textContent).toContain('Explore')
   })
 })
@@ -804,7 +584,7 @@ describe('header-only renderers', () => {
 // ---------------------------------------------------------------------------
 
 describe('grep result summary', () => {
-  it('shows result summary line from tool result', () => {
+  it('shows pattern in header (no child result)', () => {
     const innerMsg = {
       type: 'assistant',
       message: {
@@ -816,33 +596,20 @@ describe('grep result summary', () => {
         }],
       },
     }
-    const result = {
-      type: 'user',
-      message: {
-        content: [{
-          type: 'tool_result',
-          content: 'Found 10 files',
-          tool_use_id: 'toolu_grep_1',
-        }],
-      },
-      tool_use_result: { tool_name: 'Grep' },
-    }
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([innerMsg, result]),
+      content: rawContent(innerMsg),
     })
 
-    const { container } = render(() => (
+    render(() => (
       <PreferencesProvider>
         <MessageBubble message={msg} />
       </PreferencesProvider>
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('Found 10 files')
-    // Summary should be inside a bordered area
-    const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
-    expect(bodyWrapper).not.toBeNull()
+    expect(bubble.textContent).toContain('TODO')
+    expect(bubble.textContent).toContain('/home/user/project')
   })
 })
 
@@ -851,7 +618,7 @@ describe('grep result summary', () => {
 // ---------------------------------------------------------------------------
 
 describe('glob result summary', () => {
-  it('shows file count summary', () => {
+  it('shows pattern in header (no child result)', () => {
     const innerMsg = {
       type: 'assistant',
       message: {
@@ -863,20 +630,9 @@ describe('glob result summary', () => {
         }],
       },
     }
-    const result = {
-      type: 'user',
-      message: {
-        content: [{
-          type: 'tool_result',
-          content: 'src/a.tsx\nsrc/b.tsx\nsrc/c.tsx\nsrc/d.tsx\nsrc/e.tsx',
-          tool_use_id: 'toolu_glob_1',
-        }],
-      },
-      tool_use_result: { tool_name: 'Glob', numFiles: 5 },
-    }
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([innerMsg, result]),
+      content: rawContent(innerMsg),
     })
 
     render(() => (
@@ -886,7 +642,7 @@ describe('glob result summary', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('Found 5 files')
+    expect(bubble.textContent).toContain('**/*.tsx')
   })
 })
 
@@ -895,7 +651,7 @@ describe('glob result summary', () => {
 // ---------------------------------------------------------------------------
 
 describe('agent stats summary', () => {
-  it('shows stats summary when completed', () => {
+  it('shows description without stats when no child result', () => {
     const innerMsg = {
       type: 'assistant',
       message: {
@@ -907,25 +663,9 @@ describe('agent stats summary', () => {
         }],
       },
     }
-    const result = {
-      type: 'user',
-      message: {
-        content: [{
-          type: 'tool_result',
-          content: 'Done',
-          tool_use_id: 'toolu_agent_2',
-        }],
-      },
-      tool_use_result: {
-        status: 'completed',
-        totalDurationMs: 65000,
-        totalTokens: 1234,
-        totalToolUseCount: 5,
-      },
-    }
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([innerMsg, result]),
+      content: rawContent(innerMsg),
     })
 
     render(() => (
@@ -935,9 +675,12 @@ describe('agent stats summary', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('1m 5s')
-    expect(bubble.textContent).toContain('1.2k tokens')
-    expect(bubble.textContent).toContain('5 tool uses')
+    expect(bubble.textContent).toContain('Search files')
+    expect(bubble.textContent).toContain('Explore')
+    // Without child result, stats and "Complete" should not appear
+    expect(bubble.textContent).not.toContain('Complete')
+    expect(bubble.textContent).not.toContain('tokens')
+    expect(bubble.textContent).not.toContain('tool uses')
   })
 
   it('formats title with subagent prefix', () => {
@@ -952,20 +695,9 @@ describe('agent stats summary', () => {
         }],
       },
     }
-    const result = {
-      type: 'user',
-      message: {
-        content: [{
-          type: 'tool_result',
-          content: 'Done',
-          tool_use_id: 'toolu_agent_3',
-        }],
-      },
-      tool_use_result: { status: 'completed' },
-    }
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([innerMsg, result]),
+      content: rawContent(innerMsg),
     })
 
     render(() => (
@@ -997,20 +729,6 @@ function editToolUse(oldString: string, newString: string, filePath = '/src/app.
   }
 }
 
-function editToolResult() {
-  return {
-    type: 'user',
-    message: {
-      content: [{
-        type: 'tool_result',
-        content: 'The file has been edited successfully.',
-        tool_use_id: 'toolu_edit_1',
-      }],
-    },
-    tool_use_result: { tool_name: 'Edit', structuredPatch: [], filePath: '/src/app.ts', oldString: '', newString: '' },
-  }
-}
-
 function writeToolUse(content: string, filePath = '/src/new-file.ts') {
   return {
     type: 'assistant',
@@ -1025,73 +743,50 @@ function writeToolUse(content: string, filePath = '/src/new-file.ts') {
   }
 }
 
-function writeToolResult() {
-  return {
-    type: 'user',
-    message: {
-      content: [{
-        type: 'tool_result',
-        content: 'File written successfully.',
-        tool_use_id: 'toolu_write_1',
-      }],
-    },
-    tool_use_result: { tool_name: 'Write', structuredPatch: [], filePath: '/src/new-file.ts', oldString: '', newString: '' },
-  }
-}
-
 // ---------------------------------------------------------------------------
-// Edit/Write always visible
+// Edit/Write tool_use rendering
 // ---------------------------------------------------------------------------
 
-describe('edit/write alwaysVisible', () => {
-  it('edit body is visible without expanding', () => {
+describe('edit/write tool_use rendering', () => {
+  it('edit shows file path in header', () => {
     const parent = editToolUse('const a = 1', 'const a = 2')
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([parent, editToolResult()]),
+      content: rawContent(parent),
     })
 
-    const { container } = render(() => (
+    render(() => (
       <PreferencesProvider>
         <MessageBubble message={msg} />
       </PreferencesProvider>
     ))
 
-    // Body should be visible without clicking expand
-    const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
-    expect(bodyWrapper).not.toBeNull()
-    // Expand button should not exist since alwaysVisible hides it
-    expect(screen.queryByRole('button', { name: 'Expand 1 tool result' })).toBeNull()
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble.textContent).toContain('app.ts')
   })
 
-  it('write body is visible without expanding and shows additions diff', () => {
+  it('write shows file path in header', () => {
     const parent = writeToolUse('export const hello = "world"')
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([parent, writeToolResult()]),
+      content: rawContent(parent),
     })
 
-    const { container } = render(() => (
+    render(() => (
       <PreferencesProvider>
         <MessageBubble message={msg} />
       </PreferencesProvider>
     ))
 
-    // Body should be visible without clicking expand
-    const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
-    expect(bodyWrapper).not.toBeNull()
-    // Expand button should not exist since alwaysVisible hides it
-    expect(screen.queryByRole('button', { name: 'Expand 1 tool result' })).toBeNull()
-    // Should show the file content as an additions diff
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('hello')
+    expect(bubble.textContent).toContain('new-file.ts')
   })
 
-  it('write with empty content does not show diff', () => {
+  it('write with empty content renders without error', () => {
     const parent = writeToolUse('')
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
-      content: wrapContent([parent, writeToolResult()]),
+      content: rawContent(parent),
     })
 
     const { container } = render(() => (
@@ -1100,7 +795,7 @@ describe('edit/write alwaysVisible', () => {
       </PreferencesProvider>
     ))
 
-    // No diff view should be rendered for empty content
+    // No diff view should be rendered for empty content without child result
     const diffView = container.querySelector('[data-diff-view]')
     expect(diffView).toBeNull()
   })

@@ -4,6 +4,7 @@ import type { JSX } from 'solid-js'
 import type { StructuredPatchHunk } from './diffUtils'
 import type { MessageContentRenderer, RenderContext } from './messageRenderers'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
+import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { BashInput, EditInput, GrepInput, WriteInput } from '~/types/toolMessages'
 import Bot from 'lucide-solid/icons/bot'
 import Braces from 'lucide-solid/icons/braces'
@@ -34,6 +35,7 @@ import { createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
+import { parseMessageContent } from '~/lib/messageParser'
 import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
@@ -41,7 +43,8 @@ import { DiffView, rawDiffToHunks } from './diffUtils'
 import { getAssistantContent, isObject, relativizePath } from './messageUtils'
 import { parseCatNContent, ReadResultView } from './ReadResultView'
 import { RelativeTime } from './RelativeTime'
-import { firstNonEmptyLine, formatCompactNumber, formatDuration, formatGlobSummary, formatGrepSummary, formatTaskStatus, formatToolInput } from './rendererUtils'
+import { formatToolInput } from './rendererUtils'
+import { PALETTE_SIZE, spanLineColors } from './SpanLines.css'
 import { renderToolDetail } from './toolDetailRenderers'
 import {
   controlResponseTag,
@@ -51,7 +54,6 @@ import {
   toolHeaderTimestamp,
   toolInputPath,
   toolInputSummary,
-  toolInputSummaryExpanded,
   toolInputText,
   toolMessage,
   toolResultContent,
@@ -102,26 +104,15 @@ export function ToolUseLayout(props: {
   /** Toggle diff view between unified and split. */
   onDiffViewChange?: (view: DiffViewPreference) => void
   context?: RenderContext
-  /** Whether the body is expanded. When provided, overrides context.threadExpanded. */
+  /** Whether the body is expanded. */
   expanded?: boolean
-  /** Toggle expand/collapse. When provided, overrides context.onToggleThread. */
+  /** Toggle expand/collapse. When provided, shows the expand button. */
   onToggleExpand?: () => void
-  /** Custom label for the expand button tooltip (e.g. "Expand 3 tool results"). */
+  /** Custom label for the expand button tooltip. */
   expandLabel?: string
 }): JSX.Element {
-  // Unified expand: explicit props take precedence over context-derived thread expand.
-  const threadCount = () => props.alwaysVisible ? 0 : (props.context?.threadChildCount ?? 0)
-  const hasExplicitExpand = () => !!props.onToggleExpand
-  const expanded = () => hasExplicitExpand()
-    ? (props.expanded ?? false)
-    : (props.context?.threadExpanded ?? false)
-  const onToggle = () => hasExplicitExpand()
-    ? props.onToggleExpand!
-    : (threadCount() > 0 ? (props.context?.onToggleThread ?? (() => {})) : undefined)
-  const expandLabel = () => hasExplicitExpand()
-    ? props.expandLabel
-    : (threadCount() > 0 ? `Expand ${threadCount()} tool result${threadCount() === 1 ? '' : 's'}` : undefined)
-  const hasActions = () => !!onToggle() || !!props.context?.onCopyJson || !!props.hasDiff
+  const expanded = () => props.expanded ?? false
+  const hasActions = () => !!props.onToggleExpand || !!props.context?.onCopyJson || !!props.hasDiff
   return (
     <div class={toolMessage}>
       <div class={toolUseHeader}>
@@ -133,14 +124,12 @@ export function ToolUseLayout(props: {
         {typeof props.title === 'string'
           ? <span class={toolInputText}>{props.title}</span>
           : props.title}
-        <ControlResponseTag response={props.context?.childControlResponse} />
         <Show when={props.context && hasActions()}>
           <ToolHeaderActions
             createdAt={props.context!.createdAt}
-            updatedAt={props.context!.updatedAt}
             expanded={expanded()}
-            onToggleExpand={onToggle()}
-            expandLabel={expandLabel()}
+            onToggleExpand={props.onToggleExpand}
+            expandLabel={props.expandLabel}
             onCopyJson={props.context!.onCopyJson}
             jsonCopied={props.context!.jsonCopied ?? false}
             hasDiff={props.hasDiff}
@@ -150,7 +139,12 @@ export function ToolUseLayout(props: {
         </Show>
       </div>
       <Show when={props.summary || (props.children && (props.alwaysVisible || expanded()))}>
-        <div class={props.bordered !== false ? toolBodyContent : undefined}>
+        <div class={props.bordered !== false
+          ? `${toolBodyContent}${props.context?.spanColor != null && props.context.spanColor >= 0
+            ? ` ${spanLineColors[`color${props.context.spanColor % PALETTE_SIZE}`]}`
+            : ''}`
+          : undefined}
+        >
           <Show when={props.summary}>{props.summary}</Show>
           <Show when={props.children && (props.alwaysVisible || expanded())}>
             {props.children}
@@ -190,8 +184,6 @@ export function toolIconFor(name: string): LucideIcon {
 export function ToolHeaderActions(props: {
   /** ISO timestamp for relative time display. */
   createdAt?: string
-  /** ISO timestamp of the last update (thread merge). Preferred over createdAt when set. */
-  updatedAt?: string
   /** Whether the content is expanded. */
   expanded?: boolean
   /** Toggle expand/collapse. When set, shows the expand button. */
@@ -212,7 +204,7 @@ export function ToolHeaderActions(props: {
   onCopyMarkdown?: () => void
   markdownCopied?: boolean
 }): JSX.Element {
-  const timestamp = () => props.updatedAt || props.createdAt
+  const timestamp = () => props.createdAt
   return (
     <div class={toolHeaderActions} data-testid="message-toolbar">
       <Show when={props.onReply}>
@@ -314,7 +306,7 @@ function ToolUseMessage(props: {
     >
       <Show when={props.hasDiff}>
         <DiffView
-          hunks={(props.context?.childStructuredPatch?.length ? props.context.childStructuredPatch : null) ?? rawDiffToHunks(props.oldStr, props.newStr)}
+          hunks={rawDiffToHunks(props.oldStr, props.newStr)}
           view={diffView()}
           filePath={props.filePath}
           originalFile={props.originalFile}
@@ -324,91 +316,22 @@ function ToolUseMessage(props: {
   )
 }
 
-/** Derive a summary element for a generic tool_use (Bash command, Grep/Glob result counts). */
+/** Derive a summary element for a generic tool_use (Bash command, search paths). */
 function deriveToolSummary(toolName: string, input: Record<string, unknown>, context?: RenderContext): JSX.Element | undefined {
-  const content = context?.childResultContent
-
   switch (toolName) {
     case 'Bash': {
       const cmd = (input as BashInput).command
       if (!cmd)
         return undefined
-      const expanded = context?.threadExpanded ?? false
-      const cls = expanded ? toolInputSummaryExpanded : toolInputSummary
-      if (expanded)
-        return <div class={cls}>{cmd}</div>
       const firstLine = cmd.split('\n')[0]
       const truncated = firstLine.length > 120 ? `${firstLine.slice(0, 120)}\u2026` : firstLine
-      return <div class={cls}>{truncated}</div>
+      return <div class={toolInputSummary}>{truncated}</div>
     }
     case 'Grep': {
       const path = (input as GrepInput).path
-      const pathLine = path
-        ? relativizePath(path, context?.workingDir, context?.homeDir)
-        : null
-      const summaryText = formatGrepSummary(
-        context?.childGrepNumFiles,
-        context?.childGrepNumLines,
-        content ? firstNonEmptyLine(content) : null,
-      )
-      if (!pathLine && !summaryText)
+      if (!path)
         return undefined
-      return (
-        <>
-          {pathLine && <div class={toolInputSummary}>{pathLine}</div>}
-          {summaryText && <div class={toolInputSummary}>{summaryText}</div>}
-        </>
-      )
-    }
-    case 'Glob': {
-      const summaryText = formatGlobSummary(
-        context?.childGlobNumFiles,
-        context?.childGlobDurationMs,
-        context?.childGlobTruncated,
-        content ? firstNonEmptyLine(content) : null,
-      )
-      if (!summaryText)
-        return undefined
-      return <div class={toolInputSummary}>{summaryText}</div>
-    }
-    case 'TaskOutput': {
-      const task = context?.childTask
-      const parts: string[] = []
-      if (task?.exitCode != null)
-        parts.push(`Exit code ${task.exitCode}`)
-      else if (task?.status)
-        parts.push(formatTaskStatus(task.status))
-      if (task?.task_id)
-        parts.push(`Task ID ${task.task_id}`)
-      return parts.length > 0
-        ? <div class={toolInputSummary}>{parts.join(' \u00B7 ')}</div>
-        : undefined
-    }
-    case 'ToolSearch': {
-      const matches = context?.childToolSearchMatches
-      if (!matches || matches.length === 0)
-        return undefined
-      return <div class={toolInputSummary}>{`Found ${matches.length} tool${matches.length === 1 ? '' : 's'}`}</div>
-    }
-    case 'Agent':
-    case 'Task': {
-      const status = context?.childToolResultStatus
-      const hasChildren = (context?.threadChildCount ?? 0) > 0
-      const displayStatus = status
-        ? formatTaskStatus(status)
-        : (hasChildren ? 'Running' : null)
-      const parts: string[] = []
-      if (displayStatus)
-        parts.push(displayStatus)
-      if (context?.childTotalDurationMs !== undefined)
-        parts.push(formatDuration(context.childTotalDurationMs))
-      if (context?.childTotalToolUseCount !== undefined)
-        parts.push(`${context.childTotalToolUseCount} tool use${context.childTotalToolUseCount === 1 ? '' : 's'}`)
-      if (context?.childTotalTokens !== undefined)
-        parts.push(`${formatCompactNumber(context.childTotalTokens)} tokens`)
-      return parts.length > 0
-        ? <div class={toolInputSummary}>{parts.join(' \u00B7 ')}</div>
-        : undefined
+      return <div class={toolInputSummary}>{relativizePath(path, context?.workingDir, context?.homeDir)}</div>
     }
     default:
       return undefined
@@ -469,12 +392,31 @@ export const toolUseRenderer: MessageContentRenderer = {
         oldStr={oldStr}
         newStr={newStr}
         filePath={filePath}
-        originalFile={context?.childOriginalFile}
+        originalFile={undefined}
         alwaysVisible={isEdit || isWrite}
         context={context}
       />
     )
   },
+}
+
+/** Extract tool name and input from a tool_use AgentChatMessage. */
+function extractToolUseInfo(msg: AgentChatMessage): { toolName: string, input: Record<string, unknown> } | null {
+  const parsed = parseMessageContent(msg)
+  const obj = parsed.parentObject
+  if (!obj)
+    return null
+  const content = getAssistantContent(obj)
+  if (!content)
+    return null
+  const toolUse = content.find(c => isObject(c) && c.type === 'tool_use')
+  if (!toolUse)
+    return null
+  const toolData = toolUse as Record<string, unknown>
+  return {
+    toolName: String(toolData.name || ''),
+    input: isObject(toolData.input) ? toolData.input as Record<string, unknown> : {},
+  }
 }
 
 /** Set of tool names whose results should be rendered as preformatted text. */
@@ -622,7 +564,7 @@ function ToolResultMessage(props: {
           when={hasDiff()}
           fallback={
             props.isPreText
-              ? ((props.toolName === 'Bash' || props.toolName === 'TaskOutput') && containsAnsi(props.resultContent))
+              ? ((props.toolName === 'Bash' || props.toolName === 'TaskOutput' || props.toolName === '') && containsAnsi(props.resultContent))
                   /* eslint-disable-next-line solid/no-innerhtml -- HTML from renderAnsi, not user input */
                   ? <div class={toolResultContentAnsi} innerHTML={renderAnsi(props.resultContent)} />
                   : renderReadOrPre(props.toolName, props.resultContent, props.context)
@@ -683,16 +625,20 @@ export const toolResultRenderer: MessageContentRenderer = {
           .join('')
       : String(resultData.content || '')
 
-    // Extract tool name from tool_use_result, or fall back to parent context
+    // Extract tool name from tool_use_result, or from the linked tool_use message.
     const toolUseResult = parsed.tool_use_result as Record<string, unknown> | undefined
-    const toolName = String(toolUseResult?.tool_name || context?.parentToolName || 'Result')
+    const toolUseInfo = context?.toolUseMessage ? extractToolUseInfo(context.toolUseMessage) : null
+    const toolName = String(toolUseResult?.tool_name || toolUseInfo?.toolName || context?.parentToolName || '')
+    const toolInput = toolUseInfo?.input
 
-    // Determine whether this tool's output should be preformatted text
-    const isPreText = PRE_TEXT_TOOLS.has(toolName)
+    // Determine whether this tool's output should be preformatted text.
+    // When tool name is unknown (standalone tool_result without parent context),
+    // default to preformatted rendering since most tool outputs are plain text.
+    const isPreText = toolName === '' || PRE_TEXT_TOOLS.has(toolName)
 
     // For WebFetch, extract the prompt from parent tool input
-    const webFetchPrompt = toolName === 'WebFetch' && context?.parentToolInput
-      ? String(context.parentToolInput.prompt || '')
+    const webFetchPrompt = toolName === 'WebFetch' && (context?.parentToolInput || toolInput)
+      ? String((context?.parentToolInput?.prompt || toolInput?.prompt) || '')
       : ''
 
     // Extract structuredPatch from tool_use_result for Edit/Write diffs.
@@ -711,13 +657,16 @@ export const toolResultRenderer: MessageContentRenderer = {
     // parent already shows the diff, and TodoWrite boilerplate messages.
     const hideContent = parentShowsDiff || toolName === 'TodoWrite'
 
+    // Build the inner result element.
+    let innerResult: JSX.Element
+
     // Grep: render structured result view when tool_use_result has data.
     if (toolName === 'Grep' && toolUseResult) {
       const numFiles = typeof toolUseResult.numFiles === 'number' ? toolUseResult.numFiles : 0
       const numLines = typeof toolUseResult.numLines === 'number' ? toolUseResult.numLines : 0
       const filenames = Array.isArray(toolUseResult.filenames) ? toolUseResult.filenames as string[] : []
       const grepContent = typeof toolUseResult.content === 'string' ? toolUseResult.content : ''
-      return (
+      innerResult = (
         <GrepResultView
           numFiles={numFiles}
           numLines={numLines}
@@ -728,17 +677,15 @@ export const toolResultRenderer: MessageContentRenderer = {
         />
       )
     }
-
     // ToolSearch: render matched tool names from tool_use_result.
-    if (toolName === 'ToolSearch' && toolUseResult) {
+    else if (toolName === 'ToolSearch' && toolUseResult) {
       const matches = Array.isArray(toolUseResult.matches) ? toolUseResult.matches as string[] : []
-      return <ToolSearchResultView matches={matches} />
+      innerResult = <ToolSearchResultView matches={matches} />
     }
-
     // Glob: render structured result view when tool_use_result has filenames.
-    if (toolName === 'Glob' && toolUseResult) {
+    else if (toolName === 'Glob' && toolUseResult) {
       const filenames = Array.isArray(toolUseResult.filenames) ? toolUseResult.filenames as string[] : []
-      return (
+      innerResult = (
         <GlobResultView
           filenames={filenames}
           fallbackContent={resultContent}
@@ -746,19 +693,42 @@ export const toolResultRenderer: MessageContentRenderer = {
         />
       )
     }
+    else {
+      innerResult = (
+        <ToolResultMessage
+          toolName={toolName}
+          resultContent={hideContent ? '' : resultContent}
+          isPreText={isPreText}
+          webFetchPrompt={webFetchPrompt}
+          structuredPatch={structuredPatch}
+          oldStr={oldStr}
+          newStr={newStr}
+          filePath={filePath}
+          context={context}
+        />
+      )
+    }
 
-    return (
-      <ToolResultMessage
-        toolName={toolName}
-        resultContent={hideContent ? '' : resultContent}
-        isPreText={isPreText}
-        webFetchPrompt={webFetchPrompt}
-        structuredPatch={structuredPatch}
-        oldStr={oldStr}
-        newStr={newStr}
-        filePath={filePath}
-        context={context}
-      />
-    )
+    // Wrap in ToolUseLayout when we have tool info from the linked tool_use message.
+    if (toolName && context?.toolUseMessage) {
+      const detail = renderToolDetail(toolName, toolInput ?? {}, context)
+      const summary = deriveToolSummary(toolName, toolInput ?? {}, context)
+      const title = detail ?? toolName
+
+      return (
+        <ToolUseLayout
+          icon={toolIconFor(toolName)}
+          toolName={toolName}
+          title={title}
+          summary={summary}
+          alwaysVisible={true}
+          context={context}
+        >
+          {innerResult}
+        </ToolUseLayout>
+      )
+    }
+
+    return innerResult
   },
 }

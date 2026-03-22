@@ -4,7 +4,7 @@ import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import ArrowDown from 'lucide-solid/icons/arrow-down'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
-import { createEffect, createSignal, For, on, onCleanup, onMount, Show, untrack } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
 import { formatChatQuote } from '~/lib/quoteUtils'
@@ -14,6 +14,7 @@ import * as styles from './ChatView.css'
 import { markdownContent } from './markdownContent.css'
 import { MessageBubble } from './MessageBubble'
 import { assistantMessage } from './messageStyles.css'
+import { SpanLines } from './SpanLines'
 import { ThinkingIndicator } from './ThinkingIndicator'
 import { ToolUseLayout } from './toolRenderers'
 
@@ -53,6 +54,8 @@ interface ChatViewProps {
   onReply?: (quotedText: string) => void
   /** When "plan", streaming text is rendered with plan styling. */
   streamingType?: string
+  /** Look up a message by its spanId (for tool_use ↔ tool_result linking). */
+  getMessageBySpanId?: (spanId: string) => AgentChatMessage | undefined
 }
 
 export const ChatView: Component<ChatViewProps> = (props) => {
@@ -312,8 +315,19 @@ export const ChatView: Component<ChatViewProps> = (props) => {
             >
               <div ref={contentRef} class={styles.messageListContent}>
                 <For each={props.messages}>
-                  {msg => (
-                    <div data-seq={msg.seq.toString()}>
+                  {(msg) => {
+                    const spanLines = createMemo(() => {
+                      if (!msg.spanLines || msg.spanLines === '[]')
+                        return []
+                      try {
+                        return JSON.parse(msg.spanLines)
+                      }
+                      catch {
+                        return []
+                      }
+                    })
+
+                    const bubble = (
                       <MessageBubble
                         message={msg}
                         error={props.messageErrors?.[msg.id]}
@@ -322,9 +336,24 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                         workingDir={props.workingDir}
                         homeDir={props.homeDir}
                         onReply={props.onReply}
+                        getMessageBySpanId={props.getMessageBySpanId}
                       />
-                    </div>
-                  )}
+                    )
+
+                    return (
+                      <Show
+                        when={spanLines().length > 0}
+                        fallback={<div data-seq={msg.seq.toString()}>{bubble}</div>}
+                      >
+                        <div data-seq={msg.seq.toString()} class={styles.messageRow}>
+                          <SpanLines lines={spanLines()} spanOpener={!!msg.spanId} />
+                          <div class={styles.messageRowContent}>
+                            {bubble}
+                          </div>
+                        </div>
+                      </Show>
+                    )
+                  }}
                 </For>
                 <Show when={props.streamingText}>
                   <Show

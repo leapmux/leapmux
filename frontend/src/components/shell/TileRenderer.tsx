@@ -255,6 +255,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                       if (agentTab()?.id === at.id)
                         forceScrollToBottomRef.current = fn
                     }}
+                    getMessageBySpanId={spanId => chatStore.getMessageBySpanId(agentId, spanId)}
                     onQuote={isActiveWorkspaceArchived()
                       ? undefined
                       : (text) => {

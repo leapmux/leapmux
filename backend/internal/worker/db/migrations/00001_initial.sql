@@ -34,11 +34,14 @@ CREATE TABLE messages (
     role                INTEGER NOT NULL,
     content             BLOB NOT NULL,
     content_compression INTEGER NOT NULL,
+    depth               INTEGER NOT NULL DEFAULT 0,
+    span_id             TEXT NOT NULL DEFAULT '',
+    parent_span_id      TEXT NOT NULL DEFAULT '',
+    span_lines          TEXT NOT NULL DEFAULT '[]',
+    span_color          INTEGER NOT NULL DEFAULT -1,
     delivery_error      TEXT NOT NULL DEFAULT '',
-    thread_id           TEXT NOT NULL DEFAULT '',
     agent_provider      INTEGER NOT NULL DEFAULT 1,
     created_at          DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    updated_at          DATETIME,
     UNIQUE(agent_id, seq)
 );
 CREATE INDEX idx_messages_agent_id_seq ON messages(agent_id, seq);

@@ -68,7 +68,7 @@ func handleCodexOutput(a *CodexAgent, content []byte) {
 
 	default:
 		// Persist unknown notifications so the frontend can decide how to render them.
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, content, ""); err != nil {
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, content, "", "", -1); err != nil {
 			slog.Error("codex persist notification", "agent_id", a.agentID, "method", envelope.Method, "error", err)
 		}
 	}
@@ -139,19 +139,32 @@ func (a *CodexAgent) handlePlanDelta(params json.RawMessage) {
 
 // handleItemStarted processes item/started notifications.
 func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
-	item, itemType, itemID := extractCodexItem(params)
+	item, itemType, itemID, threadID := extractCodexItem(params)
 	if item == nil {
 		return
 	}
+
+	parentSpanID := a.codexParentSpanID(threadID)
 
 	switch itemType {
 	case "agentMessage":
 		// No-op for started — wait for completed to persist.
 	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall":
-		// Persist with itemID as threadID so the completed item can merge.
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, itemID); err != nil {
+		// Pre-peek the span color before persisting so it is recorded with the message.
+		spanColor := a.sink.PeekNextSpanColor()
+		// Persist first at parent depth, then open span so the
+		// completed message is indented under the started message.
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, parentSpanID, itemID, spanColor); err != nil {
 			slog.Error("codex persist item/started", "agent_id", a.agentID, "type", itemType, "error", err)
 		}
+		a.sink.OpenSpan(itemID, parentSpanID)
+	case "collabAgentToolCall":
+		// Persist first at parent depth, then open spans for
+		// SpawnAgent so subagent messages are indented.
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, parentSpanID, itemID, -1); err != nil {
+			slog.Error("codex persist collabAgentToolCall/started", "agent_id", a.agentID, "error", err)
+		}
+		a.handleCollabAgentSpan(item, parentSpanID, false)
 	case "reasoning":
 		// No-op for started — wait for completed.
 	}
@@ -159,13 +172,15 @@ func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
 
 // handleItemCompleted processes item/completed notifications.
 func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
-	item, itemType, itemID := extractCodexItem(params)
+	item, itemType, itemID, threadID := extractCodexItem(params)
 	if item == nil {
 		return
 	}
 
 	// Non-notification messages soft-clear the notification thread.
 	a.sink.SoftClearNotifThread()
+
+	parentSpanID := a.codexParentSpanID(threadID)
 
 	switch itemType {
 	case "agentMessage":
@@ -177,7 +192,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 			a.turnAssistantText = messageItem.Text
 			a.mu.Unlock()
 		}
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, ""); err != nil {
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, parentSpanID, itemID, -1); err != nil {
 			slog.Error("codex persist agentMessage", "agent_id", a.agentID, "error", err)
 		}
 	case "plan":
@@ -197,27 +212,31 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 				})
 			}
 		}
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, ""); err != nil {
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, parentSpanID, itemID, -1); err != nil {
 			slog.Error("codex persist plan", "agent_id", a.agentID, "error", err)
 		}
 	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall":
 		a.mu.Lock()
 		a.turnToolUses++
 		a.mu.Unlock()
-		// Try to merge into the started item.
-		if itemID != "" && a.sink.MergeIntoThread(itemID, params) {
-			return
-		}
-		// Fallback: persist standalone.
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, itemID); err != nil {
+		// Persist inside the span (at child depth), then close it.
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, parentSpanID, itemID, -1); err != nil {
 			slog.Error("codex persist item/completed", "agent_id", a.agentID, "type", itemType, "error", err)
 		}
+		a.sink.CloseSpan(itemID)
+	case "collabAgentToolCall":
+		// Close receiver thread spans first so the completed message
+		// is persisted at parent depth (outside the subagent scope).
+		a.handleCollabAgentSpan(item, parentSpanID, true)
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, parentSpanID, itemID, -1); err != nil {
+			slog.Error("codex persist collabAgentToolCall/completed", "agent_id", a.agentID, "error", err)
+		}
 	case "reasoning":
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, ""); err != nil {
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, parentSpanID, itemID, -1); err != nil {
 			slog.Error("codex persist reasoning", "agent_id", a.agentID, "error", err)
 		}
 	default:
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, ""); err != nil {
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, parentSpanID, itemID, -1); err != nil {
 			slog.Error("codex persist unknown item", "agent_id", a.agentID, "type", itemType, "error", err)
 		}
 	}
@@ -259,7 +278,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	}
 
 	// Persist as a result divider.
-	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT, params, ""); err != nil {
+	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT, params, "", "", -1); err != nil {
 		slog.Error("codex persist turn/completed", "agent_id", a.agentID, "error", err)
 	}
 
@@ -455,14 +474,61 @@ func codexWindowToType(mins int) string {
 	}
 }
 
-// extractCodexItem extracts the item type and ID from item/started or item/completed params.
-// Two unmarshals are needed: one to extract the raw item JSON, another to read type/ID from it.
-func extractCodexItem(params json.RawMessage) (json.RawMessage, string, string) {
+// handleCollabAgentSpan opens or closes spans for CollabAgentToolCall items.
+// For SpawnAgent tool calls, each receiverThreadId becomes a new span.
+func (a *CodexAgent) handleCollabAgentSpan(item json.RawMessage, parentSpanID string, isCompleted bool) {
+	var collab struct {
+		Tool              string   `json:"tool"`
+		Status            string   `json:"status"`
+		ReceiverThreadIds []string `json:"receiverThreadIds"`
+	}
+	if json.Unmarshal(item, &collab) != nil {
+		return
+	}
+
+	if collab.Tool != "spawnAgent" {
+		return
+	}
+
+	if isCompleted {
+		// Close spans when the spawn is completed or failed.
+		for _, receiverID := range collab.ReceiverThreadIds {
+			a.sink.CloseSpan(receiverID)
+		}
+	} else {
+		// Open spans for each spawned agent thread.
+		for _, receiverID := range collab.ReceiverThreadIds {
+			a.sink.OpenSpan(receiverID, parentSpanID)
+		}
+	}
+}
+
+// codexParentSpanID determines the parent span ID from a pre-extracted threadId.
+// If the threadId matches the main thread (or is empty), returns ""
+// (main agent scope). Otherwise returns the threadId as the parent span ID.
+func (a *CodexAgent) codexParentSpanID(threadID string) string {
+	if threadID == "" {
+		return ""
+	}
+	a.mu.Lock()
+	mainThreadID := a.threadID
+	a.mu.Unlock()
+	if threadID == mainThreadID {
+		return ""
+	}
+	return threadID
+}
+
+// extractCodexItem extracts the item type, ID, and threadId from item/started
+// or item/completed params. The threadId is returned alongside the item to
+// avoid a redundant unmarshal in codexParentSpanID.
+func extractCodexItem(params json.RawMessage) (item json.RawMessage, itemType, itemID, threadID string) {
 	var wrapper struct {
-		Item json.RawMessage `json:"item"`
+		Item     json.RawMessage `json:"item"`
+		ThreadID string          `json:"threadId"`
 	}
 	if json.Unmarshal(params, &wrapper) != nil || len(wrapper.Item) == 0 {
-		return nil, "", ""
+		return nil, "", "", ""
 	}
 
 	var header struct {
@@ -470,8 +536,8 @@ func extractCodexItem(params json.RawMessage) (json.RawMessage, string, string) 
 		ID   string `json:"id"`
 	}
 	if json.Unmarshal(wrapper.Item, &header) != nil {
-		return nil, "", ""
+		return nil, "", "", ""
 	}
 
-	return wrapper.Item, header.Type, header.ID
+	return wrapper.Item, header.Type, header.ID, wrapper.ThreadID
 }

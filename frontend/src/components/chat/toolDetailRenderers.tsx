@@ -4,7 +4,6 @@ import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, TaskStopInp
 import { diffLines } from 'diff'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { relativizePath } from './messageUtils'
-import { formatTaskStatus } from './rendererUtils'
 import {
   toolInputCode,
   toolInputPath,
@@ -112,13 +111,7 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
       return query ? <span class={toolInputText}>{query}</span> : null
     }
     case 'TaskOutput': {
-      const task = context?.childTask
-      const description = task?.description
-      if (description && task?.status === 'completed')
-        return <span class={toolInputText}>{description}</span>
-      const status = formatTaskStatus(task?.status)
-      const title = `${status}${description ? ` - ${description}` : ''}`
-      return <span class={toolInputText}>{title}</span>
+      return <span class={toolInputText}>Waiting for output</span>
     }
     case 'ToolSearch': {
       const { query } = input as ToolSearchInput

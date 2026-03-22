@@ -16,9 +16,7 @@ export interface ParsedMessageContent {
   topLevel: Record<string, unknown> | null
   /** The first (parent) inner message object, or undefined. */
   parentObject: Record<string, unknown> | undefined
-  /** Thread children (messages after the first), empty array if none. */
-  children: unknown[]
-  /** The wrapper envelope if wrapped, null otherwise. */
+  /** The notification wrapper envelope if this is a LEAPMUX notification, null otherwise. */
   wrapper: { old_seqs: number[], messages: unknown[] } | null
 }
 
@@ -26,13 +24,16 @@ const EMPTY_PARSED: ParsedMessageContent = {
   rawText: '',
   topLevel: null,
   parentObject: undefined,
-  children: [],
   wrapper: null,
 }
 
 /**
  * Decompress and parse an AgentChatMessage's content in a single pass.
  * Never throws -- returns safe defaults on any failure.
+ *
+ * LEAPMUX notification messages use a wrapper format:
+ *   {"old_seqs": [...], "messages": [{...}, ...]}
+ * All other messages are stored as raw JSON (no wrapper).
  */
 export function parseMessageContent(message: AgentChatMessage): ParsedMessageContent {
   const text = decompressContentToString(message.content, message.contentCompression)
@@ -41,12 +42,11 @@ export function parseMessageContent(message: AgentChatMessage): ParsedMessageCon
 
   try {
     const obj = JSON.parse(text)
-    if (obj?.messages && Array.isArray(obj.messages)) {
-      // Wrapped format: {"old_seqs": [...], "messages": [{...}, ...]}
-      // An empty messages array can occur when notification consolidation
-      // cancels out all changes (e.g. plan mode toggled back).
+
+    // LEAPMUX notifications use the wrapper format for consolidation.
+    if (message.role === MessageRole.LEAPMUX && obj?.messages && Array.isArray(obj.messages)) {
       if (obj.messages.length === 0)
-        return { rawText: text, topLevel: obj, parentObject: undefined, children: [], wrapper: obj }
+        return { rawText: text, topLevel: obj, parentObject: undefined, wrapper: obj }
 
       const first = obj.messages[0]
       const parent = (typeof first === 'object' && first !== null && !Array.isArray(first))
@@ -56,18 +56,18 @@ export function parseMessageContent(message: AgentChatMessage): ParsedMessageCon
         rawText: text,
         topLevel: obj,
         parentObject: parent,
-        children: obj.messages.length > 1 ? obj.messages.slice(1) : [],
         wrapper: obj,
       }
     }
-    // Not wrapped — treat the parsed object as the parent directly.
+
+    // Regular messages: stored as raw JSON, no wrapper.
     const parent = (typeof obj === 'object' && obj !== null && !Array.isArray(obj))
       ? obj as Record<string, unknown>
       : undefined
-    return { rawText: text, topLevel: obj, parentObject: parent, children: [], wrapper: null }
+    return { rawText: text, topLevel: obj, parentObject: parent, wrapper: null }
   }
   catch {
-    return { rawText: text, topLevel: null, parentObject: undefined, children: [], wrapper: null }
+    return { rawText: text, topLevel: null, parentObject: undefined, wrapper: null }
   }
 }
 

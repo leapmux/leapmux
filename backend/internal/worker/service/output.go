@@ -4,7 +4,6 @@
 package service
 
 import (
-	"database/sql"
 	"encoding/json"
 	"log/slog"
 	"slices"
@@ -25,41 +24,181 @@ import (
 // remains eligible for merging.
 const notifThreadGracePeriod = time.Second
 
-// threadWrapper is the content envelope stored in the DB for every message.
-// It tracks the original seq values of the message before thread merges
-// and holds the raw Claude Code JSON for each message in the thread.
-type threadWrapper struct {
-	OldSeqs  []int64           `json:"old_seqs"`
-	Messages []json.RawMessage `json:"messages"`
+// --- Span Tracker ---
+
+// ActiveSpan tracks a single open subagent span.
+type ActiveSpan struct {
+	SpanID     string
+	Depth      int
+	ColorIndex int
+	Column     int
 }
 
-// wrapContent wraps a single raw message JSON into a threadWrapper envelope.
-func wrapContent(rawJSON []byte) []byte {
-	w := threadWrapper{
-		OldSeqs:  []int64{},
-		Messages: []json.RawMessage{rawJSON},
+// SpanLineType describes how the frontend should render a span line column.
+type SpanLineType string
+
+const (
+	SpanLineActive            SpanLineType = "active"             // Vertical line only.
+	SpanLineConnector         SpanLineType = "connector"          // Vertical + horizontal branch to the message.
+	SpanLinePassthrough       SpanLineType = "passthrough"        // Horizontal line only (empty slot after connector).
+	SpanLineActivePassthrough SpanLineType = "active_passthrough" // Vertical + horizontal passthrough.
+)
+
+// SpanLine represents a single span line entry in the JSON array.
+type SpanLine struct {
+	SpanID           string       `json:"span_id"`
+	Color            int          `json:"color"`
+	Type             SpanLineType `json:"type"`
+	PassthroughColor int          `json:"passthrough_color,omitempty"`
+}
+
+// SpanTracker manages hierarchical span state for an agent's message threading.
+type SpanTracker struct {
+	mu        sync.Mutex
+	spans     []ActiveSpan
+	nextColor int
+}
+
+// OpenSpan registers a new subagent span.
+func (t *SpanTracker) OpenSpan(spanID, parentSpanID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	depth := 1
+	for _, s := range t.spans {
+		if s.SpanID == parentSpanID {
+			depth = s.Depth + 1
+			break
+		}
 	}
-	data, _ := json.Marshal(w)
-	return data
-}
 
-// unwrapContent parses a threadWrapper from content bytes.
-func unwrapContent(data []byte) (*threadWrapper, error) {
-	var w threadWrapper
-	if err := json.Unmarshal(data, &w); err != nil {
-		return nil, err
+	// Find first free column (null slot).
+	column := -1
+	used := make(map[int]bool, len(t.spans))
+	for _, s := range t.spans {
+		used[s.Column] = true
 	}
-	return &w, nil
+	for i := 0; ; i++ {
+		if !used[i] {
+			column = i
+			break
+		}
+	}
+
+	t.spans = append(t.spans, ActiveSpan{
+		SpanID:     spanID,
+		Depth:      depth,
+		ColorIndex: t.nextColor,
+		Column:     column,
+	})
+	t.nextColor++
 }
 
-// appendToThread appends a child message to an existing thread wrapper,
-// recording the parent's current seq in old_seqs before the seq bump.
-func appendToThread(wrapper *threadWrapper, parentSeq int64, childRawJSON []byte) []byte {
-	wrapper.OldSeqs = append(wrapper.OldSeqs, parentSeq)
-	wrapper.Messages = append(wrapper.Messages, childRawJSON)
-	data, _ := json.Marshal(wrapper)
-	return data
+// CloseSpan removes a span, freeing its column.
+func (t *SpanTracker) CloseSpan(spanID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.spans = slices.DeleteFunc(t.spans, func(s ActiveSpan) bool {
+		return s.SpanID == spanID
+	})
 }
+
+// PeekNextColor returns the color index that will be assigned to the next
+// span opened via OpenSpan. Safe to call only when output processing is
+// sequential per agent (which it is for both Claude and Codex handlers).
+func (t *SpanTracker) PeekNextColor() int32 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return int32(t.nextColor)
+}
+
+// ColorFor returns the color index of an active span, or -1 if not found.
+func (t *SpanTracker) ColorFor(spanID string) int32 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, s := range t.spans {
+		if s.SpanID == spanID {
+			return int32(s.ColorIndex)
+		}
+	}
+	return -1
+}
+
+// Snapshot returns the depth and span lines for a given parentSpanID in a single
+// atomic operation. connectorSpanID identifies the span this message connects to
+// (used to compute passthrough hints for columns to the right of the connector).
+// This avoids the TOCTOU risk of calling DepthFor and SpanLines separately,
+// and reduces mutex acquisitions.
+func (t *SpanTracker) Snapshot(parentSpanID, connectorSpanID string) (depth int32, spanLines string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Depth lookup.
+	if parentSpanID != "" {
+		for _, s := range t.spans {
+			if s.SpanID == parentSpanID {
+				depth = int32(s.Depth)
+				break
+			}
+		}
+	}
+
+	// Span lines serialization.
+	if len(t.spans) == 0 {
+		return depth, "[]"
+	}
+
+	maxCol := 0
+	for _, s := range t.spans {
+		if s.Column > maxCol {
+			maxCol = s.Column
+		}
+	}
+
+	lines := make([]*SpanLine, maxCol+1)
+	for _, s := range t.spans {
+		lines[s.Column] = &SpanLine{
+			SpanID: s.SpanID,
+			Color:  s.ColorIndex,
+			Type:   SpanLineActive,
+		}
+	}
+
+	// Find the connector column and apply rendering hints.
+	connectorCol := -1
+	connectorColor := 0
+	if connectorSpanID != "" {
+		for col, l := range lines {
+			if l != nil && l.SpanID == connectorSpanID {
+				connectorCol = col
+				connectorColor = l.Color
+				l.Type = SpanLineConnector
+				break
+			}
+		}
+	}
+
+	// Mark columns to the right of the connector as passthrough.
+	if connectorCol >= 0 {
+		for col := connectorCol + 1; col < len(lines); col++ {
+			if lines[col] == nil {
+				lines[col] = &SpanLine{
+					Type:             SpanLinePassthrough,
+					PassthroughColor: connectorColor,
+				}
+			} else {
+				lines[col].Type = SpanLineActivePassthrough
+				lines[col].PassthroughColor = connectorColor
+			}
+		}
+	}
+
+	data, _ := json.Marshal(lines)
+	return depth, string(data)
+}
+
+// --- Notification threading ---
 
 // notifThreadRef tracks the current notification thread for an agent.
 type notifThreadRef struct {
@@ -67,6 +206,34 @@ type notifThreadRef struct {
 	seq       int64
 	softClear time.Time // Zero = not soft-cleared
 }
+
+// notifThreadWrapper is the content envelope stored in the DB for notification
+// thread messages. It consolidates multiple notifications into a single DB row.
+type notifThreadWrapper struct {
+	OldSeqs  []int64           `json:"old_seqs"`
+	Messages []json.RawMessage `json:"messages"`
+}
+
+// wrapNotifContent wraps a single raw notification JSON into a notifThreadWrapper.
+func wrapNotifContent(rawJSON []byte) []byte {
+	w := notifThreadWrapper{
+		OldSeqs:  []int64{},
+		Messages: []json.RawMessage{rawJSON},
+	}
+	data, _ := json.Marshal(w)
+	return data
+}
+
+// unwrapNotifContent parses a notifThreadWrapper from content bytes.
+func unwrapNotifContent(data []byte) (*notifThreadWrapper, error) {
+	var w notifThreadWrapper
+	if err := json.Unmarshal(data, &w); err != nil {
+		return nil, err
+	}
+	return &w, nil
+}
+
+// --- OutputHandler ---
 
 // OutputHandler manages agent output persistence and broadcasting.
 // It holds shared state accessed by per-agent OutputSink instances.
@@ -79,6 +246,9 @@ type OutputHandler struct {
 	notifMu         sync.Map // agentID -> *sync.Mutex
 	lastNotifThread sync.Map // agentID -> *notifThreadRef
 
+	// Per-agent span tracking (concurrent access).
+	spanTrackers sync.Map // agentID -> *SpanTracker
+
 	// Plan mode tool_use tracking (shared across agents).
 	planModeToolUse sync.Map // tool_use_id -> target mode string ("plan" or "default")
 }
@@ -90,6 +260,12 @@ func NewOutputHandler(queries *db.Queries, watcher *WatcherManager, agents *agen
 		watcher: watcher,
 		agents:  agents,
 	}
+}
+
+// spanTracker returns the per-agent SpanTracker, creating one if needed.
+func (h *OutputHandler) spanTracker(agentID string) *SpanTracker {
+	v, _ := h.spanTrackers.LoadOrStore(agentID, &SpanTracker{})
+	return v.(*SpanTracker)
 }
 
 // NewSink creates a per-agent OutputSink backed by this OutputHandler.
@@ -110,16 +286,24 @@ type agentOutputSink struct {
 
 // --- OutputSink interface implementation ---
 
-func (s *agentOutputSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, threadID string) error {
-	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, role, content, threadID)
-}
-
-func (s *agentOutputSink) MergeIntoThread(threadID string, content []byte) bool {
-	return s.h.mergeIntoThread(s.agentID, s.agentProvider, threadID, content)
+func (s *agentOutputSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, parentSpanID string, spanID string, spanColor int32) error {
+	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, role, content, parentSpanID, spanID, spanColor)
 }
 
 func (s *agentOutputSink) PersistNotification(role leapmuxv1.MessageRole, content []byte) error {
 	return s.h.persistNotificationThreaded(s.agentID, s.agentProvider, role, content)
+}
+
+func (s *agentOutputSink) OpenSpan(spanID, parentSpanID string) {
+	s.h.spanTracker(s.agentID).OpenSpan(spanID, parentSpanID)
+}
+
+func (s *agentOutputSink) CloseSpan(spanID string) {
+	s.h.spanTracker(s.agentID).CloseSpan(spanID)
+}
+
+func (s *agentOutputSink) PeekNextSpanColor() int32 {
+	return s.h.spanTracker(s.agentID).PeekNextColor()
 }
 
 func (s *agentOutputSink) BroadcastStreamChunk(content []byte) {
@@ -321,10 +505,26 @@ func (h *OutputHandler) softClearNotifThread(agentID string) {
 }
 
 // persistAndBroadcast persists a message and broadcasts it to watchers.
-func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, role leapmuxv1.MessageRole, contentJSON []byte, threadID string) error {
+func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, role leapmuxv1.MessageRole, contentJSON []byte, parentSpanID string, spanID string, spanColor int32) error {
+	tracker := h.spanTracker(agentID)
+	// The connector span is the span this message visually connects to.
+	// Use spanID when the span is already open (e.g. tool_result); for
+	// span openers the span isn't open yet so Snapshot won't find it and
+	// falls back to no connector. Otherwise use parentSpanID.
+	connectorSpanID := spanID
+	if connectorSpanID == "" {
+		connectorSpanID = parentSpanID
+	}
+	depth, spanLines := tracker.Snapshot(parentSpanID, connectorSpanID)
+
+	// Resolve span color: if the span is already active (e.g. tool_result
+	// inside an open span), look up its color from the tracker.
+	if spanID != "" && spanColor < 0 {
+		spanColor = tracker.ColorFor(spanID)
+	}
+
 	msgID := id.Generate()
-	wrapped := wrapContent(contentJSON)
-	compressed, compressionType := msgcodec.Compress(wrapped)
+	compressed, compressionType := msgcodec.Compress(contentJSON)
 	now := time.Now()
 
 	seq, err := h.queries.CreateMessage(bgCtx(), db.CreateMessageParams{
@@ -333,7 +533,11 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		Role:               role,
 		Content:            compressed,
 		ContentCompression: compressionType,
-		ThreadID:           threadID,
+		Depth:              int64(depth),
+		SpanID:             spanID,
+		ParentSpanID:       parentSpanID,
+		SpanLines:          spanLines,
+		SpanColor:          int64(spanColor),
 		AgentProvider:      agentProvider,
 		CreatedAt:          now,
 	})
@@ -349,58 +553,13 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		Seq:                seq,
 		AgentProvider:      agentProvider,
 		CreatedAt:          timefmt.Format(now),
+		Depth:              depth,
+		SpanId:             spanID,
+		ParentSpanId:       parentSpanID,
+		SpanLines:          spanLines,
+		SpanColor:          spanColor,
 	})
 	return nil
-}
-
-// mergeIntoThread appends a child message to an existing thread parent.
-func (h *OutputHandler) mergeIntoThread(agentID string, agentProvider leapmuxv1.AgentProvider, threadID string, childJSON []byte) bool {
-	parentRow, err := h.queries.GetMessageByAgentAndThreadID(bgCtx(), db.GetMessageByAgentAndThreadIDParams{
-		AgentID:  agentID,
-		ThreadID: threadID,
-	})
-	if err != nil {
-		return false
-	}
-
-	parentData, err := msgcodec.Decompress(parentRow.Content, parentRow.ContentCompression)
-	if err != nil {
-		slog.Error("decompress parent for thread merge", "agent_id", agentID, "thread_id", threadID, "error", err)
-		return false
-	}
-	wrapper, err := unwrapContent(parentData)
-	if err != nil {
-		slog.Error("parse parent wrapper for thread merge", "agent_id", agentID, "thread_id", threadID, "error", err)
-		return false
-	}
-
-	merged := appendToThread(wrapper, parentRow.Seq, childJSON)
-
-	now := time.Now()
-	mergedCompressed, mergedCompType := msgcodec.Compress(merged)
-	newSeq, err := h.queries.UpdateMessageThread(bgCtx(), db.UpdateMessageThreadParams{
-		Content:            mergedCompressed,
-		ContentCompression: mergedCompType,
-		UpdatedAt:          sql.NullTime{Time: now, Valid: true},
-		ID:                 parentRow.ID,
-		AgentID:            agentID,
-	})
-	if err != nil {
-		slog.Error("update parent thread", "agent_id", agentID, "thread_id", threadID, "error", err)
-		return false
-	}
-
-	h.broadcastMessage(agentID, &leapmuxv1.AgentChatMessage{
-		Id:                 parentRow.ID,
-		Role:               parentRow.Role,
-		Content:            mergedCompressed,
-		ContentCompression: mergedCompType,
-		Seq:                newSeq,
-		AgentProvider:      agentProvider,
-		CreatedAt:          timefmt.Format(parentRow.CreatedAt),
-		UpdatedAt:          timefmt.Format(now),
-	})
-	return true
 }
 
 // persistNotificationThreaded persists a notification message, appending it
@@ -437,7 +596,7 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 		return err
 	}
 
-	wrapper, err := unwrapContent(parentData)
+	wrapper, err := unwrapNotifContent(parentData)
 	if err != nil {
 		return err
 	}
@@ -451,12 +610,10 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 
 	merged, _ := json.Marshal(wrapper)
 
-	now := time.Now()
 	mergedCompressed, mergedCompType := msgcodec.Compress(merged)
-	newSeq, err := h.queries.UpdateMessageThread(bgCtx(), db.UpdateMessageThreadParams{
+	newSeq, err := h.queries.UpdateNotificationThread(bgCtx(), db.UpdateNotificationThreadParams{
 		Content:            mergedCompressed,
 		ContentCompression: mergedCompType,
-		UpdatedAt:          sql.NullTime{Time: now, Valid: true},
 		ID:                 parentRow.ID,
 		AgentID:            agentID,
 	})
@@ -475,7 +632,6 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 		Seq:                newSeq,
 		AgentProvider:      agentProvider,
 		CreatedAt:          timefmt.Format(parentRow.CreatedAt),
-		UpdatedAt:          timefmt.Format(now),
 	})
 
 	return nil
@@ -484,7 +640,7 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 // createNotificationStandalone creates a new standalone notification message.
 func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvider leapmuxv1.AgentProvider, role leapmuxv1.MessageRole, contentJSON []byte) error {
 	msgID := id.Generate()
-	wrapped := wrapContent(contentJSON)
+	wrapped := wrapNotifContent(contentJSON)
 	compressed, compressionType := msgcodec.Compress(wrapped)
 	now := time.Now()
 
@@ -494,7 +650,11 @@ func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvid
 		Role:               role,
 		Content:            compressed,
 		ContentCompression: compressionType,
-		ThreadID:           "",
+		Depth:              0,
+		SpanID:             "",
+		ParentSpanID:       "",
+		SpanLines:          "[]",
+		SpanColor:          -1,
 		AgentProvider:      agentProvider,
 		CreatedAt:          now,
 	})

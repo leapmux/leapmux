@@ -1,5 +1,5 @@
 -- name: CreateMessage :one
-INSERT INTO messages (id, agent_id, seq, role, content, content_compression, thread_id, agent_provider, created_at)
+INSERT INTO messages (id, agent_id, seq, role, content, content_compression, depth, span_id, parent_span_id, span_lines, span_color, agent_provider, created_at)
 VALUES (
   sqlc.arg(id),
   sqlc.arg(agent_id),
@@ -7,7 +7,11 @@ VALUES (
   sqlc.arg(role),
   sqlc.arg(content),
   sqlc.arg(content_compression),
-  sqlc.arg(thread_id),
+  sqlc.arg(depth),
+  sqlc.arg(span_id),
+  sqlc.arg(parent_span_id),
+  sqlc.arg(span_lines),
+  sqlc.arg(span_color),
   sqlc.arg(agent_provider),
   sqlc.arg(created_at)
 )
@@ -42,15 +46,11 @@ SELECT * FROM messages WHERE id = ? AND agent_id = ?;
 -- name: SetMessageDeliveryError :exec
 UPDATE messages SET delivery_error = ? WHERE id = ? AND agent_id = ?;
 
--- name: GetMessageByAgentAndThreadID :one
-SELECT * FROM messages WHERE agent_id = ? AND thread_id = ? AND role = 2 LIMIT 1;
-
--- name: UpdateMessageThread :one
+-- name: UpdateNotificationThread :one
 UPDATE messages
 SET content = sqlc.arg(content),
     content_compression = sqlc.arg(content_compression),
-    seq = (SELECT COALESCE(MAX(m.seq), 0) + 1 FROM messages m WHERE m.agent_id = sqlc.arg(agent_id)),
-    updated_at = sqlc.arg(updated_at)
+    seq = (SELECT COALESCE(MAX(m.seq), 0) + 1 FROM messages m WHERE m.agent_id = sqlc.arg(agent_id))
 WHERE messages.id = sqlc.arg(id) AND messages.agent_id = sqlc.arg(agent_id)
 RETURNING seq;
 

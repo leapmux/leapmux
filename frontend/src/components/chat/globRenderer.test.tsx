@@ -134,41 +134,9 @@ describe('glob tool_use collapsed summary', () => {
     expect(text).toContain('frontend/src/**/*.test.*')
   })
 
-  it('shows "Found N files" summary', () => {
-    const text = renderToolUseText({
-      childGlobNumFiles: 4,
-    })
-    expect(text).toContain('Found 4 files')
-  })
-
-  it('shows "Found N files · Took Xs" with duration', () => {
-    const text = renderToolUseText({
-      childGlobNumFiles: 4,
-      childGlobDurationMs: 1011,
-    })
-    expect(text).toContain('Found 4 files')
-    expect(text).toContain('Took 1s')
-  })
-
-  it('shows "Result truncated" when truncated', () => {
-    const text = renderToolUseText({
-      childGlobNumFiles: 100,
-      childGlobTruncated: true,
-    })
-    expect(text).toContain('Found 100 files')
-    expect(text).toContain('Result truncated')
-  })
-
-  it('shows "No files found" when numFiles is 0', () => {
-    const text = renderToolUseText({
-      childGlobNumFiles: 0,
-      childResultContent: 'No files found',
-    })
-    expect(text).toContain('No files found')
-  })
-
-  it('shows nothing when no result data yet', () => {
+  it('shows only the pattern with no summary (child data fields removed)', () => {
     const text = renderToolUseText()
+    expect(text).toContain('frontend/src/**/*.test.*')
     expect(text).not.toContain('Found')
     expect(text).not.toContain('No files')
   })

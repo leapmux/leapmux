@@ -91,11 +91,12 @@ func (a *ClaudeCodeAgent) enrichResultWithToolUses(content []byte) []byte {
 }
 
 // processAssistantBlocks parses the message.content[] blocks of an assistant
-// message once and performs plan mode tracking, plan file tracking, and tool
-// use counting — replacing three separate parse passes.
+// message once and performs plan mode tracking, plan file tracking, tool
+// use counting, and scope management — replacing multiple separate parse passes.
 func (a *ClaudeCodeAgent) processAssistantBlocks(content []byte) {
 	var msg struct {
-		Message struct {
+		ParentToolUseID string `json:"parent_tool_use_id"`
+		Message         struct {
 			Content []struct {
 				Type  string `json:"type"`
 				ID    string `json:"id"`
@@ -112,6 +113,9 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(content []byte) {
 	if json.Unmarshal(content, &msg) != nil {
 		return
 	}
+
+	// Determine the parent span for any Agent tool_use blocks.
+	parentSpanID := msg.ParentToolUseID
 
 	toolUseCount := 0
 	planFileProcessed := false
@@ -130,6 +134,10 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(content []byte) {
 			case "ExitPlanMode":
 				a.sink.StorePlanModeToolUse(block.ID, PermissionModeDefault)
 			}
+
+			// Open a span for every tool_use so the tool_result
+			// is visually grouped under its tool_use.
+			a.sink.OpenSpan(block.ID, parentSpanID)
 		}
 
 		// Plan file path tracking (Write/Edit to ~/.claude/plans/).
@@ -200,32 +208,24 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		a.extractAndBroadcastUsage(content, msgType)
 	}
 
-	// Parse assistant message content blocks once for plan mode tracking,
-	// plan file tracking, and tool use counting.
+	// Determine parent span ID for hierarchy tracking.
+	parentSpanID := extractParentToolUseID(content)
+	if parentSpanID == "" {
+		parentSpanID = extractSystemToolUseID(content)
+	}
+
+	// Determine span ID: for tool_use messages use the block ID,
+	// for tool_result messages use the tool_use_id reference.
+	var spanID string
 	if msgType == "assistant" {
-		a.processAssistantBlocks(content)
+		spanID = extractToolUseID(content)
+	} else if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
+		spanID = extractToolResultID(content)
 	}
 
-	// Extract thread_id — try each extractor until one succeeds.
-	threadID := extractToolUseID(content)
-	if threadID == "" {
-		threadID = extractToolResultID(content)
-	}
-	if threadID == "" {
-		threadID = extractParentToolUseID(content)
-	}
-	if threadID == "" {
-		threadID = extractSystemToolUseID(content)
-	}
-
-	// Child message with a matching parent: merge into the parent's row.
-	if threadID != "" && (role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER || role == leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM) {
-		if a.sink.MergeIntoThread(threadID, content) {
-			if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
-				a.detectPlanModeFromToolResult(content)
-			}
-			return
-		}
+	// Detect plan mode from tool_result messages.
+	if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
+		a.detectPlanModeFromToolResult(content)
 	}
 
 	// Enrich result messages with num_tool_uses.
@@ -233,9 +233,34 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		content = a.enrichResultWithToolUses(content)
 	}
 
-	// Standalone message or no matching parent — persist.
-	if err := a.sink.PersistMessage(role, content, threadID); err != nil {
+	// Pre-peek the span color for tool_use messages (assistant with a spanID)
+	// so it is available at persist time, before the span is actually opened.
+	var spanColor int32 = -1
+	if msgType == "assistant" && spanID != "" {
+		spanColor = a.sink.PeekNextSpanColor()
+	}
+
+	// Persist as a standalone message with hierarchy metadata.
+	// This MUST happen before processAssistantBlocks (which opens spans)
+	// so the assistant message stays at the parent depth.
+	if err := a.sink.PersistMessage(role, content, parentSpanID, spanID, spanColor); err != nil {
 		slog.Error("persist agent message", "agent_id", a.agentID, "error", err)
+	}
+
+	// Parse assistant message content blocks for plan mode tracking,
+	// plan file tracking, tool use counting, and span management.
+	// Runs after persist so spans open AFTER the tool_use message,
+	// keeping it at parent depth while its tool_result is indented.
+	if msgType == "assistant" {
+		a.processAssistantBlocks(content)
+	}
+
+	// Close span after persisting if this is a user message (tool_result)
+	// that completes a tool span.
+	if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
+		if spanID != "" {
+			a.sink.CloseSpan(spanID)
+		}
 	}
 }
 
@@ -287,7 +312,8 @@ func (a *ClaudeCodeAgent) claudeCodeHandleControlResponse(content []byte) {
 	}
 
 	var cr struct {
-		Response struct {
+		ParentToolUseID string `json:"parent_tool_use_id"`
+		Response        struct {
 			Subtype  string `json:"subtype"`
 			Response struct {
 				Mode string `json:"mode"`
@@ -298,6 +324,12 @@ func (a *ClaudeCodeAgent) claudeCodeHandleControlResponse(content []byte) {
 		if cr.Response.Subtype == "success" && cr.Response.Response.Mode != "" {
 			a.sink.UpdatePermissionMode(cr.Response.Response.Mode)
 		}
+	}
+
+	// Persist control response as a separate message in the timeline.
+	parentSpanID := cr.ParentToolUseID
+	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_USER, content, parentSpanID, "", -1); err != nil {
+		slog.Error("persist control_response", "agent_id", a.agentID, "error", err)
 	}
 }
 

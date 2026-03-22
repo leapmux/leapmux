@@ -1,31 +1,10 @@
-import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import { describe, expect, it } from 'vitest'
-import { ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { isAgentWorking } from '~/utils/agentState'
+import { makeMessage, rawContent, wrapContent } from '../helpers/messageFactory'
 
-/** Encode a JSON object as message content bytes. */
-function encode(obj: unknown): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify(obj))
-}
-
-/** Build a wrapper envelope (the standard message format). */
-function wrap(messages: unknown[]): Uint8Array {
-  return encode({ old_seqs: [], messages })
-}
-
-/** Build a minimal AgentChatMessage. */
-function makeMsg(role: MessageRole, content?: Uint8Array, deliveryError?: string): AgentChatMessage {
-  return {
-    $typeName: 'leapmux.v1.AgentChatMessage' as const,
-    id: 'msg-1',
-    role,
-    seq: 1n,
-    createdAt: '',
-    updatedAt: '',
-    deliveryError: deliveryError ?? '',
-    content: content ?? new Uint8Array(),
-    contentCompression: ContentCompression.NONE,
-  } as AgentChatMessage
+function makeMsg(role: MessageRole, content?: Uint8Array, deliveryError?: string) {
+  return makeMessage({ role, content, deliveryError })
 }
 
 describe('isAgentWorking', () => {
@@ -48,51 +27,51 @@ describe('isAgentWorking', () => {
   it('returns false when last message is a turn-end RESULT', () => {
     expect(isAgentWorking([
       makeMsg(MessageRole.USER),
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'result', subtype: 'turn_result' }])),
+      makeMsg(MessageRole.RESULT, rawContent({ type: 'result', subtype: 'turn_result' })),
     ])).toBe(false)
   })
 
   it('skips settings_changed RESULT and finds preceding ASSISTANT', () => {
     expect(isAgentWorking([
       makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'settings_changed' }])),
+      makeMsg(MessageRole.RESULT, rawContent({ type: 'settings_changed' })),
     ])).toBe(true)
   })
 
   it('skips context_cleared RESULT and finds preceding ASSISTANT', () => {
     expect(isAgentWorking([
       makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'context_cleared' }])),
+      makeMsg(MessageRole.RESULT, rawContent({ type: 'context_cleared' })),
     ])).toBe(true)
   })
 
   it('skips multiple trailing notification RESULTs and finds preceding non-RESULT', () => {
     expect(isAgentWorking([
       makeMsg(MessageRole.USER),
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'settings_changed' }])),
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'context_cleared' }])),
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'settings_changed' }])),
+      makeMsg(MessageRole.RESULT, rawContent({ type: 'settings_changed' })),
+      makeMsg(MessageRole.RESULT, rawContent({ type: 'context_cleared' })),
+      makeMsg(MessageRole.RESULT, rawContent({ type: 'settings_changed' })),
     ])).toBe(true)
   })
 
   it('skips notification RESULTs but finds turn-end RESULT underneath', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'result', subtype: 'turn_result' }])),
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'settings_changed' }])),
+      makeMsg(MessageRole.RESULT, rawContent({ type: 'result', subtype: 'turn_result' })),
+      makeMsg(MessageRole.RESULT, rawContent({ type: 'settings_changed' })),
     ])).toBe(false)
   })
 
   it('returns false when all messages are notification RESULTs', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'settings_changed' }])),
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'context_cleared' }])),
+      makeMsg(MessageRole.RESULT, rawContent({ type: 'settings_changed' })),
+      makeMsg(MessageRole.RESULT, rawContent({ type: 'context_cleared' })),
     ])).toBe(false)
   })
 
   it('does not skip interrupted RESULT (it is a genuine turn end)', () => {
     expect(isAgentWorking([
       makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'interrupted' }])),
+      makeMsg(MessageRole.RESULT, rawContent({ type: 'interrupted' })),
     ])).toBe(false)
   })
 
@@ -113,43 +92,43 @@ describe('isAgentWorking', () => {
 
   it('skips LEAPMUX message and finds turn-end RESULT underneath', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'result', subtype: 'turn_result' }])),
-      makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'settings_changed' }])),
+      makeMsg(MessageRole.RESULT, rawContent({ type: 'result', subtype: 'turn_result' })),
+      makeMsg(MessageRole.LEAPMUX, wrapContent([{ type: 'settings_changed' }])),
     ])).toBe(false)
   })
 
   it('skips LEAPMUX settings_changed and finds preceding ASSISTANT', () => {
     expect(isAgentWorking([
       makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'settings_changed' }])),
+      makeMsg(MessageRole.LEAPMUX, wrapContent([{ type: 'settings_changed' }])),
     ])).toBe(true)
   })
 
   it('treats LEAPMUX context_cleared as turn boundary (returns false)', () => {
     expect(isAgentWorking([
       makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'context_cleared' }])),
+      makeMsg(MessageRole.LEAPMUX, wrapContent([{ type: 'context_cleared' }])),
     ])).toBe(false)
   })
 
   it('skips multiple trailing LEAPMUX messages', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'result', subtype: 'turn_result' }])),
-      makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'settings_changed' }])),
-      makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'context_cleared' }])),
+      makeMsg(MessageRole.RESULT, rawContent({ type: 'result', subtype: 'turn_result' })),
+      makeMsg(MessageRole.LEAPMUX, wrapContent([{ type: 'settings_changed' }])),
+      makeMsg(MessageRole.LEAPMUX, wrapContent([{ type: 'context_cleared' }])),
     ])).toBe(false)
   })
 
   it('returns false when all messages are LEAPMUX notifications', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'settings_changed' }])),
-      makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'context_cleared' }])),
+      makeMsg(MessageRole.LEAPMUX, wrapContent([{ type: 'settings_changed' }])),
+      makeMsg(MessageRole.LEAPMUX, wrapContent([{ type: 'context_cleared' }])),
     ])).toBe(false)
   })
 
   it('skips USER message with deliveryError (agent never received it)', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'result', subtype: 'turn_result' }])),
+      makeMsg(MessageRole.RESULT, rawContent({ type: 'result', subtype: 'turn_result' })),
       makeMsg(MessageRole.USER, undefined, 'connection lost'),
     ])).toBe(false)
   })
@@ -163,23 +142,23 @@ describe('isAgentWorking', () => {
 
   it('skips mixed LEAPMUX and notification RESULT messages', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'result', subtype: 'turn_result' }])),
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'settings_changed' }])),
-      makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'context_cleared' }])),
+      makeMsg(MessageRole.RESULT, rawContent({ type: 'result', subtype: 'turn_result' })),
+      makeMsg(MessageRole.RESULT, rawContent({ type: 'settings_changed' })),
+      makeMsg(MessageRole.LEAPMUX, wrapContent([{ type: 'context_cleared' }])),
     ])).toBe(false)
   })
 
   it('treats LEAPMUX wrapper with [settings_changed, context_cleared] as turn boundary', () => {
     expect(isAgentWorking([
       makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'settings_changed' }, { type: 'context_cleared' }])),
+      makeMsg(MessageRole.LEAPMUX, wrapContent([{ type: 'settings_changed' }, { type: 'context_cleared' }])),
     ])).toBe(false)
   })
 
   it('treats LEAPMUX wrapper with [context_cleared, settings_changed] as turn boundary', () => {
     expect(isAgentWorking([
       makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'context_cleared' }, { type: 'settings_changed' }])),
+      makeMsg(MessageRole.LEAPMUX, wrapContent([{ type: 'context_cleared' }, { type: 'settings_changed' }])),
     ])).toBe(false)
   })
 })

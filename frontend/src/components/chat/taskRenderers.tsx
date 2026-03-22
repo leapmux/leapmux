@@ -1,19 +1,15 @@
 /* eslint-disable solid/components-return-once -- render methods are not Solid components */
-/* eslint-disable solid/no-innerhtml -- HTML is produced from user/assistant text via remark, not arbitrary user input */
 import type { JSX } from 'solid-js'
 import type { MessageContentRenderer, RenderContext } from './messageRenderers'
 import type { TodoItem } from '~/stores/chat.store'
 import ListTodo from 'lucide-solid/icons/list-todo'
 import Terminal from 'lucide-solid/icons/terminal'
 import Vote from 'lucide-solid/icons/vote'
-import { For, Show } from 'solid-js'
+import { For } from 'solid-js'
 import { TodoList } from '~/components/todo/TodoList'
-import { renderMarkdown } from '~/lib/renderMarkdown'
-import { markdownContent } from './markdownContent.css'
 import { getAssistantContent, isObject } from './messageUtils'
 import { ToolUseLayout } from './toolRenderers'
 import {
-  answerText,
   toolInputSummary,
 } from './toolStyles.css'
 
@@ -55,20 +51,11 @@ export function renderAskUserQuestion(toolUse: Record<string, unknown>, context?
   if (!Array.isArray(questions) || questions.length === 0)
     return null
 
-  const answers = context?.childAnswers
-  const hasAnswers = !!answers && Object.keys(answers).length > 0
-  const hasChild = (context?.threadChildCount ?? 0) > 0
-  const statusText = hasAnswers
-    ? 'Submitted answers'
-    : (hasChild && context?.childResultContent)
-        ? context.childResultContent
-        : 'Waiting for answers'
-
   return (
     <ToolUseLayout
       icon={Vote}
       toolName="AskUserQuestion"
-      title={statusText}
+      title="Waiting for answers"
       alwaysVisible={true}
       context={context}
     >
@@ -76,13 +63,10 @@ export function renderAskUserQuestion(toolUse: Record<string, unknown>, context?
         <For each={questions}>
           {(q) => {
             const header = String(q.header || '')
-            const answer = answers?.[header]
             return (
               <li>
                 <strong>{`${header}: `}</strong>
-                <Show when={answer} fallback={<em>Not answered</em>}>
-                  <div class={`${answerText} ${markdownContent}`} innerHTML={renderMarkdown(answer!)} />
-                </Show>
+                <em>Not answered</em>
               </li>
             )
           }}

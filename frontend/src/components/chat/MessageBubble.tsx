@@ -5,7 +5,7 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 
 import Check from 'lucide-solid/icons/check'
 import Copy from 'lucide-solid/icons/copy'
-import { createMemo, createSignal, ErrorBoundary, For, onMount, Show } from 'solid-js'
+import { createMemo, createSignal, ErrorBoundary, onMount, Show } from 'solid-js'
 import { render } from 'solid-js/web'
 import { IconButton } from '~/components/common/IconButton'
 import { usePreferences } from '~/context/PreferencesContext'
@@ -52,17 +52,6 @@ function roleLabel(role: MessageRole): string {
   }
 }
 
-/** Map a Claude Code JSON type field to a proto MessageRole. */
-function typeToRole(type: string | undefined): MessageRole {
-  switch (type) {
-    case 'user': return MessageRole.USER
-    case 'assistant': return MessageRole.ASSISTANT
-    case 'system': return MessageRole.SYSTEM
-    case 'result': return MessageRole.RESULT
-    default: return MessageRole.UNSPECIFIED
-  }
-}
-
 function injectCopyButtons(container: HTMLElement) {
   const preElements = container.querySelectorAll('pre')
   for (const pre of preElements) {
@@ -104,13 +93,14 @@ interface MessageBubbleProps {
   workingDir?: string
   homeDir?: string
   onReply?: (quotedText: string) => void
+  /** Look up a message by its spanId (for tool_use ↔ tool_result linking). */
+  getMessageBySpanId?: (spanId: string) => AgentChatMessage | undefined
 }
 
 export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const prefs = usePreferences()
   const [jsonCopied, setJsonCopied] = createSignal(false)
   const [markdownCopied, setMarkdownCopied] = createSignal(false)
-  const [threadExpandedManual, setThreadExpandedManual] = createSignal<boolean | null>(null)
   let contentRef: HTMLDivElement | undefined
 
   // Consolidated message parsing: decompress and parse once, derive everything from this memo.
@@ -129,10 +119,18 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       seq: Number(msg.seq),
       created_at: msg.createdAt,
     }
-    if (msg.updatedAt)
-      envelope.updated_at = msg.updatedAt
     if (msg.deliveryError)
       envelope.delivery_error = msg.deliveryError
+    if (msg.depth)
+      envelope.depth = msg.depth
+    if (msg.spanId)
+      envelope.span_id = msg.spanId
+    if (msg.parentSpanId)
+      envelope.parent_span_id = msg.parentSpanId
+    if (msg.spanLines && msg.spanLines !== '[]')
+      envelope.span_lines = JSON.parse(msg.spanLines)
+    if (msg.spanColor >= 0)
+      envelope.span_color = msg.spanColor
     if (p.wrapper && p.wrapper.old_seqs.length > 0)
       envelope.old_seqs = p.wrapper.old_seqs
 
@@ -142,7 +140,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     }
 
     try {
-      envelope.messages = [JSON.parse(p.rawText)]
+      envelope.content = JSON.parse(p.rawText)
       return JSON.stringify(envelope)
     }
     catch {
@@ -150,29 +148,8 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     }
   }
 
-  // Extract parent tool_use name and input from the category (pre-extracted during classification).
-  const parentToolInfo = (): { name: string, input: Record<string, unknown> } | null => {
-    const cat = category()
-    if (cat.kind !== 'tool_use')
-      return null
-    const input = cat.toolUse.input
-    return {
-      name: cat.toolName,
-      input: (typeof input === 'object' && input !== null && !Array.isArray(input))
-        ? input as Record<string, unknown>
-        : {},
-    }
-  }
-
-  const threadExpanded = () => threadExpandedManual() ?? false
-  const setThreadExpanded = (updater: boolean | ((prev: boolean) => boolean)) => {
-    const current = threadExpanded()
-    const next = typeof updater === 'function' ? updater(current) : updater
-    setThreadExpandedManual(next)
-  }
-
   // Whether the message is rendered by a renderer that has its own internal ToolHeaderActions.
-  const hasInternalActions = () => category().kind === 'tool_use'
+  const hasInternalActions = () => category().kind === 'tool_use' || category().kind === 'tool_result'
 
   const copyJson = async () => {
     await navigator.clipboard.writeText(prettifyJson(rawJson()))
@@ -180,127 +157,27 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     setTimeout(setJsonCopied, 2000, false)
   }
 
-  // Extract structuredPatch from a thread child (tool_result) for the parent tool_use diff.
-  // Scans all children to skip synthetic control responses that may precede the tool_result.
-  const childToolUseResult = (): Record<string, unknown> | null => {
-    for (const raw of parsed().children) {
-      const child = raw as Record<string, unknown>
-      if (typeof child?.tool_use_result === 'object' && child.tool_use_result !== null)
-        return child.tool_use_result as Record<string, unknown>
-    }
-    return null
-  }
-
-  // Extract text content from a thread child's tool_result.
-  // Scans all children to skip synthetic control responses that may precede the tool_result.
-  const extractChildResultContent = (): string | undefined => {
-    for (const raw of parsed().children) {
-      try {
-        const child = raw as Record<string, unknown>
-        if (child?.type !== 'user')
-          continue
-        const msg = child.message as Record<string, unknown>
-        if (!msg?.content || !Array.isArray(msg.content))
-          continue
-        const toolResult = (msg.content as Array<Record<string, unknown>>).find(c => c.type === 'tool_result')
-        if (!toolResult)
-          continue
-        const resultData = toolResult as Record<string, unknown>
-        const content = Array.isArray(resultData.content)
-          ? (resultData.content as Array<Record<string, unknown>>)
-              .filter(c => c.type === 'text')
-              .map(c => c.text)
-              .join('')
-          : (typeof resultData.content === 'string' ? resultData.content : '')
-        if (content)
-          return content
-      }
-      catch { continue }
-    }
-    return undefined
-  }
-
-  // Extract is_error from a thread child's tool_result (for fallback rejection detection).
-  const extractChildResultIsError = (): boolean | undefined => {
-    for (const raw of parsed().children) {
-      try {
-        const child = raw as Record<string, unknown>
-        if (child?.type !== 'user')
-          continue
-        const msg = child.message as Record<string, unknown>
-        if (!msg?.content || !Array.isArray(msg.content))
-          continue
-        const toolResult = (msg.content as Array<Record<string, unknown>>).find(c => c.type === 'tool_result')
-        if (!toolResult)
-          continue
-        return (toolResult as Record<string, unknown>).is_error === true
-      }
-      catch { continue }
-    }
-    return undefined
-  }
-
-  // Extract control response (approval/rejection) from thread children.
-  const childControlResponse = (): { action: string, comment: string } | undefined => {
-    const children = parsed().children
-    for (const child of children) {
-      const obj = child as Record<string, unknown>
-      if (obj?.isSynthetic === true && typeof obj.controlResponse === 'object' && obj.controlResponse !== null) {
-        const cr = obj.controlResponse as Record<string, unknown>
-        return {
-          action: String(cr.action || ''),
-          comment: String(cr.comment || ''),
-        }
-      }
-    }
-    return undefined
-  }
-
-  // Thread children excluding the control response (for expanded thread display).
-  const nonControlChildren = () =>
-    parsed().children.filter((child) => {
-      const obj = child as Record<string, unknown>
-      return !(obj?.isSynthetic === true && typeof obj.controlResponse === 'object' && obj.controlResponse !== null)
-    })
+  // Look up the corresponding tool_use message for tool_result messages.
+  const toolUseMessage = createMemo(() => {
+    if (category().kind !== 'tool_result')
+      return undefined
+    const spanId = props.message.spanId
+    if (!spanId || !props.getMessageBySpanId)
+      return undefined
+    return props.getMessageBySpanId(spanId)
+  })
 
   // Build render context for message renderers.
-  const renderContext = (): RenderContext => {
-    const tur = childToolUseResult()
-    return {
-      createdAt: props.message.createdAt,
-      updatedAt: props.message.updatedAt,
-      workingDir: props.workingDir,
-      homeDir: props.homeDir,
-      threadChildCount: nonControlChildren().length,
-      threadExpanded: threadExpanded(),
-      onToggleThread: () => setThreadExpanded(prev => !prev),
-      diffView: prefs.diffView(),
-      onCopyJson: copyJson,
-      jsonCopied: jsonCopied(),
-      childStructuredPatch: Array.isArray(tur?.structuredPatch) ? tur!.structuredPatch as RenderContext['childStructuredPatch'] : undefined,
-      childFilePath: typeof tur?.filePath === 'string' ? tur.filePath : undefined,
-      childAnswers: (typeof tur?.answers === 'object' && tur.answers !== null && !Array.isArray(tur.answers))
-        ? tur.answers as Record<string, string>
-        : undefined,
-      childResultContent: extractChildResultContent(),
-      childResultIsError: extractChildResultIsError(),
-      childTask: (typeof tur?.task === 'object' && tur.task !== null && !Array.isArray(tur.task))
-        ? tur.task as RenderContext['childTask']
-        : undefined,
-      childToolResultStatus: typeof tur?.status === 'string' ? tur.status as string : undefined,
-      childTotalDurationMs: typeof tur?.totalDurationMs === 'number' ? tur.totalDurationMs : undefined,
-      childTotalTokens: typeof tur?.totalTokens === 'number' ? tur.totalTokens : undefined,
-      childTotalToolUseCount: typeof tur?.totalToolUseCount === 'number' ? tur.totalToolUseCount : undefined,
-      childControlResponse: childControlResponse(),
-      childOriginalFile: typeof tur?.originalFile === 'string' ? tur.originalFile : undefined,
-      childGrepNumFiles: typeof tur?.numFiles === 'number' ? tur.numFiles : undefined,
-      childGrepNumLines: typeof tur?.numLines === 'number' ? tur.numLines : undefined,
-      childGlobNumFiles: typeof tur?.numFiles === 'number' ? tur.numFiles : undefined,
-      childGlobDurationMs: typeof tur?.durationMs === 'number' ? tur.durationMs : undefined,
-      childGlobTruncated: typeof tur?.truncated === 'boolean' ? tur.truncated : undefined,
-      childToolSearchMatches: Array.isArray(tur?.matches) ? tur.matches as string[] : undefined,
-    }
-  }
+  const renderContext = (): RenderContext => ({
+    createdAt: props.message.createdAt,
+    workingDir: props.workingDir,
+    homeDir: props.homeDir,
+    diffView: prefs.diffView(),
+    onCopyJson: copyJson,
+    jsonCopied: jsonCopied(),
+    toolUseMessage: toolUseMessage(),
+    spanColor: props.message.spanColor,
+  })
 
   // Extract assistant text for the reply button.
   const extractAssistantText = (): string | null => {
@@ -394,10 +271,6 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
           <Show when={!hasInternalActions()}>
             <ToolHeaderActions
               createdAt={props.message.createdAt}
-              updatedAt={props.message.updatedAt}
-              expanded={threadExpanded()}
-              onToggleExpand={nonControlChildren().length > 0 ? () => setThreadExpanded(prev => !prev) : undefined}
-              expandLabel={nonControlChildren().length > 0 ? `Expand ${nonControlChildren().length} tool result${nonControlChildren().length === 1 ? '' : 's'}` : undefined}
               onCopyJson={copyJson}
               jsonCopied={jsonCopied()}
               onReply={extractQuotableText() ? handleReply : undefined}
@@ -406,37 +279,6 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
             />
           </Show>
         </div>
-
-        {/* Thread children (e.g. tool_result after tool_use) — expanded via ThreadExpander in tool header */}
-        <Show when={nonControlChildren().length > 0 && threadExpanded() && category().kind !== 'notification_thread'}>
-          <div class={styles.threadChildren}>
-            {(() => {
-              const toolInfo = parentToolInfo()
-              return (
-                <For each={nonControlChildren()}>
-                  {(child) => {
-                    const childRole = () => typeToRole((child as Record<string, unknown>)?.type as string | undefined)
-                    return (
-                      <div
-                        class={chatStyles.metaMessage}
-                        data-testid="thread-child-bubble"
-                      >
-                        <ErrorBoundary fallback={renderErrorFallback('Failed to render thread child message:')}>
-                          {renderMessageContent(child, childRole(), {
-                            workingDir: props.workingDir,
-                            homeDir: props.homeDir,
-                            parentToolName: toolInfo?.name,
-                            parentToolInput: toolInfo?.input,
-                          })}
-                        </ErrorBoundary>
-                      </div>
-                    )
-                  }}
-                </For>
-              )
-            })()}
-          </div>
-        </Show>
 
         <Show when={props.error}>
           <div class={styles.messageError} data-testid="message-error">
