@@ -102,7 +102,9 @@ export function createChatStore() {
   /** Non-reactive index of messages by spanId for tool_use ↔ tool_result lookup. */
   const spanIndex = new Map<string, Map<string, AgentChatMessage>>()
 
-  /** Index a single message by spanId if it has one. */
+  /** Index a single message by spanId if it has one.
+   *  Only the first message per spanId is stored (the tool_use opener),
+   *  so tool_result messages don't overwrite their corresponding tool_use. */
   function indexBySpanId(agentId: string, msg: AgentChatMessage) {
     if (msg.spanId) {
       let agentSpans = spanIndex.get(agentId)
@@ -110,7 +112,8 @@ export function createChatStore() {
         agentSpans = new Map()
         spanIndex.set(agentId, agentSpans)
       }
-      agentSpans.set(msg.spanId, msg)
+      if (!agentSpans.has(msg.spanId))
+        agentSpans.set(msg.spanId, msg)
     }
   }
 
@@ -123,7 +126,8 @@ export function createChatStore() {
           agentSpans = new Map()
           spanIndex.set(agentId, agentSpans)
         }
-        agentSpans.set(msg.spanId, msg)
+        if (!agentSpans.has(msg.spanId))
+          agentSpans.set(msg.spanId, msg)
       }
     }
   }
