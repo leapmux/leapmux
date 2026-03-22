@@ -4,7 +4,6 @@
 package service
 
 import (
-	"database/sql"
 	"encoding/json"
 	"log/slog"
 	"slices"
@@ -25,41 +24,121 @@ import (
 // remains eligible for merging.
 const notifThreadGracePeriod = time.Second
 
-// threadWrapper is the content envelope stored in the DB for every message.
-// It tracks the original seq values of the message before thread merges
-// and holds the raw Claude Code JSON for each message in the thread.
-type threadWrapper struct {
-	OldSeqs  []int64           `json:"old_seqs"`
-	Messages []json.RawMessage `json:"messages"`
+// --- Scope Tracker ---
+
+// ActiveScope tracks a single open subagent scope.
+type ActiveScope struct {
+	ScopeID    string
+	Depth      int
+	ColorIndex int
+	Column     int
 }
 
-// wrapContent wraps a single raw message JSON into a threadWrapper envelope.
-func wrapContent(rawJSON []byte) []byte {
-	w := threadWrapper{
-		OldSeqs:  []int64{},
-		Messages: []json.RawMessage{rawJSON},
+// ThreadLine represents a single thread line entry in the JSON array.
+type ThreadLine struct {
+	ScopeID string `json:"scope_id"`
+	Color   int    `json:"color"`
+}
+
+// ScopeTracker manages hierarchical scope state for an agent's message threading.
+type ScopeTracker struct {
+	mu        sync.Mutex
+	scopes    []ActiveScope
+	nextColor int
+}
+
+// OpenScope registers a new subagent scope.
+func (t *ScopeTracker) OpenScope(scopeID, parentScopeID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	depth := 1
+	for _, s := range t.scopes {
+		if s.ScopeID == parentScopeID {
+			depth = s.Depth + 1
+			break
+		}
 	}
-	data, _ := json.Marshal(w)
-	return data
-}
 
-// unwrapContent parses a threadWrapper from content bytes.
-func unwrapContent(data []byte) (*threadWrapper, error) {
-	var w threadWrapper
-	if err := json.Unmarshal(data, &w); err != nil {
-		return nil, err
+	// Find first free column (null slot).
+	column := -1
+	used := make(map[int]bool, len(t.scopes))
+	for _, s := range t.scopes {
+		used[s.Column] = true
 	}
-	return &w, nil
+	for i := 0; ; i++ {
+		if !used[i] {
+			column = i
+			break
+		}
+	}
+
+	t.scopes = append(t.scopes, ActiveScope{
+		ScopeID:    scopeID,
+		Depth:      depth,
+		ColorIndex: t.nextColor,
+		Column:     column,
+	})
+	t.nextColor++
 }
 
-// appendToThread appends a child message to an existing thread wrapper,
-// recording the parent's current seq in old_seqs before the seq bump.
-func appendToThread(wrapper *threadWrapper, parentSeq int64, childRawJSON []byte) []byte {
-	wrapper.OldSeqs = append(wrapper.OldSeqs, parentSeq)
-	wrapper.Messages = append(wrapper.Messages, childRawJSON)
-	data, _ := json.Marshal(wrapper)
-	return data
+// CloseScope removes a scope, freeing its column.
+func (t *ScopeTracker) CloseScope(scopeID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.scopes = slices.DeleteFunc(t.scopes, func(s ActiveScope) bool {
+		return s.ScopeID == scopeID
+	})
 }
+
+// ThreadLines returns the current thread lines as a JSON string.
+func (t *ScopeTracker) ThreadLines() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if len(t.scopes) == 0 {
+		return "[]"
+	}
+
+	// Find max column to size the array.
+	maxCol := 0
+	for _, s := range t.scopes {
+		if s.Column > maxCol {
+			maxCol = s.Column
+		}
+	}
+
+	// Build the array with nulls for free slots.
+	lines := make([]*ThreadLine, maxCol+1)
+	for _, s := range t.scopes {
+		lines[s.Column] = &ThreadLine{
+			ScopeID: s.ScopeID,
+			Color:   s.ColorIndex,
+		}
+	}
+
+	data, _ := json.Marshal(lines)
+	return string(data)
+}
+
+// DepthFor returns the depth for a given scope ID (0 for empty/main).
+func (t *ScopeTracker) DepthFor(scopeID string) int32 {
+	if scopeID == "" {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	for _, s := range t.scopes {
+		if s.ScopeID == scopeID {
+			return int32(s.Depth)
+		}
+	}
+	return 0
+}
+
+// --- Notification threading ---
 
 // notifThreadRef tracks the current notification thread for an agent.
 type notifThreadRef struct {
@@ -67,6 +146,34 @@ type notifThreadRef struct {
 	seq       int64
 	softClear time.Time // Zero = not soft-cleared
 }
+
+// notifThreadWrapper is the content envelope stored in the DB for notification
+// thread messages. It consolidates multiple notifications into a single DB row.
+type notifThreadWrapper struct {
+	OldSeqs  []int64           `json:"old_seqs"`
+	Messages []json.RawMessage `json:"messages"`
+}
+
+// wrapNotifContent wraps a single raw notification JSON into a notifThreadWrapper.
+func wrapNotifContent(rawJSON []byte) []byte {
+	w := notifThreadWrapper{
+		OldSeqs:  []int64{},
+		Messages: []json.RawMessage{rawJSON},
+	}
+	data, _ := json.Marshal(w)
+	return data
+}
+
+// unwrapNotifContent parses a notifThreadWrapper from content bytes.
+func unwrapNotifContent(data []byte) (*notifThreadWrapper, error) {
+	var w notifThreadWrapper
+	if err := json.Unmarshal(data, &w); err != nil {
+		return nil, err
+	}
+	return &w, nil
+}
+
+// --- OutputHandler ---
 
 // OutputHandler manages agent output persistence and broadcasting.
 // It holds shared state accessed by per-agent OutputSink instances.
@@ -79,6 +186,9 @@ type OutputHandler struct {
 	notifMu         sync.Map // agentID -> *sync.Mutex
 	lastNotifThread sync.Map // agentID -> *notifThreadRef
 
+	// Per-agent scope tracking (concurrent access).
+	scopeTrackers sync.Map // agentID -> *ScopeTracker
+
 	// Plan mode tool_use tracking (shared across agents).
 	planModeToolUse sync.Map // tool_use_id -> target mode string ("plan" or "default")
 }
@@ -90,6 +200,12 @@ func NewOutputHandler(queries *db.Queries, watcher *WatcherManager, agents *agen
 		watcher: watcher,
 		agents:  agents,
 	}
+}
+
+// scopeTracker returns the per-agent ScopeTracker, creating one if needed.
+func (h *OutputHandler) scopeTracker(agentID string) *ScopeTracker {
+	v, _ := h.scopeTrackers.LoadOrStore(agentID, &ScopeTracker{})
+	return v.(*ScopeTracker)
 }
 
 // NewSink creates a per-agent OutputSink backed by this OutputHandler.
@@ -110,16 +226,20 @@ type agentOutputSink struct {
 
 // --- OutputSink interface implementation ---
 
-func (s *agentOutputSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, threadID string) error {
-	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, role, content, threadID)
-}
-
-func (s *agentOutputSink) MergeIntoThread(threadID string, content []byte) bool {
-	return s.h.mergeIntoThread(s.agentID, s.agentProvider, threadID, content)
+func (s *agentOutputSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, scopeID string) error {
+	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, role, content, scopeID)
 }
 
 func (s *agentOutputSink) PersistNotification(role leapmuxv1.MessageRole, content []byte) error {
 	return s.h.persistNotificationThreaded(s.agentID, s.agentProvider, role, content)
+}
+
+func (s *agentOutputSink) OpenScope(scopeID, parentScopeID string) {
+	s.h.scopeTracker(s.agentID).OpenScope(scopeID, parentScopeID)
+}
+
+func (s *agentOutputSink) CloseScope(scopeID string) {
+	s.h.scopeTracker(s.agentID).CloseScope(scopeID)
 }
 
 func (s *agentOutputSink) BroadcastStreamChunk(content []byte) {
@@ -321,10 +441,13 @@ func (h *OutputHandler) softClearNotifThread(agentID string) {
 }
 
 // persistAndBroadcast persists a message and broadcasts it to watchers.
-func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, role leapmuxv1.MessageRole, contentJSON []byte, threadID string) error {
+func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, role leapmuxv1.MessageRole, contentJSON []byte, scopeID string) error {
+	tracker := h.scopeTracker(agentID)
+	depth := tracker.DepthFor(scopeID)
+	threadLines := tracker.ThreadLines()
+
 	msgID := id.Generate()
-	wrapped := wrapContent(contentJSON)
-	compressed, compressionType := msgcodec.Compress(wrapped)
+	compressed, compressionType := msgcodec.Compress(contentJSON)
 	now := time.Now()
 
 	seq, err := h.queries.CreateMessage(bgCtx(), db.CreateMessageParams{
@@ -333,7 +456,9 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		Role:               role,
 		Content:            compressed,
 		ContentCompression: compressionType,
-		ThreadID:           threadID,
+		Depth:              int64(depth),
+		ScopeID:            scopeID,
+		ThreadLines:        threadLines,
 		AgentProvider:      agentProvider,
 		CreatedAt:          now,
 	})
@@ -349,58 +474,11 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		Seq:                seq,
 		AgentProvider:      agentProvider,
 		CreatedAt:          timefmt.Format(now),
+		Depth:              depth,
+		ScopeId:            scopeID,
+		ThreadLines:        threadLines,
 	})
 	return nil
-}
-
-// mergeIntoThread appends a child message to an existing thread parent.
-func (h *OutputHandler) mergeIntoThread(agentID string, agentProvider leapmuxv1.AgentProvider, threadID string, childJSON []byte) bool {
-	parentRow, err := h.queries.GetMessageByAgentAndThreadID(bgCtx(), db.GetMessageByAgentAndThreadIDParams{
-		AgentID:  agentID,
-		ThreadID: threadID,
-	})
-	if err != nil {
-		return false
-	}
-
-	parentData, err := msgcodec.Decompress(parentRow.Content, parentRow.ContentCompression)
-	if err != nil {
-		slog.Error("decompress parent for thread merge", "agent_id", agentID, "thread_id", threadID, "error", err)
-		return false
-	}
-	wrapper, err := unwrapContent(parentData)
-	if err != nil {
-		slog.Error("parse parent wrapper for thread merge", "agent_id", agentID, "thread_id", threadID, "error", err)
-		return false
-	}
-
-	merged := appendToThread(wrapper, parentRow.Seq, childJSON)
-
-	now := time.Now()
-	mergedCompressed, mergedCompType := msgcodec.Compress(merged)
-	newSeq, err := h.queries.UpdateMessageThread(bgCtx(), db.UpdateMessageThreadParams{
-		Content:            mergedCompressed,
-		ContentCompression: mergedCompType,
-		UpdatedAt:          sql.NullTime{Time: now, Valid: true},
-		ID:                 parentRow.ID,
-		AgentID:            agentID,
-	})
-	if err != nil {
-		slog.Error("update parent thread", "agent_id", agentID, "thread_id", threadID, "error", err)
-		return false
-	}
-
-	h.broadcastMessage(agentID, &leapmuxv1.AgentChatMessage{
-		Id:                 parentRow.ID,
-		Role:               parentRow.Role,
-		Content:            mergedCompressed,
-		ContentCompression: mergedCompType,
-		Seq:                newSeq,
-		AgentProvider:      agentProvider,
-		CreatedAt:          timefmt.Format(parentRow.CreatedAt),
-		UpdatedAt:          timefmt.Format(now),
-	})
-	return true
 }
 
 // persistNotificationThreaded persists a notification message, appending it
@@ -437,7 +515,7 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 		return err
 	}
 
-	wrapper, err := unwrapContent(parentData)
+	wrapper, err := unwrapNotifContent(parentData)
 	if err != nil {
 		return err
 	}
@@ -451,12 +529,10 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 
 	merged, _ := json.Marshal(wrapper)
 
-	now := time.Now()
 	mergedCompressed, mergedCompType := msgcodec.Compress(merged)
-	newSeq, err := h.queries.UpdateMessageThread(bgCtx(), db.UpdateMessageThreadParams{
+	newSeq, err := h.queries.UpdateNotificationThread(bgCtx(), db.UpdateNotificationThreadParams{
 		Content:            mergedCompressed,
 		ContentCompression: mergedCompType,
-		UpdatedAt:          sql.NullTime{Time: now, Valid: true},
 		ID:                 parentRow.ID,
 		AgentID:            agentID,
 	})
@@ -475,7 +551,6 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 		Seq:                newSeq,
 		AgentProvider:      agentProvider,
 		CreatedAt:          timefmt.Format(parentRow.CreatedAt),
-		UpdatedAt:          timefmt.Format(now),
 	})
 
 	return nil
@@ -484,7 +559,7 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 // createNotificationStandalone creates a new standalone notification message.
 func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvider leapmuxv1.AgentProvider, role leapmuxv1.MessageRole, contentJSON []byte) error {
 	msgID := id.Generate()
-	wrapped := wrapContent(contentJSON)
+	wrapped := wrapNotifContent(contentJSON)
 	compressed, compressionType := msgcodec.Compress(wrapped)
 	now := time.Now()
 
@@ -494,7 +569,9 @@ func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvid
 		Role:               role,
 		Content:            compressed,
 		ContentCompression: compressionType,
-		ThreadID:           "",
+		Depth:              0,
+		ScopeID:            "",
+		ThreadLines:        "[]",
 		AgentProvider:      agentProvider,
 		CreatedAt:          now,
 	})

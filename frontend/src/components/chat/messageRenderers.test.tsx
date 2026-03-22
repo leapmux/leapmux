@@ -56,46 +56,18 @@ describe('agent/task renderer', () => {
     expect(renderToolUseText('Task', {})).toBe('Task')
   })
 
-  it('shows "Running" when thread children exist but no status', () => {
-    const text = renderToolUseText('Agent', { description: 'Analyze code' }, {
-      threadChildCount: 1,
-    })
+  it('shows no status (child data fields removed)', () => {
+    const text = renderToolUseText('Agent', { description: 'Analyze code' })
     expect(text).toContain('Analyze code')
-    expect(text).toContain('Running')
-  })
-
-  it('shows "Complete" when childToolResultStatus is "completed"', () => {
-    const text = renderToolUseText('Agent', { description: 'Analyze code' }, {
-      threadChildCount: 2,
-      childToolResultStatus: 'completed',
-    })
-    expect(text).toContain('Analyze code')
-    expect(text).toContain('Complete')
-  })
-
-  it('shows "Failed" when childToolResultStatus is "failed"', () => {
-    const text = renderToolUseText('Task', { description: 'Build project' }, {
-      threadChildCount: 2,
-      childToolResultStatus: 'failed',
-    })
-    expect(text).toContain('Build project')
-    expect(text).toContain('Failed')
-  })
-
-  it('shows no status when no thread children', () => {
-    const text = renderToolUseText('Agent', { description: 'Search' })
-    expect(text).toBe('Search')
     expect(text).not.toContain('Running')
     expect(text).not.toContain('Complete')
+    expect(text).not.toContain('Failed')
   })
 
-  it('renders description + subagent_type in title, status in summary', () => {
-    const text = renderToolUseText('Agent', { description: 'Fix bug', subagent_type: 'code' }, {
-      threadChildCount: 2,
-      childToolResultStatus: 'completed',
-    })
+  it('renders description + subagent_type in title without status', () => {
+    const text = renderToolUseText('Agent', { description: 'Fix bug', subagent_type: 'code' })
     expect(text).toContain('Fix bug (code)')
-    expect(text).toContain('Complete')
+    expect(text).not.toContain('Complete')
   })
 
   it('formats title as "SubAgent: rest" when description starts with subagent name', () => {
@@ -109,16 +81,10 @@ describe('agent/task renderer', () => {
     expect(text).not.toContain('Explore:')
   })
 
-  it('shows stats summary when stats are provided', () => {
-    const text = renderToolUseText('Agent', { description: 'Search' }, {
-      threadChildCount: 1,
-      childToolResultStatus: 'completed',
-      childTotalDurationMs: 30000,
-      childTotalTokens: 500,
-      childTotalToolUseCount: 3,
-    })
-    expect(text).toContain('30s')
-    expect(text).toContain('500 tokens')
-    expect(text).toContain('3 tool uses')
+  it('shows only description without stats (child data fields removed)', () => {
+    const text = renderToolUseText('Agent', { description: 'Search' })
+    expect(text).toBe('Search')
+    expect(text).not.toContain('tokens')
+    expect(text).not.toContain('tool uses')
   })
 })

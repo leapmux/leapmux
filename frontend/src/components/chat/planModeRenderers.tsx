@@ -9,10 +9,9 @@ import { Icon } from '~/components/common/Icon'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { markdownContent } from './markdownContent.css'
-import { getAssistantContent, isObject, relativizePath } from './messageUtils'
+import { getAssistantContent, isObject } from './messageUtils'
 import { ToolUseLayout } from './toolRenderers'
 import {
-  toolInputSummary,
   toolInputText,
   toolUseHeader,
   toolUseIcon,
@@ -23,25 +22,12 @@ export function renderExitPlanMode(toolUse: Record<string, unknown>, context?: R
   const input = toolUse.input
   const planText = isObject(input) ? String((input as Record<string, unknown>).plan || '') : ''
 
-  // Derive effective control response: prefer the explicit controlResponse
-  // threaded by the backend; fall back to tool_result-based detection for
-  // data where the controlResponse was lost to the pre-fix race condition.
-  const effectiveCr = (): { action: string, comment: string } | undefined => {
-    if (context?.childControlResponse)
-      return context.childControlResponse
-    const resultContent = context?.childResultContent
-    if (!resultContent)
-      return undefined
-    if (context?.childResultIsError === true)
-      return { action: 'rejected', comment: resultContent }
-    if (context?.childResultIsError === false || resultContent.toLowerCase().includes('approved your plan'))
-      return { action: 'approved', comment: '' }
-    return { action: 'rejected', comment: resultContent }
-  }
+  // Control response info is no longer available from thread children.
+  // ExitPlanMode tool_use just shows the plan; the control_response
+  // and tool_result are now rendered as separate messages in the timeline.
+  const effectiveCr = (): { action: string, comment: string } | undefined => undefined
 
-  const summary = context?.childFilePath
-    ? <div class={toolInputSummary}>{relativizePath(context.childFilePath, context?.workingDir, context?.homeDir)}</div>
-    : undefined
+  const summary = undefined
 
   return (
     <ToolUseLayout

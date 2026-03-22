@@ -240,11 +240,8 @@ const codexPlugin: ProviderPlugin = {
     if (parent.method === 'thread/started' || parent.method === 'turn/started' || parent.method === 'thread/status/changed')
       return { kind: 'hidden' }
 
-    // Codex wrapper messages represent state updates of the same item
-    // (e.g. inProgress → completed). Use the last message as the effective parent.
-    const effective = (wrapper && wrapper.messages.length > 1)
-      ? wrapper.messages.at(-1) as Record<string, unknown>
-      : parent
+    // Each item is now its own message (no more merging).
+    const effective = parent
 
     // Codex item types from item/completed notifications.
     // The params are stored natively: {item: {type: "agentMessage", ...}, threadId, turnId}

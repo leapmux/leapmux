@@ -139,18 +139,26 @@ func (a *CodexAgent) handlePlanDelta(params json.RawMessage) {
 
 // handleItemStarted processes item/started notifications.
 func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
-	item, itemType, itemID := extractCodexItem(params)
+	item, itemType, _ := extractCodexItem(params)
 	if item == nil {
 		return
 	}
+
+	scopeID := a.codexScopeID(params)
 
 	switch itemType {
 	case "agentMessage":
 		// No-op for started — wait for completed to persist.
 	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall":
-		// Persist with itemID as threadID so the completed item can merge.
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, itemID); err != nil {
+		// Persist as standalone message.
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, scopeID); err != nil {
 			slog.Error("codex persist item/started", "agent_id", a.agentID, "type", itemType, "error", err)
+		}
+	case "collabAgentToolCall":
+		// Open scopes for SpawnAgent tool calls.
+		a.handleCollabAgentScope(item, scopeID, false)
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, scopeID); err != nil {
+			slog.Error("codex persist collabAgentToolCall/started", "agent_id", a.agentID, "error", err)
 		}
 	case "reasoning":
 		// No-op for started — wait for completed.
@@ -159,13 +167,15 @@ func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
 
 // handleItemCompleted processes item/completed notifications.
 func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
-	item, itemType, itemID := extractCodexItem(params)
+	item, itemType, _ := extractCodexItem(params)
 	if item == nil {
 		return
 	}
 
 	// Non-notification messages soft-clear the notification thread.
 	a.sink.SoftClearNotifThread()
+
+	scopeID := a.codexScopeID(params)
 
 	switch itemType {
 	case "agentMessage":
@@ -177,7 +187,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 			a.turnAssistantText = messageItem.Text
 			a.mu.Unlock()
 		}
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, ""); err != nil {
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, scopeID); err != nil {
 			slog.Error("codex persist agentMessage", "agent_id", a.agentID, "error", err)
 		}
 	case "plan":
@@ -197,27 +207,29 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 				})
 			}
 		}
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, ""); err != nil {
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, scopeID); err != nil {
 			slog.Error("codex persist plan", "agent_id", a.agentID, "error", err)
 		}
 	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall":
 		a.mu.Lock()
 		a.turnToolUses++
 		a.mu.Unlock()
-		// Try to merge into the started item.
-		if itemID != "" && a.sink.MergeIntoThread(itemID, params) {
-			return
-		}
-		// Fallback: persist standalone.
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, itemID); err != nil {
+		// Persist as standalone message.
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, scopeID); err != nil {
 			slog.Error("codex persist item/completed", "agent_id", a.agentID, "type", itemType, "error", err)
 		}
+	case "collabAgentToolCall":
+		// Close scopes for completed/failed SpawnAgent tool calls.
+		a.handleCollabAgentScope(item, scopeID, true)
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, scopeID); err != nil {
+			slog.Error("codex persist collabAgentToolCall/completed", "agent_id", a.agentID, "error", err)
+		}
 	case "reasoning":
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, ""); err != nil {
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, scopeID); err != nil {
 			slog.Error("codex persist reasoning", "agent_id", a.agentID, "error", err)
 		}
 	default:
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, ""); err != nil {
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, scopeID); err != nil {
 			slog.Error("codex persist unknown item", "agent_id", a.agentID, "type", itemType, "error", err)
 		}
 	}
@@ -453,6 +465,54 @@ func codexWindowToType(mins int) string {
 		hours := (mins + 30) / 60 // round
 		return fmt.Sprintf("%d_hour", hours)
 	}
+}
+
+// handleCollabAgentScope opens or closes scopes for CollabAgentToolCall items.
+// For SpawnAgent tool calls, each receiverThreadId becomes a new scope.
+func (a *CodexAgent) handleCollabAgentScope(item json.RawMessage, parentScopeID string, isCompleted bool) {
+	var collab struct {
+		Tool              string   `json:"tool"`
+		Status            string   `json:"status"`
+		ReceiverThreadIds []string `json:"receiverThreadIds"`
+	}
+	if json.Unmarshal(item, &collab) != nil {
+		return
+	}
+
+	if collab.Tool != "spawnAgent" {
+		return
+	}
+
+	if isCompleted {
+		// Close scopes when the spawn is completed or failed.
+		for _, receiverID := range collab.ReceiverThreadIds {
+			a.sink.CloseScope(receiverID)
+		}
+	} else {
+		// Open scopes for each spawned agent thread.
+		for _, receiverID := range collab.ReceiverThreadIds {
+			a.sink.OpenScope(receiverID, parentScopeID)
+		}
+	}
+}
+
+// codexScopeID determines the scope ID for a Codex notification.
+// If the notification's threadId matches the main thread, it returns ""
+// (main agent scope). Otherwise it returns the threadId as the scope ID.
+func (a *CodexAgent) codexScopeID(params json.RawMessage) string {
+	var notif struct {
+		ThreadID string `json:"threadId"`
+	}
+	if json.Unmarshal(params, &notif) != nil || notif.ThreadID == "" {
+		return ""
+	}
+	a.mu.Lock()
+	mainThreadID := a.threadID
+	a.mu.Unlock()
+	if notif.ThreadID == mainThreadID {
+		return ""
+	}
+	return notif.ThreadID
 }
 
 // extractCodexItem extracts the item type and ID from item/started or item/completed params.

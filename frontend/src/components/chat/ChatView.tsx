@@ -15,6 +15,7 @@ import { markdownContent } from './markdownContent.css'
 import { MessageBubble } from './MessageBubble'
 import { assistantMessage } from './messageStyles.css'
 import { ThinkingIndicator } from './ThinkingIndicator'
+import { ThreadLines } from './ThreadLines'
 import { ToolUseLayout } from './toolRenderers'
 
 interface ChatViewProps {
@@ -312,19 +313,36 @@ export const ChatView: Component<ChatViewProps> = (props) => {
             >
               <div ref={contentRef} class={styles.messageListContent}>
                 <For each={props.messages}>
-                  {msg => (
-                    <div data-seq={msg.seq.toString()}>
-                      <MessageBubble
-                        message={msg}
-                        error={props.messageErrors?.[msg.id]}
-                        onRetry={() => props.onRetryMessage?.(msg.id)}
-                        onDelete={() => props.onDeleteMessage?.(msg.id)}
-                        workingDir={props.workingDir}
-                        homeDir={props.homeDir}
-                        onReply={props.onReply}
-                      />
-                    </div>
-                  )}
+                  {(msg) => {
+                    const threadLines = () => {
+                      try {
+                        return JSON.parse(msg.threadLines || '[]')
+                      }
+                      catch {
+                        return []
+                      }
+                    }
+                    const hasThreadLines = () => threadLines().length > 0
+
+                    return (
+                      <div data-seq={msg.seq.toString()} style={hasThreadLines() ? { display: 'flex' } : undefined}>
+                        {hasThreadLines() && (
+                          <ThreadLines lines={threadLines()} scopeId={msg.scopeId || ''} />
+                        )}
+                        <div style={hasThreadLines() ? { 'flex': '1', 'min-width': '0' } : undefined}>
+                          <MessageBubble
+                            message={msg}
+                            error={props.messageErrors?.[msg.id]}
+                            onRetry={() => props.onRetryMessage?.(msg.id)}
+                            onDelete={() => props.onDeleteMessage?.(msg.id)}
+                            workingDir={props.workingDir}
+                            homeDir={props.homeDir}
+                            onReply={props.onReply}
+                          />
+                        </div>
+                      </div>
+                    )
+                  }}
                 </For>
                 <Show when={props.streamingText}>
                   <Show

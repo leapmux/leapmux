@@ -163,8 +163,10 @@ message AgentChatMessage {
   string created_at = 5;
   string delivery_error = 6; // Non-empty if worker delivery failed
   ContentCompression content_compression = 7; // Compression algorithm used for content
-  string updated_at = 8; // Set when message is updated (e.g. thread merge)
-  AgentProvider agent_provider = 9; // Provider that produced this message
+  AgentProvider agent_provider = 8; // Provider that produced this message
+  int32 depth = 9; // Nesting level: 0=main agent, 1=subagent, 2=nested subagent
+  string scope_id = 10; // tool_use_id of the Agent tool that spawned this scope (empty for main)
+  string thread_lines = 11; // JSON array of active thread lines at this message's position
 }
 
 // AgentStreamChunk provides token-by-token streaming.

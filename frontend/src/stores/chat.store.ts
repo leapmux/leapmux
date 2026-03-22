@@ -43,17 +43,19 @@ function removePersistedLocalMessage(agentId: string, messageId: string) {
 
 /** Reconstruct an AgentChatMessage from a persisted local message. */
 function hydrateLocalMessage(p: PersistedLocalMessage): AgentChatMessage {
-  const wrapped = JSON.stringify({ old_seqs: [], messages: [{ content: p.contentText }] })
+  const contentJson = JSON.stringify({ content: p.contentText })
   return {
     $typeName: 'leapmux.v1.AgentChatMessage' as const,
     id: p.id,
     role: MessageRole.USER,
-    content: new TextEncoder().encode(wrapped),
+    content: new TextEncoder().encode(contentJson),
     contentCompression: ContentCompression.NONE,
     seq: 0n,
     createdAt: p.createdAt,
     deliveryError: p.deliveryError,
-    updatedAt: '',
+    depth: 0,
+    scopeId: '',
+    threadLines: '[]',
   } as AgentChatMessage
 }
 
@@ -78,7 +80,7 @@ interface ChatStoreState {
   savedViewportScroll: Record<string, { distFromBottom: number, atBottom: boolean }>
   /** Whether initial load has completed for an agent. */
   initialLoadComplete: Record<string, boolean>
-  /** Monotonic counter incremented on every addMessage (including thread merges). */
+  /** Monotonic counter incremented on every addMessage (including notification updates). */
   messageVersion: Record<string, number>
 }
 
@@ -125,8 +127,8 @@ export function createChatStore() {
     },
 
     addMessage(agentId: string, message: AgentChatMessage) {
-      // Thread merge: check if a message with this ID already exists.
-      // Search from end — thread merges almost always affect recent messages.
+      // Notification thread update: LEAPMUX notification messages can be updated
+      // in-place when consolidating. Check if a message with this ID exists.
       const messages = state.messagesByAgent[agentId]
       const existingIdx = messages?.findLastIndex(m => m.id === message.id) ?? -1
 
@@ -184,7 +186,7 @@ export function createChatStore() {
         setState('todosByAgent', agentId, todos)
       }
 
-      // Bump version so auto-scroll effects can detect thread merges
+      // Bump version so auto-scroll effects can detect notification updates
       // (which don't change messages.length).
       setState('messageVersion', agentId, (prev = 0) => prev + 1)
     },

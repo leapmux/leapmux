@@ -221,13 +221,10 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		messageID := id.Generate()
 		now := time.Now().UTC()
 
-		// Wrap user content in the standard threadWrapper envelope so the
-		// frontend can parse it consistently. The inner format is a plain
-		// object with a "content" string field (no "type"), which the
-		// frontend classifies as user_content and renders as markdown.
+		// Store user content as a plain JSON object with a "content" field,
+		// which the frontend classifies as user_content and renders as markdown.
 		innerJSON, _ := json.Marshal(map[string]string{"content": content})
-		wrapped := wrapContent(innerJSON)
-		compressed, compressionType := msgcodec.Compress(wrapped)
+		compressed, compressionType := msgcodec.Compress(innerJSON)
 
 		// Persist the user message.
 		seq, err := svc.Queries.CreateMessage(bgCtx(), db.CreateMessageParams{
@@ -236,7 +233,9 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
 			Content:            compressed,
 			ContentCompression: compressionType,
-			ThreadID:           "",
+			Depth:              0,
+			ScopeID:            "",
+			ThreadLines:        "[]",
 			AgentProvider:      dbAgent.AgentProvider,
 			CreatedAt:          now,
 		})
@@ -1185,8 +1184,7 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
 	messageID := id.Generate()
 	now := time.Now().UTC()
 	innerJSON, _ := json.Marshal(map[string]string{"content": content})
-	wrapped := wrapContent(innerJSON)
-	compressed, compressionType := msgcodec.Compress(wrapped)
+	compressed, compressionType := msgcodec.Compress(innerJSON)
 
 	seq, err := svc.Queries.CreateMessage(bgCtx(), db.CreateMessageParams{
 		ID:                 messageID,
@@ -1194,7 +1192,9 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
 		Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
 		Content:            compressed,
 		ContentCompression: compressionType,
-		ThreadID:           "",
+		Depth:              0,
+		ScopeID:            "",
+		ThreadLines:        "[]",
 		AgentProvider:      dbAgent.AgentProvider,
 		CreatedAt:          now,
 	})
@@ -1380,14 +1380,8 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 		},
 	}
 	displayJSON, _ := json.Marshal(displayContent)
-	merged := false
-	if toolUseID != "" {
-		merged = svc.Output.mergeIntoThread(agentID, dbAgent.AgentProvider, toolUseID, displayJSON)
-	}
-	if !merged {
-		if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, displayJSON, ""); err != nil {
-			slog.Warn("failed to persist control response notification", "agent_id", agentID, "error", err)
-		}
+	if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, displayJSON, ""); err != nil {
+		slog.Warn("failed to persist control response notification", "agent_id", agentID, "error", err)
 	}
 
 	// Detect plan mode changes from control responses (agent-initiated).
@@ -1580,7 +1574,7 @@ func broadcastWatchEvent(sender *channel.Sender, resp *leapmuxv1.WatchEventsResp
 
 // messageToProto converts a DB Message to a proto AgentChatMessage.
 func messageToProto(m *db.Message) *leapmuxv1.AgentChatMessage {
-	msg := &leapmuxv1.AgentChatMessage{
+	return &leapmuxv1.AgentChatMessage{
 		Id:                 m.ID,
 		Role:               leapmuxv1.MessageRole(m.Role),
 		Content:            m.Content,
@@ -1589,11 +1583,8 @@ func messageToProto(m *db.Message) *leapmuxv1.AgentChatMessage {
 		ContentCompression: leapmuxv1.ContentCompression(m.ContentCompression),
 		AgentProvider:      m.AgentProvider,
 		CreatedAt:          timefmt.Format(m.CreatedAt),
+		Depth:              int32(m.Depth),
+		ScopeId:            m.ScopeID,
+		ThreadLines:        m.ThreadLines,
 	}
-
-	if m.UpdatedAt.Valid {
-		msg.UpdatedAt = timefmt.Format(m.UpdatedAt.Time)
-	}
-
-	return msg
 }

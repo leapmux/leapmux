@@ -55,14 +55,10 @@ export function renderAskUserQuestion(toolUse: Record<string, unknown>, context?
   if (!Array.isArray(questions) || questions.length === 0)
     return null
 
-  const answers = context?.childAnswers
-  const hasAnswers = !!answers && Object.keys(answers).length > 0
-  const hasChild = (context?.threadChildCount ?? 0) > 0
-  const statusText = hasAnswers
-    ? 'Submitted answers'
-    : (hasChild && context?.childResultContent)
-        ? context.childResultContent
-        : 'Waiting for answers'
+  // Answer data is no longer available from thread children.
+  // The tool_result with answers is now a separate message.
+  const answers: Record<string, string> | undefined = undefined
+  const statusText = 'Waiting for answers'
 
   return (
     <ToolUseLayout

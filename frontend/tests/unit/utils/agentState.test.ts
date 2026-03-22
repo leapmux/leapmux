@@ -48,51 +48,51 @@ describe('isAgentWorking', () => {
   it('returns false when last message is a turn-end RESULT', () => {
     expect(isAgentWorking([
       makeMsg(MessageRole.USER),
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'result', subtype: 'turn_result' }])),
+      makeMsg(MessageRole.RESULT, encode({ type: 'result', subtype: 'turn_result' })),
     ])).toBe(false)
   })
 
   it('skips settings_changed RESULT and finds preceding ASSISTANT', () => {
     expect(isAgentWorking([
       makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'settings_changed' }])),
+      makeMsg(MessageRole.RESULT, encode({ type: 'settings_changed' })),
     ])).toBe(true)
   })
 
   it('skips context_cleared RESULT and finds preceding ASSISTANT', () => {
     expect(isAgentWorking([
       makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'context_cleared' }])),
+      makeMsg(MessageRole.RESULT, encode({ type: 'context_cleared' })),
     ])).toBe(true)
   })
 
   it('skips multiple trailing notification RESULTs and finds preceding non-RESULT', () => {
     expect(isAgentWorking([
       makeMsg(MessageRole.USER),
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'settings_changed' }])),
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'context_cleared' }])),
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'settings_changed' }])),
+      makeMsg(MessageRole.RESULT, encode({ type: 'settings_changed' })),
+      makeMsg(MessageRole.RESULT, encode({ type: 'context_cleared' })),
+      makeMsg(MessageRole.RESULT, encode({ type: 'settings_changed' })),
     ])).toBe(true)
   })
 
   it('skips notification RESULTs but finds turn-end RESULT underneath', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'result', subtype: 'turn_result' }])),
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'settings_changed' }])),
+      makeMsg(MessageRole.RESULT, encode({ type: 'result', subtype: 'turn_result' })),
+      makeMsg(MessageRole.RESULT, encode({ type: 'settings_changed' })),
     ])).toBe(false)
   })
 
   it('returns false when all messages are notification RESULTs', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'settings_changed' }])),
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'context_cleared' }])),
+      makeMsg(MessageRole.RESULT, encode({ type: 'settings_changed' })),
+      makeMsg(MessageRole.RESULT, encode({ type: 'context_cleared' })),
     ])).toBe(false)
   })
 
   it('does not skip interrupted RESULT (it is a genuine turn end)', () => {
     expect(isAgentWorking([
       makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'interrupted' }])),
+      makeMsg(MessageRole.RESULT, encode({ type: 'interrupted' })),
     ])).toBe(false)
   })
 
@@ -113,7 +113,7 @@ describe('isAgentWorking', () => {
 
   it('skips LEAPMUX message and finds turn-end RESULT underneath', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'result', subtype: 'turn_result' }])),
+      makeMsg(MessageRole.RESULT, encode({ type: 'result', subtype: 'turn_result' })),
       makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'settings_changed' }])),
     ])).toBe(false)
   })
@@ -134,7 +134,7 @@ describe('isAgentWorking', () => {
 
   it('skips multiple trailing LEAPMUX messages', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'result', subtype: 'turn_result' }])),
+      makeMsg(MessageRole.RESULT, encode({ type: 'result', subtype: 'turn_result' })),
       makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'settings_changed' }])),
       makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'context_cleared' }])),
     ])).toBe(false)
@@ -149,7 +149,7 @@ describe('isAgentWorking', () => {
 
   it('skips USER message with deliveryError (agent never received it)', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'result', subtype: 'turn_result' }])),
+      makeMsg(MessageRole.RESULT, encode({ type: 'result', subtype: 'turn_result' })),
       makeMsg(MessageRole.USER, undefined, 'connection lost'),
     ])).toBe(false)
   })
@@ -163,8 +163,8 @@ describe('isAgentWorking', () => {
 
   it('skips mixed LEAPMUX and notification RESULT messages', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'result', subtype: 'turn_result' }])),
-      makeMsg(MessageRole.RESULT, wrap([{ type: 'settings_changed' }])),
+      makeMsg(MessageRole.RESULT, encode({ type: 'result', subtype: 'turn_result' })),
+      makeMsg(MessageRole.RESULT, encode({ type: 'settings_changed' })),
       makeMsg(MessageRole.LEAPMUX, wrap([{ type: 'context_cleared' }])),
     ])).toBe(false)
   })

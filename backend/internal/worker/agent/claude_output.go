@@ -91,11 +91,12 @@ func (a *ClaudeCodeAgent) enrichResultWithToolUses(content []byte) []byte {
 }
 
 // processAssistantBlocks parses the message.content[] blocks of an assistant
-// message once and performs plan mode tracking, plan file tracking, and tool
-// use counting — replacing three separate parse passes.
+// message once and performs plan mode tracking, plan file tracking, tool
+// use counting, and scope management — replacing multiple separate parse passes.
 func (a *ClaudeCodeAgent) processAssistantBlocks(content []byte) {
 	var msg struct {
-		Message struct {
+		ParentToolUseID string `json:"parent_tool_use_id"`
+		Message         struct {
 			Content []struct {
 				Type  string `json:"type"`
 				ID    string `json:"id"`
@@ -113,6 +114,9 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(content []byte) {
 		return
 	}
 
+	// Determine the parent scope for any Agent tool_use blocks.
+	parentScopeID := msg.ParentToolUseID
+
 	toolUseCount := 0
 	planFileProcessed := false
 	for _, block := range msg.Message.Content {
@@ -129,6 +133,9 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(content []byte) {
 				a.sink.StorePlanModeToolUse(block.ID, PermissionModePlan)
 			case "ExitPlanMode":
 				a.sink.StorePlanModeToolUse(block.ID, PermissionModeDefault)
+			case "Agent":
+				// Open a new scope for the subagent.
+				a.sink.OpenScope(block.ID, parentScopeID)
 			}
 		}
 
@@ -201,31 +208,20 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	}
 
 	// Parse assistant message content blocks once for plan mode tracking,
-	// plan file tracking, and tool use counting.
+	// plan file tracking, tool use counting, and scope management.
 	if msgType == "assistant" {
 		a.processAssistantBlocks(content)
 	}
 
-	// Extract thread_id — try each extractor until one succeeds.
-	threadID := extractToolUseID(content)
-	if threadID == "" {
-		threadID = extractToolResultID(content)
-	}
-	if threadID == "" {
-		threadID = extractParentToolUseID(content)
-	}
-	if threadID == "" {
-		threadID = extractSystemToolUseID(content)
+	// Determine scope ID for hierarchy tracking.
+	scopeID := extractParentToolUseID(content)
+	if scopeID == "" {
+		scopeID = extractSystemToolUseID(content)
 	}
 
-	// Child message with a matching parent: merge into the parent's row.
-	if threadID != "" && (role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER || role == leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM) {
-		if a.sink.MergeIntoThread(threadID, content) {
-			if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
-				a.detectPlanModeFromToolResult(content)
-			}
-			return
-		}
+	// Detect plan mode from tool_result messages.
+	if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
+		a.detectPlanModeFromToolResult(content)
 	}
 
 	// Enrich result messages with num_tool_uses.
@@ -233,9 +229,17 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		content = a.enrichResultWithToolUses(content)
 	}
 
-	// Standalone message or no matching parent — persist.
-	if err := a.sink.PersistMessage(role, content, threadID); err != nil {
+	// Persist as a standalone message with hierarchy metadata.
+	if err := a.sink.PersistMessage(role, content, scopeID); err != nil {
 		slog.Error("persist agent message", "agent_id", a.agentID, "error", err)
+	}
+
+	// Close scope after persisting if this is a user message (tool_result)
+	// that completes an Agent tool scope.
+	if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
+		if toolResultID := extractToolResultID(content); toolResultID != "" {
+			a.sink.CloseScope(toolResultID)
+		}
 	}
 }
 
@@ -287,7 +291,8 @@ func (a *ClaudeCodeAgent) claudeCodeHandleControlResponse(content []byte) {
 	}
 
 	var cr struct {
-		Response struct {
+		ParentToolUseID string `json:"parent_tool_use_id"`
+		Response        struct {
 			Subtype  string `json:"subtype"`
 			Response struct {
 				Mode string `json:"mode"`
@@ -298,6 +303,12 @@ func (a *ClaudeCodeAgent) claudeCodeHandleControlResponse(content []byte) {
 		if cr.Response.Subtype == "success" && cr.Response.Response.Mode != "" {
 			a.sink.UpdatePermissionMode(cr.Response.Response.Mode)
 		}
+	}
+
+	// Persist control response as a separate message in the timeline.
+	scopeID := cr.ParentToolUseID
+	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_USER, content, scopeID); err != nil {
+		slog.Error("persist control_response", "agent_id", a.agentID, "error", err)
 	}
 }
 

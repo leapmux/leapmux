@@ -93,18 +93,10 @@ describe('toolSearch tool_use rendering', () => {
     expect(text).toContain('"notebook"')
   })
 
-  it('shows "Found N tools" summary when matches available', () => {
-    const text = renderToolUseText(undefined, {
-      childToolSearchMatches: ['Read', 'Glob', 'Grep'],
-    })
-    expect(text).toContain('Found 3 tools')
-  })
-
-  it('shows "Found 1 tool" for singular match', () => {
-    const text = renderToolUseText(undefined, {
-      childToolSearchMatches: ['Edit'],
-    })
-    expect(text).toContain('Found 1 tool')
+  it('shows only query with no result count summary (child data fields removed)', () => {
+    const text = renderToolUseText()
+    expect(text).toContain('"select:Read,Glob,Grep"')
+    expect(text).not.toContain('Found')
   })
 })
 
