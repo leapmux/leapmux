@@ -45,8 +45,10 @@ export function parseMessageContent(message: AgentChatMessage): ParsedMessageCon
 
     // LEAPMUX notifications use the wrapper format for consolidation.
     if (message.role === MessageRole.LEAPMUX && obj?.messages && Array.isArray(obj.messages)) {
+      const wrapper = { old_seqs: obj.old_seqs ?? [], messages: obj.messages }
+
       if (obj.messages.length === 0)
-        return { rawText: text, topLevel: obj, parentObject: undefined, wrapper: obj }
+        return { rawText: text, topLevel: obj, parentObject: undefined, wrapper }
 
       const first = obj.messages[0]
       const parent = (typeof first === 'object' && first !== null && !Array.isArray(first))
@@ -56,7 +58,7 @@ export function parseMessageContent(message: AgentChatMessage): ParsedMessageCon
         rawText: text,
         topLevel: obj,
         parentObject: parent,
-        wrapper: obj,
+        wrapper,
       }
     }
 

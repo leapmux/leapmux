@@ -218,14 +218,13 @@ type notifThreadRef struct {
 // notifThreadWrapper is the content envelope stored in the DB for notification
 // thread messages. It consolidates multiple notifications into a single DB row.
 type notifThreadWrapper struct {
-	OldSeqs  []int64           `json:"old_seqs"`
+	OldSeqs  []int64           `json:"old_seqs,omitempty"`
 	Messages []json.RawMessage `json:"messages"`
 }
 
 // wrapNotifContent wraps a single raw notification JSON into a notifThreadWrapper.
 func wrapNotifContent(rawJSON []byte) []byte {
 	w := notifThreadWrapper{
-		OldSeqs:  []int64{},
 		Messages: []json.RawMessage{rawJSON},
 	}
 	data, _ := json.Marshal(w)

@@ -83,8 +83,6 @@ interface ChatStoreState {
   initialLoadComplete: Record<string, boolean>
   /** Monotonic counter incremented on every addMessage (including notification updates). */
   messageVersion: Record<string, number>
-  /** Index of messages by spanId for tool_use ↔ tool_result lookup. */
-  spanIndex: Record<string, Record<string, AgentChatMessage>>
 }
 
 export function createChatStore() {
@@ -99,29 +97,43 @@ export function createChatStore() {
     savedViewportScroll: {},
     initialLoadComplete: {},
     messageVersion: {},
-    spanIndex: {},
   })
+
+  /** Non-reactive index of messages by spanId for tool_use ↔ tool_result lookup. */
+  const spanIndex = new Map<string, Map<string, AgentChatMessage>>()
 
   /** Index a single message by spanId if it has one. */
   function indexBySpanId(agentId: string, msg: AgentChatMessage) {
     if (msg.spanId) {
-      setState('spanIndex', agentId, msg.spanId, msg)
+      let agentSpans = spanIndex.get(agentId)
+      if (!agentSpans) {
+        agentSpans = new Map()
+        spanIndex.set(agentId, agentSpans)
+      }
+      agentSpans.set(msg.spanId, msg)
     }
   }
 
-  /** Batch-index multiple messages by spanId in a single setState call. */
+  /** Batch-index multiple messages by spanId. */
   function indexBySpanIdBatch(agentId: string, messages: AgentChatMessage[]) {
-    const entries: Record<string, AgentChatMessage> = {}
+    let agentSpans = spanIndex.get(agentId)
     for (const msg of messages) {
-      if (msg.spanId)
-        entries[msg.spanId] = msg
+      if (msg.spanId) {
+        if (!agentSpans) {
+          agentSpans = new Map()
+          spanIndex.set(agentId, agentSpans)
+        }
+        agentSpans.set(msg.spanId, msg)
+      }
     }
-    for (const [spanId, msg] of Object.entries(entries))
-      setState('spanIndex', agentId, spanId, msg)
   }
 
   /** Shared implementation for setMessages / loadInitialMessages. */
   function applyMessages(agentId: string, messages: AgentChatMessage[], hasMore: boolean) {
+    // Index spans before setting messages so that reactive computations
+    // triggered by the message list update can already look up tool_use
+    // messages by spanId.
+    indexBySpanIdBatch(agentId, messages)
     setState('messagesByAgent', agentId, messages)
     setState('hasMoreOlder', agentId, hasMore)
     setState('initialLoadComplete', agentId, true)
@@ -130,7 +142,6 @@ export function createChatStore() {
         setState('messageErrors', msg.id, msg.deliveryError)
       }
     }
-    indexBySpanIdBatch(agentId, messages)
     // Extract todos from the last TodoWrite message in the loaded history.
     const todos = findLatestTodos(messages)
     if (todos) {
@@ -146,7 +157,7 @@ export function createChatStore() {
     },
 
     getMessageBySpanId(agentId: string, spanId: string): AgentChatMessage | undefined {
-      return state.spanIndex[agentId]?.[spanId]
+      return spanIndex.get(agentId)?.get(spanId)
     },
 
     setMessages(agentId: string, messages: AgentChatMessage[], hasMore = false) {

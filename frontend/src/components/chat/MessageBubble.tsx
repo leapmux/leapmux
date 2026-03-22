@@ -90,8 +90,9 @@ function injectCopyButtons(container: HTMLElement) {
 export function classifyParsedMessage(message: AgentChatMessage) {
   const parsed = parseMessageContent(message)
   let category = classifyMessage(parsed.parentObject, parsed.wrapper, message.agentProvider)
-  // Hide task_progress system messages inside spans — progress is shown via the span's context.
-  if (category.kind === 'notification' && message.parentSpanId && parsed.parentObject?.subtype === 'task_progress')
+  // Hide task_started/task_progress system messages inside spans — progress is shown via the span's context.
+  if (category.kind === 'notification' && message.parentSpanId
+    && (parsed.parentObject?.subtype === 'task_started' || parsed.parentObject?.subtype === 'task_progress'))
     category = { kind: 'hidden' }
   return { parsed, category }
 }
