@@ -346,7 +346,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                         fallback={<div data-seq={msg.seq.toString()}>{bubble}</div>}
                       >
                         <div data-seq={msg.seq.toString()} class={styles.messageRow}>
-                          <SpanLines lines={spanLines()} parentSpanId={msg.parentSpanId || ''} spanOpener={!!msg.spanId} />
+                          <SpanLines lines={spanLines()} spanOpener={!!msg.spanId} />
                           <div class={styles.messageRowContent}>
                             {bubble}
                           </div>

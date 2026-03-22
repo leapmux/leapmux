@@ -3,22 +3,33 @@ import { For, Show } from 'solid-js'
 import {
   PALETTE_SIZE,
   spanLineActive,
+  spanLineActivePassthrough,
   spanLineColors,
   spanLineConnector,
   spanLineEmpty,
+  spanLinePassthrough,
   spanLinesContainer,
   spanLinesContainerSpanOpener,
+  spanPassthroughColors,
 } from './SpanLines.css'
 
 export interface SpanLine {
   span_id: string
   color: number
+  type: 'active' | 'connector' | 'passthrough' | 'active_passthrough'
+  passthrough_color?: number
 }
 
 interface SpanLinesProps {
   lines: (SpanLine | null)[]
-  parentSpanId: string
   spanOpener?: boolean
+}
+
+const TYPE_STYLES: Record<string, string> = {
+  active: spanLineActive,
+  connector: spanLineConnector,
+  passthrough: spanLinePassthrough,
+  active_passthrough: spanLineActivePassthrough,
 }
 
 export const SpanLines: Component<SpanLinesProps> = (props) => {
@@ -30,13 +41,15 @@ export const SpanLines: Component<SpanLinesProps> = (props) => {
             if (line === null)
               return <div class={spanLineEmpty} />
 
-            const colorClass = spanLineColors[`color${line.color % PALETTE_SIZE}`]
-            const isConnected = line.span_id === props.parentSpanId
+            const baseClass = TYPE_STYLES[line.type] || spanLineActive
+            const colorClass = line.color >= 0
+              ? spanLineColors[`color${line.color % PALETTE_SIZE}`]
+              : ''
+            const ptClass = line.passthrough_color != null && line.passthrough_color >= 0
+              ? spanPassthroughColors[`color${line.passthrough_color % PALETTE_SIZE}`]
+              : ''
 
-            if (isConnected)
-              return <div class={`${spanLineConnector} ${colorClass}`} />
-
-            return <div class={`${spanLineActive} ${colorClass}`} />
+            return <div class={`${baseClass} ${colorClass} ${ptClass}`} />
           }}
         </For>
       </div>

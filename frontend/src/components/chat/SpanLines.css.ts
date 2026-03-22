@@ -62,6 +62,42 @@ export const spanLineConnector = style([spanLineColumnBase, {
   },
 }])
 
+/** Active vertical line with a horizontal pass-through from another span's connector. */
+export const spanLineActivePassthrough = style([spanLineColumnBase, {
+  '::before': {
+    content: '""',
+    position: 'absolute',
+    left: '50%',
+    top: 0,
+    bottom: 0,
+    width: '2px',
+    transform: 'translateX(-50%)',
+    backgroundColor: 'var(--span-line-color, var(--border))',
+  },
+  '::after': {
+    content: '""',
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: '50%',
+    height: '2px',
+    backgroundColor: 'var(--span-passthrough-color, var(--border))',
+  },
+}])
+
+/** Empty column with a horizontal pass-through line. */
+export const spanLinePassthrough = style([spanLineColumnBase, {
+  '::before': {
+    content: '""',
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: '50%',
+    height: '2px',
+    backgroundColor: 'var(--span-passthrough-color, var(--border))',
+  },
+}])
+
 /** Span line color palette (cycled by color index). */
 const PALETTE = [
   'rgb(59 130 246)',
@@ -76,6 +112,10 @@ const PALETTE = [
 
 export const spanLineColors = styleVariants(
   Object.fromEntries(PALETTE.map((color, i) => [`color${i}`, { vars: { '--span-line-color': color } }])),
+)
+
+export const spanPassthroughColors = styleVariants(
+  Object.fromEntries(PALETTE.map((color, i) => [`color${i}`, { vars: { '--span-passthrough-color': color } }])),
 )
 
 export const PALETTE_SIZE = PALETTE.length

@@ -34,10 +34,22 @@ type ActiveSpan struct {
 	Column     int
 }
 
+// SpanLineType describes how the frontend should render a span line column.
+type SpanLineType string
+
+const (
+	SpanLineActive            SpanLineType = "active"             // Vertical line only.
+	SpanLineConnector         SpanLineType = "connector"          // Vertical + horizontal branch to the message.
+	SpanLinePassthrough       SpanLineType = "passthrough"        // Horizontal line only (empty slot after connector).
+	SpanLineActivePassthrough SpanLineType = "active_passthrough" // Vertical + horizontal passthrough.
+)
+
 // SpanLine represents a single span line entry in the JSON array.
 type SpanLine struct {
-	SpanID string `json:"span_id"`
-	Color  int    `json:"color"`
+	SpanID           string       `json:"span_id"`
+	Color            int          `json:"color"`
+	Type             SpanLineType `json:"type"`
+	PassthroughColor int          `json:"passthrough_color,omitempty"`
 }
 
 // SpanTracker manages hierarchical span state for an agent's message threading.
@@ -114,9 +126,11 @@ func (t *SpanTracker) ColorFor(spanID string) int32 {
 }
 
 // Snapshot returns the depth and span lines for a given parentSpanID in a single
-// atomic operation. This avoids the TOCTOU risk of calling DepthFor and
-// SpanLines separately, and reduces mutex acquisitions.
-func (t *SpanTracker) Snapshot(parentSpanID string) (depth int32, spanLines string) {
+// atomic operation. connectorSpanID identifies the span this message connects to
+// (used to compute passthrough hints for columns to the right of the connector).
+// This avoids the TOCTOU risk of calling DepthFor and SpanLines separately,
+// and reduces mutex acquisitions.
+func (t *SpanTracker) Snapshot(parentSpanID, connectorSpanID string) (depth int32, spanLines string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -147,6 +161,36 @@ func (t *SpanTracker) Snapshot(parentSpanID string) (depth int32, spanLines stri
 		lines[s.Column] = &SpanLine{
 			SpanID: s.SpanID,
 			Color:  s.ColorIndex,
+			Type:   SpanLineActive,
+		}
+	}
+
+	// Find the connector column and apply rendering hints.
+	connectorCol := -1
+	connectorColor := 0
+	if connectorSpanID != "" {
+		for col, l := range lines {
+			if l != nil && l.SpanID == connectorSpanID {
+				connectorCol = col
+				connectorColor = l.Color
+				l.Type = SpanLineConnector
+				break
+			}
+		}
+	}
+
+	// Mark columns to the right of the connector as passthrough.
+	if connectorCol >= 0 {
+		for col := connectorCol + 1; col < len(lines); col++ {
+			if lines[col] == nil {
+				lines[col] = &SpanLine{
+					Type:             SpanLinePassthrough,
+					PassthroughColor: connectorColor,
+				}
+			} else {
+				lines[col].Type = SpanLineActivePassthrough
+				lines[col].PassthroughColor = connectorColor
+			}
 		}
 	}
 
@@ -463,7 +507,15 @@ func (h *OutputHandler) softClearNotifThread(agentID string) {
 // persistAndBroadcast persists a message and broadcasts it to watchers.
 func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, role leapmuxv1.MessageRole, contentJSON []byte, parentSpanID string, spanID string, spanColor int32) error {
 	tracker := h.spanTracker(agentID)
-	depth, spanLines := tracker.Snapshot(parentSpanID)
+	// The connector span is the span this message visually connects to.
+	// Use spanID when the span is already open (e.g. tool_result); for
+	// span openers the span isn't open yet so Snapshot won't find it and
+	// falls back to no connector. Otherwise use parentSpanID.
+	connectorSpanID := spanID
+	if connectorSpanID == "" {
+		connectorSpanID = parentSpanID
+	}
+	depth, spanLines := tracker.Snapshot(parentSpanID, connectorSpanID)
 
 	// Resolve span color: if the span is already active (e.g. tool_result
 	// inside an open span), look up its color from the tracker.
