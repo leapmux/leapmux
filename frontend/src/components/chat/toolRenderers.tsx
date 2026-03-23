@@ -291,8 +291,13 @@ function ToolUseMessage(props: {
   context?: RenderContext
 }): JSX.Element {
   const { diffView, toggleDiffView } = useDiffViewToggle(() => props.context?.diffView)
+  const [expanded, setExpanded] = createSignal(false)
 
   const title = () => props.detail ?? `${props.toolName}${props.fallbackDisplay || ''}`
+
+  // Edit diffs are collapsed by default (the tool_result already shows the diff).
+  // Write diffs and non-diff tool_use messages remain always visible.
+  const isCollapsibleDiff = () => props.hasDiff && !props.alwaysVisible
 
   return (
     <ToolUseLayout
@@ -305,6 +310,9 @@ function ToolUseMessage(props: {
       diffView={diffView()}
       onDiffViewChange={toggleDiffView}
       context={props.context}
+      expanded={expanded()}
+      onToggleExpand={isCollapsibleDiff() ? () => setExpanded(v => !v) : undefined}
+      expandLabel="Show diff"
     >
       <Show when={props.hasDiff}>
         <DiffView
@@ -395,7 +403,7 @@ export const toolUseRenderer: MessageContentRenderer = {
         newStr={newStr}
         filePath={filePath}
         originalFile={undefined}
-        alwaysVisible={isEdit || isWrite}
+        alwaysVisible={isWrite}
         context={context}
       />
     )
@@ -570,6 +578,7 @@ function ToolResultMessage(props: {
   oldStr: string
   newStr: string
   filePath: string
+  originalFile?: string
   context?: RenderContext
 }): JSX.Element {
   const { diffView, toggleDiffView } = useDiffViewToggle(() => props.context?.diffView)
@@ -635,6 +644,7 @@ function ToolResultMessage(props: {
             hunks={hasPatch() ? props.structuredPatch! : rawDiffToHunks(props.oldStr, props.newStr)}
             view={diffView()}
             filePath={props.filePath}
+            originalFile={props.originalFile}
           />
         </Show>
       </Show>
@@ -698,6 +708,9 @@ export const toolResultRenderer: MessageContentRenderer = {
     const filePath = isEditOrWrite && !parentShowsDiff ? String(toolUseResult?.filePath || '') : ''
     const oldStr = isEditOrWrite && !parentShowsDiff ? String(toolUseResult?.oldString || '') : ''
     const newStr = isEditOrWrite && !parentShowsDiff ? String(toolUseResult?.newString || '') : ''
+    const originalFile = isEditOrWrite && !parentShowsDiff && typeof toolUseResult?.originalFile === 'string'
+      ? toolUseResult.originalFile as string
+      : undefined
 
     // Hide redundant result content: Edit/Write success messages when the
     // parent already shows the diff, and TodoWrite boilerplate messages.
@@ -750,6 +763,7 @@ export const toolResultRenderer: MessageContentRenderer = {
           oldStr={oldStr}
           newStr={newStr}
           filePath={filePath}
+          originalFile={originalFile}
           context={context}
         />
       )
