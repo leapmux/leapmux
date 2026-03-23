@@ -14,6 +14,8 @@ type testSink struct {
 	sessionIDs       []string
 	sessionInfos     []map[string]interface{}
 	spanTypes        map[string]string
+	openSpans        []string
+	closedSpans      []string
 	planModeToolUses sync.Map
 }
 
@@ -34,9 +36,17 @@ func (s *testSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, sp
 
 func (s *testSink) PersistNotification(leapmuxv1.MessageRole, []byte) error { return nil }
 
-func (s *testSink) OpenSpan(string, string)    {}
-func (s *testSink) CloseSpan(string)           {}
-func (s *testSink) ResetSpans()                {}
+func (s *testSink) OpenSpan(spanID string, _ string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.openSpans = append(s.openSpans, spanID)
+}
+func (s *testSink) CloseSpan(spanID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closedSpans = append(s.closedSpans, spanID)
+}
+func (s *testSink) ResetSpans() {}
 func (s *testSink) SetSpanType(spanID, spanType string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -150,6 +160,27 @@ func (s *testSink) LastSessionInfo() map[string]interface{} {
 		return nil
 	}
 	return s.sessionInfos[len(s.sessionInfos)-1]
+}
+
+// OpenSpans returns a copy of all opened span IDs.
+func (s *testSink) OpenSpans() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.openSpans...)
+}
+
+// ClosedSpans returns a copy of all closed span IDs.
+func (s *testSink) ClosedSpans() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.closedSpans...)
+}
+
+// ClosedSpanCount returns the number of CloseSpan calls.
+func (s *testSink) ClosedSpanCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.closedSpans)
 }
 
 // noopSink is a no-op implementation of OutputSink for tests that don't

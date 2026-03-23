@@ -405,6 +405,55 @@ func TestAgent_SpanTypeSetOnToolUseAndResult(t *testing.T) {
 	assert.Equal(t, "Grep", toolResult.SpanType, "tool_result span type should match the tool_use")
 }
 
+// TestAgent_ParallelToolUseClosesAllSpans verifies that when a user message
+// contains multiple tool_result blocks (parallel tool calls), all corresponding
+// spans are closed — not just the first one.
+func TestAgent_ParallelToolUseClosesAllSpans(t *testing.T) {
+	ctx := context.Background()
+	sink := &testSink{}
+
+	agent, err := mockStartWithInit(ctx, Options{
+		AgentID:    "parallel-span-test",
+		Model:      "test",
+		WorkingDir: t.TempDir(),
+	}, sink)
+	require.NoError(t, err, "mockStartWithInit")
+	defer func() {
+		agent.Stop()
+		_ = agent.Wait()
+	}()
+
+	testutil.AssertEventually(t, func() bool {
+		return sink.SessionIDCount() >= 1
+	}, "expected init message")
+
+	// Assistant calls two tools in parallel.
+	toolUseMsg := `{"type":"assistant","message":{"role":"assistant","content":[` +
+		`{"type":"tool_use","id":"toolu_A","name":"Grep","input":{"pattern":"foo"}},` +
+		`{"type":"tool_use","id":"toolu_B","name":"Bash","input":{"command":"ls"}}` +
+		`]},"session_id":"test-session","uuid":"uuid1"}` + "\n"
+	require.NoError(t, agent.SendRawInput([]byte(toolUseMsg)))
+
+	testutil.AssertEventually(t, func() bool {
+		return len(sink.OpenSpans()) >= 2
+	}, "expected both spans to be opened")
+
+	assert.ElementsMatch(t, []string{"toolu_A", "toolu_B"}, sink.OpenSpans())
+
+	// Single user message with two tool_result blocks.
+	toolResultMsg := `{"type":"user","message":{"role":"user","content":[` +
+		`{"type":"tool_result","tool_use_id":"toolu_A","content":"match found"},` +
+		`{"type":"tool_result","tool_use_id":"toolu_B","content":"file list"}` +
+		`]},"session_id":"test-session","uuid":"uuid2"}` + "\n"
+	require.NoError(t, agent.SendRawInput([]byte(toolResultMsg)))
+
+	testutil.AssertEventually(t, func() bool {
+		return sink.ClosedSpanCount() >= 2
+	}, "expected both spans to be closed")
+
+	assert.ElementsMatch(t, []string{"toolu_A", "toolu_B"}, sink.ClosedSpans())
+}
+
 // TestHelperProcessEarlyExit is a test helper that writes an error to stderr
 // and exits immediately, simulating Claude Code detecting CLAUDECODE env var.
 func TestHelperProcessEarlyExit(t *testing.T) {

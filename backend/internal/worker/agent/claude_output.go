@@ -332,11 +332,14 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		a.processAssistantBlocks(&env)
 	}
 
-	// Close span after persisting if this is a user message (tool_result)
-	// that completes a tool span.
+	// Close spans after persisting if this is a user message (tool_result).
+	// A single user message may contain multiple tool_result blocks when
+	// tools were called in parallel, so close all of them.
 	if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
-		if spanID != "" {
-			a.sink.CloseSpan(spanID)
+		for _, block := range env.ContentBlocks() {
+			if block.Type == "tool_result" && block.ToolUseID != "" {
+				a.sink.CloseSpan(block.ToolUseID)
+			}
 		}
 	}
 
