@@ -510,12 +510,23 @@ function GrepResultView(props: {
     return lines.slice(0, COLLAPSED_RESULT_ROWS).join('\n')
   }
 
+  const summary = () => {
+    if (props.numLines > 0 && props.numFiles > 0)
+      return `${props.numLines} match${props.numLines === 1 ? '' : 'es'} in ${props.numFiles} file${props.numFiles === 1 ? '' : 's'}`
+    if (props.numFiles > 0)
+      return `Found ${props.numFiles} file${props.numFiles === 1 ? '' : 's'}`
+    return ''
+  }
+
   return (
     <div class={`${toolMessage}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>
       <Show
         when={hasResult()}
         fallback={<div class={toolResultContentPre}>{props.fallbackContent || 'No matches found'}</div>}
       >
+        <Show when={summary()}>
+          <div class={toolResultPrompt}>{summary()}</div>
+        </Show>
         <Show when={displayFilenames().length > 0}>
           <FileListView filenames={displayFilenames()} context={props.context} />
         </Show>
@@ -713,10 +724,11 @@ export const toolResultRenderer: MessageContentRenderer = {
           .join('')
       : String(resultData.content || '')
 
-    // Extract tool name from tool_use_result, or from the linked tool_use message.
+    // Extract tool name: prefer span_type (always set for span messages),
+    // then tool_use_result, then linked tool_use message.
     const toolUseResult = parsed.tool_use_result as Record<string, unknown> | undefined
     const toolUseInfo = context?.toolUseMessage ? extractToolUseInfo(context.toolUseMessage) : null
-    const toolName = String(toolUseResult?.tool_name || toolUseInfo?.toolName || context?.parentToolName || '')
+    const toolName = String(context?.spanType || toolUseResult?.tool_name || toolUseInfo?.toolName || context?.parentToolName || '')
     const toolInput = toolUseInfo?.input
 
     // Determine whether this tool's output should be preformatted text.

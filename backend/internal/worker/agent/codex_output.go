@@ -155,16 +155,17 @@ func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
 		// Persist first at parent depth, then open span so the
 		// completed message is indented under the started message.
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanColor: spanColor,
+			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: spanColor,
 		}); err != nil {
 			slog.Error("codex persist item/started", "agent_id", a.agentID, "type", itemType, "error", err)
 		}
+		a.sink.SetSpanType(itemID, itemType)
 		a.sink.OpenSpan(itemID, parentSpanID)
 	case "collabAgentToolCall":
 		// Persist first at parent depth, then open spans for
 		// SpawnAgent so subagent messages are indented.
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanColor: -1,
+			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: -1,
 		}); err != nil {
 			slog.Error("codex persist collabAgentToolCall/started", "agent_id", a.agentID, "error", err)
 		}
@@ -197,7 +198,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 			a.mu.Unlock()
 		}
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanColor: -1,
+			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: -1,
 		}); err != nil {
 			slog.Error("codex persist agentMessage", "agent_id", a.agentID, "error", err)
 		}
@@ -219,7 +220,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 			}
 		}
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanColor: -1,
+			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: -1,
 		}); err != nil {
 			slog.Error("codex persist plan", "agent_id", a.agentID, "error", err)
 		}
@@ -229,7 +230,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		a.mu.Unlock()
 		// Persist inside the span (at child depth), then close it.
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanColor: -1, Closing: true,
+			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: -1, Closing: true,
 		}); err != nil {
 			slog.Error("codex persist item/completed", "agent_id", a.agentID, "type", itemType, "error", err)
 		}
@@ -239,19 +240,19 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		// is persisted at parent depth (outside the subagent scope).
 		a.handleCollabAgentSpan(item, parentSpanID, true)
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanColor: -1,
+			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: -1,
 		}); err != nil {
 			slog.Error("codex persist collabAgentToolCall/completed", "agent_id", a.agentID, "error", err)
 		}
 	case "reasoning":
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanColor: -1,
+			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: -1,
 		}); err != nil {
 			slog.Error("codex persist reasoning", "agent_id", a.agentID, "error", err)
 		}
 	default:
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanColor: -1,
+			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: -1,
 		}); err != nil {
 			slog.Error("codex persist unknown item", "agent_id", a.agentID, "type", itemType, "error", err)
 		}

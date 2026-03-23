@@ -57,6 +57,7 @@ type SpanLine struct {
 type SpanTracker struct {
 	mu        sync.Mutex
 	spans     []ActiveSpan
+	spanTypes map[string]string // spanID → span type (tool name / item type)
 	nextColor int
 }
 
@@ -103,6 +104,30 @@ func (t *SpanTracker) CloseSpan(spanID string) {
 	t.spans = slices.DeleteFunc(t.spans, func(s ActiveSpan) bool {
 		return s.SpanID == spanID
 	})
+	delete(t.spanTypes, spanID)
+}
+
+// SetSpanType records the type (tool name / item type) for a span ID.
+func (t *SpanTracker) SetSpanType(spanID, spanType string) {
+	if spanID == "" || spanType == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.spanTypes == nil {
+		t.spanTypes = make(map[string]string)
+	}
+	t.spanTypes[spanID] = spanType
+}
+
+// GetSpanType returns the stored type for a span ID, or "".
+func (t *SpanTracker) GetSpanType(spanID string) string {
+	if spanID == "" {
+		return ""
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.spanTypes[spanID]
 }
 
 // PeekNextColor returns the color index that will be assigned to the next
@@ -300,6 +325,14 @@ func (s *agentOutputSink) OpenSpan(spanID, parentSpanID string) {
 
 func (s *agentOutputSink) CloseSpan(spanID string) {
 	s.tracker.CloseSpan(spanID)
+}
+
+func (s *agentOutputSink) SetSpanType(spanID, spanType string) {
+	s.tracker.SetSpanType(spanID, spanType)
+}
+
+func (s *agentOutputSink) GetSpanType(spanID string) string {
+	return s.tracker.GetSpanType(spanID)
 }
 
 func (s *agentOutputSink) PeekNextSpanColor() int32 {
@@ -540,8 +573,9 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		Depth:              int64(depth),
 		SpanID:             span.SpanID,
 		ParentSpanID:       span.ParentSpanID,
-		SpanLines:          spanLines,
+		SpanType:           span.SpanType,
 		SpanColor:          int64(spanColor),
+		SpanLines:          spanLines,
 		AgentProvider:      agentProvider,
 		CreatedAt:          now,
 	})
@@ -560,8 +594,9 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		Depth:              depth,
 		SpanId:             span.SpanID,
 		ParentSpanId:       span.ParentSpanID,
-		SpanLines:          spanLines,
+		SpanType:           span.SpanType,
 		SpanColor:          spanColor,
+		SpanLines:          spanLines,
 	})
 	return nil
 }

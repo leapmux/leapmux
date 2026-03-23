@@ -77,6 +77,8 @@ export interface RenderContext {
   toolUseMessage?: AgentChatMessage
   /** Color index assigned to this message's span (−1 = no color). */
   spanColor?: number
+  /** Tool name or item type from span_type column (reliable, always set for span messages). */
+  spanType?: string
   /** Whether the Bash/TaskOutput tool result is expanded (controlled by MessageBubble). */
   toolResultExpanded?: boolean
 }

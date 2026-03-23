@@ -223,13 +223,17 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		parentSpanID = extractSystemToolUseID(content)
 	}
 
-	// Determine span ID: for tool_use messages use the block ID,
-	// for tool_result messages use the tool_use_id reference.
-	var spanID string
+	// Determine span ID and span type: for tool_use messages use the block ID
+	// and tool name, for tool_result messages use the tool_use_id reference
+	// and look up the tool name from the span tracker.
+	var spanID, spanType string
 	if msgType == "assistant" {
-		spanID = extractToolUseID(content)
+		spanID, spanType = extractToolUseIDAndName(content)
 	} else if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
 		spanID = extractToolResultID(content)
+		if spanID != "" {
+			spanType = a.sink.GetSpanType(spanID)
+		}
 	}
 
 	// Detect plan mode from tool_result messages.
@@ -257,10 +261,16 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	if err := a.sink.PersistMessage(role, content, SpanInfo{
 		ParentSpanID: parentSpanID,
 		SpanID:       spanID,
+		SpanType:     spanType,
 		SpanColor:    spanColor,
 		Closing:      closing,
 	}); err != nil {
 		slog.Error("persist agent message", "agent_id", a.agentID, "error", err)
+	}
+
+	// Record span type for tool_use so the corresponding tool_result can look it up.
+	if spanType != "" {
+		a.sink.SetSpanType(spanID, spanType)
 	}
 
 	// Parse assistant message content blocks for plan mode tracking,
@@ -535,23 +545,29 @@ func (a *ClaudeCodeAgent) detectPlanModeFromToolResult(content []byte) {
 // --- Thread ID extraction helpers ---
 
 func extractToolUseID(content []byte) string {
+	id, _ := extractToolUseIDAndName(content)
+	return id
+}
+
+func extractToolUseIDAndName(content []byte) (string, string) {
 	var msg struct {
 		Message struct {
 			Content []struct {
 				Type string `json:"type"`
 				ID   string `json:"id"`
+				Name string `json:"name"`
 			} `json:"content"`
 		} `json:"message"`
 	}
 	if err := json.Unmarshal(content, &msg); err != nil {
-		return ""
+		return "", ""
 	}
 	for _, block := range msg.Message.Content {
 		if block.Type == "tool_use" && block.ID != "" {
-			return block.ID
+			return block.ID, block.Name
 		}
 	}
-	return ""
+	return "", ""
 }
 
 func extractToolResultID(content []byte) string {

@@ -146,6 +146,8 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       envelope.span_id = msg.spanId
     if (msg.parentSpanId)
       envelope.parent_span_id = msg.parentSpanId
+    if (msg.spanType)
+      envelope.span_type = msg.spanType
     if (msg.spanColor > 0)
       envelope.span_color = msg.spanColor
     if (msg.spanLines && msg.spanLines !== '[]')
@@ -196,7 +198,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       return false
 
     const toolUseResult = obj.tool_use_result as Record<string, unknown> | undefined
-    const toolName = String(toolUseResult?.tool_name || '')
+    const toolName = props.message.spanType || String(toolUseResult?.tool_name || '')
 
     // Grep/Glob: collapsible if filenames array exceeds threshold.
     if (toolName === 'Grep' || toolName === 'Glob') {
@@ -258,6 +260,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     jsonCopied: jsonCopied(),
     toolUseMessage: toolUseMessage(),
     spanColor: props.message.spanColor,
+    spanType: props.message.spanType,
     toolResultExpanded: toolResultExpanded(),
   })
 

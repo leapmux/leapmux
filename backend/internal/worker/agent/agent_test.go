@@ -276,6 +276,57 @@ func TestAgent_InitMessageFlowsThrough(t *testing.T) {
 	}, "expected additional output after input")
 }
 
+// TestAgent_SpanTypeSetOnToolUseAndResult verifies that span_type is set
+// to the tool name for both tool_use (assistant) and tool_result (user) messages.
+func TestAgent_SpanTypeSetOnToolUseAndResult(t *testing.T) {
+	ctx := context.Background()
+	sink := &testSink{}
+
+	agent, err := mockStartWithInit(ctx, Options{
+		AgentID:    "span-type-test",
+		Model:      "test",
+		WorkingDir: t.TempDir(),
+	}, sink)
+	require.NoError(t, err, "mockStartWithInit")
+	defer func() {
+		agent.Stop()
+		_ = agent.Wait()
+	}()
+
+	// Wait for init to be processed.
+	testutil.AssertEventually(t, func() bool {
+		return sink.SessionIDCount() >= 1
+	}, "expected init message")
+
+	initialCount := sink.MessageCount()
+
+	// Send a tool_use (assistant) message with tool name "Grep".
+	toolUseMsg := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_test123","name":"Grep","input":{"pattern":"foo"}}]},"session_id":"test-session","uuid":"uuid1"}` + "\n"
+	require.NoError(t, agent.SendRawInput([]byte(toolUseMsg)))
+
+	testutil.AssertEventually(t, func() bool {
+		return sink.MessageCount() > initialCount
+	}, "expected tool_use message to be persisted")
+
+	msgs := sink.Messages()
+	toolUse := msgs[len(msgs)-1]
+	assert.Equal(t, "toolu_test123", toolUse.SpanID, "tool_use span ID")
+	assert.Equal(t, "Grep", toolUse.SpanType, "tool_use span type should be the tool name")
+
+	// Send a tool_result (user) message referencing the same tool_use_id.
+	toolResultMsg := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_test123","content":"Found 3 files"}]},"session_id":"test-session","uuid":"uuid2","tool_use_result":{"mode":"files_with_matches","filenames":["a.go","b.go","c.go"],"numFiles":3}}` + "\n"
+	require.NoError(t, agent.SendRawInput([]byte(toolResultMsg)))
+
+	testutil.AssertEventually(t, func() bool {
+		return sink.MessageCount() > initialCount+1
+	}, "expected tool_result message to be persisted")
+
+	msgs = sink.Messages()
+	toolResult := msgs[len(msgs)-1]
+	assert.Equal(t, "toolu_test123", toolResult.SpanID, "tool_result span ID")
+	assert.Equal(t, "Grep", toolResult.SpanType, "tool_result span type should match the tool_use")
+}
+
 // TestHelperProcessEarlyExit is a test helper that writes an error to stderr
 // and exits immediately, simulating Claude Code detecting CLAUDECODE env var.
 func TestHelperProcessEarlyExit(t *testing.T) {

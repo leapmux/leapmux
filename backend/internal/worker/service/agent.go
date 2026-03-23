@@ -1590,7 +1590,8 @@ func messageToProto(m *db.Message) *leapmuxv1.AgentChatMessage {
 		Depth:              int32(m.Depth),
 		SpanId:             m.SpanID,
 		ParentSpanId:       m.ParentSpanID,
-		SpanLines:          m.SpanLines,
+		SpanType:           m.SpanType,
 		SpanColor:          int32(m.SpanColor),
+		SpanLines:          m.SpanLines,
 	}
 }

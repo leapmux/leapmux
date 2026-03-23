@@ -13,6 +13,7 @@ type testSink struct {
 	streamChunks     [][]byte
 	sessionIDs       []string
 	sessionInfos     []map[string]interface{}
+	spanTypes        map[string]string
 	planModeToolUses sync.Map
 }
 
@@ -21,20 +22,35 @@ type testSinkMessage struct {
 	Content      []byte
 	ParentSpanID string
 	SpanID       string
+	SpanType     string
 }
 
 func (s *testSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, span SpanInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.messages = append(s.messages, testSinkMessage{Role: role, Content: append([]byte(nil), content...), ParentSpanID: span.ParentSpanID, SpanID: span.SpanID})
+	s.messages = append(s.messages, testSinkMessage{Role: role, Content: append([]byte(nil), content...), ParentSpanID: span.ParentSpanID, SpanID: span.SpanID, SpanType: span.SpanType})
 	return nil
 }
 
 func (s *testSink) PersistNotification(leapmuxv1.MessageRole, []byte) error { return nil }
 
-func (s *testSink) OpenSpan(string, string)  {}
-func (s *testSink) CloseSpan(string)         {}
-func (s *testSink) PeekNextSpanColor() int32 { return 0 }
+func (s *testSink) OpenSpan(string, string)    {}
+func (s *testSink) CloseSpan(string)           {}
+func (s *testSink) SetSpanType(spanID, spanType string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.spanTypes == nil {
+		s.spanTypes = make(map[string]string)
+	}
+	s.spanTypes[spanID] = spanType
+}
+
+func (s *testSink) GetSpanType(spanID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.spanTypes[spanID]
+}
+func (s *testSink) PeekNextSpanColor() int32   { return 0 }
 
 func (s *testSink) BroadcastStreamChunk(content []byte) {
 	s.mu.Lock()
@@ -85,6 +101,13 @@ func (s *testSink) MessageCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.messages)
+}
+
+// Messages returns a copy of all persisted messages.
+func (s *testSink) Messages() []testSinkMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]testSinkMessage(nil), s.messages...)
 }
 
 // StreamChunkCount returns the number of broadcast stream chunks.
@@ -138,6 +161,8 @@ func (noopSink) PersistMessage(leapmuxv1.MessageRole, []byte, SpanInfo) error {
 func (noopSink) PersistNotification(leapmuxv1.MessageRole, []byte) error         { return nil }
 func (noopSink) OpenSpan(string, string)                                         {}
 func (noopSink) CloseSpan(string)                                                {}
+func (noopSink) SetSpanType(string, string)                                      {}
+func (noopSink) GetSpanType(string) string                                       { return "" }
 func (noopSink) PeekNextSpanColor() int32                                        { return 0 }
 func (noopSink) BroadcastStreamChunk([]byte)                                     {}
 func (noopSink) PersistControlRequest(string, []byte)                            {}

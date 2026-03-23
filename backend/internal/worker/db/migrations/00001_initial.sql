@@ -37,6 +37,7 @@ CREATE TABLE messages (
     depth               INTEGER NOT NULL DEFAULT 0,
     span_id             TEXT NOT NULL DEFAULT '',
     parent_span_id      TEXT NOT NULL DEFAULT '',
+    span_type           TEXT NOT NULL DEFAULT '',
     span_lines          TEXT NOT NULL DEFAULT '[]',
     span_color          INTEGER NOT NULL DEFAULT -1,
     delivery_error      TEXT NOT NULL DEFAULT '',

@@ -6,6 +6,7 @@ const spanLinesContainerBase = style({
   flexDirection: 'row',
   alignItems: 'stretch',
   flexShrink: 0,
+  paddingRight: '1px',
 })
 
 export const spanLinesContainer = style([spanLinesContainerBase, {

@@ -6,6 +6,7 @@ import leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 type SpanInfo struct {
 	ParentSpanID string
 	SpanID       string
+	SpanType     string
 	SpanColor    int32
 	Closing      bool
 }
@@ -17,6 +18,8 @@ type OutputSink interface {
 	PersistNotification(role leapmuxv1.MessageRole, content []byte) error
 	OpenSpan(spanID string, parentSpanID string)
 	CloseSpan(spanID string)
+	SetSpanType(spanID, spanType string)
+	GetSpanType(spanID string) string
 	PeekNextSpanColor() int32
 	BroadcastStreamChunk(content []byte)
 	PersistControlRequest(requestID string, payload []byte)

@@ -238,3 +238,26 @@ func TestSpanTracker_SpanLinesNullSlots(t *testing.T) {
 	assert.Equal(t, "null", string(parsed[1]))
 	assert.NotEqual(t, "null", string(parsed[2]))
 }
+
+func TestSpanTracker_SpanType(t *testing.T) {
+	tracker := &SpanTracker{}
+
+	// GetSpanType returns "" for unknown spans.
+	assert.Equal(t, "", tracker.GetSpanType("unknown"))
+	assert.Equal(t, "", tracker.GetSpanType(""))
+
+	// SetSpanType stores the type.
+	tracker.SetSpanType("span-1", "Grep")
+	assert.Equal(t, "Grep", tracker.GetSpanType("span-1"))
+
+	// SetSpanType with empty spanID or spanType is a no-op.
+	tracker.SetSpanType("", "Edit")
+	tracker.SetSpanType("span-2", "")
+	assert.Equal(t, "", tracker.GetSpanType("span-2"))
+
+	// CloseSpan removes the span type.
+	tracker.SetSpanType("span-3", "Read")
+	assert.Equal(t, "Read", tracker.GetSpanType("span-3"))
+	tracker.CloseSpan("span-3")
+	assert.Equal(t, "", tracker.GetSpanType("span-3"))
+}
