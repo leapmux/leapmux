@@ -314,12 +314,12 @@ func TestSpanTracker_ChildSpanAfterDescendantClose(t *testing.T) {
 	//   Open F (child of C) → must get col 5, NOT col 3
 	tracker := &SpanTracker{}
 
-	tracker.OpenSpan("span-A", "")         // col 0
-	tracker.OpenSpan("span-B", "span-A")   // col 1
-	tracker.OpenSpan("span-C", "span-B")   // col 2
-	tracker.OpenSpan("span-D", "span-C")   // col 3
-	tracker.OpenSpan("span-E", "span-D")   // col 4
-	tracker.CloseSpan("span-D")            // frees col 3; E still active at col 4
+	tracker.OpenSpan("span-A", "")       // col 0
+	tracker.OpenSpan("span-B", "span-A") // col 1
+	tracker.OpenSpan("span-C", "span-B") // col 2
+	tracker.OpenSpan("span-D", "span-C") // col 3
+	tracker.OpenSpan("span-E", "span-D") // col 4
+	tracker.CloseSpan("span-D")          // frees col 3; E still active at col 4
 
 	// F is a new child of C — must go to col 5, not col 3.
 	tracker.OpenSpan("span-F", "span-C")
@@ -342,6 +342,41 @@ func TestSpanTracker_ChildSpanAfterDescendantClose(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
 	require.Len(t, parsed, 6)
 	assert.Equal(t, SpanLineConnectorEnd, parsed[5].Type)
+}
+
+func TestSpanTracker_ChildSpanSkipsNonDescendantGap(t *testing.T) {
+	// Regression: when a span closes and frees a column between the parent's
+	// subtree and a non-descendant span, a new child must be placed AFTER
+	// the non-descendant span — not in the freed gap.
+	//
+	// Scenario (mirrors the real bug):
+	//   Agent@1 has child s2@2 (descendant). Unrelated s4@4 is NOT a
+	//   descendant. A previously closed span freed col 3.
+	//   Opening Bash (child of Agent) must get col 5, not col 3.
+	tracker := &SpanTracker{}
+
+	tracker.OpenSpan("root", "")      // col 0
+	tracker.OpenSpan("agent", "root") // col 1
+	tracker.OpenSpan("s2", "agent")   // col 2
+	tracker.OpenSpan("old", "agent")  // col 3
+	tracker.OpenSpan("s4", "root")    // col 4
+	tracker.CloseSpan("old")          // frees col 3
+
+	// Bash is a child of agent — must go to col 5, not col 3.
+	tracker.OpenSpan("bash", "agent")
+
+	_, lines, _ := tracker.Snapshot("agent", "", false)
+	var parsed []*SpanLine
+	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
+
+	// Expect 6 columns: root@0, agent@1, s2@2, null@3, s4@4, bash@5
+	require.Len(t, parsed, 6, "expected 6 columns")
+	assert.Equal(t, "root", parsed[0].SpanID)
+	assert.Equal(t, "agent", parsed[1].SpanID)
+	assert.Equal(t, "s2", parsed[2].SpanID)
+	assert.Nil(t, parsed[3])
+	assert.Equal(t, "s4", parsed[4].SpanID)
+	assert.Equal(t, "bash", parsed[5].SpanID)
 }
 
 func TestSpanTracker_DeepNestingDepth(t *testing.T) {

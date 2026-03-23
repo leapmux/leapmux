@@ -120,7 +120,7 @@ type messageEnvelope struct {
 		} `json:"usage"`
 	} `json:"message"`
 	ToolUseResult json.RawMessage            `json:"tool_use_result"`
-	CostUSD       *float64                  `json:"total_cost_usd"`
+	CostUSD       *float64                   `json:"total_cost_usd"`
 	ModelUsage    map[string]json.RawMessage `json:"modelUsage"`
 
 	// contentBlocks is lazily populated from RawContent.

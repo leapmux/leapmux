@@ -87,15 +87,15 @@ func (t *SpanTracker) OpenSpan(spanID, parentSpanID string) {
 	}
 
 	// Find the minimum starting column. When a parent is known, place the
-	// new child to the right of all active descendants of that parent so it
-	// doesn't reuse a column freed by a closed intermediate span.
+	// new child to the right of all active spans that are to the right of
+	// the parent so it doesn't reuse a column freed by a closed span,
+	// which would place the connector_end at a position with no preceding
+	// vertical line.
 	minCol := parentCol + 1
 	if parentCol >= 0 {
 		for _, s := range t.spans {
-			if s.Column > parentCol && t.isDescendantOf(s.SpanID, parentSpanID) {
-				if s.Column >= minCol {
-					minCol = s.Column + 1
-				}
+			if s.Column > parentCol && s.Column >= minCol {
+				minCol = s.Column + 1
 			}
 		}
 	}
