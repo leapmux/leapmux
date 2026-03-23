@@ -303,6 +303,180 @@ func TestSpanTracker_ChildSpanColumnAfterSiblingClose(t *testing.T) {
 	assert.Equal(t, SpanLineConnectorEnd, parsed[4].Type)
 }
 
+func TestSpanTracker_ChildSpanAfterDescendantClose(t *testing.T) {
+	// Regression: when a child span (D) of parent (C) closes but D's own
+	// child (E) remains active, a new child of C (F) must be placed to the
+	// RIGHT of E — not in D's freed column.
+	//
+	// Scenario:
+	//   Open A(col0) → B(col1) → C(col2) → D(col3) → E(col4)
+	//   Close D (frees col 3, but E at col 4 is still active)
+	//   Open F (child of C) → must get col 5, NOT col 3
+	tracker := &SpanTracker{}
+
+	tracker.OpenSpan("span-A", "")         // col 0
+	tracker.OpenSpan("span-B", "span-A")   // col 1
+	tracker.OpenSpan("span-C", "span-B")   // col 2
+	tracker.OpenSpan("span-D", "span-C")   // col 3
+	tracker.OpenSpan("span-E", "span-D")   // col 4
+	tracker.CloseSpan("span-D")            // frees col 3; E still active at col 4
+
+	// F is a new child of C — must go to col 5, not col 3.
+	tracker.OpenSpan("span-F", "span-C")
+
+	_, lines, _ := tracker.Snapshot("span-C", "", false)
+	var parsed []*SpanLine
+	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
+
+	// Expect 6 columns: A@0, B@1, C@2, null@3, E@4, F@5
+	require.Len(t, parsed, 6, "expected 6 columns: A@0, B@1, C@2, null@3, E@4, F@5")
+	assert.Equal(t, "span-A", parsed[0].SpanID)
+	assert.Equal(t, "span-B", parsed[1].SpanID)
+	assert.Equal(t, "span-C", parsed[2].SpanID)
+	assert.Nil(t, parsed[3]) // freed slot from span-D
+	assert.Equal(t, "span-E", parsed[4].SpanID)
+	assert.Equal(t, "span-F", parsed[5].SpanID)
+
+	// Verify F's connector_end is at col 5 (not col 3).
+	_, lines, _ = tracker.Snapshot("span-C", "span-F", true)
+	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
+	require.Len(t, parsed, 6)
+	assert.Equal(t, SpanLineConnectorEnd, parsed[5].Type)
+}
+
+func TestSpanTracker_DeepNestingDepth(t *testing.T) {
+	tracker := &SpanTracker{}
+
+	// A → B → C → D (depths 1, 2, 3, 4).
+	tracker.OpenSpan("span-A", "")
+	tracker.OpenSpan("span-B", "span-A")
+	tracker.OpenSpan("span-C", "span-B")
+	tracker.OpenSpan("span-D", "span-C")
+
+	depth, _, _ := tracker.Snapshot("span-A", "", false)
+	assert.Equal(t, int32(1), depth)
+	depth, _, _ = tracker.Snapshot("span-B", "", false)
+	assert.Equal(t, int32(2), depth)
+	depth, _, _ = tracker.Snapshot("span-C", "", false)
+	assert.Equal(t, int32(3), depth)
+	depth, _, _ = tracker.Snapshot("span-D", "", false)
+	assert.Equal(t, int32(4), depth)
+}
+
+func TestSpanTracker_DepthAfterIntermediateClose(t *testing.T) {
+	// A → B → C. Close B. C's depth should still be 3 (not affected
+	// by the intermediate parent closing).
+	tracker := &SpanTracker{}
+
+	tracker.OpenSpan("span-A", "")
+	tracker.OpenSpan("span-B", "span-A")
+	tracker.OpenSpan("span-C", "span-B")
+
+	// Verify C is depth 3 before closing B.
+	depth, _, _ := tracker.Snapshot("span-C", "", false)
+	assert.Equal(t, int32(3), depth)
+
+	// Close B — C's depth must remain 3.
+	tracker.CloseSpan("span-B")
+	depth, _, _ = tracker.Snapshot("span-C", "", false)
+	assert.Equal(t, int32(3), depth)
+
+	// A's depth must remain 1.
+	depth, _, _ = tracker.Snapshot("span-A", "", false)
+	assert.Equal(t, int32(1), depth)
+}
+
+func TestSpanTracker_MultipleChildrenDepth(t *testing.T) {
+	// Parent P with three children C1, C2, C3 — all should have same depth.
+	tracker := &SpanTracker{}
+
+	tracker.OpenSpan("P", "")
+	tracker.OpenSpan("C1", "P")
+	tracker.OpenSpan("C2", "P")
+	tracker.OpenSpan("C3", "P")
+
+	for _, spanID := range []string{"C1", "C2", "C3"} {
+		depth, _, _ := tracker.Snapshot(spanID, "", false)
+		assert.Equal(t, int32(2), depth, "depth for %s", spanID)
+	}
+}
+
+func TestSpanTracker_SnapshotConnectorColor(t *testing.T) {
+	tracker := &SpanTracker{}
+
+	// A (color 1) and B (color 2).
+	tracker.OpenSpan("span-A", "")
+	tracker.OpenSpan("span-B", "")
+
+	// Connector to A should return color 1.
+	_, _, connColor := tracker.Snapshot("", "span-A", false)
+	assert.Equal(t, int32(1), connColor)
+
+	// Connector to B should return color 2.
+	_, _, connColor = tracker.Snapshot("", "span-B", false)
+	assert.Equal(t, int32(2), connColor)
+
+	// No connector returns 0.
+	_, _, connColor = tracker.Snapshot("", "", false)
+	assert.Equal(t, int32(0), connColor)
+
+	// Connector to nonexistent span returns 0.
+	_, _, connColor = tracker.Snapshot("", "nonexistent", false)
+	assert.Equal(t, int32(0), connColor)
+}
+
+func TestSpanTracker_ConnectorOnNestedChild(t *testing.T) {
+	tracker := &SpanTracker{}
+
+	// A (col 0) → B (col 1). Connect to B while A is active.
+	tracker.OpenSpan("span-A", "")
+	tracker.OpenSpan("span-B", "span-A")
+
+	// Connector to B: A = active, B = connector.
+	_, lines, connColor := tracker.Snapshot("span-A", "span-B", false)
+	var parsed []*SpanLine
+	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
+	require.Len(t, parsed, 2)
+	assert.Equal(t, SpanLineActive, parsed[0].Type)
+	assert.Equal(t, SpanLineConnector, parsed[1].Type)
+	assert.Equal(t, int32(2), connColor)
+
+	// Closing connector to B: A = active, B = connector_end.
+	_, lines, _ = tracker.Snapshot("span-A", "span-B", true)
+	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
+	require.Len(t, parsed, 2)
+	assert.Equal(t, SpanLineActive, parsed[0].Type)
+	assert.Equal(t, SpanLineConnectorEnd, parsed[1].Type)
+}
+
+func TestSpanTracker_ConnectorWithDepthAndPassthrough(t *testing.T) {
+	tracker := &SpanTracker{}
+
+	// A (col 0) → B (col 1) → C (col 2). Connect to A while B, C active.
+	tracker.OpenSpan("span-A", "")
+	tracker.OpenSpan("span-B", "span-A")
+	tracker.OpenSpan("span-C", "span-B")
+
+	_, lines, _ := tracker.Snapshot("", "span-A", false)
+	var parsed []*SpanLine
+	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
+	require.Len(t, parsed, 3)
+	assert.Equal(t, SpanLineConnector, parsed[0].Type)
+	assert.Equal(t, SpanLineActivePassthrough, parsed[1].Type)
+	assert.Equal(t, 1, parsed[1].PassthroughColor)
+	assert.Equal(t, SpanLineActivePassthrough, parsed[2].Type)
+	assert.Equal(t, 1, parsed[2].PassthroughColor)
+
+	// Connect to B: A = active, B = connector, C = active_passthrough.
+	_, lines, _ = tracker.Snapshot("span-A", "span-B", false)
+	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
+	require.Len(t, parsed, 3)
+	assert.Equal(t, SpanLineActive, parsed[0].Type)
+	assert.Equal(t, SpanLineConnector, parsed[1].Type)
+	assert.Equal(t, SpanLineActivePassthrough, parsed[2].Type)
+	assert.Equal(t, 2, parsed[2].PassthroughColor)
+}
+
 func TestSpanTracker_SpanType(t *testing.T) {
 	tracker := &SpanTracker{}
 

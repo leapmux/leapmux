@@ -29,7 +29,6 @@ const notifThreadGracePeriod = time.Second
 // ActiveSpan tracks a single open subagent span.
 type ActiveSpan struct {
 	SpanID     string
-	Depth      int
 	ColorIndex int
 	Column     int
 }
@@ -62,6 +61,7 @@ type SpanTracker struct {
 	mu        sync.Mutex
 	spans     []ActiveSpan
 	spanTypes map[string]string // spanID → span type (tool name / item type)
+	parentMap map[string]string // spanID → parentSpanID (persists after close for ancestry lookups)
 	nextColor int
 }
 
@@ -70,21 +70,39 @@ func (t *SpanTracker) OpenSpan(spanID, parentSpanID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Single pass: find parent depth/column and build used-column set.
-	depth := 1
+	// Record parentage (persists after close for ancestry lookups).
+	if t.parentMap == nil {
+		t.parentMap = make(map[string]string)
+	}
+	t.parentMap[spanID] = parentSpanID
+
+	// Single pass: find parent column and build used-column set.
 	parentCol := -1
 	used := make(map[int]bool, len(t.spans))
 	for _, s := range t.spans {
 		used[s.Column] = true
 		if s.SpanID == parentSpanID {
-			depth = s.Depth + 1
 			parentCol = s.Column
 		}
 	}
 
-	// Find first free column to the right of the parent's column.
+	// Find the minimum starting column. When a parent is known, place the
+	// new child to the right of all active descendants of that parent so it
+	// doesn't reuse a column freed by a closed intermediate span.
+	minCol := parentCol + 1
+	if parentCol >= 0 {
+		for _, s := range t.spans {
+			if s.Column > parentCol && t.isDescendantOf(s.SpanID, parentSpanID) {
+				if s.Column >= minCol {
+					minCol = s.Column + 1
+				}
+			}
+		}
+	}
+
+	// Find first free column starting from minCol.
 	column := -1
-	for i := parentCol + 1; ; i++ {
+	for i := minCol; ; i++ {
 		if !used[i] {
 			column = i
 			break
@@ -94,10 +112,35 @@ func (t *SpanTracker) OpenSpan(spanID, parentSpanID string) {
 	t.nextColor = t.nextColor%spanPaletteSize + 1
 	t.spans = append(t.spans, ActiveSpan{
 		SpanID:     spanID,
-		Depth:      depth,
 		ColorIndex: t.nextColor,
 		Column:     column,
 	})
+}
+
+// depthOf returns the nesting depth for a span by walking the parentMap.
+// Returns 0 for unknown or root-level ("") spans. Must be called with t.mu held.
+func (t *SpanTracker) depthOf(spanID string) int {
+	depth := 0
+	current := spanID
+	for current != "" {
+		depth++
+		current = t.parentMap[current]
+	}
+	return depth
+}
+
+// isDescendantOf reports whether spanID is a descendant of ancestorSpanID
+// by walking the parentMap. Must be called with t.mu held.
+func (t *SpanTracker) isDescendantOf(spanID, ancestorSpanID string) bool {
+	current := spanID
+	for current != "" {
+		parent := t.parentMap[current]
+		if parent == ancestorSpanID {
+			return true
+		}
+		current = parent
+	}
+	return false
 }
 
 // CloseSpan removes a span, freeing its column.
@@ -160,12 +203,12 @@ func (t *SpanTracker) Snapshot(parentSpanID, connectorSpanID string, closing boo
 		return depth, "[]", connectorColorOut
 	}
 
-	// Single pass: depth lookup, maxCol, and span line entries.
+	// Depth lookup via parent chain; single pass for maxCol.
+	if parentSpanID != "" {
+		depth = int32(t.depthOf(parentSpanID))
+	}
 	maxCol := 0
 	for _, s := range t.spans {
-		if parentSpanID != "" && s.SpanID == parentSpanID {
-			depth = int32(s.Depth)
-		}
 		if s.Column > maxCol {
 			maxCol = s.Column
 		}
