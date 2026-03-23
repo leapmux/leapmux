@@ -73,18 +73,6 @@ function renderToolResultText(
   return container.textContent?.trim() ?? ''
 }
 
-/** Render a Grep tool_result message and return its container element. */
-function renderToolResultContainer(
-  resultContent: string,
-  toolUseResult?: Record<string, unknown>,
-  context?: RenderContext,
-): HTMLElement {
-  const msg = makeGrepToolResult(resultContent, toolUseResult)
-  const result = renderMessageContent(msg, 1 /* USER */, context)
-  const { container } = render(() => result)
-  return container
-}
-
 describe('formatGrepSummary', () => {
   it('returns null when no structured data and no fallback', () => {
     expect(formatGrepSummary(undefined, undefined)).toBeNull()
@@ -177,7 +165,7 @@ describe('grep tool_result expanded view', () => {
   })
 
   it('shows file list when numFiles > 0', () => {
-    const container = renderToolResultContainer(
+    const text = renderToolResultText(
       'src/foo.ts\nsrc/bar.ts',
       {
         tool_name: 'Grep',
@@ -187,15 +175,13 @@ describe('grep tool_result expanded view', () => {
         numLines: 0,
       },
     )
-    const listItems = container.querySelectorAll('li')
-    expect(listItems.length).toBe(2)
-    expect(listItems[0].textContent).toContain('foo.ts')
-    expect(listItems[1].textContent).toContain('bar.ts')
+    expect(text).toContain('src/foo.ts')
+    expect(text).toContain('src/bar.ts')
   })
 
   it('shows both file list and content when both numFiles and numLines > 0', () => {
     const matchContent = '42:const x = 1;'
-    const container = renderToolResultContainer(
+    const text = renderToolResultText(
       'src/foo.ts\n42:const x = 1;',
       {
         tool_name: 'Grep',
@@ -205,11 +191,7 @@ describe('grep tool_result expanded view', () => {
         numLines: 1,
       },
     )
-    const text = container.textContent ?? ''
-    // Check for file list
-    const listItems = container.querySelectorAll('li')
-    expect(listItems.length).toBe(1)
-    // Check for content
+    expect(text).toContain('src/foo.ts')
     expect(text).toContain('const x = 1;')
   })
 
@@ -222,7 +204,7 @@ describe('grep tool_result expanded view', () => {
   })
 
   it('relativizes file paths in file list', () => {
-    const container = renderToolResultContainer(
+    const text = renderToolResultText(
       '/home/user/project/src/foo.ts',
       {
         tool_name: 'Grep',
@@ -235,8 +217,7 @@ describe('grep tool_result expanded view', () => {
         workingDir: '/home/user/project',
       },
     )
-    const listItems = container.querySelectorAll('li')
-    expect(listItems.length).toBe(1)
-    expect(listItems[0].textContent).toBe('src/foo.ts')
+    expect(text).toContain('src/foo.ts')
+    expect(text).not.toContain('/home/user/project')
   })
 })

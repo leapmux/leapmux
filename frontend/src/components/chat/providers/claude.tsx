@@ -139,20 +139,21 @@ function classifyClaudeCodeMessage(
 
   // User messages
   if (type === 'user') {
-    // Agent prompt: user message with parent_tool_use_id (prompt sent to sub-agent)
-    if (typeof parentObject.parent_tool_use_id === 'string')
-      return { kind: 'agent_prompt' }
-
     const message = parentObject.message as Record<string, unknown> | undefined
     if (isObject(message)) {
       const content = (message as Record<string, unknown>).content
       if (typeof content === 'string')
         return { kind: 'user_text' }
       if (Array.isArray(content)) {
+        // tool_result takes priority over agent_prompt (subagent tool results
+        // also have parent_tool_use_id but should be rendered as tool results).
         if ((content as Array<Record<string, unknown>>).some(c => isObject(c) && c.type === 'tool_result'))
           return { kind: 'tool_result' }
       }
     }
+    // Agent prompt: user message with parent_tool_use_id (prompt sent to sub-agent)
+    if (typeof parentObject.parent_tool_use_id === 'string')
+      return { kind: 'agent_prompt' }
     return { kind: 'unknown' }
   }
 

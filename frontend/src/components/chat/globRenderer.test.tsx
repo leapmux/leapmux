@@ -144,7 +144,7 @@ describe('glob tool_use collapsed summary', () => {
 
 describe('glob tool_result expanded view', () => {
   it('shows file list with relativized paths', () => {
-    const container = renderToolResultContainer(
+    const text = renderToolResultText(
       '/home/user/project/src/foo.ts\n/home/user/project/src/bar.ts',
       {
         tool_name: 'Glob',
@@ -155,10 +155,9 @@ describe('glob tool_result expanded view', () => {
       },
       { workingDir: '/home/user/project' },
     )
-    const listItems = container.querySelectorAll('li')
-    expect(listItems.length).toBe(2)
-    expect(listItems[0].textContent).toBe('src/foo.ts')
-    expect(listItems[1].textContent).toBe('src/bar.ts')
+    expect(text).toContain('src/foo.ts')
+    expect(text).toContain('src/bar.ts')
+    expect(text).not.toContain('/home/user/project')
   })
 
   it('shows "No files found" when filenames is empty', () => {
@@ -192,7 +191,7 @@ describe('glob tool_result expanded view', () => {
   })
 
   it('renders single file correctly', () => {
-    const container = renderToolResultContainer(
+    const text = renderToolResultText(
       'src/only-file.ts',
       {
         tool_name: 'Glob',
@@ -201,8 +200,6 @@ describe('glob tool_result expanded view', () => {
         truncated: false,
       },
     )
-    const listItems = container.querySelectorAll('li')
-    expect(listItems.length).toBe(1)
-    expect(listItems[0].textContent).toContain('only-file.ts')
+    expect(text).toContain('only-file.ts')
   })
 })

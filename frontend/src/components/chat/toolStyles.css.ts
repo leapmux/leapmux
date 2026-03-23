@@ -52,7 +52,6 @@ export const toolResultContentAnsi = style({
   fontFamily: 'var(--font-mono)',
   fontVariantLigatures: 'none',
   fontSize: 'var(--text-8)',
-  lineHeight: 1.5,
 })
 
 // Override Shiki's default <pre> styling inside ANSI tool result
@@ -112,9 +111,40 @@ const toolInputSummaryBase = {
 
 export const toolInputSummary = style({
   ...toolInputSummaryBase,
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-all',
+})
+
+// Override Shiki's default <pre> styling inside tool input summary (for Bash highlighting)
+globalStyle(`${toolInputSummary} pre.shiki`, {
+  margin: 0,
+  padding: 0,
+  border: 'none',
+  background: 'none',
+  backgroundColor: 'transparent',
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-all',
+  fontSize: 'inherit',
+  fontFamily: 'inherit',
+  lineHeight: 'inherit',
+})
+
+globalStyle(`${toolInputSummary} pre.shiki code`, {
+  padding: 0,
+  background: 'none',
+  backgroundColor: 'transparent',
+  fontSize: 'inherit',
+  fontFamily: 'inherit',
+})
+
+globalStyle(`${toolInputSummary} pre.shiki span`, {
+  color: 'var(--shiki-light)',
+  backgroundColor: 'var(--shiki-light-bg, transparent)',
+})
+
+globalStyle(`html[data-theme="dark"] ${toolInputSummary} pre.shiki span`, {
+  color: 'var(--shiki-dark)',
+  backgroundColor: 'var(--shiki-dark-bg, transparent)',
 })
 
 // Tool input detail text (natural language: descriptions, URLs, queries)

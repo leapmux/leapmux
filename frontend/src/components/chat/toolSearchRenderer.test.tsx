@@ -101,7 +101,7 @@ describe('toolSearch tool_use rendering', () => {
 })
 
 describe('toolSearch tool_result rendering', () => {
-  it('shows matched tool names as list items', () => {
+  it('shows matched tool names', () => {
     const container = renderToolResultContainer(
       ['Read', 'Glob', 'Grep', 'Bash'],
       {
@@ -111,12 +111,11 @@ describe('toolSearch tool_result rendering', () => {
         total_deferred_tools: 19,
       },
     )
-    const listItems = container.querySelectorAll('li')
-    expect(listItems.length).toBe(4)
-    expect(listItems[0].textContent).toBe('Read')
-    expect(listItems[1].textContent).toBe('Glob')
-    expect(listItems[2].textContent).toBe('Grep')
-    expect(listItems[3].textContent).toBe('Bash')
+    const text = container.textContent ?? ''
+    expect(text).toContain('Read')
+    expect(text).toContain('Glob')
+    expect(text).toContain('Grep')
+    expect(text).toContain('Bash')
   })
 
   it('shows single matched tool', () => {
@@ -129,9 +128,8 @@ describe('toolSearch tool_result rendering', () => {
         total_deferred_tools: 19,
       },
     )
-    const listItems = container.querySelectorAll('li')
-    expect(listItems.length).toBe(1)
-    expect(listItems[0].textContent).toBe('Edit')
+    const text = container.textContent ?? ''
+    expect(text).toContain('Edit')
   })
 
   it('shows "No tools found" when matches is empty', () => {

@@ -14,30 +14,30 @@ import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { createLogger } from '~/lib/logger'
 import { parseMessageContent } from '~/lib/messageParser'
 import { formatChatQuote } from '~/lib/quoteUtils'
+import { formatUnifiedDiffText, rawDiffToHunks } from './diffUtils'
 import * as styles from './MessageBubble.css'
 import { classifyMessage, messageBubbleClass, messageRowClass } from './messageClassification'
 import { renderMessageContent, ToolHeaderActions } from './messageRenderers'
 import * as chatStyles from './messageStyles.css'
-import { getAssistantContent } from './messageUtils'
+import { getAssistantContent, isObject } from './messageUtils'
 import { renderNotificationThread } from './notificationRenderers'
 import { prettifyJson } from './rendererUtils'
 import { COLLAPSED_RESULT_ROWS } from './toolRenderers'
 
 const logger = createLogger('MessageBubble')
 
-function errorDetail(err: unknown): string {
-  if (err instanceof Error)
-    return err.stack ?? err.message
-  return String(err)
-}
-
 function renderErrorFallback(label: string) {
   return (err: unknown) => {
     logger.warn(label, err)
+    const message = err instanceof Error ? err.message : String(err)
+    const stack = err instanceof Error ? err.stack : undefined
     return (
       <span class={chatStyles.systemMessage}>
         {'Failed to render message: '}
-        <pre>{errorDetail(err)}</pre>
+        {message}
+        <Show when={stack}>
+          <pre>{stack}</pre>
+        </Show>
       </span>
     )
   }
@@ -58,6 +58,9 @@ function injectCopyButtons(container: HTMLElement) {
   const preElements = container.querySelectorAll('pre')
   for (const pre of preElements) {
     if (pre.querySelector('.copy-code-button'))
+      continue
+    // Skip shiki <pre> inside tool messages — copy is handled by ToolHeaderActions.
+    if (pre.closest('[data-tool-message]'))
       continue
 
     const host = document.createElement('div')
@@ -204,13 +207,28 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     const toolUseResult = obj.tool_use_result as Record<string, unknown> | undefined
     const toolName = props.message.spanType || String(toolUseResult?.tool_name || '')
 
-    // Grep/Glob: collapsible if filenames or content lines exceed threshold.
+    // Grep/Glob: collapsible based on structured data or raw result content.
     if (toolName === 'Grep' || toolName === 'Glob') {
+      // Structured: check filenames array from tool_use_result.
       const filenames = Array.isArray(toolUseResult?.filenames) ? toolUseResult!.filenames as string[] : []
       if (filenames.length > COLLAPSED_RESULT_ROWS)
         return true
-      if (toolName === 'Grep' && typeof toolUseResult?.content === 'string')
-        return toolUseResult.content.split('\n').length > COLLAPSED_RESULT_ROWS
+      // Structured: check content lines from tool_use_result (Grep content mode).
+      if (toolName === 'Grep' && typeof toolUseResult?.content === 'string'
+        && toolUseResult.content.split('\n').length > COLLAPSED_RESULT_ROWS) {
+        return true
+      }
+      // Fallback: check raw result content (e.g. subagent without tool_use_result).
+      const msg = obj.message as Record<string, unknown> | undefined
+      if (msg && Array.isArray(msg.content)) {
+        const tr = (msg.content as Array<Record<string, unknown>>).find(c => c.type === 'tool_result')
+        if (tr) {
+          const rc = Array.isArray(tr.content)
+            ? (tr.content as Array<Record<string, unknown>>).filter(c => c.type === 'text').map(c => c.text).join('')
+            : String(tr.content || '')
+          return rc.split('\n').filter((l: string) => l.trim()).length > COLLAPSED_RESULT_ROWS
+        }
+      }
       return false
     }
 
@@ -260,6 +278,70 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     const newString = String(toolUseResult.newString || '')
     return oldString !== '' && newString !== '' && oldString !== newString
   })
+
+  // Extract copyable content for tool_result messages (Read/Write/Edit/Bash/etc.).
+  const copyableResultContent = createMemo((): string | null => {
+    if (category().kind !== 'tool_result')
+      return null
+    const obj = parsed().parentObject
+    if (!obj)
+      return null
+
+    const toolUseResult = obj.tool_use_result as Record<string, unknown> | undefined
+    const toolName = props.message.spanType || String(toolUseResult?.tool_name || '')
+
+    // Edit: format as unified diff.
+    if (toolName === 'Edit') {
+      const structuredPatch = Array.isArray(toolUseResult?.structuredPatch) && (toolUseResult!.structuredPatch as unknown[]).length > 0
+        ? toolUseResult!.structuredPatch as Array<{ oldStart: number, oldLines: number, newStart: number, newLines: number, lines: string[] }>
+        : null
+      const filePath = String(toolUseResult?.filePath || '')
+      if (structuredPatch) {
+        return formatUnifiedDiffText(structuredPatch, filePath)
+      }
+      const oldStr = String(toolUseResult?.oldString || '')
+      const newStr = String(toolUseResult?.newString || '')
+      if (oldStr && newStr && oldStr !== newStr) {
+        return formatUnifiedDiffText(rawDiffToHunks(oldStr, newStr), filePath)
+      }
+      return null
+    }
+
+    // Read: copy file content from structured data.
+    if (toolName === 'Read') {
+      const file = toolUseResult?.file as Record<string, unknown> | undefined
+      if (file && typeof file.content === 'string')
+        return file.content
+    }
+
+    // Write: copy new file content from structured data.
+    if (toolName === 'Write') {
+      if (typeof toolUseResult?.newString === 'string')
+        return toolUseResult.newString as string
+    }
+
+    // Fallback: extract raw result content for any tool.
+    const msg = obj.message as Record<string, unknown> | undefined
+    if (!msg || !Array.isArray(msg.content))
+      return null
+    const tr = (msg.content as Array<Record<string, unknown>>).find(c => isObject(c) && c.type === 'tool_result')
+    if (!tr)
+      return null
+    const rc = Array.isArray(tr.content)
+      ? (tr.content as Array<Record<string, unknown>>).filter(c => isObject(c) && c.type === 'text').map(c => c.text).join('')
+      : String(tr.content || '')
+    return rc || null
+  })
+
+  const [resultCopied, setResultCopied] = createSignal(false)
+  const copyResultContent = async () => {
+    const content = copyableResultContent()
+    if (!content)
+      return
+    await navigator.clipboard.writeText(content)
+    setResultCopied(true)
+    setTimeout(setResultCopied, 2000, false)
+  }
 
   const diffView = () => localDiffView() ?? prefs.diffView()
   const toggleDiffView = () => setLocalDiffView(diffView() === 'unified' ? 'split' : 'unified')
@@ -374,6 +456,8 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
             createdAt={props.message.createdAt}
             onCopyJson={copyJson}
             jsonCopied={jsonCopied()}
+            onCopyContent={copyableResultContent() ? copyResultContent : undefined}
+            contentCopied={resultCopied()}
             expanded={toolResultExpanded()}
             onToggleExpand={isCollapsibleToolResult() ? () => setToolResultExpanded(v => !v) : undefined}
             hasDiff={hasToolResultDiff()}

@@ -220,6 +220,21 @@ export function rawDiffToHunks(oldStr: string, newStr: string): StructuredPatchH
   return [{ oldStart: 1, oldLines, newStart: 1, newLines, lines }]
 }
 
+/** Format structuredPatch hunks as a unified diff string suitable for copying. */
+export function formatUnifiedDiffText(hunks: StructuredPatchHunk[], filePath?: string): string {
+  const header = filePath
+    ? `--- a/${filePath}\n+++ b/${filePath}\n`
+    : ''
+  const parts: string[] = [header]
+  for (const hunk of hunks) {
+    parts.push(`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@\n`)
+    for (const line of hunk.lines) {
+      parts.push(`${line}\n`)
+    }
+  }
+  return parts.join('')
+}
+
 /**
  * Extract old-side and new-side source text from hunks for tokenization.
  * Old side = context lines + removed lines (in order).

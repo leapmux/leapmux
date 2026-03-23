@@ -40,7 +40,7 @@ import { IconButton } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
 import { parseMessageContent } from '~/lib/messageParser'
 import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
-import { renderMarkdown } from '~/lib/renderMarkdown'
+import { renderMarkdown, shikiHighlighter } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { DiffView, rawDiffToHunks } from './diffUtils'
 import { getAssistantContent, isObject, relativizePath } from './messageUtils'
@@ -113,11 +113,15 @@ export function ToolUseLayout(props: {
   onToggleExpand?: () => void
   /** Custom label for the expand button tooltip. */
   expandLabel?: string
+  /** Copy content callback. */
+  onCopyContent?: () => void
+  contentCopied?: boolean
+  copyContentLabel?: string
 }): JSX.Element {
   const expanded = () => props.expanded ?? false
-  const hasActions = () => !!props.onToggleExpand || !!props.context?.onCopyJson || !!props.hasDiff
+  const hasActions = () => !!props.onToggleExpand || !!props.context?.onCopyJson || !!props.hasDiff || !!props.onCopyContent
   return (
-    <div class={toolMessage}>
+    <div class={toolMessage} data-tool-message>
       <div class={toolUseHeader}>
         <Tooltip text={props.toolName}>
           <span class={`${inlineFlex} ${toolUseIcon}`}>
@@ -133,6 +137,9 @@ export function ToolUseLayout(props: {
             expanded={expanded()}
             onToggleExpand={props.onToggleExpand}
             expandLabel={props.expandLabel}
+            onCopyContent={props.onCopyContent}
+            contentCopied={props.contentCopied}
+            copyContentLabel={props.copyContentLabel}
             onCopyJson={props.context!.onCopyJson}
             jsonCopied={props.context!.jsonCopied ?? false}
             hasDiff={props.hasDiff}
@@ -201,6 +208,11 @@ export function ToolHeaderActions(props: {
   diffView?: DiffViewPreference
   /** Toggle diff view between unified and split. */
   onToggleDiffView?: () => void
+  /** Copy content callback — when provided, shows a copy button (command, file content, diff). */
+  onCopyContent?: () => void
+  contentCopied?: boolean
+  /** Custom label for the copy content tooltip. */
+  copyContentLabel?: string
   /** Reply callback — when provided, shows a reply button. */
   onReply?: () => void
   /** Copy markdown callback — when provided, shows a copy markdown button. */
@@ -243,6 +255,14 @@ export function ToolHeaderActions(props: {
           title={props.jsonCopied ? 'Copied' : 'Copy Raw JSON'}
         />
       </Show>
+      <Show when={props.onCopyContent}>
+        <IconButton
+          icon={props.contentCopied ? Check : Copy}
+          size="sm"
+          onClick={() => props.onCopyContent?.()}
+          title={props.contentCopied ? 'Copied' : (props.copyContentLabel || 'Copy')}
+        />
+      </Show>
       <Show when={props.hasDiff && props.onToggleDiffView}>
         <IconButton
           icon={props.diffView === 'unified' ? Columns2 : Rows2}
@@ -280,6 +300,8 @@ function ToolUseMessage(props: {
   detail: JSX.Element | null
   /** Summary shown below header inside the bordered area (e.g. Bash command, Grep result count). */
   summary?: JSX.Element | null
+  /** Full command text for Bash (shown when expanded). */
+  fullCommand?: string
   fallbackDisplay: string | null
   hasDiff: boolean
   oldStr: string
@@ -293,27 +315,40 @@ function ToolUseMessage(props: {
 }): JSX.Element {
   const { diffView, toggleDiffView } = useDiffViewToggle(() => props.context?.diffView)
   const [expanded, setExpanded] = createSignal(false)
+  const [commandCopied, setCommandCopied] = createSignal(false)
 
   const title = () => props.detail ?? `${props.toolName}${props.fallbackDisplay || ''}`
 
   // Edit diffs are collapsed by default (the tool_result already shows the diff).
   // Write diffs and non-diff tool_use messages remain always visible.
   const isCollapsibleDiff = () => props.hasDiff && !props.alwaysVisible
+  // Bash: collapsible when command is multi-line.
+  const isMultiLineCommand = () => !!props.fullCommand && props.fullCommand.includes('\n')
+  const isCollapsible = () => isCollapsibleDiff() || isMultiLineCommand()
 
   return (
     <ToolUseLayout
       icon={toolIconFor(props.toolName)}
       toolName={props.toolName}
       title={title()}
-      summary={props.summary}
+      summary={isMultiLineCommand() && expanded() ? undefined : props.summary}
       alwaysVisible={props.alwaysVisible}
       hasDiff={props.hasDiff}
       diffView={diffView()}
       onDiffViewChange={toggleDiffView}
       context={props.context}
       expanded={expanded()}
-      onToggleExpand={isCollapsibleDiff() ? () => setExpanded(v => !v) : undefined}
-      expandLabel="Show diff"
+      onToggleExpand={isCollapsible() ? () => setExpanded(v => !v) : undefined}
+      expandLabel={isMultiLineCommand() ? 'Show full command' : 'Show diff'}
+      onCopyContent={props.fullCommand
+        ? () => {
+            navigator.clipboard.writeText(props.fullCommand!)
+            setCommandCopied(true)
+            setTimeout(setCommandCopied, 2000, false)
+          }
+        : undefined}
+      contentCopied={commandCopied()}
+      copyContentLabel="Copy Command"
     >
       <Show when={props.hasDiff}>
         <DiffView
@@ -323,8 +358,20 @@ function ToolUseMessage(props: {
           originalFile={props.originalFile}
         />
       </Show>
+      <Show when={isMultiLineCommand() && expanded()}>
+        {/* eslint-disable-next-line solid/no-innerhtml -- shiki output is safe */}
+        <div class={toolResultContentAnsi} innerHTML={renderBashHighlight(props.fullCommand!)} />
+      </Show>
     </ToolUseLayout>
   )
+}
+
+function renderBashHighlight(code: string): string {
+  return shikiHighlighter.codeToHtml(code, {
+    lang: 'bash',
+    themes: { light: 'github-light', dark: 'github-dark' },
+    defaultColor: false,
+  })
 }
 
 /** Derive a summary element for a generic tool_use (Bash command, search paths). */
@@ -335,8 +382,8 @@ function deriveToolSummary(toolName: string, input: Record<string, unknown>, con
       if (!cmd)
         return undefined
       const firstLine = cmd.split('\n')[0]
-      const truncated = firstLine.length > 120 ? `${firstLine.slice(0, 120)}\u2026` : firstLine
-      return <div class={toolInputSummary}>{truncated}</div>
+      // eslint-disable-next-line solid/no-innerhtml -- shiki output is safe
+      return <div class={toolInputSummary} innerHTML={renderBashHighlight(firstLine)} />
     }
     case 'Grep': {
       const path = (input as GrepInput).path
@@ -393,11 +440,15 @@ export const toolUseRenderer: MessageContentRenderer = {
     const hasDiff = (isEdit && oldStr !== '' && newStr !== '' && oldStr !== newStr)
       || (isWrite && newStr !== '')
 
+    // Bash: pass full command for multi-line expand.
+    const fullCommand = toolName === 'Bash' ? (input as BashInput).command : undefined
+
     return (
       <ToolUseMessage
         toolName={toolName}
         detail={detail}
         summary={summary}
+        fullCommand={fullCommand}
         fallbackDisplay={fallbackDisplay}
         hasDiff={hasDiff}
         oldStr={oldStr}
@@ -442,6 +493,81 @@ const TOOL_USE_ERROR_RE = /<tool_use_error>([\s\S]*?)<\/tool_use_error>/
 function extractToolUseError(content: string): string | null {
   const match = content.match(TOOL_USE_ERROR_RE)
   return match ? match[1].trim() : null
+}
+
+/**
+ * Summary line patterns found at the start of raw Grep/Glob tool output.
+ * When tool_use_result is absent (e.g. subagent), the raw text starts with
+ * a summary line like "Found 21 files" followed by the actual file list.
+ * This regex matches those summary lines so they can be stripped from the
+ * file list and the count can be extracted.
+ */
+const RAW_RESULT_SUMMARY_RE = /^(?:Found (\d+) (?:files?|lines?(?:\s+and\s+\d+\s+files?)?)|(\d+) match(?:es)? in (\d+) files?|No (?:matches|files) found)$/
+
+/** Grep content-mode line pattern: "line_num:text" or "file:line_num:text". */
+const GREP_CONTENT_LINE_RE = /^\d+[:-]|^[^:]+:\d+[:-]/
+
+/**
+ * Parse raw Grep/Glob result text (without tool_use_result).
+ * Strips the leading summary line (if any) and returns structured data
+ * matching what tool_use_result would provide.
+ */
+function parseRawGrepGlobResult(raw: string, toolName: string): {
+  numFiles: number
+  numLines: number
+  filenames: string[]
+  content: string
+} {
+  const lines = raw.split('\n')
+  const firstLine = lines[0]?.trim() ?? ''
+  const summaryMatch = firstLine.match(RAW_RESULT_SUMMARY_RE)
+
+  // Strip the summary line from the data lines.
+  const dataLines = summaryMatch ? lines.slice(1) : lines
+  const nonEmpty = dataLines.filter(l => l.trim())
+
+  // For Grep content mode (lines contain "file:line:match" or "line_num:text"),
+  // we check if lines look like grep content output vs. plain file paths.
+  const looksLikeContent = toolName === 'Grep'
+    && nonEmpty.length > 0
+    && nonEmpty.every(l => GREP_CONTENT_LINE_RE.test(l))
+
+  let numFiles = 0
+  let numLines = 0
+
+  if (summaryMatch) {
+    if (summaryMatch[1]) {
+      // "Found N files" or "Found N lines"
+      const n = Number.parseInt(summaryMatch[1], 10)
+      if (firstLine.includes('line')) {
+        numLines = n
+      }
+      else {
+        numFiles = n
+      }
+    }
+    else if (summaryMatch[2] && summaryMatch[3]) {
+      // "N matches in M files"
+      numLines = Number.parseInt(summaryMatch[2], 10)
+      numFiles = Number.parseInt(summaryMatch[3], 10)
+    }
+  }
+
+  if (looksLikeContent) {
+    return {
+      numFiles: numFiles || 0,
+      numLines: numLines || nonEmpty.length,
+      filenames: [],
+      content: nonEmpty.join('\n'),
+    }
+  }
+
+  return {
+    numFiles: numFiles || nonEmpty.length,
+    numLines: 0,
+    filenames: nonEmpty,
+    content: '',
+  }
 }
 
 /** Reusable file-path list used by Grep/Glob result views. */
@@ -918,12 +1044,26 @@ export const toolResultRenderer: MessageContentRenderer = {
     // Build the inner result element.
     let innerResult: JSX.Element
 
-    // Grep: render structured result view when tool_use_result has data.
-    if (toolName === 'Grep' && toolUseResult) {
-      const numFiles = typeof toolUseResult.numFiles === 'number' ? toolUseResult.numFiles : 0
-      const numLines = typeof toolUseResult.numLines === 'number' ? toolUseResult.numLines : 0
-      const filenames = Array.isArray(toolUseResult.filenames) ? toolUseResult.filenames as string[] : []
-      const grepContent = typeof toolUseResult.content === 'string' ? toolUseResult.content : ''
+    // Grep: render structured result view (with or without tool_use_result).
+    if (toolName === 'Grep') {
+      let numFiles: number
+      let numLines: number
+      let filenames: string[]
+      let grepContent: string
+      if (toolUseResult) {
+        numFiles = typeof toolUseResult.numFiles === 'number' ? toolUseResult.numFiles : 0
+        numLines = typeof toolUseResult.numLines === 'number' ? toolUseResult.numLines : 0
+        filenames = Array.isArray(toolUseResult.filenames) ? toolUseResult.filenames as string[] : []
+        grepContent = typeof toolUseResult.content === 'string' ? toolUseResult.content : ''
+      }
+      else {
+        // Subagent: parse raw resultContent to extract summary and file list.
+        const parsed = parseRawGrepGlobResult(resultContent, 'Grep')
+        numFiles = parsed.numFiles
+        numLines = parsed.numLines
+        filenames = parsed.filenames
+        grepContent = parsed.content
+      }
       innerResult = (
         <GrepResultView
           numFiles={numFiles}
@@ -987,9 +1127,16 @@ export const toolResultRenderer: MessageContentRenderer = {
         />
       )
     }
-    // Glob: render structured result view when tool_use_result has filenames.
-    else if (toolName === 'Glob' && toolUseResult) {
-      const filenames = Array.isArray(toolUseResult.filenames) ? toolUseResult.filenames as string[] : []
+    // Glob: render structured result view (with or without tool_use_result).
+    else if (toolName === 'Glob') {
+      let filenames: string[]
+      if (toolUseResult) {
+        filenames = Array.isArray(toolUseResult.filenames) ? toolUseResult.filenames as string[] : []
+      }
+      else {
+        // Subagent: parse raw resultContent to extract summary and file list.
+        filenames = parseRawGrepGlobResult(resultContent, 'Glob').filenames
+      }
       innerResult = (
         <GlobResultView
           filenames={filenames}
