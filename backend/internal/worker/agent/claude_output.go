@@ -93,36 +93,55 @@ func (a *ClaudeCodeAgent) enrichResultWithToolUses(content []byte) []byte {
 	return a.enrichWithToolUses(content)
 }
 
-// processAssistantBlocks parses the message.content[] blocks of an assistant
-// message once and performs plan mode tracking, plan file tracking, tool
-// use counting, and scope management — replacing multiple separate parse passes.
-func (a *ClaudeCodeAgent) processAssistantBlocks(content []byte) {
-	var msg struct {
-		ParentToolUseID string `json:"parent_tool_use_id"`
-		Message         struct {
-			Content []struct {
-				Type  string `json:"type"`
-				ID    string `json:"id"`
-				Name  string `json:"name"`
-				Input struct {
-					FilePath  string `json:"file_path"`
-					Content   string `json:"content"`
-					OldString string `json:"old_string"`
-					NewString string `json:"new_string"`
-				} `json:"input"`
-			} `json:"content"`
-		} `json:"message"`
-	}
-	if json.Unmarshal(content, &msg) != nil {
-		return
-	}
+// contentBlock represents a single block in message.content[].
+type contentBlock struct {
+	Type      string          `json:"type"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	ToolUseID string          `json:"tool_use_id"`
+	Input     json.RawMessage `json:"input"`
+}
 
+// messageEnvelope is the shared top-level structure parsed once for
+// assistant, user, system, and result messages.
+type messageEnvelope struct {
+	ParentToolUseID string `json:"parent_tool_use_id"`
+	ToolUseID       string `json:"tool_use_id"`
+	Message         struct {
+		RawContent json.RawMessage `json:"content"`
+	} `json:"message"`
+	ToolUseResult *struct {
+		Message string `json:"message"`
+	} `json:"tool_use_result"`
+
+	// contentBlocks is lazily populated from RawContent.
+	contentBlocks []contentBlock
+	contentParsed bool
+}
+
+// ContentBlocks returns the parsed content blocks from message.content.
+// Returns nil if content is not an array (e.g. a plain string).
+func (e *messageEnvelope) ContentBlocks() []contentBlock {
+	if !e.contentParsed {
+		e.contentParsed = true
+		raw := e.Message.RawContent
+		if len(raw) > 0 && raw[0] == '[' {
+			_ = json.Unmarshal(raw, &e.contentBlocks)
+		}
+	}
+	return e.contentBlocks
+}
+
+// processAssistantBlocks iterates the pre-parsed message.content[] blocks of an
+// assistant message and performs plan mode tracking, plan file tracking, tool
+// use counting, and scope management.
+func (a *ClaudeCodeAgent) processAssistantBlocks(env *messageEnvelope) {
 	// Determine the parent span for any Agent tool_use blocks.
-	parentSpanID := msg.ParentToolUseID
+	parentSpanID := env.ParentToolUseID
 
 	toolUseCount := 0
 	planFileProcessed := false
-	for _, block := range msg.Message.Content {
+	for _, block := range env.ContentBlocks() {
 		if block.Type != "tool_use" {
 			continue
 		}
@@ -145,20 +164,29 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(content []byte) {
 
 		// Plan file path tracking (Write/Edit to ~/.claude/plans/).
 		if !planFileProcessed && (block.Name == "Write" || block.Name == "Edit") {
-			filePath := block.Input.FilePath
+			var input struct {
+				FilePath  string `json:"file_path"`
+				Content   string `json:"content"`
+				OldString string `json:"old_string"`
+				NewString string `json:"new_string"`
+			}
+			if json.Unmarshal(block.Input, &input) != nil {
+				continue
+			}
+			filePath := input.FilePath
 			if filePath != "" && a.homeDir != "" {
 				planDir := a.homeDir + "/.claude/plans/"
 				if strings.HasPrefix(filePath, planDir) {
 					planFileProcessed = true
 
 					var planContentStr string
-					if block.Name == "Write" && block.Input.Content != "" {
-						planContentStr = block.Input.Content
+					if block.Name == "Write" && input.Content != "" {
+						planContentStr = input.Content
 					} else {
 						data, readErr := os.ReadFile(filePath)
 						if readErr == nil && len(data) > 0 {
 							if block.Name == "Edit" {
-								planContentStr = strings.Replace(string(data), block.Input.OldString, block.Input.NewString, 1)
+								planContentStr = strings.Replace(string(data), input.OldString, input.NewString, 1)
 							} else {
 								planContentStr = string(data)
 							}
@@ -215,15 +243,22 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	// Non-notification messages soft-clear the notification thread.
 	a.sink.SoftClearNotifThread()
 
+	// Parse the message envelope once for all downstream consumers.
+	var env messageEnvelope
+	if err := json.Unmarshal(content, &env); err != nil {
+		slog.Warn("invalid message envelope", "agent_id", a.agentID, "error", err)
+		return
+	}
+
 	// Extract agent context metadata from assistant and result messages.
 	if msgType == "assistant" || msgType == "result" {
 		a.extractAndBroadcastUsage(content, msgType)
 	}
 
 	// Determine parent span ID for hierarchy tracking.
-	parentSpanID := extractParentToolUseID(content)
+	parentSpanID := env.ParentToolUseID
 	if parentSpanID == "" {
-		parentSpanID = extractSystemToolUseID(content)
+		parentSpanID = env.ToolUseID
 	}
 
 	// Determine span ID and span type: for tool_use messages use the block ID
@@ -231,9 +266,19 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	// and look up the tool name from the span tracker.
 	var spanID, spanType string
 	if msgType == "assistant" {
-		spanID, spanType = extractToolUseIDAndName(content)
+		for _, block := range env.ContentBlocks() {
+			if block.Type == "tool_use" && block.ID != "" {
+				spanID, spanType = block.ID, block.Name
+				break
+			}
+		}
 	} else if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
-		spanID = extractToolResultID(content)
+		for _, block := range env.ContentBlocks() {
+			if block.Type == "tool_result" && block.ToolUseID != "" {
+				spanID = block.ToolUseID
+				break
+			}
+		}
 		if spanID != "" {
 			spanType = a.sink.GetSpanType(spanID)
 		}
@@ -241,7 +286,7 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 
 	// Detect plan mode from tool_result messages.
 	if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
-		a.detectPlanModeFromToolResult(content)
+		a.detectPlanModeFromToolResult(&env)
 	}
 
 	// Enrich result messages with num_tool_uses.
@@ -281,7 +326,7 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	// Runs after persist so spans open AFTER the tool_use message,
 	// keeping it at parent depth while its tool_result is indented.
 	if msgType == "assistant" {
-		a.processAssistantBlocks(content)
+		a.processAssistantBlocks(&env)
 	}
 
 	// Close span after persisting if this is a user message (tool_result)
@@ -499,23 +544,8 @@ func modelContextWindow(models []*leapmuxv1.AvailableModel, modelID string) int6
 
 // detectPlanModeFromToolResult inspects a user message (tool_result) for
 // confirmation of a previously tracked EnterPlanMode or ExitPlanMode tool_use.
-func (a *ClaudeCodeAgent) detectPlanModeFromToolResult(content []byte) {
-	var msg struct {
-		Message struct {
-			Content []struct {
-				Type      string `json:"type"`
-				ToolUseID string `json:"tool_use_id"`
-			} `json:"content"`
-		} `json:"message"`
-		ToolUseResult *struct {
-			Message string `json:"message"`
-		} `json:"tool_use_result"`
-	}
-	if err := json.Unmarshal(content, &msg); err != nil {
-		return
-	}
-
-	for _, block := range msg.Message.Content {
+func (a *ClaudeCodeAgent) detectPlanModeFromToolResult(env *messageEnvelope) {
+	for _, block := range env.ContentBlocks() {
 		if block.Type != "tool_result" || block.ToolUseID == "" {
 			continue
 		}
@@ -526,8 +556,8 @@ func (a *ClaudeCodeAgent) detectPlanModeFromToolResult(content []byte) {
 		}
 
 		resultText := ""
-		if msg.ToolUseResult != nil {
-			resultText = msg.ToolUseResult.Message
+		if env.ToolUseResult != nil {
+			resultText = env.ToolUseResult.Message
 		}
 
 		resultLower := strings.ToLower(resultText)
@@ -556,74 +586,6 @@ func (a *ClaudeCodeAgent) detectPlanModeFromToolResult(content []byte) {
 				"result_text", truncated)
 		}
 	}
-}
-
-// --- Thread ID extraction helpers ---
-
-func extractToolUseID(content []byte) string {
-	id, _ := extractToolUseIDAndName(content)
-	return id
-}
-
-func extractToolUseIDAndName(content []byte) (string, string) {
-	var msg struct {
-		Message struct {
-			Content []struct {
-				Type string `json:"type"`
-				ID   string `json:"id"`
-				Name string `json:"name"`
-			} `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.Unmarshal(content, &msg); err != nil {
-		return "", ""
-	}
-	for _, block := range msg.Message.Content {
-		if block.Type == "tool_use" && block.ID != "" {
-			return block.ID, block.Name
-		}
-	}
-	return "", ""
-}
-
-func extractToolResultID(content []byte) string {
-	var msg struct {
-		Message struct {
-			Content []struct {
-				Type      string `json:"type"`
-				ToolUseID string `json:"tool_use_id"`
-			} `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.Unmarshal(content, &msg); err != nil {
-		return ""
-	}
-	for _, block := range msg.Message.Content {
-		if block.Type == "tool_result" && block.ToolUseID != "" {
-			return block.ToolUseID
-		}
-	}
-	return ""
-}
-
-func extractParentToolUseID(content []byte) string {
-	var msg struct {
-		ParentToolUseID string `json:"parent_tool_use_id"`
-	}
-	if err := json.Unmarshal(content, &msg); err != nil {
-		return ""
-	}
-	return msg.ParentToolUseID
-}
-
-func extractSystemToolUseID(content []byte) string {
-	var msg struct {
-		ToolUseID string `json:"tool_use_id"`
-	}
-	if err := json.Unmarshal(content, &msg); err != nil {
-		return ""
-	}
-	return msg.ToolUseID
 }
 
 // --- Notification threading helpers ---
