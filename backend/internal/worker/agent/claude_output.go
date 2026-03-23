@@ -54,11 +54,14 @@ func (a *ClaudeCodeAgent) HandleOutput(content []byte) {
 		a.handlePersistableMessage(content, envelope.Type, role)
 
 	case "user":
-		// Reset tool use counter at the start of each user turn.
-		a.mu.Lock()
-		a.turnToolUses = 0
-		a.mu.Unlock()
-		if !isSimpleUserTextEcho(content) {
+		if isSimpleUserTextEcho(content) {
+			// Reset tool use counter at the start of each user turn.
+			// Only reset for user text echoes, not tool_result messages,
+			// so the counter accumulates across the entire turn.
+			a.mu.Lock()
+			a.turnToolUses = 0
+			a.mu.Unlock()
+		} else {
 			a.handlePersistableMessage(content, envelope.Type, role)
 		}
 
