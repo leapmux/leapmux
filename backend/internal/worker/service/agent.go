@@ -1373,7 +1373,8 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 
 	// Persist a display message for the control response.
 	// Skip for AskUserQuestion — the tool_result already shows the user's answers.
-	if toolName != "AskUserQuestion" {
+	// Skip for ExitPlanMode — the tool_result already shows approval/feedback.
+	if toolName != "AskUserQuestion" && toolName != "ExitPlanMode" {
 		action := "approved"
 		if crPayload.Response.Response.Behavior == agent.ControlBehaviorDeny {
 			action = "rejected"

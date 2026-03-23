@@ -214,16 +214,25 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // tool_use and agent_prompt render their own ToolHeaderActions inside ToolUseLayout.
   const hasInternalActions = () => category().kind === 'tool_use' || category().kind === 'agent_prompt'
 
-  // Determine if this tool_result is collapsible (enough lines/items to warrant collapse).
-  const isCollapsibleToolResult = createMemo(() => {
+  // Shared derivation for tool_result messages: extract toolName and toolUseResult once.
+  const toolResultInfo = createMemo(() => {
     if (category().kind !== 'tool_result')
-      return false
+      return null
     const obj = parsed().parentObject
     if (!obj)
-      return false
-
+      return null
     const toolUseResult = obj.tool_use_result as Record<string, unknown> | undefined
     const toolName = props.message.spanType || String(toolUseResult?.tool_name || '')
+    return { obj, toolUseResult, toolName }
+  })
+
+  // Determine if this tool_result is collapsible (enough lines/items to warrant collapse).
+  const isCollapsibleToolResult = createMemo(() => {
+    const info = toolResultInfo()
+    if (!info)
+      return false
+
+    const { obj, toolUseResult, toolName } = info
 
     // Grep/Glob: collapsible based on structured data or raw result content.
     if (toolName === 'Grep' || toolName === 'Glob') {
@@ -273,12 +282,10 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
 
   // Determine if this tool_result has a diff (Edit/Write with structuredPatch or old/new strings).
   const hasToolResultDiff = createMemo(() => {
-    if (category().kind !== 'tool_result')
+    const info = toolResultInfo()
+    if (!info)
       return false
-    const obj = parsed().parentObject
-    if (!obj)
-      return false
-    const toolUseResult = obj.tool_use_result as Record<string, unknown> | undefined
+    const { toolUseResult } = info
     if (!toolUseResult)
       return false
     if (Array.isArray(toolUseResult.structuredPatch) && (toolUseResult.structuredPatch as unknown[]).length > 0)
@@ -290,14 +297,11 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
 
   // Extract copyable content for tool_result messages (Read/Write/Edit/Bash/etc.).
   const copyableResultContent = createMemo((): string | null => {
-    if (category().kind !== 'tool_result')
-      return null
-    const obj = parsed().parentObject
-    if (!obj)
+    const info = toolResultInfo()
+    if (!info)
       return null
 
-    const toolUseResult = obj.tool_use_result as Record<string, unknown> | undefined
-    const toolName = props.message.spanType || String(toolUseResult?.tool_name || '')
+    const { obj, toolUseResult, toolName } = info
 
     // Edit: format as unified diff.
     if (toolName === 'Edit') {

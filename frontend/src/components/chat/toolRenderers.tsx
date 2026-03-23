@@ -21,6 +21,7 @@ import FilePlus from 'lucide-solid/icons/file-plus'
 import FoldVertical from 'lucide-solid/icons/fold-vertical'
 import FolderSearch from 'lucide-solid/icons/folder-search'
 import Globe from 'lucide-solid/icons/globe'
+import Hand from 'lucide-solid/icons/hand'
 import ListTodo from 'lucide-solid/icons/list-todo'
 import MessageSquare from 'lucide-solid/icons/message-square'
 import OctagonX from 'lucide-solid/icons/octagon-x'
@@ -29,6 +30,7 @@ import PocketKnife from 'lucide-solid/icons/pocket-knife'
 import Quote from 'lucide-solid/icons/quote'
 import Rows2 from 'lucide-solid/icons/rows-2'
 import Search from 'lucide-solid/icons/search'
+import Stamp from 'lucide-solid/icons/stamp'
 import Terminal from 'lucide-solid/icons/terminal'
 import TextSearch from 'lucide-solid/icons/text-search'
 import TicketsPlane from 'lucide-solid/icons/tickets-plane'
@@ -43,10 +45,11 @@ import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
 import { renderMarkdown, shikiHighlighter } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { DiffView, rawDiffToHunks } from './diffUtils'
+import { markdownContent } from './markdownContent.css'
 import { getAssistantContent, isObject, relativizePath } from './messageUtils'
 import { parseCatNContent, ReadResultView } from './ReadResultView'
 import { RelativeTime } from './RelativeTime'
-import { formatDuration, formatToolInput } from './rendererUtils'
+import { formatDuration, formatTaskStatus, formatToolInput } from './rendererUtils'
 import { spanColorKey } from './SpanLines'
 import { spanLineColors } from './SpanLines.css'
 import { renderToolDetail } from './toolDetailRenderers'
@@ -804,7 +807,6 @@ function extractWebSearchSummary(results: unknown[]): string {
 
 /** WebSearch result view: collapsed by default, shows links + summary. */
 function WebSearchResultView(props: {
-  query: string
   links: WebSearchLink[]
   summary: string
   context?: RenderContext
@@ -940,10 +942,7 @@ function TaskOutputResultView(props: {
 }): JSX.Element {
   const expanded = () => props.context?.toolResultExpanded ?? false
   const status = () => typeof props.task.status === 'string' ? props.task.status : ''
-  const statusLabel = () => {
-    const s = status()
-    return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''
-  }
+  const statusLabel = () => formatTaskStatus(status() || undefined)
   const description = () => typeof props.task.description === 'string' ? props.task.description : ''
   const taskId = () => typeof props.task.task_id === 'string' ? props.task.task_id : ''
   const exitCode = () => typeof props.task.exitCode === 'number' ? props.task.exitCode : null
@@ -1047,6 +1046,50 @@ function renderReadOrPre(
     }
   }
   return <div class={toolResultContentPre}>{resultContent}</div>
+}
+
+/** ExitPlanMode result view: "Plan approved" with file path, or "Sent feedback:" with markdown content. */
+function ExitPlanModeResultView(props: {
+  isError: boolean
+  resultContent: string
+  toolUseResult?: Record<string, unknown>
+  context?: RenderContext
+}): JSX.Element {
+  if (props.isError) {
+    return (
+      <div class={toolMessage}>
+        <div class={toolUseHeader}>
+          <span class={`${inlineFlex} ${toolUseIcon}`}>
+            <Icon icon={Hand} size="md" />
+          </span>
+          <span class={toolInputText}>Sent feedback:</span>
+        </div>
+        {/* eslint-disable-next-line solid/no-innerhtml -- HTML from renderMarkdown, not user input */}
+        <div class={markdownContent} innerHTML={renderMarkdown(props.resultContent)} />
+      </div>
+    )
+  }
+
+  const filePath = typeof props.toolUseResult?.filePath === 'string'
+    ? props.toolUseResult.filePath as string
+    : ''
+
+  return (
+    <div class={toolMessage}>
+      <div class={toolUseHeader}>
+        <span class={`${inlineFlex} ${toolUseIcon}`}>
+          <Icon icon={Stamp} size="md" />
+        </span>
+        <span class={toolInputText}>Plan approved</span>
+      </div>
+      <Show when={filePath}>
+        <div class={toolResultPrompt}>
+          {'Plan file: '}
+          <code>{relativizePath(filePath, props.context?.workingDir, props.context?.homeDir)}</code>
+        </div>
+      </Show>
+    </div>
+  )
 }
 
 /** Inner component for tool_result messages with structuredPatch — owns local diff view state. */
@@ -1305,12 +1348,22 @@ export const toolResultRenderer: MessageContentRenderer = {
     else if (toolName === 'WebSearch' && toolUseResult && Array.isArray(toolUseResult.results)) {
       const links = extractWebSearchLinks(toolUseResult.results as unknown[])
       const summary = extractWebSearchSummary(toolUseResult.results as unknown[])
-      const query = typeof toolUseResult.query === 'string' ? toolUseResult.query : ''
       innerResult = (
         <WebSearchResultView
-          query={query}
           links={links}
           summary={summary}
+          context={context}
+        />
+      )
+    }
+    // ExitPlanMode: render approval or feedback.
+    else if (toolName === 'ExitPlanMode') {
+      const isError = resultData.is_error === true
+      innerResult = (
+        <ExitPlanModeResultView
+          isError={isError}
+          resultContent={resultContent}
+          toolUseResult={toolUseResult}
           context={context}
         />
       )

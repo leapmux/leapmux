@@ -254,11 +254,11 @@ function pickSpanColors(theme: { blue?: string, green?: string, brightRed?: stri
 
 const DARK_PALETTE = pickSpanColors(darkTerminalTheme)
 const LIGHT_PALETTE = pickSpanColors(lightTerminalTheme)
-const PALETTE_SIZE_N = DARK_PALETTE.length
+export const PALETTE_SIZE = DARK_PALETTE.length
 
 // Generate palette CSS custom properties for theme switching.
 // Each color index gets a --span-palette-N variable that changes with data-theme.
-const paletteIndices = Array.from({ length: PALETTE_SIZE_N }, (_, i) => i)
+const paletteIndices = Array.from({ length: PALETTE_SIZE }, (_, i) => i)
 globalStyle(':root', {
   vars: Object.fromEntries(paletteIndices.map(i => [`--span-palette-${i}`, LIGHT_PALETTE[i]])),
 })
@@ -273,5 +273,3 @@ export const spanLineColors = styleVariants(
 export const spanPassthroughColors = styleVariants(
   Object.fromEntries(paletteIndices.map(i => [`color${i}`, { vars: { '--span-passthrough-color': `var(--span-palette-${i})` } }])),
 )
-
-export const PALETTE_SIZE = PALETTE_SIZE_N
