@@ -21,6 +21,7 @@ import * as chatStyles from './messageStyles.css'
 import { getAssistantContent } from './messageUtils'
 import { renderNotificationThread } from './notificationRenderers'
 import { prettifyJson } from './rendererUtils'
+import { COLLAPSED_RESULT_ROWS } from './toolRenderers'
 
 const logger = createLogger('MessageBubble')
 
@@ -116,6 +117,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const prefs = usePreferences()
   const [jsonCopied, setJsonCopied] = createSignal(false)
   const [markdownCopied, setMarkdownCopied] = createSignal(false)
+  const [toolResultExpanded, setToolResultExpanded] = createSignal(false)
   let contentRef: HTMLDivElement | undefined
 
   // Use pre-computed values from ChatView when available, otherwise compute on demand.
@@ -184,6 +186,40 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // tool_use always renders its own ToolHeaderActions inside ToolUseLayout.
   const hasInternalActions = () => category().kind === 'tool_use'
 
+  // Determine if this tool_result is collapsible (enough lines/items to warrant collapse).
+  const isCollapsibleToolResult = createMemo(() => {
+    if (category().kind !== 'tool_result')
+      return false
+    const obj = parsed().parentObject
+    if (!obj)
+      return false
+
+    const toolUseResult = obj.tool_use_result as Record<string, unknown> | undefined
+    const toolName = String(toolUseResult?.tool_name || '')
+
+    // Grep/Glob: collapsible if filenames array exceeds threshold.
+    if (toolName === 'Grep' || toolName === 'Glob') {
+      const filenames = Array.isArray(toolUseResult?.filenames) ? toolUseResult!.filenames as string[] : []
+      return filenames.length > COLLAPSED_RESULT_ROWS
+    }
+
+    // Bash/TaskOutput/unknown: collapsible if result text exceeds threshold lines.
+    if (toolName === 'Bash' || toolName === 'TaskOutput' || toolName === '') {
+      const msg = obj.message as Record<string, unknown> | undefined
+      if (!msg || !Array.isArray(msg.content))
+        return false
+      const tr = (msg.content as Array<Record<string, unknown>>).find(c => c.type === 'tool_result')
+      if (!tr)
+        return false
+      const rc = Array.isArray(tr.content)
+        ? (tr.content as Array<Record<string, unknown>>).filter(c => c.type === 'text').map(c => c.text).join('')
+        : String(tr.content || '')
+      return rc.split('\n').length > COLLAPSED_RESULT_ROWS
+    }
+
+    return false
+  })
+
   // Build render context for message renderers.
   const renderContext = (): RenderContext => ({
     createdAt: props.message.createdAt,
@@ -194,6 +230,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     jsonCopied: jsonCopied(),
     toolUseMessage: toolUseMessage(),
     spanColor: props.message.spanColor,
+    toolResultExpanded: toolResultExpanded(),
   })
 
   // Extract assistant text for the reply button.
@@ -292,6 +329,8 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
             createdAt={props.message.createdAt}
             onCopyJson={copyJson}
             jsonCopied={jsonCopied()}
+            expanded={toolResultExpanded()}
+            onToggleExpand={isCollapsibleToolResult() ? () => setToolResultExpanded(v => !v) : undefined}
             onReply={extractQuotableText() ? handleReply : undefined}
             onCopyMarkdown={extractQuotableText() ? copyMarkdown : undefined}
             markdownCopied={markdownCopied()}
