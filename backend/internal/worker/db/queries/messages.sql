@@ -59,7 +59,7 @@ RETURNING seq;
 SELECT * FROM messages WHERE agent_id = ? ORDER BY seq DESC LIMIT 1;
 
 -- name: HasUserMessages :one
-SELECT EXISTS(SELECT 1 FROM messages WHERE agent_id = ? AND role = 1) AS has_messages;
+SELECT EXISTS(SELECT 1 FROM messages m JOIN agents a ON m.agent_id = a.id WHERE m.agent_id = ? AND m.role = 1 AND m.seq > a.session_start_seq) AS has_messages;
 
 -- name: DeleteMessageByAgentAndID :exec
 DELETE FROM messages WHERE id = ? AND agent_id = ?;
