@@ -176,7 +176,7 @@ export const controlResponseTag = style({
 // Body content area for tool_use renderers (expand-gated body below header)
 // Uses --span-line-color when set (via spanLineColors class), falling back to --border.
 export const toolBodyContent = style({
-  marginLeft: '6px',
+  marginLeft: '5px',
   paddingLeft: 'var(--space-3)',
   paddingRight: 'var(--space-3)',
   borderLeft: '2px solid var(--span-line-color, var(--border))',

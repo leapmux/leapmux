@@ -96,6 +96,10 @@ export function classifyParsedMessage(message: AgentChatMessage) {
     && (parsed.parentObject?.subtype === 'task_started' || parsed.parentObject?.subtype === 'task_progress')) {
     category = { kind: 'hidden' }
   }
+  // Hide ToolSearch tool_use and tool_result — they are internal plumbing, not user-visible.
+  if ((category.kind === 'tool_use' || category.kind === 'tool_result') && message.spanType === 'ToolSearch') {
+    category = { kind: 'hidden' }
+  }
   return { parsed, category }
 }
 
