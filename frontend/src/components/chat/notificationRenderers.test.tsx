@@ -1,5 +1,6 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
+import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 
 // Mock messageRenderers to break the circular dependency (messageRenderers
 // imports from notificationRenderers at module-init time).
@@ -8,7 +9,7 @@ vi.mock('./messageRenderers', () => ({
     typeof v === 'object' && v !== null && !Array.isArray(v),
 }))
 
-const { renderNotificationThread } = await import('./notificationRenderers')
+const { renderNotificationThread, resultRenderer } = await import('./notificationRenderers')
 
 /** Extract all text content from the rendered container, trimmed. */
 function renderText(messages: unknown[]): string {
@@ -154,5 +155,72 @@ describe('renderNotificationThread: agent_renamed', () => {
     const text = renderText(messages)
     expect(text).toContain('Renamed to Test Plan')
     expect(text).toContain('Interrupted')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// resultRenderer
+// ---------------------------------------------------------------------------
+
+/** Render a result message and return trimmed text content. */
+function renderResultText(parsed: Record<string, unknown>): string {
+  const result = resultRenderer.render(parsed, MessageRole.SYSTEM)
+  if (result === null)
+    return ''
+  const { container } = render(() => result)
+  return container.textContent?.trim() ?? ''
+}
+
+/** Check if the result is rendered with danger color (error style). */
+function isRenderedAsError(parsed: Record<string, unknown>): boolean {
+  const result = resultRenderer.render(parsed, MessageRole.SYSTEM)
+  if (result === null)
+    return false
+  const { container } = render(() => result)
+  const div = container.querySelector('div')
+  return div?.style.color === 'var(--danger)'
+}
+
+describe('resultRenderer', () => {
+  it('returns null for non-result messages', () => {
+    expect(resultRenderer.render({ type: 'other' }, MessageRole.SYSTEM)).toBeNull()
+  })
+
+  it('renders is_error=true as error', () => {
+    const parsed = { type: 'result', is_error: true, result: 'Something went wrong' }
+    expect(isRenderedAsError(parsed)).toBe(true)
+    expect(renderResultText(parsed)).toBe('Something went wrong')
+  })
+
+  it('renders missing stop_reason with num_turns<=1 as error', () => {
+    const parsed = { type: 'result', stop_reason: null, subtype: 'success', num_turns: 1, result: 'Unknown skill: foo', duration_ms: 5 }
+    expect(isRenderedAsError(parsed)).toBe(true)
+    expect(renderResultText(parsed)).toBe('Unknown skill: foo')
+  })
+
+  it('renders missing stop_reason with num_turns>1 as normal (not error)', () => {
+    const parsed = {
+      type: 'result',
+      is_error: false,
+      stop_reason: null,
+      subtype: 'success',
+      num_turns: 4,
+      result: '## Context Usage\n\nSome output...',
+      duration_ms: 1095,
+    }
+    expect(isRenderedAsError(parsed)).toBe(false)
+    expect(renderResultText(parsed)).toContain('Took')
+  })
+
+  it('renders success subtype with duration', () => {
+    const parsed = { type: 'result', subtype: 'success', stop_reason: 'end_turn', result: 'done', duration_ms: 5000 }
+    expect(isRenderedAsError(parsed)).toBe(false)
+    expect(renderResultText(parsed)).toBe('Took 5.0s')
+  })
+
+  it('renders non-success subtype with result text and duration', () => {
+    const parsed = { type: 'result', subtype: 'cancelled', stop_reason: 'end_turn', result: 'Cancelled', duration_ms: 2000 }
+    expect(isRenderedAsError(parsed)).toBe(false)
+    expect(renderResultText(parsed)).toBe('Cancelled (2.0s)')
   })
 })

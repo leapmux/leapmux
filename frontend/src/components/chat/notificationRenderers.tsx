@@ -236,7 +236,10 @@ export const resultRenderer: MessageContentRenderer = {
 
     // When stop_reason is absent (agent never produced output), show the result
     // text as an error — e.g. "Unknown skill: update-pr".
-    if (!parsed.stop_reason && resultText) {
+    // Local commands that produce real output (e.g. /context) complete with
+    // num_turns > 1 despite having no stop_reason; skip the error path for those.
+    const numTurns = typeof parsed.num_turns === 'number' ? parsed.num_turns : 0
+    if (!parsed.stop_reason && numTurns <= 1 && resultText) {
       return <div class={resultDivider} style={{ color: 'var(--danger)' }}>{resultText}</div>
     }
 
