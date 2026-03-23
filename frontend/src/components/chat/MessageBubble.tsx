@@ -249,6 +249,14 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
         && (toolUseResult!.content as Array<Record<string, unknown>>).some(c => typeof c === 'object' && c !== null && c.type === 'text')
     }
 
+    // WebFetch: always collapsible when structured result is present.
+    if (toolName === 'WebFetch' && typeof toolUseResult?.code === 'number')
+      return true
+
+    // WebSearch: always collapsible when structured results are present.
+    if (toolName === 'WebSearch' && Array.isArray(toolUseResult?.results))
+      return true
+
     // Bash/Read/TaskOutput/unknown: collapsible if result text exceeds threshold lines.
     if (toolName === 'Bash' || toolName === 'Read' || toolName === 'TaskOutput' || toolName === '') {
       const msg = obj.message as Record<string, unknown> | undefined

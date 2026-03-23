@@ -122,6 +122,7 @@ message AvailableModel {
   string default_effort = 4;   // Default reasoning effort for this model
   repeated AvailableEffort supported_efforts = 5; // Efforts this model supports
   string description = 6;      // Tooltip / description text shown on hover
+  int64 context_window = 7;    // Context window size in tokens (0 = unknown)
 }
 
 // AvailableEffort describes a reasoning effort supported by a model.

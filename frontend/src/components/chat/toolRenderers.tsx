@@ -66,6 +66,10 @@ import {
   toolResultPrompt,
   toolUseHeader,
   toolUseIcon,
+  webSearchLink,
+  webSearchLinkDomain,
+  webSearchLinkList,
+  webSearchLinkTitle,
 } from './toolStyles.css'
 
 /** Inline control response tag (Approved / Rejected) for tool headers. */
@@ -704,6 +708,7 @@ function AgentResultView(props: {
   context?: RenderContext
 }): JSX.Element {
   const expanded = () => props.context?.toolResultExpanded ?? false
+  const isCollapsed = () => !expanded() && props.content.split('\n').length > COLLAPSED_RESULT_ROWS
   const icon = () => props.status === 'completed' ? Check : Bot
 
   return (
@@ -715,7 +720,7 @@ function AgentResultView(props: {
         <span class={toolInputText}>{`Agent ${props.agentId} ${props.status}`}</span>
       </div>
       {/* eslint-disable-next-line solid/no-innerhtml -- HTML from renderMarkdown, not user input */}
-      <div class={`${toolResultContent}${expanded() ? '' : ` ${toolResultCollapsed}`}`} innerHTML={renderMarkdown(props.content)} />
+      <div class={`${toolResultContent}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`} innerHTML={renderMarkdown(props.content)} />
     </div>
   )
 }
@@ -753,6 +758,139 @@ function AskUserQuestionResultView(props: {
   )
 }
 
+const WWW_PREFIX_RE = /^www\./
+
+/** Extract domain from a URL for display. */
+function extractDomain(url: string): string {
+  try {
+    return new URL(url).hostname.replace(WWW_PREFIX_RE, '')
+  }
+  catch {
+    return url
+  }
+}
+
+interface WebSearchLink {
+  title: string
+  url: string
+}
+
+/** Extract deduplicated links from WebSearch tool_use_result.results. */
+function extractWebSearchLinks(results: unknown[]): WebSearchLink[] {
+  const seen = new Set<string>()
+  const links: WebSearchLink[] = []
+  for (const item of results) {
+    if (isObject(item) && Array.isArray((item as Record<string, unknown>).content)) {
+      for (const link of (item as Record<string, unknown>).content as Array<Record<string, unknown>>) {
+        if (isObject(link) && typeof link.url === 'string' && typeof link.title === 'string' && !seen.has(link.url)) {
+          seen.add(link.url)
+          links.push({ title: link.title, url: link.url })
+        }
+      }
+    }
+  }
+  return links
+}
+
+/** Extract the final text summary from WebSearch results (last string entry). */
+function extractWebSearchSummary(results: unknown[]): string {
+  for (let i = results.length - 1; i >= 0; i--) {
+    if (typeof results[i] === 'string' && (results[i] as string).trim().length > 0)
+      return (results[i] as string).trim()
+  }
+  return ''
+}
+
+/** WebSearch result view: collapsed by default, shows links + summary. */
+function WebSearchResultView(props: {
+  query: string
+  links: WebSearchLink[]
+  summary: string
+  context?: RenderContext
+}): JSX.Element {
+  const expanded = () => props.context?.toolResultExpanded ?? false
+  const isCollapsed = () => !expanded() && props.links.length > COLLAPSED_RESULT_ROWS
+  const displayLinks = () => {
+    if (expanded() || props.links.length <= COLLAPSED_RESULT_ROWS)
+      return props.links
+    return props.links.slice(0, COLLAPSED_RESULT_ROWS)
+  }
+
+  return (
+    <div class={toolMessage}>
+      <Show when={props.links.length > 0}>
+        <div class={toolResultPrompt}>
+          {`${props.links.length} result${props.links.length === 1 ? '' : 's'}`}
+        </div>
+        <div class={`${webSearchLinkList}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>
+          <For each={displayLinks()}>
+            {link => (
+              <div class={webSearchLink}>
+                <span class={webSearchLinkTitle}>
+                  <a href={link.url} target="_blank" rel="noopener noreferrer nofollow">{link.title}</a>
+                </span>
+                <span class={webSearchLinkDomain}>{extractDomain(link.url)}</span>
+              </div>
+            )}
+          </For>
+        </div>
+      </Show>
+      <Show when={expanded() && props.summary}>
+        {/* eslint-disable-next-line solid/no-innerhtml -- HTML from renderMarkdown, not user input */}
+        <div class={toolResultContent} innerHTML={renderMarkdown(props.summary)} />
+      </Show>
+    </div>
+  )
+}
+
+/** Format byte count as a human-readable string. */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024)
+    return `${bytes} B`
+  if (bytes < 1024 * 1024)
+    return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/** Format milliseconds as a human-readable duration. */
+function formatDuration(ms: number): string {
+  if (ms < 1000)
+    return `${ms}ms`
+  return `${(ms / 1000).toFixed(1)}s`
+}
+
+/** WebFetch result view: shows HTTP status, size, duration, then collapsed markdown body. */
+function WebFetchResultView(props: {
+  code: number
+  codeText: string
+  bytes: number
+  durationMs: number
+  result: string
+  context?: RenderContext
+}): JSX.Element {
+  const expanded = () => props.context?.toolResultExpanded ?? false
+  const isCollapsed = () => !expanded() && props.result.split('\n').length > COLLAPSED_RESULT_ROWS
+  const summary = () => {
+    const parts: string[] = []
+    parts.push(`${props.code} ${props.codeText}`)
+    if (props.bytes > 0)
+      parts.push(formatBytes(props.bytes))
+    if (props.durationMs > 0)
+      parts.push(formatDuration(props.durationMs))
+    return parts.join(' \u00B7 ')
+  }
+
+  return (
+    <div class={toolMessage}>
+      <div class={toolResultPrompt}>{summary()}</div>
+      <Show when={props.result}>
+        {/* eslint-disable-next-line solid/no-innerhtml -- HTML from renderMarkdown, not user input */}
+        <div class={`${toolResultContent}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`} innerHTML={renderMarkdown(props.result)} />
+      </Show>
+    </div>
+  )
+}
+
 /** Renders agent_prompt messages (prompt sent to sub-agent) as a collapsible tool-style block. */
 export const agentPromptRenderer: MessageContentRenderer = {
   render(parsed, _role, context) {
@@ -783,6 +921,7 @@ function AgentPromptView(props: {
   context?: RenderContext
 }): JSX.Element {
   const [expanded, setExpanded] = createSignal(false)
+  const isCollapsed = () => !expanded() && props.text.split('\n').length > COLLAPSED_RESULT_ROWS
 
   return (
     <ToolUseLayout
@@ -794,7 +933,7 @@ function AgentPromptView(props: {
       onToggleExpand={() => setExpanded(v => !v)}
     >
       {/* eslint-disable-next-line solid/no-innerhtml -- HTML from renderMarkdown, not user input */}
-      <div class={`${toolResultContent}${expanded() ? '' : ` ${toolResultCollapsed}`}`} innerHTML={renderMarkdown(props.text)} />
+      <div class={`${toolResultContent}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`} innerHTML={renderMarkdown(props.text)} />
     </ToolUseLayout>
   )
 }
@@ -920,7 +1059,6 @@ function ToolResultMessage(props: {
   toolName: string
   resultContent: string
   isPreText: boolean
-  webFetchPrompt: string
   structuredPatch: StructuredPatchHunk[] | null
   oldStr: string
   newStr: string
@@ -965,12 +1103,6 @@ function ToolResultMessage(props: {
           <span class={toolInputText}>{props.isError ? 'Error' : 'Success'}</span>
         </div>
       </Show>
-      {props.webFetchPrompt && (
-        <div class={toolResultPrompt}>
-          {'Prompt: '}
-          {props.webFetchPrompt}
-        </div>
-      )}
       <Show
         when={!errorText()}
         fallback={<div class={toolResultError}>{errorText()}</div>}
@@ -1041,11 +1173,6 @@ export const toolResultRenderer: MessageContentRenderer = {
     // When tool name is unknown (standalone tool_result without parent context),
     // default to preformatted rendering since most tool outputs are plain text.
     const isPreText = toolName === '' || PRE_TEXT_TOOLS.has(toolName)
-
-    // For WebFetch, extract the prompt from parent tool input
-    const webFetchPrompt = toolName === 'WebFetch' && (context?.parentToolInput || toolInput)
-      ? String((context?.parentToolInput?.prompt || toolInput?.prompt) || '')
-      : ''
 
     // Extract structuredPatch from tool_use_result for Edit/Write diffs.
     // When rendered as a child of an Edit/Write tool_use, the parent already
@@ -1164,6 +1291,34 @@ export const toolResultRenderer: MessageContentRenderer = {
     else if (toolName === 'AskUserQuestion' && toolUseResult) {
       innerResult = <AskUserQuestionResultView toolUseResult={toolUseResult} context={context} />
     }
+    // WebFetch: render structured result view with HTTP status, size, duration.
+    else if (toolName === 'WebFetch' && toolUseResult && typeof toolUseResult.code === 'number') {
+      const fetchResult = typeof toolUseResult.result === 'string' ? toolUseResult.result : resultContent
+      innerResult = (
+        <WebFetchResultView
+          code={toolUseResult.code as number}
+          codeText={typeof toolUseResult.codeText === 'string' ? toolUseResult.codeText : ''}
+          bytes={typeof toolUseResult.bytes === 'number' ? toolUseResult.bytes as number : 0}
+          durationMs={typeof toolUseResult.durationMs === 'number' ? toolUseResult.durationMs as number : 0}
+          result={fetchResult}
+          context={context}
+        />
+      )
+    }
+    // WebSearch: render structured result view with links and summary.
+    else if (toolName === 'WebSearch' && toolUseResult && Array.isArray(toolUseResult.results)) {
+      const links = extractWebSearchLinks(toolUseResult.results as unknown[])
+      const summary = extractWebSearchSummary(toolUseResult.results as unknown[])
+      const query = typeof toolUseResult.query === 'string' ? toolUseResult.query : ''
+      innerResult = (
+        <WebSearchResultView
+          query={query}
+          links={links}
+          summary={summary}
+          context={context}
+        />
+      )
+    }
     // Glob: render structured result view (with or without tool_use_result).
     else if (toolName === 'Glob') {
       let filenames: string[]
@@ -1188,7 +1343,6 @@ export const toolResultRenderer: MessageContentRenderer = {
           toolName={toolName}
           resultContent={hideContent ? '' : resultContent}
           isPreText={isPreText}
-          webFetchPrompt={webFetchPrompt}
           structuredPatch={structuredPatch}
           oldStr={oldStr}
           newStr={newStr}

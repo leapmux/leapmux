@@ -361,6 +361,8 @@ func (a *CodexAgent) handleTokenUsageUpdated(params json.RawMessage) {
 	}
 	if notif.TokenUsage.ModelContextWindow != nil {
 		usage["contextWindow"] = *notif.TokenUsage.ModelContextWindow
+	} else if cw := modelContextWindow(a.availableModels, a.model); cw > 0 {
+		usage["contextWindow"] = cw
 	}
 	a.sink.BroadcastSessionInfo(map[string]interface{}{
 		"contextUsage": usage,

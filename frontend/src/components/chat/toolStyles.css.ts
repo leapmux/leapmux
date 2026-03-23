@@ -95,6 +95,12 @@ export const toolResultCollapsed = style({
   maskImage: 'linear-gradient(to bottom, black calc(100% - 1.5em), transparent)',
 })
 
+// Cap heading font sizes inside collapsed markdown previews
+globalStyle(`${toolResultCollapsed} h1, ${toolResultCollapsed} h2, ${toolResultCollapsed} h3, ${toolResultCollapsed} h4, ${toolResultCollapsed} h5, ${toolResultCollapsed} h6`, {
+  fontSize: 'inherit',
+  margin: 0,
+})
+
 // Prompt label shown above WebFetch tool result
 export const toolResultPrompt = style({
   color: 'var(--muted-foreground)',
@@ -226,4 +232,34 @@ export const toolFileList = style({
   paddingLeft: '20px',
   margin: '4px 0',
   fontSize: 'var(--text-8)',
+})
+
+// WebSearch result link list
+export const webSearchLinkList = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '2px',
+})
+
+export const webSearchLink = style({
+  display: 'flex',
+  alignItems: 'baseline',
+  gap: 'var(--space-2)',
+  fontSize: 'var(--text-8)',
+  lineHeight: 1.5,
+  overflow: 'hidden',
+})
+
+export const webSearchLinkTitle = style({
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  minWidth: 0,
+})
+
+export const webSearchLinkDomain = style({
+  color: 'var(--muted-foreground)',
+  fontSize: 'var(--text-9)',
+  flexShrink: 0,
+  whiteSpace: 'nowrap',
 })

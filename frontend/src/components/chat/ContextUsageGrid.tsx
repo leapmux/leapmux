@@ -20,16 +20,17 @@ export function contextSize(usage: ContextUsageInfo): number {
 /**
  * Compute context usage percentage from structured token data.
  * Accounts for the autocompact buffer: usable capacity = contextWindow * (1 - buffer%).
- * Falls back to DEFAULT_CONTEXT_WINDOW when contextWindow is not yet known
- * (assistant messages arrive before the result message that carries contextWindow).
+ * Uses the context window from usage data, then modelContextWindow, then DEFAULT_CONTEXT_WINDOW.
  */
-export function computePercentage(usage: ContextUsageInfo | undefined): number | null {
+export function computePercentage(usage: ContextUsageInfo | undefined, modelContextWindow?: number): number | null {
   if (!usage)
     return null
   const total = contextSize(usage)
   if (total <= 0)
     return null
-  const contextWindow = (usage.contextWindow && usage.contextWindow > 0) ? usage.contextWindow : DEFAULT_CONTEXT_WINDOW
+  const contextWindow = (usage.contextWindow && usage.contextWindow > 0)
+    ? usage.contextWindow
+    : (modelContextWindow && modelContextWindow > 0) ? modelContextWindow : DEFAULT_CONTEXT_WINDOW
   const usable = contextWindow * (1 - DEFAULT_BUFFER_PCT / 100)
   if (usable <= 0)
     return null

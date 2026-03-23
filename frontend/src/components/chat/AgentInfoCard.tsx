@@ -183,9 +183,12 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
       <Show when={props.agentSessionInfo?.contextUsage}>
         {(() => {
           const usage = props.agentSessionInfo!.contextUsage!
-          const ctxWindow = (usage.contextWindow && usage.contextWindow > 0) ? usage.contextWindow : 200_000
+          const modelCtxWindow = props.agent?.availableModels?.find(m => m.id === props.agent?.model)?.contextWindow
+          const ctxWindow = (usage.contextWindow && usage.contextWindow > 0)
+            ? usage.contextWindow
+            : (modelCtxWindow && modelCtxWindow > 0) ? Number(modelCtxWindow) : 200_000
           const total = contextSize(usage)
-          const pct = computePercentage(usage)
+          const pct = computePercentage(usage, Number(modelCtxWindow) || undefined)
           return (
             <div class={styles.infoRow}>
               <span class={styles.infoLabel}>Context</span>

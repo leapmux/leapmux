@@ -479,9 +479,22 @@ func (a *ClaudeCodeAgent) extractAndBroadcastUsage(content []byte, msgType strin
 
 func (a *ClaudeCodeAgent) getOrCreateUsageSnapshot() *contextUsageSnapshot {
 	if a.contextUsage == nil {
-		a.contextUsage = &contextUsageSnapshot{}
+		a.contextUsage = &contextUsageSnapshot{
+			ContextWindow: modelContextWindow(claudeCodeAvailableModels, a.model),
+		}
 	}
 	return a.contextUsage
+}
+
+// modelContextWindow looks up the context window for a model ID from a list
+// of available models. Returns 0 if the model is not found.
+func modelContextWindow(models []*leapmuxv1.AvailableModel, modelID string) int64 {
+	for _, m := range models {
+		if m.Id == modelID {
+			return m.ContextWindow
+		}
+	}
+	return 0
 }
 
 // detectPlanModeFromToolResult inspects a user message (tool_result) for
