@@ -204,10 +204,14 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     const toolUseResult = obj.tool_use_result as Record<string, unknown> | undefined
     const toolName = props.message.spanType || String(toolUseResult?.tool_name || '')
 
-    // Grep/Glob: collapsible if filenames array exceeds threshold.
+    // Grep/Glob: collapsible if filenames or content lines exceed threshold.
     if (toolName === 'Grep' || toolName === 'Glob') {
       const filenames = Array.isArray(toolUseResult?.filenames) ? toolUseResult!.filenames as string[] : []
-      return filenames.length > COLLAPSED_RESULT_ROWS
+      if (filenames.length > COLLAPSED_RESULT_ROWS)
+        return true
+      if (toolName === 'Grep' && typeof toolUseResult?.content === 'string')
+        return toolUseResult.content.split('\n').length > COLLAPSED_RESULT_ROWS
+      return false
     }
 
     // Read with structured file data: use numLines directly.

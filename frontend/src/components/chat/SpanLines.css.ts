@@ -1,4 +1,5 @@
 import { globalStyle, style, styleVariants } from '@vanilla-extract/css'
+import { darkTerminalTheme, lightTerminalTheme } from '~/lib/terminal'
 
 // ─── Span Column Geometry ───────────────────────────────────────────
 //
@@ -45,8 +46,13 @@ const CONNECTOR_GAP = 4
 /** Right padding on the SpanLines container. */
 const CONTAINER_PAD_RIGHT = 1
 
-/** Extension to bridge vertical lines across the gap between message rows. */
-const ROW_GAP = 'var(--space-3)'
+/**
+ * Extension to bridge vertical lines across the gap between message rows.
+ * Messages with span lines use a tightened gap of --space-2 (via negative
+ * marginTop in messageRowWithSpanLines).  Each row extends the vertical
+ * line by the full tightened gap so adjacent lines overlap seamlessly.
+ */
+const ROW_GAP = 'var(--space-2)'
 
 // ─── Bridge (Passthrough Hop) ───────────────────────────────────────
 //
@@ -228,24 +234,44 @@ globalStyle(`${spanLinePassthrough}:last-child::before`, {
   right: `${CONNECTOR_GAP}px`,
 })
 
-/** Span line color palette (cycled by color index). */
-const PALETTE = [
-  'rgb(59 130 246)',
-  'rgb(34 197 94)',
-  'rgb(249 115 22)',
-  'rgb(168 85 247)',
-  'rgb(236 72 153)',
-  'rgb(20 184 166)',
-  'rgb(234 179 8)',
-  'rgb(239 68 68)',
-]
+/**
+ * Span line color palette (cycled by color index).
+ * Uses the same Dimidium color scheme as the xterm.js terminal themes
+ * defined in terminal.ts, with separate palettes for light and dark modes.
+ */
+function pickSpanColors(theme: { blue?: string, green?: string, brightRed?: string, magenta?: string, brightMagenta?: string, cyan?: string, yellow?: string, red?: string }): string[] {
+  return [
+    theme.blue!,
+    theme.green!,
+    theme.brightRed!, // orange-ish
+    theme.magenta!,
+    theme.brightMagenta!,
+    theme.cyan!,
+    theme.yellow!,
+    theme.red!,
+  ]
+}
+
+const DARK_PALETTE = pickSpanColors(darkTerminalTheme)
+const LIGHT_PALETTE = pickSpanColors(lightTerminalTheme)
+const PALETTE_SIZE_N = DARK_PALETTE.length
+
+// Generate palette CSS custom properties for theme switching.
+// Each color index gets a --span-palette-N variable that changes with data-theme.
+const paletteIndices = Array.from({ length: PALETTE_SIZE_N }, (_, i) => i)
+globalStyle(':root', {
+  vars: Object.fromEntries(paletteIndices.map(i => [`--span-palette-${i}`, LIGHT_PALETTE[i]])),
+})
+globalStyle('[data-theme="dark"]', {
+  vars: Object.fromEntries(paletteIndices.map(i => [`--span-palette-${i}`, DARK_PALETTE[i]])),
+})
 
 export const spanLineColors = styleVariants(
-  Object.fromEntries(PALETTE.map((color, i) => [`color${i}`, { vars: { '--span-line-color': color } }])),
+  Object.fromEntries(paletteIndices.map(i => [`color${i}`, { vars: { '--span-line-color': `var(--span-palette-${i})` } }])),
 )
 
 export const spanPassthroughColors = styleVariants(
-  Object.fromEntries(PALETTE.map((color, i) => [`color${i}`, { vars: { '--span-passthrough-color': color } }])),
+  Object.fromEntries(paletteIndices.map(i => [`color${i}`, { vars: { '--span-passthrough-color': `var(--span-palette-${i})` } }])),
 )
 
-export const PALETTE_SIZE = PALETTE.length
+export const PALETTE_SIZE = PALETTE_SIZE_N
