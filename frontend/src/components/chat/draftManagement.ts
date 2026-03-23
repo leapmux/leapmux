@@ -56,7 +56,8 @@ export function saveDraftFromEditor(editor: Editor, draftKey: string): void {
   editor.action((ctx: Ctx) => {
     const serializer = ctx.get(serializerCtx)
     const view = ctx.get(editorViewCtx)
-    const text = serializer(view.state.doc).trim()
+    const raw = serializer(view.state.doc)
+    const text = typeof raw === 'string' ? raw.trim() : ''
     const cursor = view.state.selection.from
     saveDraft(draftKey, text, cursor)
   })
