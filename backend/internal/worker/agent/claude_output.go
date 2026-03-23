@@ -113,9 +113,7 @@ type messageEnvelope struct {
 	Message         struct {
 		RawContent json.RawMessage `json:"content"`
 	} `json:"message"`
-	ToolUseResult *struct {
-		Message string `json:"message"`
-	} `json:"tool_use_result"`
+	ToolUseResult json.RawMessage `json:"tool_use_result"`
 
 	// contentBlocks is lazily populated from RawContent.
 	contentBlocks []contentBlock
@@ -567,8 +565,8 @@ func (a *ClaudeCodeAgent) detectPlanModeFromToolResult(env *messageEnvelope) {
 		}
 
 		resultText := ""
-		if env.ToolUseResult != nil {
-			resultText = env.ToolUseResult.Message
+		if len(env.ToolUseResult) > 0 {
+			resultText = extractToolUseResultMessage(env.ToolUseResult)
 		}
 
 		resultLower := strings.ToLower(resultText)
@@ -597,6 +595,29 @@ func (a *ClaudeCodeAgent) detectPlanModeFromToolResult(env *messageEnvelope) {
 				"result_text", truncated)
 		}
 	}
+}
+
+// extractToolUseResultMessage extracts the message string from a tool_use_result
+// field that may be either a plain JSON string or an object with a "message" key.
+func extractToolUseResultMessage(raw json.RawMessage) string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return ""
+	}
+	if trimmed[0] == '"' {
+		var s string
+		if json.Unmarshal(raw, &s) == nil {
+			return s
+		}
+	} else if trimmed[0] == '{' {
+		var obj struct {
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(raw, &obj) == nil {
+			return obj.Message
+		}
+	}
+	return ""
 }
 
 // --- Notification threading helpers ---

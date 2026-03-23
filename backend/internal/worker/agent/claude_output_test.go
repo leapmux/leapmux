@@ -262,6 +262,38 @@ func TestHandleOutput_PlanModeEnterExit(t *testing.T) {
 	assert.Equal(t, PermissionModePlan, modes[0])
 }
 
+func TestHandleOutput_PlanModeEnter_StringToolUseResult(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	// Assistant sends EnterPlanMode tool_use.
+	agent.HandleOutput([]byte(`{
+		"type": "assistant",
+		"message": {
+			"role": "assistant",
+			"content": [
+				{"type": "tool_use", "id": "pm-002", "name": "EnterPlanMode", "input": {}}
+			]
+		}
+	}`))
+
+	// User confirms with tool_result, but tool_use_result is a plain string.
+	agent.HandleOutput([]byte(`{
+		"type": "user",
+		"message": {
+			"role": "user",
+			"content": [
+				{"type": "tool_result", "tool_use_id": "pm-002"}
+			]
+		},
+		"tool_use_result": "You have entered plan mode."
+	}`))
+
+	modes := sink.PermissionModes()
+	require.Len(t, modes, 1)
+	assert.Equal(t, PermissionModePlan, modes[0])
+}
+
 func TestHandleOutput_MultipleToolUses(t *testing.T) {
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
