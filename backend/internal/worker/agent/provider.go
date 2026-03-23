@@ -18,6 +18,7 @@ type OutputSink interface {
 	PersistNotification(role leapmuxv1.MessageRole, content []byte) error
 	OpenSpan(spanID string, parentSpanID string)
 	CloseSpan(spanID string)
+	ResetSpans()
 	SetSpanType(spanID, spanType string)
 	GetSpanType(spanID string) string
 	PeekNextSpanColor() int32

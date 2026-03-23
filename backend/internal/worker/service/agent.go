@@ -940,6 +940,9 @@ func (svc *Context) handleClearContext(agentID string) {
 	// StartAgent below doesn't fail with "agent already running".
 	svc.Agents.StopAndWaitAgent(agentID)
 
+	// Clear span tracking state from the previous session.
+	svc.Output.ResetSpanTracker(agentID)
+
 	// Restart the agent with a fresh context.
 	// Don't clear agentSessionId before starting — the frontend uses it for
 	// isWatchable. On success, handleSystemInit will overwrite it with the
@@ -1467,6 +1470,9 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 	// Stop the running agent and wait for it to fully exit so that
 	// StartAgent below doesn't fail with "agent already running".
 	svc.Agents.StopAndWaitAgent(agentID)
+
+	// Clear span tracking state from the previous session.
+	svc.Output.ResetSpanTracker(agentID)
 
 	// Broadcast context_cleared and plan_execution as separate notifications.
 	svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{

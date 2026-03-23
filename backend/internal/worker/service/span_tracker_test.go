@@ -582,3 +582,42 @@ func TestSpanTracker_ParentMapClearedOnAllClose(t *testing.T) {
 	depth, _, _ = tracker.Snapshot("span-X", "", false)
 	assert.Equal(t, int32(1), depth)
 }
+
+func TestSpanTracker_Reset(t *testing.T) {
+	tracker := &SpanTracker{}
+
+	// Open nested spans and set types.
+	tracker.OpenSpan("span-A", "")
+	tracker.OpenSpan("span-B", "span-A")
+	tracker.SetSpanType("span-A", "Agent")
+	tracker.SetSpanType("span-B", "Grep")
+
+	// Verify state exists before reset.
+	depth, lines, _ := tracker.Snapshot("span-B", "", false)
+	assert.Equal(t, int32(2), depth)
+	assert.NotEqual(t, "[]", lines)
+	assert.Equal(t, "Agent", tracker.GetSpanType("span-A"))
+
+	// Reset clears everything.
+	tracker.Reset()
+
+	depth, lines, _ = tracker.Snapshot("", "", false)
+	assert.Equal(t, int32(0), depth)
+	assert.Equal(t, "[]", lines)
+	assert.Equal(t, "", tracker.GetSpanType("span-A"))
+	assert.Equal(t, "", tracker.GetSpanType("span-B"))
+
+	// Color counter resets — next span gets color 1 again.
+	assert.Equal(t, int32(1), tracker.PeekNextColor())
+
+	// Tracker is fully reusable after reset.
+	tracker.OpenSpan("span-X", "")
+	depth, lines, _ = tracker.Snapshot("span-X", "", false)
+	assert.Equal(t, int32(1), depth)
+
+	var parsed []*SpanLine
+	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
+	require.Len(t, parsed, 1)
+	assert.Equal(t, "span-X", parsed[0].SpanID)
+	assert.Equal(t, 1, parsed[0].Color)
+}

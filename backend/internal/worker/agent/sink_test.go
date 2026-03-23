@@ -36,6 +36,7 @@ func (s *testSink) PersistNotification(leapmuxv1.MessageRole, []byte) error { re
 
 func (s *testSink) OpenSpan(string, string)    {}
 func (s *testSink) CloseSpan(string)           {}
+func (s *testSink) ResetSpans()                {}
 func (s *testSink) SetSpanType(spanID, spanType string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -161,6 +162,7 @@ func (noopSink) PersistMessage(leapmuxv1.MessageRole, []byte, SpanInfo) error {
 func (noopSink) PersistNotification(leapmuxv1.MessageRole, []byte) error         { return nil }
 func (noopSink) OpenSpan(string, string)                                         {}
 func (noopSink) CloseSpan(string)                                                {}
+func (noopSink) ResetSpans()                                                     {}
 func (noopSink) SetSpanType(string, string)                                      {}
 func (noopSink) GetSpanType(string) string                                       { return "" }
 func (noopSink) PeekNextSpanColor() int32                                        { return 0 }

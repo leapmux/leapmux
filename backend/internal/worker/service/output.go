@@ -143,6 +143,18 @@ func (t *SpanTracker) isDescendantOf(spanID, ancestorSpanID string) bool {
 	return false
 }
 
+// Reset clears all span tracking state, returning the tracker to its
+// initial empty state. Used when the agent's context is cleared or interrupted.
+func (t *SpanTracker) Reset() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.spans = nil
+	t.nextColor = 0
+	clear(t.spanTypes)
+	clear(t.parentMap)
+}
+
 // CloseSpan removes a span, freeing its column.
 func (t *SpanTracker) CloseSpan(spanID string) {
 	t.mu.Lock()
@@ -345,6 +357,14 @@ func NewOutputHandler(queries *db.Queries, watcher *WatcherManager, agents *agen
 	}
 }
 
+// ResetSpanTracker resets the span tracker for the given agent, clearing all
+// active spans. Used when the agent's context is cleared or plan execution restarts.
+func (h *OutputHandler) ResetSpanTracker(agentID string) {
+	if v, ok := h.spanTrackers.Load(agentID); ok {
+		v.(*SpanTracker).Reset()
+	}
+}
+
 // spanTracker returns the per-agent SpanTracker, creating one if needed.
 func (h *OutputHandler) spanTracker(agentID string) *SpanTracker {
 	if v, ok := h.spanTrackers.Load(agentID); ok {
@@ -388,6 +408,10 @@ func (s *agentOutputSink) OpenSpan(spanID, parentSpanID string) {
 
 func (s *agentOutputSink) CloseSpan(spanID string) {
 	s.tracker.CloseSpan(spanID)
+}
+
+func (s *agentOutputSink) ResetSpans() {
+	s.tracker.Reset()
 }
 
 func (s *agentOutputSink) SetSpanType(spanID, spanType string) {

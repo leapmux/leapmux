@@ -299,6 +299,9 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 		slog.Error("codex persist turn/completed", "agent_id", a.agentID, "error", err)
 	}
 
+	// Reset all span tracking at turn-end so the next turn starts clean.
+	a.sink.ResetSpans()
+
 	if turnStatus != "" {
 		if turnStatus == "failed" {
 			a.sink.BroadcastNotification(map[string]interface{}{

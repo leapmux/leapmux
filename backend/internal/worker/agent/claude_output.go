@@ -66,6 +66,9 @@ func (a *ClaudeCodeAgent) HandleOutput(content []byte) {
 		}
 
 	case "context_cleared", "interrupted", "plan_execution":
+		if envelope.Type == "interrupted" {
+			a.sink.ResetSpans()
+		}
 		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, content); err != nil {
 			slog.Error("persist agent notification", "agent_id", a.agentID, "type", envelope.Type, "error", err)
 		}
@@ -335,6 +338,11 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		if spanID != "" {
 			a.sink.CloseSpan(spanID)
 		}
+	}
+
+	// Reset all span tracking at turn-end so the next turn starts clean.
+	if msgType == "result" {
+		a.sink.ResetSpans()
 	}
 }
 
