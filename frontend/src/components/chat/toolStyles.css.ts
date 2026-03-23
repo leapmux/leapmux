@@ -1,5 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { todoList } from '~/components/todo/TodoList.css'
+import { LINE_THICKNESS, TOOL_BODY_INDENT } from './SpanLines.css'
 
 // Tool use/result messages - document-style, no bubble
 export const toolMessage = style({
@@ -87,8 +88,10 @@ globalStyle(`html[data-theme="dark"] ${toolResultContentAnsi} pre.shiki span`, {
   backgroundColor: 'var(--shiki-dark-bg, transparent)',
 })
 
-// Fade-out overlay applied to collapsed tool results (last row fades out)
+// Collapsed tool results: max 3rem height with fade-out gradient
 export const toolResultCollapsed = style({
+  maxHeight: '3rem',
+  overflow: 'hidden',
   WebkitMaskImage: 'linear-gradient(to bottom, black calc(100% - 1.5em), transparent)',
   maskImage: 'linear-gradient(to bottom, black calc(100% - 1.5em), transparent)',
 })
@@ -176,10 +179,10 @@ export const controlResponseTag = style({
 // Body content area for tool_use renderers (expand-gated body below header)
 // Uses --span-line-color when set (via spanLineColors class), falling back to --border.
 export const toolBodyContent = style({
-  marginLeft: '5px',
+  marginLeft: `${TOOL_BODY_INDENT}px`,
   paddingLeft: 'var(--space-3)',
   paddingRight: 'var(--space-3)',
-  borderLeft: '2px solid var(--span-line-color, var(--border))',
+  borderLeft: `${LINE_THICKNESS}px solid var(--span-line-color, var(--border))`,
 })
 
 // TodoList inside tool body: remove horizontal padding (toolBodyContent already provides it)

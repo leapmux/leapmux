@@ -20,6 +20,7 @@ import FoldVertical from 'lucide-solid/icons/fold-vertical'
 import FolderSearch from 'lucide-solid/icons/folder-search'
 import Globe from 'lucide-solid/icons/globe'
 import ListTodo from 'lucide-solid/icons/list-todo'
+import MessageSquare from 'lucide-solid/icons/message-square'
 import OctagonX from 'lucide-solid/icons/octagon-x'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import PocketKnife from 'lucide-solid/icons/pocket-knife'
@@ -564,6 +565,76 @@ function GlobResultView(props: {
   )
 }
 
+/** Collapsed Agent result view: icon + "Agent {agentId} {status}" header + collapsed markdown body. */
+function AgentResultView(props: {
+  agentId: string
+  status: string
+  content: string
+  context?: RenderContext
+}): JSX.Element {
+  const expanded = () => props.context?.toolResultExpanded ?? false
+  const icon = () => props.status === 'completed' ? Check : Bot
+
+  return (
+    <div class={toolMessage}>
+      <div class={toolUseHeader}>
+        <span class={`${inlineFlex} ${toolUseIcon}`}>
+          <Icon icon={icon()} size="md" />
+        </span>
+        <span class={toolInputText}>{`Agent ${props.agentId} ${props.status}`}</span>
+      </div>
+      {/* eslint-disable-next-line solid/no-innerhtml -- HTML from renderMarkdown, not user input */}
+      <div class={`${toolResultContent}${expanded() ? '' : ` ${toolResultCollapsed}`}`} innerHTML={renderMarkdown(props.content)} />
+    </div>
+  )
+}
+
+/** Renders agent_prompt messages (prompt sent to sub-agent) as a collapsible tool-style block. */
+export const agentPromptRenderer: MessageContentRenderer = {
+  render(parsed, _role, context) {
+    if (!isObject(parsed) || parsed.type !== 'user' || typeof parsed.parent_tool_use_id !== 'string')
+      return null
+
+    const message = parsed.message as Record<string, unknown> | undefined
+    if (!isObject(message))
+      return null
+    const content = (message as Record<string, unknown>).content
+    if (!Array.isArray(content))
+      return null
+
+    const text = (content as Array<Record<string, unknown>>)
+      .filter(c => isObject(c) && c.type === 'text')
+      .map(c => String(c.text || ''))
+      .join('\n\n')
+    if (!text)
+      return null
+
+    return <AgentPromptView text={text} context={context} />
+  },
+}
+
+/** Collapsed agent prompt view: MessageSquare icon + "Prompt" title + collapsed markdown body. */
+function AgentPromptView(props: {
+  text: string
+  context?: RenderContext
+}): JSX.Element {
+  const [expanded, setExpanded] = createSignal(false)
+
+  return (
+    <ToolUseLayout
+      icon={MessageSquare}
+      toolName="Prompt"
+      title="Prompt"
+      context={props.context}
+      expanded={expanded()}
+      onToggleExpand={() => setExpanded(v => !v)}
+    >
+      {/* eslint-disable-next-line solid/no-innerhtml -- HTML from renderMarkdown, not user input */}
+      <div class={`${toolResultContent}${expanded() ? '' : ` ${toolResultCollapsed}`}`} innerHTML={renderMarkdown(props.text)} />
+    </ToolUseLayout>
+  )
+}
+
 /** Structured Read result view using tool_use_result.file data. */
 function ReadFileResultView(props: {
   lines: ParsedCatLine[]
@@ -807,6 +878,25 @@ export const toolResultRenderer: MessageContentRenderer = {
           filePath={readFilePath!}
           totalLines={totalLines}
           fallbackContent={resultContent}
+          context={context}
+        />
+      )
+    }
+    // Agent: render collapsed result with "Agent {agentId} {status}" header.
+    else if (toolName === 'Agent' && toolUseResult) {
+      const agentId = typeof toolUseResult.agentId === 'string' ? toolUseResult.agentId : ''
+      const status = typeof toolUseResult.status === 'string' ? toolUseResult.status : 'completed'
+      const agentContent = Array.isArray(toolUseResult.content)
+        ? (toolUseResult.content as Array<Record<string, unknown>>)
+            .filter(c => isObject(c) && c.type === 'text')
+            .map(c => String(c.text || ''))
+            .join('\n\n')
+        : resultContent
+      innerResult = (
+        <AgentResultView
+          agentId={agentId}
+          status={status}
+          content={agentContent}
           context={context}
         />
       )

@@ -15,6 +15,7 @@ import { markdownContent } from './markdownContent.css'
 import { classifyParsedMessage, MessageBubble } from './MessageBubble'
 import { assistantMessage } from './messageStyles.css'
 import { SpanLines } from './SpanLines'
+import { NO_SPAN_MARGIN } from './SpanLines.css'
 import { ThinkingIndicator } from './ThinkingIndicator'
 import { ToolUseLayout } from './toolRenderers'
 
@@ -349,7 +350,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     return (
                       <Show
                         when={spanLines().length > 0}
-                        fallback={<div data-seq={msg.seq.toString()} style={{ 'margin-left': '1px' }}>{bubble}</div>}
+                        fallback={<div data-seq={msg.seq.toString()} style={{ 'margin-left': `${NO_SPAN_MARGIN}px` }}>{bubble}</div>}
                       >
                         <div data-seq={msg.seq.toString()} class={styles.messageRow}>
                           <SpanLines lines={spanLines()} spanOpener={!!msg.spanId} />

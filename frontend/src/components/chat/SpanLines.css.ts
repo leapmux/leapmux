@@ -1,30 +1,110 @@
 import { globalStyle, style, styleVariants } from '@vanilla-extract/css'
 
+// ─── Span Column Geometry ───────────────────────────────────────────
+//
+// Span lines visualize nested tool invocations as colored vertical
+// lines in columns to the left of message content.  Horizontal
+// connectors (├ and └ shapes) link a vertical line to the message
+// that opens or closes a span.
+//
+//     ←──── COL_WIDTH (24) ────→
+//     ┌──────────┬─────────────┐
+//     │     line (2px)         │
+//     │      ┃   │             │
+//     │      ┃────── connector ──→│← CONNECTOR_GAP (4) →│ message
+//     │      ┃   │             │                        │
+//     └──────────┴─────────────┘                        │
+//     ←overlap→                                         │
+//       (5px)  ┌─── next col ───┐                       │
+//
+// Adjacent columns overlap by COL_OVERLAP so their centers sit
+// COL_WIDTH − COL_OVERLAP = COL_SPACING apart.
+
+/** Thickness of all span lines (vertical, horizontal, connectors, bridges). */
+export const LINE_THICKNESS = 2
+
+/** Center-to-center spacing between adjacent span columns. */
+const COL_SPACING = 19
+
+/** Rendered element width of each column (line centered at COL_WIDTH / 2). */
+const COL_WIDTH = 24
+
+/** Overlap between adjacent columns (applied as negative left margin). */
+const COL_OVERLAP = COL_WIDTH - COL_SPACING // 5
+
+// ─── Connector Positioning ──────────────────────────────────────────
+
+/** Vertical offset aligning horizontal connectors with the first text line. */
+const CONNECTOR_Y = 9
+
+/** Inset from the column's right edge to the connector tip. */
+const CONNECTOR_GAP = 4
+
+// ─── Container Spacing ─────────────────────────────────────────────
+
+/** Right padding on the SpanLines container. */
+const CONTAINER_PAD_RIGHT = 1
+
+/**
+ * Non-opener containers (no horizontal connector) are pulled tighter
+ * by this amount so vertical-only lines sit closer to message content.
+ */
+const NON_OPENER_TIGHTEN = 4
+
+/** Extension to bridge vertical lines across the gap between message rows. */
+const ROW_GAP = 'var(--space-3)'
+
+// ─── Bridge (Passthrough Hop) ───────────────────────────────────────
+//
+// When a horizontal connector passes through a column that already has
+// a vertical line, a bridge arc hops over the vertical line to avoid
+// visual ambiguity.
+
+/** Diameter of the bridge arc. */
+const BRIDGE_DIAMETER = 10
+
+/** Radius of the bridge arc. */
+const BRIDGE_RADIUS = BRIDGE_DIAMETER / 2 // 5
+
+/** Top edge of the bridge arc. */
+const BRIDGE_TOP = 6
+
+/** Bottom edge of the bridge arc (center of the connector line). */
+const BRIDGE_BOTTOM = CONNECTOR_Y + LINE_THICKNESS / 2 // 10
+
+/** Overlap so horizontal segments tuck under bridge borders (sub-pixel gap fix). */
+const BRIDGE_SEAM = 1
+
+// ─── Derived Exports (for toolStyles.css.ts, ChatView.tsx) ──────────
+
+/** Left margin for tool body content borders (matches column overlap). */
+export const TOOL_BODY_INDENT = COL_OVERLAP // 5
+
+/** Left margin for messages without span lines. */
+export const NO_SPAN_MARGIN = CONTAINER_PAD_RIGHT // 1
+
+// ─── Styles ─────────────────────────────────────────────────────────
+
 /** Container for all span line columns. */
 const spanLinesContainerBase = style({
   display: 'flex',
   flexDirection: 'row',
   alignItems: 'stretch',
   flexShrink: 0,
-  paddingRight: '1px',
+  paddingRight: `${CONTAINER_PAD_RIGHT}px`,
 })
 
-export const spanLinesContainer = style([spanLinesContainerBase, {
-  marginRight: '-4px',
-}])
+export const spanLinesContainer = style([spanLinesContainerBase])
 
 export const spanLinesContainerSpanOpener = style([spanLinesContainerBase])
 
 /** Base style for a single span line column. */
 const spanLineColumnBase = style({
-  width: '24px',
-  marginLeft: '-5px',
+  width: `${COL_WIDTH}px`,
+  marginLeft: `${-COL_OVERLAP}px`,
   position: 'relative',
   flexShrink: 0,
 })
-
-/** Extension to bridge the gap between message rows. */
-const GAP_EXTEND = 'var(--space-3)'
 
 /** Vertical line running through the column center. */
 export const spanLineActive = style([spanLineColumnBase, {
@@ -32,9 +112,9 @@ export const spanLineActive = style([spanLineColumnBase, {
     content: '""',
     position: 'absolute',
     left: '50%',
-    top: `calc(-1 * ${GAP_EXTEND})`,
-    bottom: `calc(-1 * ${GAP_EXTEND})`,
-    width: '2px',
+    top: `calc(-1 * ${ROW_GAP})`,
+    bottom: `calc(-1 * ${ROW_GAP})`,
+    width: `${LINE_THICKNESS}px`,
     transform: 'translateX(-50%)',
     backgroundColor: 'var(--span-line-color, var(--border))',
   },
@@ -43,20 +123,15 @@ export const spanLineActive = style([spanLineColumnBase, {
 /** Empty column (no active span). */
 export const spanLineEmpty = style([spanLineColumnBase])
 
-/** Vertical offset for horizontal connector lines — aligns to center of first text line. */
-const CONNECTOR_TOP = '9px'
-/** Gap between the connector tip and the message content. */
-const CONNECTOR_GAP = '4px'
-
-/** Horizontal connector from the vertical line to the message. */
+/** Horizontal connector from the vertical line to the message (├ shape). */
 export const spanLineConnector = style([spanLineColumnBase, {
   '::before': {
     content: '""',
     position: 'absolute',
     left: '50%',
-    top: `calc(-1 * ${GAP_EXTEND})`,
-    bottom: `calc(-1 * ${GAP_EXTEND})`,
-    width: '2px',
+    top: `calc(-1 * ${ROW_GAP})`,
+    bottom: `calc(-1 * ${ROW_GAP})`,
+    width: `${LINE_THICKNESS}px`,
     transform: 'translateX(-50%)',
     backgroundColor: 'var(--span-line-color, var(--border))',
   },
@@ -64,22 +139,22 @@ export const spanLineConnector = style([spanLineColumnBase, {
     content: '""',
     position: 'absolute',
     left: '50%',
-    top: CONNECTOR_TOP,
-    right: CONNECTOR_GAP,
-    height: '2px',
+    top: `${CONNECTOR_Y}px`,
+    right: `${CONNECTOR_GAP}px`,
+    height: `${LINE_THICKNESS}px`,
     backgroundColor: 'var(--span-line-color, var(--border))',
   },
 }])
 
-/** Bottom-corner connector (└): vertical line from top to connector, then horizontal to the right. */
+/** Bottom-corner connector (└ shape): vertical line down to connector, then horizontal. */
 export const spanLineConnectorEnd = style([spanLineColumnBase, {
   '::before': {
     content: '""',
     position: 'absolute',
     left: '50%',
-    top: `calc(-1 * ${GAP_EXTEND})`,
-    height: `calc(${CONNECTOR_TOP} + 2px + ${GAP_EXTEND})`,
-    width: '2px',
+    top: `calc(-1 * ${ROW_GAP})`,
+    height: `calc(${CONNECTOR_Y + LINE_THICKNESS}px + ${ROW_GAP})`,
+    width: `${LINE_THICKNESS}px`,
     transform: 'translateX(-50%)',
     backgroundColor: 'var(--span-line-color, var(--border))',
   },
@@ -87,48 +162,37 @@ export const spanLineConnectorEnd = style([spanLineColumnBase, {
     content: '""',
     position: 'absolute',
     left: '50%',
-    top: CONNECTOR_TOP,
-    right: CONNECTOR_GAP,
-    height: '2px',
+    top: `${CONNECTOR_Y}px`,
+    right: `${CONNECTOR_GAP}px`,
+    height: `${LINE_THICKNESS}px`,
     backgroundColor: 'var(--span-line-color, var(--border))',
   },
 }])
 
-/** Bridge dimensions for the circuit-style hop over the vertical line. */
-const BRIDGE_SIZE = '10px'
-const BRIDGE_HALF = '5px'
-const BRIDGE_TOP = '6px'
-/** Vertical position of the passthrough horizontal line (bridge bottom). */
-const BRIDGE_BOTTOM = `calc(${CONNECTOR_TOP} + 1px)`
-/** Overlap so horizontal segments tuck under the bridge borders (avoids sub-pixel gaps). */
-const BRIDGE_OVERLAP = '1px'
-
 /**
  * Build the horizontal passthrough gradient with a gap for the bridge arc.
- * @param rightEnd - CSS value for where the right segment ends (e.g. '100%' or 'calc(100% - 4px)')
+ * @param rightEnd CSS value for where the right segment ends
  */
 function passthroughGradient(rightEnd: string) {
   const c = 'var(--span-passthrough-color, var(--border))'
-  const gapL = `calc(50% - ${BRIDGE_HALF} + ${BRIDGE_OVERLAP})`
-  const gapR = `calc(50% + ${BRIDGE_HALF} - ${BRIDGE_OVERLAP})`
+  const gapL = `calc(50% - ${BRIDGE_RADIUS - BRIDGE_SEAM}px)`
+  const gapR = `calc(50% + ${BRIDGE_RADIUS - BRIDGE_SEAM}px)`
   return `linear-gradient(to right, ${c} 0, ${c} ${gapL}, transparent ${gapL}, transparent ${gapR}, ${c} ${gapR}, ${c} ${rightEnd}${rightEnd !== '100%' ? `, transparent ${rightEnd}` : ''})`
 }
 
 /** Active vertical line with a horizontal pass-through that hops over the vertical line. */
 export const spanLineActivePassthrough = style([spanLineColumnBase, {
-  // Horizontal line segments with a gap where the bridge arc sits.
-  // The gap is slightly narrower than the bridge so segments overlap its borders.
   'backgroundImage': passthroughGradient('100%'),
-  'backgroundSize': '100% 2px',
-  'backgroundPosition': `0 ${CONNECTOR_TOP}`,
+  'backgroundSize': `100% ${LINE_THICKNESS}px`,
+  'backgroundPosition': `0 ${CONNECTOR_Y}px`,
   'backgroundRepeat': 'no-repeat',
   '::before': {
     content: '""',
     position: 'absolute',
     left: '50%',
-    top: `calc(-1 * ${GAP_EXTEND})`,
-    bottom: `calc(-1 * ${GAP_EXTEND})`,
-    width: '2px',
+    top: `calc(-1 * ${ROW_GAP})`,
+    bottom: `calc(-1 * ${ROW_GAP})`,
+    width: `${LINE_THICKNESS}px`,
     transform: 'translateX(-50%)',
     backgroundColor: 'var(--span-line-color, var(--border))',
   },
@@ -137,15 +201,15 @@ export const spanLineActivePassthrough = style([spanLineColumnBase, {
     position: 'absolute',
     boxSizing: 'border-box',
     left: '50%',
-    top: BRIDGE_TOP,
-    width: BRIDGE_SIZE,
-    height: `calc(${BRIDGE_BOTTOM} - ${BRIDGE_TOP} + ${BRIDGE_OVERLAP})`,
+    top: `${BRIDGE_TOP}px`,
+    width: `${BRIDGE_DIAMETER}px`,
+    height: `${BRIDGE_BOTTOM - BRIDGE_TOP + BRIDGE_SEAM}px`,
     transform: 'translateX(-50%)',
-    borderLeft: '2px solid var(--span-passthrough-color, var(--border))',
-    borderRight: '2px solid var(--span-passthrough-color, var(--border))',
-    borderTop: '2px solid var(--span-passthrough-color, var(--border))',
+    borderLeft: `${LINE_THICKNESS}px solid var(--span-passthrough-color, var(--border))`,
+    borderRight: `${LINE_THICKNESS}px solid var(--span-passthrough-color, var(--border))`,
+    borderTop: `${LINE_THICKNESS}px solid var(--span-passthrough-color, var(--border))`,
     borderBottom: 'none',
-    borderRadius: `${BRIDGE_HALF} ${BRIDGE_HALF} 0 0`,
+    borderRadius: `${BRIDGE_RADIUS}px ${BRIDGE_RADIUS}px 0 0`,
   },
 }])
 
@@ -156,18 +220,18 @@ export const spanLinePassthrough = style([spanLineColumnBase, {
     position: 'absolute',
     left: 0,
     right: 0,
-    top: CONNECTOR_TOP,
-    height: '2px',
+    top: `${CONNECTOR_Y}px`,
+    height: `${LINE_THICKNESS}px`,
     backgroundColor: 'var(--span-passthrough-color, var(--border))',
   },
 }])
 
 /** Shorten the rightmost passthrough column so it doesn't touch the message content. */
 globalStyle(`${spanLineActivePassthrough}:last-child`, {
-  backgroundImage: passthroughGradient(`calc(100% - ${CONNECTOR_GAP})`),
+  backgroundImage: passthroughGradient(`calc(100% - ${CONNECTOR_GAP}px)`),
 })
 globalStyle(`${spanLinePassthrough}:last-child::before`, {
-  right: CONNECTOR_GAP,
+  right: `${CONNECTOR_GAP}px`,
 })
 
 /** Span line color palette (cycled by color index). */

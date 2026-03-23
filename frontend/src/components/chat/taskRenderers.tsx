@@ -2,8 +2,8 @@
 import type { JSX } from 'solid-js'
 import type { MessageContentRenderer, RenderContext } from './messageRenderers'
 import type { TodoItem } from '~/stores/chat.store'
+import Check from 'lucide-solid/icons/check'
 import ListTodo from 'lucide-solid/icons/list-todo'
-import Terminal from 'lucide-solid/icons/terminal'
 import Vote from 'lucide-solid/icons/vote'
 import { For } from 'solid-js'
 import { TodoList } from '~/components/todo/TodoList'
@@ -100,21 +100,24 @@ export const askUserQuestionRenderer: MessageContentRenderer = {
   },
 }
 
-/** Renders task_notification system messages as a tool-use-style block with Terminal icon. */
+/** Renders task_notification system messages as a tool-use-style block with Check icon. */
 export const taskNotificationRenderer: MessageContentRenderer = {
   render(parsed, _role, context) {
     if (!isObject(parsed) || parsed.type !== 'system' || parsed.subtype !== 'task_notification')
       return null
 
+    const status = typeof parsed.status === 'string' ? parsed.status : 'completed'
+    const statusLabel = status.charAt(0).toUpperCase() + status.slice(1)
     const summaryText = typeof parsed.summary === 'string' ? parsed.summary : 'Task notification'
+    const title = `${statusLabel}: ${summaryText}`
     const outputFile = typeof parsed.output_file === 'string' ? parsed.output_file : null
     const summary = outputFile ? <div class={toolInputSummary}>{outputFile}</div> : undefined
 
     return (
       <ToolUseLayout
-        icon={Terminal}
+        icon={Check}
         toolName="Task Notification"
-        title={summaryText}
+        title={title}
         summary={summary}
         context={context}
       />

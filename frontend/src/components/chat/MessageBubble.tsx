@@ -190,8 +190,8 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   })
 
   // Whether the message is rendered by a renderer that has its own internal ToolHeaderActions.
-  // tool_use always renders its own ToolHeaderActions inside ToolUseLayout.
-  const hasInternalActions = () => category().kind === 'tool_use'
+  // tool_use and agent_prompt render their own ToolHeaderActions inside ToolUseLayout.
+  const hasInternalActions = () => category().kind === 'tool_use' || category().kind === 'agent_prompt'
 
   // Determine if this tool_result is collapsible (enough lines/items to warrant collapse).
   const isCollapsibleToolResult = createMemo(() => {
@@ -215,6 +215,12 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       const file = toolUseResult?.file as Record<string, unknown> | undefined
       if (file && typeof file.numLines === 'number')
         return file.numLines > COLLAPSED_RESULT_ROWS
+    }
+
+    // Agent: always collapsible when content is present (uses rem-based height collapse).
+    if (toolName === 'Agent') {
+      return Array.isArray(toolUseResult?.content)
+        && (toolUseResult!.content as Array<Record<string, unknown>>).some(c => typeof c === 'object' && c !== null && c.type === 'text')
     }
 
     // Bash/Read/TaskOutput/unknown: collapsible if result text exceeds threshold lines.

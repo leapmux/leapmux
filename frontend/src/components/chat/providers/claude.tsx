@@ -87,7 +87,7 @@ function classifyClaudeCodeMessage(
     if (subtype === 'status' && parentObject.status !== 'compacting')
       return { kind: 'hidden' }
     if (subtype === 'task_notification')
-      return { kind: 'task_notification' }
+      return { kind: 'hidden' }
     return { kind: 'notification' }
   }
 
@@ -139,6 +139,10 @@ function classifyClaudeCodeMessage(
 
   // User messages
   if (type === 'user') {
+    // Agent prompt: user message with parent_tool_use_id (prompt sent to sub-agent)
+    if (typeof parentObject.parent_tool_use_id === 'string')
+      return { kind: 'agent_prompt' }
+
     const message = parentObject.message as Record<string, unknown> | undefined
     if (isObject(message)) {
       const content = (message as Record<string, unknown>).content

@@ -41,6 +41,7 @@ import {
 } from './taskRenderers'
 
 import {
+  agentPromptRenderer,
   ToolHeaderActions,
   toolResultRenderer,
   toolUseRenderer,
@@ -259,6 +260,7 @@ const KIND_RENDERERS: Record<string, (parsed: unknown, role: MessageRole, contex
   // at module initialization time, which can hit the TDZ due to the circular
   // dependency between messageRenderers ↔ toolRenderers.
   tool_result: (p, r, c) => toolResultRenderer.render(p, r, c),
+  agent_prompt: (p, r, c) => agentPromptRenderer.render(p, r, c),
   assistant_text: assistantTextRenderer.render,
   assistant_thinking: assistantThinkingRenderer.render,
   user_text: userTextContentRenderer.render,
@@ -322,6 +324,7 @@ function getFallbackRenderers(): MessageContentRenderer[] {
       askUserQuestionRenderer,
       toolUseRenderer,
       toolResultRenderer,
+      agentPromptRenderer,
       userTextContentRenderer,
       assistantTextRenderer,
       assistantThinkingRenderer,

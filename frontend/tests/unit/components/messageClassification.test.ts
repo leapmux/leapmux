@@ -130,9 +130,9 @@ describe('classifyMessage', () => {
 
   // -- task_notification ----------------------------------------------------
 
-  it('classifies system task_notification', () => {
+  it('classifies system task_notification as hidden', () => {
     const result = classifyMessage({ type: 'system', subtype: 'task_notification' }, null)
-    expect(result.kind).toBe('task_notification')
+    expect(result.kind).toBe('hidden')
   })
 
   // -- notification (system fallback) ---------------------------------------
