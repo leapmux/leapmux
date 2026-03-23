@@ -308,7 +308,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                                   data-testid="agent-info-trigger"
                                   {...triggerProps}
                                 >
-                                  <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} size={iconSize.xs} />
+                                  <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} modelContextWindow={Number(props.agent?.availableModels?.find(m => m.id === props.agent?.model)?.contextWindow) || undefined} size={iconSize.xs} />
                                   <Show when={info.urgentRateLimit()}>
                                     {rl => (
                                       <Tooltip
@@ -366,7 +366,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                               data-testid="agent-info-trigger"
                               {...triggerProps}
                             >
-                              <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} size={iconSize.xs} />
+                              <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} modelContextWindow={Number(props.agent?.availableModels?.find(m => m.id === props.agent?.model)?.contextWindow) || undefined} size={iconSize.xs} />
                               <Show when={info.urgentRateLimit()}>
                                 {rl => (
                                   <Tooltip

@@ -6,6 +6,7 @@ import { Tooltip } from '~/components/common/Tooltip'
 
 interface ContextUsageGridProps {
   contextUsage?: ContextUsageInfo
+  modelContextWindow?: number
   size: number
 }
 
@@ -71,7 +72,7 @@ const GAP = 1
 const STEP = SQUARE_SIZE + GAP // 4
 
 export const ContextUsageGrid: Component<ContextUsageGridProps> = (props) => {
-  const percentage = createMemo(() => computePercentage(props.contextUsage))
+  const percentage = createMemo(() => computePercentage(props.contextUsage, props.modelContextWindow))
 
   const filled = createMemo(() => {
     const pct = percentage()
