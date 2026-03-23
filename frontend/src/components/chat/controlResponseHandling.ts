@@ -6,7 +6,7 @@ import type { PermissionMode } from '~/utils/controlResponse'
 import { createEffect, createMemo, on } from 'solid-js'
 import { clearDraft } from '~/lib/editor/draftPersistence'
 import { safeGetJson, safeRemoveItem, safeSetJson } from '~/lib/safeStorage'
-import { buildAllowResponse, buildDenyResponse, getToolName } from '~/utils/controlResponse'
+import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import { trySubmitAskUserQuestion } from './controls/AskUserQuestionControl'
 import { getProviderPlugin } from './providers'
 
@@ -167,7 +167,7 @@ export function useControlResponseHandling(
     const toolName = getToolName(req.payload)
     const response = (content || toolName === 'ExitPlanMode')
       ? buildDenyResponse(req.requestId, content)
-      : buildAllowResponse(req.requestId)
+      : buildAllowResponse(req.requestId, getToolInput(req.payload))
     if (toolName === 'CodexPlanModePrompt')
       (response as Record<string, unknown>).codexPlanModePrompt = true
     const bytes = new TextEncoder().encode(JSON.stringify(response))

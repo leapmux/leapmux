@@ -54,15 +54,21 @@ func (a *ClaudeCodeAgent) HandleOutput(content []byte) {
 		a.handlePersistableMessage(content, envelope.Type, role)
 
 	case "user":
-		// Reset tool use counter at the start of each user turn.
-		a.mu.Lock()
-		a.turnToolUses = 0
-		a.mu.Unlock()
-		if !isSimpleUserTextEcho(content) {
+		if isSimpleUserTextEcho(content) {
+			// Reset tool use counter at the start of each user turn.
+			// Only reset for user text echoes, not tool_result messages,
+			// so the counter accumulates across the entire turn.
+			a.mu.Lock()
+			a.turnToolUses = 0
+			a.mu.Unlock()
+		} else {
 			a.handlePersistableMessage(content, envelope.Type, role)
 		}
 
 	case "context_cleared", "interrupted", "plan_execution":
+		if envelope.Type == "interrupted" {
+			a.sink.ResetSpans()
+		}
 		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, content); err != nil {
 			slog.Error("persist agent notification", "agent_id", a.agentID, "type", envelope.Type, "error", err)
 		}
@@ -90,32 +96,61 @@ func (a *ClaudeCodeAgent) enrichResultWithToolUses(content []byte) []byte {
 	return a.enrichWithToolUses(content)
 }
 
-// processAssistantBlocks parses the message.content[] blocks of an assistant
-// message once and performs plan mode tracking, plan file tracking, and tool
-// use counting — replacing three separate parse passes.
-func (a *ClaudeCodeAgent) processAssistantBlocks(content []byte) {
-	var msg struct {
-		Message struct {
-			Content []struct {
-				Type  string `json:"type"`
-				ID    string `json:"id"`
-				Name  string `json:"name"`
-				Input struct {
-					FilePath  string `json:"file_path"`
-					Content   string `json:"content"`
-					OldString string `json:"old_string"`
-					NewString string `json:"new_string"`
-				} `json:"input"`
-			} `json:"content"`
-		} `json:"message"`
+// contentBlock represents a single block in message.content[].
+type contentBlock struct {
+	Type      string          `json:"type"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	ToolUseID string          `json:"tool_use_id"`
+	Input     json.RawMessage `json:"input"`
+}
+
+// messageEnvelope is the shared top-level structure parsed once for
+// assistant, user, system, and result messages.
+type messageEnvelope struct {
+	ParentToolUseID string `json:"parent_tool_use_id"`
+	ToolUseID       string `json:"tool_use_id"`
+	Message         struct {
+		RawContent json.RawMessage `json:"content"`
+		Usage      *struct {
+			InputTokens              int64 `json:"input_tokens"`
+			OutputTokens             int64 `json:"output_tokens"`
+			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+		} `json:"usage"`
+	} `json:"message"`
+	ToolUseResult json.RawMessage            `json:"tool_use_result"`
+	CostUSD       *float64                   `json:"total_cost_usd"`
+	ModelUsage    map[string]json.RawMessage `json:"modelUsage"`
+
+	// contentBlocks is lazily populated from RawContent.
+	contentBlocks []contentBlock
+	contentParsed bool
+}
+
+// ContentBlocks returns the parsed content blocks from message.content.
+// Returns nil if content is not an array (e.g. a plain string).
+func (e *messageEnvelope) ContentBlocks() []contentBlock {
+	if !e.contentParsed {
+		e.contentParsed = true
+		raw := e.Message.RawContent
+		if len(raw) > 0 && raw[0] == '[' {
+			_ = json.Unmarshal(raw, &e.contentBlocks)
+		}
 	}
-	if json.Unmarshal(content, &msg) != nil {
-		return
-	}
+	return e.contentBlocks
+}
+
+// processAssistantBlocks iterates the pre-parsed message.content[] blocks of an
+// assistant message and performs plan mode tracking, plan file tracking, tool
+// use counting, and scope management.
+func (a *ClaudeCodeAgent) processAssistantBlocks(env *messageEnvelope) {
+	// Determine the parent span for any Agent tool_use blocks.
+	parentSpanID := env.ParentToolUseID
 
 	toolUseCount := 0
 	planFileProcessed := false
-	for _, block := range msg.Message.Content {
+	for _, block := range env.ContentBlocks() {
 		if block.Type != "tool_use" {
 			continue
 		}
@@ -130,24 +165,35 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(content []byte) {
 			case "ExitPlanMode":
 				a.sink.StorePlanModeToolUse(block.ID, PermissionModeDefault)
 			}
+
+			a.sink.OpenSpan(block.ID, parentSpanID)
 		}
 
 		// Plan file path tracking (Write/Edit to ~/.claude/plans/).
 		if !planFileProcessed && (block.Name == "Write" || block.Name == "Edit") {
-			filePath := block.Input.FilePath
+			var input struct {
+				FilePath  string `json:"file_path"`
+				Content   string `json:"content"`
+				OldString string `json:"old_string"`
+				NewString string `json:"new_string"`
+			}
+			if json.Unmarshal(block.Input, &input) != nil {
+				continue
+			}
+			filePath := input.FilePath
 			if filePath != "" && a.homeDir != "" {
 				planDir := a.homeDir + "/.claude/plans/"
 				if strings.HasPrefix(filePath, planDir) {
 					planFileProcessed = true
 
 					var planContentStr string
-					if block.Name == "Write" && block.Input.Content != "" {
-						planContentStr = block.Input.Content
+					if block.Name == "Write" && input.Content != "" {
+						planContentStr = input.Content
 					} else {
 						data, readErr := os.ReadFile(filePath)
 						if readErr == nil && len(data) > 0 {
 							if block.Name == "Edit" {
-								planContentStr = strings.Replace(string(data), block.Input.OldString, block.Input.NewString, 1)
+								planContentStr = strings.Replace(string(data), input.OldString, input.NewString, 1)
 							} else {
 								planContentStr = string(data)
 							}
@@ -184,6 +230,15 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 				if statusVal == "" && prev == "" {
 					return
 				}
+				// Emit a LEAPMUX notification for compacting status so it threads with
+				// other LEAPMUX notifications (context_cleared, settings_changed, etc.).
+				if statusVal == "compacting" {
+					leapmuxContent := []byte(`{"type":"compacting"}`)
+					if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, leapmuxContent); err != nil {
+						slog.Error("persist compacting notification", "agent_id", a.agentID, "error", err)
+					}
+					return
+				}
 			}
 			if err := a.sink.PersistNotification(role, content); err != nil {
 				slog.Error("persist notification-threaded system message", "agent_id", a.agentID, "error", err)
@@ -195,37 +250,50 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	// Non-notification messages soft-clear the notification thread.
 	a.sink.SoftClearNotifThread()
 
+	// Parse the message envelope once for all downstream consumers.
+	var env messageEnvelope
+	if err := json.Unmarshal(content, &env); err != nil {
+		slog.Warn("invalid message envelope", "agent_id", a.agentID, "error", err)
+		return
+	}
+
 	// Extract agent context metadata from assistant and result messages.
 	if msgType == "assistant" || msgType == "result" {
-		a.extractAndBroadcastUsage(content, msgType)
+		a.extractAndBroadcastUsage(&env, msgType)
 	}
 
-	// Parse assistant message content blocks once for plan mode tracking,
-	// plan file tracking, and tool use counting.
+	// Determine parent span ID for hierarchy tracking.
+	parentSpanID := env.ParentToolUseID
+	if parentSpanID == "" {
+		parentSpanID = env.ToolUseID
+	}
+
+	// Determine span ID and span type: for tool_use messages use the block ID
+	// and tool name, for tool_result messages use the tool_use_id reference
+	// and look up the tool name from the span tracker.
+	var spanID, spanType string
 	if msgType == "assistant" {
-		a.processAssistantBlocks(content)
-	}
-
-	// Extract thread_id — try each extractor until one succeeds.
-	threadID := extractToolUseID(content)
-	if threadID == "" {
-		threadID = extractToolResultID(content)
-	}
-	if threadID == "" {
-		threadID = extractParentToolUseID(content)
-	}
-	if threadID == "" {
-		threadID = extractSystemToolUseID(content)
-	}
-
-	// Child message with a matching parent: merge into the parent's row.
-	if threadID != "" && (role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER || role == leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM) {
-		if a.sink.MergeIntoThread(threadID, content) {
-			if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
-				a.detectPlanModeFromToolResult(content)
+		for _, block := range env.ContentBlocks() {
+			if block.Type == "tool_use" && block.ID != "" {
+				spanID, spanType = block.ID, block.Name
+				break
 			}
-			return
 		}
+	} else if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
+		for _, block := range env.ContentBlocks() {
+			if block.Type == "tool_result" && block.ToolUseID != "" {
+				spanID = block.ToolUseID
+				break
+			}
+		}
+		if spanID != "" {
+			spanType = a.sink.GetSpanType(spanID)
+		}
+	}
+
+	// Detect plan mode from tool_result messages.
+	if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
+		a.detectPlanModeFromToolResult(&env)
 	}
 
 	// Enrich result messages with num_tool_uses.
@@ -233,9 +301,53 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		content = a.enrichResultWithToolUses(content)
 	}
 
-	// Standalone message or no matching parent — persist.
-	if err := a.sink.PersistMessage(role, content, threadID); err != nil {
+	// Pre-peek the span color for tool_use messages (assistant with a spanID)
+	// so it is available at persist time, before the span is actually opened.
+	var spanColor int32
+	if msgType == "assistant" && spanID != "" {
+		spanColor = a.sink.PeekNextSpanColor()
+	}
+
+	// Persist as a standalone message with hierarchy metadata.
+	// This MUST happen before processAssistantBlocks (which opens spans)
+	// so the assistant message stays at the parent depth.
+	// closing is true when this is a tool_result that will close its span.
+	closing := role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER && spanID != ""
+	if err := a.sink.PersistMessage(role, content, SpanInfo{
+		ParentSpanID: parentSpanID,
+		SpanID:       spanID,
+		SpanType:     spanType,
+		SpanColor:    spanColor,
+		Closing:      closing,
+	}); err != nil {
 		slog.Error("persist agent message", "agent_id", a.agentID, "error", err)
+	}
+
+	if spanType != "" {
+		a.sink.SetSpanType(spanID, spanType)
+	}
+
+	// Parse assistant message content blocks for plan mode tracking,
+	// plan file tracking, tool use counting, and span management.
+	// Runs after persist so spans open AFTER the tool_use message,
+	// keeping it at parent depth while its tool_result is indented.
+	if msgType == "assistant" {
+		a.processAssistantBlocks(&env)
+	}
+
+	// A single user message may contain multiple tool_result blocks
+	// (parallel tool calls), so close all of them.
+	if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
+		for _, block := range env.ContentBlocks() {
+			if block.Type == "tool_result" && block.ToolUseID != "" {
+				a.sink.CloseSpan(block.ToolUseID)
+			}
+		}
+	}
+
+	// Reset all span tracking at turn-end so the next turn starts clean.
+	if msgType == "result" {
+		a.sink.ResetSpans()
 	}
 }
 
@@ -299,6 +411,9 @@ func (a *ClaudeCodeAgent) claudeCodeHandleControlResponse(content []byte) {
 			a.sink.UpdatePermissionMode(cr.Response.Response.Mode)
 		}
 	}
+
+	// No need to persist control_response in the timeline — they are
+	// already surfaced as notification threads.
 }
 
 // claudeCodeHandleRateLimitEvent broadcasts rate_limit_event and persists as notification.
@@ -335,59 +450,34 @@ func (a *ClaudeCodeAgent) claudeCodeHandleRateLimitEvent(content []byte) {
 }
 
 // extractAndBroadcastUsage extracts token usage from assistant/result messages.
-func (a *ClaudeCodeAgent) extractAndBroadcastUsage(content []byte, msgType string) {
-	var infoFields struct {
-		CostUSD *float64 `json:"total_cost_usd"`
-	}
-	if err := json.Unmarshal(content, &infoFields); err != nil {
-		return
-	}
-
+func (a *ClaudeCodeAgent) extractAndBroadcastUsage(env *messageEnvelope, msgType string) {
 	info := map[string]interface{}{}
-	if infoFields.CostUSD != nil {
-		info["total_cost_usd"] = *infoFields.CostUSD
+	if env.CostUSD != nil {
+		info["total_cost_usd"] = *env.CostUSD
 	}
 
 	snapshot := a.getOrCreateUsageSnapshot()
 
-	if msgType == "assistant" {
-		var assistantMsg struct {
-			Message *struct {
-				Usage *struct {
-					InputTokens              int64 `json:"input_tokens"`
-					OutputTokens             int64 `json:"output_tokens"`
-					CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
-					CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
-				} `json:"usage"`
-			} `json:"message"`
-		}
-		if err := json.Unmarshal(content, &assistantMsg); err == nil &&
-			assistantMsg.Message != nil && assistantMsg.Message.Usage != nil {
-			u := assistantMsg.Message.Usage
-			snapshot.mu.Lock()
-			snapshot.InputTokens = u.InputTokens
-			snapshot.OutputTokens = u.OutputTokens
-			snapshot.CacheCreationInputTokens = u.CacheCreationInputTokens
-			snapshot.CacheReadInputTokens = u.CacheReadInputTokens
-			snapshot.mu.Unlock()
-		}
+	if msgType == "assistant" && env.Message.Usage != nil {
+		u := env.Message.Usage
+		snapshot.mu.Lock()
+		snapshot.InputTokens = u.InputTokens
+		snapshot.OutputTokens = u.OutputTokens
+		snapshot.CacheCreationInputTokens = u.CacheCreationInputTokens
+		snapshot.CacheReadInputTokens = u.CacheReadInputTokens
+		snapshot.mu.Unlock()
 	}
 
-	if msgType == "result" {
-		var resultMsg struct {
-			ModelUsage map[string]json.RawMessage `json:"modelUsage"`
-		}
-		if err := json.Unmarshal(content, &resultMsg); err == nil && resultMsg.ModelUsage != nil {
-			for _, raw := range resultMsg.ModelUsage {
-				var mu struct {
-					ContextWindow int64 `json:"contextWindow"`
-				}
-				if json.Unmarshal(raw, &mu) == nil && mu.ContextWindow > 0 {
-					snapshot.mu.Lock()
-					snapshot.ContextWindow = mu.ContextWindow
-					snapshot.mu.Unlock()
-					break
-				}
+	if msgType == "result" && env.ModelUsage != nil {
+		for _, raw := range env.ModelUsage {
+			var mu struct {
+				ContextWindow int64 `json:"contextWindow"`
+			}
+			if json.Unmarshal(raw, &mu) == nil && mu.ContextWindow > 0 {
+				snapshot.mu.Lock()
+				snapshot.ContextWindow = mu.ContextWindow
+				snapshot.mu.Unlock()
+				break
 			}
 		}
 	}
@@ -422,30 +512,28 @@ func (a *ClaudeCodeAgent) extractAndBroadcastUsage(content []byte, msgType strin
 
 func (a *ClaudeCodeAgent) getOrCreateUsageSnapshot() *contextUsageSnapshot {
 	if a.contextUsage == nil {
-		a.contextUsage = &contextUsageSnapshot{}
+		a.contextUsage = &contextUsageSnapshot{
+			ContextWindow: modelContextWindow(claudeCodeAvailableModels, a.model),
+		}
 	}
 	return a.contextUsage
 }
 
+// modelContextWindow looks up the context window for a model ID from a list
+// of available models. Returns 0 if the model is not found.
+func modelContextWindow(models []*leapmuxv1.AvailableModel, modelID string) int64 {
+	for _, m := range models {
+		if m.Id == modelID {
+			return m.ContextWindow
+		}
+	}
+	return 0
+}
+
 // detectPlanModeFromToolResult inspects a user message (tool_result) for
 // confirmation of a previously tracked EnterPlanMode or ExitPlanMode tool_use.
-func (a *ClaudeCodeAgent) detectPlanModeFromToolResult(content []byte) {
-	var msg struct {
-		Message struct {
-			Content []struct {
-				Type      string `json:"type"`
-				ToolUseID string `json:"tool_use_id"`
-			} `json:"content"`
-		} `json:"message"`
-		ToolUseResult *struct {
-			Message string `json:"message"`
-		} `json:"tool_use_result"`
-	}
-	if err := json.Unmarshal(content, &msg); err != nil {
-		return
-	}
-
-	for _, block := range msg.Message.Content {
+func (a *ClaudeCodeAgent) detectPlanModeFromToolResult(env *messageEnvelope) {
+	for _, block := range env.ContentBlocks() {
 		if block.Type != "tool_result" || block.ToolUseID == "" {
 			continue
 		}
@@ -456,8 +544,8 @@ func (a *ClaudeCodeAgent) detectPlanModeFromToolResult(content []byte) {
 		}
 
 		resultText := ""
-		if msg.ToolUseResult != nil {
-			resultText = msg.ToolUseResult.Message
+		if len(env.ToolUseResult) > 0 {
+			resultText = extractToolUseResultMessage(env.ToolUseResult)
 		}
 
 		resultLower := strings.ToLower(resultText)
@@ -488,66 +576,28 @@ func (a *ClaudeCodeAgent) detectPlanModeFromToolResult(content []byte) {
 	}
 }
 
-// --- Thread ID extraction helpers ---
-
-func extractToolUseID(content []byte) string {
-	var msg struct {
-		Message struct {
-			Content []struct {
-				Type string `json:"type"`
-				ID   string `json:"id"`
-			} `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.Unmarshal(content, &msg); err != nil {
+// extractToolUseResultMessage extracts the message string from a tool_use_result
+// field that may be either a plain JSON string or an object with a "message" key.
+func extractToolUseResultMessage(raw json.RawMessage) string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
 		return ""
 	}
-	for _, block := range msg.Message.Content {
-		if block.Type == "tool_use" && block.ID != "" {
-			return block.ID
+	switch trimmed[0] {
+	case '"':
+		var s string
+		if json.Unmarshal(raw, &s) == nil {
+			return s
+		}
+	case '{':
+		var obj struct {
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(raw, &obj) == nil {
+			return obj.Message
 		}
 	}
 	return ""
-}
-
-func extractToolResultID(content []byte) string {
-	var msg struct {
-		Message struct {
-			Content []struct {
-				Type      string `json:"type"`
-				ToolUseID string `json:"tool_use_id"`
-			} `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.Unmarshal(content, &msg); err != nil {
-		return ""
-	}
-	for _, block := range msg.Message.Content {
-		if block.Type == "tool_result" && block.ToolUseID != "" {
-			return block.ToolUseID
-		}
-	}
-	return ""
-}
-
-func extractParentToolUseID(content []byte) string {
-	var msg struct {
-		ParentToolUseID string `json:"parent_tool_use_id"`
-	}
-	if err := json.Unmarshal(content, &msg); err != nil {
-		return ""
-	}
-	return msg.ParentToolUseID
-}
-
-func extractSystemToolUseID(content []byte) string {
-	var msg struct {
-		ToolUseID string `json:"tool_use_id"`
-	}
-	if err := json.Unmarshal(content, &msg); err != nil {
-		return ""
-	}
-	return msg.ToolUseID
 }
 
 // --- Notification threading helpers ---
@@ -567,7 +617,7 @@ func isNotificationThreadable(content []byte, role leapmuxv1.MessageRole) bool {
 		if json.Unmarshal(content, &msg) != nil {
 			return false
 		}
-		return msg.Type == "settings_changed" || msg.Type == "context_cleared" || msg.Type == "interrupted" || msg.Type == "rate_limit" || msg.Type == "agent_error"
+		return msg.Type == "settings_changed" || msg.Type == "context_cleared" || msg.Type == "interrupted" || msg.Type == "rate_limit" || msg.Type == "agent_error" || msg.Type == "compacting"
 	case leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM:
 		var msg struct {
 			Subtype string `json:"subtype"`

@@ -2,6 +2,7 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from './messageRenderers'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import Bot from 'lucide-solid/icons/bot'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FileEdit from 'lucide-solid/icons/file-pen-line'
@@ -229,6 +230,18 @@ export function codexReasoningRenderer(parsed: unknown, _role: MessageRole, _con
   )
 }
 
+/** Build a title element with a display name and optional status badge. */
+function codexStatusTitle(displayName: string, status: string): JSX.Element {
+  return (
+    <>
+      <span class={toolInputSummary}>{displayName}</span>
+      <Show when={status}>
+        <span class={toolInputSummary}>{status}</span>
+      </Show>
+    </>
+  )
+}
+
 /** Renders Codex mcpToolCall items using shared ToolUseLayout. */
 export function codexMcpToolCallRenderer(parsed: unknown, _role: MessageRole, context?: RenderContext): JSX.Element | null {
   const item = extractItem(parsed)
@@ -243,14 +256,7 @@ export function codexMcpToolCallRenderer(parsed: unknown, _role: MessageRole, co
   const error = item.error as Record<string, unknown> | undefined
   const [expanded, setExpanded] = createSignal(false)
 
-  const titleEl = (
-    <>
-      <span class={toolInputSummary}>{server ? `${server}/${tool}` : tool}</span>
-      <Show when={status}>
-        <span class={toolInputSummary}>{status}</span>
-      </Show>
-    </>
-  )
+  const titleEl = codexStatusTitle(server ? `${server}/${tool}` : tool, status)
 
   return (
     <ToolUseLayout
@@ -280,6 +286,28 @@ export function codexMcpToolCallRenderer(parsed: unknown, _role: MessageRole, co
         </div>
       </Show>
     </ToolUseLayout>
+  )
+}
+
+/** Renders Codex collabAgentToolCall items (SpawnAgent) using shared ToolUseLayout. */
+export function codexCollabAgentToolCallRenderer(parsed: unknown, _role: MessageRole, context?: RenderContext): JSX.Element | null {
+  const item = extractItem(parsed)
+  if (!item || item.type !== 'collabAgentToolCall')
+    return null
+
+  const tool = (item.tool as string) || 'SpawnAgent'
+  const status = (item.status as string) || ''
+  const displayName = tool === 'spawnAgent' ? 'SpawnAgent' : tool
+
+  const titleEl = codexStatusTitle(displayName, status)
+
+  return (
+    <ToolUseLayout
+      icon={Bot}
+      toolName={displayName}
+      title={titleEl}
+      context={context}
+    />
   )
 }
 

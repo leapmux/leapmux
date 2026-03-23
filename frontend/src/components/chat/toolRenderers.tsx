@@ -3,12 +3,16 @@ import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
 import type { StructuredPatchHunk } from './diffUtils'
 import type { MessageContentRenderer, RenderContext } from './messageRenderers'
+import type { ParsedCatLine } from './ReadResultView'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
+import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { BashInput, EditInput, GrepInput, WriteInput } from '~/types/toolMessages'
 import Bot from 'lucide-solid/icons/bot'
 import Braces from 'lucide-solid/icons/braces'
 import Check from 'lucide-solid/icons/check'
 import ChevronsRight from 'lucide-solid/icons/chevrons-right'
+import CircleAlert from 'lucide-solid/icons/circle-alert'
+import ClockFading from 'lucide-solid/icons/clock-fading'
 import Columns2 from 'lucide-solid/icons/columns-2'
 import Copy from 'lucide-solid/icons/copy'
 import File from 'lucide-solid/icons/file'
@@ -17,14 +21,16 @@ import FilePlus from 'lucide-solid/icons/file-plus'
 import FoldVertical from 'lucide-solid/icons/fold-vertical'
 import FolderSearch from 'lucide-solid/icons/folder-search'
 import Globe from 'lucide-solid/icons/globe'
+import Hand from 'lucide-solid/icons/hand'
 import ListTodo from 'lucide-solid/icons/list-todo'
+import MessageSquare from 'lucide-solid/icons/message-square'
 import OctagonX from 'lucide-solid/icons/octagon-x'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import PocketKnife from 'lucide-solid/icons/pocket-knife'
 import Quote from 'lucide-solid/icons/quote'
 import Rows2 from 'lucide-solid/icons/rows-2'
 import Search from 'lucide-solid/icons/search'
-import SquareTerminal from 'lucide-solid/icons/square-terminal'
+import Stamp from 'lucide-solid/icons/stamp'
 import Terminal from 'lucide-solid/icons/terminal'
 import TextSearch from 'lucide-solid/icons/text-search'
 import TicketsPlane from 'lucide-solid/icons/tickets-plane'
@@ -34,26 +40,28 @@ import { createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
+import { parseMessageContent } from '~/lib/messageParser'
 import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
-import { renderMarkdown } from '~/lib/renderMarkdown'
+import { renderMarkdown, shikiHighlighter } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { DiffView, rawDiffToHunks } from './diffUtils'
+import { markdownContent } from './markdownContent.css'
 import { getAssistantContent, isObject, relativizePath } from './messageUtils'
 import { parseCatNContent, ReadResultView } from './ReadResultView'
 import { RelativeTime } from './RelativeTime'
-import { firstNonEmptyLine, formatCompactNumber, formatDuration, formatGlobSummary, formatGrepSummary, formatTaskStatus, formatToolInput } from './rendererUtils'
+import { formatDuration, formatTaskStatus, formatToolInput } from './rendererUtils'
+import { spanColorKey } from './SpanLines'
+import { spanLineColors } from './SpanLines.css'
 import { renderToolDetail } from './toolDetailRenderers'
 import {
   controlResponseTag,
   toolBodyContent,
-  toolFileList,
   toolHeaderActions,
   toolHeaderTimestamp,
-  toolInputPath,
   toolInputSummary,
-  toolInputSummaryExpanded,
   toolInputText,
   toolMessage,
+  toolResultCollapsed,
   toolResultContent,
   toolResultContentAnsi,
   toolResultContentPre,
@@ -61,6 +69,10 @@ import {
   toolResultPrompt,
   toolUseHeader,
   toolUseIcon,
+  webSearchLink,
+  webSearchLinkDomain,
+  webSearchLinkList,
+  webSearchLinkTitle,
 } from './toolStyles.css'
 
 /** Inline control response tag (Approved / Rejected) for tool headers. */
@@ -102,28 +114,21 @@ export function ToolUseLayout(props: {
   /** Toggle diff view between unified and split. */
   onDiffViewChange?: (view: DiffViewPreference) => void
   context?: RenderContext
-  /** Whether the body is expanded. When provided, overrides context.threadExpanded. */
+  /** Whether the body is expanded. */
   expanded?: boolean
-  /** Toggle expand/collapse. When provided, overrides context.onToggleThread. */
+  /** Toggle expand/collapse. When provided, shows the expand button. */
   onToggleExpand?: () => void
-  /** Custom label for the expand button tooltip (e.g. "Expand 3 tool results"). */
+  /** Custom label for the expand button tooltip. */
   expandLabel?: string
+  /** Copy content callback. */
+  onCopyContent?: () => void
+  contentCopied?: boolean
+  copyContentLabel?: string
 }): JSX.Element {
-  // Unified expand: explicit props take precedence over context-derived thread expand.
-  const threadCount = () => props.alwaysVisible ? 0 : (props.context?.threadChildCount ?? 0)
-  const hasExplicitExpand = () => !!props.onToggleExpand
-  const expanded = () => hasExplicitExpand()
-    ? (props.expanded ?? false)
-    : (props.context?.threadExpanded ?? false)
-  const onToggle = () => hasExplicitExpand()
-    ? props.onToggleExpand!
-    : (threadCount() > 0 ? (props.context?.onToggleThread ?? (() => {})) : undefined)
-  const expandLabel = () => hasExplicitExpand()
-    ? props.expandLabel
-    : (threadCount() > 0 ? `Expand ${threadCount()} tool result${threadCount() === 1 ? '' : 's'}` : undefined)
-  const hasActions = () => !!onToggle() || !!props.context?.onCopyJson || !!props.hasDiff
+  const expanded = () => props.expanded ?? false
+  const hasActions = () => !!props.onToggleExpand || !!props.context?.onCopyJson || !!props.hasDiff || !!props.onCopyContent
   return (
-    <div class={toolMessage}>
+    <div class={toolMessage} data-tool-message>
       <div class={toolUseHeader}>
         <Tooltip text={props.toolName}>
           <span class={`${inlineFlex} ${toolUseIcon}`}>
@@ -133,14 +138,15 @@ export function ToolUseLayout(props: {
         {typeof props.title === 'string'
           ? <span class={toolInputText}>{props.title}</span>
           : props.title}
-        <ControlResponseTag response={props.context?.childControlResponse} />
         <Show when={props.context && hasActions()}>
           <ToolHeaderActions
             createdAt={props.context!.createdAt}
-            updatedAt={props.context!.updatedAt}
             expanded={expanded()}
-            onToggleExpand={onToggle()}
-            expandLabel={expandLabel()}
+            onToggleExpand={props.onToggleExpand}
+            expandLabel={props.expandLabel}
+            onCopyContent={props.onCopyContent}
+            contentCopied={props.contentCopied}
+            copyContentLabel={props.copyContentLabel}
             onCopyJson={props.context!.onCopyJson}
             jsonCopied={props.context!.jsonCopied ?? false}
             hasDiff={props.hasDiff}
@@ -150,7 +156,12 @@ export function ToolUseLayout(props: {
         </Show>
       </div>
       <Show when={props.summary || (props.children && (props.alwaysVisible || expanded()))}>
-        <div class={props.bordered !== false ? toolBodyContent : undefined}>
+        <div class={props.bordered !== false
+          ? `${toolBodyContent}${props.context?.spanColor != null && props.context.spanColor > 0
+            ? ` ${spanLineColors[spanColorKey(props.context.spanColor)]}`
+            : ''}`
+          : undefined}
+        >
           <Show when={props.summary}>{props.summary}</Show>
           <Show when={props.children && (props.alwaysVisible || expanded())}>
             {props.children}
@@ -178,7 +189,7 @@ export function toolIconFor(name: string): LucideIcon {
     case 'EnterPlanMode': return TicketsPlane
     case 'ExitPlanMode': return PlaneTakeoff
     case 'AskUserQuestion': return Vote
-    case 'TaskOutput': return SquareTerminal
+    case 'TaskOutput': return ClockFading
     case 'Skill': return PocketKnife
     case 'ToolSearch': return Search
     case 'TaskStop': return OctagonX
@@ -190,8 +201,6 @@ export function toolIconFor(name: string): LucideIcon {
 export function ToolHeaderActions(props: {
   /** ISO timestamp for relative time display. */
   createdAt?: string
-  /** ISO timestamp of the last update (thread merge). Preferred over createdAt when set. */
-  updatedAt?: string
   /** Whether the content is expanded. */
   expanded?: boolean
   /** Toggle expand/collapse. When set, shows the expand button. */
@@ -206,13 +215,18 @@ export function ToolHeaderActions(props: {
   diffView?: DiffViewPreference
   /** Toggle diff view between unified and split. */
   onToggleDiffView?: () => void
+  /** Copy content callback — when provided, shows a copy button (command, file content, diff). */
+  onCopyContent?: () => void
+  contentCopied?: boolean
+  /** Custom label for the copy content tooltip. */
+  copyContentLabel?: string
   /** Reply callback — when provided, shows a reply button. */
   onReply?: () => void
   /** Copy markdown callback — when provided, shows a copy markdown button. */
   onCopyMarkdown?: () => void
   markdownCopied?: boolean
 }): JSX.Element {
-  const timestamp = () => props.updatedAt || props.createdAt
+  const timestamp = () => props.createdAt
   return (
     <div class={toolHeaderActions} data-testid="message-toolbar">
       <Show when={props.onReply}>
@@ -246,6 +260,14 @@ export function ToolHeaderActions(props: {
           data-testid="message-copy-json"
           onClick={() => props.onCopyJson?.()}
           title={props.jsonCopied ? 'Copied' : 'Copy Raw JSON'}
+        />
+      </Show>
+      <Show when={props.onCopyContent}>
+        <IconButton
+          icon={props.contentCopied ? Check : Copy}
+          size="sm"
+          onClick={() => props.onCopyContent?.()}
+          title={props.contentCopied ? 'Copied' : (props.copyContentLabel || 'Copy')}
         />
       </Show>
       <Show when={props.hasDiff && props.onToggleDiffView}>
@@ -285,6 +307,8 @@ function ToolUseMessage(props: {
   detail: JSX.Element | null
   /** Summary shown below header inside the bordered area (e.g. Bash command, Grep result count). */
   summary?: JSX.Element | null
+  /** Full command text for Bash (shown when expanded). */
+  fullCommand?: string
   fallbackDisplay: string | null
   hasDiff: boolean
   oldStr: string
@@ -297,118 +321,82 @@ function ToolUseMessage(props: {
   context?: RenderContext
 }): JSX.Element {
   const { diffView, toggleDiffView } = useDiffViewToggle(() => props.context?.diffView)
+  const [expanded, setExpanded] = createSignal(false)
+  const [commandCopied, setCommandCopied] = createSignal(false)
 
   const title = () => props.detail ?? `${props.toolName}${props.fallbackDisplay || ''}`
+
+  // Edit diffs are collapsed by default (the tool_result already shows the diff).
+  // Write diffs and non-diff tool_use messages remain always visible.
+  const isCollapsibleDiff = () => props.hasDiff && !props.alwaysVisible
+  // Bash: collapsible when command is multi-line.
+  const isMultiLineCommand = () => !!props.fullCommand && props.fullCommand.includes('\n')
+  const isCollapsible = () => isCollapsibleDiff() || isMultiLineCommand()
 
   return (
     <ToolUseLayout
       icon={toolIconFor(props.toolName)}
       toolName={props.toolName}
       title={title()}
-      summary={props.summary}
+      summary={isMultiLineCommand() && expanded() ? undefined : props.summary}
       alwaysVisible={props.alwaysVisible}
       hasDiff={props.hasDiff}
       diffView={diffView()}
       onDiffViewChange={toggleDiffView}
       context={props.context}
+      expanded={expanded()}
+      onToggleExpand={isCollapsible() ? () => setExpanded(v => !v) : undefined}
+      expandLabel={isMultiLineCommand() ? 'Show full command' : 'Show diff'}
+      onCopyContent={props.fullCommand
+        ? () => {
+            navigator.clipboard.writeText(props.fullCommand!)
+            setCommandCopied(true)
+            setTimeout(setCommandCopied, 2000, false)
+          }
+        : undefined}
+      contentCopied={commandCopied()}
+      copyContentLabel="Copy Command"
     >
       <Show when={props.hasDiff}>
         <DiffView
-          hunks={(props.context?.childStructuredPatch?.length ? props.context.childStructuredPatch : null) ?? rawDiffToHunks(props.oldStr, props.newStr)}
+          hunks={rawDiffToHunks(props.oldStr, props.newStr)}
           view={diffView()}
           filePath={props.filePath}
           originalFile={props.originalFile}
         />
       </Show>
+      <Show when={isMultiLineCommand() && expanded()}>
+        {/* eslint-disable-next-line solid/no-innerhtml -- shiki output is safe */}
+        <div class={toolResultContentAnsi} innerHTML={renderBashHighlight(props.fullCommand!)} />
+      </Show>
     </ToolUseLayout>
   )
 }
 
-/** Derive a summary element for a generic tool_use (Bash command, Grep/Glob result counts). */
-function deriveToolSummary(toolName: string, input: Record<string, unknown>, context?: RenderContext): JSX.Element | undefined {
-  const content = context?.childResultContent
+function renderBashHighlight(code: string): string {
+  return shikiHighlighter.codeToHtml(code, {
+    lang: 'bash',
+    themes: { light: 'github-light', dark: 'github-dark' },
+    defaultColor: false,
+  })
+}
 
+/** Derive a summary element for a generic tool_use (Bash command, search paths). */
+function deriveToolSummary(toolName: string, input: Record<string, unknown>, context?: RenderContext): JSX.Element | undefined {
   switch (toolName) {
     case 'Bash': {
       const cmd = (input as BashInput).command
       if (!cmd)
         return undefined
-      const expanded = context?.threadExpanded ?? false
-      const cls = expanded ? toolInputSummaryExpanded : toolInputSummary
-      if (expanded)
-        return <div class={cls}>{cmd}</div>
       const firstLine = cmd.split('\n')[0]
-      const truncated = firstLine.length > 120 ? `${firstLine.slice(0, 120)}\u2026` : firstLine
-      return <div class={cls}>{truncated}</div>
+      // eslint-disable-next-line solid/no-innerhtml -- shiki output is safe
+      return <div class={toolInputSummary} innerHTML={renderBashHighlight(firstLine)} />
     }
     case 'Grep': {
       const path = (input as GrepInput).path
-      const pathLine = path
-        ? relativizePath(path, context?.workingDir, context?.homeDir)
-        : null
-      const summaryText = formatGrepSummary(
-        context?.childGrepNumFiles,
-        context?.childGrepNumLines,
-        content ? firstNonEmptyLine(content) : null,
-      )
-      if (!pathLine && !summaryText)
+      if (!path)
         return undefined
-      return (
-        <>
-          {pathLine && <div class={toolInputSummary}>{pathLine}</div>}
-          {summaryText && <div class={toolInputSummary}>{summaryText}</div>}
-        </>
-      )
-    }
-    case 'Glob': {
-      const summaryText = formatGlobSummary(
-        context?.childGlobNumFiles,
-        context?.childGlobDurationMs,
-        context?.childGlobTruncated,
-        content ? firstNonEmptyLine(content) : null,
-      )
-      if (!summaryText)
-        return undefined
-      return <div class={toolInputSummary}>{summaryText}</div>
-    }
-    case 'TaskOutput': {
-      const task = context?.childTask
-      const parts: string[] = []
-      if (task?.exitCode != null)
-        parts.push(`Exit code ${task.exitCode}`)
-      else if (task?.status)
-        parts.push(formatTaskStatus(task.status))
-      if (task?.task_id)
-        parts.push(`Task ID ${task.task_id}`)
-      return parts.length > 0
-        ? <div class={toolInputSummary}>{parts.join(' \u00B7 ')}</div>
-        : undefined
-    }
-    case 'ToolSearch': {
-      const matches = context?.childToolSearchMatches
-      if (!matches || matches.length === 0)
-        return undefined
-      return <div class={toolInputSummary}>{`Found ${matches.length} tool${matches.length === 1 ? '' : 's'}`}</div>
-    }
-    case 'Agent':
-    case 'Task': {
-      const status = context?.childToolResultStatus
-      const hasChildren = (context?.threadChildCount ?? 0) > 0
-      const displayStatus = status
-        ? formatTaskStatus(status)
-        : (hasChildren ? 'Running' : null)
-      const parts: string[] = []
-      if (displayStatus)
-        parts.push(displayStatus)
-      if (context?.childTotalDurationMs !== undefined)
-        parts.push(formatDuration(context.childTotalDurationMs))
-      if (context?.childTotalToolUseCount !== undefined)
-        parts.push(`${context.childTotalToolUseCount} tool use${context.childTotalToolUseCount === 1 ? '' : 's'}`)
-      if (context?.childTotalTokens !== undefined)
-        parts.push(`${formatCompactNumber(context.childTotalTokens)} tokens`)
-      return parts.length > 0
-        ? <div class={toolInputSummary}>{parts.join(' \u00B7 ')}</div>
-        : undefined
+      return <div class={toolInputSummary}>{relativizePath(path, context?.workingDir, context?.homeDir)}</div>
     }
     default:
       return undefined
@@ -459,26 +447,52 @@ export const toolUseRenderer: MessageContentRenderer = {
     const hasDiff = (isEdit && oldStr !== '' && newStr !== '' && oldStr !== newStr)
       || (isWrite && newStr !== '')
 
+    // Bash: pass full command for multi-line expand.
+    const fullCommand = toolName === 'Bash' ? (input as BashInput).command : undefined
+
     return (
       <ToolUseMessage
         toolName={toolName}
         detail={detail}
         summary={summary}
+        fullCommand={fullCommand}
         fallbackDisplay={fallbackDisplay}
         hasDiff={hasDiff}
         oldStr={oldStr}
         newStr={newStr}
         filePath={filePath}
-        originalFile={context?.childOriginalFile}
-        alwaysVisible={isEdit || isWrite}
+        originalFile={undefined}
+        alwaysVisible={isWrite}
         context={context}
       />
     )
   },
 }
 
+/** Extract tool name and input from a tool_use AgentChatMessage. */
+function extractToolUseInfo(msg: AgentChatMessage): { toolName: string, input: Record<string, unknown> } | null {
+  const parsed = parseMessageContent(msg)
+  const obj = parsed.parentObject
+  if (!obj)
+    return null
+  const content = getAssistantContent(obj)
+  if (!content)
+    return null
+  const toolUse = content.find(c => isObject(c) && c.type === 'tool_use')
+  if (!toolUse)
+    return null
+  const toolData = toolUse as Record<string, unknown>
+  return {
+    toolName: String(toolData.name || ''),
+    input: isObject(toolData.input) ? toolData.input as Record<string, unknown> : {},
+  }
+}
+
 /** Set of tool names whose results should be rendered as preformatted text. */
 const PRE_TEXT_TOOLS = new Set(['Bash', 'Grep', 'Glob', 'Read', 'TaskOutput'])
+
+/** Number of lines/items shown when a tool result is collapsed (last row fades out). */
+export const COLLAPSED_RESULT_ROWS = 3
 
 const TOOL_USE_ERROR_RE = /<tool_use_error>([\s\S]*?)<\/tool_use_error>/
 
@@ -488,21 +502,98 @@ function extractToolUseError(content: string): string | null {
   return match ? match[1].trim() : null
 }
 
+/**
+ * Summary line patterns found at the start of raw Grep/Glob tool output.
+ * When tool_use_result is absent (e.g. subagent), the raw text starts with
+ * a summary line like "Found 21 files" followed by the actual file list.
+ * This regex matches those summary lines so they can be stripped from the
+ * file list and the count can be extracted.
+ */
+const RAW_RESULT_SUMMARY_RE = /^(?:Found (\d+) (?:files?|lines?(?:\s+and\s+\d+\s+files?)?)|(\d+) match(?:es)? in (\d+) files?|No (?:matches|files) found)$/
+
+/** Grep content-mode line pattern: "line_num:text" or "file:line_num:text". */
+const GREP_CONTENT_LINE_RE = /^\d+[:-]|^[^:]+:\d+[:-]/
+
+/**
+ * Parse raw Grep/Glob result text (without tool_use_result).
+ * Strips the leading summary line (if any) and returns structured data
+ * matching what tool_use_result would provide.
+ */
+function parseRawGrepGlobResult(raw: string, toolName: string): {
+  numFiles: number
+  numLines: number
+  filenames: string[]
+  content: string
+} {
+  const lines = raw.split('\n')
+  const firstLine = lines[0]?.trim() ?? ''
+  const summaryMatch = firstLine.match(RAW_RESULT_SUMMARY_RE)
+
+  // Strip the summary line from the data lines.
+  const dataLines = summaryMatch ? lines.slice(1) : lines
+  const nonEmpty = dataLines.filter(l => l.trim())
+
+  // For Grep content mode (lines contain "file:line:match" or "line_num:text"),
+  // we check the first few lines to classify the output format.
+  const sampleLines = nonEmpty.length > 5 ? nonEmpty.slice(0, 5) : nonEmpty
+  const looksLikeContent = toolName === 'Grep'
+    && sampleLines.length > 0
+    && sampleLines.every(l => GREP_CONTENT_LINE_RE.test(l))
+
+  let numFiles = 0
+  let numLines = 0
+
+  if (summaryMatch) {
+    if (summaryMatch[1]) {
+      // "Found N files" or "Found N lines"
+      const n = Number.parseInt(summaryMatch[1], 10)
+      if (firstLine.includes('line')) {
+        numLines = n
+      }
+      else {
+        numFiles = n
+      }
+    }
+    else if (summaryMatch[2] && summaryMatch[3]) {
+      // "N matches in M files"
+      numLines = Number.parseInt(summaryMatch[2], 10)
+      numFiles = Number.parseInt(summaryMatch[3], 10)
+    }
+  }
+
+  if (looksLikeContent) {
+    return {
+      numFiles: numFiles || 0,
+      numLines: numLines || nonEmpty.length,
+      filenames: [],
+      content: nonEmpty.join('\n'),
+    }
+  }
+
+  return {
+    numFiles: numFiles || nonEmpty.length,
+    numLines: 0,
+    filenames: nonEmpty,
+    content: '',
+  }
+}
+
 /** Reusable file-path list used by Grep/Glob result views. */
 function FileListView(props: {
   filenames: string[]
   context?: RenderContext
 }): JSX.Element {
   return (
-    <ul class={toolFileList}>
+    <div class={toolResultContentPre}>
       <For each={props.filenames}>
-        {f => (
-          <li class={toolInputPath}>
+        {(f, i) => (
+          <>
+            {i() > 0 && '\n'}
             {relativizePath(f, props.context?.workingDir, props.context?.homeDir)}
-          </li>
+          </>
         )}
       </For>
-    </ul>
+    </div>
   )
 }
 
@@ -516,11 +607,16 @@ function ToolSearchResultView(props: {
         when={props.matches.length > 0}
         fallback={<div class={toolResultContentPre}>No tools found</div>}
       >
-        <ul class={toolFileList}>
+        <div class={toolResultContentPre}>
           <For each={props.matches}>
-            {name => <li class={toolInputPath}>{name}</li>}
+            {(name, i) => (
+              <>
+                {i() > 0 && '\n'}
+                {name}
+              </>
+            )}
           </For>
-        </ul>
+        </div>
       </Show>
     </div>
   )
@@ -536,18 +632,46 @@ function GrepResultView(props: {
   context?: RenderContext
 }): JSX.Element {
   const hasResult = () => props.numFiles > 0 || props.numLines > 0
+  const expanded = () => props.context?.toolResultExpanded ?? false
+  const isCollapsed = () => !expanded()
+    && (props.filenames.length > COLLAPSED_RESULT_ROWS
+      || props.content.split('\n').length > COLLAPSED_RESULT_ROWS)
+  const displayFilenames = () => {
+    if (expanded() || props.filenames.length <= COLLAPSED_RESULT_ROWS)
+      return props.filenames
+    return props.filenames.slice(0, COLLAPSED_RESULT_ROWS)
+  }
+  const displayContent = () => {
+    if (expanded() || !props.content)
+      return props.content
+    const lines = props.content.split('\n')
+    if (lines.length <= COLLAPSED_RESULT_ROWS)
+      return props.content
+    return lines.slice(0, COLLAPSED_RESULT_ROWS).join('\n')
+  }
+
+  const summary = () => {
+    if (props.numLines > 0 && props.numFiles > 0)
+      return `${props.numLines} match${props.numLines === 1 ? '' : 'es'} in ${props.numFiles} file${props.numFiles === 1 ? '' : 's'}`
+    if (props.numFiles > 0)
+      return `Found ${props.numFiles} file${props.numFiles === 1 ? '' : 's'}`
+    return ''
+  }
 
   return (
-    <div class={toolMessage}>
+    <div class={`${toolMessage}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>
       <Show
         when={hasResult()}
         fallback={<div class={toolResultContentPre}>{props.fallbackContent || 'No matches found'}</div>}
       >
-        <Show when={props.filenames.length > 0}>
-          <FileListView filenames={props.filenames} context={props.context} />
+        <Show when={summary()}>
+          <div class={toolResultPrompt}>{summary()}</div>
         </Show>
-        <Show when={props.content}>
-          <div class={toolResultContentPre}>{props.content}</div>
+        <Show when={displayFilenames().length > 0}>
+          <FileListView filenames={displayFilenames()} context={props.context} />
+        </Show>
+        <Show when={displayContent()}>
+          <div class={toolResultContentPre}>{displayContent()}</div>
         </Show>
       </Show>
     </div>
@@ -560,13 +684,348 @@ function GlobResultView(props: {
   fallbackContent: string
   context?: RenderContext
 }): JSX.Element {
+  const expanded = () => props.context?.toolResultExpanded ?? false
+  const isCollapsed = () => !expanded() && props.filenames.length > COLLAPSED_RESULT_ROWS
+  const displayFilenames = () => {
+    if (expanded() || props.filenames.length <= COLLAPSED_RESULT_ROWS)
+      return props.filenames
+    return props.filenames.slice(0, COLLAPSED_RESULT_ROWS)
+  }
+
   return (
-    <div class={toolMessage}>
+    <div class={`${toolMessage}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>
       <Show
         when={props.filenames.length > 0}
         fallback={<div class={toolResultContentPre}>{props.fallbackContent || 'No files found'}</div>}
       >
-        <FileListView filenames={props.filenames} context={props.context} />
+        <FileListView filenames={displayFilenames()} context={props.context} />
+      </Show>
+    </div>
+  )
+}
+
+/** Format agent status for display. */
+function formatAgentStatus(status: string): string {
+  if (status === 'async_launched')
+    return 'launched asynchronously'
+  return status
+}
+
+/** Collapsed Agent result view: icon + "Agent {agentId} {status}" header + collapsed markdown body. */
+function AgentResultView(props: {
+  agentId: string
+  status: string
+  content: string
+  context?: RenderContext
+}): JSX.Element {
+  const expanded = () => props.context?.toolResultExpanded ?? false
+  const isCollapsed = () => !expanded() && props.content.split('\n').length > COLLAPSED_RESULT_ROWS
+  const icon = () => props.status === 'completed' ? Check : Bot
+
+  return (
+    <div class={toolMessage}>
+      <div class={toolUseHeader}>
+        <span class={`${inlineFlex} ${toolUseIcon}`}>
+          <Icon icon={icon()} size="md" />
+        </span>
+        <span class={toolInputText}>{`Agent ${props.agentId} ${formatAgentStatus(props.status)}`}</span>
+      </div>
+      {/* eslint-disable-next-line solid/no-innerhtml -- HTML from renderMarkdown, not user input */}
+      <div class={`${toolResultContent}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`} innerHTML={renderMarkdown(props.content)} />
+    </div>
+  )
+}
+
+/** AskUserQuestion result view: shows questions with selected answers. */
+function AskUserQuestionResultView(props: {
+  toolUseResult: Record<string, unknown>
+  context?: RenderContext
+}): JSX.Element {
+  const questions = () => Array.isArray(props.toolUseResult.questions)
+    ? props.toolUseResult.questions as Array<Record<string, unknown>>
+    : []
+  const answers = () => isObject(props.toolUseResult.answers)
+    ? props.toolUseResult.answers as Record<string, string>
+    : {}
+
+  return (
+    <div class={toolMessage}>
+      <For each={questions()}>
+        {(q) => {
+          const header = String(q.header || '')
+          const answer = answers()[header]
+          return (
+            <div class={toolResultPrompt}>
+              <strong>
+                {header}
+                {': '}
+              </strong>
+              {answer || <em>Not answered</em>}
+            </div>
+          )
+        }}
+      </For>
+    </div>
+  )
+}
+
+const WWW_PREFIX_RE = /^www\./
+
+/** Extract domain from a URL for display. */
+function extractDomain(url: string): string {
+  try {
+    return new URL(url).hostname.replace(WWW_PREFIX_RE, '')
+  }
+  catch {
+    return url
+  }
+}
+
+interface WebSearchLink {
+  title: string
+  url: string
+}
+
+/** Extract deduplicated links from WebSearch tool_use_result.results. */
+function extractWebSearchLinks(results: unknown[]): WebSearchLink[] {
+  const seen = new Set<string>()
+  const links: WebSearchLink[] = []
+  for (const item of results) {
+    if (isObject(item) && Array.isArray((item as Record<string, unknown>).content)) {
+      for (const link of (item as Record<string, unknown>).content as Array<Record<string, unknown>>) {
+        if (isObject(link) && typeof link.url === 'string' && typeof link.title === 'string' && !seen.has(link.url)) {
+          seen.add(link.url)
+          links.push({ title: link.title, url: link.url })
+        }
+      }
+    }
+  }
+  return links
+}
+
+/** Extract the final text summary from WebSearch results (last string entry). */
+function extractWebSearchSummary(results: unknown[]): string {
+  for (let i = results.length - 1; i >= 0; i--) {
+    if (typeof results[i] === 'string' && (results[i] as string).trim().length > 0)
+      return (results[i] as string).trim()
+  }
+  return ''
+}
+
+/** WebSearch result view: collapsed by default, shows links + summary. */
+function WebSearchResultView(props: {
+  links: WebSearchLink[]
+  summary: string
+  context?: RenderContext
+}): JSX.Element {
+  const expanded = () => props.context?.toolResultExpanded ?? false
+  const isCollapsed = () => !expanded() && props.links.length > COLLAPSED_RESULT_ROWS
+  const displayLinks = () => {
+    if (expanded() || props.links.length <= COLLAPSED_RESULT_ROWS)
+      return props.links
+    return props.links.slice(0, COLLAPSED_RESULT_ROWS)
+  }
+
+  return (
+    <div class={toolMessage}>
+      <Show when={props.links.length > 0}>
+        <div class={toolResultPrompt}>
+          {`${props.links.length} result${props.links.length === 1 ? '' : 's'}`}
+        </div>
+        <div class={`${webSearchLinkList}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>
+          <For each={displayLinks()}>
+            {link => (
+              <div class={webSearchLink}>
+                <span class={webSearchLinkTitle}>
+                  <a href={link.url} target="_blank" rel="noopener noreferrer nofollow">{link.title}</a>
+                </span>
+                <span class={webSearchLinkDomain}>{extractDomain(link.url)}</span>
+              </div>
+            )}
+          </For>
+        </div>
+      </Show>
+      <Show when={expanded() && props.summary}>
+        {/* eslint-disable-next-line solid/no-innerhtml -- HTML from renderMarkdown, not user input */}
+        <div class={toolResultContent} innerHTML={renderMarkdown(props.summary)} />
+      </Show>
+    </div>
+  )
+}
+
+/** Format byte count as a human-readable string. */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024)
+    return `${bytes} B`
+  if (bytes < 1024 * 1024)
+    return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/** WebFetch result view: shows HTTP status, size, duration, then collapsed markdown body. */
+function WebFetchResultView(props: {
+  code: number
+  codeText: string
+  bytes: number
+  durationMs: number
+  result: string
+  context?: RenderContext
+}): JSX.Element {
+  const expanded = () => props.context?.toolResultExpanded ?? false
+  const isCollapsed = () => !expanded() && props.result.split('\n').length > COLLAPSED_RESULT_ROWS
+  const summary = () => {
+    const parts: string[] = []
+    parts.push(`${props.code} ${props.codeText}`)
+    if (props.bytes > 0)
+      parts.push(formatBytes(props.bytes))
+    if (props.durationMs > 0)
+      parts.push(formatDuration(props.durationMs))
+    return parts.join(' \u00B7 ')
+  }
+
+  return (
+    <div class={toolMessage}>
+      <div class={toolResultPrompt}>{summary()}</div>
+      <Show when={props.result}>
+        {/* eslint-disable-next-line solid/no-innerhtml -- HTML from renderMarkdown, not user input */}
+        <div class={`${toolResultContent}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`} innerHTML={renderMarkdown(props.result)} />
+      </Show>
+    </div>
+  )
+}
+
+/** Renders agent_prompt messages (prompt sent to sub-agent) as a collapsible tool-style block. */
+export const agentPromptRenderer: MessageContentRenderer = {
+  render(parsed, _role, context) {
+    if (!isObject(parsed) || parsed.type !== 'user' || typeof parsed.parent_tool_use_id !== 'string')
+      return null
+
+    const message = parsed.message as Record<string, unknown> | undefined
+    if (!isObject(message))
+      return null
+    const content = (message as Record<string, unknown>).content
+    if (!Array.isArray(content))
+      return null
+
+    const text = (content as Array<Record<string, unknown>>)
+      .filter(c => isObject(c) && c.type === 'text')
+      .map(c => String(c.text || ''))
+      .join('\n\n')
+    if (!text)
+      return null
+
+    return <AgentPromptView text={text} context={context} />
+  },
+}
+
+/** Collapsed agent prompt view: MessageSquare icon + "Prompt" title + collapsed markdown body. */
+function AgentPromptView(props: {
+  text: string
+  context?: RenderContext
+}): JSX.Element {
+  const [expanded, setExpanded] = createSignal(false)
+  const isCollapsed = () => !expanded() && props.text.split('\n').length > COLLAPSED_RESULT_ROWS
+
+  return (
+    <ToolUseLayout
+      icon={MessageSquare}
+      toolName="Prompt"
+      title="Prompt"
+      context={props.context}
+      expanded={expanded()}
+      onToggleExpand={() => setExpanded(v => !v)}
+    >
+      {/* eslint-disable-next-line solid/no-innerhtml -- HTML from renderMarkdown, not user input */}
+      <div class={`${toolResultContent}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`} innerHTML={renderMarkdown(props.text)} />
+    </ToolUseLayout>
+  )
+}
+
+/** Structured TaskOutput result view using tool_use_result.task data. */
+function TaskOutputResultView(props: {
+  task: Record<string, unknown>
+  fallbackContent: string
+  context?: RenderContext
+}): JSX.Element {
+  const expanded = () => props.context?.toolResultExpanded ?? false
+  const status = () => typeof props.task.status === 'string' ? props.task.status : ''
+  const statusLabel = () => formatTaskStatus(status() || undefined)
+  const description = () => typeof props.task.description === 'string' ? props.task.description : ''
+  const taskId = () => typeof props.task.task_id === 'string' ? props.task.task_id : ''
+  const exitCode = () => typeof props.task.exitCode === 'number' ? props.task.exitCode : null
+  const output = () => typeof props.task.output === 'string' ? props.task.output : props.fallbackContent
+  const icon = () => status() === 'completed' ? Check : ClockFading
+
+  const meta = () => {
+    const parts: string[] = []
+    if (taskId())
+      parts.push(`task ID: ${taskId()}`)
+    if (exitCode() !== null)
+      parts.push(`exit code: ${exitCode()}`)
+    return parts.length > 0 ? ` (${parts.join(' \u00B7 ')})` : ''
+  }
+
+  const title = () => {
+    const label = statusLabel()
+    const desc = description()
+    if (label && desc)
+      return `${label}: ${desc}${meta()}`
+    if (label)
+      return `${label}${meta()}`
+    if (desc)
+      return `${desc}${meta()}`
+    return `TaskOutput${meta()}`
+  }
+
+  const outputLines = () => output().split('\n')
+  const isCollapsed = () => !expanded() && outputLines().length > COLLAPSED_RESULT_ROWS
+  const displayOutput = () => {
+    if (!isCollapsed())
+      return output()
+    return outputLines().slice(0, COLLAPSED_RESULT_ROWS).join('\n')
+  }
+
+  return (
+    <div class={toolMessage}>
+      <div class={toolUseHeader}>
+        <span class={`${inlineFlex} ${toolUseIcon}`}>
+          <Icon icon={icon()} size="md" />
+        </span>
+        <span class={toolInputText}>{title()}</span>
+      </div>
+      <Show when={displayOutput()}>
+        {containsAnsi(output())
+          /* eslint-disable-next-line solid/no-innerhtml -- HTML from renderAnsi, not user input */
+          ? <div class={`${toolResultContentAnsi}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`} innerHTML={renderAnsi(displayOutput())} />
+          : <div class={`${toolResultContentPre}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>{displayOutput()}</div>}
+      </Show>
+    </div>
+  )
+}
+
+/** Structured Read result view using tool_use_result.file data. */
+function ReadFileResultView(props: {
+  lines: ParsedCatLine[]
+  filePath: string
+  totalLines: number
+  fallbackContent: string
+  context?: RenderContext
+}): JSX.Element {
+  const expanded = () => props.context?.toolResultExpanded ?? false
+  const isCollapsed = () => !expanded() && props.lines.length > COLLAPSED_RESULT_ROWS
+  const displayLines = () => {
+    if (expanded() || props.lines.length <= COLLAPSED_RESULT_ROWS)
+      return props.lines
+    return props.lines.slice(0, COLLAPSED_RESULT_ROWS)
+  }
+
+  return (
+    <div class={`${toolMessage}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>
+      <Show
+        when={props.lines.length > 0}
+        fallback={<div class={toolResultContentPre}>{props.fallbackContent || 'Empty file'}</div>}
+      >
+        <ReadResultView lines={displayLines()} filePath={props.filePath} />
       </Show>
     </div>
   )
@@ -576,16 +1035,68 @@ function GlobResultView(props: {
 function renderReadOrPre(
   toolName: string,
   resultContent: string,
-  context?: RenderContext,
+  readFilePath?: string,
+  collapsed?: boolean,
 ): JSX.Element {
   if (toolName === 'Read') {
     const parsed = parseCatNContent(resultContent)
     if (parsed) {
-      const filePath = context?.parentToolInput?.file_path as string | undefined
-      return <ReadResultView lines={parsed} filePath={filePath} />
+      const displayLines = collapsed && parsed.length > COLLAPSED_RESULT_ROWS
+        ? parsed.slice(0, COLLAPSED_RESULT_ROWS)
+        : parsed
+      const isCollapsed = collapsed && parsed.length > COLLAPSED_RESULT_ROWS
+      return (
+        <div class={isCollapsed ? toolResultCollapsed : undefined}>
+          <ReadResultView lines={displayLines} filePath={readFilePath} />
+        </div>
+      )
     }
   }
   return <div class={toolResultContentPre}>{resultContent}</div>
+}
+
+/** ExitPlanMode result view: "Plan approved" with file path, or "Sent feedback:" with markdown content. */
+function ExitPlanModeResultView(props: {
+  isError: boolean
+  resultContent: string
+  toolUseResult?: Record<string, unknown>
+  context?: RenderContext
+}): JSX.Element {
+  if (props.isError) {
+    return (
+      <div class={toolMessage}>
+        <div class={toolUseHeader}>
+          <span class={`${inlineFlex} ${toolUseIcon}`}>
+            <Icon icon={Hand} size="md" />
+          </span>
+          <span class={toolInputText}>Sent feedback:</span>
+        </div>
+        {/* eslint-disable-next-line solid/no-innerhtml -- HTML from renderMarkdown, not user input */}
+        <div class={markdownContent} innerHTML={renderMarkdown(props.resultContent)} />
+      </div>
+    )
+  }
+
+  const filePath = typeof props.toolUseResult?.filePath === 'string'
+    ? props.toolUseResult.filePath as string
+    : ''
+
+  return (
+    <div class={toolMessage}>
+      <div class={toolUseHeader}>
+        <span class={`${inlineFlex} ${toolUseIcon}`}>
+          <Icon icon={Stamp} size="md" />
+        </span>
+        <span class={toolInputText}>Plan approved</span>
+      </div>
+      <Show when={filePath}>
+        <div class={toolResultPrompt}>
+          {'Plan file: '}
+          <code>{relativizePath(filePath, props.context?.workingDir, props.context?.homeDir)}</code>
+        </div>
+      </Show>
+    </div>
+  )
 }
 
 /** Inner component for tool_result messages with structuredPatch — owns local diff view state. */
@@ -593,27 +1104,51 @@ function ToolResultMessage(props: {
   toolName: string
   resultContent: string
   isPreText: boolean
-  webFetchPrompt: string
   structuredPatch: StructuredPatchHunk[] | null
   oldStr: string
   newStr: string
   filePath: string
+  originalFile?: string
+  /** File path for Read tool syntax highlighting. */
+  readFilePath?: string
+  /** Whether the tool result is an error (from is_error field). */
+  isError?: boolean
   context?: RenderContext
 }): JSX.Element {
-  const { diffView, toggleDiffView } = useDiffViewToggle(() => props.context?.diffView)
+  const diffView = () => props.context?.diffView ?? 'unified'
   const hasPatch = () => !!props.structuredPatch && props.structuredPatch.length > 0
   const hasFallbackDiff = () => props.oldStr !== '' && props.newStr !== '' && props.oldStr !== props.newStr
   const hasDiff = () => hasPatch() || hasFallbackDiff()
   const errorText = () => extractToolUseError(props.resultContent)
 
+  // Bash/TaskOutput/Read: collapsible via expand/collapse button in MessageBubble toolbar.
+  const isRead = () => props.toolName === 'Read'
+  const isBashLike = () => props.toolName === 'Bash' || props.toolName === 'TaskOutput' || props.toolName === ''
+  const expanded = () => props.context?.toolResultExpanded ?? false
+  const resultLines = () => props.resultContent.split('\n')
+  const isCollapsed = () => {
+    if (!isBashLike() || expanded())
+      return false
+    return resultLines().length > COLLAPSED_RESULT_ROWS
+  }
+  const displayContent = () => {
+    if (!isCollapsed())
+      return props.resultContent
+    return resultLines().slice(0, COLLAPSED_RESULT_ROWS).join('\n')
+  }
+
+  const statusIcon = () => props.isError ? CircleAlert : Check
+
   return (
     <div class={toolMessage}>
-      {props.webFetchPrompt && (
-        <div class={toolResultPrompt}>
-          {'Prompt: '}
-          {props.webFetchPrompt}
+      <Show when={isBashLike() && props.isError !== undefined}>
+        <div class={toolUseHeader}>
+          <span class={`${inlineFlex} ${toolUseIcon}`}>
+            <Icon icon={statusIcon()} size="md" />
+          </span>
+          <span class={toolInputText}>{props.isError ? 'Error' : 'Success'}</span>
         </div>
-      )}
+      </Show>
       <Show
         when={!errorText()}
         fallback={<div class={toolResultError}>{errorText()}</div>}
@@ -622,31 +1157,21 @@ function ToolResultMessage(props: {
           when={hasDiff()}
           fallback={
             props.isPreText
-              ? ((props.toolName === 'Bash' || props.toolName === 'TaskOutput') && containsAnsi(props.resultContent))
+              ? isBashLike()
+                ? containsAnsi(props.resultContent)
                   /* eslint-disable-next-line solid/no-innerhtml -- HTML from renderAnsi, not user input */
-                  ? <div class={toolResultContentAnsi} innerHTML={renderAnsi(props.resultContent)} />
-                  : renderReadOrPre(props.toolName, props.resultContent, props.context)
+                  ? <div class={`${toolResultContentAnsi}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`} innerHTML={renderAnsi(displayContent())} />
+                  : <div class={`${toolResultContentPre}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>{displayContent()}</div>
+                : renderReadOrPre(props.toolName, props.resultContent, props.readFilePath, isRead() && !expanded())
               /* eslint-disable-next-line solid/no-innerhtml -- HTML from renderMarkdown, not user input */
               : <div class={toolResultContent} innerHTML={renderMarkdown(props.resultContent)} />
           }
         >
-          <div class={toolUseHeader}>
-            <Show when={props.filePath}>
-              <span class={toolInputPath}>{relativizePath(props.filePath, props.context?.workingDir, props.context?.homeDir)}</span>
-            </Show>
-            <div class={toolHeaderActions}>
-              <IconButton
-                icon={diffView() === 'unified' ? Columns2 : Rows2}
-                size="sm"
-                onClick={() => toggleDiffView()}
-                title={diffView() === 'unified' ? 'Switch to split view' : 'Switch to unified view'}
-              />
-            </div>
-          </div>
           <DiffView
             hunks={hasPatch() ? props.structuredPatch! : rawDiffToHunks(props.oldStr, props.newStr)}
             view={diffView()}
             filePath={props.filePath}
+            originalFile={props.originalFile}
           />
         </Show>
       </Show>
@@ -683,17 +1208,17 @@ export const toolResultRenderer: MessageContentRenderer = {
           .join('')
       : String(resultData.content || '')
 
-    // Extract tool name from tool_use_result, or fall back to parent context
+    // Extract tool name: prefer span_type (always set for span messages),
+    // then tool_use_result, then linked tool_use message.
     const toolUseResult = parsed.tool_use_result as Record<string, unknown> | undefined
-    const toolName = String(toolUseResult?.tool_name || context?.parentToolName || 'Result')
+    const toolUseInfo = context?.toolUseMessage ? extractToolUseInfo(context.toolUseMessage) : null
+    const toolName = String(context?.spanType || toolUseResult?.tool_name || toolUseInfo?.toolName || context?.parentToolName || '')
+    const toolInput = toolUseInfo?.input
 
-    // Determine whether this tool's output should be preformatted text
-    const isPreText = PRE_TEXT_TOOLS.has(toolName)
-
-    // For WebFetch, extract the prompt from parent tool input
-    const webFetchPrompt = toolName === 'WebFetch' && context?.parentToolInput
-      ? String(context.parentToolInput.prompt || '')
-      : ''
+    // Determine whether this tool's output should be preformatted text.
+    // When tool name is unknown (standalone tool_result without parent context),
+    // default to preformatted rendering since most tool outputs are plain text.
+    const isPreText = toolName === '' || PRE_TEXT_TOOLS.has(toolName)
 
     // Extract structuredPatch from tool_use_result for Edit/Write diffs.
     // When rendered as a child of an Edit/Write tool_use, the parent already
@@ -706,18 +1231,46 @@ export const toolResultRenderer: MessageContentRenderer = {
     const filePath = isEditOrWrite && !parentShowsDiff ? String(toolUseResult?.filePath || '') : ''
     const oldStr = isEditOrWrite && !parentShowsDiff ? String(toolUseResult?.oldString || '') : ''
     const newStr = isEditOrWrite && !parentShowsDiff ? String(toolUseResult?.newString || '') : ''
+    const originalFile = isEditOrWrite && !parentShowsDiff && typeof toolUseResult?.originalFile === 'string'
+      ? toolUseResult.originalFile as string
+      : undefined
+
+    // Extract structured file data from tool_use_result for Read results.
+    const readFile = toolName === 'Read' && isObject(toolUseResult?.file)
+      ? toolUseResult!.file as Record<string, unknown>
+      : null
+    const readFilePath = readFile
+      ? String(readFile.filePath || '')
+      : toolName === 'Read' ? String(toolInput?.file_path || '') : undefined
 
     // Hide redundant result content: Edit/Write success messages when the
-    // parent already shows the diff, and TodoWrite boilerplate messages.
-    const hideContent = parentShowsDiff || toolName === 'TodoWrite'
+    // parent already shows the diff.
+    const hideContent = parentShowsDiff
 
-    // Grep: render structured result view when tool_use_result has data.
-    if (toolName === 'Grep' && toolUseResult) {
-      const numFiles = typeof toolUseResult.numFiles === 'number' ? toolUseResult.numFiles : 0
-      const numLines = typeof toolUseResult.numLines === 'number' ? toolUseResult.numLines : 0
-      const filenames = Array.isArray(toolUseResult.filenames) ? toolUseResult.filenames as string[] : []
-      const grepContent = typeof toolUseResult.content === 'string' ? toolUseResult.content : ''
-      return (
+    // Build the inner result element.
+    let innerResult: JSX.Element
+
+    // Grep: render structured result view (with or without tool_use_result).
+    if (toolName === 'Grep') {
+      let numFiles: number
+      let numLines: number
+      let filenames: string[]
+      let grepContent: string
+      if (toolUseResult) {
+        numFiles = typeof toolUseResult.numFiles === 'number' ? toolUseResult.numFiles : 0
+        numLines = typeof toolUseResult.numLines === 'number' ? toolUseResult.numLines : 0
+        filenames = Array.isArray(toolUseResult.filenames) ? toolUseResult.filenames as string[] : []
+        grepContent = typeof toolUseResult.content === 'string' ? toolUseResult.content : ''
+      }
+      else {
+        // Subagent: parse raw resultContent to extract summary and file list.
+        const parsed = parseRawGrepGlobResult(resultContent, 'Grep')
+        numFiles = parsed.numFiles
+        numLines = parsed.numLines
+        filenames = parsed.filenames
+        grepContent = parsed.content
+      }
+      innerResult = (
         <GrepResultView
           numFiles={numFiles}
           numLines={numLines}
@@ -728,17 +1281,111 @@ export const toolResultRenderer: MessageContentRenderer = {
         />
       )
     }
-
     // ToolSearch: render matched tool names from tool_use_result.
-    if (toolName === 'ToolSearch' && toolUseResult) {
+    else if (toolName === 'ToolSearch' && toolUseResult) {
       const matches = Array.isArray(toolUseResult.matches) ? toolUseResult.matches as string[] : []
-      return <ToolSearchResultView matches={matches} />
+      innerResult = <ToolSearchResultView matches={matches} />
     }
-
-    // Glob: render structured result view when tool_use_result has filenames.
-    if (toolName === 'Glob' && toolUseResult) {
-      const filenames = Array.isArray(toolUseResult.filenames) ? toolUseResult.filenames as string[] : []
-      return (
+    // Read: render structured result view when tool_use_result has file data.
+    else if (toolName === 'Read' && readFile) {
+      const fileContent = typeof readFile.content === 'string' ? readFile.content : ''
+      const startLine = typeof readFile.startLine === 'number' ? readFile.startLine : 1
+      const totalLines = typeof readFile.totalLines === 'number' ? readFile.totalLines : 0
+      const lines: ParsedCatLine[] = fileContent
+        ? fileContent.split('\n').map((text, i) => ({ num: startLine + i, text }))
+        : []
+      innerResult = (
+        <ReadFileResultView
+          lines={lines}
+          filePath={readFilePath!}
+          totalLines={totalLines}
+          fallbackContent={resultContent}
+          context={context}
+        />
+      )
+    }
+    // Agent: render collapsed result with "Agent {agentId} {status}" header.
+    else if (toolName === 'Agent' && toolUseResult) {
+      const agentId = typeof toolUseResult.agentId === 'string' ? toolUseResult.agentId : ''
+      const status = typeof toolUseResult.status === 'string' ? toolUseResult.status : 'completed'
+      const agentContent = Array.isArray(toolUseResult.content)
+        ? (toolUseResult.content as Array<Record<string, unknown>>)
+            .filter(c => isObject(c) && c.type === 'text')
+            .map(c => String(c.text || ''))
+            .join('\n\n')
+        : resultContent
+      innerResult = (
+        <AgentResultView
+          agentId={agentId}
+          status={status}
+          content={agentContent}
+          context={context}
+        />
+      )
+    }
+    // TaskOutput: render structured result with status/description header.
+    else if (toolName === 'TaskOutput' && toolUseResult && isObject(toolUseResult.task)) {
+      innerResult = (
+        <TaskOutputResultView
+          task={toolUseResult.task as Record<string, unknown>}
+          fallbackContent={resultContent}
+          context={context}
+        />
+      )
+    }
+    // AskUserQuestion: render answered questions from tool_use_result.
+    else if (toolName === 'AskUserQuestion' && toolUseResult) {
+      innerResult = <AskUserQuestionResultView toolUseResult={toolUseResult} context={context} />
+    }
+    // WebFetch: render structured result view with HTTP status, size, duration.
+    else if (toolName === 'WebFetch' && toolUseResult && typeof toolUseResult.code === 'number') {
+      const fetchResult = typeof toolUseResult.result === 'string' ? toolUseResult.result : resultContent
+      innerResult = (
+        <WebFetchResultView
+          code={toolUseResult.code as number}
+          codeText={typeof toolUseResult.codeText === 'string' ? toolUseResult.codeText : ''}
+          bytes={typeof toolUseResult.bytes === 'number' ? toolUseResult.bytes as number : 0}
+          durationMs={typeof toolUseResult.durationMs === 'number' ? toolUseResult.durationMs as number : 0}
+          result={fetchResult}
+          context={context}
+        />
+      )
+    }
+    // WebSearch: render structured result view with links and summary.
+    else if (toolName === 'WebSearch' && toolUseResult && Array.isArray(toolUseResult.results)) {
+      const links = extractWebSearchLinks(toolUseResult.results as unknown[])
+      const summary = extractWebSearchSummary(toolUseResult.results as unknown[])
+      innerResult = (
+        <WebSearchResultView
+          links={links}
+          summary={summary}
+          context={context}
+        />
+      )
+    }
+    // ExitPlanMode: render approval or feedback.
+    else if (toolName === 'ExitPlanMode') {
+      const isError = resultData.is_error === true
+      innerResult = (
+        <ExitPlanModeResultView
+          isError={isError}
+          resultContent={resultContent}
+          toolUseResult={toolUseResult}
+          context={context}
+        />
+      )
+    }
+    // Glob: render structured result view (with or without tool_use_result).
+    else if (toolName === 'Glob') {
+      let filenames: string[]
+      if (toolUseResult) {
+        filenames = Array.isArray(toolUseResult.filenames) ? toolUseResult.filenames as string[] : []
+      }
+      else {
+        // Subagent: parse raw resultContent to extract summary and file list.
+        filenames = parseRawGrepGlobResult(resultContent, 'Glob').filenames
+      }
+      innerResult = (
         <GlobResultView
           filenames={filenames}
           fallbackContent={resultContent}
@@ -746,19 +1393,24 @@ export const toolResultRenderer: MessageContentRenderer = {
         />
       )
     }
+    else {
+      innerResult = (
+        <ToolResultMessage
+          toolName={toolName}
+          resultContent={hideContent ? '' : resultContent}
+          isPreText={isPreText}
+          structuredPatch={structuredPatch}
+          oldStr={oldStr}
+          newStr={newStr}
+          filePath={filePath}
+          originalFile={originalFile}
+          readFilePath={readFilePath}
+          isError={typeof resultData.is_error === 'boolean' ? resultData.is_error : undefined}
+          context={context}
+        />
+      )
+    }
 
-    return (
-      <ToolResultMessage
-        toolName={toolName}
-        resultContent={hideContent ? '' : resultContent}
-        isPreText={isPreText}
-        webFetchPrompt={webFetchPrompt}
-        structuredPatch={structuredPatch}
-        oldStr={oldStr}
-        newStr={newStr}
-        filePath={filePath}
-        context={context}
-      />
-    )
+    return innerResult
   },
 }

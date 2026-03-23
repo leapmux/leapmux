@@ -3,7 +3,7 @@ import type { ActionsProps, AskQuestionState, ContentProps, Question } from './t
 
 import { For, Match, Show, Switch } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
-import { buildAllowResponse, buildDenyResponse, getToolName } from '~/utils/controlResponse'
+import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
 import { AskUserQuestionActions, AskUserQuestionContent } from './AskUserQuestionControl'
 import { CollapsibleText } from './CollapsibleText'
@@ -237,7 +237,7 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
                 {props.hasEditorContent ? 'Send Feedback' : 'Stay in Plan Mode'}
               </button>
               <button
-                onClick={() => sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId))}
+                onClick={() => sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId, getToolInput(props.request.payload)))}
                 data-testid="control-allow-btn"
               >
                 Implement Plan

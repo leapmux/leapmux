@@ -26,7 +26,7 @@ export interface TerminalInstance {
 
 const DEFAULT_FONT_SIZE = 13
 
-const darkTerminalTheme: ITheme = {
+export const darkTerminalTheme: ITheme = {
   background: '#1a1917', // --background
   foreground: '#e8e6e1', // --foreground
   cursor: '#14b8a6', // --primary
@@ -50,7 +50,7 @@ const darkTerminalTheme: ITheme = {
   brightWhite: '#dee3e4',
 }
 
-const lightTerminalTheme: ITheme = {
+export const lightTerminalTheme: ITheme = {
   background: '#fdfcfa', // --background
   foreground: '#22201e', // --foreground
   cursor: '#0d9488', // --primary

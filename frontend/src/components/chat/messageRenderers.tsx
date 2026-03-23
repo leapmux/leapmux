@@ -1,10 +1,9 @@
 /* eslint-disable solid/components-return-once -- render methods are not Solid components */
 /* eslint-disable solid/no-innerhtml -- HTML is produced from user/assistant text via remark, not arbitrary user input */
 import type { JSX } from 'solid-js'
-import type { StructuredPatchHunk } from './diffUtils'
 import type { MessageCategory } from './messageClassification'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
-import type { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentChatMessage, AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import Bot from 'lucide-solid/icons/bot'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
@@ -21,6 +20,7 @@ import {
   agentErrorRenderer,
   agentRenamedRenderer,
   compactBoundaryRenderer,
+  compactingRenderer,
   contextClearedRenderer,
   controlResponseRenderer,
   interruptedRenderer,
@@ -41,6 +41,7 @@ import {
 } from './taskRenderers'
 
 import {
+  agentPromptRenderer,
   ToolHeaderActions,
   toolResultRenderer,
   toolUseRenderer,
@@ -53,7 +54,6 @@ import {
 } from './toolStyles.css'
 
 export { ToolHeaderActions }
-export { firstNonEmptyLine, formatTaskStatus } from './rendererUtils'
 
 const logger = createLogger('messageRenderers')
 
@@ -61,70 +61,27 @@ const logger = createLogger('messageRenderers')
 export interface RenderContext {
   /** ISO timestamp of the message (for relative time in toolbar). */
   createdAt?: string
-  /** ISO timestamp of the last update (thread merge). Preferred over createdAt when set. */
-  updatedAt?: string
   workingDir?: string
   /** Worker's home directory for tilde (~) path simplification. */
   homeDir?: string
-  /** Number of thread children (tool results). */
-  threadChildCount?: number
-  /** Whether thread is currently expanded. */
-  threadExpanded?: boolean
-  /** Toggle thread expansion. */
-  onToggleThread?: () => void
   /** User's preferred diff view. */
   diffView?: DiffViewPreference
   /** Copy raw JSON to clipboard. */
   onCopyJson?: () => void
   /** Whether JSON was just copied (for feedback). */
   jsonCopied?: boolean
-  /** Parent tool_use name (passed to child tool_result renderers). */
+  /** Parent tool_use name (passed to tool_result renderers for context). */
   parentToolName?: string
-  /** Parent tool_use input (passed to child tool_result renderers). */
+  /** Parent tool_use input (passed to tool_result renderers for context). */
   parentToolInput?: Record<string, unknown>
-  /** structuredPatch from child tool_result (passed to parent tool_use for Edit/Write diffs). */
-  childStructuredPatch?: StructuredPatchHunk[]
-  /** File path from child tool_result (passed to parent tool_use for Edit/Write diffs). */
-  childFilePath?: string
-  /** Answers map from child tool_result (header → answer string, for AskUserQuestion). */
-  childAnswers?: Record<string, string>
-  /** Text content from child tool_result message (for fallback descriptions, e.g. "User stopped"). */
-  childResultContent?: string
-  /** Whether the child tool_result has is_error=true (for fallback rejection detection). */
-  childResultIsError?: boolean
-  /** Task data from child tool_result (for TaskOutput renderer). */
-  childTask?: {
-    task_id?: string
-    task_type?: string
-    status?: string
-    description?: string
-    output?: string
-    exitCode?: number | null
-  }
-  /** Status from child tool_use_result (for Agent/Task status display). */
-  childToolResultStatus?: string
-  /** Total duration in ms from child tool_use_result (for Agent/Task stats). */
-  childTotalDurationMs?: number
-  /** Total tokens from child tool_use_result (for Agent/Task stats). */
-  childTotalTokens?: number
-  /** Total tool use count from child tool_use_result (for Agent/Task stats). */
-  childTotalToolUseCount?: number
-  /** Control response (approval/rejection) threaded into this tool_use. */
-  childControlResponse?: { action: string, comment: string }
-  /** Original file content before edit (for expandable context lines in diffs). */
-  childOriginalFile?: string
-  /** Grep result: number of matched files from child tool_use_result. */
-  childGrepNumFiles?: number
-  /** Grep result: number of matched lines from child tool_use_result. */
-  childGrepNumLines?: number
-  /** Glob result: number of matched files from child tool_use_result. */
-  childGlobNumFiles?: number
-  /** Glob result: duration in ms from child tool_use_result. */
-  childGlobDurationMs?: number
-  /** Glob result: whether results were truncated from child tool_use_result. */
-  childGlobTruncated?: boolean
-  /** ToolSearch result: matched tool names from child tool_use_result. */
-  childToolSearchMatches?: string[]
+  /** The corresponding tool_use message (looked up by spanId for tool_result messages). */
+  toolUseMessage?: AgentChatMessage
+  /** Color index assigned to this message's span (−1 = no color). */
+  spanColor?: number
+  /** Tool name or item type from span_type column (reliable, always set for span messages). */
+  spanType?: string
+  /** Whether the Bash/TaskOutput tool result is expanded (controlled by MessageBubble). */
+  toolResultExpanded?: boolean
 }
 
 export interface MessageContentRenderer {
@@ -303,6 +260,7 @@ const KIND_RENDERERS: Record<string, (parsed: unknown, role: MessageRole, contex
   // at module initialization time, which can hit the TDZ due to the circular
   // dependency between messageRenderers ↔ toolRenderers.
   tool_result: (p, r, c) => toolResultRenderer.render(p, r, c),
+  agent_prompt: (p, r, c) => agentPromptRenderer.render(p, r, c),
   assistant_text: assistantTextRenderer.render,
   assistant_thinking: assistantThinkingRenderer.render,
   user_text: userTextContentRenderer.render,
@@ -313,6 +271,7 @@ const KIND_RENDERERS: Record<string, (parsed: unknown, role: MessageRole, contex
     return settingsChangedRenderer.render(parsed, role, context)
       ?? interruptedRenderer.render(parsed, role, context)
       ?? contextClearedRenderer.render(parsed, role, context)
+      ?? compactingRenderer.render(parsed, role, context)
       ?? agentErrorRenderer.render(parsed, role, context)
       ?? agentRenamedRenderer.render(parsed, role, context)
       ?? rateLimitRenderer.render(parsed, role, context)
@@ -365,6 +324,7 @@ function getFallbackRenderers(): MessageContentRenderer[] {
       askUserQuestionRenderer,
       toolUseRenderer,
       toolResultRenderer,
+      agentPromptRenderer,
       userTextContentRenderer,
       assistantTextRenderer,
       assistantThinkingRenderer,
@@ -374,6 +334,7 @@ function getFallbackRenderers(): MessageContentRenderer[] {
       settingsChangedRenderer,
       interruptedRenderer,
       contextClearedRenderer,
+      compactingRenderer,
       agentErrorRenderer,
       agentRenamedRenderer,
       rateLimitRenderer,

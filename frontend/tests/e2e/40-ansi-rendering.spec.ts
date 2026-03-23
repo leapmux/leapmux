@@ -2,7 +2,6 @@ import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 
 const TOOK_TIME_RE = /Took \d+/
-const EXPAND_TOOL_RESULT_RE = /Expand.*tool result/
 
 /** Send a message via the ProseMirror editor. */
 async function sendMessage(page: Page, text: string) {
@@ -21,9 +20,6 @@ async function sendMessage(page: Page, text: string) {
  */
 async function allowToolExecutionIfNeeded(page: Page) {
   const allowBtn = page.locator('[data-testid="control-allow-btn"]')
-  // Use a short timeout so the test doesn't block for 30s when the tool
-  // is auto-approved (no banner). The banner typically appears within a
-  // few seconds if it's going to appear at all.
   try {
     await expect(allowBtn).toBeVisible({ timeout: 10_000 })
     await allowBtn.click()
@@ -36,8 +32,6 @@ async function allowToolExecutionIfNeeded(page: Page) {
 test.describe('ANSI Escape Sequence Rendering', () => {
   test('should render ANSI colored output from Bash tool as styled HTML', async ({ page, authenticatedWorkspace }) => {
     // Ask Claude to run `ls --color=always /` which produces ANSI colored output.
-    // Directories and symlinks get colored by ls, and --color=always forces
-    // ANSI codes even when stdout is not a TTY.
     await sendMessage(
       page,
       'Run this exact command with the Bash tool and nothing else: ls --color=always /',
@@ -46,26 +40,16 @@ test.describe('ANSI Escape Sequence Rendering', () => {
     // Approve the Bash tool execution if a control banner appears
     await allowToolExecutionIfNeeded(page)
 
-    // Wait for the agent's turn to finish. The "Took Xs" marker appears after all
-    // tool bubbles have been rendered, so this ensures expand buttons are available.
+    // Wait for the agent's turn to finish.
     await expect(page.getByText(TOOK_TIME_RE)).toBeVisible({ timeout: 60_000 })
 
-    // The agent may invoke ToolSearch before Bash, creating multiple tool bubbles
-    // with separate "Expand" buttons. Expand ALL collapsed tool results so the
-    // Bash output is visible regardless of ordering.
-    // Click one at a time since clicking changes the button to "Collapse".
-    while (await page.getByRole('button', { name: EXPAND_TOOL_RESULT_RE }).first().isVisible().catch(() => false)) {
-      await page.getByRole('button', { name: EXPAND_TOOL_RESULT_RE }).first().click()
-    }
-
-    // The ANSI-rendered content will have a pre.shiki element inside a thread child bubble
-    // (tool results render outside [data-testid="message-content"]).
-    // If the tool output doesn't contain ANSI codes, it may render as a plain <code> element instead.
-    // Use a combined locator to wait for whichever element appears first, avoiding
-    // a racy one-shot check that can select the wrong locator before rendering finishes.
-    const shikiPre = page.locator('[data-testid="thread-child-bubble"] pre.shiki')
-    const plainCode = page.locator('[data-testid="thread-child-bubble"] code')
-    const outputElement = shikiPre.or(plainCode)
+    // tool_result messages are now standalone. Look for ANSI-rendered content
+    // that contains actual directory listing output (not the command itself).
+    // Use text content filtering to find the output element.
+    const bubbles = page.locator('[data-testid="message-bubble"]')
+    const shikiPre = bubbles.locator('pre.shiki').filter({ hasText: 'usr' })
+    const plainPre = bubbles.locator('pre').filter({ hasText: 'usr' })
+    const outputElement = shikiPre.or(plainPre)
     await expect(outputElement.first()).toBeVisible({ timeout: 30_000 })
 
     // Verify some well-known root directories are present

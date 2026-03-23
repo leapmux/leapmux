@@ -41,14 +41,31 @@ export function firstNonEmptyLine(text?: string): string | null {
   return null
 }
 
-/** Format a duration in milliseconds as a human-readable string (e.g. "5s", "2m 30s"). */
+/** Format a duration in milliseconds as a human-readable string (e.g. "5ms", "3.2s", "2m 30s", "1h 5m"). */
 export function formatDuration(ms: number): string {
-  const totalSec = Math.round(ms / 1000)
-  if (totalSec < 60)
-    return `${totalSec}s`
-  const min = Math.floor(totalSec / 60)
-  const sec = totalSec % 60
-  return sec > 0 ? `${min}m ${sec}s` : `${min}m`
+  if (ms < 1000)
+    return `${Math.round(ms)}ms`
+
+  const totalSeconds = ms / 1000
+  if (totalSeconds < 10)
+    return `${totalSeconds.toFixed(1)}s`
+
+  const totalSecondsRounded = Math.round(totalSeconds)
+  const days = Math.floor(totalSecondsRounded / 86400)
+  const hours = Math.floor((totalSecondsRounded % 86400) / 3600)
+  const minutes = Math.floor((totalSecondsRounded % 3600) / 60)
+  const seconds = totalSecondsRounded % 60
+
+  const parts: string[] = []
+  if (days > 0)
+    parts.push(`${days}d`)
+  if (hours > 0)
+    parts.push(`${hours}h`)
+  if (minutes > 0)
+    parts.push(`${minutes}m`)
+  if (seconds > 0 || parts.length === 0)
+    parts.push(`${seconds}s`)
+  return parts.join(' ')
 }
 
 /** Format a number with locale-aware separators (e.g. 1,234). */

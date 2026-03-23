@@ -77,14 +77,14 @@ export const ExitPlanModeActions: Component<ActionsProps> = (props) => {
   }
 
   const handleApprove = () => {
-    sendResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId))
+    sendResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId, getToolInput(props.request.payload)))
   }
 
   const handleBypassPermissions = () => {
     sendResponse(
       props.request.agentId,
       props.onRespond,
-      buildAllowResponse(props.request.requestId, undefined, props.bypassPermissionMode || 'bypassPermissions'),
+      buildAllowResponse(props.request.requestId, getToolInput(props.request.payload), props.bypassPermissionMode || 'bypassPermissions'),
     )
   }
 

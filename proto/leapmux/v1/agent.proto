@@ -122,6 +122,7 @@ message AvailableModel {
   string default_effort = 4;   // Default reasoning effort for this model
   repeated AvailableEffort supported_efforts = 5; // Efforts this model supports
   string description = 6;      // Tooltip / description text shown on hover
+  int64 context_window = 7;    // Context window size in tokens (0 = unknown)
 }
 
 // AvailableEffort describes a reasoning effort supported by a model.
@@ -163,8 +164,13 @@ message AgentChatMessage {
   string created_at = 5;
   string delivery_error = 6; // Non-empty if worker delivery failed
   ContentCompression content_compression = 7; // Compression algorithm used for content
-  string updated_at = 8; // Set when message is updated (e.g. thread merge)
-  AgentProvider agent_provider = 9; // Provider that produced this message
+  AgentProvider agent_provider = 8; // Provider that produced this message
+  int32 depth = 9; // Nesting level: 0=main agent, 1=subagent, 2=nested subagent
+  string parent_span_id = 10; // span_id of the parent Agent/SpawnAgent that spawned this scope (empty for main)
+  string span_id = 11; // Links a tool invocation with its result (tool_use ↔ tool_result, item/started ↔ item/completed)
+  string span_type = 12; // Tool name (e.g. "Grep", "Edit") or item type (e.g. "commandExecution") for span messages
+  int32 span_color = 13; // Color index assigned to this span (−1 = no color)
+  string span_lines = 14; // JSON array of active span lines at this message's position
 }
 
 // AgentStreamChunk provides token-by-token streaming.

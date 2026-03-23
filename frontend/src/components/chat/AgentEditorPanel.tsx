@@ -7,7 +7,7 @@ import type { PermissionMode } from '~/utils/controlResponse'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import SendHorizontal from 'lucide-solid/icons/send-horizontal'
 import Square from 'lucide-solid/icons/square'
-import { createEffect, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
@@ -166,6 +166,9 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
 
   // Agent info card (extracted module)
   const info = useAgentInfoCard(props)
+  const modelContextWindow = createMemo(() =>
+    Number(props.agent?.availableModels?.find(m => m.id === props.agent?.model)?.contextWindow) || undefined,
+  )
 
   let triggerSend: (() => void) | undefined
 
@@ -308,7 +311,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                                   data-testid="agent-info-trigger"
                                   {...triggerProps}
                                 >
-                                  <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} size={iconSize.xs} />
+                                  <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} modelContextWindow={modelContextWindow()} size={iconSize.xs} />
                                   <Show when={info.urgentRateLimit()}>
                                     {rl => (
                                       <Tooltip
@@ -366,7 +369,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                               data-testid="agent-info-trigger"
                               {...triggerProps}
                             >
-                              <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} size={iconSize.xs} />
+                              <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} modelContextWindow={modelContextWindow()} size={iconSize.xs} />
                               <Show when={info.urgentRateLimit()}>
                                 {rl => (
                                   <Tooltip

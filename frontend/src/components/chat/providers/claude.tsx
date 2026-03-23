@@ -87,7 +87,7 @@ function classifyClaudeCodeMessage(
     if (subtype === 'status' && parentObject.status !== 'compacting')
       return { kind: 'hidden' }
     if (subtype === 'task_notification')
-      return { kind: 'task_notification' }
+      return { kind: 'hidden' }
     return { kind: 'notification' }
   }
 
@@ -97,7 +97,7 @@ function classifyClaudeCodeMessage(
       return { kind: 'hidden' }
     return { kind: 'notification' }
   }
-  if (type === 'interrupted' || type === 'context_cleared' || type === 'settings_changed' || type === 'agent_renamed')
+  if (type === 'interrupted' || type === 'context_cleared' || type === 'compacting' || type === 'settings_changed' || type === 'agent_renamed')
     return { kind: 'notification' }
 
   // Result divider
@@ -145,10 +145,15 @@ function classifyClaudeCodeMessage(
       if (typeof content === 'string')
         return { kind: 'user_text' }
       if (Array.isArray(content)) {
+        // tool_result takes priority over agent_prompt (subagent tool results
+        // also have parent_tool_use_id but should be rendered as tool results).
         if ((content as Array<Record<string, unknown>>).some(c => isObject(c) && c.type === 'tool_result'))
           return { kind: 'tool_result' }
       }
     }
+    // Agent prompt: user message with parent_tool_use_id (prompt sent to sub-agent)
+    if (typeof parentObject.parent_tool_use_id === 'string')
+      return { kind: 'agent_prompt' }
     return { kind: 'unknown' }
   }
 

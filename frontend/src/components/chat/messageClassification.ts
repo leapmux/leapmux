@@ -13,6 +13,7 @@ export type MessageCategory
     | { kind: 'task_notification' }
     | { kind: 'tool_use', toolName: string, toolUse: Record<string, unknown>, content: Array<Record<string, unknown>> }
     | { kind: 'tool_result' }
+    | { kind: 'agent_prompt' }
     | { kind: 'assistant_text' }
     | { kind: 'assistant_thinking' }
     | { kind: 'user_text' }
@@ -58,6 +59,7 @@ const META_KINDS = new Set<MessageCategory['kind']>([
   'result_divider',
   'tool_use',
   'tool_result',
+  'agent_prompt',
   'control_response',
   'compact_summary',
   'notification',

@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -274,6 +276,182 @@ func TestAgent_InitMessageFlowsThrough(t *testing.T) {
 	testutil.AssertEventually(t, func() bool {
 		return sink.MessageCount() >= 1
 	}, "expected additional output after input")
+}
+
+// TestAgent_ToolUseCountSurvivesToolResult verifies that the turn tool use
+// counter is not reset by tool_result (user) messages, only by user text echoes.
+func TestAgent_ToolUseCountSurvivesToolResult(t *testing.T) {
+	ctx := context.Background()
+	sink := &testSink{}
+
+	agent, err := mockStartWithInit(ctx, Options{
+		AgentID:    "tool-count-test",
+		Model:      "test",
+		WorkingDir: t.TempDir(),
+	}, sink)
+	require.NoError(t, err, "mockStartWithInit")
+	defer func() {
+		agent.Stop()
+		_ = agent.Wait()
+	}()
+
+	// Wait for init to be processed.
+	testutil.AssertEventually(t, func() bool {
+		return sink.SessionIDCount() >= 1
+	}, "expected init message")
+
+	// 1. User text echo — resets counter to 0.
+	userEcho := `{"type":"user","message":{"role":"user","content":"Run pwd"}}` + "\n"
+	require.NoError(t, agent.SendRawInput([]byte(userEcho)))
+	time.Sleep(50 * time.Millisecond)
+
+	// 2. Assistant with tool_use — counter should become 1.
+	assistantToolUse := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"pwd"}}]},"session_id":"test-session","uuid":"uuid1"}` + "\n"
+	require.NoError(t, agent.SendRawInput([]byte(assistantToolUse)))
+	time.Sleep(50 * time.Millisecond)
+
+	// 3. Tool result (user type, array content) — should NOT reset counter.
+	toolResult := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"/home/user"}]}}` + "\n"
+	require.NoError(t, agent.SendRawInput([]byte(toolResult)))
+	time.Sleep(50 * time.Millisecond)
+
+	// 4. Assistant with text (no tool_use) — counter stays 1.
+	assistantText := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"The current directory is /home/user"}]},"session_id":"test-session","uuid":"uuid2"}` + "\n"
+	require.NoError(t, agent.SendRawInput([]byte(assistantText)))
+	time.Sleep(50 * time.Millisecond)
+
+	// 5. Result message — should be enriched with num_tool_uses: 1.
+	resultMsg := `{"type":"result","subtype":"turn_end"}` + "\n"
+	require.NoError(t, agent.SendRawInput([]byte(resultMsg)))
+
+	testutil.AssertEventually(t, func() bool {
+		msgs := sink.Messages()
+		for _, m := range msgs {
+			if m.Role == leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT {
+				return true
+			}
+		}
+		return false
+	}, "expected result message to be persisted")
+
+	// Find the result message and verify num_tool_uses.
+	msgs := sink.Messages()
+	var resultContent []byte
+	for _, m := range msgs {
+		if m.Role == leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT {
+			resultContent = m.Content
+		}
+	}
+	require.NotNil(t, resultContent, "result message should exist")
+
+	var enriched map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(resultContent, &enriched))
+	numToolUsesRaw, ok := enriched["num_tool_uses"]
+	require.True(t, ok, "result should contain num_tool_uses field")
+
+	var numToolUses int
+	require.NoError(t, json.Unmarshal(numToolUsesRaw, &numToolUses))
+	assert.Equal(t, 1, numToolUses, "num_tool_uses should be 1 (tool_result should not reset the counter)")
+}
+
+// TestAgent_SpanTypeSetOnToolUseAndResult verifies that span_type is set
+// to the tool name for both tool_use (assistant) and tool_result (user) messages.
+func TestAgent_SpanTypeSetOnToolUseAndResult(t *testing.T) {
+	ctx := context.Background()
+	sink := &testSink{}
+
+	agent, err := mockStartWithInit(ctx, Options{
+		AgentID:    "span-type-test",
+		Model:      "test",
+		WorkingDir: t.TempDir(),
+	}, sink)
+	require.NoError(t, err, "mockStartWithInit")
+	defer func() {
+		agent.Stop()
+		_ = agent.Wait()
+	}()
+
+	// Wait for init to be processed.
+	testutil.AssertEventually(t, func() bool {
+		return sink.SessionIDCount() >= 1
+	}, "expected init message")
+
+	initialCount := sink.MessageCount()
+
+	// Send a tool_use (assistant) message with tool name "Grep".
+	toolUseMsg := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_test123","name":"Grep","input":{"pattern":"foo"}}]},"session_id":"test-session","uuid":"uuid1"}` + "\n"
+	require.NoError(t, agent.SendRawInput([]byte(toolUseMsg)))
+
+	testutil.AssertEventually(t, func() bool {
+		return sink.MessageCount() > initialCount
+	}, "expected tool_use message to be persisted")
+
+	msgs := sink.Messages()
+	toolUse := msgs[len(msgs)-1]
+	assert.Equal(t, "toolu_test123", toolUse.SpanID, "tool_use span ID")
+	assert.Equal(t, "Grep", toolUse.SpanType, "tool_use span type should be the tool name")
+
+	// Send a tool_result (user) message referencing the same tool_use_id.
+	toolResultMsg := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_test123","content":"Found 3 files"}]},"session_id":"test-session","uuid":"uuid2","tool_use_result":{"mode":"files_with_matches","filenames":["a.go","b.go","c.go"],"numFiles":3}}` + "\n"
+	require.NoError(t, agent.SendRawInput([]byte(toolResultMsg)))
+
+	testutil.AssertEventually(t, func() bool {
+		return sink.MessageCount() > initialCount+1
+	}, "expected tool_result message to be persisted")
+
+	msgs = sink.Messages()
+	toolResult := msgs[len(msgs)-1]
+	assert.Equal(t, "toolu_test123", toolResult.SpanID, "tool_result span ID")
+	assert.Equal(t, "Grep", toolResult.SpanType, "tool_result span type should match the tool_use")
+}
+
+// TestAgent_ParallelToolUseClosesAllSpans verifies that when a user message
+// contains multiple tool_result blocks (parallel tool calls), all corresponding
+// spans are closed — not just the first one.
+func TestAgent_ParallelToolUseClosesAllSpans(t *testing.T) {
+	ctx := context.Background()
+	sink := &testSink{}
+
+	agent, err := mockStartWithInit(ctx, Options{
+		AgentID:    "parallel-span-test",
+		Model:      "test",
+		WorkingDir: t.TempDir(),
+	}, sink)
+	require.NoError(t, err, "mockStartWithInit")
+	defer func() {
+		agent.Stop()
+		_ = agent.Wait()
+	}()
+
+	testutil.AssertEventually(t, func() bool {
+		return sink.SessionIDCount() >= 1
+	}, "expected init message")
+
+	// Assistant calls two tools in parallel.
+	toolUseMsg := `{"type":"assistant","message":{"role":"assistant","content":[` +
+		`{"type":"tool_use","id":"toolu_A","name":"Grep","input":{"pattern":"foo"}},` +
+		`{"type":"tool_use","id":"toolu_B","name":"Bash","input":{"command":"ls"}}` +
+		`]},"session_id":"test-session","uuid":"uuid1"}` + "\n"
+	require.NoError(t, agent.SendRawInput([]byte(toolUseMsg)))
+
+	testutil.AssertEventually(t, func() bool {
+		return len(sink.OpenSpans()) >= 2
+	}, "expected both spans to be opened")
+
+	assert.ElementsMatch(t, []string{"toolu_A", "toolu_B"}, sink.OpenSpans())
+
+	// Single user message with two tool_result blocks.
+	toolResultMsg := `{"type":"user","message":{"role":"user","content":[` +
+		`{"type":"tool_result","tool_use_id":"toolu_A","content":"match found"},` +
+		`{"type":"tool_result","tool_use_id":"toolu_B","content":"file list"}` +
+		`]},"session_id":"test-session","uuid":"uuid2"}` + "\n"
+	require.NoError(t, agent.SendRawInput([]byte(toolResultMsg)))
+
+	testutil.AssertEventually(t, func() bool {
+		return sink.ClosedSpanCount() >= 2
+	}, "expected both spans to be closed")
+
+	assert.ElementsMatch(t, []string{"toolu_A", "toolu_B"}, sink.ClosedSpans())
 }
 
 // TestHelperProcessEarlyExit is a test helper that writes an error to stderr

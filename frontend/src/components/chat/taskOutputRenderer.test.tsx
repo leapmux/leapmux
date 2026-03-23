@@ -15,7 +15,8 @@ vi.mock('~/lib/renderMarkdown', () => ({
   renderMarkdown: (text: string) => text,
 }))
 
-const { formatTaskStatus, firstNonEmptyLine, renderMessageContent } = await import('./messageRenderers')
+const { renderMessageContent } = await import('./messageRenderers')
+const { formatTaskStatus, firstNonEmptyLine } = await import('./rendererUtils')
 type RenderContext = import('./messageRenderers').RenderContext
 
 /** Construct a TaskOutput tool_use assistant message object. */
@@ -74,104 +75,21 @@ describe('firstNonEmptyLine', () => {
 })
 
 describe('renderTaskOutput', () => {
-  it('all properties present: shows description only when completed', () => {
-    const text = renderText({
-      childTask: {
-        task_id: 'abc',
-        task_type: 'shell',
-        status: 'completed',
-        description: 'Build project',
-        output: 'Build succeeded',
-        exitCode: 0,
-      },
-    })
-    expect(text).toContain('Build project')
-    expect(text).not.toContain('Complete')
-  })
-
-  it('missing status: shows "Waiting for output"', () => {
-    const text = renderText({
-      childTask: {
-        description: 'Some task',
-      },
-    })
+  it('always shows "Waiting for output" (child data fields removed)', () => {
+    const text = renderText()
     expect(text).toContain('Waiting for output')
   })
 
-  it('missing description: shows status only, no dash separator', () => {
-    const text = renderText({
-      childTask: {
-        status: 'running',
-      },
-    })
-    expect(text).toContain('Running')
-    expect(text).not.toContain(' - ')
-  })
-
-  it('collapsed with exitCode and task_id: shows summary line', () => {
-    const text = renderText({
-      childTask: {
-        task_id: 'abc',
-        status: 'completed',
-        description: 'Test run',
-        output: 'All tests passed\n42 tests total',
-        exitCode: 0,
-      },
-    })
-    expect(text).toContain('Exit code 0')
-    expect(text).toContain('Task ID abc')
-  })
-
-  it('expanded shows summary (output rendered via thread child)', () => {
-    const text = renderText({
-      threadExpanded: true,
-      childTask: {
-        task_id: 'xyz',
-        status: 'completed',
-        description: 'Run tests',
-        exitCode: 0,
-      },
-    })
-    expect(text).toContain('Exit code 0')
-    expect(text).toContain('Task ID xyz')
-  })
-
-  it('all childTask properties missing (undefined): graceful "Waiting for output" fallback', () => {
-    const text = renderText({
-      childTask: {},
-    })
-    expect(text).toContain('Waiting for output')
-  })
-
-  it('no childTask at all (no thread child yet): shows "Waiting for output"', () => {
+  it('shows "Waiting for output" even with empty context', () => {
     const text = renderText({})
     expect(text).toContain('Waiting for output')
   })
 
-  it('exitCode null (process still running): shows status instead of "Exit code null"', () => {
-    const text = renderText({
-      childTask: {
-        task_id: 'b0c676c',
-        task_type: 'local_bash',
-        status: 'running',
-        description: 'Run full E2E suite',
-        output: '',
-        exitCode: null,
-      },
-    })
-    expect(text).not.toContain('Exit code null')
-    expect(text).toContain('Running')
-    expect(text).toContain('Task ID b0c676c')
-  })
-
-  it('exitCode 0 still shows "Exit code 0"', () => {
-    const text = renderText({
-      childTask: {
-        task_id: 'abc',
-        status: 'completed',
-        exitCode: 0,
-      },
-    })
-    expect(text).toContain('Exit code 0')
+  it('does not show task status or exit code (no child data)', () => {
+    const text = renderText({})
+    expect(text).not.toContain('Running')
+    expect(text).not.toContain('Complete')
+    expect(text).not.toContain('Exit code')
+    expect(text).not.toContain('Task ID')
   })
 })

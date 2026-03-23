@@ -59,6 +59,7 @@ export function relativizePath(absPath: string, workingDir?: string, homeDir?: s
 const BASE_NOTIFICATION_TYPES = new Set([
   'settings_changed',
   'context_cleared',
+  'compacting',
   'interrupted',
   'rate_limit',
   'agent_renamed',

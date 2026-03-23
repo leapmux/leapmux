@@ -20,29 +20,26 @@ function makeMessage(id: string, seq: bigint, deliveryError = '') {
   })
 }
 
-/** Build a wrapped assistant message containing a TodoWrite tool_use. */
+/** Build a raw assistant message containing a TodoWrite tool_use. */
 function makeTodoWriteMessage(
   id: string,
   seq: bigint,
   todos: Array<{ content: string, status: string, activeForm: string }>,
 ) {
-  const wrapped = {
-    old_seqs: [],
-    messages: [{
-      type: 'assistant',
-      message: {
-        content: [{
-          type: 'tool_use',
-          name: 'TodoWrite',
-          input: { todos },
-        }],
-      },
-    }],
+  const raw = {
+    type: 'assistant',
+    message: {
+      content: [{
+        type: 'tool_use',
+        name: 'TodoWrite',
+        input: { todos },
+      }],
+    },
   }
   return create(AgentChatMessageSchema, {
     id,
     role: MessageRole.ASSISTANT,
-    content: new TextEncoder().encode(JSON.stringify(wrapped)),
+    content: new TextEncoder().encode(JSON.stringify(raw)),
     contentCompression: ContentCompression.NONE,
     seq,
   })

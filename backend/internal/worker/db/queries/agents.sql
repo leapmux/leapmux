@@ -25,7 +25,7 @@ WHERE workspace_id = ? AND closed_at IS NULL;
 UPDATE agents SET title = ? WHERE id = ?;
 
 -- name: UpdateAgentSessionID :exec
-UPDATE agents SET agent_session_id = ? WHERE id = ?;
+UPDATE agents SET agent_session_id = ?, session_start_seq = (SELECT COALESCE(MAX(m.seq), 0) FROM messages m WHERE m.agent_id = agents.id) WHERE agents.id = ?;
 
 -- name: ReopenAgent :exec
 UPDATE agents SET closed_at = NULL WHERE id = ?;

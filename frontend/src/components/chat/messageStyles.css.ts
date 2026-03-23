@@ -1,4 +1,4 @@
-import { globalStyle, style } from '@vanilla-extract/css'
+import { globalStyle, keyframes, style } from '@vanilla-extract/css'
 import { toolHeaderActions, toolHeaderTimestamp } from './toolStyles.css'
 
 export const messageBubble = style({
@@ -15,6 +15,25 @@ export const userMessage = style([messageBubble, {
   border: '1px solid var(--border)',
   color: 'var(--foreground)',
   alignSelf: 'flex-end',
+}])
+
+const pendingPulse = keyframes({
+  '0%, 100%': { opacity: 0.5 },
+  '50%': { opacity: 0.85 },
+})
+
+export const userMessagePending = style([messageBubble, {
+  'backgroundColor': 'var(--accent)',
+  'border': '1px solid var(--border)',
+  'color': 'var(--foreground)',
+  'alignSelf': 'flex-end',
+  'animation': `${pendingPulse} 1.5s ease-in-out infinite`,
+  '@media': {
+    '(prefers-reduced-motion: reduce)': {
+      animation: 'none',
+      opacity: 0.6,
+    },
+  },
 }])
 
 export const assistantMessage = style([messageBubble, {
@@ -145,15 +164,18 @@ globalStyle(`${messageRow} > .${metaMessage}`, {
   alignSelf: 'auto',
 })
 
-// Inside messageRow containing a resultDivider, position actions absolutely at the right edge
-globalStyle(`${messageRow}:has(.${resultDivider})`, {
+// Inside messageRow containing a metaMessage, position actions absolutely so they don't take space
+globalStyle(`${messageRow}:has(> .${metaMessage})`, {
   position: 'relative',
 })
 
-globalStyle(`${messageRow}:has(.${resultDivider}) > .${toolHeaderActions}`, {
+globalStyle(`${messageRow}:has(> .${metaMessage}) > .${toolHeaderActions}`, {
   position: 'absolute',
   right: 0,
   marginLeft: 0,
+  background: 'var(--background)',
+  borderRadius: 'var(--radius-small)',
+  paddingLeft: 'var(--space-1)',
 })
 
 // Inside messageRowEnd, place actions to the left of the bubble in a 2-column grid (mirrored via RTL)
@@ -195,6 +217,9 @@ globalStyle(`${messageRowCenter} > .${toolHeaderActions}`, {
   position: 'absolute',
   right: 0,
   marginLeft: 0,
+  background: 'var(--background)',
+  borderRadius: 'var(--radius-small)',
+  paddingLeft: 'var(--space-1)',
 })
 
 // When hovering a message row, reveal the actions

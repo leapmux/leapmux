@@ -13,25 +13,56 @@ type testSink struct {
 	streamChunks     [][]byte
 	sessionIDs       []string
 	sessionInfos     []map[string]interface{}
+	spanTypes        map[string]string
+	openSpans        []string
+	closedSpans      []string
 	planModeToolUses sync.Map
 }
 
 type testSinkMessage struct {
-	Role     leapmuxv1.MessageRole
-	Content  []byte
-	ThreadID string
+	Role         leapmuxv1.MessageRole
+	Content      []byte
+	ParentSpanID string
+	SpanID       string
+	SpanType     string
 }
 
-func (s *testSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, threadID string) error {
+func (s *testSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, span SpanInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.messages = append(s.messages, testSinkMessage{Role: role, Content: append([]byte(nil), content...), ThreadID: threadID})
+	s.messages = append(s.messages, testSinkMessage{Role: role, Content: append([]byte(nil), content...), ParentSpanID: span.ParentSpanID, SpanID: span.SpanID, SpanType: span.SpanType})
 	return nil
 }
 
-func (s *testSink) MergeIntoThread(string, []byte) bool { return false }
-
 func (s *testSink) PersistNotification(leapmuxv1.MessageRole, []byte) error { return nil }
+
+func (s *testSink) OpenSpan(spanID string, _ string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.openSpans = append(s.openSpans, spanID)
+}
+func (s *testSink) CloseSpan(spanID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closedSpans = append(s.closedSpans, spanID)
+}
+func (s *testSink) ResetSpans() {}
+func (s *testSink) SetSpanType(spanID, spanType string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.spanTypes == nil {
+		s.spanTypes = make(map[string]string)
+	}
+	s.spanTypes[spanID] = spanType
+}
+
+func (s *testSink) GetSpanType(spanID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.spanTypes[spanID]
+}
+
+func (s *testSink) PeekNextSpanColor() int32 { return 0 }
 
 func (s *testSink) BroadcastStreamChunk(content []byte) {
 	s.mu.Lock()
@@ -84,6 +115,13 @@ func (s *testSink) MessageCount() int {
 	return len(s.messages)
 }
 
+// Messages returns a copy of all persisted messages.
+func (s *testSink) Messages() []testSinkMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]testSinkMessage(nil), s.messages...)
+}
+
 // StreamChunkCount returns the number of broadcast stream chunks.
 func (s *testSink) StreamChunkCount() int {
 	s.mu.Lock()
@@ -125,13 +163,41 @@ func (s *testSink) LastSessionInfo() map[string]interface{} {
 	return s.sessionInfos[len(s.sessionInfos)-1]
 }
 
+// OpenSpans returns a copy of all opened span IDs.
+func (s *testSink) OpenSpans() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.openSpans...)
+}
+
+// ClosedSpans returns a copy of all closed span IDs.
+func (s *testSink) ClosedSpans() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.closedSpans...)
+}
+
+// ClosedSpanCount returns the number of CloseSpan calls.
+func (s *testSink) ClosedSpanCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.closedSpans)
+}
+
 // noopSink is a no-op implementation of OutputSink for tests that don't
 // need to verify output.
 type noopSink struct{}
 
-func (noopSink) PersistMessage(leapmuxv1.MessageRole, []byte, string) error      { return nil }
-func (noopSink) MergeIntoThread(string, []byte) bool                             { return false }
+func (noopSink) PersistMessage(leapmuxv1.MessageRole, []byte, SpanInfo) error {
+	return nil
+}
 func (noopSink) PersistNotification(leapmuxv1.MessageRole, []byte) error         { return nil }
+func (noopSink) OpenSpan(string, string)                                         {}
+func (noopSink) CloseSpan(string)                                                {}
+func (noopSink) ResetSpans()                                                     {}
+func (noopSink) SetSpanType(string, string)                                      {}
+func (noopSink) GetSpanType(string) string                                       { return "" }
+func (noopSink) PeekNextSpanColor() int32                                        { return 0 }
 func (noopSink) BroadcastStreamChunk([]byte)                                     {}
 func (noopSink) PersistControlRequest(string, []byte)                            {}
 func (noopSink) DeleteControlRequest(string)                                     {}

@@ -98,6 +98,72 @@ func TestResolveResumeSessionID_ResumedAgentPreservesSession(t *testing.T) {
 		"resumed agent should preserve session ID even without local messages")
 }
 
+func TestResolveResumeSessionID_IgnoresPreClearMessages(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t, "ws-1")
+
+	// Create an agent (non-resumed).
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:          "agent-clear",
+		WorkspaceID: "ws-1",
+		WorkingDir:  t.TempDir(),
+		HomeDir:     t.TempDir(),
+		Model:       "opus",
+	}))
+
+	// Simulate agent startup: set initial session ID.
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
+		AgentSessionID: "session-A",
+		ID:             "agent-clear",
+	}))
+
+	// User sends a message in session-A.
+	_, err := svc.Queries.CreateMessage(ctx, db.CreateMessageParams{
+		ID:        "msg-1",
+		AgentID:   "agent-clear",
+		Role:      leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
+		Content:   []byte(`{"content":"hello"}`),
+		CreatedAt: time.Now(),
+	})
+	require.NoError(t, err)
+
+	// Verify session-A is resumable (has user messages).
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-clear")
+	require.NoError(t, err)
+	assert.Equal(t, "session-A",
+		svc.resolveResumeSessionID("agent-clear", dbAgent.AgentSessionID, dbAgent.Resumed),
+		"session-A should be resumable because a user message exists")
+
+	// Simulate /clear: agent restarts fresh, gets a new session ID.
+	// UpdateAgentSessionID atomically records session_start_seq.
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
+		AgentSessionID: "session-B",
+		ID:             "agent-clear",
+	}))
+
+	// No messages exchanged in session-B yet. Even though old messages
+	// from session-A exist, resolveResumeSessionID should return "".
+	dbAgent, err = svc.Queries.GetAgentByID(ctx, "agent-clear")
+	require.NoError(t, err)
+	assert.Empty(t,
+		svc.resolveResumeSessionID("agent-clear", dbAgent.AgentSessionID, dbAgent.Resumed),
+		"session-B should NOT be resumable — no messages exchanged yet")
+
+	// After the user sends a message in session-B, it should become resumable.
+	_, err = svc.Queries.CreateMessage(ctx, db.CreateMessageParams{
+		ID:        "msg-2",
+		AgentID:   "agent-clear",
+		Role:      leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
+		Content:   []byte(`{"content":"world"}`),
+		CreatedAt: time.Now(),
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "session-B",
+		svc.resolveResumeSessionID("agent-clear", dbAgent.AgentSessionID, dbAgent.Resumed),
+		"session-B should be resumable after a user message is sent")
+}
+
 func TestUpdateAgentSettings_DoesNotResumeSessionOnRestart(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")

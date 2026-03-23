@@ -43,17 +43,20 @@ function removePersistedLocalMessage(agentId: string, messageId: string) {
 
 /** Reconstruct an AgentChatMessage from a persisted local message. */
 function hydrateLocalMessage(p: PersistedLocalMessage): AgentChatMessage {
-  const wrapped = JSON.stringify({ old_seqs: [], messages: [{ content: p.contentText }] })
+  const contentJson = JSON.stringify({ content: p.contentText })
   return {
     $typeName: 'leapmux.v1.AgentChatMessage' as const,
     id: p.id,
     role: MessageRole.USER,
-    content: new TextEncoder().encode(wrapped),
+    content: new TextEncoder().encode(contentJson),
     contentCompression: ContentCompression.NONE,
     seq: 0n,
     createdAt: p.createdAt,
     deliveryError: p.deliveryError,
-    updatedAt: '',
+    depth: 0,
+    parentSpanId: '',
+    spanId: '',
+    spanLines: '[]',
   } as AgentChatMessage
 }
 
@@ -78,7 +81,7 @@ interface ChatStoreState {
   savedViewportScroll: Record<string, { distFromBottom: number, atBottom: boolean }>
   /** Whether initial load has completed for an agent. */
   initialLoadComplete: Record<string, boolean>
-  /** Monotonic counter incremented on every addMessage (including thread merges). */
+  /** Monotonic counter incremented on every addMessage (including notification updates). */
   messageVersion: Record<string, number>
 }
 
@@ -96,8 +99,37 @@ export function createChatStore() {
     messageVersion: {},
   })
 
+  /** Non-reactive index of messages by spanId for tool_use ↔ tool_result lookup. */
+  const spanIndex = new Map<string, Map<string, AgentChatMessage>>()
+
+  /**
+   * Index messages by spanId. Only the first message per spanId is stored
+   * (the tool_use opener), so tool_result messages don't overwrite their
+   * corresponding tool_use.
+   */
+  function indexBySpanId(agentId: string, ...messages: AgentChatMessage[]) {
+    let agentSpans = spanIndex.get(agentId)
+    for (const msg of messages) {
+      if (msg.spanId) {
+        if (!agentSpans) {
+          agentSpans = new Map()
+          spanIndex.set(agentId, agentSpans)
+        }
+        if (!agentSpans.has(msg.spanId))
+          agentSpans.set(msg.spanId, msg)
+      }
+    }
+  }
+
   /** Shared implementation for setMessages / loadInitialMessages. */
   function applyMessages(agentId: string, messages: AgentChatMessage[], hasMore: boolean) {
+    // Clear stale span index entries before re-indexing to prevent memory leaks
+    // when the message list is fully replaced (e.g. on reconnect or agent switch).
+    spanIndex.delete(agentId)
+    // Index spans before setting messages so that reactive computations
+    // triggered by the message list update can already look up tool_use
+    // messages by spanId.
+    indexBySpanId(agentId, ...messages)
     setState('messagesByAgent', agentId, messages)
     setState('hasMoreOlder', agentId, hasMore)
     setState('initialLoadComplete', agentId, true)
@@ -120,13 +152,17 @@ export function createChatStore() {
       return state.messagesByAgent[agentId] ?? []
     },
 
+    getMessageBySpanId(agentId: string, spanId: string): AgentChatMessage | undefined {
+      return spanIndex.get(agentId)?.get(spanId)
+    },
+
     setMessages(agentId: string, messages: AgentChatMessage[], hasMore = false) {
       applyMessages(agentId, messages, hasMore)
     },
 
     addMessage(agentId: string, message: AgentChatMessage) {
-      // Thread merge: check if a message with this ID already exists.
-      // Search from end — thread merges almost always affect recent messages.
+      // Notification thread update: LEAPMUX notification messages can be updated
+      // in-place when consolidating. Check if a message with this ID exists.
       const messages = state.messagesByAgent[agentId]
       const existingIdx = messages?.findLastIndex(m => m.id === message.id) ?? -1
 
@@ -172,6 +208,9 @@ export function createChatStore() {
         })
       }
 
+      // Index by spanId for tool_use ↔ tool_result lookup.
+      indexBySpanId(agentId, message)
+
       // Track delivery errors
       if (message.deliveryError) {
         setState('messageErrors', message.id, message.deliveryError)
@@ -184,7 +223,7 @@ export function createChatStore() {
         setState('todosByAgent', agentId, todos)
       }
 
-      // Bump version so auto-scroll effects can detect thread merges
+      // Bump version so auto-scroll effects can detect notification updates
       // (which don't change messages.length).
       setState('messageVersion', agentId, (prev = 0) => prev + 1)
     },
@@ -307,6 +346,7 @@ export function createChatStore() {
             const newMsgs = resp.messages.filter(m => !existingSeqs.has(m.seq))
             return [...newMsgs, ...prev]
           })
+          indexBySpanId(agentId, ...resp.messages)
           // Extract todos from older messages if none found yet.
           if (!state.todosByAgent[agentId] || state.todosByAgent[agentId].length === 0) {
             const todos = findLatestTodos(resp.messages)

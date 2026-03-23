@@ -15,6 +15,7 @@ import {
   resultDivider,
 } from './messageStyles.css'
 import { isObject } from './messageUtils'
+import { formatDuration } from './rendererUtils'
 
 // ---------------------------------------------------------------------------
 // Display helpers for settings change notifications
@@ -64,6 +65,19 @@ export const interruptedRenderer: MessageContentRenderer = {
     if (!isObject(parsed) || parsed.type !== 'interrupted')
       return null
     return <div class={controlResponseMessage}>Interrupted</div>
+  },
+}
+
+export const compactingRenderer: MessageContentRenderer = {
+  render(parsed, _role, _context) {
+    if (!isObject(parsed) || parsed.type !== 'compacting')
+      return null
+    return (
+      <div class={resultDivider}>
+        <Icon icon={LoaderCircle} size="sm" class={spinner} />
+        {' Compacting context...'}
+      </div>
+    )
   },
 }
 
@@ -202,32 +216,6 @@ export const systemInitRenderer: MessageContentRenderer = {
   },
 }
 
-export function formatDuration(ms: number): string {
-  if (ms < 1000)
-    return `${Math.round(ms)}ms`
-
-  const totalSeconds = ms / 1000
-  if (totalSeconds < 10)
-    return `${totalSeconds.toFixed(1)}s`
-
-  const totalSecondsRounded = Math.round(totalSeconds)
-  const days = Math.floor(totalSecondsRounded / 86400)
-  const hours = Math.floor((totalSecondsRounded % 86400) / 3600)
-  const minutes = Math.floor((totalSecondsRounded % 3600) / 60)
-  const seconds = totalSecondsRounded % 60
-
-  const parts: string[] = []
-  if (days > 0)
-    parts.push(`${days}d`)
-  if (hours > 0)
-    parts.push(`${hours}h`)
-  if (minutes > 0)
-    parts.push(`${minutes}m`)
-  if (seconds > 0 || parts.length === 0)
-    parts.push(`${seconds}s`)
-  return parts.join(' ')
-}
-
 /** Handles result messages: {"type":"result","duration_ms":865,"num_turns":558,...} */
 export const resultRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
@@ -246,21 +234,13 @@ export const resultRenderer: MessageContentRenderer = {
     const resultText = typeof parsed.result === 'string' ? parsed.result : ''
     const durationStr = formatDuration(durationMs)
 
-    // When stop_reason is absent (agent never produced output), the result text
-    // may be an error or just a repetition of the last assistant message.
-    if (!parsed.stop_reason && resultText) {
-      if (parsed.subtype === 'success') {
-        // For success results, only show known error prefixes (e.g. "Unknown skill:").
-        const knownErrorPrefixes = ['Unknown skill:']
-        const isKnownError = knownErrorPrefixes.some(p => resultText.startsWith(p))
-        if (isKnownError) {
-          return <div class={resultDivider} style={{ color: 'var(--danger)' }}>{resultText}</div>
-        }
-        // Fall through to normal display logic below
-      }
-      else {
-        return <div class={resultDivider} style={{ color: 'var(--danger)' }}>{resultText}</div>
-      }
+    // When stop_reason is absent (agent never produced output), show the result
+    // text as an error — e.g. "Unknown skill: update-pr".
+    // Local commands that produce real output (e.g. /context) complete with
+    // num_turns > 1 despite having no stop_reason; skip the error path for those.
+    const numTurns = typeof parsed.num_turns === 'number' ? parsed.num_turns : 0
+    if (!parsed.stop_reason && numTurns <= 1 && resultText) {
+      return <div class={resultDivider} style={{ color: 'var(--danger)' }}>{resultText}</div>
     }
 
     // For non-success subtypes, show result text with duration.
@@ -387,8 +367,11 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
       if (title)
         settingsParts.push(`Renamed to ${title}`)
     }
+    else if (t === 'compacting' || (t === 'system' && st === 'status' && m.status === 'compacting')) {
+      compacting = true
+    }
     else if (t === 'system' && st === 'status') {
-      compacting = m.status === 'compacting'
+      compacting = false
     }
     else if (t === 'system' && st === 'compact_boundary') {
       compacting = false

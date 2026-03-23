@@ -108,7 +108,7 @@ describe('formatGlobSummary', () => {
   })
 
   it('includes duration when durationMs is provided', () => {
-    expect(formatGlobSummary(4, 1011)).toBe('Found 4 files \u00B7 Took 1s')
+    expect(formatGlobSummary(4, 1011)).toBe('Found 4 files \u00B7 Took 1.0s')
   })
 
   it('includes "Result truncated" when truncated is true', () => {
@@ -116,15 +116,15 @@ describe('formatGlobSummary', () => {
   })
 
   it('includes both duration and truncated', () => {
-    expect(formatGlobSummary(50, 2500, true)).toBe('Found 50 files \u00B7 Took 3s \u00B7 Result truncated')
+    expect(formatGlobSummary(50, 2500, true)).toBe('Found 50 files \u00B7 Took 2.5s \u00B7 Result truncated')
   })
 
   it('omits truncated when false', () => {
-    expect(formatGlobSummary(4, 1011, false)).toBe('Found 4 files \u00B7 Took 1s')
+    expect(formatGlobSummary(4, 1011, false)).toBe('Found 4 files \u00B7 Took 1.0s')
   })
 
   it('shows duration with "No files found"', () => {
-    expect(formatGlobSummary(0, 500)).toBe('No files found \u00B7 Took 1s')
+    expect(formatGlobSummary(0, 500)).toBe('No files found \u00B7 Took 500ms')
   })
 })
 
@@ -134,41 +134,9 @@ describe('glob tool_use collapsed summary', () => {
     expect(text).toContain('frontend/src/**/*.test.*')
   })
 
-  it('shows "Found N files" summary', () => {
-    const text = renderToolUseText({
-      childGlobNumFiles: 4,
-    })
-    expect(text).toContain('Found 4 files')
-  })
-
-  it('shows "Found N files · Took Xs" with duration', () => {
-    const text = renderToolUseText({
-      childGlobNumFiles: 4,
-      childGlobDurationMs: 1011,
-    })
-    expect(text).toContain('Found 4 files')
-    expect(text).toContain('Took 1s')
-  })
-
-  it('shows "Result truncated" when truncated', () => {
-    const text = renderToolUseText({
-      childGlobNumFiles: 100,
-      childGlobTruncated: true,
-    })
-    expect(text).toContain('Found 100 files')
-    expect(text).toContain('Result truncated')
-  })
-
-  it('shows "No files found" when numFiles is 0', () => {
-    const text = renderToolUseText({
-      childGlobNumFiles: 0,
-      childResultContent: 'No files found',
-    })
-    expect(text).toContain('No files found')
-  })
-
-  it('shows nothing when no result data yet', () => {
+  it('shows only the pattern with no summary (child data fields removed)', () => {
     const text = renderToolUseText()
+    expect(text).toContain('frontend/src/**/*.test.*')
     expect(text).not.toContain('Found')
     expect(text).not.toContain('No files')
   })
@@ -176,7 +144,7 @@ describe('glob tool_use collapsed summary', () => {
 
 describe('glob tool_result expanded view', () => {
   it('shows file list with relativized paths', () => {
-    const container = renderToolResultContainer(
+    const text = renderToolResultText(
       '/home/user/project/src/foo.ts\n/home/user/project/src/bar.ts',
       {
         tool_name: 'Glob',
@@ -187,10 +155,9 @@ describe('glob tool_result expanded view', () => {
       },
       { workingDir: '/home/user/project' },
     )
-    const listItems = container.querySelectorAll('li')
-    expect(listItems.length).toBe(2)
-    expect(listItems[0].textContent).toBe('src/foo.ts')
-    expect(listItems[1].textContent).toBe('src/bar.ts')
+    expect(text).toContain('src/foo.ts')
+    expect(text).toContain('src/bar.ts')
+    expect(text).not.toContain('/home/user/project')
   })
 
   it('shows "No files found" when filenames is empty', () => {
@@ -224,7 +191,7 @@ describe('glob tool_result expanded view', () => {
   })
 
   it('renders single file correctly', () => {
-    const container = renderToolResultContainer(
+    const text = renderToolResultText(
       'src/only-file.ts',
       {
         tool_name: 'Glob',
@@ -233,8 +200,6 @@ describe('glob tool_result expanded view', () => {
         truncated: false,
       },
     )
-    const listItems = container.querySelectorAll('li')
-    expect(listItems.length).toBe(1)
-    expect(listItems[0].textContent).toContain('only-file.ts')
+    expect(text).toContain('only-file.ts')
   })
 })

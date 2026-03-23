@@ -1,3 +1,7 @@
+// Base CSS tokens (--space-*, --radius-*, --font-size-*, --line-height-*, etc.)
+// are provided by @knadh/oat — see node_modules/@knadh/oat/css/01-theme.css
+// for the full list of custom properties and their values.
+
 import { globalFontFace, globalStyle } from '@vanilla-extract/css'
 
 globalFontFace('Hack NF', {

@@ -14,6 +14,7 @@ import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import * as styles from '../ChatView.css'
 import {
   codexAgentMessageRenderer,
+  codexCollabAgentToolCallRenderer,
   codexCommandExecutionRenderer,
   codexFileChangeRenderer,
   codexMcpToolCallRenderer,
@@ -240,11 +241,8 @@ const codexPlugin: ProviderPlugin = {
     if (parent.method === 'thread/started' || parent.method === 'turn/started' || parent.method === 'thread/status/changed')
       return { kind: 'hidden' }
 
-    // Codex wrapper messages represent state updates of the same item
-    // (e.g. inProgress → completed). Use the last message as the effective parent.
-    const effective = (wrapper && wrapper.messages.length > 1)
-      ? wrapper.messages.at(-1) as Record<string, unknown>
-      : parent
+    // Each item is now its own message (no more merging).
+    const effective = parent
 
     // Codex item types from item/completed notifications.
     // The params are stored natively: {item: {type: "agentMessage", ...}, threadId, turnId}
@@ -280,6 +278,10 @@ const codexPlugin: ProviderPlugin = {
       // dynamicToolCall → tool use
       if (itemType === 'dynamicToolCall')
         return { kind: 'tool_use', toolName: (item.tool as string) || 'dynamicTool', toolUse: item, content: [] }
+
+      // collabAgentToolCall → tool use (SpawnAgent)
+      if (itemType === 'collabAgentToolCall')
+        return { kind: 'tool_use', toolName: 'collabAgentToolCall', toolUse: item, content: [] }
 
       // reasoning → thinking (hide if both summary and content are empty)
       if (itemType === 'reasoning') {
@@ -335,6 +337,8 @@ const codexPlugin: ProviderPlugin = {
         return codexCommandExecutionRenderer(cat.toolUse, role, context)
       if (cat.toolName === 'fileChange')
         return codexFileChangeRenderer(cat.toolUse, role, context)
+      if (cat.toolName === 'collabAgentToolCall')
+        return codexCollabAgentToolCallRenderer(cat.toolUse, role, context)
       return codexMcpToolCallRenderer(cat.toolUse, role, context)
     }
     return null

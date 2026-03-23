@@ -17,9 +17,6 @@ beforeAll(() => {
 
 function makeContext(overrides: Partial<RenderContext> = {}): RenderContext {
   return {
-    threadChildCount: 0,
-    threadExpanded: false,
-    onToggleThread: vi.fn(),
     onCopyJson: vi.fn(),
     jsonCopied: false,
     ...overrides,
@@ -72,7 +69,9 @@ describe('toolUseLayout', () => {
           icon={ListTodo}
           toolName="TestTool"
           title="Header"
-          context={makeContext({ threadExpanded: false })}
+          expanded={false}
+          onToggleExpand={vi.fn()}
+          context={makeContext()}
         >
           <div data-testid="body-content">Body content</div>
         </ToolUseLayout>
@@ -90,7 +89,9 @@ describe('toolUseLayout', () => {
           icon={ListTodo}
           toolName="TestTool"
           title="Header"
-          context={makeContext({ threadExpanded: true })}
+          expanded={true}
+          onToggleExpand={vi.fn()}
+          context={makeContext()}
         >
           <div data-testid="body-content">Body content</div>
         </ToolUseLayout>
@@ -109,7 +110,9 @@ describe('toolUseLayout', () => {
           toolName="TestTool"
           title="Header"
           alwaysVisible={true}
-          context={makeContext({ threadExpanded: false })}
+          expanded={false}
+          onToggleExpand={vi.fn()}
+          context={makeContext()}
         >
           <div data-testid="body-content">Always visible body</div>
         </ToolUseLayout>
@@ -145,7 +148,9 @@ describe('toolUseLayout', () => {
           toolName="TestTool"
           title="Header"
           bordered={false}
-          context={makeContext({ threadExpanded: true })}
+          expanded={true}
+          onToggleExpand={vi.fn()}
+          context={makeContext()}
         >
           <div>Body</div>
         </ToolUseLayout>
@@ -154,40 +159,6 @@ describe('toolUseLayout', () => {
 
     const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
     expect(bodyWrapper).toBeNull()
-  })
-
-  it('shows ControlResponseTag when approved', () => {
-    const { container } = render(() => (
-      <PreferencesProvider>
-        <ToolUseLayout
-          icon={ListTodo}
-          toolName="TestTool"
-          title="Header"
-          context={makeContext({
-            childControlResponse: { action: 'approved', comment: '' },
-          })}
-        />
-      </PreferencesProvider>
-    ))
-
-    expect(container.textContent).toContain('Approved')
-  })
-
-  it('shows ControlResponseTag when rejected', () => {
-    const { container } = render(() => (
-      <PreferencesProvider>
-        <ToolUseLayout
-          icon={ListTodo}
-          toolName="TestTool"
-          title="Header"
-          context={makeContext({
-            childControlResponse: { action: 'rejected', comment: 'Needs changes' },
-          })}
-        />
-      </PreferencesProvider>
-    ))
-
-    expect(container.textContent).toContain('Rejected: Needs changes')
   })
 
   it('renders JSX title without toolInputText wrapper', () => {

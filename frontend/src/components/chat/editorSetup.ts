@@ -121,6 +121,8 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
         },
       }))
       ctx.get(listenerCtx).markdownUpdated((_ctx, md) => {
+        if (typeof md !== 'string')
+          return
         opts.setMarkdown(md)
         opts.onContentChange?.(md.trim().length > 0)
         // Debounced draft save

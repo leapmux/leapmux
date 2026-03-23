@@ -6,11 +6,21 @@ import { Tooltip } from '~/components/common/Tooltip'
 
 interface ContextUsageGridProps {
   contextUsage?: ContextUsageInfo
+  modelContextWindow?: number
   size: number
 }
 
 export const DEFAULT_BUFFER_PCT = 16.5
-const DEFAULT_CONTEXT_WINDOW = 200_000
+export const DEFAULT_CONTEXT_WINDOW = 200_000
+
+/** Resolve the effective context window from usage data, model metadata, or the default. */
+export function resolveContextWindow(usage: ContextUsageInfo, modelContextWindow?: number): number {
+  if (usage.contextWindow && usage.contextWindow > 0)
+    return usage.contextWindow
+  if (modelContextWindow && modelContextWindow > 0)
+    return modelContextWindow
+  return DEFAULT_CONTEXT_WINDOW
+}
 
 /** Total context size = cache_creation + cache_read + input tokens. */
 export function contextSize(usage: ContextUsageInfo): number {
@@ -20,16 +30,15 @@ export function contextSize(usage: ContextUsageInfo): number {
 /**
  * Compute context usage percentage from structured token data.
  * Accounts for the autocompact buffer: usable capacity = contextWindow * (1 - buffer%).
- * Falls back to DEFAULT_CONTEXT_WINDOW when contextWindow is not yet known
- * (assistant messages arrive before the result message that carries contextWindow).
+ * Uses the context window from usage data, then modelContextWindow, then DEFAULT_CONTEXT_WINDOW.
  */
-export function computePercentage(usage: ContextUsageInfo | undefined): number | null {
+export function computePercentage(usage: ContextUsageInfo | undefined, modelContextWindow?: number): number | null {
   if (!usage)
     return null
   const total = contextSize(usage)
   if (total <= 0)
     return null
-  const contextWindow = (usage.contextWindow && usage.contextWindow > 0) ? usage.contextWindow : DEFAULT_CONTEXT_WINDOW
+  const contextWindow = resolveContextWindow(usage, modelContextWindow)
   const usable = contextWindow * (1 - DEFAULT_BUFFER_PCT / 100)
   if (usable <= 0)
     return null
@@ -63,7 +72,7 @@ const GAP = 1
 const STEP = SQUARE_SIZE + GAP // 4
 
 export const ContextUsageGrid: Component<ContextUsageGridProps> = (props) => {
-  const percentage = createMemo(() => computePercentage(props.contextUsage))
+  const percentage = createMemo(() => computePercentage(props.contextUsage, props.modelContextWindow))
 
   const filled = createMemo(() => {
     const pct = percentage()

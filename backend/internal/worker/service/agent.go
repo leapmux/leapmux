@@ -170,6 +170,9 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// Stop the agent process.
 		svc.Agents.StopAgent(agentID)
 
+		// Clean up per-agent output handler state.
+		svc.Output.CleanupAgent(agentID)
+
 		// Mark the agent as closed in the database.
 		if err := svc.Queries.CloseAgent(bgCtx(), agentID); err != nil {
 			slog.Error("failed to close agent in DB", "agent_id", agentID, "error", err)
@@ -221,13 +224,10 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		messageID := id.Generate()
 		now := time.Now().UTC()
 
-		// Wrap user content in the standard threadWrapper envelope so the
-		// frontend can parse it consistently. The inner format is a plain
-		// object with a "content" string field (no "type"), which the
-		// frontend classifies as user_content and renders as markdown.
+		// Store user content as a plain JSON object with a "content" field,
+		// which the frontend classifies as user_content and renders as markdown.
 		innerJSON, _ := json.Marshal(map[string]string{"content": content})
-		wrapped := wrapContent(innerJSON)
-		compressed, compressionType := msgcodec.Compress(wrapped)
+		compressed, compressionType := msgcodec.Compress(innerJSON)
 
 		// Persist the user message.
 		seq, err := svc.Queries.CreateMessage(bgCtx(), db.CreateMessageParams{
@@ -236,7 +236,11 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
 			Content:            compressed,
 			ContentCompression: compressionType,
-			ThreadID:           "",
+			Depth:              0,
+			SpanID:             "",
+			ParentSpanID:       "",
+			SpanLines:          "[]",
+			SpanColor:          0,
 			AgentProvider:      dbAgent.AgentProvider,
 			CreatedAt:          now,
 		})
@@ -939,6 +943,9 @@ func (svc *Context) handleClearContext(agentID string) {
 	// StartAgent below doesn't fail with "agent already running".
 	svc.Agents.StopAndWaitAgent(agentID)
 
+	// Clear span tracking state from the previous session.
+	svc.Output.ResetSpanTracker(agentID)
+
 	// Restart the agent with a fresh context.
 	// Don't clear agentSessionId before starting — the frontend uses it for
 	// isWatchable. On success, handleSystemInit will overwrite it with the
@@ -1185,8 +1192,7 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
 	messageID := id.Generate()
 	now := time.Now().UTC()
 	innerJSON, _ := json.Marshal(map[string]string{"content": content})
-	wrapped := wrapContent(innerJSON)
-	compressed, compressionType := msgcodec.Compress(wrapped)
+	compressed, compressionType := msgcodec.Compress(innerJSON)
 
 	seq, err := svc.Queries.CreateMessage(bgCtx(), db.CreateMessageParams{
 		ID:                 messageID,
@@ -1194,7 +1200,11 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
 		Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
 		Content:            compressed,
 		ContentCompression: compressionType,
-		ThreadID:           "",
+		Depth:              0,
+		SpanID:             "",
+		ParentSpanID:       "",
+		SpanLines:          "[]",
+		SpanColor:          0,
 		AgentProvider:      dbAgent.AgentProvider,
 		CreatedAt:          now,
 	})
@@ -1368,24 +1378,22 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 	}
 
 	// Persist a display message for the control response.
-	action := "approved"
-	if crPayload.Response.Response.Behavior == agent.ControlBehaviorDeny {
-		action = "rejected"
-	}
-	displayContent := map[string]interface{}{
-		"isSynthetic": true,
-		"controlResponse": map[string]string{
-			"action":  action,
-			"comment": crPayload.Response.Response.Message,
-		},
-	}
-	displayJSON, _ := json.Marshal(displayContent)
-	merged := false
-	if toolUseID != "" {
-		merged = svc.Output.mergeIntoThread(agentID, dbAgent.AgentProvider, toolUseID, displayJSON)
-	}
-	if !merged {
-		if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, displayJSON, ""); err != nil {
+	// Skip for AskUserQuestion — the tool_result already shows the user's answers.
+	// Skip for ExitPlanMode — the tool_result already shows approval/feedback.
+	if toolName != "AskUserQuestion" && toolName != "ExitPlanMode" {
+		action := "approved"
+		if crPayload.Response.Response.Behavior == agent.ControlBehaviorDeny {
+			action = "rejected"
+		}
+		displayContent := map[string]interface{}{
+			"isSynthetic": true,
+			"controlResponse": map[string]string{
+				"action":  action,
+				"comment": crPayload.Response.Response.Message,
+			},
+		}
+		displayJSON, _ := json.Marshal(displayContent)
+		if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, displayJSON, agent.SpanInfo{}, nil); err != nil {
 			slog.Warn("failed to persist control response notification", "agent_id", agentID, "error", err)
 		}
 	}
@@ -1465,6 +1473,9 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 	// Stop the running agent and wait for it to fully exit so that
 	// StartAgent below doesn't fail with "agent already running".
 	svc.Agents.StopAndWaitAgent(agentID)
+
+	// Clear span tracking state from the previous session.
+	svc.Output.ResetSpanTracker(agentID)
 
 	// Broadcast context_cleared and plan_execution as separate notifications.
 	svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
@@ -1580,7 +1591,7 @@ func broadcastWatchEvent(sender *channel.Sender, resp *leapmuxv1.WatchEventsResp
 
 // messageToProto converts a DB Message to a proto AgentChatMessage.
 func messageToProto(m *db.Message) *leapmuxv1.AgentChatMessage {
-	msg := &leapmuxv1.AgentChatMessage{
+	return &leapmuxv1.AgentChatMessage{
 		Id:                 m.ID,
 		Role:               leapmuxv1.MessageRole(m.Role),
 		Content:            m.Content,
@@ -1589,11 +1600,11 @@ func messageToProto(m *db.Message) *leapmuxv1.AgentChatMessage {
 		ContentCompression: leapmuxv1.ContentCompression(m.ContentCompression),
 		AgentProvider:      m.AgentProvider,
 		CreatedAt:          timefmt.Format(m.CreatedAt),
+		Depth:              int32(m.Depth),
+		SpanId:             m.SpanID,
+		ParentSpanId:       m.ParentSpanID,
+		SpanType:           m.SpanType,
+		SpanColor:          int32(m.SpanColor),
+		SpanLines:          m.SpanLines,
 	}
-
-	if m.UpdatedAt.Valid {
-		msg.UpdatedAt = timefmt.Format(m.UpdatedAt.Time)
-	}
-
-	return msg
 }

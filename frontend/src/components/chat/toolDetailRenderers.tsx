@@ -4,7 +4,6 @@ import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, TaskStopInp
 import { diffLines } from 'diff'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { relativizePath } from './messageUtils'
-import { formatTaskStatus } from './rendererUtils'
 import {
   toolInputCode,
   toolInputPath,
@@ -112,13 +111,16 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
       return query ? <span class={toolInputText}>{query}</span> : null
     }
     case 'TaskOutput': {
-      const task = context?.childTask
-      const description = task?.description
-      if (description && task?.status === 'completed')
-        return <span class={toolInputText}>{description}</span>
-      const status = formatTaskStatus(task?.status)
-      const title = `${status}${description ? ` - ${description}` : ''}`
-      return <span class={toolInputText}>{title}</span>
+      const { task_id, block, timeout } = input as { task_id?: string, block?: boolean, timeout?: number }
+      const parts: string[] = []
+      if (task_id)
+        parts.push(`task ID: ${task_id}`)
+      if (typeof timeout === 'number')
+        parts.push(`timeout: ${timeout >= 1000 ? `${timeout / 1000}s` : `${timeout}ms`}`)
+      if (block !== undefined)
+        parts.push(`block: ${block}`)
+      const meta = parts.length > 0 ? ` (${parts.join(' \u00B7 ')})` : ''
+      return <span class={toolInputText}>{`Waiting for output${meta}`}</span>
     }
     case 'ToolSearch': {
       const { query } = input as ToolSearchInput

@@ -1,19 +1,15 @@
 /* eslint-disable solid/components-return-once -- render methods are not Solid components */
-/* eslint-disable solid/no-innerhtml -- HTML is produced from user/assistant text via remark, not arbitrary user input */
 import type { JSX } from 'solid-js'
 import type { MessageContentRenderer, RenderContext } from './messageRenderers'
 import type { TodoItem } from '~/stores/chat.store'
+import Check from 'lucide-solid/icons/check'
 import ListTodo from 'lucide-solid/icons/list-todo'
-import Terminal from 'lucide-solid/icons/terminal'
 import Vote from 'lucide-solid/icons/vote'
 import { For, Show } from 'solid-js'
 import { TodoList } from '~/components/todo/TodoList'
-import { renderMarkdown } from '~/lib/renderMarkdown'
-import { markdownContent } from './markdownContent.css'
 import { getAssistantContent, isObject } from './messageUtils'
 import { ToolUseLayout } from './toolRenderers'
 import {
-  answerText,
   toolInputSummary,
 } from './toolStyles.css'
 
@@ -45,7 +41,7 @@ export function renderTodoWrite(toolUse: Record<string, unknown>, context?: Rend
   )
 }
 
-/** Render AskUserQuestion tool_use with questions and inline answers. Returns null if input is invalid. */
+/** Render AskUserQuestion tool_use with questions and options. Returns null if input is invalid. */
 export function renderAskUserQuestion(toolUse: Record<string, unknown>, context?: RenderContext): JSX.Element | null {
   const input = toolUse.input
   if (!isObject(input))
@@ -55,39 +51,34 @@ export function renderAskUserQuestion(toolUse: Record<string, unknown>, context?
   if (!Array.isArray(questions) || questions.length === 0)
     return null
 
-  const answers = context?.childAnswers
-  const hasAnswers = !!answers && Object.keys(answers).length > 0
-  const hasChild = (context?.threadChildCount ?? 0) > 0
-  const statusText = hasAnswers
-    ? 'Submitted answers'
-    : (hasChild && context?.childResultContent)
-        ? context.childResultContent
-        : 'Waiting for answers'
+  const title = questions.length === 1
+    ? String(questions[0].question || questions[0].header || 'Question')
+    : `${questions.length} questions`
 
   return (
     <ToolUseLayout
       icon={Vote}
       toolName="AskUserQuestion"
-      title={statusText}
+      title={title}
       alwaysVisible={true}
       context={context}
     >
-      <ul style={{ 'padding-left': '20px', 'margin': '4px 0 0' }}>
-        <For each={questions}>
-          {(q) => {
-            const header = String(q.header || '')
-            const answer = answers?.[header]
-            return (
-              <li>
-                <strong>{`${header}: `}</strong>
-                <Show when={answer} fallback={<em>Not answered</em>}>
-                  <div class={`${answerText} ${markdownContent}`} innerHTML={renderMarkdown(answer!)} />
-                </Show>
-              </li>
-            )
-          }}
-        </For>
-      </ul>
+      <For each={questions}>
+        {(q) => {
+          const header = String(q.header || '')
+          const options = Array.isArray(q.options) ? q.options as Array<Record<string, unknown>> : []
+          return (
+            <div style={{ 'margin-top': '4px' }}>
+              <Show when={questions.length > 1}>
+                <div><strong>{header}</strong></div>
+              </Show>
+              <For each={options}>
+                {opt => <div class={toolInputSummary}>{String(opt.label || '')}</div>}
+              </For>
+            </div>
+          )
+        }}
+      </For>
     </ToolUseLayout>
   )
 }
@@ -116,21 +107,24 @@ export const askUserQuestionRenderer: MessageContentRenderer = {
   },
 }
 
-/** Renders task_notification system messages as a tool-use-style block with Terminal icon. */
+/** Renders task_notification system messages as a tool-use-style block with Check icon. */
 export const taskNotificationRenderer: MessageContentRenderer = {
   render(parsed, _role, context) {
     if (!isObject(parsed) || parsed.type !== 'system' || parsed.subtype !== 'task_notification')
       return null
 
+    const status = typeof parsed.status === 'string' ? parsed.status : 'completed'
+    const statusLabel = status.charAt(0).toUpperCase() + status.slice(1)
     const summaryText = typeof parsed.summary === 'string' ? parsed.summary : 'Task notification'
+    const title = `${statusLabel}: ${summaryText}`
     const outputFile = typeof parsed.output_file === 'string' ? parsed.output_file : null
     const summary = outputFile ? <div class={toolInputSummary}>{outputFile}</div> : undefined
 
     return (
       <ToolUseLayout
-        icon={Terminal}
+        icon={Check}
         toolName="Task Notification"
-        title={summaryText}
+        title={title}
         summary={summary}
         context={context}
       />

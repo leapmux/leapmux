@@ -1,5 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { todoList } from '~/components/todo/TodoList.css'
+import { LINE_THICKNESS, TOOL_BODY_INDENT } from './SpanLines.css'
 
 // Tool use/result messages - document-style, no bubble
 export const toolMessage = style({
@@ -51,7 +52,6 @@ export const toolResultContentAnsi = style({
   fontFamily: 'var(--font-mono)',
   fontVariantLigatures: 'none',
   fontSize: 'var(--text-8)',
-  lineHeight: 1.5,
 })
 
 // Override Shiki's default <pre> styling inside ANSI tool result
@@ -87,6 +87,20 @@ globalStyle(`html[data-theme="dark"] ${toolResultContentAnsi} pre.shiki span`, {
   backgroundColor: 'var(--shiki-dark-bg, transparent)',
 })
 
+// Collapsed tool results: max 3rem height with fade-out gradient
+export const toolResultCollapsed = style({
+  maxHeight: '3.6rem',
+  overflow: 'hidden',
+  WebkitMaskImage: 'linear-gradient(to bottom, black calc(100% - 1.5em), transparent)',
+  maskImage: 'linear-gradient(to bottom, black calc(100% - 1.5em), transparent)',
+})
+
+// Cap heading font sizes inside collapsed markdown previews
+globalStyle(`${toolResultCollapsed} h1, ${toolResultCollapsed} h2, ${toolResultCollapsed} h3, ${toolResultCollapsed} h4, ${toolResultCollapsed} h5, ${toolResultCollapsed} h6`, {
+  fontSize: 'inherit',
+  margin: 0,
+})
+
 // Prompt label shown above WebFetch tool result
 export const toolResultPrompt = style({
   color: 'var(--muted-foreground)',
@@ -103,15 +117,40 @@ const toolInputSummaryBase = {
 
 export const toolInputSummary = style({
   ...toolInputSummaryBase,
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-})
-
-export const toolInputSummaryExpanded = style({
-  ...toolInputSummaryBase,
   whiteSpace: 'pre-wrap',
   wordBreak: 'break-all',
+})
+
+// Override Shiki's default <pre> styling inside tool input summary (for Bash highlighting)
+globalStyle(`${toolInputSummary} pre.shiki`, {
+  margin: 0,
+  padding: 0,
+  border: 'none',
+  background: 'none',
+  backgroundColor: 'transparent',
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-all',
+  fontSize: 'inherit',
+  fontFamily: 'inherit',
+  lineHeight: 'inherit',
+})
+
+globalStyle(`${toolInputSummary} pre.shiki code`, {
+  padding: 0,
+  background: 'none',
+  backgroundColor: 'transparent',
+  fontSize: 'inherit',
+  fontFamily: 'inherit',
+})
+
+globalStyle(`${toolInputSummary} pre.shiki span`, {
+  color: 'var(--shiki-light)',
+  backgroundColor: 'var(--shiki-light-bg, transparent)',
+})
+
+globalStyle(`html[data-theme="dark"] ${toolInputSummary} pre.shiki span`, {
+  color: 'var(--shiki-dark)',
+  backgroundColor: 'var(--shiki-dark-bg, transparent)',
 })
 
 // Tool input detail text (natural language: descriptions, URLs, queries)
@@ -174,11 +213,12 @@ export const controlResponseTag = style({
 })
 
 // Body content area for tool_use renderers (expand-gated body below header)
+// Uses --span-line-color when set (via spanLineColors class), falling back to --border.
 export const toolBodyContent = style({
-  marginLeft: '6px',
+  marginLeft: `${TOOL_BODY_INDENT}px`,
   paddingLeft: 'var(--space-3)',
   paddingRight: 'var(--space-3)',
-  borderLeft: '2px solid var(--border)',
+  borderLeft: `${LINE_THICKNESS}px solid var(--span-line-color, var(--border))`,
 })
 
 // TodoList inside tool body: remove horizontal padding (toolBodyContent already provides it)
@@ -194,8 +234,32 @@ export const toolFileList = style({
   fontSize: 'var(--text-8)',
 })
 
-// AskUserQuestion: answer text
-export const answerText = style({
-  color: 'var(--foreground)',
-  marginTop: '2px',
+// WebSearch result link list
+export const webSearchLinkList = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '2px',
+})
+
+export const webSearchLink = style({
+  display: 'flex',
+  alignItems: 'baseline',
+  gap: 'var(--space-2)',
+  fontSize: 'var(--text-8)',
+  lineHeight: 1.5,
+  overflow: 'hidden',
+})
+
+export const webSearchLinkTitle = style({
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  minWidth: 0,
+})
+
+export const webSearchLinkDomain = style({
+  color: 'var(--muted-foreground)',
+  fontSize: 'var(--text-9)',
+  flexShrink: 0,
+  whiteSpace: 'nowrap',
 })

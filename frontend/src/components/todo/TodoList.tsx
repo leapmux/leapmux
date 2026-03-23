@@ -32,7 +32,7 @@ export const TodoList: Component<TodoListProps> = (props) => {
               </Switch>
             </div>
             <span class={styles.todoText}>
-              {todo.status === 'in_progress' ? todo.activeForm : todo.content}
+              {todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content}
             </span>
           </div>
         )}

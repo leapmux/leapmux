@@ -34,7 +34,7 @@ export const GenericToolContent: Component<{ request: ControlRequest }> = (props
 
 export const GenericToolActions: Component<ActionsProps> = (props) => {
   const handleAllow = () => {
-    sendResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId))
+    sendResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId, getToolInput(props.request.payload)))
   }
 
   const handleDeny = () => {
@@ -43,7 +43,7 @@ export const GenericToolActions: Component<ActionsProps> = (props) => {
 
   const handleBypassPermissions = () => {
     // Allow the current request first, then switch to bypass mode.
-    sendResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId))
+    sendResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId, getToolInput(props.request.payload)))
     if (props.bypassPermissionMode)
       props.onPermissionModeChange?.(props.bypassPermissionMode)
   }
