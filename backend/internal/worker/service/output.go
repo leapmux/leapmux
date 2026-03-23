@@ -53,6 +53,10 @@ type SpanLine struct {
 	PassthroughColor int          `json:"passthrough_color,omitempty"`
 }
 
+// spanPaletteSize is the number of colors in the frontend span palette.
+// Color indices are 1-based and wrap around within [1, spanPaletteSize].
+const spanPaletteSize = 8
+
 // SpanTracker manages hierarchical span state for an agent's message threading.
 type SpanTracker struct {
 	mu        sync.Mutex
@@ -74,20 +78,28 @@ func (t *SpanTracker) OpenSpan(spanID, parentSpanID string) {
 		}
 	}
 
-	// Find first free column (null slot).
+	// Find first free column to the right of the parent's column.
+	// This ensures child spans always appear visually nested under their parent.
+	parentCol := -1
+	for _, s := range t.spans {
+		if s.SpanID == parentSpanID {
+			parentCol = s.Column
+			break
+		}
+	}
 	column := -1
 	used := make(map[int]bool, len(t.spans))
 	for _, s := range t.spans {
 		used[s.Column] = true
 	}
-	for i := 0; ; i++ {
+	for i := parentCol + 1; ; i++ {
 		if !used[i] {
 			column = i
 			break
 		}
 	}
 
-	t.nextColor++
+	t.nextColor = t.nextColor%spanPaletteSize + 1
 	t.spans = append(t.spans, ActiveSpan{
 		SpanID:     spanID,
 		Depth:      depth,
@@ -136,7 +148,7 @@ func (t *SpanTracker) GetSpanType(spanID string) string {
 func (t *SpanTracker) PeekNextColor() int32 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return int32(t.nextColor + 1)
+	return int32(t.nextColor%spanPaletteSize + 1)
 }
 
 // Snapshot returns the depth and span lines for a given parentSpanID in a single
@@ -146,7 +158,7 @@ func (t *SpanTracker) PeekNextColor() int32 {
 // This avoids the TOCTOU risk of calling DepthFor and SpanLines separately,
 // and reduces mutex acquisitions.
 func (t *SpanTracker) Snapshot(parentSpanID, connectorSpanID string, closing bool) (depth int32, spanLines string, connectorColorOut int32) {
-	connectorColorOut = -1 // no connector found
+	connectorColorOut = 0 // no connector found
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -556,7 +568,7 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 	// Resolve span color: if the span is already active (e.g. tool_result
 	// inside an open span), use the connector color from the snapshot.
 	spanColor := span.SpanColor
-	if span.SpanID != "" && spanColor < 0 && connectorColor >= 0 {
+	if span.SpanID != "" && spanColor == 0 && connectorColor > 0 {
 		spanColor = connectorColor
 	}
 
@@ -693,7 +705,7 @@ func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvid
 		SpanID:             "",
 		ParentSpanID:       "",
 		SpanLines:          "[]",
-		SpanColor:          -1,
+		SpanColor:          0,
 		AgentProvider:      agentProvider,
 		CreatedAt:          now,
 	})

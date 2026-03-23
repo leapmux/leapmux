@@ -248,7 +248,7 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 
 	// Pre-peek the span color for tool_use messages (assistant with a spanID)
 	// so it is available at persist time, before the span is actually opened.
-	var spanColor int32 = -1
+	var spanColor int32
 	if msgType == "assistant" && spanID != "" {
 		spanColor = a.sink.PeekNextSpanColor()
 	}

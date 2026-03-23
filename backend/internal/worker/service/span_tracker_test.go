@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -136,6 +137,27 @@ func TestSpanTracker_PeekNextColor(t *testing.T) {
 	assert.Equal(t, int32(3), tracker.PeekNextColor())
 }
 
+func TestSpanTracker_ColorWrapsAroundPalette(t *testing.T) {
+	tracker := &SpanTracker{}
+
+	// Open and close spanPaletteSize spans to exhaust the palette.
+	for i := 0; i < spanPaletteSize; i++ {
+		tracker.OpenSpan(fmt.Sprintf("s%d", i), "")
+		tracker.CloseSpan(fmt.Sprintf("s%d", i))
+	}
+
+	// Next span wraps back to color 1.
+	tracker.OpenSpan("wrap", "")
+	_, lines, _ := tracker.Snapshot("wrap", "", false)
+	var parsed []*SpanLine
+	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
+	require.Len(t, parsed, 1)
+	assert.Equal(t, 1, parsed[0].Color)
+
+	// PeekNextColor also wraps.
+	assert.Equal(t, int32(2), tracker.PeekNextColor())
+}
+
 func TestSpanTracker_RenderingHints(t *testing.T) {
 	tracker := &SpanTracker{}
 
@@ -237,6 +259,48 @@ func TestSpanTracker_SpanLinesNullSlots(t *testing.T) {
 	assert.NotEqual(t, "null", string(parsed[0]))
 	assert.Equal(t, "null", string(parsed[1]))
 	assert.NotEqual(t, "null", string(parsed[2]))
+}
+
+func TestSpanTracker_ChildSpanColumnAfterSiblingClose(t *testing.T) {
+	// Regression: when a sibling span closes and frees a column to the LEFT
+	// of a parent span, a new child of that parent must still be placed to
+	// the RIGHT of its parent — not in the freed left-side slot.
+	//
+	// Scenario: main context spawns A, B, C, D (columns 0-3).
+	// C closes (frees col 2). D opens tool D-1 (child of D at col 3).
+	// D-1 must get col 4 (or any col > 3), NOT col 2.
+	tracker := &SpanTracker{}
+
+	tracker.OpenSpan("span-A", "")  // col 0
+	tracker.OpenSpan("span-B", "")  // col 1
+	tracker.OpenSpan("span-C", "")  // col 2
+	tracker.OpenSpan("span-D", "")  // col 3
+	tracker.CloseSpan("span-C")     // frees col 2
+
+	// D-1 is a tool_use inside D → child of span-D.
+	tracker.OpenSpan("span-D1", "span-D") // must be col 4, not col 2
+
+	_, lines, _ := tracker.Snapshot("span-D", "", false)
+	var parsed []*SpanLine
+	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
+
+	// Expect 5 columns: A@0, B@1, null@2, D@3, D-1@4
+	require.Len(t, parsed, 5)
+	assert.Equal(t, "span-A", parsed[0].SpanID)
+	assert.Equal(t, "span-B", parsed[1].SpanID)
+	assert.Nil(t, parsed[2]) // freed slot from span-C
+	assert.Equal(t, "span-D", parsed[3].SpanID)
+	assert.Equal(t, "span-D1", parsed[4].SpanID)
+
+	// Now close D-1 and verify the connector_end is at col 4 (to the right of D).
+	_, lines, _ = tracker.Snapshot("span-D", "span-D1", true)
+	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
+	require.Len(t, parsed, 5)
+	assert.Equal(t, SpanLineActive, parsed[0].Type)
+	assert.Equal(t, SpanLineActive, parsed[1].Type)
+	assert.Nil(t, parsed[2])
+	assert.Equal(t, SpanLineActive, parsed[3].Type)
+	assert.Equal(t, SpanLineConnectorEnd, parsed[4].Type)
 }
 
 func TestSpanTracker_SpanType(t *testing.T) {

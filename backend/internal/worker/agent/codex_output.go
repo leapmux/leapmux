@@ -68,7 +68,7 @@ func handleCodexOutput(a *CodexAgent, content []byte) {
 
 	default:
 		// Persist unknown notifications so the frontend can decide how to render them.
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, content, SpanInfo{SpanColor: -1}); err != nil {
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, content, SpanInfo{}); err != nil {
 			slog.Error("codex persist notification", "agent_id", a.agentID, "method", envelope.Method, "error", err)
 		}
 	}
@@ -165,7 +165,7 @@ func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
 		// Persist first at parent depth, then open spans for
 		// SpawnAgent so subagent messages are indented.
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: -1,
+			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist collabAgentToolCall/started", "agent_id", a.agentID, "error", err)
 		}
@@ -198,7 +198,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 			a.mu.Unlock()
 		}
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: -1,
+			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist agentMessage", "agent_id", a.agentID, "error", err)
 		}
@@ -220,7 +220,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 			}
 		}
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: -1,
+			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist plan", "agent_id", a.agentID, "error", err)
 		}
@@ -230,7 +230,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		a.mu.Unlock()
 		// Persist inside the span (at child depth), then close it.
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: -1, Closing: true,
+			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, Closing: true,
 		}); err != nil {
 			slog.Error("codex persist item/completed", "agent_id", a.agentID, "type", itemType, "error", err)
 		}
@@ -240,19 +240,19 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		// is persisted at parent depth (outside the subagent scope).
 		a.handleCollabAgentSpan(item, parentSpanID, true)
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: -1,
+			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist collabAgentToolCall/completed", "agent_id", a.agentID, "error", err)
 		}
 	case "reasoning":
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: -1,
+			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist reasoning", "agent_id", a.agentID, "error", err)
 		}
 	default:
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: -1,
+			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist unknown item", "agent_id", a.agentID, "type", itemType, "error", err)
 		}
@@ -295,7 +295,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	}
 
 	// Persist as a result divider.
-	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT, params, SpanInfo{SpanColor: -1}); err != nil {
+	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT, params, SpanInfo{}); err != nil {
 		slog.Error("codex persist turn/completed", "agent_id", a.agentID, "error", err)
 	}
 
