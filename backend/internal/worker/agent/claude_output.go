@@ -112,8 +112,16 @@ type messageEnvelope struct {
 	ToolUseID       string `json:"tool_use_id"`
 	Message         struct {
 		RawContent json.RawMessage `json:"content"`
+		Usage      *struct {
+			InputTokens              int64 `json:"input_tokens"`
+			OutputTokens             int64 `json:"output_tokens"`
+			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+		} `json:"usage"`
 	} `json:"message"`
 	ToolUseResult json.RawMessage `json:"tool_use_result"`
+	CostUSD       *float64                       `json:"total_cost_usd"`
+	ModelUsage    map[string]json.RawMessage      `json:"modelUsage"`
 
 	// contentBlocks is lazily populated from RawContent.
 	contentBlocks []contentBlock
@@ -158,8 +166,6 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(env *messageEnvelope) {
 				a.sink.StorePlanModeToolUse(block.ID, PermissionModeDefault)
 			}
 
-			// Open a span for every tool_use so the tool_result
-			// is visually grouped under its tool_use.
 			a.sink.OpenSpan(block.ID, parentSpanID)
 		}
 
@@ -253,7 +259,7 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 
 	// Extract agent context metadata from assistant and result messages.
 	if msgType == "assistant" || msgType == "result" {
-		a.extractAndBroadcastUsage(content, msgType)
+		a.extractAndBroadcastUsage(&env, msgType)
 	}
 
 	// Determine parent span ID for hierarchy tracking.
@@ -317,7 +323,6 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		slog.Error("persist agent message", "agent_id", a.agentID, "error", err)
 	}
 
-	// Record span type for tool_use so the corresponding tool_result can look it up.
 	if spanType != "" {
 		a.sink.SetSpanType(spanID, spanType)
 	}
@@ -330,9 +335,8 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		a.processAssistantBlocks(&env)
 	}
 
-	// Close spans after persisting if this is a user message (tool_result).
-	// A single user message may contain multiple tool_result blocks when
-	// tools were called in parallel, so close all of them.
+	// A single user message may contain multiple tool_result blocks
+	// (parallel tool calls), so close all of them.
 	if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
 		for _, block := range env.ContentBlocks() {
 			if block.Type == "tool_result" && block.ToolUseID != "" {
@@ -446,59 +450,34 @@ func (a *ClaudeCodeAgent) claudeCodeHandleRateLimitEvent(content []byte) {
 }
 
 // extractAndBroadcastUsage extracts token usage from assistant/result messages.
-func (a *ClaudeCodeAgent) extractAndBroadcastUsage(content []byte, msgType string) {
-	var infoFields struct {
-		CostUSD *float64 `json:"total_cost_usd"`
-	}
-	if err := json.Unmarshal(content, &infoFields); err != nil {
-		return
-	}
-
+func (a *ClaudeCodeAgent) extractAndBroadcastUsage(env *messageEnvelope, msgType string) {
 	info := map[string]interface{}{}
-	if infoFields.CostUSD != nil {
-		info["total_cost_usd"] = *infoFields.CostUSD
+	if env.CostUSD != nil {
+		info["total_cost_usd"] = *env.CostUSD
 	}
 
 	snapshot := a.getOrCreateUsageSnapshot()
 
-	if msgType == "assistant" {
-		var assistantMsg struct {
-			Message *struct {
-				Usage *struct {
-					InputTokens              int64 `json:"input_tokens"`
-					OutputTokens             int64 `json:"output_tokens"`
-					CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
-					CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
-				} `json:"usage"`
-			} `json:"message"`
-		}
-		if err := json.Unmarshal(content, &assistantMsg); err == nil &&
-			assistantMsg.Message != nil && assistantMsg.Message.Usage != nil {
-			u := assistantMsg.Message.Usage
-			snapshot.mu.Lock()
-			snapshot.InputTokens = u.InputTokens
-			snapshot.OutputTokens = u.OutputTokens
-			snapshot.CacheCreationInputTokens = u.CacheCreationInputTokens
-			snapshot.CacheReadInputTokens = u.CacheReadInputTokens
-			snapshot.mu.Unlock()
-		}
+	if msgType == "assistant" && env.Message.Usage != nil {
+		u := env.Message.Usage
+		snapshot.mu.Lock()
+		snapshot.InputTokens = u.InputTokens
+		snapshot.OutputTokens = u.OutputTokens
+		snapshot.CacheCreationInputTokens = u.CacheCreationInputTokens
+		snapshot.CacheReadInputTokens = u.CacheReadInputTokens
+		snapshot.mu.Unlock()
 	}
 
-	if msgType == "result" {
-		var resultMsg struct {
-			ModelUsage map[string]json.RawMessage `json:"modelUsage"`
-		}
-		if err := json.Unmarshal(content, &resultMsg); err == nil && resultMsg.ModelUsage != nil {
-			for _, raw := range resultMsg.ModelUsage {
-				var mu struct {
-					ContextWindow int64 `json:"contextWindow"`
-				}
-				if json.Unmarshal(raw, &mu) == nil && mu.ContextWindow > 0 {
-					snapshot.mu.Lock()
-					snapshot.ContextWindow = mu.ContextWindow
-					snapshot.mu.Unlock()
-					break
-				}
+	if msgType == "result" && env.ModelUsage != nil {
+		for _, raw := range env.ModelUsage {
+			var mu struct {
+				ContextWindow int64 `json:"contextWindow"`
+			}
+			if json.Unmarshal(raw, &mu) == nil && mu.ContextWindow > 0 {
+				snapshot.mu.Lock()
+				snapshot.ContextWindow = mu.ContextWindow
+				snapshot.mu.Unlock()
+				break
 			}
 		}
 	}

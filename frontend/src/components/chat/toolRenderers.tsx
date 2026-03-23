@@ -704,6 +704,13 @@ function GlobResultView(props: {
   )
 }
 
+/** Format agent status for display. */
+function formatAgentStatus(status: string): string {
+  if (status === 'async_launched')
+    return 'launched asynchronously'
+  return status
+}
+
 /** Collapsed Agent result view: icon + "Agent {agentId} {status}" header + collapsed markdown body. */
 function AgentResultView(props: {
   agentId: string
@@ -721,7 +728,7 @@ function AgentResultView(props: {
         <span class={`${inlineFlex} ${toolUseIcon}`}>
           <Icon icon={icon()} size="md" />
         </span>
-        <span class={toolInputText}>{`Agent ${props.agentId} ${props.status}`}</span>
+        <span class={toolInputText}>{`Agent ${props.agentId} ${formatAgentStatus(props.status)}`}</span>
       </div>
       {/* eslint-disable-next-line solid/no-innerhtml -- HTML from renderMarkdown, not user input */}
       <div class={`${toolResultContent}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`} innerHTML={renderMarkdown(props.content)} />

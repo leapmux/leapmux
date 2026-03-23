@@ -257,10 +257,14 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
         return file.numLines > COLLAPSED_RESULT_ROWS
     }
 
-    // Agent: always collapsible when content is present (uses rem-based height collapse).
+    // Agent: collapsible when structured content is present, or when raw result text is long enough (async launches).
     if (toolName === 'Agent') {
-      return Array.isArray(toolUseResult?.content)
-        && (toolUseResult!.content as Array<Record<string, unknown>>).some(c => typeof c === 'object' && c !== null && c.type === 'text')
+      if (Array.isArray(toolUseResult?.content)
+        && (toolUseResult!.content as Array<Record<string, unknown>>).some(c => typeof c === 'object' && c !== null && c.type === 'text')) {
+        return true
+      }
+      const rc = extractToolResultText(obj)
+      return rc != null && rc.split('\n').length > COLLAPSED_RESULT_ROWS
     }
 
     // WebFetch: always collapsible when structured result is present.
