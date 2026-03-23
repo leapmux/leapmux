@@ -227,9 +227,3 @@ export const toolFileList = style({
   margin: '4px 0',
   fontSize: 'var(--text-8)',
 })
-
-// AskUserQuestion: answer text
-export const answerText = style({
-  color: 'var(--foreground)',
-  marginTop: '2px',
-})

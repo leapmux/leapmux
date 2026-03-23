@@ -1372,20 +1372,23 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 	}
 
 	// Persist a display message for the control response.
-	action := "approved"
-	if crPayload.Response.Response.Behavior == agent.ControlBehaviorDeny {
-		action = "rejected"
-	}
-	displayContent := map[string]interface{}{
-		"isSynthetic": true,
-		"controlResponse": map[string]string{
-			"action":  action,
-			"comment": crPayload.Response.Response.Message,
-		},
-	}
-	displayJSON, _ := json.Marshal(displayContent)
-	if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, displayJSON, agent.SpanInfo{SpanColor: -1}, nil); err != nil {
-		slog.Warn("failed to persist control response notification", "agent_id", agentID, "error", err)
+	// Skip for AskUserQuestion — the tool_result already shows the user's answers.
+	if toolName != "AskUserQuestion" {
+		action := "approved"
+		if crPayload.Response.Response.Behavior == agent.ControlBehaviorDeny {
+			action = "rejected"
+		}
+		displayContent := map[string]interface{}{
+			"isSynthetic": true,
+			"controlResponse": map[string]string{
+				"action":  action,
+				"comment": crPayload.Response.Response.Message,
+			},
+		}
+		displayJSON, _ := json.Marshal(displayContent)
+		if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, displayJSON, agent.SpanInfo{SpanColor: -1}, nil); err != nil {
+			slog.Warn("failed to persist control response notification", "agent_id", agentID, "error", err)
+		}
 	}
 
 	// Detect plan mode changes from control responses (agent-initiated).

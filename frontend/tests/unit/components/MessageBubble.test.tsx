@@ -84,7 +84,7 @@ function askUserQuestionToolUse(questions: Array<{ header: string }>) {
 // ---------------------------------------------------------------------------
 
 describe('askUserQuestion thread rendering', () => {
-  it('shows "Waiting for answers" for standalone tool_use (no children)', () => {
+  it('shows question text for single-question tool_use', () => {
     const parent = askUserQuestionToolUse([{ header: 'Uncommitted' }])
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
@@ -98,10 +98,12 @@ describe('askUserQuestion thread rendering', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('Waiting for answers')
+    expect(bubble.textContent).toContain('Question about Uncommitted?')
+    expect(bubble.textContent).toContain('Option A')
+    expect(bubble.textContent).toContain('Option B')
   })
 
-  it('shows "Waiting for answers" for multi-question tool_use (no children)', () => {
+  it('shows question count for multi-question tool_use', () => {
     const parent = askUserQuestionToolUse([{ header: 'Auth' }, { header: 'Database' }])
     const msg = makeMsg({
       role: MessageRole.ASSISTANT,
@@ -115,7 +117,9 @@ describe('askUserQuestion thread rendering', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('Waiting for answers')
+    expect(bubble.textContent).toContain('2 questions')
+    expect(bubble.textContent).toContain('Auth')
+    expect(bubble.textContent).toContain('Database')
   })
 })
 

@@ -103,6 +103,10 @@ export function classifyParsedMessage(message: AgentChatMessage) {
   if ((category.kind === 'tool_use' || category.kind === 'tool_result') && message.spanType === 'ToolSearch') {
     category = { kind: 'hidden' }
   }
+  // Hide TodoWrite tool_result — the tool_use already shows the full todo list.
+  if (category.kind === 'tool_result' && message.spanType === 'TodoWrite') {
+    category = { kind: 'hidden' }
+  }
   return { parsed, category }
 }
 

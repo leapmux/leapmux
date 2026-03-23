@@ -720,6 +720,39 @@ function AgentResultView(props: {
   )
 }
 
+/** AskUserQuestion result view: shows questions with selected answers. */
+function AskUserQuestionResultView(props: {
+  toolUseResult: Record<string, unknown>
+  context?: RenderContext
+}): JSX.Element {
+  const questions = () => Array.isArray(props.toolUseResult.questions)
+    ? props.toolUseResult.questions as Array<Record<string, unknown>>
+    : []
+  const answers = () => isObject(props.toolUseResult.answers)
+    ? props.toolUseResult.answers as Record<string, string>
+    : {}
+
+  return (
+    <div class={toolMessage}>
+      <For each={questions()}>
+        {(q) => {
+          const header = String(q.header || '')
+          const answer = answers()[header]
+          return (
+            <div class={toolResultPrompt}>
+              <strong>
+                {header}
+                {': '}
+              </strong>
+              {answer || <em>Not answered</em>}
+            </div>
+          )
+        }}
+      </For>
+    </div>
+  )
+}
+
 /** Renders agent_prompt messages (prompt sent to sub-agent) as a collapsible tool-style block. */
 export const agentPromptRenderer: MessageContentRenderer = {
   render(parsed, _role, context) {
@@ -1038,8 +1071,8 @@ export const toolResultRenderer: MessageContentRenderer = {
       : toolName === 'Read' ? String(toolInput?.file_path || '') : undefined
 
     // Hide redundant result content: Edit/Write success messages when the
-    // parent already shows the diff, and TodoWrite boilerplate messages.
-    const hideContent = parentShowsDiff || toolName === 'TodoWrite'
+    // parent already shows the diff.
+    const hideContent = parentShowsDiff
 
     // Build the inner result element.
     let innerResult: JSX.Element
@@ -1126,6 +1159,10 @@ export const toolResultRenderer: MessageContentRenderer = {
           context={context}
         />
       )
+    }
+    // AskUserQuestion: render answered questions from tool_use_result.
+    else if (toolName === 'AskUserQuestion' && toolUseResult) {
+      innerResult = <AskUserQuestionResultView toolUseResult={toolUseResult} context={context} />
     }
     // Glob: render structured result view (with or without tool_use_result).
     else if (toolName === 'Glob') {

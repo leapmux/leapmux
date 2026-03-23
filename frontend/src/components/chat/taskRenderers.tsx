@@ -5,7 +5,7 @@ import type { TodoItem } from '~/stores/chat.store'
 import Check from 'lucide-solid/icons/check'
 import ListTodo from 'lucide-solid/icons/list-todo'
 import Vote from 'lucide-solid/icons/vote'
-import { For } from 'solid-js'
+import { For, Show } from 'solid-js'
 import { TodoList } from '~/components/todo/TodoList'
 import { getAssistantContent, isObject } from './messageUtils'
 import { ToolUseLayout } from './toolRenderers'
@@ -41,7 +41,7 @@ export function renderTodoWrite(toolUse: Record<string, unknown>, context?: Rend
   )
 }
 
-/** Render AskUserQuestion tool_use with questions and inline answers. Returns null if input is invalid. */
+/** Render AskUserQuestion tool_use with questions and options. Returns null if input is invalid. */
 export function renderAskUserQuestion(toolUse: Record<string, unknown>, context?: RenderContext): JSX.Element | null {
   const input = toolUse.input
   if (!isObject(input))
@@ -51,27 +51,34 @@ export function renderAskUserQuestion(toolUse: Record<string, unknown>, context?
   if (!Array.isArray(questions) || questions.length === 0)
     return null
 
+  const title = questions.length === 1
+    ? String(questions[0].question || questions[0].header || 'Question')
+    : `${questions.length} questions`
+
   return (
     <ToolUseLayout
       icon={Vote}
       toolName="AskUserQuestion"
-      title="Waiting for answers"
+      title={title}
       alwaysVisible={true}
       context={context}
     >
-      <ul style={{ 'padding-left': '20px', 'margin': '4px 0 0' }}>
-        <For each={questions}>
-          {(q) => {
-            const header = String(q.header || '')
-            return (
-              <li>
-                <strong>{`${header}: `}</strong>
-                <em>Not answered</em>
-              </li>
-            )
-          }}
-        </For>
-      </ul>
+      <For each={questions}>
+        {(q) => {
+          const header = String(q.header || '')
+          const options = Array.isArray(q.options) ? q.options as Array<Record<string, unknown>> : []
+          return (
+            <div style={{ 'margin-top': '4px' }}>
+              <Show when={questions.length > 1}>
+                <div><strong>{header}</strong></div>
+              </Show>
+              <For each={options}>
+                {opt => <div class={toolInputSummary}>{String(opt.label || '')}</div>}
+              </For>
+            </div>
+          )
+        }}
+      </For>
     </ToolUseLayout>
   )
 }
