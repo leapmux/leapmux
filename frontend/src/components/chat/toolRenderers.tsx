@@ -57,6 +57,7 @@ import {
   toolInputSummary,
   toolInputText,
   toolMessage,
+  toolResultCollapsed,
   toolResultContent,
   toolResultContentAnsi,
   toolResultContentPre,
@@ -423,8 +424,8 @@ function extractToolUseInfo(msg: AgentChatMessage): { toolName: string, input: R
 /** Set of tool names whose results should be rendered as preformatted text. */
 const PRE_TEXT_TOOLS = new Set(['Bash', 'Grep', 'Glob', 'Read', 'TaskOutput'])
 
-/** Number of lines/items shown when a tool result is collapsed. */
-export const COLLAPSED_RESULT_ROWS = 2
+/** Number of lines/items shown when a tool result is collapsed (last row fades out). */
+export const COLLAPSED_RESULT_ROWS = 3
 
 const TOOL_USE_ERROR_RE = /<tool_use_error>([\s\S]*?)<\/tool_use_error>/
 
@@ -483,6 +484,9 @@ function GrepResultView(props: {
 }): JSX.Element {
   const hasResult = () => props.numFiles > 0 || props.numLines > 0
   const expanded = () => props.context?.toolResultExpanded ?? false
+  const isCollapsed = () => !expanded()
+    && (props.filenames.length > COLLAPSED_RESULT_ROWS
+      || props.content.split('\n').length > COLLAPSED_RESULT_ROWS)
   const displayFilenames = () => {
     if (expanded() || props.filenames.length <= COLLAPSED_RESULT_ROWS)
       return props.filenames
@@ -498,7 +502,7 @@ function GrepResultView(props: {
   }
 
   return (
-    <div class={toolMessage}>
+    <div class={`${toolMessage}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>
       <Show
         when={hasResult()}
         fallback={<div class={toolResultContentPre}>{props.fallbackContent || 'No matches found'}</div>}
@@ -521,6 +525,7 @@ function GlobResultView(props: {
   context?: RenderContext
 }): JSX.Element {
   const expanded = () => props.context?.toolResultExpanded ?? false
+  const isCollapsed = () => !expanded() && props.filenames.length > COLLAPSED_RESULT_ROWS
   const displayFilenames = () => {
     if (expanded() || props.filenames.length <= COLLAPSED_RESULT_ROWS)
       return props.filenames
@@ -528,7 +533,7 @@ function GlobResultView(props: {
   }
 
   return (
-    <div class={toolMessage}>
+    <div class={`${toolMessage}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>
       <Show
         when={props.filenames.length > 0}
         fallback={<div class={toolResultContentPre}>{props.fallbackContent || 'No files found'}</div>}
@@ -576,13 +581,15 @@ function ToolResultMessage(props: {
   // Bash/TaskOutput: collapsible via expand/collapse button in MessageBubble toolbar.
   const isBashLike = () => props.toolName === 'Bash' || props.toolName === 'TaskOutput' || props.toolName === ''
   const expanded = () => props.context?.toolResultExpanded ?? false
-  const displayContent = () => {
+  const isCollapsed = () => {
     if (!isBashLike() || expanded())
+      return false
+    return props.resultContent.split('\n').length > COLLAPSED_RESULT_ROWS
+  }
+  const displayContent = () => {
+    if (!isCollapsed())
       return props.resultContent
-    const lines = props.resultContent.split('\n')
-    if (lines.length <= COLLAPSED_RESULT_ROWS)
-      return props.resultContent
-    return lines.slice(0, COLLAPSED_RESULT_ROWS).join('\n')
+    return props.resultContent.split('\n').slice(0, COLLAPSED_RESULT_ROWS).join('\n')
   }
 
   return (
@@ -602,10 +609,10 @@ function ToolResultMessage(props: {
           fallback={
             props.isPreText
               ? isBashLike()
-                ? ((props.toolName === 'Bash' || props.toolName === 'TaskOutput' || props.toolName === '') && containsAnsi(props.resultContent))
-                    /* eslint-disable-next-line solid/no-innerhtml -- HTML from renderAnsi, not user input */
-                    ? <div class={toolResultContentAnsi} innerHTML={renderAnsi(displayContent())} />
-                    : <div class={toolResultContentPre}>{displayContent()}</div>
+                ? containsAnsi(props.resultContent)
+                  /* eslint-disable-next-line solid/no-innerhtml -- HTML from renderAnsi, not user input */
+                  ? <div class={`${toolResultContentAnsi}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`} innerHTML={renderAnsi(displayContent())} />
+                  : <div class={`${toolResultContentPre}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>{displayContent()}</div>
                 : renderReadOrPre(props.toolName, props.resultContent, props.context)
               /* eslint-disable-next-line solid/no-innerhtml -- HTML from renderMarkdown, not user input */
               : <div class={toolResultContent} innerHTML={renderMarkdown(props.resultContent)} />

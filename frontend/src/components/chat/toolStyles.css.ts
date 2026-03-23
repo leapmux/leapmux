@@ -87,6 +87,12 @@ globalStyle(`html[data-theme="dark"] ${toolResultContentAnsi} pre.shiki span`, {
   backgroundColor: 'var(--shiki-dark-bg, transparent)',
 })
 
+// Fade-out overlay applied to collapsed tool results (last row fades out)
+export const toolResultCollapsed = style({
+  WebkitMaskImage: 'linear-gradient(to bottom, black calc(100% - 1.5em), transparent)',
+  maskImage: 'linear-gradient(to bottom, black calc(100% - 1.5em), transparent)',
+})
+
 // Prompt label shown above WebFetch tool result
 export const toolResultPrompt = style({
   color: 'var(--muted-foreground)',
