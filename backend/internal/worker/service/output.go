@@ -70,28 +70,20 @@ func (t *SpanTracker) OpenSpan(spanID, parentSpanID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	// Single pass: find parent depth/column and build used-column set.
 	depth := 1
+	parentCol := -1
+	used := make(map[int]bool, len(t.spans))
 	for _, s := range t.spans {
+		used[s.Column] = true
 		if s.SpanID == parentSpanID {
 			depth = s.Depth + 1
-			break
+			parentCol = s.Column
 		}
 	}
 
 	// Find first free column to the right of the parent's column.
-	// This ensures child spans always appear visually nested under their parent.
-	parentCol := -1
-	for _, s := range t.spans {
-		if s.SpanID == parentSpanID {
-			parentCol = s.Column
-			break
-		}
-	}
 	column := -1
-	used := make(map[int]bool, len(t.spans))
-	for _, s := range t.spans {
-		used[s.Column] = true
-	}
 	for i := parentCol + 1; ; i++ {
 		if !used[i] {
 			column = i
@@ -162,23 +154,18 @@ func (t *SpanTracker) Snapshot(parentSpanID, connectorSpanID string, closing boo
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Depth lookup.
-	if parentSpanID != "" {
-		for _, s := range t.spans {
-			if s.SpanID == parentSpanID {
-				depth = int32(s.Depth)
-				break
-			}
-		}
-	}
-
 	// Span lines serialization.
 	if len(t.spans) == 0 {
+		// Depth lookup (no spans to search).
 		return depth, "[]", connectorColorOut
 	}
 
+	// Single pass: depth lookup, maxCol, and span line entries.
 	maxCol := 0
 	for _, s := range t.spans {
+		if parentSpanID != "" && s.SpanID == parentSpanID {
+			depth = int32(s.Depth)
+		}
 		if s.Column > maxCol {
 			maxCol = s.Column
 		}

@@ -10,7 +10,16 @@ interface ContextUsageGridProps {
 }
 
 export const DEFAULT_BUFFER_PCT = 16.5
-const DEFAULT_CONTEXT_WINDOW = 200_000
+export const DEFAULT_CONTEXT_WINDOW = 200_000
+
+/** Resolve the effective context window from usage data, model metadata, or the default. */
+export function resolveContextWindow(usage: ContextUsageInfo, modelContextWindow?: number): number {
+  if (usage.contextWindow && usage.contextWindow > 0)
+    return usage.contextWindow
+  if (modelContextWindow && modelContextWindow > 0)
+    return modelContextWindow
+  return DEFAULT_CONTEXT_WINDOW
+}
 
 /** Total context size = cache_creation + cache_read + input tokens. */
 export function contextSize(usage: ContextUsageInfo): number {
@@ -28,9 +37,7 @@ export function computePercentage(usage: ContextUsageInfo | undefined, modelCont
   const total = contextSize(usage)
   if (total <= 0)
     return null
-  const contextWindow = (usage.contextWindow && usage.contextWindow > 0)
-    ? usage.contextWindow
-    : (modelContextWindow && modelContextWindow > 0) ? modelContextWindow : DEFAULT_CONTEXT_WINDOW
+  const contextWindow = resolveContextWindow(usage, modelContextWindow)
   const usable = contextWindow * (1 - DEFAULT_BUFFER_PCT / 100)
   if (usable <= 0)
     return null

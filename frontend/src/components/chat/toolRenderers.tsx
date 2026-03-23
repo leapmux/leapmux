@@ -46,7 +46,7 @@ import { DiffView, rawDiffToHunks } from './diffUtils'
 import { getAssistantContent, isObject, relativizePath } from './messageUtils'
 import { parseCatNContent, ReadResultView } from './ReadResultView'
 import { RelativeTime } from './RelativeTime'
-import { formatToolInput } from './rendererUtils'
+import { formatDuration, formatToolInput } from './rendererUtils'
 import { spanColorKey } from './SpanLines'
 import { spanLineColors } from './SpanLines.css'
 import { renderToolDetail } from './toolDetailRenderers'
@@ -531,10 +531,11 @@ function parseRawGrepGlobResult(raw: string, toolName: string): {
   const nonEmpty = dataLines.filter(l => l.trim())
 
   // For Grep content mode (lines contain "file:line:match" or "line_num:text"),
-  // we check if lines look like grep content output vs. plain file paths.
+  // we check the first few lines to classify the output format.
+  const sampleLines = nonEmpty.length > 5 ? nonEmpty.slice(0, 5) : nonEmpty
   const looksLikeContent = toolName === 'Grep'
-    && nonEmpty.length > 0
-    && nonEmpty.every(l => GREP_CONTENT_LINE_RE.test(l))
+    && sampleLines.length > 0
+    && sampleLines.every(l => GREP_CONTENT_LINE_RE.test(l))
 
   let numFiles = 0
   let numLines = 0
@@ -852,13 +853,6 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-/** Format milliseconds as a human-readable duration. */
-function formatDuration(ms: number): string {
-  if (ms < 1000)
-    return `${ms}ms`
-  return `${(ms / 1000).toFixed(1)}s`
-}
-
 /** WebFetch result view: shows HTTP status, size, duration, then collapsed markdown body. */
 function WebFetchResultView(props: {
   code: number
@@ -977,11 +971,12 @@ function TaskOutputResultView(props: {
     return `TaskOutput${meta()}`
   }
 
-  const isCollapsed = () => !expanded() && output().split('\n').length > COLLAPSED_RESULT_ROWS
+  const outputLines = () => output().split('\n')
+  const isCollapsed = () => !expanded() && outputLines().length > COLLAPSED_RESULT_ROWS
   const displayOutput = () => {
     if (!isCollapsed())
       return output()
-    return output().split('\n').slice(0, COLLAPSED_RESULT_ROWS).join('\n')
+    return outputLines().slice(0, COLLAPSED_RESULT_ROWS).join('\n')
   }
 
   return (
@@ -1080,15 +1075,16 @@ function ToolResultMessage(props: {
   const isRead = () => props.toolName === 'Read'
   const isBashLike = () => props.toolName === 'Bash' || props.toolName === 'TaskOutput' || props.toolName === ''
   const expanded = () => props.context?.toolResultExpanded ?? false
+  const resultLines = () => props.resultContent.split('\n')
   const isCollapsed = () => {
     if (!isBashLike() || expanded())
       return false
-    return props.resultContent.split('\n').length > COLLAPSED_RESULT_ROWS
+    return resultLines().length > COLLAPSED_RESULT_ROWS
   }
   const displayContent = () => {
     if (!isCollapsed())
       return props.resultContent
-    return props.resultContent.split('\n').slice(0, COLLAPSED_RESULT_ROWS).join('\n')
+    return resultLines().slice(0, COLLAPSED_RESULT_ROWS).join('\n')
   }
 
   const statusIcon = () => props.isError ? CircleAlert : Check

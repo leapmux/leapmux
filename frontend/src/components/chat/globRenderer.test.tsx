@@ -108,7 +108,7 @@ describe('formatGlobSummary', () => {
   })
 
   it('includes duration when durationMs is provided', () => {
-    expect(formatGlobSummary(4, 1011)).toBe('Found 4 files \u00B7 Took 1s')
+    expect(formatGlobSummary(4, 1011)).toBe('Found 4 files \u00B7 Took 1.0s')
   })
 
   it('includes "Result truncated" when truncated is true', () => {
@@ -116,15 +116,15 @@ describe('formatGlobSummary', () => {
   })
 
   it('includes both duration and truncated', () => {
-    expect(formatGlobSummary(50, 2500, true)).toBe('Found 50 files \u00B7 Took 3s \u00B7 Result truncated')
+    expect(formatGlobSummary(50, 2500, true)).toBe('Found 50 files \u00B7 Took 2.5s \u00B7 Result truncated')
   })
 
   it('omits truncated when false', () => {
-    expect(formatGlobSummary(4, 1011, false)).toBe('Found 4 files \u00B7 Took 1s')
+    expect(formatGlobSummary(4, 1011, false)).toBe('Found 4 files \u00B7 Took 1.0s')
   })
 
   it('shows duration with "No files found"', () => {
-    expect(formatGlobSummary(0, 500)).toBe('No files found \u00B7 Took 1s')
+    expect(formatGlobSummary(0, 500)).toBe('No files found \u00B7 Took 500ms')
   })
 })
 

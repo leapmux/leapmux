@@ -196,6 +196,20 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     return props.getMessageBySpanId(spanId)
   })
 
+  /** Extract the raw text content from a tool_result block inside a parsed message object. */
+  function extractToolResultText(obj: Record<string, unknown>): string | null {
+    const msg = obj.message as Record<string, unknown> | undefined
+    if (!msg || !Array.isArray(msg.content))
+      return null
+    const tr = (msg.content as Array<Record<string, unknown>>).find(c => isObject(c) && c.type === 'tool_result')
+    if (!tr)
+      return null
+    const text = Array.isArray(tr.content)
+      ? (tr.content as Array<Record<string, unknown>>).filter(c => isObject(c) && c.type === 'text').map(c => c.text).join('')
+      : String(tr.content || '')
+    return text || null
+  }
+
   // Whether the message is rendered by a renderer that has its own internal ToolHeaderActions.
   // tool_use and agent_prompt render their own ToolHeaderActions inside ToolUseLayout.
   const hasInternalActions = () => category().kind === 'tool_use' || category().kind === 'agent_prompt'
@@ -223,17 +237,8 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
         return true
       }
       // Fallback: check raw result content (e.g. subagent without tool_use_result).
-      const msg = obj.message as Record<string, unknown> | undefined
-      if (msg && Array.isArray(msg.content)) {
-        const tr = (msg.content as Array<Record<string, unknown>>).find(c => c.type === 'tool_result')
-        if (tr) {
-          const rc = Array.isArray(tr.content)
-            ? (tr.content as Array<Record<string, unknown>>).filter(c => c.type === 'text').map(c => c.text).join('')
-            : String(tr.content || '')
-          return rc.split('\n').filter((l: string) => l.trim()).length > COLLAPSED_RESULT_ROWS
-        }
-      }
-      return false
+      const rc = extractToolResultText(obj)
+      return rc != null && rc.split('\n').filter((l: string) => l.trim()).length > COLLAPSED_RESULT_ROWS
     }
 
     // Read with structured file data: use numLines directly.
@@ -259,16 +264,8 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
 
     // Bash/Read/TaskOutput/unknown: collapsible if result text exceeds threshold lines.
     if (toolName === 'Bash' || toolName === 'Read' || toolName === 'TaskOutput' || toolName === '') {
-      const msg = obj.message as Record<string, unknown> | undefined
-      if (!msg || !Array.isArray(msg.content))
-        return false
-      const tr = (msg.content as Array<Record<string, unknown>>).find(c => c.type === 'tool_result')
-      if (!tr)
-        return false
-      const rc = Array.isArray(tr.content)
-        ? (tr.content as Array<Record<string, unknown>>).filter(c => c.type === 'text').map(c => c.text).join('')
-        : String(tr.content || '')
-      return rc.split('\n').length > COLLAPSED_RESULT_ROWS
+      const rc = extractToolResultText(obj)
+      return rc != null && rc.split('\n').length > COLLAPSED_RESULT_ROWS
     }
 
     return false
@@ -333,16 +330,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     }
 
     // Fallback: extract raw result content for any tool.
-    const msg = obj.message as Record<string, unknown> | undefined
-    if (!msg || !Array.isArray(msg.content))
-      return null
-    const tr = (msg.content as Array<Record<string, unknown>>).find(c => isObject(c) && c.type === 'tool_result')
-    if (!tr)
-      return null
-    const rc = Array.isArray(tr.content)
-      ? (tr.content as Array<Record<string, unknown>>).filter(c => isObject(c) && c.type === 'text').map(c => c.text).join('')
-      : String(tr.content || '')
-    return rc || null
+    return extractToolResultText(obj)
   })
 
   const [resultCopied, setResultCopied] = createSignal(false)

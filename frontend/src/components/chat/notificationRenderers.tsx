@@ -15,6 +15,7 @@ import {
   resultDivider,
 } from './messageStyles.css'
 import { isObject } from './messageUtils'
+import { formatDuration } from './rendererUtils'
 
 // ---------------------------------------------------------------------------
 // Display helpers for settings change notifications
@@ -213,32 +214,6 @@ export const systemInitRenderer: MessageContentRenderer = {
       return null
     return <span />
   },
-}
-
-export function formatDuration(ms: number): string {
-  if (ms < 1000)
-    return `${Math.round(ms)}ms`
-
-  const totalSeconds = ms / 1000
-  if (totalSeconds < 10)
-    return `${totalSeconds.toFixed(1)}s`
-
-  const totalSecondsRounded = Math.round(totalSeconds)
-  const days = Math.floor(totalSecondsRounded / 86400)
-  const hours = Math.floor((totalSecondsRounded % 86400) / 3600)
-  const minutes = Math.floor((totalSecondsRounded % 3600) / 60)
-  const seconds = totalSecondsRounded % 60
-
-  const parts: string[] = []
-  if (days > 0)
-    parts.push(`${days}d`)
-  if (hours > 0)
-    parts.push(`${hours}h`)
-  if (minutes > 0)
-    parts.push(`${minutes}m`)
-  if (seconds > 0 || parts.length === 0)
-    parts.push(`${seconds}s`)
-  return parts.join(' ')
 }
 
 /** Handles result messages: {"type":"result","duration_ms":865,"num_turns":558,...} */
