@@ -252,6 +252,54 @@ func TestConsolidateNotificationThread_CompactionSupersedes_ContextCleared(t *te
 	})
 }
 
+func TestConsolidateNotificationThread_CompactingDroppedByBoundary(t *testing.T) {
+	t.Run("compacting dropped when compact_boundary follows", func(t *testing.T) {
+		msgs := []json.RawMessage{
+			raw(t, map[string]interface{}{"type": "compacting"}),
+			raw(t, map[string]interface{}{"type": "system", "subtype": "compact_boundary"}),
+		}
+		result := consolidateNotificationThread(msgs)
+		require.Len(t, result, 1)
+		m := parseRaw(t, result[0])
+		assert.Equal(t, "system", m["type"])
+		assert.Equal(t, "compact_boundary", m["subtype"])
+	})
+
+	t.Run("compacting dropped when microcompact_boundary follows", func(t *testing.T) {
+		msgs := []json.RawMessage{
+			raw(t, map[string]interface{}{"type": "compacting"}),
+			raw(t, map[string]interface{}{"type": "system", "subtype": "microcompact_boundary"}),
+		}
+		result := consolidateNotificationThread(msgs)
+		require.Len(t, result, 1)
+		m := parseRaw(t, result[0])
+		assert.Equal(t, "system", m["type"])
+		assert.Equal(t, "microcompact_boundary", m["subtype"])
+	})
+
+	t.Run("compacting kept when no boundary follows", func(t *testing.T) {
+		msgs := []json.RawMessage{
+			raw(t, map[string]interface{}{"type": "compacting"}),
+		}
+		result := consolidateNotificationThread(msgs)
+		assert.Equal(t, []string{"compacting"}, types(t, result))
+	})
+
+	t.Run("compacting with settings_changed and boundary", func(t *testing.T) {
+		msgs := []json.RawMessage{
+			raw(t, settingsChanged("A", "B")),
+			raw(t, map[string]interface{}{"type": "compacting"}),
+			raw(t, map[string]interface{}{"type": "system", "subtype": "compact_boundary"}),
+		}
+		result := consolidateNotificationThread(msgs)
+		require.Len(t, result, 2)
+		assert.Equal(t, "settings_changed", msgType(t, result[0]))
+		m := parseRaw(t, result[1])
+		assert.Equal(t, "system", m["type"])
+		assert.Equal(t, "compact_boundary", m["subtype"])
+	})
+}
+
 func TestConsolidateNotificationThread_Empty(t *testing.T) {
 	result := consolidateNotificationThread(nil)
 	assert.Equal(t, []json.RawMessage{}, result)

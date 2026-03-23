@@ -97,7 +97,7 @@ function classifyClaudeCodeMessage(
       return { kind: 'hidden' }
     return { kind: 'notification' }
   }
-  if (type === 'interrupted' || type === 'context_cleared' || type === 'settings_changed' || type === 'agent_renamed')
+  if (type === 'interrupted' || type === 'context_cleared' || type === 'compacting' || type === 'settings_changed' || type === 'agent_renamed')
     return { kind: 'notification' }
 
   // Result divider

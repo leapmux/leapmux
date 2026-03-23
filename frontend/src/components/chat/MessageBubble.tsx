@@ -118,6 +118,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const [jsonCopied, setJsonCopied] = createSignal(false)
   const [markdownCopied, setMarkdownCopied] = createSignal(false)
   const [toolResultExpanded, setToolResultExpanded] = createSignal(false)
+  const [localDiffView, setLocalDiffView] = createSignal<'unified' | 'split' | null>(null)
   let contentRef: HTMLDivElement | undefined
 
   // Use pre-computed values from ChatView when available, otherwise compute on demand.
@@ -145,10 +146,10 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       envelope.span_id = msg.spanId
     if (msg.parentSpanId)
       envelope.parent_span_id = msg.parentSpanId
-    if (msg.spanLines && msg.spanLines !== '[]')
-      envelope.span_lines = JSON.parse(msg.spanLines)
     if (msg.spanColor > 0)
       envelope.span_color = msg.spanColor
+    if (msg.spanLines && msg.spanLines !== '[]')
+      envelope.span_lines = JSON.parse(msg.spanLines)
     if (p.wrapper && p.wrapper.old_seqs.length > 0)
       envelope.old_seqs = p.wrapper.old_seqs
 
@@ -203,8 +204,15 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       return filenames.length > COLLAPSED_RESULT_ROWS
     }
 
-    // Bash/TaskOutput/unknown: collapsible if result text exceeds threshold lines.
-    if (toolName === 'Bash' || toolName === 'TaskOutput' || toolName === '') {
+    // Read with structured file data: use numLines directly.
+    if (toolName === 'Read') {
+      const file = toolUseResult?.file as Record<string, unknown> | undefined
+      if (file && typeof file.numLines === 'number')
+        return file.numLines > COLLAPSED_RESULT_ROWS
+    }
+
+    // Bash/Read/TaskOutput/unknown: collapsible if result text exceeds threshold lines.
+    if (toolName === 'Bash' || toolName === 'Read' || toolName === 'TaskOutput' || toolName === '') {
       const msg = obj.message as Record<string, unknown> | undefined
       if (!msg || !Array.isArray(msg.content))
         return false
@@ -220,12 +228,32 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     return false
   })
 
+  // Determine if this tool_result has a diff (Edit/Write with structuredPatch or old/new strings).
+  const hasToolResultDiff = createMemo(() => {
+    if (category().kind !== 'tool_result')
+      return false
+    const obj = parsed().parentObject
+    if (!obj)
+      return false
+    const toolUseResult = obj.tool_use_result as Record<string, unknown> | undefined
+    if (!toolUseResult)
+      return false
+    if (Array.isArray(toolUseResult.structuredPatch) && (toolUseResult.structuredPatch as unknown[]).length > 0)
+      return true
+    const oldString = String(toolUseResult.oldString || '')
+    const newString = String(toolUseResult.newString || '')
+    return oldString !== '' && newString !== '' && oldString !== newString
+  })
+
+  const diffView = () => localDiffView() ?? prefs.diffView()
+  const toggleDiffView = () => setLocalDiffView(diffView() === 'unified' ? 'split' : 'unified')
+
   // Build render context for message renderers.
   const renderContext = (): RenderContext => ({
     createdAt: props.message.createdAt,
     workingDir: props.workingDir,
     homeDir: props.homeDir,
-    diffView: prefs.diffView(),
+    diffView: diffView(),
     onCopyJson: copyJson,
     jsonCopied: jsonCopied(),
     toolUseMessage: toolUseMessage(),
@@ -331,6 +359,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
             jsonCopied={jsonCopied()}
             expanded={toolResultExpanded()}
             onToggleExpand={isCollapsibleToolResult() ? () => setToolResultExpanded(v => !v) : undefined}
+            hasDiff={hasToolResultDiff()}
+            diffView={diffView()}
+            onToggleDiffView={hasToolResultDiff() ? toggleDiffView : undefined}
             onReply={extractQuotableText() ? handleReply : undefined}
             onCopyMarkdown={extractQuotableText() ? copyMarkdown : undefined}
             markdownCopied={markdownCopied()}

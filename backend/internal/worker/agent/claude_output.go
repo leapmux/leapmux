@@ -192,6 +192,15 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 				if statusVal == "" && prev == "" {
 					return
 				}
+				// Emit a LEAPMUX notification for compacting status so it threads with
+				// other LEAPMUX notifications (context_cleared, settings_changed, etc.).
+				if statusVal == "compacting" {
+					leapmuxContent := []byte(`{"type":"compacting"}`)
+					if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, leapmuxContent); err != nil {
+						slog.Error("persist compacting notification", "agent_id", a.agentID, "error", err)
+					}
+					return
+				}
 			}
 			if err := a.sink.PersistNotification(role, content); err != nil {
 				slog.Error("persist notification-threaded system message", "agent_id", a.agentID, "error", err)
@@ -602,7 +611,7 @@ func isNotificationThreadable(content []byte, role leapmuxv1.MessageRole) bool {
 		if json.Unmarshal(content, &msg) != nil {
 			return false
 		}
-		return msg.Type == "settings_changed" || msg.Type == "context_cleared" || msg.Type == "interrupted" || msg.Type == "rate_limit" || msg.Type == "agent_error"
+		return msg.Type == "settings_changed" || msg.Type == "context_cleared" || msg.Type == "interrupted" || msg.Type == "rate_limit" || msg.Type == "agent_error" || msg.Type == "compacting"
 	case leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM:
 		var msg struct {
 			Subtype string `json:"subtype"`

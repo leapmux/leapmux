@@ -164,15 +164,18 @@ globalStyle(`${messageRow} > .${metaMessage}`, {
   alignSelf: 'auto',
 })
 
-// Inside messageRow containing a resultDivider, position actions absolutely at the right edge
-globalStyle(`${messageRow}:has(.${resultDivider})`, {
+// Inside messageRow containing a metaMessage, position actions absolutely so they don't take space
+globalStyle(`${messageRow}:has(> .${metaMessage})`, {
   position: 'relative',
 })
 
-globalStyle(`${messageRow}:has(.${resultDivider}) > .${toolHeaderActions}`, {
+globalStyle(`${messageRow}:has(> .${metaMessage}) > .${toolHeaderActions}`, {
   position: 'absolute',
   right: 0,
   marginLeft: 0,
+  background: 'var(--background)',
+  borderRadius: 'var(--radius-small)',
+  paddingLeft: 'var(--space-1)',
 })
 
 // Inside messageRowEnd, place actions to the left of the bubble in a 2-column grid (mirrored via RTL)
@@ -214,6 +217,9 @@ globalStyle(`${messageRowCenter} > .${toolHeaderActions}`, {
   position: 'absolute',
   right: 0,
   marginLeft: 0,
+  background: 'var(--background)',
+  borderRadius: 'var(--radius-small)',
+  paddingLeft: 'var(--space-1)',
 })
 
 // When hovering a message row, reveal the actions

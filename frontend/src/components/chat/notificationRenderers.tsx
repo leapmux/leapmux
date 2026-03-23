@@ -67,6 +67,19 @@ export const interruptedRenderer: MessageContentRenderer = {
   },
 }
 
+export const compactingRenderer: MessageContentRenderer = {
+  render(parsed, _role, _context) {
+    if (!isObject(parsed) || parsed.type !== 'compacting')
+      return null
+    return (
+      <div class={resultDivider}>
+        <Icon icon={LoaderCircle} size="sm" class={spinner} />
+        {' Compacting context...'}
+      </div>
+    )
+  },
+}
+
 export const contextClearedRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
     if (!isObject(parsed) || parsed.type !== 'context_cleared')
@@ -376,8 +389,11 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
       if (title)
         settingsParts.push(`Renamed to ${title}`)
     }
+    else if (t === 'compacting' || (t === 'system' && st === 'status' && m.status === 'compacting')) {
+      compacting = true
+    }
     else if (t === 'system' && st === 'status') {
-      compacting = m.status === 'compacting'
+      compacting = false
     }
     else if (t === 'system' && st === 'compact_boundary') {
       compacting = false

@@ -867,11 +867,18 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 			codexRateLimitRaw = raw
 			codexRateLimitLastIdx = i
 
+		case env.Type == "compacting":
+			latestStatusRaw = raw
+			statusLastIdx = i
+
 		case env.Type == "system" && env.Subtype == "status":
 			latestStatusRaw = raw
 			statusLastIdx = i
 
 		case env.Type == "system" && (env.Subtype == "compact_boundary" || env.Subtype == "microcompact_boundary"):
+			// Compaction result supersedes any earlier compacting status.
+			latestStatusRaw = nil
+			statusLastIdx = -1
 			// Compaction supersedes any earlier context_cleared.
 			if contextClearedLastIdx >= 0 && i > contextClearedLastIdx {
 				contextClearedRaw = nil

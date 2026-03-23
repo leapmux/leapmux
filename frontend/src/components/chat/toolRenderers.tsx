@@ -3,6 +3,7 @@ import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
 import type { StructuredPatchHunk } from './diffUtils'
 import type { MessageContentRenderer, RenderContext } from './messageRenderers'
+import type { ParsedCatLine } from './ReadResultView'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { BashInput, EditInput, GrepInput, WriteInput } from '~/types/toolMessages'
@@ -552,17 +553,53 @@ function GlobResultView(props: {
   )
 }
 
+/** Structured Read result view using tool_use_result.file data. */
+function ReadFileResultView(props: {
+  lines: ParsedCatLine[]
+  filePath: string
+  totalLines: number
+  fallbackContent: string
+  context?: RenderContext
+}): JSX.Element {
+  const expanded = () => props.context?.toolResultExpanded ?? false
+  const isCollapsed = () => !expanded() && props.lines.length > COLLAPSED_RESULT_ROWS
+  const displayLines = () => {
+    if (expanded() || props.lines.length <= COLLAPSED_RESULT_ROWS)
+      return props.lines
+    return props.lines.slice(0, COLLAPSED_RESULT_ROWS)
+  }
+
+  return (
+    <div class={`${toolMessage}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>
+      <Show
+        when={props.lines.length > 0}
+        fallback={<div class={toolResultContentPre}>{props.fallbackContent || 'Empty file'}</div>}
+      >
+        <ReadResultView lines={displayLines()} filePath={props.filePath} />
+      </Show>
+    </div>
+  )
+}
+
 /** Render Read tool results with syntax highlighting, or fall back to plain pre text. */
 function renderReadOrPre(
   toolName: string,
   resultContent: string,
-  context?: RenderContext,
+  readFilePath?: string,
+  collapsed?: boolean,
 ): JSX.Element {
   if (toolName === 'Read') {
     const parsed = parseCatNContent(resultContent)
     if (parsed) {
-      const filePath = context?.parentToolInput?.file_path as string | undefined
-      return <ReadResultView lines={parsed} filePath={filePath} />
+      const displayLines = collapsed && parsed.length > COLLAPSED_RESULT_ROWS
+        ? parsed.slice(0, COLLAPSED_RESULT_ROWS)
+        : parsed
+      const isCollapsed = collapsed && parsed.length > COLLAPSED_RESULT_ROWS
+      return (
+        <div class={isCollapsed ? toolResultCollapsed : undefined}>
+          <ReadResultView lines={displayLines} filePath={readFilePath} />
+        </div>
+      )
     }
   }
   return <div class={toolResultContentPre}>{resultContent}</div>
@@ -579,15 +616,18 @@ function ToolResultMessage(props: {
   newStr: string
   filePath: string
   originalFile?: string
+  /** File path for Read tool syntax highlighting. */
+  readFilePath?: string
   context?: RenderContext
 }): JSX.Element {
-  const { diffView, toggleDiffView } = useDiffViewToggle(() => props.context?.diffView)
+  const diffView = () => props.context?.diffView ?? 'unified'
   const hasPatch = () => !!props.structuredPatch && props.structuredPatch.length > 0
   const hasFallbackDiff = () => props.oldStr !== '' && props.newStr !== '' && props.oldStr !== props.newStr
   const hasDiff = () => hasPatch() || hasFallbackDiff()
   const errorText = () => extractToolUseError(props.resultContent)
 
-  // Bash/TaskOutput: collapsible via expand/collapse button in MessageBubble toolbar.
+  // Bash/TaskOutput/Read: collapsible via expand/collapse button in MessageBubble toolbar.
+  const isRead = () => props.toolName === 'Read'
   const isBashLike = () => props.toolName === 'Bash' || props.toolName === 'TaskOutput' || props.toolName === ''
   const expanded = () => props.context?.toolResultExpanded ?? false
   const isCollapsed = () => {
@@ -622,24 +662,16 @@ function ToolResultMessage(props: {
                   /* eslint-disable-next-line solid/no-innerhtml -- HTML from renderAnsi, not user input */
                   ? <div class={`${toolResultContentAnsi}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`} innerHTML={renderAnsi(displayContent())} />
                   : <div class={`${toolResultContentPre}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>{displayContent()}</div>
-                : renderReadOrPre(props.toolName, props.resultContent, props.context)
+                : renderReadOrPre(props.toolName, props.resultContent, props.readFilePath, isRead() && !expanded())
               /* eslint-disable-next-line solid/no-innerhtml -- HTML from renderMarkdown, not user input */
               : <div class={toolResultContent} innerHTML={renderMarkdown(props.resultContent)} />
           }
         >
-          <div class={toolUseHeader}>
-            <Show when={props.filePath}>
+          <Show when={props.filePath}>
+            <div class={toolUseHeader}>
               <span class={toolInputPath}>{relativizePath(props.filePath, props.context?.workingDir, props.context?.homeDir)}</span>
-            </Show>
-            <div class={toolHeaderActions}>
-              <IconButton
-                icon={diffView() === 'unified' ? Columns2 : Rows2}
-                size="sm"
-                onClick={() => toggleDiffView()}
-                title={diffView() === 'unified' ? 'Switch to split view' : 'Switch to unified view'}
-              />
             </div>
-          </div>
+          </Show>
           <DiffView
             hunks={hasPatch() ? props.structuredPatch! : rawDiffToHunks(props.oldStr, props.newStr)}
             view={diffView()}
@@ -712,6 +744,14 @@ export const toolResultRenderer: MessageContentRenderer = {
       ? toolUseResult.originalFile as string
       : undefined
 
+    // Extract structured file data from tool_use_result for Read results.
+    const readFile = toolName === 'Read' && isObject(toolUseResult?.file)
+      ? toolUseResult!.file as Record<string, unknown>
+      : null
+    const readFilePath = readFile
+      ? String(readFile.filePath || '')
+      : toolName === 'Read' ? String(toolInput?.file_path || '') : undefined
+
     // Hide redundant result content: Edit/Write success messages when the
     // parent already shows the diff, and TodoWrite boilerplate messages.
     const hideContent = parentShowsDiff || toolName === 'TodoWrite'
@@ -741,6 +781,24 @@ export const toolResultRenderer: MessageContentRenderer = {
       const matches = Array.isArray(toolUseResult.matches) ? toolUseResult.matches as string[] : []
       innerResult = <ToolSearchResultView matches={matches} />
     }
+    // Read: render structured result view when tool_use_result has file data.
+    else if (toolName === 'Read' && readFile) {
+      const fileContent = typeof readFile.content === 'string' ? readFile.content : ''
+      const startLine = typeof readFile.startLine === 'number' ? readFile.startLine : 1
+      const totalLines = typeof readFile.totalLines === 'number' ? readFile.totalLines : 0
+      const lines: ParsedCatLine[] = fileContent
+        ? fileContent.split('\n').map((text, i) => ({ num: startLine + i, text }))
+        : []
+      innerResult = (
+        <ReadFileResultView
+          lines={lines}
+          filePath={readFilePath!}
+          totalLines={totalLines}
+          fallbackContent={resultContent}
+          context={context}
+        />
+      )
+    }
     // Glob: render structured result view when tool_use_result has filenames.
     else if (toolName === 'Glob' && toolUseResult) {
       const filenames = Array.isArray(toolUseResult.filenames) ? toolUseResult.filenames as string[] : []
@@ -764,6 +822,7 @@ export const toolResultRenderer: MessageContentRenderer = {
           newStr={newStr}
           filePath={filePath}
           originalFile={originalFile}
+          readFilePath={readFilePath}
           context={context}
         />
       )
