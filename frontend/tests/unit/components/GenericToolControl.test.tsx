@@ -60,6 +60,33 @@ describe('genericToolActions', () => {
     expect(screen.queryByTestId('control-bypass-btn')).toBeNull()
   })
 
+  it('sends allow response with original tool input when allow is clicked', () => {
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    const request = makeRequest('req-10', 'agent-3')
+
+    render(() => (
+      <GenericToolActions
+        request={request}
+        askState={makeAskState()}
+        onRespond={onRespond}
+        hasEditorContent={false}
+        onTriggerSend={() => {}}
+        bypassPermissionMode="bypassPermissions"
+        onPermissionModeChange={vi.fn()}
+      />
+    ))
+
+    fireEvent.click(screen.getByTestId('control-allow-btn'))
+
+    expect(onRespond).toHaveBeenCalledOnce()
+    const [agentId, bytes] = onRespond.mock.calls[0]
+    expect(agentId).toBe('agent-3')
+    const decoded = JSON.parse(new TextDecoder().decode(bytes))
+    expect(decoded.response.request_id).toBe('req-10')
+    expect(decoded.response.response.behavior).toBe('allow')
+    expect(decoded.response.response.updatedInput).toEqual({ command: 'ls' })
+  })
+
   it('sends allow response and changes permission mode when bypass is clicked', () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
     const onPermissionModeChange = vi.fn()
@@ -86,6 +113,7 @@ describe('genericToolActions', () => {
     const decoded = JSON.parse(new TextDecoder().decode(bytes))
     expect(decoded.response.request_id).toBe('req-42')
     expect(decoded.response.response.behavior).toBe('allow')
+    expect(decoded.response.response.updatedInput).toEqual({ command: 'ls' })
 
     // Verify permission mode change
     expect(onPermissionModeChange).toHaveBeenCalledOnce()

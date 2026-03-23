@@ -21,7 +21,7 @@ export function getToolInput(payload: Record<string, unknown>): Record<string, u
  */
 export function buildAllowResponse(
   requestId: string,
-  updatedInput?: Record<string, unknown>,
+  updatedInput: Record<string, unknown>,
   permissionMode?: PermissionMode,
 ): Record<string, unknown> {
   return {
@@ -32,7 +32,7 @@ export function buildAllowResponse(
       request_id: requestId,
       response: {
         behavior: 'allow',
-        updatedInput: updatedInput ?? {},
+        updatedInput,
       },
     },
   }
