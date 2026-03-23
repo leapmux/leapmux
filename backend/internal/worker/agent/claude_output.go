@@ -119,9 +119,9 @@ type messageEnvelope struct {
 			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
 		} `json:"usage"`
 	} `json:"message"`
-	ToolUseResult json.RawMessage `json:"tool_use_result"`
-	CostUSD       *float64                       `json:"total_cost_usd"`
-	ModelUsage    map[string]json.RawMessage      `json:"modelUsage"`
+	ToolUseResult json.RawMessage            `json:"tool_use_result"`
+	CostUSD       *float64                  `json:"total_cost_usd"`
+	ModelUsage    map[string]json.RawMessage `json:"modelUsage"`
 
 	// contentBlocks is lazily populated from RawContent.
 	contentBlocks []contentBlock
@@ -583,12 +583,13 @@ func extractToolUseResultMessage(raw json.RawMessage) string {
 	if len(trimmed) == 0 {
 		return ""
 	}
-	if trimmed[0] == '"' {
+	switch trimmed[0] {
+	case '"':
 		var s string
 		if json.Unmarshal(raw, &s) == nil {
 			return s
 		}
-	} else if trimmed[0] == '{' {
+	case '{':
 		var obj struct {
 			Message string `json:"message"`
 		}

@@ -61,7 +61,8 @@ func (s *testSink) GetSpanType(spanID string) string {
 	defer s.mu.Unlock()
 	return s.spanTypes[spanID]
 }
-func (s *testSink) PeekNextSpanColor() int32   { return 0 }
+
+func (s *testSink) PeekNextSpanColor() int32 { return 0 }
 
 func (s *testSink) BroadcastStreamChunk(content []byte) {
 	s.mu.Lock()

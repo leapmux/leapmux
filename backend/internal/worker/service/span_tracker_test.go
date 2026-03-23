@@ -271,11 +271,11 @@ func TestSpanTracker_ChildSpanColumnAfterSiblingClose(t *testing.T) {
 	// D-1 must get col 4 (or any col > 3), NOT col 2.
 	tracker := &SpanTracker{}
 
-	tracker.OpenSpan("span-A", "")  // col 0
-	tracker.OpenSpan("span-B", "")  // col 1
-	tracker.OpenSpan("span-C", "")  // col 2
-	tracker.OpenSpan("span-D", "")  // col 3
-	tracker.CloseSpan("span-C")     // frees col 2
+	tracker.OpenSpan("span-A", "") // col 0
+	tracker.OpenSpan("span-B", "") // col 1
+	tracker.OpenSpan("span-C", "") // col 2
+	tracker.OpenSpan("span-D", "") // col 3
+	tracker.CloseSpan("span-C")    // frees col 2
 
 	// D-1 is a tool_use inside D → child of span-D.
 	tracker.OpenSpan("span-D1", "span-D") // must be col 4, not col 2
