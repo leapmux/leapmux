@@ -319,8 +319,7 @@ func (a *ClaudeCodeAgent) claudeCodeHandleControlResponse(content []byte) {
 	}
 
 	var cr struct {
-		ParentToolUseID string `json:"parent_tool_use_id"`
-		Response        struct {
+		Response struct {
 			Subtype  string `json:"subtype"`
 			Response struct {
 				Mode string `json:"mode"`
@@ -333,13 +332,8 @@ func (a *ClaudeCodeAgent) claudeCodeHandleControlResponse(content []byte) {
 		}
 	}
 
-	// Persist control response as a separate message in the timeline.
-	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_USER, content, SpanInfo{
-		ParentSpanID: cr.ParentToolUseID,
-		SpanColor:    -1,
-	}); err != nil {
-		slog.Error("persist control_response", "agent_id", a.agentID, "error", err)
-	}
+	// No need to persist control_response in the timeline — they are
+	// already surfaced as notification threads.
 }
 
 // claudeCodeHandleRateLimitEvent broadcasts rate_limit_event and persists as notification.

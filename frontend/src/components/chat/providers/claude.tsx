@@ -137,10 +137,6 @@ function classifyClaudeCodeMessage(
     return { kind: 'unknown' }
   }
 
-  // Control response (persisted as user role with type=control_response)
-  if (type === 'control_response')
-    return { kind: 'control_response' }
-
   // User messages
   if (type === 'user') {
     const message = parentObject.message as Record<string, unknown> | undefined
