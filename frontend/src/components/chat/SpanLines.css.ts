@@ -45,12 +45,6 @@ const CONNECTOR_GAP = 4
 /** Right padding on the SpanLines container. */
 const CONTAINER_PAD_RIGHT = 1
 
-/**
- * Non-opener containers (no horizontal connector) are pulled tighter
- * by this amount so vertical-only lines sit closer to message content.
- */
-const NON_OPENER_TIGHTEN = 4
-
 /** Extension to bridge vertical lines across the gap between message rows. */
 const ROW_GAP = 'var(--space-3)'
 

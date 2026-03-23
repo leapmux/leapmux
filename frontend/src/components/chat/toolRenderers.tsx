@@ -11,6 +11,8 @@ import Bot from 'lucide-solid/icons/bot'
 import Braces from 'lucide-solid/icons/braces'
 import Check from 'lucide-solid/icons/check'
 import ChevronsRight from 'lucide-solid/icons/chevrons-right'
+import CircleAlert from 'lucide-solid/icons/circle-alert'
+import ClockFading from 'lucide-solid/icons/clock-fading'
 import Columns2 from 'lucide-solid/icons/columns-2'
 import Copy from 'lucide-solid/icons/copy'
 import File from 'lucide-solid/icons/file'
@@ -27,7 +29,6 @@ import PocketKnife from 'lucide-solid/icons/pocket-knife'
 import Quote from 'lucide-solid/icons/quote'
 import Rows2 from 'lucide-solid/icons/rows-2'
 import Search from 'lucide-solid/icons/search'
-import SquareTerminal from 'lucide-solid/icons/square-terminal'
 import Terminal from 'lucide-solid/icons/terminal'
 import TextSearch from 'lucide-solid/icons/text-search'
 import TicketsPlane from 'lucide-solid/icons/tickets-plane'
@@ -52,10 +53,8 @@ import { renderToolDetail } from './toolDetailRenderers'
 import {
   controlResponseTag,
   toolBodyContent,
-  toolFileList,
   toolHeaderActions,
   toolHeaderTimestamp,
-  toolInputPath,
   toolInputSummary,
   toolInputText,
   toolMessage,
@@ -176,7 +175,7 @@ export function toolIconFor(name: string): LucideIcon {
     case 'EnterPlanMode': return TicketsPlane
     case 'ExitPlanMode': return PlaneTakeoff
     case 'AskUserQuestion': return Vote
-    case 'TaskOutput': return SquareTerminal
+    case 'TaskOutput': return ClockFading
     case 'Skill': return PocketKnife
     case 'ToolSearch': return Search
     case 'TaskStop': return OctagonX
@@ -451,15 +450,16 @@ function FileListView(props: {
   context?: RenderContext
 }): JSX.Element {
   return (
-    <ul class={toolFileList}>
+    <div class={toolResultContentPre}>
       <For each={props.filenames}>
-        {f => (
-          <li class={toolInputPath}>
+        {(f, i) => (
+          <>
+            {i() > 0 && '\n'}
             {relativizePath(f, props.context?.workingDir, props.context?.homeDir)}
-          </li>
+          </>
         )}
       </For>
-    </ul>
+    </div>
   )
 }
 
@@ -473,11 +473,16 @@ function ToolSearchResultView(props: {
         when={props.matches.length > 0}
         fallback={<div class={toolResultContentPre}>No tools found</div>}
       >
-        <ul class={toolFileList}>
+        <div class={toolResultContentPre}>
           <For each={props.matches}>
-            {name => <li class={toolInputPath}>{name}</li>}
+            {(name, i) => (
+              <>
+                {i() > 0 && '\n'}
+                {name}
+              </>
+            )}
           </For>
-        </ul>
+        </div>
       </Show>
     </div>
   )
@@ -635,6 +640,70 @@ function AgentPromptView(props: {
   )
 }
 
+/** Structured TaskOutput result view using tool_use_result.task data. */
+function TaskOutputResultView(props: {
+  task: Record<string, unknown>
+  fallbackContent: string
+  context?: RenderContext
+}): JSX.Element {
+  const expanded = () => props.context?.toolResultExpanded ?? false
+  const status = () => typeof props.task.status === 'string' ? props.task.status : ''
+  const statusLabel = () => {
+    const s = status()
+    return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''
+  }
+  const description = () => typeof props.task.description === 'string' ? props.task.description : ''
+  const taskId = () => typeof props.task.task_id === 'string' ? props.task.task_id : ''
+  const exitCode = () => typeof props.task.exitCode === 'number' ? props.task.exitCode : null
+  const output = () => typeof props.task.output === 'string' ? props.task.output : props.fallbackContent
+  const icon = () => status() === 'completed' ? Check : ClockFading
+
+  const meta = () => {
+    const parts: string[] = []
+    if (taskId())
+      parts.push(`task ID: ${taskId()}`)
+    if (exitCode() !== null)
+      parts.push(`exit code: ${exitCode()}`)
+    return parts.length > 0 ? ` (${parts.join(' \u00B7 ')})` : ''
+  }
+
+  const title = () => {
+    const label = statusLabel()
+    const desc = description()
+    if (label && desc)
+      return `${label}: ${desc}${meta()}`
+    if (label)
+      return `${label}${meta()}`
+    if (desc)
+      return `${desc}${meta()}`
+    return `TaskOutput${meta()}`
+  }
+
+  const isCollapsed = () => !expanded() && output().split('\n').length > COLLAPSED_RESULT_ROWS
+  const displayOutput = () => {
+    if (!isCollapsed())
+      return output()
+    return output().split('\n').slice(0, COLLAPSED_RESULT_ROWS).join('\n')
+  }
+
+  return (
+    <div class={toolMessage}>
+      <div class={toolUseHeader}>
+        <span class={`${inlineFlex} ${toolUseIcon}`}>
+          <Icon icon={icon()} size="md" />
+        </span>
+        <span class={toolInputText}>{title()}</span>
+      </div>
+      <Show when={displayOutput()}>
+        {containsAnsi(output())
+          /* eslint-disable-next-line solid/no-innerhtml -- HTML from renderAnsi, not user input */
+          ? <div class={`${toolResultContentAnsi}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`} innerHTML={renderAnsi(displayOutput())} />
+          : <div class={`${toolResultContentPre}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>{displayOutput()}</div>}
+      </Show>
+    </div>
+  )
+}
+
 /** Structured Read result view using tool_use_result.file data. */
 function ReadFileResultView(props: {
   lines: ParsedCatLine[]
@@ -700,6 +769,8 @@ function ToolResultMessage(props: {
   originalFile?: string
   /** File path for Read tool syntax highlighting. */
   readFilePath?: string
+  /** Whether the tool result is an error (from is_error field). */
+  isError?: boolean
   context?: RenderContext
 }): JSX.Element {
   const diffView = () => props.context?.diffView ?? 'unified'
@@ -723,8 +794,18 @@ function ToolResultMessage(props: {
     return props.resultContent.split('\n').slice(0, COLLAPSED_RESULT_ROWS).join('\n')
   }
 
+  const statusIcon = () => props.isError ? CircleAlert : Check
+
   return (
     <div class={toolMessage}>
+      <Show when={isBashLike() && props.isError !== undefined}>
+        <div class={toolUseHeader}>
+          <span class={`${inlineFlex} ${toolUseIcon}`}>
+            <Icon icon={statusIcon()} size="md" />
+          </span>
+          <span class={toolInputText}>{props.isError ? 'Error' : 'Success'}</span>
+        </div>
+      </Show>
       {props.webFetchPrompt && (
         <div class={toolResultPrompt}>
           {'Prompt: '}
@@ -749,11 +830,6 @@ function ToolResultMessage(props: {
               : <div class={toolResultContent} innerHTML={renderMarkdown(props.resultContent)} />
           }
         >
-          <Show when={props.filePath}>
-            <div class={toolUseHeader}>
-              <span class={toolInputPath}>{relativizePath(props.filePath, props.context?.workingDir, props.context?.homeDir)}</span>
-            </div>
-          </Show>
           <DiffView
             hunks={hasPatch() ? props.structuredPatch! : rawDiffToHunks(props.oldStr, props.newStr)}
             view={diffView()}
@@ -901,6 +977,16 @@ export const toolResultRenderer: MessageContentRenderer = {
         />
       )
     }
+    // TaskOutput: render structured result with status/description header.
+    else if (toolName === 'TaskOutput' && toolUseResult && isObject(toolUseResult.task)) {
+      innerResult = (
+        <TaskOutputResultView
+          task={toolUseResult.task as Record<string, unknown>}
+          fallbackContent={resultContent}
+          context={context}
+        />
+      )
+    }
     // Glob: render structured result view when tool_use_result has filenames.
     else if (toolName === 'Glob' && toolUseResult) {
       const filenames = Array.isArray(toolUseResult.filenames) ? toolUseResult.filenames as string[] : []
@@ -925,6 +1011,7 @@ export const toolResultRenderer: MessageContentRenderer = {
           filePath={filePath}
           originalFile={originalFile}
           readFilePath={readFilePath}
+          isError={typeof resultData.is_error === 'boolean' ? resultData.is_error : undefined}
           context={context}
         />
       )

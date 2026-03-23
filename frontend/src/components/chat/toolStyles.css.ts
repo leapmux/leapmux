@@ -90,7 +90,7 @@ globalStyle(`html[data-theme="dark"] ${toolResultContentAnsi} pre.shiki span`, {
 
 // Collapsed tool results: max 3rem height with fade-out gradient
 export const toolResultCollapsed = style({
-  maxHeight: '3rem',
+  maxHeight: '3.6rem',
   overflow: 'hidden',
   WebkitMaskImage: 'linear-gradient(to bottom, black calc(100% - 1.5em), transparent)',
   maskImage: 'linear-gradient(to bottom, black calc(100% - 1.5em), transparent)',

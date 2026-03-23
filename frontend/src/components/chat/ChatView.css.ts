@@ -43,7 +43,7 @@ export const messageListSpacer = style({
 export const messageListContent = style({
   display: 'flex',
   flexDirection: 'column',
-  gap: 'var(--space-3)',
+  gap: 'var(--space-5)',
 })
 
 export const messageList = style({
@@ -309,6 +309,11 @@ export const rateLimitCountdown = style({
 
 export const messageRow = style({
   display: 'flex',
+})
+
+// Tighten the gap for messages with span lines (they belong to a visual group).
+export const messageRowWithSpanLines = style({
+  marginTop: 'calc(-1 * (var(--space-5) - var(--space-2)))',
 })
 
 export const messageRowContent = style({
