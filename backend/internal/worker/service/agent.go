@@ -170,6 +170,9 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// Stop the agent process.
 		svc.Agents.StopAgent(agentID)
 
+		// Clean up per-agent output handler state.
+		svc.Output.CleanupAgent(agentID)
+
 		// Mark the agent as closed in the database.
 		if err := svc.Queries.CloseAgent(bgCtx(), agentID); err != nil {
 			slog.Error("failed to close agent in DB", "agent_id", agentID, "error", err)

@@ -365,6 +365,14 @@ func (h *OutputHandler) ResetSpanTracker(agentID string) {
 	}
 }
 
+// CleanupAgent removes all per-agent state from the handler's maps.
+// Call this when an agent is permanently closed.
+func (h *OutputHandler) CleanupAgent(agentID string) {
+	h.notifMu.Delete(agentID)
+	h.lastNotifThread.Delete(agentID)
+	h.spanTrackers.Delete(agentID)
+}
+
 // spanTracker returns the per-agent SpanTracker, creating one if needed.
 func (h *OutputHandler) spanTracker(agentID string) *SpanTracker {
 	if v, ok := h.spanTrackers.Load(agentID); ok {
