@@ -499,3 +499,86 @@ func TestSpanTracker_SpanType(t *testing.T) {
 	tracker.CloseSpan("span-3")
 	assert.Equal(t, "", tracker.GetSpanType("span-3"))
 }
+
+func TestSpanTracker_ToolUseConnectorInSubagent(t *testing.T) {
+	// When a tool_use message is emitted inside a subagent, the tool_use's
+	// own span hasn't been opened yet (it opens after persist). The parent
+	// subagent span IS active. The span line for the subagent should render
+	// as "connector" (├), not "active" (│).
+	tracker := &SpanTracker{}
+	tracker.OpenSpan("subagent", "")
+
+	// Simulate persistAndBroadcast for a tool_use inside the subagent:
+	//   span.SpanID       = "tool-1"  (not yet open)
+	//   span.ParentSpanID = "subagent" (already open)
+	//   span.Closing      = false
+	connectorSpanID := resolveConnectorSpanID("tool-1", "subagent", false)
+	_, lines, _ := tracker.Snapshot("subagent", connectorSpanID, false)
+
+	var parsed []*SpanLine
+	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
+	require.Len(t, parsed, 1)
+	assert.Equal(t, SpanLineConnector, parsed[0].Type,
+		"tool_use inside subagent should show connector to parent span")
+}
+
+func TestSpanTracker_ToolResultConnectorInSubagent(t *testing.T) {
+	// A tool_result (closing) message should still connect to the tool's
+	// own span, not the parent — the span is open at this point.
+	tracker := &SpanTracker{}
+	tracker.OpenSpan("subagent", "")
+	tracker.OpenSpan("tool-1", "subagent")
+
+	connectorSpanID := resolveConnectorSpanID("tool-1", "subagent", true)
+	_, lines, _ := tracker.Snapshot("subagent", connectorSpanID, true)
+
+	var parsed []*SpanLine
+	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
+	require.Len(t, parsed, 2)
+	assert.Equal(t, SpanLineActive, parsed[0].Type)
+	assert.Equal(t, SpanLineConnectorEnd, parsed[1].Type,
+		"tool_result should show connector_end on its own span")
+}
+
+func TestSpanTracker_TopLevelToolUseNoConnector(t *testing.T) {
+	// A top-level tool_use (no parent span) should have no connector.
+	tracker := &SpanTracker{}
+
+	connectorSpanID := resolveConnectorSpanID("tool-1", "", false)
+	_, lines, _ := tracker.Snapshot("", connectorSpanID, false)
+	assert.Equal(t, "[]", lines)
+}
+
+func TestSpanTracker_ParentMapClearedOnAllClose(t *testing.T) {
+	tracker := &SpanTracker{}
+
+	// Open nested spans A → B → C and verify depth works.
+	tracker.OpenSpan("span-A", "")
+	tracker.OpenSpan("span-B", "span-A")
+	tracker.OpenSpan("span-C", "span-B")
+
+	depth, _, _ := tracker.Snapshot("span-C", "", false)
+	assert.Equal(t, int32(3), depth)
+
+	// Close all spans in reverse order.
+	tracker.CloseSpan("span-C")
+	assert.NotEmpty(t, tracker.parentMap, "parentMap should still have entries while spans are active")
+	tracker.CloseSpan("span-B")
+	assert.NotEmpty(t, tracker.parentMap)
+	tracker.CloseSpan("span-A")
+
+	// parentMap should be cleared when all spans are closed.
+	assert.Empty(t, tracker.parentMap, "parentMap should be cleared when all spans close")
+
+	// Open new spans and verify depth/ancestry still works after the map was cleared.
+	tracker.OpenSpan("span-X", "")
+	tracker.OpenSpan("span-Y", "span-X")
+	tracker.OpenSpan("span-Z", "span-Y")
+
+	depth, _, _ = tracker.Snapshot("span-Z", "", false)
+	assert.Equal(t, int32(3), depth)
+	depth, _, _ = tracker.Snapshot("span-Y", "", false)
+	assert.Equal(t, int32(2), depth)
+	depth, _, _ = tracker.Snapshot("span-X", "", false)
+	assert.Equal(t, int32(1), depth)
+}

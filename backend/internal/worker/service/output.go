@@ -151,7 +151,12 @@ func (t *SpanTracker) CloseSpan(spanID string) {
 	t.spans = slices.DeleteFunc(t.spans, func(s ActiveSpan) bool {
 		return s.SpanID == spanID
 	})
-	delete(t.spanTypes, spanID)
+	if t.spanTypes != nil {
+		delete(t.spanTypes, spanID)
+	}
+	if len(t.spans) == 0 {
+		clear(t.parentMap)
+	}
 }
 
 // SetSpanType records the type (tool name / item type) for a span ID.
@@ -259,6 +264,22 @@ func (t *SpanTracker) Snapshot(parentSpanID, connectorSpanID string, closing boo
 
 	data, _ := json.Marshal(lines)
 	return depth, string(data), connectorColorOut
+}
+
+// resolveConnectorSpanID determines which span a message should visually
+// connect to. For span closers (tool_result), the span is already open so
+// we connect to it directly. For span openers (tool_use) and other messages,
+// the span isn't open yet so we connect to the parent span instead.
+func resolveConnectorSpanID(spanID, parentSpanID string, closing bool) string {
+	// For span closers (tool_result), the span is already open.
+	if closing && spanID != "" {
+		return spanID
+	}
+	// For span openers (tool_use) and other messages, connect to the parent.
+	if parentSpanID != "" {
+		return parentSpanID
+	}
+	return spanID
 }
 
 // --- Notification threading ---
@@ -585,14 +606,7 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 	if tracker == nil {
 		tracker = h.spanTracker(agentID)
 	}
-	// The connector span is the span this message visually connects to.
-	// Use spanID when the span is already open (e.g. tool_result); for
-	// span openers the span isn't open yet so Snapshot won't find it and
-	// falls back to no connector. Otherwise use parentSpanID.
-	connectorSpanID := span.SpanID
-	if connectorSpanID == "" {
-		connectorSpanID = span.ParentSpanID
-	}
+	connectorSpanID := resolveConnectorSpanID(span.SpanID, span.ParentSpanID, span.Closing)
 	depth, spanLines, connectorColor := tracker.Snapshot(span.ParentSpanID, connectorSpanID, span.Closing)
 
 	// Resolve span color: if the span is already active (e.g. tool_result
