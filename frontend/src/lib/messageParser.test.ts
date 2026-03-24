@@ -207,6 +207,30 @@ describe('extractTodos', () => {
     const todos = extractTodos(msg, parsed)
     expect(todos![0].status).toBe('pending')
   })
+
+  it('extracts todos from a Codex turn/plan/updated message', () => {
+    const msg = makeMsg(MessageRole.ASSISTANT, {
+      method: 'turn/plan/updated',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        explanation: 'Need a plan',
+        plan: [
+          { step: 'Inspect messages', status: 'inProgress' },
+          { step: 'Patch renderer', status: 'pending' },
+          { step: 'Run tests', status: 'completed' },
+        ],
+      },
+    })
+    const parsed = parseMessageContent(msg)
+    const todos = extractTodos(msg, parsed)
+
+    expect(todos).toEqual([
+      { content: 'Inspect messages', status: 'in_progress', activeForm: 'Inspect messages' },
+      { content: 'Patch renderer', status: 'pending', activeForm: 'Patch renderer' },
+      { content: 'Run tests', status: 'completed', activeForm: 'Run tests' },
+    ])
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -248,6 +272,23 @@ describe('findLatestTodos', () => {
 
   it('returns null for empty array', () => {
     expect(findLatestTodos([])).toBeNull()
+  })
+
+  it('finds the latest Codex turn/plan/updated scanning backward', () => {
+    const messages = [
+      makeTodoMsg(2n, [{ content: 'Old task', status: 'completed', activeForm: 'Old' }]),
+      makeMsg(MessageRole.ASSISTANT, {
+        method: 'turn/plan/updated',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          explanation: null,
+          plan: [{ step: 'New Codex task', status: 'inProgress' }],
+        },
+      }, { seq: 4n }),
+    ]
+    const todos = findLatestTodos(messages)
+    expect(todos).toEqual([{ content: 'New Codex task', status: 'in_progress', activeForm: 'New Codex task' }])
   })
 })
 

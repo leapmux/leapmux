@@ -495,11 +495,16 @@ const PRE_TEXT_TOOLS = new Set(['Bash', 'Grep', 'Glob', 'Read', 'TaskOutput'])
 export const COLLAPSED_RESULT_ROWS = 3
 
 const TOOL_USE_ERROR_RE = /<tool_use_error>([\s\S]*?)<\/tool_use_error>/
+const LEADING_BLANK_LINES_RE = /^(?:\s*\n)+/
 
 /** Extract error text from <tool_use_error> tags in tool result content. */
 function extractToolUseError(content: string): string | null {
   const match = content.match(TOOL_USE_ERROR_RE)
   return match ? match[1].trim() : null
+}
+
+function stripLeadingBlankLines(content: string): string {
+  return content.replace(LEADING_BLANK_LINES_RE, '')
 }
 
 /**
@@ -1100,7 +1105,7 @@ function ExitPlanModeResultView(props: {
 }
 
 /** Inner component for tool_result messages with structuredPatch — owns local diff view state. */
-function ToolResultMessage(props: {
+export function ToolResultMessage(props: {
   toolName: string
   resultContent: string
   isPreText: boolean
@@ -1113,6 +1118,8 @@ function ToolResultMessage(props: {
   readFilePath?: string
   /** Whether the tool result is an error (from is_error field). */
   isError?: boolean
+  /** Optional status detail shown inline with the Bash-like result header. */
+  statusDetail?: string
   context?: RenderContext
 }): JSX.Element {
   const diffView = () => props.context?.diffView ?? 'unified'
@@ -1124,8 +1131,9 @@ function ToolResultMessage(props: {
   // Bash/TaskOutput/Read: collapsible via expand/collapse button in MessageBubble toolbar.
   const isRead = () => props.toolName === 'Read'
   const isBashLike = () => props.toolName === 'Bash' || props.toolName === 'TaskOutput' || props.toolName === ''
+  const normalizedResultContent = () => isBashLike() ? stripLeadingBlankLines(props.resultContent) : props.resultContent
   const expanded = () => props.context?.toolResultExpanded ?? false
-  const resultLines = () => props.resultContent.split('\n')
+  const resultLines = () => normalizedResultContent().split('\n')
   const isCollapsed = () => {
     if (!isBashLike() || expanded())
       return false
@@ -1133,20 +1141,25 @@ function ToolResultMessage(props: {
   }
   const displayContent = () => {
     if (!isCollapsed())
-      return props.resultContent
+      return normalizedResultContent()
     return resultLines().slice(0, COLLAPSED_RESULT_ROWS).join('\n')
   }
 
   const statusIcon = () => props.isError ? CircleAlert : Check
 
   return (
-    <div class={toolMessage}>
+    <div class={toolMessage} data-tool-message>
       <Show when={isBashLike() && props.isError !== undefined}>
         <div class={toolUseHeader}>
           <span class={`${inlineFlex} ${toolUseIcon}`}>
             <Icon icon={statusIcon()} size="md" />
           </span>
-          <span class={toolInputText}>{props.isError ? 'Error' : 'Success'}</span>
+          <span class={toolInputText}>
+            {props.isError ? 'Error' : 'Success'}
+            <Show when={props.statusDetail}>
+              {detail => ` (${detail()})`}
+            </Show>
+          </span>
         </div>
       </Show>
       <Show
@@ -1158,7 +1171,7 @@ function ToolResultMessage(props: {
           fallback={
             props.isPreText
               ? isBashLike()
-                ? containsAnsi(props.resultContent)
+                ? containsAnsi(normalizedResultContent())
                   /* eslint-disable-next-line solid/no-innerhtml -- HTML from renderAnsi, not user input */
                   ? <div class={`${toolResultContentAnsi}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`} innerHTML={renderAnsi(displayContent())} />
                   : <div class={`${toolResultContentPre}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>{displayContent()}</div>

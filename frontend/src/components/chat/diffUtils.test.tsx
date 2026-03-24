@@ -2,7 +2,7 @@ import type { StructuredPatchHunk } from './diffUtils'
 import { render } from '@solidjs/testing-library'
 import { diffWordsWithSpace } from 'diff'
 import { describe, expect, it } from 'vitest'
-import { computeGapMap, DiffView, groupByHunk, rawDiffToHunks } from './diffUtils'
+import { computeGapMap, computeSyntheticGapMap, DiffView, groupByHunk, rawDiffToHunks } from './diffUtils'
 
 /**
  * Reconstruct one side of a word-diff using the same filtering logic
@@ -244,6 +244,30 @@ describe('computeGapMap', () => {
   })
 })
 
+describe('computeSyntheticGapMap', () => {
+  it('computes only inter-hunk gaps without original file content', () => {
+    const hunks: StructuredPatchHunk[] = [
+      { oldStart: 4, oldLines: 2, newStart: 4, newLines: 2, lines: [' line 4', '-line 5', '+line 5 mod'] },
+      { oldStart: 9, oldLines: 1, newStart: 9, newLines: 1, lines: ['-line 9', '+line 9 mod'] },
+    ]
+
+    const gaps = computeSyntheticGapMap(hunks)
+
+    expect(gaps.get(1)).toEqual({ startLineNumber: 6, lineCount: 3 })
+    expect(gaps.size).toBe(1)
+  })
+
+  it('does not infer outer gaps without original file length', () => {
+    const hunks: StructuredPatchHunk[] = [
+      { oldStart: 2, oldLines: 1, newStart: 2, newLines: 1, lines: ['-line 2', '+line 2 mod'] },
+    ]
+
+    const gaps = computeSyntheticGapMap(hunks)
+
+    expect(gaps.size).toBe(0)
+  })
+})
+
 describe('groupByHunk', () => {
   it('groups entries by hunkIndex', () => {
     const entries = [
@@ -274,5 +298,32 @@ describe('groupByHunk', () => {
     const groups = groupByHunk(entries)
     expect(groups).toHaveLength(1)
     expect(groups[0]).toHaveLength(2)
+  })
+})
+
+describe('DiffView gap rendering without original file', () => {
+  const hunks: StructuredPatchHunk[] = [
+    { oldStart: 4, oldLines: 2, newStart: 4, newLines: 2, lines: [' line 4', '-line 5', '+line 5 mod'] },
+    { oldStart: 9, oldLines: 1, newStart: 9, newLines: 1, lines: ['-line 9', '+line 9 mod'] },
+  ]
+
+  it('renders non-clickable hidden-line gaps in unified view', () => {
+    const { getAllByText, queryByRole } = render(() => (
+      <DiffView hunks={hunks} view="unified" />
+    ))
+
+    expect(getAllByText('3 lines hidden')).toHaveLength(1)
+    expect(queryByRole('button', { name: /expand/i })).toBeNull()
+    expect(queryByRole('button', { name: /collapse/i })).toBeNull()
+  })
+
+  it('renders non-clickable hidden-line gaps in split view', () => {
+    const { getAllByText, queryByRole } = render(() => (
+      <DiffView hunks={hunks} view="split" />
+    ))
+
+    expect(getAllByText('3 lines hidden')).toHaveLength(1)
+    expect(queryByRole('button', { name: /expand/i })).toBeNull()
+    expect(queryByRole('button', { name: /collapse/i })).toBeNull()
   })
 })

@@ -64,7 +64,6 @@ interface ChatViewProps {
 }
 
 export const ChatView: Component<ChatViewProps> = (props) => {
-  const coalescedCodexSpanTypes = new Set(['commandExecution', 'fileChange', 'reasoning'])
   // Throttle streaming text markdown rendering to animation frames to avoid
   // running the full remark+shiki pipeline on every streaming chunk.
   const [renderedStreamHtml, setRenderedStreamHtml] = createSignal('')
@@ -168,7 +167,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   })
 
   const visibleEntries = createMemo(() => {
-    const entries = props.messages.map((msg) => {
+    return props.messages.map((msg) => {
       let classified = classifyParsedMessage(msg)
       if (
         classified.category.kind === 'hidden'
@@ -180,37 +179,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         classified = { ...classified, category: { kind: 'assistant_thinking' } }
       }
       return { msg, ...classified }
-    })
-
-    const latestCodexCommandSeqBySpan = new Map<string, bigint>()
-    for (const entry of entries) {
-      if (
-        entry.msg.agentProvider === AgentProvider.CODEX
-        && !!entry.msg.spanType
-        && coalescedCodexSpanTypes.has(entry.msg.spanType)
-        && entry.msg.spanId
-        && (entry.category.kind === 'tool_use' || entry.category.kind === 'assistant_thinking')
-      ) {
-        const prev = latestCodexCommandSeqBySpan.get(entry.msg.spanId)
-        if (prev === undefined || entry.msg.seq > prev)
-          latestCodexCommandSeqBySpan.set(entry.msg.spanId, entry.msg.seq)
-      }
-    }
-
-    return entries.filter((entry) => {
-      if (entry.category.kind === 'hidden')
-        return false
-      if (
-        entry.msg.agentProvider === AgentProvider.CODEX
-        && !!entry.msg.spanType
-        && coalescedCodexSpanTypes.has(entry.msg.spanType)
-        && entry.msg.spanId
-        && (entry.category.kind === 'tool_use' || entry.category.kind === 'assistant_thinking')
-      ) {
-        return latestCodexCommandSeqBySpan.get(entry.msg.spanId) === entry.msg.seq
-      }
-      return true
-    })
+    }).filter(entry => entry.category.kind !== 'hidden')
   })
 
   const scrollToBottom = () => {

@@ -66,6 +66,50 @@ describe('codex classify', () => {
     const result = plugin.classify(parent, null)
     expect(result).toEqual({ kind: 'notification' })
   })
+
+  it('classifies compacting as notification', () => {
+    const parent = { type: 'compacting' }
+    const result = plugin.classify(parent, null)
+    expect(result).toEqual({ kind: 'notification' })
+  })
+
+  it('classifies compact_boundary system messages as notification', () => {
+    const parent = { type: 'system', subtype: 'compact_boundary' }
+    const result = plugin.classify(parent, null)
+    expect(result).toEqual({ kind: 'notification' })
+  })
+
+  it('classifies turn/plan/updated as a Codex tool-use message', () => {
+    const parent = {
+      method: 'turn/plan/updated',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        explanation: null,
+        plan: [
+          { step: 'Inspect messages', status: 'inProgress' },
+          { step: 'Update renderer', status: 'pending' },
+        ],
+      },
+    }
+    const result = plugin.classify(parent, null)
+    expect(result).toEqual({ kind: 'tool_use', toolName: 'turnPlan', toolUse: parent, content: [] })
+  })
+
+  it('classifies webSearch items as Codex tool-use messages', () => {
+    const parent = {
+      item: {
+        type: 'webSearch',
+        id: 'ws-1',
+        query: 'https://example.com',
+        action: { type: 'openPage', url: 'https://example.com' },
+      },
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+    }
+    const result = plugin.classify(parent, null)
+    expect(result).toEqual({ kind: 'tool_use', toolName: 'webSearch', toolUse: parent.item, content: [] })
+  })
 })
 
 describe('codex isAskUserQuestion', () => {

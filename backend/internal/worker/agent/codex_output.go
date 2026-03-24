@@ -57,6 +57,9 @@ func handleCodexOutput(a *CodexAgent, content []byte) {
 	case "item/completed":
 		a.handleItemCompleted(envelope.Params)
 
+	case "thread/compacted":
+		a.handleThreadCompacted(envelope.Params)
+
 	case "turn/completed":
 		a.handleTurnCompleted(envelope.Params)
 
@@ -226,6 +229,10 @@ func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
 	switch itemType {
 	case "agentMessage":
 		// No-op for started — wait for completed to persist.
+	case "contextCompaction":
+		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, []byte(`{"type":"compacting"}`)); err != nil {
+			slog.Error("codex persist compacting notification", "agent_id", a.agentID, "error", err)
+		}
 	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall":
 		// Pre-peek the span color before persisting so it is recorded with the message.
 		spanColor := a.sink.PeekNextSpanColor()
@@ -331,12 +338,37 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 			slog.Error("codex persist reasoning", "agent_id", a.agentID, "error", err)
 		}
 		a.sink.BroadcastStreamEnd(itemID)
+	case "contextCompaction":
+		// No-op: completion is represented by thread/compacted, which is emitted as
+		// a LEAPMUX notification-thread boundary instead of an assistant message.
 	default:
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
 			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist unknown item", "agent_id", a.agentID, "type", itemType, "error", err)
 		}
+	}
+}
+
+func (a *CodexAgent) handleThreadCompacted(params json.RawMessage) {
+	var notif struct {
+		ThreadID string `json:"threadId"`
+		TurnID   string `json:"turnId"`
+	}
+	if json.Unmarshal(params, &notif) != nil {
+		return
+	}
+	content, err := json.Marshal(map[string]interface{}{
+		"type":     "system",
+		"subtype":  "compact_boundary",
+		"threadId": notif.ThreadID,
+		"turnId":   notif.TurnID,
+	})
+	if err != nil {
+		return
+	}
+	if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, content); err != nil {
+		slog.Error("codex persist compacted notification", "agent_id", a.agentID, "error", err)
 	}
 }
 

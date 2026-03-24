@@ -10,6 +10,7 @@ import (
 type testSink struct {
 	mu               sync.Mutex
 	messages         []testSinkMessage
+	notifications    []testSinkMessage
 	streamChunks     []testSinkStreamChunk
 	streamEnds       []string
 	sessionIDs       []string
@@ -41,7 +42,12 @@ func (s *testSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, sp
 	return nil
 }
 
-func (s *testSink) PersistNotification(leapmuxv1.MessageRole, []byte) error { return nil }
+func (s *testSink) PersistNotification(role leapmuxv1.MessageRole, content []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.notifications = append(s.notifications, testSinkMessage{Role: role, Content: append([]byte(nil), content...)})
+	return nil
+}
 
 func (s *testSink) OpenSpan(spanID string, _ string) {
 	s.mu.Lock()
@@ -130,6 +136,18 @@ func (s *testSink) MessageCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.messages)
+}
+
+func (s *testSink) NotificationCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.notifications)
+}
+
+func (s *testSink) LastNotification() testSinkMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.notifications[len(s.notifications)-1]
 }
 
 // Messages returns a copy of all persisted messages.

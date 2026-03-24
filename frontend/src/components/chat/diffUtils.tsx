@@ -270,6 +270,14 @@ export interface DiffGap {
   startLineNumber: number
 }
 
+/** A synthetic gap computed from hunk coordinates when original file content is unavailable. */
+export interface DiffGapSummary {
+  /** Number of hidden old-file lines between hunks. */
+  lineCount: number
+  /** 1-based line number of the first hidden line. */
+  startLineNumber: number
+}
+
 /**
  * Compute a map of gaps between hunks using the original file content.
  * Returns a Map keyed by hunk index (gap *before* that hunk) plus an optional trailing gap.
@@ -323,6 +331,37 @@ export function computeGapMap(
   }
 
   return { gaps, trailing }
+}
+
+/**
+ * Compute synthetic gap summaries from hunk coordinates only.
+ * This supports non-expandable "N lines hidden" separators even when the
+ * original file content is not available.
+ *
+ * Gap at key N = lines between hunk N-1 and hunk N.
+ * Leading and trailing gaps are intentionally omitted without original file
+ * content because they only indicate omitted outer context around the diff.
+ */
+export function computeSyntheticGapMap(hunks: StructuredPatchHunk[]): Map<number, DiffGapSummary> {
+  const gaps = new Map<number, DiffGapSummary>()
+
+  if (hunks.length === 0)
+    return gaps
+
+  for (let i = 1; i < hunks.length; i++) {
+    const prev = hunks[i - 1]
+    const curr = hunks[i]
+    const gapStart = prev.oldStart + prev.oldLines
+    const gapEnd = curr.oldStart - 1
+    if (gapEnd >= gapStart) {
+      gaps.set(i, {
+        lineCount: gapEnd - gapStart + 1,
+        startLineNumber: gapStart,
+      })
+    }
+  }
+
+  return gaps
 }
 
 /**
@@ -534,6 +573,32 @@ function DiffGapSeparator(props: {
         )}
       </For>
     </>
+  )
+}
+
+/** Render a non-interactive gap separator when only the hidden line count is known. */
+function DiffGapSummarySeparator(props: {
+  gap: DiffGapSummary
+  splitView?: boolean
+  isFirst?: boolean
+  isLast?: boolean
+}): JSX.Element {
+  const separatorClass = () => {
+    let cls = diffGapSeparator
+    if (props.splitView)
+      cls += ` ${diffGapSeparatorSplit}`
+    if (props.isFirst)
+      cls += ` ${diffGapSeparatorFirst}`
+    if (props.isLast)
+      cls += ` ${diffGapSeparatorLast}`
+    return cls
+  }
+  const hiddenLabel = () => `${props.gap.lineCount} line${props.gap.lineCount === 1 ? '' : 's'} hidden`
+
+  return (
+    <div class={separatorClass()}>
+      {hiddenLabel()}
+    </div>
   )
 }
 
@@ -771,6 +836,7 @@ function UnifiedDiffView(props: { hunks: StructuredPatchHunk[], filePath?: strin
       return null
     return computeGapMap(props.hunks, ofl)
   }
+  const syntheticGaps = createMemo(() => computeSyntheticGapMap(props.hunks))
 
   const [gapReveals, setGapReveals] = createSignal<Map<string, { top: number, bottom: number }>>(new Map())
   const getReveal = (key: string) => gapReveals().get(key) ?? { top: 0, bottom: 0 }
@@ -805,8 +871,26 @@ function UnifiedDiffView(props: { hunks: StructuredPatchHunk[], filePath?: strin
       <Show
         when={gapData()}
         fallback={(
-          <For each={lines()}>
-            {line => <UnifiedDiffLine line={line} />}
+          <For each={groupByHunk(lines())}>
+            {(group, groupIdx) => {
+              const hi = () => group[0]?.hunkIndex ?? groupIdx()
+              const gapBefore = () => syntheticGaps().get(hi())
+              return (
+                <>
+                  <Show when={gapBefore()}>
+                    {gap => (
+                      <DiffGapSummarySeparator
+                        gap={gap()}
+                        isFirst={groupIdx() === 0}
+                      />
+                    )}
+                  </Show>
+                  <For each={group}>
+                    {line => <UnifiedDiffLine line={line} />}
+                  </For>
+                </>
+              )
+            }}
           </For>
         )}
       >
@@ -899,6 +983,7 @@ function SplitDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string,
       return null
     return computeGapMap(props.hunks, ofl)
   }
+  const syntheticGaps = createMemo(() => computeSyntheticGapMap(props.hunks))
 
   const [gapReveals, setGapReveals] = createSignal<Map<string, { top: number, bottom: number }>>(new Map())
   const getReveal = (key: string) => gapReveals().get(key) ?? { top: 0, bottom: 0 }
@@ -933,10 +1018,31 @@ function SplitDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string,
       <Show
         when={gapData()}
         fallback={(
-          <For each={splitLines().left}>
-            {(leftLine, i) => {
-              const rightLine = () => splitLines().right[i()]
-              return <SplitDiffRow left={leftLine} right={rightLine()} />
+          <For each={groupByHunk(splitLines().left)}>
+            {(leftGroup, groupIdx) => {
+              const hi = () => leftGroup[0]?.hunkIndex ?? groupIdx()
+              const rightGroups = () => groupByHunk(splitLines().right)
+              const rightGroup = () => rightGroups()[groupIdx()] ?? []
+              const gapBefore = () => syntheticGaps().get(hi())
+              return (
+                <>
+                  <Show when={gapBefore()}>
+                    {gap => (
+                      <DiffGapSummarySeparator
+                        gap={gap()}
+                        splitView
+                        isFirst={groupIdx() === 0}
+                      />
+                    )}
+                  </Show>
+                  <For each={leftGroup}>
+                    {(leftLine, i) => {
+                      const rightLine = () => rightGroup()[i()] ?? { content: '', type: 'empty' as const, num: null, hunkIndex: hi() }
+                      return <SplitDiffRow left={leftLine} right={rightLine()} />
+                    }}
+                  </For>
+                </>
+              )
             }}
           </For>
         )}

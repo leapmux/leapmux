@@ -11,7 +11,7 @@ import { createMemo, createSignal, ErrorBoundary, onMount, Show } from 'solid-js
 import { render } from 'solid-js/web'
 import { IconButton } from '~/components/common/IconButton'
 import { usePreferences } from '~/context/PreferencesContext'
-import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { createLogger } from '~/lib/logger'
 import { parseMessageContent } from '~/lib/messageParser'
 import { formatChatQuote } from '~/lib/quoteUtils'
@@ -91,6 +91,24 @@ function injectCopyButtons(container: HTMLElement) {
   }
 }
 
+function isCodexEmptyCompletedWebSearch(message: AgentChatMessage, parsed: ParsedMessageContent): boolean {
+  if (message.agentProvider !== AgentProvider.CODEX || message.spanType !== 'webSearch')
+    return false
+
+  const item = parsed.parentObject?.item as Record<string, unknown> | undefined
+  if (!isObject(item) || item.type !== 'webSearch')
+    return false
+
+  const query = typeof item.query === 'string' ? item.query.trim() : ''
+  const action = isObject(item.action) ? item.action as Record<string, unknown> : null
+  const actionType = typeof action?.type === 'string' ? action.type as string : ''
+
+  if (actionType !== 'other')
+    return false
+
+  return query.length === 0
+}
+
 /** Classify a message, returning both the parsed content and category. */
 export function classifyParsedMessage(message: AgentChatMessage) {
   const parsed = parseMessageContent(message)
@@ -106,6 +124,9 @@ export function classifyParsedMessage(message: AgentChatMessage) {
   }
   // Hide TodoWrite tool_result — the tool_use already shows the full todo list.
   if (category.kind === 'tool_result' && message.spanType === 'TodoWrite') {
+    category = { kind: 'hidden' }
+  }
+  if ((category.kind === 'tool_use' || category.kind === 'tool_result') && isCodexEmptyCompletedWebSearch(message, parsed)) {
     category = { kind: 'hidden' }
   }
   return { parsed, category }
@@ -212,9 +233,33 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     return text || null
   }
 
+  const isCodexTerminalCommandResult = createMemo(() => {
+    if (props.message.agentProvider !== AgentProvider.CODEX)
+      return false
+    if (category().kind !== 'tool_use' || props.message.spanType !== 'commandExecution')
+      return false
+    const item = parsed().parentObject?.item as Record<string, unknown> | undefined
+    const status = typeof item?.status === 'string' ? item.status : ''
+    return status === 'completed' || status === 'failed'
+  })
+
+  const isCodexCompletedFileChangeResult = createMemo(() => {
+    if (props.message.agentProvider !== AgentProvider.CODEX)
+      return false
+    if (category().kind !== 'tool_use' || props.message.spanType !== 'fileChange')
+      return false
+    const item = parsed().parentObject?.item as Record<string, unknown> | undefined
+    return item?.status === 'completed'
+  })
+
   // Whether the message is rendered by a renderer that has its own internal ToolHeaderActions.
-  // tool_use and agent_prompt render their own ToolHeaderActions inside ToolUseLayout.
-  const hasInternalActions = () => category().kind === 'tool_use' || category().kind === 'agent_prompt'
+  // tool_use and agent_prompt render their own ToolHeaderActions inside ToolUseLayout,
+  // except Codex terminal command results, which should use the shared result toolbar.
+  const hasInternalActions = () => {
+    if (isCodexTerminalCommandResult() || isCodexCompletedFileChangeResult())
+      return false
+    return category().kind === 'tool_use' || category().kind === 'agent_prompt'
+  }
 
   // Shared derivation for tool_result messages: extract toolName and toolUseResult once.
   const toolResultInfo = createMemo(() => {
@@ -230,6 +275,12 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
 
   // Determine if this tool_result is collapsible (enough lines/items to warrant collapse).
   const isCollapsibleToolResult = createMemo(() => {
+    if (isCodexTerminalCommandResult()) {
+      const item = parsed().parentObject?.item as Record<string, unknown> | undefined
+      const output = typeof item?.aggregatedOutput === 'string' ? item.aggregatedOutput : ''
+      return output.split('\n').length > COLLAPSED_RESULT_ROWS
+    }
+
     const info = toolResultInfo()
     if (!info)
       return false
@@ -288,6 +339,12 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
 
   // Determine if this tool_result has a diff (Edit/Write with structuredPatch or old/new strings).
   const hasToolResultDiff = createMemo(() => {
+    if (isCodexCompletedFileChangeResult()) {
+      const item = parsed().parentObject?.item as Record<string, unknown> | undefined
+      const changes = Array.isArray(item?.changes) ? item.changes as Array<Record<string, unknown>> : []
+      return changes.some(change => typeof change.diff === 'string' && change.diff.includes('@@ '))
+    }
+
     const info = toolResultInfo()
     if (!info)
       return false
@@ -303,6 +360,20 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
 
   // Extract copyable content for tool_result messages (Read/Write/Edit/Bash/etc.).
   const copyableResultContent = createMemo((): string | null => {
+    if (isCodexTerminalCommandResult()) {
+      const item = parsed().parentObject?.item as Record<string, unknown> | undefined
+      return typeof item?.aggregatedOutput === 'string' ? item.aggregatedOutput : null
+    }
+
+    if (isCodexCompletedFileChangeResult()) {
+      const item = parsed().parentObject?.item as Record<string, unknown> | undefined
+      const changes = Array.isArray(item?.changes) ? item.changes as Array<Record<string, unknown>> : []
+      const diffs = changes
+        .map(change => typeof change.diff === 'string' ? change.diff : '')
+        .filter(Boolean)
+      return diffs.length > 0 ? diffs.join('\n\n') : null
+    }
+
     const info = toolResultInfo()
     if (!info)
       return null

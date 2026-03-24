@@ -207,6 +207,53 @@ func TestHandleCodexOutput_PlanDelta(t *testing.T) {
 	}
 }
 
+func TestHandleCodexOutput_ContextCompactionStartPersistsCompactingNotification(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"item/started","params":{"item":{"type":"contextCompaction","id":"compact-1"},"threadId":"t1","turnId":"turn1"}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if sink.NotificationCount() != 1 {
+		t.Fatalf("expected 1 notification, got %d", sink.NotificationCount())
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(sink.LastNotification().Content, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal notification: %v", err)
+	}
+	if parsed["type"] != "compacting" {
+		t.Fatalf("expected compacting notification, got %+v", parsed)
+	}
+	if sink.MessageCount() != 0 {
+		t.Fatalf("expected 0 assistant messages, got %d", sink.MessageCount())
+	}
+}
+
+func TestHandleCodexOutput_ThreadCompactedPersistsBoundaryNotification(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"thread/compacted","params":{"threadId":"t1","turnId":"turn1"}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if sink.NotificationCount() != 1 {
+		t.Fatalf("expected 1 notification, got %d", sink.NotificationCount())
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(sink.LastNotification().Content, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal notification: %v", err)
+	}
+	if parsed["type"] != "system" || parsed["subtype"] != "compact_boundary" {
+		t.Fatalf("expected compact boundary notification, got %+v", parsed)
+	}
+	if parsed["threadId"] != "t1" || parsed["turnId"] != "turn1" {
+		t.Fatalf("expected thread/turn ids to be preserved, got %+v", parsed)
+	}
+	if sink.MessageCount() != 0 {
+		t.Fatalf("expected 0 assistant messages, got %d", sink.MessageCount())
+	}
+}
+
 func TestHandleCodexOutput_CommandExecutionOutputDelta(t *testing.T) {
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
