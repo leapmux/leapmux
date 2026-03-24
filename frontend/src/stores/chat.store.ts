@@ -41,6 +41,21 @@ function removePersistedLocalMessage(agentId: string, messageId: string) {
   safeSetJson(LOCAL_MSG_KEY, all)
 }
 
+function extractUserMessageText(message: AgentChatMessage): string | null {
+  if (message.role !== MessageRole.USER)
+    return null
+  const parsed = parseMessageContent(message)
+  const parent = parsed.parentObject
+  if (!parent)
+    return null
+  if (typeof parent.content === 'string')
+    return parent.content
+  const msg = parent.message as Record<string, unknown> | undefined
+  if (msg && typeof msg.content === 'string')
+    return msg.content
+  return null
+}
+
 /** Reconstruct an AgentChatMessage from a persisted local message. */
 function hydrateLocalMessage(p: PersistedLocalMessage): AgentChatMessage {
   const contentJson = JSON.stringify({ content: p.contentText })
@@ -180,6 +195,22 @@ export function createChatStore() {
       }
       else {
         setState('messagesByAgent', agentId, (prev = []) => {
+          if (message.role === MessageRole.USER) {
+            const incomingText = extractUserMessageText(message)
+            if (incomingText) {
+              const localIdx = prev.findIndex(candidate =>
+                candidate.id.startsWith('local-')
+                && candidate.role === MessageRole.USER
+                && !candidate.deliveryError
+                && extractUserMessageText(candidate) === incomingText,
+              )
+              if (localIdx !== -1) {
+                removePersistedLocalMessage(agentId, prev[localIdx].id)
+                return [...prev.slice(0, localIdx), message, ...prev.slice(localIdx + 1)]
+              }
+            }
+          }
+
           // Local (optimistic) messages have seq === 0n and always go at the end.
           if (message.seq === 0n) {
             return [...prev, message]

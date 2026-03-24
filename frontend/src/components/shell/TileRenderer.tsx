@@ -416,6 +416,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
           if (!id)
             return
           forceScrollToBottomRef.current?.()
+          const sendAgent = agentStore.state.agents.find(a => a.id === id)
 
           // Create an optimistic local message so it appears immediately in the chat.
           const localId = `local-${crypto.randomUUID()}`
@@ -429,15 +430,14 @@ export function createTileRenderer(opts: TileRendererOpts) {
             createdAt: new Date().toISOString(),
             deliveryError: '',
             updatedAt: '',
+            agentProvider: sendAgent?.agentProvider,
           }
           chatStore.addMessage(id, localMsg)
 
           try {
-            const sendAgent = agentStore.state.agents.find(a => a.id === id)
             await workerRpc.sendAgentMessage(sendAgent?.workerId ?? '', { agentId: id, content })
-            // Success: remove the optimistic message. The real message
-            // will arrive via the WatchEvents stream from the Worker.
-            chatStore.removeMessage(id, localId)
+            // Keep the optimistic message until the persisted message arrives.
+            // chatStore.addMessage() reconciles the matching server echo in place.
           }
           catch {
             chatStore.setMessageError(localId, 'Failed to deliver')

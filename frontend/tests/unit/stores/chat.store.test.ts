@@ -1,7 +1,7 @@
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentChatMessageSchema, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { createChatStore } from '~/stores/chat.store'
 
 // Mock workerRpc for loadInitialMessages / loadOlderMessages / loadNewerMessages
@@ -17,6 +17,18 @@ function makeMessage(id: string, seq: bigint, deliveryError = '') {
     content: new TextEncoder().encode(`{"content":"test"}`),
     seq,
     deliveryError,
+  })
+}
+
+function makeUserMessage(id: string, seq: bigint, content: string, deliveryError = '', agentProvider?: AgentProvider) {
+  return create(AgentChatMessageSchema, {
+    id,
+    role: MessageRole.USER,
+    content: new TextEncoder().encode(JSON.stringify({ content })),
+    contentCompression: ContentCompression.NONE,
+    seq,
+    deliveryError,
+    agentProvider,
   })
 }
 
@@ -147,6 +159,21 @@ describe('createChatStore', () => {
       store.removeMessage('agent1', 'msg1')
       expect(store.getMessages('agent1')).toHaveLength(0)
       expect(store.state.messageErrors.msg1).toBeUndefined()
+      dispose()
+    })
+  })
+
+  it('should replace a matching optimistic local user message with the persisted server message', () => {
+    createRoot((dispose) => {
+      const store = createChatStore()
+      store.addMessage('agent1', makeUserMessage('local-1', 0n, 'hello', '', AgentProvider.CODEX))
+      store.addMessage('agent1', makeUserMessage('server-1', 5n, 'hello', '', AgentProvider.CODEX))
+
+      const msgs = store.getMessages('agent1')
+      expect(msgs).toHaveLength(1)
+      expect(msgs[0].id).toBe('server-1')
+      expect(msgs[0].seq).toBe(5n)
+      expect(msgs[0].agentProvider).toBe(AgentProvider.CODEX)
       dispose()
     })
   })
