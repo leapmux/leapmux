@@ -3,7 +3,7 @@ import type { JSX } from 'solid-js'
 import type { StructuredPatchHunk } from './diffUtils'
 import type { RenderContext } from './messageRenderers'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
-import type { CommandStreamSegment, TodoItem } from '~/stores/chat.store'
+import type { CommandStreamSegment } from '~/stores/chat.store'
 import Bot from 'lucide-solid/icons/bot'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
@@ -18,6 +18,7 @@ import { createEffect, createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { TodoList } from '~/components/todo/TodoList'
+import { codexPlanToTodos } from '~/lib/messageParser'
 import { renderMarkdown, shikiHighlighter } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { DiffView, rawDiffToHunks } from './diffUtils'
@@ -213,30 +214,6 @@ function extractPlanParams(parsed: unknown): Record<string, unknown> | null {
   return null
 }
 
-function codexPlanTodos(plan: unknown): TodoItem[] {
-  if (!Array.isArray(plan))
-    return []
-  return plan.flatMap((entry) => {
-    if (!isObject(entry))
-      return []
-    const content = typeof entry.step === 'string' ? entry.step : ''
-    if (!content)
-      return []
-    const rawStatus = entry.status
-    const status: TodoItem['status']
-      = rawStatus === 'completed'
-        ? 'completed'
-        : rawStatus === 'inProgress'
-          ? 'in_progress'
-          : 'pending'
-    return [{
-      content,
-      status,
-      activeForm: content,
-    }]
-  })
-}
-
 function codexWebSearchAction(parsed: unknown): Record<string, unknown> | null {
   if (!isObject(parsed))
     return null
@@ -351,7 +328,10 @@ export function codexTurnPlanRenderer(parsed: unknown, _role: MessageRole, conte
   if (!params)
     return null
 
-  const todos = codexPlanTodos(params.plan)
+  const plan = params.plan
+  if (!Array.isArray(plan))
+    return null
+  const todos = codexPlanToTodos(plan)
   if (todos.length === 0)
     return null
 

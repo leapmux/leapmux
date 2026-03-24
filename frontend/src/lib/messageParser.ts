@@ -98,6 +98,23 @@ export function getInnerMessageType(parsed: ParsedMessageContent): string | unde
 // Domain-specific extractors
 // ---------------------------------------------------------------------------
 
+/** Convert a Codex plan array (from turn/plan/updated) to TodoItem[]. */
+export function codexPlanToTodos(plan: unknown[]): TodoItem[] {
+  return plan.flatMap((entry) => {
+    if (typeof entry !== 'object' || entry === null)
+      return []
+    const step = String((entry as Record<string, unknown>).step || '')
+    if (!step)
+      return []
+    const status = (entry as Record<string, unknown>).status
+    return [{
+      content: step,
+      status: status === 'inProgress' ? 'in_progress' as const : status === 'completed' ? 'completed' as const : 'pending' as const,
+      activeForm: step,
+    }]
+  })
+}
+
 /** Extract TodoWrite todos from a parsed assistant message. Returns null if not applicable. */
 export function extractTodos(message: AgentChatMessage, parsed: ParsedMessageContent): TodoItem[] | null {
   if (message.role !== MessageRole.ASSISTANT)
@@ -128,19 +145,7 @@ export function extractTodos(message: AgentChatMessage, parsed: ParsedMessageCon
     const plan = params?.plan
     if (!Array.isArray(plan))
       return null
-    const todos = plan.flatMap((entry) => {
-      if (typeof entry !== 'object' || entry === null)
-        return []
-      const step = String((entry as Record<string, unknown>).step || '')
-      if (!step)
-        return []
-      const status = (entry as Record<string, unknown>).status
-      return [{
-        content: step,
-        status: status === 'inProgress' ? 'in_progress' as const : status === 'completed' ? 'completed' as const : 'pending' as const,
-        activeForm: step,
-      }]
-    })
+    const todos = codexPlanToTodos(plan)
     return todos.length > 0 ? todos : null
   }
 
