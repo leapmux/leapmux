@@ -1,19 +1,27 @@
 /* eslint-disable solid/no-innerhtml -- HTML is produced via remark, not arbitrary user input */
 import type { JSX } from 'solid-js'
+import type { StructuredPatchHunk } from './diffUtils'
 import type { RenderContext } from './messageRenderers'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import type { CommandStreamSegment } from '~/stores/chat.store'
 import Bot from 'lucide-solid/icons/bot'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FileEdit from 'lucide-solid/icons/file-pen-line'
+import FilePlus from 'lucide-solid/icons/file-plus'
+import Globe from 'lucide-solid/icons/globe'
+import ListTodo from 'lucide-solid/icons/list-todo'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
-import SquareTerminal from 'lucide-solid/icons/square-terminal'
+import Terminal from 'lucide-solid/icons/terminal'
 import Wrench from 'lucide-solid/icons/wrench'
-import { createSignal, For, Show } from 'solid-js'
+import { createEffect, createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
-import { renderMarkdown } from '~/lib/renderMarkdown'
+import { TodoList } from '~/components/todo/TodoList'
+import { codexPlanToTodos } from '~/lib/messageParser'
+import { renderMarkdown, shikiHighlighter } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
+import { DiffView, rawDiffToHunks } from './diffUtils'
 import { markdownContent } from './markdownContent.css'
 import {
   resultDivider,
@@ -22,18 +30,48 @@ import {
   thinkingContent,
   thinkingHeader,
 } from './messageStyles.css'
-import { isObject } from './messageUtils'
-import { ToolUseLayout } from './toolRenderers'
+import { isObject, relativizePath } from './messageUtils'
+import { formatDuration } from './rendererUtils'
+import { renderToolDetail } from './toolDetailRenderers'
+import { ToolResultMessage, ToolUseLayout } from './toolRenderers'
 import {
+  commandStreamContainer,
+  commandStreamInteraction,
+  toolInputCode,
   toolInputPath,
   toolInputSummary,
+  toolInputText,
+  toolMessage,
   toolResultContentPre,
   toolResultError,
+  toolResultPrompt,
   toolUseIcon,
 } from './toolStyles.css'
 
 /** Regex to strip shell wrappers like `/bin/zsh -lc '...'` from commands. */
 const SHELL_WRAPPER_RE = /^\/bin\/(?:ba|z)?sh\s+-lc\s+'(.+)'$/
+const CODEX_DIFF_HEADER_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
+const DIV_OPEN_RE = /<div\b/g
+const DIV_CLOSE_RE = /<\/div>/g
+const TOOL_USE_HEADER_CLASS_FRAGMENT = 'toolUseHeader__'
+
+function LiveStreamOutput(props: { stream: () => CommandStreamSegment[] }): JSX.Element {
+  return (
+    <div class={commandStreamContainer}>
+      <For each={props.stream()}>
+        {segment => (
+          <div class={toolResultContentPre}>{segment.text}</div>
+        )}
+      </For>
+    </div>
+  )
+}
+
+interface ParsedCodexDiff {
+  hunks: StructuredPatchHunk[]
+  oldText: string
+  newText: string
+}
 
 /** Extract the item from Codex native params: {item: {...}, threadId, turnId} */
 function extractItem(parsed: unknown): Record<string, unknown> | null {
@@ -46,6 +84,206 @@ function extractItem(parsed: unknown): Record<string, unknown> | null {
   if (parsed.type && typeof parsed.type === 'string')
     return parsed
   return null
+}
+
+function firstCommandLine(command: string): string {
+  return command.split('\n').find(line => line.trim()) || command
+}
+
+function renderBashHighlight(code: string): string {
+  return shikiHighlighter.codeToHtml(code, {
+    lang: 'bash',
+    themes: { light: 'github-light', dark: 'github-dark' },
+    defaultColor: false,
+  })
+}
+
+function parseCodexUnifiedDiff(diff: string): ParsedCodexDiff | null {
+  if (!diff.trim())
+    return null
+
+  const lines = diff.split('\n')
+  const hunks: StructuredPatchHunk[] = []
+  const oldLines: string[] = []
+  const newLines: string[] = []
+  let current: StructuredPatchHunk | null = null
+
+  for (const line of lines) {
+    const header = line.match(CODEX_DIFF_HEADER_RE)
+    if (header) {
+      current = {
+        oldStart: Number.parseInt(header[1], 10),
+        oldLines: header[2] ? Number.parseInt(header[2], 10) : 1,
+        newStart: Number.parseInt(header[3], 10),
+        newLines: header[4] ? Number.parseInt(header[4], 10) : 1,
+        lines: [],
+      }
+      hunks.push(current)
+      continue
+    }
+    if (!current)
+      continue
+    if (line.startsWith('\\ No newline at end of file'))
+      continue
+    if (!line.startsWith('+') && !line.startsWith('-') && !line.startsWith(' '))
+      continue
+
+    current.lines.push(line)
+    const prefix = line[0]
+    const text = line.slice(1)
+    if (prefix === '+' || prefix === ' ')
+      newLines.push(text)
+    if (prefix === '-' || prefix === ' ')
+      oldLines.push(text)
+  }
+
+  if (hunks.length === 0)
+    return null
+
+  return {
+    hunks,
+    oldText: oldLines.join('\n'),
+    newText: newLines.join('\n'),
+  }
+}
+
+function codexChangeKind(change: Record<string, unknown>): string {
+  const kind = change.kind
+  if (typeof kind === 'string')
+    return kind
+  if (isObject(kind) && typeof kind.type === 'string')
+    return kind.type as string
+  return ''
+}
+
+function isSimpleEditChange(change: Record<string, unknown>): boolean {
+  return codexChangeKind(change) === 'update' && typeof change.diff === 'string' && !!parseCodexUnifiedDiff(change.diff as string)
+}
+
+function isSimpleAddChange(change: Record<string, unknown>): boolean {
+  return codexChangeKind(change) === 'add' && typeof change.diff === 'string' && (change.diff as string).length > 0
+}
+
+function parsedChangeDiffs(changes: Array<Record<string, unknown>>): Array<{ path: string, diff: ParsedCodexDiff }> {
+  return changes.flatMap((change) => {
+    const diffText = typeof change.diff === 'string' ? change.diff : ''
+    const parsed = parseCodexUnifiedDiff(diffText)
+    if (!parsed)
+      return []
+    return [{ path: typeof change.path === 'string' ? change.path : '', diff: parsed }]
+  })
+}
+
+function stripToolUseHeaderFromOutput(output: string): string {
+  if (!output.includes(TOOL_USE_HEADER_CLASS_FRAGMENT))
+    return output
+
+  const lines = output.split('\n')
+  const kept: string[] = []
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (!line.includes(TOOL_USE_HEADER_CLASS_FRAGMENT)) {
+      kept.push(line)
+      continue
+    }
+
+    if (kept.length > 0 && kept.at(-1).includes('<div'))
+      kept.pop()
+
+    let depth = 1
+    while (++i < lines.length) {
+      const current = lines[i]
+      depth += (current.match(DIV_OPEN_RE) || []).length
+      depth -= (current.match(DIV_CLOSE_RE) || []).length
+      if (depth <= 0)
+        break
+    }
+  }
+
+  return kept.join('\n')
+}
+
+function extractPlanParams(parsed: unknown): Record<string, unknown> | null {
+  if (!isObject(parsed))
+    return null
+  if (parsed.method === 'turn/plan/updated' && isObject(parsed.params))
+    return parsed.params as Record<string, unknown>
+  if (Array.isArray(parsed.plan))
+    return parsed
+  return null
+}
+
+function codexWebSearchAction(parsed: unknown): Record<string, unknown> | null {
+  if (!isObject(parsed))
+    return null
+  return isObject(parsed.action) ? parsed.action as Record<string, unknown> : null
+}
+
+function codexWebSearchActionType(action: Record<string, unknown> | null): string {
+  return typeof action?.type === 'string' ? action.type as string : ''
+}
+
+function codexWebSearchQueries(action: Record<string, unknown> | null): string[] {
+  if (codexWebSearchActionType(action) !== 'search')
+    return []
+  const direct = typeof action?.query === 'string' ? action.query.trim() : ''
+  const listed = Array.isArray(action?.queries)
+    ? action.queries.filter(q => typeof q === 'string').map(q => (q as string).trim()).filter(Boolean)
+    : []
+  const merged = direct ? [direct, ...listed] : listed
+  return merged.filter((query, index) => merged.indexOf(query) === index)
+}
+
+function codexWebSearchActionDetail(action: Record<string, unknown> | null, query: string): string {
+  const actionType = codexWebSearchActionType(action)
+  if (actionType === 'search') {
+    const queries = codexWebSearchQueries(action)
+    if (queries.length > 0)
+      return queries[0]
+    return query
+  }
+  if (actionType === 'openPage')
+    return typeof action?.url === 'string' ? action.url : query
+  if (actionType === 'findInPage') {
+    const url = typeof action?.url === 'string' ? action.url : ''
+    const pattern = typeof action?.pattern === 'string' ? action.pattern : ''
+    if (pattern && url)
+      return `'${pattern}' in ${url}`
+    if (pattern)
+      return `'${pattern}'`
+    if (url)
+      return url
+  }
+  return query
+}
+
+function renderCodexWebSearchTitle(action: Record<string, unknown> | null, detail: string, context?: RenderContext): JSX.Element | string {
+  const actionType = codexWebSearchActionType(action)
+  if (actionType === 'openPage') {
+    return renderToolDetail('WebFetch', { url: detail }, context) || detail || 'Open page'
+  }
+  if (actionType === 'search') {
+    return renderToolDetail('WebSearch', { query: detail }, context) || detail || 'Web search'
+  }
+  if (actionType === 'findInPage') {
+    const url = typeof action?.url === 'string' ? action.url : ''
+    const pattern = typeof action?.pattern === 'string' ? action.pattern : ''
+    if (pattern && url) {
+      return (
+        <>
+          <span class={toolInputCode}>{`"${pattern}"`}</span>
+          <span class={toolInputText}>{' in '}</span>
+          {renderToolDetail('WebFetch', { url }, context) || <span class={toolInputText}>{url}</span>}
+        </>
+      )
+    }
+    if (pattern)
+      return <span class={toolInputCode}>{`"${pattern}"`}</span>
+    if (url)
+      return renderToolDetail('WebFetch', { url }, context) || url
+  }
+  return detail || 'Searching the web'
 }
 
 /** Renders Codex agentMessage items as markdown. */
@@ -76,10 +314,89 @@ export function codexPlanRenderer(parsed: unknown, _role: MessageRole, context?:
       bordered={false}
       context={context}
     >
-      <>
-        <hr />
-        <div class={markdownContent} style={{ 'font-size': 'var(--text-regular)' }} innerHTML={renderMarkdown(text)} />
-      </>
+      <hr />
+      <div class={markdownContent} style={{ 'font-size': 'var(--text-regular)' }} innerHTML={renderMarkdown(text)} />
+    </ToolUseLayout>
+  )
+}
+
+/** Renders Codex turn/plan/updated notifications with the same todo-list UI pattern as TodoWrite. */
+export function codexTurnPlanRenderer(parsed: unknown, _role: MessageRole, context?: RenderContext): JSX.Element | null {
+  const params = extractPlanParams(parsed)
+  if (!params)
+    return null
+
+  const plan = params.plan
+  if (!Array.isArray(plan))
+    return null
+  const todos = codexPlanToTodos(plan)
+  if (todos.length === 0)
+    return null
+
+  const explanation = typeof params.explanation === 'string' ? params.explanation.trim() : ''
+  const label = `${todos.length} task${todos.length === 1 ? '' : 's'}${explanation ? ` - ${explanation}` : ''}`
+
+  return (
+    <ToolUseLayout
+      icon={ListTodo}
+      toolName="Plan Update"
+      title={label}
+      alwaysVisible={true}
+      context={context}
+    >
+      <TodoList todos={todos} />
+    </ToolUseLayout>
+  )
+}
+
+/** Renders Codex webSearch items using WebSearch/WebFetch-style tool cards. */
+export function codexWebSearchRenderer(parsed: unknown, _role: MessageRole, context?: RenderContext): JSX.Element | null {
+  const item = extractItem(parsed)
+  if (!item || item.type !== 'webSearch')
+    return null
+
+  const query = typeof item.query === 'string' ? item.query : ''
+  const action = codexWebSearchAction(item)
+  const actionType = codexWebSearchActionType(action)
+  const detail = codexWebSearchActionDetail(action, query)
+  const queries = codexWebSearchQueries(action)
+  const isStartMessage = actionType === 'other' && !query.trim()
+  const [expanded, setExpanded] = createSignal(false)
+
+  if (isStartMessage) {
+    return (
+      <ToolUseLayout
+        icon={Globe}
+        toolName="WebSearch"
+        title="Searching the web"
+        alwaysVisible={true}
+        context={context}
+      />
+    )
+  }
+
+  if (!detail.trim())
+    return null
+
+  return (
+    <ToolUseLayout
+      icon={Globe}
+      toolName={actionType === 'openPage' ? 'WebFetch' : 'WebSearch'}
+      title={renderCodexWebSearchTitle(action, detail, context)}
+      context={context}
+      expanded={expanded()}
+      onToggleExpand={queries.length > 1 ? () => setExpanded(v => !v) : undefined}
+      alwaysVisible={queries.length <= 1}
+    >
+      <Show when={queries.length > 1}>
+        <For each={queries.slice(1)}>
+          {extraQuery => (
+            <div class={toolInputSummary}>
+              {renderToolDetail('WebSearch', { query: extraQuery }, context) || extraQuery}
+            </div>
+          )}
+        </For>
+      </Show>
     </ToolUseLayout>
   )
 }
@@ -95,30 +412,66 @@ export function codexCommandExecutionRenderer(parsed: unknown, _role: MessageRol
   const command = rawCommand.replace(SHELL_WRAPPER_RE, '$1')
   const cwd = (item.cwd as string) || ''
   const status = (item.status as string) || ''
-  const output = (item.aggregatedOutput as string) || ''
+  const output = stripToolUseHeaderFromOutput((item.aggregatedOutput as string) || '')
   const exitCode = item.exitCode as number | null | undefined
   const durationMs = item.durationMs as number | null | undefined
-  const isCompleted = status === 'completed'
-  const hasError = isCompleted && exitCode != null && exitCode !== 0
-  const [expanded, setExpanded] = createSignal(hasError || !isCompleted)
+  const isTerminal = status === 'completed' || status === 'failed'
+  const hasError = status === 'failed' || (isTerminal && exitCode != null && exitCode !== 0)
+  const liveStream = () => context?.commandStream ?? []
+  const hasLiveStream = () => liveStream().length > 0
+  const [expanded, setExpanded] = createSignal(false)
+  createEffect(() => {
+    if (hasLiveStream())
+      setExpanded(true)
+  })
+  const displayCommand = firstCommandLine(command)
+  const title = renderToolDetail('Bash', { description: 'Run command', command }, context) || 'Run command'
 
   const statusParts = (): string => {
     const parts: string[] = []
-    if (!isCompleted && status)
-      parts.push(status)
     if (exitCode != null)
       parts.push(`exit ${exitCode}`)
     if (durationMs != null)
-      parts.push(`${(durationMs / 1000).toFixed(1)}s`)
+      parts.push(formatDuration(durationMs))
     return parts.join(' · ')
+  }
+  const resultStatusDetail = (): string => {
+    const parts: string[] = []
+    if (exitCode != null && exitCode !== 0)
+      parts.push(`exit code: ${exitCode}`)
+    return parts.join(' · ')
+  }
+
+  if (isTerminal) {
+    return (
+      <ToolResultMessage
+        toolName="Bash"
+        resultContent={output}
+        isPreText={true}
+        structuredPatch={null}
+        oldStr=""
+        newStr=""
+        filePath=""
+        isError={hasError}
+        statusDetail={resultStatusDetail()}
+        context={context}
+      />
+    )
   }
 
   return (
     <ToolUseLayout
-      icon={SquareTerminal}
+      icon={Terminal}
       toolName="Command Execution"
-      title={command}
-      summary={statusParts() ? <div class={toolInputSummary}>{statusParts()}</div> : undefined}
+      title={title}
+      summary={(
+        <>
+          <div class={toolInputSummary} innerHTML={renderBashHighlight(displayCommand)} />
+          <Show when={statusParts()}>
+            <div class={toolInputSummary}>{statusParts()}</div>
+          </Show>
+        </>
+      )}
       context={context}
       expanded={expanded()}
       onToggleExpand={() => setExpanded(v => !v)}
@@ -127,11 +480,22 @@ export function codexCommandExecutionRenderer(parsed: unknown, _role: MessageRol
         <div class={toolInputSummary}>
           cwd:
           {' '}
-          {cwd}
+          {relativizePath(cwd, context?.workingDir, context?.homeDir)}
         </div>
       </Show>
-      <Show when={output}>
-        <div class={toolResultContentPre}>{output}</div>
+      <Show
+        when={hasLiveStream()}
+        fallback={<Show when={output}><div class={toolResultContentPre}>{output}</div></Show>}
+      >
+        <div class={commandStreamContainer}>
+          <For each={liveStream()}>
+            {segment => (
+              <div class={segment.kind === 'interaction' ? commandStreamInteraction : toolResultContentPre}>
+                {segment.kind === 'interaction' ? `> ${segment.text}` : segment.text}
+              </div>
+            )}
+          </For>
+        </div>
       </Show>
     </ToolUseLayout>
   )
@@ -145,17 +509,90 @@ export function codexFileChangeRenderer(parsed: unknown, _role: MessageRole, con
 
   const changes = (item.changes as Array<Record<string, unknown>>) || []
   const status = (item.status as string) || ''
-  const [expanded, setExpanded] = createSignal(true)
+  const liveStream = () => context?.commandStream ?? []
+  const hasLiveStream = () => liveStream().length > 0
+  const completedDiffs = parsedChangeDiffs(changes)
+  const simpleAdd = changes.length === 1 && isSimpleAddChange(changes[0]) ? changes[0] : null
+  const simpleAddPath = simpleAdd ? ((simpleAdd.path as string) || '') : ''
+  const simpleAddContent = simpleAdd ? ((simpleAdd.diff as string) || '') : ''
+
+  if (status === 'completed' && simpleAdd) {
+    return (
+      <ToolResultMessage
+        toolName="Write"
+        resultContent=""
+        isPreText={false}
+        structuredPatch={rawDiffToHunks('', simpleAddContent)}
+        oldStr=""
+        newStr={simpleAddContent}
+        filePath={simpleAddPath}
+        context={context}
+      />
+    )
+  }
+
+  if (status === 'completed' && completedDiffs.length > 0) {
+    return (
+      <div class={toolMessage}>
+        <For each={completedDiffs}>
+          {entry => (
+            <DiffView
+              hunks={entry.diff.hunks}
+              view={context?.diffView ?? 'unified'}
+              filePath={entry.path}
+            />
+          )}
+        </For>
+      </div>
+    )
+  }
+
+  if (status === 'completed') {
+    return (
+      <div class={toolMessage}>
+        <Show when={changes.length > 0 && completedDiffs.length === 0}>
+          <div class={toolResultPrompt}>
+            {changes.length === 1 ? '1 file changed' : `${changes.length} files changed`}
+          </div>
+        </Show>
+      </div>
+    )
+  }
+
+  const simpleEdit = changes.length === 1 && isSimpleEditChange(changes[0]) ? changes[0] : null
+  const parsedDiff = simpleEdit ? parseCodexUnifiedDiff(simpleEdit.diff as string) : null
+  const inProgressDetail = simpleAdd
+    ? { icon: FilePlus, title: renderToolDetail('Write', { file_path: simpleAddPath, content: simpleAddContent }, context), path: simpleAddPath }
+    : simpleEdit && parsedDiff
+      ? { icon: FileEdit, title: renderToolDetail('Edit', { file_path: (simpleEdit.path as string) || '', old_string: parsedDiff.oldText, new_string: parsedDiff.newText }, context), path: (simpleEdit.path as string) || '' }
+      : null
+
+  if (inProgressDetail) {
+    const title = inProgressDetail.title || (
+      <span class={toolInputPath}>{relativizePath(inProgressDetail.path, context?.workingDir, context?.homeDir)}</span>
+    )
+
+    return (
+      <ToolUseLayout
+        icon={inProgressDetail.icon}
+        toolName="File Change"
+        title={title}
+        context={context}
+        alwaysVisible={true}
+      >
+        <Show when={hasLiveStream()}>
+          <LiveStreamOutput stream={liveStream} />
+        </Show>
+      </ToolUseLayout>
+    )
+  }
 
   const titleEl = (
-    <>
-      <span class={toolInputSummary}>
-        {changes.length === 1 ? String(changes[0].path || 'file') : `${changes.length} files`}
-      </span>
-      <Show when={status}>
-        <span class={toolInputSummary}>{status}</span>
-      </Show>
-    </>
+    <span class={toolInputSummary}>
+      {changes.length === 1
+        ? relativizePath(String(changes[0].path || 'file'), context?.workingDir, context?.homeDir)
+        : `${changes.length} files`}
+    </span>
   )
 
   return (
@@ -164,28 +601,24 @@ export function codexFileChangeRenderer(parsed: unknown, _role: MessageRole, con
       toolName="File Change"
       title={titleEl}
       context={context}
-      expanded={expanded()}
-      onToggleExpand={() => setExpanded(v => !v)}
+      alwaysVisible={true}
     >
-      <For each={changes}>
+      <Show when={hasLiveStream()}>
+        <LiveStreamOutput stream={liveStream} />
+      </Show>
+      <For each={changes.length === 1 ? [] : changes}>
         {(change) => {
-          const path = (change.path as string) || '(unknown)'
-          const kind = (change.kind as string) || ''
-          const diff = (change.diff as string) || ''
+          const path = relativizePath((change.path as string) || '(unknown)', context?.workingDir, context?.homeDir)
+          const kind = codexChangeKind(change)
           return (
-            <div>
-              <div class={toolInputPath}>
-                {path}
-                {' '}
-                <span class={toolInputSummary}>
-                  (
-                  {kind}
-                  )
-                </span>
-              </div>
-              <Show when={diff}>
-                <div class={toolResultContentPre}>{diff}</div>
-              </Show>
+            <div class={toolInputPath}>
+              {path}
+              {' '}
+              <span class={toolInputSummary}>
+                (
+                {kind}
+                )
+              </span>
             </div>
           )
         }}
@@ -202,8 +635,38 @@ export function codexReasoningRenderer(parsed: unknown, _role: MessageRole, _con
 
   const summary = (item.summary as string[]) || []
   const content = (item.content as string[]) || []
-  const text = summary.join('\n') || content.join('\n') || ''
-  if (!text)
+  const liveStream = () => _context?.commandStream ?? []
+  const liveSummary = () => {
+    const parts: string[] = []
+    let current = ''
+    for (const segment of liveStream()) {
+      if (segment.kind === 'reasoning_summary_break') {
+        if (current) {
+          parts.push(current)
+          current = ''
+        }
+        continue
+      }
+      if (segment.kind === 'reasoning_summary')
+        current += segment.text
+    }
+    if (current)
+      parts.push(current)
+    return parts
+  }
+  const liveContent = () => liveStream()
+    .filter(segment => segment.kind === 'reasoning_content')
+    .map(segment => segment.text)
+  const text = () => {
+    const streamedSummary = liveSummary()
+    if (streamedSummary.length > 0)
+      return streamedSummary.join('\n\n')
+    const streamedContent = liveContent()
+    if (streamedContent.length > 0)
+      return streamedContent.join('\n')
+    return summary.join('\n') || content.join('\n') || ''
+  }
+  if (!text())
     return null
 
   const [expanded, setExpanded] = createSignal(false)
@@ -223,7 +686,7 @@ export function codexReasoningRenderer(parsed: unknown, _role: MessageRole, _con
       </div>
       <Show when={expanded()}>
         <div class={thinkingContent}>
-          <div class={markdownContent} innerHTML={renderMarkdown(text)} />
+          <div class={markdownContent} innerHTML={renderMarkdown(text())} />
         </div>
       </Show>
     </div>
@@ -257,6 +720,28 @@ export function codexMcpToolCallRenderer(parsed: unknown, _role: MessageRole, co
   const [expanded, setExpanded] = createSignal(false)
 
   const titleEl = codexStatusTitle(server ? `${server}/${tool}` : tool, status)
+
+  if (status === 'completed' || status === 'failed') {
+    return (
+      <div class={toolMessage}>
+        <Show when={result}>
+          <div>
+            <div class={toolResultPrompt}>Result</div>
+            <div class={toolResultContentPre}>{JSON.stringify(result, null, 2)}</div>
+          </div>
+        </Show>
+        <Show when={error}>
+          <div>
+            <div class={toolResultPrompt}>Error</div>
+            <div class={toolResultError}>{JSON.stringify(error, null, 2)}</div>
+          </div>
+        </Show>
+        <Show when={!result && !error && status}>
+          <div class={toolResultPrompt}>{status}</div>
+        </Show>
+      </div>
+    )
+  }
 
   return (
     <ToolUseLayout
@@ -298,14 +783,22 @@ export function codexCollabAgentToolCallRenderer(parsed: unknown, _role: Message
   const tool = (item.tool as string) || 'SpawnAgent'
   const status = (item.status as string) || ''
   const displayName = tool === 'spawnAgent' ? 'SpawnAgent' : tool
+  const titleEl = renderToolDetail('Agent', { description: displayName }, context) || codexStatusTitle(displayName, status)
 
-  const titleEl = codexStatusTitle(displayName, status)
+  if (status === 'completed' || status === 'failed') {
+    return (
+      <div class={toolMessage}>
+        <div class={toolResultPrompt}>{`${displayName} ${status}`}</div>
+      </div>
+    )
+  }
 
   return (
     <ToolUseLayout
       icon={Bot}
       toolName={displayName}
       title={titleEl}
+      summary={status ? <div class={toolInputSummary}>{status}</div> : undefined}
       context={context}
     />
   )

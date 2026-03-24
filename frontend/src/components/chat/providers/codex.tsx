@@ -21,6 +21,8 @@ import {
   codexPlanRenderer,
   codexReasoningRenderer,
   codexTurnCompletedRenderer,
+  codexTurnPlanRenderer,
+  codexWebSearchRenderer,
 } from '../codexRenderers'
 import { CodexControlActions, CodexControlContent } from '../controls/CodexControlRequest'
 import { isNotificationThreadWrapper, isObject } from '../messageUtils'
@@ -51,8 +53,10 @@ function buildCodexInterruptRequest(threadId: string, turnId: string): string {
 /** Extra notification types for Codex (agent_error). */
 const CODEX_EXTRA_NOTIF_TYPES = new Set(['agent_error'])
 function isCodexNotifThread(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
-  if (isNotificationThreadWrapper(wrapper, CODEX_EXTRA_NOTIF_TYPES))
+  if (isNotificationThreadWrapper(wrapper, CODEX_EXTRA_NOTIF_TYPES, (t, st) =>
+    t === 'system' && st !== 'init' && st !== 'task_notification')) {
     return true
+  }
   // Codex method-based notifications (e.g. account/rateLimits/updated)
   if (!wrapper || wrapper.messages.length < 1)
     return false
@@ -236,10 +240,26 @@ const codexPlugin: ProviderPlugin = {
     if (!parent)
       return { kind: 'unknown' }
 
+    const type = parent.type as string | undefined
+    const subtype = parent.subtype as string | undefined
+
     // Startup and status notifications are transient lifecycle signals.
     // Persist them if needed, but keep them out of chat rendering.
     if (parent.method === 'thread/started' || parent.method === 'turn/started' || parent.method === 'thread/status/changed')
       return { kind: 'hidden' }
+
+    if (type === 'system') {
+      if (subtype === 'init')
+        return { kind: 'hidden' }
+      if (subtype === 'status' && parent.status !== 'compacting')
+        return { kind: 'hidden' }
+      if (subtype === 'task_notification')
+        return { kind: 'hidden' }
+      return { kind: 'notification' }
+    }
+
+    if (parent.method === 'turn/plan/updated' && isObject(parent.params))
+      return { kind: 'tool_use', toolName: 'turnPlan', toolUse: parent, content: [] }
 
     // Each item is now its own message (no more merging).
     const effective = parent
@@ -283,6 +303,10 @@ const codexPlugin: ProviderPlugin = {
       if (itemType === 'collabAgentToolCall')
         return { kind: 'tool_use', toolName: 'collabAgentToolCall', toolUse: item, content: [] }
 
+      // webSearch → tool use / result-like native codex message
+      if (itemType === 'webSearch')
+        return { kind: 'tool_use', toolName: 'webSearch', toolUse: item, content: [] }
+
       // reasoning → thinking (hide if both summary and content are empty)
       if (itemType === 'reasoning') {
         const summary = item.summary as unknown[] | undefined
@@ -312,9 +336,8 @@ const codexPlugin: ProviderPlugin = {
     }
 
     // LeapMux notification types
-    const type = parent.type as string | undefined
     if (type === 'settings_changed' || type === 'context_cleared'
-      || type === 'interrupted' || type === 'agent_error' || type === 'agent_renamed') {
+      || type === 'interrupted' || type === 'agent_error' || type === 'agent_renamed' || type === 'compacting') {
       return { kind: 'notification' }
     }
 
@@ -331,12 +354,16 @@ const codexPlugin: ProviderPlugin = {
     if (category.kind === 'tool_use') {
       // Use the item stored in category.toolUse (resolved to final state in classify).
       const cat = category as { toolName: string, toolUse: Record<string, unknown> }
+      if (cat.toolName === 'turnPlan')
+        return codexTurnPlanRenderer(cat.toolUse, role, context)
       if (cat.toolName === 'plan')
         return codexPlanRenderer(cat.toolUse, role, context)
       if (cat.toolName === 'commandExecution')
         return codexCommandExecutionRenderer(cat.toolUse, role, context)
       if (cat.toolName === 'fileChange')
         return codexFileChangeRenderer(cat.toolUse, role, context)
+      if (cat.toolName === 'webSearch')
+        return codexWebSearchRenderer(cat.toolUse, role, context)
       if (cat.toolName === 'collabAgentToolCall')
         return codexCollabAgentToolCallRenderer(cat.toolUse, role, context)
       return codexMcpToolCallRenderer(cat.toolUse, role, context)

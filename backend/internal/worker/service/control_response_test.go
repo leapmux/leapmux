@@ -1,0 +1,150 @@
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/msgcodec"
+	"github.com/leapmux/leapmux/internal/worker/agent"
+	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+)
+
+func decodeMessageContent(t *testing.T, content []byte, compression leapmuxv1.ContentCompression) string {
+	t.Helper()
+	raw, err := msgcodec.Decompress(content, compression)
+	require.NoError(t, err)
+
+	var body struct {
+		Content string `json:"content"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &body))
+	return body.Content
+}
+
+func TestSendControlResponse_PersistsCodexUserInputAnswer(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, "ws-1")
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents)
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+
+	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+		AgentID:   "agent-1",
+		RequestID: "7",
+		Payload: []byte(`{
+			"jsonrpc":"2.0",
+			"id":7,
+			"method":"item/tool/requestUserInput",
+			"params":{
+				"questions":[
+					{"header":"Task","id":"task"},
+					{"header":"Reason","id":"reason"}
+				]
+			}
+		}`),
+	}))
+
+	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+		AgentID:    "agent-1",
+		Model:      "opus",
+		WorkingDir: t.TempDir(),
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
+	require.NoError(t, err)
+	defer svc.Agents.StopAgent("agent-1")
+
+	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+		AgentId: "agent-1",
+		Content: []byte(`{
+			"jsonrpc":"2.0",
+			"id":7,
+			"result":{
+				"answers":{
+					"task":{"answers":["Inspect the renderer"]},
+					"reason":{"answers":["Need parity with Claude Code"]}
+				}
+			}
+		}`),
+	}, w)
+
+	require.Empty(t, w.errors)
+
+	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
+		AgentID: "agent-1",
+		Seq:     0,
+		Limit:   10,
+	})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_USER, rows[0].Role)
+	assert.Equal(t, "Task: Inspect the renderer\nReason: Need parity with Claude Code", decodeMessageContent(t, rows[0].Content, rows[0].ContentCompression))
+}
+
+func TestSendControlResponse_PersistsCodexFeedbackMessage(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, "ws-1")
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents)
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+
+	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+		AgentID:   "agent-1",
+		RequestID: "req-1",
+		Payload: []byte(`{
+			"type":"control_request",
+			"request_id":"req-1",
+			"request":{"tool_name":"ExitPlanMode"}
+		}`),
+	}))
+
+	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+		AgentID:    "agent-1",
+		Model:      "opus",
+		WorkingDir: t.TempDir(),
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
+	require.NoError(t, err)
+	defer svc.Agents.StopAgent("agent-1")
+
+	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+		AgentId: "agent-1",
+		Content: []byte(`{
+			"type":"control_response",
+			"response":{
+				"subtype":"success",
+				"request_id":"req-1",
+				"response":{
+					"behavior":"deny",
+					"message":"Please add tests before exiting plan mode."
+				}
+			}
+		}`),
+	}, w)
+
+	require.Empty(t, w.errors)
+
+	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
+		AgentID: "agent-1",
+		Seq:     0,
+		Limit:   10,
+	})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_USER, rows[0].Role)
+	assert.Equal(t, "Please add tests before exiting plan mode.", decodeMessageContent(t, rows[0].Content, rows[0].ContentCompression))
+}

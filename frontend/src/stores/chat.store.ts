@@ -41,6 +41,21 @@ function removePersistedLocalMessage(agentId: string, messageId: string) {
   safeSetJson(LOCAL_MSG_KEY, all)
 }
 
+function extractUserMessageText(message: AgentChatMessage): string | null {
+  if (message.role !== MessageRole.USER)
+    return null
+  const parsed = parseMessageContent(message)
+  const parent = parsed.parentObject
+  if (!parent)
+    return null
+  if (typeof parent.content === 'string')
+    return parent.content
+  const msg = parent.message as Record<string, unknown> | undefined
+  if (msg && typeof msg.content === 'string')
+    return msg.content
+  return null
+}
+
 /** Reconstruct an AgentChatMessage from a persisted local message. */
 function hydrateLocalMessage(p: PersistedLocalMessage): AgentChatMessage {
   const contentJson = JSON.stringify({ content: p.contentText })
@@ -66,9 +81,22 @@ export interface TodoItem {
   activeForm: string
 }
 
+export interface CommandStreamSegment {
+  kind: 'output' | 'interaction' | 'reasoning_summary' | 'reasoning_content' | 'reasoning_summary_break'
+  text: string
+}
+
+const METHOD_TO_SEGMENT_KIND: Record<string, CommandStreamSegment['kind']> = {
+  'item/commandExecution/terminalInteraction': 'interaction',
+  'item/reasoning/summaryTextDelta': 'reasoning_summary',
+  'item/reasoning/textDelta': 'reasoning_content',
+  'item/reasoning/summaryPartAdded': 'reasoning_summary_break',
+}
+
 interface ChatStoreState {
   messagesByAgent: Record<string, AgentChatMessage[]>
   streamingText: Record<string, string>
+  commandStreamsByAgent: Record<string, Record<string, CommandStreamSegment[]>>
   messageErrors: Record<string, string>
   /** Latest TodoWrite todos per agent, updated incrementally as messages arrive. */
   todosByAgent: Record<string, TodoItem[]>
@@ -89,6 +117,7 @@ export function createChatStore() {
   const [state, setState] = createStore<ChatStoreState>({
     messagesByAgent: {},
     streamingText: {},
+    commandStreamsByAgent: {},
     messageErrors: {},
     todosByAgent: {},
     loading: false,
@@ -172,7 +201,33 @@ export function createChatStore() {
         setState('messagesByAgent', agentId, existingIdx, message)
       }
       else {
+        // Reconcile optimistic local user messages before updating the store,
+        // so the localStorage side-effect stays outside the setState updater.
+        let reconciledLocalId: string | undefined
+        if (message.role === MessageRole.USER) {
+          const incomingText = extractUserMessageText(message)
+          if (incomingText) {
+            const current = state.messagesByAgent[agentId] ?? []
+            const local = current.find(candidate =>
+              candidate.id.startsWith('local-')
+              && candidate.role === MessageRole.USER
+              && !candidate.deliveryError
+              && extractUserMessageText(candidate) === incomingText,
+            )
+            if (local)
+              reconciledLocalId = local.id
+          }
+        }
+        if (reconciledLocalId)
+          removePersistedLocalMessage(agentId, reconciledLocalId)
+
         setState('messagesByAgent', agentId, (prev = []) => {
+          if (reconciledLocalId) {
+            const localIdx = prev.findIndex(m => m.id === reconciledLocalId)
+            if (localIdx !== -1)
+              return [...prev.slice(0, localIdx), message, ...prev.slice(localIdx + 1)]
+          }
+
           // Local (optimistic) messages have seq === 0n and always go at the end.
           if (message.seq === 0n) {
             return [...prev, message]
@@ -288,6 +343,38 @@ export function createChatStore() {
 
     clearStreamingText(agentId: string) {
       setState('streamingText', agentId, '')
+    },
+
+    appendCommandStream(agentId: string, spanId: string, method: string, text: string) {
+      if (!spanId)
+        return
+      const segmentKind: CommandStreamSegment['kind'] = METHOD_TO_SEGMENT_KIND[method] ?? 'output'
+      if (!text && segmentKind !== 'reasoning_summary_break')
+        return
+      setState('commandStreamsByAgent', agentId, spanId, (prev = []) => {
+        const last = prev.at(-1)
+        if (segmentKind !== 'reasoning_summary_break' && last && last.kind === segmentKind) {
+          return [
+            ...prev.slice(0, -1),
+            { kind: segmentKind, text: last.text + text },
+          ]
+        }
+        return [...prev, { kind: segmentKind, text }]
+      })
+      setState('messageVersion', agentId, (prev = 0) => prev + 1)
+    },
+
+    getCommandStream(agentId: string, spanId: string): CommandStreamSegment[] {
+      if (!spanId)
+        return []
+      return state.commandStreamsByAgent[agentId]?.[spanId] ?? []
+    },
+
+    clearCommandStream(agentId: string, spanId: string) {
+      if (!spanId)
+        return
+      setState('commandStreamsByAgent', agentId, spanId, undefined!)
+      setState('messageVersion', agentId, (prev = 0) => prev + 1)
     },
 
     getTodos(agentId: string): TodoItem[] {

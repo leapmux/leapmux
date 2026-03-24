@@ -1,17 +1,30 @@
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
-import { render, screen, waitFor } from '@solidjs/testing-library'
+import type { CommandStreamSegment } from '~/stores/chat.store'
+import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { ChatView } from '~/components/chat/ChatView'
 import { PreferencesProvider } from '~/context/PreferencesContext'
-import { ContentCompression } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 
-// jsdom does not provide ResizeObserver
+const A_TXT_RE = /a\.txt/
+const B_TXT_RE = /b\.txt/
+
+// jsdom does not provide ResizeObserver or Worker
 beforeAll(() => {
   globalThis.ResizeObserver ??= class {
     observe() {}
     unobserve() {}
     disconnect() {}
   } as unknown as typeof ResizeObserver
+  globalThis.Worker ??= class {
+    onmessage: ((e: MessageEvent) => void) | null = null
+    onerror: ((e: ErrorEvent) => void) | null = null
+    postMessage() {}
+    terminate() {}
+    addEventListener() {}
+    removeEventListener() {}
+    dispatchEvent() { return false }
+  } as unknown as typeof Worker
 })
 
 function makeMessage(role: string, text: string, id: string = '1'): AgentChatMessage {
@@ -29,6 +42,164 @@ function makeMessage(role: string, text: string, id: string = '1'): AgentChatMes
     seq: 1n,
     createdAt: '',
   }
+}
+
+function makeCodexCommandMessage(params: {
+  id: string
+  seq: bigint
+  spanId: string
+  status: string
+  command?: string
+  aggregatedOutput?: string
+  processId?: string
+  exitCode?: number
+}): AgentChatMessage {
+  return {
+    $typeName: 'leapmux.v1.AgentChatMessage',
+    id: params.id,
+    role: MessageRole.ASSISTANT,
+    content: new TextEncoder().encode(JSON.stringify({
+      item: {
+        type: 'commandExecution',
+        id: params.spanId,
+        command: params.command ?? 'echo hi',
+        cwd: '/tmp',
+        processId: params.processId,
+        status: params.status,
+        aggregatedOutput: params.aggregatedOutput ?? '',
+        exitCode: params.exitCode,
+      },
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+    })),
+    contentCompression: ContentCompression.NONE,
+    seq: params.seq,
+    createdAt: '',
+    agentProvider: AgentProvider.CODEX,
+    spanId: params.spanId,
+    spanType: 'commandExecution',
+  } as AgentChatMessage
+}
+
+function makeCodexFileChangeMessage(params: {
+  id: string
+  seq: bigint
+  spanId: string
+  status: string
+  diff?: string
+  changes?: Array<Record<string, unknown>>
+}): AgentChatMessage {
+  return {
+    $typeName: 'leapmux.v1.AgentChatMessage',
+    id: params.id,
+    role: MessageRole.ASSISTANT,
+    content: new TextEncoder().encode(JSON.stringify({
+      item: {
+        type: 'fileChange',
+        id: params.spanId,
+        status: params.status,
+        changes: params.changes ?? (params.status === 'completed'
+          ? [{ path: 'a.txt', kind: 'update', diff: params.diff ?? '@@ -1 +1 @@\n-old\n+new' }]
+          : []),
+      },
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+    })),
+    contentCompression: ContentCompression.NONE,
+    seq: params.seq,
+    createdAt: '',
+    agentProvider: AgentProvider.CODEX,
+    spanId: params.spanId,
+    spanType: 'fileChange',
+  } as AgentChatMessage
+}
+
+function makeCodexReasoningMessage(params: {
+  id: string
+  seq: bigint
+  spanId: string
+  summary?: string[]
+  content?: string[]
+}): AgentChatMessage {
+  return {
+    $typeName: 'leapmux.v1.AgentChatMessage',
+    id: params.id,
+    role: MessageRole.ASSISTANT,
+    content: new TextEncoder().encode(JSON.stringify({
+      item: {
+        type: 'reasoning',
+        id: params.spanId,
+        summary: params.summary ?? [],
+        content: params.content ?? [],
+      },
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+    })),
+    contentCompression: ContentCompression.NONE,
+    seq: params.seq,
+    createdAt: '',
+    agentProvider: AgentProvider.CODEX,
+    spanId: params.spanId,
+    spanType: 'reasoning',
+  } as AgentChatMessage
+}
+
+function makeCodexTurnPlanMessage(params: {
+  id: string
+  seq: bigint
+  explanation?: string | null
+  plan: Array<{ step: string, status: string }>
+}): AgentChatMessage {
+  return {
+    $typeName: 'leapmux.v1.AgentChatMessage',
+    id: params.id,
+    role: MessageRole.ASSISTANT,
+    content: new TextEncoder().encode(JSON.stringify({
+      method: 'turn/plan/updated',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        explanation: params.explanation ?? null,
+        plan: params.plan,
+      },
+    })),
+    contentCompression: ContentCompression.NONE,
+    seq: params.seq,
+    createdAt: '',
+    agentProvider: AgentProvider.CODEX,
+  } as AgentChatMessage
+}
+
+function makeCodexWebSearchMessage(params: {
+  id: string
+  seq: bigint
+  spanId: string
+  query?: string
+  action?: Record<string, unknown>
+  completed?: boolean
+}): AgentChatMessage {
+  return {
+    $typeName: 'leapmux.v1.AgentChatMessage',
+    id: params.id,
+    role: MessageRole.ASSISTANT,
+    content: new TextEncoder().encode(JSON.stringify({
+      item: {
+        type: 'webSearch',
+        id: params.spanId,
+        query: params.query ?? '',
+        action: params.action ?? { type: 'other' },
+      },
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+    })),
+    contentCompression: ContentCompression.NONE,
+    seq: params.seq,
+    createdAt: '',
+    agentProvider: AgentProvider.CODEX,
+    spanId: params.spanId,
+    spanType: 'webSearch',
+    spanLines: params.completed ? JSON.stringify([{ span_id: params.spanId, color: 1, type: 'connector_end' }]) : '[]',
+  } as AgentChatMessage
 }
 
 describe('chatView', () => {
@@ -72,5 +243,481 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
     expect(screen.getByTestId('chat-container')).toBeTruthy()
+  })
+
+  it('renders live command stream inside the matching codex command bubble', () => {
+    const messages = [
+      makeCodexCommandMessage({ id: 'cmd-start', seq: 1n, spanId: 'cmd-1', status: 'in_progress' }),
+    ]
+    const commandStream: CommandStreamSegment[] = [
+      { kind: 'output', text: 'building...\n' },
+      { kind: 'interaction', text: 'y\n' },
+    ]
+
+    render(() => (
+      <PreferencesProvider>
+        <ChatView
+          messages={messages}
+          streamingText=""
+          getCommandStreamBySpanId={() => commandStream}
+        />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getByText('building...')).toBeTruthy()
+    expect(screen.getByText('> y')).toBeTruthy()
+  })
+
+  it('keeps both codex commandExecution start and completed messages in history', () => {
+    const messages = [
+      makeCodexCommandMessage({ id: 'cmd-start', seq: 1n, spanId: 'cmd-1', status: 'in_progress' }),
+      makeCodexCommandMessage({ id: 'cmd-done', seq: 2n, spanId: 'cmd-1', status: 'completed', aggregatedOutput: 'done\n' }),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getAllByTestId('message-bubble')).toHaveLength(2)
+    expect(screen.getByText('done')).toBeTruthy()
+    expect(view.container.textContent).toContain('echo hi')
+  })
+
+  it('renders long completed codex command output with the shared collapsed result UI', () => {
+    const messages = [
+      makeCodexCommandMessage({
+        id: 'cmd-done',
+        seq: 1n,
+        spanId: 'cmd-1',
+        status: 'completed',
+        aggregatedOutput: 'line1\nline2\nline3\nline4\n',
+      }),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getByTestId('message-toolbar')).toBeTruthy()
+    expect(view.container.textContent).toContain('line1')
+    expect(view.container.textContent).toContain('line3')
+    expect(screen.queryByText('line4')).toBeNull()
+  })
+
+  it('strips tool use header DOM from completed codex command output', () => {
+    const messages = [
+      makeCodexCommandMessage({
+        id: 'cmd-done',
+        seq: 1n,
+        spanId: 'cmd-1',
+        status: 'failed',
+        aggregatedOutput: [
+          'TestingLibraryElementError',
+          '  <div',
+          '    class="toolStyles_toolUseHeader__174i4tc1"',
+          '  >',
+          '    <span>0 files</span>',
+          '  </div>',
+          'real failure output',
+        ].join('\n'),
+      }),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(view.container.textContent).toContain('real failure output')
+    expect(screen.queryByText('0 files')).toBeNull()
+  })
+
+  it('renders process ID and exit code in completed codex command failures without output', () => {
+    const messages = [
+      makeCodexCommandMessage({
+        id: 'cmd-failed',
+        seq: 1n,
+        spanId: 'cmd-1',
+        status: 'failed',
+        aggregatedOutput: '',
+        processId: '63628',
+        exitCode: 1,
+      }),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(view.container.textContent).toContain('Error (exit code: 1)')
+  })
+
+  it('renders live fileChange stream inside the matching codex fileChange bubble', () => {
+    const messages = [
+      makeCodexFileChangeMessage({ id: 'fc-start', seq: 1n, spanId: 'fc-1', status: 'in_progress' }),
+    ]
+    const fileStream: CommandStreamSegment[] = [
+      { kind: 'output', text: 'updating a.txt\n' },
+    ]
+
+    render(() => (
+      <PreferencesProvider>
+        <ChatView
+          messages={messages}
+          streamingText=""
+          getCommandStreamBySpanId={() => fileStream}
+        />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getByText('updating a.txt')).toBeTruthy()
+  })
+
+  it('keeps both codex fileChange start and completed messages in history', () => {
+    const messages = [
+      makeCodexFileChangeMessage({ id: 'fc-start', seq: 1n, spanId: 'fc-1', status: 'in_progress' }),
+      makeCodexFileChangeMessage({ id: 'fc-done', seq: 2n, spanId: 'fc-1', status: 'completed' }),
+    ]
+
+    render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getAllByTestId('message-bubble')).toHaveLength(2)
+    expect(screen.getByText('0 files')).toBeTruthy()
+    expect(screen.getByText('old')).toBeTruthy()
+  })
+
+  it('does not render a diff in the codex fileChange start message', () => {
+    const messages = [
+      makeCodexFileChangeMessage({
+        id: 'fc-start',
+        seq: 1n,
+        spanId: 'fc-1',
+        status: 'in_progress',
+        changes: [{ path: 'a.txt', kind: 'update', diff: '@@ -1 +1 @@\n-old\n+new' }],
+      }),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(view.container.textContent).toContain('a.txt')
+    expect(view.container.textContent).not.toContain('old')
+    expect(view.container.textContent).not.toContain('new')
+  })
+
+  it('renders a simple codex fileChange with Edit-style diff content', () => {
+    const messages = [
+      makeCodexFileChangeMessage({ id: 'fc-done', seq: 1n, spanId: 'fc-1', status: 'completed' }),
+    ]
+
+    render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.queryByText('completed')).toBeNull()
+    expect(screen.getByText('old')).toBeTruthy()
+    expect(screen.getByText('new')).toBeTruthy()
+  })
+
+  it('renders a simple codex add fileChange start message like Write tool_use', () => {
+    const messages = [
+      makeCodexFileChangeMessage({
+        id: 'fc-start',
+        seq: 1n,
+        spanId: 'fc-1',
+        status: 'in_progress',
+        changes: [{ path: '/repo/src/new-file.ts', kind: { type: 'add' }, diff: 'export const hello = "world"\n' }],
+      }),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(view.container.textContent).toContain('new-file.ts')
+    expect(view.container.textContent).not.toContain('export const hello = "world"')
+  })
+
+  it('renders a simple codex add fileChange completion like Write tool_use_result', () => {
+    const messages = [
+      makeCodexFileChangeMessage({
+        id: 'fc-done',
+        seq: 1n,
+        spanId: 'fc-1',
+        status: 'completed',
+        changes: [{ path: '/repo/src/new-file.ts', kind: { type: 'add' }, diff: 'export const hello = "world"\n' }],
+      }),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(view.container.textContent).toContain('export const hello = "world"')
+    expect(screen.getByTestId('message-toolbar')).toBeTruthy()
+  })
+
+  it('shows shared toolbar actions for completed codex fileChange messages', () => {
+    const messages = [
+      makeCodexFileChangeMessage({ id: 'fc-done', seq: 1n, spanId: 'fc-1', status: 'completed' }),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    const toolbar = screen.getByTestId('message-toolbar')
+    expect(toolbar).toBeTruthy()
+    expect(screen.getByTestId('message-copy-json')).toBeTruthy()
+    expect(view.container.querySelectorAll('[data-testid="message-toolbar"] button').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('falls back to codex fileChange summary for mixed changes', () => {
+    const messages = [
+      makeCodexFileChangeMessage({
+        id: 'fc-done',
+        seq: 1n,
+        spanId: 'fc-1',
+        status: 'completed',
+        changes: [
+          { path: 'a.txt', kind: 'create', diff: '' },
+          { path: 'b.txt', kind: 'delete', diff: '' },
+        ],
+      }),
+    ]
+
+    render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getByText('2 files changed')).toBeTruthy()
+    expect(screen.queryByText(A_TXT_RE)).toBeNull()
+    expect(screen.queryByText(B_TXT_RE)).toBeNull()
+  })
+
+  it('renders live reasoning stream inside the matching codex reasoning bubble', () => {
+    const messages = [
+      makeCodexReasoningMessage({ id: 'reason-start', seq: 1n, spanId: 'reason-1' }),
+    ]
+    const reasoningStream: CommandStreamSegment[] = [
+      { kind: 'reasoning_summary', text: 'first summary' },
+      { kind: 'reasoning_summary_break', text: '' },
+      { kind: 'reasoning_summary', text: 'second summary' },
+    ]
+
+    render(() => (
+      <PreferencesProvider>
+        <ChatView
+          messages={messages}
+          streamingText=""
+          getCommandStreamBySpanId={() => reasoningStream}
+        />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getAllByTestId('message-bubble')).toHaveLength(1)
+    expect(screen.getByText('Thinking')).toBeTruthy()
+  })
+
+  it('keeps completed codex reasoning visible while empty start reasoning remains hidden', () => {
+    const messages = [
+      makeCodexReasoningMessage({ id: 'reason-start', seq: 1n, spanId: 'reason-1' }),
+      makeCodexReasoningMessage({ id: 'reason-done', seq: 2n, spanId: 'reason-1', summary: ['done'] }),
+    ]
+
+    render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getAllByTestId('message-bubble')).toHaveLength(1)
+    expect(screen.getByText('Thinking')).toBeTruthy()
+  })
+
+  it('renders turn/plan/updated with the TodoWrite-style todo list UI', () => {
+    const messages = [
+      makeCodexTurnPlanMessage({
+        id: 'plan-1',
+        seq: 1n,
+        plan: [
+          { step: 'Inspect message filtering', status: 'inProgress' },
+          { step: 'Implement renderer', status: 'pending' },
+          { step: 'Run tests', status: 'completed' },
+        ],
+      }),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(view.container.textContent).toContain('3 tasks')
+    expect(view.container.textContent).toContain('Inspect message filtering')
+    expect(view.container.textContent).toContain('Implement renderer')
+    expect(view.container.textContent).toContain('Run tests')
+  })
+
+  it('renders turn/plan/updated explanation in the title when present', () => {
+    const messages = [
+      makeCodexTurnPlanMessage({
+        id: 'plan-1',
+        seq: 1n,
+        explanation: 'Need to keep start and complete messages visible',
+        plan: [
+          { step: 'Inspect message filtering', status: 'inProgress' },
+          { step: 'Implement renderer', status: 'pending' },
+        ],
+      }),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(view.container.textContent).toContain('2 tasks - Need to keep start and complete messages visible')
+  })
+
+  it('renders codex webSearch start and completed search messages separately', () => {
+    const messages = [
+      makeCodexWebSearchMessage({ id: 'ws-start', seq: 1n, spanId: 'ws-1' }),
+      makeCodexWebSearchMessage({
+        id: 'ws-done',
+        seq: 2n,
+        spanId: 'ws-1',
+        query: 'codex app server',
+        action: {
+          type: 'search',
+          query: 'codex app server',
+          queries: [
+            'codex app server',
+            'site:github.com openai codex "turn/plan/updated"',
+            'site:github.com "turn/plan/updated" codex app server',
+          ],
+        },
+        completed: true,
+      }),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getAllByTestId('message-bubble')).toHaveLength(1)
+    expect(view.container.textContent).not.toContain('Searching the web')
+    expect(view.container.textContent).toContain('codex app server')
+    expect(view.container.textContent).not.toContain('site:github.com openai codex')
+    expect(view.container.textContent).not.toContain('site:github.com "turn/plan/updated" codex app server')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
+
+    expect(view.container.textContent).toContain('site:github.com openai codex "turn/plan/updated"')
+    expect(view.container.textContent).toContain('site:github.com "turn/plan/updated" codex app server')
+  })
+
+  it('renders codex webSearch openPage messages like a fetch/opened-page result', () => {
+    const messages = [
+      makeCodexWebSearchMessage({
+        id: 'ws-open',
+        seq: 1n,
+        spanId: 'ws-1',
+        query: 'https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md',
+        action: {
+          type: 'openPage',
+          url: 'https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md',
+        },
+        completed: true,
+      }),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(view.container.textContent).toContain('https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md')
+    expect(screen.getByTestId('message-toolbar')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Expand' })).toBeNull()
+  })
+
+  it('renders codex webSearch findInPage messages with pattern and URL', () => {
+    const messages = [
+      makeCodexWebSearchMessage({
+        id: 'ws-find',
+        seq: 1n,
+        spanId: 'ws-1',
+        query: 'README',
+        action: {
+          type: 'findInPage',
+          url: 'https://example.com/readme',
+          pattern: 'turn/plan/updated',
+        },
+        completed: true,
+      }),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(view.container.textContent).toContain('turn/plan/updated')
+    expect(view.container.textContent).toContain('https://example.com/readme')
+    expect(screen.getByTestId('message-toolbar')).toBeTruthy()
+  })
+
+  it('hides empty completed codex webSearch messages with no query or detail', () => {
+    const messages = [
+      makeCodexWebSearchMessage({
+        id: 'ws-empty',
+        seq: 1n,
+        spanId: 'ws-1',
+        query: '',
+        action: { type: 'other' },
+        completed: true,
+      }),
+    ]
+
+    render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.queryByText('Searched')).toBeNull()
+    expect(screen.queryByText('Searching the web')).toBeNull()
+    expect(screen.queryByTestId('message-bubble')).toBeNull()
   })
 })

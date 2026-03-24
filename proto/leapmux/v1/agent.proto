@@ -173,16 +173,18 @@ message AgentChatMessage {
   string span_lines = 14; // JSON array of active span lines at this message's position
 }
 
-// AgentStreamChunk provides token-by-token streaming.
 message AgentStreamChunk {
   string message_id = 1;
   bytes delta = 2; // Verbatim NDJSON line (stream_event from Claude Code)
   AgentProvider agent_provider = 3; // Provider that produced this chunk
+  string span_id = 4; // Optional target tool/item span for inline streaming
+  string method = 5; // Original provider notification method for classifying the stream
 }
 
 // AgentStreamEnd signals that streaming for a message is complete.
 message AgentStreamEnd {
   string message_id = 1;
+  string span_id = 2; // Optional target tool/item span for inline streaming
 }
 
 // AgentStatusChange notifies of agent status transitions.

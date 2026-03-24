@@ -98,27 +98,58 @@ export function getInnerMessageType(parsed: ParsedMessageContent): string | unde
 // Domain-specific extractors
 // ---------------------------------------------------------------------------
 
+/** Convert a Codex plan array (from turn/plan/updated) to TodoItem[]. */
+export function codexPlanToTodos(plan: unknown[]): TodoItem[] {
+  return plan.flatMap((entry) => {
+    if (typeof entry !== 'object' || entry === null)
+      return []
+    const step = String((entry as Record<string, unknown>).step || '')
+    if (!step)
+      return []
+    const status = (entry as Record<string, unknown>).status
+    return [{
+      content: step,
+      status: status === 'inProgress' ? 'in_progress' as const : status === 'completed' ? 'completed' as const : 'pending' as const,
+      activeForm: step,
+    }]
+  })
+}
+
 /** Extract TodoWrite todos from a parsed assistant message. Returns null if not applicable. */
 export function extractTodos(message: AgentChatMessage, parsed: ParsedMessageContent): TodoItem[] | null {
   if (message.role !== MessageRole.ASSISTANT)
     return null
   const parent = parsed.parentObject
-  if (!parent || parent.type !== 'assistant')
+  if (!parent)
     return null
-  const msg = parent.message as Record<string, unknown> | undefined
-  const content = msg?.content
-  if (!Array.isArray(content))
-    return null
-  const toolUse = content.find(
-    (c: Record<string, unknown>) => typeof c === 'object' && c !== null && c.type === 'tool_use' && c.name === 'TodoWrite',
-  )
-  if (!toolUse?.input?.todos || !Array.isArray(toolUse.input.todos))
-    return null
-  return toolUse.input.todos.map((t: Record<string, unknown>) => ({
-    content: String(t.content || ''),
-    status: t.status === 'in_progress' ? 'in_progress' as const : t.status === 'completed' ? 'completed' as const : 'pending' as const,
-    activeForm: String(t.activeForm || ''),
-  }))
+
+  if (parent.type === 'assistant') {
+    const msg = parent.message as Record<string, unknown> | undefined
+    const content = msg?.content
+    if (!Array.isArray(content))
+      return null
+    const toolUse = content.find(
+      (c: Record<string, unknown>) => typeof c === 'object' && c !== null && c.type === 'tool_use' && c.name === 'TodoWrite',
+    )
+    if (!toolUse?.input?.todos || !Array.isArray(toolUse.input.todos))
+      return null
+    return toolUse.input.todos.map((t: Record<string, unknown>) => ({
+      content: String(t.content || ''),
+      status: t.status === 'in_progress' ? 'in_progress' as const : t.status === 'completed' ? 'completed' as const : 'pending' as const,
+      activeForm: String(t.activeForm || ''),
+    }))
+  }
+
+  if (parent.method === 'turn/plan/updated') {
+    const params = parent.params as Record<string, unknown> | undefined
+    const plan = params?.plan
+    if (!Array.isArray(plan))
+      return null
+    const todos = codexPlanToTodos(plan)
+    return todos.length > 0 ? todos : null
+  }
+
+  return null
 }
 
 /** Scan messages backward for the latest TodoWrite, returning todos or null. */

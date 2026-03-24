@@ -686,11 +686,22 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
+		dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+		if err != nil {
+			slog.Error("failed to look up agent for control response", "agent_id", agentID, "error", err)
+			sendNotFoundError(sender, "agent not found")
+			return
+		}
+
+		persistedCodexText := svc.codexControlResponseDisplayText(agentID, dbAgent.AgentProvider, content)
+
 		// Detect plan mode changes from the control response before
 		// forwarding to the agent. This mirrors the main-branch Hub logic
 		// that updated permission mode based on EnterPlanMode/ExitPlanMode
 		// approval or rejection.
 		svc.handleControlResponsePlanMode(agentID, content)
+
+		svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, persistedCodexText)
 
 		if err := svc.Agents.SendRawInput(agentID, content); err != nil {
 			slog.Error("failed to send control response to agent",
@@ -1073,6 +1084,18 @@ func (svc *Context) handleControlRequestMessage(agentID, content string) {
 	// Send as raw input to the agent's stdin.
 	if err := svc.Agents.SendRawInput(agentID, []byte(content)); err != nil {
 		slog.Error("failed to send control request to agent", "agent_id", agentID, "error", err)
+	}
+}
+
+func (svc *Context) persistSyntheticUserMessage(agentID string, provider leapmuxv1.AgentProvider, content string) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return
+	}
+
+	innerJSON, _ := json.Marshal(map[string]string{"content": content})
+	if err := svc.Output.persistAndBroadcast(agentID, provider, leapmuxv1.MessageRole_MESSAGE_ROLE_USER, innerJSON, agent.SpanInfo{}, nil); err != nil {
+		slog.Error("synthetic user message: failed to persist message", "agent_id", agentID, "error", err)
 	}
 }
 

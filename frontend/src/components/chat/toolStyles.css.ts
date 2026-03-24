@@ -42,6 +42,21 @@ export const toolResultContentPre = style({
   wordBreak: 'break-all',
 })
 
+export const commandStreamContainer = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--space-1)',
+})
+
+export const commandStreamInteraction = style([
+  toolResultContentPre,
+  {
+    color: 'var(--muted-foreground)',
+    paddingLeft: 'var(--space-2)',
+    borderLeft: '2px solid var(--border)',
+  },
+])
+
 // Tool result error message (subtle styling for transient, auto-recovered errors)
 export const toolResultError = style({
   color: 'var(--muted-foreground)',

@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
+import type { CommandStreamSegment } from '~/stores/chat.store'
 
 import ArrowDown from 'lucide-solid/icons/arrow-down'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
@@ -7,6 +8,7 @@ import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { spinner } from '~/styles/animations.css'
@@ -57,6 +59,8 @@ interface ChatViewProps {
   streamingType?: string
   /** Look up a message by its spanId (for tool_use ↔ tool_result linking). */
   getMessageBySpanId?: (spanId: string) => AgentChatMessage | undefined
+  /** Look up live Codex span stream segments by span id. */
+  getCommandStreamBySpanId?: (spanId: string) => CommandStreamSegment[]
 }
 
 export const ChatView: Component<ChatViewProps> = (props) => {
@@ -160,6 +164,22 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   onMount(() => {
     props.scrollStateRef?.(getScrollState)
     props.scrollToBottomRef?.(forceScrollToBottom)
+  })
+
+  const visibleEntries = createMemo(() => {
+    return props.messages.map((msg) => {
+      let classified = classifyParsedMessage(msg)
+      if (
+        classified.category.kind === 'hidden'
+        && msg.agentProvider === AgentProvider.CODEX
+        && msg.spanType === 'reasoning'
+        && msg.spanId
+        && (props.getCommandStreamBySpanId?.(msg.spanId).length ?? 0) > 0
+      ) {
+        classified = { ...classified, category: { kind: 'assistant_thinking' } }
+      }
+      return { msg, ...classified }
+    }).filter(entry => entry.category.kind !== 'hidden')
   })
 
   const scrollToBottom = () => {
@@ -315,12 +335,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
               onQuote={text => props.onQuote?.(formatChatQuote(text))}
             >
               <div ref={contentRef} class={styles.messageListContent}>
-                <For each={props.messages}>
-                  {(msg) => {
-                    const { parsed, category } = classifyParsedMessage(msg)
-                    if (category.kind === 'hidden')
-                      return null
-
+                <For each={visibleEntries()}>
+                  {({ msg, parsed, category }) => {
                     const spanLines = createMemo(() => {
                       if (!msg.spanLines || msg.spanLines === '[]')
                         return []
@@ -344,6 +360,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                         homeDir={props.homeDir}
                         onReply={props.onReply}
                         getMessageBySpanId={props.getMessageBySpanId}
+                        commandStream={props.getCommandStreamBySpanId?.(msg.spanId)}
                       />
                     )
 

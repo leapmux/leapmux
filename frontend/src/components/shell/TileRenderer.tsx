@@ -21,13 +21,13 @@ import { Icon } from '~/components/common/Icon'
 import { showWarnToast } from '~/components/common/Toast'
 import { FileViewer } from '~/components/fileviewer/FileViewer'
 import { TerminalView } from '~/components/terminal/TerminalView'
-import { AgentStatus, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { tabKey } from '~/stores/tab.store'
-import { isAgentWorking } from '~/utils/agentState'
+import { shouldShowThinkingIndicator } from '~/utils/agentState'
 import * as styles from './AppShell.css'
 import { TabBar } from './TabBar'
 import { Tile } from './Tile'
@@ -115,6 +115,14 @@ export function createTileRenderer(opts: TileRendererOpts) {
       return null
     return tabStore.state.tabs.find(t => tabKey(t) === key) ?? null
   }
+
+  const agentThinking = (agentId: string) => shouldShowThinkingIndicator(
+    agentStore.state.agents.find(a => a.id === agentId),
+    agentSessionStore.getInfo(agentId),
+    chatStore.getMessages(agentId),
+    chatStore.state.streamingText[agentId],
+    controlStore.getRequests(agentId).length,
+  )
 
   const createTabBarForTile = (tileId: string) => (
     <TabBar
@@ -233,7 +241,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     messageVersion={chatStore.getMessageVersion(agentId)}
                     streamingText={chatStore.state.streamingText[agentId] ?? ''}
                     streamingType={agentSessionStore.getInfo(agentId).streamingType}
-                    agentWorking={agentStore.state.agents.find(a => a.id === agentId)?.status === AgentStatus.ACTIVE && isAgentWorking(chatStore.getMessages(agentId)) && controlStore.getRequests(agentId).length === 0}
+                    agentWorking={agentThinking(agentId)}
                     messageErrors={chatStore.state.messageErrors}
                     onRetryMessage={messageId => agentOps.handleRetryMessage(agentId, messageId)}
                     onDeleteMessage={messageId => agentOps.handleDeleteMessage(agentId, messageId)}
@@ -256,6 +264,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                         forceScrollToBottomRef.current = fn
                     }}
                     getMessageBySpanId={spanId => chatStore.getMessageBySpanId(agentId, spanId)}
+                    getCommandStreamBySpanId={spanId => chatStore.getCommandStream(agentId, spanId)}
                     onQuote={isActiveWorkspaceArchived()
                       ? undefined
                       : (text) => {
@@ -407,6 +416,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
           if (!id)
             return
           forceScrollToBottomRef.current?.()
+          const sendAgent = agentStore.state.agents.find(a => a.id === id)
 
           // Create an optimistic local message so it appears immediately in the chat.
           const localId = `local-${crypto.randomUUID()}`
@@ -420,15 +430,14 @@ export function createTileRenderer(opts: TileRendererOpts) {
             createdAt: new Date().toISOString(),
             deliveryError: '',
             updatedAt: '',
+            agentProvider: sendAgent?.agentProvider,
           }
           chatStore.addMessage(id, localMsg)
 
           try {
-            const sendAgent = agentStore.state.agents.find(a => a.id === id)
             await workerRpc.sendAgentMessage(sendAgent?.workerId ?? '', { agentId: id, content })
-            // Success: remove the optimistic message. The real message
-            // will arrive via the WatchEvents stream from the Worker.
-            chatStore.removeMessage(id, localId)
+            // Keep the optimistic message until the persisted message arrives.
+            // chatStore.addMessage() reconciles the matching server echo in place.
           }
           catch {
             chatStore.setMessageError(localId, 'Failed to deliver')
@@ -446,7 +455,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         onInterrupt={() => agentOps.handleInterrupt(agentId())}
         settingsLoading={settingsLoading.loading()}
         agentSessionInfo={agentSessionStore.getInfo(agentId())}
-        agentWorking={agentStore.state.agents.find(a => a.id === agentId())?.status === AgentStatus.ACTIVE && isAgentWorking(chatStore.getMessages(agentId()))}
+        agentWorking={agentThinking(agentId())}
         containerHeight={props.containerHeight}
       />
     )

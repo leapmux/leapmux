@@ -177,6 +177,9 @@ func TestHandleCodexOutput_PlanDelta(t *testing.T) {
 	if sink.StreamChunkCount() != 1 {
 		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
 	}
+	if got := sink.LastStreamChunk(); got.Method != "item/plan/delta" || got.SpanID != "" || string(got.Content) != "# Plan\n" {
+		t.Fatalf("unexpected stream chunk: %+v", got)
+	}
 
 	// Verify the session info was broadcast with streamingType "plan".
 	if sink.SessionInfoCount() != 1 {
@@ -201,6 +204,203 @@ func TestHandleCodexOutput_PlanDelta(t *testing.T) {
 	// Should NOT be persisted as a regular message.
 	if sink.MessageCount() != 0 {
 		t.Errorf("expected 0 messages, got %d", sink.MessageCount())
+	}
+}
+
+func TestHandleCodexOutput_ContextCompactionStartPersistsCompactingNotification(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"item/started","params":{"item":{"type":"contextCompaction","id":"compact-1"},"threadId":"t1","turnId":"turn1"}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if sink.NotificationCount() != 1 {
+		t.Fatalf("expected 1 notification, got %d", sink.NotificationCount())
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(sink.LastNotification().Content, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal notification: %v", err)
+	}
+	if parsed["type"] != "compacting" {
+		t.Fatalf("expected compacting notification, got %+v", parsed)
+	}
+	if sink.MessageCount() != 0 {
+		t.Fatalf("expected 0 assistant messages, got %d", sink.MessageCount())
+	}
+}
+
+func TestHandleCodexOutput_ThreadCompactedPersistsBoundaryNotification(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"thread/compacted","params":{"threadId":"t1","turnId":"turn1"}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if sink.NotificationCount() != 1 {
+		t.Fatalf("expected 1 notification, got %d", sink.NotificationCount())
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(sink.LastNotification().Content, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal notification: %v", err)
+	}
+	if parsed["type"] != "system" || parsed["subtype"] != "compact_boundary" {
+		t.Fatalf("expected compact boundary notification, got %+v", parsed)
+	}
+	if parsed["threadId"] != "t1" || parsed["turnId"] != "turn1" {
+		t.Fatalf("expected thread/turn ids to be preserved, got %+v", parsed)
+	}
+	if sink.MessageCount() != 0 {
+		t.Fatalf("expected 0 assistant messages, got %d", sink.MessageCount())
+	}
+}
+
+func TestHandleCodexOutput_CommandExecutionOutputDelta(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"item/commandExecution/outputDelta","params":{"itemId":"cmd-1","delta":"hello\n","threadId":"t1","turnId":"turn1"}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if sink.StreamChunkCount() != 1 {
+		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
+	}
+	got := sink.LastStreamChunk()
+	if got.SpanID != "cmd-1" {
+		t.Fatalf("expected spanID cmd-1, got %q", got.SpanID)
+	}
+	if got.Method != "item/commandExecution/outputDelta" {
+		t.Fatalf("expected command output method, got %q", got.Method)
+	}
+	if string(got.Content) != "hello\n" {
+		t.Fatalf("unexpected content %q", string(got.Content))
+	}
+	if sink.MessageCount() != 0 {
+		t.Fatalf("expected no persisted messages, got %d", sink.MessageCount())
+	}
+}
+
+func TestHandleCodexOutput_ReasoningSummaryTextDelta(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"item/reasoning/summaryTextDelta","params":{"itemId":"reason-1","delta":"thinking...","summaryIndex":0,"threadId":"t1","turnId":"turn1"}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if sink.StreamChunkCount() != 1 {
+		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
+	}
+	got := sink.LastStreamChunk()
+	if got.SpanID != "reason-1" {
+		t.Fatalf("expected spanID reason-1, got %q", got.SpanID)
+	}
+	if got.Method != "item/reasoning/summaryTextDelta" {
+		t.Fatalf("expected reasoning summary method, got %q", got.Method)
+	}
+	if string(got.Content) != "thinking..." {
+		t.Fatalf("unexpected content %q", string(got.Content))
+	}
+	if sink.MessageCount() != 0 {
+		t.Fatalf("expected no persisted messages, got %d", sink.MessageCount())
+	}
+}
+
+func TestHandleCodexOutput_ReasoningSummaryPartAdded(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"item/reasoning/summaryPartAdded","params":{"itemId":"reason-1","summaryIndex":1,"threadId":"t1","turnId":"turn1"}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if sink.StreamChunkCount() != 1 {
+		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
+	}
+	got := sink.LastStreamChunk()
+	if got.SpanID != "reason-1" {
+		t.Fatalf("expected spanID reason-1, got %q", got.SpanID)
+	}
+	if got.Method != "item/reasoning/summaryPartAdded" {
+		t.Fatalf("expected reasoning summary part method, got %q", got.Method)
+	}
+	if len(got.Content) != 0 {
+		t.Fatalf("expected empty content, got %q", string(got.Content))
+	}
+	if sink.MessageCount() != 0 {
+		t.Fatalf("expected no persisted messages, got %d", sink.MessageCount())
+	}
+}
+
+func TestHandleCodexOutput_ReasoningTextDelta(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"item/reasoning/textDelta","params":{"itemId":"reason-1","delta":"raw chain","contentIndex":0,"threadId":"t1","turnId":"turn1"}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if sink.StreamChunkCount() != 1 {
+		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
+	}
+	got := sink.LastStreamChunk()
+	if got.SpanID != "reason-1" {
+		t.Fatalf("expected spanID reason-1, got %q", got.SpanID)
+	}
+	if got.Method != "item/reasoning/textDelta" {
+		t.Fatalf("expected reasoning text method, got %q", got.Method)
+	}
+	if string(got.Content) != "raw chain" {
+		t.Fatalf("unexpected content %q", string(got.Content))
+	}
+	if sink.MessageCount() != 0 {
+		t.Fatalf("expected no persisted messages, got %d", sink.MessageCount())
+	}
+}
+
+func TestHandleCodexOutput_CommandExecutionTerminalInteraction(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"item/commandExecution/terminalInteraction","params":{"itemId":"cmd-1","processId":"123","stdin":"y\n","threadId":"t1","turnId":"turn1"}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if sink.StreamChunkCount() != 1 {
+		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
+	}
+	got := sink.LastStreamChunk()
+	if got.SpanID != "cmd-1" {
+		t.Fatalf("expected spanID cmd-1, got %q", got.SpanID)
+	}
+	if got.Method != "item/commandExecution/terminalInteraction" {
+		t.Fatalf("expected command interaction method, got %q", got.Method)
+	}
+	if string(got.Content) != "y\n" {
+		t.Fatalf("unexpected content %q", string(got.Content))
+	}
+	if sink.MessageCount() != 0 {
+		t.Fatalf("expected no persisted messages, got %d", sink.MessageCount())
+	}
+}
+
+func TestHandleCodexOutput_FileChangeOutputDelta(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"item/fileChange/outputDelta","params":{"itemId":"fc-1","delta":"diff --git a.txt b.txt\n","threadId":"t1","turnId":"turn1"}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if sink.StreamChunkCount() != 1 {
+		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
+	}
+	got := sink.LastStreamChunk()
+	if got.SpanID != "fc-1" {
+		t.Fatalf("expected spanID fc-1, got %q", got.SpanID)
+	}
+	if got.Method != "item/fileChange/outputDelta" {
+		t.Fatalf("expected file change output method, got %q", got.Method)
+	}
+	if string(got.Content) != "diff --git a.txt b.txt\n" {
+		t.Fatalf("unexpected content %q", string(got.Content))
+	}
+	if sink.MessageCount() != 0 {
+		t.Fatalf("expected no persisted messages, got %d", sink.MessageCount())
 	}
 }
 
@@ -244,6 +444,60 @@ func TestHandleCodexOutput_PlanDeltaThenCompleted(t *testing.T) {
 	info2 := sink.LastSessionInfo()
 	if info2["streamingType"] != "plan" {
 		t.Errorf("expected streamingType 'plan', got %v", info2["streamingType"])
+	}
+}
+
+func TestHandleCodexOutput_CommandExecutionCompletedBroadcastsStreamEnd(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	completed := `{"method":"item/completed","params":{"threadId":"t1","item":{"type":"commandExecution","id":"cmd-1","status":"completed","aggregatedOutput":"done"}}}`
+	handleCodexOutput(agent, []byte(completed))
+
+	if sink.MessageCount() != 1 {
+		t.Fatalf("expected 1 persisted message, got %d", sink.MessageCount())
+	}
+	if sink.StreamEndCount() != 1 {
+		t.Fatalf("expected 1 stream end, got %d", sink.StreamEndCount())
+	}
+	if got := sink.LastStreamEnd(); got != "cmd-1" {
+		t.Fatalf("expected stream end for cmd-1, got %q", got)
+	}
+}
+
+func TestHandleCodexOutput_FileChangeCompletedBroadcastsStreamEnd(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	completed := `{"method":"item/completed","params":{"threadId":"t1","item":{"type":"fileChange","id":"fc-1","status":"completed","changes":[{"path":"a.txt","kind":"update","diff":"@@ -1 +1 @@\n-old\n+new"}]}}}`
+	handleCodexOutput(agent, []byte(completed))
+
+	if sink.MessageCount() != 1 {
+		t.Fatalf("expected 1 persisted message, got %d", sink.MessageCount())
+	}
+	if sink.StreamEndCount() != 1 {
+		t.Fatalf("expected 1 stream end, got %d", sink.StreamEndCount())
+	}
+	if got := sink.LastStreamEnd(); got != "fc-1" {
+		t.Fatalf("expected stream end for fc-1, got %q", got)
+	}
+}
+
+func TestHandleCodexOutput_ReasoningCompletedBroadcastsStreamEnd(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	completed := `{"method":"item/completed","params":{"threadId":"t1","item":{"type":"reasoning","id":"reason-1","summary":["done"]}}}`
+	handleCodexOutput(agent, []byte(completed))
+
+	if sink.MessageCount() != 1 {
+		t.Fatalf("expected 1 persisted message, got %d", sink.MessageCount())
+	}
+	if sink.StreamEndCount() != 1 {
+		t.Fatalf("expected 1 stream end, got %d", sink.StreamEndCount())
+	}
+	if got := sink.LastStreamEnd(); got != "reason-1" {
+		t.Fatalf("expected stream end for reason-1, got %q", got)
 	}
 }
 

@@ -22,7 +22,8 @@ type OutputSink interface {
 	SetSpanType(spanID, spanType string)
 	GetSpanType(spanID string) string
 	PeekNextSpanColor() int32
-	BroadcastStreamChunk(content []byte)
+	BroadcastStreamChunk(content []byte, spanID string, method string)
+	BroadcastStreamEnd(spanID string)
 	PersistControlRequest(requestID string, payload []byte)
 	DeleteControlRequest(requestID string)
 	BroadcastControlRequest(requestID string, payload []byte)
