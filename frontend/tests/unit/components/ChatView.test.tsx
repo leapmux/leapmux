@@ -6,6 +6,9 @@ import { ChatView } from '~/components/chat/ChatView'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { AgentProvider, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 
+const A_TXT_RE = /a\.txt/
+const B_TXT_RE = /b\.txt/
+
 // jsdom does not provide ResizeObserver or Worker
 beforeAll(() => {
   globalThis.ResizeObserver ??= class {
@@ -512,8 +515,8 @@ describe('chatView', () => {
     ))
 
     expect(screen.getByText('2 files changed')).toBeTruthy()
-    expect(screen.queryByText(/a\.txt/)).toBeNull()
-    expect(screen.queryByText(/b\.txt/)).toBeNull()
+    expect(screen.queryByText(A_TXT_RE)).toBeNull()
+    expect(screen.queryByText(B_TXT_RE)).toBeNull()
   })
 
   it('renders live reasoning stream inside the matching codex reasoning bubble', () => {

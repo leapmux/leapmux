@@ -301,7 +301,10 @@ describe('groupByHunk', () => {
   })
 })
 
-describe('DiffView gap rendering without original file', () => {
+const EXPAND_RE = /expand/i
+const COLLAPSE_RE = /collapse/i
+
+describe('diffView gap rendering without original file', () => {
   const hunks: StructuredPatchHunk[] = [
     { oldStart: 4, oldLines: 2, newStart: 4, newLines: 2, lines: [' line 4', '-line 5', '+line 5 mod'] },
     { oldStart: 9, oldLines: 1, newStart: 9, newLines: 1, lines: ['-line 9', '+line 9 mod'] },
@@ -313,8 +316,8 @@ describe('DiffView gap rendering without original file', () => {
     ))
 
     expect(getAllByText('3 lines hidden')).toHaveLength(1)
-    expect(queryByRole('button', { name: /expand/i })).toBeNull()
-    expect(queryByRole('button', { name: /collapse/i })).toBeNull()
+    expect(queryByRole('button', { name: EXPAND_RE })).toBeNull()
+    expect(queryByRole('button', { name: COLLAPSE_RE })).toBeNull()
   })
 
   it('renders non-clickable hidden-line gaps in split view', () => {
@@ -323,7 +326,7 @@ describe('DiffView gap rendering without original file', () => {
     ))
 
     expect(getAllByText('3 lines hidden')).toHaveLength(1)
-    expect(queryByRole('button', { name: /expand/i })).toBeNull()
-    expect(queryByRole('button', { name: /collapse/i })).toBeNull()
+    expect(queryByRole('button', { name: EXPAND_RE })).toBeNull()
+    expect(queryByRole('button', { name: COLLAPSE_RE })).toBeNull()
   })
 })

@@ -3,6 +3,7 @@ import type { JSX } from 'solid-js'
 import type { StructuredPatchHunk } from './diffUtils'
 import type { RenderContext } from './messageRenderers'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import type { TodoItem } from '~/stores/chat.store'
 import Bot from 'lucide-solid/icons/bot'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
@@ -15,10 +16,9 @@ import Terminal from 'lucide-solid/icons/terminal'
 import Wrench from 'lucide-solid/icons/wrench'
 import { createEffect, createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
-import { TodoList } from '~/components/todo/TodoList'
 import { Tooltip } from '~/components/common/Tooltip'
+import { TodoList } from '~/components/todo/TodoList'
 import { renderMarkdown, shikiHighlighter } from '~/lib/renderMarkdown'
-import type { TodoItem } from '~/stores/chat.store'
 import { inlineFlex } from '~/styles/shared.css'
 import { DiffView, rawDiffToHunks } from './diffUtils'
 import { markdownContent } from './markdownContent.css'
@@ -35,8 +35,8 @@ import { renderToolDetail } from './toolDetailRenderers'
 import { ToolResultMessage, ToolUseLayout } from './toolRenderers'
 import {
   commandStreamContainer,
-  toolInputCode,
   commandStreamInteraction,
+  toolInputCode,
   toolInputPath,
   toolInputSummary,
   toolInputText,
@@ -50,6 +50,8 @@ import {
 /** Regex to strip shell wrappers like `/bin/zsh -lc '...'` from commands. */
 const SHELL_WRAPPER_RE = /^\/bin\/(?:ba|z)?sh\s+-lc\s+'(.+)'$/
 const CODEX_DIFF_HEADER_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
+const DIV_OPEN_RE = /<div\b/g
+const DIV_CLOSE_RE = /<\/div>/g
 const TOOL_USE_HEADER_CLASS_FRAGMENT = 'toolUseHeader__'
 
 interface ParsedCodexDiff {
@@ -173,14 +175,14 @@ function stripToolUseHeaderFromOutput(output: string): string {
       continue
     }
 
-    if (kept.length > 0 && kept[kept.length - 1].includes('<div'))
+    if (kept.length > 0 && kept.at(-1).includes('<div'))
       kept.pop()
 
     let depth = 1
     while (++i < lines.length) {
       const current = lines[i]
-      depth += (current.match(/<div\b/g) || []).length
-      depth -= (current.match(/<\/div>/g) || []).length
+      depth += (current.match(DIV_OPEN_RE) || []).length
+      depth -= (current.match(DIV_CLOSE_RE) || []).length
       if (depth <= 0)
         break
     }
@@ -472,15 +474,15 @@ export function codexCommandExecutionRenderer(parsed: unknown, _role: MessageRol
       icon={Terminal}
       toolName="Command Execution"
       title={title}
-      summary={
+      summary={(
         <>
-          {/* eslint-disable-next-line solid/no-innerhtml -- shiki output is safe */}
+          { }
           <div class={toolInputSummary} innerHTML={renderBashHighlight(displayCommand)} />
           <Show when={statusParts()}>
             <div class={toolInputSummary}>{statusParts()}</div>
           </Show>
         </>
-      }
+      )}
       context={context}
       expanded={expanded()}
       onToggleExpand={() => setExpanded(v => !v)}
@@ -668,9 +670,9 @@ export function codexFileChangeRenderer(parsed: unknown, _role: MessageRole, con
                 {' '}
                 <span class={toolInputSummary}>
                   (
-                    {kind}
-                    )
-                  </span>
+                  {kind}
+                  )
+                </span>
               </div>
             </div>
           )

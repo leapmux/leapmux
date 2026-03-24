@@ -20,8 +20,8 @@ import {
   codexMcpToolCallRenderer,
   codexPlanRenderer,
   codexReasoningRenderer,
-  codexTurnPlanRenderer,
   codexTurnCompletedRenderer,
+  codexTurnPlanRenderer,
   codexWebSearchRenderer,
 } from '../codexRenderers'
 import { CodexControlActions, CodexControlContent } from '../controls/CodexControlRequest'
@@ -54,8 +54,9 @@ function buildCodexInterruptRequest(threadId: string, turnId: string): string {
 const CODEX_EXTRA_NOTIF_TYPES = new Set(['agent_error'])
 function isCodexNotifThread(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
   if (isNotificationThreadWrapper(wrapper, CODEX_EXTRA_NOTIF_TYPES, (t, st) =>
-    t === 'system' && st !== 'init' && st !== 'task_notification'))
+    t === 'system' && st !== 'init' && st !== 'task_notification')) {
     return true
+  }
   // Codex method-based notifications (e.g. account/rateLimits/updated)
   if (!wrapper || wrapper.messages.length < 1)
     return false
