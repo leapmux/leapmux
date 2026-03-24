@@ -7,6 +7,7 @@ import Bot from 'lucide-solid/icons/bot'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FileEdit from 'lucide-solid/icons/file-pen-line'
+import FilePlus from 'lucide-solid/icons/file-plus'
 import Globe from 'lucide-solid/icons/globe'
 import ListTodo from 'lucide-solid/icons/list-todo'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
@@ -19,7 +20,7 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { renderMarkdown, shikiHighlighter } from '~/lib/renderMarkdown'
 import type { TodoItem } from '~/stores/chat.store'
 import { inlineFlex } from '~/styles/shared.css'
-import { DiffView } from './diffUtils'
+import { DiffView, rawDiffToHunks } from './diffUtils'
 import { markdownContent } from './markdownContent.css'
 import {
   resultDivider,
@@ -142,6 +143,10 @@ function codexChangeKind(change: Record<string, unknown>): string {
 
 function isSimpleEditChange(change: Record<string, unknown>): boolean {
   return codexChangeKind(change) === 'update' && typeof change.diff === 'string' && !!parseCodexUnifiedDiff(change.diff as string)
+}
+
+function isSimpleAddChange(change: Record<string, unknown>): boolean {
+  return codexChangeKind(change) === 'add' && typeof change.diff === 'string' && (change.diff as string).length > 0
 }
 
 function parsedChangeDiffs(changes: Array<Record<string, unknown>>): Array<{ path: string, diff: ParsedCodexDiff }> {
@@ -418,7 +423,6 @@ export function codexCommandExecutionRenderer(parsed: unknown, _role: MessageRol
   const output = stripToolUseHeaderFromOutput((item.aggregatedOutput as string) || '')
   const exitCode = item.exitCode as number | null | undefined
   const durationMs = item.durationMs as number | null | undefined
-  const processId = item.processId as string | null | undefined
   const isTerminal = status === 'completed' || status === 'failed'
   const hasError = status === 'failed' || (isTerminal && exitCode != null && exitCode !== 0)
   const liveStream = () => context?.commandStream ?? []
@@ -441,8 +445,6 @@ export function codexCommandExecutionRenderer(parsed: unknown, _role: MessageRol
   }
   const resultStatusDetail = (): string => {
     const parts: string[] = []
-    if (processId)
-      parts.push(`process ID: ${processId}`)
     if (exitCode != null && exitCode !== 0)
       parts.push(`exit code: ${exitCode}`)
     return parts.join(' · ')
@@ -519,6 +521,24 @@ export function codexFileChangeRenderer(parsed: unknown, _role: MessageRole, con
   const liveStream = () => context?.commandStream ?? []
   const hasLiveStream = () => liveStream().length > 0
   const completedDiffs = parsedChangeDiffs(changes)
+  const simpleAdd = changes.length === 1 && isSimpleAddChange(changes[0]) ? changes[0] : null
+  const simpleAddPath = simpleAdd ? ((simpleAdd.path as string) || '') : ''
+  const simpleAddContent = simpleAdd ? ((simpleAdd.diff as string) || '') : ''
+
+  if (status === 'completed' && simpleAdd) {
+    return (
+      <ToolResultMessage
+        toolName="Write"
+        resultContent=""
+        isPreText={false}
+        structuredPatch={rawDiffToHunks('', simpleAddContent)}
+        oldStr=""
+        newStr={simpleAddContent}
+        filePath={simpleAddPath}
+        context={context}
+      />
+    )
+  }
 
   if (status === 'completed' && completedDiffs.length > 0) {
     return (
@@ -550,6 +570,35 @@ export function codexFileChangeRenderer(parsed: unknown, _role: MessageRole, con
 
   const simpleEdit = changes.length === 1 && isSimpleEditChange(changes[0]) ? changes[0] : null
   const parsedDiff = simpleEdit ? parseCodexUnifiedDiff(simpleEdit.diff as string) : null
+  if (simpleAdd) {
+    const title = renderToolDetail('Write', {
+      file_path: simpleAddPath,
+      content: simpleAddContent,
+    }, context) || (
+      <span class={toolInputPath}>{relativizePath(simpleAddPath, context?.workingDir, context?.homeDir)}</span>
+    )
+
+    return (
+      <ToolUseLayout
+        icon={FilePlus}
+        toolName="File Change"
+        title={title}
+        context={context}
+        alwaysVisible={true}
+      >
+        <Show when={hasLiveStream()}>
+          <div class={commandStreamContainer}>
+            <For each={liveStream()}>
+              {segment => (
+                <div class={toolResultContentPre}>{segment.text}</div>
+              )}
+            </For>
+          </div>
+        </Show>
+      </ToolUseLayout>
+    )
+  }
+
   if (simpleEdit && parsedDiff) {
     const path = (simpleEdit.path as string) || ''
     const title = renderToolDetail('Edit', {

@@ -6,13 +6,22 @@ import { ChatView } from '~/components/chat/ChatView'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { AgentProvider, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 
-// jsdom does not provide ResizeObserver
+// jsdom does not provide ResizeObserver or Worker
 beforeAll(() => {
   globalThis.ResizeObserver ??= class {
     observe() {}
     unobserve() {}
     disconnect() {}
   } as unknown as typeof ResizeObserver
+  globalThis.Worker ??= class {
+    onmessage: ((e: MessageEvent) => void) | null = null
+    onerror: ((e: ErrorEvent) => void) | null = null
+    postMessage() {}
+    terminate() {}
+    addEventListener() {}
+    removeEventListener() {}
+    dispatchEvent() { return false }
+  } as unknown as typeof Worker
 })
 
 function makeMessage(role: string, text: string, id: string = '1'): AgentChatMessage {
@@ -344,7 +353,7 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(view.container.textContent).toContain('Error (process ID: 63628 · exit code: 1)')
+    expect(view.container.textContent).toContain('Error (exit code: 1)')
   })
 
   it('renders live fileChange stream inside the matching codex fileChange bubble', () => {
@@ -421,6 +430,48 @@ describe('chatView', () => {
     expect(screen.queryByText('completed')).toBeNull()
     expect(screen.getByText('old')).toBeTruthy()
     expect(screen.getByText('new')).toBeTruthy()
+  })
+
+  it('renders a simple codex add fileChange start message like Write tool_use', () => {
+    const messages = [
+      makeCodexFileChangeMessage({
+        id: 'fc-start',
+        seq: 1n,
+        spanId: 'fc-1',
+        status: 'in_progress',
+        changes: [{ path: '/repo/src/new-file.ts', kind: { type: 'add' }, diff: 'export const hello = "world"\n' }],
+      }),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(view.container.textContent).toContain('new-file.ts')
+    expect(view.container.textContent).not.toContain('export const hello = "world"')
+  })
+
+  it('renders a simple codex add fileChange completion like Write tool_use_result', () => {
+    const messages = [
+      makeCodexFileChangeMessage({
+        id: 'fc-done',
+        seq: 1n,
+        spanId: 'fc-1',
+        status: 'completed',
+        changes: [{ path: '/repo/src/new-file.ts', kind: { type: 'add' }, diff: 'export const hello = "world"\n' }],
+      }),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(view.container.textContent).toContain('export const hello = "world"')
+    expect(screen.getByTestId('message-toolbar')).toBeTruthy()
   })
 
   it('shows shared toolbar actions for completed codex fileChange messages', () => {
