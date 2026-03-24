@@ -86,6 +86,13 @@ export interface CommandStreamSegment {
   text: string
 }
 
+const METHOD_TO_SEGMENT_KIND: Record<string, CommandStreamSegment['kind']> = {
+  'item/commandExecution/terminalInteraction': 'interaction',
+  'item/reasoning/summaryTextDelta': 'reasoning_summary',
+  'item/reasoning/textDelta': 'reasoning_content',
+  'item/reasoning/summaryPartAdded': 'reasoning_summary_break',
+}
+
 interface ChatStoreState {
   messagesByAgent: Record<string, AgentChatMessage[]>
   streamingText: Record<string, string>
@@ -331,16 +338,7 @@ export function createChatStore() {
     appendCommandStream(agentId: string, spanId: string, method: string, text: string) {
       if (!spanId)
         return
-      const segmentKind: CommandStreamSegment['kind']
-        = method === 'item/commandExecution/terminalInteraction'
-          ? 'interaction'
-          : method === 'item/reasoning/summaryTextDelta'
-            ? 'reasoning_summary'
-            : method === 'item/reasoning/textDelta'
-              ? 'reasoning_content'
-              : method === 'item/reasoning/summaryPartAdded'
-                ? 'reasoning_summary_break'
-                : 'output'
+      const segmentKind: CommandStreamSegment['kind'] = METHOD_TO_SEGMENT_KIND[method] ?? 'output'
       if (!text && segmentKind !== 'reasoning_summary_break')
         return
       setState('commandStreamsByAgent', agentId, spanId, (prev = []) => {

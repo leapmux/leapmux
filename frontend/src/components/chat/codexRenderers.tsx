@@ -3,7 +3,7 @@ import type { JSX } from 'solid-js'
 import type { StructuredPatchHunk } from './diffUtils'
 import type { RenderContext } from './messageRenderers'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
-import type { TodoItem } from '~/stores/chat.store'
+import type { CommandStreamSegment, TodoItem } from '~/stores/chat.store'
 import Bot from 'lucide-solid/icons/bot'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
@@ -53,6 +53,18 @@ const CODEX_DIFF_HEADER_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
 const DIV_OPEN_RE = /<div\b/g
 const DIV_CLOSE_RE = /<\/div>/g
 const TOOL_USE_HEADER_CLASS_FRAGMENT = 'toolUseHeader__'
+
+function LiveStreamOutput(props: { stream: () => CommandStreamSegment[] }): JSX.Element {
+  return (
+    <div class={commandStreamContainer}>
+      <For each={props.stream()}>
+        {segment => (
+          <div class={toolResultContentPre}>{segment.text}</div>
+        )}
+      </For>
+    </div>
+  )
+}
 
 interface ParsedCodexDiff {
   hunks: StructuredPatchHunk[]
@@ -476,7 +488,6 @@ export function codexCommandExecutionRenderer(parsed: unknown, _role: MessageRol
       title={title}
       summary={(
         <>
-          { }
           <div class={toolInputSummary} innerHTML={renderBashHighlight(displayCommand)} />
           <Show when={statusParts()}>
             <div class={toolInputSummary}>{statusParts()}</div>
@@ -589,13 +600,7 @@ export function codexFileChangeRenderer(parsed: unknown, _role: MessageRole, con
         alwaysVisible={true}
       >
         <Show when={hasLiveStream()}>
-          <div class={commandStreamContainer}>
-            <For each={liveStream()}>
-              {segment => (
-                <div class={toolResultContentPre}>{segment.text}</div>
-              )}
-            </For>
-          </div>
+          <LiveStreamOutput stream={liveStream} />
         </Show>
       </ToolUseLayout>
     )
@@ -620,26 +625,18 @@ export function codexFileChangeRenderer(parsed: unknown, _role: MessageRole, con
         alwaysVisible={true}
       >
         <Show when={hasLiveStream()}>
-          <div class={commandStreamContainer}>
-            <For each={liveStream()}>
-              {segment => (
-                <div class={toolResultContentPre}>{segment.text}</div>
-              )}
-            </For>
-          </div>
+          <LiveStreamOutput stream={liveStream} />
         </Show>
       </ToolUseLayout>
     )
   }
 
   const titleEl = (
-    <>
-      <span class={toolInputSummary}>
-        {changes.length === 1
-          ? relativizePath(String(changes[0].path || 'file'), context?.workingDir, context?.homeDir)
-          : `${changes.length} files`}
-      </span>
-    </>
+    <span class={toolInputSummary}>
+      {changes.length === 1
+        ? relativizePath(String(changes[0].path || 'file'), context?.workingDir, context?.homeDir)
+        : `${changes.length} files`}
+    </span>
   )
 
   return (
@@ -651,29 +648,21 @@ export function codexFileChangeRenderer(parsed: unknown, _role: MessageRole, con
       alwaysVisible={true}
     >
       <Show when={hasLiveStream()}>
-        <div class={commandStreamContainer}>
-          <For each={liveStream()}>
-            {segment => (
-              <div class={toolResultContentPre}>{segment.text}</div>
-            )}
-          </For>
-        </div>
+        <LiveStreamOutput stream={liveStream} />
       </Show>
       <For each={changes.length === 1 ? [] : changes}>
         {(change) => {
           const path = relativizePath((change.path as string) || '(unknown)', context?.workingDir, context?.homeDir)
           const kind = codexChangeKind(change)
           return (
-            <div>
-              <div class={toolInputPath}>
-                {path}
-                {' '}
-                <span class={toolInputSummary}>
-                  (
-                  {kind}
-                  )
-                </span>
-              </div>
+            <div class={toolInputPath}>
+              {path}
+              {' '}
+              <span class={toolInputSummary}>
+                (
+                {kind}
+                )
+              </span>
             </div>
           )
         }}

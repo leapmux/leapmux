@@ -1021,8 +1021,7 @@ function SplitDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string,
           <For each={groupByHunk(splitLines().left)}>
             {(leftGroup, groupIdx) => {
               const hi = () => leftGroup[0]?.hunkIndex ?? groupIdx()
-              const rightGroups = () => groupByHunk(splitLines().right)
-              const rightGroup = () => rightGroups()[groupIdx()] ?? []
+              const rightGroup = () => groupByHunk(splitLines().right)[groupIdx()] ?? []
               const gapBefore = () => syntheticGaps().get(hi())
               return (
                 <>
