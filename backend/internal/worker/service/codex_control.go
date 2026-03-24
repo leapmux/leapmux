@@ -125,9 +125,8 @@ func codexFeedbackMessageText(responseContent []byte) string {
 	return message
 }
 
-func (svc *Context) codexControlResponseDisplayText(agentID string, content []byte) string {
-	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
-	if err != nil || dbAgent.AgentProvider != leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
+func (svc *Context) codexControlResponseDisplayText(agentID string, provider leapmuxv1.AgentProvider, content []byte) string {
+	if provider != leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
 		return ""
 	}
 

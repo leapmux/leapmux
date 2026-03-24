@@ -201,21 +201,31 @@ export function createChatStore() {
         setState('messagesByAgent', agentId, existingIdx, message)
       }
       else {
+        // Reconcile optimistic local user messages before updating the store,
+        // so the localStorage side-effect stays outside the setState updater.
+        let reconciledLocalId: string | undefined
+        if (message.role === MessageRole.USER) {
+          const incomingText = extractUserMessageText(message)
+          if (incomingText) {
+            const current = state.messagesByAgent[agentId] ?? []
+            const local = current.find(candidate =>
+              candidate.id.startsWith('local-')
+              && candidate.role === MessageRole.USER
+              && !candidate.deliveryError
+              && extractUserMessageText(candidate) === incomingText,
+            )
+            if (local)
+              reconciledLocalId = local.id
+          }
+        }
+        if (reconciledLocalId)
+          removePersistedLocalMessage(agentId, reconciledLocalId)
+
         setState('messagesByAgent', agentId, (prev = []) => {
-          if (message.role === MessageRole.USER) {
-            const incomingText = extractUserMessageText(message)
-            if (incomingText) {
-              const localIdx = prev.findIndex(candidate =>
-                candidate.id.startsWith('local-')
-                && candidate.role === MessageRole.USER
-                && !candidate.deliveryError
-                && extractUserMessageText(candidate) === incomingText,
-              )
-              if (localIdx !== -1) {
-                removePersistedLocalMessage(agentId, prev[localIdx].id)
-                return [...prev.slice(0, localIdx), message, ...prev.slice(localIdx + 1)]
-              }
-            }
+          if (reconciledLocalId) {
+            const localIdx = prev.findIndex(m => m.id === reconciledLocalId)
+            if (localIdx !== -1)
+              return [...prev.slice(0, localIdx), message, ...prev.slice(localIdx + 1)]
           }
 
           // Local (optimistic) messages have seq === 0n and always go at the end.

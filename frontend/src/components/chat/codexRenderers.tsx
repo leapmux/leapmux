@@ -314,10 +314,8 @@ export function codexPlanRenderer(parsed: unknown, _role: MessageRole, context?:
       bordered={false}
       context={context}
     >
-      <>
-        <hr />
-        <div class={markdownContent} style={{ 'font-size': 'var(--text-regular)' }} innerHTML={renderMarkdown(text)} />
-      </>
+      <hr />
+      <div class={markdownContent} style={{ 'font-size': 'var(--text-regular)' }} innerHTML={renderMarkdown(text)} />
     </ToolUseLayout>
   )
 }
@@ -563,42 +561,20 @@ export function codexFileChangeRenderer(parsed: unknown, _role: MessageRole, con
 
   const simpleEdit = changes.length === 1 && isSimpleEditChange(changes[0]) ? changes[0] : null
   const parsedDiff = simpleEdit ? parseCodexUnifiedDiff(simpleEdit.diff as string) : null
-  if (simpleAdd) {
-    const title = renderToolDetail('Write', {
-      file_path: simpleAddPath,
-      content: simpleAddContent,
-    }, context) || (
-      <span class={toolInputPath}>{relativizePath(simpleAddPath, context?.workingDir, context?.homeDir)}</span>
+  const inProgressDetail = simpleAdd
+    ? { icon: FilePlus, title: renderToolDetail('Write', { file_path: simpleAddPath, content: simpleAddContent }, context), path: simpleAddPath }
+    : simpleEdit && parsedDiff
+      ? { icon: FileEdit, title: renderToolDetail('Edit', { file_path: (simpleEdit.path as string) || '', old_string: parsedDiff.oldText, new_string: parsedDiff.newText }, context), path: (simpleEdit.path as string) || '' }
+      : null
+
+  if (inProgressDetail) {
+    const title = inProgressDetail.title || (
+      <span class={toolInputPath}>{relativizePath(inProgressDetail.path, context?.workingDir, context?.homeDir)}</span>
     )
 
     return (
       <ToolUseLayout
-        icon={FilePlus}
-        toolName="File Change"
-        title={title}
-        context={context}
-        alwaysVisible={true}
-      >
-        <Show when={hasLiveStream()}>
-          <LiveStreamOutput stream={liveStream} />
-        </Show>
-      </ToolUseLayout>
-    )
-  }
-
-  if (simpleEdit && parsedDiff) {
-    const path = (simpleEdit.path as string) || ''
-    const title = renderToolDetail('Edit', {
-      file_path: path,
-      old_string: parsedDiff.oldText,
-      new_string: parsedDiff.newText,
-    }, context) || (
-      <span class={toolInputPath}>{relativizePath(path, context?.workingDir, context?.homeDir)}</span>
-    )
-
-    return (
-      <ToolUseLayout
-        icon={FileEdit}
+        icon={inProgressDetail.icon}
         toolName="File Change"
         title={title}
         context={context}
