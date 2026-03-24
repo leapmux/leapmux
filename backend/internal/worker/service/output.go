@@ -434,7 +434,7 @@ func (s *agentOutputSink) PeekNextSpanColor() int32 {
 	return s.tracker.PeekNextColor()
 }
 
-func (s *agentOutputSink) BroadcastStreamChunk(content []byte) {
+func (s *agentOutputSink) BroadcastStreamChunk(content []byte, spanID string, method string) {
 	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
 		AgentId: s.agentID,
 		Event: &leapmuxv1.AgentEvent_StreamChunk{
@@ -442,6 +442,20 @@ func (s *agentOutputSink) BroadcastStreamChunk(content []byte) {
 				MessageId:     s.agentID,
 				Delta:         content,
 				AgentProvider: s.agentProvider,
+				SpanId:        spanID,
+				Method:        method,
+			},
+		},
+	})
+}
+
+func (s *agentOutputSink) BroadcastStreamEnd(spanID string) {
+	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
+		AgentId: s.agentID,
+		Event: &leapmuxv1.AgentEvent_StreamEnd{
+			StreamEnd: &leapmuxv1.AgentStreamEnd{
+				MessageId: s.agentID,
+				SpanId:    spanID,
 			},
 		},
 	})

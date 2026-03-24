@@ -157,6 +157,22 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         chatStore.addMessage(agentId, msg)
         chatStore.clearStreamingText(agentId)
 
+        if (msg.spanId && (msg.spanType === 'commandExecution' || msg.spanType === 'fileChange' || msg.spanType === 'reasoning') && msg.role === MessageRole.ASSISTANT) {
+          try {
+            const parsed = parseMessageContent(msg)
+            const item = parsed.parentObject?.item as Record<string, unknown> | undefined
+            const isCompletedReasoning = item?.type === 'reasoning'
+              && (((item.summary as unknown[] | undefined)?.length ?? 0) > 0 || ((item.content as unknown[] | undefined)?.length ?? 0) > 0)
+            if ((item?.type === 'commandExecution' || item?.type === 'fileChange') && item.status === 'completed') {
+              chatStore.clearCommandStream(agentId, msg.spanId)
+            }
+            else if (isCompletedReasoning) {
+              chatStore.clearCommandStream(agentId, msg.spanId)
+            }
+          }
+          catch { /* ignore parse errors */ }
+        }
+
         // Extract context usage from assistant messages (rehydrates on reconnect).
         if (msg.role === MessageRole.ASSISTANT) {
           try {
@@ -195,11 +211,24 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       }
       case 'streamChunk': {
         const text = new TextDecoder().decode(inner.value.delta)
-        chatStore.setStreamingText(agentId, (chatStore.state.streamingText[agentId] ?? '') + text)
+        if (inner.value.spanId) {
+          chatStore.appendCommandStream(
+            agentId,
+            inner.value.spanId,
+            inner.value.method,
+            text,
+          )
+        }
+        else {
+          chatStore.setStreamingText(agentId, (chatStore.state.streamingText[agentId] ?? '') + text)
+        }
         break
       }
       case 'streamEnd':
-        chatStore.clearStreamingText(agentId)
+        if (inner.value.spanId)
+          chatStore.clearCommandStream(agentId, inner.value.spanId)
+        else
+          chatStore.clearStreamingText(agentId)
         if (tabStore.state.activeTabKey !== `agent:${agentId}`) {
           tabStore.setNotification(TabType.AGENT, agentId, true)
         }
@@ -586,6 +615,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     }
     for (const a of agentStore.state.agents) {
       chatStore.clearStreamingText(a.id)
+      const streams = chatStore.state.commandStreamsByAgent[a.id]
+      if (streams) {
+        for (const spanId of Object.keys(streams))
+          chatStore.clearCommandStream(a.id, spanId)
+      }
       controlStore.clearAgent(a.id)
       if (a.status === AgentStatus.ACTIVE) {
         agentStore.updateAgent(a.id, { status: AgentStatus.INACTIVE })

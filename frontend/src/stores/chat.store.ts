@@ -66,9 +66,15 @@ export interface TodoItem {
   activeForm: string
 }
 
+export interface CommandStreamSegment {
+  kind: 'output' | 'interaction' | 'reasoning_summary' | 'reasoning_content' | 'reasoning_summary_break'
+  text: string
+}
+
 interface ChatStoreState {
   messagesByAgent: Record<string, AgentChatMessage[]>
   streamingText: Record<string, string>
+  commandStreamsByAgent: Record<string, Record<string, CommandStreamSegment[]>>
   messageErrors: Record<string, string>
   /** Latest TodoWrite todos per agent, updated incrementally as messages arrive. */
   todosByAgent: Record<string, TodoItem[]>
@@ -89,6 +95,7 @@ export function createChatStore() {
   const [state, setState] = createStore<ChatStoreState>({
     messagesByAgent: {},
     streamingText: {},
+    commandStreamsByAgent: {},
     messageErrors: {},
     todosByAgent: {},
     loading: false,
@@ -288,6 +295,47 @@ export function createChatStore() {
 
     clearStreamingText(agentId: string) {
       setState('streamingText', agentId, '')
+    },
+
+    appendCommandStream(agentId: string, spanId: string, method: string, text: string) {
+      if (!spanId)
+        return
+      const segmentKind: CommandStreamSegment['kind']
+        = method === 'item/commandExecution/terminalInteraction'
+          ? 'interaction'
+          : method === 'item/reasoning/summaryTextDelta'
+            ? 'reasoning_summary'
+            : method === 'item/reasoning/textDelta'
+              ? 'reasoning_content'
+              : method === 'item/reasoning/summaryPartAdded'
+                ? 'reasoning_summary_break'
+                : 'output'
+      if (!text && segmentKind !== 'reasoning_summary_break')
+        return
+      setState('commandStreamsByAgent', agentId, spanId, (prev = []) => {
+        const last = prev.at(-1)
+        if (segmentKind !== 'reasoning_summary_break' && last && last.kind === segmentKind) {
+          return [
+            ...prev.slice(0, -1),
+            { kind: segmentKind, text: last.text + text },
+          ]
+        }
+        return [...prev, { kind: segmentKind, text }]
+      })
+      setState('messageVersion', agentId, (prev = 0) => prev + 1)
+    },
+
+    getCommandStream(agentId: string, spanId: string): CommandStreamSegment[] {
+      if (!spanId)
+        return []
+      return state.commandStreamsByAgent[agentId]?.[spanId] ?? []
+    },
+
+    clearCommandStream(agentId: string, spanId: string) {
+      if (!spanId)
+        return
+      setState('commandStreamsByAgent', agentId, spanId, undefined!)
+      setState('messageVersion', agentId, (prev = 0) => prev + 1)
     },
 
     getTodos(agentId: string): TodoItem[] {

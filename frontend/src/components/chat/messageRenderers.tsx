@@ -4,6 +4,7 @@ import type { JSX } from 'solid-js'
 import type { MessageCategory } from './messageClassification'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { AgentChatMessage, AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import type { CommandStreamSegment } from '~/stores/chat.store'
 import Bot from 'lucide-solid/icons/bot'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
@@ -80,8 +81,12 @@ export interface RenderContext {
   spanColor?: number
   /** Tool name or item type from span_type column (reliable, always set for span messages). */
   spanType?: string
+  /** Current message span id. */
+  spanId?: string
   /** Whether the Bash/TaskOutput tool result is expanded (controlled by MessageBubble). */
   toolResultExpanded?: boolean
+  /** Live streamed Codex span content for command, fileChange, and reasoning items. */
+  commandStream?: CommandStreamSegment[]
 }
 
 export interface MessageContentRenderer {

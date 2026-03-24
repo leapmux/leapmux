@@ -33,6 +33,24 @@ func handleCodexOutput(a *CodexAgent, content []byte) {
 	case "item/plan/delta":
 		a.handlePlanDelta(envelope.Params)
 
+	case "item/reasoning/summaryTextDelta":
+		a.handleReasoningSummaryTextDelta(envelope.Params)
+
+	case "item/reasoning/summaryPartAdded":
+		a.handleReasoningSummaryPartAdded(envelope.Params)
+
+	case "item/reasoning/textDelta":
+		a.handleReasoningTextDelta(envelope.Params)
+
+	case "item/commandExecution/outputDelta":
+		a.handleCommandExecutionOutputDelta(envelope.Params)
+
+	case "item/commandExecution/terminalInteraction":
+		a.handleCommandExecutionTerminalInteraction(envelope.Params)
+
+	case "item/fileChange/outputDelta":
+		a.handleFileChangeOutputDelta(envelope.Params)
+
 	case "item/started":
 		a.handleItemStarted(envelope.Params)
 
@@ -113,7 +131,7 @@ func (a *CodexAgent) handleAgentMessageDelta(params json.RawMessage) {
 		Delta string `json:"delta"`
 	}
 	if json.Unmarshal(params, &delta) == nil && delta.Delta != "" {
-		a.sink.BroadcastStreamChunk([]byte(delta.Delta))
+		a.sink.BroadcastStreamChunk([]byte(delta.Delta), "", "item/agentMessage/delta")
 	}
 }
 
@@ -133,7 +151,66 @@ func (a *CodexAgent) handlePlanDelta(params json.RawMessage) {
 		} else {
 			a.mu.Unlock()
 		}
-		a.sink.BroadcastStreamChunk([]byte(delta.Delta))
+		a.sink.BroadcastStreamChunk([]byte(delta.Delta), "", "item/plan/delta")
+	}
+}
+
+func (a *CodexAgent) handleReasoningSummaryTextDelta(params json.RawMessage) {
+	var notif struct {
+		ItemID string `json:"itemId"`
+		Delta  string `json:"delta"`
+	}
+	if json.Unmarshal(params, &notif) == nil && notif.ItemID != "" && notif.Delta != "" {
+		a.sink.BroadcastStreamChunk([]byte(notif.Delta), notif.ItemID, "item/reasoning/summaryTextDelta")
+	}
+}
+
+func (a *CodexAgent) handleReasoningSummaryPartAdded(params json.RawMessage) {
+	var notif struct {
+		ItemID string `json:"itemId"`
+	}
+	if json.Unmarshal(params, &notif) == nil && notif.ItemID != "" {
+		a.sink.BroadcastStreamChunk(nil, notif.ItemID, "item/reasoning/summaryPartAdded")
+	}
+}
+
+func (a *CodexAgent) handleReasoningTextDelta(params json.RawMessage) {
+	var notif struct {
+		ItemID string `json:"itemId"`
+		Delta  string `json:"delta"`
+	}
+	if json.Unmarshal(params, &notif) == nil && notif.ItemID != "" && notif.Delta != "" {
+		a.sink.BroadcastStreamChunk([]byte(notif.Delta), notif.ItemID, "item/reasoning/textDelta")
+	}
+}
+
+func (a *CodexAgent) handleCommandExecutionOutputDelta(params json.RawMessage) {
+	var notif struct {
+		ItemID string `json:"itemId"`
+		Delta  string `json:"delta"`
+	}
+	if json.Unmarshal(params, &notif) == nil && notif.ItemID != "" && notif.Delta != "" {
+		a.sink.BroadcastStreamChunk([]byte(notif.Delta), notif.ItemID, "item/commandExecution/outputDelta")
+	}
+}
+
+func (a *CodexAgent) handleCommandExecutionTerminalInteraction(params json.RawMessage) {
+	var notif struct {
+		ItemID string `json:"itemId"`
+		Stdin  string `json:"stdin"`
+	}
+	if json.Unmarshal(params, &notif) == nil && notif.ItemID != "" && notif.Stdin != "" {
+		a.sink.BroadcastStreamChunk([]byte(notif.Stdin), notif.ItemID, "item/commandExecution/terminalInteraction")
+	}
+}
+
+func (a *CodexAgent) handleFileChangeOutputDelta(params json.RawMessage) {
+	var notif struct {
+		ItemID string `json:"itemId"`
+		Delta  string `json:"delta"`
+	}
+	if json.Unmarshal(params, &notif) == nil && notif.ItemID != "" && notif.Delta != "" {
+		a.sink.BroadcastStreamChunk([]byte(notif.Delta), notif.ItemID, "item/fileChange/outputDelta")
 	}
 }
 
@@ -234,6 +311,9 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		}); err != nil {
 			slog.Error("codex persist item/completed", "agent_id", a.agentID, "type", itemType, "error", err)
 		}
+		if itemType == "commandExecution" || itemType == "fileChange" || itemType == "reasoning" {
+			a.sink.BroadcastStreamEnd(itemID)
+		}
 		a.sink.CloseSpan(itemID)
 	case "collabAgentToolCall":
 		// Close receiver thread spans first so the completed message
@@ -250,6 +330,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		}); err != nil {
 			slog.Error("codex persist reasoning", "agent_id", a.agentID, "error", err)
 		}
+		a.sink.BroadcastStreamEnd(itemID)
 	default:
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
 			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,

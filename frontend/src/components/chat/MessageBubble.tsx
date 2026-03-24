@@ -3,6 +3,7 @@ import type { MessageCategory } from './messageClassification'
 import type { RenderContext } from './messageRenderers'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { CommandStreamSegment } from '~/stores/chat.store'
 
 import Check from 'lucide-solid/icons/check'
 import Copy from 'lucide-solid/icons/copy'
@@ -122,6 +123,7 @@ interface MessageBubbleProps {
   onReply?: (quotedText: string) => void
   /** Look up a message by its spanId (for tool_use ↔ tool_result linking). */
   getMessageBySpanId?: (spanId: string) => AgentChatMessage | undefined
+  commandStream?: CommandStreamSegment[]
 }
 
 export const MessageBubble: Component<MessageBubbleProps> = (props) => {
@@ -365,7 +367,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     toolUseMessage: toolUseMessage(),
     spanColor: props.message.spanColor,
     spanType: props.message.spanType,
+    spanId: props.message.spanId,
     toolResultExpanded: toolResultExpanded(),
+    commandStream: props.commandStream,
   })
 
   // Extract assistant text for the reply button.

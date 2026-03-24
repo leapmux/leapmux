@@ -10,7 +10,8 @@ import (
 type testSink struct {
 	mu               sync.Mutex
 	messages         []testSinkMessage
-	streamChunks     [][]byte
+	streamChunks     []testSinkStreamChunk
+	streamEnds       []string
 	sessionIDs       []string
 	sessionInfos     []map[string]interface{}
 	spanTypes        map[string]string
@@ -25,6 +26,12 @@ type testSinkMessage struct {
 	ParentSpanID string
 	SpanID       string
 	SpanType     string
+}
+
+type testSinkStreamChunk struct {
+	Content []byte
+	SpanID  string
+	Method  string
 }
 
 func (s *testSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, span SpanInfo) error {
@@ -64,10 +71,20 @@ func (s *testSink) GetSpanType(spanID string) string {
 
 func (s *testSink) PeekNextSpanColor() int32 { return 0 }
 
-func (s *testSink) BroadcastStreamChunk(content []byte) {
+func (s *testSink) BroadcastStreamChunk(content []byte, spanID string, method string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.streamChunks = append(s.streamChunks, append([]byte(nil), content...))
+	s.streamChunks = append(s.streamChunks, testSinkStreamChunk{
+		Content: append([]byte(nil), content...),
+		SpanID:  spanID,
+		Method:  method,
+	})
+}
+
+func (s *testSink) BroadcastStreamEnd(spanID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.streamEnds = append(s.streamEnds, spanID)
 }
 
 func (s *testSink) PersistControlRequest(string, []byte)   {}
@@ -127,6 +144,27 @@ func (s *testSink) StreamChunkCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.streamChunks)
+}
+
+func (s *testSink) LastStreamChunk() testSinkStreamChunk {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.streamChunks[len(s.streamChunks)-1]
+}
+
+func (s *testSink) StreamEndCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.streamEnds)
+}
+
+func (s *testSink) LastStreamEnd() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.streamEnds) == 0 {
+		return ""
+	}
+	return s.streamEnds[len(s.streamEnds)-1]
 }
 
 // SessionIDCount returns the number of UpdateSessionID calls.
@@ -198,7 +236,8 @@ func (noopSink) ResetSpans()                                                    
 func (noopSink) SetSpanType(string, string)                                      {}
 func (noopSink) GetSpanType(string) string                                       { return "" }
 func (noopSink) PeekNextSpanColor() int32                                        { return 0 }
-func (noopSink) BroadcastStreamChunk([]byte)                                     {}
+func (noopSink) BroadcastStreamChunk([]byte, string, string)                     {}
+func (noopSink) BroadcastStreamEnd(string)                                       {}
 func (noopSink) PersistControlRequest(string, []byte)                            {}
 func (noopSink) DeleteControlRequest(string)                                     {}
 func (noopSink) BroadcastControlRequest(string, []byte)                          {}

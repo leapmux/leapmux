@@ -1,5 +1,6 @@
-import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
-import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentChatMessage, AgentInfo } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentSessionInfo } from '~/stores/agentSession.store'
+import { AgentProvider, AgentStatus, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { getInnerMessageType, parseMessageContent } from '~/lib/messageParser'
 
 /** RESULT-role messages with these inner types are mid-turn notifications, not turn ends. */
@@ -42,4 +43,28 @@ export function isAgentWorking(msgs: AgentChatMessage[]): boolean {
     return false // real turn-end RESULT
   }
   return false // no messages or all notifications
+}
+
+/**
+ * Whether the chat-level thinking indicator should be shown for an agent.
+ * Codex exposes an explicit turn ID for active turns; prefer that over the
+ * generic message-history heuristic so idle-but-running Codex tabs don't show
+ * as thinking on creation.
+ */
+export function shouldShowThinkingIndicator(
+  agent: AgentInfo | undefined,
+  sessionInfo: AgentSessionInfo | undefined,
+  msgs: AgentChatMessage[],
+  streamingText: string | undefined,
+  pendingControlRequests = 0,
+): boolean {
+  if (!agent || agent.status !== AgentStatus.ACTIVE)
+    return false
+  if (pendingControlRequests > 0)
+    return false
+  if (streamingText)
+    return true
+  if (agent.agentProvider === AgentProvider.CODEX)
+    return Boolean(sessionInfo?.codexTurnId)
+  return isAgentWorking(msgs)
 }

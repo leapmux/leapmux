@@ -1,10 +1,38 @@
+import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import { describe, expect, it } from 'vitest'
-import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
-import { isAgentWorking } from '~/utils/agentState'
+import { AgentProvider, AgentStatus, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { isAgentWorking, shouldShowThinkingIndicator } from '~/utils/agentState'
 import { makeMessage, rawContent, wrapContent } from '../helpers/messageFactory'
 
 function makeMsg(role: MessageRole, content?: Uint8Array, deliveryError?: string) {
   return makeMessage({ role, content, deliveryError })
+}
+
+function makeAgent(overrides: Partial<AgentInfo> = {}): AgentInfo {
+  return {
+    $typeName: 'leapmux.v1.AgentInfo' as const,
+    id: 'agent-1',
+    workspaceId: 'ws-1',
+    title: 'Agent 1',
+    model: '',
+    status: AgentStatus.ACTIVE,
+    workingDir: '/tmp',
+    permissionMode: '',
+    effort: '',
+    agentSessionId: '',
+    homeDir: '/tmp',
+    workerId: 'worker-1',
+    createdAt: '2025-01-15T10:00:00.000Z',
+    gitStatus: undefined,
+    agentProvider: AgentProvider.CLAUDE_CODE,
+    availableModels: [],
+    availableOptionGroups: [],
+    codexSandboxPolicy: '',
+    codexNetworkAccess: '',
+    codexCollaborationMode: '',
+    ...overrides,
+  } as AgentInfo
 }
 
 describe('isAgentWorking', () => {
@@ -160,5 +188,64 @@ describe('isAgentWorking', () => {
       makeMsg(MessageRole.ASSISTANT),
       makeMsg(MessageRole.LEAPMUX, wrapContent([{ type: 'context_cleared' }, { type: 'settings_changed' }])),
     ])).toBe(false)
+  })
+})
+
+describe('shouldShowThinkingIndicator', () => {
+  it('returns false for an inactive agent', () => {
+    expect(shouldShowThinkingIndicator(
+      makeAgent({ status: AgentStatus.INACTIVE }),
+      {},
+      [makeMsg(MessageRole.USER)],
+      '',
+    )).toBe(false)
+  })
+
+  it('returns false when a control request is pending', () => {
+    expect(shouldShowThinkingIndicator(
+      makeAgent(),
+      {},
+      [makeMsg(MessageRole.USER)],
+      '',
+      1,
+    )).toBe(false)
+  })
+
+  it('returns true when streaming text is present', () => {
+    expect(shouldShowThinkingIndicator(
+      makeAgent(),
+      {},
+      [],
+      'streaming...',
+    )).toBe(true)
+  })
+
+  it('uses codexTurnId for Codex instead of chat-history heuristics', () => {
+    const sessionInfo: AgentSessionInfo = {}
+    expect(shouldShowThinkingIndicator(
+      makeAgent({ agentProvider: AgentProvider.CODEX }),
+      sessionInfo,
+      [makeMsg(MessageRole.ASSISTANT)],
+      '',
+    )).toBe(false)
+  })
+
+  it('shows thinking for Codex when codexTurnId is set', () => {
+    const sessionInfo: AgentSessionInfo = { codexTurnId: 'turn-123' }
+    expect(shouldShowThinkingIndicator(
+      makeAgent({ agentProvider: AgentProvider.CODEX }),
+      sessionInfo,
+      [],
+      '',
+    )).toBe(true)
+  })
+
+  it('falls back to chat-history heuristics for non-Codex agents', () => {
+    expect(shouldShowThinkingIndicator(
+      makeAgent({ agentProvider: AgentProvider.CLAUDE_CODE }),
+      {},
+      [makeMsg(MessageRole.USER)],
+      '',
+    )).toBe(true)
   })
 })

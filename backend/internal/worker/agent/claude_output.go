@@ -86,7 +86,7 @@ func (a *ClaudeCodeAgent) HandleOutput(content []byte) {
 		a.claudeCodeHandleRateLimitEvent(content)
 
 	default:
-		a.sink.BroadcastStreamChunk(content)
+		a.sink.BroadcastStreamChunk(content, "", "")
 	}
 }
 
