@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"slices"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
@@ -227,8 +226,10 @@ func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
 
 	trackerParentSpanID := a.codexTrackerParentSpanID(threadID)
 	parentSpanID := a.codexVisibleParentSpanID(threadID)
+	var collab *codexCollabAgentToolCall
 	if itemType == "collabAgentToolCall" {
-		parentSpanID = a.codexCollabParentSpanID(parentSpanID, item, itemID, false)
+		collab = parseCollabToolCall(item)
+		parentSpanID = a.codexCollabParentSpanID(parentSpanID, collab, itemID, false)
 		trackerParentSpanID = parentSpanID
 	}
 
@@ -259,10 +260,10 @@ func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
 			slog.Error("codex persist collabAgentToolCall/started", "agent_id", a.agentID, "error", err)
 		}
 		a.sink.SetSpanType(itemID, itemType)
-		if collabToolCreatesSpan(item) {
+		if collab != nil && collab.Tool == "wait" {
 			a.sink.OpenSpan(itemID, parentSpanID)
 		}
-		a.handleCollabAgentSpan(item, itemID, parentSpanID, false)
+		a.handleCollabAgentSpan(collab, itemID, parentSpanID, false)
 	case "reasoning":
 		// No-op for started — wait for completed.
 	}
@@ -280,8 +281,10 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 
 	trackerParentSpanID := a.codexTrackerParentSpanID(threadID)
 	parentSpanID := a.codexVisibleParentSpanID(threadID)
+	var collab *codexCollabAgentToolCall
 	if itemType == "collabAgentToolCall" {
-		parentSpanID = a.codexCollabParentSpanID(parentSpanID, item, itemID, true)
+		collab = parseCollabToolCall(item)
+		parentSpanID = a.codexCollabParentSpanID(parentSpanID, collab, itemID, true)
 		trackerParentSpanID = parentSpanID
 	}
 
@@ -337,15 +340,16 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		}
 		a.sink.CloseSpan(itemID)
 	case "collabAgentToolCall":
+		createsSpan := collab != nil && collab.Tool == "wait"
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, TrackerParentSpanID: trackerParentSpanID, SpanID: itemID, SpanType: itemType, Closing: collabToolCreatesSpan(item),
+			ParentSpanID: parentSpanID, TrackerParentSpanID: trackerParentSpanID, SpanID: itemID, SpanType: itemType, Closing: createsSpan,
 		}); err != nil {
 			slog.Error("codex persist collabAgentToolCall/completed", "agent_id", a.agentID, "error", err)
 		}
-		if collabToolCreatesSpan(item) {
+		if createsSpan {
 			a.sink.CloseSpan(itemID)
 		}
-		a.handleCollabAgentSpan(item, itemID, parentSpanID, true)
+		a.handleCollabAgentSpan(collab, itemID, parentSpanID, true)
 	case "reasoning":
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
 			ParentSpanID: parentSpanID, TrackerParentSpanID: trackerParentSpanID, SpanID: itemID, SpanType: itemType,
@@ -436,6 +440,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 
 	// Reset all span tracking at turn-end so the next turn starts clean.
 	a.sink.ResetSpans()
+	a.resetCollabReceivers()
 
 	if turnStatus != "" {
 		if turnStatus == "failed" {
@@ -668,9 +673,8 @@ type codexCollabAgentToolCall struct {
 // handleCollabAgentSpan updates span lifecycle for CollabAgentToolCall items.
 // Spawned subagent spans stay open after spawn completion and only close when a
 // later terminal lifecycle event proves the agent is done.
-func (a *CodexAgent) handleCollabAgentSpan(item json.RawMessage, itemID, parentSpanID string, isCompleted bool) {
-	var collab codexCollabAgentToolCall
-	if json.Unmarshal(item, &collab) != nil {
+func (a *CodexAgent) handleCollabAgentSpan(collab *codexCollabAgentToolCall, itemID, parentSpanID string, isCompleted bool) {
+	if collab == nil {
 		return
 	}
 
@@ -719,20 +723,20 @@ func (a *CodexAgent) handleCollabAgentSpan(item json.RawMessage, itemID, parentS
 }
 
 func isTerminalCollabAgentStatus(status string) bool {
-	return slices.Contains([]string{
-		"completed",
-		"errored",
-		"shutdown",
-		"notFound",
-	}, status)
-}
-
-func collabToolCreatesSpan(item json.RawMessage) bool {
-	var collab codexCollabAgentToolCall
-	if json.Unmarshal(item, &collab) != nil {
+	switch status {
+	case "completed", "errored", "shutdown", "notFound":
+		return true
+	default:
 		return false
 	}
-	return collab.Tool == "wait"
+}
+
+func parseCollabToolCall(item json.RawMessage) *codexCollabAgentToolCall {
+	var collab codexCollabAgentToolCall
+	if json.Unmarshal(item, &collab) != nil {
+		return nil
+	}
+	return &collab
 }
 
 // codexTrackerParentSpanID determines the tracker ancestry from a pre-extracted
@@ -768,9 +772,8 @@ func (a *CodexAgent) codexVisibleParentSpanID(threadID string) string {
 	return spanID
 }
 
-func (a *CodexAgent) codexCollabParentSpanID(defaultParentSpanID string, item json.RawMessage, itemID string, isCompleted bool) string {
-	var collab codexCollabAgentToolCall
-	if json.Unmarshal(item, &collab) != nil {
+func (a *CodexAgent) codexCollabParentSpanID(defaultParentSpanID string, collab *codexCollabAgentToolCall, itemID string, isCompleted bool) string {
+	if collab == nil {
 		return defaultParentSpanID
 	}
 
@@ -839,6 +842,13 @@ func (a *CodexAgent) unregisterCollabReceiver(threadID string) {
 			delete(a.collabSpanThreads, spanID)
 		}
 	}
+}
+
+func (a *CodexAgent) resetCollabReceivers() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	clear(a.collabThreadSpans)
+	clear(a.collabSpanThreads)
 }
 
 func (a *CodexAgent) hasCollabReceivers(spanID string) bool {
