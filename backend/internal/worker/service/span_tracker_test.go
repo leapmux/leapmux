@@ -610,7 +610,7 @@ func TestSpanTracker_ToolUseConnectorInSubagent(t *testing.T) {
 	//   span.SpanID       = "tool-1"  (not yet open)
 	//   span.ParentSpanID = "subagent" (already open)
 	//   span.Closing      = false
-	connectorSpanID := resolveConnectorSpanID("tool-1", "subagent", false)
+	connectorSpanID := resolveConnectorSpanID("tool-1", "", "subagent", false)
 	_, lines, _ := tracker.Snapshot("subagent", connectorSpanID, false)
 
 	var parsed []*SpanLine
@@ -627,7 +627,7 @@ func TestSpanTracker_ToolResultConnectorInSubagent(t *testing.T) {
 	tracker.OpenSpan("subagent", "")
 	tracker.OpenSpan("tool-1", "subagent")
 
-	connectorSpanID := resolveConnectorSpanID("tool-1", "subagent", true)
+	connectorSpanID := resolveConnectorSpanID("tool-1", "", "subagent", true)
 	_, lines, _ := tracker.Snapshot("subagent", connectorSpanID, true)
 
 	var parsed []*SpanLine
@@ -642,9 +642,23 @@ func TestSpanTracker_TopLevelToolUseNoConnector(t *testing.T) {
 	// A top-level tool_use (no parent span) should have no connector.
 	tracker := &SpanTracker{}
 
-	connectorSpanID := resolveConnectorSpanID("tool-1", "", false)
+	connectorSpanID := resolveConnectorSpanID("tool-1", "", "", false)
 	_, lines, _ := tracker.Snapshot("", connectorSpanID, false)
 	assert.Equal(t, "[]", lines)
+}
+
+func TestSpanTracker_ExplicitClosingConnectorUsesOverride(t *testing.T) {
+	tracker := &SpanTracker{}
+	tracker.OpenSpan("subagent", "")
+
+	connectorSpanID := resolveConnectorSpanID("wait-1", "subagent", "", true)
+	_, lines, _ := tracker.Snapshot("", connectorSpanID, true)
+
+	var parsed []*SpanLine
+	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
+	require.Len(t, parsed, 1)
+	assert.Equal(t, SpanLineConnectorEnd, parsed[0].Type,
+		"explicit connector override should let a spanless message close its parent span")
 }
 
 func TestSpanTracker_ParentMapClearedOnAllClose(t *testing.T) {

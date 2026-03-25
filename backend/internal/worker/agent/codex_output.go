@@ -284,6 +284,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		parentSpanID = a.codexCollabParentSpanID(parentSpanID, collab, itemID, true)
 		trackerParentSpanID = parentSpanID
 	}
+	closingParentSpanID := a.closingCollabParentSpanID(collab, parentSpanID, true)
 
 	switch itemType {
 	case "agentMessage":
@@ -338,7 +339,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		a.sink.CloseSpan(itemID)
 	case "collabAgentToolCall":
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, TrackerParentSpanID: trackerParentSpanID, SpanID: itemID, SpanType: itemType,
+			ParentSpanID: parentSpanID, TrackerParentSpanID: trackerParentSpanID, ConnectorSpanID: closingParentSpanID, SpanID: itemID, SpanType: itemType, Closing: closingParentSpanID != "",
 		}); err != nil {
 			slog.Error("codex persist collabAgentToolCall/completed", "agent_id", a.agentID, "error", err)
 		}
@@ -711,6 +712,25 @@ func (a *CodexAgent) handleCollabAgentSpan(collab *codexCollabAgentToolCall, ite
 	}
 }
 
+func (a *CodexAgent) closingCollabParentSpanID(collab *codexCollabAgentToolCall, parentSpanID string, isCompleted bool) string {
+	if collab == nil || !isCompleted || parentSpanID == "" {
+		return ""
+	}
+
+	switch collab.Tool {
+	case "wait":
+		if a.willDrainCollabParent(parentSpanID, collab.ReceiverThreadIds, collab.AgentsStates, false) {
+			return parentSpanID
+		}
+	case "closeAgent":
+		if collab.Status == "completed" && a.willDrainCollabParent(parentSpanID, collab.ReceiverThreadIds, collab.AgentsStates, true) {
+			return parentSpanID
+		}
+	}
+
+	return ""
+}
+
 func isTerminalCollabAgentStatus(status string) bool {
 	switch status {
 	case "completed", "errored", "shutdown", "notFound":
@@ -838,6 +858,43 @@ func (a *CodexAgent) hasCollabReceivers(spanID string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.collabSpanThreads != nil && a.collabSpanThreads[spanID] > 0
+}
+
+func (a *CodexAgent) willDrainCollabParent(parentSpanID string, receiverIDs []string, agentStates map[string]codexCollabAgentState, removeAll bool) bool {
+	if parentSpanID == "" {
+		return false
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.collabSpanThreads == nil || a.collabSpanThreads[parentSpanID] == 0 {
+		return false
+	}
+
+	remaining := a.collabSpanThreads[parentSpanID]
+	seen := make(map[string]struct{}, len(receiverIDs))
+	for _, receiverID := range receiverIDs {
+		if receiverID == "" {
+			continue
+		}
+		if _, ok := seen[receiverID]; ok {
+			continue
+		}
+		seen[receiverID] = struct{}{}
+		if a.collabThreadSpans == nil || a.collabThreadSpans[receiverID] != parentSpanID {
+			continue
+		}
+		if !removeAll {
+			state, ok := agentStates[receiverID]
+			if !ok || !isTerminalCollabAgentStatus(state.Status) {
+				continue
+			}
+		}
+		remaining--
+	}
+
+	return remaining == 0
 }
 
 func (a *CodexAgent) collabSpanIDForReceivers(receiverIDs []string) string {

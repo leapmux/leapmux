@@ -23,11 +23,13 @@ type testSink struct {
 }
 
 type testSinkMessage struct {
-	Role         leapmuxv1.MessageRole
-	Content      []byte
-	ParentSpanID string
-	SpanID       string
-	SpanType     string
+	Role            leapmuxv1.MessageRole
+	Content         []byte
+	ParentSpanID    string
+	ConnectorSpanID string
+	SpanID          string
+	SpanType        string
+	Closing         bool
 }
 
 type testSinkStreamChunk struct {
@@ -44,7 +46,7 @@ type testSinkSpanOpen struct {
 func (s *testSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, span SpanInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.messages = append(s.messages, testSinkMessage{Role: role, Content: append([]byte(nil), content...), ParentSpanID: span.ParentSpanID, SpanID: span.SpanID, SpanType: span.SpanType})
+	s.messages = append(s.messages, testSinkMessage{Role: role, Content: append([]byte(nil), content...), ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing})
 	return nil
 }
 

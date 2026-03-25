@@ -267,6 +267,9 @@ func TestHandleCodexOutput_WaitMessagesStayInsideSpawnAgentSpan(t *testing.T) {
 	if messages[2].ParentSpanID != "call-1" {
 		t.Fatalf("expected wait completed to be nested under spawnAgent span, got parent %q", messages[2].ParentSpanID)
 	}
+	if !messages[2].Closing || messages[2].ConnectorSpanID != "call-1" {
+		t.Fatalf("expected wait completed to render the parent spawnAgent as closing, got closing=%v connector=%q", messages[2].Closing, messages[2].ConnectorSpanID)
+	}
 	if got := sink.OpenSpans(); len(got) != 1 || got[0].SpanID != "call-1" {
 		t.Fatalf("expected only spawnAgent span to open, got %v", got)
 	}
@@ -380,6 +383,28 @@ func TestHandleCodexOutput_WaitCompletedClosesOnlyTerminalReceivers(t *testing.T
 
 	if got := sink.ClosedSpans(); len(got) != 0 {
 		t.Fatalf("expected only receiver bookkeeping changes, not synthetic child span closes, got %v", got)
+	}
+}
+
+func TestHandleCodexOutput_WaitCompletedClosesParentSpawnOnlyAfterLastReceiverFinishes(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	spawnStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	waitCompletedFirst := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
+	waitCompletedSecond := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-3","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-2"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-2":{"status":"completed","message":"done"}}}}}`
+
+	handleCodexOutput(agent, []byte(spawnStarted))
+	handleCodexOutput(agent, []byte(waitCompletedFirst))
+
+	if got := sink.ClosedSpans(); len(got) != 0 {
+		t.Fatalf("expected parent spawnAgent span to remain open until all receivers finish, got %v", got)
+	}
+
+	handleCodexOutput(agent, []byte(waitCompletedSecond))
+
+	if got := sink.ClosedSpans(); len(got) != 1 || got[0] != "call-1" {
+		t.Fatalf("expected parent spawnAgent span to close after the last receiver finishes, got %v", got)
 	}
 }
 

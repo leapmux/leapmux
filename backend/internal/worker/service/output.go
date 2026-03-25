@@ -301,7 +301,10 @@ func (t *SpanTracker) ShouldBroadcastStreamChunk(spanID string) bool {
 // connect to. For span closers (tool_result), the span is already open so
 // we connect to it directly. For span openers (tool_use) and other messages,
 // the span isn't open yet so we connect to the parent span instead.
-func resolveConnectorSpanID(spanID, parentSpanID string, closing bool) string {
+func resolveConnectorSpanID(spanID, connectorSpanID, parentSpanID string, closing bool) string {
+	if connectorSpanID != "" {
+		return connectorSpanID
+	}
 	// For span closers (tool_result), the span is already open.
 	if closing && spanID != "" {
 		return spanID
@@ -678,7 +681,7 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 	if trackerParentSpanID == "" {
 		trackerParentSpanID = span.ParentSpanID
 	}
-	connectorSpanID := resolveConnectorSpanID(span.SpanID, trackerParentSpanID, span.Closing)
+	connectorSpanID := resolveConnectorSpanID(span.SpanID, span.ConnectorSpanID, trackerParentSpanID, span.Closing)
 	depth, spanLines, connectorColor := tracker.Snapshot(trackerParentSpanID, connectorSpanID, span.Closing)
 
 	// Resolve span color: if the span is already active (e.g. tool_result
