@@ -8,7 +8,7 @@ import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { formatCountdown, formatResetTimestamp, getResetsAt, pickUrgentRateLimit, RATE_LIMIT_POPOVER_LABELS } from '~/lib/rateLimitUtils'
 import * as styles from './ChatView.css'
-import { computePercentage, contextSize, DEFAULT_BUFFER_PCT, resolveContextWindow } from './ContextUsageGrid'
+import { computePercentage, contextBufferPct, contextSize, resolveContextWindow } from './ContextUsageGrid'
 import { tildify } from './messageUtils'
 
 export interface AgentInfoCardProps {
@@ -186,14 +186,15 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
           const modelCtxWindow = props.agent?.availableModels?.find(m => m.id === props.agent?.model)?.contextWindow
           const ctxWindow = resolveContextWindow(usage, Number(modelCtxWindow) || undefined)
           const total = contextSize(usage)
-          const pct = computePercentage(usage, Number(modelCtxWindow) || undefined)
+          const pct = computePercentage(usage, Number(modelCtxWindow) || undefined, props.agent?.agentProvider)
+          const bufferPct = contextBufferPct(props.agent?.agentProvider)
           return (
             <div class={styles.infoRow}>
               <span class={styles.infoLabel}>Context</span>
               <span class={styles.infoValueText}>
                 {formatTokenCount(total)}
                 {` / ${formatTokenCount(ctxWindow)}`}
-                {pct != null ? ` (${Math.round(pct)}% with ${DEFAULT_BUFFER_PCT}% buffer)` : ''}
+                {pct != null ? ` (${Math.round(pct)}%${bufferPct > 0 ? ` with ${bufferPct}% headroom` : ''})` : ''}
               </span>
             </div>
           )

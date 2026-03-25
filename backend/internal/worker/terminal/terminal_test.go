@@ -512,6 +512,7 @@ func TestDetectDefaultShell(t *testing.T) {
 func TestResolveDefaultShell_PrefersLeapmuxEnv(t *testing.T) {
 	t.Setenv("LEAPMUX_DEFAULT_SHELL", "/bin/test-leapmux-shell")
 	t.Setenv("SHELL", "/bin/other-shell")
+	resetShellCache()
 	shell := ResolveDefaultShell()
 	assert.Equal(t, "/bin/test-leapmux-shell", shell)
 }
@@ -519,6 +520,7 @@ func TestResolveDefaultShell_PrefersLeapmuxEnv(t *testing.T) {
 func TestResolveDefaultShell_LeapmuxEnvBareName(t *testing.T) {
 	t.Setenv("LEAPMUX_DEFAULT_SHELL", "sh")
 	t.Setenv("SHELL", "/bin/other-shell")
+	resetShellCache()
 	shell := ResolveDefaultShell()
 	assert.NotEmpty(t, shell, "bare name should be resolved")
 	assert.True(t, strings.HasPrefix(shell, "/"), "resolved path should be absolute")
@@ -528,6 +530,7 @@ func TestResolveDefaultShell_LeapmuxEnvBareName(t *testing.T) {
 func TestResolveDefaultShell_LeapmuxEnvInvalidBareName(t *testing.T) {
 	t.Setenv("LEAPMUX_DEFAULT_SHELL", "nonexistent-shell-xyz")
 	t.Setenv("SHELL", "/bin/fallback-shell")
+	resetShellCache()
 	shell := ResolveDefaultShell()
 	assert.Equal(t, "/bin/fallback-shell", shell, "should fall back to $SHELL when LEAPMUX_DEFAULT_SHELL is unresolvable")
 }
@@ -535,6 +538,7 @@ func TestResolveDefaultShell_LeapmuxEnvInvalidBareName(t *testing.T) {
 func TestResolveDefaultShell_UsesEnvWhenSet(t *testing.T) {
 	t.Setenv("LEAPMUX_DEFAULT_SHELL", "")
 	t.Setenv("SHELL", "/bin/test-shell")
+	resetShellCache()
 	shell := ResolveDefaultShell()
 	assert.Equal(t, "/bin/test-shell", shell, "ResolveDefaultShell should prefer $SHELL")
 }
@@ -542,6 +546,7 @@ func TestResolveDefaultShell_UsesEnvWhenSet(t *testing.T) {
 func TestResolveDefaultShell_FallsBackWhenEnvUnset(t *testing.T) {
 	t.Setenv("LEAPMUX_DEFAULT_SHELL", "")
 	t.Setenv("SHELL", "")
+	resetShellCache()
 	shell := ResolveDefaultShell()
 	assert.NotEmpty(t, shell, "ResolveDefaultShell should return a shell even without $SHELL")
 	assert.True(t, strings.HasPrefix(shell, "/"), "ResolveDefaultShell should return an absolute path")
