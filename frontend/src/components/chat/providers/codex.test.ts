@@ -162,7 +162,6 @@ describe('codex classify', () => {
     const result = plugin.classify(parent, null)
     expect(result).toEqual({ kind: 'hidden' })
   })
-
 })
 
 describe('codex isAskUserQuestion', () => {

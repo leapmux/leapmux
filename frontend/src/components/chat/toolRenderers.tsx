@@ -1067,40 +1067,41 @@ function ExitPlanModeResultView(props: {
   toolUseResult?: Record<string, unknown>
   context?: RenderContext
 }): JSX.Element {
-  if (props.isError) {
-    return (
-      <div class={toolMessage}>
-        <div class={toolUseHeader}>
-          <span class={`${inlineFlex} ${toolUseIcon}`}>
-            <Icon icon={Hand} size="md" />
-          </span>
-          <span class={toolInputText}>Sent feedback:</span>
-        </div>
-        {/* eslint-disable-next-line solid/no-innerhtml -- HTML from renderMarkdown, not user input */}
-        <div class={markdownContent} innerHTML={renderMarkdown(props.resultContent)} />
-      </div>
-    )
-  }
-
-  const filePath = typeof props.toolUseResult?.filePath === 'string'
+  const filePath = () => typeof props.toolUseResult?.filePath === 'string'
     ? props.toolUseResult.filePath as string
     : ''
 
   return (
-    <div class={toolMessage}>
-      <div class={toolUseHeader}>
-        <span class={`${inlineFlex} ${toolUseIcon}`}>
-          <Icon icon={Stamp} size="md" />
-        </span>
-        <span class={toolInputText}>Plan approved</span>
-      </div>
-      <Show when={filePath}>
-        <div class={toolResultPrompt}>
-          {'Plan file: '}
-          <code>{relativizePath(filePath, props.context?.workingDir, props.context?.homeDir)}</code>
+    <Show
+      when={!props.isError}
+      fallback={(
+        <div class={toolMessage}>
+          <div class={toolUseHeader}>
+            <span class={`${inlineFlex} ${toolUseIcon}`}>
+              <Icon icon={Hand} size="md" />
+            </span>
+            <span class={toolInputText}>Sent feedback:</span>
+          </div>
+          {/* eslint-disable-next-line solid/no-innerhtml -- HTML from renderMarkdown, not user input */}
+          <div class={markdownContent} innerHTML={renderMarkdown(props.resultContent)} />
         </div>
-      </Show>
-    </div>
+      )}
+    >
+      <div class={toolMessage}>
+        <div class={toolUseHeader}>
+          <span class={`${inlineFlex} ${toolUseIcon}`}>
+            <Icon icon={Stamp} size="md" />
+          </span>
+          <span class={toolInputText}>Plan approved</span>
+        </div>
+        <Show when={filePath()}>
+          <div class={toolResultPrompt}>
+            {'Plan file: '}
+            <code>{relativizePath(filePath(), props.context?.workingDir, props.context?.homeDir)}</code>
+          </div>
+        </Show>
+      </div>
+    </Show>
   )
 }
 

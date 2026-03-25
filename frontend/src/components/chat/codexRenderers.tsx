@@ -18,9 +18,9 @@ import { createEffect, createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { TodoList } from '~/components/todo/TodoList'
-import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { codexPlanToTodos } from '~/lib/messageParser'
 import { renderMarkdown, shikiHighlighter } from '~/lib/renderMarkdown'
+import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { inlineFlex } from '~/styles/shared.css'
 import { DiffView, rawDiffToHunks } from './diffUtils'
 import { markdownContent } from './markdownContent.css'
@@ -811,7 +811,7 @@ export function codexCollabAgentToolCallRenderer(parsed: unknown, _role: Message
       ? 'Waiting for subagent'
       : isSpawnAgent
         ? (spawnAgentDetails ? `Subagent (${spawnAgentDetails})` : 'Subagent')
-    : renderToolDetail('Agent', { description: displayName }, context) || codexStatusTitle(displayName, status)
+        : renderToolDetail('Agent', { description: displayName }, context) || codexStatusTitle(displayName, status)
   const summary = hasCollapsiblePrompt
     ? (
         <div
@@ -820,8 +820,8 @@ export function codexCollabAgentToolCallRenderer(parsed: unknown, _role: Message
         />
       )
     : isWaitInProgress || isTerminalWait || isSpawnAgent || !status
-        ? undefined
-        : <div class={toolInputSummary}>{status}</div>
+      ? undefined
+      : <div class={toolInputSummary}>{status}</div>
 
   return (
     <ToolUseLayout
