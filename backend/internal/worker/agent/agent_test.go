@@ -457,7 +457,7 @@ func TestAgent_ParallelToolUseClosesAllSpans(t *testing.T) {
 		return len(sink.OpenSpans()) >= 2
 	}, "expected both spans to be opened")
 
-	assert.ElementsMatch(t, []string{"toolu_A", "toolu_B"}, sink.OpenSpans())
+	assert.ElementsMatch(t, []string{"toolu_A", "toolu_B"}, []string{sink.OpenSpans()[0].SpanID, sink.OpenSpans()[1].SpanID})
 
 	// Single user message with two tool_result blocks.
 	toolResultMsg := `{"type":"user","message":{"role":"user","content":[` +

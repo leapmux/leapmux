@@ -16,7 +16,7 @@ type testSink struct {
 	sessionIDs       []string
 	sessionInfos     []map[string]interface{}
 	spanTypes        map[string]string
-	openSpans        []string
+	openSpans        []testSinkSpanOpen
 	closedSpans      []string
 	planModeToolUses sync.Map
 }
@@ -35,6 +35,11 @@ type testSinkStreamChunk struct {
 	Method  string
 }
 
+type testSinkSpanOpen struct {
+	SpanID       string
+	ParentSpanID string
+}
+
 func (s *testSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, span SpanInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -49,10 +54,10 @@ func (s *testSink) PersistNotification(role leapmuxv1.MessageRole, content []byt
 	return nil
 }
 
-func (s *testSink) OpenSpan(spanID string, _ string) {
+func (s *testSink) OpenSpan(spanID string, parentSpanID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.openSpans = append(s.openSpans, spanID)
+	s.openSpans = append(s.openSpans, testSinkSpanOpen{SpanID: spanID, ParentSpanID: parentSpanID})
 }
 func (s *testSink) CloseSpan(spanID string) {
 	s.mu.Lock()
@@ -220,10 +225,10 @@ func (s *testSink) LastSessionInfo() map[string]interface{} {
 }
 
 // OpenSpans returns a copy of all opened span IDs.
-func (s *testSink) OpenSpans() []string {
+func (s *testSink) OpenSpans() []testSinkSpanOpen {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]string(nil), s.openSpans...)
+	return append([]testSinkSpanOpen(nil), s.openSpans...)
 }
 
 // ClosedSpans returns a copy of all closed span IDs.

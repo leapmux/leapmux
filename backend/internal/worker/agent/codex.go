@@ -88,6 +88,8 @@ type CodexAgent struct {
 	turnAssistantText string       // final assistant message text for the current turn
 	streamingPlan     bool         // whether we've sent streamingType session info for the current plan stream
 	availableModels   []*leapmuxv1.AvailableModel
+	collabThreadSpans map[string]string // child thread ID -> owning spawnAgent span ID
+	collabSpanThreads map[string]int    // spawnAgent span ID -> active child thread count
 }
 
 // StartCodex starts a Codex agent process and performs the JSON-RPC handshake.
