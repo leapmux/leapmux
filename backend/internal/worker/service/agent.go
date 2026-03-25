@@ -326,7 +326,15 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		svc.handleControlRequestMessage(r.GetAgentId(), r.GetContent())
+		agentID := r.GetAgentId()
+		content := r.GetContent()
+		if dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID); err == nil {
+			if dbAgent.AgentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX && isInterruptRequest(content) {
+				svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, "[Request interrupted by user]")
+			}
+		}
+
+		svc.handleControlRequestMessage(agentID, content)
 		sendProtoResponse(sender, &leapmuxv1.SendAgentRawMessageResponse{})
 	})
 

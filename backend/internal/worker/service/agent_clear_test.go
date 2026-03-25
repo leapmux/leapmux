@@ -58,6 +58,17 @@ func decodeMessageTypes(t *testing.T, msg *leapmuxv1.AgentChatMessage) []string 
 	return []string{typ}
 }
 
+func decodeAgentChatMessageContent(t *testing.T, msg *leapmuxv1.AgentChatMessage) map[string]any {
+	t.Helper()
+
+	raw, err := msgcodec.Decompress(msg.Content, msg.ContentCompression)
+	require.NoError(t, err)
+
+	var top map[string]any
+	require.NoError(t, json.Unmarshal(raw, &top))
+	return top
+}
+
 func TestSendAgentMessage_SlashClearBroadcastsUserBeforeContextCleared(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
@@ -113,4 +124,64 @@ func TestSendAgentMessage_SlashClearBroadcastsUserBeforeContextCleared(t *testin
 	require.NotEqual(t, -1, userIdx, "expected a streamed user message")
 	require.NotEqual(t, -1, contextClearedIdx, "expected a streamed context_cleared notification")
 	assert.Less(t, userIdx, contextClearedIdx, "the /clear user message must be streamed before context_cleared")
+}
+
+func TestSendAgentRawMessage_CodexInterruptPersistsSyntheticUserMarker(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, "ws-1")
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents)
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-codex",
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+
+	sender := channel.NewSender(w)
+	svc.Watchers.WatchAgent("agent-codex", &EventWatcher{
+		ChannelID: w.channelID,
+		Sender:    sender,
+	})
+
+	dispatch(d, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
+		AgentId: "agent-codex",
+		Content: `{"jsonrpc":"2.0","id":1001,"method":"turn/interrupt","params":{"threadId":"thread-1","turnId":"turn-1"}}`,
+	}, w)
+
+	require.Empty(t, w.errors)
+	require.Len(t, w.streams, 1)
+
+	msg := decodeWatchAgentMessage(t, w.streams[0])
+	require.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_USER, msg.Role)
+	assert.Equal(t, "[Request interrupted by user]", decodeAgentChatMessageContent(t, msg)["content"])
+}
+
+func TestSendAgentRawMessage_ClaudeInterruptDoesNotPersistSyntheticUserMarker(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, "ws-1")
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents)
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-claude",
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+
+	sender := channel.NewSender(w)
+	svc.Watchers.WatchAgent("agent-claude", &EventWatcher{
+		ChannelID: w.channelID,
+		Sender:    sender,
+	})
+
+	dispatch(d, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
+		AgentId: "agent-claude",
+		Content: `{"type":"control_request","request":{"subtype":"interrupt"}}`,
+	}, w)
+
+	require.Empty(t, w.errors)
+	assert.Empty(t, w.streams)
 }

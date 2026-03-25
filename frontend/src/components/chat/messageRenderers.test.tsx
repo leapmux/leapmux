@@ -88,26 +88,3 @@ describe('agent/task renderer', () => {
     expect(text).not.toContain('tool uses')
   })
 })
-
-describe('user content renderer', () => {
-  it('renders Codex turn/interrupt payload as a human-friendly message', () => {
-    const parsed = {
-      content: '{"jsonrpc":"2.0","id":1001,"method":"turn/interrupt","params":{"threadId":"thread-1","turnId":"turn-1"}}',
-    }
-    const result = renderMessageContent(parsed, 1 /* USER */)
-    const { container } = render(() => result)
-    expect(container.textContent?.trim()).toBe('[Request interrupted by user]')
-  })
-
-  it('renders Codex turn/interrupt user message content as a human-friendly message', () => {
-    const parsed = {
-      type: 'user',
-      message: {
-        content: '{"jsonrpc":"2.0","id":1001,"method":"turn/interrupt","params":{"threadId":"thread-1","turnId":"turn-1"}}',
-      },
-    }
-    const result = renderMessageContent(parsed, 1 /* USER */)
-    const { container } = render(() => result)
-    expect(container.textContent?.trim()).toBe('[Request interrupted by user]')
-  })
-})

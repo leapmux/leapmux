@@ -87,6 +87,12 @@ function codexAssistantInterruptEcho(parent: Record<string, unknown>): boolean {
   return text.length > 0 && isCodexInterruptRequestText(text)
 }
 
+function isCodexJsonRpcResponse(parent: Record<string, unknown>): boolean {
+  if ('method' in parent || 'item' in parent || 'turn' in parent)
+    return false
+  return ('result' in parent || 'error' in parent) && ('id' in parent)
+}
+
 /** Extra notification types for Codex (agent_error). */
 const CODEX_EXTRA_NOTIF_TYPES = new Set(['agent_error'])
 function isCodexNotifThread(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
@@ -301,6 +307,9 @@ const codexPlugin: ProviderPlugin = {
 
     if (!parent)
       return { kind: 'unknown' }
+
+    if (isCodexJsonRpcResponse(parent))
+      return { kind: 'hidden' }
 
     if (codexAssistantInterruptEcho(parent))
       return { kind: 'hidden' }

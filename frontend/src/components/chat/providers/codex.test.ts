@@ -154,6 +154,15 @@ describe('codex classify', () => {
     expect(result).toEqual({ kind: 'hidden' })
   })
 
+  it('hides plain JSON-RPC response envelopes', () => {
+    const parent = {
+      id: 1001,
+      result: {},
+    }
+    const result = plugin.classify(parent, null)
+    expect(result).toEqual({ kind: 'hidden' })
+  })
+
 })
 
 describe('codex isAskUserQuestion', () => {
