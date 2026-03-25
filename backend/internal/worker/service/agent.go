@@ -539,7 +539,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		if newPermissionMode == "" {
 			newPermissionMode = dbAgent.PermissionMode
 		}
-		oldExtraSettings := resolveCodexExtras(parseExtraSettings(dbAgent.ExtraSettings), dbAgent.AgentProvider)
+		oldExtraSettings := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
 		newExtraSettings := resolveCodexExtras(mergeExtraSettings(oldExtraSettings, s.GetExtraSettings()), dbAgent.AgentProvider)
 
 		// Update the DB.
@@ -913,7 +913,7 @@ func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, 
 		AgentProvider:         a.AgentProvider,
 		AvailableModels:       availableModels,
 		AvailableOptionGroups: availableOptionGroups,
-		ExtraSettings:         resolveCodexExtras(parseExtraSettings(a.ExtraSettings), a.AgentProvider),
+		ExtraSettings:         loadExtraSettings(a.ExtraSettings, a.AgentProvider),
 	}
 
 	if a.ClosedAt.Valid {
@@ -951,7 +951,7 @@ func (svc *Context) handleClearContext(agentID string) {
 		Effort:         dbAgent.Effort,
 		WorkingDir:     dbAgent.WorkingDir,
 		PermissionMode: dbAgent.PermissionMode,
-		ExtraSettings:  resolveCodexExtras(parseExtraSettings(dbAgent.ExtraSettings), dbAgent.AgentProvider),
+		ExtraSettings:  loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider),
 		StartupTimeout: svc.agentStartupTimeout(),
 		Shell:          svc.agentShell(),
 		LoginShell:     svc.agentLoginShell(),
@@ -1022,7 +1022,7 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 		WorkingDir:      dbAgent.WorkingDir,
 		ResumeSessionID: resumeSessionID,
 		PermissionMode:  dbAgent.PermissionMode,
-		ExtraSettings:   resolveCodexExtras(parseExtraSettings(dbAgent.ExtraSettings), dbAgent.AgentProvider),
+		ExtraSettings:   loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider),
 		StartupTimeout:  svc.agentStartupTimeout(),
 		Shell:           svc.agentShell(),
 		LoginShell:      svc.agentLoginShell(),
@@ -1136,9 +1136,9 @@ func (svc *Context) setAgentCollaborationMode(agentID, mode string) {
 		return
 	}
 
-	extras := resolveCodexExtras(parseExtraSettings(dbAgent.ExtraSettings), dbAgent.AgentProvider)
-	oldMode := extras[extraSettingCollaborationMode]
-	extras[extraSettingCollaborationMode] = mode
+	extras := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
+	oldMode := extras[agent.CodexExtraCollaborationMode]
+	extras[agent.CodexExtraCollaborationMode] = mode
 	if err := svc.Queries.SetAgentExtraSettings(bgCtx(), db.SetAgentExtraSettingsParams{
 		ExtraSettings: marshalExtraSettings(extras),
 		ID:            agentID,
@@ -1149,7 +1149,7 @@ func (svc *Context) setAgentCollaborationMode(agentID, mode string) {
 
 	if svc.Agents.HasAgent(agentID) {
 		svc.Agents.UpdateSettings(agentID, &leapmuxv1.AgentSettings{ExtraSettings: map[string]string{
-			extraSettingCollaborationMode: mode,
+			agent.CodexExtraCollaborationMode: mode,
 		}})
 	}
 
@@ -1175,10 +1175,10 @@ func (svc *Context) setAgentCollaborationMode(agentID, mode string) {
 		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 			"type": "settings_changed",
 			"changes": map[string]interface{}{
-				extraSettingCollaborationMode: map[string]string{
+				agent.CodexExtraCollaborationMode: map[string]string{
 					"old": oldMode, "new": mode,
-					"label":    optionGroupLabel(extraSettingCollaborationMode, dbAgent.AgentProvider),
-					"oldLabel": optionLabel(extraSettingCollaborationMode, oldMode, dbAgent.AgentProvider), "newLabel": optionLabel(extraSettingCollaborationMode, mode, dbAgent.AgentProvider),
+					"label":    optionGroupLabel(agent.CodexExtraCollaborationMode, dbAgent.AgentProvider),
+					"oldLabel": optionLabel(agent.CodexExtraCollaborationMode, oldMode, dbAgent.AgentProvider), "newLabel": optionLabel(agent.CodexExtraCollaborationMode, mode, dbAgent.AgentProvider),
 				},
 			},
 		})
@@ -1509,7 +1509,7 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 		Effort:         dbAgent.Effort,
 		WorkingDir:     dbAgent.WorkingDir,
 		PermissionMode: targetMode,
-		ExtraSettings:  resolveCodexExtras(parseExtraSettings(dbAgent.ExtraSettings), dbAgent.AgentProvider),
+		ExtraSettings:  loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider),
 		StartupTimeout: svc.agentStartupTimeout(),
 		Shell:          svc.agentShell(),
 		LoginShell:     svc.agentLoginShell(),

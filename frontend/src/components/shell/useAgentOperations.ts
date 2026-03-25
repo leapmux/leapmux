@@ -278,7 +278,8 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       props.settingsLoading.stop()
     }
     catch (err) {
-      props.agentStore.updateAgent(agentId, { extraSettings: { ...(agent.extraSettings || {}), [field]: previous } })
+      const current = props.agentStore.state.agents.find(a => a.id === agentId)
+      props.agentStore.updateAgent(agentId, { extraSettings: { ...(current?.extraSettings || {}), [field]: previous } })
       props.settingsLoading.stop()
       showWarnToast(`Failed to change ${errorLabel}`, err)
     }

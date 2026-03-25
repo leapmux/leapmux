@@ -546,7 +546,7 @@ func (s *agentOutputSink) buildStatusChange(
 		Effort:         dbAgent.Effort,
 		GitStatus:      gitutil.GetGitStatus(dbAgent.WorkingDir),
 		AgentProvider:  s.agentProvider,
-		ExtraSettings:  resolveCodexExtras(parseExtraSettings(dbAgent.ExtraSettings), dbAgent.AgentProvider),
+		ExtraSettings:  loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider),
 	}
 }
 

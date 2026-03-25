@@ -110,6 +110,18 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
   const networkGroup = () => optionGroup(props.availableOptionGroups, CODEX_EXTRA_NETWORK_ACCESS)
   const networkItems = () => optionGroupItems(props.availableOptionGroups, CODEX_EXTRA_NETWORK_ACCESS)
 
+  // Identify the first visible group in each column so settingsFieldsetFirst
+  // is applied only to it. Using a derived signal avoids fragile cascading
+  // conditionals that must be updated every time a new group is added.
+  const leftFirstGroup = () => serviceTierItems().length > 0 ? 'tier' : 'effort'
+  const rightFirstGroup = () =>
+    collaborationModeItems().length > 0 ? 'collab'
+      : networkItems().length > 0 ? 'network'
+        : sandboxItems().length > 0 ? 'sandbox'
+          : 'mode'
+  const firstLeftClass = (id: string) => leftFirstGroup() === id ? styles.settingsFieldsetFirst : undefined
+  const firstRightClass = (id: string) => rightFirstGroup() === id ? styles.settingsFieldsetFirst : undefined
+
   return (
     <div class={styles.settingsPanelColumns}>
       <div class={[styles.settingsPanelColumn, styles.settingsPanelColumnPrimary].join(' ')}>
@@ -121,7 +133,7 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
             name={`${menuId}-service-tier`}
             current={currentServiceTier()}
             onChange={v => props.onOptionGroupChange?.(CODEX_EXTRA_SERVICE_TIER, v)}
-            fieldsetClass={styles.settingsFieldsetFirst}
+            fieldsetClass={firstLeftClass('tier')}
           />
         </Show>
         <RadioGroup
@@ -131,7 +143,7 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
           name={`${menuId}-effort`}
           current={currentEffort()}
           onChange={v => props.onEffortChange?.(v)}
-          fieldsetClass={serviceTierItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
+          fieldsetClass={firstLeftClass('effort')}
         />
         <RadioGroup
           label="Model"
@@ -151,7 +163,7 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
             name={`${menuId}-collaboration-mode`}
             current={currentCollaborationMode()}
             onChange={v => props.onOptionGroupChange?.(CODEX_EXTRA_COLLABORATION_MODE, v)}
-            fieldsetClass={styles.settingsFieldsetFirst}
+            fieldsetClass={firstRightClass('collab')}
           />
         </Show>
         <Show when={networkItems().length > 0}>
@@ -162,7 +174,7 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
             name={`${menuId}-network`}
             current={currentNetwork()}
             onChange={v => props.onOptionGroupChange?.(CODEX_EXTRA_NETWORK_ACCESS, v)}
-            fieldsetClass={collaborationModeItems().length === 0 && serviceTierItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
+            fieldsetClass={firstRightClass('network')}
           />
         </Show>
         <Show when={sandboxItems().length > 0}>
@@ -173,7 +185,7 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
             name={`${menuId}-sandbox`}
             current={currentSandbox()}
             onChange={v => props.onOptionGroupChange?.(CODEX_EXTRA_SANDBOX_POLICY, v)}
-            fieldsetClass={collaborationModeItems().length === 0 && serviceTierItems().length === 0 && networkItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
+            fieldsetClass={firstRightClass('sandbox')}
           />
         </Show>
         <div>
@@ -184,7 +196,7 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
             name={`${menuId}-mode`}
             current={currentMode()}
             onChange={v => props.onPermissionModeChange?.(v as PermissionMode)}
-            fieldsetClass={collaborationModeItems().length === 0 && serviceTierItems().length === 0 && networkItems().length === 0 && sandboxItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
+            fieldsetClass={firstRightClass('mode')}
           />
         </div>
       </div>

@@ -99,6 +99,65 @@ describe('useAgentOperations', () => {
       })
     })
 
+    it('rollback re-reads current state to avoid clobbering concurrent changes', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { agentStore, ops } = setup()
+          const agent = create(AgentInfoSchema, {
+            id: 'a-concurrent',
+            workerId: 'w-1',
+            extraSettings: { sandbox_policy: 'workspace-write', network_access: 'restricted' },
+            availableOptionGroups: [
+              {
+                key: 'sandbox_policy',
+                label: 'Sandbox Policy',
+                options: [
+                  { id: 'workspace-write', name: 'Workspace Write', isDefault: true },
+                  { id: 'danger-full-access', name: 'Full Access' },
+                ],
+              },
+              {
+                key: 'network_access',
+                label: 'Network Access',
+                options: [
+                  { id: 'restricted', name: 'Restricted', isDefault: true },
+                  { id: 'enabled', name: 'Enabled' },
+                ],
+              },
+            ],
+          })
+          agentStore.addAgent(agent)
+
+          // First call will fail; second succeeds.
+          let rejectFirst!: (err: Error) => void
+          mockUpdateAgentSettings.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject }))
+          mockUpdateAgentSettings.mockResolvedValueOnce({})
+
+          // Launch both changes concurrently.
+          const p1 = ops.handleOptionGroupChange('a-concurrent', 'sandbox_policy', 'danger-full-access')
+          const p2 = ops.handleOptionGroupChange('a-concurrent', 'network_access', 'enabled')
+
+          // Both optimistic updates should be applied.
+          const mid = agentStore.state.agents.find(a => a.id === 'a-concurrent')
+          expect(mid?.extraSettings?.sandbox_policy).toBe('danger-full-access')
+          expect(mid?.extraSettings?.network_access).toBe('enabled')
+
+          // Fail the first RPC — its rollback should only revert sandbox_policy,
+          // leaving network_access intact.
+          rejectFirst(new Error('sandbox fail'))
+          await p1
+          await p2
+
+          const final = agentStore.state.agents.find(a => a.id === 'a-concurrent')
+          expect(final?.extraSettings?.sandbox_policy).toBe('workspace-write')
+          expect(final?.extraSettings?.network_access).toBe('enabled')
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
     it('falls back to the first option when no explicit default is marked', async () => {
       await createRoot(async (dispose) => {
         try {

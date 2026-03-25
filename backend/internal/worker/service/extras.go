@@ -10,13 +10,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
-const (
-	extraSettingSandboxPolicy     = agent.CodexExtraSandboxPolicy
-	extraSettingNetworkAccess     = agent.CodexExtraNetworkAccess
-	extraSettingCollaborationMode = agent.CodexExtraCollaborationMode
-	extraSettingServiceTier       = agent.CodexExtraServiceTier
-)
-
 func parseExtraSettings(raw string) map[string]string {
 	if raw == "" {
 		return map[string]string{}
@@ -99,17 +92,23 @@ func resolveCodexExtras(settings map[string]string, provider leapmuxv1.AgentProv
 	if provider != leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
 		return settings
 	}
-	if settings[extraSettingSandboxPolicy] == "" {
-		settings[extraSettingSandboxPolicy] = agent.CodexDefaultSandboxPolicy
+	if settings[agent.CodexExtraSandboxPolicy] == "" {
+		settings[agent.CodexExtraSandboxPolicy] = agent.CodexDefaultSandboxPolicy
 	}
-	if settings[extraSettingNetworkAccess] == "" {
-		settings[extraSettingNetworkAccess] = agent.CodexDefaultNetworkAccess
+	if settings[agent.CodexExtraNetworkAccess] == "" {
+		settings[agent.CodexExtraNetworkAccess] = agent.CodexDefaultNetworkAccess
 	}
-	if settings[extraSettingCollaborationMode] == "" {
-		settings[extraSettingCollaborationMode] = agent.CodexDefaultCollaborationMode
+	if settings[agent.CodexExtraCollaborationMode] == "" {
+		settings[agent.CodexExtraCollaborationMode] = agent.CodexDefaultCollaborationMode
 	}
-	if settings[extraSettingServiceTier] == "" {
-		settings[extraSettingServiceTier] = agent.CodexDefaultServiceTier
+	if settings[agent.CodexExtraServiceTier] == "" {
+		settings[agent.CodexExtraServiceTier] = agent.CodexDefaultServiceTier
 	}
 	return settings
+}
+
+// loadExtraSettings parses a JSON extra_settings string from the DB and fills
+// in provider-specific defaults.
+func loadExtraSettings(raw string, provider leapmuxv1.AgentProvider) map[string]string {
+	return resolveCodexExtras(parseExtraSettings(raw), provider)
 }
