@@ -4,6 +4,7 @@ import { makeMessage, rawContent } from '../../tests/unit/helpers/messageFactory
 import {
   extractAgentRenamed,
   extractAssistantUsage,
+  extractCodexTokenUsage,
   extractPlanFilePath,
   extractRateLimitInfo,
   extractResultMetadata,
@@ -354,6 +355,53 @@ describe('extractAssistantUsage', () => {
     }
     const msg = makeMsg(MessageRole.ASSISTANT, content)
     expect(extractAssistantUsage(parseMessageContent(msg))).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// extractCodexTokenUsage
+// ---------------------------------------------------------------------------
+
+describe('extractCodexTokenUsage', () => {
+  it('extracts context usage from persisted Codex token usage notifications', () => {
+    const msg = makeMsg(MessageRole.LEAPMUX, wrap({
+      method: 'thread/tokenUsage/updated',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        tokenUsage: {
+          total: {
+            totalTokens: 200,
+            inputTokens: 100,
+            cachedInputTokens: 25,
+            outputTokens: 50,
+            reasoningOutputTokens: 9,
+          },
+          last: {
+            totalTokens: 23,
+            inputTokens: 10,
+            cachedInputTokens: 5,
+            outputTokens: 7,
+            reasoningOutputTokens: 1,
+          },
+          modelContextWindow: 4096,
+        },
+      },
+    }))
+
+    expect(extractCodexTokenUsage(parseMessageContent(msg))).toEqual({
+      contextUsage: {
+        inputTokens: 100,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 25,
+        contextWindow: 4096,
+      },
+    })
+  })
+
+  it('returns null for unrelated messages', () => {
+    const msg = makeMsg(MessageRole.LEAPMUX, wrap({ method: 'turn/completed', params: {} }))
+    expect(extractCodexTokenUsage(parseMessageContent(msg))).toBeNull()
   })
 })
 

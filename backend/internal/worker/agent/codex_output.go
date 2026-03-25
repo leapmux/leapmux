@@ -65,7 +65,7 @@ func handleCodexOutput(a *CodexAgent, content []byte) {
 		a.handleTurnCompleted(envelope.Params)
 
 	case "thread/tokenUsage/updated":
-		a.handleTokenUsageUpdated(envelope.Params)
+		a.handleTokenUsageUpdated(content, envelope.Params)
 
 	case "thread/name/updated":
 		a.handleThreadNameUpdated(envelope.Params)
@@ -458,12 +458,21 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 }
 
 // handleTokenUsageUpdated processes thread/tokenUsage/updated notifications.
-func (a *CodexAgent) handleTokenUsageUpdated(params json.RawMessage) {
+func (a *CodexAgent) handleTokenUsageUpdated(content []byte, params json.RawMessage) {
+	// Persist the raw Codex notification so reconnect/catch-up can rehydrate
+	// context usage from history.
+	if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, content); err != nil {
+		slog.Error("codex persist tokenUsage", "agent_id", a.agentID, "error", err)
+	}
+
 	var notif struct {
+		ThreadID string `json:"threadId"`
+		TurnID   string `json:"turnId"`
 		TokenUsage struct {
 			Total struct {
-				InputTokens  int64 `json:"inputTokens"`
-				OutputTokens int64 `json:"outputTokens"`
+				InputTokens       int64 `json:"inputTokens"`
+				CachedInputTokens int64 `json:"cachedInputTokens"`
+				OutputTokens      int64 `json:"outputTokens"`
 			} `json:"total"`
 			ModelContextWindow *int64 `json:"modelContextWindow"`
 		} `json:"tokenUsage"`
@@ -473,8 +482,10 @@ func (a *CodexAgent) handleTokenUsageUpdated(params json.RawMessage) {
 	}
 
 	usage := map[string]interface{}{
-		"inputTokens":  notif.TokenUsage.Total.InputTokens,
-		"outputTokens": notif.TokenUsage.Total.OutputTokens,
+		"inputTokens":              notif.TokenUsage.Total.InputTokens,
+		"cacheCreationInputTokens": int64(0),
+		"cacheReadInputTokens":     notif.TokenUsage.Total.CachedInputTokens,
+		"outputTokens":             notif.TokenUsage.Total.OutputTokens,
 	}
 	if notif.TokenUsage.ModelContextWindow != nil {
 		usage["contextWindow"] = *notif.TokenUsage.ModelContextWindow

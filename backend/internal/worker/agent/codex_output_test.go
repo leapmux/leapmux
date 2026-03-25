@@ -592,3 +592,55 @@ func TestHandleCodexOutput_ApprovalWithoutID(t *testing.T) {
 		t.Errorf("expected 0 broadcast control requests (no id), got %d", sink.BroadcastControlCount())
 	}
 }
+
+func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsage(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{"total":{"totalTokens":200,"inputTokens":100,"cachedInputTokens":25,"outputTokens":50,"reasoningOutputTokens":9},"last":{"totalTokens":23,"inputTokens":10,"cachedInputTokens":5,"outputTokens":7,"reasoningOutputTokens":1},"modelContextWindow":4096}}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if sink.NotificationCount() != 1 {
+		t.Fatalf("expected 1 persisted notification, got %d", sink.NotificationCount())
+	}
+	if sink.SessionInfoCount() != 1 {
+		t.Fatalf("expected 1 session info broadcast, got %d", sink.SessionInfoCount())
+	}
+
+	info := sink.LastSessionInfo()
+	usage, ok := info["contextUsage"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected contextUsage map, got %#v", info["contextUsage"])
+	}
+	if usage["inputTokens"] != int64(100) {
+		t.Fatalf("expected inputTokens 100, got %#v", usage["inputTokens"])
+	}
+	if usage["cacheCreationInputTokens"] != int64(0) {
+		t.Fatalf("expected cacheCreationInputTokens 0, got %#v", usage["cacheCreationInputTokens"])
+	}
+	if usage["cacheReadInputTokens"] != int64(25) {
+		t.Fatalf("expected cacheReadInputTokens 25, got %#v", usage["cacheReadInputTokens"])
+	}
+	if usage["contextWindow"] != int64(4096) {
+		t.Fatalf("expected contextWindow 4096, got %#v", usage["contextWindow"])
+	}
+}
+
+func TestHandleCodexOutput_TokenUsageUpdatedFallsBackToModelContextWindow(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.model = "gpt-5.4"
+	agent.availableModels = codexDefaultModels
+
+	input := `{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{"total":{"totalTokens":200,"inputTokens":100,"cachedInputTokens":25,"outputTokens":50,"reasoningOutputTokens":9},"last":{"totalTokens":23,"inputTokens":10,"cachedInputTokens":5,"outputTokens":7,"reasoningOutputTokens":1},"modelContextWindow":null}}}`
+	handleCodexOutput(agent, []byte(input))
+
+	info := sink.LastSessionInfo()
+	usage, ok := info["contextUsage"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected contextUsage map, got %#v", info["contextUsage"])
+	}
+	if usage["contextWindow"] != int64(1_050_000) {
+		t.Fatalf("expected fallback contextWindow 1050000, got %#v", usage["contextWindow"])
+	}
+}
