@@ -205,6 +205,18 @@ func permissionModeLabel(mode string, provider leapmuxv1.AgentProvider) string {
 	return optionLabel("permissionMode", mode, provider)
 }
 
+func optionGroupLabel(key string, provider leapmuxv1.AgentProvider) string {
+	for _, group := range agent.AvailableOptionGroupsForProvider(provider) {
+		if group.Key == key {
+			if group.Label != "" {
+				return group.Label
+			}
+			return key
+		}
+	}
+	return key
+}
+
 // optionLabel looks up a human-readable label for an option value from the
 // provider registry's option groups. Falls back to the raw value if not found.
 func optionLabel(key, value string, provider leapmuxv1.AgentProvider) string {

@@ -114,17 +114,15 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
     <div class={styles.settingsPanelColumns}>
       <div class={[styles.settingsPanelColumn, styles.settingsPanelColumnPrimary].join(' ')}>
         <Show when={serviceTierItems().length > 0}>
-          <div>
-            <RadioGroup
-              label={serviceTierGroup()?.label || 'Fast Mode'}
-              items={serviceTierItems()}
-              testIdPrefix="codex-service-tier"
-              name={`${menuId}-service-tier`}
-              current={currentServiceTier()}
-              onChange={v => props.onOptionGroupChange?.(CODEX_EXTRA_SERVICE_TIER, v)}
-              fieldsetClass={styles.settingsFieldsetFirst}
-            />
-          </div>
+          <RadioGroup
+            label={serviceTierGroup()?.label || 'Fast Mode'}
+            items={serviceTierItems()}
+            testIdPrefix="codex-service-tier"
+            name={`${menuId}-service-tier`}
+            current={currentServiceTier()}
+            onChange={v => props.onOptionGroupChange?.(CODEX_EXTRA_SERVICE_TIER, v)}
+            fieldsetClass={styles.settingsFieldsetFirst}
+          />
         </Show>
         <RadioGroup
           label="Reasoning Effort"
@@ -146,43 +144,37 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
       </div>
       <div class={styles.settingsPanelColumn}>
         <Show when={collaborationModeItems().length > 0}>
-          <div>
-            <RadioGroup
-              label={collaborationModeGroup()?.label || 'Workflow'}
-              items={collaborationModeItems()}
-              testIdPrefix="codex-collaboration-mode"
-              name={`${menuId}-collaboration-mode`}
-              current={currentCollaborationMode()}
-              onChange={v => props.onOptionGroupChange?.(CODEX_EXTRA_COLLABORATION_MODE, v)}
-              fieldsetClass={styles.settingsFieldsetFirst}
-            />
-          </div>
+          <RadioGroup
+            label={collaborationModeGroup()?.label || 'Workflow'}
+            items={collaborationModeItems()}
+            testIdPrefix="codex-collaboration-mode"
+            name={`${menuId}-collaboration-mode`}
+            current={currentCollaborationMode()}
+            onChange={v => props.onOptionGroupChange?.(CODEX_EXTRA_COLLABORATION_MODE, v)}
+            fieldsetClass={styles.settingsFieldsetFirst}
+          />
         </Show>
         <Show when={networkItems().length > 0}>
-          <div>
-            <RadioGroup
-              label={networkGroup()?.label || 'Network Access'}
-              items={networkItems()}
-              testIdPrefix="network"
-              name={`${menuId}-network`}
-              current={currentNetwork()}
-              onChange={v => props.onOptionGroupChange?.(CODEX_EXTRA_NETWORK_ACCESS, v)}
-              fieldsetClass={collaborationModeItems().length === 0 && serviceTierItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
-            />
-          </div>
+          <RadioGroup
+            label={networkGroup()?.label || 'Network Access'}
+            items={networkItems()}
+            testIdPrefix="network"
+            name={`${menuId}-network`}
+            current={currentNetwork()}
+            onChange={v => props.onOptionGroupChange?.(CODEX_EXTRA_NETWORK_ACCESS, v)}
+            fieldsetClass={collaborationModeItems().length === 0 && serviceTierItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
+          />
         </Show>
         <Show when={sandboxItems().length > 0}>
-          <div>
-            <RadioGroup
-              label={sandboxGroup()?.label || 'Sandbox'}
-              items={sandboxItems()}
-              testIdPrefix="sandbox"
-              name={`${menuId}-sandbox`}
-              current={currentSandbox()}
-              onChange={v => props.onOptionGroupChange?.(CODEX_EXTRA_SANDBOX_POLICY, v)}
-              fieldsetClass={collaborationModeItems().length === 0 && serviceTierItems().length === 0 && networkItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
-            />
-          </div>
+          <RadioGroup
+            label={sandboxGroup()?.label || 'Sandbox'}
+            items={sandboxItems()}
+            testIdPrefix="sandbox"
+            name={`${menuId}-sandbox`}
+            current={currentSandbox()}
+            onChange={v => props.onOptionGroupChange?.(CODEX_EXTRA_SANDBOX_POLICY, v)}
+            fieldsetClass={collaborationModeItems().length === 0 && serviceTierItems().length === 0 && networkItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
+          />
         </Show>
         <div>
           <RadioGroup

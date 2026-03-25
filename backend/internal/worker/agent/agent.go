@@ -396,7 +396,7 @@ func init() {
 			Key:   "permissionMode",
 			Label: "Permission Mode",
 			Options: []*leapmuxv1.AvailableOption{
-				{Id: PermissionModeDefault, Name: "Default"},
+				{Id: PermissionModeDefault, Name: "Default", IsDefault: true},
 				{Id: PermissionModePlan, Name: "Plan Mode"},
 				{Id: PermissionModeAcceptEdits, Name: "Accept Edits"},
 				{Id: PermissionModeBypassPermissions, Name: "Bypass Permissions"},

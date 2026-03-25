@@ -171,6 +171,25 @@ func TestAgent_WorkingDir(t *testing.T) {
 	assert.Equal(t, dir, agent.workingDir)
 }
 
+func TestAvailableOptionGroups_DefaultOptionMetadata(t *testing.T) {
+	for _, provider := range []leapmuxv1.AgentProvider{
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	} {
+		groups := AvailableOptionGroupsForProvider(provider)
+		require.NotEmpty(t, groups)
+		for _, group := range groups {
+			defaults := 0
+			for _, option := range group.Options {
+				if option.IsDefault {
+					defaults++
+				}
+			}
+			assert.Equalf(t, 1, defaults, "provider=%s group=%s should expose exactly one default option", provider.String(), group.Key)
+		}
+	}
+}
+
 // TestHelperProcessWithInit is a test helper that acts as a mock Claude process
 // that outputs an init message with a session_id on startup, then echoes stdin.
 func TestHelperProcessWithInit(t *testing.T) {

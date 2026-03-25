@@ -133,6 +133,7 @@ message AvailableOption {
   string id = 1;           // Value stored/sent in requests (e.g. "default", "never")
   string name = 2;         // Human-readable label (e.g. "Default", "Full Auto")
   string description = 3;  // Tooltip text
+  bool is_default = 4;     // Whether this is the provider's default option for the group
 }
 
 // AvailableOptionGroup describes a named group of options (e.g. "Permission Mode", "Approval Policy").

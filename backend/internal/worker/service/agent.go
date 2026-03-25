@@ -66,7 +66,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			agentProvider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 		}
 		model := modelOrDefault(r.GetModel(), agentProvider)
-		extraSettings := codexExtrasResolved(cloneExtraSettings(r.GetExtraSettings()), agentProvider)
+		extraSettings := resolveCodexExtras(mergeExtraSettings(nil, r.GetExtraSettings()), agentProvider)
 
 		// Ensure the channel knows about this workspace so that
 		// subsequent WatchEvents calls can access the agent.
@@ -539,12 +539,8 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		if newPermissionMode == "" {
 			newPermissionMode = dbAgent.PermissionMode
 		}
-		oldExtraSettings := parseExtraSettings(dbAgent.ExtraSettings)
-		newExtraSettings := codexExtrasResolved(mergeExtraSettings(oldExtraSettings, s.GetExtraSettings()), dbAgent.AgentProvider)
-		newSandboxPolicy := sandboxPolicyFromExtras(newExtraSettings)
-		newNetworkAccess := networkAccessFromExtras(newExtraSettings)
-		newCollaborationMode := collaborationModeFromExtras(newExtraSettings, dbAgent.AgentProvider)
-		newServiceTier := serviceTierFromExtras(newExtraSettings, dbAgent.AgentProvider)
+		oldExtraSettings := resolveCodexExtras(parseExtraSettings(dbAgent.ExtraSettings), dbAgent.AgentProvider)
+		newExtraSettings := resolveCodexExtras(mergeExtraSettings(oldExtraSettings, s.GetExtraSettings()), dbAgent.AgentProvider)
 
 		// Update the DB.
 		if err := svc.Queries.UpdateAgentAllSettings(bgCtx(), db.UpdateAgentAllSettingsParams{
@@ -638,32 +634,15 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 				"oldLabel": permissionModeLabel(dbAgent.PermissionMode, dbAgent.AgentProvider), "newLabel": permissionModeLabel(newPermissionMode, dbAgent.AgentProvider),
 			}
 		}
-		oldSandboxPolicy := sandboxPolicyFromExtras(oldExtraSettings)
-		if oldSandboxPolicy != newSandboxPolicy {
-			changes[extraSettingSandboxPolicy] = map[string]string{
-				"old": oldSandboxPolicy, "new": newSandboxPolicy,
-				"oldLabel": optionLabel(extraSettingSandboxPolicy, oldSandboxPolicy, dbAgent.AgentProvider), "newLabel": optionLabel(extraSettingSandboxPolicy, newSandboxPolicy, dbAgent.AgentProvider),
-			}
-		}
-		oldNetworkAccess := networkAccessFromExtras(oldExtraSettings)
-		if oldNetworkAccess != newNetworkAccess {
-			changes[extraSettingNetworkAccess] = map[string]string{
-				"old": oldNetworkAccess, "new": newNetworkAccess,
-				"oldLabel": optionLabel(extraSettingNetworkAccess, oldNetworkAccess, dbAgent.AgentProvider), "newLabel": optionLabel(extraSettingNetworkAccess, newNetworkAccess, dbAgent.AgentProvider),
-			}
-		}
-		oldCollaborationMode := collaborationModeFromExtras(oldExtraSettings, dbAgent.AgentProvider)
-		if oldCollaborationMode != newCollaborationMode {
-			changes[extraSettingCollaborationMode] = map[string]string{
-				"old": oldCollaborationMode, "new": newCollaborationMode,
-				"oldLabel": optionLabel(extraSettingCollaborationMode, oldCollaborationMode, dbAgent.AgentProvider), "newLabel": optionLabel(extraSettingCollaborationMode, newCollaborationMode, dbAgent.AgentProvider),
-			}
-		}
-		oldServiceTier := serviceTierFromExtras(oldExtraSettings, dbAgent.AgentProvider)
-		if oldServiceTier != newServiceTier {
-			changes[extraSettingServiceTier] = map[string]string{
-				"old": oldServiceTier, "new": newServiceTier,
-				"oldLabel": optionLabel(extraSettingServiceTier, oldServiceTier, dbAgent.AgentProvider), "newLabel": optionLabel(extraSettingServiceTier, newServiceTier, dbAgent.AgentProvider),
+		for _, key := range sortedExtraSettingKeys(oldExtraSettings, newExtraSettings) {
+			oldVal, newVal := oldExtraSettings[key], newExtraSettings[key]
+			if oldVal != newVal {
+				changes[key] = map[string]string{
+					"old": oldVal, "new": newVal,
+					"label":    optionGroupLabel(key, dbAgent.AgentProvider),
+					"oldLabel": optionLabel(key, oldVal, dbAgent.AgentProvider),
+					"newLabel": optionLabel(key, newVal, dbAgent.AgentProvider),
+				}
 			}
 		}
 		if len(changes) > 0 {
@@ -934,7 +913,7 @@ func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, 
 		AgentProvider:         a.AgentProvider,
 		AvailableModels:       availableModels,
 		AvailableOptionGroups: availableOptionGroups,
-		ExtraSettings:         codexExtrasResolved(parseExtraSettings(a.ExtraSettings), a.AgentProvider),
+		ExtraSettings:         resolveCodexExtras(parseExtraSettings(a.ExtraSettings), a.AgentProvider),
 	}
 
 	if a.ClosedAt.Valid {
@@ -972,7 +951,7 @@ func (svc *Context) handleClearContext(agentID string) {
 		Effort:         dbAgent.Effort,
 		WorkingDir:     dbAgent.WorkingDir,
 		PermissionMode: dbAgent.PermissionMode,
-		ExtraSettings:  codexExtrasResolved(parseExtraSettings(dbAgent.ExtraSettings), dbAgent.AgentProvider),
+		ExtraSettings:  resolveCodexExtras(parseExtraSettings(dbAgent.ExtraSettings), dbAgent.AgentProvider),
 		StartupTimeout: svc.agentStartupTimeout(),
 		Shell:          svc.agentShell(),
 		LoginShell:     svc.agentLoginShell(),
@@ -1043,7 +1022,7 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 		WorkingDir:      dbAgent.WorkingDir,
 		ResumeSessionID: resumeSessionID,
 		PermissionMode:  dbAgent.PermissionMode,
-		ExtraSettings:   codexExtrasResolved(parseExtraSettings(dbAgent.ExtraSettings), dbAgent.AgentProvider),
+		ExtraSettings:   resolveCodexExtras(parseExtraSettings(dbAgent.ExtraSettings), dbAgent.AgentProvider),
 		StartupTimeout:  svc.agentStartupTimeout(),
 		Shell:           svc.agentShell(),
 		LoginShell:      svc.agentLoginShell(),
@@ -1157,8 +1136,8 @@ func (svc *Context) setAgentCollaborationMode(agentID, mode string) {
 		return
 	}
 
-	extras := codexExtrasResolved(parseExtraSettings(dbAgent.ExtraSettings), dbAgent.AgentProvider)
-	oldMode := collaborationModeFromExtras(extras, dbAgent.AgentProvider)
+	extras := resolveCodexExtras(parseExtraSettings(dbAgent.ExtraSettings), dbAgent.AgentProvider)
+	oldMode := extras[extraSettingCollaborationMode]
 	extras[extraSettingCollaborationMode] = mode
 	if err := svc.Queries.SetAgentExtraSettings(bgCtx(), db.SetAgentExtraSettingsParams{
 		ExtraSettings: marshalExtraSettings(extras),
@@ -1198,6 +1177,7 @@ func (svc *Context) setAgentCollaborationMode(agentID, mode string) {
 			"changes": map[string]interface{}{
 				extraSettingCollaborationMode: map[string]string{
 					"old": oldMode, "new": mode,
+					"label":    optionGroupLabel(extraSettingCollaborationMode, dbAgent.AgentProvider),
 					"oldLabel": optionLabel(extraSettingCollaborationMode, oldMode, dbAgent.AgentProvider), "newLabel": optionLabel(extraSettingCollaborationMode, mode, dbAgent.AgentProvider),
 				},
 			},
@@ -1529,7 +1509,7 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 		Effort:         dbAgent.Effort,
 		WorkingDir:     dbAgent.WorkingDir,
 		PermissionMode: targetMode,
-		ExtraSettings:  codexExtrasResolved(parseExtraSettings(dbAgent.ExtraSettings), dbAgent.AgentProvider),
+		ExtraSettings:  resolveCodexExtras(parseExtraSettings(dbAgent.ExtraSettings), dbAgent.AgentProvider),
 		StartupTimeout: svc.agentStartupTimeout(),
 		Shell:          svc.agentShell(),
 		LoginShell:     svc.agentLoginShell(),

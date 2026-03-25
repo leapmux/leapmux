@@ -7,7 +7,7 @@ import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { Icon } from '~/components/common/Icon'
 import { codexTierToRateLimitInfo, formatRateLimitMessage } from '~/lib/rateLimitUtils'
 import { renderMarkdown } from '~/lib/renderMarkdown'
-import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
+import { getCachedSettingsGroupLabel, getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { spinner } from '~/styles/animations.css'
 import { markdownContent } from './markdownContent.css'
 import {
@@ -26,11 +26,7 @@ function displayLabel(key: string): string {
     case 'model': return 'Model'
     case 'effort': return 'Effort'
     case 'permissionMode': return 'Permission Mode'
-    case 'collaboration_mode': return 'Workflow'
-    case 'service_tier': return 'Fast Mode'
-    case 'sandbox_policy': return 'Sandbox Policy'
-    case 'network_access': return 'Network Access'
-    default: return key
+    default: return getCachedSettingsGroupLabel(key) ?? key
   }
 }
 
@@ -43,7 +39,7 @@ export const settingsChangedRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
     if (!isObject(parsed) || parsed.type !== 'settings_changed')
       return null
-    const changes = parsed.changes as Record<string, { old: string, new: string, oldLabel?: string, newLabel?: string }>
+    const changes = parsed.changes as Record<string, { old: string, new: string, label?: string, oldLabel?: string, newLabel?: string }>
     if (!changes)
       return null
     const parts: string[] = []
@@ -51,7 +47,7 @@ export const settingsChangedRenderer: MessageContentRenderer = {
       if (val.old !== val.new) {
         const oldDisplay = val.oldLabel || displayValue(key, val.old)
         const newDisplay = val.newLabel || displayValue(key, val.new)
-        parts.push(`${displayLabel(key)} (${oldDisplay} → ${newDisplay})`)
+        parts.push(`${val.label || displayLabel(key)} (${oldDisplay} → ${newDisplay})`)
       }
     }
     if (parts.length === 0)

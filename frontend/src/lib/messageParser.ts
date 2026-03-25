@@ -277,11 +277,7 @@ export function extractRateLimitInfo(parsed: ParsedMessageContent): {
 
 /** Extract settings changes from a LEAPMUX settings_changed inner message. */
 export function extractSettingsChanges(parsed: ParsedMessageContent): {
-  collaboration_mode?: { old: string, new: string }
-  service_tier?: { old: string, new: string }
-  sandbox_policy?: { old: string, new: string }
-  network_access?: { old: string, new: string }
-  permissionMode?: { old: string, new: string }
+  [key: string]: { old: string, new: string } | undefined
 } | null {
   const inner = getInnerMessage(parsed)
   if (!inner || inner.type !== 'settings_changed')
@@ -289,13 +285,7 @@ export function extractSettingsChanges(parsed: ParsedMessageContent): {
   const changes = inner.changes as Record<string, unknown> | undefined
   if (!changes || typeof changes !== 'object')
     return null
-  return changes as {
-    collaboration_mode?: { old: string, new: string }
-    service_tier?: { old: string, new: string }
-    sandbox_policy?: { old: string, new: string }
-    network_access?: { old: string, new: string }
-    permissionMode?: { old: string, new: string }
-  }
+  return changes as { [key: string]: { old: string, new: string } | undefined }
 }
 
 /** Extract renamed title from an agent_renamed notification (wrapped or unwrapped). */

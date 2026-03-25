@@ -201,7 +201,8 @@ export function createChatStore() {
           // Shallow-merge via path setter: preserves the store proxy reference
           // so <For> keeps the existing MessageBubble (local UI state survives).
           setState('messagesByAgent', agentId, existingIdx, message)
-        } else {
+        }
+        else {
           // Notification thread rows are updated in place on the backend but
           // receive a new seq. Reinsert them so the visible order follows seq.
           setState('messagesByAgent', agentId, (prev = []) => {

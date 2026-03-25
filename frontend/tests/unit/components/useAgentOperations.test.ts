@@ -14,13 +14,15 @@ import { createLayoutStore } from '~/stores/layout.store'
 import { createTabStore } from '~/stores/tab.store'
 
 const mockCloseAgent = vi.fn<(workerId: string, req: { agentId: string, worktreeAction?: WorktreeAction }) => Promise<CloseAgentResponse>>()
+const mockUpdateAgentSettings = vi.fn()
+const mockShowWarnToast = vi.fn()
 
 vi.mock('~/api/workerRpc', () => ({
   closeAgent: (...args: unknown[]) => mockCloseAgent(...args as [string, { agentId: string, worktreeAction?: WorktreeAction }]),
   openAgent: vi.fn(),
   sendAgentMessage: vi.fn(),
   sendControlResponse: vi.fn(),
-  updateAgentSettings: vi.fn(),
+  updateAgentSettings: (...args: unknown[]) => mockUpdateAgentSettings(...args),
   retryAgentMessage: vi.fn(),
   deleteAgentMessage: vi.fn(),
 }))
@@ -33,7 +35,7 @@ vi.mock('~/api/clients', () => ({
 }))
 
 vi.mock('~/components/common/Toast', () => ({
-  showWarnToast: vi.fn(),
+  showWarnToast: (...args: unknown[]) => mockShowWarnToast(...args),
 }))
 
 function setup() {
@@ -61,6 +63,72 @@ function setup() {
 }
 
 describe('useAgentOperations', () => {
+  describe('handleOptionGroupChange', () => {
+    it('uses option-group metadata for default rollback and error labeling', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { agentStore, ops } = setup()
+          const agent = create(AgentInfoSchema, {
+            id: 'a-1',
+            workerId: 'w-1',
+            extraSettings: { opencode_mode: 'safe' },
+            availableOptionGroups: [{
+              key: 'opencode_mode',
+              label: 'Execution Mode',
+              options: [
+                { id: 'safe', name: 'Safe', isDefault: true },
+                { id: 'fast', name: 'Fast' },
+              ],
+            }],
+          })
+          agentStore.addAgent(agent)
+          mockUpdateAgentSettings.mockRejectedValueOnce(new Error('boom'))
+
+          await ops.handleOptionGroupChange('a-1', 'opencode_mode', 'fast')
+
+          expect(mockUpdateAgentSettings).toHaveBeenCalledWith('w-1', {
+            agentId: 'a-1',
+            settings: { extraSettings: { opencode_mode: 'fast' } },
+          })
+          expect(agentStore.state.agents.find(a => a.id === 'a-1')?.extraSettings?.opencode_mode).toBe('safe')
+          expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to change Execution Mode', expect.any(Error))
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('falls back to the first option when no explicit default is marked', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { agentStore, ops } = setup()
+          const agent = create(AgentInfoSchema, {
+            id: 'a-2',
+            workerId: 'w-1',
+            availableOptionGroups: [{
+              key: 'opencode_mode',
+              label: 'Execution Mode',
+              options: [
+                { id: 'safe', name: 'Safe' },
+                { id: 'fast', name: 'Fast' },
+              ],
+            }],
+          })
+          agentStore.addAgent(agent)
+          mockUpdateAgentSettings.mockRejectedValueOnce(new Error('boom'))
+
+          await ops.handleOptionGroupChange('a-2', 'opencode_mode', 'fast')
+
+          expect(agentStore.state.agents.find(a => a.id === 'a-2')?.extraSettings?.opencode_mode).toBe('safe')
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+  })
+
   describe('handleCloseAgent', () => {
     it('should call closeAgent RPC when workerId is available', async () => {
       await createRoot(async (dispose) => {

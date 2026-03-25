@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"log/slog"
+	"maps"
 	"sort"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -10,22 +11,11 @@ import (
 )
 
 const (
-	extraSettingSandboxPolicy     = "sandbox_policy"
-	extraSettingNetworkAccess     = "network_access"
-	extraSettingCollaborationMode = "collaboration_mode"
-	extraSettingServiceTier       = "service_tier"
+	extraSettingSandboxPolicy     = agent.CodexExtraSandboxPolicy
+	extraSettingNetworkAccess     = agent.CodexExtraNetworkAccess
+	extraSettingCollaborationMode = agent.CodexExtraCollaborationMode
+	extraSettingServiceTier       = agent.CodexExtraServiceTier
 )
-
-func cloneExtraSettings(src map[string]string) map[string]string {
-	if len(src) == 0 {
-		return map[string]string{}
-	}
-	dst := make(map[string]string, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
-}
 
 func parseExtraSettings(raw string) map[string]string {
 	if raw == "" {
@@ -51,21 +41,18 @@ func marshalExtraSettings(settings map[string]string) string {
 	if len(settings) == 0 {
 		return "{}"
 	}
-	keys := make([]string, 0, len(settings))
+	// Filter out empty values before marshaling.
+	// json.Marshal sorts map keys automatically.
+	filtered := make(map[string]string, len(settings))
 	for k, v := range settings {
 		if v != "" {
-			keys = append(keys, k)
+			filtered[k] = v
 		}
 	}
-	if len(keys) == 0 {
+	if len(filtered) == 0 {
 		return "{}"
 	}
-	sort.Strings(keys)
-	ordered := make(map[string]string, len(keys))
-	for _, k := range keys {
-		ordered[k] = settings[k]
-	}
-	data, err := json.Marshal(ordered)
+	data, err := json.Marshal(filtered)
 	if err != nil {
 		slog.Error("failed to marshal extra_settings; using empty object", "error", err)
 		return "{}"
@@ -74,7 +61,10 @@ func marshalExtraSettings(settings map[string]string) string {
 }
 
 func mergeExtraSettings(current, incoming map[string]string) map[string]string {
-	merged := cloneExtraSettings(current)
+	merged := maps.Clone(current)
+	if merged == nil {
+		merged = map[string]string{}
+	}
 	for k, v := range incoming {
 		if v == "" {
 			delete(merged, k)
@@ -85,53 +75,41 @@ func mergeExtraSettings(current, incoming map[string]string) map[string]string {
 	return merged
 }
 
-func extraSettingOrDefault(settings map[string]string, key, fallback string) string {
-	if v := settings[key]; v != "" {
-		return v
+func sortedExtraSettingKeys(mapsToMerge ...map[string]string) []string {
+	keys := make(map[string]struct{})
+	for _, settings := range mapsToMerge {
+		for key := range settings {
+			keys[key] = struct{}{}
+		}
 	}
-	return fallback
-}
-
-func sandboxPolicyFromExtras(settings map[string]string) string {
-	return extraSettingOrDefault(settings, extraSettingSandboxPolicy, agent.CodexDefaultSandboxPolicy)
-}
-
-func networkAccessFromExtras(settings map[string]string) string {
-	return extraSettingOrDefault(settings, extraSettingNetworkAccess, agent.CodexDefaultNetworkAccess)
-}
-
-func collaborationModeFromExtras(settings map[string]string, provider leapmuxv1.AgentProvider) string {
-	mode := settings[extraSettingCollaborationMode]
-	if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
-		return agent.StringOrDefault(mode, agent.CodexDefaultCollaborationMode)
+	if len(keys) == 0 {
+		return nil
 	}
-	return mode
-}
-
-func serviceTierFromExtras(settings map[string]string, provider leapmuxv1.AgentProvider) string {
-	tier := settings[extraSettingServiceTier]
-	if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
-		return agent.StringOrDefault(tier, agent.CodexDefaultServiceTier)
+	out := make([]string, 0, len(keys))
+	for key := range keys {
+		out = append(out, key)
 	}
-	return tier
+	sort.Strings(out)
+	return out
 }
 
-func codexExtrasResolved(settings map[string]string, provider leapmuxv1.AgentProvider) map[string]string {
+// resolveCodexExtras fills in Codex-specific defaults for any missing extra
+// settings keys. It mutates the input map and returns it.
+func resolveCodexExtras(settings map[string]string, provider leapmuxv1.AgentProvider) map[string]string {
 	if provider != leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
-		return cloneExtraSettings(settings)
+		return settings
 	}
-	resolved := cloneExtraSettings(settings)
-	if resolved[extraSettingSandboxPolicy] == "" {
-		resolved[extraSettingSandboxPolicy] = agent.CodexDefaultSandboxPolicy
+	if settings[extraSettingSandboxPolicy] == "" {
+		settings[extraSettingSandboxPolicy] = agent.CodexDefaultSandboxPolicy
 	}
-	if resolved[extraSettingNetworkAccess] == "" {
-		resolved[extraSettingNetworkAccess] = agent.CodexDefaultNetworkAccess
+	if settings[extraSettingNetworkAccess] == "" {
+		settings[extraSettingNetworkAccess] = agent.CodexDefaultNetworkAccess
 	}
-	if resolved[extraSettingCollaborationMode] == "" {
-		resolved[extraSettingCollaborationMode] = agent.CodexDefaultCollaborationMode
+	if settings[extraSettingCollaborationMode] == "" {
+		settings[extraSettingCollaborationMode] = agent.CodexDefaultCollaborationMode
 	}
-	if resolved[extraSettingServiceTier] == "" {
-		resolved[extraSettingServiceTier] = agent.CodexDefaultServiceTier
+	if settings[extraSettingServiceTier] == "" {
+		settings[extraSettingServiceTier] = agent.CodexDefaultServiceTier
 	}
-	return resolved
+	return settings
 }
