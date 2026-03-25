@@ -677,12 +677,8 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 	if tracker == nil {
 		tracker = h.spanTracker(agentID)
 	}
-	trackerParentSpanID := span.TrackerParentSpanID
-	if trackerParentSpanID == "" {
-		trackerParentSpanID = span.ParentSpanID
-	}
-	connectorSpanID := resolveConnectorSpanID(span.SpanID, span.ConnectorSpanID, trackerParentSpanID, span.Closing)
-	depth, spanLines, connectorColor := tracker.Snapshot(trackerParentSpanID, connectorSpanID, span.Closing)
+	connectorSpanID := resolveConnectorSpanID(span.SpanID, span.ConnectorSpanID, span.ParentSpanID, span.Closing)
+	depth, spanLines, connectorColor := tracker.Snapshot(span.ParentSpanID, connectorSpanID, span.Closing)
 
 	// Resolve span color: if the span is already active (e.g. tool_result
 	// inside an open span), use the connector color from the snapshot.
