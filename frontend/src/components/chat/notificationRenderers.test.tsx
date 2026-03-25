@@ -107,7 +107,7 @@ describe('renderNotificationThread: message ordering', () => {
 
   it('uses Workflow label for Codex collaboration mode changes', () => {
     const messages = [
-      { type: 'settings_changed', changes: { codexCollaborationMode: { old: 'default', new: 'plan' } } },
+      { type: 'settings_changed', changes: { collaboration_mode: { old: 'default', new: 'plan' } } },
     ]
     const text = renderText(messages)
     expect(text).toContain('Workflow')

@@ -10,7 +10,7 @@ import type { PermissionMode } from '~/utils/controlResponse'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { getProviderPlugin } from '~/components/chat/providers'
-import { DEFAULT_CODEX_NETWORK_ACCESS, DEFAULT_CODEX_SANDBOX_POLICY, DEFAULT_CODEX_SERVICE_TIER } from '~/components/chat/providers/codex'
+import { CODEX_EXTRA_COLLABORATION_MODE, CODEX_EXTRA_NETWORK_ACCESS, CODEX_EXTRA_SANDBOX_POLICY, CODEX_EXTRA_SERVICE_TIER, DEFAULT_CODEX_COLLABORATION_MODE, DEFAULT_CODEX_NETWORK_ACCESS, DEFAULT_CODEX_SANDBOX_POLICY, DEFAULT_CODEX_SERVICE_TIER } from '~/components/chat/providers/codex'
 import { showWarnToast } from '~/components/common/Toast'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
@@ -67,7 +67,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   }
 
   const defaultCodexCollaborationMode = (provider: AgentProvider): string => {
-    return provider === AgentProvider.CODEX ? 'default' : ''
+    return provider === AgentProvider.CODEX ? DEFAULT_CODEX_COLLABORATION_MODE : ''
   }
 
   // Open a new agent in the given workspace
@@ -82,7 +82,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
         systemPrompt: '',
         workerId,
         workingDir,
-        ...(agentProvider === AgentProvider.CODEX ? { codexCollaborationMode: 'default' } : {}),
+        ...(agentProvider === AgentProvider.CODEX ? { extraSettings: { [CODEX_EXTRA_COLLABORATION_MODE]: DEFAULT_CODEX_COLLABORATION_MODE } } : {}),
         ...(sessionId ? { agentSessionId: sessionId } : {}),
       })
       if (resp.agent) {
@@ -262,7 +262,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   // Change a Codex-specific setting (sandbox policy or network access).
   const handleCodexSettingChange = async (
     agentId: string,
-    field: 'codexCollaborationMode' | 'codexSandboxPolicy' | 'codexNetworkAccess' | 'codexServiceTier',
+    field: 'collaboration_mode' | 'sandbox_policy' | 'network_access' | 'service_tier',
     value: string,
     defaultValue: string,
     errorLabel: string,
@@ -270,18 +270,18 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     const agent = props.agentStore.state.agents.find(a => a.id === agentId)
     if (!agent)
       return
-    const previous = agent[field] || defaultValue
-    props.agentStore.updateAgent(agentId, { [field]: value })
+    const previous = agent.extraSettings?.[field] || defaultValue
+    props.agentStore.updateAgent(agentId, { extraSettings: { ...(agent.extraSettings || {}), [field]: value } })
     props.settingsLoading.start()
     try {
       await workerRpc.updateAgentSettings(agent.workerId, {
         agentId,
-        settings: { [field]: value },
+        settings: { extraSettings: { [field]: value } },
       })
       props.settingsLoading.stop()
     }
     catch (err) {
-      props.agentStore.updateAgent(agentId, { [field]: previous })
+      props.agentStore.updateAgent(agentId, { extraSettings: { ...(agent.extraSettings || {}), [field]: previous } })
       props.settingsLoading.stop()
       showWarnToast(`Failed to change ${errorLabel}`, err)
     }
@@ -289,18 +289,18 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
 
   const handleOptionGroupChange = (agentId: string, key: string, value: string) => {
     const labels: Record<string, string> = {
-      codexCollaborationMode: 'workflow',
-      codexSandboxPolicy: 'sandbox policy',
-      codexNetworkAccess: 'network access',
-      codexServiceTier: 'fast mode',
+      [CODEX_EXTRA_COLLABORATION_MODE]: 'workflow',
+      [CODEX_EXTRA_SANDBOX_POLICY]: 'sandbox policy',
+      [CODEX_EXTRA_NETWORK_ACCESS]: 'network access',
+      [CODEX_EXTRA_SERVICE_TIER]: 'fast mode',
     }
     const defaults: Record<string, string> = {
-      codexCollaborationMode: defaultCodexCollaborationMode(AgentProvider.CODEX),
-      codexSandboxPolicy: DEFAULT_CODEX_SANDBOX_POLICY,
-      codexNetworkAccess: DEFAULT_CODEX_NETWORK_ACCESS,
-      codexServiceTier: DEFAULT_CODEX_SERVICE_TIER,
+      [CODEX_EXTRA_COLLABORATION_MODE]: defaultCodexCollaborationMode(AgentProvider.CODEX),
+      [CODEX_EXTRA_SANDBOX_POLICY]: DEFAULT_CODEX_SANDBOX_POLICY,
+      [CODEX_EXTRA_NETWORK_ACCESS]: DEFAULT_CODEX_NETWORK_ACCESS,
+      [CODEX_EXTRA_SERVICE_TIER]: DEFAULT_CODEX_SERVICE_TIER,
     }
-    handleCodexSettingChange(agentId, key as 'codexCollaborationMode' | 'codexSandboxPolicy' | 'codexNetworkAccess' | 'codexServiceTier', value, defaults[key] || value, labels[key] || key)
+    handleCodexSettingChange(agentId, key as 'collaboration_mode' | 'sandbox_policy' | 'network_access' | 'service_tier', value, defaults[key] || value, labels[key] || key)
   }
 
   // Retry a failed message delivery.

@@ -164,44 +164,6 @@ func effortOrDefault(effort string, provider leapmuxv1.AgentProvider) string {
 	return agent.DefaultEffort(provider)
 }
 
-// codexSandboxPolicyOrDefault returns the sandbox policy if non-empty,
-// otherwise the Codex default.
-func codexSandboxPolicyOrDefault(policy string) string {
-	return agent.StringOrDefault(policy, agent.CodexDefaultSandboxPolicy)
-}
-
-// codexNetworkAccessOrDefault returns the network access if non-empty,
-// otherwise the Codex default.
-func codexNetworkAccessOrDefault(access string) string {
-	return agent.StringOrDefault(access, agent.CodexDefaultNetworkAccess)
-}
-
-// codexCollaborationModeOrDefault returns the collaboration mode if non-empty,
-// otherwise the Codex default.
-func codexCollaborationModeOrDefault(mode string) string {
-	return agent.StringOrDefault(mode, agent.CodexDefaultCollaborationMode)
-}
-
-// codexServiceTierOrDefault returns the service tier if non-empty, otherwise
-// the Codex default.
-func codexServiceTierOrDefault(tier string) string {
-	return agent.StringOrDefault(tier, agent.CodexDefaultServiceTier)
-}
-
-func codexCollaborationModeForProvider(mode string, provider leapmuxv1.AgentProvider) string {
-	if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
-		return codexCollaborationModeOrDefault(mode)
-	}
-	return mode
-}
-
-func codexServiceTierForProvider(tier string, provider leapmuxv1.AgentProvider) string {
-	if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
-		return codexServiceTierOrDefault(tier)
-	}
-	return tier
-}
-
 // settingsDisplayLabels returns lookup functions for model and effort display
 // names using the agent's AvailableModels data. If the agent is not running or
 // has no model list, the lookup functions return the raw ID as-is.

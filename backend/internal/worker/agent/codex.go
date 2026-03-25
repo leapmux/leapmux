@@ -25,6 +25,13 @@ const (
 	CodexDefaultServiceTier       = "default"
 )
 
+const (
+	codexExtraSandboxPolicy     = "sandbox_policy"
+	codexExtraNetworkAccess     = "network_access"
+	codexExtraCollaborationMode = "collaboration_mode"
+	codexExtraServiceTier       = "service_tier"
+)
+
 // Codex sandbox policy values.
 const (
 	CodexSandboxDangerFullAccess = "danger-full-access"
@@ -183,10 +190,10 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	// 3. Use the permission mode directly as the Codex approval policy.
 	// The DB stores provider-native values (e.g. "never", "on-request", "untrusted" for Codex).
 	a.approvalPolicy = StringOrDefault(opts.PermissionMode, CodexDefaultApprovalPolicy)
-	a.sandboxPolicy = StringOrDefault(opts.CodexSandboxPolicy, CodexDefaultSandboxPolicy)
-	a.networkAccess = StringOrDefault(opts.CodexNetworkAccess, CodexDefaultNetworkAccess)
-	a.collaborationMode = StringOrDefault(opts.CodexCollaborationMode, CodexDefaultCollaborationMode)
-	a.serviceTier = StringOrDefault(opts.CodexServiceTier, CodexDefaultServiceTier)
+	a.sandboxPolicy = StringOrDefault(opts.ExtraSettings[codexExtraSandboxPolicy], CodexDefaultSandboxPolicy)
+	a.networkAccess = StringOrDefault(opts.ExtraSettings[codexExtraNetworkAccess], CodexDefaultNetworkAccess)
+	a.collaborationMode = StringOrDefault(opts.ExtraSettings[codexExtraCollaborationMode], CodexDefaultCollaborationMode)
+	a.serviceTier = StringOrDefault(opts.ExtraSettings[codexExtraServiceTier], CodexDefaultServiceTier)
 
 	// 4. Send "thread/start" or "thread/resume" request.
 	threadParams := map[string]interface{}{
@@ -484,13 +491,15 @@ func (a *CodexAgent) CurrentSettings() *leapmuxv1.AgentSettings {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return &leapmuxv1.AgentSettings{
-		Model:                  a.model,
-		Effort:                 a.effort,
-		PermissionMode:         a.approvalPolicy,
-		CodexSandboxPolicy:     a.sandboxPolicy,
-		CodexNetworkAccess:     a.networkAccess,
-		CodexCollaborationMode: a.collaborationMode,
-		CodexServiceTier:       a.serviceTier,
+		Model:          a.model,
+		Effort:         a.effort,
+		PermissionMode: a.approvalPolicy,
+		ExtraSettings: map[string]string{
+			codexExtraSandboxPolicy:     a.sandboxPolicy,
+			codexExtraNetworkAccess:     a.networkAccess,
+			codexExtraCollaborationMode: a.collaborationMode,
+			codexExtraServiceTier:       a.serviceTier,
+		},
 	}
 }
 
@@ -512,17 +521,17 @@ func (a *CodexAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	if s.GetPermissionMode() != "" {
 		a.approvalPolicy = s.GetPermissionMode()
 	}
-	if s.GetCodexSandboxPolicy() != "" {
-		a.sandboxPolicy = s.GetCodexSandboxPolicy()
+	if s.GetExtraSettings()[codexExtraSandboxPolicy] != "" {
+		a.sandboxPolicy = s.GetExtraSettings()[codexExtraSandboxPolicy]
 	}
-	if s.GetCodexNetworkAccess() != "" {
-		a.networkAccess = s.GetCodexNetworkAccess()
+	if s.GetExtraSettings()[codexExtraNetworkAccess] != "" {
+		a.networkAccess = s.GetExtraSettings()[codexExtraNetworkAccess]
 	}
-	if s.GetCodexCollaborationMode() != "" {
-		a.collaborationMode = s.GetCodexCollaborationMode()
+	if s.GetExtraSettings()[codexExtraCollaborationMode] != "" {
+		a.collaborationMode = s.GetExtraSettings()[codexExtraCollaborationMode]
 	}
-	if s.GetCodexServiceTier() != "" {
-		a.serviceTier = s.GetCodexServiceTier()
+	if s.GetExtraSettings()[codexExtraServiceTier] != "" {
+		a.serviceTier = s.GetExtraSettings()[codexExtraServiceTier]
 	}
 	return true
 }
@@ -644,7 +653,7 @@ func init() {
 		codexDefaultModels,
 		[]*leapmuxv1.AvailableOptionGroup{
 			{
-				Key:   "codexServiceTier",
+				Key:   codexExtraServiceTier,
 				Label: "Fast Mode",
 				Options: []*leapmuxv1.AvailableOption{
 					{Id: CodexDefaultServiceTier, Name: "Off", Description: "Use the normal/default service tier"},
@@ -652,7 +661,7 @@ func init() {
 				},
 			},
 			{
-				Key:   "codexCollaborationMode",
+				Key:   codexExtraCollaborationMode,
 				Label: "Workflow",
 				Options: []*leapmuxv1.AvailableOption{
 					{Id: CodexCollaborationDefault, Name: "Default"},
@@ -669,7 +678,7 @@ func init() {
 				},
 			},
 			{
-				Key:   "codexSandboxPolicy",
+				Key:   codexExtraSandboxPolicy,
 				Label: "Sandbox Policy",
 				Options: []*leapmuxv1.AvailableOption{
 					{Id: CodexSandboxDangerFullAccess, Name: "Full Access", Description: "No filesystem restrictions"},
@@ -678,7 +687,7 @@ func init() {
 				},
 			},
 			{
-				Key:   "codexNetworkAccess",
+				Key:   codexExtraNetworkAccess,
 				Label: "Network Access",
 				Options: []*leapmuxv1.AvailableOption{
 					{Id: CodexNetworkRestricted, Name: "Restricted", Description: "No network access from the sandbox"},

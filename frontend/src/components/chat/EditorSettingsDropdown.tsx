@@ -21,10 +21,7 @@ export interface EditorSettingsDropdownProps {
   model?: string
   effort?: string
   permissionMode?: string
-  codexCollaborationMode?: string
-  codexSandboxPolicy?: string
-  codexNetworkAccess?: string
-  codexServiceTier?: string
+  extraSettings?: Record<string, string>
   availableModels?: import('~/generated/leapmux/v1/agent_pb').AvailableModel[]
   availableOptionGroups?: import('~/generated/leapmux/v1/agent_pb').AvailableOptionGroup[]
   agentProvider?: AgentProvider
@@ -44,10 +41,7 @@ export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.
     model: props.model,
     effort: props.effort,
     permissionMode: props.permissionMode,
-    codexCollaborationMode: props.codexCollaborationMode,
-    codexSandboxPolicy: props.codexSandboxPolicy,
-    codexNetworkAccess: props.codexNetworkAccess,
-    codexServiceTier: props.codexServiceTier,
+    extraSettings: props.extraSettings,
     availableModels: props.availableModels,
     availableOptionGroups: props.availableOptionGroups,
     onModelChange: props.onModelChange,

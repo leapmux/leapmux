@@ -1,6 +1,8 @@
 export interface SettingsChange {
-  codexCollaborationMode?: { old: string, new: string }
-  codexServiceTier?: { old: string, new: string }
+  collaboration_mode?: { old: string, new: string }
+  service_tier?: { old: string, new: string }
+  sandbox_policy?: { old: string, new: string }
+  network_access?: { old: string, new: string }
   permissionMode?: { old: string, new: string }
 }
 

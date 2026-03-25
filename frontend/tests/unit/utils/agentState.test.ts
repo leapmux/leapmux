@@ -28,9 +28,7 @@ function makeAgent(overrides: Partial<AgentInfo> = {}): AgentInfo {
     agentProvider: AgentProvider.CLAUDE_CODE,
     availableModels: [],
     availableOptionGroups: [],
-    codexSandboxPolicy: '',
-    codexNetworkAccess: '',
-    codexCollaborationMode: '',
+    extraSettings: {},
     ...overrides,
   } as AgentInfo
 }

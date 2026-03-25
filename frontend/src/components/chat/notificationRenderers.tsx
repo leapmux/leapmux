@@ -26,10 +26,10 @@ function displayLabel(key: string): string {
     case 'model': return 'Model'
     case 'effort': return 'Effort'
     case 'permissionMode': return 'Permission Mode'
-    case 'codexCollaborationMode': return 'Workflow'
-    case 'codexServiceTier': return 'Fast Mode'
-    case 'codexSandboxPolicy': return 'Sandbox Policy'
-    case 'codexNetworkAccess': return 'Network Access'
+    case 'collaboration_mode': return 'Workflow'
+    case 'service_tier': return 'Fast Mode'
+    case 'sandbox_policy': return 'Sandbox Policy'
+    case 'network_access': return 'Network Access'
     default: return key
   }
 }
