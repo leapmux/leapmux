@@ -229,6 +229,81 @@ func TestHandleCodexOutput_ContextCompactionStartPersistsCompactingNotification(
 	}
 }
 
+func TestHandleCodexOutput_SpawnAgentStartedOpensSubagentSpan(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if got := sink.OpenSpans(); len(got) != 1 || got[0] != "child-1" {
+		t.Fatalf("expected child span to open, got %v", got)
+	}
+	if sink.ClosedSpanCount() != 0 {
+		t.Fatalf("expected no spans to close, got %v", sink.ClosedSpans())
+	}
+}
+
+func TestHandleCodexOutput_SpawnAgentCompletedDoesNotCloseSubagentSpan(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"running","message":null}}}}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if sink.ClosedSpanCount() != 0 {
+		t.Fatalf("expected spawn completion to keep span open, got %v", sink.ClosedSpans())
+	}
+}
+
+func TestHandleCodexOutput_WaitCompletedClosesTerminalSubagentSpan(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if got := sink.ClosedSpans(); len(got) != 1 || got[0] != "child-1" {
+		t.Fatalf("expected wait completion to close child span, got %v", got)
+	}
+}
+
+func TestHandleCodexOutput_WaitCompletedDoesNotCloseNonTerminalOrMissingStatuses(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"running","message":null}}}}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if sink.ClosedSpanCount() != 0 {
+		t.Fatalf("expected non-terminal or missing wait statuses to keep spans open, got %v", sink.ClosedSpans())
+	}
+}
+
+func TestHandleCodexOutput_CloseAgentCompletedClosesSubagentSpan(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-3","tool":"closeAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"shutdown","message":null}}}}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if got := sink.ClosedSpans(); len(got) != 1 || got[0] != "child-1" {
+		t.Fatalf("expected closeAgent completion to close child span, got %v", got)
+	}
+}
+
+func TestHandleCodexOutput_WaitCompletedClosesOnlyTerminalReceivers(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-4","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2","child-3"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"},"child-2":{"status":"running","message":null},"child-3":{"status":"notFound","message":null}}}}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if got := sink.ClosedSpans(); len(got) != 2 || got[0] != "child-1" || got[1] != "child-3" {
+		t.Fatalf("expected only terminal receivers to close, got %v", got)
+	}
+}
+
 func TestHandleCodexOutput_ThreadCompactedPersistsBoundaryNotification(t *testing.T) {
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)

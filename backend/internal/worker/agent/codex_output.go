@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
@@ -609,33 +610,65 @@ func codexWindowToType(mins int) string {
 	}
 }
 
-// handleCollabAgentSpan opens or closes spans for CollabAgentToolCall items.
-// For SpawnAgent tool calls, each receiverThreadId becomes a new span.
+type codexCollabAgentState struct {
+	Status string `json:"status"`
+}
+
+type codexCollabAgentToolCall struct {
+	Tool              string                           `json:"tool"`
+	Status            string                           `json:"status"`
+	ReceiverThreadIds []string                         `json:"receiverThreadIds"`
+	AgentsStates      map[string]codexCollabAgentState `json:"agentsStates"`
+}
+
+// handleCollabAgentSpan updates span lifecycle for CollabAgentToolCall items.
+// Spawned subagent spans stay open after spawn completion and only close when a
+// later terminal lifecycle event proves the agent is done.
 func (a *CodexAgent) handleCollabAgentSpan(item json.RawMessage, parentSpanID string, isCompleted bool) {
-	var collab struct {
-		Tool              string   `json:"tool"`
-		Status            string   `json:"status"`
-		ReceiverThreadIds []string `json:"receiverThreadIds"`
-	}
+	var collab codexCollabAgentToolCall
 	if json.Unmarshal(item, &collab) != nil {
 		return
 	}
 
-	if collab.Tool != "spawnAgent" {
-		return
-	}
-
-	if isCompleted {
-		// Close spans when the spawn is completed or failed.
-		for _, receiverID := range collab.ReceiverThreadIds {
-			a.sink.CloseSpan(receiverID)
+	switch collab.Tool {
+	case "spawnAgent":
+		if isCompleted {
+			// Do not close spans here. spawnAgent completion only means the child
+			// thread was launched successfully, not that it finished its work.
+			return
 		}
-	} else {
 		// Open spans for each spawned agent thread.
 		for _, receiverID := range collab.ReceiverThreadIds {
 			a.sink.OpenSpan(receiverID, parentSpanID)
 		}
+	case "wait":
+		if !isCompleted {
+			return
+		}
+		for _, receiverID := range collab.ReceiverThreadIds {
+			state, ok := collab.AgentsStates[receiverID]
+			if !ok || !isTerminalCollabAgentStatus(state.Status) {
+				continue
+			}
+			a.sink.CloseSpan(receiverID)
+		}
+	case "closeAgent":
+		if !isCompleted || collab.Status != "completed" {
+			return
+		}
+		for _, receiverID := range collab.ReceiverThreadIds {
+			a.sink.CloseSpan(receiverID)
+		}
 	}
+}
+
+func isTerminalCollabAgentStatus(status string) bool {
+	return slices.Contains([]string{
+		"completed",
+		"errored",
+		"shutdown",
+		"notFound",
+	}, status)
 }
 
 // codexParentSpanID determines the parent span ID from a pre-extracted threadId.
