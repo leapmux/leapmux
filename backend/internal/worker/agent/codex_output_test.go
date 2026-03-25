@@ -311,6 +311,30 @@ func TestHandleCodexOutput_SpawnAgentCompletedDoesNotCloseSubagentSpan(t *testin
 	}
 }
 
+func TestHandleCodexOutput_SpawnAgentCompletedRegistersLateReceiverThreads(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":[],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"running","message":null}}}}}`
+	cmdStarted := `{"method":"item/started","params":{"threadId":"child-1","turnId":"turn2","item":{"type":"commandExecution","id":"cmd-1","status":"inProgress","command":"ls","cwd":"/tmp","processId":"123","commandActions":[]}}}`
+
+	handleCodexOutput(agent, []byte(started))
+	handleCodexOutput(agent, []byte(completed))
+	handleCodexOutput(agent, []byte(cmdStarted))
+
+	if got := sink.OpenSpans(); len(got) != 3 || got[0].SpanID != "call-1" || got[1].SpanID != "child-1" || got[1].ParentSpanID != "call-1" || got[2].SpanID != "cmd-1" || got[2].ParentSpanID != "call-1" {
+		t.Fatalf("expected late receiver thread to open under spawnAgent span, got %v", got)
+	}
+	messages := sink.Messages()
+	if len(messages) != 3 {
+		t.Fatalf("expected 3 persisted messages, got %d", len(messages))
+	}
+	if messages[2].ParentSpanID != "call-1" {
+		t.Fatalf("expected child command to inherit spawnAgent parent after late registration, got %q", messages[2].ParentSpanID)
+	}
+}
+
 func TestHandleCodexOutput_WaitCompletedClosesTerminalSubagentSpan(t *testing.T) {
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)

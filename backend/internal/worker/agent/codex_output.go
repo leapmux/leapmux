@@ -676,17 +676,19 @@ func (a *CodexAgent) handleCollabAgentSpan(item json.RawMessage, itemID, parentS
 
 	switch collab.Tool {
 	case "spawnAgent":
-		if isCompleted {
-			// Do not close spans here. spawnAgent completion only means the child
-			// thread was launched successfully, not that it finished its work.
-			return
+		if !isCompleted {
+			a.sink.OpenSpan(itemID, parentSpanID)
 		}
-		a.sink.OpenSpan(itemID, parentSpanID)
-		// Open spans for each spawned agent thread.
+		// Register and open spans for each spawned agent thread as soon as the
+		// receiver thread IDs are available. Some spawnAgent started messages do
+		// not include them yet, and they only appear on completion.
 		for _, receiverID := range collab.ReceiverThreadIds {
-			a.registerCollabReceiver(receiverID, itemID)
-			a.sink.OpenSpan(receiverID, itemID)
+			if a.registerCollabReceiver(receiverID, itemID) {
+				a.sink.OpenSpan(receiverID, itemID)
+			}
 		}
+		// Do not close spans here. spawnAgent completion only means the child
+		// thread was launched successfully, not that it finished its work.
 	case "wait":
 		if !isCompleted {
 			return
@@ -789,9 +791,9 @@ func (a *CodexAgent) codexCollabParentSpanID(defaultParentSpanID string, item js
 	return defaultParentSpanID
 }
 
-func (a *CodexAgent) registerCollabReceiver(threadID, spanID string) {
+func (a *CodexAgent) registerCollabReceiver(threadID, spanID string) bool {
 	if threadID == "" || spanID == "" {
-		return
+		return false
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -809,10 +811,12 @@ func (a *CodexAgent) registerCollabReceiver(threadID, spanID string) {
 			}
 		}
 	}
-	if a.collabThreadSpans[threadID] != spanID {
-		a.collabThreadSpans[threadID] = spanID
-		a.collabSpanThreads[spanID]++
+	if a.collabThreadSpans[threadID] == spanID {
+		return false
 	}
+	a.collabThreadSpans[threadID] = spanID
+	a.collabSpanThreads[spanID]++
+	return true
 }
 
 func (a *CodexAgent) unregisterCollabReceiver(threadID string) {
