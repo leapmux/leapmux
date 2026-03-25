@@ -267,8 +267,35 @@ func TestHandleCodexOutput_WaitMessagesStayInsideSpawnAgentSpan(t *testing.T) {
 	if messages[2].ParentSpanID != "call-1" {
 		t.Fatalf("expected wait completed to be nested under spawnAgent span, got parent %q", messages[2].ParentSpanID)
 	}
-	if got := sink.ClosedSpans(); len(got) != 2 || got[0] != "child-1" || got[1] != "call-1" {
-		t.Fatalf("expected wait completion to close child and spawnAgent spans, got %v", got)
+	if got := sink.OpenSpans(); len(got) != 3 || got[2].SpanID != "call-2" || got[2].ParentSpanID != "call-1" {
+		t.Fatalf("expected wait to open its own span under spawnAgent, got %v", got)
+	}
+	if got := sink.ClosedSpans(); len(got) != 3 || got[0] != "call-2" || got[1] != "child-1" || got[2] != "call-1" {
+		t.Fatalf("expected wait completion to close wait, child, and spawnAgent spans, got %v", got)
+	}
+}
+
+func TestHandleCodexOutput_SubagentCommandPersistsVisibleParentSpan(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	spawnStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	cmdStarted := `{"method":"item/started","params":{"threadId":"child-1","turnId":"turn2","item":{"type":"commandExecution","id":"cmd-1","status":"inProgress","command":"ls","cwd":"/tmp","processId":"123","commandActions":[]}}}`
+	cmdCompleted := `{"method":"item/completed","params":{"threadId":"child-1","turnId":"turn2","item":{"type":"commandExecution","id":"cmd-1","status":"completed","command":"ls","cwd":"/tmp","processId":"123","commandActions":[],"aggregatedOutput":"ok","exitCode":0,"durationMs":1}}}`
+
+	handleCodexOutput(agent, []byte(spawnStarted))
+	handleCodexOutput(agent, []byte(cmdStarted))
+	handleCodexOutput(agent, []byte(cmdCompleted))
+
+	messages := sink.Messages()
+	if len(messages) != 3 {
+		t.Fatalf("expected 3 persisted messages, got %d", len(messages))
+	}
+	if messages[1].ParentSpanID != "call-1" {
+		t.Fatalf("expected command started to use visible collab parent, got %q", messages[1].ParentSpanID)
+	}
+	if messages[2].ParentSpanID != "call-1" {
+		t.Fatalf("expected command completed to use visible collab parent, got %q", messages[2].ParentSpanID)
 	}
 }
 
@@ -291,8 +318,8 @@ func TestHandleCodexOutput_WaitCompletedClosesTerminalSubagentSpan(t *testing.T)
 	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
 	handleCodexOutput(agent, []byte(input))
 
-	if got := sink.ClosedSpans(); len(got) != 1 || got[0] != "child-1" {
-		t.Fatalf("expected wait completion to close child span, got %v", got)
+	if got := sink.ClosedSpans(); len(got) != 2 || got[0] != "call-2" || got[1] != "child-1" {
+		t.Fatalf("expected wait completion to close wait and child spans, got %v", got)
 	}
 }
 
@@ -303,8 +330,8 @@ func TestHandleCodexOutput_WaitCompletedDoesNotCloseNonTerminalOrMissingStatuses
 	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"running","message":null}}}}}`
 	handleCodexOutput(agent, []byte(input))
 
-	if sink.ClosedSpanCount() != 0 {
-		t.Fatalf("expected non-terminal or missing wait statuses to keep spans open, got %v", sink.ClosedSpans())
+	if got := sink.ClosedSpans(); len(got) != 1 || got[0] != "call-2" {
+		t.Fatalf("expected non-terminal wait completion to close only the wait span, got %v", got)
 	}
 }
 
@@ -327,8 +354,8 @@ func TestHandleCodexOutput_WaitCompletedClosesOnlyTerminalReceivers(t *testing.T
 	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-4","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2","child-3"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"},"child-2":{"status":"running","message":null},"child-3":{"status":"notFound","message":null}}}}}`
 	handleCodexOutput(agent, []byte(input))
 
-	if got := sink.ClosedSpans(); len(got) != 2 || got[0] != "child-1" || got[1] != "child-3" {
-		t.Fatalf("expected only terminal receivers to close, got %v", got)
+	if got := sink.ClosedSpans(); len(got) != 3 || got[0] != "call-4" || got[1] != "child-1" || got[2] != "child-3" {
+		t.Fatalf("expected wait span plus only terminal receivers to close, got %v", got)
 	}
 }
 

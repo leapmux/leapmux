@@ -5,6 +5,7 @@ import leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 // SpanInfo groups span-related metadata for a persisted message.
 type SpanInfo struct {
 	ParentSpanID string
+	TrackerParentSpanID string
 	SpanID       string
 	SpanType     string
 	SpanColor    int32

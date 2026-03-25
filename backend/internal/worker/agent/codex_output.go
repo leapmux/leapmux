@@ -225,9 +225,11 @@ func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
 		return
 	}
 
-	parentSpanID := a.codexParentSpanID(threadID)
+	trackerParentSpanID := a.codexTrackerParentSpanID(threadID)
+	parentSpanID := a.codexVisibleParentSpanID(threadID)
 	if itemType == "collabAgentToolCall" {
 		parentSpanID = a.codexCollabParentSpanID(parentSpanID, item, itemID, false)
+		trackerParentSpanID = parentSpanID
 	}
 
 	switch itemType {
@@ -243,7 +245,7 @@ func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
 		// Persist first at parent depth, then open span so the
 		// completed message is indented under the started message.
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: spanColor,
+			ParentSpanID: parentSpanID, TrackerParentSpanID: trackerParentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: spanColor,
 		}); err != nil {
 			slog.Error("codex persist item/started", "agent_id", a.agentID, "type", itemType, "error", err)
 		}
@@ -252,11 +254,14 @@ func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
 	case "collabAgentToolCall":
 		spanColor := a.sink.PeekNextSpanColor()
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: spanColor,
+			ParentSpanID: parentSpanID, TrackerParentSpanID: trackerParentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: spanColor,
 		}); err != nil {
 			slog.Error("codex persist collabAgentToolCall/started", "agent_id", a.agentID, "error", err)
 		}
 		a.sink.SetSpanType(itemID, itemType)
+		if collabToolCreatesSpan(item) {
+			a.sink.OpenSpan(itemID, parentSpanID)
+		}
 		a.handleCollabAgentSpan(item, itemID, parentSpanID, false)
 	case "reasoning":
 		// No-op for started — wait for completed.
@@ -273,9 +278,11 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 	// Non-notification messages soft-clear the notification thread.
 	a.sink.SoftClearNotifThread()
 
-	parentSpanID := a.codexParentSpanID(threadID)
+	trackerParentSpanID := a.codexTrackerParentSpanID(threadID)
+	parentSpanID := a.codexVisibleParentSpanID(threadID)
 	if itemType == "collabAgentToolCall" {
 		parentSpanID = a.codexCollabParentSpanID(parentSpanID, item, itemID, true)
+		trackerParentSpanID = parentSpanID
 	}
 
 	switch itemType {
@@ -289,7 +296,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 			a.mu.Unlock()
 		}
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
+			ParentSpanID: parentSpanID, TrackerParentSpanID: trackerParentSpanID, SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist agentMessage", "agent_id", a.agentID, "error", err)
 		}
@@ -311,7 +318,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 			}
 		}
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
+			ParentSpanID: parentSpanID, TrackerParentSpanID: trackerParentSpanID, SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist plan", "agent_id", a.agentID, "error", err)
 		}
@@ -321,7 +328,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		a.mu.Unlock()
 		// Persist inside the span (at child depth), then close it.
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, Closing: true,
+			ParentSpanID: parentSpanID, TrackerParentSpanID: trackerParentSpanID, SpanID: itemID, SpanType: itemType, Closing: true,
 		}); err != nil {
 			slog.Error("codex persist item/completed", "agent_id", a.agentID, "type", itemType, "error", err)
 		}
@@ -331,14 +338,17 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		a.sink.CloseSpan(itemID)
 	case "collabAgentToolCall":
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
+			ParentSpanID: parentSpanID, TrackerParentSpanID: trackerParentSpanID, SpanID: itemID, SpanType: itemType, Closing: collabToolCreatesSpan(item),
 		}); err != nil {
 			slog.Error("codex persist collabAgentToolCall/completed", "agent_id", a.agentID, "error", err)
+		}
+		if collabToolCreatesSpan(item) {
+			a.sink.CloseSpan(itemID)
 		}
 		a.handleCollabAgentSpan(item, itemID, parentSpanID, true)
 	case "reasoning":
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
+			ParentSpanID: parentSpanID, TrackerParentSpanID: trackerParentSpanID, SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist reasoning", "agent_id", a.agentID, "error", err)
 		}
@@ -348,7 +358,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		// a LEAPMUX notification-thread boundary instead of an assistant message.
 	default:
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
+			ParentSpanID: parentSpanID, TrackerParentSpanID: trackerParentSpanID, SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist unknown item", "agent_id", a.agentID, "type", itemType, "error", err)
 		}
@@ -696,10 +706,18 @@ func isTerminalCollabAgentStatus(status string) bool {
 	}, status)
 }
 
-// codexParentSpanID determines the parent span ID from a pre-extracted threadId.
-// If the threadId matches the main thread (or is empty), returns ""
-// (main agent scope). Otherwise returns the threadId as the parent span ID.
-func (a *CodexAgent) codexParentSpanID(threadID string) string {
+func collabToolCreatesSpan(item json.RawMessage) bool {
+	var collab codexCollabAgentToolCall
+	if json.Unmarshal(item, &collab) != nil {
+		return false
+	}
+	return collab.Tool == "wait"
+}
+
+// codexTrackerParentSpanID determines the tracker ancestry from a pre-extracted
+// threadId. Child thread spans remain in the tracker so span lines and depth can
+// reflect subagent scope even when stored parent_span_id points at a visible span.
+func (a *CodexAgent) codexTrackerParentSpanID(threadID string) string {
 	if threadID == "" {
 		return ""
 	}
@@ -710,6 +728,23 @@ func (a *CodexAgent) codexParentSpanID(threadID string) string {
 		return ""
 	}
 	return threadID
+}
+
+// codexVisibleParentSpanID resolves the persisted/logical parent span for a
+// message. Unlike tracker ancestry, this must never fall back to raw thread IDs
+// because they are synthetic scope ids, not rendered parent messages.
+func (a *CodexAgent) codexVisibleParentSpanID(threadID string) string {
+	if threadID == "" {
+		return ""
+	}
+	a.mu.Lock()
+	mainThreadID := a.threadID
+	spanID := a.collabThreadSpans[threadID]
+	a.mu.Unlock()
+	if threadID == mainThreadID {
+		return ""
+	}
+	return spanID
 }
 
 func (a *CodexAgent) codexCollabParentSpanID(defaultParentSpanID string, item json.RawMessage, itemID string, isCompleted bool) string {
