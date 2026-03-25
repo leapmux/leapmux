@@ -10,7 +10,7 @@ import type { PermissionMode } from '~/utils/controlResponse'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { getProviderPlugin } from '~/components/chat/providers'
-import { DEFAULT_CODEX_NETWORK_ACCESS, DEFAULT_CODEX_SANDBOX_POLICY } from '~/components/chat/providers/codex'
+import { DEFAULT_CODEX_NETWORK_ACCESS, DEFAULT_CODEX_SANDBOX_POLICY, DEFAULT_CODEX_SERVICE_TIER } from '~/components/chat/providers/codex'
 import { showWarnToast } from '~/components/common/Toast'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
@@ -262,7 +262,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   // Change a Codex-specific setting (sandbox policy or network access).
   const handleCodexSettingChange = async (
     agentId: string,
-    field: 'codexCollaborationMode' | 'codexSandboxPolicy' | 'codexNetworkAccess',
+    field: 'codexCollaborationMode' | 'codexSandboxPolicy' | 'codexNetworkAccess' | 'codexServiceTier',
     value: string,
     defaultValue: string,
     errorLabel: string,
@@ -289,16 +289,18 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
 
   const handleOptionGroupChange = (agentId: string, key: string, value: string) => {
     const labels: Record<string, string> = {
-      codexCollaborationMode: 'mode',
+      codexCollaborationMode: 'workflow',
       codexSandboxPolicy: 'sandbox policy',
       codexNetworkAccess: 'network access',
+      codexServiceTier: 'fast mode',
     }
     const defaults: Record<string, string> = {
       codexCollaborationMode: defaultCodexCollaborationMode(AgentProvider.CODEX),
       codexSandboxPolicy: DEFAULT_CODEX_SANDBOX_POLICY,
       codexNetworkAccess: DEFAULT_CODEX_NETWORK_ACCESS,
+      codexServiceTier: DEFAULT_CODEX_SERVICE_TIER,
     }
-    handleCodexSettingChange(agentId, key as 'codexCollaborationMode' | 'codexSandboxPolicy' | 'codexNetworkAccess', value, defaults[key] || value, labels[key] || key)
+    handleCodexSettingChange(agentId, key as 'codexCollaborationMode' | 'codexSandboxPolicy' | 'codexNetworkAccess' | 'codexServiceTier', value, defaults[key] || value, labels[key] || key)
   }
 
   // Retry a failed message delivery.

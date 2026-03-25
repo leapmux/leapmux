@@ -26,7 +26,8 @@ function displayLabel(key: string): string {
     case 'model': return 'Model'
     case 'effort': return 'Effort'
     case 'permissionMode': return 'Permission Mode'
-    case 'codexCollaborationMode': return 'Mode'
+    case 'codexCollaborationMode': return 'Workflow'
+    case 'codexServiceTier': return 'Fast Mode'
     case 'codexSandboxPolicy': return 'Sandbox Policy'
     case 'codexNetworkAccess': return 'Network Access'
     default: return key

@@ -352,6 +352,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                         codexCollaborationMode={props.agent?.codexCollaborationMode}
                         codexSandboxPolicy={props.agent?.codexSandboxPolicy}
                         codexNetworkAccess={props.agent?.codexNetworkAccess}
+                        codexServiceTier={props.agent?.codexServiceTier}
                         availableModels={props.agent?.availableModels}
                         availableOptionGroups={props.agent?.availableOptionGroups}
                         agentProvider={props.agent?.agentProvider}

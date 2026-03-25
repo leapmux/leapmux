@@ -278,6 +278,7 @@ export function extractRateLimitInfo(parsed: ParsedMessageContent): {
 /** Extract settings changes from a LEAPMUX settings_changed inner message. */
 export function extractSettingsChanges(parsed: ParsedMessageContent): {
   codexCollaborationMode?: { old: string, new: string }
+  codexServiceTier?: { old: string, new: string }
   permissionMode?: { old: string, new: string }
 } | null {
   const inner = getInnerMessage(parsed)
@@ -288,6 +289,7 @@ export function extractSettingsChanges(parsed: ParsedMessageContent): {
     return null
   return changes as {
     codexCollaborationMode?: { old: string, new: string }
+    codexServiceTier?: { old: string, new: string }
     permissionMode?: { old: string, new: string }
   }
 }

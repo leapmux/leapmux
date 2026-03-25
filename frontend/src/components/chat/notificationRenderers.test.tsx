@@ -88,7 +88,7 @@ describe('renderNotificationThread: message ordering', () => {
     ]
     const text = renderText(messages)
     const clearedIdx = text.indexOf('Context cleared')
-    const modeIdx = text.indexOf('Mode')
+    const modeIdx = text.indexOf('Permission Mode')
     expect(clearedIdx).toBeGreaterThanOrEqual(0)
     expect(modeIdx).toBeGreaterThan(clearedIdx)
   })
@@ -99,10 +99,18 @@ describe('renderNotificationThread: message ordering', () => {
       { type: 'context_cleared' },
     ]
     const text = renderText(messages)
-    const modeIdx = text.indexOf('Mode')
+    const modeIdx = text.indexOf('Permission Mode')
     const clearedIdx = text.indexOf('Context cleared')
     expect(modeIdx).toBeGreaterThanOrEqual(0)
     expect(clearedIdx).toBeGreaterThan(modeIdx)
+  })
+
+  it('uses Workflow label for Codex collaboration mode changes', () => {
+    const messages = [
+      { type: 'settings_changed', changes: { codexCollaborationMode: { old: 'default', new: 'plan' } } },
+    ]
+    const text = renderText(messages)
+    expect(text).toContain('Workflow')
   })
 
   it('interrupted appears in order among other messages', () => {

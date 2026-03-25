@@ -67,6 +67,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 		model := modelOrDefault(r.GetModel(), agentProvider)
 		codexCollaborationMode := codexCollaborationModeForProvider(r.GetCodexCollaborationMode(), agentProvider)
+		codexServiceTier := codexServiceTierForProvider(r.GetCodexServiceTier(), agentProvider)
 
 		// Ensure the channel knows about this workspace so that
 		// subsequent WatchEvents calls can access the agent.
@@ -91,6 +92,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			CodexSandboxPolicy:     r.GetCodexSandboxPolicy(),
 			CodexNetworkAccess:     r.GetCodexNetworkAccess(),
 			CodexCollaborationMode: codexCollaborationMode,
+			CodexServiceTier:       codexServiceTier,
 			AgentProvider:          agentProvider,
 			Resumed:                resumed,
 		}); err != nil {
@@ -109,6 +111,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			CodexSandboxPolicy:     r.GetCodexSandboxPolicy(),
 			CodexNetworkAccess:     r.GetCodexNetworkAccess(),
 			CodexCollaborationMode: codexCollaborationMode,
+			CodexServiceTier:       codexServiceTier,
 			StartupTimeout:         svc.agentStartupTimeout(),
 			Shell:                  svc.agentShell(),
 			LoginShell:             svc.agentLoginShell(),
@@ -541,6 +544,10 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		if newCodexCollaborationMode == "" {
 			newCodexCollaborationMode = codexCollaborationModeForProvider(dbAgent.CodexCollaborationMode, dbAgent.AgentProvider)
 		}
+		newCodexServiceTier := s.GetCodexServiceTier()
+		if newCodexServiceTier == "" {
+			newCodexServiceTier = codexServiceTierForProvider(dbAgent.CodexServiceTier, dbAgent.AgentProvider)
+		}
 
 		// Update the DB.
 		if err := svc.Queries.UpdateAgentAllSettings(bgCtx(), db.UpdateAgentAllSettingsParams{
@@ -550,6 +557,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			CodexSandboxPolicy:     newCodexSandboxPolicy,
 			CodexNetworkAccess:     newCodexNetworkAccess,
 			CodexCollaborationMode: newCodexCollaborationMode,
+			CodexServiceTier:       newCodexServiceTier,
 			ID:                     agentID,
 		}); err != nil {
 			slog.Error("failed to update agent settings", "agent_id", agentID, "error", err)
@@ -569,6 +577,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 				CodexSandboxPolicy:     newCodexSandboxPolicy,
 				CodexNetworkAccess:     newCodexNetworkAccess,
 				CodexCollaborationMode: newCodexCollaborationMode,
+				CodexServiceTier:       newCodexServiceTier,
 			})
 
 			if !updated {
@@ -586,6 +595,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 					CodexSandboxPolicy:     newCodexSandboxPolicy,
 					CodexNetworkAccess:     newCodexNetworkAccess,
 					CodexCollaborationMode: newCodexCollaborationMode,
+					CodexServiceTier:       newCodexServiceTier,
 					StartupTimeout:         svc.agentStartupTimeout(),
 					Shell:                  svc.agentShell(),
 					LoginShell:             svc.agentLoginShell(),
@@ -659,6 +669,13 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			changes["codexCollaborationMode"] = map[string]string{
 				"old": oldCodexCollaborationMode, "new": newCodexCollaborationMode,
 				"oldLabel": optionLabel("codexCollaborationMode", oldCodexCollaborationMode, dbAgent.AgentProvider), "newLabel": optionLabel("codexCollaborationMode", newCodexCollaborationMode, dbAgent.AgentProvider),
+			}
+		}
+		oldCodexServiceTier := codexServiceTierForProvider(dbAgent.CodexServiceTier, dbAgent.AgentProvider)
+		if oldCodexServiceTier != newCodexServiceTier {
+			changes["codexServiceTier"] = map[string]string{
+				"old": oldCodexServiceTier, "new": newCodexServiceTier,
+				"oldLabel": optionLabel("codexServiceTier", oldCodexServiceTier, dbAgent.AgentProvider), "newLabel": optionLabel("codexServiceTier", newCodexServiceTier, dbAgent.AgentProvider),
 			}
 		}
 		if len(changes) > 0 {
@@ -932,6 +949,7 @@ func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, 
 		CodexSandboxPolicy:     a.CodexSandboxPolicy,
 		CodexNetworkAccess:     a.CodexNetworkAccess,
 		CodexCollaborationMode: codexCollaborationModeForProvider(a.CodexCollaborationMode, a.AgentProvider),
+		CodexServiceTier:       codexServiceTierForProvider(a.CodexServiceTier, a.AgentProvider),
 	}
 
 	if a.ClosedAt.Valid {
@@ -972,6 +990,7 @@ func (svc *Context) handleClearContext(agentID string) {
 		CodexSandboxPolicy:     dbAgent.CodexSandboxPolicy,
 		CodexNetworkAccess:     dbAgent.CodexNetworkAccess,
 		CodexCollaborationMode: dbAgent.CodexCollaborationMode,
+		CodexServiceTier:       dbAgent.CodexServiceTier,
 		StartupTimeout:         svc.agentStartupTimeout(),
 		Shell:                  svc.agentShell(),
 		LoginShell:             svc.agentLoginShell(),
@@ -1045,6 +1064,7 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 		CodexSandboxPolicy:     dbAgent.CodexSandboxPolicy,
 		CodexNetworkAccess:     dbAgent.CodexNetworkAccess,
 		CodexCollaborationMode: dbAgent.CodexCollaborationMode,
+		CodexServiceTier:       dbAgent.CodexServiceTier,
 		StartupTimeout:         svc.agentStartupTimeout(),
 		Shell:                  svc.agentShell(),
 		LoginShell:             svc.agentLoginShell(),
@@ -1185,6 +1205,7 @@ func (svc *Context) setAgentCodexCollaborationMode(agentID, mode string) {
 				GitStatus:              gitutil.GetGitStatus(dbAgent.WorkingDir),
 				AgentProvider:          dbAgent.AgentProvider,
 				CodexCollaborationMode: mode,
+				CodexServiceTier:       codexServiceTierForProvider(dbAgent.CodexServiceTier, dbAgent.AgentProvider),
 			},
 		},
 	})
@@ -1529,6 +1550,7 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 		CodexSandboxPolicy:     dbAgent.CodexSandboxPolicy,
 		CodexNetworkAccess:     dbAgent.CodexNetworkAccess,
 		CodexCollaborationMode: dbAgent.CodexCollaborationMode,
+		CodexServiceTier:       dbAgent.CodexServiceTier,
 		StartupTimeout:         svc.agentStartupTimeout(),
 		Shell:                  svc.agentShell(),
 		LoginShell:             svc.agentLoginShell(),

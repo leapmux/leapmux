@@ -13,6 +13,7 @@ export interface ProviderSettingsPanelProps {
   codexCollaborationMode?: string
   codexSandboxPolicy?: string
   codexNetworkAccess?: string
+  codexServiceTier?: string
   availableModels?: AvailableModel[]
   availableOptionGroups?: AvailableOptionGroup[]
   onModelChange?: (model: string) => void

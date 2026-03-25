@@ -1,5 +1,6 @@
 export interface SettingsChange {
   codexCollaborationMode?: { old: string, new: string }
+  codexServiceTier?: { old: string, new: string }
   permissionMode?: { old: string, new: string }
 }
 

@@ -35,6 +35,7 @@ const DEFAULT_CODEX_EFFORT = 'high'
 export const DEFAULT_CODEX_COLLABORATION_MODE = 'default'
 export const DEFAULT_CODEX_SANDBOX_POLICY = 'workspace-write'
 export const DEFAULT_CODEX_NETWORK_ACCESS = 'restricted'
+export const DEFAULT_CODEX_SERVICE_TIER = 'default'
 
 let codexReqIdCounter = 1000
 
@@ -89,9 +90,12 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
   const currentCollaborationMode = () => props.codexCollaborationMode || DEFAULT_CODEX_COLLABORATION_MODE
   const currentSandbox = () => props.codexSandboxPolicy || DEFAULT_CODEX_SANDBOX_POLICY
   const currentNetwork = () => props.codexNetworkAccess || DEFAULT_CODEX_NETWORK_ACCESS
+  const currentServiceTier = () => props.codexServiceTier || DEFAULT_CODEX_SERVICE_TIER
 
   const models = () => modelItems(props.availableModels)
   const efforts = () => effortItems(props.availableModels, currentModel())
+  const serviceTierGroup = () => optionGroup(props.availableOptionGroups, 'codexServiceTier')
+  const serviceTierItems = () => optionGroupItems(props.availableOptionGroups, 'codexServiceTier')
   const collaborationModeGroup = () => optionGroup(props.availableOptionGroups, 'codexCollaborationMode')
   const collaborationModeItems = () => optionGroupItems(props.availableOptionGroups, 'codexCollaborationMode')
   const modeGroup = () => permissionModeGroup(props.availableOptionGroups)
@@ -104,6 +108,19 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
   return (
     <div class={styles.settingsPanelColumns}>
       <div class={[styles.settingsPanelColumn, styles.settingsPanelColumnPrimary].join(' ')}>
+        <Show when={serviceTierItems().length > 0}>
+          <div>
+            <RadioGroup
+              label={serviceTierGroup()?.label || 'Fast Mode'}
+              items={serviceTierItems()}
+              testIdPrefix="codex-service-tier"
+              name={`${menuId}-service-tier`}
+              current={currentServiceTier()}
+              onChange={v => props.onOptionGroupChange?.('codexServiceTier', v)}
+              fieldsetClass={styles.settingsFieldsetFirst}
+            />
+          </div>
+        </Show>
         <RadioGroup
           label="Reasoning Effort"
           items={efforts()}
@@ -111,7 +128,7 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
           name={`${menuId}-effort`}
           current={currentEffort()}
           onChange={v => props.onEffortChange?.(v)}
-          fieldsetClass={styles.settingsFieldsetFirst}
+          fieldsetClass={serviceTierItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
         />
         <RadioGroup
           label="Model"
@@ -126,7 +143,7 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
         <Show when={collaborationModeItems().length > 0}>
           <div>
             <RadioGroup
-              label={collaborationModeGroup()?.label || 'Mode'}
+              label={collaborationModeGroup()?.label || 'Workflow'}
               items={collaborationModeItems()}
               testIdPrefix="codex-collaboration-mode"
               name={`${menuId}-collaboration-mode`}
@@ -145,7 +162,7 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
               name={`${menuId}-network`}
               current={currentNetwork()}
               onChange={v => props.onOptionGroupChange?.('codexNetworkAccess', v)}
-              fieldsetClass={collaborationModeItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
+              fieldsetClass={collaborationModeItems().length === 0 && serviceTierItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
             />
           </div>
         </Show>
@@ -158,7 +175,7 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
               name={`${menuId}-sandbox`}
               current={currentSandbox()}
               onChange={v => props.onOptionGroupChange?.('codexSandboxPolicy', v)}
-              fieldsetClass={collaborationModeItems().length === 0 && networkItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
+              fieldsetClass={collaborationModeItems().length === 0 && serviceTierItems().length === 0 && networkItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
             />
           </div>
         </Show>
@@ -170,7 +187,7 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
             name={`${menuId}-mode`}
             current={currentMode()}
             onChange={v => props.onPermissionModeChange?.(v as PermissionMode)}
-            fieldsetClass={collaborationModeItems().length === 0 && networkItems().length === 0 && sandboxItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
+            fieldsetClass={collaborationModeItems().length === 0 && serviceTierItems().length === 0 && networkItems().length === 0 && sandboxItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
           />
         </div>
       </div>

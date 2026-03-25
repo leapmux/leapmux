@@ -547,6 +547,7 @@ func (s *agentOutputSink) buildStatusChange(
 		GitStatus:              gitutil.GetGitStatus(dbAgent.WorkingDir),
 		AgentProvider:          s.agentProvider,
 		CodexCollaborationMode: codexCollaborationModeForProvider(dbAgent.CodexCollaborationMode, dbAgent.AgentProvider),
+		CodexServiceTier:       codexServiceTierForProvider(dbAgent.CodexServiceTier, dbAgent.AgentProvider),
 	}
 }
 

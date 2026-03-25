@@ -182,11 +182,24 @@ func codexCollaborationModeOrDefault(mode string) string {
 	return agent.StringOrDefault(mode, agent.CodexDefaultCollaborationMode)
 }
 
+// codexServiceTierOrDefault returns the service tier if non-empty, otherwise
+// the Codex default.
+func codexServiceTierOrDefault(tier string) string {
+	return agent.StringOrDefault(tier, agent.CodexDefaultServiceTier)
+}
+
 func codexCollaborationModeForProvider(mode string, provider leapmuxv1.AgentProvider) string {
 	if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
 		return codexCollaborationModeOrDefault(mode)
 	}
 	return mode
+}
+
+func codexServiceTierForProvider(tier string, provider leapmuxv1.AgentProvider) string {
+	if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
+		return codexServiceTierOrDefault(tier)
+	}
+	return tier
 }
 
 // settingsDisplayLabels returns lookup functions for model and effort display

@@ -72,6 +72,7 @@ type Options struct {
 	CodexSandboxPolicy     string                  // Codex sandbox policy (e.g. "danger-full-access", "workspace-write")
 	CodexNetworkAccess     string                  // Codex network access ("restricted" or "enabled")
 	CodexCollaborationMode string                  // Codex collaboration mode ("default" or "plan")
+	CodexServiceTier       string                  // Codex service tier ("default" or "fast")
 	StartupTimeout         time.Duration           // Timeout for the startup handshake (default: 30s)
 	Shell                  string                  // Default shell path (always set when using shell wrapper)
 	LoginShell             bool                    // If true, use interactive+login shell flags
