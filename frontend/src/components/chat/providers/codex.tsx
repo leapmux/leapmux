@@ -31,7 +31,7 @@ import { registerProvider } from './registry'
 
 /** Default model for Codex agents. */
 const DEFAULT_CODEX_MODEL = import.meta.env.LEAPMUX_CODEX_DEFAULT_MODEL || 'gpt-5.4'
-const DEFAULT_CODEX_EFFORT = 'medium'
+const DEFAULT_CODEX_EFFORT = 'high'
 export const DEFAULT_CODEX_COLLABORATION_MODE = 'default'
 export const DEFAULT_CODEX_SANDBOX_POLICY = 'workspace-write'
 export const DEFAULT_CODEX_NETWORK_ACCESS = 'restricted'
