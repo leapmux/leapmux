@@ -124,7 +124,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 	}
 
 	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
-		ctx, opts.Shell, opts.LoginShell, "claude", baseArgs, modelEffortArgs, opts.WorkingDir,
+		ctx, opts.Shell, opts.LoginShell, "claude", []string{"CLAUDECODE"}, baseArgs, modelEffortArgs, opts.WorkingDir,
 	)
 
 	cmd.Env = filterEnv(cmd.Environ(), "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")

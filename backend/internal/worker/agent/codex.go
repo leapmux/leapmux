@@ -97,13 +97,13 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	// Codex doesn't have third-party provider detection or model/effort
 	// conditional args, so we pass empty modelEffortArgs for a simple command.
 	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
-		ctx, opts.Shell, opts.LoginShell, "codex", []string{"app-server"}, nil, opts.WorkingDir,
+		ctx, opts.Shell, opts.LoginShell, "codex", []string{"CODEX_CI"}, []string{"app-server"}, nil, opts.WorkingDir,
 	)
 
-	cmd.Env = filterEnv(cmd.Environ(), "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
+	cmd.Env = filterEnv(cmd.Environ(), "CODEX_CI", "CODEX_THREAD_ID")
 	cmd.Env = append(cmd.Env, "LEAPMUX_WORKER=1")
 	if opts.LoginShell {
-		cmd.Env = append(cmd.Env, "CLAUDECODE=1")
+		cmd.Env = append(cmd.Env, "CODEX_CI=1")
 	}
 
 	cmd.Cancel = func() error {

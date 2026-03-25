@@ -900,8 +900,8 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 }
 
 func TestAgent_LeapmuxWorkerEnvAlwaysSet(t *testing.T) {
-	// Verify that LEAPMUX_WORKER=1 is always present in the environment
-	// when starting an agent (both with and without login shell).
+	// Verify that LEAPMUX_WORKER=1 is always present for Claude Code and that
+	// CLAUDECODE=1 is injected only for login shells.
 	ctx := context.Background()
 
 	// Without login shell.
@@ -924,7 +924,7 @@ func TestAgent_LeapmuxWorkerEnvAlwaysSet(t *testing.T) {
 	assert.False(t, foundClaudeCode, "CLAUDECODE=1 should NOT be in env without login shell")
 
 	// With login shell - verify the env is set on the command.
-	shellCmd, _, _ := buildShellWrappedCommand(ctx, "/bin/sh", true, "claude", []string{"--output-format", "stream-json"}, []string{"--model", "test"}, t.TempDir())
+	shellCmd, _, _ := buildShellWrappedCommand(ctx, "/bin/sh", true, "claude", []string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "test"}, t.TempDir())
 	shellCmd.Env = filterEnv(shellCmd.Environ(), "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
 	shellCmd.Env = append(shellCmd.Env, "CLAUDE_CODE_ENTRYPOINT=sdk-ts", "LEAPMUX_WORKER=1", "CLAUDECODE=1")
 
@@ -940,4 +940,53 @@ func TestAgent_LeapmuxWorkerEnvAlwaysSet(t *testing.T) {
 	}
 	assert.True(t, foundWorker, "LEAPMUX_WORKER=1 should be in shell-wrapped env")
 	assert.True(t, foundClaudeCode, "CLAUDECODE=1 should be in shell-wrapped env")
+}
+
+func TestCodex_LoginShellEnvUsesCodexMarkers(t *testing.T) {
+	ctx := context.Background()
+
+	cmd := exec.CommandContext(ctx, "echo", "test")
+	cmd.Dir = t.TempDir()
+	cmd.Env = filterEnv(cmd.Environ(), "CODEX_CI", "CODEX_THREAD_ID")
+	cmd.Env = append(cmd.Env, "LEAPMUX_WORKER=1")
+
+	foundWorker := false
+	foundCodexCI := false
+	foundThreadID := false
+	for _, e := range cmd.Env {
+		if e == "LEAPMUX_WORKER=1" {
+			foundWorker = true
+		}
+		if e == "CODEX_CI=1" {
+			foundCodexCI = true
+		}
+		if strings.HasPrefix(e, "CODEX_THREAD_ID=") {
+			foundThreadID = true
+		}
+	}
+	assert.True(t, foundWorker, "LEAPMUX_WORKER=1 should be in env")
+	assert.False(t, foundCodexCI, "CODEX_CI=1 should NOT be in env without login shell")
+	assert.False(t, foundThreadID, "CODEX_THREAD_ID should be filtered from env")
+
+	shellCmd, _, _ := buildShellWrappedCommand(ctx, "/bin/sh", true, "codex", []string{"CODEX_CI"}, []string{"app-server"}, nil, t.TempDir())
+	shellCmd.Env = filterEnv(shellCmd.Environ(), "CODEX_CI", "CODEX_THREAD_ID")
+	shellCmd.Env = append(shellCmd.Env, "LEAPMUX_WORKER=1", "CODEX_CI=1")
+
+	foundWorker = false
+	foundCodexCI = false
+	foundThreadID = false
+	for _, e := range shellCmd.Env {
+		if e == "LEAPMUX_WORKER=1" {
+			foundWorker = true
+		}
+		if e == "CODEX_CI=1" {
+			foundCodexCI = true
+		}
+		if strings.HasPrefix(e, "CODEX_THREAD_ID=") {
+			foundThreadID = true
+		}
+	}
+	assert.True(t, foundWorker, "LEAPMUX_WORKER=1 should be in shell-wrapped env")
+	assert.True(t, foundCodexCI, "CODEX_CI=1 should be in shell-wrapped env")
+	assert.False(t, foundThreadID, "CODEX_THREAD_ID should remain filtered in shell-wrapped env")
 }
