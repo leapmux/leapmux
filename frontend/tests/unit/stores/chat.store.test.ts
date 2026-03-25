@@ -107,7 +107,7 @@ describe('createChatStore', () => {
     })
   })
 
-  it('should update message in-place on thread merge (same ID)', () => {
+  it('should reinsert a thread-merge update when the same ID gets a newer seq', () => {
     createRoot((dispose) => {
       const store = createChatStore()
       store.addMessage('agent1', makeMessage('msg1', 1n))
@@ -119,10 +119,29 @@ describe('createChatStore', () => {
 
       const msgs = store.getMessages('agent1')
       expect(msgs).toHaveLength(2)
-      // The merged message should be at its original position with updated seq
-      expect(msgs[0].id).toBe('msg1')
-      expect(msgs[0].seq).toBe(3n)
-      expect(msgs[1].id).toBe('msg2')
+      expect(msgs[0].id).toBe('msg2')
+      expect(msgs[0].seq).toBe(2n)
+      expect(msgs[1].id).toBe('msg1')
+      expect(msgs[1].seq).toBe(3n)
+      dispose()
+    })
+  })
+
+  it('should keep a merged server message ahead of trailing optimistic locals', () => {
+    createRoot((dispose) => {
+      const store = createChatStore()
+      store.addMessage('agent1', makeMessage('notif', 1n))
+      store.addMessage('agent1', makeUserMessage('local-1', 0n, '/clear'))
+
+      const merged = makeMessage('notif', 5n)
+      store.addMessage('agent1', merged)
+
+      const msgs = store.getMessages('agent1')
+      expect(msgs).toHaveLength(2)
+      expect(msgs[0].id).toBe('notif')
+      expect(msgs[0].seq).toBe(5n)
+      expect(msgs[1].id).toBe('local-1')
+      expect(msgs[1].seq).toBe(0n)
       dispose()
     })
   })

@@ -257,6 +257,27 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// Claude Code does not handle natively.
 		isSlashClear := trimmed == "/clear" || trimmed == "/reset"
 
+		userMsg := &leapmuxv1.AgentChatMessage{
+			Id:                 messageID,
+			Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
+			Content:            compressed,
+			ContentCompression: compressionType,
+			Seq:                seq,
+			AgentProvider:      dbAgent.AgentProvider,
+			CreatedAt:          timefmt.Format(now),
+		}
+
+		// For /clear, broadcast the user message before restarting so live
+		// watchers never see context_cleared ahead of the triggering command.
+		if isSlashClear {
+			svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
+				AgentId: agentID,
+				Event: &leapmuxv1.AgentEvent_AgentMessage{
+					AgentMessage: userMsg,
+				},
+			})
+		}
+
 		// Attempt to send the message to the agent process (unless it's
 		// a command that leapmux handles itself).
 		var deliveryError string
@@ -287,22 +308,15 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		// Broadcast the user message to all watchers so it appears in
 		// every connected frontend's chat view.
-		userMsg := &leapmuxv1.AgentChatMessage{
-			Id:                 messageID,
-			Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
-			Content:            compressed,
-			ContentCompression: compressionType,
-			Seq:                seq,
-			DeliveryError:      deliveryError,
-			AgentProvider:      dbAgent.AgentProvider,
-			CreatedAt:          timefmt.Format(now),
+		if !isSlashClear {
+			userMsg.DeliveryError = deliveryError
+			svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
+				AgentId: agentID,
+				Event: &leapmuxv1.AgentEvent_AgentMessage{
+					AgentMessage: userMsg,
+				},
+			})
 		}
-		svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
-			AgentId: agentID,
-			Event: &leapmuxv1.AgentEvent_AgentMessage{
-				AgentMessage: userMsg,
-			},
-		})
 
 		// Broadcast delivery error separately (frontend uses both events).
 		if deliveryError != "" {
