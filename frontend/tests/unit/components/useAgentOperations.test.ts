@@ -5,7 +5,7 @@ import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { useAgentOperations } from '~/components/shell/useAgentOperations'
-import { AgentInfoSchema, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentInfoSchema, AgentProvider, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createAgentStore } from '~/stores/agent.store'
@@ -16,13 +16,14 @@ import { createTabStore } from '~/stores/tab.store'
 
 const mockCloseAgent = vi.fn<(workerId: string, req: { agentId: string, worktreeAction?: WorktreeAction }) => Promise<CloseAgentResponse>>()
 const mockSendAgentRawMessage = vi.fn()
+const mockSendAgentMessage = vi.fn()
 const mockUpdateAgentSettings = vi.fn()
 const mockShowWarnToast = vi.fn()
 
 vi.mock('~/api/workerRpc', () => ({
   closeAgent: (...args: unknown[]) => mockCloseAgent(...args as [string, { agentId: string, worktreeAction?: WorktreeAction }]),
   openAgent: vi.fn(),
-  sendAgentMessage: vi.fn(),
+  sendAgentMessage: (...args: unknown[]) => mockSendAgentMessage(...args),
   sendAgentRawMessage: (...args: unknown[]) => mockSendAgentRawMessage(...args),
   sendControlResponse: vi.fn(),
   updateAgentSettings: (...args: unknown[]) => mockUpdateAgentSettings(...args),
@@ -49,10 +50,17 @@ function setup() {
   const tabStore = createTabStore()
   const layoutStore = createLayoutStore()
 
+  const chatStore = {
+    getMessages: vi.fn().mockReturnValue([]),
+    clearMessageError: vi.fn(),
+    setMessageError: vi.fn(),
+    removeMessage: vi.fn(),
+  } as any
+
   const ops = useAgentOperations({
     agentStore,
     agentSessionStore,
-    chatStore: {} as any,
+    chatStore,
     controlStore,
     tabStore,
     layoutStore,
@@ -65,7 +73,7 @@ function setup() {
     setShowResumeDialog: vi.fn(),
   })
 
-  return { agentStore, agentSessionStore, controlStore, tabStore, layoutStore, ops }
+  return { agentStore, agentSessionStore, controlStore, tabStore, layoutStore, chatStore, ops }
 }
 
 describe('useAgentOperations', () => {
@@ -216,6 +224,60 @@ describe('useAgentOperations', () => {
           await ops.handleOptionGroupChange('a-2', 'opencode_mode', 'fast')
 
           expect(agentStore.state.agents.find(a => a.id === 'a-2')?.extraSettings?.opencode_mode).toBe('safe')
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+  })
+
+  describe('handleRetryMessage', () => {
+    it('clears the delivery error before resending the message', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { agentStore, chatStore, ops } = setup()
+          const agent = create(AgentInfoSchema, { id: 'a-1', workerId: 'w-1' })
+          agentStore.addAgent(agent)
+          chatStore.getMessages.mockReturnValue([{
+            id: 'local-1',
+            role: MessageRole.USER,
+            content: new TextEncoder().encode(JSON.stringify({ content: 'retry me' })),
+            contentCompression: ContentCompression.NONE,
+          }])
+          mockSendAgentMessage.mockResolvedValueOnce({})
+
+          await ops.handleRetryMessage('a-1', 'local-1')
+
+          expect(chatStore.clearMessageError).toHaveBeenCalledWith('local-1')
+          expect(mockSendAgentMessage).toHaveBeenCalledWith('w-1', { agentId: 'a-1', content: 'retry me' })
+          expect(chatStore.removeMessage).toHaveBeenCalledWith('a-1', 'local-1')
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('restores the delivery error if resend fails', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { agentStore, chatStore, ops } = setup()
+          const agent = create(AgentInfoSchema, { id: 'a-2', workerId: 'w-1' })
+          agentStore.addAgent(agent)
+          chatStore.getMessages.mockReturnValue([{
+            id: 'local-2',
+            role: MessageRole.USER,
+            content: new TextEncoder().encode(JSON.stringify({ content: 'retry me' })),
+            contentCompression: ContentCompression.NONE,
+          }])
+          mockSendAgentMessage.mockRejectedValueOnce(new Error('offline'))
+
+          await ops.handleRetryMessage('a-2', 'local-2')
+
+          expect(chatStore.clearMessageError).toHaveBeenCalledWith('local-2')
+          expect(chatStore.setMessageError).toHaveBeenCalledWith('local-2', 'Failed to deliver')
+          expect(mockShowWarnToast).toHaveBeenCalledWith('Retry failed', expect.any(Error))
         }
         finally {
           dispose()

@@ -506,7 +506,8 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
 
   const rowClass = () => messageRowClass(category().kind, props.message.role)
   const isLocalPending = () => props.message.id.startsWith('local-')
-  const bubbleClass = () => isLocalPending() && props.message.role === MessageRole.USER
+  const isPendingUserMessage = () => isLocalPending() && props.message.role === MessageRole.USER && !props.error
+  const bubbleClass = () => isPendingUserMessage()
     ? chatStyles.userMessagePending
     : messageBubbleClass(category().kind, props.message.role)
 

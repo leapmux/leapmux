@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MessageBubble } from '~/components/chat/MessageBubble'
+import * as chatStyles from '~/components/chat/messageStyles.css'
 import { toolBodyContent } from '~/components/chat/toolStyles.css'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
@@ -712,6 +713,40 @@ describe('agent stats summary', () => {
 
     const bubble = screen.getByTestId('message-content')
     expect(bubble.textContent).toContain('Explore: message classification')
+  })
+})
+
+describe('pending user bubble state', () => {
+  it('stops pulsation when a local user message has a delivery error', () => {
+    const msg = makeMsg({
+      id: 'local-1',
+      role: MessageRole.USER,
+      content: rawContent({ content: 'hello' }),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} error="Failed to deliver" />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getByTestId('message-bubble').className).not.toContain(chatStyles.userMessagePending)
+  })
+
+  it('keeps pulsation for a local user message without a delivery error', () => {
+    const msg = makeMsg({
+      id: 'local-2',
+      role: MessageRole.USER,
+      content: rawContent({ content: 'hello' }),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getByTestId('message-bubble').className).toContain(chatStyles.userMessagePending)
   })
 })
 

@@ -330,6 +330,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       if (typeof content !== 'string')
         return
 
+      props.chatStore.clearMessageError(messageId)
       await workerRpc.sendAgentMessage(workerId, { agentId, content })
       // Success: delete the old failed message. The new one arrives via WatchEvents.
       if (messageId.startsWith('local-')) {
@@ -341,6 +342,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       }
     }
     catch (err) {
+      props.chatStore.setMessageError(messageId, 'Failed to deliver')
       showWarnToast('Retry failed', err)
     }
   }
