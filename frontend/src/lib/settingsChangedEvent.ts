@@ -1,6 +1,5 @@
 export interface SettingsChange {
-  codexCollaborationMode?: { old: string, new: string }
-  permissionMode?: { old: string, new: string }
+  [key: string]: { old: string, new: string } | undefined
 }
 
 type Predicate = (changes: SettingsChange) => boolean

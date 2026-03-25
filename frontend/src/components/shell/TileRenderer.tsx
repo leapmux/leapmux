@@ -148,6 +148,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       }}
       hasActiveTabContext={!!getCurrentTabContext().workerId}
       isEditingRef={(fn) => { setIsTabEditing(fn) }}
+      availableProviders={agentOps.availableProviders()}
       onNewAgent={agentOps.handleOpenAgent}
       onNewTerminal={termOps.handleOpenTerminal}
       availableShells={termOps.availableShells()}

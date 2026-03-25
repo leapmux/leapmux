@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import type { useAgentOperations } from './useAgentOperations'
+import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { KeyPinDecision } from '~/lib/channel'
 import type { createAgentStore } from '~/stores/agent.store'
 import type { createLayoutStore } from '~/stores/layout.store'
@@ -67,6 +68,8 @@ interface AppShellDialogsProps {
   orgSlug: string
   loadWorkspaces: () => Promise<void>
   navigate: (path: string) => void
+  availableProviders?: AgentProvider[]
+  onRefreshProviders?: () => void
 }
 
 export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
@@ -86,6 +89,8 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
           defaultWorkerId={props.getCurrentTabContext().workerId}
           defaultWorkingDir={props.getCurrentTabContext().workingDir}
           defaultTitle={`Agent ${nextTabNumber(props.tabStore.state.tabs, TabType.AGENT, 'Agent')}`}
+          availableProviders={props.availableProviders}
+          onRefreshProviders={props.onRefreshProviders}
           onCreated={(agent) => {
             props.setShowNewAgentDialog(false)
             const tileId = props.layoutStore.focusedTileId()
@@ -131,6 +136,8 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
       <Show when={props.showNewWorkspace}>
         <NewWorkspaceDialog
           preselectedWorkerId={props.preselectedWorkerId}
+          availableProviders={props.availableProviders}
+          onRefreshProviders={props.onRefreshProviders}
           onCreated={(ws, _wid) => {
             props.workspaceStore.addWorkspace(ws)
             props.setShowNewWorkspace(false)

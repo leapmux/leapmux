@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -10,7 +11,9 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -205,4 +208,69 @@ func TestUpdateAgentSettings_DoesNotResumeSessionOnRestart(t *testing.T) {
 	// Session ID should remain unchanged when no restart was attempted.
 	assert.Equal(t, "old-session-id", dbAgent.AgentSessionID,
 		"session ID should not change when agent is not running")
+}
+
+func TestUpdateAgentSettings_BroadcastsGenericExtraSettingChanges(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, "ws-1")
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents)
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		ExtraSettings: `{"opencode_mode":"safe"}`,
+	}))
+
+	sender := channel.NewSender(w)
+	svc.Watchers.WatchAgent("agent-1", &EventWatcher{
+		ChannelID: w.channelID,
+		Sender:    sender,
+	})
+
+	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+		AgentId: "agent-1",
+		Settings: &leapmuxv1.AgentSettings{
+			ExtraSettings: map[string]string{"opencode_mode": "fast"},
+		},
+	}, w)
+
+	require.Empty(t, w.errors)
+	require.NotEmpty(t, w.streams)
+
+	var resp leapmuxv1.WatchEventsResponse
+	require.NoError(t, proto.Unmarshal(w.streams[len(w.streams)-1].GetPayload(), &resp))
+	msg := resp.GetAgentEvent().GetAgentMessage()
+	require.NotNil(t, msg)
+
+	raw, err := msgcodec.Decompress(msg.Content, msg.ContentCompression)
+	require.NoError(t, err)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(raw, &payload))
+
+	if payload["type"] != "settings_changed" {
+		messages, ok := payload["messages"].([]any)
+		require.True(t, ok)
+		for _, entry := range messages {
+			candidate, ok := entry.(map[string]any)
+			if ok && candidate["type"] == "settings_changed" {
+				payload = candidate
+				break
+			}
+		}
+	}
+
+	assert.Equal(t, "settings_changed", payload["type"])
+
+	changes, ok := payload["changes"].(map[string]any)
+	require.True(t, ok)
+	change, ok := changes["opencode_mode"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "safe", change["old"])
+	assert.Equal(t, "fast", change["new"])
+	assert.Equal(t, "opencode_mode", change["label"])
+	assert.Equal(t, "safe", change["oldLabel"])
+	assert.Equal(t, "fast", change["newLabel"])
 }

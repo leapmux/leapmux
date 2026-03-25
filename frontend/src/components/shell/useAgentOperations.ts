@@ -7,10 +7,12 @@ import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { PermissionMode } from '~/utils/controlResponse'
 
+import { createEffect, createSignal, on } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { getProviderPlugin } from '~/components/chat/providers'
-import { DEFAULT_CODEX_NETWORK_ACCESS, DEFAULT_CODEX_SANDBOX_POLICY } from '~/components/chat/providers/codex'
+import { CODEX_EXTRA_COLLABORATION_MODE, DEFAULT_CODEX_COLLABORATION_MODE } from '~/components/chat/providers/codex'
+import { optionGroupDefaultValue, optionGroupLabel } from '~/components/chat/settingsShared'
 import { showWarnToast } from '~/components/common/Toast'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
@@ -57,6 +59,29 @@ export interface UseAgentOperationsProps {
 }
 
 export function useAgentOperations(props: UseAgentOperationsProps) {
+  const [availableProviders, setAvailableProviders] = createSignal<AgentProvider[]>([])
+
+  const loadAvailableProviders = () => {
+    const ctx = props.getCurrentTabContext()
+    if (!ctx.workerId)
+      return
+    workerRpc.listAvailableProviders(ctx.workerId)
+      .then((resp) => {
+        setAvailableProviders([...resp.providers])
+      })
+      .catch(() => {
+        setAvailableProviders([])
+      })
+  }
+
+  createEffect(on(
+    () => props.getCurrentTabContext().workerId,
+    (workerId) => {
+      if (workerId)
+        loadAvailableProviders()
+    },
+  ))
+
   /** Look up the workerId for a given agent from the agent store. */
   const getAgentWorkerId = (agentId: string): string => {
     return props.agentStore.state.agents.find(a => a.id === agentId)?.workerId ?? ''
@@ -64,10 +89,6 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
 
   const defaultPermissionModeForAgent = (provider: AgentProvider): PermissionMode => {
     return getProviderPlugin(provider)?.defaultPermissionMode ?? 'default'
-  }
-
-  const defaultCodexCollaborationMode = (provider: AgentProvider): string => {
-    return provider === AgentProvider.CODEX ? 'default' : ''
   }
 
   // Open a new agent in the given workspace
@@ -82,7 +103,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
         systemPrompt: '',
         workerId,
         workingDir,
-        ...(agentProvider === AgentProvider.CODEX ? { codexCollaborationMode: 'default' } : {}),
+        ...(agentProvider === AgentProvider.CODEX ? { extraSettings: { [CODEX_EXTRA_COLLABORATION_MODE]: DEFAULT_CODEX_COLLABORATION_MODE } } : {}),
         ...(sessionId ? { agentSessionId: sessionId } : {}),
       })
       if (resp.agent) {
@@ -114,7 +135,10 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
-  // Open a new agent in the active workspace (for click handlers)
+  // Open a new agent in the active workspace (for click handlers).
+  // When providerOverride is given (from per-provider TabBar buttons),
+  // the agent is created directly. When omitted (from dialog or empty
+  // tab actions), falls back to Claude Code.
   const handleOpenAgent = async (providerOverride?: AgentProvider) => {
     if (!props.isActiveWorkspaceMutatable())
       return
@@ -126,11 +150,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       props.setShowNewAgentDialog(true)
       return
     }
-    // Default to the active tab's provider, then to Claude Code.
-    const activeTab = props.tabStore.state.tabs.find(
-      t => t.type === TabType.AGENT && t.id === props.agentStore.state.activeAgentId,
-    )
-    const provider = providerOverride ?? activeTab?.agentProvider ?? AgentProvider.CLAUDE_CODE
+    const provider = providerOverride ?? AgentProvider.CLAUDE_CODE
     props.setNewAgentLoading(true)
     try {
       await openAgentInWorkspace(ws.id, ctx.workerId, ctx.workingDir, undefined, provider)
@@ -259,10 +279,10 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
-  // Change a Codex-specific setting (sandbox policy or network access).
-  const handleCodexSettingChange = async (
+  // Change an option-group setting stored in extraSettings.
+  const handleOptionGroupSettingChange = async (
     agentId: string,
-    field: 'codexCollaborationMode' | 'codexSandboxPolicy' | 'codexNetworkAccess',
+    field: string,
     value: string,
     defaultValue: string,
     errorLabel: string,
@@ -270,35 +290,29 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     const agent = props.agentStore.state.agents.find(a => a.id === agentId)
     if (!agent)
       return
-    const previous = agent[field] || defaultValue
-    props.agentStore.updateAgent(agentId, { [field]: value })
+    const previous = agent.extraSettings?.[field] || defaultValue
+    props.agentStore.updateAgent(agentId, { extraSettings: { ...(agent.extraSettings || {}), [field]: value } })
     props.settingsLoading.start()
     try {
       await workerRpc.updateAgentSettings(agent.workerId, {
         agentId,
-        settings: { [field]: value },
+        settings: { extraSettings: { [field]: value } },
       })
       props.settingsLoading.stop()
     }
     catch (err) {
-      props.agentStore.updateAgent(agentId, { [field]: previous })
+      const current = props.agentStore.state.agents.find(a => a.id === agentId)
+      props.agentStore.updateAgent(agentId, { extraSettings: { ...(current?.extraSettings || {}), [field]: previous } })
       props.settingsLoading.stop()
       showWarnToast(`Failed to change ${errorLabel}`, err)
     }
   }
 
   const handleOptionGroupChange = (agentId: string, key: string, value: string) => {
-    const labels: Record<string, string> = {
-      codexCollaborationMode: 'mode',
-      codexSandboxPolicy: 'sandbox policy',
-      codexNetworkAccess: 'network access',
-    }
-    const defaults: Record<string, string> = {
-      codexCollaborationMode: defaultCodexCollaborationMode(AgentProvider.CODEX),
-      codexSandboxPolicy: DEFAULT_CODEX_SANDBOX_POLICY,
-      codexNetworkAccess: DEFAULT_CODEX_NETWORK_ACCESS,
-    }
-    handleCodexSettingChange(agentId, key as 'codexCollaborationMode' | 'codexSandboxPolicy' | 'codexNetworkAccess', value, defaults[key] || value, labels[key] || key)
+    const agent = props.agentStore.state.agents.find(a => a.id === agentId)
+    const defaultValue = optionGroupDefaultValue(agent?.availableOptionGroups, key) || value
+    const label = optionGroupLabel(agent?.availableOptionGroups, key)
+    handleOptionGroupSettingChange(agentId, key, value, defaultValue, label)
   }
 
   // Retry a failed message delivery.
@@ -370,6 +384,8 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   }
 
   return {
+    availableProviders,
+    loadAvailableProviders,
     openAgentInWorkspace,
     handleOpenAgent,
     handleResumeAgent,

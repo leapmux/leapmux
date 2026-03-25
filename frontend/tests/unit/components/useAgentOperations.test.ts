@@ -14,15 +14,18 @@ import { createLayoutStore } from '~/stores/layout.store'
 import { createTabStore } from '~/stores/tab.store'
 
 const mockCloseAgent = vi.fn<(workerId: string, req: { agentId: string, worktreeAction?: WorktreeAction }) => Promise<CloseAgentResponse>>()
+const mockUpdateAgentSettings = vi.fn()
+const mockShowWarnToast = vi.fn()
 
 vi.mock('~/api/workerRpc', () => ({
   closeAgent: (...args: unknown[]) => mockCloseAgent(...args as [string, { agentId: string, worktreeAction?: WorktreeAction }]),
   openAgent: vi.fn(),
   sendAgentMessage: vi.fn(),
   sendControlResponse: vi.fn(),
-  updateAgentSettings: vi.fn(),
+  updateAgentSettings: (...args: unknown[]) => mockUpdateAgentSettings(...args),
   retryAgentMessage: vi.fn(),
   deleteAgentMessage: vi.fn(),
+  listAvailableProviders: vi.fn().mockResolvedValue({ providers: [] }),
 }))
 
 vi.mock('~/api/clients', () => ({
@@ -33,7 +36,7 @@ vi.mock('~/api/clients', () => ({
 }))
 
 vi.mock('~/components/common/Toast', () => ({
-  showWarnToast: vi.fn(),
+  showWarnToast: (...args: unknown[]) => mockShowWarnToast(...args),
 }))
 
 function setup() {
@@ -61,6 +64,133 @@ function setup() {
 }
 
 describe('useAgentOperations', () => {
+  describe('handleOptionGroupChange', () => {
+    it('uses option-group metadata for default rollback and error labeling', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { agentStore, ops } = setup()
+          const agent = create(AgentInfoSchema, {
+            id: 'a-1',
+            workerId: 'w-1',
+            extraSettings: { opencode_mode: 'safe' },
+            availableOptionGroups: [{
+              key: 'opencode_mode',
+              label: 'Execution Mode',
+              options: [
+                { id: 'safe', name: 'Safe', isDefault: true },
+                { id: 'fast', name: 'Fast' },
+              ],
+            }],
+          })
+          agentStore.addAgent(agent)
+          mockUpdateAgentSettings.mockRejectedValueOnce(new Error('boom'))
+
+          await ops.handleOptionGroupChange('a-1', 'opencode_mode', 'fast')
+
+          expect(mockUpdateAgentSettings).toHaveBeenCalledWith('w-1', {
+            agentId: 'a-1',
+            settings: { extraSettings: { opencode_mode: 'fast' } },
+          })
+          expect(agentStore.state.agents.find(a => a.id === 'a-1')?.extraSettings?.opencode_mode).toBe('safe')
+          expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to change Execution Mode', expect.any(Error))
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('rollback re-reads current state to avoid clobbering concurrent changes', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { agentStore, ops } = setup()
+          const agent = create(AgentInfoSchema, {
+            id: 'a-concurrent',
+            workerId: 'w-1',
+            extraSettings: { sandbox_policy: 'workspace-write', network_access: 'restricted' },
+            availableOptionGroups: [
+              {
+                key: 'sandbox_policy',
+                label: 'Sandbox Policy',
+                options: [
+                  { id: 'workspace-write', name: 'Workspace Write', isDefault: true },
+                  { id: 'danger-full-access', name: 'Full Access' },
+                ],
+              },
+              {
+                key: 'network_access',
+                label: 'Network Access',
+                options: [
+                  { id: 'restricted', name: 'Restricted', isDefault: true },
+                  { id: 'enabled', name: 'Enabled' },
+                ],
+              },
+            ],
+          })
+          agentStore.addAgent(agent)
+
+          // First call will fail; second succeeds.
+          let rejectFirst!: (err: Error) => void
+          mockUpdateAgentSettings.mockImplementationOnce(() => new Promise((_resolve, reject) => {
+            rejectFirst = reject
+          }))
+          mockUpdateAgentSettings.mockResolvedValueOnce({})
+
+          // Launch both changes concurrently.
+          const p1 = ops.handleOptionGroupChange('a-concurrent', 'sandbox_policy', 'danger-full-access')
+          const p2 = ops.handleOptionGroupChange('a-concurrent', 'network_access', 'enabled')
+
+          // Both optimistic updates should be applied.
+          const mid = agentStore.state.agents.find(a => a.id === 'a-concurrent')
+          expect(mid?.extraSettings?.sandbox_policy).toBe('danger-full-access')
+          expect(mid?.extraSettings?.network_access).toBe('enabled')
+
+          // Fail the first RPC — its rollback should only revert sandbox_policy,
+          // leaving network_access intact.
+          rejectFirst(new Error('sandbox fail'))
+          await p1
+          await p2
+
+          const final = agentStore.state.agents.find(a => a.id === 'a-concurrent')
+          expect(final?.extraSettings?.sandbox_policy).toBe('workspace-write')
+          expect(final?.extraSettings?.network_access).toBe('enabled')
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('falls back to the first option when no explicit default is marked', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { agentStore, ops } = setup()
+          const agent = create(AgentInfoSchema, {
+            id: 'a-2',
+            workerId: 'w-1',
+            availableOptionGroups: [{
+              key: 'opencode_mode',
+              label: 'Execution Mode',
+              options: [
+                { id: 'safe', name: 'Safe' },
+                { id: 'fast', name: 'Fast' },
+              ],
+            }],
+          })
+          agentStore.addAgent(agent)
+          mockUpdateAgentSettings.mockRejectedValueOnce(new Error('boom'))
+
+          await ops.handleOptionGroupChange('a-2', 'opencode_mode', 'fast')
+
+          expect(agentStore.state.agents.find(a => a.id === 'a-2')?.extraSettings?.opencode_mode).toBe('safe')
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+  })
+
   describe('handleCloseAgent', () => {
     it('should call closeAgent RPC when workerId is available', async () => {
       await createRoot(async (dispose) => {

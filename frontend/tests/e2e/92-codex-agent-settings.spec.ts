@@ -12,6 +12,25 @@ codexTest.describe('Codex Agent Settings', () => {
     await expect(settingsBtn).toContainText(GPT_54_MINI_RE)
   })
 
+  codexTest('Codex agent can toggle Fast mode from the settings menu', async ({ authenticatedCodexWorkspace, page }) => {
+    void authenticatedCodexWorkspace
+
+    await openSettingsMenu(page)
+    await expect(page.locator('[data-testid="codex-service-tier-default"] input[type="radio"]')).toBeChecked()
+    await page.locator('[data-testid="codex-service-tier-fast"]').click()
+    await waitForSettingsIdle(page)
+
+    await openSettingsMenu(page)
+    await expect(page.locator('[data-testid="codex-service-tier-fast"] input[type="radio"]')).toBeChecked()
+  })
+
+  codexTest('Fast mode group appears first in the settings popover', async ({ authenticatedCodexWorkspace, page }) => {
+    void authenticatedCodexWorkspace
+
+    await openSettingsMenu(page)
+    await expect(page.locator('[data-testid="agent-settings-menu"] fieldset legend').first()).toHaveText('Fast Mode')
+  })
+
   codexTest('Codex agent can enter plan mode from the settings menu', async ({ authenticatedCodexWorkspace, page }) => {
     void authenticatedCodexWorkspace
 
@@ -19,6 +38,7 @@ codexTest.describe('Codex Agent Settings', () => {
     await expect(trigger).toBeVisible()
 
     await openSettingsMenu(page)
+    await expect(page.locator('[data-testid="agent-settings-menu"]')).toContainText('Workflow')
     await expect(page.locator('[data-testid="codex-collaboration-mode-plan"]')).toBeVisible()
     await page.locator('[data-testid="codex-collaboration-mode-plan"]').click()
 

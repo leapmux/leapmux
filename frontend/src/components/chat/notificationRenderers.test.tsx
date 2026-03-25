@@ -1,6 +1,7 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 
 // Mock messageRenderers to break the circular dependency (messageRenderers
 // imports from notificationRenderers at module-init time).
@@ -88,7 +89,7 @@ describe('renderNotificationThread: message ordering', () => {
     ]
     const text = renderText(messages)
     const clearedIdx = text.indexOf('Context cleared')
-    const modeIdx = text.indexOf('Mode')
+    const modeIdx = text.indexOf('Permission Mode')
     expect(clearedIdx).toBeGreaterThanOrEqual(0)
     expect(modeIdx).toBeGreaterThan(clearedIdx)
   })
@@ -99,10 +100,44 @@ describe('renderNotificationThread: message ordering', () => {
       { type: 'context_cleared' },
     ]
     const text = renderText(messages)
-    const modeIdx = text.indexOf('Mode')
+    const modeIdx = text.indexOf('Permission Mode')
     const clearedIdx = text.indexOf('Context cleared')
     expect(modeIdx).toBeGreaterThanOrEqual(0)
     expect(clearedIdx).toBeGreaterThan(modeIdx)
+  })
+
+  it('uses Workflow label for Codex collaboration mode changes', () => {
+    updateSettingsLabelCache([], [{
+      key: 'collaboration_mode',
+      label: 'Workflow',
+      options: [
+        { id: 'default', name: 'Default' },
+        { id: 'plan', name: 'Plan Mode' },
+      ],
+    }] as any)
+    const messages = [
+      { type: 'settings_changed', changes: { collaboration_mode: { old: 'default', new: 'plan' } } },
+    ]
+    const text = renderText(messages)
+    expect(text).toContain('Workflow')
+  })
+
+  it('uses cached option-group labels for arbitrary provider settings', () => {
+    updateSettingsLabelCache([], [{
+      key: 'opencode_mode',
+      label: 'Execution Mode',
+      options: [
+        { id: 'safe', name: 'Safe' },
+        { id: 'fast', name: 'Fast' },
+      ],
+    }] as any)
+    const messages = [
+      { type: 'settings_changed', changes: { opencode_mode: { old: 'safe', new: 'fast' } } },
+    ]
+    const text = renderText(messages)
+    expect(text).toContain('Execution Mode')
+    expect(text).toContain('Safe')
+    expect(text).toContain('Fast')
   })
 
   it('interrupted appears in order among other messages', () => {

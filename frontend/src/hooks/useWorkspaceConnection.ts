@@ -254,7 +254,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             ? {}
             : {
                 ...(sc.permissionMode ? { permissionMode: sc.permissionMode } : {}),
-                ...(sc.codexCollaborationMode ? { codexCollaborationMode: sc.codexCollaborationMode } : {}),
+                ...(sc.extraSettings ? { extraSettings: sc.extraSettings } : {}),
                 ...(sc.model ? { model: sc.model } : {}),
                 ...(sc.effort ? { effort: sc.effort } : {}),
               }),

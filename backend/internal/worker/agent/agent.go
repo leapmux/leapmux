@@ -8,12 +8,16 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
 // Claude Code permission mode values.
@@ -63,20 +67,18 @@ type ClaudeCodeAgent struct {
 
 // Options configures a new ClaudeCodeAgent.
 type Options struct {
-	AgentID                string
-	Model                  string
-	Effort                 string // Effort (low, medium, high, max)
-	WorkingDir             string
-	ResumeSessionID        string                  // If set, uses --resume to resume a previous session
-	PermissionMode         string                  // Permission mode to set on startup (default, acceptEdits, plan, bypassPermissions)
-	CodexSandboxPolicy     string                  // Codex sandbox policy (e.g. "danger-full-access", "workspace-write")
-	CodexNetworkAccess     string                  // Codex network access ("restricted" or "enabled")
-	CodexCollaborationMode string                  // Codex collaboration mode ("default" or "plan")
-	StartupTimeout         time.Duration           // Timeout for the startup handshake (default: 30s)
-	Shell                  string                  // Default shell path (always set when using shell wrapper)
-	LoginShell             bool                    // If true, use interactive+login shell flags
-	HomeDir                string                  // User's home directory (for reading Claude Code settings)
-	AgentProvider          leapmuxv1.AgentProvider // Coding agent provider (default: CLAUDE_CODE)
+	AgentID         string
+	Model           string
+	Effort          string // Effort (low, medium, high, max)
+	WorkingDir      string
+	ResumeSessionID string                  // If set, uses --resume to resume a previous session
+	PermissionMode  string                  // Permission mode to set on startup (default, acceptEdits, plan, bypassPermissions)
+	ExtraSettings   map[string]string       // Provider-specific persisted settings (e.g. Codex extras)
+	StartupTimeout  time.Duration           // Timeout for the startup handshake (default: 30s)
+	Shell           string                  // Default shell path (always set when using shell wrapper)
+	LoginShell      bool                    // If true, use interactive+login shell flags
+	HomeDir         string                  // User's home directory (for reading Claude Code settings)
+	AgentProvider   leapmuxv1.AgentProvider // Coding agent provider (default: CLAUDE_CODE)
 }
 
 // StartClaudeCode spawns a new Claude Code process and begins reading its output.
@@ -317,6 +319,7 @@ type providerRegistration struct {
 	optionGroups  []*leapmuxv1.AvailableOptionGroup
 	envModelKey   string // e.g. "LEAPMUX_CLAUDE_DEFAULT_MODEL"
 	envEffortKey  string // e.g. "LEAPMUX_CLAUDE_DEFAULT_EFFORT"
+	binaryName    string // e.g. "claude", "codex"
 }
 
 // providerRegistry maps each AgentProvider to its registration.
@@ -331,6 +334,7 @@ func registerProvider(
 	defaultModels []*leapmuxv1.AvailableModel,
 	optionGroups []*leapmuxv1.AvailableOptionGroup,
 	envModelKey, envEffortKey string,
+	binaryName string,
 ) {
 	providerRegistry[provider] = providerRegistration{
 		start:         start,
@@ -338,6 +342,7 @@ func registerProvider(
 		optionGroups:  optionGroups,
 		envModelKey:   envModelKey,
 		envEffortKey:  envEffortKey,
+		binaryName:    binaryName,
 	}
 }
 
@@ -398,7 +403,7 @@ func init() {
 			Key:   "permissionMode",
 			Label: "Permission Mode",
 			Options: []*leapmuxv1.AvailableOption{
-				{Id: PermissionModeDefault, Name: "Default"},
+				{Id: PermissionModeDefault, Name: "Default", IsDefault: true},
 				{Id: PermissionModePlan, Name: "Plan Mode"},
 				{Id: PermissionModeAcceptEdits, Name: "Accept Edits"},
 				{Id: PermissionModeBypassPermissions, Name: "Bypass Permissions"},
@@ -406,6 +411,7 @@ func init() {
 		}},
 		"LEAPMUX_CLAUDE_DEFAULT_MODEL",
 		"LEAPMUX_CLAUDE_DEFAULT_EFFORT",
+		"claude",
 	)
 }
 
@@ -537,6 +543,77 @@ func filterEnv(environ []string, keys ...string) []string {
 		}
 	}
 	return filtered
+}
+
+// ListAvailableProviders returns providers whose binary is found in the
+// user's shell environment. Checks run concurrently to minimize latency
+// when login shells are used (each check reads shell profiles).
+func ListAvailableProviders(ctx context.Context, shellPath string, useLoginShell bool) []leapmuxv1.AgentProvider {
+	type check struct {
+		provider leapmuxv1.AgentProvider
+		binary   string
+	}
+	var checks []check
+	for provider, reg := range providerRegistry {
+		if reg.binaryName != "" {
+			checks = append(checks, check{provider, reg.binaryName})
+		}
+	}
+
+	found := make([]bool, len(checks))
+	var wg sync.WaitGroup
+	for i, c := range checks {
+		wg.Add(1)
+		go func(idx int, binary string) {
+			defer wg.Done()
+			found[idx] = checkBinaryAvailable(ctx, shellPath, useLoginShell, binary)
+		}(i, c.binary)
+	}
+	wg.Wait()
+
+	var result []leapmuxv1.AgentProvider
+	for i, c := range checks {
+		if found[i] {
+			result = append(result, c.provider)
+		}
+	}
+	// Always return at least one provider so the UI has something to show.
+	if len(result) == 0 {
+		result = append(result, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
+	return result
+}
+
+func checkBinaryAvailable(ctx context.Context, shellPath string, loginShell bool, binaryName string) bool {
+	shellName := filepath.Base(shellPath)
+
+	var inner, flag string
+	switch {
+	case terminal.IsPwsh(shellName):
+		inner = fmt.Sprintf("if (Get-Command %s -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }", pwshQuote(binaryName))
+		flag = "-Command"
+	case shellName == "nu":
+		inner = fmt.Sprintf("if (which %s | is-not-empty) { exit 0 } else { exit 1 }", nuQuote(binaryName))
+		flag = "-c"
+	case shellName == "tcsh" || shellName == "csh":
+		inner = fmt.Sprintf("which %s >& /dev/null", posixQuote(binaryName))
+		flag = "-c"
+	default:
+		inner = fmt.Sprintf("command -v %s >/dev/null 2>&1", posixQuote(binaryName))
+		flag = "-c"
+	}
+
+	var args []string
+	if loginShell {
+		args = append(terminal.LoginShellArgs(shellPath), flag, inner)
+	} else {
+		args = []string{flag, inner}
+	}
+
+	cmd := exec.CommandContext(ctx, shellPath, args...)
+	cmd.Dir = os.TempDir()
+	return cmd.Run() == nil
 }
 
 // buildModelEffortArgs constructs the --model and --effort CLI arguments for

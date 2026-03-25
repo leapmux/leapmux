@@ -17,5 +17,6 @@ func init() {
 		nil,
 		"LEAPMUX_OPENCODE_DEFAULT_MODEL",
 		"LEAPMUX_OPENCODE_DEFAULT_EFFORT",
+		"opencode",
 	)
 }

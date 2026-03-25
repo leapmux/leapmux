@@ -24,6 +24,8 @@ interface NewWorkspaceDialogProps {
   onCreated: (workspace: Workspace, workerId: string) => void
   onClose: () => void
   preselectedWorkerId?: string
+  availableProviders?: AgentProvider[]
+  onRefreshProviders?: () => void
 }
 
 export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) => {
@@ -97,7 +99,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
           <div class="vstack gap-4">
             <div class={state.showGitOptions() ? dialogTopSection : undefined}>
               <WorkerSelector state={state} />
-              <AgentProviderSelector value={agentProvider} onChange={setAgentProvider} />
+              <AgentProviderSelector value={agentProvider} onChange={setAgentProvider} availableProviders={props.availableProviders} onRefresh={props.onRefreshProviders} />
               <div>
                 <div class={labelRow}>
                   Title

@@ -196,9 +196,47 @@ export function createChatStore() {
       const existingIdx = messages?.findLastIndex(m => m.id === message.id) ?? -1
 
       if (existingIdx !== -1) {
-        // Shallow-merge via path setter: preserves the store proxy reference
-        // so <For> keeps the existing MessageBubble (local UI state survives).
-        setState('messagesByAgent', agentId, existingIdx, message)
+        const existing = messages![existingIdx]
+        if (existing.seq === message.seq) {
+          // Shallow-merge via path setter: preserves the store proxy reference
+          // so <For> keeps the existing MessageBubble (local UI state survives).
+          setState('messagesByAgent', agentId, existingIdx, message)
+        }
+        else {
+          // Notification thread rows are updated in place on the backend but
+          // receive a new seq. Reinsert them so the visible order follows seq.
+          setState('messagesByAgent', agentId, (prev = []) => {
+            const next = [...prev]
+            next.splice(existingIdx, 1)
+
+            // Local (optimistic) messages have seq === 0n and always stay at the end.
+            if (message.seq === 0n) {
+              next.push(message)
+              return next
+            }
+
+            let serverEnd = next.length
+            while (serverEnd > 0 && next[serverEnd - 1].seq === 0n)
+              serverEnd--
+
+            if (serverEnd === 0 || message.seq > next[serverEnd - 1].seq) {
+              next.splice(serverEnd, 0, message)
+              return next
+            }
+
+            let lo = 0
+            let hi = serverEnd
+            while (lo < hi) {
+              const mid = (lo + hi) >>> 1
+              if (next[mid].seq < message.seq)
+                lo = mid + 1
+              else
+                hi = mid
+            }
+            next.splice(lo, 0, message)
+            return next
+          })
+        }
       }
       else {
         // Reconcile optimistic local user messages before updating the store,

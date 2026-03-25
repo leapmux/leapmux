@@ -12,7 +12,7 @@ import { getProviderPlugin } from './providers'
 
 export interface ControlResponseHandlingProps {
   agentId: string
-  agent?: { permissionMode?: string, codexCollaborationMode?: string, agentProvider?: AgentProvider }
+  agent?: { permissionMode?: string, extraSettings?: Record<string, string>, agentProvider?: AgentProvider }
   controlRequests?: ControlRequest[]
   onControlResponse?: (agentId: string, content: Uint8Array) => Promise<void>
   onPermissionModeChange?: (mode: PermissionMode) => void

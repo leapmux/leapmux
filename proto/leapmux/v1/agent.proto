@@ -54,9 +54,7 @@ message OpenAgentRequest {
   string create_branch = 14;        // "Create new branch" mode — branch name to create
   string create_branch_base = 15;   // Base branch for "Create new branch" (default: current branch)
   AgentProvider agent_provider = 16; // Coding agent provider (default: CLAUDE_CODE)
-  string codex_sandbox_policy = 17;  // Codex sandbox policy (optional, for future use)
-  string codex_network_access = 18;  // Codex network access ("restricted" or "enabled")
-  string codex_collaboration_mode = 19; // Codex collaboration mode ("default" or "plan")
+  map<string, string> extra_settings = 17; // Provider-specific persisted settings (e.g. Codex extras)
 }
 
 message OpenAgentResponse {
@@ -109,9 +107,7 @@ message AgentInfo {
   AgentProvider agent_provider = 17; // Coding agent provider
   repeated AvailableModel available_models = 18; // Models reported by the agent process
   repeated AvailableOptionGroup available_option_groups = 19; // Option groups (e.g. permission modes, sandbox policies)
-  string codex_sandbox_policy = 20; // Codex sandbox policy (e.g. "danger-full-access", "workspace-write")
-  string codex_network_access = 21; // Codex network access (e.g. "restricted", "enabled")
-  string codex_collaboration_mode = 22; // Codex collaboration mode (e.g. "default", "plan")
+  map<string, string> extra_settings = 20; // Provider-specific persisted settings (e.g. Codex extras)
 }
 
 // AvailableModel describes a model reported by the agent process (e.g. Codex model/list).
@@ -137,6 +133,7 @@ message AvailableOption {
   string id = 1;           // Value stored/sent in requests (e.g. "default", "never")
   string name = 2;         // Human-readable label (e.g. "Default", "Full Auto")
   string description = 3;  // Tooltip text
+  bool is_default = 4;     // Whether this is the provider's default option for the group
 }
 
 // AvailableOptionGroup describes a named group of options (e.g. "Permission Mode", "Approval Policy").
@@ -199,7 +196,7 @@ message AgentStatusChange {
   AgentGitStatus git_status = 8; // Git status for the agent's working directory
   reserved 9; // was supports_model_effort
   AgentProvider agent_provider = 10; // Provider for this agent
-  string codex_collaboration_mode = 11; // Codex collaboration mode for Codex agents
+  map<string, string> extra_settings = 11; // Provider-specific persisted settings
 }
 
 // AgentGitStatus holds git repository status for an agent's working directory.
@@ -282,9 +279,7 @@ message AgentSettings {
   string model = 1;
   string effort = 2;
   string permission_mode = 3;
-  string codex_sandbox_policy = 4;
-  string codex_network_access = 5;
-  string codex_collaboration_mode = 6;
+  map<string, string> extra_settings = 4;
 }
 
 message UpdateAgentSettingsRequest {
@@ -293,3 +288,9 @@ message UpdateAgentSettingsRequest {
 }
 
 message UpdateAgentSettingsResponse {}
+
+message ListAvailableProvidersRequest {}
+
+message ListAvailableProvidersResponse {
+  repeated AgentProvider providers = 1;
+}

@@ -7,20 +7,25 @@ import type { AvailableModel, AvailableOptionGroup } from '~/generated/leapmux/v
  */
 const modelLabels = new Map<string, string>()
 const effortLabels = new Map<string, string>()
+const optionGroupDisplayLabels = new Map<string, string>()
 const optionGroupLabels = new Map<string, Map<string, string>>()
 
-/** Update the cache from an availableModels list (called when AgentInfo arrives). */
-export function updateSettingsLabelCache(models: AvailableModel[], optionGroups?: AvailableOptionGroup[]): void {
-  for (const m of models) {
-    if (m.displayName)
-      modelLabels.set(m.id, m.displayName)
-    for (const e of m.supportedEfforts) {
-      if (e.name)
-        effortLabels.set(e.id, e.name)
+/** Update the cache from available model/option metadata (called when AgentInfo arrives). */
+export function updateSettingsLabelCache(models?: AvailableModel[], optionGroups?: AvailableOptionGroup[]): void {
+  if (models) {
+    for (const m of models) {
+      if (m.displayName)
+        modelLabels.set(m.id, m.displayName)
+      for (const e of m.supportedEfforts) {
+        if (e.name)
+          effortLabels.set(e.id, e.name)
+      }
     }
   }
   if (optionGroups) {
     for (const group of optionGroups) {
+      if (group.label)
+        optionGroupDisplayLabels.set(group.key, group.label)
       let groupMap = optionGroupLabels.get(group.key)
       if (!groupMap) {
         groupMap = new Map()
@@ -41,4 +46,8 @@ export function getCachedSettingsLabel(key: string, id: string): string | undefi
   if (key === 'effort')
     return effortLabels.get(id)
   return optionGroupLabels.get(key)?.get(id)
+}
+
+export function getCachedSettingsGroupLabel(key: string): string | undefined {
+  return optionGroupDisplayLabels.get(key)
 }

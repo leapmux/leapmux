@@ -10,9 +10,7 @@ export interface ProviderSettingsPanelProps {
   model?: string
   effort?: string
   permissionMode?: string
-  codexCollaborationMode?: string
-  codexSandboxPolicy?: string
-  codexNetworkAccess?: string
+  extraSettings?: Record<string, string>
   availableModels?: AvailableModel[]
   availableOptionGroups?: AvailableOptionGroup[]
   onModelChange?: (model: string) => void
@@ -87,7 +85,7 @@ export interface ProviderPlugin {
    */
   planMode?: {
     /** Read the current plan-relevant mode from agent state. */
-    currentMode: (agent: { permissionMode?: string, codexCollaborationMode?: string }) => string
+    currentMode: (agent: { permissionMode?: string, extraSettings?: Record<string, string> }) => string
     /** The value that represents "plan" mode. */
     planValue: string
     /** The default (non-plan) mode value. */

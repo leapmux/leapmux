@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -66,7 +67,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			agentProvider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 		}
 		model := modelOrDefault(r.GetModel(), agentProvider)
-		codexCollaborationMode := codexCollaborationModeForProvider(r.GetCodexCollaborationMode(), agentProvider)
+		extraSettings := resolveCodexExtras(mergeExtraSettings(nil, r.GetExtraSettings()), agentProvider)
 
 		// Ensure the channel knows about this workspace so that
 		// subsequent WatchEvents calls can access the agent.
@@ -80,19 +81,17 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		// Create the agent record in the database.
 		if err := svc.Queries.CreateAgent(bgCtx(), db.CreateAgentParams{
-			ID:                     agentID,
-			WorkspaceID:            r.GetWorkspaceId(),
-			WorkingDir:             workingDir,
-			HomeDir:                svc.HomeDir,
-			Title:                  r.GetTitle(),
-			Model:                  model,
-			SystemPrompt:           r.GetSystemPrompt(),
-			Effort:                 r.GetEffort(),
-			CodexSandboxPolicy:     r.GetCodexSandboxPolicy(),
-			CodexNetworkAccess:     r.GetCodexNetworkAccess(),
-			CodexCollaborationMode: codexCollaborationMode,
-			AgentProvider:          agentProvider,
-			Resumed:                resumed,
+			ID:            agentID,
+			WorkspaceID:   r.GetWorkspaceId(),
+			WorkingDir:    workingDir,
+			HomeDir:       svc.HomeDir,
+			Title:         r.GetTitle(),
+			Model:         model,
+			SystemPrompt:  r.GetSystemPrompt(),
+			Effort:        r.GetEffort(),
+			ExtraSettings: marshalExtraSettings(extraSettings),
+			AgentProvider: agentProvider,
+			Resumed:       resumed,
 		}); err != nil {
 			slog.Error("failed to create agent", "error", err)
 			sendInternalError(sender, "failed to create agent")
@@ -101,19 +100,17 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		// Start the agent process.
 		agentOpts := agent.Options{
-			AgentID:                agentID,
-			Model:                  model,
-			Effort:                 r.GetEffort(),
-			WorkingDir:             workingDir,
-			ResumeSessionID:        r.GetAgentSessionId(),
-			CodexSandboxPolicy:     r.GetCodexSandboxPolicy(),
-			CodexNetworkAccess:     r.GetCodexNetworkAccess(),
-			CodexCollaborationMode: codexCollaborationMode,
-			StartupTimeout:         svc.agentStartupTimeout(),
-			Shell:                  svc.agentShell(),
-			LoginShell:             svc.agentLoginShell(),
-			HomeDir:                svc.HomeDir,
-			AgentProvider:          agentProvider,
+			AgentID:         agentID,
+			Model:           model,
+			Effort:          r.GetEffort(),
+			WorkingDir:      workingDir,
+			ResumeSessionID: r.GetAgentSessionId(),
+			ExtraSettings:   extraSettings,
+			StartupTimeout:  svc.agentStartupTimeout(),
+			Shell:           svc.agentShell(),
+			LoginShell:      svc.agentLoginShell(),
+			HomeDir:         svc.HomeDir,
+			AgentProvider:   agentProvider,
 		}
 
 		sink := svc.Output.NewSink(agentID, agentProvider)
@@ -254,6 +251,27 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// Claude Code does not handle natively.
 		isSlashClear := trimmed == "/clear" || trimmed == "/reset"
 
+		userMsg := &leapmuxv1.AgentChatMessage{
+			Id:                 messageID,
+			Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
+			Content:            compressed,
+			ContentCompression: compressionType,
+			Seq:                seq,
+			AgentProvider:      dbAgent.AgentProvider,
+			CreatedAt:          timefmt.Format(now),
+		}
+
+		// For /clear, broadcast the user message before restarting so live
+		// watchers never see context_cleared ahead of the triggering command.
+		if isSlashClear {
+			svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
+				AgentId: agentID,
+				Event: &leapmuxv1.AgentEvent_AgentMessage{
+					AgentMessage: userMsg,
+				},
+			})
+		}
+
 		// Attempt to send the message to the agent process (unless it's
 		// a command that leapmux handles itself).
 		var deliveryError string
@@ -284,22 +302,15 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		// Broadcast the user message to all watchers so it appears in
 		// every connected frontend's chat view.
-		userMsg := &leapmuxv1.AgentChatMessage{
-			Id:                 messageID,
-			Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
-			Content:            compressed,
-			ContentCompression: compressionType,
-			Seq:                seq,
-			DeliveryError:      deliveryError,
-			AgentProvider:      dbAgent.AgentProvider,
-			CreatedAt:          timefmt.Format(now),
+		if !isSlashClear {
+			userMsg.DeliveryError = deliveryError
+			svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
+				AgentId: agentID,
+				Event: &leapmuxv1.AgentEvent_AgentMessage{
+					AgentMessage: userMsg,
+				},
+			})
 		}
-		svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
-			AgentId: agentID,
-			Event: &leapmuxv1.AgentEvent_AgentMessage{
-				AgentMessage: userMsg,
-			},
-		})
 
 		// Broadcast delivery error separately (frontend uses both events).
 		if deliveryError != "" {
@@ -529,28 +540,16 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		if newPermissionMode == "" {
 			newPermissionMode = dbAgent.PermissionMode
 		}
-		newCodexSandboxPolicy := s.GetCodexSandboxPolicy()
-		if newCodexSandboxPolicy == "" {
-			newCodexSandboxPolicy = dbAgent.CodexSandboxPolicy
-		}
-		newCodexNetworkAccess := s.GetCodexNetworkAccess()
-		if newCodexNetworkAccess == "" {
-			newCodexNetworkAccess = dbAgent.CodexNetworkAccess
-		}
-		newCodexCollaborationMode := s.GetCodexCollaborationMode()
-		if newCodexCollaborationMode == "" {
-			newCodexCollaborationMode = codexCollaborationModeForProvider(dbAgent.CodexCollaborationMode, dbAgent.AgentProvider)
-		}
+		oldExtraSettings := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
+		newExtraSettings := resolveCodexExtras(mergeExtraSettings(oldExtraSettings, s.GetExtraSettings()), dbAgent.AgentProvider)
 
 		// Update the DB.
 		if err := svc.Queries.UpdateAgentAllSettings(bgCtx(), db.UpdateAgentAllSettingsParams{
-			Model:                  newModel,
-			Effort:                 newEffort,
-			PermissionMode:         newPermissionMode,
-			CodexSandboxPolicy:     newCodexSandboxPolicy,
-			CodexNetworkAccess:     newCodexNetworkAccess,
-			CodexCollaborationMode: newCodexCollaborationMode,
-			ID:                     agentID,
+			Model:          newModel,
+			Effort:         newEffort,
+			PermissionMode: newPermissionMode,
+			ExtraSettings:  marshalExtraSettings(newExtraSettings),
+			ID:             agentID,
 		}); err != nil {
 			slog.Error("failed to update agent settings", "agent_id", agentID, "error", err)
 			sendInternalError(sender, "failed to update agent settings")
@@ -563,12 +562,10 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// Code) return false and we fall back to stop+restart.
 		if svc.Agents.HasAgent(agentID) {
 			updated := svc.Agents.UpdateSettings(agentID, &leapmuxv1.AgentSettings{
-				Model:                  newModel,
-				Effort:                 newEffort,
-				PermissionMode:         newPermissionMode,
-				CodexSandboxPolicy:     newCodexSandboxPolicy,
-				CodexNetworkAccess:     newCodexNetworkAccess,
-				CodexCollaborationMode: newCodexCollaborationMode,
+				Model:          newModel,
+				Effort:         newEffort,
+				PermissionMode: newPermissionMode,
+				ExtraSettings:  newExtraSettings,
 			})
 
 			if !updated {
@@ -577,20 +574,18 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 				resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
 
 				agentOpts := agent.Options{
-					AgentID:                agentID,
-					Model:                  newModel,
-					Effort:                 newEffort,
-					WorkingDir:             dbAgent.WorkingDir,
-					ResumeSessionID:        resumeSessionID,
-					PermissionMode:         newPermissionMode,
-					CodexSandboxPolicy:     newCodexSandboxPolicy,
-					CodexNetworkAccess:     newCodexNetworkAccess,
-					CodexCollaborationMode: newCodexCollaborationMode,
-					StartupTimeout:         svc.agentStartupTimeout(),
-					Shell:                  svc.agentShell(),
-					LoginShell:             svc.agentLoginShell(),
-					HomeDir:                svc.HomeDir,
-					AgentProvider:          dbAgent.AgentProvider,
+					AgentID:         agentID,
+					Model:           newModel,
+					Effort:          newEffort,
+					WorkingDir:      dbAgent.WorkingDir,
+					ResumeSessionID: resumeSessionID,
+					PermissionMode:  newPermissionMode,
+					ExtraSettings:   newExtraSettings,
+					StartupTimeout:  svc.agentStartupTimeout(),
+					Shell:           svc.agentShell(),
+					LoginShell:      svc.agentLoginShell(),
+					HomeDir:         svc.HomeDir,
+					AgentProvider:   dbAgent.AgentProvider,
 				}
 
 				sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
@@ -640,25 +635,15 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 				"oldLabel": permissionModeLabel(dbAgent.PermissionMode, dbAgent.AgentProvider), "newLabel": permissionModeLabel(newPermissionMode, dbAgent.AgentProvider),
 			}
 		}
-		if dbAgent.CodexSandboxPolicy != newCodexSandboxPolicy {
-			oldPolicy := codexSandboxPolicyOrDefault(dbAgent.CodexSandboxPolicy)
-			changes["codexSandboxPolicy"] = map[string]string{
-				"old": oldPolicy, "new": newCodexSandboxPolicy,
-				"oldLabel": optionLabel("codexSandboxPolicy", oldPolicy, dbAgent.AgentProvider), "newLabel": optionLabel("codexSandboxPolicy", newCodexSandboxPolicy, dbAgent.AgentProvider),
-			}
-		}
-		if dbAgent.CodexNetworkAccess != newCodexNetworkAccess {
-			oldAccess := codexNetworkAccessOrDefault(dbAgent.CodexNetworkAccess)
-			changes["codexNetworkAccess"] = map[string]string{
-				"old": oldAccess, "new": newCodexNetworkAccess,
-				"oldLabel": optionLabel("codexNetworkAccess", oldAccess, dbAgent.AgentProvider), "newLabel": optionLabel("codexNetworkAccess", newCodexNetworkAccess, dbAgent.AgentProvider),
-			}
-		}
-		oldCodexCollaborationMode := codexCollaborationModeForProvider(dbAgent.CodexCollaborationMode, dbAgent.AgentProvider)
-		if oldCodexCollaborationMode != newCodexCollaborationMode {
-			changes["codexCollaborationMode"] = map[string]string{
-				"old": oldCodexCollaborationMode, "new": newCodexCollaborationMode,
-				"oldLabel": optionLabel("codexCollaborationMode", oldCodexCollaborationMode, dbAgent.AgentProvider), "newLabel": optionLabel("codexCollaborationMode", newCodexCollaborationMode, dbAgent.AgentProvider),
+		for _, key := range sortedExtraSettingKeys(oldExtraSettings, newExtraSettings) {
+			oldVal, newVal := oldExtraSettings[key], newExtraSettings[key]
+			if oldVal != newVal {
+				changes[key] = map[string]string{
+					"old": oldVal, "new": newVal,
+					"label":    optionGroupLabel(key, dbAgent.AgentProvider),
+					"oldLabel": optionLabel(key, oldVal, dbAgent.AgentProvider),
+					"newLabel": optionLabel(key, newVal, dbAgent.AgentProvider),
+				}
 			}
 		}
 		if len(changes) > 0 {
@@ -711,6 +696,20 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.SendControlResponseResponse{})
+	})
+
+	d.Register("ListAvailableProviders", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+		var r leapmuxv1.ListAvailableProvidersRequest
+		if err := unmarshalRequest(req, &r); err != nil {
+			sendInvalidArgument(sender, "invalid request")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), svc.agentStartupTimeout())
+		defer cancel()
+		providers := agent.ListAvailableProviders(ctx, svc.agentShell(), svc.agentLoginShell())
+		sendProtoResponse(sender, &leapmuxv1.ListAvailableProvidersResponse{
+			Providers: providers,
+		})
 	})
 
 	// WatchEvents registers the channel as a watcher for agent/terminal events.
@@ -913,25 +912,23 @@ func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, 
 		status = leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE
 	}
 	info := &leapmuxv1.AgentInfo{
-		Id:                     a.ID,
-		WorkspaceId:            a.WorkspaceID,
-		Title:                  a.Title,
-		Model:                  modelOrDefault(a.Model, a.AgentProvider),
-		Status:                 status,
-		WorkingDir:             a.WorkingDir,
-		PermissionMode:         permissionMode,
-		Effort:                 a.Effort,
-		AgentSessionId:         a.AgentSessionID,
-		HomeDir:                a.HomeDir,
-		WorkerId:               workerID,
-		CreatedAt:              timefmt.Format(a.CreatedAt),
-		GitStatus:              gs,
-		AgentProvider:          a.AgentProvider,
-		AvailableModels:        availableModels,
-		AvailableOptionGroups:  availableOptionGroups,
-		CodexSandboxPolicy:     a.CodexSandboxPolicy,
-		CodexNetworkAccess:     a.CodexNetworkAccess,
-		CodexCollaborationMode: codexCollaborationModeForProvider(a.CodexCollaborationMode, a.AgentProvider),
+		Id:                    a.ID,
+		WorkspaceId:           a.WorkspaceID,
+		Title:                 a.Title,
+		Model:                 modelOrDefault(a.Model, a.AgentProvider),
+		Status:                status,
+		WorkingDir:            a.WorkingDir,
+		PermissionMode:        permissionMode,
+		Effort:                a.Effort,
+		AgentSessionId:        a.AgentSessionID,
+		HomeDir:               a.HomeDir,
+		WorkerId:              workerID,
+		CreatedAt:             timefmt.Format(a.CreatedAt),
+		GitStatus:             gs,
+		AgentProvider:         a.AgentProvider,
+		AvailableModels:       availableModels,
+		AvailableOptionGroups: availableOptionGroups,
+		ExtraSettings:         loadExtraSettings(a.ExtraSettings, a.AgentProvider),
 	}
 
 	if a.ClosedAt.Valid {
@@ -964,19 +961,17 @@ func (svc *Context) handleClearContext(agentID string) {
 	// to resume a stale session.
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	if _, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
-		AgentID:                agentID,
-		Model:                  modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
-		Effort:                 dbAgent.Effort,
-		WorkingDir:             dbAgent.WorkingDir,
-		PermissionMode:         dbAgent.PermissionMode,
-		CodexSandboxPolicy:     dbAgent.CodexSandboxPolicy,
-		CodexNetworkAccess:     dbAgent.CodexNetworkAccess,
-		CodexCollaborationMode: dbAgent.CodexCollaborationMode,
-		StartupTimeout:         svc.agentStartupTimeout(),
-		Shell:                  svc.agentShell(),
-		LoginShell:             svc.agentLoginShell(),
-		HomeDir:                svc.HomeDir,
-		AgentProvider:          dbAgent.AgentProvider,
+		AgentID:        agentID,
+		Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
+		Effort:         dbAgent.Effort,
+		WorkingDir:     dbAgent.WorkingDir,
+		PermissionMode: dbAgent.PermissionMode,
+		ExtraSettings:  loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider),
+		StartupTimeout: svc.agentStartupTimeout(),
+		Shell:          svc.agentShell(),
+		LoginShell:     svc.agentLoginShell(),
+		HomeDir:        svc.HomeDir,
+		AgentProvider:  dbAgent.AgentProvider,
 	}, sink); err != nil {
 		slog.Error("clear context: failed to restart agent", "agent_id", agentID, "error", err)
 		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
@@ -1036,20 +1031,18 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	if _, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
-		AgentID:                agentID,
-		Model:                  modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
-		Effort:                 dbAgent.Effort,
-		WorkingDir:             dbAgent.WorkingDir,
-		ResumeSessionID:        resumeSessionID,
-		PermissionMode:         dbAgent.PermissionMode,
-		CodexSandboxPolicy:     dbAgent.CodexSandboxPolicy,
-		CodexNetworkAccess:     dbAgent.CodexNetworkAccess,
-		CodexCollaborationMode: dbAgent.CodexCollaborationMode,
-		StartupTimeout:         svc.agentStartupTimeout(),
-		Shell:                  svc.agentShell(),
-		LoginShell:             svc.agentLoginShell(),
-		HomeDir:                svc.HomeDir,
-		AgentProvider:          dbAgent.AgentProvider,
+		AgentID:         agentID,
+		Model:           modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
+		Effort:          dbAgent.Effort,
+		WorkingDir:      dbAgent.WorkingDir,
+		ResumeSessionID: resumeSessionID,
+		PermissionMode:  dbAgent.PermissionMode,
+		ExtraSettings:   loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider),
+		StartupTimeout:  svc.agentStartupTimeout(),
+		Shell:           svc.agentShell(),
+		LoginShell:      svc.agentLoginShell(),
+		HomeDir:         svc.HomeDir,
+		AgentProvider:   dbAgent.AgentProvider,
 	}, sink); err != nil {
 		slog.Error("ensureAgentRunning: failed to start agent", "agent_id", agentID, "error", err)
 		return err
@@ -1149,42 +1142,46 @@ func (svc *Context) setAgentPermissionMode(agentID, mode string) {
 	}
 }
 
-// setAgentCodexCollaborationMode updates the agent's Codex collaboration mode
+// setAgentCollaborationMode updates the agent's collaboration mode
 // in the DB and broadcasts a statusChange + settings_changed notification.
-func (svc *Context) setAgentCodexCollaborationMode(agentID, mode string) {
+func (svc *Context) setAgentCollaborationMode(agentID, mode string) {
 	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {
 		slog.Error("set Codex collaboration mode: agent not found", "agent_id", agentID, "error", err)
 		return
 	}
 
-	oldMode := codexCollaborationModeForProvider(dbAgent.CodexCollaborationMode, dbAgent.AgentProvider)
-	if err := svc.Queries.SetAgentCodexCollaborationMode(bgCtx(), db.SetAgentCodexCollaborationModeParams{
-		CodexCollaborationMode: mode,
-		ID:                     agentID,
+	extras := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
+	oldMode := extras[agent.CodexExtraCollaborationMode]
+	extras[agent.CodexExtraCollaborationMode] = mode
+	if err := svc.Queries.SetAgentExtraSettings(bgCtx(), db.SetAgentExtraSettingsParams{
+		ExtraSettings: marshalExtraSettings(extras),
+		ID:            agentID,
 	}); err != nil {
 		slog.Error("set Codex collaboration mode: DB update failed", "agent_id", agentID, "error", err)
 		return
 	}
 
 	if svc.Agents.HasAgent(agentID) {
-		svc.Agents.UpdateSettings(agentID, &leapmuxv1.AgentSettings{CodexCollaborationMode: mode})
+		svc.Agents.UpdateSettings(agentID, &leapmuxv1.AgentSettings{ExtraSettings: map[string]string{
+			agent.CodexExtraCollaborationMode: mode,
+		}})
 	}
 
 	svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_StatusChange{
 			StatusChange: &leapmuxv1.AgentStatusChange{
-				AgentId:                agentID,
-				Status:                 leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED,
-				AgentSessionId:         dbAgent.AgentSessionID,
-				WorkerOnline:           true,
-				PermissionMode:         dbAgent.PermissionMode,
-				Model:                  modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
-				Effort:                 dbAgent.Effort,
-				GitStatus:              gitutil.GetGitStatus(dbAgent.WorkingDir),
-				AgentProvider:          dbAgent.AgentProvider,
-				CodexCollaborationMode: mode,
+				AgentId:        agentID,
+				Status:         leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED,
+				AgentSessionId: dbAgent.AgentSessionID,
+				WorkerOnline:   true,
+				PermissionMode: dbAgent.PermissionMode,
+				Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
+				Effort:         dbAgent.Effort,
+				GitStatus:      gitutil.GetGitStatus(dbAgent.WorkingDir),
+				AgentProvider:  dbAgent.AgentProvider,
+				ExtraSettings:  extras,
 			},
 		},
 	})
@@ -1193,9 +1190,10 @@ func (svc *Context) setAgentCodexCollaborationMode(agentID, mode string) {
 		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 			"type": "settings_changed",
 			"changes": map[string]interface{}{
-				"codexCollaborationMode": map[string]string{
+				agent.CodexExtraCollaborationMode: map[string]string{
 					"old": oldMode, "new": mode,
-					"oldLabel": optionLabel("codexCollaborationMode", oldMode, dbAgent.AgentProvider), "newLabel": optionLabel("codexCollaborationMode", mode, dbAgent.AgentProvider),
+					"label":    optionGroupLabel(agent.CodexExtraCollaborationMode, dbAgent.AgentProvider),
+					"oldLabel": optionLabel(agent.CodexExtraCollaborationMode, oldMode, dbAgent.AgentProvider), "newLabel": optionLabel(agent.CodexExtraCollaborationMode, mode, dbAgent.AgentProvider),
 				},
 			},
 		})
@@ -1338,7 +1336,7 @@ func (svc *Context) handleCodexPlanModePromptResponse(agentID string, content []
 
 	switch crPayload.Response.Response.Behavior {
 	case agent.ControlBehaviorAllow:
-		svc.setAgentCodexCollaborationMode(agentID, agent.CodexCollaborationDefault)
+		svc.setAgentCollaborationMode(agentID, agent.CodexCollaborationDefault)
 		svc.sendSyntheticUserMessage(agentID, "Implement the plan.")
 	case agent.ControlBehaviorDeny:
 		if msg := strings.TrimSpace(crPayload.Response.Response.Message); msg != "" && msg != "Rejected by user." {
@@ -1521,19 +1519,17 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	if _, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
-		AgentID:                agentID,
-		Model:                  modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
-		Effort:                 dbAgent.Effort,
-		WorkingDir:             dbAgent.WorkingDir,
-		PermissionMode:         targetMode,
-		CodexSandboxPolicy:     dbAgent.CodexSandboxPolicy,
-		CodexNetworkAccess:     dbAgent.CodexNetworkAccess,
-		CodexCollaborationMode: dbAgent.CodexCollaborationMode,
-		StartupTimeout:         svc.agentStartupTimeout(),
-		Shell:                  svc.agentShell(),
-		LoginShell:             svc.agentLoginShell(),
-		HomeDir:                svc.HomeDir,
-		AgentProvider:          dbAgent.AgentProvider,
+		AgentID:        agentID,
+		Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
+		Effort:         dbAgent.Effort,
+		WorkingDir:     dbAgent.WorkingDir,
+		PermissionMode: targetMode,
+		ExtraSettings:  loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider),
+		StartupTimeout: svc.agentStartupTimeout(),
+		Shell:          svc.agentShell(),
+		LoginShell:     svc.agentLoginShell(),
+		HomeDir:        svc.HomeDir,
+		AgentProvider:  dbAgent.AgentProvider,
 	}, sink); err != nil {
 		slog.Error("plan exec: failed to restart agent", "agent_id", agentID, "error", err)
 		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{

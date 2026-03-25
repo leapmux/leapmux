@@ -164,31 +164,6 @@ func effortOrDefault(effort string, provider leapmuxv1.AgentProvider) string {
 	return agent.DefaultEffort(provider)
 }
 
-// codexSandboxPolicyOrDefault returns the sandbox policy if non-empty,
-// otherwise the Codex default.
-func codexSandboxPolicyOrDefault(policy string) string {
-	return agent.StringOrDefault(policy, agent.CodexDefaultSandboxPolicy)
-}
-
-// codexNetworkAccessOrDefault returns the network access if non-empty,
-// otherwise the Codex default.
-func codexNetworkAccessOrDefault(access string) string {
-	return agent.StringOrDefault(access, agent.CodexDefaultNetworkAccess)
-}
-
-// codexCollaborationModeOrDefault returns the collaboration mode if non-empty,
-// otherwise the Codex default.
-func codexCollaborationModeOrDefault(mode string) string {
-	return agent.StringOrDefault(mode, agent.CodexDefaultCollaborationMode)
-}
-
-func codexCollaborationModeForProvider(mode string, provider leapmuxv1.AgentProvider) string {
-	if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
-		return codexCollaborationModeOrDefault(mode)
-	}
-	return mode
-}
-
 // settingsDisplayLabels returns lookup functions for model and effort display
 // names using the agent's AvailableModels data. If the agent is not running or
 // has no model list, the lookup functions return the raw ID as-is.
@@ -228,6 +203,18 @@ func (svc *Context) settingsDisplayLabels(agentID string, provider leapmuxv1.Age
 // by looking up the "permissionMode" option group in the provider registry.
 func permissionModeLabel(mode string, provider leapmuxv1.AgentProvider) string {
 	return optionLabel("permissionMode", mode, provider)
+}
+
+func optionGroupLabel(key string, provider leapmuxv1.AgentProvider) string {
+	for _, group := range agent.AvailableOptionGroupsForProvider(provider) {
+		if group.Key == key {
+			if group.Label != "" {
+				return group.Label
+			}
+			return key
+		}
+	}
+	return key
 }
 
 // optionLabel looks up a human-readable label for an option value from the

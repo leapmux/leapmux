@@ -40,6 +40,12 @@ export function optionGroup(availableOptionGroups: AvailableOptionGroup[] | unde
   return availableOptionGroups?.find(g => g.key === key)
 }
 
+/** Resolve the display label for an option group key. */
+export function optionGroupLabel(availableOptionGroups: AvailableOptionGroup[] | undefined, key: string): string {
+  const group = optionGroup(availableOptionGroups, key)
+  return group?.label || key
+}
+
 /** Build option-group radio items. */
 export function optionGroupItems(availableOptionGroups: AvailableOptionGroup[] | undefined, key: string): SettingsItem[] {
   const group = optionGroup(availableOptionGroups, key)
@@ -97,6 +103,14 @@ export function optionLabel(availableOptionGroups: AvailableOptionGroup[] | unde
       return opt.name || opt.id
   }
   return currentValue
+}
+
+/** Resolve the default option ID for an option group. */
+export function optionGroupDefaultValue(availableOptionGroups: AvailableOptionGroup[] | undefined, key: string): string {
+  const group = optionGroup(availableOptionGroups, key)
+  if (!group || group.options.length === 0)
+    return ''
+  return group.options.find(o => o.isDefault)?.id || group.options[0]?.id || ''
 }
 
 export function RadioGroup(props: {
