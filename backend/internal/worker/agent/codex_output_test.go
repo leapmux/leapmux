@@ -237,8 +237,8 @@ func TestHandleCodexOutput_SpawnAgentStartedOpensSubagentSpan(t *testing.T) {
 	input := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
 	handleCodexOutput(agent, []byte(input))
 
-	if got := sink.OpenSpans(); len(got) != 2 || got[0].SpanID != "call-1" || got[0].ParentSpanID != "" || got[1].SpanID != "child-1" || got[1].ParentSpanID != "call-1" {
-		t.Fatalf("expected child span to open, got %v", got)
+	if got := sink.OpenSpans(); len(got) != 1 || got[0].SpanID != "call-1" || got[0].ParentSpanID != "" {
+		t.Fatalf("expected only spawnAgent span to open, got %v", got)
 	}
 	if sink.ClosedSpanCount() != 0 {
 		t.Fatalf("expected no spans to close, got %v", sink.ClosedSpans())
@@ -267,11 +267,11 @@ func TestHandleCodexOutput_WaitMessagesStayInsideSpawnAgentSpan(t *testing.T) {
 	if messages[2].ParentSpanID != "call-1" {
 		t.Fatalf("expected wait completed to be nested under spawnAgent span, got parent %q", messages[2].ParentSpanID)
 	}
-	if got := sink.OpenSpans(); len(got) != 3 || got[2].SpanID != "call-2" || got[2].ParentSpanID != "call-1" {
-		t.Fatalf("expected wait to open its own span under spawnAgent, got %v", got)
+	if got := sink.OpenSpans(); len(got) != 1 || got[0].SpanID != "call-1" {
+		t.Fatalf("expected only spawnAgent span to open, got %v", got)
 	}
-	if got := sink.ClosedSpans(); len(got) != 3 || got[0] != "call-2" || got[1] != "child-1" || got[2] != "call-1" {
-		t.Fatalf("expected wait completion to close wait, child, and spawnAgent spans, got %v", got)
+	if got := sink.ClosedSpans(); len(got) != 1 || got[0] != "call-1" {
+		t.Fatalf("expected wait completion to close only spawnAgent spans when receivers are done, got %v", got)
 	}
 }
 
@@ -323,8 +323,8 @@ func TestHandleCodexOutput_SpawnAgentCompletedRegistersLateReceiverThreads(t *te
 	handleCodexOutput(agent, []byte(completed))
 	handleCodexOutput(agent, []byte(cmdStarted))
 
-	if got := sink.OpenSpans(); len(got) != 3 || got[0].SpanID != "call-1" || got[1].SpanID != "child-1" || got[1].ParentSpanID != "call-1" || got[2].SpanID != "cmd-1" || got[2].ParentSpanID != "call-1" {
-		t.Fatalf("expected late receiver thread to open under spawnAgent span, got %v", got)
+	if got := sink.OpenSpans(); len(got) != 2 || got[0].SpanID != "call-1" || got[1].SpanID != "cmd-1" || got[1].ParentSpanID != "call-1" {
+		t.Fatalf("expected child command span to open under spawnAgent span after late registration, got %v", got)
 	}
 	messages := sink.Messages()
 	if len(messages) != 3 {
@@ -342,8 +342,8 @@ func TestHandleCodexOutput_WaitCompletedClosesTerminalSubagentSpan(t *testing.T)
 	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
 	handleCodexOutput(agent, []byte(input))
 
-	if got := sink.ClosedSpans(); len(got) != 2 || got[0] != "call-2" || got[1] != "child-1" {
-		t.Fatalf("expected wait completion to close wait and child spans, got %v", got)
+	if got := sink.ClosedSpans(); len(got) != 0 {
+		t.Fatalf("expected wait completion without visible parent span to close no synthetic child spans, got %v", got)
 	}
 }
 
@@ -354,8 +354,8 @@ func TestHandleCodexOutput_WaitCompletedDoesNotCloseNonTerminalOrMissingStatuses
 	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"running","message":null}}}}}`
 	handleCodexOutput(agent, []byte(input))
 
-	if got := sink.ClosedSpans(); len(got) != 1 || got[0] != "call-2" {
-		t.Fatalf("expected non-terminal wait completion to close only the wait span, got %v", got)
+	if got := sink.ClosedSpans(); len(got) != 0 {
+		t.Fatalf("expected non-terminal wait completion to close no spans, got %v", got)
 	}
 }
 
@@ -366,8 +366,8 @@ func TestHandleCodexOutput_CloseAgentCompletedClosesSubagentSpan(t *testing.T) {
 	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-3","tool":"closeAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"shutdown","message":null}}}}}`
 	handleCodexOutput(agent, []byte(input))
 
-	if got := sink.ClosedSpans(); len(got) != 1 || got[0] != "child-1" {
-		t.Fatalf("expected closeAgent completion to close child span, got %v", got)
+	if got := sink.ClosedSpans(); len(got) != 0 {
+		t.Fatalf("expected closeAgent completion to close no synthetic child spans, got %v", got)
 	}
 }
 
@@ -378,8 +378,8 @@ func TestHandleCodexOutput_WaitCompletedClosesOnlyTerminalReceivers(t *testing.T
 	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-4","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2","child-3"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"},"child-2":{"status":"running","message":null},"child-3":{"status":"notFound","message":null}}}}}`
 	handleCodexOutput(agent, []byte(input))
 
-	if got := sink.ClosedSpans(); len(got) != 3 || got[0] != "call-4" || got[1] != "child-1" || got[2] != "child-3" {
-		t.Fatalf("expected wait span plus only terminal receivers to close, got %v", got)
+	if got := sink.ClosedSpans(); len(got) != 0 {
+		t.Fatalf("expected only receiver bookkeeping changes, not synthetic child span closes, got %v", got)
 	}
 }
 

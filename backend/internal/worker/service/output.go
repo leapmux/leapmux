@@ -98,6 +98,16 @@ func (t *SpanTracker) OpenSpan(spanID, parentSpanID string) {
 				minCol = s.Column + 1
 			}
 		}
+	} else if len(t.spans) > 0 {
+		// Root-level spans opened while other spans are active should append to
+		// the right of the current active set instead of reusing a left gap.
+		// This keeps later connector_end rendering aligned with the visible
+		// active columns rather than jumping back to column 0.
+		for _, s := range t.spans {
+			if s.Column >= minCol {
+				minCol = s.Column + 1
+			}
+		}
 	}
 
 	// Find first free column starting from minCol.
@@ -279,34 +289,12 @@ func (t *SpanTracker) Snapshot(parentSpanID, connectorSpanID string, closing boo
 }
 
 // ShouldBroadcastStreamChunk reports whether a live stream chunk for spanID
-// should be broadcast. To keep the live UI uncluttered, span-targeted deltas
-// are only streamed when the target span is top-level and it is the only
-// active span. Untargeted streaming (spanID == "") is always allowed.
+// should be broadcast. To keep the live UI uncluttered, all live deltas are
+// suppressed whenever any span is active.
 func (t *SpanTracker) ShouldBroadcastStreamChunk(spanID string) bool {
-	if spanID == "" {
-		return true
-	}
-
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
-	if t.parentMap[spanID] != "" {
-		return false
-	}
-
-	active := 0
-	for _, s := range t.spans {
-		if s.SpanID == spanID {
-			active++
-			continue
-		}
-		active++
-		if active > 1 {
-			return false
-		}
-	}
-
-	return active == 1
+	return len(t.spans) == 0
 }
 
 // resolveConnectorSpanID determines which span a message should visually

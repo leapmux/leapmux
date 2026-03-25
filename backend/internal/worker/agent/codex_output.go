@@ -260,9 +260,6 @@ func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
 			slog.Error("codex persist collabAgentToolCall/started", "agent_id", a.agentID, "error", err)
 		}
 		a.sink.SetSpanType(itemID, itemType)
-		if collab != nil && collab.Tool == "wait" {
-			a.sink.OpenSpan(itemID, parentSpanID)
-		}
 		a.handleCollabAgentSpan(collab, itemID, parentSpanID, false)
 	case "reasoning":
 		// No-op for started — wait for completed.
@@ -340,14 +337,10 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		}
 		a.sink.CloseSpan(itemID)
 	case "collabAgentToolCall":
-		createsSpan := collab != nil && collab.Tool == "wait"
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, TrackerParentSpanID: trackerParentSpanID, SpanID: itemID, SpanType: itemType, Closing: createsSpan,
+			ParentSpanID: parentSpanID, TrackerParentSpanID: trackerParentSpanID, SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist collabAgentToolCall/completed", "agent_id", a.agentID, "error", err)
-		}
-		if createsSpan {
-			a.sink.CloseSpan(itemID)
 		}
 		a.handleCollabAgentSpan(collab, itemID, parentSpanID, true)
 	case "reasoning":
@@ -486,8 +479,8 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 // handleTokenUsageUpdated processes thread/tokenUsage/updated notifications.
 func (a *CodexAgent) handleTokenUsageUpdated(content []byte, params json.RawMessage) {
 	var notif struct {
-		ThreadID string `json:"threadId"`
-		TurnID   string `json:"turnId"`
+		ThreadID   string `json:"threadId"`
+		TurnID     string `json:"turnId"`
 		TokenUsage struct {
 			Last struct {
 				InputTokens       int64 `json:"inputTokens"`
@@ -683,13 +676,11 @@ func (a *CodexAgent) handleCollabAgentSpan(collab *codexCollabAgentToolCall, ite
 		if !isCompleted {
 			a.sink.OpenSpan(itemID, parentSpanID)
 		}
-		// Register and open spans for each spawned agent thread as soon as the
-		// receiver thread IDs are available. Some spawnAgent started messages do
-		// not include them yet, and they only appear on completion.
+		// Register receiver thread IDs as soon as they are available. Some
+		// spawnAgent started messages do not include them yet, and they only
+		// appear on completion.
 		for _, receiverID := range collab.ReceiverThreadIds {
-			if a.registerCollabReceiver(receiverID, itemID) {
-				a.sink.OpenSpan(receiverID, itemID)
-			}
+			a.registerCollabReceiver(receiverID, itemID)
 		}
 		// Do not close spans here. spawnAgent completion only means the child
 		// thread was launched successfully, not that it finished its work.
@@ -702,7 +693,6 @@ func (a *CodexAgent) handleCollabAgentSpan(collab *codexCollabAgentToolCall, ite
 			if !ok || !isTerminalCollabAgentStatus(state.Status) {
 				continue
 			}
-			a.sink.CloseSpan(receiverID)
 			a.unregisterCollabReceiver(receiverID)
 		}
 		if parentSpanID != "" && !a.hasCollabReceivers(parentSpanID) {
@@ -713,7 +703,6 @@ func (a *CodexAgent) handleCollabAgentSpan(collab *codexCollabAgentToolCall, ite
 			return
 		}
 		for _, receiverID := range collab.ReceiverThreadIds {
-			a.sink.CloseSpan(receiverID)
 			a.unregisterCollabReceiver(receiverID)
 		}
 		if parentSpanID != "" && !a.hasCollabReceivers(parentSpanID) {
@@ -739,20 +728,11 @@ func parseCollabToolCall(item json.RawMessage) *codexCollabAgentToolCall {
 	return &collab
 }
 
-// codexTrackerParentSpanID determines the tracker ancestry from a pre-extracted
-// threadId. Child thread spans remain in the tracker so span lines and depth can
-// reflect subagent scope even when stored parent_span_id points at a visible span.
+// codexTrackerParentSpanID resolves tracker ancestry for a message. Child
+// thread messages now hang directly off the visible collab span instead of a
+// synthetic receiver-thread span.
 func (a *CodexAgent) codexTrackerParentSpanID(threadID string) string {
-	if threadID == "" {
-		return ""
-	}
-	a.mu.Lock()
-	mainThreadID := a.threadID
-	a.mu.Unlock()
-	if threadID == mainThreadID {
-		return ""
-	}
-	return threadID
+	return a.codexVisibleParentSpanID(threadID)
 }
 
 // codexVisibleParentSpanID resolves the persisted/logical parent span for a

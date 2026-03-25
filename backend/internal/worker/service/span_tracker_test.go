@@ -69,10 +69,34 @@ func TestSpanTracker_ColumnReuse(t *testing.T) {
 	_, lines, _ := tracker.Snapshot("", "", false)
 	var parsed []*SpanLine
 	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
-	require.Len(t, parsed, 2)
+	require.Len(t, parsed, 3)
 
-	assert.Equal(t, "span-3", parsed[0].SpanID)
+	assert.Nil(t, parsed[0])
 	assert.Equal(t, "span-2", parsed[1].SpanID)
+	assert.Equal(t, "span-3", parsed[2].SpanID)
+}
+
+func TestSpanTracker_RootSpanAppendsAfterRightmostActiveColumn(t *testing.T) {
+	tracker := &SpanTracker{}
+
+	tracker.OpenSpan("spawn-1", "")        // col 0
+	tracker.OpenSpan("child-1", "spawn-1") // col 1
+	tracker.OpenSpan("spawn-2", "")        // col 2
+	tracker.OpenSpan("child-2", "spawn-2") // col 3
+	tracker.CloseSpan("spawn-1")           // free col 0, child-1 stays active
+	tracker.CloseSpan("child-1")           // free col 1
+	tracker.OpenSpan("wait", "")           // should append at col 4, not reuse 0
+
+	_, lines, _ := tracker.Snapshot("", "", false)
+	var parsed []*SpanLine
+	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
+	require.Len(t, parsed, 5)
+
+	assert.Nil(t, parsed[0])
+	assert.Nil(t, parsed[1])
+	assert.Equal(t, "spawn-2", parsed[2].SpanID)
+	assert.Equal(t, "child-2", parsed[3].SpanID)
+	assert.Equal(t, "wait", parsed[4].SpanID)
 }
 
 func TestSpanTracker_ParallelSpans(t *testing.T) {
@@ -220,15 +244,21 @@ func TestSpanTracker_ConnectorEnd(t *testing.T) {
 	assert.Equal(t, SpanLineConnector, parsed[0].Type)
 }
 
-func TestSpanTracker_ShouldBroadcastStreamChunk_AllowsUntargetedStreams(t *testing.T) {
+func TestSpanTracker_ShouldBroadcastStreamChunk_AllowsUntargetedStreamsWhenNoSpansActive(t *testing.T) {
 	tracker := &SpanTracker{}
 	assert.True(t, tracker.ShouldBroadcastStreamChunk(""))
 }
 
-func TestSpanTracker_ShouldBroadcastStreamChunk_AllowsSingleTopLevelSpan(t *testing.T) {
+func TestSpanTracker_ShouldBroadcastStreamChunk_HidesUntargetedStreamsWhenSpansActive(t *testing.T) {
 	tracker := &SpanTracker{}
 	tracker.OpenSpan("span-A", "")
-	assert.True(t, tracker.ShouldBroadcastStreamChunk("span-A"))
+	assert.False(t, tracker.ShouldBroadcastStreamChunk(""))
+}
+
+func TestSpanTracker_ShouldBroadcastStreamChunk_HidesSingleTopLevelSpan(t *testing.T) {
+	tracker := &SpanTracker{}
+	tracker.OpenSpan("span-A", "")
+	assert.False(t, tracker.ShouldBroadcastStreamChunk("span-A"))
 }
 
 func TestSpanTracker_ShouldBroadcastStreamChunk_HidesNestedSpan(t *testing.T) {
