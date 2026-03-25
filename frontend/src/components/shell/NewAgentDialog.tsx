@@ -25,6 +25,8 @@ interface NewAgentDialogProps {
   defaultTitle?: string
   defaultAgentProvider?: AgentProvider
   sessionId?: string
+  availableProviders?: AgentProvider[]
+  onRefreshProviders?: () => void
   onCreated: (agent: AgentInfo) => void
   onClose: () => void
 }
@@ -83,7 +85,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
           <div class="vstack gap-4">
             <div class={state.showGitOptions() ? dialogTopSection : undefined}>
               <WorkerSelector state={state} />
-              <AgentProviderSelector value={agentProvider} onChange={setAgentProvider} />
+              <AgentProviderSelector value={agentProvider} onChange={setAgentProvider} availableProviders={props.availableProviders} onRefresh={props.onRefreshProviders} />
             </div>
             <div class={state.showGitOptions() ? dialogTwoColumn : dialogSingleColumn}>
               <div class={dialogLeftPanel}>

@@ -1169,6 +1169,8 @@ export const AppShell: ParentComponent = (props) => {
         orgSlug={params.orgSlug}
         loadWorkspaces={loadWorkspaces}
         navigate={path => navigate(path)}
+        availableProviders={agentOps.availableProviders()}
+        onRefreshProviders={agentOps.loadAvailableProviders}
       />
 
       <Show when={deregisterTarget()}>

@@ -7,6 +7,7 @@ import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { PermissionMode } from '~/utils/controlResponse'
 
+import { createEffect, createSignal, on } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { getProviderPlugin } from '~/components/chat/providers'
@@ -58,6 +59,29 @@ export interface UseAgentOperationsProps {
 }
 
 export function useAgentOperations(props: UseAgentOperationsProps) {
+  const [availableProviders, setAvailableProviders] = createSignal<AgentProvider[]>([])
+
+  const loadAvailableProviders = () => {
+    const ctx = props.getCurrentTabContext()
+    if (!ctx.workerId)
+      return
+    workerRpc.listAvailableProviders(ctx.workerId)
+      .then((resp) => {
+        setAvailableProviders([...resp.providers])
+      })
+      .catch(() => {
+        setAvailableProviders([])
+      })
+  }
+
+  createEffect(on(
+    () => props.getCurrentTabContext().workerId,
+    (workerId) => {
+      if (workerId)
+        loadAvailableProviders()
+    },
+  ))
+
   /** Look up the workerId for a given agent from the agent store. */
   const getAgentWorkerId = (agentId: string): string => {
     return props.agentStore.state.agents.find(a => a.id === agentId)?.workerId ?? ''
@@ -111,7 +135,10 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
-  // Open a new agent in the active workspace (for click handlers)
+  // Open a new agent in the active workspace (for click handlers).
+  // When providerOverride is given (from per-provider TabBar buttons),
+  // the agent is created directly. When omitted (from dialog or empty
+  // tab actions), falls back to Claude Code.
   const handleOpenAgent = async (providerOverride?: AgentProvider) => {
     if (!props.isActiveWorkspaceMutatable())
       return
@@ -123,11 +150,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       props.setShowNewAgentDialog(true)
       return
     }
-    // Default to the active tab's provider, then to Claude Code.
-    const activeTab = props.tabStore.state.tabs.find(
-      t => t.type === TabType.AGENT && t.id === props.agentStore.state.activeAgentId,
-    )
-    const provider = providerOverride ?? activeTab?.agentProvider ?? AgentProvider.CLAUDE_CODE
+    const provider = providerOverride ?? AgentProvider.CLAUDE_CODE
     props.setNewAgentLoading(true)
     try {
       await openAgentInWorkspace(ws.id, ctx.workerId, ctx.workingDir, undefined, provider)
@@ -361,6 +384,8 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   }
 
   return {
+    availableProviders,
+    loadAvailableProviders,
     openAgentInWorkspace,
     handleOpenAgent,
     handleResumeAgent,

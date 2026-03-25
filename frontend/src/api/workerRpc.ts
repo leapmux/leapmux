@@ -13,6 +13,7 @@ import type {
   DeleteAgentMessageResponse,
   ListAgentMessagesResponse,
   ListAgentsResponse,
+  ListAvailableProvidersResponse,
   OpenAgentResponse,
   RenameAgentResponse,
   SendAgentMessageResponse,
@@ -65,6 +66,8 @@ import {
   ListAgentMessagesResponseSchema,
   ListAgentsRequestSchema,
   ListAgentsResponseSchema,
+  ListAvailableProvidersRequestSchema,
+  ListAvailableProvidersResponseSchema,
   OpenAgentRequestSchema,
   OpenAgentResponseSchema,
   RenameAgentRequestSchema,
@@ -290,6 +293,10 @@ export function deleteAgentMessage(workerId: string, req: MessageInitShape<typeo
 
 export function updateAgentSettings(workerId: string, req: MessageInitShape<typeof UpdateAgentSettingsRequestSchema>): Promise<UpdateAgentSettingsResponse> {
   return callWorker(workerId, 'UpdateAgentSettings', UpdateAgentSettingsRequestSchema, UpdateAgentSettingsResponseSchema, req)
+}
+
+export function listAvailableProviders(workerId: string): Promise<ListAvailableProvidersResponse> {
+  return callWorker(workerId, 'ListAvailableProviders', ListAvailableProvidersRequestSchema, ListAvailableProvidersResponseSchema, {})
 }
 
 // ---------------------------------------------------------------------------

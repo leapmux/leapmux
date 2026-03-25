@@ -8,12 +8,16 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
 // Claude Code permission mode values.
@@ -315,6 +319,7 @@ type providerRegistration struct {
 	optionGroups  []*leapmuxv1.AvailableOptionGroup
 	envModelKey   string // e.g. "LEAPMUX_CLAUDE_DEFAULT_MODEL"
 	envEffortKey  string // e.g. "LEAPMUX_CLAUDE_DEFAULT_EFFORT"
+	binaryName    string // e.g. "claude", "codex"
 }
 
 // providerRegistry maps each AgentProvider to its registration.
@@ -329,6 +334,7 @@ func registerProvider(
 	defaultModels []*leapmuxv1.AvailableModel,
 	optionGroups []*leapmuxv1.AvailableOptionGroup,
 	envModelKey, envEffortKey string,
+	binaryName string,
 ) {
 	providerRegistry[provider] = providerRegistration{
 		start:         start,
@@ -336,6 +342,7 @@ func registerProvider(
 		optionGroups:  optionGroups,
 		envModelKey:   envModelKey,
 		envEffortKey:  envEffortKey,
+		binaryName:    binaryName,
 	}
 }
 
@@ -404,6 +411,7 @@ func init() {
 		}},
 		"LEAPMUX_CLAUDE_DEFAULT_MODEL",
 		"LEAPMUX_CLAUDE_DEFAULT_EFFORT",
+		"claude",
 	)
 }
 
@@ -535,6 +543,62 @@ func filterEnv(environ []string, keys ...string) []string {
 		}
 	}
 	return filtered
+}
+
+// ListAvailableProviders returns providers whose binary is found in the
+// user's shell environment. It runs a check command in the user's shell
+// for each registered provider and returns those that exit successfully.
+func ListAvailableProviders(ctx context.Context, shellPath string, useLoginShell bool) []leapmuxv1.AgentProvider {
+	var result []leapmuxv1.AgentProvider
+	for provider, reg := range providerRegistry {
+		if reg.binaryName == "" {
+			continue
+		}
+		if checkBinaryAvailable(ctx, shellPath, useLoginShell, reg.binaryName) {
+			result = append(result, provider)
+		}
+	}
+	// Always return at least one provider so the UI has something to show.
+	if len(result) == 0 {
+		result = append(result, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
+	return result
+}
+
+func checkBinaryAvailable(ctx context.Context, shellPath string, loginShell bool, binaryName string) bool {
+	shellName := filepath.Base(shellPath)
+	var inner string
+	switch {
+	case terminal.IsPwsh(shellName):
+		inner = fmt.Sprintf("if (Get-Command %s -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }", binaryName)
+	case shellName == "nu":
+		inner = fmt.Sprintf("if (which %s | is-not-empty) { exit 0 } else { exit 1 }", binaryName)
+	case shellName == "tcsh" || shellName == "csh":
+		inner = fmt.Sprintf("which %s >& /dev/null", binaryName)
+	default:
+		inner = fmt.Sprintf("command -v %s >/dev/null 2>&1", binaryName)
+	}
+
+	var args []string
+	switch {
+	case terminal.IsPwsh(shellName):
+		if loginShell {
+			args = append(terminal.LoginShellArgs(shellPath), "-Command", inner)
+		} else {
+			args = []string{"-Command", inner}
+		}
+	default:
+		if loginShell {
+			args = append(terminal.LoginShellArgs(shellPath), "-c", inner)
+		} else {
+			args = []string{"-c", inner}
+		}
+	}
+
+	cmd := exec.CommandContext(ctx, shellPath, args...)
+	cmd.Dir = os.TempDir()
+	return cmd.Run() == nil
 }
 
 // buildModelEffortArgs constructs the --model and --effort CLI arguments for

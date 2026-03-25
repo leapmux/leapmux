@@ -698,6 +698,7 @@ func init() {
 		},
 		"LEAPMUX_CODEX_DEFAULT_MODEL",
 		"LEAPMUX_CODEX_DEFAULT_EFFORT",
+		"codex",
 	)
 }
 

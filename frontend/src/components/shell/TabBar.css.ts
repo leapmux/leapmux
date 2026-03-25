@@ -150,6 +150,28 @@ export const tabEditInput = style({
   },
 })
 
+export const providerButton = style({
+  'appearance': 'none',
+  'background': 'none',
+  'border': 'none',
+  'display': 'inline-flex',
+  'alignItems': 'center',
+  'justifyContent': 'center',
+  'width': '24px',
+  'height': '24px',
+  'minWidth': '24px',
+  'padding': 0,
+  'borderRadius': 'var(--radius-small)',
+  'color': 'var(--muted-foreground)',
+  'cursor': 'pointer',
+  'flexShrink': 0,
+  'lineHeight': 0,
+  ':hover': {
+    color: 'var(--foreground)',
+    backgroundColor: 'var(--card)',
+  },
+})
+
 // --- Collapsed new-tab button (visible at minimal/micro) ---
 export const collapsedNewTab = style({
   display: 'none',

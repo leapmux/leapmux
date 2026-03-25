@@ -1,4 +1,5 @@
 import type { Component, JSX } from 'solid-js'
+import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { Tab } from '~/stores/tab.store'
 import { createDroppable, createSortable, SortableProvider, transformStyle } from '@thisbeyond/solid-dnd'
 import Bot from 'lucide-solid/icons/bot'
@@ -13,7 +14,7 @@ import Rows2 from 'lucide-solid/icons/rows-2'
 import Terminal from 'lucide-solid/icons/terminal'
 import X from 'lucide-solid/icons/x'
 import { createSignal, ErrorBoundary, For, Show } from 'solid-js'
-import { AgentProviderIcon } from '~/components/common/AgentProviderIcon'
+import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
@@ -66,8 +67,9 @@ interface TabBarProps {
   onSelect: (tab: Tab) => void
   onClose: (tab: Tab) => void
   onRename: (tab: Tab, title: string) => void
-  onNewAgent: () => void
+  onNewAgent: (provider?: AgentProvider) => void
   onNewTerminal: () => void
+  availableProviders?: AgentProvider[]
   availableShells?: string[]
   defaultShell?: string
   onNewTerminalWithShell?: (shell: string) => void
@@ -88,7 +90,6 @@ interface TabBarProps {
 }
 
 export const TabBar: Component<TabBarProps> = (props) => {
-  const newAgentLabel = () => props.hasActiveTabContext ? 'New agent at the current working directory' : 'New agent...'
   const newTerminalLabel = () => props.hasActiveTabContext ? 'New terminal at the current working directory' : 'New terminal...'
 
   const [editingTabKey, setEditingTabKey] = createSignal<string | null>(null)
@@ -299,7 +300,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
           const target = e.target as HTMLElement
           if (target.closest('[data-testid="tab"]'))
             return
-          props.onNewAgent()
+          props.onNewAgentAdvanced?.()
         }}
       >
         <ErrorBoundary fallback={(
@@ -325,16 +326,33 @@ export const TabBar: Component<TabBarProps> = (props) => {
       <Show when={props.showAddButton}>
         {/* Full / Compact: individual new-tab buttons */}
         <div class={styles.newTabWrapper}>
-          <TabBarTooltip text={newAgentLabel()}>
-            <IconButton
-              icon={Bot}
-              iconSize="md"
-              size="md"
-              state={props.newAgentLoading ? IconButtonState.Loading : IconButtonState.Enabled}
-              data-testid="new-agent-button"
-              onClick={() => props.onNewAgent()}
-            />
-          </TabBarTooltip>
+          <For each={props.availableProviders ?? []}>
+            {provider => (
+              <TabBarTooltip text={`New ${agentProviderLabel(provider)} agent`}>
+                <Show
+                  when={!props.newAgentLoading}
+                  fallback={(
+                    <IconButton
+                      icon={Bot}
+                      iconSize="md"
+                      size="md"
+                      state={IconButtonState.Loading}
+                      data-testid={`new-agent-button-${provider}`}
+                    />
+                  )}
+                >
+                  <button
+                    type="button"
+                    class={styles.providerButton}
+                    data-testid={`new-agent-button-${provider}`}
+                    onClick={() => props.onNewAgent(provider)}
+                  >
+                    <AgentProviderIcon provider={provider} size={16} />
+                  </button>
+                </Show>
+              </TabBarTooltip>
+            )}
+          </For>
           <TabBarTooltip text={newTerminalLabel()}>
             <IconButton
               icon={Terminal}

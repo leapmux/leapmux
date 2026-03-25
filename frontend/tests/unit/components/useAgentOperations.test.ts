@@ -25,6 +25,7 @@ vi.mock('~/api/workerRpc', () => ({
   updateAgentSettings: (...args: unknown[]) => mockUpdateAgentSettings(...args),
   retryAgentMessage: vi.fn(),
   deleteAgentMessage: vi.fn(),
+  listAvailableProviders: vi.fn().mockResolvedValue({ providers: [] }),
 }))
 
 vi.mock('~/api/clients', () => ({
@@ -130,7 +131,9 @@ describe('useAgentOperations', () => {
 
           // First call will fail; second succeeds.
           let rejectFirst!: (err: Error) => void
-          mockUpdateAgentSettings.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject }))
+          mockUpdateAgentSettings.mockImplementationOnce(() => new Promise((_resolve, reject) => {
+            rejectFirst = reject
+          }))
           mockUpdateAgentSettings.mockResolvedValueOnce({})
 
           // Launch both changes concurrently.

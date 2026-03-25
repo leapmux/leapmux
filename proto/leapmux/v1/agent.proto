@@ -288,3 +288,9 @@ message UpdateAgentSettingsRequest {
 }
 
 message UpdateAgentSettingsResponse {}
+
+message ListAvailableProvidersRequest {}
+
+message ListAvailableProvidersResponse {
+  repeated AgentProvider providers = 1;
+}

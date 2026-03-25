@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -695,6 +696,20 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.SendControlResponseResponse{})
+	})
+
+	d.Register("ListAvailableProviders", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+		var r leapmuxv1.ListAvailableProvidersRequest
+		if err := unmarshalRequest(req, &r); err != nil {
+			sendInvalidArgument(sender, "invalid request")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		providers := agent.ListAvailableProviders(ctx, svc.agentShell(), svc.agentLoginShell())
+		sendProtoResponse(sender, &leapmuxv1.ListAvailableProvidersResponse{
+			Providers: providers,
+		})
 	})
 
 	// WatchEvents registers the channel as a watcher for agent/terminal events.

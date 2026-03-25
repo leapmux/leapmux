@@ -115,9 +115,12 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
   // conditionals that must be updated every time a new group is added.
   const leftFirstGroup = () => serviceTierItems().length > 0 ? 'tier' : 'effort'
   const rightFirstGroup = () =>
-    collaborationModeItems().length > 0 ? 'collab'
-      : networkItems().length > 0 ? 'network'
-        : sandboxItems().length > 0 ? 'sandbox'
+    collaborationModeItems().length > 0
+      ? 'collab'
+      : networkItems().length > 0
+        ? 'network'
+        : sandboxItems().length > 0
+          ? 'sandbox'
           : 'mode'
   const firstLeftClass = (id: string) => leftFirstGroup() === id ? styles.settingsFieldsetFirst : undefined
   const firstRightClass = (id: string) => rightFirstGroup() === id ? styles.settingsFieldsetFirst : undefined
