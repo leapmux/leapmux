@@ -76,11 +76,16 @@ func (t *SpanTracker) OpenSpan(spanID, parentSpanID string) {
 	}
 	t.parentMap[spanID] = parentSpanID
 
-	// Single pass: find parent column and build used-column set.
+	// Single pass: find parent column, build used-column set, and track the
+	// rightmost active column for minCol computation below.
 	parentCol := -1
+	maxCol := -1
 	used := make(map[int]bool, len(t.spans))
 	for _, s := range t.spans {
 		used[s.Column] = true
+		if s.Column > maxCol {
+			maxCol = s.Column
+		}
 		if s.SpanID == parentSpanID {
 			parentCol = s.Column
 		}
@@ -90,24 +95,16 @@ func (t *SpanTracker) OpenSpan(spanID, parentSpanID string) {
 	// new child to the right of all active spans that are to the right of
 	// the parent so it doesn't reuse a column freed by a closed span,
 	// which would place the connector_end at a position with no preceding
-	// vertical line.
+	// vertical line. Root-level spans opened while other spans are active
+	// append to the right of the current active set instead of reusing a
+	// left gap, keeping connector_end rendering aligned.
 	minCol := parentCol + 1
 	if parentCol >= 0 {
-		for _, s := range t.spans {
-			if s.Column > parentCol && s.Column >= minCol {
-				minCol = s.Column + 1
-			}
+		if maxCol >= parentCol {
+			minCol = maxCol + 1
 		}
 	} else if len(t.spans) > 0 {
-		// Root-level spans opened while other spans are active should append to
-		// the right of the current active set instead of reusing a left gap.
-		// This keeps later connector_end rendering aligned with the visible
-		// active columns rather than jumping back to column 0.
-		for _, s := range t.spans {
-			if s.Column >= minCol {
-				minCol = s.Column + 1
-			}
-		}
+		minCol = maxCol + 1
 	}
 
 	// Find first free column starting from minCol.
@@ -288,10 +285,10 @@ func (t *SpanTracker) Snapshot(parentSpanID, connectorSpanID string, closing boo
 	return depth, string(data), connectorColorOut
 }
 
-// ShouldBroadcastStreamChunk reports whether a live stream chunk for spanID
-// should be broadcast. To keep the live UI uncluttered, all live deltas are
-// suppressed whenever any span is active.
-func (t *SpanTracker) ShouldBroadcastStreamChunk(spanID string) bool {
+// ShouldBroadcastStreamChunk reports whether a live stream chunk should be
+// broadcast. To keep the live UI uncluttered, all live deltas are suppressed
+// whenever any span is active.
+func (t *SpanTracker) ShouldBroadcastStreamChunk() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return len(t.spans) == 0
@@ -457,7 +454,7 @@ func (s *agentOutputSink) PeekNextSpanColor() int32 {
 }
 
 func (s *agentOutputSink) BroadcastStreamChunk(content []byte, spanID string, method string) {
-	if !s.tracker.ShouldBroadcastStreamChunk(spanID) {
+	if !s.tracker.ShouldBroadcastStreamChunk() {
 		return
 	}
 	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{

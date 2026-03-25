@@ -244,43 +244,22 @@ func TestSpanTracker_ConnectorEnd(t *testing.T) {
 	assert.Equal(t, SpanLineConnector, parsed[0].Type)
 }
 
-func TestSpanTracker_ShouldBroadcastStreamChunk_AllowsUntargetedStreamsWhenNoSpansActive(t *testing.T) {
+func TestSpanTracker_ShouldBroadcastStreamChunk_AllowsWhenNoSpansActive(t *testing.T) {
 	tracker := &SpanTracker{}
-	assert.True(t, tracker.ShouldBroadcastStreamChunk(""))
+	assert.True(t, tracker.ShouldBroadcastStreamChunk())
 }
 
-func TestSpanTracker_ShouldBroadcastStreamChunk_HidesUntargetedStreamsWhenSpansActive(t *testing.T) {
+func TestSpanTracker_ShouldBroadcastStreamChunk_HidesWhenSpanActive(t *testing.T) {
 	tracker := &SpanTracker{}
 	tracker.OpenSpan("span-A", "")
-	assert.False(t, tracker.ShouldBroadcastStreamChunk(""))
-}
-
-func TestSpanTracker_ShouldBroadcastStreamChunk_HidesSingleTopLevelSpan(t *testing.T) {
-	tracker := &SpanTracker{}
-	tracker.OpenSpan("span-A", "")
-	assert.False(t, tracker.ShouldBroadcastStreamChunk("span-A"))
-}
-
-func TestSpanTracker_ShouldBroadcastStreamChunk_HidesNestedSpan(t *testing.T) {
-	tracker := &SpanTracker{}
-	tracker.OpenSpan("span-A", "")
-	tracker.OpenSpan("span-B", "span-A")
-	assert.False(t, tracker.ShouldBroadcastStreamChunk("span-B"))
+	assert.False(t, tracker.ShouldBroadcastStreamChunk())
 }
 
 func TestSpanTracker_ShouldBroadcastStreamChunk_HidesWhenMultipleSpansActive(t *testing.T) {
 	tracker := &SpanTracker{}
 	tracker.OpenSpan("span-A", "")
 	tracker.OpenSpan("span-B", "")
-	assert.False(t, tracker.ShouldBroadcastStreamChunk("span-A"))
-	assert.False(t, tracker.ShouldBroadcastStreamChunk("span-B"))
-}
-
-func TestSpanTracker_ShouldBroadcastStreamChunk_HidesParentWithActiveChild(t *testing.T) {
-	tracker := &SpanTracker{}
-	tracker.OpenSpan("span-A", "")
-	tracker.OpenSpan("span-B", "span-A")
-	assert.False(t, tracker.ShouldBroadcastStreamChunk("span-A"))
+	assert.False(t, tracker.ShouldBroadcastStreamChunk())
 }
 
 func TestSpanTracker_PassthroughWithNullSlot(t *testing.T) {

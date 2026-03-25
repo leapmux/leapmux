@@ -280,7 +280,6 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		collab = parseCollabToolCall(item)
 		parentSpanID = a.codexCollabParentSpanID(parentSpanID, collab, itemID, true)
 	}
-	closingParentSpanID := a.closingCollabParentSpanID(collab, parentSpanID, true)
 
 	switch itemType {
 	case "agentMessage":
@@ -334,6 +333,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		}
 		a.sink.CloseSpan(itemID)
 	case "collabAgentToolCall":
+		closingParentSpanID := a.closingCollabParentSpanID(collab, parentSpanID, true)
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
 			ParentSpanID: parentSpanID, ConnectorSpanID: closingParentSpanID, SpanID: itemID, SpanType: itemType, Closing: closingParentSpanID != "",
 		}); err != nil {
