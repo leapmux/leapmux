@@ -5,15 +5,17 @@ import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { useAgentOperations } from '~/components/shell/useAgentOperations'
-import { AgentInfoSchema } from '~/generated/leapmux/v1/agent_pb'
+import { AgentInfoSchema, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createAgentStore } from '~/stores/agent.store'
+import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createControlStore } from '~/stores/control.store'
 import { createLayoutStore } from '~/stores/layout.store'
 import { createTabStore } from '~/stores/tab.store'
 
 const mockCloseAgent = vi.fn<(workerId: string, req: { agentId: string, worktreeAction?: WorktreeAction }) => Promise<CloseAgentResponse>>()
+const mockSendAgentRawMessage = vi.fn()
 const mockUpdateAgentSettings = vi.fn()
 const mockShowWarnToast = vi.fn()
 
@@ -21,6 +23,7 @@ vi.mock('~/api/workerRpc', () => ({
   closeAgent: (...args: unknown[]) => mockCloseAgent(...args as [string, { agentId: string, worktreeAction?: WorktreeAction }]),
   openAgent: vi.fn(),
   sendAgentMessage: vi.fn(),
+  sendAgentRawMessage: (...args: unknown[]) => mockSendAgentRawMessage(...args),
   sendControlResponse: vi.fn(),
   updateAgentSettings: (...args: unknown[]) => mockUpdateAgentSettings(...args),
   retryAgentMessage: vi.fn(),
@@ -41,12 +44,14 @@ vi.mock('~/components/common/Toast', () => ({
 
 function setup() {
   const agentStore = createAgentStore()
+  const agentSessionStore = createAgentSessionStore()
   const controlStore = createControlStore()
   const tabStore = createTabStore()
   const layoutStore = createLayoutStore()
 
   const ops = useAgentOperations({
     agentStore,
+    agentSessionStore,
     chatStore: {} as any,
     controlStore,
     tabStore,
@@ -60,10 +65,38 @@ function setup() {
     setShowResumeDialog: vi.fn(),
   })
 
-  return { agentStore, controlStore, tabStore, layoutStore, ops }
+  return { agentStore, agentSessionStore, controlStore, tabStore, layoutStore, ops }
 }
 
 describe('useAgentOperations', () => {
+  describe('handleInterrupt', () => {
+    it('sends provider interrupt payload via raw agent input', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { agentStore, agentSessionStore, ops } = setup()
+          const agent = create(AgentInfoSchema, {
+            id: 'codex-1',
+            workerId: 'w-1',
+            agentProvider: AgentProvider.CODEX,
+            agentSessionId: 'thread-1',
+          })
+          agentStore.addAgent(agent)
+          agentSessionStore.updateInfo('codex-1', { codexTurnId: 'turn-1' })
+
+          await ops.handleInterrupt('codex-1')
+
+          expect(mockSendAgentRawMessage).toHaveBeenCalledWith('w-1', {
+            agentId: 'codex-1',
+            content: '{"jsonrpc":"2.0","id":1001,"method":"turn/interrupt","params":{"threadId":"thread-1","turnId":"turn-1"}}',
+          })
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+  })
+
   describe('handleOptionGroupChange', () => {
     it('uses option-group metadata for default rollback and error labeling', async () => {
       await createRoot(async (dispose) => {

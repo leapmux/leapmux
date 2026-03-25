@@ -245,7 +245,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       if (!content)
         return
 
-      await workerRpc.sendAgentMessage(workerId, { agentId, content })
+      await workerRpc.sendAgentRawMessage(workerId, { agentId, content })
     }
     catch (err) {
       showWarnToast('Failed to interrupt', err)

@@ -283,7 +283,7 @@ const claudeCodePlugin: ProviderPlugin = {
   // Claude Code supports runtime permission mode changes via control_request
   // (lightweight, no agent restart needed).
   async changePermissionMode(workerId: string, agentId: string, mode: PermissionMode): Promise<void> {
-    await workerRpc.sendAgentMessage(workerId, {
+    await workerRpc.sendAgentRawMessage(workerId, {
       agentId,
       content: buildSetPermissionModeRequest(mode),
     })

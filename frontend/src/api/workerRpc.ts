@@ -16,6 +16,7 @@ import type {
   ListAvailableProvidersResponse,
   OpenAgentResponse,
   RenameAgentResponse,
+  SendAgentRawMessageResponse,
   SendAgentMessageResponse,
   SendControlResponseResponse,
   UpdateAgentSettingsResponse,
@@ -73,6 +74,8 @@ import {
   RenameAgentRequestSchema,
   RenameAgentResponseSchema,
   SendAgentMessageRequestSchema,
+  SendAgentRawMessageRequestSchema,
+  SendAgentRawMessageResponseSchema,
   SendAgentMessageResponseSchema,
   SendControlResponseRequestSchema,
   SendControlResponseResponseSchema,
@@ -269,6 +272,10 @@ export function closeAgent(workerId: string, req: MessageInitShape<typeof CloseA
 
 export function sendAgentMessage(workerId: string, req: MessageInitShape<typeof SendAgentMessageRequestSchema>): Promise<SendAgentMessageResponse> {
   return callWorker(workerId, 'SendAgentMessage', SendAgentMessageRequestSchema, SendAgentMessageResponseSchema, req)
+}
+
+export function sendAgentRawMessage(workerId: string, req: MessageInitShape<typeof SendAgentRawMessageRequestSchema>): Promise<SendAgentRawMessageResponse> {
+  return callWorker(workerId, 'SendAgentRawMessage', SendAgentRawMessageRequestSchema, SendAgentRawMessageResponseSchema, req)
 }
 
 export function listAgents(workerId: string, req: MessageInitShape<typeof ListAgentsRequestSchema>): Promise<ListAgentsResponse> {
