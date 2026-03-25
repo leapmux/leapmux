@@ -18,6 +18,7 @@ type testSink struct {
 	spanTypes        map[string]string
 	openSpans        []testSinkSpanOpen
 	closedSpans      []string
+	resetSpanCount   int
 	planModeToolUses sync.Map
 }
 
@@ -64,7 +65,11 @@ func (s *testSink) CloseSpan(spanID string) {
 	defer s.mu.Unlock()
 	s.closedSpans = append(s.closedSpans, spanID)
 }
-func (s *testSink) ResetSpans() {}
+func (s *testSink) ResetSpans() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resetSpanCount++
+}
 func (s *testSink) SetSpanType(spanID, spanType string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -243,6 +248,12 @@ func (s *testSink) ClosedSpanCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.closedSpans)
+}
+
+func (s *testSink) ResetSpanCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.resetSpanCount
 }
 
 // noopSink is a no-op implementation of OutputSink for tests that don't

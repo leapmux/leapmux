@@ -389,6 +389,13 @@ func (a *CodexAgent) handleThreadCompacted(params json.RawMessage) {
 
 // handleTurnCompleted processes turn/completed notifications.
 func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
+	var notif struct {
+		ThreadID string `json:"threadId"`
+	}
+	if json.Unmarshal(params, &notif) == nil && !a.isMainThreadID(notif.ThreadID) {
+		return
+	}
+
 	// Enrich the params with num_tool_uses so the frontend can distinguish
 	// simple text-only exchanges from complex multi-tool turns.
 	a.mu.Lock()
@@ -473,33 +480,36 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 
 // handleTokenUsageUpdated processes thread/tokenUsage/updated notifications.
 func (a *CodexAgent) handleTokenUsageUpdated(content []byte, params json.RawMessage) {
-	// Persist the raw Codex notification so reconnect/catch-up can rehydrate
-	// context usage from history.
-	if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, content); err != nil {
-		slog.Error("codex persist tokenUsage", "agent_id", a.agentID, "error", err)
-	}
-
 	var notif struct {
 		ThreadID string `json:"threadId"`
 		TurnID   string `json:"turnId"`
 		TokenUsage struct {
-			Total struct {
+			Last struct {
 				InputTokens       int64 `json:"inputTokens"`
 				CachedInputTokens int64 `json:"cachedInputTokens"`
 				OutputTokens      int64 `json:"outputTokens"`
-			} `json:"total"`
+			} `json:"last"`
 			ModelContextWindow *int64 `json:"modelContextWindow"`
 		} `json:"tokenUsage"`
 	}
 	if json.Unmarshal(params, &notif) != nil {
 		return
 	}
+	if !a.isMainThreadID(notif.ThreadID) {
+		return
+	}
+
+	// Persist the raw Codex notification so reconnect/catch-up can rehydrate
+	// context usage from history.
+	if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, content); err != nil {
+		slog.Error("codex persist tokenUsage", "agent_id", a.agentID, "error", err)
+	}
 
 	usage := map[string]interface{}{
-		"inputTokens":              notif.TokenUsage.Total.InputTokens,
+		"inputTokens":              notif.TokenUsage.Last.InputTokens,
 		"cacheCreationInputTokens": int64(0),
-		"cacheReadInputTokens":     notif.TokenUsage.Total.CachedInputTokens,
-		"outputTokens":             notif.TokenUsage.Total.OutputTokens,
+		"cacheReadInputTokens":     notif.TokenUsage.Last.CachedInputTokens,
+		"outputTokens":             notif.TokenUsage.Last.OutputTokens,
 	}
 	if notif.TokenUsage.ModelContextWindow != nil {
 		usage["contextWindow"] = *notif.TokenUsage.ModelContextWindow
@@ -509,6 +519,15 @@ func (a *CodexAgent) handleTokenUsageUpdated(content []byte, params json.RawMess
 	a.sink.BroadcastSessionInfo(map[string]interface{}{
 		"contextUsage": usage,
 	})
+}
+
+func (a *CodexAgent) isMainThreadID(threadID string) bool {
+	if threadID == "" {
+		return true
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return threadID == a.threadID
 }
 
 // handleThreadNameUpdated processes thread/name/updated notifications.

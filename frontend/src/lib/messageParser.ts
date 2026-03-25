@@ -202,14 +202,14 @@ export function extractCodexTokenUsage(parsed: ParsedMessageContent): {
 
   const params = inner.params as Record<string, unknown> | undefined
   const tokenUsage = params?.tokenUsage as Record<string, unknown> | undefined
-  const total = tokenUsage?.total as Record<string, unknown> | undefined
-  if (!total || typeof total.inputTokens !== 'number')
+  const last = tokenUsage?.last as Record<string, unknown> | undefined
+  if (!last || typeof last.inputTokens !== 'number')
     return null
 
   const contextUsage: ContextUsageInfo = {
-    inputTokens: total.inputTokens as number,
+    inputTokens: last.inputTokens as number,
     cacheCreationInputTokens: 0,
-    cacheReadInputTokens: typeof total.cachedInputTokens === 'number' ? total.cachedInputTokens as number : 0,
+    cacheReadInputTokens: typeof last.cachedInputTokens === 'number' ? last.cachedInputTokens as number : 0,
   }
   if (typeof tokenUsage?.modelContextWindow === 'number')
     contextUsage.contextWindow = tokenUsage.modelContextWindow as number

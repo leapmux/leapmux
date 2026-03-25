@@ -330,8 +330,11 @@ const codexPlugin: ProviderPlugin = {
         return { kind: 'tool_use', toolName: (item.tool as string) || 'dynamicTool', toolUse: item, content: [] }
 
       // collabAgentToolCall → tool use (SpawnAgent)
-      if (itemType === 'collabAgentToolCall')
+      if (itemType === 'collabAgentToolCall') {
+        if (item.tool === 'spawnAgent' && item.status === 'completed')
+          return { kind: 'hidden' }
         return { kind: 'tool_use', toolName: 'collabAgentToolCall', toolUse: item, content: [] }
+      }
 
       // webSearch → tool use / result-like native codex message
       if (itemType === 'webSearch')
@@ -359,6 +362,9 @@ const codexPlugin: ProviderPlugin = {
     }
 
     // Codex method-based notifications
+    if (parent.method === 'thread/tokenUsage/updated')
+      return { kind: 'hidden' }
+
     if (parent.method === 'account/rateLimits/updated') {
       if (isCodexRateLimitAllAllowed(parent))
         return { kind: 'hidden' }

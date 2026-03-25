@@ -110,6 +110,23 @@ describe('codex classify', () => {
     const result = plugin.classify(parent, null)
     expect(result).toEqual({ kind: 'tool_use', toolName: 'webSearch', toolUse: parent.item, content: [] })
   })
+
+  it('hides thread/tokenUsage/updated notifications', () => {
+    const parent = {
+      method: 'thread/tokenUsage/updated',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        tokenUsage: {
+          total: { totalTokens: 200, inputTokens: 100, cachedInputTokens: 25, outputTokens: 50, reasoningOutputTokens: 9 },
+          last: { totalTokens: 23, inputTokens: 10, cachedInputTokens: 5, outputTokens: 7, reasoningOutputTokens: 1 },
+          modelContextWindow: 4096,
+        },
+      },
+    }
+    const result = plugin.classify(parent, null)
+    expect(result).toEqual({ kind: 'hidden' })
+  })
 })
 
 describe('codex isAskUserQuestion', () => {
