@@ -68,7 +68,8 @@ func newCodexAgentWithSink(sink OutputSink) *CodexAgent {
 		processBase: processBase{
 			agentID: "test-agent",
 		},
-		sink: sink,
+		sink:     sink,
+		threadID: "main-thread",
 	}
 }
 
@@ -226,6 +227,184 @@ func TestHandleCodexOutput_ContextCompactionStartPersistsCompactingNotification(
 	}
 	if sink.MessageCount() != 0 {
 		t.Fatalf("expected 0 assistant messages, got %d", sink.MessageCount())
+	}
+}
+
+func TestHandleCodexOutput_SpawnAgentStartedOpensSubagentSpan(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if got := sink.OpenSpans(); len(got) != 1 || got[0].SpanID != "call-1" || got[0].ParentSpanID != "" {
+		t.Fatalf("expected only spawnAgent span to open, got %v", got)
+	}
+	if sink.ClosedSpanCount() != 0 {
+		t.Fatalf("expected no spans to close, got %v", sink.ClosedSpans())
+	}
+}
+
+func TestHandleCodexOutput_WaitMessagesStayInsideSpawnAgentSpan(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	spawnStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	waitStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{}}}}`
+	waitCompleted := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
+
+	handleCodexOutput(agent, []byte(spawnStarted))
+	handleCodexOutput(agent, []byte(waitStarted))
+	handleCodexOutput(agent, []byte(waitCompleted))
+
+	messages := sink.Messages()
+	if len(messages) != 3 {
+		t.Fatalf("expected 3 persisted messages, got %d", len(messages))
+	}
+	if messages[1].ParentSpanID != "call-1" {
+		t.Fatalf("expected wait started to be nested under spawnAgent span, got parent %q", messages[1].ParentSpanID)
+	}
+	if messages[2].ParentSpanID != "call-1" {
+		t.Fatalf("expected wait completed to be nested under spawnAgent span, got parent %q", messages[2].ParentSpanID)
+	}
+	if !messages[2].Closing || messages[2].ConnectorSpanID != "call-1" {
+		t.Fatalf("expected wait completed to render the parent spawnAgent as closing, got closing=%v connector=%q", messages[2].Closing, messages[2].ConnectorSpanID)
+	}
+	if got := sink.OpenSpans(); len(got) != 1 || got[0].SpanID != "call-1" {
+		t.Fatalf("expected only spawnAgent span to open, got %v", got)
+	}
+	if got := sink.ClosedSpans(); len(got) != 1 || got[0] != "call-1" {
+		t.Fatalf("expected wait completion to close only spawnAgent spans when receivers are done, got %v", got)
+	}
+}
+
+func TestHandleCodexOutput_SubagentCommandPersistsVisibleParentSpan(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	spawnStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	cmdStarted := `{"method":"item/started","params":{"threadId":"child-1","turnId":"turn2","item":{"type":"commandExecution","id":"cmd-1","status":"inProgress","command":"ls","cwd":"/tmp","processId":"123","commandActions":[]}}}`
+	cmdCompleted := `{"method":"item/completed","params":{"threadId":"child-1","turnId":"turn2","item":{"type":"commandExecution","id":"cmd-1","status":"completed","command":"ls","cwd":"/tmp","processId":"123","commandActions":[],"aggregatedOutput":"ok","exitCode":0,"durationMs":1}}}`
+
+	handleCodexOutput(agent, []byte(spawnStarted))
+	handleCodexOutput(agent, []byte(cmdStarted))
+	handleCodexOutput(agent, []byte(cmdCompleted))
+
+	messages := sink.Messages()
+	if len(messages) != 3 {
+		t.Fatalf("expected 3 persisted messages, got %d", len(messages))
+	}
+	if messages[1].ParentSpanID != "call-1" {
+		t.Fatalf("expected command started to use visible collab parent, got %q", messages[1].ParentSpanID)
+	}
+	if messages[2].ParentSpanID != "call-1" {
+		t.Fatalf("expected command completed to use visible collab parent, got %q", messages[2].ParentSpanID)
+	}
+}
+
+func TestHandleCodexOutput_SpawnAgentCompletedDoesNotCloseSubagentSpan(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"running","message":null}}}}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if sink.ClosedSpanCount() != 0 {
+		t.Fatalf("expected spawn completion to keep span open, got %v", sink.ClosedSpans())
+	}
+}
+
+func TestHandleCodexOutput_SpawnAgentCompletedRegistersLateReceiverThreads(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":[],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"running","message":null}}}}}`
+	cmdStarted := `{"method":"item/started","params":{"threadId":"child-1","turnId":"turn2","item":{"type":"commandExecution","id":"cmd-1","status":"inProgress","command":"ls","cwd":"/tmp","processId":"123","commandActions":[]}}}`
+
+	handleCodexOutput(agent, []byte(started))
+	handleCodexOutput(agent, []byte(completed))
+	handleCodexOutput(agent, []byte(cmdStarted))
+
+	if got := sink.OpenSpans(); len(got) != 2 || got[0].SpanID != "call-1" || got[1].SpanID != "cmd-1" || got[1].ParentSpanID != "call-1" {
+		t.Fatalf("expected child command span to open under spawnAgent span after late registration, got %v", got)
+	}
+	messages := sink.Messages()
+	if len(messages) != 3 {
+		t.Fatalf("expected 3 persisted messages, got %d", len(messages))
+	}
+	if messages[2].ParentSpanID != "call-1" {
+		t.Fatalf("expected child command to inherit spawnAgent parent after late registration, got %q", messages[2].ParentSpanID)
+	}
+}
+
+func TestHandleCodexOutput_WaitCompletedClosesTerminalSubagentSpan(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if got := sink.ClosedSpans(); len(got) != 0 {
+		t.Fatalf("expected wait completion without visible parent span to close no synthetic child spans, got %v", got)
+	}
+}
+
+func TestHandleCodexOutput_WaitCompletedDoesNotCloseNonTerminalOrMissingStatuses(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"running","message":null}}}}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if got := sink.ClosedSpans(); len(got) != 0 {
+		t.Fatalf("expected non-terminal wait completion to close no spans, got %v", got)
+	}
+}
+
+func TestHandleCodexOutput_CloseAgentCompletedClosesSubagentSpan(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-3","tool":"closeAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"shutdown","message":null}}}}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if got := sink.ClosedSpans(); len(got) != 0 {
+		t.Fatalf("expected closeAgent completion to close no synthetic child spans, got %v", got)
+	}
+}
+
+func TestHandleCodexOutput_WaitCompletedClosesOnlyTerminalReceivers(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-4","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2","child-3"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"},"child-2":{"status":"running","message":null},"child-3":{"status":"notFound","message":null}}}}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if got := sink.ClosedSpans(); len(got) != 0 {
+		t.Fatalf("expected only receiver bookkeeping changes, not synthetic child span closes, got %v", got)
+	}
+}
+
+func TestHandleCodexOutput_WaitCompletedClosesParentSpawnOnlyAfterLastReceiverFinishes(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	spawnStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	waitCompletedFirst := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
+	waitCompletedSecond := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-3","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-2"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-2":{"status":"completed","message":"done"}}}}}`
+
+	handleCodexOutput(agent, []byte(spawnStarted))
+	handleCodexOutput(agent, []byte(waitCompletedFirst))
+
+	if got := sink.ClosedSpans(); len(got) != 0 {
+		t.Fatalf("expected parent spawnAgent span to remain open until all receivers finish, got %v", got)
+	}
+
+	handleCodexOutput(agent, []byte(waitCompletedSecond))
+
+	if got := sink.ClosedSpans(); len(got) != 1 || got[0] != "call-1" {
+		t.Fatalf("expected parent spawnAgent span to close after the last receiver finishes, got %v", got)
 	}
 }
 
@@ -515,5 +694,94 @@ func TestHandleCodexOutput_ApprovalWithoutID(t *testing.T) {
 	}
 	if sink.BroadcastControlCount() != 0 {
 		t.Errorf("expected 0 broadcast control requests (no id), got %d", sink.BroadcastControlCount())
+	}
+}
+
+func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsage(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{"total":{"totalTokens":200,"inputTokens":100,"cachedInputTokens":25,"outputTokens":50,"reasoningOutputTokens":9},"last":{"totalTokens":23,"inputTokens":10,"cachedInputTokens":5,"outputTokens":7,"reasoningOutputTokens":1},"modelContextWindow":4096}}}`
+	agent.threadID = "thread-1"
+	handleCodexOutput(agent, []byte(input))
+
+	if sink.NotificationCount() != 1 {
+		t.Fatalf("expected 1 persisted notification, got %d", sink.NotificationCount())
+	}
+	if sink.SessionInfoCount() != 1 {
+		t.Fatalf("expected 1 session info broadcast, got %d", sink.SessionInfoCount())
+	}
+
+	info := sink.LastSessionInfo()
+	usage, ok := info["contextUsage"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected contextUsage map, got %#v", info["contextUsage"])
+	}
+	if usage["inputTokens"] != int64(5) {
+		t.Fatalf("expected inputTokens 5, got %#v", usage["inputTokens"])
+	}
+	if usage["cacheCreationInputTokens"] != int64(0) {
+		t.Fatalf("expected cacheCreationInputTokens 0, got %#v", usage["cacheCreationInputTokens"])
+	}
+	if usage["cacheReadInputTokens"] != int64(5) {
+		t.Fatalf("expected cacheReadInputTokens 5, got %#v", usage["cacheReadInputTokens"])
+	}
+	if usage["contextWindow"] != int64(4096) {
+		t.Fatalf("expected contextWindow 4096, got %#v", usage["contextWindow"])
+	}
+}
+
+func TestHandleCodexOutput_TokenUsageUpdatedFallsBackToModelContextWindow(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.model = "gpt-5.4"
+	agent.availableModels = codexDefaultModels
+	agent.threadID = "thread-1"
+
+	input := `{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{"total":{"totalTokens":200,"inputTokens":100,"cachedInputTokens":25,"outputTokens":50,"reasoningOutputTokens":9},"last":{"totalTokens":23,"inputTokens":10,"cachedInputTokens":5,"outputTokens":7,"reasoningOutputTokens":1},"modelContextWindow":null}}}`
+	handleCodexOutput(agent, []byte(input))
+
+	info := sink.LastSessionInfo()
+	usage, ok := info["contextUsage"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected contextUsage map, got %#v", info["contextUsage"])
+	}
+	if usage["contextWindow"] != int64(1_050_000) {
+		t.Fatalf("expected fallback contextWindow 1050000, got %#v", usage["contextWindow"])
+	}
+}
+
+func TestHandleCodexOutput_TokenUsageUpdatedIgnoresSubagentThreads(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+
+	input := `{"method":"thread/tokenUsage/updated","params":{"threadId":"child-thread","turnId":"turn-1","tokenUsage":{"total":{"totalTokens":200,"inputTokens":100,"cachedInputTokens":25,"outputTokens":50,"reasoningOutputTokens":9},"last":{"totalTokens":23,"inputTokens":10,"cachedInputTokens":5,"outputTokens":7,"reasoningOutputTokens":1},"modelContextWindow":4096}}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if sink.NotificationCount() != 0 {
+		t.Fatalf("expected 0 persisted notifications, got %d", sink.NotificationCount())
+	}
+	if sink.SessionInfoCount() != 0 {
+		t.Fatalf("expected 0 session info broadcasts, got %d", sink.SessionInfoCount())
+	}
+}
+
+func TestHandleCodexOutput_TurnCompletedIgnoresSubagentThreads(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+
+	input := `{"method":"turn/completed","params":{"threadId":"child-thread","turn":{"id":"turn-1","status":"completed","items":[],"error":null}}}`
+	handleCodexOutput(agent, []byte(input))
+
+	if sink.MessageCount() != 0 {
+		t.Fatalf("expected 0 persisted messages, got %d", sink.MessageCount())
+	}
+	if sink.ResetSpanCount() != 0 {
+		t.Fatalf("expected span tracker not to reset, got %d", sink.ResetSpanCount())
+	}
+	if sink.SessionInfoCount() != 0 {
+		t.Fatalf("expected 0 session info broadcasts, got %d", sink.SessionInfoCount())
 	}
 }

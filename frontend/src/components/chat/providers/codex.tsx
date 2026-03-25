@@ -55,6 +55,44 @@ function buildCodexInterruptRequest(threadId: string, turnId: string): string {
   })
 }
 
+function isCodexInterruptRequestText(content: string): boolean {
+  try {
+    const parsed = JSON.parse(content) as Record<string, unknown>
+    return parsed.method === 'turn/interrupt'
+  }
+  catch {
+    return false
+  }
+}
+
+function codexAssistantInterruptEcho(parent: Record<string, unknown>): boolean {
+  if (parent.role !== 'assistant')
+    return false
+
+  if (typeof parent.content === 'string')
+    return isCodexInterruptRequestText(parent.content)
+
+  if (parent.type !== 'assistant' || !isObject(parent.message))
+    return false
+
+  const content = (parent.message as Record<string, unknown>).content
+  if (!Array.isArray(content))
+    return false
+
+  const text = content
+    .filter((c: unknown) => isObject(c) && c.type === 'text')
+    .map((c: unknown) => String((c as Record<string, unknown>).text || ''))
+    .join('')
+
+  return text.length > 0 && isCodexInterruptRequestText(text)
+}
+
+function isCodexJsonRpcResponse(parent: Record<string, unknown>): boolean {
+  if ('method' in parent || 'item' in parent || 'turn' in parent)
+    return false
+  return ('result' in parent || 'error' in parent) && ('id' in parent)
+}
+
 /** Extra notification types for Codex (agent_error). */
 const CODEX_EXTRA_NOTIF_TYPES = new Set(['agent_error'])
 function isCodexNotifThread(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
@@ -270,6 +308,12 @@ const codexPlugin: ProviderPlugin = {
     if (!parent)
       return { kind: 'unknown' }
 
+    if (isCodexJsonRpcResponse(parent))
+      return { kind: 'hidden' }
+
+    if (codexAssistantInterruptEcho(parent))
+      return { kind: 'hidden' }
+
     const type = parent.type as string | undefined
     const subtype = parent.subtype as string | undefined
 
@@ -330,8 +374,11 @@ const codexPlugin: ProviderPlugin = {
         return { kind: 'tool_use', toolName: (item.tool as string) || 'dynamicTool', toolUse: item, content: [] }
 
       // collabAgentToolCall → tool use (SpawnAgent)
-      if (itemType === 'collabAgentToolCall')
+      if (itemType === 'collabAgentToolCall') {
+        if (item.tool === 'spawnAgent' && item.status === 'completed')
+          return { kind: 'hidden' }
         return { kind: 'tool_use', toolName: 'collabAgentToolCall', toolUse: item, content: [] }
+      }
 
       // webSearch → tool use / result-like native codex message
       if (itemType === 'webSearch')
@@ -359,6 +406,9 @@ const codexPlugin: ProviderPlugin = {
     }
 
     // Codex method-based notifications
+    if (parent.method === 'thread/tokenUsage/updated')
+      return { kind: 'hidden' }
+
     if (parent.method === 'account/rateLimits/updated') {
       if (isCodexRateLimitAllAllowed(parent))
         return { kind: 'hidden' }

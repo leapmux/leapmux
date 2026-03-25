@@ -1,17 +1,24 @@
 import type { Component } from 'solid-js'
+import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import Info from 'lucide-solid/icons/info'
 import { createMemo, For, Show } from 'solid-js'
 import { Tooltip } from '~/components/common/Tooltip'
+import { AgentProvider as AgentProviderEnum } from '~/generated/leapmux/v1/agent_pb'
 
 interface ContextUsageGridProps {
   contextUsage?: ContextUsageInfo
   modelContextWindow?: number
+  agentProvider?: AgentProvider
   size: number
 }
 
 export const DEFAULT_BUFFER_PCT = 16.5
 export const DEFAULT_CONTEXT_WINDOW = 200_000
+
+export function contextBufferPct(agentProvider?: AgentProvider): number {
+  return agentProvider === AgentProviderEnum.CLAUDE_CODE ? DEFAULT_BUFFER_PCT : 0
+}
 
 /** Resolve the effective context window from usage data, model metadata, or the default. */
 export function resolveContextWindow(usage: ContextUsageInfo, modelContextWindow?: number): number {
@@ -32,14 +39,14 @@ export function contextSize(usage: ContextUsageInfo): number {
  * Accounts for the autocompact buffer: usable capacity = contextWindow * (1 - buffer%).
  * Uses the context window from usage data, then modelContextWindow, then DEFAULT_CONTEXT_WINDOW.
  */
-export function computePercentage(usage: ContextUsageInfo | undefined, modelContextWindow?: number): number | null {
+export function computePercentage(usage: ContextUsageInfo | undefined, modelContextWindow?: number, agentProvider?: AgentProvider): number | null {
   if (!usage)
     return null
   const total = contextSize(usage)
   if (total <= 0)
     return null
   const contextWindow = resolveContextWindow(usage, modelContextWindow)
-  const usable = contextWindow * (1 - DEFAULT_BUFFER_PCT / 100)
+  const usable = contextWindow * (1 - contextBufferPct(agentProvider) / 100)
   if (usable <= 0)
     return null
   return Math.min(100, (total / usable) * 100)
@@ -72,7 +79,7 @@ const GAP = 1
 const STEP = SQUARE_SIZE + GAP // 4
 
 export const ContextUsageGrid: Component<ContextUsageGridProps> = (props) => {
-  const percentage = createMemo(() => computePercentage(props.contextUsage, props.modelContextWindow))
+  const percentage = createMemo(() => computePercentage(props.contextUsage, props.modelContextWindow, props.agentProvider))
 
   const filled = createMemo(() => {
     const pct = percentage()

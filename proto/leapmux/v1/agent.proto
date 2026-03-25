@@ -152,6 +152,13 @@ message SendAgentMessageRequest {
 
 message SendAgentMessageResponse {}
 
+message SendAgentRawMessageRequest {
+  string agent_id = 1;
+  string content = 2; // Raw provider input/control payload
+}
+
+message SendAgentRawMessageResponse {}
+
 // AgentChatMessage represents a complete message in the conversation.
 message AgentChatMessage {
   string id = 1;

@@ -16,17 +16,20 @@ type testSink struct {
 	sessionIDs       []string
 	sessionInfos     []map[string]interface{}
 	spanTypes        map[string]string
-	openSpans        []string
+	openSpans        []testSinkSpanOpen
 	closedSpans      []string
+	resetSpanCount   int
 	planModeToolUses sync.Map
 }
 
 type testSinkMessage struct {
-	Role         leapmuxv1.MessageRole
-	Content      []byte
-	ParentSpanID string
-	SpanID       string
-	SpanType     string
+	Role            leapmuxv1.MessageRole
+	Content         []byte
+	ParentSpanID    string
+	ConnectorSpanID string
+	SpanID          string
+	SpanType        string
+	Closing         bool
 }
 
 type testSinkStreamChunk struct {
@@ -35,10 +38,15 @@ type testSinkStreamChunk struct {
 	Method  string
 }
 
+type testSinkSpanOpen struct {
+	SpanID       string
+	ParentSpanID string
+}
+
 func (s *testSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, span SpanInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.messages = append(s.messages, testSinkMessage{Role: role, Content: append([]byte(nil), content...), ParentSpanID: span.ParentSpanID, SpanID: span.SpanID, SpanType: span.SpanType})
+	s.messages = append(s.messages, testSinkMessage{Role: role, Content: append([]byte(nil), content...), ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing})
 	return nil
 }
 
@@ -49,17 +57,21 @@ func (s *testSink) PersistNotification(role leapmuxv1.MessageRole, content []byt
 	return nil
 }
 
-func (s *testSink) OpenSpan(spanID string, _ string) {
+func (s *testSink) OpenSpan(spanID string, parentSpanID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.openSpans = append(s.openSpans, spanID)
+	s.openSpans = append(s.openSpans, testSinkSpanOpen{SpanID: spanID, ParentSpanID: parentSpanID})
 }
 func (s *testSink) CloseSpan(spanID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closedSpans = append(s.closedSpans, spanID)
 }
-func (s *testSink) ResetSpans() {}
+func (s *testSink) ResetSpans() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resetSpanCount++
+}
 func (s *testSink) SetSpanType(spanID, spanType string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -220,10 +232,10 @@ func (s *testSink) LastSessionInfo() map[string]interface{} {
 }
 
 // OpenSpans returns a copy of all opened span IDs.
-func (s *testSink) OpenSpans() []string {
+func (s *testSink) OpenSpans() []testSinkSpanOpen {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]string(nil), s.openSpans...)
+	return append([]testSinkSpanOpen(nil), s.openSpans...)
 }
 
 // ClosedSpans returns a copy of all closed span IDs.
@@ -238,6 +250,12 @@ func (s *testSink) ClosedSpanCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.closedSpans)
+}
+
+func (s *testSink) ResetSpanCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.resetSpanCount
 }
 
 // noopSink is a no-op implementation of OutputSink for tests that don't

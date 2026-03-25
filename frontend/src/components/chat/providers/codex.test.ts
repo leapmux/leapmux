@@ -110,6 +110,58 @@ describe('codex classify', () => {
     const result = plugin.classify(parent, null)
     expect(result).toEqual({ kind: 'tool_use', toolName: 'webSearch', toolUse: parent.item, content: [] })
   })
+
+  it('hides thread/tokenUsage/updated notifications', () => {
+    const parent = {
+      method: 'thread/tokenUsage/updated',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        tokenUsage: {
+          total: { totalTokens: 200, inputTokens: 100, cachedInputTokens: 25, outputTokens: 50, reasoningOutputTokens: 9 },
+          last: { totalTokens: 23, inputTokens: 10, cachedInputTokens: 5, outputTokens: 7, reasoningOutputTokens: 1 },
+          modelContextWindow: 4096,
+        },
+      },
+    }
+    const result = plugin.classify(parent, null)
+    expect(result).toEqual({ kind: 'hidden' })
+  })
+
+  it('hides assistant interrupt echo messages with top-level string content', () => {
+    const parent = {
+      role: 'assistant',
+      content: '{"jsonrpc":"2.0","id":1001,"method":"turn/interrupt","params":{"threadId":"thread-1","turnId":"turn-1"}}',
+    }
+    const result = plugin.classify(parent, null)
+    expect(result).toEqual({ kind: 'hidden' })
+  })
+
+  it('hides assistant interrupt echo messages with assistant text blocks', () => {
+    const parent = {
+      role: 'assistant',
+      type: 'assistant',
+      message: {
+        content: [
+          {
+            type: 'text',
+            text: '{"jsonrpc":"2.0","id":1001,"method":"turn/interrupt","params":{"threadId":"thread-1","turnId":"turn-1"}}',
+          },
+        ],
+      },
+    }
+    const result = plugin.classify(parent, null)
+    expect(result).toEqual({ kind: 'hidden' })
+  })
+
+  it('hides plain JSON-RPC response envelopes', () => {
+    const parent = {
+      id: 1001,
+      result: {},
+    }
+    const result = plugin.classify(parent, null)
+    expect(result).toEqual({ kind: 'hidden' })
+  })
 })
 
 describe('codex isAskUserQuestion', () => {

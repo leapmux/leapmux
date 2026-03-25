@@ -257,8 +257,10 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		return
 	}
 
-	// Extract agent context metadata from assistant and result messages.
-	if msgType == "assistant" || msgType == "result" {
+	// Extract agent context metadata from top-level assistant and result
+	// messages. Subagent messages (with parent_tool_use_id) have their own
+	// smaller context and would make the bar show a misleadingly low value.
+	if (msgType == "assistant" || msgType == "result") && env.ParentToolUseID == "" {
 		a.extractAndBroadcastUsage(&env, msgType)
 	}
 

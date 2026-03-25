@@ -13,7 +13,7 @@ import (
 func TestBuildShellWrappedCommand_Bash_Interactive(t *testing.T) {
 	cmd, delimiter, metaPrefix := buildShellWrappedCommand(
 		context.Background(), "/bin/bash", true, "claude",
-		[]string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
 	)
 	require.NotEmpty(t, delimiter)
 	assert.True(t, strings.HasPrefix(delimiter, "__LEAPMUX_READY_"))
@@ -43,7 +43,7 @@ func TestBuildShellWrappedCommand_Bash_Interactive(t *testing.T) {
 func TestBuildShellWrappedCommand_Bash_NonInteractive(t *testing.T) {
 	cmd, _, _ := buildShellWrappedCommand(
 		context.Background(), "/bin/bash", false, "claude",
-		[]string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
 	)
 	assert.Equal(t, "/bin/bash", cmd.Path)
 	require.Len(t, cmd.Args, 3) // bash -c <cmd>
@@ -54,7 +54,7 @@ func TestBuildShellWrappedCommand_Bash_NonInteractive(t *testing.T) {
 func TestBuildShellWrappedCommand_Zsh(t *testing.T) {
 	cmd, delimiter, _ := buildShellWrappedCommand(
 		context.Background(), "/bin/zsh", true, "claude",
-		[]string{"--verbose"}, []string{"--model", "sonnet"}, "/home/user",
+		[]string{"CLAUDECODE"}, []string{"--verbose"}, []string{"--model", "sonnet"}, "/home/user",
 	)
 	assert.Equal(t, "/bin/zsh", cmd.Path)
 	require.Len(t, cmd.Args, 5) // zsh -i -l -c <cmd>
@@ -69,7 +69,7 @@ func TestBuildShellWrappedCommand_Zsh(t *testing.T) {
 func TestBuildShellWrappedCommand_Fish(t *testing.T) {
 	cmd, _, _ := buildShellWrappedCommand(
 		context.Background(), "/usr/bin/fish", true, "claude",
-		[]string{"--model", "sonnet"}, []string{}, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--model", "sonnet"}, []string{}, "/tmp",
 	)
 	assert.Equal(t, "/usr/bin/fish", cmd.Path)
 	require.Len(t, cmd.Args, 5) // fish -i -l -c <cmd>
@@ -85,7 +85,7 @@ func TestBuildShellWrappedCommand_Fish(t *testing.T) {
 func TestBuildShellWrappedCommand_Tcsh_Interactive(t *testing.T) {
 	cmd, delimiter, _ := buildShellWrappedCommand(
 		context.Background(), "/bin/tcsh", true, "claude",
-		[]string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
 	)
 	assert.Equal(t, "/bin/tcsh", cmd.Path)
 	require.Len(t, cmd.Args, 3) // tcsh -ic <cmd>
@@ -98,7 +98,7 @@ func TestBuildShellWrappedCommand_Tcsh_Interactive(t *testing.T) {
 func TestBuildShellWrappedCommand_Tcsh_NonInteractive(t *testing.T) {
 	cmd, _, _ := buildShellWrappedCommand(
 		context.Background(), "/bin/tcsh", false, "claude",
-		[]string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
 	)
 	assert.Equal(t, "/bin/tcsh", cmd.Path)
 	require.Len(t, cmd.Args, 3) // tcsh -c <cmd>
@@ -108,7 +108,7 @@ func TestBuildShellWrappedCommand_Tcsh_NonInteractive(t *testing.T) {
 func TestBuildShellWrappedCommand_Csh(t *testing.T) {
 	cmd, _, _ := buildShellWrappedCommand(
 		context.Background(), "/bin/csh", true, "claude",
-		[]string{"--verbose"}, []string{"--model", "opus"}, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--verbose"}, []string{"--model", "opus"}, "/tmp",
 	)
 	assert.Equal(t, "/bin/csh", cmd.Path)
 	require.Len(t, cmd.Args, 3) // csh -ic <cmd>
@@ -120,7 +120,7 @@ func TestBuildShellWrappedCommand_Csh(t *testing.T) {
 func TestBuildShellWrappedCommand_Nu_Interactive(t *testing.T) {
 	cmd, delimiter, _ := buildShellWrappedCommand(
 		context.Background(), "/usr/bin/nu", true, "claude",
-		[]string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
 	)
 	assert.Equal(t, "/usr/bin/nu", cmd.Path)
 	require.Len(t, cmd.Args, 5) // nu -i -l -c <cmd>
@@ -140,7 +140,7 @@ func TestBuildShellWrappedCommand_Nu_Interactive(t *testing.T) {
 }
 
 func TestBuildNuCommand_SingleQuoteInArgs(t *testing.T) {
-	inner := buildNuCommand("claude", "__DELIM__", "__META__ ",
+	inner := buildNuCommand("claude", []string{"CLAUDECODE"}, "__DELIM__", "__META__ ",
 		[]string{"--output-format", "stream-json"},
 		[]string{"--model", "it's-a-model"})
 	// Single quotes in args must be safely double-quoted, not POSIX-quoted.
@@ -151,7 +151,7 @@ func TestBuildNuCommand_SingleQuoteInArgs(t *testing.T) {
 func TestBuildShellWrappedCommand_Nu_NonInteractive(t *testing.T) {
 	cmd, _, _ := buildShellWrappedCommand(
 		context.Background(), "/usr/bin/nu", false, "claude",
-		[]string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
 	)
 	assert.Equal(t, "/usr/bin/nu", cmd.Path)
 	require.Len(t, cmd.Args, 3) // nu -c <cmd>
@@ -163,7 +163,7 @@ func TestBuildShellWrappedCommand_Pwsh_Interactive(t *testing.T) {
 		t.Run(shell, func(t *testing.T) {
 			cmd, delimiter, _ := buildShellWrappedCommand(
 				context.Background(), shell, true, "claude",
-				[]string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+				[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
 			)
 			assert.Equal(t, shell, cmd.Path)
 			require.Len(t, cmd.Args, 4) // pwsh -Login -Command <cmd>
@@ -181,7 +181,7 @@ func TestBuildShellWrappedCommand_Pwsh_Interactive(t *testing.T) {
 func TestBuildShellWrappedCommand_Pwsh_NonInteractive(t *testing.T) {
 	cmd, _, _ := buildShellWrappedCommand(
 		context.Background(), "/usr/bin/pwsh", false, "claude",
-		[]string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
 	)
 	assert.Equal(t, "/usr/bin/pwsh", cmd.Path)
 	require.Len(t, cmd.Args, 3) // pwsh -Command <cmd>
@@ -191,7 +191,7 @@ func TestBuildShellWrappedCommand_Pwsh_NonInteractive(t *testing.T) {
 func TestBuildShellWrappedCommand_UnknownShell(t *testing.T) {
 	cmd, _, _ := buildShellWrappedCommand(
 		context.Background(), "/usr/bin/xonsh", true, "claude",
-		[]string{"--verbose"}, []string{"--model", "opus"}, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--verbose"}, []string{"--model", "opus"}, "/tmp",
 	)
 	assert.Equal(t, "/usr/bin/xonsh", cmd.Path)
 	require.Len(t, cmd.Args, 5) // defaults to -i -l -c
@@ -207,7 +207,7 @@ func TestBuildShellWrappedCommand_NoModelEffort(t *testing.T) {
 	// No conditional logic should be generated.
 	cmd, _, metaPrefix := buildShellWrappedCommand(
 		context.Background(), "/bin/bash", true, "claude",
-		[]string{"--output-format", "stream-json"}, nil, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, nil, "/tmp",
 	)
 	assert.Empty(t, metaPrefix)
 	assert.Contains(t, cmd.Args[4], "'--output-format'")
@@ -219,7 +219,7 @@ func TestBuildShellWrappedCommand_NoModelEffort(t *testing.T) {
 func TestBuildShellWrappedCommand_NoModelEffort_Nu(t *testing.T) {
 	cmd, _, metaPrefix := buildShellWrappedCommand(
 		context.Background(), "/usr/bin/nu", true, "claude",
-		[]string{"--output-format", "stream-json"}, nil, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, nil, "/tmp",
 	)
 	assert.Empty(t, metaPrefix)
 	assert.NotContains(t, cmd.Args[4], "CLAUDE_CODE_USE_BEDROCK")
@@ -228,14 +228,14 @@ func TestBuildShellWrappedCommand_NoModelEffort_Nu(t *testing.T) {
 func TestBuildShellWrappedCommand_NoModelEffort_Pwsh(t *testing.T) {
 	cmd, _, metaPrefix := buildShellWrappedCommand(
 		context.Background(), "/usr/bin/pwsh", true, "claude",
-		[]string{"--output-format", "stream-json"}, nil, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, nil, "/tmp",
 	)
 	assert.Empty(t, metaPrefix)
 	assert.NotContains(t, cmd.Args[3], "CLAUDE_CODE_USE_BEDROCK")
 }
 
 func TestBuildShellWrappedCommand_ModelEffortInElseBranch(t *testing.T) {
-	inner := buildPosixCommand("claude", "__DELIM__", "__META__ ", []string{"--output-format", "stream-json"}, []string{"--model", "opus", "--effort", "high"}, true)
+	inner := buildPosixCommand("claude", []string{"CLAUDECODE"}, "__DELIM__", "__META__ ", []string{"--output-format", "stream-json"}, []string{"--model", "opus", "--effort", "high"}, true)
 
 	// The else branch should contain model/effort args
 	parts := strings.SplitN(inner, "else", 2)
@@ -248,6 +248,34 @@ func TestBuildShellWrappedCommand_ModelEffortInElseBranch(t *testing.T) {
 	// The if branch (third-party provider) should NOT contain model/effort args
 	assert.NotContains(t, parts[0], "'--model'")
 	assert.NotContains(t, parts[0], "'--effort'")
+}
+
+func TestBuildShellWrappedCommand_CodexUsesCodexEnvMarkers(t *testing.T) {
+	cmd, delimiter, metaPrefix := buildShellWrappedCommand(
+		context.Background(), "/bin/zsh", true, "codex",
+		[]string{"CODEX_CI"}, []string{"app-server"}, nil, "/tmp",
+	)
+	assert.Empty(t, metaPrefix)
+	assert.Contains(t, cmd.Args[4], "unset CODEX_CI")
+	assert.NotContains(t, cmd.Args[4], "CLAUDECODE")
+	assert.Contains(t, cmd.Args[4], "echo '"+delimiter+"'")
+	assert.Contains(t, cmd.Args[4], "exec codex")
+}
+
+func TestBuildShellWrappedCommand_CodexUsesCodexEnvMarkers_NuAndPwsh(t *testing.T) {
+	nuCmd, _, _ := buildShellWrappedCommand(
+		context.Background(), "/usr/bin/nu", true, "codex",
+		[]string{"CODEX_CI"}, []string{"app-server"}, nil, "/tmp",
+	)
+	assert.Contains(t, nuCmd.Args[4], "hide-env CODEX_CI")
+	assert.NotContains(t, nuCmd.Args[4], "CLAUDECODE")
+
+	pwshCmd, _, _ := buildShellWrappedCommand(
+		context.Background(), "/usr/bin/pwsh", true, "codex",
+		[]string{"CODEX_CI"}, []string{"app-server"}, nil, "/tmp",
+	)
+	assert.Contains(t, pwshCmd.Args[3], "Remove-Item Env:CODEX_CI")
+	assert.NotContains(t, pwshCmd.Args[3], "CLAUDECODE")
 }
 
 func TestBuildModelEffortArgs(t *testing.T) {

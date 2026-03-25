@@ -20,6 +20,7 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { TodoList } from '~/components/todo/TodoList'
 import { codexPlanToTodos } from '~/lib/messageParser'
 import { renderMarkdown, shikiHighlighter } from '~/lib/renderMarkdown'
+import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { inlineFlex } from '~/styles/shared.css'
 import { DiffView, rawDiffToHunks } from './diffUtils'
 import { markdownContent } from './markdownContent.css'
@@ -42,6 +43,8 @@ import {
   toolInputSummary,
   toolInputText,
   toolMessage,
+  toolResultCollapsed,
+  toolResultContent,
   toolResultContentPre,
   toolResultError,
   toolResultPrompt,
@@ -782,25 +785,58 @@ export function codexCollabAgentToolCallRenderer(parsed: unknown, _role: Message
 
   const tool = (item.tool as string) || 'SpawnAgent'
   const status = (item.status as string) || ''
-  const displayName = tool === 'spawnAgent' ? 'SpawnAgent' : tool
-  const titleEl = renderToolDetail('Agent', { description: displayName }, context) || codexStatusTitle(displayName, status)
-
-  if (status === 'completed' || status === 'failed') {
-    return (
-      <div class={toolMessage}>
-        <div class={toolResultPrompt}>{`${displayName} ${status}`}</div>
-      </div>
-    )
-  }
+  const prompt = typeof item.prompt === 'string' ? item.prompt : ''
+  const model = typeof item.model === 'string' ? item.model : ''
+  const reasoningEffort = typeof item.reasoningEffort === 'string' ? item.reasoningEffort : ''
+  const displayName = tool === 'spawnAgent'
+    ? 'SpawnAgent'
+    : tool === 'wait'
+      ? 'Wait'
+      : tool
+  const isTerminalWait = tool === 'wait' && status !== 'inProgress' && status !== ''
+  const isWaitInProgress = tool === 'wait' && !isTerminalWait
+  const isSpawnAgent = tool === 'spawnAgent'
+  const hasPrompt = prompt.trim() !== ''
+  const hasCollapsiblePrompt = (isWaitInProgress || isSpawnAgent) && hasPrompt
+  const [expanded, setExpanded] = createSignal(false)
+  const modelLabel = model ? (getCachedSettingsLabel('model', model) || model) : ''
+  const effortLabel = reasoningEffort ? (getCachedSettingsLabel('effort', reasoningEffort) || reasoningEffort) : ''
+  const spawnAgentDetails = [
+    modelLabel ? `model: ${modelLabel}` : '',
+    effortLabel ? `reasoning effort: ${effortLabel}` : '',
+  ].filter(Boolean).join(' · ')
+  const titleEl = isTerminalWait
+    ? `Wait ${status}`
+    : isWaitInProgress
+      ? 'Waiting for subagent'
+      : isSpawnAgent
+        ? (spawnAgentDetails ? `Subagent (${spawnAgentDetails})` : 'Subagent')
+        : renderToolDetail('Agent', { description: displayName }, context) || codexStatusTitle(displayName, status)
+  const summary = hasCollapsiblePrompt
+    ? (
+        <div
+          class={`${toolResultContent} ${toolResultCollapsed} ${markdownContent}`}
+          innerHTML={renderMarkdown(prompt)}
+        />
+      )
+    : isWaitInProgress || isTerminalWait || isSpawnAgent || !status
+      ? undefined
+      : <div class={toolInputSummary}>{status}</div>
 
   return (
     <ToolUseLayout
       icon={Bot}
       toolName={displayName}
       title={titleEl}
-      summary={status ? <div class={toolInputSummary}>{status}</div> : undefined}
+      summary={expanded() ? undefined : summary}
       context={context}
-    />
+      expanded={expanded()}
+      onToggleExpand={hasCollapsiblePrompt ? () => setExpanded(v => !v) : undefined}
+    >
+      <Show when={hasCollapsiblePrompt}>
+        <div class={`${toolResultContent} ${markdownContent}`} innerHTML={renderMarkdown(prompt)} />
+      </Show>
+    </ToolUseLayout>
   )
 }
 

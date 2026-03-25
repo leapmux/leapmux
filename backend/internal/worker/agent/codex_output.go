@@ -64,7 +64,7 @@ func handleCodexOutput(a *CodexAgent, content []byte) {
 		a.handleTurnCompleted(envelope.Params)
 
 	case "thread/tokenUsage/updated":
-		a.handleTokenUsageUpdated(envelope.Params)
+		a.handleTokenUsageUpdated(content, envelope.Params)
 
 	case "thread/name/updated":
 		a.handleThreadNameUpdated(envelope.Params)
@@ -224,7 +224,12 @@ func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
 		return
 	}
 
-	parentSpanID := a.codexParentSpanID(threadID)
+	parentSpanID := a.codexVisibleParentSpanID(threadID)
+	var collab *codexCollabAgentToolCall
+	if itemType == "collabAgentToolCall" {
+		collab = parseCollabToolCall(item)
+		parentSpanID = a.codexCollabParentSpanID(parentSpanID, collab, itemID, false)
+	}
 
 	switch itemType {
 	case "agentMessage":
@@ -246,14 +251,14 @@ func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
 		a.sink.SetSpanType(itemID, itemType)
 		a.sink.OpenSpan(itemID, parentSpanID)
 	case "collabAgentToolCall":
-		// Persist first at parent depth, then open spans for
-		// SpawnAgent so subagent messages are indented.
+		spanColor := a.sink.PeekNextSpanColor()
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
+			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: spanColor,
 		}); err != nil {
 			slog.Error("codex persist collabAgentToolCall/started", "agent_id", a.agentID, "error", err)
 		}
-		a.handleCollabAgentSpan(item, parentSpanID, false)
+		a.sink.SetSpanType(itemID, itemType)
+		a.handleCollabAgentSpan(collab, itemID, parentSpanID, false)
 	case "reasoning":
 		// No-op for started — wait for completed.
 	}
@@ -269,7 +274,12 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 	// Non-notification messages soft-clear the notification thread.
 	a.sink.SoftClearNotifThread()
 
-	parentSpanID := a.codexParentSpanID(threadID)
+	parentSpanID := a.codexVisibleParentSpanID(threadID)
+	var collab *codexCollabAgentToolCall
+	if itemType == "collabAgentToolCall" {
+		collab = parseCollabToolCall(item)
+		parentSpanID = a.codexCollabParentSpanID(parentSpanID, collab, itemID, true)
+	}
 
 	switch itemType {
 	case "agentMessage":
@@ -323,14 +333,13 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		}
 		a.sink.CloseSpan(itemID)
 	case "collabAgentToolCall":
-		// Close receiver thread spans first so the completed message
-		// is persisted at parent depth (outside the subagent scope).
-		a.handleCollabAgentSpan(item, parentSpanID, true)
+		closingParentSpanID := a.closingCollabParentSpanID(collab, parentSpanID, true)
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
-			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
+			ParentSpanID: parentSpanID, ConnectorSpanID: closingParentSpanID, SpanID: itemID, SpanType: itemType, Closing: closingParentSpanID != "",
 		}); err != nil {
 			slog.Error("codex persist collabAgentToolCall/completed", "agent_id", a.agentID, "error", err)
 		}
+		a.handleCollabAgentSpan(collab, itemID, parentSpanID, true)
 	case "reasoning":
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
 			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
@@ -374,6 +383,13 @@ func (a *CodexAgent) handleThreadCompacted(params json.RawMessage) {
 
 // handleTurnCompleted processes turn/completed notifications.
 func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
+	var notif struct {
+		ThreadID string `json:"threadId"`
+	}
+	if json.Unmarshal(params, &notif) == nil && !a.isMainThreadID(notif.ThreadID) {
+		return
+	}
+
 	// Enrich the params with num_tool_uses so the frontend can distinguish
 	// simple text-only exchanges from complex multi-tool turns.
 	a.mu.Lock()
@@ -414,6 +430,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 
 	// Reset all span tracking at turn-end so the next turn starts clean.
 	a.sink.ResetSpans()
+	a.resetCollabReceivers()
 
 	if turnStatus != "" {
 		if turnStatus == "failed" {
@@ -457,23 +474,37 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 }
 
 // handleTokenUsageUpdated processes thread/tokenUsage/updated notifications.
-func (a *CodexAgent) handleTokenUsageUpdated(params json.RawMessage) {
+func (a *CodexAgent) handleTokenUsageUpdated(content []byte, params json.RawMessage) {
 	var notif struct {
+		ThreadID   string `json:"threadId"`
+		TurnID     string `json:"turnId"`
 		TokenUsage struct {
-			Total struct {
-				InputTokens  int64 `json:"inputTokens"`
-				OutputTokens int64 `json:"outputTokens"`
-			} `json:"total"`
+			Last struct {
+				InputTokens       int64 `json:"inputTokens"`
+				CachedInputTokens int64 `json:"cachedInputTokens"`
+				OutputTokens      int64 `json:"outputTokens"`
+			} `json:"last"`
 			ModelContextWindow *int64 `json:"modelContextWindow"`
 		} `json:"tokenUsage"`
 	}
 	if json.Unmarshal(params, &notif) != nil {
 		return
 	}
+	if !a.isMainThreadID(notif.ThreadID) {
+		return
+	}
+
+	// Persist the raw Codex notification so reconnect/catch-up can rehydrate
+	// context usage from history.
+	if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, content); err != nil {
+		slog.Error("codex persist tokenUsage", "agent_id", a.agentID, "error", err)
+	}
 
 	usage := map[string]interface{}{
-		"inputTokens":  notif.TokenUsage.Total.InputTokens,
-		"outputTokens": notif.TokenUsage.Total.OutputTokens,
+		"inputTokens":              max(notif.TokenUsage.Last.InputTokens-notif.TokenUsage.Last.CachedInputTokens, 0),
+		"cacheCreationInputTokens": int64(0),
+		"cacheReadInputTokens":     notif.TokenUsage.Last.CachedInputTokens,
+		"outputTokens":             notif.TokenUsage.Last.OutputTokens,
 	}
 	if notif.TokenUsage.ModelContextWindow != nil {
 		usage["contextWindow"] = *notif.TokenUsage.ModelContextWindow
@@ -483,6 +514,15 @@ func (a *CodexAgent) handleTokenUsageUpdated(params json.RawMessage) {
 	a.sink.BroadcastSessionInfo(map[string]interface{}{
 		"contextUsage": usage,
 	})
+}
+
+func (a *CodexAgent) isMainThreadID(threadID string) bool {
+	if threadID == "" {
+		return true
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return threadID == a.threadID
 }
 
 // handleThreadNameUpdated processes thread/name/updated notifications.
@@ -609,49 +649,267 @@ func codexWindowToType(mins int) string {
 	}
 }
 
-// handleCollabAgentSpan opens or closes spans for CollabAgentToolCall items.
-// For SpawnAgent tool calls, each receiverThreadId becomes a new span.
-func (a *CodexAgent) handleCollabAgentSpan(item json.RawMessage, parentSpanID string, isCompleted bool) {
-	var collab struct {
-		Tool              string   `json:"tool"`
-		Status            string   `json:"status"`
-		ReceiverThreadIds []string `json:"receiverThreadIds"`
-	}
-	if json.Unmarshal(item, &collab) != nil {
+type codexCollabAgentState struct {
+	Status string `json:"status"`
+}
+
+type codexCollabAgentToolCall struct {
+	Tool              string                           `json:"tool"`
+	Status            string                           `json:"status"`
+	ReceiverThreadIds []string                         `json:"receiverThreadIds"`
+	AgentsStates      map[string]codexCollabAgentState `json:"agentsStates"`
+}
+
+// handleCollabAgentSpan updates span lifecycle for CollabAgentToolCall items.
+// Spawned subagent spans stay open after spawn completion and only close when a
+// later terminal lifecycle event proves the agent is done.
+func (a *CodexAgent) handleCollabAgentSpan(collab *codexCollabAgentToolCall, itemID, parentSpanID string, isCompleted bool) {
+	if collab == nil {
 		return
 	}
 
-	if collab.Tool != "spawnAgent" {
-		return
-	}
-
-	if isCompleted {
-		// Close spans when the spawn is completed or failed.
-		for _, receiverID := range collab.ReceiverThreadIds {
-			a.sink.CloseSpan(receiverID)
+	switch collab.Tool {
+	case "spawnAgent":
+		if !isCompleted {
+			a.sink.OpenSpan(itemID, parentSpanID)
 		}
-	} else {
-		// Open spans for each spawned agent thread.
+		// Register receiver thread IDs as soon as they are available. Some
+		// spawnAgent started messages do not include them yet, and they only
+		// appear on completion.
 		for _, receiverID := range collab.ReceiverThreadIds {
-			a.sink.OpenSpan(receiverID, parentSpanID)
+			a.registerCollabReceiver(receiverID, itemID)
+		}
+		// Do not close spans here. spawnAgent completion only means the child
+		// thread was launched successfully, not that it finished its work.
+	case "wait":
+		if !isCompleted {
+			return
+		}
+		for _, receiverID := range collab.ReceiverThreadIds {
+			state, ok := collab.AgentsStates[receiverID]
+			if !ok || !isTerminalCollabAgentStatus(state.Status) {
+				continue
+			}
+			a.unregisterCollabReceiver(receiverID)
+		}
+		if parentSpanID != "" && !a.hasCollabReceivers(parentSpanID) {
+			a.sink.CloseSpan(parentSpanID)
+		}
+	case "closeAgent":
+		if !isCompleted || collab.Status != "completed" {
+			return
+		}
+		for _, receiverID := range collab.ReceiverThreadIds {
+			a.unregisterCollabReceiver(receiverID)
+		}
+		if parentSpanID != "" && !a.hasCollabReceivers(parentSpanID) {
+			a.sink.CloseSpan(parentSpanID)
 		}
 	}
 }
 
-// codexParentSpanID determines the parent span ID from a pre-extracted threadId.
-// If the threadId matches the main thread (or is empty), returns ""
-// (main agent scope). Otherwise returns the threadId as the parent span ID.
-func (a *CodexAgent) codexParentSpanID(threadID string) string {
+func (a *CodexAgent) closingCollabParentSpanID(collab *codexCollabAgentToolCall, parentSpanID string, isCompleted bool) string {
+	if collab == nil || !isCompleted || parentSpanID == "" {
+		return ""
+	}
+
+	switch collab.Tool {
+	case "wait":
+		if a.willDrainCollabParent(parentSpanID, collab.ReceiverThreadIds, collab.AgentsStates, false) {
+			return parentSpanID
+		}
+	case "closeAgent":
+		if collab.Status == "completed" && a.willDrainCollabParent(parentSpanID, collab.ReceiverThreadIds, collab.AgentsStates, true) {
+			return parentSpanID
+		}
+	}
+
+	return ""
+}
+
+func isTerminalCollabAgentStatus(status string) bool {
+	switch status {
+	case "completed", "errored", "shutdown", "notFound":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseCollabToolCall(item json.RawMessage) *codexCollabAgentToolCall {
+	var collab codexCollabAgentToolCall
+	if json.Unmarshal(item, &collab) != nil {
+		return nil
+	}
+	return &collab
+}
+
+// codexVisibleParentSpanID resolves the parent span for a message. It maps
+// child thread IDs to their owning collab span. Main-thread or empty thread
+// IDs return "" (root scope).
+func (a *CodexAgent) codexVisibleParentSpanID(threadID string) string {
 	if threadID == "" {
 		return ""
 	}
 	a.mu.Lock()
 	mainThreadID := a.threadID
+	spanID := a.collabThreadSpans[threadID]
 	a.mu.Unlock()
 	if threadID == mainThreadID {
 		return ""
 	}
-	return threadID
+	return spanID
+}
+
+func (a *CodexAgent) codexCollabParentSpanID(defaultParentSpanID string, collab *codexCollabAgentToolCall, itemID string, isCompleted bool) string {
+	if collab == nil {
+		return defaultParentSpanID
+	}
+
+	switch collab.Tool {
+	case "spawnAgent":
+		if isCompleted {
+			if spanID := a.collabSpanIDForReceivers(collab.ReceiverThreadIds); spanID != "" {
+				return spanID
+			}
+			return itemID
+		}
+	case "wait", "closeAgent":
+		if spanID := a.collabSpanIDForReceivers(collab.ReceiverThreadIds); spanID != "" {
+			return spanID
+		}
+	}
+
+	return defaultParentSpanID
+}
+
+func (a *CodexAgent) registerCollabReceiver(threadID, spanID string) bool {
+	if threadID == "" || spanID == "" {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.collabThreadSpans == nil {
+		a.collabThreadSpans = make(map[string]string)
+	}
+	if a.collabSpanThreads == nil {
+		a.collabSpanThreads = make(map[string]int)
+	}
+	if prev := a.collabThreadSpans[threadID]; prev != "" && prev != spanID {
+		if a.collabSpanThreads[prev] > 0 {
+			a.collabSpanThreads[prev]--
+			if a.collabSpanThreads[prev] == 0 {
+				delete(a.collabSpanThreads, prev)
+			}
+		}
+	}
+	if a.collabThreadSpans[threadID] == spanID {
+		return false
+	}
+	a.collabThreadSpans[threadID] = spanID
+	a.collabSpanThreads[spanID]++
+	return true
+}
+
+func (a *CodexAgent) unregisterCollabReceiver(threadID string) {
+	if threadID == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.collabThreadSpans == nil {
+		return
+	}
+	spanID := a.collabThreadSpans[threadID]
+	if spanID == "" {
+		return
+	}
+	delete(a.collabThreadSpans, threadID)
+	if a.collabSpanThreads != nil && a.collabSpanThreads[spanID] > 0 {
+		a.collabSpanThreads[spanID]--
+		if a.collabSpanThreads[spanID] == 0 {
+			delete(a.collabSpanThreads, spanID)
+		}
+	}
+}
+
+func (a *CodexAgent) resetCollabReceivers() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	clear(a.collabThreadSpans)
+	clear(a.collabSpanThreads)
+}
+
+func (a *CodexAgent) hasCollabReceivers(spanID string) bool {
+	if spanID == "" {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.collabSpanThreads != nil && a.collabSpanThreads[spanID] > 0
+}
+
+func (a *CodexAgent) willDrainCollabParent(parentSpanID string, receiverIDs []string, agentStates map[string]codexCollabAgentState, removeAll bool) bool {
+	if parentSpanID == "" {
+		return false
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.collabSpanThreads == nil || a.collabSpanThreads[parentSpanID] == 0 {
+		return false
+	}
+
+	remaining := a.collabSpanThreads[parentSpanID]
+	seen := make(map[string]struct{}, len(receiverIDs))
+	for _, receiverID := range receiverIDs {
+		if receiverID == "" {
+			continue
+		}
+		if _, ok := seen[receiverID]; ok {
+			continue
+		}
+		seen[receiverID] = struct{}{}
+		if a.collabThreadSpans == nil || a.collabThreadSpans[receiverID] != parentSpanID {
+			continue
+		}
+		if !removeAll {
+			state, ok := agentStates[receiverID]
+			if !ok || !isTerminalCollabAgentStatus(state.Status) {
+				continue
+			}
+		}
+		remaining--
+	}
+
+	return remaining == 0
+}
+
+func (a *CodexAgent) collabSpanIDForReceivers(receiverIDs []string) string {
+	if len(receiverIDs) == 0 {
+		return ""
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.collabThreadSpans == nil {
+		return ""
+	}
+	var spanID string
+	for _, receiverID := range receiverIDs {
+		current := a.collabThreadSpans[receiverID]
+		if current == "" {
+			return ""
+		}
+		if spanID == "" {
+			spanID = current
+			continue
+		}
+		if current != spanID {
+			return ""
+		}
+	}
+	return spanID
 }
 
 // extractCodexItem extracts the item type, ID, and threadId from item/started

@@ -196,14 +196,6 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		agentID := r.GetAgentId()
 		content := r.GetContent()
 
-		// Control requests (set_permission_mode, interrupt) are sent as raw
-		// input to Claude Code's stdin — not persisted as chat messages.
-		if isControlRequest(content) {
-			svc.handleControlRequestMessage(agentID, content)
-			sendProtoResponse(sender, &leapmuxv1.SendAgentMessageResponse{})
-			return
-		}
-
 		// Reject user messages shorter than 2 characters (after trimming
 		// whitespace) to avoid 400 errors from the Anthropic API.
 		trimmed := strings.TrimSpace(content)
@@ -325,6 +317,25 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 				},
 			})
 		}
+	})
+
+	d.Register("SendAgentRawMessage", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+		var r leapmuxv1.SendAgentRawMessageRequest
+		if err := unmarshalRequest(req, &r); err != nil {
+			sendInvalidArgument(sender, "invalid request")
+			return
+		}
+
+		agentID := r.GetAgentId()
+		content := r.GetContent()
+		if dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID); err == nil {
+			if dbAgent.AgentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX && isInterruptRequest(content) {
+				svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, "[Request interrupted by user]")
+			}
+		}
+
+		svc.handleControlRequestMessage(agentID, content)
+		sendProtoResponse(sender, &leapmuxv1.SendAgentRawMessageResponse{})
 	})
 
 	d.Register("ListAgents", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
@@ -1052,10 +1063,10 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 	return nil
 }
 
-// handleControlRequestMessage handles a control_request JSON message sent
-// as a user message. Control requests (set_permission_mode, interrupt, etc.)
-// are forwarded as raw input to the agent's stdin, not wrapped in a user
-// message envelope.
+// handleControlRequestMessage handles raw provider control input
+// (e.g. Claude control_request JSON or Codex JSON-RPC interrupt).
+// These payloads are forwarded directly to the agent's stdin and are not
+// wrapped in a user message envelope or persisted as chat messages.
 func (svc *Context) handleControlRequestMessage(agentID, content string) {
 	// If agent is not running, handle special cases locally.
 	if !svc.Agents.HasAgent(agentID) {
@@ -1551,19 +1562,6 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 	}
 }
 
-// isControlRequest checks if the content is a control_request JSON message
-// (e.g. set_permission_mode, interrupt). These are sent as raw input to
-// Claude Code's stdin and not persisted as chat messages.
-func isControlRequest(content string) bool {
-	var msg struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal([]byte(content), &msg); err != nil {
-		return false
-	}
-	return msg.Type == "control_request"
-}
-
 // parseSetPermissionMode checks if a control_request is a set_permission_mode
 // request and returns the requested mode. Returns ("", false) if not a match.
 func parseSetPermissionMode(content string) (string, bool) {
@@ -1582,9 +1580,11 @@ func parseSetPermissionMode(content string) (string, bool) {
 	return msg.Request.Mode, true
 }
 
-// isInterruptRequest checks if a control_request has subtype "interrupt".
+// isInterruptRequest checks whether the raw payload is an interrupt request
+// for a supported provider format.
 func isInterruptRequest(content string) bool {
 	var msg struct {
+		Method  string `json:"method"`
 		Request struct {
 			Subtype string `json:"subtype"`
 		} `json:"request"`
@@ -1592,7 +1592,7 @@ func isInterruptRequest(content string) bool {
 	if err := json.Unmarshal([]byte(content), &msg); err != nil {
 		return false
 	}
-	return msg.Request.Subtype == "interrupt"
+	return msg.Request.Subtype == "interrupt" || msg.Method == "turn/interrupt"
 }
 
 // broadcastWatchEvent sends a WatchEventsResponse as a stream message.

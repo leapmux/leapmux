@@ -192,6 +192,31 @@ export function extractAssistantUsage(parsed: ParsedMessageContent): {
   return Object.keys(result).length > 0 ? result : null
 }
 
+/** Extract context usage from a persisted Codex thread/tokenUsage/updated notification. */
+export function extractCodexTokenUsage(parsed: ParsedMessageContent): {
+  contextUsage: ContextUsageInfo
+} | null {
+  const inner = getInnerMessage(parsed)
+  if (!inner || inner.method !== 'thread/tokenUsage/updated')
+    return null
+
+  const params = inner.params as Record<string, unknown> | undefined
+  const tokenUsage = params?.tokenUsage as Record<string, unknown> | undefined
+  const last = tokenUsage?.last as Record<string, unknown> | undefined
+  if (!last || typeof last.inputTokens !== 'number')
+    return null
+
+  const contextUsage: ContextUsageInfo = {
+    inputTokens: Math.max((last.inputTokens as number) - (typeof last.cachedInputTokens === 'number' ? last.cachedInputTokens as number : 0), 0),
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: typeof last.cachedInputTokens === 'number' ? last.cachedInputTokens as number : 0,
+  }
+  if (typeof tokenUsage?.modelContextWindow === 'number')
+    contextUsage.contextWindow = tokenUsage.modelContextWindow as number
+
+  return { contextUsage }
+}
+
 /** Extract result-message metadata: subtype, contextWindow, totalCostUsd, numToolUses. */
 export function extractResultMetadata(parsed: ParsedMessageContent): {
   subtype?: string

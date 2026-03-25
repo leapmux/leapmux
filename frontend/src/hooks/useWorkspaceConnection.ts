@@ -15,7 +15,7 @@ import { AgentStatus, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { ChannelError } from '~/lib/channel'
 import { createLogger } from '~/lib/logger'
-import { extractAgentRenamed, extractAssistantUsage, extractPlanFilePath, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessageType, parseMessageContent } from '~/lib/messageParser'
+import { extractAgentRenamed, extractAssistantUsage, extractCodexTokenUsage, extractPlanFilePath, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessageType, parseMessageContent } from '~/lib/messageParser'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
 
 const log = createLogger('workspace')
@@ -137,6 +137,10 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
               for (const rl of rls)
                 rateLimits[rl.key] = rl.info
               agentSessionStore.updateInfo(agentId, { rateLimits } as Record<string, unknown>)
+            }
+            const codexUsage = extractCodexTokenUsage(parsed)
+            if (codexUsage) {
+              agentSessionStore.updateInfo(agentId, codexUsage as Record<string, unknown>)
             }
             const sc = extractSettingsChanges(parsed)
             if (sc) {

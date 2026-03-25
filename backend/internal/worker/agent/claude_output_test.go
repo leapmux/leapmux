@@ -326,3 +326,75 @@ func TestHandleOutput_MultipleToolUses(t *testing.T) {
 	// Tool use counter should reflect both.
 	assert.Equal(t, 2, agent.turnToolUses)
 }
+
+func TestHandleOutput_TopLevelAssistantBroadcastsContextUsage(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	// A top-level assistant message (no parent_tool_use_id) with usage should
+	// broadcast context usage via session info.
+	agent.HandleOutput([]byte(`{
+		"type": "assistant",
+		"message": {
+			"role": "assistant",
+			"content": [{"type": "text", "text": "hello"}],
+			"usage": {"input_tokens": 100, "output_tokens": 50, "cache_creation_input_tokens": 10, "cache_read_input_tokens": 30}
+		}
+	}`))
+
+	// Force a result message to trigger the broadcast (assistant messages are
+	// debounced, but result messages always broadcast).
+	agent.HandleOutput([]byte(`{
+		"type": "result",
+		"subtype": "success"
+	}`))
+
+	require.GreaterOrEqual(t, sink.SessionInfoCount(), 1)
+	info := sink.LastSessionInfo()
+	usage, ok := info["contextUsage"].(map[string]interface{})
+	require.True(t, ok, "expected contextUsage in session info")
+	assert.Equal(t, int64(100), usage["inputTokens"])
+	assert.Equal(t, int64(50), usage["outputTokens"])
+	assert.Equal(t, int64(10), usage["cacheCreationInputTokens"])
+	assert.Equal(t, int64(30), usage["cacheReadInputTokens"])
+}
+
+func TestHandleOutput_SubagentAssistantDoesNotOverwriteContextUsage(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	// First, a top-level assistant message sets the usage baseline.
+	agent.HandleOutput([]byte(`{
+		"type": "assistant",
+		"message": {
+			"role": "assistant",
+			"content": [{"type": "text", "text": "top level"}],
+			"usage": {"input_tokens": 500, "output_tokens": 200, "cache_creation_input_tokens": 40, "cache_read_input_tokens": 100}
+		}
+	}`))
+
+	// Then a subagent assistant message (with parent_tool_use_id) has smaller
+	// usage — it must NOT overwrite the top-level snapshot.
+	agent.HandleOutput([]byte(`{
+		"type": "assistant",
+		"parent_tool_use_id": "agent-tu-1",
+		"message": {
+			"role": "assistant",
+			"content": [{"type": "text", "text": "subagent"}],
+			"usage": {"input_tokens": 50, "output_tokens": 10, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 5}
+		}
+	}`))
+
+	// Force broadcast via result.
+	agent.HandleOutput([]byte(`{
+		"type": "result",
+		"subtype": "success"
+	}`))
+
+	require.GreaterOrEqual(t, sink.SessionInfoCount(), 1)
+	info := sink.LastSessionInfo()
+	usage, ok := info["contextUsage"].(map[string]interface{})
+	require.True(t, ok, "expected contextUsage in session info")
+	assert.Equal(t, int64(500), usage["inputTokens"], "subagent should not overwrite top-level inputTokens")
+	assert.Equal(t, int64(200), usage["outputTokens"], "subagent should not overwrite top-level outputTokens")
+}

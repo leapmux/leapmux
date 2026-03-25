@@ -16,6 +16,7 @@ import (
 // are sourced. When false, only -c is used (no profile sourcing).
 //
 // binaryName is the executable to invoke (e.g. "claude", "codex").
+// stripEnvKeys are removed by the shell wrapper before the binary is started.
 // baseArgs are always passed to the binary. modelEffortArgs (--model/--effort)
 // are conditionally included only when no third-party LLM provider env vars
 // are detected at shell runtime. When modelEffortArgs is empty, no conditional
@@ -25,7 +26,7 @@ import (
 // The caller should scan stdout for lines starting with metaPrefix to extract
 // key=value metadata, then for the delimiter to detect the end of preamble.
 func buildShellWrappedCommand(ctx context.Context, shellPath string, interactive bool,
-	binaryName string, baseArgs []string, modelEffortArgs []string, workingDir string) (*exec.Cmd, string, string) {
+	binaryName string, stripEnvKeys, baseArgs []string, modelEffortArgs []string, workingDir string) (*exec.Cmd, string, string) {
 
 	id := generateRequestID()
 	delimiter := "__LEAPMUX_READY_" + id + "__"
@@ -38,21 +39,21 @@ func buildShellWrappedCommand(ctx context.Context, shellPath string, interactive
 	var cmdArgs []string
 	switch {
 	case terminal.IsPwsh(shellName):
-		inner := buildPwshCommand(binaryName, delimiter, metaPrefix, baseArgs, modelEffortArgs)
+		inner := buildPwshCommand(binaryName, stripEnvKeys, delimiter, metaPrefix, baseArgs, modelEffortArgs)
 		if interactive {
 			cmdArgs = append(terminal.LoginShellArgs(shellPath), "-Command", inner)
 		} else {
 			cmdArgs = []string{"-Command", inner}
 		}
 	case shellName == "tcsh" || shellName == "csh":
-		inner := buildPosixCommand(binaryName, delimiter, metaPrefix, baseArgs, modelEffortArgs, true)
+		inner := buildPosixCommand(binaryName, stripEnvKeys, delimiter, metaPrefix, baseArgs, modelEffortArgs, true)
 		if interactive {
 			cmdArgs = []string{"-ic", inner} // tcsh: -l must be the only flag
 		} else {
 			cmdArgs = []string{"-c", inner}
 		}
 	case shellName == "nu":
-		inner := buildNuCommand(binaryName, delimiter, metaPrefix, baseArgs, modelEffortArgs)
+		inner := buildNuCommand(binaryName, stripEnvKeys, delimiter, metaPrefix, baseArgs, modelEffortArgs)
 		if interactive {
 			cmdArgs = append(terminal.LoginShellArgs(shellPath), "-c", inner)
 		} else {
@@ -60,7 +61,7 @@ func buildShellWrappedCommand(ctx context.Context, shellPath string, interactive
 		}
 	default:
 		// bash, zsh, fish, sh, ash, dash, ksh, xonsh, and unknown shells
-		inner := buildPosixCommand(binaryName, delimiter, metaPrefix, baseArgs, modelEffortArgs, true)
+		inner := buildPosixCommand(binaryName, stripEnvKeys, delimiter, metaPrefix, baseArgs, modelEffortArgs, true)
 		if interactive {
 			cmdArgs = append(terminal.LoginShellArgs(shellPath), "-c", inner)
 		} else {
@@ -77,7 +78,7 @@ func buildShellWrappedCommand(ctx context.Context, shellPath string, interactive
 // If useExec is true, the command uses exec to replace the shell process.
 // When modelEffortArgs is non-empty, a conditional is emitted to check for
 // third-party provider env vars at runtime.
-func buildPosixCommand(binaryName, delimiter, metaPrefix string, baseArgs, modelEffortArgs []string, useExec bool) string {
+func buildPosixCommand(binaryName string, stripEnvKeys []string, delimiter, metaPrefix string, baseArgs, modelEffortArgs []string, useExec bool) string {
 	quotedBase := make([]string, len(baseArgs))
 	for i, arg := range baseArgs {
 		quotedBase[i] = posixQuote(arg)
@@ -89,11 +90,12 @@ func buildPosixCommand(binaryName, delimiter, metaPrefix string, baseArgs, model
 	}
 
 	baseArgsStr := strings.Join(quotedBase, " ")
+	clearEnvPrefix := posixClearEnv(stripEnvKeys)
 
 	// Simple path: no model/effort args (third-party detected from settings).
 	if len(modelEffortArgs) == 0 {
-		return fmt.Sprintf("unset CLAUDECODE && echo '%s' && %s%s %s",
-			delimiter, execPrefix, binaryName, baseArgsStr)
+		return fmt.Sprintf("%secho '%s' && %s%s %s",
+			clearEnvPrefix, delimiter, execPrefix, binaryName, baseArgsStr)
 	}
 
 	// Conditional path: check env vars at runtime.
@@ -104,7 +106,7 @@ func buildPosixCommand(binaryName, delimiter, metaPrefix string, baseArgs, model
 	meArgsStr := strings.Join(quotedME, " ")
 
 	return fmt.Sprintf(
-		"unset CLAUDECODE && "+
+		"%s"+
 			"if "+posixEnvCondition()+"; then "+
 			"echo '%scan_change_model_and_effort=false' && "+
 			"echo '%s' && %s%s %s; "+
@@ -112,24 +114,26 @@ func buildPosixCommand(binaryName, delimiter, metaPrefix string, baseArgs, model
 			"echo '%scan_change_model_and_effort=true' && "+
 			"echo '%s' && %s%s %s %s; "+
 			"fi",
+		clearEnvPrefix,
 		metaPrefix, delimiter, execPrefix, binaryName, baseArgsStr,
 		metaPrefix, delimiter, execPrefix, binaryName, baseArgsStr, meArgsStr,
 	)
 }
 
 // buildNuCommand builds the inner command string for Nushell.
-func buildNuCommand(binaryName, delimiter, metaPrefix string, baseArgs, modelEffortArgs []string) string {
+func buildNuCommand(binaryName string, stripEnvKeys []string, delimiter, metaPrefix string, baseArgs, modelEffortArgs []string) string {
 	quotedBase := make([]string, len(baseArgs))
 	for i, arg := range baseArgs {
 		quotedBase[i] = nuQuote(arg)
 	}
 
 	baseArgsStr := strings.Join(quotedBase, " ")
+	clearEnvPrefix := nuClearEnv(stripEnvKeys)
 
 	// Simple path: no model/effort args.
 	if len(modelEffortArgs) == 0 {
-		return fmt.Sprintf("hide-env CLAUDECODE; echo '%s'; ^%s %s",
-			delimiter, binaryName, baseArgsStr)
+		return fmt.Sprintf("%secho '%s'; ^%s %s",
+			clearEnvPrefix, delimiter, binaryName, baseArgsStr)
 	}
 
 	// Conditional path.
@@ -140,7 +144,7 @@ func buildNuCommand(binaryName, delimiter, metaPrefix string, baseArgs, modelEff
 	meArgsStr := strings.Join(quotedME, " ")
 
 	return fmt.Sprintf(
-		"hide-env CLAUDECODE; "+
+		"%s"+
 			"if ("+nuEnvCondition()+") { "+
 			"echo '%scan_change_model_and_effort=false'; "+
 			"echo '%s'; ^%s %s "+
@@ -148,25 +152,26 @@ func buildNuCommand(binaryName, delimiter, metaPrefix string, baseArgs, modelEff
 			"echo '%scan_change_model_and_effort=true'; "+
 			"echo '%s'; ^%s %s %s "+
 			"}",
+		clearEnvPrefix,
 		metaPrefix, delimiter, binaryName, baseArgsStr,
 		metaPrefix, delimiter, binaryName, baseArgsStr, meArgsStr,
 	)
 }
 
 // buildPwshCommand builds the inner command string for PowerShell.
-func buildPwshCommand(binaryName, delimiter, metaPrefix string, baseArgs, modelEffortArgs []string) string {
+func buildPwshCommand(binaryName string, stripEnvKeys []string, delimiter, metaPrefix string, baseArgs, modelEffortArgs []string) string {
 	quotedBase := make([]string, len(baseArgs))
 	for i, arg := range baseArgs {
 		quotedBase[i] = pwshQuote(arg)
 	}
 
 	baseArgsStr := strings.Join(quotedBase, " ")
+	clearEnvPrefix := pwshClearEnv(stripEnvKeys)
 
 	// Simple path: no model/effort args.
 	if len(modelEffortArgs) == 0 {
-		return fmt.Sprintf("Remove-Item Env:CLAUDECODE -ErrorAction SilentlyContinue; "+
-			"Write-Output '%s'; & %s %s",
-			delimiter, binaryName, baseArgsStr)
+		return fmt.Sprintf("%sWrite-Output '%s'; & %s %s",
+			clearEnvPrefix, delimiter, binaryName, baseArgsStr)
 	}
 
 	// Conditional path.
@@ -177,7 +182,7 @@ func buildPwshCommand(binaryName, delimiter, metaPrefix string, baseArgs, modelE
 	meArgsStr := strings.Join(quotedME, " ")
 
 	return fmt.Sprintf(
-		"Remove-Item Env:CLAUDECODE -ErrorAction SilentlyContinue; "+
+		"%s"+
 			"if ("+pwshEnvCondition()+") { "+
 			"Write-Output '%scan_change_model_and_effort=false'; "+
 			"Write-Output '%s'; & %s %s "+
@@ -185,9 +190,39 @@ func buildPwshCommand(binaryName, delimiter, metaPrefix string, baseArgs, modelE
 			"Write-Output '%scan_change_model_and_effort=true'; "+
 			"Write-Output '%s'; & %s %s %s "+
 			"}",
+		clearEnvPrefix,
 		metaPrefix, delimiter, binaryName, baseArgsStr,
 		metaPrefix, delimiter, binaryName, baseArgsStr, meArgsStr,
 	)
+}
+
+func posixClearEnv(keys []string) string {
+	if len(keys) == 0 {
+		return ""
+	}
+	return "unset " + strings.Join(keys, " ") + " && "
+}
+
+func nuClearEnv(keys []string) string {
+	if len(keys) == 0 {
+		return ""
+	}
+	parts := make([]string, len(keys))
+	for i, key := range keys {
+		parts[i] = "hide-env " + key
+	}
+	return strings.Join(parts, "; ") + "; "
+}
+
+func pwshClearEnv(keys []string) string {
+	if len(keys) == 0 {
+		return ""
+	}
+	parts := make([]string, len(keys))
+	for i, key := range keys {
+		parts[i] = "Remove-Item Env:" + key + " -ErrorAction SilentlyContinue"
+	}
+	return strings.Join(parts, "; ") + "; "
 }
 
 // posixEnvCondition builds a POSIX shell conditional expression that checks
