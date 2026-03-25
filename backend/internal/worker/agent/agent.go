@@ -546,16 +546,35 @@ func filterEnv(environ []string, keys ...string) []string {
 }
 
 // ListAvailableProviders returns providers whose binary is found in the
-// user's shell environment. It runs a check command in the user's shell
-// for each registered provider and returns those that exit successfully.
+// user's shell environment. Checks run concurrently to minimize latency
+// when login shells are used (each check reads shell profiles).
 func ListAvailableProviders(ctx context.Context, shellPath string, useLoginShell bool) []leapmuxv1.AgentProvider {
-	var result []leapmuxv1.AgentProvider
+	type check struct {
+		provider leapmuxv1.AgentProvider
+		binary   string
+	}
+	var checks []check
 	for provider, reg := range providerRegistry {
-		if reg.binaryName == "" {
-			continue
+		if reg.binaryName != "" {
+			checks = append(checks, check{provider, reg.binaryName})
 		}
-		if checkBinaryAvailable(ctx, shellPath, useLoginShell, reg.binaryName) {
-			result = append(result, provider)
+	}
+
+	found := make([]bool, len(checks))
+	var wg sync.WaitGroup
+	for i, c := range checks {
+		wg.Add(1)
+		go func(idx int, binary string) {
+			defer wg.Done()
+			found[idx] = checkBinaryAvailable(ctx, shellPath, useLoginShell, binary)
+		}(i, c.binary)
+	}
+	wg.Wait()
+
+	var result []leapmuxv1.AgentProvider
+	for i, c := range checks {
+		if found[i] {
+			result = append(result, c.provider)
 		}
 	}
 	// Always return at least one provider so the UI has something to show.
@@ -568,32 +587,28 @@ func ListAvailableProviders(ctx context.Context, shellPath string, useLoginShell
 
 func checkBinaryAvailable(ctx context.Context, shellPath string, loginShell bool, binaryName string) bool {
 	shellName := filepath.Base(shellPath)
-	var inner string
+
+	var inner, flag string
 	switch {
 	case terminal.IsPwsh(shellName):
-		inner = fmt.Sprintf("if (Get-Command %s -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }", binaryName)
+		inner = fmt.Sprintf("if (Get-Command %s -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }", pwshQuote(binaryName))
+		flag = "-Command"
 	case shellName == "nu":
-		inner = fmt.Sprintf("if (which %s | is-not-empty) { exit 0 } else { exit 1 }", binaryName)
+		inner = fmt.Sprintf("if (which %s | is-not-empty) { exit 0 } else { exit 1 }", nuQuote(binaryName))
+		flag = "-c"
 	case shellName == "tcsh" || shellName == "csh":
-		inner = fmt.Sprintf("which %s >& /dev/null", binaryName)
+		inner = fmt.Sprintf("which %s >& /dev/null", posixQuote(binaryName))
+		flag = "-c"
 	default:
-		inner = fmt.Sprintf("command -v %s >/dev/null 2>&1", binaryName)
+		inner = fmt.Sprintf("command -v %s >/dev/null 2>&1", posixQuote(binaryName))
+		flag = "-c"
 	}
 
 	var args []string
-	switch {
-	case terminal.IsPwsh(shellName):
-		if loginShell {
-			args = append(terminal.LoginShellArgs(shellPath), "-Command", inner)
-		} else {
-			args = []string{"-Command", inner}
-		}
-	default:
-		if loginShell {
-			args = append(terminal.LoginShellArgs(shellPath), "-c", inner)
-		} else {
-			args = []string{"-c", inner}
-		}
+	if loginShell {
+		args = append(terminal.LoginShellArgs(shellPath), flag, inner)
+	} else {
+		args = []string{flag, inner}
 	}
 
 	cmd := exec.CommandContext(ctx, shellPath, args...)

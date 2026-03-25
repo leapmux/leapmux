@@ -704,7 +704,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			sendInvalidArgument(sender, "invalid request")
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), svc.agentStartupTimeout())
 		defer cancel()
 		providers := agent.ListAvailableProviders(ctx, svc.agentShell(), svc.agentLoginShell())
 		sendProtoResponse(sender, &leapmuxv1.ListAvailableProvidersResponse{
