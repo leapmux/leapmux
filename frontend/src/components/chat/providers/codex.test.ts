@@ -127,6 +127,33 @@ describe('codex classify', () => {
     const result = plugin.classify(parent, null)
     expect(result).toEqual({ kind: 'hidden' })
   })
+
+  it('hides assistant interrupt echo messages with top-level string content', () => {
+    const parent = {
+      role: 'assistant',
+      content: '{"jsonrpc":"2.0","id":1001,"method":"turn/interrupt","params":{"threadId":"thread-1","turnId":"turn-1"}}',
+    }
+    const result = plugin.classify(parent, null)
+    expect(result).toEqual({ kind: 'hidden' })
+  })
+
+  it('hides assistant interrupt echo messages with assistant text blocks', () => {
+    const parent = {
+      role: 'assistant',
+      type: 'assistant',
+      message: {
+        content: [
+          {
+            type: 'text',
+            text: '{"jsonrpc":"2.0","id":1001,"method":"turn/interrupt","params":{"threadId":"thread-1","turnId":"turn-1"}}',
+          },
+        ],
+      },
+    }
+    const result = plugin.classify(parent, null)
+    expect(result).toEqual({ kind: 'hidden' })
+  })
+
 })
 
 describe('codex isAskUserQuestion', () => {

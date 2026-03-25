@@ -98,6 +98,16 @@ function markdownClass(_role: MessageRole): string {
   return markdownContent
 }
 
+function parseInterruptRequest(content: string): boolean {
+  try {
+    const parsed = JSON.parse(content) as Record<string, unknown>
+    return parsed.method === 'turn/interrupt'
+  }
+  catch {
+    return false
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Specialized tool render functions (accept pre-extracted tool_use data)
 // ---------------------------------------------------------------------------
@@ -219,6 +229,9 @@ const userTextContentRenderer: MessageContentRenderer = {
     if (!text)
       return null
 
+    if (parseInterruptRequest(text))
+      return <div class={markdownClass(role)} innerHTML={renderMarkdown('[Request interrupted by user]')} />
+
     return <div class={markdownClass(role)} innerHTML={renderMarkdown(text)} />
   },
 }
@@ -228,6 +241,8 @@ const userContentRenderer: MessageContentRenderer = {
   render(parsed, role, _context) {
     if (!isObject(parsed) || typeof parsed.content !== 'string' || 'type' in parsed)
       return null
+    if (parseInterruptRequest(parsed.content as string))
+      return <div class={markdownClass(role)} innerHTML={renderMarkdown('[Request interrupted by user]')} />
     return <div class={markdownClass(role)} innerHTML={renderMarkdown(parsed.content as string)} />
   },
 }

@@ -55,6 +55,38 @@ function buildCodexInterruptRequest(threadId: string, turnId: string): string {
   })
 }
 
+function isCodexInterruptRequestText(content: string): boolean {
+  try {
+    const parsed = JSON.parse(content) as Record<string, unknown>
+    return parsed.method === 'turn/interrupt'
+  }
+  catch {
+    return false
+  }
+}
+
+function codexAssistantInterruptEcho(parent: Record<string, unknown>): boolean {
+  if (parent.role !== 'assistant')
+    return false
+
+  if (typeof parent.content === 'string')
+    return isCodexInterruptRequestText(parent.content)
+
+  if (parent.type !== 'assistant' || !isObject(parent.message))
+    return false
+
+  const content = (parent.message as Record<string, unknown>).content
+  if (!Array.isArray(content))
+    return false
+
+  const text = content
+    .filter((c: unknown) => isObject(c) && c.type === 'text')
+    .map((c: unknown) => String((c as Record<string, unknown>).text || ''))
+    .join('')
+
+  return text.length > 0 && isCodexInterruptRequestText(text)
+}
+
 /** Extra notification types for Codex (agent_error). */
 const CODEX_EXTRA_NOTIF_TYPES = new Set(['agent_error'])
 function isCodexNotifThread(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
@@ -269,6 +301,9 @@ const codexPlugin: ProviderPlugin = {
 
     if (!parent)
       return { kind: 'unknown' }
+
+    if (codexAssistantInterruptEcho(parent))
+      return { kind: 'hidden' }
 
     const type = parent.type as string | undefined
     const subtype = parent.subtype as string | undefined

@@ -207,7 +207,7 @@ export function extractCodexTokenUsage(parsed: ParsedMessageContent): {
     return null
 
   const contextUsage: ContextUsageInfo = {
-    inputTokens: last.inputTokens as number,
+    inputTokens: Math.max((last.inputTokens as number) - (typeof last.cachedInputTokens === 'number' ? last.cachedInputTokens as number : 0), 0),
     cacheCreationInputTokens: 0,
     cacheReadInputTokens: typeof last.cachedInputTokens === 'number' ? last.cachedInputTokens as number : 0,
   }

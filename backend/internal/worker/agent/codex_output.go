@@ -506,7 +506,7 @@ func (a *CodexAgent) handleTokenUsageUpdated(content []byte, params json.RawMess
 	}
 
 	usage := map[string]interface{}{
-		"inputTokens":              notif.TokenUsage.Last.InputTokens,
+		"inputTokens":              max(notif.TokenUsage.Last.InputTokens-notif.TokenUsage.Last.CachedInputTokens, 0),
 		"cacheCreationInputTokens": int64(0),
 		"cacheReadInputTokens":     notif.TokenUsage.Last.CachedInputTokens,
 		"outputTokens":             notif.TokenUsage.Last.OutputTokens,

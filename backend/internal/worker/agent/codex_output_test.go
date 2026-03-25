@@ -692,8 +692,8 @@ func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsage(t *testing.T)
 	if !ok {
 		t.Fatalf("expected contextUsage map, got %#v", info["contextUsage"])
 	}
-	if usage["inputTokens"] != int64(10) {
-		t.Fatalf("expected inputTokens 10, got %#v", usage["inputTokens"])
+	if usage["inputTokens"] != int64(5) {
+		t.Fatalf("expected inputTokens 5, got %#v", usage["inputTokens"])
 	}
 	if usage["cacheCreationInputTokens"] != int64(0) {
 		t.Fatalf("expected cacheCreationInputTokens 0, got %#v", usage["cacheCreationInputTokens"])

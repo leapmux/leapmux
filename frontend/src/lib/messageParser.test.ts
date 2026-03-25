@@ -391,7 +391,7 @@ describe('extractCodexTokenUsage', () => {
 
     expect(extractCodexTokenUsage(parseMessageContent(msg))).toEqual({
       contextUsage: {
-        inputTokens: 10,
+        inputTokens: 5,
         cacheCreationInputTokens: 0,
         cacheReadInputTokens: 5,
         contextWindow: 4096,
