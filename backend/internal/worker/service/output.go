@@ -278,6 +278,37 @@ func (t *SpanTracker) Snapshot(parentSpanID, connectorSpanID string, closing boo
 	return depth, string(data), connectorColorOut
 }
 
+// ShouldBroadcastStreamChunk reports whether a live stream chunk for spanID
+// should be broadcast. To keep the live UI uncluttered, span-targeted deltas
+// are only streamed when the target span is top-level and it is the only
+// active span. Untargeted streaming (spanID == "") is always allowed.
+func (t *SpanTracker) ShouldBroadcastStreamChunk(spanID string) bool {
+	if spanID == "" {
+		return true
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.parentMap[spanID] != "" {
+		return false
+	}
+
+	active := 0
+	for _, s := range t.spans {
+		if s.SpanID == spanID {
+			active++
+			continue
+		}
+		active++
+		if active > 1 {
+			return false
+		}
+	}
+
+	return active == 1
+}
+
 // resolveConnectorSpanID determines which span a message should visually
 // connect to. For span closers (tool_result), the span is already open so
 // we connect to it directly. For span openers (tool_use) and other messages,
@@ -435,6 +466,9 @@ func (s *agentOutputSink) PeekNextSpanColor() int32 {
 }
 
 func (s *agentOutputSink) BroadcastStreamChunk(content []byte, spanID string, method string) {
+	if !s.tracker.ShouldBroadcastStreamChunk(spanID) {
+		return
+	}
 	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
 		AgentId: s.agentID,
 		Event: &leapmuxv1.AgentEvent_StreamChunk{
