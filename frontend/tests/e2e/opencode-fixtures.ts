@@ -10,8 +10,8 @@ import {
 } from './helpers/api'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
-// AgentProvider.OPENCODE = 3
-const AGENT_PROVIDER_OPENCODE = 3
+// AgentProvider.OPENCODE = 4
+const AGENT_PROVIDER_OPENCODE = 4
 
 interface WorkspaceFixture {
   workspaceId: string
