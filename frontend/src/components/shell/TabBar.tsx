@@ -25,6 +25,9 @@ import { menuSectionHeader, monoFont } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
 import { TABBAR_ZONE_PREFIX, useTabDrag } from './TabDragContext'
 
+const MENU_CHECK = '\u2713 ' // ✓ + space
+const MENU_NOCHECK = '\u2003 ' // em-space placeholder
+
 const TabBarTooltip: Component<{ text: string, children: JSX.Element }> = tipProps => (
   <Tooltip text={tipProps.text}>
     <span class={styles.tooltipTrigger}>
@@ -287,7 +290,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
           prefs.setShowHiddenMessages(!prefs.showHiddenMessages())
         }}
       >
-        {prefs.showHiddenMessages() ? '\u2713 ' : '\u2003 '}
+        {prefs.showHiddenMessages() ? MENU_CHECK : MENU_NOCHECK}
         Show hidden messages
       </button>
     </>

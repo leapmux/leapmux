@@ -150,7 +150,7 @@ interface MessageBubbleProps {
   /** Toggle the expand/collapse state for this message's tool result. */
   onToggleToolResultExpanded?: () => void
   /** Lifted per-message diff view override, managed by ChatView. */
-  localDiffView?: 'unified' | 'split' | null
+  localDiffView?: 'unified' | 'split'
   /** Set the per-message diff view override. */
   onSetLocalDiffView?: (view: 'unified' | 'split') => void
 }
@@ -160,7 +160,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const [jsonCopied, setJsonCopied] = createSignal(false)
   const [markdownCopied, setMarkdownCopied] = createSignal(false)
   const toolResultExpanded = () => props.toolResultExpanded ?? false
-  const localDiffView = () => props.localDiffView ?? null
+  const localDiffView = () => props.localDiffView
   let contentRef: HTMLDivElement | undefined
 
   // Use pre-computed values from ChatView when available, otherwise compute on demand.

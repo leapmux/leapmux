@@ -186,11 +186,11 @@ export const PreferencesProvider: ParentComponent = (props) => {
   }
 
   // --- Browser-only developer preferences ---
-  const [showHiddenMessages, setShowHiddenMessages] = createSignal(
+  const [showHiddenMessages, setShowHiddenMessagesSignal] = createSignal(
     readLocalStorage('leapmux-show-hidden-messages') === 'true',
   )
-  const setShowHiddenMessagesWrapped = (value: boolean) => {
-    setShowHiddenMessages(value)
+  const setShowHiddenMessages = (value: boolean) => {
+    setShowHiddenMessagesSignal(value)
     writeLocalStorage('leapmux-show-hidden-messages', value ? 'true' : null)
   }
 
@@ -261,7 +261,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
       theme,
       terminalTheme,
       showHiddenMessages,
-      setShowHiddenMessages: setShowHiddenMessagesWrapped,
+      setShowHiddenMessages,
       uiFontCustomEnabled,
       monoFontCustomEnabled,
       uiFonts,

@@ -84,7 +84,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       return next
     })
   }
-  const getLocalDiffView = (messageId: string) => diffViewOverrides().get(messageId) ?? null
+  const getLocalDiffView = (messageId: string) => diffViewOverrides().get(messageId)
   const setLocalDiffView = (messageId: string, view: 'unified' | 'split') => {
     setDiffViewOverrides((prev) => {
       const next = new Map(prev)
