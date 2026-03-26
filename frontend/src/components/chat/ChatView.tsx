@@ -8,6 +8,7 @@ import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
+import { usePreferences } from '~/context/PreferencesContext'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { renderMarkdown } from '~/lib/renderMarkdown'
@@ -65,6 +66,33 @@ interface ChatViewProps {
 }
 
 export const ChatView: Component<ChatViewProps> = (props) => {
+  const prefs = usePreferences()
+
+  // Lifted expand/collapse state keyed by message ID so that it survives
+  // <For> re-renders when new messages are added to the list.
+  const [expandedMessages, setExpandedMessages] = createSignal<Set<string>>(new Set())
+  const [diffViewOverrides, setDiffViewOverrides] = createSignal<Map<string, 'unified' | 'split'>>(new Map())
+
+  const isMessageExpanded = (messageId: string) => expandedMessages().has(messageId)
+  const toggleMessageExpanded = (messageId: string) => {
+    setExpandedMessages((prev) => {
+      const next = new Set(prev)
+      if (next.has(messageId))
+        next.delete(messageId)
+      else
+        next.add(messageId)
+      return next
+    })
+  }
+  const getLocalDiffView = (messageId: string) => diffViewOverrides().get(messageId)
+  const setLocalDiffView = (messageId: string, view: 'unified' | 'split') => {
+    setDiffViewOverrides((prev) => {
+      const next = new Map(prev)
+      next.set(messageId, view)
+      return next
+    })
+  }
+
   // Throttle streaming text markdown rendering to animation frames to avoid
   // running the full remark+shiki pipeline on every streaming chunk.
   const [renderedStreamHtml, setRenderedStreamHtml] = createSignal('')
@@ -168,6 +196,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   })
 
   const visibleEntries = createMemo(() => {
+    const showHidden = prefs.showHiddenMessages()
     return props.messages.map((msg) => {
       let classified = classifyParsedMessage(msg)
       if (
@@ -180,7 +209,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         classified = { ...classified, category: { kind: 'assistant_thinking' } }
       }
       return { msg, ...classified }
-    }).filter(entry => entry.category.kind !== 'hidden')
+    }).filter(entry => showHidden || entry.category.kind !== 'hidden')
   })
 
   const scrollToBottom = () => {
@@ -362,6 +391,10 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                         onReply={props.onReply}
                         getMessageBySpanId={props.getMessageBySpanId}
                         commandStream={props.getCommandStreamBySpanId?.(msg.spanId)}
+                        toolResultExpanded={isMessageExpanded(msg.id)}
+                        onToggleToolResultExpanded={() => toggleMessageExpanded(msg.id)}
+                        localDiffView={getLocalDiffView(msg.id)}
+                        onSetLocalDiffView={view => setLocalDiffView(msg.id, view)}
                       />
                     )
 

@@ -19,10 +19,14 @@ import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
+import { usePreferences } from '~/context/PreferencesContext'
 import { tabKey, TabType } from '~/stores/tab.store'
 import { menuSectionHeader, monoFont } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
 import { TABBAR_ZONE_PREFIX, useTabDrag } from './TabDragContext'
+
+const MENU_CHECK = '\u2713 ' // ✓ + space
+const MENU_NOCHECK = '\u2003 ' // em-space placeholder
 
 const TabBarTooltip: Component<{ text: string, children: JSX.Element }> = tipProps => (
   <Tooltip text={tipProps.text}>
@@ -90,6 +94,7 @@ interface TabBarProps {
 }
 
 export const TabBar: Component<TabBarProps> = (props) => {
+  const prefs = usePreferences()
   const newTerminalLabel = () => props.hasActiveTabContext ? 'New terminal at the current working directory' : 'New terminal...'
 
   const [editingTabKey, setEditingTabKey] = createSignal<string | null>(null)
@@ -276,6 +281,18 @@ export const TabBar: Component<TabBarProps> = (props) => {
           </button>
         )}
       </For>
+      <hr />
+      <li class={menuSectionHeader}>Developer</li>
+      <button
+        role="menuitem"
+        onClick={(e) => {
+          e.preventDefault()
+          prefs.setShowHiddenMessages(!prefs.showHiddenMessages())
+        }}
+      >
+        {prefs.showHiddenMessages() ? MENU_CHECK : MENU_NOCHECK}
+        Show hidden messages
+      </button>
     </>
   )
 

@@ -1,6 +1,7 @@
 import { render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { TabBar } from '~/components/shell/TabBar'
+import { PreferencesProvider } from '~/context/PreferencesContext'
 import { TabType } from '~/stores/tab.store'
 
 // Mock solid-dnd to avoid DragDropProvider context requirement
@@ -84,11 +85,13 @@ describe('tabBar readOnly prop', () => {
       makeTab(TabType.FILE, 'f1', 'File 1'),
     ]
     render(() => (
-      <TabBar
-        {...defaultProps}
-        tabs={tabs}
-        readOnly={false}
-      />
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          tabs={tabs}
+          readOnly={false}
+        />
+      </PreferencesProvider>
     ))
     const closeButtons = screen.getAllByTestId('tab-close')
     expect(closeButtons).toHaveLength(3)
@@ -100,11 +103,13 @@ describe('tabBar readOnly prop', () => {
       makeTab(TabType.TERMINAL, 't1', 'Terminal 1'),
     ]
     render(() => (
-      <TabBar
-        {...defaultProps}
-        tabs={tabs}
-        readOnly={true}
-      />
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          tabs={tabs}
+          readOnly={true}
+        />
+      </PreferencesProvider>
     ))
     const closeButtons = screen.queryAllByTestId('tab-close')
     expect(closeButtons).toHaveLength(0)
@@ -115,11 +120,13 @@ describe('tabBar readOnly prop', () => {
       makeTab(TabType.FILE, 'f1', 'readme.md'),
     ]
     render(() => (
-      <TabBar
-        {...defaultProps}
-        tabs={tabs}
-        readOnly={true}
-      />
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          tabs={tabs}
+          readOnly={true}
+        />
+      </PreferencesProvider>
     ))
     const closeButtons = screen.getAllByTestId('tab-close')
     expect(closeButtons).toHaveLength(1)
@@ -132,11 +139,13 @@ describe('tabBar readOnly prop', () => {
       makeTab(TabType.FILE, 'f1', 'readme.md'),
     ]
     render(() => (
-      <TabBar
-        {...defaultProps}
-        tabs={tabs}
-        readOnly={true}
-      />
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          tabs={tabs}
+          readOnly={true}
+        />
+      </PreferencesProvider>
     ))
     // Only the file tab should have a close button
     const closeButtons = screen.getAllByTestId('tab-close')
@@ -145,12 +154,14 @@ describe('tabBar readOnly prop', () => {
 
   it('hides add-tab buttons when readOnly is true', () => {
     render(() => (
-      <TabBar
-        {...defaultProps}
-        tabs={[makeTab(TabType.AGENT, 'a1', 'Agent')]}
-        readOnly={true}
-        showAddButton={false}
-      />
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          tabs={[makeTab(TabType.AGENT, 'a1', 'Agent')]}
+          readOnly={true}
+          showAddButton={false}
+        />
+      </PreferencesProvider>
     ))
     expect(screen.queryByTestId('new-agent-button')).toBeNull()
     expect(screen.queryByTestId('new-terminal-button')).toBeNull()

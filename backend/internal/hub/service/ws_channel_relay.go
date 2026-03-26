@@ -77,6 +77,8 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	wsConn.SetReadLimit(channelmgr.WSReadLimit)
+
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
