@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -14,6 +15,21 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/util/version"
 )
+
+const (
+	OpenCodeExtraPrimaryAgent = "primaryAgent"
+	OpenCodePrimaryAgentBuild = "build"
+	OpenCodePrimaryAgentPlan  = "plan"
+	openCodeHiddenCompaction  = "compaction"
+	openCodeHiddenTitle       = "title"
+	openCodeHiddenSummary     = "summary"
+)
+
+type openCodeModeInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
 
 // OpenCodeAgent manages a single OpenCode ACP process.
 type OpenCodeAgent struct {
@@ -24,12 +40,14 @@ type OpenCodeAgent struct {
 	sink       OutputSink
 
 	// ACP-specific state.
-	sessionID         string       // from newSession response
-	nextReqID         atomic.Int64 // JSON-RPC request ID counter
-	pendingReqs       sync.Map     // reqID (int64) -> chan json.RawMessage
-	availableModels   []*leapmuxv1.AvailableModel
-	turnAssistantText string       // accumulated assistant text for the current turn
-	turnThinkingText  string       // accumulated thinking text for the current turn
+	sessionID              string       // from newSession response
+	nextReqID              atomic.Int64 // JSON-RPC request ID counter
+	pendingReqs            sync.Map     // reqID (int64) -> chan json.RawMessage
+	availableModels        []*leapmuxv1.AvailableModel
+	currentPrimaryAgent    string
+	availablePrimaryAgents []*leapmuxv1.AvailableOption
+	turnAssistantText      string // accumulated assistant text for the current turn
+	turnThinkingText       string // accumulated thinking text for the current turn
 }
 
 // StartOpenCode starts an OpenCode ACP agent process and performs the handshake.
@@ -136,11 +154,8 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 			} `json:"availableModels"`
 		} `json:"models"`
 		Modes *struct {
-			CurrentModeID  string `json:"currentModeId"`
-			AvailableModes []struct {
-				ID   string `json:"id"`
-				Name string `json:"name"`
-			} `json:"availableModes"`
+			CurrentModeID  string             `json:"currentModeId"`
+			AvailableModes []openCodeModeInfo `json:"availableModes"`
 		} `json:"modes"`
 	}
 	if err := json.Unmarshal(sessionResp, &session); err != nil {
@@ -164,6 +179,19 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 		a.model = session.Models.CurrentModelID
 	}
 
+	var requestedPrimaryAgent string
+	if opts.ExtraSettings != nil {
+		requestedPrimaryAgent = opts.ExtraSettings[OpenCodeExtraPrimaryAgent]
+	}
+	if session.Modes != nil {
+		if err := a.configurePrimaryAgents(session.Modes.AvailableModes, session.Modes.CurrentModeID, requestedPrimaryAgent); err != nil {
+			cleanup()
+			return nil, a.formatStartupError("session/set_mode", err)
+		}
+	} else {
+		a.configurePrimaryAgents(nil, "", "")
+	}
+
 	return a, nil
 }
 
@@ -181,6 +209,96 @@ func buildOpenCodeModels(models []struct {
 		})
 	}
 	return result
+}
+
+func buildOpenCodePrimaryAgents(modes []openCodeModeInfo, currentModeID string) []*leapmuxv1.AvailableOption {
+	result := make([]*leapmuxv1.AvailableOption, 0, len(modes))
+	for _, mode := range modes {
+		if isHiddenOpenCodePrimaryAgent(mode.ID) {
+			continue
+		}
+		name := strings.TrimSpace(mode.Name)
+		if name == "" {
+			name = mode.ID
+		}
+		result = append(result, &leapmuxv1.AvailableOption{
+			Id:          mode.ID,
+			Name:        name,
+			Description: mode.Description,
+			IsDefault:   mode.ID == currentModeID,
+		})
+	}
+	return result
+}
+
+func fallbackOpenCodePrimaryAgents() []*leapmuxv1.AvailableOption {
+	return []*leapmuxv1.AvailableOption{
+		{Id: OpenCodePrimaryAgentBuild, Name: OpenCodePrimaryAgentBuild, IsDefault: true},
+		{Id: OpenCodePrimaryAgentPlan, Name: OpenCodePrimaryAgentPlan},
+	}
+}
+
+func isHiddenOpenCodePrimaryAgent(id string) bool {
+	switch id {
+	case openCodeHiddenCompaction, openCodeHiddenTitle, openCodeHiddenSummary:
+		return true
+	default:
+		return false
+	}
+}
+
+func hasOpenCodePrimaryAgent(options []*leapmuxv1.AvailableOption, id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, option := range options {
+		if option != nil && option.Id == id {
+			return true
+		}
+	}
+	return false
+}
+
+func firstOpenCodePrimaryAgent(options []*leapmuxv1.AvailableOption) string {
+	for _, option := range options {
+		if option != nil && option.IsDefault && option.Id != "" {
+			return option.Id
+		}
+	}
+	for _, option := range options {
+		if option != nil && option.Id != "" {
+			return option.Id
+		}
+	}
+	return ""
+}
+
+func (a *OpenCodeAgent) configurePrimaryAgents(modes []openCodeModeInfo, currentModeID, requestedPrimaryAgent string) error {
+	available := buildOpenCodePrimaryAgents(modes, currentModeID)
+	hasACPModeList := len(available) > 0
+	current := currentModeID
+	if !hasACPModeList {
+		available = fallbackOpenCodePrimaryAgents()
+		if current == "" {
+			current = OpenCodePrimaryAgentBuild
+		}
+	}
+	if current == "" {
+		current = firstOpenCodePrimaryAgent(available)
+	}
+
+	a.mu.Lock()
+	a.availablePrimaryAgents = available
+	a.currentPrimaryAgent = current
+	a.mu.Unlock()
+
+	if hasACPModeList && requestedPrimaryAgent != "" && requestedPrimaryAgent != current && hasOpenCodePrimaryAgent(available, requestedPrimaryAgent) {
+		if err := a.setPrimaryAgent(requestedPrimaryAgent); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // SendInput writes a user prompt to the agent. The ACP prompt RPC blocks until
@@ -285,8 +403,13 @@ func (a *OpenCodeAgent) handlePromptResponse(resp json.RawMessage) {
 func (a *OpenCodeAgent) CurrentSettings() *leapmuxv1.AgentSettings {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	extra := map[string]string{}
+	if a.currentPrimaryAgent != "" {
+		extra[OpenCodeExtraPrimaryAgent] = a.currentPrimaryAgent
+	}
 	return &leapmuxv1.AgentSettings{
-		Model: a.model,
+		Model:         a.model,
+		ExtraSettings: extra,
 	}
 }
 
@@ -295,23 +418,91 @@ func (a *OpenCodeAgent) AvailableModels() []*leapmuxv1.AvailableModel {
 	return a.availableModels
 }
 
+// AvailableOptionGroups returns the available primary-agent group.
+func (a *OpenCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
+	return a.availablePrimaryAgentGroup()
+}
+
 // UpdateSettings applies setting changes to a running agent.
 func (a *OpenCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	if m := s.GetModel(); m != "" {
-		a.mu.Lock()
-		sessionID := a.sessionID
-		a.model = m
-		a.mu.Unlock()
-
-		params, _ := json.Marshal(map[string]interface{}{
-			"sessionId": sessionID,
-			"modelId":   m,
-		})
-		if _, err := a.sendRequest("session/set_model", json.RawMessage(params), 10*time.Second); err != nil {
+		if err := a.setModel(m); err != nil {
 			slog.Warn("opencode session/set_model failed", "agent_id", a.agentID, "error", err)
+			return false
+		}
+	}
+	if primaryAgent := s.GetExtraSettings()[OpenCodeExtraPrimaryAgent]; primaryAgent != "" {
+		if err := a.setPrimaryAgent(primaryAgent); err != nil {
+			slog.Warn("opencode session/set_mode failed", "agent_id", a.agentID, "error", err)
+			return false
 		}
 	}
 	return true
+}
+
+func (a *OpenCodeAgent) setModel(model string) error {
+	a.mu.Lock()
+	sessionID := a.sessionID
+	a.mu.Unlock()
+
+	params, _ := json.Marshal(map[string]interface{}{
+		"sessionId": sessionID,
+		"modelId":   model,
+	})
+	resp, err := a.sendRequest("session/set_model", json.RawMessage(params), 10*time.Second)
+	if err != nil {
+		return err
+	}
+	if err := jsonRPCResultError(resp); err != nil {
+		return err
+	}
+
+	a.mu.Lock()
+	a.model = model
+	a.mu.Unlock()
+	return nil
+}
+
+func (a *OpenCodeAgent) setPrimaryAgent(agent string) error {
+	a.mu.Lock()
+	sessionID := a.sessionID
+	available := a.availablePrimaryAgents
+	a.mu.Unlock()
+
+	if !hasOpenCodePrimaryAgent(available, agent) {
+		return fmt.Errorf("unknown primary agent: %s", agent)
+	}
+
+	params, _ := json.Marshal(map[string]interface{}{
+		"sessionId": sessionID,
+		"modeId":    agent,
+	})
+	resp, err := a.sendRequest("session/set_mode", json.RawMessage(params), 10*time.Second)
+	if err != nil {
+		return err
+	}
+	if err := jsonRPCResultError(resp); err != nil {
+		return err
+	}
+
+	a.mu.Lock()
+	a.currentPrimaryAgent = agent
+	a.mu.Unlock()
+	return nil
+}
+
+func (a *OpenCodeAgent) availablePrimaryAgentGroup() []*leapmuxv1.AvailableOptionGroup {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	options := a.availablePrimaryAgents
+	if len(options) == 0 {
+		options = fallbackOpenCodePrimaryAgents()
+	}
+	return []*leapmuxv1.AvailableOptionGroup{{
+		Key:     OpenCodeExtraPrimaryAgent,
+		Label:   "Primary Agent",
+		Options: options,
+	}}
 }
 
 // HandleOutput processes a single JSONL notification from OpenCode.
@@ -467,16 +658,19 @@ func unwrapACPResult(resp json.RawMessage) json.RawMessage {
 	return wrapper.Content
 }
 
-func init() {
-	registerProvider(
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-		func(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
-			return StartOpenCode(ctx, opts, sink)
-		},
-		nil, // models discovered dynamically from newSession
-		nil, // no static option groups
-		"LEAPMUX_OPENCODE_DEFAULT_MODEL",
-		"LEAPMUX_OPENCODE_DEFAULT_EFFORT",
-		"opencode",
-	)
+func jsonRPCResultError(resp json.RawMessage) error {
+	if len(resp) == 0 || string(resp) == "null" {
+		return nil
+	}
+	var rpcErr struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(resp, &rpcErr); err != nil {
+		return nil
+	}
+	if rpcErr.Message == "" {
+		return nil
+	}
+	return fmt.Errorf("json-rpc error %d: %s", rpcErr.Code, rpcErr.Message)
 }

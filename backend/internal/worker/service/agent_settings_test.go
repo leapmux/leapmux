@@ -274,3 +274,36 @@ func TestUpdateAgentSettings_BroadcastsGenericExtraSettingChanges(t *testing.T) 
 	assert.Equal(t, "safe", change["oldLabel"])
 	assert.Equal(t, "fast", change["newLabel"])
 }
+
+func TestPersistConfirmedAgentSettings_MergesDiscoveredPrimaryAgent(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t, "ws-1")
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-opencode",
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+		ExtraSettings: `{"primaryAgent":"build"}`,
+	}))
+
+	err := svc.persistConfirmedAgentSettings(
+		"agent-opencode",
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+		"",
+		"",
+		"",
+		loadExtraSettings(`{"primaryAgent":"build"}`, leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE),
+		&leapmuxv1.AgentSettings{
+			Model:         "openai/gpt-5",
+			ExtraSettings: map[string]string{"primaryAgent": "plan"},
+		},
+	)
+	require.NoError(t, err)
+
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-opencode")
+	require.NoError(t, err)
+	assert.Equal(t, "openai/gpt-5", dbAgent.Model)
+	assert.Equal(t, "plan", loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)["primaryAgent"])
+}

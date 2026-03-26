@@ -1,3 +1,4 @@
+import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { sendOpenCodePermissionResponse } from '../controls/OpenCodeControlRequest'
@@ -233,6 +234,234 @@ describe('opencode result divider renderer', () => {
   })
 })
 
+describe('opencode tool_call renderer', () => {
+  const plugin = getProviderPlugin(AgentProvider.OPENCODE)!
+
+  it('renders tool_call with execute kind', () => {
+    const toolUse = {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'call_1',
+      title: 'bash',
+      kind: 'execute',
+      status: 'pending',
+      locations: [],
+      rawInput: {},
+    }
+    const category = plugin.classify(toolUse, null)
+    expect(category.kind).toBe('tool_use')
+    const result = plugin.renderMessage!(category, toolUse, MessageRole.ASSISTANT)
+    expect(result).not.toBeNull()
+  })
+
+  it('renders tool_call without kind', () => {
+    const toolUse = {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'call_2',
+      title: 'custom_tool',
+      status: 'pending',
+    }
+    const category = plugin.classify(toolUse, null)
+    const result = plugin.renderMessage!(category, toolUse, MessageRole.ASSISTANT)
+    expect(result).not.toBeNull()
+  })
+})
+
+describe('opencode plan mode', () => {
+	const plugin = getProviderPlugin(AgentProvider.OPENCODE)!
+
+	it('reads the current mode from extraSettings.primaryAgent', () => {
+		expect(plugin.planMode?.currentMode({ extraSettings: { primaryAgent: 'plan' } })).toBe('plan')
+		expect(plugin.planMode?.currentMode({ extraSettings: {} })).toBe('build')
+	})
+
+	it('setMode writes primaryAgent through onOptionGroupChange', () => {
+		const onOptionGroupChange = vi.fn()
+		plugin.planMode?.setMode('plan', { onOptionGroupChange })
+		expect(onOptionGroupChange).toHaveBeenCalledWith('primaryAgent', 'plan')
+	})
+})
+
+describe('opencode settings panel', () => {
+	const plugin = getProviderPlugin(AgentProvider.OPENCODE)!
+
+	it('renders primary-agent choices and updates via option-group callback', async () => {
+		const onOptionGroupChange = vi.fn()
+		render(() => plugin.SettingsPanel!({
+			model: 'openai/gpt-5',
+			extraSettings: { primaryAgent: 'build' },
+			availableModels: [{ id: 'openai/gpt-5', displayName: 'GPT-5', isDefault: true, supportedEfforts: [] }],
+			availableOptionGroups: [{
+				key: 'primaryAgent',
+				label: 'Primary Agent',
+				options: [
+					{ id: 'build', name: 'build', isDefault: true },
+					{ id: 'plan', name: 'plan' },
+				],
+			}],
+			onOptionGroupChange,
+		}))
+
+		expect(screen.getByText('Primary Agent')).toBeTruthy()
+		expect(screen.getByTestId('primary-agent-build')).toBeTruthy()
+		expect(screen.getByTestId('primary-agent-plan')).toBeTruthy()
+
+		await fireEvent.click(screen.getByDisplayValue('plan'))
+		expect(onOptionGroupChange).toHaveBeenCalledWith('primaryAgent', 'plan')
+	})
+
+	it('includes the selected primary agent in the trigger label', () => {
+		render(() => plugin.settingsTriggerLabel!({
+			model: 'openai/gpt-5',
+			extraSettings: { primaryAgent: 'plan' },
+			availableModels: [{ id: 'openai/gpt-5', displayName: 'GPT-5', isDefault: true, supportedEfforts: [] }],
+			availableOptionGroups: [{
+				key: 'primaryAgent',
+				label: 'Primary Agent',
+				options: [
+					{ id: 'build', name: 'build', isDefault: true },
+					{ id: 'plan', name: 'plan' },
+				],
+			}],
+		}))
+
+		expect(screen.getByText('GPT-5 plan')).toBeTruthy()
+	})
+})
+
+describe('opencode tool_call_update renderer', () => {
+  const plugin = getProviderPlugin(AgentProvider.OPENCODE)!
+
+  it('renders completed execute tool_call_update with command and output', () => {
+    const toolUse = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'call_1',
+      status: 'completed',
+      kind: 'execute',
+      title: 'Shows recent commit messages',
+      rawInput: {
+        command: 'git log --oneline -5',
+        workdir: '/workspace',
+        description: 'Shows recent commit messages',
+      },
+      rawOutput: {
+        output: 'abc123 fix something\ndef456 add feature',
+        metadata: { exit: 0, description: 'Shows recent commit messages', truncated: false },
+      },
+      content: [{ type: 'content', content: { type: 'text', text: 'abc123 fix something\ndef456 add feature' } }],
+    }
+    const category = plugin.classify(toolUse, null)
+    expect(category.kind).toBe('tool_use')
+    const result = plugin.renderMessage!(category, toolUse, MessageRole.ASSISTANT)
+    expect(result).not.toBeNull()
+  })
+
+  it('renders failed execute tool_call_update', () => {
+    const toolUse = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'call_2',
+      status: 'failed',
+      kind: 'execute',
+      title: 'Run failing command',
+      rawInput: { command: 'false' },
+      rawOutput: { error: 'command failed', metadata: { exit: 1 } },
+      content: [],
+    }
+    const category = plugin.classify(toolUse, null)
+    const result = plugin.renderMessage!(category, toolUse, MessageRole.ASSISTANT)
+    expect(result).not.toBeNull()
+  })
+
+  it('classifies edit kind tool_call_update as tool_use', () => {
+    const toolUse = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'call_3',
+      status: 'completed',
+      kind: 'edit',
+      title: 'src/main.ts',
+      content: [
+        { type: 'diff', path: 'src/main.ts', oldText: 'const a = 1', newText: 'const a = 2' },
+      ],
+    }
+    const category = plugin.classify(toolUse, null)
+    expect(category.kind).toBe('tool_use')
+  })
+
+  it('renders tool_call_update without rawInput', () => {
+    const toolUse = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'call_4',
+      status: 'completed',
+      kind: 'execute',
+      title: 'simple command',
+      content: [{ type: 'content', content: { type: 'text', text: 'output' } }],
+    }
+    const category = plugin.classify(toolUse, null)
+    const result = plugin.renderMessage!(category, toolUse, MessageRole.ASSISTANT)
+    expect(result).not.toBeNull()
+  })
+
+  it('renders search kind tool_call_update with matches', () => {
+    const toolUse = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'call_search',
+      status: 'completed',
+      kind: 'search',
+      title: 'UpdateSettings',
+      rawInput: {
+        pattern: 'UpdateSettings',
+        path: '/workspace/backend',
+        include: '*.go',
+      },
+      rawOutput: {
+        output: 'Found 24 matches\n/workspace/backend/agent.go:\n  Line 262: func UpdateSettings',
+        metadata: { matches: 24, truncated: false },
+      },
+      content: [{ type: 'content', content: { type: 'text', text: 'Found 24 matches\n...' } }],
+    }
+    const category = plugin.classify(toolUse, null)
+    const result = plugin.renderMessage!(category, toolUse, MessageRole.ASSISTANT)
+    expect(result).not.toBeNull()
+  })
+
+  it('renders read kind tool_call_update with file content', () => {
+    const toolUse = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'call_read',
+      status: 'completed',
+      kind: 'read',
+      title: 'backend/agent.go',
+      rawInput: {
+        filePath: '/workspace/backend/agent.go',
+        offset: 537,
+        limit: 150,
+      },
+      rawOutput: {
+        output: '537: func foo() {\n538:   return\n539: }',
+        metadata: { preview: 'func foo() {', truncated: true, loaded: [] },
+      },
+      content: [{ type: 'content', content: { type: 'text', text: '537: func foo() {\n538:   return\n539: }' } }],
+    }
+    const category = plugin.classify(toolUse, null)
+    const result = plugin.renderMessage!(category, toolUse, MessageRole.ASSISTANT)
+    expect(result).not.toBeNull()
+  })
+
+  it('renders tool_call_update with rawOutput fallback', () => {
+    const toolUse = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'call_5',
+      status: 'completed',
+      kind: 'execute',
+      title: 'check status',
+      content: [],
+      rawOutput: { output: 'everything ok', metadata: { exit: 0 } },
+    }
+    const category = plugin.classify(toolUse, null)
+    const result = plugin.renderMessage!(category, toolUse, MessageRole.ASSISTANT)
+    expect(result).not.toBeNull()
+  })
+})
+
 describe('opencode isAskUserQuestion', () => {
   const plugin = getProviderPlugin(AgentProvider.OPENCODE)!
 
@@ -285,7 +514,7 @@ describe('sendOpenCodePermissionResponse', () => {
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
       id: 5,
-      result: { outcome: { optionId: 'once' } },
+      result: { outcome: { outcome: 'selected', optionId: 'once' } },
     })
   })
 
@@ -301,7 +530,7 @@ describe('sendOpenCodePermissionResponse', () => {
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
       id: 7,
-      result: { outcome: { optionId: 'reject' } },
+      result: { outcome: { outcome: 'selected', optionId: 'reject' } },
     })
   })
 
@@ -317,7 +546,7 @@ describe('sendOpenCodePermissionResponse', () => {
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
       id: 9,
-      result: { outcome: { optionId: 'always' } },
+      result: { outcome: { outcome: 'selected', optionId: 'always' } },
     })
   })
 
@@ -333,7 +562,7 @@ describe('sendOpenCodePermissionResponse', () => {
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
       id: 'abc',
-      result: { outcome: { optionId: 'once' } },
+      result: { outcome: { outcome: 'selected', optionId: 'once' } },
     })
   })
 })

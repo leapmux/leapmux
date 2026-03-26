@@ -3,7 +3,7 @@ import type { MessageCategory } from '../messageClassification'
 import type { ProviderPlugin, ProviderSettingsPanelProps, RenderContext } from './registry'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
-import { createUniqueId } from 'solid-js'
+import { createUniqueId, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { OpenCodeControlActions, OpenCodeControlContent } from '../controls/OpenCodeControlRequest'
@@ -16,11 +16,14 @@ import {
   opencodeToolCallRenderer,
   opencodeToolCallUpdateRenderer,
 } from '../opencodeRenderers'
-import { defaultModelId, modelDisplayName, modelItems, RadioGroup } from '../settingsShared'
+import { defaultModelId, modelDisplayName, modelItems, optionGroup, optionGroupItems, optionLabel, RadioGroup } from '../settingsShared'
 import { registerProvider } from './registry'
 
 /** Default model for OpenCode agents (discovered dynamically, fallback). */
 const DEFAULT_OPENCODE_MODEL = import.meta.env.LEAPMUX_OPENCODE_DEFAULT_MODEL || ''
+const DEFAULT_OPENCODE_PRIMARY_AGENT = 'build'
+const OPENCODE_PLAN_PRIMARY_AGENT = 'plan'
+const OPENCODE_EXTRA_PRIMARY_AGENT = 'primaryAgent'
 
 /** Extra notification types for OpenCode (agent_error). */
 const OPENCODE_EXTRA_NOTIF_TYPES = new Set(['agent_error'])
@@ -30,14 +33,27 @@ function isOpenCodeNotifThread(wrapper: { messages: unknown[] } | null): wrapper
     t === 'system' && st !== 'init' && st !== 'task_notification')
 }
 
-/** OpenCode settings panel (model only — simpler than Codex). */
+/** OpenCode settings panel (model + primary agent). */
 function OpenCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
   const menuId = createUniqueId()
   const currentModel = () => props.model || defaultModelId(props.availableModels) || DEFAULT_OPENCODE_MODEL
+  const currentPrimaryAgent = () => props.extraSettings?.[OPENCODE_EXTRA_PRIMARY_AGENT] || DEFAULT_OPENCODE_PRIMARY_AGENT
   const models = () => modelItems(props.availableModels)
+  const primaryAgentGroup = () => optionGroup(props.availableOptionGroups, OPENCODE_EXTRA_PRIMARY_AGENT)
+  const primaryAgentItems = () => optionGroupItems(props.availableOptionGroups, OPENCODE_EXTRA_PRIMARY_AGENT)
 
   return (
     <div>
+      <Show when={primaryAgentItems().length > 0}>
+        <RadioGroup
+          label={primaryAgentGroup()?.label || 'Primary Agent'}
+          items={primaryAgentItems()}
+          testIdPrefix="primary-agent"
+          name={`${menuId}-primary-agent`}
+          current={currentPrimaryAgent()}
+          onChange={v => props.onOptionGroupChange?.(OPENCODE_EXTRA_PRIMARY_AGENT, v)}
+        />
+      </Show>
       <RadioGroup
         label="Model"
         items={models()}
@@ -50,11 +66,13 @@ function OpenCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
   )
 }
 
-/** OpenCode trigger label (model name). */
+/** OpenCode trigger label (model name + primary agent). */
 function OpenCodeTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
   const currentModel = () => props.model || defaultModelId(props.availableModels) || DEFAULT_OPENCODE_MODEL
+  const currentPrimaryAgent = () => props.extraSettings?.[OPENCODE_EXTRA_PRIMARY_AGENT] || DEFAULT_OPENCODE_PRIMARY_AGENT
   const displayName = () => modelDisplayName(props.availableModels, currentModel())
-  return <>{displayName()}</>
+  const primaryAgent = () => optionLabel(props.availableOptionGroups, OPENCODE_EXTRA_PRIMARY_AGENT, currentPrimaryAgent())
+  return <>{displayName()} {primaryAgent()}</>
 }
 
 /**
@@ -139,6 +157,12 @@ function classifyOpenCodeMessage(
 
 const opencodePlugin: ProviderPlugin = {
   defaultModel: DEFAULT_OPENCODE_MODEL || undefined,
+  planMode: {
+    currentMode: agent => agent.extraSettings?.[OPENCODE_EXTRA_PRIMARY_AGENT] || DEFAULT_OPENCODE_PRIMARY_AGENT,
+    planValue: OPENCODE_PLAN_PRIMARY_AGENT,
+    defaultValue: DEFAULT_OPENCODE_PRIMARY_AGENT,
+    setMode: (mode, cb) => cb.onOptionGroupChange?.(OPENCODE_EXTRA_PRIMARY_AGENT, mode),
+  },
 
   classify: classifyOpenCodeMessage,
 
@@ -152,10 +176,10 @@ const opencodePlugin: ProviderPlugin = {
     if (category.kind === 'tool_use') {
       const cat = category as { toolName: string, toolUse: Record<string, unknown> }
       if (cat.toolName === 'plan')
-        return opencodePlanRenderer(cat.toolUse, role, context)
+        return opencodePlanRenderer(cat.toolUse, _role, context)
       if (cat.toolUse.sessionUpdate === 'tool_call_update')
-        return opencodeToolCallUpdateRenderer(cat.toolUse, role, context)
-      return opencodeToolCallRenderer(cat.toolUse, role, context)
+        return opencodeToolCallUpdateRenderer(cat.toolUse, _role, context)
+      return opencodeToolCallRenderer(cat.toolUse, _role, context)
     }
     return null
   },

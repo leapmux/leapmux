@@ -290,6 +290,11 @@ func (a *ClaudeCodeAgent) AvailableModels() []*leapmuxv1.AvailableModel {
 	return claudeCodeAvailableModels
 }
 
+// AvailableOptionGroups returns the static Claude Code option groups.
+func (a *ClaudeCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
+	return AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+}
+
 // UpdateSettings is a no-op for Claude Code — settings changes require a restart.
 func (a *ClaudeCodeAgent) UpdateSettings(_ *leapmuxv1.AgentSettings) bool {
 	return false
@@ -412,6 +417,25 @@ func init() {
 		"LEAPMUX_CLAUDE_DEFAULT_MODEL",
 		"LEAPMUX_CLAUDE_DEFAULT_EFFORT",
 		"claude",
+	)
+
+	registerProvider(
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+		func(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+			return StartOpenCode(ctx, opts, sink)
+		},
+		nil, // models discovered dynamically from newSession
+		[]*leapmuxv1.AvailableOptionGroup{{
+			Key:   OpenCodeExtraPrimaryAgent,
+			Label: "Primary Agent",
+			Options: []*leapmuxv1.AvailableOption{
+				{Id: OpenCodePrimaryAgentBuild, Name: "build", IsDefault: true},
+				{Id: OpenCodePrimaryAgentPlan, Name: "plan"},
+			},
+		}},
+		"LEAPMUX_OPENCODE_DEFAULT_MODEL",
+		"LEAPMUX_OPENCODE_DEFAULT_EFFORT",
+		"opencode",
 	)
 }
 

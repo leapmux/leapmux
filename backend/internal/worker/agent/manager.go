@@ -240,9 +240,18 @@ func withDefaultModelMarked(models []*leapmuxv1.AvailableModel, provider leapmux
 	return out
 }
 
-// AvailableOptionGroups returns the static option groups for a provider
-// from the provider registry (e.g. permission modes, sandbox policies).
-func (m *Manager) AvailableOptionGroups(provider leapmuxv1.AgentProvider) []*leapmuxv1.AvailableOptionGroup {
+// AvailableOptionGroups returns the option groups for an agent, preferring the
+// running provider's runtime groups and falling back to the static registry.
+func (m *Manager) AvailableOptionGroups(agentID string, provider leapmuxv1.AgentProvider) []*leapmuxv1.AvailableOptionGroup {
+	m.mu.RLock()
+	p, ok := m.agents[agentID]
+	m.mu.RUnlock()
+
+	if ok {
+		if groups := p.AvailableOptionGroups(); len(groups) > 0 {
+			return groups
+		}
+	}
 	return AvailableOptionGroupsForProvider(provider)
 }
 

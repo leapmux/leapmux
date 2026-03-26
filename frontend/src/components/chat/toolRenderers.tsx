@@ -373,7 +373,7 @@ function ToolUseMessage(props: {
   )
 }
 
-function renderBashHighlight(code: string): string {
+export function renderBashHighlight(code: string): string {
   return shikiHighlighter.codeToHtml(code, {
     lang: 'bash',
     themes: { light: 'github-light', dark: 'github-dark' },

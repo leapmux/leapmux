@@ -36,7 +36,7 @@ export function sendOpenCodePermissionResponse(
   return sendResponse(agentId, onRespond, {
     jsonrpc: '2.0',
     id: toRpcId(requestId),
-    result: { outcome: { optionId } },
+    result: { outcome: { outcome: 'selected', optionId } },
   })
 }
 
