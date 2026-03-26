@@ -10,7 +10,7 @@ async function ensureAgentTab(page: Page): Promise<void> {
     await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toBeVisible()
   }
   catch {
-    await page.locator('[data-testid="new-agent-button"]').click()
+    await page.locator('[data-testid^="new-agent-button"]').first().click()
     await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toBeVisible()
   }
   // Wait for auto-created agents from the worker to settle.
@@ -146,7 +146,7 @@ test.describe('Chat Pagination & Scroll', () => {
     await expect(chatContainer).toContainText('First Agent Reply', { timeout: 30_000 })
 
     // Create a second agent tab
-    await page.locator('[data-testid="new-agent-button"]').click()
+    await page.locator('[data-testid^="new-agent-button"]').first().click()
     await page.waitForTimeout(2000)
 
     // Switch back to the first agent tab
@@ -205,7 +205,7 @@ test.describe('Chat Pagination & Scroll', () => {
     expect(wasAtBottom).toBe(true)
 
     // Create a second agent tab (switches to it automatically).
-    await page.locator('[data-testid="new-agent-button"]').click()
+    await page.locator('[data-testid^="new-agent-button"]').first().click()
     await page.waitForTimeout(2000)
 
     // Switch back to the first agent tab.
@@ -239,7 +239,7 @@ test.describe('Chat Pagination & Scroll', () => {
     ).toBeVisible({ timeout: 10_000 })
 
     // Switch to a new agent tab while the turn is still in progress.
-    await page.locator('[data-testid="new-agent-button"]').click()
+    await page.locator('[data-testid^="new-agent-button"]').first().click()
     await page.waitForTimeout(1000)
 
     // Wait for the first agent's turn to complete while its tab is hidden.

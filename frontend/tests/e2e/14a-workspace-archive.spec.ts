@@ -70,7 +70,7 @@ test.describe('Workspace Archive', () => {
     await page.getByRole('menuitem', { name: 'Unarchive' }).click()
 
     // Workspace is active again — add-tab buttons should be visible
-    await expect(page.locator('[data-testid="new-agent-button"]')).toBeVisible()
+    await expect(page.locator('[data-testid^="new-agent-button"]')).toBeVisible()
   })
 
   test('should not show Move-to when workspace is in the only target section', async ({ page, authenticatedWorkspace }) => {
@@ -143,7 +143,7 @@ test.describe('Workspace Archive', () => {
     await expect(agentTab.locator('[data-testid="tab-close"]')).not.toBeVisible()
 
     // The add-tab buttons should be hidden (workspace is archived)
-    await expect(page.locator('[data-testid="new-agent-button"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid^="new-agent-button"]')).not.toBeVisible()
 
     // Editor panel should be hidden for archived workspaces
     await expect(page.locator('[data-testid="agent-editor-panel"]')).not.toBeVisible()

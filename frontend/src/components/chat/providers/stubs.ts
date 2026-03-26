@@ -1,12 +1,3 @@
-import type { ProviderPlugin } from './registry'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { registerProvider } from './registry'
-
-/** Stub plugin for providers that don't have a custom classifier yet. */
-const stubPlugin: ProviderPlugin = {
-  classify() {
-    return { kind: 'unknown' as const }
-  },
-}
-
-registerProvider(AgentProvider.OPENCODE, stubPlugin)
+// Stub plugin for providers that don't have a custom classifier yet.
+// All currently supported providers (Claude Code, Codex, OpenCode) have
+// their own plugins, so this file is intentionally empty.

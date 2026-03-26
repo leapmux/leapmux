@@ -3,7 +3,7 @@ import { openAgentViaUI as openAgentViaUIHelper, waitForLayoutSave } from './hel
 
 /** Open a new agent via the tab bar add menu. */
 async function openAgentViaUI(page: import('@playwright/test').Page) {
-  await page.locator('[data-testid="new-agent-button"]').click()
+  await page.locator('[data-testid^="new-agent-button"]').first().click()
   // Wait for a new tab to appear
   await page.locator('[data-testid="tab"]').first().waitFor()
 }
@@ -371,7 +371,7 @@ test.describe('Tiling Layout', () => {
     // Open a new agent in the second tile so it has its own tab.
     // Set up the layout save listener BEFORE clicking, so we don't miss the event.
     const saved = waitForLayoutSave(page)
-    await tiles.nth(1).locator('[data-testid="new-agent-button"]').click()
+    await tiles.nth(1).locator('[data-testid^="new-agent-button"]').first().click()
     await expect(tiles.nth(1).locator('[data-testid="tab"]')).toHaveCount(1)
 
     // Verify no empty tile actions are showing

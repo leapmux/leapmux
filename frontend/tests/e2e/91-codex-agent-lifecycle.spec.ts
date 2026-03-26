@@ -13,7 +13,7 @@ codexTest.describe('Codex Agent Lifecycle', () => {
     const tabsBefore = await page.locator('[data-testid="tab"]').count()
 
     // Click the new agent button to create another agent.
-    const newAgentBtn = page.locator('[data-testid="new-agent-button"]')
+    const newAgentBtn = page.locator('[data-testid^="new-agent-button"]').first()
     if (await newAgentBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
       await newAgentBtn.click()
       // Wait for the new tab to appear.
