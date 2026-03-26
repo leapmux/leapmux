@@ -8,8 +8,8 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
-	"unicode"
 	"sync/atomic"
+	"unicode"
 	"syscall"
 	"time"
 
@@ -197,7 +197,7 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 			return nil, a.formatStartupError("session/set_mode", err)
 		}
 	} else {
-		a.configurePrimaryAgents(nil, "", "")
+		_ = a.configurePrimaryAgents(nil, "", "")
 	}
 
 	return a, nil
