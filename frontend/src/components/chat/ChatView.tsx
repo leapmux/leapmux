@@ -65,6 +65,31 @@ interface ChatViewProps {
 }
 
 export const ChatView: Component<ChatViewProps> = (props) => {
+  // Lifted expand/collapse state keyed by message ID so that it survives
+  // <For> re-renders when new messages are added to the list.
+  const [expandedMessages, setExpandedMessages] = createSignal<Set<string>>(new Set())
+  const [diffViewOverrides, setDiffViewOverrides] = createSignal<Map<string, 'unified' | 'split'>>(new Map())
+
+  const isMessageExpanded = (messageId: string) => expandedMessages().has(messageId)
+  const toggleMessageExpanded = (messageId: string) => {
+    setExpandedMessages((prev) => {
+      const next = new Set(prev)
+      if (next.has(messageId))
+        next.delete(messageId)
+      else
+        next.add(messageId)
+      return next
+    })
+  }
+  const getLocalDiffView = (messageId: string) => diffViewOverrides().get(messageId) ?? null
+  const setLocalDiffView = (messageId: string, view: 'unified' | 'split') => {
+    setDiffViewOverrides((prev) => {
+      const next = new Map(prev)
+      next.set(messageId, view)
+      return next
+    })
+  }
+
   // Throttle streaming text markdown rendering to animation frames to avoid
   // running the full remark+shiki pipeline on every streaming chunk.
   const [renderedStreamHtml, setRenderedStreamHtml] = createSignal('')
@@ -362,6 +387,10 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                         onReply={props.onReply}
                         getMessageBySpanId={props.getMessageBySpanId}
                         commandStream={props.getCommandStreamBySpanId?.(msg.spanId)}
+                        toolResultExpanded={isMessageExpanded(msg.id)}
+                        onToggleToolResultExpanded={() => toggleMessageExpanded(msg.id)}
+                        localDiffView={getLocalDiffView(msg.id)}
+                        onSetLocalDiffView={view => setLocalDiffView(msg.id, view)}
                       />
                     )
 
