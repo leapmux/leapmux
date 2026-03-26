@@ -100,7 +100,7 @@ func (a *OpenCodeAgent) handleAgentMessageChunk(update json.RawMessage) {
 	}
 	if json.Unmarshal(update, &chunk) == nil && chunk.Content.Text != "" {
 		a.mu.Lock()
-		a.turnAssistantText += chunk.Content.Text
+		a.turnAssistantText.WriteString(chunk.Content.Text)
 		a.mu.Unlock()
 		a.sink.BroadcastStreamChunk([]byte(chunk.Content.Text), "", "agent_message_chunk")
 	}
@@ -116,7 +116,7 @@ func (a *OpenCodeAgent) handleAgentThoughtChunk(update json.RawMessage) {
 	}
 	if json.Unmarshal(update, &chunk) == nil && chunk.Content.Text != "" {
 		a.mu.Lock()
-		a.turnThinkingText += chunk.Content.Text
+		a.turnThinkingText.WriteString(chunk.Content.Text)
 		a.mu.Unlock()
 		a.sink.BroadcastStreamChunk([]byte(chunk.Content.Text), "", "agent_thought_chunk")
 	}

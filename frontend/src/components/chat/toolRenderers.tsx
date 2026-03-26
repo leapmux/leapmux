@@ -503,7 +503,7 @@ function extractToolUseError(content: string): string | null {
   return match ? match[1].trim() : null
 }
 
-function stripLeadingBlankLines(content: string): string {
+export function stripLeadingBlankLines(content: string): string {
   return content.replace(LEADING_BLANK_LINES_RE, '')
 }
 

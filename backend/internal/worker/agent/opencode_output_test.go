@@ -64,8 +64,8 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk(t *testing.T) {
 		t.Fatalf("expected 0 persisted messages, got %d", sink.MessageCount())
 	}
 	agent.mu.Lock()
-	if agent.turnThinkingText != "thinking..." {
-		t.Fatalf("expected accumulated thinking text 'thinking...', got %q", agent.turnThinkingText)
+	if agent.turnThinkingText.String() != "thinking..." {
+		t.Fatalf("expected accumulated thinking text 'thinking...', got %q", agent.turnThinkingText.String())
 	}
 	agent.mu.Unlock()
 }
@@ -75,8 +75,8 @@ func TestHandlePromptResponse_PersistsThinkingText(t *testing.T) {
 	agent := newOpenCodeAgentWithSink(sink)
 
 	// Simulate accumulated thinking and assistant text.
-	agent.turnThinkingText = "let me think about this"
-	agent.turnAssistantText = "Here is the answer."
+	agent.turnThinkingText.WriteString("let me think about this")
+	agent.turnAssistantText.WriteString("Here is the answer.")
 
 	resp := json.RawMessage(`{"stopReason":"end_turn","usage":{"totalTokens":100}}`)
 	agent.handlePromptResponse(resp)
@@ -121,11 +121,11 @@ func TestHandlePromptResponse_PersistsThinkingText(t *testing.T) {
 
 	// Accumulated text should be reset.
 	agent.mu.Lock()
-	if agent.turnThinkingText != "" {
-		t.Fatalf("expected empty thinking text after prompt response, got %q", agent.turnThinkingText)
+	if agent.turnThinkingText.String() != "" {
+		t.Fatalf("expected empty thinking text after prompt response, got %q", agent.turnThinkingText.String())
 	}
-	if agent.turnAssistantText != "" {
-		t.Fatalf("expected empty assistant text after prompt response, got %q", agent.turnAssistantText)
+	if agent.turnAssistantText.String() != "" {
+		t.Fatalf("expected empty assistant text after prompt response, got %q", agent.turnAssistantText.String())
 	}
 	agent.mu.Unlock()
 }

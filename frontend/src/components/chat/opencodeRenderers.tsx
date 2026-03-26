@@ -21,7 +21,7 @@ import { markdownContent } from './markdownContent.css'
 import { ThinkingMessage } from './messageRenderers'
 import { resultDivider } from './messageStyles.css'
 import { isObject, relativizePath } from './messageUtils'
-import { COLLAPSED_RESULT_ROWS, renderBashHighlight, ToolUseLayout } from './toolRenderers'
+import { COLLAPSED_RESULT_ROWS, renderBashHighlight, stripLeadingBlankLines, ToolUseLayout } from './toolRenderers'
 import {
   toolInputCode,
   toolInputPath,
@@ -92,13 +92,6 @@ function extractToolOutput(toolUse: Record<string, unknown>): { text: string, er
   }
   const status = toolUse.status as string | undefined
   return { text, error: status === 'failed', diff }
-}
-
-const LEADING_BLANK_LINES_RE = /^(?:\s*\n)+/
-
-/** Strip leading blank lines from output text. */
-function stripLeadingBlankLines(text: string): string {
-  return text.replace(LEADING_BLANK_LINES_RE, '')
 }
 
 // ---------------------------------------------------------------------------

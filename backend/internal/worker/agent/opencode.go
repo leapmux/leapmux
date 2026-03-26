@@ -47,8 +47,8 @@ type OpenCodeAgent struct {
 	availableModels        []*leapmuxv1.AvailableModel
 	currentPrimaryAgent    string
 	availablePrimaryAgents []*leapmuxv1.AvailableOption
-	turnAssistantText      string // accumulated assistant text for the current turn
-	turnThinkingText       string // accumulated thinking text for the current turn
+	turnAssistantText      strings.Builder // accumulated assistant text for the current turn
+	turnThinkingText       strings.Builder // accumulated thinking text for the current turn
 }
 
 // StartOpenCode starts an OpenCode ACP agent process and performs the handshake.
@@ -390,10 +390,10 @@ func (a *OpenCodeAgent) handlePromptResponse(resp json.RawMessage) {
 
 	// Persist accumulated thinking and assistant text before the result divider.
 	a.mu.Lock()
-	thinkingText := a.turnThinkingText
-	a.turnThinkingText = ""
-	assistantText := a.turnAssistantText
-	a.turnAssistantText = ""
+	thinkingText := a.turnThinkingText.String()
+	a.turnThinkingText.Reset()
+	assistantText := a.turnAssistantText.String()
+	a.turnAssistantText.Reset()
 	a.mu.Unlock()
 
 	if thinkingText != "" {
