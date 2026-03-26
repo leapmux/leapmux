@@ -76,7 +76,7 @@ function OpenCodeTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
   return (
     <>
       {displayName()}
-      {' '}
+      {' \u00B7 '}
       {primaryAgent()}
     </>
   )

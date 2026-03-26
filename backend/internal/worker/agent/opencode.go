@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"unicode"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -211,6 +212,17 @@ func buildOpenCodeModels(models []struct {
 	return result
 }
 
+// capitalizeFirst returns s with its first rune upper-cased.
+func capitalizeFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	for _, r := range s {
+		return string(unicode.ToUpper(r)) + s[len(string(r)):]
+	}
+	return s
+}
+
 func buildOpenCodePrimaryAgents(modes []openCodeModeInfo, currentModeID string) []*leapmuxv1.AvailableOption {
 	result := make([]*leapmuxv1.AvailableOption, 0, len(modes))
 	for _, mode := range modes {
@@ -218,8 +230,9 @@ func buildOpenCodePrimaryAgents(modes []openCodeModeInfo, currentModeID string) 
 			continue
 		}
 		name := strings.TrimSpace(mode.Name)
-		if name == "" {
-			name = mode.ID
+		if name == "" || name == mode.ID {
+			// Capitalize when the agent provides no separate display name.
+			name = capitalizeFirst(mode.ID)
 		}
 		result = append(result, &leapmuxv1.AvailableOption{
 			Id:          mode.ID,
@@ -233,8 +246,8 @@ func buildOpenCodePrimaryAgents(modes []openCodeModeInfo, currentModeID string) 
 
 func fallbackOpenCodePrimaryAgents() []*leapmuxv1.AvailableOption {
 	return []*leapmuxv1.AvailableOption{
-		{Id: OpenCodePrimaryAgentBuild, Name: OpenCodePrimaryAgentBuild, IsDefault: true},
-		{Id: OpenCodePrimaryAgentPlan, Name: OpenCodePrimaryAgentPlan},
+		{Id: OpenCodePrimaryAgentBuild, Name: capitalizeFirst(OpenCodePrimaryAgentBuild), IsDefault: true},
+		{Id: OpenCodePrimaryAgentPlan, Name: capitalizeFirst(OpenCodePrimaryAgentPlan)},
 	}
 }
 

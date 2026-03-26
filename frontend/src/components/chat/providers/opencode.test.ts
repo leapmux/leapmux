@@ -318,13 +318,13 @@ describe('opencode settings panel', () => {
         key: 'primaryAgent',
         label: 'Primary Agent',
         options: [
-          { id: 'build', name: 'build', isDefault: true },
-          { id: 'plan', name: 'plan' },
+          { id: 'build', name: 'Build', isDefault: true },
+          { id: 'plan', name: 'Plan' },
         ],
       }],
     }))
 
-    expect(screen.getByText('GPT-5 plan')).toBeTruthy()
+    expect(screen.getByText('GPT-5 \u00B7 Plan')).toBeTruthy()
   })
 })
 
