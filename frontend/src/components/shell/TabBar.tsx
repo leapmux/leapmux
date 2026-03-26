@@ -19,6 +19,7 @@ import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
+import { usePreferences } from '~/context/PreferencesContext'
 import { tabKey, TabType } from '~/stores/tab.store'
 import { menuSectionHeader, monoFont } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
@@ -90,6 +91,7 @@ interface TabBarProps {
 }
 
 export const TabBar: Component<TabBarProps> = (props) => {
+  const prefs = usePreferences()
   const newTerminalLabel = () => props.hasActiveTabContext ? 'New terminal at the current working directory' : 'New terminal...'
 
   const [editingTabKey, setEditingTabKey] = createSignal<string | null>(null)
@@ -276,6 +278,18 @@ export const TabBar: Component<TabBarProps> = (props) => {
           </button>
         )}
       </For>
+      <hr />
+      <li class={menuSectionHeader}>Developer</li>
+      <button
+        role="menuitem"
+        onClick={(e) => {
+          e.preventDefault()
+          prefs.setShowHiddenMessages(!prefs.showHiddenMessages())
+        }}
+      >
+        {prefs.showHiddenMessages() ? '\u2713 ' : '\u2003 '}
+        Show hidden messages
+      </button>
     </>
   )
 

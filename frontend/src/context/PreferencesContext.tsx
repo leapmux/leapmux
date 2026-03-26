@@ -39,6 +39,9 @@ interface PreferencesState {
   turnEndSound: () => TurnEndSoundPreference
   /** Resolved turn end sound volume (0-100). */
   turnEndSoundVolume: () => number
+  /** Whether hidden messages are shown in the chat view (developer feature). */
+  showHiddenMessages: () => boolean
+  setShowHiddenMessages: (value: boolean) => void
 
   // --- Browser-level overrides (localStorage) ---
   /** Raw browser-level theme override. null means "use account default". */
@@ -182,6 +185,15 @@ export const PreferencesProvider: ParentComponent = (props) => {
     writeLocalStorage('leapmux-turn-end-sound-volume', value !== null ? String(value) : null)
   }
 
+  // --- Browser-only developer preferences ---
+  const [showHiddenMessages, setShowHiddenMessages] = createSignal(
+    readLocalStorage('leapmux-show-hidden-messages') === 'true',
+  )
+  const setShowHiddenMessagesWrapped = (value: boolean) => {
+    setShowHiddenMessages(value)
+    writeLocalStorage('leapmux-show-hidden-messages', value ? 'true' : null)
+  }
+
   // --- Resolved values (browser override → account default → hardcoded) ---
   const theme = (): ThemePreference => browserTheme() ?? accountTheme()
   const terminalTheme = (): TerminalThemePreference => browserTerminalTheme() ?? accountTerminalTheme()
@@ -248,6 +260,8 @@ export const PreferencesProvider: ParentComponent = (props) => {
     <PreferencesContext.Provider value={{
       theme,
       terminalTheme,
+      showHiddenMessages,
+      setShowHiddenMessages: setShowHiddenMessagesWrapped,
       uiFontCustomEnabled,
       monoFontCustomEnabled,
       uiFonts,

@@ -537,9 +537,11 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
         >
           <div ref={contentRef} data-testid="message-content">
             <ErrorBoundary fallback={renderErrorFallback('Failed to render message:')}>
-              {category().kind === 'notification_thread'
-                ? renderNotificationThread((category() as { kind: 'notification_thread', messages: unknown[] }).messages)
-                : renderMessageContent(parsed().parentObject ?? parsed().rawText, props.message.role, renderContext(), category(), props.message.agentProvider)}
+              {category().kind === 'hidden'
+                ? <pre class={chatStyles.hiddenMessageJson}>{prettifyJson(rawJson())}</pre>
+                : category().kind === 'notification_thread'
+                  ? renderNotificationThread((category() as { kind: 'notification_thread', messages: unknown[] }).messages)
+                  : renderMessageContent(parsed().parentObject ?? parsed().rawText, props.message.role, renderContext(), category(), props.message.agentProvider)}
             </ErrorBoundary>
           </div>
         </div>

@@ -8,6 +8,7 @@ import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
+import { usePreferences } from '~/context/PreferencesContext'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { renderMarkdown } from '~/lib/renderMarkdown'
@@ -65,6 +66,8 @@ interface ChatViewProps {
 }
 
 export const ChatView: Component<ChatViewProps> = (props) => {
+  const prefs = usePreferences()
+
   // Lifted expand/collapse state keyed by message ID so that it survives
   // <For> re-renders when new messages are added to the list.
   const [expandedMessages, setExpandedMessages] = createSignal<Set<string>>(new Set())
@@ -193,6 +196,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   })
 
   const visibleEntries = createMemo(() => {
+    const showHidden = prefs.showHiddenMessages()
     return props.messages.map((msg) => {
       let classified = classifyParsedMessage(msg)
       if (
@@ -205,7 +209,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         classified = { ...classified, category: { kind: 'assistant_thinking' } }
       }
       return { msg, ...classified }
-    }).filter(entry => entry.category.kind !== 'hidden')
+    }).filter(entry => showHidden || entry.category.kind !== 'hidden')
   })
 
   const scrollToBottom = () => {
