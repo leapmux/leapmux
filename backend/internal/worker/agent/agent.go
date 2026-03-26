@@ -441,9 +441,9 @@ func init() {
 
 var claudeCodeAvailableModels = []*leapmuxv1.AvailableModel{
 	{Id: "opus", DisplayName: "Opus", Description: "Most capable for complex work", DefaultEffort: "high", SupportedEfforts: claudeCodeEffortAll, ContextWindow: 200_000},
-	{Id: "opus[1m]", DisplayName: "Opus (1M context)", Description: "Most capable for complex work \u00b7 May be billed as extra usage", IsDefault: true, DefaultEffort: "high", SupportedEfforts: claudeCodeEffortAll, ContextWindow: 1_000_000},
+	{Id: "opus[1m]", DisplayName: "Opus (1M context)", Description: "Most capable for complex work", IsDefault: true, DefaultEffort: "high", SupportedEfforts: claudeCodeEffortAll, ContextWindow: 1_000_000},
 	{Id: "sonnet", DisplayName: "Sonnet", Description: "Best for everyday tasks", DefaultEffort: "high", SupportedEfforts: claudeCodeEffortNoMax, ContextWindow: 200_000},
-	{Id: "sonnet[1m]", DisplayName: "Sonnet (1M context)", Description: "Best for everyday tasks \u00b7 May be billed as extra usage", DefaultEffort: "high", SupportedEfforts: claudeCodeEffortNoMax, ContextWindow: 1_000_000},
+	{Id: "sonnet[1m]", DisplayName: "Sonnet (1M context)", Description: "Best for everyday tasks", DefaultEffort: "high", SupportedEfforts: claudeCodeEffortNoMax, ContextWindow: 1_000_000},
 	{Id: "haiku", DisplayName: "Haiku", Description: "Fastest for quick answers", DefaultEffort: "high", ContextWindow: 200_000},
 }
 
