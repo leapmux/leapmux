@@ -134,15 +134,22 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 		return nil, a.formatStartupError("initialize", err)
 	}
 
-	// 2. Send "session/new" request.
-	sessionParams, _ := json.Marshal(map[string]interface{}{
-		"cwd":        opts.WorkingDir,
-		"mcpServers": []interface{}{},
-	})
-	sessionResp, err := a.sendRequest("session/new", json.RawMessage(sessionParams), timeout)
+	// 2. Send "session/resume" (if resuming) or "session/new" (fresh session).
+	sessionMethod, sessionParams := buildSessionRequest(opts.ResumeSessionID, opts.WorkingDir)
+	sessionResp, err := a.sendRequest(sessionMethod, json.RawMessage(sessionParams), timeout)
 	if err != nil {
-		cleanup()
-		return nil, a.formatStartupError("session/new", err)
+		if opts.ResumeSessionID != "" {
+			// Resume failed — fall back to a fresh session so the agent
+			// is still usable (e.g. the old session was garbage-collected).
+			slog.Warn("session/resume failed, falling back to session/new",
+				"agent_id", a.agentID, "session_id", opts.ResumeSessionID, "error", err)
+			_, fallbackParams := buildSessionRequest("", opts.WorkingDir)
+			sessionResp, err = a.sendRequest("session/new", json.RawMessage(fallbackParams), timeout)
+		}
+		if err != nil {
+			cleanup()
+			return nil, a.formatStartupError(sessionMethod, err)
+		}
 	}
 
 	var session struct {
@@ -194,6 +201,25 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 	}
 
 	return a, nil
+}
+
+// buildSessionRequest returns the JSON-RPC method and params for starting or
+// resuming an OpenCode session. When resumeSessionID is non-empty, it produces
+// a "session/resume" request; otherwise a "session/new" request.
+func buildSessionRequest(resumeSessionID, workingDir string) (method string, params []byte) {
+	if resumeSessionID != "" {
+		params, _ = json.Marshal(map[string]interface{}{
+			"sessionId":  resumeSessionID,
+			"cwd":        workingDir,
+			"mcpServers": []interface{}{},
+		})
+		return "session/resume", params
+	}
+	params, _ = json.Marshal(map[string]interface{}{
+		"cwd":        workingDir,
+		"mcpServers": []interface{}{},
+	})
+	return "session/new", params
 }
 
 // buildOpenCodeModels converts the ACP newSession models list to proto models.

@@ -8,6 +8,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
@@ -75,6 +78,26 @@ func newOpenCodeAgentForRPC(t *testing.T) (*OpenCodeAgent, func() []openCodeReco
 		copy(out, requests)
 		return out
 	}
+}
+
+func TestBuildSessionRequest_NewSession(t *testing.T) {
+	method, params := buildSessionRequest("", "/workspace")
+	assert.Equal(t, "session/new", method)
+
+	var parsed map[string]interface{}
+	require.NoError(t, json.Unmarshal(params, &parsed))
+	assert.Equal(t, "/workspace", parsed["cwd"])
+	assert.NotContains(t, parsed, "sessionId")
+}
+
+func TestBuildSessionRequest_ResumeSession(t *testing.T) {
+	method, params := buildSessionRequest("session-123", "/workspace")
+	assert.Equal(t, "session/resume", method)
+
+	var parsed map[string]interface{}
+	require.NoError(t, json.Unmarshal(params, &parsed))
+	assert.Equal(t, "/workspace", parsed["cwd"])
+	assert.Equal(t, "session-123", parsed["sessionId"])
 }
 
 func TestOpenCodeConfigurePrimaryAgentsUsesSessionCurrentMode(t *testing.T) {

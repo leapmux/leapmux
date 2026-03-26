@@ -6,6 +6,7 @@ import type { PermissionMode } from '~/utils/controlResponse'
 import { createUniqueId, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import * as styles from '../ChatView.css'
 import { OpenCodeControlActions, OpenCodeControlContent } from '../controls/OpenCodeControlRequest'
 import { isNotificationThreadWrapper } from '../messageUtils'
 import {
@@ -41,10 +42,11 @@ function OpenCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
   const models = () => modelItems(props.availableModels)
   const primaryAgentGroup = () => optionGroup(props.availableOptionGroups, OPENCODE_EXTRA_PRIMARY_AGENT)
   const primaryAgentItems = () => optionGroupItems(props.availableOptionGroups, OPENCODE_EXTRA_PRIMARY_AGENT)
+  const hasPrimaryAgent = () => primaryAgentItems().length > 0
 
   return (
-    <div>
-      <Show when={primaryAgentItems().length > 0}>
+    <>
+      <Show when={hasPrimaryAgent()}>
         <RadioGroup
           label={primaryAgentGroup()?.label || 'Primary Agent'}
           items={primaryAgentItems()}
@@ -52,6 +54,7 @@ function OpenCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
           name={`${menuId}-primary-agent`}
           current={currentPrimaryAgent()}
           onChange={v => props.onOptionGroupChange?.(OPENCODE_EXTRA_PRIMARY_AGENT, v)}
+          fieldsetClass={styles.settingsFieldsetFirst}
         />
       </Show>
       <Show when={models().length > 0}>
@@ -61,9 +64,10 @@ function OpenCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
           name={`${menuId}-model`}
           current={currentModel()}
           onChange={v => props.onModelChange?.(v)}
+          fieldsetClass={!hasPrimaryAgent() ? styles.settingsFieldsetFirst : undefined}
         />
       </Show>
-    </div>
+    </>
   )
 }
 

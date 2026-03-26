@@ -296,7 +296,7 @@ export function FilterableListbox(props: {
 
   return (
     <>
-      <div class={listboxCls()} ref={listRef} onClick={e => e.stopPropagation()}>
+      <div class={listboxCls()} ref={listRef}>
         <For each={filtered()}>
           {(item, index) => (
             <div
