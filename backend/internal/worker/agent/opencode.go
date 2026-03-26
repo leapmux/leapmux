@@ -9,9 +9,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"unicode"
 	"syscall"
 	"time"
+	"unicode"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/util/version"
@@ -197,7 +197,10 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 			return nil, a.formatStartupError("session/set_mode", err)
 		}
 	} else {
-		_ = a.configurePrimaryAgents(nil, "", "")
+		if err := a.configurePrimaryAgents(nil, "", ""); err != nil {
+			cleanup()
+			return nil, a.formatStartupError("session/set_mode", err)
+		}
 	}
 
 	return a, nil

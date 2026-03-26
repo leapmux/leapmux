@@ -335,10 +335,10 @@ func TestPersistConfirmedAgentSettings_PersistsDiscoveredPrimaryAgentFromEmpty(t
 	err := svc.persistConfirmedAgentSettings(
 		"agent-opencode",
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-		"", // model (empty, will be overridden by confirmed)
-		"", // effort
-		"", // permissionMode
-		nil,   // requested extraSettings (empty for a new tab)
+		"",  // model (empty, will be overridden by confirmed)
+		"",  // effort
+		"",  // permissionMode
+		nil, // requested extraSettings (empty for a new tab)
 		&leapmuxv1.AgentSettings{
 			Model:         "openai/gpt-5",
 			ExtraSettings: map[string]string{"primaryAgent": "build"},
