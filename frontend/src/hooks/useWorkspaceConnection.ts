@@ -17,6 +17,7 @@ import { ChannelError } from '~/lib/channel'
 import { createLogger } from '~/lib/logger'
 import { extractAgentRenamed, extractAssistantUsage, extractCodexTokenUsage, extractPlanFilePath, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessageType, parseMessageContent } from '~/lib/messageParser'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
+import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 
 const log = createLogger('workspace')
 
@@ -159,6 +160,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         }
 
         chatStore.addMessage(agentId, msg)
+        if (
+          tabStore.state.activeTabKey !== `agent:${agentId}`
+          && chatStore.getMessages(agentId).length > MAX_BACKGROUND_CHAT_MESSAGES
+        ) {
+          chatStore.trimOldMessages(agentId, MAX_BACKGROUND_CHAT_MESSAGES)
+        }
         chatStore.clearStreamingText(agentId)
 
         if (msg.spanId && (msg.spanType === 'commandExecution' || msg.spanType === 'fileChange' || msg.spanType === 'reasoning') && msg.role === MessageRole.ASSISTANT) {

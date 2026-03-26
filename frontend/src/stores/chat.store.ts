@@ -86,6 +86,11 @@ export interface CommandStreamSegment {
   text: string
 }
 
+/** Max number of loaded messages to keep for the visible agent tab window. */
+export const MAX_LOADED_CHAT_MESSAGES = 150
+/** Max number of loaded messages to keep for hidden/background agent tabs. */
+export const MAX_BACKGROUND_CHAT_MESSAGES = 50
+
 const METHOD_TO_SEGMENT_KIND: Record<string, CommandStreamSegment['kind']> = {
   'item/commandExecution/terminalInteraction': 'interaction',
   'item/reasoning/summaryTextDelta': 'reasoning_summary',

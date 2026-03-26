@@ -11,6 +11,7 @@ import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { renderMarkdown } from '~/lib/renderMarkdown'
+import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { spinner } from '~/styles/animations.css'
 import * as styles from './ChatView.css'
 import { markdownContent } from './markdownContent.css'
@@ -227,7 +228,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         setAtBottom(true)
         autoScrollPending = false
       })
-      if (props.messages.length > 150) {
+      if (props.messages.length > MAX_LOADED_CHAT_MESSAGES) {
         props.onTrimOldMessages?.()
       }
     }
