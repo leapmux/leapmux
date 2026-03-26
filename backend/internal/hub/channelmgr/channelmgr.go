@@ -239,39 +239,27 @@ type ClosedChannel struct {
 // (e.g. when the WebSocket relay disconnects). Channels whose ConnID matches
 // connID are removed and returned so the caller can notify workers.
 func (m *Manager) UnregisterByConn(connID string) []ClosedChannel {
-	m.mu.Lock()
-	var removed []ClosedChannel
-	var cancels []context.CancelFunc
-	for id, ch := range m.channels {
-		if ch.ConnID == connID {
-			removed = append(removed, ClosedChannel{ChannelID: id, WorkerID: ch.WorkerID})
-			if ch.cancel != nil {
-				cancels = append(cancels, ch.cancel)
-			}
-			delete(m.channels, id)
-		}
-	}
-	m.mu.Unlock()
-
-	for _, cc := range removed {
-		m.ChunkTracker.RemoveChannel(cc.ChannelID)
-	}
-
-	for _, cancel := range cancels {
-		cancel()
-	}
-	return removed
+	return m.unregisterMatching(func(ch *channel) bool {
+		return ch.ConnID == connID
+	})
 }
 
 // UnregisterUnboundByUser removes all channels for a user that have no
 // associated relay connection (empty ConnID). This cleans up channels that were
 // opened via RPC but never used through a WebSocket relay.
 func (m *Manager) UnregisterUnboundByUser(userID string) []ClosedChannel {
+	return m.unregisterMatching(func(ch *channel) bool {
+		return ch.UserID == userID && ch.ConnID == ""
+	})
+}
+
+// unregisterMatching removes all channels matching the predicate.
+func (m *Manager) unregisterMatching(predicate func(*channel) bool) []ClosedChannel {
 	m.mu.Lock()
 	var removed []ClosedChannel
 	var cancels []context.CancelFunc
 	for id, ch := range m.channels {
-		if ch.UserID == userID && ch.ConnID == "" {
+		if predicate(ch) {
 			removed = append(removed, ClosedChannel{ChannelID: id, WorkerID: ch.WorkerID})
 			if ch.cancel != nil {
 				cancels = append(cancels, ch.cancel)

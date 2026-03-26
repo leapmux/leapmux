@@ -3,8 +3,6 @@ package service
 import (
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -370,43 +368,10 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		candidates := []string{
-			"/bin/bash",
-			"/bin/zsh",
-			"/bin/sh",
-			"/usr/bin/fish",
-			"/bin/fish",
-		}
-
-		var shells []string
-		for _, path := range candidates {
-			if _, err := os.Stat(path); err == nil {
-				shells = append(shells, path)
-			}
-		}
-
-		defaultShell := os.Getenv("SHELL")
-		if defaultShell == "" {
-			defaultShell = "/bin/sh"
-		}
-
-		// Ensure default shell is in the list.
-		found := false
-		for _, s := range shells {
-			if s == defaultShell {
-				found = true
-				break
-			}
-		}
-		if !found {
-			if _, err := os.Stat(defaultShell); err == nil {
-				shells = append(shells, defaultShell)
-			}
-		}
-
+		shells, defaultShell := terminal.ListAvailableShells()
 		sendProtoResponse(sender, &leapmuxv1.ListAvailableShellsResponse{
 			Shells:       shells,
-			DefaultShell: filepath.Base(defaultShell),
+			DefaultShell: defaultShell,
 		})
 	})
 }

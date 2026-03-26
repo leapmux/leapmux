@@ -207,19 +207,17 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 // resuming an OpenCode session. When resumeSessionID is non-empty, it produces
 // a "session/resume" request; otherwise a "session/new" request.
 func buildSessionRequest(resumeSessionID, workingDir string) (method string, params []byte) {
-	if resumeSessionID != "" {
-		params, _ = json.Marshal(map[string]interface{}{
-			"sessionId":  resumeSessionID,
-			"cwd":        workingDir,
-			"mcpServers": []interface{}{},
-		})
-		return "session/resume", params
-	}
-	params, _ = json.Marshal(map[string]interface{}{
+	p := map[string]interface{}{
 		"cwd":        workingDir,
 		"mcpServers": []interface{}{},
-	})
-	return "session/new", params
+	}
+	method = "session/new"
+	if resumeSessionID != "" {
+		p["sessionId"] = resumeSessionID
+		method = "session/resume"
+	}
+	params, _ = json.Marshal(p)
+	return method, params
 }
 
 // buildOpenCodeModels converts the ACP newSession models list to proto models.

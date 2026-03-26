@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"log/slog"
+	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
@@ -93,22 +94,18 @@ func (a *OpenCodeAgent) handleSessionUpdate(params json.RawMessage) {
 
 // handleAgentMessageChunk processes agent_message_chunk — streaming text.
 func (a *OpenCodeAgent) handleAgentMessageChunk(update json.RawMessage) {
-	var chunk struct {
-		Content struct {
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if json.Unmarshal(update, &chunk) == nil && chunk.Content.Text != "" {
-		a.mu.Lock()
-		a.turnAssistantText.WriteString(chunk.Content.Text)
-		a.mu.Unlock()
-		a.sink.BroadcastStreamChunk([]byte(chunk.Content.Text), "", "agent_message_chunk")
-	}
+	a.handleAgentChunk(update, &a.turnAssistantText, "agent_message_chunk")
 }
 
 // handleAgentThoughtChunk processes agent_thought_chunk — reasoning tokens.
 // Thinking text is accumulated separately and persisted at turn end.
 func (a *OpenCodeAgent) handleAgentThoughtChunk(update json.RawMessage) {
+	a.handleAgentChunk(update, &a.turnThinkingText, "agent_thought_chunk")
+}
+
+// handleAgentChunk extracts text from a chunk update, appends it to the
+// given builder (under lock), and broadcasts it as a stream chunk.
+func (a *OpenCodeAgent) handleAgentChunk(update json.RawMessage, builder *strings.Builder, eventType string) {
 	var chunk struct {
 		Content struct {
 			Text string `json:"text"`
@@ -116,9 +113,9 @@ func (a *OpenCodeAgent) handleAgentThoughtChunk(update json.RawMessage) {
 	}
 	if json.Unmarshal(update, &chunk) == nil && chunk.Content.Text != "" {
 		a.mu.Lock()
-		a.turnThinkingText.WriteString(chunk.Content.Text)
+		builder.WriteString(chunk.Content.Text)
 		a.mu.Unlock()
-		a.sink.BroadcastStreamChunk([]byte(chunk.Content.Text), "", "agent_thought_chunk")
+		a.sink.BroadcastStreamChunk([]byte(chunk.Content.Text), "", eventType)
 	}
 }
 

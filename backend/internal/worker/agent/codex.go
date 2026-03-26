@@ -727,7 +727,7 @@ func codexModelDisplayName(id string) string {
 	suffixParts := strings.Split(parts[1], "-")
 	for i, p := range suffixParts {
 		if len(p) > 0 {
-			suffixParts[i] = strings.ToUpper(p[:1]) + p[1:]
+			suffixParts[i] = capitalizeFirst(p)
 		}
 	}
 	return prefix + parts[0] + " " + strings.Join(suffixParts, " ")

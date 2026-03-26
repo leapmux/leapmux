@@ -2,15 +2,17 @@ import type { Accessor, Component, Setter } from 'solid-js'
 import type { GitBranchEntry } from '~/generated/leapmux/v1/git_pb'
 import type { GitMode } from '~/hooks/createWorkerDialogState'
 import { generateSlug } from 'random-word-slugs'
-import { createEffect, createMemo, createSignal, For, on, Show } from 'solid-js'
+import { batch, createEffect, createMemo, createSignal, For, on, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { tildify } from '~/components/chat/messageUtils'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { Tooltip } from '~/components/common/Tooltip'
 import { useOrg } from '~/context/OrgContext'
+import { createLogger } from '~/lib/logger'
 import { validateBranchName } from '~/lib/validate'
 import { errorText, labelRow, pathPreview, radioGroup, radioRow, radioSubContent, warningText } from '~/styles/shared.css'
 
+const log = createLogger('GitOptions')
 const LAST_PATH_SEGMENT_RE = /\/[^/]+$/
 const REMOTE_PREFIX_RE = /^[^/]+\//
 
@@ -141,18 +143,26 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
       })
       if (gen !== branchGeneration)
         return
-      setBranches(resp.branches)
-      // Default the base branch to the current branch.
-      const cur = resp.currentBranch || currentBranch()
-      if (!selectedBaseBranch() && cur) {
-        setSelectedBaseBranch(cur)
-      }
-      if (!selectedNewBranchBase() && cur) {
-        setSelectedNewBranchBase(cur)
-      }
+      // Batch branches, selected values, AND loading state together.
+      // If branchesLoading is set outside the batch, the <select>
+      // children swap (from "Loading..." to branch <option>s) in a
+      // separate render pass — the browser resets selectedIndex to 0
+      // and SolidJS doesn't re-apply the value because the signal
+      // didn't change, only the children did.
+      batch(() => {
+        setBranches(resp.branches)
+        setBranchesLoading(false)
+        const cur = resp.currentBranch || currentBranch()
+        if (!selectedBaseBranch() && cur) {
+          setSelectedBaseBranch(cur)
+        }
+        if (!selectedNewBranchBase() && cur) {
+          setSelectedNewBranchBase(cur)
+        }
+      })
     }
-    catch {}
-    finally {
+    catch (err) {
+      log.warn('Failed to list git branches', err)
       if (gen === branchGeneration)
         setBranchesLoading(false)
     }
@@ -179,10 +189,13 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
       const entries = resp.worktrees
         .filter(wt => !wt.isMain)
         .map(wt => ({ path: wt.path, branch: wt.branch, isMain: wt.isMain }))
-      setWorktrees(entries)
+      batch(() => {
+        setWorktrees(entries)
+        setWorktreesLoading(false)
+      })
     }
-    catch {}
-    finally {
+    catch (err) {
+      log.warn('Failed to list git worktrees', err)
       if (gen === worktreeGeneration)
         setWorktreesLoading(false)
     }
@@ -214,20 +227,22 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
       })
       if (gen !== gitInfoGeneration)
         return
-      setIsGitRepo(resp.isGitRepo)
-      setIsRepoRoot(resp.isRepoRoot)
-      setIsWorktreeRoot(resp.isWorktreeRoot)
-      setIsDirty(resp.isDirty)
-      setRepoRoot(resp.repoRoot)
-      setRepoDirName(resp.repoDirName)
-      setCurrentBranch(resp.currentBranch)
-      // Reset branch lists but preserve the selected mode.
-      setBranches([])
-      setWorktrees([])
-      setSelectedCheckoutBranch('')
-      setSelectedBaseBranch('')
-      setSelectedNewBranchBase('')
-      setSelectedWorktreePath('')
+      batch(() => {
+        setIsGitRepo(resp.isGitRepo)
+        setIsRepoRoot(resp.isRepoRoot)
+        setIsWorktreeRoot(resp.isWorktreeRoot)
+        setIsDirty(resp.isDirty)
+        setRepoRoot(resp.repoRoot)
+        setRepoDirName(resp.repoDirName)
+        setCurrentBranch(resp.currentBranch)
+        // Reset branch lists but preserve the selected mode.
+        setBranches([])
+        setWorktrees([])
+        setSelectedCheckoutBranch('')
+        setSelectedBaseBranch('')
+        setSelectedNewBranchBase('')
+        setSelectedWorktreePath('')
+      })
       // Re-fetch for the current mode since the lists were cleared.
       const mode = gitMode()
       if (mode === 'switch-branch' || mode === 'create-branch' || mode === 'create-worktree') {
@@ -237,7 +252,8 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
         fetchWorktrees()
       }
     }
-    catch {
+    catch (err) {
+      log.warn('Failed to get git info', err)
       if (gen !== gitInfoGeneration)
         return
       setIsGitRepo(false)

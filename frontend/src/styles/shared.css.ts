@@ -226,6 +226,17 @@ export const dialogTopSection = style({
   gap: 'var(--space-4)',
 })
 
+export const dialogTopTwoColumn = style({
+  'display': 'grid',
+  'gridTemplateColumns': '1fr 1fr',
+  'gap': 'var(--space-4)',
+  '@media': {
+    '(max-width: 639px)': {
+      gridTemplateColumns: '1fr',
+    },
+  },
+})
+
 export const dialogTwoColumn = style({
   'display': 'grid',
   'gridTemplateColumns': '1fr 1fr',
