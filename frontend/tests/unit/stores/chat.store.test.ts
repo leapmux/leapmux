@@ -87,6 +87,15 @@ describe('createChatStore', () => {
     })
   })
 
+  it('should ignore clearing a command stream that was never created', () => {
+    createRoot((dispose) => {
+      const store = createChatStore()
+      expect(() => store.clearCommandStream('a1', 'rs_missing')).not.toThrow()
+      expect(store.getCommandStream('a1', 'rs_missing')).toEqual([])
+      dispose()
+    })
+  })
+
   it('should set and clear message errors', () => {
     createRoot((dispose) => {
       const store = createChatStore()

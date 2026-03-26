@@ -91,7 +91,9 @@ const TerminalContainer: Component<{
         onTitleChange(id, title)
       })
       instance.terminal.onBell(() => {
-        onBell(id)
+        if (!instances.get(id)?.suppressInput) {
+          onBell(id)
+        }
       })
     }
 

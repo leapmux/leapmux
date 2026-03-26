@@ -25,6 +25,7 @@ import { ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
+import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { tabKey } from '~/stores/tab.store'
 import { shouldShowThinkingIndicator } from '~/utils/agentState'
@@ -251,7 +252,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     hasOlderMessages={chatStore.hasOlderMessages(agentId)}
                     fetchingOlder={chatStore.isFetchingOlder(agentId)}
                     onLoadOlderMessages={() => chatStore.loadOlderMessages(agentStore.state.agents.find(a => a.id === agentId)?.workerId ?? '', agentId)}
-                    onTrimOldMessages={() => chatStore.trimOldMessages(agentId, 150)}
+                    onTrimOldMessages={() => chatStore.trimOldMessages(agentId, MAX_LOADED_CHAT_MESSAGES)}
                     savedViewportScroll={chatStore.getSavedViewportScroll(agentId)}
                     onClearSavedViewportScroll={() => chatStore.clearSavedViewportScroll(agentId)}
                     scrollStateRef={(fn) => {

@@ -102,16 +102,7 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 			}
 		}
 
-		// Current branch.
-		if branch, err := gitOutput(ctx, dirPath, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
-			resp.CurrentBranch = strings.TrimSpace(branch)
-			if resp.CurrentBranch == "HEAD" {
-				// Detached HEAD — show short SHA instead.
-				if sha, err := gitOutput(ctx, dirPath, "rev-parse", "--short", "HEAD"); err == nil {
-					resp.CurrentBranch = strings.TrimSpace(sha)
-				}
-			}
-		}
+		resp.CurrentBranch = currentBranchForPath(ctx, dirPath)
 
 		// Origin URL.
 		if originURL, err := gitOutput(ctx, dirPath, "config", "--get", "remote.origin.url"); err == nil {
@@ -290,20 +281,9 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 			branches = append(branches, &leapmuxv1.GitBranchEntry{Name: b, IsRemote: true})
 		}
 
-		// Get current branch of the main repo root.
-		currentBranch := ""
-		if branch, err := gitOutput(ctx, repoRoot, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
-			currentBranch = strings.TrimSpace(branch)
-			if currentBranch == "HEAD" {
-				if sha, err := gitOutput(ctx, repoRoot, "rev-parse", "--short", "HEAD"); err == nil {
-					currentBranch = strings.TrimSpace(sha)
-				}
-			}
-		}
-
 		sendProtoResponse(sender, &leapmuxv1.ListGitBranchesResponse{
 			Branches:      branches,
-			CurrentBranch: currentBranch,
+			CurrentBranch: currentBranchForPath(ctx, dirPath),
 		})
 	})
 
@@ -785,6 +765,24 @@ func resolveMainRepoRoot(ctx context.Context, dirPath string) (string, error) {
 	}
 
 	return repoRoot, nil
+}
+
+func currentBranchForPath(ctx context.Context, dirPath string) string {
+	branch, err := gitOutput(ctx, dirPath, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return ""
+	}
+
+	currentBranch := strings.TrimSpace(branch)
+	if currentBranch != "HEAD" {
+		return currentBranch
+	}
+
+	sha, err := gitOutput(ctx, dirPath, "rev-parse", "--short", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(sha)
 }
 
 // parseGitLines splits git output by newlines, trimming whitespace and filtering empty lines.
