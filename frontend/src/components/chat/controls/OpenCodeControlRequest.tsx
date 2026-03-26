@@ -47,12 +47,12 @@ export const OpenCodeControlContent: Component<ContentProps> = (props) => {
   const kind = () => toolCall()?.kind as string | undefined
 
   return (
-    <div>
+    <>
       <div class={styles.controlBannerTitle}>{title()}</div>
       <Show when={kind()}>
         <div class={styles.codexCwd}>{kind()}</div>
       </Show>
-    </div>
+    </>
   )
 }
 
