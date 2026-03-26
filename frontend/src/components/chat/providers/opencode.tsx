@@ -11,6 +11,8 @@ import { isNotificationThreadWrapper } from '../messageUtils'
 import {
   opencodeAgentMessageRenderer,
   opencodePlanRenderer,
+  opencodeResultDividerRenderer,
+  opencodeThoughtRenderer,
   opencodeToolCallRenderer,
   opencodeToolCallUpdateRenderer,
 } from '../opencodeRenderers'
@@ -143,6 +145,10 @@ const opencodePlugin: ProviderPlugin = {
   renderMessage(category: MessageCategory, parsed: unknown, _role: MessageRole, context?: RenderContext): JSX.Element | null {
     if (category.kind === 'assistant_text')
       return opencodeAgentMessageRenderer(parsed)
+    if (category.kind === 'assistant_thinking')
+      return opencodeThoughtRenderer(parsed, _role, context)
+    if (category.kind === 'result_divider')
+      return opencodeResultDividerRenderer(parsed)
     if (category.kind === 'tool_use') {
       const cat = category as { toolName: string, toolUse: Record<string, unknown> }
       if (cat.toolName === 'plan')

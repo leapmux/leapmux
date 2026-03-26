@@ -115,7 +115,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		sink := svc.Output.NewSink(agentID, agentProvider)
 
-		confirmedMode, err := svc.Agents.StartAgent(bgCtx(), agentOpts, sink)
+		confirmedSettings, err := svc.Agents.StartAgent(bgCtx(), agentOpts, sink)
 		if err != nil {
 			slog.Error("failed to start agent", "agent_id", agentID, "error", err)
 			// Mark the agent as closed since the process failed to start.
@@ -124,12 +124,25 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
+		confirmedMode := confirmedSettings.GetPermissionMode()
 		slog.Info("agent started", "agent_id", agentID, "model", model, "permission_mode", confirmedMode)
 
 		// Persist the confirmed permission mode.
 		if confirmedMode != "" {
 			_ = svc.Queries.SetAgentPermissionMode(bgCtx(), db.SetAgentPermissionModeParams{
 				PermissionMode: confirmedMode,
+				ID:             agentID,
+			})
+		}
+
+		// Persist the discovered model (e.g. OpenCode discovers models dynamically
+		// during session/new, so the DB model may be empty until now).
+		if discoveredModel := confirmedSettings.GetModel(); discoveredModel != "" && model == "" {
+			_ = svc.Queries.UpdateAgentAllSettings(bgCtx(), db.UpdateAgentAllSettingsParams{
+				Model:          discoveredModel,
+				Effort:         agentOpts.Effort,
+				PermissionMode: confirmedMode,
+				ExtraSettings:  "",
 				ID:             agentID,
 			})
 		}

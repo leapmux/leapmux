@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { sendOpenCodePermissionResponse } from '../controls/OpenCodeControlRequest'
+import { opencodeResultDividerRenderer } from '../opencodeRenderers'
 import { getProviderPlugin } from './registry'
 
 // Side-effect import to register the OpenCode plugin.
@@ -202,6 +203,33 @@ describe('opencode classify', () => {
   it('hides empty wrapper', () => {
     const wrapper = { old_seqs: [], messages: [] }
     expect(plugin.classify(undefined, wrapper)).toEqual({ kind: 'hidden' })
+  })
+})
+
+describe('opencode result divider renderer', () => {
+  const plugin = getProviderPlugin(AgentProvider.OPENCODE)!
+
+  it('renders "Turn ended" for end_turn', () => {
+    const parsed = { stopReason: 'end_turn', usage: { totalTokens: 100 } }
+    const result = opencodeResultDividerRenderer(parsed)
+    expect(result).not.toBeNull()
+  })
+
+  it('renders "Turn ended" when stopReason is missing', () => {
+    const parsed = { usage: { totalTokens: 100 } }
+    const result = opencodeResultDividerRenderer(parsed)
+    expect(result).not.toBeNull()
+  })
+
+  it('returns null for non-object input', () => {
+    expect(opencodeResultDividerRenderer(null)).toBeNull()
+    expect(opencodeResultDividerRenderer('string')).toBeNull()
+  })
+
+  it('is returned by plugin.renderMessage for result_divider', () => {
+    const parsed = { stopReason: 'end_turn' }
+    const result = plugin.renderMessage!({ kind: 'result_divider' }, parsed, MessageRole.RESULT)
+    expect(result).not.toBeNull()
   })
 })
 

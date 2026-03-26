@@ -29,6 +29,7 @@ type OpenCodeAgent struct {
 	pendingReqs       sync.Map     // reqID (int64) -> chan json.RawMessage
 	availableModels   []*leapmuxv1.AvailableModel
 	turnAssistantText string       // accumulated assistant text for the current turn
+	turnThinkingText  string       // accumulated thinking text for the current turn
 }
 
 // StartOpenCode starts an OpenCode ACP agent process and performs the handshake.
@@ -230,11 +231,26 @@ func (a *OpenCodeAgent) handlePromptResponse(resp json.RawMessage) {
 		return
 	}
 
-	// Persist the accumulated assistant text as a message before the result divider.
+	// Persist accumulated thinking and assistant text before the result divider.
 	a.mu.Lock()
+	thinkingText := a.turnThinkingText
+	a.turnThinkingText = ""
 	assistantText := a.turnAssistantText
 	a.turnAssistantText = ""
 	a.mu.Unlock()
+
+	if thinkingText != "" {
+		msgContent, _ := json.Marshal(map[string]interface{}{
+			"sessionUpdate": "agent_thought_chunk",
+			"content": map[string]interface{}{
+				"type": "text",
+				"text": thinkingText,
+			},
+		})
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, msgContent, SpanInfo{}); err != nil {
+			slog.Error("opencode persist thinking text", "agent_id", a.agentID, "error", err)
+		}
+	}
 
 	if assistantText != "" {
 		msgContent, _ := json.Marshal(map[string]interface{}{
@@ -248,6 +264,10 @@ func (a *OpenCodeAgent) handlePromptResponse(resp json.RawMessage) {
 			slog.Error("opencode persist assistant text", "agent_id", a.agentID, "error", err)
 		}
 	}
+
+	// Unwrap the result if it uses the ACP message format {role, content, ...}.
+	// The frontend expects stopReason at the top level.
+	resp = unwrapACPResult(resp)
 
 	enriched := a.enrichWithToolUses(resp)
 	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT, enriched, SpanInfo{}); err != nil {
@@ -427,6 +447,24 @@ func (a *OpenCodeAgent) cancelSession() error {
 // formatStartupError includes stderr and preamble output for diagnostics.
 func (a *OpenCodeAgent) formatStartupError(phase string, err error) error {
 	return a.processBase.formatStartupError(phase, err, a.PreambleOutput())
+}
+
+// unwrapACPResult extracts the inner content from an ACP result message.
+// Some OpenCode versions return session/prompt results in the format:
+//
+//	{id, role: "result", seq, created_at, content: {stopReason, usage, ...}}
+//
+// The frontend classifier expects stopReason at the top level, so we unwrap
+// the content and merge any top-level metadata (_meta) into it.
+func unwrapACPResult(resp json.RawMessage) json.RawMessage {
+	var wrapper struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(resp, &wrapper) != nil || wrapper.Role != "result" || len(wrapper.Content) == 0 {
+		return resp
+	}
+	return wrapper.Content
 }
 
 func init() {

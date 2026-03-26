@@ -3,32 +3,25 @@ import type { JSX } from 'solid-js'
 import type { RenderContext } from './messageRenderers'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { CommandStreamSegment } from '~/stores/chat.store'
-import Brain from 'lucide-solid/icons/brain'
-import ChevronRight from 'lucide-solid/icons/chevron-right'
 import Eye from 'lucide-solid/icons/eye'
 import FileEdit from 'lucide-solid/icons/file-pen-line'
 import ListTodo from 'lucide-solid/icons/list-todo'
 import Search from 'lucide-solid/icons/search'
 import Terminal from 'lucide-solid/icons/terminal'
 import Wrench from 'lucide-solid/icons/wrench'
-import { createSignal, For, Show } from 'solid-js'
+import { For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { TodoList } from '~/components/todo/TodoList'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { DiffView, rawDiffToHunks } from './diffUtils'
 import { markdownContent } from './markdownContent.css'
-import {
-  thinkingChevron,
-  thinkingChevronExpanded,
-  thinkingContent,
-  thinkingHeader,
-} from './messageStyles.css'
+import { ThinkingMessage } from './messageRenderers'
+import { resultDivider } from './messageStyles.css'
 import { isObject, relativizePath } from './messageUtils'
 import { ToolResultMessage, ToolUseLayout } from './toolRenderers'
 import {
   toolInputPath,
   toolInputSummary,
-  toolMessage,
   toolResultContent,
   toolResultContentPre,
   toolResultError,
@@ -64,25 +57,12 @@ export function opencodeAgentMessageRenderer(parsed: unknown): JSX.Element | nul
   return <div class={markdownContent} innerHTML={renderMarkdown(text)} />
 }
 
-/** Render an OpenCode agent_thought_chunk as collapsible thinking. */
-export function opencodeThoughtRenderer(parsed: unknown, _role: MessageRole, _context?: RenderContext): JSX.Element {
+/** Render an OpenCode agent_thought_chunk as collapsible thinking (same style as Claude Code). */
+export function opencodeThoughtRenderer(parsed: unknown, _role: MessageRole, context?: RenderContext): JSX.Element | null {
   const text = extractAgentText(parsed)
-  const [expanded, setExpanded] = createSignal(false)
-
-  return (
-    <div class={toolMessage}>
-      <div class={thinkingHeader} onClick={() => setExpanded(!expanded())}>
-        <Icon icon={Brain} size="sm" />
-        <span>Thinking</span>
-        <span class={expanded() ? thinkingChevronExpanded : thinkingChevron}>
-          <Icon icon={ChevronRight} size="sm" />
-        </span>
-      </div>
-      <Show when={expanded()}>
-        <div class={thinkingContent}>{text}</div>
-      </Show>
-    </div>
-  )
+  if (!text)
+    return null
+  return <ThinkingMessage text={text} context={context} />
 }
 
 /** Render an OpenCode tool_call (pending status). */
@@ -175,6 +155,16 @@ export function opencodeToolCallUpdateRenderer(toolUse: Record<string, unknown>,
       </Show>
     </ToolResultMessage>
   )
+}
+
+/** Render an OpenCode result divider (turn completion). */
+export function opencodeResultDividerRenderer(parsed: unknown): JSX.Element | null {
+  if (!isObject(parsed))
+    return null
+  const obj = parsed as Record<string, unknown>
+  const reason = obj.stopReason as string | undefined
+  const label = reason && reason !== 'end_turn' ? `Turn ended (${reason})` : 'Turn ended'
+  return <div class={resultDivider}>{label}</div>
 }
 
 /** Render an OpenCode plan (todo list). */

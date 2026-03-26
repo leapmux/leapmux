@@ -49,8 +49,15 @@ func (a *OpenCodeAgent) handleSessionUpdate(params json.RawMessage) {
 
 	var header struct {
 		SessionUpdate string `json:"sessionUpdate"`
+		Role          string `json:"role"`
 	}
 	if json.Unmarshal(wrapper.Update, &header) != nil {
+		return
+	}
+
+	// Turn-end messages with role "result" are handled by handlePromptResponse
+	// when the session/prompt RPC completes — skip them here to avoid duplicates.
+	if header.Role == "result" {
 		return
 	}
 
@@ -100,7 +107,7 @@ func (a *OpenCodeAgent) handleAgentMessageChunk(update json.RawMessage) {
 }
 
 // handleAgentThoughtChunk processes agent_thought_chunk — reasoning tokens.
-// Thought text is NOT accumulated into turnAssistantText (only agent_message_chunk is).
+// Thinking text is accumulated separately and persisted at turn end.
 func (a *OpenCodeAgent) handleAgentThoughtChunk(update json.RawMessage) {
 	var chunk struct {
 		Content struct {
@@ -108,6 +115,9 @@ func (a *OpenCodeAgent) handleAgentThoughtChunk(update json.RawMessage) {
 		} `json:"content"`
 	}
 	if json.Unmarshal(update, &chunk) == nil && chunk.Content.Text != "" {
+		a.mu.Lock()
+		a.turnThinkingText += chunk.Content.Text
+		a.mu.Unlock()
 		a.sink.BroadcastStreamChunk([]byte(chunk.Content.Text), "", "agent_thought_chunk")
 	}
 }

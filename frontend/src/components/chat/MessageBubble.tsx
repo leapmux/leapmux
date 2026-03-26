@@ -457,6 +457,14 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     if (item?.type === 'agentMessage' && typeof item.text === 'string')
       return item.text.trim() || null
 
+    // OpenCode format: {sessionUpdate: 'agent_message_chunk'|'agent_thought_chunk', content: {text: '...'}}
+    const su = obj.sessionUpdate as string | undefined
+    if (su === 'agent_message_chunk' || su === 'agent_thought_chunk') {
+      const ct = obj.content as Record<string, unknown> | undefined
+      if (ct && typeof ct.text === 'string')
+        return (ct.text as string).trim() || null
+    }
+
     // Claude Code format: {type: 'assistant', message: {content: [...]}}
     const content = getAssistantContent(obj)
     if (!content)

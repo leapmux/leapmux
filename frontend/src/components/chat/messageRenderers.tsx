@@ -121,7 +121,7 @@ const assistantTextRenderer: MessageContentRenderer = {
 }
 
 /** Inner component for thinking messages — owns local expand/collapse state. */
-function ThinkingMessage(props: { text: string, context?: RenderContext }): JSX.Element {
+export function ThinkingMessage(props: { text: string, context?: RenderContext }): JSX.Element {
   const [expanded, setExpanded] = createSignal(false)
 
   return (

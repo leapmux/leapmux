@@ -1,7 +1,7 @@
 import type { AskQuestionState, Question } from '../controls/types'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { sendCodexDecision, sendCodexUserInputResponse, toRpcId } from '../controls/CodexControlRequest'
 import { getProviderPlugin } from './registry'
 
@@ -161,6 +161,31 @@ describe('codex classify', () => {
     }
     const result = plugin.classify(parent, null)
     expect(result).toEqual({ kind: 'hidden' })
+  })
+})
+
+describe('codex result divider', () => {
+  const plugin = getProviderPlugin(AgentProvider.CODEX)!
+
+  it('classifies turn/completed as result_divider', () => {
+    const parent = {
+      method: 'turn/completed',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        turn: { id: 'turn-1', status: 'completed' },
+      },
+      turn: { id: 'turn-1', status: 'completed' },
+    }
+    expect(plugin.classify(parent, null)).toEqual({ kind: 'result_divider' })
+  })
+
+  it('renders result_divider via renderMessage', () => {
+    const parsed = {
+      turn: { id: 'turn-1', status: 'completed' },
+    }
+    const result = plugin.renderMessage!({ kind: 'result_divider' }, parsed, MessageRole.RESULT)
+    expect(result).not.toBeNull()
   })
 })
 

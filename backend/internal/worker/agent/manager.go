@@ -39,29 +39,30 @@ type startFunc func(ctx context.Context, opts Options, sink OutputSink) (Provide
 // StartAgent spawns an agent for the given agent ID, dispatching based on
 // opts.AgentProvider.
 // The sink receives parsed output events.
-// Returns the confirmed permission mode from the startup handshake.
-func (m *Manager) StartAgent(ctx context.Context, opts Options, sink OutputSink) (string, error) {
+// Returns the confirmed settings from the startup handshake (e.g. permission
+// mode, discovered model).
+func (m *Manager) StartAgent(ctx context.Context, opts Options, sink OutputSink) (*leapmuxv1.AgentSettings, error) {
 	reg, ok := providerRegistry[opts.AgentProvider]
 	if !ok {
-		return "", fmt.Errorf("unsupported agent provider: %v", opts.AgentProvider)
+		return nil, fmt.Errorf("unsupported agent provider: %v", opts.AgentProvider)
 	}
 	return m.startAgentWith(ctx, opts, sink, reg.start)
 }
 
-func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputSink, start startFunc) (string, error) {
+func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputSink, start startFunc) (*leapmuxv1.AgentSettings, error) {
 	m.mu.Lock()
 	if _, exists := m.agents[opts.AgentID]; exists {
 		m.mu.Unlock()
-		return "", fmt.Errorf("agent already running for agent %s", opts.AgentID)
+		return nil, fmt.Errorf("agent already running for agent %s", opts.AgentID)
 	}
 	m.mu.Unlock()
 
 	provider, err := start(ctx, opts, sink)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	confirmedMode := provider.CurrentSettings().GetPermissionMode()
+	confirmedSettings := provider.CurrentSettings()
 
 	m.mu.Lock()
 	m.agents[opts.AgentID] = provider
@@ -109,7 +110,7 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 		}
 	}()
 
-	return confirmedMode, nil
+	return confirmedSettings, nil
 }
 
 // SendInput routes a user message to the specified agent.

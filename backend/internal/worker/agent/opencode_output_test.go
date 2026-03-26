@@ -59,9 +59,75 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk(t *testing.T) {
 	if string(got.Content) != "thinking..." {
 		t.Fatalf("expected content 'thinking...', got %q", string(got.Content))
 	}
+	// Thought chunks are streamed but not persisted immediately — they accumulate.
 	if sink.MessageCount() != 0 {
 		t.Fatalf("expected 0 persisted messages, got %d", sink.MessageCount())
 	}
+	agent.mu.Lock()
+	if agent.turnThinkingText != "thinking..." {
+		t.Fatalf("expected accumulated thinking text 'thinking...', got %q", agent.turnThinkingText)
+	}
+	agent.mu.Unlock()
+}
+
+func TestHandlePromptResponse_PersistsThinkingText(t *testing.T) {
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+
+	// Simulate accumulated thinking and assistant text.
+	agent.turnThinkingText = "let me think about this"
+	agent.turnAssistantText = "Here is the answer."
+
+	resp := json.RawMessage(`{"stopReason":"end_turn","usage":{"totalTokens":100}}`)
+	agent.handlePromptResponse(resp)
+
+	// Expect 3 messages: thinking, assistant text, result divider.
+	if sink.MessageCount() != 3 {
+		t.Fatalf("expected 3 persisted messages, got %d", sink.MessageCount())
+	}
+
+	// First message: thinking text.
+	thinkingMsg := sink.Messages()[0]
+	if thinkingMsg.Role != leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT {
+		t.Fatalf("expected ASSISTANT role for thinking, got %v", thinkingMsg.Role)
+	}
+	var thinkingParsed map[string]interface{}
+	if err := json.Unmarshal(thinkingMsg.Content, &thinkingParsed); err != nil {
+		t.Fatalf("failed to unmarshal thinking: %v", err)
+	}
+	if thinkingParsed["sessionUpdate"] != "agent_thought_chunk" {
+		t.Fatalf("expected sessionUpdate 'agent_thought_chunk', got %v", thinkingParsed["sessionUpdate"])
+	}
+	content := thinkingParsed["content"].(map[string]interface{})
+	if content["text"] != "let me think about this" {
+		t.Fatalf("expected thinking text, got %v", content["text"])
+	}
+
+	// Second message: assistant text.
+	assistantMsg := sink.Messages()[1]
+	var assistantParsed map[string]interface{}
+	if err := json.Unmarshal(assistantMsg.Content, &assistantParsed); err != nil {
+		t.Fatalf("failed to unmarshal assistant: %v", err)
+	}
+	if assistantParsed["sessionUpdate"] != "agent_message_chunk" {
+		t.Fatalf("expected sessionUpdate 'agent_message_chunk', got %v", assistantParsed["sessionUpdate"])
+	}
+
+	// Third message: result divider.
+	resultMsg := sink.Messages()[2]
+	if resultMsg.Role != leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT {
+		t.Fatalf("expected RESULT role, got %v", resultMsg.Role)
+	}
+
+	// Accumulated text should be reset.
+	agent.mu.Lock()
+	if agent.turnThinkingText != "" {
+		t.Fatalf("expected empty thinking text after prompt response, got %q", agent.turnThinkingText)
+	}
+	if agent.turnAssistantText != "" {
+		t.Fatalf("expected empty assistant text after prompt response, got %q", agent.turnAssistantText)
+	}
+	agent.mu.Unlock()
 }
 
 func TestHandleOpenCodeOutput_ToolCallOpensSpan(t *testing.T) {
@@ -377,6 +443,84 @@ func TestHandleOpenCodeOutput_ToolCallThenCompleted(t *testing.T) {
 	}
 	if !completedMsg.Closing {
 		t.Fatalf("expected closing=true for completed tool_call_update")
+	}
+}
+
+func TestUnwrapACPResult(t *testing.T) {
+	t.Run("unwraps role=result with content", func(t *testing.T) {
+		input := json.RawMessage(`{"id":"msg-1","role":"result","seq":4,"created_at":"2026-03-26T10:46:48.015Z","content":{"_meta":{},"stopReason":"end_turn","usage":{"totalTokens":100}}}`)
+		got := unwrapACPResult(input)
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(got, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+		if parsed["stopReason"] != "end_turn" {
+			t.Fatalf("expected stopReason 'end_turn' at top level, got %v", parsed["stopReason"])
+		}
+		// Should NOT have the wrapper fields.
+		if _, ok := parsed["role"]; ok {
+			t.Fatalf("expected no 'role' field after unwrap, got %v", parsed["role"])
+		}
+	})
+
+	t.Run("returns original when role is not result", func(t *testing.T) {
+		input := json.RawMessage(`{"role":"assistant","content":{"text":"hello"}}`)
+		got := unwrapACPResult(input)
+		if string(got) != string(input) {
+			t.Fatalf("expected unchanged output for non-result role")
+		}
+	})
+
+	t.Run("returns original when no role field", func(t *testing.T) {
+		input := json.RawMessage(`{"stopReason":"end_turn","usage":{"totalTokens":100}}`)
+		got := unwrapACPResult(input)
+		if string(got) != string(input) {
+			t.Fatalf("expected unchanged output when no role field")
+		}
+	})
+}
+
+func TestHandlePromptResponse_WrappedFormat(t *testing.T) {
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+
+	// Simulate a wrapped prompt response with {role: "result", content: {...}}.
+	resp := json.RawMessage(`{"id":"msg-1","role":"result","seq":4,"created_at":"2026-03-26T10:46:48.015Z","content":{"_meta":{},"stopReason":"end_turn","usage":{"totalTokens":100}}}`)
+	agent.handlePromptResponse(resp)
+
+	if sink.MessageCount() != 1 {
+		t.Fatalf("expected 1 persisted message, got %d", sink.MessageCount())
+	}
+	msg := sink.Messages()[0]
+	if msg.Role != leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT {
+		t.Fatalf("expected RESULT role, got %v", msg.Role)
+	}
+
+	// The persisted content should have stopReason at the top level.
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(msg.Content, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	if parsed["stopReason"] != "end_turn" {
+		t.Fatalf("expected stopReason 'end_turn' at top level, got %v", parsed["stopReason"])
+	}
+	// num_tool_uses should be injected.
+	if parsed["num_tool_uses"] != float64(0) {
+		t.Fatalf("expected num_tool_uses 0, got %v", parsed["num_tool_uses"])
+	}
+}
+
+func TestHandleOpenCodeOutput_SessionUpdateResultRoleIgnored(t *testing.T) {
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+
+	// A session/update with role "result" should be ignored (handled by handlePromptResponse).
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"role":"result","id":"msg-1","seq":4,"created_at":"2026-03-26T10:46:48.015Z","content":{"_meta":{},"stopReason":"end_turn","usage":{"totalTokens":100}}}}}`
+	handleOpenCodeOutput(agent, []byte(input))
+
+	if sink.MessageCount() != 0 {
+		t.Fatalf("expected 0 persisted messages for session/update with role=result, got %d", sink.MessageCount())
 	}
 }
 
