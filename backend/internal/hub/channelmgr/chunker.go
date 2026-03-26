@@ -19,6 +19,11 @@ const (
 	// maxChunkCiphertext is the maximum ciphertext size for a single Noise
 	// transport message (65535 bytes = 65519 plaintext + 16 auth tag).
 	maxChunkCiphertext = 65535
+
+	// WSReadLimit is the WebSocket per-message read limit. It must exceed
+	// maxChunkCiphertext to accommodate the 4-byte length prefix and
+	// protobuf framing of a ChannelMessage.
+	WSReadLimit = maxChunkCiphertext + 4096
 )
 
 // chunkSequence tracks cumulative size for one in-flight chunked message.
