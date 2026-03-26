@@ -198,9 +198,20 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     props.scrollToBottomRef?.(forceScrollToBottom)
   })
 
+  // Cache classified entries by message ID so that <For> receives stable
+  // object references for unchanged messages, avoiding full DOM recreation.
+  type ClassifiedEntry = ReturnType<typeof classifyParsedMessage> & { msg: AgentChatMessage }
+  const entryCache = new Map<string, ClassifiedEntry>()
   const visibleEntries = createMemo(() => {
     const showHidden = prefs.showHiddenMessages()
-    return props.messages.map((msg) => {
+    const newCache = new Map<string, ClassifiedEntry>()
+    const result = props.messages.map((msg) => {
+      const cached = entryCache.get(msg.id)
+      // Reuse cached entry if the message hasn't changed (same seq = same content).
+      if (cached && cached.msg.seq === msg.seq) {
+        newCache.set(msg.id, cached)
+        return cached
+      }
       let classified = classifyParsedMessage(msg)
       if (
         classified.category.kind === 'hidden'
@@ -211,8 +222,15 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       ) {
         classified = { ...classified, category: { kind: 'assistant_thinking' } }
       }
-      return { msg, ...classified }
+      const entry = { msg, ...classified }
+      newCache.set(msg.id, entry)
+      return entry
     }).filter(entry => showHidden || entry.category.kind !== 'hidden')
+    // Replace cache with new entries (drops removed messages).
+    entryCache.clear()
+    for (const [k, v] of newCache)
+      entryCache.set(k, v)
+    return result
   })
 
   const scrollToBottom = () => {
