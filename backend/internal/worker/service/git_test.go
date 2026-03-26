@@ -334,3 +334,17 @@ func TestResolveMainRepoRoot_NestedWorktree(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, resolved, root)
 }
+
+func TestCurrentBranchForPath_LinkedWorktreeUsesWorktreeBranch(t *testing.T) {
+	dir := initRepo(t)
+	ctx := context.Background()
+
+	run(t, dir, "git", "checkout", "-b", "main-branch")
+	run(t, dir, "git", "commit", "--allow-empty", "-m", "main branch commit")
+
+	wtDir := filepath.Join(t.TempDir(), "feature-worktree")
+	run(t, dir, "git", "worktree", "add", "-b", "feature-branch", wtDir)
+
+	require.Equal(t, "main-branch", currentBranchForPath(ctx, dir))
+	require.Equal(t, "feature-branch", currentBranchForPath(ctx, wtDir))
+}
