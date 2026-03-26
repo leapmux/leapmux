@@ -15,7 +15,7 @@ import { getToolName } from '~/utils/controlResponse'
 import * as styles from '../ChatView.css'
 import { ClaudeCodeControlActions, ClaudeCodeControlContent } from '../controls/ClaudeCodeControlRequest'
 import { isNotificationThreadWrapper, isObject } from '../messageUtils'
-import { effortItems, hasEfforts, modeLabel, modelDisplayName, modelItems, permissionModeGroup, permissionModeItems, RadioGroup } from '../settingsShared'
+import { effortItems, hasEfforts, modeLabel, modelDisplayName, modelItems, ModelSelect, permissionModeGroup, permissionModeItems, RadioGroup } from '../settingsShared'
 import { registerProvider } from './registry'
 
 function generateRandomId(): string {
@@ -167,7 +167,7 @@ function classifyClaudeCodeMessage(
   return { kind: 'unknown' }
 }
 
-const DEFAULT_CLAUDE_MODEL = import.meta.env.LEAPMUX_CLAUDE_DEFAULT_MODEL || 'opus'
+const DEFAULT_CLAUDE_MODEL = import.meta.env.LEAPMUX_CLAUDE_DEFAULT_MODEL || 'opus[1m]'
 const DEFAULT_CLAUDE_EFFORT = import.meta.env.LEAPMUX_CLAUDE_DEFAULT_EFFORT || 'high'
 
 /** Claude Code settings panel (model, effort, permission mode). */
@@ -197,8 +197,7 @@ function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element
             fieldsetClass={styles.settingsFieldsetFirst}
           />
         </Show>
-        <RadioGroup
-          label="Model"
+        <ModelSelect
           items={models()}
           testIdPrefix="model"
           name={`${menuId}-model`}

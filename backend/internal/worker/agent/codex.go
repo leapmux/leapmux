@@ -510,6 +510,11 @@ func (a *CodexAgent) AvailableModels() []*leapmuxv1.AvailableModel {
 	return a.availableModels
 }
 
+// AvailableOptionGroups returns the static Codex option groups.
+func (a *CodexAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
+	return AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+}
+
 // UpdateSettings stores new settings so the next turn/start picks them up.
 func (a *CodexAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	a.mu.Lock()
@@ -722,7 +727,7 @@ func codexModelDisplayName(id string) string {
 	suffixParts := strings.Split(parts[1], "-")
 	for i, p := range suffixParts {
 		if len(p) > 0 {
-			suffixParts[i] = strings.ToUpper(p[:1]) + p[1:]
+			suffixParts[i] = capitalizeFirst(p)
 		}
 	}
 	return prefix + parts[0] + " " + strings.Join(suffixParts, " ")

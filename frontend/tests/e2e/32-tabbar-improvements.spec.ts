@@ -4,7 +4,7 @@ import { openAgentViaUI } from './helpers/ui'
 test.describe('TabBar Improvements', () => {
   test('should create a new agent via the agent button', async ({ page, authenticatedWorkspace }) => {
     // Click the new agent button
-    await page.locator('[data-testid="new-agent-button"]').click()
+    await page.locator('[data-testid^="new-agent-button"]').first().click()
 
     // Verify new agent tab is created
     await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toBeVisible()

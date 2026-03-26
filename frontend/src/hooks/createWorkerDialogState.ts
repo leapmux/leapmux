@@ -34,6 +34,12 @@ export function createWorkerDialogState(options: WorkerDialogStateOptions = {}) 
   const [createBranchBase, setCreateBranchBase] = createSignal('')
   const [showGitOptions, setShowGitOptions] = createSignal(false)
   const [refreshKey, setRefreshKey] = createSignal(0)
+  // True while an async worktree-to-repo-root resolution is in flight.
+  // GitOptions should not render until this resolves, otherwise it will
+  // fetch git info for the (stale) worktree path and show the wrong branch.
+  const [worktreeResolving, setWorktreeResolving] = createSignal(
+    !!options.resolveWorktree && !!options.defaultWorkingDir,
+  )
   let treeHandle: DirectoryTreeHandle | undefined
 
   const fetchWorkers = async () => {
@@ -87,6 +93,9 @@ export function createWorkerDialogState(options: WorkerDialogStateOptions = {}) 
           setWorkingDir(resp.repoRoot)
       }
       catch {}
+      finally {
+        setWorktreeResolving(false)
+      }
     }))
   }
 
@@ -149,6 +158,7 @@ export function createWorkerDialogState(options: WorkerDialogStateOptions = {}) 
     createBranch,
     createBranchError,
     createBranchBase,
+    worktreeResolving,
     showGitOptions,
     setShowGitOptions,
     handleGitModeChange,

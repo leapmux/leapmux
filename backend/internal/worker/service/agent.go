@@ -115,7 +115,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		sink := svc.Output.NewSink(agentID, agentProvider)
 
-		confirmedMode, err := svc.Agents.StartAgent(bgCtx(), agentOpts, sink)
+		confirmedSettings, err := svc.Agents.StartAgent(bgCtx(), agentOpts, sink)
 		if err != nil {
 			slog.Error("failed to start agent", "agent_id", agentID, "error", err)
 			// Mark the agent as closed since the process failed to start.
@@ -123,16 +123,12 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			sendInternalError(sender, "failed to start agent: "+err.Error())
 			return
 		}
-
-		slog.Info("agent started", "agent_id", agentID, "model", model, "permission_mode", confirmedMode)
-
-		// Persist the confirmed permission mode.
-		if confirmedMode != "" {
-			_ = svc.Queries.SetAgentPermissionMode(bgCtx(), db.SetAgentPermissionModeParams{
-				PermissionMode: confirmedMode,
-				ID:             agentID,
-			})
+		if err := svc.persistConfirmedAgentSettings(agentID, agentProvider, model, agentOpts.Effort, agentOpts.PermissionMode, extraSettings, confirmedSettings); err != nil {
+			slog.Warn("failed to persist confirmed agent settings", "agent_id", agentID, "error", err)
 		}
+
+		confirmedMode := confirmedSettings.GetPermissionMode()
+		slog.Info("agent started", "agent_id", agentID, "model", model, "permission_mode", confirmedMode)
 
 		// Register the agent tab with the worktree.
 		svc.registerTabForWorktree(worktreeID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
@@ -145,13 +141,8 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		permissionMode := confirmedMode
-		if permissionMode == "" {
-			permissionMode = dbAgent.PermissionMode
-		}
-
 		sendProtoResponse(sender, &leapmuxv1.OpenAgentResponse{
-			Agent: agentToProto(&dbAgent, permissionMode, svc.WorkerID, true, gitutil.GetGitStatus(dbAgent.WorkingDir), svc.Agents.AvailableModels(agentID, dbAgent.AgentProvider), svc.Agents.AvailableOptionGroups(dbAgent.AgentProvider)),
+			Agent: agentToProto(&dbAgent, dbAgent.PermissionMode, svc.WorkerID, true, gitutil.GetGitStatus(dbAgent.WorkingDir), svc.Agents.AvailableModels(agentID, dbAgent.AgentProvider), svc.Agents.AvailableOptionGroups(agentID, dbAgent.AgentProvider)),
 		})
 	})
 
@@ -376,17 +367,12 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 		wg.Wait()
 
-		optionGroupCache := make(map[leapmuxv1.AgentProvider][]*leapmuxv1.AvailableOptionGroup)
 		protoAgents := make([]*leapmuxv1.AgentInfo, 0, len(agents))
 		for i := range agents {
 			if accessibleWsIDs != nil && !accessibleWsIDs[agents[i].WorkspaceID] {
 				continue
 			}
-			p := agents[i].AgentProvider
-			if _, ok := optionGroupCache[p]; !ok {
-				optionGroupCache[p] = svc.Agents.AvailableOptionGroups(p)
-			}
-			protoAgents = append(protoAgents, agentToProto(&agents[i], agents[i].PermissionMode, svc.WorkerID, svc.Agents.HasAgent(agents[i].ID), gitStatuses[i], svc.Agents.AvailableModels(agents[i].ID, agents[i].AgentProvider), optionGroupCache[p]))
+			protoAgents = append(protoAgents, agentToProto(&agents[i], agents[i].PermissionMode, svc.WorkerID, svc.Agents.HasAgent(agents[i].ID), gitStatuses[i], svc.Agents.AvailableModels(agents[i].ID, agents[i].AgentProvider), svc.Agents.AvailableOptionGroups(agents[i].ID, agents[i].AgentProvider)))
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.ListAgentsResponse{
@@ -601,7 +587,8 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 				sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 
-				if _, err := svc.Agents.StartAgent(bgCtx(), agentOpts, sink); err != nil {
+				confirmedSettings, err := svc.Agents.StartAgent(bgCtx(), agentOpts, sink)
+				if err != nil {
 					slog.Error("failed to restart agent with new settings",
 						"agent_id", agentID, "error", err)
 					// Clear stale session ID so ensureAgentRunning won't try
@@ -615,6 +602,9 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 						"error": "Failed to restart agent with new settings: " + err.Error(),
 					})
 				} else {
+					if err := svc.persistConfirmedAgentSettings(agentID, dbAgent.AgentProvider, newModel, newEffort, newPermissionMode, newExtraSettings, confirmedSettings); err != nil {
+						slog.Warn("failed to persist confirmed settings after restart", "agent_id", agentID, "error", err)
+					}
 					slog.Info("agent restarted with new settings",
 						"agent_id", agentID, "model", newModel, "effort", newEffort)
 				}
@@ -643,7 +633,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		if dbAgent.PermissionMode != newPermissionMode {
 			changes["permissionMode"] = map[string]string{
 				"old": dbAgent.PermissionMode, "new": newPermissionMode,
-				"oldLabel": permissionModeLabel(dbAgent.PermissionMode, dbAgent.AgentProvider), "newLabel": permissionModeLabel(newPermissionMode, dbAgent.AgentProvider),
+				"oldLabel": svc.permissionModeLabel(agentID, dbAgent.PermissionMode, dbAgent.AgentProvider), "newLabel": svc.permissionModeLabel(agentID, newPermissionMode, dbAgent.AgentProvider),
 			}
 		}
 		for _, key := range sortedExtraSettingKeys(oldExtraSettings, newExtraSettings) {
@@ -651,9 +641,9 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			if oldVal != newVal {
 				changes[key] = map[string]string{
 					"old": oldVal, "new": newVal,
-					"label":    optionGroupLabel(key, dbAgent.AgentProvider),
-					"oldLabel": optionLabel(key, oldVal, dbAgent.AgentProvider),
-					"newLabel": optionLabel(key, newVal, dbAgent.AgentProvider),
+					"label":    svc.optionGroupLabel(agentID, key, dbAgent.AgentProvider),
+					"oldLabel": svc.optionLabel(agentID, key, oldVal, dbAgent.AgentProvider),
+					"newLabel": svc.optionLabel(agentID, key, newVal, dbAgent.AgentProvider),
 				}
 			}
 		}
@@ -704,6 +694,16 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 				"agent_id", agentID, "error", err)
 			sendNotFoundError(sender, "agent not found or not running")
 			return
+		}
+
+		// Delete the resolved control request from the DB so it is not
+		// replayed on reconnect.  Extract the request ID from the response
+		// content — Claude Code uses response.request_id, OpenCode/ACP uses
+		// the JSON-RPC id field.
+		if reqID := extractControlResponseRequestID(content); reqID != "" {
+			sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
+			sink.DeleteControlRequest(reqID)
+			sink.BroadcastControlCancel(reqID)
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.SendControlResponseResponse{})
@@ -949,6 +949,34 @@ func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, 
 	return info
 }
 
+func (svc *Context) persistConfirmedAgentSettings(agentID string, provider leapmuxv1.AgentProvider, model, effort, permissionMode string, extraSettings map[string]string, confirmed *leapmuxv1.AgentSettings) error {
+	confirmedModel := model
+	if confirmed != nil && confirmed.GetModel() != "" {
+		confirmedModel = confirmed.GetModel()
+	}
+	confirmedEffort := effort
+	if confirmed != nil && confirmed.GetEffort() != "" {
+		confirmedEffort = confirmed.GetEffort()
+	}
+	confirmedPermissionMode := permissionMode
+	if confirmed != nil && confirmed.GetPermissionMode() != "" {
+		confirmedPermissionMode = confirmed.GetPermissionMode()
+	}
+	confirmedExtraSettings := mergeExtraSettings(extraSettings, nil)
+	if confirmed != nil {
+		confirmedExtraSettings = mergeExtraSettings(confirmedExtraSettings, confirmed.GetExtraSettings())
+	}
+	confirmedExtraSettings = resolveCodexExtras(confirmedExtraSettings, provider)
+
+	return svc.Queries.UpdateAgentAllSettings(bgCtx(), db.UpdateAgentAllSettingsParams{
+		Model:          confirmedModel,
+		Effort:         confirmedEffort,
+		PermissionMode: confirmedPermissionMode,
+		ExtraSettings:  marshalExtraSettings(confirmedExtraSettings),
+		ID:             agentID,
+	})
+}
+
 // handleClearContext implements the /clear command by restarting the agent
 // without resuming the previous session, giving it a fresh context window.
 func (svc *Context) handleClearContext(agentID string) {
@@ -970,20 +998,23 @@ func (svc *Context) handleClearContext(agentID string) {
 	// isWatchable. On success, handleSystemInit will overwrite it with the
 	// new session ID. On failure, clear it so ensureAgentRunning won't try
 	// to resume a stale session.
+	model := modelOrDefault(dbAgent.Model, dbAgent.AgentProvider)
+	extraSettings := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
-	if _, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
+	confirmedSettings, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
 		AgentID:        agentID,
-		Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
+		Model:          model,
 		Effort:         dbAgent.Effort,
 		WorkingDir:     dbAgent.WorkingDir,
 		PermissionMode: dbAgent.PermissionMode,
-		ExtraSettings:  loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider),
+		ExtraSettings:  extraSettings,
 		StartupTimeout: svc.agentStartupTimeout(),
 		Shell:          svc.agentShell(),
 		LoginShell:     svc.agentLoginShell(),
 		HomeDir:        svc.HomeDir,
 		AgentProvider:  dbAgent.AgentProvider,
-	}, sink); err != nil {
+	}, sink)
+	if err != nil {
 		slog.Error("clear context: failed to restart agent", "agent_id", agentID, "error", err)
 		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
 			AgentSessionID: "",
@@ -994,6 +1025,9 @@ func (svc *Context) handleClearContext(agentID string) {
 			"error": "Failed to restart agent after clearing context: " + err.Error(),
 		})
 	} else {
+		if err := svc.persistConfirmedAgentSettings(agentID, dbAgent.AgentProvider, model, dbAgent.Effort, dbAgent.PermissionMode, extraSettings, confirmedSettings); err != nil {
+			slog.Warn("clear context: failed to persist confirmed settings", "agent_id", agentID, "error", err)
+		}
 		slog.Info("clear context: agent restarted successfully", "agent_id", agentID)
 	}
 
@@ -1039,24 +1073,30 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 	}
 
 	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
+	model := modelOrDefault(dbAgent.Model, dbAgent.AgentProvider)
+	extraSettings := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
 
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
-	if _, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
+	confirmedSettings, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
 		AgentID:         agentID,
-		Model:           modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
+		Model:           model,
 		Effort:          dbAgent.Effort,
 		WorkingDir:      dbAgent.WorkingDir,
 		ResumeSessionID: resumeSessionID,
 		PermissionMode:  dbAgent.PermissionMode,
-		ExtraSettings:   loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider),
+		ExtraSettings:   extraSettings,
 		StartupTimeout:  svc.agentStartupTimeout(),
 		Shell:           svc.agentShell(),
 		LoginShell:      svc.agentLoginShell(),
 		HomeDir:         svc.HomeDir,
 		AgentProvider:   dbAgent.AgentProvider,
-	}, sink); err != nil {
+	}, sink)
+	if err != nil {
 		slog.Error("ensureAgentRunning: failed to start agent", "agent_id", agentID, "error", err)
 		return err
+	}
+	if err := svc.persistConfirmedAgentSettings(agentID, dbAgent.AgentProvider, model, dbAgent.Effort, dbAgent.PermissionMode, extraSettings, confirmedSettings); err != nil {
+		slog.Warn("ensureAgentRunning: failed to persist confirmed settings", "agent_id", agentID, "error", err)
 	}
 
 	slog.Info("ensureAgentRunning: agent started", "agent_id", agentID)
@@ -1146,7 +1186,7 @@ func (svc *Context) setAgentPermissionMode(agentID, mode string) {
 			"changes": map[string]interface{}{
 				"permissionMode": map[string]string{
 					"old": oldMode, "new": mode,
-					"oldLabel": permissionModeLabel(oldMode, dbAgent.AgentProvider), "newLabel": permissionModeLabel(mode, dbAgent.AgentProvider),
+					"oldLabel": svc.permissionModeLabel(agentID, oldMode, dbAgent.AgentProvider), "newLabel": svc.permissionModeLabel(agentID, mode, dbAgent.AgentProvider),
 				},
 			},
 		})
@@ -1203,8 +1243,8 @@ func (svc *Context) setAgentCollaborationMode(agentID, mode string) {
 			"changes": map[string]interface{}{
 				agent.CodexExtraCollaborationMode: map[string]string{
 					"old": oldMode, "new": mode,
-					"label":    optionGroupLabel(agent.CodexExtraCollaborationMode, dbAgent.AgentProvider),
-					"oldLabel": optionLabel(agent.CodexExtraCollaborationMode, oldMode, dbAgent.AgentProvider), "newLabel": optionLabel(agent.CodexExtraCollaborationMode, mode, dbAgent.AgentProvider),
+					"label":    svc.optionGroupLabel(agentID, agent.CodexExtraCollaborationMode, dbAgent.AgentProvider),
+					"oldLabel": svc.optionLabel(agentID, agent.CodexExtraCollaborationMode, oldMode, dbAgent.AgentProvider), "newLabel": svc.optionLabel(agentID, agent.CodexExtraCollaborationMode, mode, dbAgent.AgentProvider),
 				},
 			},
 		})
@@ -1356,6 +1396,35 @@ func (svc *Context) handleCodexPlanModePromptResponse(agentID string, content []
 	}
 
 	return true
+}
+
+// extractControlResponseRequestID extracts the control request ID from a
+// control response's raw JSON content.  It supports both Claude Code format
+// (response.request_id) and OpenCode/ACP JSON-RPC format (top-level id).
+func extractControlResponseRequestID(content []byte) string {
+	var parsed struct {
+		// Claude Code format
+		Response struct {
+			RequestID string `json:"request_id"`
+		} `json:"response"`
+		// OpenCode / ACP JSON-RPC format (id can be number or string)
+		ID json.RawMessage `json:"id"`
+	}
+	if json.Unmarshal(content, &parsed) != nil {
+		return ""
+	}
+	if parsed.Response.RequestID != "" {
+		return parsed.Response.RequestID
+	}
+	// Try JSON-RPC id: strip quotes for string, use raw for number.
+	if len(parsed.ID) > 0 && string(parsed.ID) != "null" {
+		var s string
+		if json.Unmarshal(parsed.ID, &s) == nil {
+			return s
+		}
+		return strings.TrimSpace(string(parsed.ID))
+	}
+	return ""
 }
 
 // handleControlResponsePlanMode detects plan mode changes from control
@@ -1528,20 +1597,23 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 		planMsg += "\n\n---\n\nThe above plan has been written to " + dbAgent.PlanFilePath + " — re-read it if needed."
 	}
 
+	model := modelOrDefault(dbAgent.Model, dbAgent.AgentProvider)
+	extraSettings := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
-	if _, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
+	confirmedSettings, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
 		AgentID:        agentID,
-		Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
+		Model:          model,
 		Effort:         dbAgent.Effort,
 		WorkingDir:     dbAgent.WorkingDir,
 		PermissionMode: targetMode,
-		ExtraSettings:  loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider),
+		ExtraSettings:  extraSettings,
 		StartupTimeout: svc.agentStartupTimeout(),
 		Shell:          svc.agentShell(),
 		LoginShell:     svc.agentLoginShell(),
 		HomeDir:        svc.HomeDir,
 		AgentProvider:  dbAgent.AgentProvider,
-	}, sink); err != nil {
+	}, sink)
+	if err != nil {
 		slog.Error("plan exec: failed to restart agent", "agent_id", agentID, "error", err)
 		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
 			AgentSessionID: "",
@@ -1552,6 +1624,9 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 			"error": "Failed to restart agent for plan execution: " + err.Error(),
 		})
 		return
+	}
+	if err := svc.persistConfirmedAgentSettings(agentID, dbAgent.AgentProvider, model, dbAgent.Effort, targetMode, extraSettings, confirmedSettings); err != nil {
+		slog.Warn("plan exec: failed to persist confirmed settings", "agent_id", agentID, "error", err)
 	}
 
 	slog.Info("plan exec: agent restarted successfully", "agent_id", agentID)
@@ -1592,7 +1667,7 @@ func isInterruptRequest(content string) bool {
 	if err := json.Unmarshal([]byte(content), &msg); err != nil {
 		return false
 	}
-	return msg.Request.Subtype == "interrupt" || msg.Method == "turn/interrupt"
+	return msg.Request.Subtype == "interrupt" || msg.Method == "turn/interrupt" || msg.Method == "session/cancel"
 }
 
 // broadcastWatchEvent sends a WatchEventsResponse as a stream message.

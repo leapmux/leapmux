@@ -15,7 +15,7 @@ import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
 import { spinner } from '~/styles/animations.css'
-import { dialogLeftPanel, dialogRightPanel, dialogSingleColumn, dialogTopSection, dialogTwoColumn, dialogWide, errorText } from '~/styles/shared.css'
+import { dialogLeftPanel, dialogRightPanel, dialogSingleColumn, dialogTopSection, dialogTopTwoColumn, dialogTwoColumn, dialogWide, errorText } from '~/styles/shared.css'
 
 interface NewAgentDialogProps {
   workspaceId: string
@@ -84,15 +84,17 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
         <section>
           <div class="vstack gap-4">
             <div class={state.showGitOptions() ? dialogTopSection : undefined}>
-              <WorkerSelector state={state} />
-              <AgentProviderSelector value={agentProvider} onChange={setAgentProvider} availableProviders={props.availableProviders} onRefresh={props.onRefreshProviders} />
+              <div class={dialogTopTwoColumn}>
+                <WorkerSelector state={state} />
+                <AgentProviderSelector value={agentProvider} onChange={setAgentProvider} availableProviders={props.availableProviders} onRefresh={props.onRefreshProviders} />
+              </div>
             </div>
             <div class={state.showGitOptions() ? dialogTwoColumn : dialogSingleColumn}>
               <div class={dialogLeftPanel}>
                 <DirectorySelector state={state} />
               </div>
               <div class={state.showGitOptions() ? dialogRightPanel : undefined}>
-                <Show when={state.workerId()}>
+                <Show when={state.workerId() && !state.worktreeResolving()}>
                   <GitOptions
                     workerId={state.workerId()}
                     selectedPath={state.workingDir()}

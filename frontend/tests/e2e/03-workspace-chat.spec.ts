@@ -13,7 +13,7 @@ async function ensureAgentTab(page: Page): Promise<number> {
     await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toBeVisible()
   }
   catch {
-    await page.locator('[data-testid="new-agent-button"]').click()
+    await page.locator('[data-testid^="new-agent-button"]').first().click()
     await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toBeVisible()
   }
   // Wait for auto-created agents from the worker to settle.
@@ -129,7 +129,7 @@ test.describe('Workspace Chat', () => {
     await ensureAgentTab(page)
 
     // Create a second agent via the agent button
-    await page.locator('[data-testid="new-agent-button"]').click()
+    await page.locator('[data-testid^="new-agent-button"]').first().click()
 
     // Should now have 2 agent tabs
     await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(2)
@@ -173,7 +173,7 @@ test.describe('Workspace Chat', () => {
     const initialCount = await ensureAgentTab(page)
 
     // Create a new agent tab
-    await page.locator('[data-testid="new-agent-button"]').click()
+    await page.locator('[data-testid^="new-agent-button"]').first().click()
     const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
     await expect(agentTabs).toHaveCount(initialCount + 1)
 
@@ -202,7 +202,7 @@ test.describe('Workspace Chat', () => {
     const initialCount = await ensureAgentTab(page)
 
     // Create a new agent tab
-    await page.locator('[data-testid="new-agent-button"]').click()
+    await page.locator('[data-testid^="new-agent-button"]').first().click()
     const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
     await expect(agentTabs).toHaveCount(initialCount + 1)
 

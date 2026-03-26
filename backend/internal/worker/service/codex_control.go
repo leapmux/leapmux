@@ -126,7 +126,12 @@ func codexFeedbackMessageText(responseContent []byte) string {
 }
 
 func (svc *Context) codexControlResponseDisplayText(agentID string, provider leapmuxv1.AgentProvider, content []byte) string {
-	if provider != leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
+	switch provider {
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:
+		// handled below
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:
+		return opencodeControlResponseDisplayText(content)
+	default:
 		return ""
 	}
 
@@ -155,4 +160,30 @@ func (svc *Context) codexControlResponseDisplayText(agentID string, provider lea
 	}
 
 	return codexFeedbackMessageText(content)
+}
+
+// opencodeControlResponseDisplayText extracts a human-readable display text
+// from an OpenCode permission response (e.g. "Allow once", "Reject").
+func opencodeControlResponseDisplayText(content []byte) string {
+	var resp struct {
+		Result struct {
+			Outcome struct {
+				OptionID string `json:"optionId"`
+			} `json:"outcome"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(content, &resp) != nil {
+		return ""
+	}
+
+	switch resp.Result.Outcome.OptionID {
+	case "once":
+		return "Allow once"
+	case "always":
+		return "Always allow"
+	case "reject":
+		return "Reject"
+	default:
+		return resp.Result.Outcome.OptionID
+	}
 }

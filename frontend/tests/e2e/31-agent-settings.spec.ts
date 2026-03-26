@@ -64,7 +64,7 @@ test.describe('Agent Settings', () => {
     // properly escaped in the shell command when spawning Claude Code.
     await openSettingsMenu(page)
     await page.locator('[data-testid="model-sonnet\\[1m\\]"]').click()
-    await expect(trigger).toContainText('Sonnet[1m]')
+    await expect(trigger).toContainText('Sonnet (1M context)')
     await waitForSettingsIdle(page)
 
     // Verify agent restarted successfully by sending a message

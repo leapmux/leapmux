@@ -18,7 +18,7 @@ import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
 import { sanitizeName } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
-import { dialogLeftPanel, dialogRightPanel, dialogSingleColumn, dialogTopSection, dialogTwoColumn, dialogWide, errorText, labelRow } from '~/styles/shared.css'
+import { dialogLeftPanel, dialogRightPanel, dialogSingleColumn, dialogTopSection, dialogTopTwoColumn, dialogTwoColumn, dialogWide, errorText, labelRow } from '~/styles/shared.css'
 
 interface NewWorkspaceDialogProps {
   onCreated: (workspace: Workspace, workerId: string) => void
@@ -97,9 +97,11 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       <form onSubmit={handleSubmit}>
         <section>
           <div class="vstack gap-4">
-            <div class={state.showGitOptions() ? dialogTopSection : undefined}>
-              <WorkerSelector state={state} />
-              <AgentProviderSelector value={agentProvider} onChange={setAgentProvider} availableProviders={props.availableProviders} onRefresh={props.onRefreshProviders} />
+            <div class={dialogTopSection}>
+              <div class={dialogTopTwoColumn}>
+                <WorkerSelector state={state} />
+                <AgentProviderSelector value={agentProvider} onChange={setAgentProvider} availableProviders={props.availableProviders} onRefresh={props.onRefreshProviders} />
+              </div>
               <div>
                 <div class={labelRow}>
                   Title

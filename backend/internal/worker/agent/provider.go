@@ -52,6 +52,7 @@ type Provider interface {
 	CurrentSettings() *leapmuxv1.AgentSettings
 	HandleOutput(content []byte)
 	AvailableModels() []*leapmuxv1.AvailableModel
+	AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup
 	// UpdateSettings applies setting changes to a running agent so that
 	// the next turn picks them up without a restart. Providers that do
 	// not support live updates (e.g. Claude Code) return false.

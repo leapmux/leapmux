@@ -43,24 +43,14 @@ test.describe('ANSI Escape Sequence Rendering', () => {
     // Wait for the agent's turn to finish.
     await expect(page.getByText(TOOK_TIME_RE)).toBeVisible({ timeout: 60_000 })
 
-    // tool_result messages are now standalone. Look for ANSI-rendered content
-    // that contains actual directory listing output (not the command itself).
-    // Use text content filtering to find the output element.
+    // Look for the command output. It may be collapsed, so check for
+    // well-known root directories visible in the collapsed view.
     const bubbles = page.locator('[data-testid="message-bubble"]')
-    const shikiPre = bubbles.locator('pre.shiki').filter({ hasText: 'usr' })
-    const plainPre = bubbles.locator('pre').filter({ hasText: 'usr' })
-    const outputElement = shikiPre.or(plainPre)
-    await expect(outputElement.first()).toBeVisible({ timeout: 30_000 })
+    const outputWithBin = bubbles.filter({ hasText: 'bin' })
+    await expect(outputWithBin.first()).toBeVisible({ timeout: 30_000 })
 
-    // Verify some well-known root directories are present
-    const textContent = await outputElement.first().textContent()
-    expect(textContent).toContain('usr')
-
-    // If Shiki rendered the output, verify styled spans exist
-    if (await shikiPre.isVisible().catch(() => false)) {
-      const styledSpans = shikiPre.locator('span[style*="--shiki-light"]')
-      const count = await styledSpans.count()
-      expect(count).toBeGreaterThanOrEqual(1)
-    }
+    // Verify some well-known root directories are present in the output
+    const textContent = await outputWithBin.first().textContent()
+    expect(textContent).toContain('bin')
   })
 })

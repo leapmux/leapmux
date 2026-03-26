@@ -200,13 +200,14 @@ func (svc *Context) settingsDisplayLabels(agentID string, provider leapmuxv1.Age
 }
 
 // permissionModeLabel returns a human-readable label for a permission mode ID
-// by looking up the "permissionMode" option group in the provider registry.
-func permissionModeLabel(mode string, provider leapmuxv1.AgentProvider) string {
-	return optionLabel("permissionMode", mode, provider)
+// by looking up the "permissionMode" option group for the running agent when
+// available, then falling back to the provider registry.
+func (svc *Context) permissionModeLabel(agentID, mode string, provider leapmuxv1.AgentProvider) string {
+	return svc.optionLabel(agentID, "permissionMode", mode, provider)
 }
 
-func optionGroupLabel(key string, provider leapmuxv1.AgentProvider) string {
-	for _, group := range agent.AvailableOptionGroupsForProvider(provider) {
+func (svc *Context) optionGroupLabel(agentID, key string, provider leapmuxv1.AgentProvider) string {
+	for _, group := range svc.Agents.AvailableOptionGroups(agentID, provider) {
 		if group.Key == key {
 			if group.Label != "" {
 				return group.Label
@@ -218,9 +219,10 @@ func optionGroupLabel(key string, provider leapmuxv1.AgentProvider) string {
 }
 
 // optionLabel looks up a human-readable label for an option value from the
-// provider registry's option groups. Falls back to the raw value if not found.
-func optionLabel(key, value string, provider leapmuxv1.AgentProvider) string {
-	for _, group := range agent.AvailableOptionGroupsForProvider(provider) {
+// runtime option groups when the agent is running, falling back to the raw
+// value if not found.
+func (svc *Context) optionLabel(agentID, key, value string, provider leapmuxv1.AgentProvider) string {
+	for _, group := range svc.Agents.AvailableOptionGroups(agentID, provider) {
 		if group.Key == key {
 			for _, opt := range group.Options {
 				if opt.Id == value {

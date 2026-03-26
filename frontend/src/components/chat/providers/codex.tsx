@@ -26,7 +26,7 @@ import {
 } from '../codexRenderers'
 import { CodexControlActions, CodexControlContent } from '../controls/CodexControlRequest'
 import { isNotificationThreadWrapper, isObject } from '../messageUtils'
-import { defaultModelId, effortItems, hasEfforts, modeLabel, modelDisplayName, modelItems, optionGroup, optionGroupItems, optionLabel, permissionModeGroup, permissionModeItems, RadioGroup } from '../settingsShared'
+import { defaultModelId, effortItems, hasEfforts, modeLabel, modelDisplayName, modelItems, ModelSelect, optionGroup, optionGroupItems, optionLabel, permissionModeGroup, permissionModeItems, RadioGroup } from '../settingsShared'
 import { registerProvider } from './registry'
 
 /** Default model for Codex agents. */
@@ -186,8 +186,7 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
           onChange={v => props.onEffortChange?.(v)}
           fieldsetClass={firstLeftClass('effort')}
         />
-        <RadioGroup
-          label="Model"
+        <ModelSelect
           items={models()}
           testIdPrefix="model"
           name={`${menuId}-model`}

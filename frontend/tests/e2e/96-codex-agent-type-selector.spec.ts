@@ -49,7 +49,7 @@ test.describe('Codex Agent Type Selector', () => {
     void authenticatedWorkspace // fixture trigger
     // The active tab is a Claude Code agent (default from fixtures).
     // When clicking "new agent", it should default to Claude Code.
-    const newAgentBtn = page.locator('[data-testid="new-agent-button"]')
+    const newAgentBtn = page.locator('[data-testid^="new-agent-button"]').first()
     if (await newAgentBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
       // Just verify the button is clickable — the new agent inherits the provider
       // from the active tab (handled by handleOpenAgent in useAgentOperations).

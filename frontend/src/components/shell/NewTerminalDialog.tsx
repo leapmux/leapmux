@@ -12,7 +12,7 @@ import { WorkerSelector } from '~/components/shell/WorkerSelector'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
 import { spinner } from '~/styles/animations.css'
-import { dialogLeftPanel, dialogRightPanel, dialogSingleColumn, dialogTopSection, dialogTwoColumn, dialogWide, errorText } from '~/styles/shared.css'
+import { dialogLeftPanel, dialogRightPanel, dialogSingleColumn, dialogTopSection, dialogTopTwoColumn, dialogTwoColumn, dialogWide, errorText } from '~/styles/shared.css'
 
 interface NewTerminalDialogProps {
   workspaceId: string
@@ -29,6 +29,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
     resolveWorktree: true,
   })
   const [shells, setShells] = createSignal<string[]>([])
+  const [defaultShell, setDefaultShell] = createSignal('')
   const [shell, setShell] = createSignal('')
   const [shellsLoading, setShellsLoading] = createSignal(false)
   const submitting = createLoadingSignal(apiLoadingTimeoutMs())
@@ -48,7 +49,9 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
         workerId: id,
       })
       setShells(resp.shells)
-      setShell(resp.defaultShell || (resp.shells.length > 0 ? resp.shells[0] : ''))
+      const def = resp.defaultShell || (resp.shells.length > 0 ? resp.shells[0] : '')
+      setDefaultShell(def)
+      setShell(def)
     }
     catch (e) {
       state.setError(e instanceof Error ? e.message : 'Failed to load shells')
@@ -95,21 +98,27 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
   const shellSelector = () => (
     <label>
       Shell
-      <select
-        value={shell()}
-        onChange={e => setShell(e.currentTarget.value)}
-        disabled={shellsLoading() || shells().length === 0}
+      <Show
+        when={!shellsLoading() && shells().length > 0}
+        fallback={(
+          <select disabled>
+            <option value="">{shellsLoading() ? 'Loading shells...' : 'No shells available'}</option>
+          </select>
+        )}
       >
-        <Show when={shellsLoading()}>
-          <option value="">Loading shells...</option>
-        </Show>
-        <Show when={!shellsLoading() && shells().length === 0}>
-          <option value="">No shells available</option>
-        </Show>
-        <For each={shells()}>
-          {s => <option value={s}>{s}</option>}
-        </For>
-      </select>
+        <select
+          value={shell()}
+          onChange={e => setShell(e.currentTarget.value)}
+        >
+          <For each={shells()}>
+            {s => (
+              <option value={s}>
+                {s === defaultShell() ? `${s} (default)` : s}
+              </option>
+            )}
+          </For>
+        </select>
+      </Show>
     </label>
   )
 
@@ -119,15 +128,17 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
         <section>
           <div class="vstack gap-4">
             <div class={state.showGitOptions() ? dialogTopSection : undefined}>
-              <WorkerSelector state={state} />
-              {shellSelector()}
+              <div class={dialogTopTwoColumn}>
+                <WorkerSelector state={state} />
+                {shellSelector()}
+              </div>
             </div>
             <div class={state.showGitOptions() ? dialogTwoColumn : dialogSingleColumn}>
               <div class={dialogLeftPanel}>
                 <DirectorySelector state={state} />
               </div>
               <div class={state.showGitOptions() ? dialogRightPanel : undefined}>
-                <Show when={state.workerId()}>
+                <Show when={state.workerId() && !state.worktreeResolving()}>
                   <GitOptions
                     workerId={state.workerId()}
                     selectedPath={state.workingDir()}

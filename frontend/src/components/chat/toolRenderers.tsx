@@ -373,7 +373,7 @@ function ToolUseMessage(props: {
   )
 }
 
-function renderBashHighlight(code: string): string {
+export function renderBashHighlight(code: string): string {
   return shikiHighlighter.codeToHtml(code, {
     lang: 'bash',
     themes: { light: 'github-light', dark: 'github-dark' },
@@ -503,7 +503,7 @@ function extractToolUseError(content: string): string | null {
   return match ? match[1].trim() : null
 }
 
-function stripLeadingBlankLines(content: string): string {
+export function stripLeadingBlankLines(content: string): string {
   return content.replace(LEADING_BLANK_LINES_RE, '')
 }
 

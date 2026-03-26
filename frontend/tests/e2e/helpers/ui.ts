@@ -184,7 +184,7 @@ export async function createWorkspaceViaUI(page: Page, title: string) {
 export async function openAgentViaUI(page: Page) {
   // Count existing agent tabs so we can wait for the new one to appear.
   const tabsBefore = await page.locator('[data-testid="tab"][data-tab-type="agent"]').count()
-  await page.locator('[data-testid="new-agent-button"]').click()
+  await page.locator('[data-testid^="new-agent-button"]').first().click()
   // Wait for the new agent tab to appear (the API call is async)
   await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(tabsBefore + 1)
   // Wait for the new tab to become selected and its editor to be ready

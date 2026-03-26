@@ -6,10 +6,28 @@ import (
 	"os/exec"
 	"testing"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type stubProvider struct {
+	groups []*leapmuxv1.AvailableOptionGroup
+}
+
+func (s *stubProvider) AgentID() string                                          { return "stub" }
+func (s *stubProvider) SendInput(string) error                                   { return nil }
+func (s *stubProvider) SendRawInput([]byte) error                                { return nil }
+func (s *stubProvider) Stop()                                                    {}
+func (s *stubProvider) IsStopped() bool                                          { return false }
+func (s *stubProvider) Wait() error                                              { return nil }
+func (s *stubProvider) Stderr() string                                           { return "" }
+func (s *stubProvider) CurrentSettings() *leapmuxv1.AgentSettings                { return &leapmuxv1.AgentSettings{} }
+func (s *stubProvider) HandleOutput([]byte)                                      {}
+func (s *stubProvider) AvailableModels() []*leapmuxv1.AvailableModel             { return nil }
+func (s *stubProvider) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup { return s.groups }
+func (s *stubProvider) UpdateSettings(*leapmuxv1.AgentSettings) bool             { return true }
 
 // startMockAgent wraps mockStart to satisfy the startFunc signature.
 func startMockAgent(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
@@ -187,4 +205,27 @@ func TestManager_AgentExitCleanup(t *testing.T) {
 	testutil.AssertEventually(t, func() bool {
 		return !m.HasAgent("auto-exit")
 	}, "expected agent to be cleaned up after exit")
+}
+
+func TestManager_AvailableOptionGroupsPrefersRuntimeGroups(t *testing.T) {
+	m := NewManager(nil)
+	runtimeGroups := []*leapmuxv1.AvailableOptionGroup{{
+		Key:   OpenCodeExtraPrimaryAgent,
+		Label: "Primary Agent",
+		Options: []*leapmuxv1.AvailableOption{
+			{Id: "build", Name: "build"},
+			{Id: "architect", Name: "architect"},
+		},
+	}}
+
+	m.mu.Lock()
+	m.agents["runtime-agent"] = &stubProvider{groups: runtimeGroups}
+	m.mu.Unlock()
+
+	assert.Equal(t, runtimeGroups, m.AvailableOptionGroups("runtime-agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE))
+
+	staticGroups := m.AvailableOptionGroups("missing-agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE)
+	require.Len(t, staticGroups, 1)
+	assert.Equal(t, OpenCodeExtraPrimaryAgent, staticGroups[0].Key)
+	assert.Equal(t, OpenCodePrimaryAgentBuild, staticGroups[0].Options[0].Id)
 }

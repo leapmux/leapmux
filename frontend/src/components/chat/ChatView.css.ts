@@ -210,6 +210,80 @@ export const settingsRadioItem = style({
   },
 })
 
+// Searchable select: current value display
+export const searchableSelectCurrent = style({
+  padding: '3px var(--space-2)',
+  fontSize: 'var(--text-8)',
+  color: 'var(--muted-foreground)',
+})
+
+// Searchable select: scrollable list
+export const searchableSelectListbox = style({
+  // Height fits 5 items (compact — selected value + filter input take extra space).
+  // Each item is 1lh tall + 6px vertical padding → calc(1lh + 6px) per item.
+  // Font-size must match items so 1lh resolves to the correct item line-height.
+  fontSize: 'var(--text-8)',
+  minHeight: 'calc((1lh + 6px) * 5)',
+  maxHeight: 'calc((1lh + 6px) * 5)',
+  overflowY: 'auto',
+})
+
+// Searchable select: item
+export const searchableSelectItem = style({
+  'display': 'flex',
+  'alignItems': 'center',
+  'justifyContent': 'space-between',
+  'gap': 'var(--space-2)',
+  'padding': '3px var(--space-2)',
+  'fontSize': 'var(--text-8)',
+  'color': 'var(--foreground)',
+  'cursor': 'pointer',
+  'userSelect': 'none',
+  'whiteSpace': 'nowrap',
+  'borderRadius': 'var(--radius-small)',
+  ':hover': {
+    backgroundColor: 'var(--card)',
+  },
+})
+
+// Searchable select: highlighted item (keyboard navigation)
+export const searchableSelectItemHighlighted = style({
+  backgroundColor: 'var(--muted)',
+})
+
+// Searchable select: currently selected item
+export const searchableSelectItemSelected = style({
+  fontWeight: 600,
+})
+
+// Searchable select: secondary text (right-aligned, muted)
+export const searchableSelectItemSecondary = style({
+  fontFamily: 'var(--font-mono)',
+  fontSize: 'var(--text-8)',
+  color: 'var(--muted-foreground)',
+  marginLeft: 'auto',
+  flexShrink: 0,
+})
+
+// Searchable select: filter input container
+export const searchableSelectControl = style({
+  padding: '3px var(--space-2)',
+  borderTop: '1px solid var(--border)',
+  marginTop: 'var(--space-1)',
+})
+
+// Searchable select: filter input
+export const searchableSelectInput = style({
+  'all': 'unset',
+  'boxSizing': 'border-box',
+  'width': '100%',
+  'fontSize': 'var(--text-8)',
+  'color': 'var(--foreground)',
+  '::placeholder': {
+    color: 'var(--faint-foreground)',
+  },
+})
+
 export const footerBarRight = style({
   display: 'flex',
   alignItems: 'center',

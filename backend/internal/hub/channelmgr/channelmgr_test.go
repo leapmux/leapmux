@@ -287,6 +287,82 @@ func TestUnregister_CloseNotification_NoConnID(t *testing.T) {
 	assert.Len(t, received, 0)
 }
 
+func TestUnregisterByConn(t *testing.T) {
+	m := New()
+	cancelled := false
+
+	m.Register("ch1", "w1", "u1", func() { cancelled = true })
+	m.Register("ch2", "w1", "u1", nil)
+	m.Register("ch3", "w2", "u1", nil) // Different conn, should not be removed.
+
+	m.SetChannelConn("ch1", "conn1")
+	m.SetChannelConn("ch2", "conn1")
+	m.SetChannelConn("ch3", "conn2")
+
+	removed := m.UnregisterByConn("conn1")
+	assert.Len(t, removed, 2)
+	assert.True(t, cancelled)
+
+	closedIDs := map[string]bool{}
+	for _, cc := range removed {
+		closedIDs[cc.ChannelID] = true
+		assert.Equal(t, "w1", cc.WorkerID)
+	}
+	assert.True(t, closedIDs["ch1"])
+	assert.True(t, closedIDs["ch2"])
+
+	// ch3 should still exist.
+	assert.True(t, m.Exists("ch3"))
+	assert.False(t, m.Exists("ch1"))
+	assert.False(t, m.Exists("ch2"))
+}
+
+func TestUnregisterUnboundByUser(t *testing.T) {
+	m := New()
+	cancelled := false
+
+	// Unbound channel (no ConnID set).
+	m.Register("ch1", "w1", "u1", func() { cancelled = true })
+	// Bound channel (has ConnID).
+	m.Register("ch2", "w1", "u1", nil)
+	m.SetChannelConn("ch2", "conn1")
+	// Unbound channel for different user.
+	m.Register("ch3", "w1", "u2", nil)
+
+	removed := m.UnregisterUnboundByUser("u1")
+	assert.Len(t, removed, 1)
+	assert.Equal(t, "ch1", removed[0].ChannelID)
+	assert.Equal(t, "w1", removed[0].WorkerID)
+	assert.True(t, cancelled)
+
+	// ch2 (bound) and ch3 (different user) should remain.
+	assert.False(t, m.Exists("ch1"))
+	assert.True(t, m.Exists("ch2"))
+	assert.True(t, m.Exists("ch3"))
+}
+
+func TestUnbindUser_ReturnsNoConns(t *testing.T) {
+	m := New()
+	m.BindUser("u1", "conn1", func(msg *leapmuxv1.ChannelMessage) error {
+		return nil
+	}, nil)
+	m.BindUser("u1", "conn2", func(msg *leapmuxv1.ChannelMessage) error {
+		return nil
+	}, nil)
+
+	// First unbind — still has conn2.
+	noConns := m.UnbindUser("u1", "conn1")
+	assert.False(t, noConns)
+
+	// Second unbind — no connections left.
+	noConns = m.UnbindUser("u1", "conn2")
+	assert.True(t, noConns)
+
+	// Unbind nonexistent user.
+	noConns = m.UnbindUser("u1", "conn3")
+	assert.True(t, noConns)
+}
+
 func TestUnregisterByWorker_SendsCloseNotifications(t *testing.T) {
 	m := New()
 

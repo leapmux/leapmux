@@ -5,6 +5,8 @@ import (
 	"context"
 	"os"
 	"os/exec"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 // MockStartAgent registers a mock agent process in the manager for testing.
@@ -13,7 +15,7 @@ import (
 //
 // This is intended for use in tests outside the agent package that need a
 // running agent registered in the manager (e.g. to make HasAgent return true).
-func (m *Manager) MockStartAgent(ctx context.Context, opts Options, sink OutputSink) (string, error) {
+func (m *Manager) MockStartAgent(ctx context.Context, opts Options, sink OutputSink) (*leapmuxv1.AgentSettings, error) {
 	return m.startAgentWith(ctx, opts, sink, mockStartForTest)
 }
 

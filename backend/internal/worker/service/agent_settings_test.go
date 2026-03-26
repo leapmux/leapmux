@@ -274,3 +274,93 @@ func TestUpdateAgentSettings_BroadcastsGenericExtraSettingChanges(t *testing.T) 
 	assert.Equal(t, "safe", change["oldLabel"])
 	assert.Equal(t, "fast", change["newLabel"])
 }
+
+func TestPersistConfirmedAgentSettings_MergesDiscoveredPrimaryAgent(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t, "ws-1")
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-opencode",
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+		ExtraSettings: `{"primaryAgent":"build"}`,
+	}))
+
+	err := svc.persistConfirmedAgentSettings(
+		"agent-opencode",
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+		"",
+		"",
+		"",
+		loadExtraSettings(`{"primaryAgent":"build"}`, leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE),
+		&leapmuxv1.AgentSettings{
+			Model:         "openai/gpt-5",
+			ExtraSettings: map[string]string{"primaryAgent": "plan"},
+		},
+	)
+	require.NoError(t, err)
+
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-opencode")
+	require.NoError(t, err)
+	assert.Equal(t, "openai/gpt-5", dbAgent.Model)
+	assert.Equal(t, "plan", loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)["primaryAgent"])
+}
+
+// TestPersistConfirmedAgentSettings_PersistsDiscoveredPrimaryAgentFromEmpty
+// simulates the initial OpenAgent flow: an agent is created with empty
+// extra_settings, then persistConfirmedAgentSettings is called with the
+// discovered primary agent from CurrentSettings(). Verifies the primary
+// agent is stored in the DB so that subsequent settings_changed notifications
+// include a non-empty old value.
+func TestPersistConfirmedAgentSettings_PersistsDiscoveredPrimaryAgentFromEmpty(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t, "ws-1")
+
+	// Agent created with empty extra_settings (like the OpenAgent handler does
+	// when no extraSettings are provided by the frontend).
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-opencode",
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+		ExtraSettings: "{}",
+	}))
+
+	// Simulate what the OpenAgent handler does: call persistConfirmedAgentSettings
+	// with empty requested extraSettings and confirmed settings that include
+	// the discovered primary agent.
+	err := svc.persistConfirmedAgentSettings(
+		"agent-opencode",
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+		"",  // model (empty, will be overridden by confirmed)
+		"",  // effort
+		"",  // permissionMode
+		nil, // requested extraSettings (empty for a new tab)
+		&leapmuxv1.AgentSettings{
+			Model:         "openai/gpt-5",
+			ExtraSettings: map[string]string{"primaryAgent": "build"},
+		},
+	)
+	require.NoError(t, err)
+
+	// Verify the discovered primary agent was persisted.
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-opencode")
+	require.NoError(t, err)
+	assert.Equal(t, "openai/gpt-5", dbAgent.Model)
+
+	persisted := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
+	assert.Equal(t, "build", persisted["primaryAgent"],
+		"discovered primary agent should be persisted from empty initial state")
+
+	// Now simulate the user changing the primary agent — the old value
+	// should come from the DB and be non-empty.
+	oldExtras := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
+	newExtras := mergeExtraSettings(oldExtras, map[string]string{"primaryAgent": "plan"})
+	assert.Equal(t, "build", oldExtras["primaryAgent"],
+		"old extra_settings should contain the previously persisted primary agent")
+	assert.Equal(t, "plan", newExtras["primaryAgent"],
+		"new extra_settings should reflect the requested change")
+}

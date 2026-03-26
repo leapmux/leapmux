@@ -107,6 +107,6 @@ test.describe('Permissions', () => {
     await expect(page.locator('[data-testid="tab"]').or(page.getByText('no open tabs'))).toBeVisible()
 
     // New agent/terminal buttons should NOT be visible for non-owner
-    await expect(page.locator('[data-testid="new-agent-button"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid^="new-agent-button"]')).not.toBeVisible()
   })
 })

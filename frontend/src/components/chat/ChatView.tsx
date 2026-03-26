@@ -126,7 +126,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   let contentRef: HTMLDivElement | undefined
   const [atBottom, setAtBottom] = createSignal(true)
   let scrollAnimationId: number | null = null
-  let autoScrollPending = false
 
   const cancelScrollAnimation = () => {
     if (scrollAnimationId !== null) {
@@ -135,10 +134,14 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     }
   }
 
+  /** Fresh DOM measurement — true if the scroll position is at/near the bottom. */
+  const isAtBottom = () =>
+    !!messageListRef && messageListRef.scrollHeight - messageListRef.scrollTop - messageListRef.clientHeight < 32
+
   const checkAtBottom = () => {
-    if (!messageListRef || scrollAnimationId !== null || autoScrollPending)
+    if (!messageListRef || scrollAnimationId !== null)
       return
-    setAtBottom(messageListRef.scrollHeight - messageListRef.scrollTop - messageListRef.clientHeight < 32)
+    setAtBottom(isAtBottom())
   }
 
   const handleScroll = () => {
@@ -195,9 +198,20 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     props.scrollToBottomRef?.(forceScrollToBottom)
   })
 
+  // Cache classified entries by message ID so that <For> receives stable
+  // object references for unchanged messages, avoiding full DOM recreation.
+  type ClassifiedEntry = ReturnType<typeof classifyParsedMessage> & { msg: AgentChatMessage }
+  const entryCache = new Map<string, ClassifiedEntry>()
   const visibleEntries = createMemo(() => {
     const showHidden = prefs.showHiddenMessages()
-    return props.messages.map((msg) => {
+    const newCache = new Map<string, ClassifiedEntry>()
+    const result = props.messages.map((msg) => {
+      const cached = entryCache.get(msg.id)
+      // Reuse cached entry if the message hasn't changed (same seq = same content).
+      if (cached && cached.msg.seq === msg.seq) {
+        newCache.set(msg.id, cached)
+        return cached
+      }
       let classified = classifyParsedMessage(msg)
       if (
         classified.category.kind === 'hidden'
@@ -208,8 +222,15 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       ) {
         classified = { ...classified, category: { kind: 'assistant_thinking' } }
       }
-      return { msg, ...classified }
+      const entry = { msg, ...classified }
+      newCache.set(msg.id, entry)
+      return entry
     }).filter(entry => showHidden || entry.category.kind !== 'hidden')
+    // Replace cache with new entries (drops removed messages).
+    entryCache.clear()
+    for (const [k, v] of newCache)
+      entryCache.set(k, v)
+    return result
   })
 
   const scrollToBottom = () => {
@@ -246,17 +267,20 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     void props.messageVersion
     void props.streamingText
     void props.agentWorking
+    // Use the atBottom signal (not a fresh DOM check) because by the time
+    // this effect runs, SolidJS has already updated the DOM — scrollHeight
+    // has grown but scrollTop hasn't, so a fresh measurement would wrongly
+    // conclude the user is no longer at the bottom. The signal captures
+    // the user's scroll position from before the content changed.
     if (untrack(atBottom) && messageListRef) {
       // Skip scroll when hidden (e.g. inactive tab with display:none).
       // The ResizeObserver will scroll to bottom when the tab becomes visible.
       if (messageListRef.clientHeight === 0)
         return
-      autoScrollPending = true
-      requestAnimationFrame(() => {
-        messageListRef!.scrollTop = messageListRef!.scrollHeight
-        setAtBottom(true)
-        autoScrollPending = false
-      })
+      // Scroll synchronously — the DOM is already updated by SolidJS,
+      // so deferring to rAF would cause one visible frame where the view
+      // appears scrolled up before snapping back to bottom.
+      messageListRef.scrollTop = messageListRef.scrollHeight
       if (props.messages.length > MAX_LOADED_CHAT_MESSAGES) {
         props.onTrimOldMessages?.()
       }
@@ -301,7 +325,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       const savedAtBottom = atBottom()
       const savedScroll = wasHidden ? props.savedViewportScroll : undefined
       resizeRafId = requestAnimationFrame(() => {
-        if (!messageListRef || scrollAnimationId !== null || autoScrollPending)
+        if (!messageListRef || scrollAnimationId !== null)
           return
         prevClientHeight = ch
         if (wasHidden) {
@@ -326,8 +350,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
             return
           }
         }
-        if (atBottom()) {
+        if (isAtBottom()) {
           messageListRef.scrollTop = messageListRef.scrollHeight
+          setAtBottom(true)
         }
         else {
           checkAtBottom()
@@ -441,8 +466,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                 <ThinkingIndicator
                   visible={props.agentWorking && !props.streamingText}
                   onExpandTick={() => {
-                    if (atBottom() && messageListRef) {
-                      messageListRef.scrollTop = messageListRef.scrollHeight
+                    if (isAtBottom()) {
+                      messageListRef!.scrollTop = messageListRef!.scrollHeight
                     }
                   }}
                 />

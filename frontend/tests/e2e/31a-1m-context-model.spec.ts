@@ -1,6 +1,8 @@
 import { expect, test } from './fixtures'
 import { lastAssistantBubble, openSettingsMenu, waitForSettingsIdle } from './helpers/ui'
 
+const MODEL_CHANGE_PATTERN = /Model.*Sonnet.*Sonnet.*1M/
+
 test.describe('1m-context model', () => {
   test('switch to sonnet[1m] and exchange messages', async ({ authenticatedWorkspace, page }) => {
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
@@ -12,10 +14,10 @@ test.describe('1m-context model', () => {
     // Switch to Sonnet[1m]
     await openSettingsMenu(page)
     await page.locator('[data-testid="model-sonnet\\[1m\\]"]').click()
-    await expect(trigger).toContainText('Sonnet[1m]')
+    await expect(trigger).toContainText('Sonnet (1M context)')
 
     // Verify the settings change notification appears in chat
-    await expect(page.getByText('Model (Sonnet \u2192 Sonnet[1m])')).toBeVisible()
+    await expect(page.getByText(MODEL_CHANGE_PATTERN)).toBeVisible()
 
     // Wait for agent restart to complete
     await waitForSettingsIdle(page)
@@ -39,6 +41,6 @@ test.describe('1m-context model', () => {
     await expect(lastAssistant2).toContainText('6', { timeout: 30000 })
 
     // Verify the model is still shown as Sonnet[1m] after exchanging messages
-    await expect(trigger).toContainText('Sonnet[1m]')
+    await expect(trigger).toContainText('Sonnet (1M context)')
   })
 })

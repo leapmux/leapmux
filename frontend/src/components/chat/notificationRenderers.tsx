@@ -47,7 +47,11 @@ export const settingsChangedRenderer: MessageContentRenderer = {
       if (val.old !== val.new) {
         const oldDisplay = val.oldLabel || displayValue(key, val.old)
         const newDisplay = val.newLabel || displayValue(key, val.new)
-        parts.push(`${val.label || displayLabel(key)} (${oldDisplay} → ${newDisplay})`)
+        const label = val.label || displayLabel(key)
+        if (oldDisplay)
+          parts.push(`${label} (${oldDisplay} → ${newDisplay})`)
+        else
+          parts.push(`${label} (${newDisplay})`)
       }
     }
     if (parts.length === 0)
