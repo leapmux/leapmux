@@ -411,6 +411,9 @@ export function createChatStore() {
     clearCommandStream(agentId: string, spanId: string) {
       if (!spanId)
         return
+      const streams = state.commandStreamsByAgent[agentId]
+      if (!streams || !(spanId in streams))
+        return
       setState('commandStreamsByAgent', agentId, spanId, undefined!)
       setState('messageVersion', agentId, (prev = 0) => prev + 1)
     },
