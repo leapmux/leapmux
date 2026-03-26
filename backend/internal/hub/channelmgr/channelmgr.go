@@ -113,22 +113,28 @@ func (m *Manager) BindUser(userID, connID string, sendFn SendFunc, cancel contex
 // UnbindUser removes a specific multiplexed WebSocket connection for a user.
 // Only the connection identified by connID is removed; other connections for the
 // same user are unaffected. The connection's cancel function is called.
-func (m *Manager) UnbindUser(userID, connID string) {
+// Returns true if the user has no remaining connections.
+func (m *Manager) UnbindUser(userID, connID string) bool {
 	m.mu.Lock()
 	conns := m.userSenders[userID]
 	var uc *userConn
+	noConns := false
 	if conns != nil {
 		uc = conns[connID]
 		delete(conns, connID)
 		if len(conns) == 0 {
 			delete(m.userSenders, userID)
+			noConns = true
 		}
+	} else {
+		noConns = true
 	}
 	m.mu.Unlock()
 
 	if uc != nil && uc.cancel != nil {
 		uc.cancel()
 	}
+	return noConns
 }
 
 // SetChannelConn associates a channel with a specific multiplexed connection.
@@ -214,6 +220,69 @@ func (m *Manager) UnregisterByWorker(workerID string) []string {
 
 	for _, id := range removed {
 		m.ChunkTracker.RemoveChannel(id)
+	}
+
+	for _, cancel := range cancels {
+		cancel()
+	}
+	return removed
+}
+
+// ClosedChannel holds the IDs of a channel that was unregistered, so the
+// caller can notify the worker.
+type ClosedChannel struct {
+	ChannelID string
+	WorkerID  string
+}
+
+// UnregisterByConn removes all channels bound to a specific relay connection
+// (e.g. when the WebSocket relay disconnects). Channels whose ConnID matches
+// connID are removed and returned so the caller can notify workers.
+func (m *Manager) UnregisterByConn(connID string) []ClosedChannel {
+	m.mu.Lock()
+	var removed []ClosedChannel
+	var cancels []context.CancelFunc
+	for id, ch := range m.channels {
+		if ch.ConnID == connID {
+			removed = append(removed, ClosedChannel{ChannelID: id, WorkerID: ch.WorkerID})
+			if ch.cancel != nil {
+				cancels = append(cancels, ch.cancel)
+			}
+			delete(m.channels, id)
+		}
+	}
+	m.mu.Unlock()
+
+	for _, cc := range removed {
+		m.ChunkTracker.RemoveChannel(cc.ChannelID)
+	}
+
+	for _, cancel := range cancels {
+		cancel()
+	}
+	return removed
+}
+
+// UnregisterUnboundByUser removes all channels for a user that have no
+// associated relay connection (empty ConnID). This cleans up channels that were
+// opened via RPC but never used through a WebSocket relay.
+func (m *Manager) UnregisterUnboundByUser(userID string) []ClosedChannel {
+	m.mu.Lock()
+	var removed []ClosedChannel
+	var cancels []context.CancelFunc
+	for id, ch := range m.channels {
+		if ch.UserID == userID && ch.ConnID == "" {
+			removed = append(removed, ClosedChannel{ChannelID: id, WorkerID: ch.WorkerID})
+			if ch.cancel != nil {
+				cancels = append(cancels, ch.cancel)
+			}
+			delete(m.channels, id)
+		}
+	}
+	m.mu.Unlock()
+
+	for _, cc := range removed {
+		m.ChunkTracker.RemoveChannel(cc.ChannelID)
 	}
 
 	for _, cancel := range cancels {
