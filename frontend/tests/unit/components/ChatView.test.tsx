@@ -415,8 +415,8 @@ describe('chatView', () => {
     ))
 
     expect(view.container.textContent).toContain('a.txt')
-    expect(view.container.textContent).not.toContain('old')
-    expect(view.container.textContent).not.toContain('new')
+    expect(view.container.textContent).not.toContain('-old')
+    expect(view.container.textContent).not.toContain('+new')
   })
 
   it('renders a simple codex fileChange with Edit-style diff content', () => {
@@ -433,6 +433,8 @@ describe('chatView', () => {
     expect(screen.queryByText('completed')).toBeNull()
     expect(screen.getByText('old')).toBeTruthy()
     expect(screen.getByText('new')).toBeTruthy()
+    expect(screen.queryByText(A_TXT_RE)).toBeNull()
+    expect(screen.queryByTestId('git-diff-stats')).toBeNull()
   })
 
   it('renders a simple codex add fileChange start message like Write tool_use', () => {
@@ -475,6 +477,34 @@ describe('chatView', () => {
 
     expect(view.container.textContent).toContain('export const hello = "world"')
     expect(screen.getByTestId('message-toolbar')).toBeTruthy()
+  })
+
+  it('renders multi-file codex fileChange entries with per-file labels including adds', () => {
+    const messages = [
+      makeCodexFileChangeMessage({
+        id: 'fc-done',
+        seq: 1n,
+        spanId: 'fc-1',
+        status: 'completed',
+        changes: [
+          { path: '/repo/src/a.ts', kind: { type: 'update' }, diff: '@@ -1 +1 @@\n-oldValue\n+newValue\n' },
+          { path: '/repo/src/new-file.tsx', kind: { type: 'add' }, diff: 'export const hello = "world"\n' },
+        ],
+      }),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(view.container.textContent).toContain('a.ts +1 -1')
+    expect(view.container.textContent).toContain('new-file.tsx +1')
+    expect(view.container.textContent).toContain('+1')
+    expect(view.container.textContent).toContain('oldValue')
+    expect(view.container.textContent).toContain('newValue')
+    expect(view.container.textContent).toContain('export const hello = "world"')
   })
 
   it('shows shared toolbar actions for completed codex fileChange messages', () => {

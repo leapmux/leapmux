@@ -18,6 +18,7 @@ import { createLogger } from '~/lib/logger'
 import { extractAgentRenamed, extractAssistantUsage, extractCodexTokenUsage, extractPlanFilePath, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessageType, parseMessageContent } from '~/lib/messageParser'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
+import { tabKey } from '~/stores/tab.store'
 
 const log = createLogger('workspace')
 
@@ -240,7 +241,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           chatStore.clearCommandStream(agentId, inner.value.spanId)
         else
           chatStore.clearStreamingText(agentId)
-        if (tabStore.state.activeTabKey !== `agent:${agentId}`) {
+        if (tabStore.state.activeTabKey !== tabKey({ type: TabType.AGENT, id: agentId })) {
           tabStore.setNotification(TabType.AGENT, agentId, true)
         }
         break

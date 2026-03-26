@@ -10,6 +10,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { tabKey } from '~/stores/tab.store'
 
 import { nextTabNumber } from './useAgentOperations'
 
@@ -222,7 +223,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   const handleTerminalBell = (terminalId: string) => {
     // Only notify if this terminal's tab is not active
     const activeKey = props.tabStore.state.activeTabKey
-    const bellKey = `terminal:${terminalId}`
+    const bellKey = tabKey({ type: TabType.TERMINAL, id: terminalId })
     if (activeKey !== bellKey) {
       props.tabStore.setNotification(TabType.TERMINAL, terminalId, true)
     }

@@ -149,3 +149,19 @@ describe('background agent history trimming', () => {
     })
   })
 })
+
+describe('agent tab notification keys', () => {
+  it('does not notify the active agent tab when key formats match store keys', () => {
+    createRoot((dispose) => {
+      const tabStore = createTabStore()
+      tabStore.addTab({ type: TabType.AGENT, id: 'agent-1', tileId: 'tile-1' })
+
+      if (tabStore.state.activeTabKey !== `${TabType.AGENT}:agent-1`) {
+        tabStore.setNotification(TabType.AGENT, 'agent-1', true)
+      }
+
+      expect(tabStore.state.tabs[0].hasNotification).not.toBe(true)
+      dispose()
+    })
+  })
+})

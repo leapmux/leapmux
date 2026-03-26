@@ -18,6 +18,7 @@ import { createEffect, createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { TodoList } from '~/components/todo/TodoList'
+import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { codexPlanToTodos } from '~/lib/messageParser'
 import { renderMarkdown, shikiHighlighter } from '~/lib/renderMarkdown'
 import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
@@ -167,14 +168,36 @@ function isSimpleAddChange(change: Record<string, unknown>): boolean {
   return codexChangeKind(change) === 'add' && typeof change.diff === 'string' && (change.diff as string).length > 0
 }
 
-function parsedChangeDiffs(changes: Array<Record<string, unknown>>): Array<{ path: string, diff: ParsedCodexDiff }> {
+function completedFileChangeEntries(changes: Array<Record<string, unknown>>): Array<
+  | { kind: 'diff', path: string, hunks: StructuredPatchHunk[] }
+  | { kind: 'add', path: string, hunks: StructuredPatchHunk[] }
+> {
   return changes.flatMap((change) => {
+    const path = typeof change.path === 'string' ? change.path : ''
     const diffText = typeof change.diff === 'string' ? change.diff : ''
     const parsed = parseCodexUnifiedDiff(diffText)
-    if (!parsed)
-      return []
-    return [{ path: typeof change.path === 'string' ? change.path : '', diff: parsed }]
+    if (parsed) {
+      return [{ kind: 'diff' as const, path, hunks: parsed.hunks }]
+    }
+    if (isSimpleAddChange(change)) {
+      return [{ kind: 'add' as const, path, hunks: rawDiffToHunks('', diffText) }]
+    }
+    return []
   })
+}
+
+function diffStatsFromHunks(hunks: StructuredPatchHunk[]): { added: number, deleted: number } {
+  let added = 0
+  let deleted = 0
+  for (const hunk of hunks) {
+    for (const line of hunk.lines) {
+      if (line.startsWith('+'))
+        added++
+      else if (line.startsWith('-'))
+        deleted++
+    }
+  }
+  return { added, deleted }
 }
 
 function stripToolUseHeaderFromOutput(output: string): string {
@@ -514,7 +537,7 @@ export function codexFileChangeRenderer(parsed: unknown, _role: MessageRole, con
   const status = (item.status as string) || ''
   const liveStream = () => context?.commandStream ?? []
   const hasLiveStream = () => liveStream().length > 0
-  const completedDiffs = parsedChangeDiffs(changes)
+  const completedEntries = completedFileChangeEntries(changes)
   const simpleAdd = changes.length === 1 && isSimpleAddChange(changes[0]) ? changes[0] : null
   const simpleAddPath = simpleAdd ? ((simpleAdd.path as string) || '') : ''
   const simpleAddContent = simpleAdd ? ((simpleAdd.diff as string) || '') : ''
@@ -534,17 +557,30 @@ export function codexFileChangeRenderer(parsed: unknown, _role: MessageRole, con
     )
   }
 
-  if (status === 'completed' && completedDiffs.length > 0) {
+  if (status === 'completed' && completedEntries.length > 0) {
+    const showPerFileLabels = completedEntries.length > 1
     return (
       <div class={toolMessage}>
-        <For each={completedDiffs}>
-          {entry => (
-            <DiffView
-              hunks={entry.diff.hunks}
-              view={context?.diffView ?? 'unified'}
-              filePath={entry.path}
-            />
-          )}
+        <For each={completedEntries}>
+          {(entry) => {
+            const stats = diffStatsFromHunks(entry.hunks)
+            return (
+              <div>
+                <Show when={showPerFileLabels}>
+                  <div class={toolResultPrompt}>
+                    <span class={toolInputPath}>{relativizePath(entry.path, context?.workingDir, context?.homeDir)}</span>
+                    {' '}
+                    <DiffStatsBadge added={stats.added} deleted={stats.deleted} class={toolInputText} />
+                  </div>
+                </Show>
+                <DiffView
+                  hunks={entry.hunks}
+                  view={context?.diffView ?? 'unified'}
+                  filePath={entry.path}
+                />
+              </div>
+            )
+          }}
         </For>
       </div>
     )
@@ -553,7 +589,7 @@ export function codexFileChangeRenderer(parsed: unknown, _role: MessageRole, con
   if (status === 'completed') {
     return (
       <div class={toolMessage}>
-        <Show when={changes.length > 0 && completedDiffs.length === 0}>
+        <Show when={changes.length > 0 && completedEntries.length === 0}>
           <div class={toolResultPrompt}>
             {changes.length === 1 ? '1 file changed' : `${changes.length} files changed`}
           </div>
