@@ -167,7 +167,7 @@ function classifyClaudeCodeMessage(
   return { kind: 'unknown' }
 }
 
-const DEFAULT_CLAUDE_MODEL = import.meta.env.LEAPMUX_CLAUDE_DEFAULT_MODEL || 'opus'
+const DEFAULT_CLAUDE_MODEL = import.meta.env.LEAPMUX_CLAUDE_DEFAULT_MODEL || 'opus[1m]'
 const DEFAULT_CLAUDE_EFFORT = import.meta.env.LEAPMUX_CLAUDE_DEFAULT_EFFORT || 'high'
 
 /** Claude Code settings panel (model, effort, permission mode). */
