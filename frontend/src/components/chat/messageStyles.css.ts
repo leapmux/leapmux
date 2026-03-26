@@ -117,6 +117,23 @@ export const resultDivider = style({
   },
 })
 
+// Hidden message rendered as raw JSON (developer mode)
+export const hiddenMessageJson = style({
+  margin: 0,
+  padding: 'var(--space-2) var(--space-3)',
+  fontSize: 'var(--text-7)',
+  fontFamily: 'var(--font-mono)',
+  fontVariantLigatures: 'none',
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-all',
+  color: 'var(--muted-foreground)',
+  backgroundColor: 'var(--card)',
+  border: '1px dashed var(--border)',
+  borderRadius: 'var(--radius-small)',
+  maxHeight: '300px',
+  overflow: 'auto',
+})
+
 // Control response message (compact)
 export const controlResponseMessage = style({
   display: 'flex',

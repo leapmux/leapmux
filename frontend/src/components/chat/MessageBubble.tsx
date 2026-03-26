@@ -145,14 +145,22 @@ interface MessageBubbleProps {
   /** Look up a message by its spanId (for tool_use ↔ tool_result linking). */
   getMessageBySpanId?: (spanId: string) => AgentChatMessage | undefined
   commandStream?: CommandStreamSegment[]
+  /** Lifted expand/collapse state for tool results, managed by ChatView. */
+  toolResultExpanded?: boolean
+  /** Toggle the expand/collapse state for this message's tool result. */
+  onToggleToolResultExpanded?: () => void
+  /** Lifted per-message diff view override, managed by ChatView. */
+  localDiffView?: 'unified' | 'split'
+  /** Set the per-message diff view override. */
+  onSetLocalDiffView?: (view: 'unified' | 'split') => void
 }
 
 export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const prefs = usePreferences()
   const [jsonCopied, setJsonCopied] = createSignal(false)
   const [markdownCopied, setMarkdownCopied] = createSignal(false)
-  const [toolResultExpanded, setToolResultExpanded] = createSignal(false)
-  const [localDiffView, setLocalDiffView] = createSignal<'unified' | 'split' | null>(null)
+  const toolResultExpanded = () => props.toolResultExpanded ?? false
+  const localDiffView = () => props.localDiffView
   let contentRef: HTMLDivElement | undefined
 
   // Use pre-computed values from ChatView when available, otherwise compute on demand.
@@ -425,7 +433,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   }
 
   const diffView = () => localDiffView() ?? prefs.diffView()
-  const toggleDiffView = () => setLocalDiffView(diffView() === 'unified' ? 'split' : 'unified')
+  const toggleDiffView = () => props.onSetLocalDiffView?.(diffView() === 'unified' ? 'split' : 'unified')
 
   // Build render context for message renderers.
   const renderContext = (): RenderContext => ({
@@ -529,9 +537,11 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
         >
           <div ref={contentRef} data-testid="message-content">
             <ErrorBoundary fallback={renderErrorFallback('Failed to render message:')}>
-              {category().kind === 'notification_thread'
-                ? renderNotificationThread((category() as { kind: 'notification_thread', messages: unknown[] }).messages)
-                : renderMessageContent(parsed().parentObject ?? parsed().rawText, props.message.role, renderContext(), category(), props.message.agentProvider)}
+              {category().kind === 'hidden'
+                ? <pre class={chatStyles.hiddenMessageJson}>{prettifyJson(rawJson())}</pre>
+                : category().kind === 'notification_thread'
+                  ? renderNotificationThread((category() as { kind: 'notification_thread', messages: unknown[] }).messages)
+                  : renderMessageContent(parsed().parentObject ?? parsed().rawText, props.message.role, renderContext(), category(), props.message.agentProvider)}
             </ErrorBoundary>
           </div>
         </div>
@@ -543,7 +553,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
             onCopyContent={copyableResultContent() ? copyResultContent : undefined}
             contentCopied={resultCopied()}
             expanded={toolResultExpanded()}
-            onToggleExpand={isCollapsibleToolResult() ? () => setToolResultExpanded(v => !v) : undefined}
+            onToggleExpand={isCollapsibleToolResult() ? props.onToggleToolResultExpanded : undefined}
             hasDiff={hasToolResultDiff()}
             diffView={diffView()}
             onToggleDiffView={hasToolResultDiff() ? toggleDiffView : undefined}
