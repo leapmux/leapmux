@@ -5,7 +5,7 @@ import type { CommandStreamSegment } from '~/stores/chat.store'
 import ArrowDown from 'lucide-solid/icons/arrow-down'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
-import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
 import { usePreferences } from '~/context/PreferencesContext'
@@ -126,7 +126,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   let contentRef: HTMLDivElement | undefined
   const [atBottom, setAtBottom] = createSignal(true)
   let scrollAnimationId: number | null = null
-  let autoScrollPending = false
 
   const cancelScrollAnimation = () => {
     if (scrollAnimationId !== null) {
@@ -140,7 +139,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     !!messageListRef && messageListRef.scrollHeight - messageListRef.scrollTop - messageListRef.clientHeight < 32
 
   const checkAtBottom = () => {
-    if (!messageListRef || scrollAnimationId !== null || autoScrollPending)
+    if (!messageListRef || scrollAnimationId !== null)
       return
     setAtBottom(isAtBottom())
   }
@@ -250,17 +249,20 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     void props.messageVersion
     void props.streamingText
     void props.agentWorking
-    if (isAtBottom()) {
+    // Use the atBottom signal (not a fresh DOM check) because by the time
+    // this effect runs, SolidJS has already updated the DOM — scrollHeight
+    // has grown but scrollTop hasn't, so a fresh measurement would wrongly
+    // conclude the user is no longer at the bottom. The signal captures
+    // the user's scroll position from before the content changed.
+    if (untrack(atBottom) && messageListRef) {
       // Skip scroll when hidden (e.g. inactive tab with display:none).
       // The ResizeObserver will scroll to bottom when the tab becomes visible.
       if (messageListRef.clientHeight === 0)
         return
-      autoScrollPending = true
-      requestAnimationFrame(() => {
-        messageListRef!.scrollTop = messageListRef!.scrollHeight
-        setAtBottom(true)
-        autoScrollPending = false
-      })
+      // Scroll synchronously — the DOM is already updated by SolidJS,
+      // so deferring to rAF would cause one visible frame where the view
+      // appears scrolled up before snapping back to bottom.
+      messageListRef.scrollTop = messageListRef.scrollHeight
       if (props.messages.length > MAX_LOADED_CHAT_MESSAGES) {
         props.onTrimOldMessages?.()
       }
@@ -305,7 +307,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       const savedAtBottom = atBottom()
       const savedScroll = wasHidden ? props.savedViewportScroll : undefined
       resizeRafId = requestAnimationFrame(() => {
-        if (!messageListRef || scrollAnimationId !== null || autoScrollPending)
+        if (!messageListRef || scrollAnimationId !== null)
           return
         prevClientHeight = ch
         if (wasHidden) {

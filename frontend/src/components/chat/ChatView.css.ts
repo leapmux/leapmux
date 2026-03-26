@@ -50,7 +50,7 @@ export const messageList = style({
   flex: 1,
   overflowX: 'hidden',
   overflowY: 'auto',
-  overflowAnchor: 'none',
+  overflowAnchor: 'auto',
   padding: 'var(--space-4) var(--space-4) var(--space-4) var(--space-6)',
   display: 'flex',
   flexDirection: 'column',

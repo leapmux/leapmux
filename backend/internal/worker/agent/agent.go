@@ -429,8 +429,8 @@ func init() {
 			Key:   OpenCodeExtraPrimaryAgent,
 			Label: "Primary Agent",
 			Options: []*leapmuxv1.AvailableOption{
-				{Id: OpenCodePrimaryAgentBuild, Name: "build", IsDefault: true},
-				{Id: OpenCodePrimaryAgentPlan, Name: "plan"},
+				{Id: OpenCodePrimaryAgentBuild, Name: "Build", IsDefault: true},
+				{Id: OpenCodePrimaryAgentPlan, Name: "Plan"},
 			},
 		}},
 		"LEAPMUX_OPENCODE_DEFAULT_MODEL",
