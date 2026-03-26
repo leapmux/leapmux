@@ -392,14 +392,9 @@ func (a *ClaudeCodeAgent) claudeCodeHandleControlCancel(content []byte) {
 }
 
 // claudeCodeHandleControlResponse handles control_response from Claude Code.
+// Note: the control request is already deleted from the DB by the
+// SendControlResponse handler; this method only handles plan mode changes.
 func (a *ClaudeCodeAgent) claudeCodeHandleControlResponse(content []byte) {
-	var reqID struct {
-		RequestID string `json:"request_id"`
-	}
-	if err := json.Unmarshal(content, &reqID); err == nil && reqID.RequestID != "" {
-		a.sink.DeleteControlRequest(reqID.RequestID)
-	}
-
 	var cr struct {
 		Response struct {
 			Subtype  string `json:"subtype"`

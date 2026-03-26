@@ -552,6 +552,9 @@ func (a *CodexAgent) handleApprovalRequest(id *json.Number, content []byte) {
 }
 
 // handleServerRequestResolved processes serverRequest/resolved notifications.
+// For user-initiated responses the control request is already deleted by the
+// SendControlResponse handler, but this also covers agent-initiated
+// resolutions (e.g. the agent moves on without waiting for user input).
 func (a *CodexAgent) handleServerRequestResolved(params json.RawMessage) {
 	var notif struct {
 		RequestID json.Number `json:"requestId"`
