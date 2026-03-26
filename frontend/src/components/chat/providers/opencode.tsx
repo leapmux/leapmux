@@ -16,7 +16,7 @@ import {
   opencodeToolCallRenderer,
   opencodeToolCallUpdateRenderer,
 } from '../opencodeRenderers'
-import { defaultModelId, modelDisplayName, modelItems, optionGroup, optionGroupItems, optionLabel, RadioGroup } from '../settingsShared'
+import { defaultModelId, modelDisplayName, modelItems, ModelSelect, optionGroup, optionGroupItems, optionLabel, RadioGroup } from '../settingsShared'
 import { registerProvider } from './registry'
 
 /** Default model for OpenCode agents (discovered dynamically, fallback). */
@@ -54,14 +54,15 @@ function OpenCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
           onChange={v => props.onOptionGroupChange?.(OPENCODE_EXTRA_PRIMARY_AGENT, v)}
         />
       </Show>
-      <RadioGroup
-        label="Model"
-        items={models()}
-        testIdPrefix="model"
-        name={`${menuId}-model`}
-        current={currentModel()}
-        onChange={v => props.onModelChange?.(v)}
-      />
+      <Show when={models().length > 0}>
+        <ModelSelect
+          items={models()}
+          testIdPrefix="model"
+          name={`${menuId}-model`}
+          current={currentModel()}
+          onChange={v => props.onModelChange?.(v)}
+        />
+      </Show>
     </div>
   )
 }
@@ -72,7 +73,13 @@ function OpenCodeTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
   const currentPrimaryAgent = () => props.extraSettings?.[OPENCODE_EXTRA_PRIMARY_AGENT] || DEFAULT_OPENCODE_PRIMARY_AGENT
   const displayName = () => modelDisplayName(props.availableModels, currentModel())
   const primaryAgent = () => optionLabel(props.availableOptionGroups, OPENCODE_EXTRA_PRIMARY_AGENT, currentPrimaryAgent())
-  return <>{displayName()} {primaryAgent()}</>
+  return (
+    <>
+      {displayName()}
+      {' '}
+      {primaryAgent()}
+    </>
+  )
 }
 
 /**

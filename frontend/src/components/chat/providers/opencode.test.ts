@@ -267,65 +267,65 @@ describe('opencode tool_call renderer', () => {
 })
 
 describe('opencode plan mode', () => {
-	const plugin = getProviderPlugin(AgentProvider.OPENCODE)!
+  const plugin = getProviderPlugin(AgentProvider.OPENCODE)!
 
-	it('reads the current mode from extraSettings.primaryAgent', () => {
-		expect(plugin.planMode?.currentMode({ extraSettings: { primaryAgent: 'plan' } })).toBe('plan')
-		expect(plugin.planMode?.currentMode({ extraSettings: {} })).toBe('build')
-	})
+  it('reads the current mode from extraSettings.primaryAgent', () => {
+    expect(plugin.planMode?.currentMode({ extraSettings: { primaryAgent: 'plan' } })).toBe('plan')
+    expect(plugin.planMode?.currentMode({ extraSettings: {} })).toBe('build')
+  })
 
-	it('setMode writes primaryAgent through onOptionGroupChange', () => {
-		const onOptionGroupChange = vi.fn()
-		plugin.planMode?.setMode('plan', { onOptionGroupChange })
-		expect(onOptionGroupChange).toHaveBeenCalledWith('primaryAgent', 'plan')
-	})
+  it('setMode writes primaryAgent through onOptionGroupChange', () => {
+    const onOptionGroupChange = vi.fn()
+    plugin.planMode?.setMode('plan', { onOptionGroupChange })
+    expect(onOptionGroupChange).toHaveBeenCalledWith('primaryAgent', 'plan')
+  })
 })
 
 describe('opencode settings panel', () => {
-	const plugin = getProviderPlugin(AgentProvider.OPENCODE)!
+  const plugin = getProviderPlugin(AgentProvider.OPENCODE)!
 
-	it('renders primary-agent choices and updates via option-group callback', async () => {
-		const onOptionGroupChange = vi.fn()
-		render(() => plugin.SettingsPanel!({
-			model: 'openai/gpt-5',
-			extraSettings: { primaryAgent: 'build' },
-			availableModels: [{ id: 'openai/gpt-5', displayName: 'GPT-5', isDefault: true, supportedEfforts: [] }],
-			availableOptionGroups: [{
-				key: 'primaryAgent',
-				label: 'Primary Agent',
-				options: [
-					{ id: 'build', name: 'build', isDefault: true },
-					{ id: 'plan', name: 'plan' },
-				],
-			}],
-			onOptionGroupChange,
-		}))
+  it('renders primary-agent choices and updates via option-group callback', async () => {
+    const onOptionGroupChange = vi.fn()
+    render(() => plugin.SettingsPanel!({
+      model: 'openai/gpt-5',
+      extraSettings: { primaryAgent: 'build' },
+      availableModels: [{ id: 'openai/gpt-5', displayName: 'GPT-5', isDefault: true, supportedEfforts: [] }],
+      availableOptionGroups: [{
+        key: 'primaryAgent',
+        label: 'Primary Agent',
+        options: [
+          { id: 'build', name: 'build', isDefault: true },
+          { id: 'plan', name: 'plan' },
+        ],
+      }],
+      onOptionGroupChange,
+    }))
 
-		expect(screen.getByText('Primary Agent')).toBeTruthy()
-		expect(screen.getByTestId('primary-agent-build')).toBeTruthy()
-		expect(screen.getByTestId('primary-agent-plan')).toBeTruthy()
+    expect(screen.getByText('Primary Agent')).toBeTruthy()
+    expect(screen.getByTestId('primary-agent-build')).toBeTruthy()
+    expect(screen.getByTestId('primary-agent-plan')).toBeTruthy()
 
-		await fireEvent.click(screen.getByDisplayValue('plan'))
-		expect(onOptionGroupChange).toHaveBeenCalledWith('primaryAgent', 'plan')
-	})
+    await fireEvent.click(screen.getByDisplayValue('plan'))
+    expect(onOptionGroupChange).toHaveBeenCalledWith('primaryAgent', 'plan')
+  })
 
-	it('includes the selected primary agent in the trigger label', () => {
-		render(() => plugin.settingsTriggerLabel!({
-			model: 'openai/gpt-5',
-			extraSettings: { primaryAgent: 'plan' },
-			availableModels: [{ id: 'openai/gpt-5', displayName: 'GPT-5', isDefault: true, supportedEfforts: [] }],
-			availableOptionGroups: [{
-				key: 'primaryAgent',
-				label: 'Primary Agent',
-				options: [
-					{ id: 'build', name: 'build', isDefault: true },
-					{ id: 'plan', name: 'plan' },
-				],
-			}],
-		}))
+  it('includes the selected primary agent in the trigger label', () => {
+    render(() => plugin.settingsTriggerLabel!({
+      model: 'openai/gpt-5',
+      extraSettings: { primaryAgent: 'plan' },
+      availableModels: [{ id: 'openai/gpt-5', displayName: 'GPT-5', isDefault: true, supportedEfforts: [] }],
+      availableOptionGroups: [{
+        key: 'primaryAgent',
+        label: 'Primary Agent',
+        options: [
+          { id: 'build', name: 'build', isDefault: true },
+          { id: 'plan', name: 'plan' },
+        ],
+      }],
+    }))
 
-		expect(screen.getByText('GPT-5 plan')).toBeTruthy()
-	})
+    expect(screen.getByText('GPT-5 plan')).toBeTruthy()
+  })
 })
 
 describe('opencode tool_call_update renderer', () => {
