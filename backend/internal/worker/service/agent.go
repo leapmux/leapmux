@@ -696,6 +696,16 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
+		// Delete the resolved control request from the DB so it is not
+		// replayed on reconnect.  Extract the request ID from the response
+		// content — Claude Code uses response.request_id, OpenCode/ACP uses
+		// the JSON-RPC id field.
+		if reqID := extractControlResponseRequestID(content); reqID != "" {
+			sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
+			sink.DeleteControlRequest(reqID)
+			sink.BroadcastControlCancel(reqID)
+		}
+
 		sendProtoResponse(sender, &leapmuxv1.SendControlResponseResponse{})
 	})
 
@@ -1386,6 +1396,35 @@ func (svc *Context) handleCodexPlanModePromptResponse(agentID string, content []
 	}
 
 	return true
+}
+
+// extractControlResponseRequestID extracts the control request ID from a
+// control response's raw JSON content.  It supports both Claude Code format
+// (response.request_id) and OpenCode/ACP JSON-RPC format (top-level id).
+func extractControlResponseRequestID(content []byte) string {
+	var parsed struct {
+		// Claude Code format
+		Response struct {
+			RequestID string `json:"request_id"`
+		} `json:"response"`
+		// OpenCode / ACP JSON-RPC format (id can be number or string)
+		ID json.RawMessage `json:"id"`
+	}
+	if json.Unmarshal(content, &parsed) != nil {
+		return ""
+	}
+	if parsed.Response.RequestID != "" {
+		return parsed.Response.RequestID
+	}
+	// Try JSON-RPC id: strip quotes for string, use raw for number.
+	if len(parsed.ID) > 0 && string(parsed.ID) != "null" {
+		var s string
+		if json.Unmarshal(parsed.ID, &s) == nil {
+			return s
+		}
+		return strings.TrimSpace(string(parsed.ID))
+	}
+	return ""
 }
 
 // handleControlResponsePlanMode detects plan mode changes from control

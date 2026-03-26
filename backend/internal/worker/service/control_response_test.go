@@ -148,3 +148,35 @@ func TestSendControlResponse_PersistsCodexFeedbackMessage(t *testing.T) {
 	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_USER, rows[0].Role)
 	assert.Equal(t, "Please add tests before exiting plan mode.", decodeMessageContent(t, rows[0].Content, rows[0].ContentCompression))
 }
+
+func TestExtractControlResponseRequestID(t *testing.T) {
+	// Claude Code format: response.request_id
+	assert.Equal(t, "req-1", extractControlResponseRequestID(
+		[]byte(`{"response":{"request_id":"req-1","response":{"behavior":"allow"}}}`),
+	))
+
+	// OpenCode / ACP JSON-RPC format: numeric id
+	assert.Equal(t, "5", extractControlResponseRequestID(
+		[]byte(`{"jsonrpc":"2.0","id":5,"result":{"outcome":{"outcome":"selected","optionId":"once"}}}`),
+	))
+
+	// OpenCode / ACP JSON-RPC format: string id
+	assert.Equal(t, "abc-123", extractControlResponseRequestID(
+		[]byte(`{"jsonrpc":"2.0","id":"abc-123","result":{"outcome":{"outcome":"selected","optionId":"reject"}}}`),
+	))
+
+	// No request ID
+	assert.Equal(t, "", extractControlResponseRequestID(
+		[]byte(`{"type":"unknown"}`),
+	))
+
+	// Null id
+	assert.Equal(t, "", extractControlResponseRequestID(
+		[]byte(`{"id":null}`),
+	))
+
+	// Invalid JSON
+	assert.Equal(t, "", extractControlResponseRequestID(
+		[]byte(`not json`),
+	))
+}
