@@ -4,7 +4,7 @@ import * as styles from './ChatDropZone.css'
 
 interface ChatDropZoneProps {
   children: JSX.Element
-  onDrop?: (files: FileList, shiftKey: boolean) => void
+  onDrop?: (dataTransfer: DataTransfer, shiftKey: boolean) => void
   disabled?: boolean
 }
 
@@ -46,7 +46,7 @@ export const ChatDropZone: Component<ChatDropZoneProps> = (props) => {
     setIsDragOver(false)
     if (props.disabled || !e.dataTransfer?.files.length)
       return
-    props.onDrop?.(e.dataTransfer.files, e.shiftKey)
+    props.onDrop?.(e.dataTransfer, e.shiftKey)
   }
 
   return (

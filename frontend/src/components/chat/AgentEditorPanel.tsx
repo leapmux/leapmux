@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { FileAttachment } from './attachments'
+import type { FileAttachment, PendingAttachmentFile } from './attachments'
 import type { EditorContentRef } from './controls/types'
 import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
@@ -25,6 +25,7 @@ import { useAgentInfoCard } from './AgentInfoCard'
 import {
   buildAcceptAttribute,
   clearAttachments,
+  collectDroppedAttachmentFiles,
   describeUnsupportedAttachment,
   getAttachments,
   inferAttachmentDetails,
@@ -63,7 +64,9 @@ export interface AgentEditorPanelProps {
   /** Height of the parent container, used for max editor height calculation. */
   containerHeight?: number
   /** Ref to expose the addFiles function for external callers (e.g. ChatDropZone). */
-  addFilesRef?: (fn: (files: FileList | File[]) => Promise<number>) => void
+  addFilesRef?: (fn: (files: FileList | File[] | PendingAttachmentFile[]) => Promise<number>) => void
+  /** Ref to expose directory-aware drop handling for external callers (e.g. ChatDropZone). */
+  addDropDataTransferRef?: (fn: (dataTransfer: DataTransfer) => Promise<number>) => void
   /** Ref to expose the triggerSend function for external callers. */
   triggerSendRef?: (fn: () => void) => void
 }
@@ -113,21 +116,22 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   const currentProviderLabel = () => agentProviderLabel(props.agent?.agentProvider)
 
   /** Validate and add files as attachments. */
-  const addFiles = async (files: FileList | File[], isPastedImage?: boolean): Promise<number> => {
+  const addFiles = async (files: FileList | File[] | PendingAttachmentFile[], isPastedImage?: boolean): Promise<number> => {
     const currentAttachments = attachments()
     let currentSize = totalAttachmentSize(currentAttachments)
 
     const accepted: FileAttachment[] = []
     const rejectionReasons = new Map<string, number>()
     let sizeLimitHit = false
-    for (const file of [...files]) {
+    for (const item of [...files]) {
+      const file = item instanceof File ? item : item.file
       if (currentSize + file.size > MAX_TOTAL_ATTACHMENT_SIZE) {
         sizeLimitHit = true
         break
       }
       const filename = isPastedImage
         ? `${nextPastedImageName(props.agentId)}.${file.type.split('/')[1] || 'png'}`
-        : undefined
+        : (item instanceof File ? undefined : item.filename)
       const attachment = await readFileAsAttachment(file, filename)
       const details = inferAttachmentDetails(attachment.filename, attachment.mimeType, attachment.data)
       if (!isAttachmentSupported(details.kind, attachmentCapabilities())) {
@@ -273,16 +277,25 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // eslint-disable-next-line solid/reactivity -- one-time ref registration, addFiles is stable
   props.addFilesRef?.(addFiles)
 
+  const addDroppedDataTransfer = async (dataTransfer: DataTransfer): Promise<number> => {
+    const { files, sizeLimitHit } = await collectDroppedAttachmentFiles(dataTransfer, totalAttachmentSize(attachments()))
+    if (sizeLimitHit)
+      showWarnToast('Total attachment size exceeds 10 MB')
+    return addFiles(files)
+  }
+  // eslint-disable-next-line solid/reactivity -- one-time ref registration, handler is stable
+  props.addDropDataTransferRef?.(addDroppedDataTransfer)
+
   const handlePasteFiles = (files: File[]) => {
     if (ctrl.activeControlRequest())
       return
     addFiles(files, true)
   }
 
-  const handleDropFiles = (files: File[]) => {
+  const handleDropDataTransfer = (dataTransfer: DataTransfer) => {
     if (ctrl.activeControlRequest())
       return
-    addFiles(files)
+    void addDroppedDataTransfer(dataTransfer)
   }
 
   // Agent info card (extracted module)
@@ -408,7 +421,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             tryRegisterEditorRef(props.agentId)
           }}
           onPasteFiles={!ctrl.activeControlRequest() ? handlePasteFiles : undefined}
-          onDropFiles={!ctrl.activeControlRequest() ? handleDropFiles : undefined}
+          onDropDataTransfer={!ctrl.activeControlRequest() ? handleDropDataTransfer : undefined}
           onUploadClick={!ctrl.activeControlRequest() ? () => fileInputRef?.click() : undefined}
           placeholder={ctrl.isAskUserQuestion() ? 'Type a custom answer...' : ctrl.activeControlRequest() ? 'Type a rejection reason...' : undefined}
           allowEmptySend={(!!ctrl.activeControlRequest() && !ctrl.isAskUserQuestion()) || attachments().length > 0}

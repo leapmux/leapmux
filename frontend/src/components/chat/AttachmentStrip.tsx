@@ -5,6 +5,7 @@ import FileImageIcon from 'lucide-solid/icons/file-image'
 import X from 'lucide-solid/icons/x'
 import { For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
+import { Tooltip } from '~/components/common/Tooltip'
 import { isImageMimeType } from './attachments'
 import * as styles from './AttachmentStrip.css'
 
@@ -40,7 +41,9 @@ export const AttachmentStrip: Component<AttachmentStripProps> = (props) => {
                   size="xs"
                 />
               </span>
-              <span class={styles.pillFilename}>{attachment.filename}</span>
+              <Tooltip text={attachment.filename}>
+                <span class={styles.pillFilename} title={attachment.filename}>{attachment.filename}</span>
+              </Tooltip>
               <button
                 class={styles.removeButton}
                 onClick={() => props.onRemove(attachment.id)}

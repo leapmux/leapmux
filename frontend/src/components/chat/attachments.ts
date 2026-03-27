@@ -11,6 +11,11 @@ export interface FileAttachment {
   size: number
 }
 
+export interface PendingAttachmentFile {
+  file: File
+  filename?: string
+}
+
 export type AttachmentKind = 'text' | 'image' | 'pdf' | 'binary'
 
 export interface AttachmentDetails {
@@ -20,6 +25,32 @@ export interface AttachmentDetails {
 
 /** Maximum total size of all attachments (10 MB). */
 export const MAX_TOTAL_ATTACHMENT_SIZE = 10 * 1024 * 1024
+
+type WebkitDataTransferItem = DataTransferItem & {
+  webkitGetAsEntry?: () => FileSystemEntry | null
+}
+
+interface FileSystemEntry {
+  readonly isFile: boolean
+  readonly isDirectory: boolean
+  readonly name: string
+  readonly fullPath: string
+}
+
+interface FileSystemFileEntry extends FileSystemEntry {
+  file: (successCallback: (file: File) => void, errorCallback?: (err: DOMException) => void) => void
+}
+
+interface FileSystemDirectoryEntry extends FileSystemEntry {
+  createReader: () => FileSystemDirectoryReader
+}
+
+interface FileSystemDirectoryReader {
+  readEntries: (
+    successCallback: (entries: FileSystemEntry[]) => void,
+    errorCallback?: (err: DOMException) => void,
+  ) => void
+}
 
 const SUPPORTED_IMAGE_MIME_TYPES = new Set([
   'image/png',
@@ -214,6 +245,90 @@ export function isImageMimeType(mime: string): boolean {
 
 export function totalAttachmentSize(attachments: FileAttachment[]): number {
   return attachments.reduce((sum, a) => sum + a.size, 0)
+}
+
+async function fileFromEntry(entry: FileSystemFileEntry): Promise<File> {
+  return new Promise((resolve, reject) => {
+    entry.file(resolve, reject)
+  })
+}
+
+async function readAllDirectoryEntries(entry: FileSystemDirectoryEntry): Promise<FileSystemEntry[]> {
+  const reader = entry.createReader()
+  const entries: FileSystemEntry[] = []
+  while (true) {
+    const batch = await new Promise<FileSystemEntry[]>((resolve, reject) => {
+      reader.readEntries(resolve, reject)
+    })
+    if (batch.length === 0)
+      return entries
+    entries.push(...batch)
+  }
+}
+
+function sortedEntries(entries: FileSystemEntry[]): FileSystemEntry[] {
+  return [...entries].sort((a, b) => a.name.localeCompare(b.name))
+}
+
+async function collectFilesFromEntry(
+  entry: FileSystemEntry,
+  currentSizeRef: { value: number },
+  results: PendingAttachmentFile[],
+): Promise<boolean> {
+  if (entry.isFile) {
+    const file = await fileFromEntry(entry as FileSystemFileEntry)
+    if (currentSizeRef.value + file.size > MAX_TOTAL_ATTACHMENT_SIZE)
+      return true
+    currentSizeRef.value += file.size
+    results.push({
+      file,
+      filename: entry.fullPath.replace(/^\/+/, ''),
+    })
+    return false
+  }
+
+  if (!entry.isDirectory)
+    return false
+
+  const childEntries = sortedEntries(await readAllDirectoryEntries(entry as FileSystemDirectoryEntry))
+  for (const childEntry of childEntries) {
+    if (await collectFilesFromEntry(childEntry, currentSizeRef, results))
+      return true
+  }
+  return false
+}
+
+/**
+ * Collect dropped files, recursively expanding directories when supported by
+ * the browser/webview. Traversal stops immediately once the next file would
+ * exceed the global attachment size limit.
+ */
+export async function collectDroppedAttachmentFiles(
+  dataTransfer: DataTransfer,
+  currentSize = 0,
+): Promise<{ files: PendingAttachmentFile[], sizeLimitHit: boolean }> {
+  const results: PendingAttachmentFile[] = []
+  const currentSizeRef = { value: currentSize }
+  const items = [...(dataTransfer.items ?? [])] as WebkitDataTransferItem[]
+  const entries = items
+    .map(item => item.webkitGetAsEntry?.() ?? null)
+    .filter((entry): entry is FileSystemEntry => entry !== null)
+
+  if (entries.length > 0) {
+    for (const entry of sortedEntries(entries)) {
+      if (await collectFilesFromEntry(entry, currentSizeRef, results))
+        return { files: results, sizeLimitHit: true }
+    }
+    return { files: results, sizeLimitHit: false }
+  }
+
+  for (const file of [...dataTransfer.files]) {
+    if (currentSizeRef.value + file.size > MAX_TOTAL_ATTACHMENT_SIZE)
+      return { files: results, sizeLimitHit: true }
+    currentSizeRef.value += file.size
+    results.push({ file })
+  }
+  return { files: results, sizeLimitHit: false }
 }
 
 // ---------------------------------------------------------------------------

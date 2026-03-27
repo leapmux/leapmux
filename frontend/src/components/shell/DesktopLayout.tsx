@@ -50,7 +50,7 @@ interface DesktopLayoutProps {
   }) => JSX.Element
   editorPanel: JSX.Element | false
   floatingWindowLayer?: JSX.Element
-  onFileDrop?: (files: FileList, shiftKey: boolean) => void
+  onFileDrop?: (dataTransfer: DataTransfer, shiftKey: boolean) => void
   fileDropDisabled?: boolean
 }
 

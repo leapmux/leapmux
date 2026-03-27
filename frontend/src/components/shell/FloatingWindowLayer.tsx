@@ -16,7 +16,7 @@ interface FloatingWindowLayerProps {
   onCloseWindow: (windowId: string) => void
   onGeometryChange?: () => void
   editorPanel?: (windowId: string) => JSX.Element | false
-  onFileDrop?: (files: FileList, shiftKey: boolean) => void
+  onFileDrop?: (dataTransfer: DataTransfer, shiftKey: boolean) => void
   fileDropDisabled?: boolean
 }
 

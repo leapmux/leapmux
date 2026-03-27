@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildAcceptAttribute,
   clearAttachments,
+  collectDroppedAttachmentFiles,
   describeUnsupportedAttachment,
   getAttachments,
   inferAttachmentDetails,
@@ -190,5 +191,79 @@ describe('readFileAsAttachment', () => {
     const file = new File(['name,value\nfoo,1\n'], 'report.csv', { type: '' })
     const attachment = await readFileAsAttachment(file)
     expect(attachment.mimeType).toBe('text/csv')
+  })
+})
+
+describe('collectDroppedAttachmentFiles', () => {
+  function createFileEntry(path: string, file: File) {
+    const parts = path.split('/')
+    const name = parts[parts.length - 1] ?? file.name
+    return {
+      isFile: true,
+      isDirectory: false,
+      name,
+      fullPath: `/${path}`,
+      file: (resolve: (value: File) => void) => resolve(file),
+    }
+  }
+
+  function createDirectoryEntry(name: string, entries: unknown[]) {
+    return {
+      isFile: false,
+      isDirectory: true,
+      name,
+      fullPath: `/${name}`,
+      createReader: () => {
+        let done = false
+        return {
+          readEntries: (resolve: (value: unknown[]) => void) => {
+            if (done) {
+              resolve([])
+              return
+            }
+            done = true
+            resolve(entries)
+          },
+        }
+      },
+    }
+  }
+
+  it('recursively expands directory drops and preserves relative paths', async () => {
+    const readme = createFileEntry('project/README.md', new File(['# test'], 'README.md', { type: 'text/markdown' }))
+    const logo = createFileEntry('project/assets/logo.png', new File([new Uint8Array([1, 2, 3])], 'logo.png', { type: 'image/png' }))
+    const assets = createDirectoryEntry('assets', [logo])
+    const project = createDirectoryEntry('project', [assets, readme])
+    const dataTransfer = {
+      items: [{ webkitGetAsEntry: () => project }],
+      files: [],
+    } as unknown as DataTransfer
+
+    const result = await collectDroppedAttachmentFiles(dataTransfer)
+
+    expect(result.sizeLimitHit).toBe(false)
+    expect(result.files.map(file => file.filename)).toEqual([
+      'project/assets/logo.png',
+      'project/README.md',
+    ])
+  })
+
+  it('stops traversal immediately once the size limit would be exceeded', async () => {
+    const first = createFileEntry('big/first.txt', new File([new Uint8Array(64)], 'first.txt', { type: 'text/plain' }))
+    const tooLarge = createFileEntry(
+      'big/second.txt',
+      new File([new Uint8Array(64)], 'second.txt', { type: 'text/plain' }),
+    )
+    const late = createFileEntry('big/late.txt', new File([new Uint8Array(64)], 'late.txt', { type: 'text/plain' }))
+    const directory = createDirectoryEntry('big', [first, tooLarge, late])
+    const dataTransfer = {
+      items: [{ webkitGetAsEntry: () => directory }],
+      files: [],
+    } as unknown as DataTransfer
+
+    const result = await collectDroppedAttachmentFiles(dataTransfer, MAX_TOTAL_ATTACHMENT_SIZE - 96)
+
+    expect(result.sizeLimitHit).toBe(true)
+    expect(result.files.map(file => file.filename)).toEqual(['big/first.txt'])
   })
 })

@@ -409,20 +409,28 @@ export function createTileRenderer(opts: TileRendererOpts) {
 
   // Refs for ChatDropZone integration: addFiles and triggerSend from AgentEditorPanel.
   const addFilesRef: { current: ((files: FileList | File[]) => Promise<number>) | undefined } = { current: undefined }
+  const addDropDataTransferRef: { current: ((dataTransfer: DataTransfer) => Promise<number>) | undefined } = { current: undefined }
   const triggerSendRef: { current: (() => void) | undefined } = { current: undefined }
 
   // Clear refs when no agent is focused to avoid stale closures.
   createEffect(() => {
     if (!focusedAgentId()) {
       addFilesRef.current = undefined
+      addDropDataTransferRef.current = undefined
       triggerSendRef.current = undefined
     }
   })
 
-  const handleFileDrop = async (files: FileList, shiftKey: boolean) => {
+  const handleFileDrop = async (dataTransfer: DataTransfer, shiftKey: boolean) => {
+    if (addDropDataTransferRef.current) {
+      const addedCount = await addDropDataTransferRef.current(dataTransfer)
+      if (shiftKey && addedCount > 0)
+        triggerSendRef.current?.()
+      return
+    }
     if (!addFilesRef.current)
       return
-    const addedCount = await addFilesRef.current(files)
+    const addedCount = await addFilesRef.current(dataTransfer.files)
     if (shiftKey && addedCount > 0)
       triggerSendRef.current?.()
   }
@@ -496,6 +504,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
           }
         }}
         addFilesRef={(fn) => { addFilesRef.current = fn }}
+        addDropDataTransferRef={(fn) => { addDropDataTransferRef.current = fn }}
         triggerSendRef={(fn) => { triggerSendRef.current = fn }}
         disabled={false}
         focusRef={(fn) => { focusEditorRef.current = fn }}

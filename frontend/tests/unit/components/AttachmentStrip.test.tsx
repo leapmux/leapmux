@@ -52,6 +52,20 @@ describe('attachmentStrip', () => {
     expect(pills[1].textContent).toContain('document.pdf')
   })
 
+  it('provides the full filename to the tooltip trigger', () => {
+    const items = [
+      makeAttachment({ id: 'a1', filename: 'very/long/nested/path/to/screenshot.png' }),
+    ]
+    const [attachments] = createSignal<FileAttachment[]>(items)
+    const { container } = render(() => (
+      <AttachmentStrip attachments={attachments} onRemove={() => {}} />
+    ))
+    const filename = container.querySelector('[data-testid="attachment-pill"] span[title]') as HTMLSpanElement
+    expect(filename).not.toBeNull()
+    expect(filename.title).toBe('very/long/nested/path/to/screenshot.png')
+    expect(filename.textContent).toBe('very/long/nested/path/to/screenshot.png')
+  })
+
   it('calls onRemove with the correct id when remove button is clicked', () => {
     const onRemove = vi.fn()
     const items = [

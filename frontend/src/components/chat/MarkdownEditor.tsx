@@ -43,7 +43,7 @@ interface MarkdownEditorProps {
   /** Called when files are pasted from clipboard. Prevents ProseMirror from inserting inline images. */
   onPasteFiles?: (files: File[]) => void
   /** Called when files are dropped onto the editor. Prevents ProseMirror from inserting inline content. */
-  onDropFiles?: (files: File[]) => void
+  onDropDataTransfer?: (dataTransfer: DataTransfer) => void
   /** Called when the upload button in the toolbar is clicked. */
   onUploadClick?: () => void
 }
@@ -322,13 +322,12 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       }
     }
     const handleDrop = (e: DragEvent) => {
-      if (!props.onDropFiles)
+      if (!props.onDropDataTransfer)
         return
-      const files = [...(e.dataTransfer?.files ?? [])]
-      if (files.length > 0) {
+      if (e.dataTransfer?.files.length) {
         e.preventDefault()
         e.stopPropagation()
-        props.onDropFiles(files)
+        props.onDropDataTransfer(e.dataTransfer)
       }
     }
     editorRef?.addEventListener('paste', handlePaste, true)
