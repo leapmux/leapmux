@@ -1,31 +1,31 @@
 #!/usr/bin/env node
 
 // Converts LeapMux SVG icons to web icon assets:
-//   - favicon.ico  (48x48 ICO, from favicon SVG)
-//   - favicon.svg  (copy of favicon SVG for modern browsers)
-//   - icon-192.png (192x192 PNG, from app icon SVG)
-//   - icon-512.png (512x512 PNG, from app icon SVG)
-//   - icon-512-maskable.png (512x512 PNG with safe-zone padding, from app icon SVG)
-//   - apple-touch-icon.png (180x180 PNG, from app icon SVG)
+//   - leapmux-icon-corners.ico (48x48 ICO, from rounded SVG)
+//   - leapmux-icon-corners.svg (copy of rounded SVG for modern browsers)
+//   - leapmux-icon-corners-192.png (192x192 PNG, from rounded SVG)
+//   - leapmux-icon-corners-512.png (512x512 PNG, from rounded SVG)
+//   - leapmux-icon-corners-maskable-512.png (512x512 PNG, from rounded SVG)
+//   - leapmux-icon-apple-touch.png (180x180 PNG, from square SVG)
 //
-// Usage: node generate-icons.mjs <favicon-svg> <app-icon-svg> <public-dir>
+// Usage: node generate-icons.mjs <rounded-svg> <square-svg> <public-dir>
 //
 // Requires @resvg/resvg-js (installed with frontend dependencies).
 
 import { Buffer } from 'node:buffer'
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { Resvg } from '@resvg/resvg-js'
 
-const [faviconSvgPath, appIconSvgPath, publicDir] = process.argv.slice(2)
-if (!faviconSvgPath || !appIconSvgPath || !publicDir) {
-  console.error('Usage: generate-icons.mjs <favicon-svg> <app-icon-svg> <public-dir>')
+const [roundedSvgPath, squareSvgPath, publicDir] = process.argv.slice(2)
+if (!roundedSvgPath || !squareSvgPath || !publicDir) {
+  console.error('Usage: generate-icons.mjs <rounded-svg> <square-svg> <public-dir>')
   process.exit(1)
 }
 
-const faviconSvg = readFileSync(faviconSvgPath)
-const appIconSvg = readFileSync(appIconSvgPath)
+const roundedSvg = readFileSync(roundedSvgPath)
+const squareSvg = readFileSync(squareSvgPath)
 
 function renderPng(svgData, size) {
   const resvg = new Resvg(svgData, { fitTo: { mode: 'width', value: size } })
@@ -49,20 +49,26 @@ function buildIco(pngData, size) {
   return Buffer.concat([header, pngData])
 }
 
-// Copy favicon SVG to public dir for modern browsers.
-copyFileSync(faviconSvgPath, join(publicDir, 'favicon.svg'))
+// Copy the rounded SVG to public dir for modern browsers.
+rmSync(join(publicDir, 'favicon.ico'), { force: true })
+rmSync(join(publicDir, 'favicon.svg'), { force: true })
+copyFileSync(roundedSvgPath, join(publicDir, 'leapmux-icon-corners.svg'))
 
-// Generate favicon.ico (48x48) from the favicon SVG.
-const ico48Png = renderPng(faviconSvg, 48)
-writeFileSync(join(publicDir, 'favicon.ico'), buildIco(ico48Png, 48))
+// Generate a favicon ICO from the rounded SVG.
+const ico48Png = renderPng(roundedSvg, 48)
+writeFileSync(join(publicDir, 'leapmux-icon-corners.ico'), buildIco(ico48Png, 48))
 
 // Ensure the icons output directory exists.
 mkdirSync(join(publicDir, 'icons'), { recursive: true })
+rmSync(join(publicDir, 'icons', 'icon-192.png'), { force: true })
+rmSync(join(publicDir, 'icons', 'icon-512.png'), { force: true })
+rmSync(join(publicDir, 'icons', 'icon-512-maskable.png'), { force: true })
+rmSync(join(publicDir, 'icons', 'apple-touch-icon.png'), { force: true })
 
-// Generate app icon PNGs from the app icon SVG.
-writeFileSync(join(publicDir, 'icons', 'icon-192.png'), renderPng(appIconSvg, 192))
-writeFileSync(join(publicDir, 'icons', 'icon-512.png'), renderPng(appIconSvg, 512))
-writeFileSync(join(publicDir, 'icons', 'icon-512-maskable.png'), renderPng(appIconSvg, 512))
-writeFileSync(join(publicDir, 'icons', 'apple-touch-icon.png'), renderPng(appIconSvg, 180))
+// Generate rounded web icons and square Apple touch icon.
+writeFileSync(join(publicDir, 'icons', 'leapmux-icon-corners-192.png'), renderPng(roundedSvg, 192))
+writeFileSync(join(publicDir, 'icons', 'leapmux-icon-corners-512.png'), renderPng(roundedSvg, 512))
+writeFileSync(join(publicDir, 'icons', 'leapmux-icon-corners-maskable-512.png'), renderPng(roundedSvg, 512))
+writeFileSync(join(publicDir, 'icons', 'leapmux-icon-apple-touch.png'), renderPng(squareSvg, 180))
 
-console.log('Generated web icons: favicon.ico, favicon.svg, icon-192.png, icon-512.png, icon-512-maskable.png, apple-touch-icon.png')
+console.log('Generated web icons: leapmux-icon-corners.ico, leapmux-icon-corners.svg, leapmux-icon-corners-192.png, leapmux-icon-corners-512.png, leapmux-icon-corners-maskable-512.png, leapmux-icon-apple-touch.png')
