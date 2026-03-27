@@ -176,6 +176,10 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       return
     const newFirstSeq = msgs[0].seq
     if (anchorFirstSeq !== undefined && newFirstSeq < anchorFirstSeq) {
+      // Loading older history means the user is browsing away from the bottom.
+      // Clear stickiness immediately so a concurrent append cannot snap the
+      // view down before the anchor adjustment rAF runs.
+      setAtBottom(false)
       const prevHeight = anchorScrollHeight
       requestAnimationFrame(() => {
         if (messageListRef) {
