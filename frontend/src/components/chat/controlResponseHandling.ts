@@ -1,4 +1,5 @@
 import type { Accessor } from 'solid-js'
+import type { FileAttachment } from './attachments'
 import type { AskQuestionState, EditorContentRef } from './controls/types'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { ControlRequest } from '~/stores/control.store'
@@ -17,7 +18,7 @@ export interface ControlResponseHandlingProps {
   onControlResponse?: (agentId: string, content: Uint8Array) => Promise<void>
   onPermissionModeChange?: (mode: PermissionMode) => void
   onOptionGroupChange?: (key: string, value: string) => void
-  onSendMessage: (content: string) => void
+  onSendMessage: (content: string, attachments?: FileAttachment[]) => void
   settingsLoading?: boolean
   agentWorking?: boolean
 }
@@ -39,6 +40,8 @@ export function useControlResponseHandling(
   askState: AskQuestionState,
   editorContentRefAccessor: () => EditorContentRef | undefined,
   resetEditorHeightFn: () => void,
+  getAttachments?: () => FileAttachment[],
+  onSendMessageOverride?: (content: string, attachments?: FileAttachment[]) => void,
 ): ControlResponseHandlingResult {
   const planModeConfig = () => getProviderPlugin(props.agent?.agentProvider)?.planMode
 
@@ -177,9 +180,11 @@ export function useControlResponseHandling(
   }
 
   const handleSend = (content: string): boolean | void => {
-    if (content.trim().length < 1)
+    const currentAttachments = getAttachments?.() ?? []
+    if (content.trim().length < 1 && currentAttachments.length === 0)
       return false
-    props.onSendMessage(content)
+    const sendFn = onSendMessageOverride ?? props.onSendMessage
+    sendFn(content, currentAttachments.length > 0 ? currentAttachments : undefined)
     resetEditorHeightFn()
   }
 

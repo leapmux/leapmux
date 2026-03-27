@@ -1113,6 +1113,8 @@ export const AppShell: ParentComponent = (props) => {
               }}
               createLeftSidebar={displayOpts => createLeftSidebarElement(sidebarOpts(), displayOpts)}
               createRightSidebar={displayOpts => createRightSidebarElement(sidebarOpts(), displayOpts)}
+              onFileDrop={tileRenderer.handleFileDrop}
+              fileDropDisabled={tileRenderer.fileDropDisabled()}
               editorPanel={(
                 tileRenderer.focusedAgentId() && !isActiveWorkspaceArchived()
                 && <tileRenderer.FocusedAgentEditorPanel containerHeight={centerPanelHeight()} />
@@ -1128,6 +1130,8 @@ export const AppShell: ParentComponent = (props) => {
                   }}
                   onCloseWindow={handleCloseFloatingWindow}
                   onGeometryChange={persistLayout}
+                  onFileDrop={tileRenderer.handleFileDrop}
+                  fileDropDisabled={tileRenderer.fileDropDisabled()}
                 />
               )}
             />

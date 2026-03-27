@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
+import type { FileAttachment } from '~/components/chat/attachments'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { createAgentStore } from '~/stores/agent.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
@@ -406,6 +407,34 @@ export function createTileRenderer(opts: TileRendererOpts) {
     return tab.id
   })
 
+  // Refs for ChatDropZone integration: addFiles and triggerSend from AgentEditorPanel.
+  const addFilesRef: { current: ((files: FileList | File[]) => Promise<number>) | undefined } = { current: undefined }
+  const addDropDataTransferRef: { current: ((dataTransfer: DataTransfer) => Promise<number>) | undefined } = { current: undefined }
+  const triggerSendRef: { current: (() => void) | undefined } = { current: undefined }
+
+  // Clear refs when no agent is focused to avoid stale closures.
+  createEffect(() => {
+    if (!focusedAgentId()) {
+      addFilesRef.current = undefined
+      addDropDataTransferRef.current = undefined
+      triggerSendRef.current = undefined
+    }
+  })
+
+  const handleFileDrop = async (dataTransfer: DataTransfer, shiftKey: boolean) => {
+    if (addDropDataTransferRef.current) {
+      const addedCount = await addDropDataTransferRef.current(dataTransfer)
+      if (shiftKey && addedCount > 0)
+        triggerSendRef.current?.()
+      return
+    }
+    if (!addFilesRef.current)
+      return
+    const addedCount = await addFilesRef.current(dataTransfer.files)
+    if (shiftKey && addedCount > 0)
+      triggerSendRef.current?.()
+  }
+
   const FocusedAgentEditorPanel: Component<{ containerHeight: number }> = (props) => {
     const agentId = () => focusedAgentId()!
     return (
@@ -413,12 +442,21 @@ export function createTileRenderer(opts: TileRendererOpts) {
         agentId={agentId()}
         agent={agentStore.state.agents.find(a => a.id === agentId())}
         // eslint-disable-next-line solid/reactivity -- event handler, not a tracked scope
-        onSendMessage={async (content) => {
+        onSendMessage={async (content, fileAttachments?: FileAttachment[]) => {
           const id = focusedAgentId()
           if (!id)
             return
           forceScrollToBottomRef.current?.()
           const sendAgent = agentStore.state.agents.find(a => a.id === id)
+
+          // Build optimistic message JSON (attachments metadata only — no binary).
+          const optimisticPayload: Record<string, unknown> = { content }
+          if (fileAttachments && fileAttachments.length > 0) {
+            optimisticPayload.attachments = fileAttachments.map(a => ({
+              filename: a.filename,
+              mime_type: a.mimeType,
+            }))
+          }
 
           // Create an optimistic local message so it appears immediately in the chat.
           const localId = `local-${crypto.randomUUID()}`
@@ -426,7 +464,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
             $typeName: 'leapmux.v1.AgentChatMessage' as const,
             id: localId,
             role: MessageRole.USER,
-            content: new TextEncoder().encode(JSON.stringify({ content })),
+            content: new TextEncoder().encode(JSON.stringify(optimisticPayload)),
             contentCompression: ContentCompression.NONE,
             seq: 0n,
             createdAt: new Date().toISOString(),
@@ -437,15 +475,37 @@ export function createTileRenderer(opts: TileRendererOpts) {
           chatStore.addMessage(id, localMsg)
 
           try {
-            await workerRpc.sendAgentMessage(sendAgent?.workerId ?? '', { agentId: id, content })
+            const protoAttachments = fileAttachments?.map(a => ({
+              filename: a.filename,
+              mimeType: a.mimeType,
+              data: a.data,
+            })) ?? []
+
+            await workerRpc.sendAgentMessage(sendAgent?.workerId ?? '', {
+              agentId: id,
+              content,
+              attachments: protoAttachments,
+            })
             // Keep the optimistic message until the persisted message arrives.
             // chatStore.addMessage() reconciles the matching server echo in place.
           }
           catch {
             chatStore.setMessageError(localId, 'Failed to deliver')
-            chatStore.persistLocalMessage(id, localId, content, 'Failed to deliver')
+            chatStore.persistLocalMessage(
+              id,
+              localId,
+              content,
+              'Failed to deliver',
+              fileAttachments?.map(a => ({
+                filename: a.filename,
+                mime_type: a.mimeType,
+              })),
+            )
           }
         }}
+        addFilesRef={(fn) => { addFilesRef.current = fn }}
+        addDropDataTransferRef={(fn) => { addDropDataTransferRef.current = fn }}
+        triggerSendRef={(fn) => { triggerSendRef.current = fn }}
         disabled={false}
         focusRef={(fn) => { focusEditorRef.current = fn }}
         controlRequests={controlStore.getRequests(agentId())}
@@ -515,5 +575,12 @@ export function createTileRenderer(opts: TileRendererOpts) {
     focusedAgentId,
     FocusedAgentEditorPanel,
     renderTile,
+    handleFileDrop,
+    fileDropDisabled: () => {
+      const agentId = focusedAgentId()
+      if (!agentId)
+        return true
+      return controlStore.getRequests(agentId).length > 0
+    },
   }
 }

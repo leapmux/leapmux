@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { FileAttachment, PendingAttachmentFile } from './attachments'
 import type { EditorContentRef } from './controls/types'
 import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
@@ -8,9 +9,12 @@ import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import SendHorizontal from 'lucide-solid/icons/send-horizontal'
 import Square from 'lucide-solid/icons/square'
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
+import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
+import { showWarnToast } from '~/components/common/Toast'
 import { Tooltip } from '~/components/common/Tooltip'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { formatResetTimestamp, getResetsAt } from '~/lib/rateLimitUtils'
 import { safeGetString, safeRemoveItem, safeSetString } from '~/lib/safeStorage'
@@ -18,6 +22,21 @@ import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store
 import { spinner } from '~/styles/animations.css'
 import { iconSize } from '~/styles/tokens'
 import { useAgentInfoCard } from './AgentInfoCard'
+import {
+  buildAcceptAttribute,
+  clearAttachments,
+  collectDroppedAttachmentFiles,
+  describeUnsupportedAttachment,
+  getAttachments,
+  inferAttachmentDetails,
+  isAttachmentSupported,
+  MAX_TOTAL_ATTACHMENT_SIZE,
+  nextPastedImageName,
+  readFileAsAttachment,
+  setAttachments as setAttachmentsCache,
+  totalAttachmentSize,
+} from './attachments'
+import { AttachmentStrip } from './AttachmentStrip'
 import * as styles from './ChatView.css'
 import { ContextUsageGrid } from './ContextUsageGrid'
 import { ControlRequestActions, ControlRequestContent } from './ControlRequestBanner'
@@ -30,7 +49,7 @@ export interface AgentEditorPanelProps {
   agentId: string
   agent?: AgentInfo
   disabled?: boolean
-  onSendMessage: (content: string) => void
+  onSendMessage: (content: string, attachments?: FileAttachment[]) => void
   focusRef?: (focus: () => void) => void
   controlRequests?: ControlRequest[]
   onControlResponse?: (agentId: string, content: Uint8Array) => Promise<void>
@@ -44,6 +63,12 @@ export interface AgentEditorPanelProps {
   agentWorking?: boolean
   /** Height of the parent container, used for max editor height calculation. */
   containerHeight?: number
+  /** Ref to expose the addFiles function for external callers (e.g. ChatDropZone). */
+  addFilesRef?: (fn: (files: FileList | File[] | PendingAttachmentFile[]) => Promise<number>) => void
+  /** Ref to expose directory-aware drop handling for external callers (e.g. ChatDropZone). */
+  addDropDataTransferRef?: (fn: (dataTransfer: DataTransfer) => Promise<number>) => void
+  /** Ref to expose the triggerSend function for external callers. */
+  triggerSendRef?: (fn: () => void) => void
 }
 
 // Per-agent editor height state
@@ -72,8 +97,88 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   const [isDragging, setIsDragging] = createSignal(false)
   const [_editorContentHeight, setEditorContentHeight] = createSignal(0)
   const [hasContent, setHasContent] = createSignal(false)
+  const [attachments, setAttachments] = createSignal<FileAttachment[]>([])
+  let fileInputRef: HTMLInputElement | undefined
   const { loading: sending, start: startSending } = createLoadingSignal()
   const interruptLoading = createLoadingSignal()
+
+  // Swap attachments on agentId change (same pattern as editor height cache).
+  createEffect(on(() => props.agentId, (agentId, prevAgentId) => {
+    if (prevAgentId) {
+      setAttachmentsCache(prevAgentId, attachments())
+    }
+    setAttachments(agentId ? getAttachments(agentId) : [])
+  }))
+
+  const attachmentCapabilities = createMemo(() =>
+    getProviderPlugin(props.agent?.agentProvider ?? AgentProvider.CLAUDE_CODE)?.attachments)
+  const acceptAttribute = createMemo(() => buildAcceptAttribute(attachmentCapabilities()))
+  const currentProviderLabel = () => agentProviderLabel(props.agent?.agentProvider)
+
+  /** Validate and add files as attachments. */
+  const addFiles = async (files: FileList | File[] | PendingAttachmentFile[], isPastedImage?: boolean): Promise<number> => {
+    const currentAttachments = attachments()
+    let currentSize = totalAttachmentSize(currentAttachments)
+
+    const accepted: FileAttachment[] = []
+    const rejectionReasons = new Map<string, number>()
+    let sizeLimitHit = false
+    // Sequential reads to avoid I/O burst; parallelism isn't needed given the 10 MB cap.
+    for (const item of [...files]) {
+      const file = item instanceof File ? item : item.file
+      if (currentSize + file.size > MAX_TOTAL_ATTACHMENT_SIZE) {
+        sizeLimitHit = true
+        break
+      }
+      const filename = isPastedImage
+        ? `${nextPastedImageName(props.agentId)}.${file.type.split('/')[1] || 'png'}`
+        : (item instanceof File ? undefined : item.filename)
+      const attachment = await readFileAsAttachment(file, filename)
+      const details = inferAttachmentDetails(attachment.filename, attachment.mimeType, attachment.data)
+      if (!isAttachmentSupported(details.kind, attachmentCapabilities())) {
+        const reason = describeUnsupportedAttachment(details.kind, currentProviderLabel())
+        rejectionReasons.set(reason, (rejectionReasons.get(reason) ?? 0) + 1)
+        continue
+      }
+      accepted.push(attachment)
+      currentSize += file.size
+    }
+
+    for (const [reason, count] of rejectionReasons) {
+      showWarnToast(count === 1 ? reason : `${reason} (${count} files)`)
+    }
+    if (sizeLimitHit)
+      showWarnToast('Total attachment size exceeds 10 MB')
+
+    if (accepted.length === 0)
+      return 0
+
+    const updated = [...currentAttachments, ...accepted]
+    setAttachments(updated)
+    if (props.agentId)
+      setAttachmentsCache(props.agentId, updated)
+    return accepted.length
+  }
+
+  const removeAttachment = (id: string) => {
+    const updated = attachments().filter(a => a.id !== id)
+    setAttachments(updated)
+    if (props.agentId)
+      setAttachmentsCache(props.agentId, updated)
+  }
+
+  const clearAllAttachments = () => {
+    setAttachments([])
+    if (props.agentId)
+      clearAttachments(props.agentId)
+  }
+
+  const handleFileInputChange = () => {
+    if (fileInputRef?.files?.length) {
+      addFiles(fileInputRef.files)
+      fileInputRef.value = ''
+    }
+  }
 
   // Per-agent editor min height: reactive signal that switches when agentId changes.
   const [editorMinHeightSignal, setEditorMinHeightSignal] = createSignal<number | undefined>(undefined)
@@ -155,6 +260,11 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     askState,
     () => editorContentRef,
     resetEditorHeight,
+    () => attachments(),
+    (content, fileAttachments) => {
+      props.onSendMessage(content, fileAttachments)
+      clearAllAttachments()
+    },
   )
 
   // Clear interrupt loading when the button hides.
@@ -163,6 +273,31 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       interruptLoading.stop()
     }
   }))
+
+  // Expose addFiles for external callers (e.g. ChatDropZone).
+  // eslint-disable-next-line solid/reactivity -- one-time ref registration, addFiles is stable
+  props.addFilesRef?.(addFiles)
+
+  const addDroppedDataTransfer = async (dataTransfer: DataTransfer): Promise<number> => {
+    const { files, sizeLimitHit } = await collectDroppedAttachmentFiles(dataTransfer, totalAttachmentSize(attachments()))
+    if (sizeLimitHit)
+      showWarnToast('Total attachment size exceeds 10 MB')
+    return addFiles(files)
+  }
+  // eslint-disable-next-line solid/reactivity -- one-time ref registration, handler is stable
+  props.addDropDataTransferRef?.(addDroppedDataTransfer)
+
+  const handlePasteFiles = (files: File[]) => {
+    if (ctrl.activeControlRequest())
+      return
+    addFiles(files, true)
+  }
+
+  const handleDropDataTransfer = (dataTransfer: DataTransfer) => {
+    if (ctrl.activeControlRequest())
+      return
+    void addDroppedDataTransfer(dataTransfer)
+  }
 
   // Agent info card (extracted module)
   const info = useAgentInfoCard(props)
@@ -223,7 +358,11 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   }
 
   return (
-    <div ref={panelRef} class={styles.editorPanelWrapper} data-testid="agent-editor-panel">
+    <div
+      ref={panelRef}
+      class={styles.editorPanelWrapper}
+      data-testid="agent-editor-panel"
+    >
       <div
         class={`${styles.editorResizeHandle} ${isDragging() ? styles.editorResizeHandleActive : ''}`}
         data-testid="editor-resize-handle"
@@ -231,6 +370,18 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         on:dblclick={handleResizeReset}
       />
       <div class={styles.inputArea}>
+        <Show when={!ctrl.activeControlRequest()}>
+          <AttachmentStrip attachments={attachments} onRemove={removeAttachment} />
+        </Show>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept={acceptAttribute()}
+          style={{ display: 'none' }}
+          onChange={handleFileInputChange}
+          data-testid="file-input"
+        />
         <MarkdownEditor
           agentId={props.agentId}
           controlRequestId={ctrl.activeControlRequest()?.requestId}
@@ -255,7 +406,10 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               setAskSelections(prev => (prev[page] ?? []).length > 0 ? { ...prev, [page]: [] } : prev)
             }
           }}
-          sendRef={(fn) => { triggerSend = fn }}
+          sendRef={(fn) => {
+            triggerSend = fn
+            props.triggerSendRef?.(fn)
+          }}
           focusRef={(fn) => {
             editorFocusFn = fn
             props.focusRef?.(fn)
@@ -267,8 +421,11 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             editorReady = true
             tryRegisterEditorRef(props.agentId)
           }}
+          onPasteFiles={!ctrl.activeControlRequest() ? handlePasteFiles : undefined}
+          onDropDataTransfer={!ctrl.activeControlRequest() ? handleDropDataTransfer : undefined}
+          onUploadClick={!ctrl.activeControlRequest() ? () => fileInputRef?.click() : undefined}
           placeholder={ctrl.isAskUserQuestion() ? 'Type a custom answer...' : ctrl.activeControlRequest() ? 'Type a rejection reason...' : undefined}
-          allowEmptySend={!!ctrl.activeControlRequest() && !ctrl.isAskUserQuestion()}
+          allowEmptySend={(!!ctrl.activeControlRequest() && !ctrl.isAskUserQuestion()) || attachments().length > 0}
           banner={
             ctrl.activeControlRequest()
               ? (
@@ -412,7 +569,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                       </Show>
                       <button
                         type="button"
-                        disabled={!hasContent() || props.disabled || sending()}
+                        disabled={(!hasContent() && attachments().length === 0) || props.disabled || sending()}
                         onClick={() => {
                           startSending()
                           triggerSend?.()

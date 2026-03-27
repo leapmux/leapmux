@@ -68,6 +68,20 @@ func TestConsolidateNotificationThread_OrderPreserved(t *testing.T) {
 		result := consolidateNotificationThread(msgs)
 		assert.Equal(t, []string{"settings_changed", "context_cleared"}, types(t, result))
 	})
+
+	t.Run("api_retry then context_cleared", func(t *testing.T) {
+		msgs := []json.RawMessage{
+			raw(t, map[string]interface{}{"type": "system", "subtype": "api_retry", "attempt": 1, "max_retries": 3}),
+			raw(t, map[string]interface{}{"type": "context_cleared"}),
+		}
+		result := consolidateNotificationThread(msgs)
+		require.Len(t, result, 2)
+		first := parseRaw(t, result[0])
+		second := parseRaw(t, result[1])
+		assert.Equal(t, "system", first["type"])
+		assert.Equal(t, "api_retry", first["subtype"])
+		assert.Equal(t, "context_cleared", second["type"])
+	})
 }
 
 func TestConsolidateNotificationThread_Dedup(t *testing.T) {
@@ -94,6 +108,22 @@ func TestConsolidateNotificationThread_Dedup(t *testing.T) {
 		model := changes["model"].(map[string]interface{})
 		assert.Equal(t, "A", model["old"])
 		assert.Equal(t, "C", model["new"])
+	})
+
+	t.Run("api_retry deduped to last occurrence after context_cleared", func(t *testing.T) {
+		msgs := []json.RawMessage{
+			raw(t, map[string]interface{}{"type": "system", "subtype": "api_retry", "attempt": 1, "max_retries": 3}),
+			raw(t, map[string]interface{}{"type": "context_cleared"}),
+			raw(t, map[string]interface{}{"type": "system", "subtype": "api_retry", "attempt": 2, "max_retries": 3}),
+		}
+		result := consolidateNotificationThread(msgs)
+		require.Len(t, result, 2)
+		first := parseRaw(t, result[0])
+		second := parseRaw(t, result[1])
+		assert.Equal(t, "context_cleared", first["type"])
+		assert.Equal(t, "system", second["type"])
+		assert.Equal(t, "api_retry", second["subtype"])
+		assert.EqualValues(t, 2, second["attempt"])
 	})
 }
 

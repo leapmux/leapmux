@@ -10,6 +10,7 @@ import type { PermissionMode } from '~/utils/controlResponse'
 import { createEffect, createSignal, on } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
+import { clearAttachments } from '~/components/chat/attachments'
 import { getProviderPlugin } from '~/components/chat/providers'
 import { CODEX_EXTRA_COLLABORATION_MODE, DEFAULT_CODEX_COLLABORATION_MODE } from '~/components/chat/providers/codex'
 import { optionGroupDefaultValue, optionGroupLabel } from '~/components/chat/settingsShared'
@@ -369,6 +370,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     try {
       const workerId = getAgentWorkerId(agentId)
       props.controlStore.clearAgent(agentId)
+      clearAttachments(agentId)
       if (workerId) {
         await workerRpc.closeAgent(workerId, { agentId, worktreeAction })
       }

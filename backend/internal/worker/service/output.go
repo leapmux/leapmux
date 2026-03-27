@@ -21,10 +21,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
 )
 
-// notifThreadGracePeriod is how long a soft-cleared notification thread
-// remains eligible for merging.
-const notifThreadGracePeriod = time.Second
-
 // --- Span Tracker ---
 
 // ActiveSpan tracks a single open subagent span.
@@ -318,9 +314,8 @@ func resolveConnectorSpanID(spanID, connectorSpanID, parentSpanID string, closin
 
 // notifThreadRef tracks the current notification thread for an agent.
 type notifThreadRef struct {
-	msgID     string
-	seq       int64
-	softClear time.Time // Zero = not soft-cleared
+	msgID string
+	seq   int64
 }
 
 // notifThreadWrapper is the content envelope stored in the DB for notification
@@ -647,10 +642,6 @@ func (s *agentOutputSink) BroadcastNotification(content map[string]interface{}) 
 	s.h.BroadcastNotification(s.agentID, s.agentProvider, content)
 }
 
-func (s *agentOutputSink) SoftClearNotifThread() {
-	s.h.softClearNotifThread(s.agentID)
-}
-
 func (s *agentOutputSink) StorePlanModeToolUse(toolUseID, targetMode string) {
 	s.h.planModeToolUse.Store(toolUseID, targetMode)
 }
@@ -683,17 +674,16 @@ func (h *OutputHandler) notifMutex(agentID string) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
-// softClearNotifThread marks the current notification thread as soft-cleared.
-func (h *OutputHandler) softClearNotifThread(agentID string) {
+// clearNotifThread clears the current notification thread boundary so
+// that the next notification starts a new wrapper.
+func (h *OutputHandler) clearNotifThread(agentID string) {
+	if _, ok := h.lastNotifThread.Load(agentID); !ok {
+		return
+	}
 	mu := h.notifMutex(agentID)
 	mu.Lock()
 	defer mu.Unlock()
-	if ref, ok := h.lastNotifThread.Load(agentID); ok {
-		threadRef := ref.(*notifThreadRef)
-		if threadRef.softClear.IsZero() {
-			threadRef.softClear = time.Now()
-		}
-	}
+	h.lastNotifThread.Delete(agentID)
 }
 
 // persistAndBroadcast persists a message and broadcasts it to watchers.
@@ -738,6 +728,9 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		return err
 	}
 
+	// Any persisted non-notification message breaks notification adjacency.
+	h.clearNotifThread(agentID)
+
 	h.broadcastMessage(agentID, &leapmuxv1.AgentChatMessage{
 		Id:                 msgID,
 		Role:               role,
@@ -768,10 +761,8 @@ func (h *OutputHandler) persistNotificationThreaded(agentID string, agentProvide
 
 	if ref, ok := h.lastNotifThread.Load(agentID); ok {
 		threadRef := ref.(*notifThreadRef)
-		if threadRef.softClear.IsZero() || time.Since(threadRef.softClear) < notifThreadGracePeriod {
-			if err := h.appendToNotificationThread(agentID, agentProvider, threadRef, role, contentJSON); err == nil {
-				return nil
-			}
+		if err := h.appendToNotificationThread(agentID, agentProvider, threadRef, role, contentJSON); err == nil {
+			return nil
 		}
 	}
 

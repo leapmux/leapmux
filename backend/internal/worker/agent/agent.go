@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
@@ -235,7 +236,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 }
 
 // SendInput writes a user message to the agent's stdin.
-func (a *ClaudeCodeAgent) SendInput(content string) error {
+func (a *ClaudeCodeAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -246,9 +247,17 @@ func (a *ClaudeCodeAgent) SendInput(content string) error {
 	msg := UserInputMessage{
 		Type: MessageTypeUser,
 		Message: UserInputContent{
-			Role:    "user",
-			Content: content,
+			Role: "user",
 		},
+	}
+
+	if len(attachments) == 0 {
+		// Plain text — backward compatible string content.
+		msg.Message.Content = content
+	} else {
+		// Multimodal — build a content block array.
+		blocks := buildClaudeContentBlocks(content, classifyAttachments(attachments))
+		msg.Message.Content = blocks
 	}
 
 	data, err := json.Marshal(msg)
@@ -262,6 +271,47 @@ func (a *ClaudeCodeAgent) SendInput(content string) error {
 	}
 
 	return nil
+}
+
+// buildClaudeContentBlocks converts text + classified attachments into Claude
+// Code's content block format: text blocks, image blocks (base64), and document
+// blocks (PDF).
+func buildClaudeContentBlocks(content string, classified []classifiedAttachment) []interface{} {
+	var blocks []interface{}
+	if content != "" {
+		blocks = append(blocks, map[string]interface{}{
+			"type": "text",
+			"text": content,
+		})
+	}
+	for _, attachment := range classified {
+		switch attachment.kind {
+		case attachmentKindText:
+			blocks = append(blocks, map[string]interface{}{
+				"type": "text",
+				"text": buildInlineTextAttachmentBlock(attachment),
+			})
+		case attachmentKindPDF:
+			blocks = append(blocks, map[string]interface{}{
+				"type": "document",
+				"source": map[string]interface{}{
+					"type":       "base64",
+					"media_type": attachment.mimeType,
+					"data":       base64.StdEncoding.EncodeToString(attachment.data),
+				},
+			})
+		default:
+			blocks = append(blocks, map[string]interface{}{
+				"type": "image",
+				"source": map[string]interface{}{
+					"type":       "base64",
+					"media_type": attachment.mimeType,
+					"data":       base64.StdEncoding.EncodeToString(attachment.data),
+				},
+			})
+		}
+	}
+	return blocks
 }
 
 // formatStartupError returns a descriptive error including stderr and

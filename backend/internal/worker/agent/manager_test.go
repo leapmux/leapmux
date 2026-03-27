@@ -17,7 +17,7 @@ type stubProvider struct {
 }
 
 func (s *stubProvider) AgentID() string                                          { return "stub" }
-func (s *stubProvider) SendInput(string) error                                   { return nil }
+func (s *stubProvider) SendInput(string, []*leapmuxv1.Attachment) error          { return nil }
 func (s *stubProvider) SendRawInput([]byte) error                                { return nil }
 func (s *stubProvider) Stop()                                                    {}
 func (s *stubProvider) IsStopped() bool                                          { return false }
@@ -90,7 +90,7 @@ func TestManager_SendInput(t *testing.T) {
 func TestManager_SendInputUnknownAgent(t *testing.T) {
 	m := NewManager(nil)
 
-	assert.Error(t, m.SendInput("nonexistent", "hello"), "expected error for unknown agent")
+	assert.Error(t, m.SendInput("nonexistent", "hello", nil), "expected error for unknown agent")
 }
 
 func TestManager_StopAll(t *testing.T) {

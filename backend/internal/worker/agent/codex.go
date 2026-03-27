@@ -300,7 +300,7 @@ func (a *CodexAgent) tryThreadRequest(
 // SendInput writes a user message to the agent. If a turn is already in
 // progress it uses turn/steer; otherwise it starts a new turn via turn/start
 // with the current model, effort, approval policy and sandbox policy.
-func (a *CodexAgent) SendInput(content string) error {
+func (a *CodexAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
 	// Read shared state under lock, then release before the blocking RPC.
 	a.mu.Lock()
 	if a.stopped {
@@ -322,9 +322,7 @@ func (a *CodexAgent) SendInput(content string) error {
 		return fmt.Errorf("codex agent has no active thread")
 	}
 
-	input := []map[string]interface{}{
-		{"type": "text", "text": content},
-	}
+	input := buildCodexInputBlocks(content, classifyAttachments(attachments))
 
 	// If a turn is active, steer it instead of starting a new one.
 	if turnID != "" {
@@ -340,6 +338,30 @@ func (a *CodexAgent) SendInput(content string) error {
 		collaborationMode: collaborationMode,
 		serviceTier:       serviceTier,
 	})
+}
+
+// buildCodexInputBlocks converts text + classified attachments into Codex's
+// input format. Images use data URI format; text attachments are inlined.
+func buildCodexInputBlocks(content string, classified []classifiedAttachment) []map[string]interface{} {
+	var input []map[string]interface{}
+	if content != "" {
+		input = append(input, map[string]interface{}{"type": "text", "text": content})
+	}
+	for _, attachment := range classified {
+		switch attachment.kind {
+		case attachmentKindText:
+			input = append(input, map[string]interface{}{
+				"type": "text",
+				"text": buildInlineTextAttachmentBlock(attachment),
+			})
+		case attachmentKindImage:
+			input = append(input, map[string]interface{}{
+				"type": "image",
+				"url":  encodeDataURI(attachment.mimeType, attachment.data),
+			})
+		}
+	}
+	return input
 }
 
 // turnSettings groups the per-turn settings snapshotted from agent state.

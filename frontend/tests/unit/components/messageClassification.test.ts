@@ -37,6 +37,17 @@ describe('classifyMessage', () => {
       expect(result.kind).toBe('notification_thread')
     })
 
+    it('classifies wrapper when a notification appears after a hidden lifecycle message', () => {
+      const result = classifyMessage(undefined, {
+        old_seqs: [],
+        messages: [
+          { type: 'system', subtype: 'init' },
+          { type: 'context_cleared' },
+        ],
+      })
+      expect(result.kind).toBe('notification_thread')
+    })
+
     it('classifies wrapper with interrupted first message', () => {
       const result = classifyMessage(undefined, wrapper({ type: 'interrupted' }))
       expect(result.kind).toBe('notification_thread')

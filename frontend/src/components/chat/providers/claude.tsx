@@ -261,6 +261,12 @@ const claudeCodePlugin: ProviderPlugin = {
   defaultEffort: DEFAULT_CLAUDE_EFFORT,
   defaultPermissionMode: 'default',
   bypassPermissionMode: 'bypassPermissions',
+  attachments: {
+    text: true,
+    image: true,
+    pdf: true,
+    binary: false,
+  },
   planMode: {
     currentMode: agent => agent.permissionMode || 'default',
     planValue: 'plan',

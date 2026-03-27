@@ -14,7 +14,7 @@ import ListTodo from 'lucide-solid/icons/list-todo'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import Terminal from 'lucide-solid/icons/terminal'
 import Wrench from 'lucide-solid/icons/wrench'
-import { createEffect, createSignal, For, Show } from 'solid-js'
+import { createEffect, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { TodoList } from '~/components/todo/TodoList'
@@ -25,6 +25,7 @@ import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { inlineFlex } from '~/styles/shared.css'
 import { DiffView, rawDiffToHunks } from './diffUtils'
 import { markdownContent } from './markdownContent.css'
+import { useSharedExpandedState } from './messageRenderers'
 import {
   resultDivider,
   thinkingChevron,
@@ -387,7 +388,7 @@ export function codexWebSearchRenderer(parsed: unknown, _role: MessageRole, cont
   const detail = codexWebSearchActionDetail(action, query)
   const queries = codexWebSearchQueries(action)
   const isStartMessage = actionType === 'other' && !query.trim()
-  const [expanded, setExpanded] = createSignal(false)
+  const [expanded, setExpanded] = useSharedExpandedState(() => context, 'codex-web-search')
 
   if (isStartMessage) {
     return (
@@ -445,7 +446,7 @@ export function codexCommandExecutionRenderer(parsed: unknown, _role: MessageRol
   const hasError = status === 'failed' || (isTerminal && exitCode != null && exitCode !== 0)
   const liveStream = () => context?.commandStream ?? []
   const hasLiveStream = () => liveStream().length > 0
-  const [expanded, setExpanded] = createSignal(false)
+  const [expanded, setExpanded] = useSharedExpandedState(() => context, 'codex-command-execution')
   createEffect(() => {
     if (hasLiveStream())
       setExpanded(true)
@@ -708,7 +709,7 @@ export function codexReasoningRenderer(parsed: unknown, _role: MessageRole, _con
   if (!text())
     return null
 
-  const [expanded, setExpanded] = createSignal(false)
+  const [expanded, setExpanded] = useSharedExpandedState(() => _context, 'codex-reasoning')
 
   return (
     <div>
@@ -756,7 +757,7 @@ export function codexMcpToolCallRenderer(parsed: unknown, _role: MessageRole, co
   const args = item.arguments ? JSON.stringify(item.arguments, null, 2) : ''
   const result = item.result as Record<string, unknown> | undefined
   const error = item.error as Record<string, unknown> | undefined
-  const [expanded, setExpanded] = createSignal(false)
+  const [expanded, setExpanded] = useSharedExpandedState(() => context, 'codex-mcp-tool-call')
 
   const titleEl = codexStatusTitle(server ? `${server}/${tool}` : tool, status)
 
@@ -834,7 +835,7 @@ export function codexCollabAgentToolCallRenderer(parsed: unknown, _role: Message
   const isSpawnAgent = tool === 'spawnAgent'
   const hasPrompt = prompt.trim() !== ''
   const hasCollapsiblePrompt = (isWaitInProgress || isSpawnAgent) && hasPrompt
-  const [expanded, setExpanded] = createSignal(false)
+  const [expanded, setExpanded] = useSharedExpandedState(() => context, 'codex-collab-agent-tool-call')
   const modelLabel = model ? (getCachedSettingsLabel('model', model) || model) : ''
   const effortLabel = reasoningEffort ? (getCachedSettingsLabel('effort', reasoningEffort) || reasoningEffort) : ''
   const spawnAgentDetails = [

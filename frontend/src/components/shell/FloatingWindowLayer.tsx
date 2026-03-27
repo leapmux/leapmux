@@ -2,6 +2,7 @@ import type { Component, JSX } from 'solid-js'
 import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
 import type { createTabStore } from '~/stores/tab.store'
 import { For } from 'solid-js'
+import { ChatDropZone } from '~/components/chat/ChatDropZone'
 import { tabKey } from '~/stores/tab.store'
 import { FloatingWindowContainer } from './FloatingWindowContainer'
 import * as styles from './FloatingWindowContainer.css'
@@ -15,6 +16,8 @@ interface FloatingWindowLayerProps {
   onCloseWindow: (windowId: string) => void
   onGeometryChange?: () => void
   editorPanel?: (windowId: string) => JSX.Element | false
+  onFileDrop?: (dataTransfer: DataTransfer, shiftKey: boolean) => void
+  fileDropDisabled?: boolean
 }
 
 export const FloatingWindowLayer: Component<FloatingWindowLayerProps> = (props) => {
@@ -49,12 +52,14 @@ export const FloatingWindowLayer: Component<FloatingWindowLayerProps> = (props) 
             onClose={() => props.onCloseWindow(win.id)}
             onGeometryChange={props.onGeometryChange}
           >
-            <TilingLayout
-              root={win.layoutRoot}
-              renderTile={props.renderTile}
-              onRatioChange={(splitId, ratios) => props.onRatioChange(win.id, splitId, ratios)}
-            />
-            {props.editorPanel?.(win.id)}
+            <ChatDropZone onDrop={props.onFileDrop} disabled={props.fileDropDisabled}>
+              <TilingLayout
+                root={win.layoutRoot}
+                renderTile={props.renderTile}
+                onRatioChange={(splitId, ratios) => props.onRatioChange(win.id, splitId, ratios)}
+              />
+              {props.editorPanel?.(win.id)}
+            </ChatDropZone>
           </FloatingWindowContainer>
         )}
       </For>

@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -344,7 +345,7 @@ func (a *OpenCodeAgent) configurePrimaryAgents(modes []openCodeModeInfo, current
 // SendInput writes a user prompt to the agent. The ACP prompt RPC blocks until
 // the LLM finishes, so it runs in a goroutine. Streaming output arrives via
 // sessionUpdate notifications meanwhile.
-func (a *OpenCodeAgent) SendInput(content string) error {
+func (a *OpenCodeAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
 	a.mu.Lock()
 	if a.stopped {
 		a.mu.Unlock()
@@ -357,11 +358,10 @@ func (a *OpenCodeAgent) SendInput(content string) error {
 		return fmt.Errorf("opencode agent has no active session")
 	}
 
+	prompt := buildOpenCodePromptBlocks(content, classifyAttachments(attachments))
 	params, _ := json.Marshal(map[string]interface{}{
 		"sessionId": sessionID,
-		"prompt": []map[string]interface{}{
-			{"type": "text", "text": content},
-		},
+		"prompt":    prompt,
 	})
 
 	go func() {
@@ -380,6 +380,41 @@ func (a *OpenCodeAgent) SendInput(content string) error {
 	}()
 
 	return nil
+}
+
+// buildOpenCodePromptBlocks converts text + classified attachments into
+// OpenCode's ACP prompt format.
+func buildOpenCodePromptBlocks(content string, classified []classifiedAttachment) []map[string]interface{} {
+	var prompt []map[string]interface{}
+	if content != "" {
+		prompt = append(prompt, map[string]interface{}{"type": "text", "text": content})
+	}
+	for _, attachment := range classified {
+		if attachment.kind == attachmentKindImage {
+			prompt = append(prompt, map[string]interface{}{
+				"type":     "image",
+				"mimeType": attachment.mimeType,
+				"data":     base64.StdEncoding.EncodeToString(attachment.data),
+				"uri":      attachment.filename,
+			})
+			continue
+		}
+
+		resource := map[string]interface{}{
+			"uri":      attachment.filename,
+			"mimeType": attachment.mimeType,
+		}
+		if attachment.kind == attachmentKindText {
+			resource["text"] = string(attachment.data)
+		} else {
+			resource["blob"] = base64.StdEncoding.EncodeToString(attachment.data)
+		}
+		prompt = append(prompt, map[string]interface{}{
+			"type":     "resource",
+			"resource": resource,
+		})
+	}
+	return prompt
 }
 
 // handlePromptResponse processes the prompt RPC response, persisting the

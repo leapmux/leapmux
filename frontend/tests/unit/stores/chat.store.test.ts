@@ -32,6 +32,25 @@ function makeUserMessage(id: string, seq: bigint, content: string, deliveryError
   })
 }
 
+function makeUserMessageWithAttachments(
+  id: string,
+  seq: bigint,
+  content: string,
+  attachments: Array<{ filename: string, mime_type: string }>,
+  deliveryError = '',
+  agentProvider?: AgentProvider,
+) {
+  return create(AgentChatMessageSchema, {
+    id,
+    role: MessageRole.USER,
+    content: new TextEncoder().encode(JSON.stringify({ content, attachments })),
+    contentCompression: ContentCompression.NONE,
+    seq,
+    deliveryError,
+    agentProvider,
+  })
+}
+
 /** Build a raw assistant message containing a TodoWrite tool_use. */
 function makeTodoWriteMessage(
   id: string,
@@ -202,6 +221,37 @@ describe('createChatStore', () => {
       expect(msgs[0].id).toBe('server-1')
       expect(msgs[0].seq).toBe(5n)
       expect(msgs[0].agentProvider).toBe(AgentProvider.CODEX)
+      dispose()
+    })
+  })
+
+  it('should replace a matching optimistic attachment-only local message with the persisted server message', () => {
+    createRoot((dispose) => {
+      const store = createChatStore()
+      const attachments = [{ filename: 'screenshot.png', mime_type: 'image/png' }]
+      store.addMessage('agent1', makeUserMessageWithAttachments('local-1', 0n, '', attachments, '', AgentProvider.CODEX))
+      store.addMessage('agent1', makeUserMessageWithAttachments('server-1', 5n, '', attachments, '', AgentProvider.CODEX))
+
+      const msgs = store.getMessages('agent1')
+      expect(msgs).toHaveLength(1)
+      expect(msgs[0].id).toBe('server-1')
+      expect(msgs[0].seq).toBe(5n)
+      dispose()
+    })
+  })
+
+  it('should preserve attachments when persisting and reloading a failed local message', () => {
+    createRoot((dispose) => {
+      const store = createChatStore()
+      store.persistLocalMessage('agent1', 'local-1', '', 'Failed to deliver', [
+        { filename: 'failed.png', mime_type: 'image/png' },
+      ])
+
+      store.loadLocalMessages('agent1')
+
+      const msgs = store.getMessages('agent1')
+      expect(msgs).toHaveLength(1)
+      expect(new TextDecoder().decode(msgs[0].content)).toContain('"filename":"failed.png"')
       dispose()
     })
   })

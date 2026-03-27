@@ -186,12 +186,24 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		agentID := r.GetAgentId()
 		content := r.GetContent()
+		attachments := r.GetAttachments()
 
-		// Reject user messages shorter than 2 characters (after trimming
-		// whitespace) to avoid 400 errors from the Anthropic API.
+		// Validate text: at least 1 character when no attachments,
+		// or allow empty text when attachments are present.
 		trimmed := strings.TrimSpace(content)
-		if utf8.RuneCountInString(trimmed) < 2 {
-			sendInvalidArgument(sender, "message must be at least 2 characters")
+		if len(attachments) == 0 && utf8.RuneCountInString(trimmed) < 1 {
+			sendInvalidArgument(sender, "message must be at least 1 character")
+			return
+		}
+
+		// Validate total attachment size (max 10 MB).
+		const maxAttachmentSize = 10 * 1024 * 1024
+		var totalSize int
+		for _, a := range attachments {
+			totalSize += len(a.GetData())
+		}
+		if totalSize > maxAttachmentSize {
+			sendInvalidArgument(sender, "total attachment size exceeds 10 MB")
 			return
 		}
 
@@ -201,12 +213,36 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
+		attachments, err = agent.NormalizeAttachmentsForProvider(
+			leapmuxv1.AgentProvider(dbAgent.AgentProvider),
+			attachments,
+		)
+		if err != nil {
+			sendInvalidArgument(sender, err.Error())
+			return
+		}
+
 		messageID := id.Generate()
 		now := time.Now().UTC()
 
 		// Store user content as a plain JSON object with a "content" field,
 		// which the frontend classifies as user_content and renders as markdown.
-		innerJSON, _ := json.Marshal(map[string]string{"content": content})
+		// When attachments are present, include their metadata (filename + mime_type)
+		// but not the raw binary data (too large for DB storage).
+		var innerJSON []byte
+		if len(attachments) > 0 {
+			type attachmentMeta struct {
+				Filename string `json:"filename"`
+				MimeType string `json:"mime_type"`
+			}
+			meta := make([]attachmentMeta, len(attachments))
+			for i, a := range attachments {
+				meta[i] = attachmentMeta{Filename: a.GetFilename(), MimeType: a.GetMimeType()}
+			}
+			innerJSON, _ = json.Marshal(map[string]interface{}{"content": content, "attachments": meta})
+		} else {
+			innerJSON, _ = json.Marshal(map[string]string{"content": content})
+		}
 		compressed, compressionType := msgcodec.Compress(innerJSON)
 
 		// Persist the user message.
@@ -265,11 +301,11 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			// Agent is not running — try to auto-start it (e.g. after worker restart).
 			if startErr := svc.ensureAgentRunning(agentID); startErr != nil {
 				deliveryError = "agent is not running"
-			} else if sendErr := svc.Agents.SendInput(agentID, content); sendErr != nil {
+			} else if sendErr := svc.Agents.SendInput(agentID, content, attachments); sendErr != nil {
 				slog.Error("failed to send input to agent after auto-start", "agent_id", agentID, "error", sendErr)
 				deliveryError = sendErr.Error()
 			}
-		} else if sendErr := svc.Agents.SendInput(agentID, content); sendErr != nil {
+		} else if sendErr := svc.Agents.SendInput(agentID, content, attachments); sendErr != nil {
 			slog.Error("failed to send input to agent", "agent_id", agentID, "error", sendErr)
 			deliveryError = sendErr.Error()
 		}
@@ -1289,11 +1325,11 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
 	if !svc.Agents.HasAgent(agentID) {
 		if startErr := svc.ensureAgentRunning(agentID); startErr != nil {
 			deliveryError = "agent is not running"
-		} else if sendErr := svc.Agents.SendInput(agentID, content); sendErr != nil {
+		} else if sendErr := svc.Agents.SendInput(agentID, content, nil); sendErr != nil {
 			slog.Error("synthetic user message: failed to send after auto-start", "agent_id", agentID, "error", sendErr)
 			deliveryError = sendErr.Error()
 		}
-	} else if sendErr := svc.Agents.SendInput(agentID, content); sendErr != nil {
+	} else if sendErr := svc.Agents.SendInput(agentID, content, nil); sendErr != nil {
 		slog.Error("synthetic user message: failed to send input", "agent_id", agentID, "error", sendErr)
 		deliveryError = sendErr.Error()
 	}
@@ -1632,7 +1668,7 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 	slog.Info("plan exec: agent restarted successfully", "agent_id", agentID)
 
 	// Send plan content as user message.
-	if err := svc.Agents.SendInput(agentID, planMsg); err != nil {
+	if err := svc.Agents.SendInput(agentID, planMsg, nil); err != nil {
 		slog.Error("plan exec: failed to send plan content", "agent_id", agentID, "error", err)
 	}
 }

@@ -46,6 +46,7 @@ import { renderMarkdown, shikiHighlighter } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { DiffView, rawDiffToHunks } from './diffUtils'
 import { markdownContent } from './markdownContent.css'
+import { useSharedExpandedState } from './messageRenderers'
 import { getAssistantContent, isObject, relativizePath } from './messageUtils'
 import { parseCatNContent, ReadResultView } from './ReadResultView'
 import { RelativeTime } from './RelativeTime'
@@ -321,7 +322,7 @@ function ToolUseMessage(props: {
   context?: RenderContext
 }): JSX.Element {
   const { diffView, toggleDiffView } = useDiffViewToggle(() => props.context?.diffView)
-  const [expanded, setExpanded] = createSignal(false)
+  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, 'tool-use-layout')
   const [commandCopied, setCommandCopied] = createSignal(false)
 
   const title = () => props.detail ?? `${props.toolName}${props.fallbackDisplay || ''}`
@@ -928,7 +929,7 @@ function AgentPromptView(props: {
   text: string
   context?: RenderContext
 }): JSX.Element {
-  const [expanded, setExpanded] = createSignal(false)
+  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, 'agent-prompt')
   const isCollapsed = () => !expanded() && props.text.split('\n').length > COLLAPSED_RESULT_ROWS
 
   return (

@@ -130,8 +130,6 @@ func (a *OpenCodeAgent) handleToolCall(update json.RawMessage) {
 		return
 	}
 
-	a.sink.SoftClearNotifThread()
-
 	spanType := tc.Kind
 	if spanType == "" {
 		spanType = "tool_call"
@@ -162,8 +160,6 @@ func (a *OpenCodeAgent) handleToolCallUpdate(update json.RawMessage) {
 		a.sink.BroadcastStreamChunk(update, tcu.ToolCallID, "tool_call_update")
 
 	case "completed", "failed":
-		a.sink.SoftClearNotifThread()
-
 		a.mu.Lock()
 		a.turnToolUses++
 		a.mu.Unlock()

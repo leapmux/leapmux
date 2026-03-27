@@ -42,6 +42,13 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   const { agentStore, chatStore, terminalStore, tabStore, controlStore, agentSessionStore, settingsLoading } = params
   const [workerOnline, setWorkerOnline] = createSignal(true)
 
+  const isAgentTabVisible = (agentId: string): boolean => {
+    const key = tabKey({ type: TabType.AGENT, id: agentId })
+    if (tabStore.state.activeTabKey === key)
+      return true
+    return Object.values(tabStore.state.tileActiveTabKeys).includes(key)
+  }
+
   // Single unified event stream abort controller.
   let eventStreamAbort: AbortController | null = null
   // Serialized key of the current subscription set to detect changes.
@@ -162,7 +169,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
 
         chatStore.addMessage(agentId, msg)
         if (
-          tabStore.state.activeTabKey !== `agent:${agentId}`
+          !isAgentTabVisible(agentId)
           && chatStore.getMessages(agentId).length > MAX_BACKGROUND_CHAT_MESSAGES
         ) {
           chatStore.trimOldMessages(agentId, MAX_BACKGROUND_CHAT_MESSAGES)
@@ -188,7 +195,15 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // Extract context usage from assistant messages (rehydrates on reconnect).
         if (msg.role === MessageRole.ASSISTANT) {
           try {
-            const usage = extractAssistantUsage(parseMessageContent(msg))
+            const parsed = parseMessageContent(msg)
+            const method = parsed.parentObject?.method as string | undefined
+            if (method === 'thread/started') {
+              // A new Codex thread starts idle. Clear any stale turn ID that may
+              // have been restored from localStorage so the chat can show its
+              // empty state instead of a phantom thinking indicator.
+              agentSessionStore.updateInfo(agentId, { codexTurnId: '' })
+            }
+            const usage = extractAssistantUsage(parsed)
             if (usage) {
               agentSessionStore.updateInfo(agentId, usage as Record<string, unknown>)
             }
@@ -202,6 +217,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           try {
             const meta = extractResultMetadata(parseMessageContent(msg))
             if (meta) {
+              if (msg.agentProvider === AgentProvider.CODEX && meta.subtype === 'turn_completed') {
+                // Codex also clears the active turn ID via ephemeral session info,
+                // but the persisted turn/completed result must be enough to stop
+                // the thinking indicator after reconnect or missed live events.
+                agentSessionStore.updateInfo(agentId, { codexTurnId: '' })
+              }
               if (meta.subtype && catchUpPhase === 'live')
                 params.onTurnEnd?.(agentId, meta.numToolUses)
               if (meta.contextWindow !== undefined) {

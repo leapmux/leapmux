@@ -8,14 +8,16 @@ import type { CommandStreamSegment } from '~/stores/chat.store'
 import Bot from 'lucide-solid/icons/bot'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
-import { createSignal, Show } from 'solid-js'
+import FileIcon from 'lucide-solid/icons/file'
+import FileImageIcon from 'lucide-solid/icons/file-image'
+import { createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { createLogger } from '~/lib/logger'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { markdownContent } from './markdownContent.css'
-import { thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
+import { attachmentItem, attachmentList, thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
 import { isObject } from './messageUtils'
 import {
   agentErrorRenderer,
@@ -88,11 +90,35 @@ export interface RenderContext {
   toolResultExpanded?: boolean
   /** Live streamed Codex span content for command, fileChange, and reasoning items. */
   commandStream?: CommandStreamSegment[]
+  /** Stable per-message UI state getter for remount-sensitive renderers. */
+  getMessageUiState?: (key: string) => boolean
+  /** Stable per-message UI state setter for remount-sensitive renderers. */
+  setMessageUiState?: (key: string, value: boolean) => void
 }
 
 export interface MessageContentRenderer {
   /** Try to render the parsed JSON content. Return null if this renderer doesn't handle it. */
   render: (parsed: unknown, role: MessageRole, context?: RenderContext) => JSX.Element | null
+}
+
+export function useSharedExpandedState(
+  getContext: () => RenderContext | undefined,
+  key: string,
+  initial = false,
+): [() => boolean, (value: boolean | ((prev: boolean) => boolean)) => void] {
+  const [localExpanded, setLocalExpanded] = createSignal(initial)
+  const expanded = () => getContext()?.getMessageUiState?.(key) ?? localExpanded()
+  const setExpanded = (value: boolean | ((prev: boolean) => boolean)) => {
+    const ctx = getContext()
+    const next = typeof value === 'function'
+      ? (value as (prev: boolean) => boolean)(expanded())
+      : value
+    if (ctx?.setMessageUiState)
+      ctx.setMessageUiState(key, next)
+    else
+      setLocalExpanded(next)
+  }
+  return [expanded, setExpanded]
 }
 
 function markdownClass(_role: MessageRole): string {
@@ -123,7 +149,7 @@ const assistantTextRenderer: MessageContentRenderer = {
 
 /** Inner component for thinking messages — owns local expand/collapse state. */
 export function ThinkingMessage(props: { text: string, context?: RenderContext }): JSX.Element {
-  const [expanded, setExpanded] = createSignal(false)
+  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, 'thinking')
 
   return (
     <>
@@ -224,12 +250,44 @@ const userTextContentRenderer: MessageContentRenderer = {
   },
 }
 
-/** Handles user messages: {"content":"..."} */
+/** Handles user messages: {"content":"..."} or {"content":"...", "attachments":[...]} */
 const userContentRenderer: MessageContentRenderer = {
   render(parsed, role, _context) {
     if (!isObject(parsed) || typeof parsed.content !== 'string' || 'type' in parsed)
       return null
-    return <div class={markdownClass(role)} innerHTML={renderMarkdown(parsed.content as string)} />
+    const attachments = Array.isArray((parsed as Record<string, unknown>).attachments)
+      ? (parsed as Record<string, unknown>).attachments as Array<{ filename?: string, mime_type?: string }>
+      : undefined
+    const content = parsed.content as string
+    const hasAttachments = attachments && attachments.length > 0
+    const hasText = content.trim().length > 0
+
+    if (!hasAttachments) {
+      if (!hasText)
+        return null
+      return <div class={markdownClass(role)} innerHTML={renderMarkdown(content)} />
+    }
+
+    return (
+      <>
+        <div class={attachmentList}>
+          <For each={attachments}>
+            {att => (
+              <span class={attachmentItem}>
+                <Icon
+                  icon={att.mime_type?.startsWith('image/') ? FileImageIcon : FileIcon}
+                  size="xs"
+                />
+                {att.filename ?? 'Unnamed file'}
+              </span>
+            )}
+          </For>
+        </div>
+        <Show when={hasText}>
+          <div class={markdownClass(role)} innerHTML={renderMarkdown(content)} />
+        </Show>
+      </>
+    )
   },
 }
 

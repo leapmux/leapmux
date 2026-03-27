@@ -72,6 +72,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // <For> re-renders when new messages are added to the list.
   const [expandedMessages, setExpandedMessages] = createSignal<Set<string>>(new Set())
   const [diffViewOverrides, setDiffViewOverrides] = createSignal<Map<string, 'unified' | 'split'>>(new Map())
+  const [messageUiState, setMessageUiState] = createSignal<Map<string, Map<string, boolean>>>(new Map())
 
   const isMessageExpanded = (messageId: string) => expandedMessages().has(messageId)
   const toggleMessageExpanded = (messageId: string) => {
@@ -89,6 +90,17 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     setDiffViewOverrides((prev) => {
       const next = new Map(prev)
       next.set(messageId, view)
+      return next
+    })
+  }
+  const getMessageUiBool = (messageId: string, key: string): boolean =>
+    messageUiState().get(messageId)?.get(key) ?? false
+  const setMessageUiBool = (messageId: string, key: string, value: boolean) => {
+    setMessageUiState((prev) => {
+      const next = new Map(prev)
+      const current = new Map(next.get(messageId) ?? [])
+      current.set(key, value)
+      next.set(messageId, current)
       return next
     })
   }
@@ -125,6 +137,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   let messageListRef: HTMLDivElement | undefined
   let contentRef: HTMLDivElement | undefined
   const [atBottom, setAtBottom] = createSignal(true)
+  const [preserveBrowsingPosition, setPreserveBrowsingPosition] = createSignal(false)
   let scrollAnimationId: number | null = null
 
   const cancelScrollAnimation = () => {
@@ -141,13 +154,17 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   const checkAtBottom = () => {
     if (!messageListRef || scrollAnimationId !== null)
       return
-    setAtBottom(isAtBottom())
+    const nextAtBottom = isAtBottom()
+    setAtBottom(nextAtBottom)
+    if (nextAtBottom)
+      setPreserveBrowsingPosition(false)
   }
 
   const handleScroll = () => {
     checkAtBottom()
     if (messageListRef && props.hasOlderMessages && !props.fetchingOlder) {
       if (messageListRef.scrollTop < messageListRef.clientHeight / 2) {
+        setPreserveBrowsingPosition(true)
         props.onLoadOlderMessages?.()
       }
     }
@@ -164,11 +181,19 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       return
     const newFirstSeq = msgs[0].seq
     if (anchorFirstSeq !== undefined && newFirstSeq < anchorFirstSeq) {
+      // Loading older history means the user is browsing away from the bottom.
+      // Clear stickiness immediately so a concurrent append cannot snap the
+      // view down before the anchor adjustment rAF runs.
+      setAtBottom(false)
+      setPreserveBrowsingPosition(true)
       const prevHeight = anchorScrollHeight
       requestAnimationFrame(() => {
         if (messageListRef) {
           const delta = messageListRef.scrollHeight - prevHeight
           messageListRef.scrollTop += delta
+          // Programmatic viewport anchoring does not reliably emit a scroll
+          // event, so recompute the sticky-bottom signal explicitly.
+          setAtBottom(isAtBottom())
         }
       })
     }
@@ -191,6 +216,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     if (messageListRef)
       messageListRef.scrollTop = messageListRef.scrollHeight
     setAtBottom(true)
+    setPreserveBrowsingPosition(false)
   }
 
   onMount(() => {
@@ -198,10 +224,52 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     props.scrollToBottomRef?.(forceScrollToBottom)
   })
 
+  let prevMessageCount = 0
+  createEffect(() => {
+    const count = props.messages.length
+    // Messages were only added or updated — no cleanup needed.
+    if (count >= prevMessageCount) {
+      prevMessageCount = count
+      return
+    }
+    prevMessageCount = count
+    const ids = new Set(props.messages.map(msg => msg.id))
+    setMessageUiState((prev) => {
+      if (prev.size === 0)
+        return prev
+      let changed = false
+      const next = new Map<string, Map<string, boolean>>()
+      for (const [messageId, state] of prev) {
+        if (ids.has(messageId))
+          next.set(messageId, state)
+        else
+          changed = true
+      }
+      return changed ? next : prev
+    })
+  })
+
   // Cache classified entries by message ID so that <For> receives stable
   // object references for unchanged messages, avoiding full DOM recreation.
   type ClassifiedEntry = ReturnType<typeof classifyParsedMessage> & { msg: AgentChatMessage }
   const entryCache = new Map<string, ClassifiedEntry>()
+  const hasVisibleMessage = (msg: AgentChatMessage): boolean => {
+    const cached = entryCache.get(msg.id)
+    if (cached && cached.msg.seq === msg.seq)
+      return cached.category.kind !== 'hidden'
+
+    const classified = classifyParsedMessage(msg)
+    if (
+      classified.category.kind === 'hidden'
+      && msg.agentProvider === AgentProvider.CODEX
+      && msg.spanType === 'reasoning'
+      && msg.spanId
+      && (props.getCommandStreamBySpanId?.(msg.spanId).length ?? 0) > 0
+    ) {
+      return true
+    }
+    return classified.category.kind !== 'hidden'
+  }
   const visibleEntries = createMemo(() => {
     const showHidden = prefs.showHiddenMessages()
     const newCache = new Map<string, ClassifiedEntry>()
@@ -232,6 +300,14 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       entryCache.set(k, v)
     return result
   })
+  // Intentionally separate from visibleEntries() — this memo short-circuits
+  // via Array.some() and avoids classifying every message, which is cheaper
+  // than materializing the full visibleEntries() array just to check emptiness.
+  const hasVisibleEntries = createMemo(() => {
+    if (prefs.showHiddenMessages())
+      return props.messages.length > 0
+    return props.messages.some(msg => hasVisibleMessage(msg))
+  })
 
   const scrollToBottom = () => {
     if (!messageListRef)
@@ -248,6 +324,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         messageListRef.scrollTop = messageListRef.scrollHeight
         scrollAnimationId = null
         setAtBottom(true)
+        setPreserveBrowsingPosition(false)
         return
       }
       const step = remaining > 48 ? remaining * 0.5 : remaining * 0.4
@@ -258,21 +335,30 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     scrollAnimationId = requestAnimationFrame(animate)
   }
 
+  let autoScrollFirstSeq: bigint | undefined
+
   // Auto-scroll the message list to the bottom when new content arrives
   // and the user is already at (or near) the bottom.
   // messageVersion covers thread merges (tool_use_result merged into an
   // existing tool_use) which don't change messages.length.
   createEffect(() => {
+    const firstSeq = props.messages[0]?.seq
+    const prependedOlderMessages = autoScrollFirstSeq !== undefined
+      && firstSeq !== undefined
+      && firstSeq < autoScrollFirstSeq
+    autoScrollFirstSeq = firstSeq
     void props.messages.length
     void props.messageVersion
     void props.streamingText
     void props.agentWorking
+    if (prependedOlderMessages)
+      return
     // Use the atBottom signal (not a fresh DOM check) because by the time
     // this effect runs, SolidJS has already updated the DOM — scrollHeight
     // has grown but scrollTop hasn't, so a fresh measurement would wrongly
     // conclude the user is no longer at the bottom. The signal captures
     // the user's scroll position from before the content changed.
-    if (untrack(atBottom) && messageListRef) {
+    if (untrack(atBottom) && !untrack(preserveBrowsingPosition) && messageListRef) {
       // Skip scroll when hidden (e.g. inactive tab with display:none).
       // The ResizeObserver will scroll to bottom when the tab becomes visible.
       if (messageListRef.clientHeight === 0)
@@ -350,13 +436,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
             return
           }
         }
-        if (isAtBottom()) {
-          messageListRef.scrollTop = messageListRef.scrollHeight
-          setAtBottom(true)
-        }
-        else {
-          checkAtBottom()
-        }
+        checkAtBottom()
       })
     }
     const observer = new ResizeObserver(handleResize)
@@ -375,7 +455,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       <div class={styles.messageListWrapper}>
         <div ref={messageListRef} class={styles.messageList} onScroll={handleScroll}>
           <Show
-            when={props.messages.length > 0 || props.streamingText || props.agentWorking}
+            when={hasVisibleEntries() || props.streamingText || props.agentWorking}
             fallback={<div class={styles.emptyChat}>Send a message to start</div>}
           >
             <Show when={props.fetchingOlder}>
@@ -420,6 +500,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                         onToggleToolResultExpanded={() => toggleMessageExpanded(msg.id)}
                         localDiffView={getLocalDiffView(msg.id)}
                         onSetLocalDiffView={view => setLocalDiffView(msg.id, view)}
+                        getMessageUiState={key => getMessageUiBool(msg.id, key)}
+                        setMessageUiState={(key, value) => setMessageUiBool(msg.id, key, value)}
                       />
                     )
 
@@ -464,11 +546,10 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                   </Show>
                 </Show>
                 <ThinkingIndicator
-                  visible={props.agentWorking && !props.streamingText}
+                  visible={props.agentWorking}
                   onExpandTick={() => {
-                    if (isAtBottom()) {
+                    if (isAtBottom())
                       messageListRef!.scrollTop = messageListRef!.scrollHeight
-                    }
                   }}
                 />
               </div>

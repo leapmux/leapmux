@@ -2,7 +2,6 @@ package terminal
 
 import (
 	"fmt"
-	"log/slog"
 	"sync"
 )
 
@@ -70,11 +69,6 @@ func (m *Manager) StartTerminal(opts Options, outputFn OutputHandler, exitFn Exi
 	// The entry is removed by RemoveTerminal (explicit close).
 	go func() {
 		exitCode := t.Wait()
-
-		slog.Info("terminal exited (kept in map)",
-			"terminal_id", opts.ID,
-			"exit_code", exitCode,
-		)
 
 		if exitFn != nil {
 			exitFn(opts.ID, exitCode)

@@ -168,6 +168,12 @@ function classifyOpenCodeMessage(
 
 const opencodePlugin: ProviderPlugin = {
   defaultModel: DEFAULT_OPENCODE_MODEL || undefined,
+  attachments: {
+    text: true,
+    image: true,
+    pdf: true,
+    binary: true,
+  },
   planMode: {
     currentMode: agent => agent.extraSettings?.[OPENCODE_EXTRA_PRIMARY_AGENT] || DEFAULT_OPENCODE_PRIMARY_AGENT,
     planValue: OPENCODE_PLAN_PRIMARY_AGENT,

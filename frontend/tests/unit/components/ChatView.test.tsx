@@ -1,6 +1,7 @@
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { CommandStreamSegment } from '~/stores/chat.store'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { ChatView } from '~/components/chat/ChatView'
 import { PreferencesProvider } from '~/context/PreferencesContext'
@@ -202,11 +203,41 @@ function makeCodexWebSearchMessage(params: {
   } as AgentChatMessage
 }
 
+function makeCodexHiddenLifecycleMessage(id: string = 'codex-hidden'): AgentChatMessage {
+  return {
+    $typeName: 'leapmux.v1.AgentChatMessage',
+    id,
+    role: MessageRole.LEAPMUX,
+    content: new TextEncoder().encode(JSON.stringify({
+      old_seqs: [],
+      messages: [
+        {
+          method: 'thread/started',
+          params: { threadId: 'thread-1' },
+        },
+      ],
+    })),
+    contentCompression: ContentCompression.NONE,
+    seq: 1n,
+    createdAt: '',
+    agentProvider: AgentProvider.CODEX,
+  } as AgentChatMessage
+}
+
 describe('chatView', () => {
   it('renders empty state when no messages', () => {
     render(() => (
       <PreferencesProvider>
         <ChatView messages={[]} streamingText="" />
+      </PreferencesProvider>
+    ))
+    expect(screen.getByText('Send a message to start')).toBeTruthy()
+  })
+
+  it('renders empty state when all messages are hidden', () => {
+    render(() => (
+      <PreferencesProvider>
+        <ChatView messages={[makeCodexHiddenLifecycleMessage()]} streamingText="" />
       </PreferencesProvider>
     ))
     expect(screen.getByText('Send a message to start')).toBeTruthy()
@@ -266,6 +297,243 @@ describe('chatView', () => {
 
     expect(screen.getByText('building...')).toBeTruthy()
     expect(screen.getByText('> y')).toBeTruthy()
+  })
+
+  it('preserves expanded codex reasoning state when the message updates and new messages are appended', async () => {
+    const initialMessages = [
+      makeCodexReasoningMessage({
+        id: 'reasoning-1',
+        seq: 1n,
+        spanId: 'reasoning-span-1',
+        summary: ['Initial reasoning summary'],
+      }),
+    ]
+    let setMessages!: (messages: AgentChatMessage[]) => void
+
+    render(() => {
+      const [messages, updateMessages] = createSignal(initialMessages)
+      setMessages = updateMessages
+      return (
+        <PreferencesProvider>
+          <ChatView messages={messages()} streamingText="" />
+        </PreferencesProvider>
+      )
+    })
+
+    fireEvent.click(screen.getByText('Thinking'))
+    expect(screen.getByText('Initial reasoning summary')).toBeTruthy()
+
+    setMessages([
+      makeCodexReasoningMessage({
+        id: 'reasoning-1',
+        seq: 2n,
+        spanId: 'reasoning-span-1',
+        summary: ['Initial reasoning summary'],
+      }),
+      makeMessage('assistant', 'Follow-up message', 'assistant-2'),
+    ])
+
+    await waitFor(() => expect(screen.getByText('Initial reasoning summary')).toBeTruthy())
+    expect(screen.getByText('Follow-up message')).toBeTruthy()
+  })
+
+  it('does not snap to bottom after older messages are prepended while browsing history', async () => {
+    const initialMessages = [
+      makeMessage('assistant', 'Newest 1', 'msg-100'),
+      makeMessage('assistant', 'Newest 2', 'msg-101'),
+    ].map((message, index) => ({ ...message, seq: BigInt(100 + index) }))
+    let setMessages!: (messages: AgentChatMessage[]) => void
+
+    const view = render(() => {
+      const [messages, updateMessages] = createSignal(initialMessages)
+      setMessages = updateMessages
+      return (
+        <PreferencesProvider>
+          <ChatView messages={messages()} streamingText="" hasOlderMessages={true} />
+        </PreferencesProvider>
+      )
+    })
+
+    const chatContainer = screen.getByTestId('chat-container')
+    const messageList = chatContainer.firstElementChild?.firstElementChild as HTMLDivElement
+
+    let scrollTop = 0
+    let scrollHeight = 2000
+    const clientHeight = 500
+    Object.defineProperty(messageList, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value
+      },
+    })
+    Object.defineProperty(messageList, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    })
+    Object.defineProperty(messageList, 'clientHeight', {
+      configurable: true,
+      get: () => clientHeight,
+    })
+
+    setMessages([...initialMessages])
+    await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)))
+
+    scrollTop = 50
+    fireEvent.scroll(messageList)
+
+    scrollHeight = 2600
+    setMessages([
+      { ...makeMessage('assistant', 'Older 1', 'msg-050'), seq: 50n },
+      { ...makeMessage('assistant', 'Older 2', 'msg-051'), seq: 51n },
+      ...initialMessages,
+    ])
+
+    await waitFor(() => expect(scrollTop).toBe(650))
+
+    scrollHeight = 2700
+    setMessages([
+      { ...makeMessage('assistant', 'Older 1', 'msg-050'), seq: 50n },
+      { ...makeMessage('assistant', 'Older 2', 'msg-051'), seq: 51n },
+      ...initialMessages,
+      { ...makeMessage('assistant', 'Newest 3', 'msg-102'), seq: 102n },
+    ])
+
+    await waitFor(() => expect(view.container.textContent).toContain('Newest 3'))
+    expect(scrollTop).toBe(650)
+  })
+
+  it('does not snap to bottom when a new message arrives before older-message anchoring finishes', async () => {
+    const initialMessages = [
+      makeMessage('assistant', 'Newest 1', 'msg-100'),
+      makeMessage('assistant', 'Newest 2', 'msg-101'),
+    ].map((message, index) => ({ ...message, seq: BigInt(100 + index) }))
+    let setMessages!: (messages: AgentChatMessage[]) => void
+
+    const view = render(() => {
+      const [messages, updateMessages] = createSignal(initialMessages)
+      setMessages = updateMessages
+      return (
+        <PreferencesProvider>
+          <ChatView messages={messages()} streamingText="" hasOlderMessages={true} />
+        </PreferencesProvider>
+      )
+    })
+
+    const chatContainer = screen.getByTestId('chat-container')
+    const messageList = chatContainer.firstElementChild?.firstElementChild as HTMLDivElement
+
+    let scrollTop = 0
+    let scrollHeight = 2000
+    const clientHeight = 500
+    Object.defineProperty(messageList, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value
+      },
+    })
+    Object.defineProperty(messageList, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    })
+    Object.defineProperty(messageList, 'clientHeight', {
+      configurable: true,
+      get: () => clientHeight,
+    })
+
+    setMessages([...initialMessages])
+    await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)))
+
+    scrollTop = 50
+    fireEvent.scroll(messageList)
+
+    scrollHeight = 2700
+    setMessages([
+      { ...makeMessage('assistant', 'Older 1', 'msg-050'), seq: 50n },
+      { ...makeMessage('assistant', 'Older 2', 'msg-051'), seq: 51n },
+      ...initialMessages,
+      { ...makeMessage('assistant', 'Newest 3', 'msg-102'), seq: 102n },
+    ])
+
+    await waitFor(() => expect(view.container.textContent).toContain('Newest 3'))
+    await waitFor(() => expect(scrollTop).toBe(750))
+  })
+
+  it('does not snap to bottom after older loading finishes while the user is still browsing history', async () => {
+    const initialMessages = [
+      makeMessage('assistant', 'Newest 1', 'msg-100'),
+      makeMessage('assistant', 'Newest 2', 'msg-101'),
+    ].map((message, index) => ({ ...message, seq: BigInt(100 + index) }))
+    let setMessages!: (messages: AgentChatMessage[]) => void
+    let setFetchingOlder!: (value: boolean) => void
+
+    const view = render(() => {
+      const [messages, updateMessages] = createSignal(initialMessages)
+      const [fetchingOlder, updateFetchingOlder] = createSignal(false)
+      setMessages = updateMessages
+      setFetchingOlder = updateFetchingOlder
+      return (
+        <PreferencesProvider>
+          <ChatView
+            messages={messages()}
+            streamingText=""
+            hasOlderMessages={true}
+            fetchingOlder={fetchingOlder()}
+          />
+        </PreferencesProvider>
+      )
+    })
+
+    const chatContainer = screen.getByTestId('chat-container')
+    const messageList = chatContainer.firstElementChild?.firstElementChild as HTMLDivElement
+
+    let scrollTop = 0
+    let scrollHeight = 2000
+    const clientHeight = 500
+    Object.defineProperty(messageList, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value
+      },
+    })
+    Object.defineProperty(messageList, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    })
+    Object.defineProperty(messageList, 'clientHeight', {
+      configurable: true,
+      get: () => clientHeight,
+    })
+
+    setMessages([...initialMessages])
+    await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)))
+
+    scrollTop = 50
+    fireEvent.scroll(messageList)
+    setFetchingOlder(true)
+
+    scrollHeight = 2600
+    setMessages([
+      { ...makeMessage('assistant', 'Older 1', 'msg-050'), seq: 50n },
+      { ...makeMessage('assistant', 'Older 2', 'msg-051'), seq: 51n },
+      ...initialMessages,
+    ])
+
+    await waitFor(() => expect(scrollTop).toBe(650))
+
+    setFetchingOlder(false)
+    scrollHeight = 2700
+    setMessages([
+      { ...makeMessage('assistant', 'Older 1', 'msg-050'), seq: 50n },
+      { ...makeMessage('assistant', 'Older 2', 'msg-051'), seq: 51n },
+      ...initialMessages,
+      { ...makeMessage('assistant', 'Newest 3', 'msg-102'), seq: 102n },
+    ])
+
+    await waitFor(() => expect(view.container.textContent).toContain('Newest 3'))
+    expect(scrollTop).toBe(650)
   })
 
   it('keeps both codex commandExecution start and completed messages in history', () => {

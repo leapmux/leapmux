@@ -11,6 +11,15 @@ import './opencode'
 describe('opencode classify', () => {
   const plugin = getProviderPlugin(AgentProvider.OPENCODE)!
 
+  it('exposes attachment capabilities', () => {
+    expect(plugin.attachments).toEqual({
+      text: true,
+      image: true,
+      pdf: true,
+      binary: true,
+    })
+  })
+
   it('classifies agent_message_chunk as assistant_text', () => {
     const parent = {
       sessionUpdate: 'agent_message_chunk',

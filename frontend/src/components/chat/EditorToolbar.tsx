@@ -26,6 +26,7 @@ import Pilcrow from 'lucide-solid/icons/pilcrow'
 import SquareCode from 'lucide-solid/icons/square-code'
 import Strikethrough from 'lucide-solid/icons/strikethrough'
 import TextQuote from 'lucide-solid/icons/text-quote'
+import Upload from 'lucide-solid/icons/upload'
 import { createUniqueId, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
@@ -65,6 +66,7 @@ export interface EditorToolbarProps {
   handleLinkRemove: () => void
   handleCodeBlockClick: () => void
   handleInlineCodeClick: () => void
+  onUploadClick?: () => void
 }
 
 export const EditorToolbar: Component<EditorToolbarProps> = (props) => {
@@ -464,6 +466,15 @@ export const EditorToolbar: Component<EditorToolbarProps> = (props) => {
           </button>
         </form>
       </div>
+      <Show when={props.onUploadClick}>
+        <IconButton
+          icon={Upload}
+          size="md"
+          data-testid="toolbar-upload"
+          title="Upload file"
+          onClick={() => props.onUploadClick?.()}
+        />
+      </Show>
       <span class={styles.enterModeWrapper}>
         <Tooltip text={enterModeTitle()}>
           <button

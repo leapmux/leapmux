@@ -153,6 +153,10 @@ interface MessageBubbleProps {
   localDiffView?: 'unified' | 'split'
   /** Set the per-message diff view override. */
   onSetLocalDiffView?: (view: 'unified' | 'split') => void
+  /** Stable per-message UI state getter for remount-sensitive renderers. */
+  getMessageUiState?: (key: string) => boolean
+  /** Stable per-message UI state setter for remount-sensitive renderers. */
+  setMessageUiState?: (key: string, value: boolean) => void
 }
 
 export const MessageBubble: Component<MessageBubbleProps> = (props) => {
@@ -449,6 +453,8 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     spanId: props.message.spanId,
     toolResultExpanded: toolResultExpanded(),
     commandStream: props.commandStream,
+    getMessageUiState: props.getMessageUiState,
+    setMessageUiState: props.setMessageUiState,
   })
 
   // Extract assistant text for the reply button.
