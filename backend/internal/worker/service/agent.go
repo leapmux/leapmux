@@ -168,7 +168,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, r.GetWorktreeAction())
+		svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
 		sendProtoResponse(sender, &leapmuxv1.CloseAgentResponse{})
 	})
 

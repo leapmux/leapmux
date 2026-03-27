@@ -680,60 +680,41 @@ func (svc *Context) getTabWorkingDir(ctx context.Context, tabType leapmuxv1.TabT
 }
 
 func (svc *Context) countOtherNonWorktreeTabsOnBranch(ctx context.Context, tabType leapmuxv1.TabType, tabID, repoRoot, branchName string) (int, error) {
-	count := 0
-	agentRows, err := svc.DB.QueryContext(ctx, `SELECT id, working_dir FROM agents WHERE closed_at IS NULL`)
+	countMatching := func(query string, skipType leapmuxv1.TabType) (int, error) {
+		rows, err := svc.DB.QueryContext(ctx, query)
+		if err != nil {
+			return 0, err
+		}
+		defer func() {
+			if closeErr := rows.Close(); closeErr != nil {
+				slog.Warn("failed to close row iterator", "error", closeErr)
+			}
+		}()
+		n := 0
+		for rows.Next() {
+			var id, workingDir string
+			if err := rows.Scan(&id, &workingDir); err != nil {
+				return 0, err
+			}
+			if tabType == skipType && id == tabID {
+				continue
+			}
+			if matches, err := tabMatchesBranch(ctx, workingDir, repoRoot, branchName); err == nil && matches {
+				n++
+			}
+		}
+		return n, nil
+	}
+
+	agents, err := countMatching(`SELECT id, working_dir FROM agents WHERE closed_at IS NULL`, leapmuxv1.TabType_TAB_TYPE_AGENT)
 	if err != nil {
 		return 0, err
 	}
-	defer func() {
-		if closeErr := agentRows.Close(); closeErr != nil {
-			slog.Warn("failed to close agent row iterator", "error", closeErr)
-		}
-	}()
-	for agentRows.Next() {
-		var id, workingDir string
-		if err := agentRows.Scan(&id, &workingDir); err != nil {
-			return 0, err
-		}
-		if tabType == leapmuxv1.TabType_TAB_TYPE_AGENT && id == tabID {
-			continue
-		}
-		matches, err := tabMatchesBranch(ctx, workingDir, repoRoot, branchName)
-		if err != nil {
-			continue
-		}
-		if matches {
-			count++
-		}
-	}
-
-	terminalRows, err := svc.DB.QueryContext(ctx, `SELECT id, working_dir FROM terminals WHERE closed_at IS NULL`)
+	terminals, err := countMatching(`SELECT id, working_dir FROM terminals WHERE closed_at IS NULL`, leapmuxv1.TabType_TAB_TYPE_TERMINAL)
 	if err != nil {
 		return 0, err
 	}
-	defer func() {
-		if closeErr := terminalRows.Close(); closeErr != nil {
-			slog.Warn("failed to close terminal row iterator", "error", closeErr)
-		}
-	}()
-	for terminalRows.Next() {
-		var id, workingDir string
-		if err := terminalRows.Scan(&id, &workingDir); err != nil {
-			return 0, err
-		}
-		if tabType == leapmuxv1.TabType_TAB_TYPE_TERMINAL && id == tabID {
-			continue
-		}
-		matches, err := tabMatchesBranch(ctx, workingDir, repoRoot, branchName)
-		if err != nil {
-			continue
-		}
-		if matches {
-			count++
-		}
-	}
-
-	return count, nil
+	return agents + terminals, nil
 }
 
 func tabMatchesBranch(ctx context.Context, workingDir, repoRoot, branchName string) (bool, error) {

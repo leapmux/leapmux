@@ -1,6 +1,6 @@
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
-import type { LastTabCloseTarget } from '~/generated/leapmux/v1/git_pb'
+import type { InspectLastTabCloseResponse } from '~/generated/leapmux/v1/git_pb'
 import type { createAgentStore } from '~/stores/agent.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
@@ -49,24 +49,11 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
 
   const [closingTabKeys, setClosingTabKeys] = createSignal<Set<string>>(new Set())
 
-  const [lastTabConfirm, setLastTabConfirm] = createSignal<{
-    target: LastTabCloseTarget
-    repoRoot: string
-    worktreePath: string
-    worktreeId: string
-    branchName: string
-    diffAdded: number
-    diffDeleted: number
-    diffUntracked: number
-    unpushedCommitCount: number
-    hasUncommittedChanges: boolean
-    upstreamExists: boolean
-    remoteBranchMissing: boolean
-    originExists: boolean
-    canPush: boolean
-    pushLabel: string
-    resolve: (choice: 'cancel' | 'push' | 'schedule-delete' | 'close-anyway') => void
-  } | null>(null)
+  type LastTabCloseChoice = 'cancel' | 'push' | 'schedule-delete' | 'close-anyway'
+
+  const [lastTabConfirm, setLastTabConfirm] = createSignal<
+    (InspectLastTabCloseResponse & { resolve: (choice: LastTabCloseChoice) => void }) | null
+  >(null)
 
   let isTabEditing: () => boolean = () => false
 
@@ -120,26 +107,9 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     }
   }
 
-  const askLastTabConfirmation = (status: NonNullable<Awaited<ReturnType<typeof workerRpc.inspectLastTabClose>>>): Promise<'cancel' | 'push' | 'schedule-delete' | 'close-anyway'> => {
+  const askLastTabConfirmation = (status: InspectLastTabCloseResponse): Promise<LastTabCloseChoice> => {
     return new Promise((resolve) => {
-      setLastTabConfirm({
-        target: status.target,
-        repoRoot: status.repoRoot,
-        worktreePath: status.worktreePath,
-        worktreeId: status.worktreeId,
-        branchName: status.branchName,
-        diffAdded: status.diffAdded,
-        diffDeleted: status.diffDeleted,
-        diffUntracked: status.diffUntracked,
-        unpushedCommitCount: status.unpushedCommitCount,
-        hasUncommittedChanges: status.hasUncommittedChanges,
-        upstreamExists: status.upstreamExists,
-        remoteBranchMissing: status.remoteBranchMissing,
-        originExists: status.originExists,
-        canPush: status.canPush,
-        pushLabel: status.pushLabel || 'Push',
-        resolve,
-      })
+      setLastTabConfirm({ ...status, resolve })
     })
   }
 

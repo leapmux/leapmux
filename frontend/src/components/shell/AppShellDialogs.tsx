@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import type { useAgentOperations } from './useAgentOperations'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { InspectLastTabCloseResponse } from '~/generated/leapmux/v1/git_pb'
 import type { KeyPinDecision } from '~/lib/channel'
 import type { createAgentStore } from '~/stores/agent.store'
 import type { createLayoutStore } from '~/stores/layout.store'
@@ -22,23 +23,10 @@ import { NewTerminalDialog } from './NewTerminalDialog'
 import { ResumeSessionDialog } from './ResumeSessionDialog'
 import { nextTabNumber } from './useAgentOperations'
 
-interface LastTabConfirmState {
-  target: LastTabCloseTarget
-  repoRoot: string
-  worktreePath: string
-  worktreeId: string
-  branchName: string
-  diffAdded: number
-  diffDeleted: number
-  diffUntracked: number
-  unpushedCommitCount: number
-  hasUncommittedChanges: boolean
-  upstreamExists: boolean
-  remoteBranchMissing: boolean
-  originExists: boolean
-  canPush: boolean
-  pushLabel: string
-  resolve: (choice: 'cancel' | 'push' | 'schedule-delete' | 'close-anyway') => void
+type LastTabCloseChoice = 'cancel' | 'push' | 'schedule-delete' | 'close-anyway'
+
+interface LastTabConfirmState extends InspectLastTabCloseResponse {
+  resolve: (choice: LastTabCloseChoice) => void
 }
 
 export interface KeyPinConfirmState {
@@ -257,12 +245,10 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
                       </>
                     )}
                   >
-                    <>
-                      You are closing the last tab for worktree
-                      {' '}
-                      <code>{confirm().worktreePath}</code>
-                      .
-                    </>
+                    You are closing the last tab for worktree
+                    {' '}
+                    <code>{confirm().worktreePath}</code>
+                    .
                   </Show>
                 </p>
                 <p>
@@ -297,7 +283,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
                 </button>
                 <Show when={confirm().canPush}>
                   <button type="button" onClick={handlePush}>
-                    {confirm().pushLabel}
+                    {confirm().pushLabel || 'Push'}
                   </button>
                 </Show>
                 <Show when={confirm().target === LastTabCloseTarget.WORKTREE}>

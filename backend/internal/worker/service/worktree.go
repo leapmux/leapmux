@@ -157,7 +157,7 @@ func (svc *Context) removeWorktreeFromDisk(wt db.Worktree, force bool) {
 
 // unregisterTabAndCleanup removes a tab's worktree association but does not
 // delete the worktree. Deletion now requires an explicit schedule RPC.
-func (svc *Context) unregisterTabAndCleanup(tabType leapmuxv1.TabType, tabID string, _ leapmuxv1.WorktreeAction) {
+func (svc *Context) unregisterTabAndCleanup(tabType leapmuxv1.TabType, tabID string) {
 	ctx := bgCtx()
 
 	// Find the worktree for this tab.
