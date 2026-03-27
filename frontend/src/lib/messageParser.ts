@@ -16,7 +16,7 @@ export interface ParsedMessageContent {
   topLevel: Record<string, unknown> | null
   /** The first (parent) inner message object, or undefined. */
   parentObject: Record<string, unknown> | undefined
-  /** The notification wrapper envelope if this is a LEAPMUX notification, null otherwise. */
+  /** The notification wrapper envelope if this is a notification thread, null otherwise. */
   wrapper: { old_seqs: number[], messages: unknown[] } | null
 }
 
@@ -31,8 +31,9 @@ const EMPTY_PARSED: ParsedMessageContent = {
  * Decompress and parse an AgentChatMessage's content in a single pass.
  * Never throws -- returns safe defaults on any failure.
  *
- * LEAPMUX notification messages use a wrapper format:
+ * Notification-threaded messages use a wrapper format:
  *   {"old_seqs": [...], "messages": [{...}, ...]}
+ * Both LEAPMUX and SYSTEM role messages may use this format.
  * All other messages are stored as raw JSON (no wrapper).
  */
 export function parseMessageContent(message: AgentChatMessage): ParsedMessageContent {
@@ -43,8 +44,10 @@ export function parseMessageContent(message: AgentChatMessage): ParsedMessageCon
   try {
     const obj = JSON.parse(text)
 
-    // LEAPMUX notifications use the wrapper format for consolidation.
-    if (message.role === MessageRole.LEAPMUX && obj?.messages && Array.isArray(obj.messages)) {
+    // Notification-threaded messages use the wrapper format for consolidation.
+    // Both LEAPMUX and SYSTEM role messages may use this format (e.g. api_retry,
+    // compact_boundary, microcompact_boundary are stored with SYSTEM role).
+    if ((message.role === MessageRole.LEAPMUX || message.role === MessageRole.SYSTEM) && obj?.messages && Array.isArray(obj.messages)) {
       const wrapper = { old_seqs: obj.old_seqs ?? [], messages: obj.messages }
 
       if (obj.messages.length === 0)

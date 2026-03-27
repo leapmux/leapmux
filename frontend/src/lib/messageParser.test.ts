@@ -41,6 +41,16 @@ describe('parseMessageContent', () => {
     expect(result.rawText).toBeTruthy()
   })
 
+  it('parses SYSTEM notification wrapper content (e.g. api_retry)', () => {
+    const inner = { type: 'system', subtype: 'api_retry', attempt: 2, max_retries: 10 }
+    const msg = makeMsg(MessageRole.SYSTEM, wrap(inner))
+    const result = parseMessageContent(msg)
+
+    expect(result.wrapper).not.toBeNull()
+    expect(result.wrapper!.messages).toEqual([inner])
+    expect(result.parentObject).toEqual(inner)
+  })
+
   it('handles empty LEAPMUX wrapper messages array', () => {
     const msg = makeMsg(MessageRole.LEAPMUX, wrap())
     const result = parseMessageContent(msg)

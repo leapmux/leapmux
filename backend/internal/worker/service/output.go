@@ -25,6 +25,10 @@ import (
 // remains eligible for merging.
 const notifThreadGracePeriod = time.Second
 
+// notifThreadRetryGracePeriod is a longer grace period for api_retry
+// notifications, so consecutive retries consolidate into a single thread.
+const notifThreadRetryGracePeriod = time.Minute
+
 // --- Span Tracker ---
 
 // ActiveSpan tracks a single open subagent span.
@@ -768,7 +772,11 @@ func (h *OutputHandler) persistNotificationThreaded(agentID string, agentProvide
 
 	if ref, ok := h.lastNotifThread.Load(agentID); ok {
 		threadRef := ref.(*notifThreadRef)
-		if threadRef.softClear.IsZero() || time.Since(threadRef.softClear) < notifThreadGracePeriod {
+		grace := notifThreadGracePeriod
+		if isAPIRetryContent(contentJSON) {
+			grace = notifThreadRetryGracePeriod
+		}
+		if threadRef.softClear.IsZero() || time.Since(threadRef.softClear) < grace {
 			if err := h.appendToNotificationThread(agentID, agentProvider, threadRef, role, contentJSON); err == nil {
 				return nil
 			}
@@ -909,6 +917,15 @@ func (h *OutputHandler) BroadcastNotification(agentID string, agentProvider leap
 	if err := h.persistNotificationThreaded(agentID, agentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, contentJSON); err != nil {
 		slog.Warn("failed to persist notification", "agent_id", agentID, "error", err)
 	}
+}
+
+// isAPIRetryContent checks whether contentJSON is a system/api_retry notification.
+func isAPIRetryContent(contentJSON []byte) bool {
+	var msg struct {
+		Type    string `json:"type"`
+		Subtype string `json:"subtype"`
+	}
+	return json.Unmarshal(contentJSON, &msg) == nil && msg.Type == "system" && msg.Subtype == "api_retry"
 }
 
 // updatePlan persists a plan file path, content, and title for an agent.
