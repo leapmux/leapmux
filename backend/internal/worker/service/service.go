@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
+	"github.com/leapmux/leapmux/internal/worker/wakelock"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -34,13 +35,14 @@ type Context struct {
 	Channels            *channel.Manager // E2EE channel manager (for workspace access lookups)
 	HomeDir             string
 	DataDir             string
-	WorkerID            string          // This worker's ID (set after registration)
-	Name                string          // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
-	Send                SendFunc        // Forwards messages to the Hub via WebSocket
-	Watchers            *WatcherManager // Fan-out manager for event broadcasting
-	Output              *OutputHandler  // Agent output NDJSON processor
-	AgentStartupTimeout time.Duration   // Timeout for agent startup handshake (default: 30s)
-	UseLoginShell       bool            // Wrap claude invocation in user's login shell
+	WorkerID            string                    // This worker's ID (set after registration)
+	Name                string                    // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
+	Send                SendFunc                  // Forwards messages to the Hub via WebSocket
+	Watchers            *WatcherManager           // Fan-out manager for event broadcasting
+	Output              *OutputHandler            // Agent output NDJSON processor
+	AgentStartupTimeout time.Duration             // Timeout for agent startup handshake (default: 30s)
+	UseLoginShell       bool                      // Wrap claude invocation in user's login shell
+	WakeLock            *wakelock.ActivityTracker // Keep-awake tracker (nil = disabled)
 }
 
 // agentStartupTimeout returns the configured agent startup timeout,
@@ -53,10 +55,10 @@ func (svc *Context) agentStartupTimeout() time.Duration {
 }
 
 // NewContext creates a new service context with all dependencies.
-func NewContext(sqlDB *sql.DB, agents *agent.Manager, terminals *terminal.Manager, homeDir, dataDir string) *Context {
+func NewContext(sqlDB *sql.DB, agents *agent.Manager, terminals *terminal.Manager, homeDir, dataDir string, wl *wakelock.ActivityTracker) *Context {
 	queries := db.New(sqlDB)
 	watchers := NewWatcherManager()
-	output := NewOutputHandler(queries, watchers, agents)
+	output := NewOutputHandler(queries, watchers, agents, wl)
 	return &Context{
 		DB:        sqlDB,
 		Queries:   queries,
@@ -66,6 +68,7 @@ func NewContext(sqlDB *sql.DB, agents *agent.Manager, terminals *terminal.Manage
 		DataDir:   dataDir,
 		Watchers:  watchers,
 		Output:    output,
+		WakeLock:  wl,
 	}
 }
 
@@ -83,6 +86,9 @@ func (svc *Context) Init() {
 	if svc.Send == nil {
 		panic("service.Context.Init: Send must be set before calling Init")
 	}
+
+	// Wire auto-continue so OutputHandler can send synthetic user messages.
+	svc.Output.SetSendMessageFunc(svc.sendSyntheticUserMessage)
 
 	// No need to deactivate agents/terminals on startup — status is now
 	// derived from runtime state (HasAgent/HasTerminal), not from the DB.

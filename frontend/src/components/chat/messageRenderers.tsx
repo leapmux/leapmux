@@ -22,6 +22,7 @@ import { isObject } from './messageUtils'
 import {
   agentErrorRenderer,
   agentRenamedRenderer,
+  apiRetryRenderer,
   compactBoundaryRenderer,
   compactingRenderer,
   contextClearedRenderer,
@@ -314,6 +315,7 @@ const KIND_RENDERERS: Record<string, (parsed: unknown, role: MessageRole, contex
       ?? agentErrorRenderer.render(parsed, role, context)
       ?? agentRenamedRenderer.render(parsed, role, context)
       ?? rateLimitRenderer.render(parsed, role, context)
+      ?? apiRetryRenderer.render(parsed, role, context)
       ?? compactBoundaryRenderer.render(parsed, role, context)
       ?? microcompactBoundaryRenderer.render(parsed, role, context)
       ?? systemInitRenderer.render(parsed, role, context)
@@ -377,6 +379,7 @@ function getFallbackRenderers(): MessageContentRenderer[] {
       agentErrorRenderer,
       agentRenamedRenderer,
       rateLimitRenderer,
+      apiRetryRenderer,
       compactBoundaryRenderer,
       microcompactBoundaryRenderer,
       systemInitRenderer,

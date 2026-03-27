@@ -47,6 +47,8 @@ type OutputSink interface {
 	StorePlanModeToolUse(toolUseID, targetMode string)
 	LoadAndDeletePlanModeToolUse(toolUseID string) (targetMode string, ok bool)
 	UpdatePlan(filePath string, content []byte, compression leapmuxv1.ContentCompression, title string)
+	ScheduleAutoContinue()
+	ResetAutoContinue()
 }
 
 // Provider is the interface that all coding agent providers must implement.

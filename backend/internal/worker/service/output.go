@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
+	"github.com/leapmux/leapmux/internal/worker/wakelock"
 )
 
 // notifThreadGracePeriod is how long a soft-cleared notification thread
@@ -365,14 +366,25 @@ type OutputHandler struct {
 
 	// Plan mode tool_use tracking (shared across agents).
 	planModeToolUse sync.Map // tool_use_id -> target mode string ("plan" or "default")
+
+	// Auto-continue state (per-agent).
+	autoContinue sync.Map // agentID -> *autoContinueState
+
+	// sendMessageFunc is called by auto-continue to inject a synthetic
+	// user message. Set via SetSendMessageFunc during service Init.
+	sendMessageFunc func(agentID, content string)
+
+	// wakeLock prevents system sleep while there is agent/terminal activity.
+	wakeLock *wakelock.ActivityTracker
 }
 
 // NewOutputHandler creates a new OutputHandler.
-func NewOutputHandler(queries *db.Queries, watcher *WatcherManager, agents *agent.Manager) *OutputHandler {
+func NewOutputHandler(queries *db.Queries, watcher *WatcherManager, agents *agent.Manager, wl *wakelock.ActivityTracker) *OutputHandler {
 	return &OutputHandler{
-		queries: queries,
-		watcher: watcher,
-		agents:  agents,
+		queries:  queries,
+		watcher:  watcher,
+		agents:   agents,
+		wakeLock: wl,
 	}
 }
 
@@ -384,12 +396,20 @@ func (h *OutputHandler) ResetSpanTracker(agentID string) {
 	}
 }
 
+// SetSendMessageFunc sets the callback used by auto-continue to inject
+// a synthetic user message into an agent. Must be called before any
+// agent output is processed.
+func (h *OutputHandler) SetSendMessageFunc(fn func(agentID, content string)) {
+	h.sendMessageFunc = fn
+}
+
 // CleanupAgent removes all per-agent state from the handler's maps.
 // Call this when an agent is permanently closed.
 func (h *OutputHandler) CleanupAgent(agentID string) {
 	h.notifMu.Delete(agentID)
 	h.lastNotifThread.Delete(agentID)
 	h.spanTrackers.Delete(agentID)
+	h.cleanupAutoContinue(agentID)
 }
 
 // spanTracker returns the per-agent SpanTracker, creating one if needed.
@@ -647,6 +667,14 @@ func (s *agentOutputSink) UpdatePlan(filePath string, content []byte, compressio
 	s.h.updatePlan(s.agentID, filePath, content, compression, title)
 }
 
+func (s *agentOutputSink) ScheduleAutoContinue() {
+	s.h.scheduleAutoContinue(s.agentID)
+}
+
+func (s *agentOutputSink) ResetAutoContinue() {
+	s.h.resetAutoContinue(s.agentID)
+}
+
 // --- Internal helpers ---
 
 // notifMutex returns a per-agent mutex for notification threading.
@@ -671,6 +699,9 @@ func (h *OutputHandler) softClearNotifThread(agentID string) {
 // persistAndBroadcast persists a message and broadcasts it to watchers.
 // tracker may be nil, in which case it is resolved from the agentID.
 func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, role leapmuxv1.MessageRole, contentJSON []byte, span agent.SpanInfo, tracker *SpanTracker) error {
+	if h.wakeLock != nil {
+		h.wakeLock.RecordActivity()
+	}
 	if tracker == nil {
 		tracker = h.spanTracker(agentID)
 	}
@@ -728,6 +759,9 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 // persistNotificationThreaded persists a notification message, appending it
 // to the current notification thread if one exists.
 func (h *OutputHandler) persistNotificationThreaded(agentID string, agentProvider leapmuxv1.AgentProvider, role leapmuxv1.MessageRole, contentJSON []byte) error {
+	if h.wakeLock != nil {
+		h.wakeLock.RecordActivity()
+	}
 	mu := h.notifMutex(agentID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -968,6 +1002,9 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 	var latestStatusRaw json.RawMessage
 	statusLastIdx := -1
 
+	var latestApiRetryRaw json.RawMessage
+	apiRetryLastIdx := -1
+
 	// Compaction boundaries and unknown types: always kept, in order.
 	type indexedRaw struct {
 		idx int
@@ -1034,6 +1071,10 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 			latestStatusRaw = raw
 			statusLastIdx = i
 
+		case env.Type == "system" && env.Subtype == "api_retry":
+			latestApiRetryRaw = raw
+			apiRetryLastIdx = i
+
 		case env.Type == "system" && (env.Subtype == "compact_boundary" || env.Subtype == "microcompact_boundary"):
 			// Compaction result supersedes any earlier compacting status.
 			latestStatusRaw = nil
@@ -1094,6 +1135,10 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 
 	if statusLastIdx >= 0 {
 		entries = append(entries, indexedRaw{statusLastIdx, latestStatusRaw})
+	}
+
+	if apiRetryLastIdx >= 0 {
+		entries = append(entries, indexedRaw{apiRetryLastIdx, latestApiRetryRaw})
 	}
 
 	// Merge keepAll entries.

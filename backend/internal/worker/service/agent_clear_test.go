@@ -72,7 +72,7 @@ func decodeAgentChatMessageContent(t *testing.T, msg *leapmuxv1.AgentChatMessage
 func TestSendAgentMessage_SlashClearBroadcastsUserBeforeContextCleared(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents)
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:          "agent-1",
@@ -129,7 +129,7 @@ func TestSendAgentMessage_SlashClearBroadcastsUserBeforeContextCleared(t *testin
 func TestSendAgentRawMessage_CodexInterruptPersistsSyntheticUserMarker(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents)
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-codex",
@@ -161,7 +161,7 @@ func TestSendAgentRawMessage_CodexInterruptPersistsSyntheticUserMarker(t *testin
 func TestSendAgentRawMessage_ClaudeInterruptDoesNotPersistSyntheticUserMarker(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents)
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-claude",

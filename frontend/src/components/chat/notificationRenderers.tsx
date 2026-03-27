@@ -117,6 +117,52 @@ export const agentRenamedRenderer: MessageContentRenderer = {
   },
 }
 
+/**
+ * Cleans up synthetic API error messages from Claude Code.
+ * Extracts a human-readable message from the embedded JSON body, e.g.:
+ *   "API Error: 529 {\"type\":\"error\",...,\"message\":\"Overloaded...\"}"
+ * becomes:
+ *   "API Error: 529 · Overloaded..."
+ */
+const apiErrorPattern = /^API Error: (\d+) (.*)$/
+function cleanAPIErrorMessage(msg: string): string {
+  const match = apiErrorPattern.exec(msg)
+  if (!match)
+    return msg
+  const [, statusCode, body] = match
+  if (body.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(body)
+      const message = parsed?.error?.message
+      if (typeof message === 'string')
+        return `API Error: ${statusCode} ${message}`
+    }
+    catch { /* not parseable JSON */ }
+    return `API Error: ${statusCode}`
+  }
+  return msg
+}
+
+function formatApiRetryLabel(data: Record<string, unknown>): string {
+  const attempt = typeof data.attempt === 'number' ? data.attempt : '?'
+  const maxRetries = typeof data.max_retries === 'number' ? data.max_retries : '?'
+  const errorStatus = data.error_status != null ? String(data.error_status) : null
+  const error = typeof data.error === 'string' ? data.error : null
+  const detail = [errorStatus, error].filter(Boolean).join(' ')
+  return detail
+    ? `API Retry ${attempt}/${maxRetries} (${detail})`
+    : `API Retry ${attempt}/${maxRetries}`
+}
+
+/** Handles api_retry notifications: {"type":"system","subtype":"api_retry","attempt":N,"max_retries":N,...} */
+export const apiRetryRenderer: MessageContentRenderer = {
+  render(parsed, _role, _context) {
+    if (!isObject(parsed) || parsed.type !== 'system' || parsed.subtype !== 'api_retry')
+      return null
+    return <div class={controlResponseMessage}>{formatApiRetryLabel(parsed as Record<string, unknown>)}</div>
+  },
+}
+
 /** Handles rate limit notifications: {"type":"rate_limit","rate_limit_info":{...}} or Codex native format */
 export const rateLimitRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
@@ -228,7 +274,10 @@ export const resultRenderer: MessageContentRenderer = {
       const errors = Array.isArray(parsed.errors) ? parsed.errors as string[] : []
       const resultText = typeof parsed.result === 'string' ? parsed.result : ''
       const errorMsg = errors.length > 0 ? errors.join('; ') : resultText || 'Unknown error'
-      return <div class={resultDivider} style={{ color: 'var(--danger)' }}>{errorMsg}</div>
+      const durationMs = typeof parsed.duration_ms === 'number' ? parsed.duration_ms : 0
+      const durationSuffix = durationMs > 0 ? ` (${formatDuration(durationMs)})` : ''
+      const label = cleanAPIErrorMessage(errorMsg) + durationSuffix
+      return <div class={resultDivider} style={{ color: 'var(--danger)' }}>{label}</div>
     }
 
     const durationMs = typeof parsed.duration_ms === 'number' ? parsed.duration_ms : 0
@@ -313,6 +362,7 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
   let microcompactPreTokens: number | undefined
   let microcompactTokensSaved: number | undefined
   const rateLimitByType: Record<string, Record<string, unknown>> = {}
+  let latestApiRetry: Record<string, unknown> | null = null
 
   for (const msg of messages) {
     if (!isObject(msg))
@@ -367,6 +417,9 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
       const title = typeof m.title === 'string' ? m.title : ''
       if (title)
         settingsParts.push(`Renamed to ${title}`)
+    }
+    else if (t === 'system' && st === 'api_retry') {
+      latestApiRetry = m
     }
     else if (t === 'compacting' || (t === 'system' && st === 'status' && m.status === 'compacting')) {
       compacting = true
@@ -427,6 +480,13 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
         <Icon icon={ArrowDownToLine} size="sm" />
         {` ${microcompactLabel}`}
       </div>,
+    )
+  }
+
+  // API retry (latest only).
+  if (latestApiRetry) {
+    elements.push(
+      <div class={controlResponseMessage}>{formatApiRetryLabel(latestApiRetry)}</div>,
     )
   }
 
