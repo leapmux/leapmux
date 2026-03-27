@@ -12,11 +12,11 @@
 //
 // Requires @resvg/resvg-js (installed with frontend dependencies).
 
-import { Buffer } from 'node:buffer'
-import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { Resvg } from '@resvg/resvg-js'
+import { buildIco } from '../../scripts/build-ico.mjs'
 
 const [roundedSvgPath, squareSvgPath, publicDir] = process.argv.slice(2)
 if (!roundedSvgPath || !squareSvgPath || !publicDir) {
@@ -27,31 +27,27 @@ if (!roundedSvgPath || !squareSvgPath || !publicDir) {
 const roundedSvg = readFileSync(roundedSvgPath)
 const squareSvg = readFileSync(squareSvgPath)
 
-function renderPng(svgData, size) {
+function renderPng(svgData, size, { opaqueCorners } = {}) {
   const resvg = new Resvg(svgData, { fitTo: { mode: 'width', value: size } })
-  return resvg.render().asPng()
+  const rendered = resvg.render()
+  if (opaqueCorners !== undefined) {
+    assertCornerAlpha(rendered.pixels, rendered.width, rendered.height, opaqueCorners)
+  }
+  return rendered.asPng()
 }
 
-function buildIco(pngData, size) {
-  // ICO format: header (6 bytes) + directory entry (16 bytes) + PNG data.
-  const header = Buffer.alloc(22)
-  header.writeUInt16LE(0, 0) // reserved
-  header.writeUInt16LE(1, 2) // type: ICO
-  header.writeUInt16LE(1, 4) // image count
-  header[6] = size < 256 ? size : 0 // width (0 = 256)
-  header[7] = size < 256 ? size : 0 // height (0 = 256)
-  header[8] = 0 // color palette
-  header[9] = 0 // reserved
-  header.writeUInt16LE(1, 10) // color planes
-  header.writeUInt16LE(32, 12) // bits per pixel
-  header.writeUInt32LE(pngData.length, 14) // image size
-  header.writeUInt32LE(22, 18) // offset to image data
-  return Buffer.concat([header, pngData])
+function assertCornerAlpha(pixels, width, height, shouldBeOpaque) {
+  for (const [x, y] of [[0, 0], [width - 1, 0], [0, height - 1], [width - 1, height - 1]]) {
+    const alpha = pixels[(y * width + x) * 4 + 3]
+    const ok = shouldBeOpaque ? alpha === 255 : alpha === 0
+    if (!ok) {
+      const expected = shouldBeOpaque ? 'opaque' : 'transparent'
+      throw new Error(`Icon ${width}x${height} has alpha=${alpha} at (${x},${y}); expected ${expected} corners`)
+    }
+  }
 }
 
 // Copy the rounded SVG to public dir for modern browsers.
-rmSync(join(publicDir, 'favicon.ico'), { force: true })
-rmSync(join(publicDir, 'favicon.svg'), { force: true })
 copyFileSync(roundedSvgPath, join(publicDir, 'leapmux-icon-corners.svg'))
 
 // Generate a favicon ICO from the rounded SVG.
@@ -60,15 +56,11 @@ writeFileSync(join(publicDir, 'leapmux-icon-corners.ico'), buildIco(ico48Png, 48
 
 // Ensure the icons output directory exists.
 mkdirSync(join(publicDir, 'icons'), { recursive: true })
-rmSync(join(publicDir, 'icons', 'icon-192.png'), { force: true })
-rmSync(join(publicDir, 'icons', 'icon-512.png'), { force: true })
-rmSync(join(publicDir, 'icons', 'icon-512-maskable.png'), { force: true })
-rmSync(join(publicDir, 'icons', 'apple-touch-icon.png'), { force: true })
 
 // Generate rounded web icons and square Apple touch icon.
-writeFileSync(join(publicDir, 'icons', 'leapmux-icon-corners-192.png'), renderPng(roundedSvg, 192))
-writeFileSync(join(publicDir, 'icons', 'leapmux-icon-corners-512.png'), renderPng(roundedSvg, 512))
-writeFileSync(join(publicDir, 'icons', 'leapmux-icon-corners-maskable-512.png'), renderPng(roundedSvg, 512))
-writeFileSync(join(publicDir, 'icons', 'leapmux-icon-apple-touch.png'), renderPng(squareSvg, 180))
+writeFileSync(join(publicDir, 'icons', 'leapmux-icon-corners-192.png'), renderPng(roundedSvg, 192, { opaqueCorners: false }))
+writeFileSync(join(publicDir, 'icons', 'leapmux-icon-corners-512.png'), renderPng(roundedSvg, 512, { opaqueCorners: false }))
+writeFileSync(join(publicDir, 'icons', 'leapmux-icon-corners-maskable-512.png'), renderPng(roundedSvg, 512, { opaqueCorners: false }))
+writeFileSync(join(publicDir, 'icons', 'leapmux-icon-apple-touch.png'), renderPng(squareSvg, 180, { opaqueCorners: true }))
 
 console.log('Generated web icons: leapmux-icon-corners.ico, leapmux-icon-corners.svg, leapmux-icon-corners-192.png, leapmux-icon-corners-512.png, leapmux-icon-corners-maskable-512.png, leapmux-icon-apple-touch.png')

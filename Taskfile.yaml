@@ -169,7 +169,6 @@ tasks:
     sources:
       - icons/leapmux-icon-corners.svg
       - icons/leapmux-icon.svg
-      - scripts/validate-icons.mjs
     generates:
       - frontend/public/leapmux-icon-corners.ico
       - frontend/public/leapmux-icon-corners.svg
@@ -179,12 +178,6 @@ tasks:
       - frontend/public/icons/leapmux-icon-apple-touch.png
     cmds:
       - NODE_PATH=frontend/node_modules bun frontend/scripts/generate-icons.mjs icons/leapmux-icon-corners.svg icons/leapmux-icon.svg frontend/public
-      - >-
-        node scripts/validate-icons.mjs
-        --transparent frontend/public/icons/leapmux-icon-corners-192.png
-        --transparent frontend/public/icons/leapmux-icon-corners-512.png
-        --transparent frontend/public/icons/leapmux-icon-corners-maskable-512.png
-        --opaque frontend/public/icons/leapmux-icon-apple-touch.png
 
   build-frontend:
     desc: Build frontend assets
@@ -386,14 +379,12 @@ tasks:
     deps: [prepare-frontend]
     sources:
       - icons/leapmux-icon-corners.svg
-      - scripts/validate-icons.mjs
     generates:
       - desktop/build/appicon.png
       - desktop/build/windows/icon.ico
     cmds:
       - mkdir -p desktop/build/windows
-      - NODE_PATH=frontend/node_modules bun desktop/scripts/generate-icons.mjs icons/leapmux-icon-corners.svg icons/leapmux-icon-corners.svg desktop/build/appicon.png desktop/build/windows/icon.ico
-      - node scripts/validate-icons.mjs --transparent desktop/build/appicon.png
+      - NODE_PATH=frontend/node_modules bun desktop/scripts/generate-icons.mjs icons/leapmux-icon-corners.svg icons/leapmux-icon-corners.svg desktop/build/appicon.png desktop/build/windows/icon.ico transparent
 
   generate-desktop-icons-darwin:
     desc: Generate Apple-safe desktop icons for macOS
@@ -401,14 +392,12 @@ tasks:
     sources:
       - icons/leapmux-icon.svg
       - icons/leapmux-icon-corners.svg
-      - scripts/validate-icons.mjs
     generates:
       - desktop/build/appicon.png
       - desktop/build/windows/icon.ico
     cmds:
       - mkdir -p desktop/build/windows
-      - NODE_PATH=frontend/node_modules bun desktop/scripts/generate-icons.mjs icons/leapmux-icon.svg icons/leapmux-icon-corners.svg desktop/build/appicon.png desktop/build/windows/icon.ico
-      - node scripts/validate-icons.mjs --opaque desktop/build/appicon.png
+      - NODE_PATH=frontend/node_modules bun desktop/scripts/generate-icons.mjs icons/leapmux-icon.svg icons/leapmux-icon-corners.svg desktop/build/appicon.png desktop/build/windows/icon.ico opaque
 
   prepare-desktop-non-darwin:
     desc: Prepare desktop build dependencies for Linux and Windows
