@@ -162,69 +162,45 @@ export function useControlResponseHandling(
       return
     if (isAskUserQuestion()) {
       const provider = props.agent?.agentProvider
-      const normalizedRequest = (() => {
+      // Extract and normalize questions once for both page navigation and response building.
+      const normalizedQuestions: Question[] = (() => {
         switch (provider) {
           case AgentProvider.CODEX: {
             const params = req.payload.params as Record<string, unknown> | undefined
-            return {
-              ...req,
-              payload: {
-                ...req.payload,
-                request: {
-                  tool_name: 'AskUserQuestion',
-                  input: { questions: params?.questions ?? [] },
-                },
-              },
-            }
+            return (params?.questions as Question[] | undefined) ?? []
           }
           case AgentProvider.OPENCODE: {
             const properties = req.payload.properties as Record<string, unknown> | undefined
             const rawQuestions = (properties?.questions as Array<Record<string, unknown>> | undefined) ?? []
-            return {
-              ...req,
-              payload: {
-                ...req.payload,
-                request: {
-                  tool_name: 'AskUserQuestion',
-                  input: {
-                    questions: rawQuestions.map(question => ({
-                      ...question,
-                      multiSelect: (question.multiSelect as boolean | undefined) ?? (question.multiple as boolean | undefined),
-                    })),
-                  },
-                },
-              },
-            }
-          }
-          default:
-            return req
-        }
-      })()
-      const sendAskResponse = () => {
-        switch (provider) {
-          case AgentProvider.CODEX: {
-            const params = req.payload.params as Record<string, unknown> | undefined
-            const questions = (params?.questions as Question[] | undefined) ?? []
-            void sendCodexUserInputResponse(req.agentId, sendControlResponse, req.requestId, questions, askState)
-            break
-          }
-          case AgentProvider.OPENCODE: {
-            const properties = req.payload.properties as Record<string, unknown> | undefined
-            const rawQuestions = (properties?.questions as Array<Record<string, unknown>> | undefined) ?? []
-            const questions = rawQuestions.map(question => ({
+            return rawQuestions.map(question => ({
               ...question,
               multiSelect: (question.multiSelect as boolean | undefined) ?? (question.multiple as boolean | undefined),
             })) as Question[]
-            void sendOpenCodeQuestionResponse(req.agentId, sendControlResponse, req.requestId, questions, askState)
-            break
           }
+          default:
+            return (getToolInput(req.payload).questions as Question[] | undefined) ?? []
+        }
+      })()
+      const normalizedRequest: ControlRequest = {
+        ...req,
+        payload: {
+          ...req.payload,
+          request: {
+            tool_name: 'AskUserQuestion',
+            input: { questions: normalizedQuestions },
+          },
+        },
+      }
+      const sendAskResponse = () => {
+        switch (provider) {
+          case AgentProvider.CODEX:
+            void sendCodexUserInputResponse(req.agentId, sendControlResponse, req.requestId, normalizedQuestions, askState)
+            break
+          case AgentProvider.OPENCODE:
+            void sendOpenCodeQuestionResponse(req.agentId, sendControlResponse, req.requestId, normalizedQuestions, askState)
+            break
           default: {
-            const response = buildAskAnswers(
-              askState,
-              ((getToolInput(req.payload).questions as Question[] | undefined) ?? []),
-              getToolInput(req.payload),
-              req.requestId,
-            )
+            const response = buildAskAnswers(askState, normalizedQuestions, getToolInput(req.payload), req.requestId)
             void sendControlResponse(req.agentId, new TextEncoder().encode(JSON.stringify(response)))
           }
         }

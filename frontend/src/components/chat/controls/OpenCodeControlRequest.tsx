@@ -110,21 +110,22 @@ export const OpenCodeControlContent: Component<ContentProps> = (props) => {
   const kind = () => toolCall()?.kind as string | undefined
 
   return (
-    <Switch>
-      <Match when={isOpenCodeQuestionPayload(props.request.payload)}>
-        <AskUserQuestionContent
-          request={{ ...props.request, payload: wrapAsAskUserQuestion(props.request.payload) }}
-          askState={props.askState}
-          optionsDisabled={props.optionsDisabled}
-        />
-      </Match>
-      <Match when={true}>
+    <Switch
+      fallback={(
         <>
           <div class={styles.controlBannerTitle}>{title()}</div>
           <Show when={kind()}>
             <div class={styles.codexCwd}>{kind()}</div>
           </Show>
         </>
+      )}
+    >
+      <Match when={isOpenCodeQuestionPayload(props.request.payload)}>
+        <AskUserQuestionContent
+          request={{ ...props.request, payload: wrapAsAskUserQuestion(props.request.payload) }}
+          askState={props.askState}
+          optionsDisabled={props.optionsDisabled}
+        />
       </Match>
     </Switch>
   )
@@ -159,15 +160,8 @@ export const OpenCodeControlActions: Component<ActionsProps> = (props) => {
   }
 
   return (
-    <Switch>
-      <Match when={isOpenCodeQuestionPayload(props.request.payload)}>
-        <AskUserQuestionActions
-          {...props}
-          request={{ ...props.request, payload: wrapAsAskUserQuestion(props.request.payload) }}
-          onRespond={userInputOnRespond}
-        />
-      </Match>
-      <Match when={true}>
+    <Switch
+      fallback={(
         <div class={styles.controlFooter}>
           <div class={styles.controlFooterLeft}>
             {props.infoTrigger}
@@ -218,6 +212,14 @@ export const OpenCodeControlActions: Component<ActionsProps> = (props) => {
             </Show>
           </div>
         </div>
+      )}
+    >
+      <Match when={isOpenCodeQuestionPayload(props.request.payload)}>
+        <AskUserQuestionActions
+          {...props}
+          request={{ ...props.request, payload: wrapAsAskUserQuestion(props.request.payload) }}
+          onRespond={userInputOnRespond}
+        />
       </Match>
     </Switch>
   )

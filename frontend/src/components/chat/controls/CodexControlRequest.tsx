@@ -134,7 +134,25 @@ export const CodexControlContent: Component<ContentProps> = (props) => {
   }
 
   return (
-    <Switch>
+    <Switch
+      fallback={(
+        <>
+          <div class={styles.controlBannerTitle}>{title()}</div>
+          <Show when={reason()}>
+            <div class={styles.codexReason}>{reason()}</div>
+          </Show>
+          <Show when={command()}>
+            <CollapsibleText text={command()!} maxLines={6} class={styles.toolSummary} />
+          </Show>
+          <Show when={cwd()}>
+            <div class={styles.codexCwd}>
+              {'cwd: '}
+              {cwd()}
+            </div>
+          </Show>
+        </>
+      )}
+    >
       <Match when={toolName() === 'CodexPlanModePrompt'}>
         <div class={styles.controlBannerTitle}>Implement the proposed plan?</div>
       </Match>
@@ -144,21 +162,6 @@ export const CodexControlContent: Component<ContentProps> = (props) => {
           askState={props.askState}
           optionsDisabled={props.optionsDisabled}
         />
-      </Match>
-      <Match when={true}>
-        <div class={styles.controlBannerTitle}>{title()}</div>
-        <Show when={reason()}>
-          <div class={styles.codexReason}>{reason()}</div>
-        </Show>
-        <Show when={command()}>
-          <CollapsibleText text={command()!} maxLines={6} class={styles.toolSummary} />
-        </Show>
-        <Show when={cwd()}>
-          <div class={styles.codexCwd}>
-            {'cwd: '}
-            {cwd()}
-          </div>
-        </Show>
       </Match>
     </Switch>
   )
@@ -215,45 +218,8 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
   }
 
   return (
-    <Switch>
-      <Match when={toolName() === 'CodexPlanModePrompt'}>
-        <div class={styles.controlFooter}>
-          <div class={styles.controlFooterLeft}>
-            {props.infoTrigger}
-          </div>
-          <div class={styles.controlFooterRight}>
-            <ButtonGroup>
-              <button
-                class="outline"
-                onClick={() => {
-                  if (props.hasEditorContent) {
-                    props.onTriggerSend()
-                    return
-                  }
-                  sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildDenyResponse(props.request.requestId, ''))
-                }}
-                data-testid="control-deny-btn"
-              >
-                {props.hasEditorContent ? 'Send Feedback' : 'Stay in Plan Mode'}
-              </button>
-              <button
-                onClick={() => sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId, getToolInput(props.request.payload)))}
-                data-testid="control-allow-btn"
-              >
-                Implement Plan
-              </button>
-            </ButtonGroup>
-          </div>
-        </div>
-      </Match>
-      <Match when={method() === 'item/tool/requestUserInput'}>
-        <AskUserQuestionActions
-          {...props}
-          request={{ ...props.request, payload: wrapAsAskUserQuestion(props.request.payload) }}
-          onRespond={userInputOnRespond}
-        />
-      </Match>
-      <Match when={true}>
+    <Switch
+      fallback={(
         <div class={styles.controlFooter}>
           <div class={styles.controlFooterLeft}>
             {props.infoTrigger}
@@ -306,6 +272,44 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
             </Show>
           </div>
         </div>
+      )}
+    >
+      <Match when={toolName() === 'CodexPlanModePrompt'}>
+        <div class={styles.controlFooter}>
+          <div class={styles.controlFooterLeft}>
+            {props.infoTrigger}
+          </div>
+          <div class={styles.controlFooterRight}>
+            <ButtonGroup>
+              <button
+                class="outline"
+                onClick={() => {
+                  if (props.hasEditorContent) {
+                    props.onTriggerSend()
+                    return
+                  }
+                  sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildDenyResponse(props.request.requestId, ''))
+                }}
+                data-testid="control-deny-btn"
+              >
+                {props.hasEditorContent ? 'Send Feedback' : 'Stay in Plan Mode'}
+              </button>
+              <button
+                onClick={() => sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId, getToolInput(props.request.payload)))}
+                data-testid="control-allow-btn"
+              >
+                Implement Plan
+              </button>
+            </ButtonGroup>
+          </div>
+        </div>
+      </Match>
+      <Match when={method() === 'item/tool/requestUserInput'}>
+        <AskUserQuestionActions
+          {...props}
+          request={{ ...props.request, payload: wrapAsAskUserQuestion(props.request.payload) }}
+          onRespond={userInputOnRespond}
+        />
       </Match>
     </Switch>
   )
