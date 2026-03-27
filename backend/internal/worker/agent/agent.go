@@ -286,27 +286,29 @@ func buildClaudeContentBlocks(content string, attachments []*leapmuxv1.Attachmen
 			"text": content,
 		})
 	}
-	for _, a := range attachments {
-		mime := a.GetMimeType()
-		data := base64.StdEncoding.EncodeToString(a.GetData())
-		switch mime {
-		case "application/pdf":
+	for _, attachment := range classifyAttachments(attachments) {
+		switch attachment.kind {
+		case attachmentKindText:
+			blocks = append(blocks, map[string]interface{}{
+				"type": "text",
+				"text": buildInlineTextAttachmentBlock(attachment),
+			})
+		case attachmentKindPDF:
 			blocks = append(blocks, map[string]interface{}{
 				"type": "document",
 				"source": map[string]interface{}{
 					"type":       "base64",
-					"media_type": mime,
-					"data":       data,
+					"media_type": attachment.mimeType,
+					"data":       base64.StdEncoding.EncodeToString(attachment.data),
 				},
 			})
 		default:
-			// Image types: png, jpeg, gif, webp
 			blocks = append(blocks, map[string]interface{}{
 				"type": "image",
 				"source": map[string]interface{}{
 					"type":       "base64",
-					"media_type": mime,
-					"data":       data,
+					"media_type": attachment.mimeType,
+					"data":       base64.StdEncoding.EncodeToString(attachment.data),
 				},
 			})
 		}

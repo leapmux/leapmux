@@ -57,6 +57,19 @@ func TestBuildClaudeContentBlocks_pdfAttachment(t *testing.T) {
 	assert.Equal(t, "application/pdf", source["media_type"])
 }
 
+func TestBuildClaudeContentBlocks_textAttachment(t *testing.T) {
+	attachments := []*leapmuxv1.Attachment{
+		{Filename: "styles.css", MimeType: "", Data: []byte("body {}\n")},
+	}
+	blocks := buildClaudeContentBlocks("review", attachments)
+	require.Len(t, blocks, 2)
+
+	textBlock := blocks[1].(map[string]interface{})
+	assert.Equal(t, "text", textBlock["type"])
+	assert.Contains(t, textBlock["text"], "BEGIN ATTACHED FILE: styles.css")
+	assert.Contains(t, textBlock["text"], "body {}")
+}
+
 func TestBuildClaudeContentBlocks_noAttachments(t *testing.T) {
 	blocks := buildClaudeContentBlocks("plain text", nil)
 	require.Len(t, blocks, 1)
@@ -81,15 +94,23 @@ func TestBuildCodexInputBlocks_imageAttachment(t *testing.T) {
 	assert.Equal(t, expectedURI, imgBlock["url"])
 }
 
+func TestBuildCodexInputBlocks_textAttachment(t *testing.T) {
+	attachments := []*leapmuxv1.Attachment{
+		{Filename: "report.csv", MimeType: "", Data: []byte("name,value\nfoo,1\n")},
+	}
+	blocks := buildCodexInputBlocks("", attachments)
+	require.Len(t, blocks, 1)
+	assert.Equal(t, "text", blocks[0]["type"])
+	assert.Contains(t, blocks[0]["text"], "BEGIN ATTACHED FILE: report.csv")
+	assert.Contains(t, blocks[0]["text"], "name,value")
+}
+
 func TestBuildCodexInputBlocks_pdfSkipped(t *testing.T) {
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "doc.pdf", MimeType: "application/pdf", Data: []byte("%PDF")},
 	}
 	blocks := buildCodexInputBlocks("", attachments)
-	// PDF should be skipped, empty text fallback
-	require.Len(t, blocks, 1)
-	assert.Equal(t, "text", blocks[0]["type"])
-	assert.Equal(t, "", blocks[0]["text"])
+	require.Empty(t, blocks)
 }
 
 func TestBuildOpenCodePromptBlocks_fileAttachment(t *testing.T) {
@@ -126,6 +147,41 @@ func TestBuildOpenCodePromptBlocks_pdfIncluded(t *testing.T) {
 	assert.Equal(t, "application/pdf", resource["mimeType"])
 	assert.Equal(t, "doc.pdf", resource["uri"])
 	assert.Equal(t, base64.StdEncoding.EncodeToString(data), resource["blob"])
+}
+
+func TestBuildOpenCodePromptBlocks_textAttachment(t *testing.T) {
+	attachments := []*leapmuxv1.Attachment{
+		{Filename: "app.css", MimeType: "", Data: []byte("body {}\n")},
+	}
+	blocks := buildOpenCodePromptBlocks("", attachments)
+	require.Len(t, blocks, 1)
+
+	resourceBlock := blocks[0]
+	assert.Equal(t, "resource", resourceBlock["type"])
+
+	resource := resourceBlock["resource"].(map[string]interface{})
+	assert.Equal(t, "text/css", resource["mimeType"])
+	assert.Equal(t, "app.css", resource["uri"])
+	assert.Equal(t, "body {}\n", resource["text"])
+}
+
+func TestNormalizeAttachmentsForProvider_RejectsUnsupportedBinary(t *testing.T) {
+	attachments := []*leapmuxv1.Attachment{
+		{Filename: "archive.bin", MimeType: "", Data: []byte{0xff, 0xfe, 0xfd}},
+	}
+	_, err := NormalizeAttachmentsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, attachments)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Codex does not support binary attachments")
+}
+
+func TestNormalizeAttachmentsForProvider_InfersTextMime(t *testing.T) {
+	attachments := []*leapmuxv1.Attachment{
+		{Filename: "notes.txt", MimeType: "", Data: []byte("hello")},
+	}
+	normalized, err := NormalizeAttachmentsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, attachments)
+	require.NoError(t, err)
+	require.Len(t, normalized, 1)
+	assert.Equal(t, "text/plain", normalized[0].GetMimeType())
 }
 
 func TestClaudeCodeAgent_SendInput_withAttachments(t *testing.T) {

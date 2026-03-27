@@ -341,27 +341,25 @@ func (a *CodexAgent) SendInput(content string, attachments []*leapmuxv1.Attachme
 }
 
 // buildCodexInputBlocks converts text + attachments into Codex's input format.
-// Images use data URI format; PDF attachments are skipped (unsupported by Codex).
+// Images use data URI format; text attachments are inlined into the prompt.
 func buildCodexInputBlocks(content string, attachments []*leapmuxv1.Attachment) []map[string]interface{} {
 	var input []map[string]interface{}
 	if content != "" {
 		input = append(input, map[string]interface{}{"type": "text", "text": content})
 	}
-	for _, a := range attachments {
-		mime := a.GetMimeType()
-		switch mime {
-		case "application/pdf":
-			slog.Warn("codex: skipping unsupported PDF attachment", "filename", a.GetFilename())
-			continue
-		default:
-			// Image types: data URI format per Codex SDK ImageInput.
-			dataURI := encodeDataURI(mime, a.GetData())
-			input = append(input, map[string]interface{}{"type": "image", "url": dataURI})
+	for _, attachment := range classifyAttachments(attachments) {
+		switch attachment.kind {
+		case attachmentKindText:
+			input = append(input, map[string]interface{}{
+				"type": "text",
+				"text": buildInlineTextAttachmentBlock(attachment),
+			})
+		case attachmentKindImage:
+			input = append(input, map[string]interface{}{
+				"type": "image",
+				"url":  encodeDataURI(attachment.mimeType, attachment.data),
+			})
 		}
-	}
-	if len(input) == 0 {
-		// Fallback: if all attachments were skipped and no text, send empty text.
-		input = append(input, map[string]interface{}{"type": "text", "text": ""})
 	}
 	return input
 }

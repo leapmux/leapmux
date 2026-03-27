@@ -283,6 +283,12 @@ const codexPlugin: ProviderPlugin = {
   defaultEffort: DEFAULT_CODEX_EFFORT,
   defaultPermissionMode: 'on-request',
   bypassPermissionMode: 'never',
+  attachments: {
+    text: true,
+    image: true,
+    pdf: false,
+    binary: false,
+  },
   planMode: {
     currentMode: agent => agent.extraSettings?.[CODEX_EXTRA_COLLABORATION_MODE] || DEFAULT_CODEX_COLLABORATION_MODE,
     planValue: 'plan',

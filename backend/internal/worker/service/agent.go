@@ -213,6 +213,15 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
+		attachments, err = agent.NormalizeAttachmentsForProvider(
+			leapmuxv1.AgentProvider(dbAgent.AgentProvider),
+			attachments,
+		)
+		if err != nil {
+			sendInvalidArgument(sender, err.Error())
+			return
+		}
+
 		messageID := id.Generate()
 		now := time.Now().UTC()
 

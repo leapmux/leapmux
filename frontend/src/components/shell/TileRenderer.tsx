@@ -407,6 +407,26 @@ export function createTileRenderer(opts: TileRendererOpts) {
     return tab.id
   })
 
+  // Refs for ChatDropZone integration: addFiles and triggerSend from AgentEditorPanel.
+  const addFilesRef: { current: ((files: FileList | File[]) => Promise<number>) | undefined } = { current: undefined }
+  const triggerSendRef: { current: (() => void) | undefined } = { current: undefined }
+
+  // Clear refs when no agent is focused to avoid stale closures.
+  createEffect(() => {
+    if (!focusedAgentId()) {
+      addFilesRef.current = undefined
+      triggerSendRef.current = undefined
+    }
+  })
+
+  const handleFileDrop = async (files: FileList, shiftKey: boolean) => {
+    if (!addFilesRef.current)
+      return
+    const addedCount = await addFilesRef.current(files)
+    if (shiftKey && addedCount > 0)
+      triggerSendRef.current?.()
+  }
+
   const FocusedAgentEditorPanel: Component<{ containerHeight: number }> = (props) => {
     const agentId = () => focusedAgentId()!
     return (
@@ -466,6 +486,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
             chatStore.persistLocalMessage(id, localId, content, 'Failed to deliver')
           }
         }}
+        addFilesRef={(fn) => { addFilesRef.current = fn }}
+        triggerSendRef={(fn) => { triggerSendRef.current = fn }}
         disabled={false}
         focusRef={(fn) => { focusEditorRef.current = fn }}
         controlRequests={controlStore.getRequests(agentId())}
@@ -535,5 +557,12 @@ export function createTileRenderer(opts: TileRendererOpts) {
     focusedAgentId,
     FocusedAgentEditorPanel,
     renderTile,
+    handleFileDrop,
+    fileDropDisabled: () => {
+      const agentId = focusedAgentId()
+      if (!agentId)
+        return true
+      return controlStore.getRequests(agentId).length > 0
+    },
   }
 }

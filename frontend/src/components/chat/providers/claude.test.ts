@@ -8,6 +8,15 @@ import './claude'
 describe('claude classify', () => {
   const plugin = getProviderPlugin(AgentProvider.CLAUDE_CODE)!
 
+  it('exposes attachment capabilities', () => {
+    expect(plugin.attachments).toEqual({
+      text: true,
+      image: true,
+      pdf: true,
+      binary: false,
+    })
+  })
+
   it('classifies result divider', () => {
     const parent = {
       type: 'result',

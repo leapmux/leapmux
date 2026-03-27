@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"time"
 	"unicode"
-	"unicode/utf8"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/util/version"
@@ -391,45 +390,32 @@ func buildOpenCodePromptBlocks(content string, attachments []*leapmuxv1.Attachme
 	if content != "" {
 		prompt = append(prompt, map[string]interface{}{"type": "text", "text": content})
 	}
-	for _, a := range attachments {
-		mime := a.GetMimeType()
-		filename := a.GetFilename()
-		data := a.GetData()
-		if strings.HasPrefix(mime, "image/") {
+	for _, attachment := range classifyAttachments(attachments) {
+		if attachment.kind == attachmentKindImage {
 			prompt = append(prompt, map[string]interface{}{
 				"type":     "image",
-				"mimeType": mime,
-				"data":     base64.StdEncoding.EncodeToString(data),
-				"uri":      filename,
+				"mimeType": attachment.mimeType,
+				"data":     base64.StdEncoding.EncodeToString(attachment.data),
+				"uri":      attachment.filename,
 			})
 			continue
 		}
 
 		resource := map[string]interface{}{
-			"uri":      filename,
-			"mimeType": mime,
+			"uri":      attachment.filename,
+			"mimeType": attachment.mimeType,
 		}
-		if isOpenCodeTextAttachment(mime, data) {
-			resource["text"] = string(data)
+		if attachment.kind == attachmentKindText {
+			resource["text"] = string(attachment.data)
 		} else {
-			resource["blob"] = base64.StdEncoding.EncodeToString(data)
+			resource["blob"] = base64.StdEncoding.EncodeToString(attachment.data)
 		}
 		prompt = append(prompt, map[string]interface{}{
 			"type":     "resource",
 			"resource": resource,
 		})
 	}
-	if len(prompt) == 0 {
-		prompt = append(prompt, map[string]interface{}{"type": "text", "text": ""})
-	}
 	return prompt
-}
-
-func isOpenCodeTextAttachment(mime string, data []byte) bool {
-	if strings.HasPrefix(mime, "text/") || mime == "application/json" || mime == "application/xml" || strings.HasSuffix(mime, "+json") || strings.HasSuffix(mime, "+xml") {
-		return utf8.Valid(data)
-	}
-	return false
 }
 
 // handlePromptResponse processes the prompt RPC response, persisting the

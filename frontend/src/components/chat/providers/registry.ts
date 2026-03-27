@@ -24,6 +24,13 @@ export interface RenderContext {
   [key: string]: unknown
 }
 
+export interface AttachmentCapabilities {
+  text: boolean
+  image: boolean
+  pdf: boolean
+  binary: boolean
+}
+
 export interface ProviderPlugin {
   /** Default model identifier for this provider. */
   defaultModel?: string
@@ -111,6 +118,9 @@ export interface ProviderPlugin {
 
   /** Optional extra class for the settings dropdown menu container. */
   settingsMenuClass?: string
+
+  /** Attachment support for the provider. */
+  attachments?: AttachmentCapabilities
 }
 
 const registry = new Map<number, ProviderPlugin>()

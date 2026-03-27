@@ -11,6 +11,15 @@ import './codex'
 describe('codex classify', () => {
   const plugin = getProviderPlugin(AgentProvider.CODEX)!
 
+  it('exposes attachment capabilities', () => {
+    expect(plugin.attachments).toEqual({
+      text: true,
+      image: true,
+      pdf: false,
+      binary: false,
+    })
+  })
+
   it('hides thread/started notifications', () => {
     const parent = {
       method: 'thread/started',

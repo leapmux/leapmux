@@ -1,33 +1,69 @@
 import type { FileAttachment } from './attachments'
 import { describe, expect, it } from 'vitest'
 import {
+  buildAcceptAttribute,
+  describeUnsupportedAttachment,
   clearAttachments,
   getAttachments,
+  inferAttachmentDetails,
+  isAttachmentSupported,
   isImageMimeType,
-  isSupportedMimeType,
   MAX_TOTAL_ATTACHMENT_SIZE,
   nextPastedImageName,
   readFileAsAttachment,
   setAttachments,
   totalAttachmentSize,
 } from './attachments'
+import type { AttachmentCapabilities } from './providers/registry'
 
-describe('isSupportedMimeType', () => {
+const claudeCapabilities: AttachmentCapabilities = {
+  text: true,
+  image: true,
+  pdf: true,
+  binary: false,
+}
+
+const codexCapabilities: AttachmentCapabilities = {
+  text: true,
+  image: true,
+  pdf: false,
+  binary: false,
+}
+
+describe('inferAttachmentDetails', () => {
   it('accepts image types', () => {
-    expect(isSupportedMimeType('image/png')).toBe(true)
-    expect(isSupportedMimeType('image/jpeg')).toBe(true)
-    expect(isSupportedMimeType('image/gif')).toBe(true)
-    expect(isSupportedMimeType('image/webp')).toBe(true)
+    expect(inferAttachmentDetails('test.png', 'image/png', new Uint8Array([137, 80, 78, 71]))).toEqual({
+      kind: 'image',
+      mimeType: 'image/png',
+    })
   })
 
   it('accepts pdf', () => {
-    expect(isSupportedMimeType('application/pdf')).toBe(true)
+    expect(inferAttachmentDetails('test.pdf', 'application/pdf', new Uint8Array([37, 80, 68, 70]))).toEqual({
+      kind: 'pdf',
+      mimeType: 'application/pdf',
+    })
   })
 
-  it('rejects unsupported types', () => {
-    expect(isSupportedMimeType('text/plain')).toBe(false)
-    expect(isSupportedMimeType('application/json')).toBe(false)
-    expect(isSupportedMimeType('video/mp4')).toBe(false)
+  it('infers text mime from extension when browser omits it', () => {
+    expect(inferAttachmentDetails('styles.css', '', new TextEncoder().encode('body {}'))).toEqual({
+      kind: 'text',
+      mimeType: 'text/css',
+    })
+  })
+
+  it('treats extensionless utf8 files as text/plain', () => {
+    expect(inferAttachmentDetails('README', '', new TextEncoder().encode('hello'))).toEqual({
+      kind: 'text',
+      mimeType: 'text/plain',
+    })
+  })
+
+  it('classifies unknown binary as binary', () => {
+    expect(inferAttachmentDetails('archive.bin', '', new Uint8Array([0, 255, 1]))).toEqual({
+      kind: 'binary',
+      mimeType: 'application/octet-stream',
+    })
   })
 })
 
@@ -40,6 +76,37 @@ describe('isImageMimeType', () => {
   it('returns false for non-image types', () => {
     expect(isImageMimeType('application/pdf')).toBe(false)
     expect(isImageMimeType('text/plain')).toBe(false)
+  })
+})
+
+describe('attachment support', () => {
+  it('allows text across Claude and Codex', () => {
+    expect(isAttachmentSupported('text', claudeCapabilities)).toBe(true)
+    expect(isAttachmentSupported('text', codexCapabilities)).toBe(true)
+  })
+
+  it('rejects pdf and binary for Codex', () => {
+    expect(isAttachmentSupported('pdf', codexCapabilities)).toBe(false)
+    expect(isAttachmentSupported('binary', codexCapabilities)).toBe(false)
+  })
+
+  it('builds provider-specific rejection copy', () => {
+    expect(describeUnsupportedAttachment('pdf', 'Codex')).toBe('Codex does not support PDF attachments')
+    expect(describeUnsupportedAttachment('binary', 'Claude Code')).toBe('Claude Code does not support binary attachments')
+  })
+})
+
+describe('buildAcceptAttribute', () => {
+  it('includes text extensions for non-binary providers', () => {
+    const accept = buildAcceptAttribute(codexCapabilities)!
+    expect(accept).toContain('.css')
+    expect(accept).toContain('.csv')
+    expect(accept).toContain('image/png')
+    expect(accept).not.toContain('application/pdf')
+  })
+
+  it('omits accept when provider supports arbitrary binary attachments', () => {
+    expect(buildAcceptAttribute({ text: true, image: true, pdf: true, binary: true })).toBeUndefined()
   })
 })
 
@@ -117,5 +184,11 @@ describe('readFileAsAttachment', () => {
     const file = new File(['hello'], 'original.txt', { type: 'image/png' })
     const attachment = await readFileAsAttachment(file, 'custom.png')
     expect(attachment.filename).toBe('custom.png')
+  })
+
+  it('infers text mime for files with empty browser mime', async () => {
+    const file = new File(['name,value\nfoo,1\n'], 'report.csv', { type: '' })
+    const attachment = await readFileAsAttachment(file)
+    expect(attachment.mimeType).toBe('text/csv')
   })
 })
