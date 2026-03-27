@@ -42,6 +42,13 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   const { agentStore, chatStore, terminalStore, tabStore, controlStore, agentSessionStore, settingsLoading } = params
   const [workerOnline, setWorkerOnline] = createSignal(true)
 
+  const isAgentTabVisible = (agentId: string): boolean => {
+    const key = tabKey({ type: TabType.AGENT, id: agentId })
+    if (tabStore.state.activeTabKey === key)
+      return true
+    return Object.values(tabStore.state.tileActiveTabKeys).includes(key)
+  }
+
   // Single unified event stream abort controller.
   let eventStreamAbort: AbortController | null = null
   // Serialized key of the current subscription set to detect changes.
@@ -162,7 +169,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
 
         chatStore.addMessage(agentId, msg)
         if (
-          tabStore.state.activeTabKey !== `agent:${agentId}`
+          !isAgentTabVisible(agentId)
           && chatStore.getMessages(agentId).length > MAX_BACKGROUND_CHAT_MESSAGES
         ) {
           chatStore.trimOldMessages(agentId, MAX_BACKGROUND_CHAT_MESSAGES)

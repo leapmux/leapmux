@@ -89,6 +89,13 @@ describe('controlRequest guard for inactive agents', () => {
 })
 
 describe('background agent history trimming', () => {
+  function isAgentTabVisible(tabStore: ReturnType<typeof createTabStore>, agentId: string): boolean {
+    const key = `${TabType.AGENT}:${agentId}`
+    if (tabStore.state.activeTabKey === key)
+      return true
+    return Object.values(tabStore.state.tileActiveTabKeys).includes(key)
+  }
+
   function makeUserMessage(id: string, seq: bigint) {
     return {
       id,
@@ -110,7 +117,7 @@ describe('background agent history trimming', () => {
 
       chatStore.addMessage('background-agent', makeUserMessage(`m${MAX_BACKGROUND_CHAT_MESSAGES + 1}`, BigInt(MAX_BACKGROUND_CHAT_MESSAGES + 1)))
       if (
-        tabStore.state.activeTabKey !== `${TabType.AGENT}:background-agent`
+        !isAgentTabVisible(tabStore, 'background-agent')
         && chatStore.getMessages('background-agent').length > MAX_BACKGROUND_CHAT_MESSAGES
       ) {
         chatStore.trimOldMessages('background-agent', MAX_BACKGROUND_CHAT_MESSAGES)
@@ -137,7 +144,7 @@ describe('background agent history trimming', () => {
 
       chatStore.addMessage('active-agent', makeUserMessage('m151', 151n))
       if (
-        tabStore.state.activeTabKey !== `${TabType.AGENT}:active-agent`
+        !isAgentTabVisible(tabStore, 'active-agent')
         && chatStore.getMessages('active-agent').length > MAX_LOADED_CHAT_MESSAGES
       ) {
         chatStore.trimOldMessages('active-agent', MAX_LOADED_CHAT_MESSAGES)
@@ -147,6 +154,34 @@ describe('background agent history trimming', () => {
       expect(messages).toHaveLength(MAX_LOADED_CHAT_MESSAGES + 1)
       expect(messages[0].seq).toBe(1n)
       expect(messages.at(-1)?.seq).toBe(151n)
+      dispose()
+    })
+  })
+
+  it('does not trim an agent tab that is active in its tile even when not globally active', () => {
+    createRoot((dispose) => {
+      const chatStore = createChatStore()
+      const tabStore = createTabStore()
+      tabStore.addTab({ type: TabType.AGENT, id: 'active-agent', tileId: 'tile-1' })
+      tabStore.addTab({ type: TabType.AGENT, id: 'visible-agent', tileId: 'tile-2' }, false)
+      tabStore.setActiveTabForTile('tile-2', TabType.AGENT, 'visible-agent')
+
+      const initial = Array.from({ length: MAX_BACKGROUND_CHAT_MESSAGES }, (_, i) =>
+        makeUserMessage(`m${i + 1}`, BigInt(i + 1)))
+      chatStore.setMessages('visible-agent', initial)
+
+      chatStore.addMessage('visible-agent', makeUserMessage(`m${MAX_BACKGROUND_CHAT_MESSAGES + 1}`, BigInt(MAX_BACKGROUND_CHAT_MESSAGES + 1)))
+      if (
+        !isAgentTabVisible(tabStore, 'visible-agent')
+        && chatStore.getMessages('visible-agent').length > MAX_BACKGROUND_CHAT_MESSAGES
+      ) {
+        chatStore.trimOldMessages('visible-agent', MAX_BACKGROUND_CHAT_MESSAGES)
+      }
+
+      const messages = chatStore.getMessages('visible-agent')
+      expect(messages).toHaveLength(MAX_BACKGROUND_CHAT_MESSAGES + 1)
+      expect(messages[0].seq).toBe(1n)
+      expect(messages.at(-1)?.seq).toBe(BigInt(MAX_BACKGROUND_CHAT_MESSAGES + 1))
       dispose()
     })
   })
