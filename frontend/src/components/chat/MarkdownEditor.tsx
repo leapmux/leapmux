@@ -20,6 +20,8 @@ export { clearDraft }
 interface MarkdownEditorProps {
   /** Agent ID for per-tab draft persistence. */
   agentId?: string
+  /** Full draft key override. When set, takes precedence over agent/control request keys. */
+  draftKey?: string
   /** When set, drafts are stored under a control-request-specific key instead of the agentId key. */
   controlRequestId?: string
   onSend: (markdown: string) => boolean | void
@@ -57,6 +59,8 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
 
   /** Compute the localStorage draft key, incorporating controlRequestId when present. */
   const getDraftKey = () => {
+    if (props.draftKey)
+      return props.draftKey
     if (!props.agentId)
       return undefined
     return props.controlRequestId
@@ -357,40 +361,34 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     }
   })
 
-  // Swap editor content when agentId changes (per-tab draft isolation)
-  let prevAgentId: string | undefined
-  let prevCtrlReqIdForAgentSwap: string | undefined
+  // Swap editor content when the effective draft key changes. This covers
+  // agent switches, control-request switches, and per-question draft scopes.
+  let prevDraftKey: string | null | undefined
   createEffect(on(
-    () => props.agentId,
-    (newAgentId) => {
-      // On first run, prevAgentId is undefined — just record the initial agentId.
+    getDraftKey,
+    (newDraftKeyRaw) => {
+      const newDraftKey = newDraftKeyRaw ?? null
+      // On first run, just record the initial key.
       // onMount already loaded the draft for this agentId, so no swap needed.
-      // Note: editorInstance may not exist yet (onMount is async), so we must
-      // set prevAgentId unconditionally to avoid skipping the first real swap.
-      if (prevAgentId === undefined) {
-        prevAgentId = newAgentId
-        prevCtrlReqIdForAgentSwap = props.controlRequestId
+      if (prevDraftKey === undefined) {
+        prevDraftKey = newDraftKey
         return
       }
-      if (newAgentId === prevAgentId)
+      if (newDraftKey === prevDraftKey)
         return
       if (!editorInstance)
         return
 
-      // Save current content as draft for the old agent (under composite key)
-      if (prevAgentId) {
-        const oldKey = prevCtrlReqIdForAgentSwap
-          ? `${prevAgentId}-ctrl-${prevCtrlReqIdForAgentSwap}`
-          : prevAgentId
+      // Save current content under the previous draft key.
+      if (prevDraftKey) {
         try {
-          saveDraftFromEditor(editorInstance, oldKey)
+          saveDraftFromEditor(editorInstance, prevDraftKey)
         }
         catch { /* editor may not be ready */ }
       }
 
-      // Load draft for the new agent and replace editor content
-      const newKey = getDraftKey()
-      const draft = newKey ? loadDraft(newKey) : { content: '', cursor: -1 }
+      // Load draft for the new key and replace editor content.
+      const draft = newDraftKey ? loadDraft(newDraftKey) : { content: '', cursor: -1 }
       try {
         editorInstance.action(replaceAll(draft.content))
         restoreCursor(editorInstance, draft.cursor)
@@ -399,50 +397,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       }
       catch { /* editor may not be ready */ }
 
-      prevAgentId = newAgentId
-      prevCtrlReqIdForAgentSwap = props.controlRequestId
-    },
-  ))
-
-  // Swap editor content when controlRequestId changes (control request draft isolation)
-  let prevControlRequestId: string | null | undefined // sentinel for first run
-  createEffect(on(
-    () => props.controlRequestId,
-    (newCtrlId) => {
-      const newCtrlIdNorm = newCtrlId ?? null
-      // On first run, just record the initial value. onMount handles initial draft.
-      if (prevControlRequestId === undefined) {
-        prevControlRequestId = newCtrlIdNorm
-        return
-      }
-      if (newCtrlIdNorm === prevControlRequestId)
-        return
-      if (!editorInstance || !props.agentId)
-        return
-
-      // Save current content under the old key
-      const oldKey = prevControlRequestId
-        ? `${props.agentId}-ctrl-${prevControlRequestId}`
-        : props.agentId
-      try {
-        saveDraftFromEditor(editorInstance, oldKey)
-      }
-      catch { /* editor may not be ready */ }
-
-      // Load draft for the new key
-      const newKey = newCtrlIdNorm
-        ? `${props.agentId}-ctrl-${newCtrlIdNorm}`
-        : props.agentId
-      const draft = loadDraft(newKey)
-      try {
-        editorInstance.action(replaceAll(draft.content))
-        restoreCursor(editorInstance, draft.cursor)
-        setMarkdown(draft.content)
-        props.onContentChange?.(draft.content.trim().length > 0)
-      }
-      catch { /* editor may not be ready */ }
-
-      prevControlRequestId = newCtrlIdNorm
+      prevDraftKey = newDraftKey
     },
   ))
 

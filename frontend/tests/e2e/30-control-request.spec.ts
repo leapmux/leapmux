@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
+import { openAgentViaUI } from './helpers/ui'
 
 /** Send a message via the ProseMirror editor. */
 async function sendMessage(page: Page, text: string) {
@@ -188,5 +189,51 @@ test.describe('Control Request - AskUserQuestion', () => {
 
     // Verify control banner disappears
     await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
+  })
+
+  test('multi-question control request stays on the correct agent tab', async ({ page, authenticatedWorkspace }) => {
+    const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
+    await expect(agentTabs).toHaveCount(1)
+
+    // Open a second agent tab; the new tab becomes active.
+    await openAgentViaUI(page)
+    await expect(agentTabs).toHaveCount(2)
+
+    const firstAgentTab = agentTabs.first()
+    const secondAgentTab = agentTabs.nth(1)
+
+    // Trigger AskUserQuestion only on the second agent.
+    await secondAgentTab.click()
+    await sendMessage(
+      page,
+      `Use AskUserQuestion and tell me what I answered: {"questions":[${COLOR_Q_2},${SIZE_Q}]}`,
+    )
+
+    const secondBanner = await waitForControlBanner(page)
+    await expect(secondBanner.getByText('Pick a color')).toBeVisible()
+
+    // Switch to the first agent and verify the control request did not leak there.
+    await firstAgentTab.click()
+    await expect(firstAgentTab).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
+
+    // Switch back to the second agent and complete the request there.
+    await secondAgentTab.click()
+    await expect(secondAgentTab).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('[data-testid="control-banner"]')).toBeVisible()
+    await expect(page.locator('[data-testid="control-banner"]').getByText('Pick a color')).toBeVisible()
+
+    await clickOption(page, 'Red')
+    await expect(page.locator('[data-testid="control-banner"]').getByText('Pick a size')).toBeVisible()
+    await clickOption(page, 'Large')
+
+    const submitBtn = page.locator('[data-testid="control-submit-btn"]')
+    await expect(submitBtn).toBeEnabled()
+    await submitBtn.click()
+
+    await page.waitForFunction(() => {
+      const body = document.body.textContent || ''
+      return body.includes('Red') && body.includes('Large')
+    })
   })
 })

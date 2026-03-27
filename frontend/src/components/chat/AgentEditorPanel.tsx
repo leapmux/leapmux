@@ -304,6 +304,15 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   const modelContextWindow = createMemo(() =>
     Number(props.agent?.availableModels?.find(m => m.id === props.agent?.model)?.contextWindow) || undefined,
   )
+  const activeDraftKey = createMemo(() => {
+    if (!props.agentId)
+      return undefined
+    const request = ctrl.activeControlRequest()
+    if (!request)
+      return props.agentId
+    const pageSuffix = ctrl.isAskUserQuestion() ? `-q-${askCurrentPage()}` : ''
+    return `${props.agentId}-ctrl-${request.requestId}${pageSuffix}`
+  })
 
   let triggerSend: (() => void) | undefined
 
@@ -384,6 +393,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         />
         <MarkdownEditor
           agentId={props.agentId}
+          draftKey={activeDraftKey()}
           controlRequestId={ctrl.activeControlRequest()?.requestId}
           onSend={ctrl.activeControlRequest() ? ctrl.handleControlSend : ctrl.handleSend}
           disabled={props.disabled}

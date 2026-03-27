@@ -1,14 +1,16 @@
 import type { Accessor } from 'solid-js'
 import type { FileAttachment } from './attachments'
-import type { AskQuestionState, EditorContentRef } from './controls/types'
-import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { AskQuestionState, EditorContentRef, Question } from './controls/types'
 import type { ControlRequest } from '~/stores/control.store'
 import type { PermissionMode } from '~/utils/controlResponse'
 import { createEffect, createMemo, on } from 'solid-js'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { clearDraft } from '~/lib/editor/draftPersistence'
 import { safeGetJson, safeRemoveItem, safeSetJson } from '~/lib/safeStorage'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
-import { trySubmitAskUserQuestion } from './controls/AskUserQuestionControl'
+import { buildAskAnswers, trySubmitAskUserQuestion } from './controls/AskUserQuestionControl'
+import { sendCodexUserInputResponse } from './controls/CodexControlRequest'
+import { sendOpenCodeQuestionResponse } from './controls/OpenCodeControlRequest'
 import { getProviderPlugin } from './providers'
 
 export interface ControlResponseHandlingProps {
@@ -146,6 +148,11 @@ export function useControlResponseHandling(
     if (!props.agentId)
       return
     clearDraft(`${props.agentId}-ctrl-${requestId}`)
+    // Ask-user-question drafts may be scoped per page; clear a reasonable
+    // range of page keys for this one-shot request.
+    for (let page = 0; page < 20; page++) {
+      clearDraft(`${props.agentId}-ctrl-${requestId}-q-${page}`)
+    }
     safeRemoveItem(`leapmux-ask-state-${props.agentId}-${requestId}`)
   }
 
@@ -154,11 +161,55 @@ export function useControlResponseHandling(
     if (!req)
       return
     if (isAskUserQuestion()) {
+      const provider = props.agent?.agentProvider
+      // Extract and normalize questions once for both page navigation and response building.
+      const normalizedQuestions: Question[] = (() => {
+        switch (provider) {
+          case AgentProvider.CODEX: {
+            const params = req.payload.params as Record<string, unknown> | undefined
+            return (params?.questions as Question[] | undefined) ?? []
+          }
+          case AgentProvider.OPENCODE: {
+            const properties = req.payload.properties as Record<string, unknown> | undefined
+            const rawQuestions = (properties?.questions as Array<Record<string, unknown>> | undefined) ?? []
+            return rawQuestions.map(question => ({
+              ...question,
+              multiSelect: (question.multiSelect as boolean | undefined) ?? (question.multiple as boolean | undefined),
+            })) as Question[]
+          }
+          default:
+            return (getToolInput(req.payload).questions as Question[] | undefined) ?? []
+        }
+      })()
+      const normalizedRequest: ControlRequest = {
+        ...req,
+        payload: {
+          ...req.payload,
+          request: {
+            tool_name: 'AskUserQuestion',
+            input: { questions: normalizedQuestions },
+          },
+        },
+      }
+      const sendAskResponse = () => {
+        switch (provider) {
+          case AgentProvider.CODEX:
+            void sendCodexUserInputResponse(req.agentId, sendControlResponse, req.requestId, normalizedQuestions, askState)
+            break
+          case AgentProvider.OPENCODE:
+            void sendOpenCodeQuestionResponse(req.agentId, sendControlResponse, req.requestId, normalizedQuestions, askState)
+            break
+          default: {
+            const response = buildAskAnswers(askState, normalizedQuestions, getToolInput(req.payload), req.requestId)
+            void sendControlResponse(req.agentId, new TextEncoder().encode(JSON.stringify(response)))
+          }
+        }
+      }
       const submitted = trySubmitAskUserQuestion(
         askState,
-        req,
+        normalizedRequest,
         content,
-        sendControlResponse,
+        sendAskResponse,
         editorContentRefAccessor(),
       )
       if (!submitted)
