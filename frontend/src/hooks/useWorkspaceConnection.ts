@@ -210,6 +210,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           try {
             const meta = extractResultMetadata(parseMessageContent(msg))
             if (meta) {
+              if (msg.agentProvider === AgentProvider.CODEX && meta.subtype === 'turn_completed') {
+                // Codex also clears the active turn ID via ephemeral session info,
+                // but the persisted turn/completed result must be enough to stop
+                // the thinking indicator after reconnect or missed live events.
+                agentSessionStore.updateInfo(agentId, { codexTurnId: '' })
+              }
               if (meta.subtype && catchUpPhase === 'live')
                 params.onTurnEnd?.(agentId, meta.numToolUses)
               if (meta.contextWindow !== undefined) {

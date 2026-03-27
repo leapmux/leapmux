@@ -1,9 +1,10 @@
 import type { ParentComponent } from 'solid-js'
 import { Router } from '@solidjs/router'
 import { FileRoutes } from '@solidjs/start/router'
-import { createEffect, createSignal, onCleanup, Suspense } from 'solid-js'
+import { createEffect, createSignal, onCleanup, onMount, Suspense } from 'solid-js'
 import { AuthProvider } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
+import { disableTextSubstitutions } from '~/lib/textInputBehavior'
 import { heightFull } from '~/styles/shared.css'
 import '~/lib/oat'
 import '@knadh/oat/oat.min.css'
@@ -103,6 +104,19 @@ export default function App() {
   ;(window as any).__leapmux_setTheme = (pref: ThemePreference) => {
     setThemePreference(pref)
   }
+
+  onMount(() => {
+    disableTextSubstitutions(document)
+
+    const handleFocusIn = (event: FocusEvent) => {
+      const target = event.target
+      if (target instanceof HTMLElement)
+        disableTextSubstitutions(target)
+    }
+
+    document.addEventListener('focusin', handleFocusIn, true)
+    onCleanup(() => document.removeEventListener('focusin', handleFocusIn, true))
+  })
 
   return (
     <div class={heightFull}>

@@ -32,9 +32,13 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
 
   let expandRafId = 0
   let tickRafId = 0
+  let wasVisible = false
 
   createEffect(() => {
     if (props.visible) {
+      if (wasVisible)
+        return
+      wasVisible = true
       setVerb(getRandomVerb())
       expandRafId = requestAnimationFrame(() => setExpanded(true))
       sim.start()
@@ -50,6 +54,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
       tickRafId = requestAnimationFrame(tick)
     }
     else {
+      wasVisible = false
       cancelAnimationFrame(expandRafId)
       cancelAnimationFrame(tickRafId)
       setExpanded(false)

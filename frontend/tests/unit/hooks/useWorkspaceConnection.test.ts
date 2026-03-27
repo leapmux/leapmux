@@ -1,7 +1,9 @@
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { AgentStatus, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, AgentStatus, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { extractResultMetadata, parseMessageContent } from '~/lib/messageParser'
 import { createAgentStore } from '~/stores/agent.store'
+import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES, MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
 import { createTabStore, TabType } from '~/stores/tab.store'
@@ -161,6 +163,40 @@ describe('agent tab notification keys', () => {
       }
 
       expect(tabStore.state.tabs[0].hasNotification).not.toBe(true)
+      dispose()
+    })
+  })
+})
+
+describe('codex result replay handling', () => {
+  it('clears stale codexTurnId when a persisted turn/completed result is replayed', () => {
+    createRoot((dispose) => {
+      const agentSessionStore = createAgentSessionStore()
+      agentSessionStore.updateInfo('agent-1', { codexTurnId: 'turn-stale' })
+
+      const msg = {
+        id: 'm1',
+        role: MessageRole.RESULT,
+        content: new TextEncoder().encode(JSON.stringify({
+          num_tool_uses: 2,
+          threadId: 'thread-1',
+          turn: {
+            id: 'turn-1',
+            items: [],
+            status: 'completed',
+            error: null,
+          },
+        })),
+        contentCompression: ContentCompression.NONE,
+        seq: 1n,
+        agentProvider: AgentProvider.CODEX,
+      } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
+
+      const meta = extractResultMetadata(parseMessageContent(msg))
+      if (meta && msg.agentProvider === AgentProvider.CODEX && meta.subtype === 'turn_completed')
+        agentSessionStore.updateInfo('agent-1', { codexTurnId: '' })
+
+      expect(agentSessionStore.getInfo('agent-1').codexTurnId).toBe('')
       dispose()
     })
   })

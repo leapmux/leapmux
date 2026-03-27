@@ -486,7 +486,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                   </Show>
                 </Show>
                 <ThinkingIndicator
-                  visible={props.agentWorking && !props.streamingText}
+                  visible={props.agentWorking}
                   onExpandTick={() => {
                     if (isAtBottom()) {
                       messageListRef!.scrollTop = messageListRef!.scrollHeight
