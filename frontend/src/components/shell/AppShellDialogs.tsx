@@ -8,25 +8,30 @@ import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
 import type { createTerminalStore } from '~/stores/terminal.store'
 import type { createWorkspaceStore } from '~/stores/workspace.store'
-import { onMount, Show } from 'solid-js'
+import LoaderCircle from 'lucide-solid/icons/loader-circle'
+import { createSignal, Show } from 'solid-js'
 import { sectionClient } from '~/api/clients'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
+import { Dialog } from '~/components/common/Dialog'
+import { Icon } from '~/components/common/Icon'
 import { KeyPinMismatchDialog } from '~/components/common/KeyPinMismatchDialog'
+import { showWarnToast } from '~/components/common/Toast'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { NewWorkspaceDialog } from '~/components/workspace/NewWorkspaceDialog'
 import { LastTabCloseTarget } from '~/generated/leapmux/v1/git_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { dialogStandard } from '~/styles/shared.css'
+import { spinner } from '~/styles/animations.css'
 import { NewAgentDialog } from './NewAgentDialog'
 import { NewTerminalDialog } from './NewTerminalDialog'
 import { ResumeSessionDialog } from './ResumeSessionDialog'
 import { nextTabNumber } from './useAgentOperations'
 
-type LastTabCloseChoice = 'cancel' | 'push' | 'schedule-delete' | 'close-anyway'
+type LastTabCloseChoice = 'cancel' | 'schedule-delete' | 'close-anyway'
 
 interface LastTabConfirmState extends InspectLastTabCloseResponse {
   resolve: (choice: LastTabCloseChoice) => void
+  onPush: () => Promise<void>
 }
 
 export interface KeyPinConfirmState {
@@ -213,15 +218,22 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
 
       <Show when={props.lastTabConfirm}>
         {(confirm) => {
-          let dlgRef!: HTMLDialogElement
-          onMount(() => dlgRef.showModal())
           const handleCancel = () => {
             confirm().resolve('cancel')
             props.setLastTabConfirm(null)
           }
-          const handlePush = () => {
-            confirm().resolve('push')
-            props.setLastTabConfirm(null)
+          const [pushing, setPushing] = createSignal(false)
+          const handlePush = async () => {
+            setPushing(true)
+            try {
+              await confirm().onPush()
+            }
+            catch (err) {
+              showWarnToast('Failed to push branch', err)
+            }
+            finally {
+              setPushing(false)
+            }
           }
           const handleScheduleDelete = () => {
             confirm().resolve('schedule-delete')
@@ -232,8 +244,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             props.setLastTabConfirm(null)
           }
           return (
-            <dialog ref={dlgRef} class={dialogStandard} onClose={handleCancel}>
-              <header><h2>Close Last Tab</h2></header>
+            <Dialog title="Close Last Tab" onClose={handleCancel}>
               <section>
                 <p>
                   <Show
@@ -275,8 +286,11 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
                     not pushed.
                   </p>
                 </Show>
-                <Show when={confirm().remoteBranchMissing}>
-                  <p>Remote branch does not exist.</p>
+                <Show when={confirm().remoteBranchMissing || (!confirm().upstreamExists && confirm().canPush)}>
+                  <p>Branch not pushed to remote.</p>
+                </Show>
+                <Show when={!confirm().hasUncommittedChanges && confirm().unpushedCommitCount === 0 && !confirm().remoteBranchMissing && confirm().upstreamExists}>
+                  <p>No uncommitted changes or unpushed commits.</p>
                 </Show>
               </section>
               <footer>
@@ -284,20 +298,21 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
                   Cancel
                 </button>
                 <Show when={confirm().canPush}>
-                  <button type="button" onClick={handlePush}>
-                    {confirm().pushLabel || 'Push'}
+                  <button type="button" onClick={handlePush} disabled={pushing()}>
+                    {confirm().hasUncommittedChanges ? 'Commit and Push' : 'Push'}
+                    <Show when={pushing()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
                   </button>
                 </Show>
                 <Show when={confirm().target === LastTabCloseTarget.WORKTREE}>
                   <ConfirmButton data-variant="danger" onClick={handleScheduleDelete}>
-                    Schedule worktree deletion
+                    Delete
                   </ConfirmButton>
                 </Show>
                 <ConfirmButton data-variant="danger" onClick={handleCloseAnyway}>
                   Close anyway
                 </ConfirmButton>
               </footer>
-            </dialog>
+            </Dialog>
           )
         }}
       </Show>

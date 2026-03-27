@@ -1,6 +1,7 @@
 package gitutil
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -14,13 +15,21 @@ import (
 
 var errNotGitRepo = errors.New("not a git repository")
 
+// NewGitCmd creates an exec.Cmd for git with terminal interaction disabled.
+func NewGitCmd(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Stdin = nil
+	return cmd
+}
+
 // GetGitStatus returns the git status for the given directory.
 // Best-effort: returns nil if git is not available or the path is not a git repo.
 func GetGitStatus(dir string) *leapmuxv1.AgentGitStatus {
 	status := &leapmuxv1.AgentGitStatus{}
 
 	// Try porcelain v2 first (git 2.13.2+).
-	cmd := exec.Command("git", "-C", dir, "status", "--porcelain=v2", "--branch")
+	cmd := NewGitCmd(context.Background(), "-C", dir, "status", "--porcelain=v2", "--branch")
 	output, err := cmd.Output()
 	if err != nil {
 		// Fallback to porcelain v1 for older git versions.
@@ -108,7 +117,7 @@ func parseXY(x, y byte, status *leapmuxv1.AgentGitStatus) {
 
 // getGitStatusV1 is the fallback for git versions that don't support --porcelain=v2.
 func getGitStatusV1(dir string) *leapmuxv1.AgentGitStatus {
-	cmd := exec.Command("git", "-C", dir, "status", "--porcelain", "--branch")
+	cmd := NewGitCmd(context.Background(), "-C", dir, "status", "--porcelain", "--branch")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil
@@ -184,7 +193,7 @@ func getGitStatusV1(dir string) *leapmuxv1.AgentGitStatus {
 
 // checkStash checks if the repository has any stashed changes.
 func checkStash(dir string, status *leapmuxv1.AgentGitStatus) {
-	cmd := exec.Command("git", "-C", dir, "rev-parse", "--verify", "refs/stash")
+	cmd := NewGitCmd(context.Background(), "-C", dir, "rev-parse", "--verify", "refs/stash")
 	if err := cmd.Run(); err == nil {
 		status.Stashed = true
 	}
@@ -192,7 +201,7 @@ func checkStash(dir string, status *leapmuxv1.AgentGitStatus) {
 
 // getShortHEAD returns the short commit SHA for HEAD, or empty string on failure.
 func getShortHEAD(dir string) string {
-	cmd := exec.Command("git", "-C", dir, "rev-parse", "--short", "HEAD")
+	cmd := NewGitCmd(context.Background(), "-C", dir, "rev-parse", "--short", "HEAD")
 	output, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -203,7 +212,7 @@ func getShortHEAD(dir string) string {
 // GetOriginURL returns the remote origin URL for the given directory.
 // Returns an empty string if the directory is not a git repo or has no origin remote.
 func GetOriginURL(dir string) string {
-	cmd := exec.Command("git", "-C", dir, "config", "--get", "remote.origin.url")
+	cmd := NewGitCmd(context.Background(), "-C", dir, "config", "--get", "remote.origin.url")
 	output, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -328,12 +337,12 @@ func CreateWorktree(repoRoot, worktreePath, branchName, startPoint string) error
 	// Try creating with new branch first.
 	args := []string{"-C", repoRoot, "worktree", "add", worktreePath, "-b", branchName}
 	args = append(args, startPoint)
-	cmd := exec.Command("git", args...)
+	cmd := NewGitCmd(context.Background(), args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		outStr := string(output)
 		// If branch already exists, try without -b (checkout existing branch).
 		if strings.Contains(outStr, "already exists") {
-			cmd2 := exec.Command("git", "-C", repoRoot, "worktree", "add", worktreePath, branchName)
+			cmd2 := NewGitCmd(context.Background(), "-C", repoRoot, "worktree", "add", worktreePath, branchName)
 			if output2, err2 := cmd2.CombinedOutput(); err2 != nil {
 				return fmt.Errorf("git worktree add: %s", strings.TrimSpace(string(output2)))
 			}
@@ -355,7 +364,7 @@ func IsWorktreeClean(worktreePath string) (bool, error) {
 	}
 
 	// Check for uncommitted changes.
-	cmd := exec.Command("git", "-C", worktreePath, "status", "--porcelain")
+	cmd := NewGitCmd(context.Background(), "-C", worktreePath, "status", "--porcelain")
 	output, err := cmd.Output()
 	if err != nil {
 		return false, fmt.Errorf("git status: %w", err)
@@ -366,7 +375,7 @@ func IsWorktreeClean(worktreePath string) (bool, error) {
 
 	// Check for unpushed commits.
 	// First, try comparing against the upstream tracking branch.
-	cmd2 := exec.Command("git", "-C", worktreePath, "log", "@{upstream}..HEAD", "--oneline")
+	cmd2 := NewGitCmd(context.Background(), "-C", worktreePath, "log", "@{upstream}..HEAD", "--oneline")
 	output2, err := cmd2.Output()
 	if err == nil {
 		// Upstream exists — check if there are commits ahead of it.
@@ -381,13 +390,13 @@ func IsWorktreeClean(worktreePath string) (bool, error) {
 	// where a worktree branch was created with `git worktree add -b <name>` and
 	// has local commits that would be lost if the worktree were deleted.
 	currentBranch := ""
-	branchCmd := exec.Command("git", "-C", worktreePath, "branch", "--show-current")
+	branchCmd := NewGitCmd(context.Background(), "-C", worktreePath, "branch", "--show-current")
 	if branchOutput, branchErr := branchCmd.Output(); branchErr == nil {
 		currentBranch = strings.TrimSpace(string(branchOutput))
 	}
 	if currentBranch != "" {
 		// Show commits on HEAD that aren't reachable from any other branch.
-		cmd3 := exec.Command("git", "-C", worktreePath, "log", "HEAD",
+		cmd3 := NewGitCmd(context.Background(), "-C", worktreePath, "log", "HEAD",
 			"--not", "--exclude="+currentBranch, "--branches", "--oneline")
 		output3, err3 := cmd3.Output()
 		if err3 == nil && len(strings.TrimSpace(string(output3))) > 0 {
@@ -406,14 +415,14 @@ func RemoveWorktree(repoRoot, worktreePath string) error {
 		return fmt.Errorf("%q is not a git repository", repoRoot)
 	}
 
-	cmd := exec.Command("git", "-C", repoRoot, "worktree", "remove", worktreePath, "--force")
+	cmd := NewGitCmd(context.Background(), "-C", repoRoot, "worktree", "remove", worktreePath, "--force")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		// If git worktree remove fails, try to remove the directory manually.
 		if rmErr := os.RemoveAll(worktreePath); rmErr != nil {
 			return fmt.Errorf("git worktree remove: %s; manual removal also failed: %w", strings.TrimSpace(string(output)), rmErr)
 		}
 		// Directory removed manually, but we should also prune the worktree list.
-		_ = exec.Command("git", "-C", repoRoot, "worktree", "prune").Run()
+		_ = NewGitCmd(context.Background(), "-C", repoRoot, "worktree", "prune").Run()
 	}
 
 	// Clean up the parent *-worktrees directory if it's now empty.
@@ -431,7 +440,7 @@ func IsBranchInUse(repoRoot, branchName string) (bool, error) {
 		return false, fmt.Errorf("invalid branch name: %w", err)
 	}
 
-	cmd := exec.Command("git", "-C", repoRoot, "worktree", "list", "--porcelain")
+	cmd := NewGitCmd(context.Background(), "-C", repoRoot, "worktree", "list", "--porcelain")
 	output, err := cmd.Output()
 	if err != nil {
 		return false, fmt.Errorf("git worktree list: %w", err)
@@ -457,7 +466,7 @@ func DeleteBranch(repoRoot, branchName string) error {
 		return fmt.Errorf("invalid branch name: %w", err)
 	}
 
-	cmd := exec.Command("git", "-C", repoRoot, "branch", "-D", branchName)
+	cmd := NewGitCmd(context.Background(), "-C", repoRoot, "branch", "-D", branchName)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git branch -D %s: %s", branchName, strings.TrimSpace(string(output)))
 	}
@@ -479,7 +488,7 @@ func ReadFileAtRef(dir, relPath, ref string) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("unsupported ref: %q", ref)
 	}
 
-	cmd := exec.Command("git", "-C", dir, "show", spec)
+	cmd := NewGitCmd(context.Background(), "-C", dir, "show", spec)
 	output, err := cmd.Output()
 	if err != nil {
 		var exitErr *exec.ExitError

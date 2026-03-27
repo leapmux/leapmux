@@ -7,13 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	"github.com/leapmux/leapmux/internal/worker/gitutil"
 )
 
 // registerGitHandlers registers handlers for git operations on the local filesystem.
@@ -475,14 +475,17 @@ func (t *tabGitContext) commitDir() string {
 func (svc *Context) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (*leapmuxv1.InspectLastTabCloseResponse, error) {
 	tabCtx, err := svc.loadTabGitContext(ctx, tabType, tabID)
 	if err != nil {
-		return nil, err
+		// If the tab's working directory is not (or no longer) a git repository,
+		// there is nothing to prompt about — allow the tab to close normally.
+		return &leapmuxv1.InspectLastTabCloseResponse{
+			Target: leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE,
+		}, nil
 	}
 
 	resp := &leapmuxv1.InspectLastTabCloseResponse{
 		Target:     leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE,
 		RepoRoot:   tabCtx.repoRoot,
 		BranchName: tabCtx.branchName,
-		PushLabel:  "Push",
 	}
 
 	statsPath := tabCtx.commitDir()
@@ -494,9 +497,6 @@ func (svc *Context) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 	resp.DiffDeleted = deleted
 	resp.DiffUntracked = untracked
 	resp.HasUncommittedChanges = hasChanges
-	if hasChanges {
-		resp.PushLabel = "Commit and Push"
-	}
 
 	unpushedCount, upstreamExists, remoteMissing, originExists, canPush, err := pushStatusForPath(ctx, tabCtx.commitDir(), tabCtx.branchName)
 	if err != nil {
@@ -801,7 +801,7 @@ func remoteRefExists(ctx context.Context, dir, remoteName, branchName string) bo
 	if remoteName == "" || branchName == "" {
 		return false
 	}
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "ls-remote", "--exit-code", "--heads", remoteName, branchName)
+	cmd := gitutil.NewGitCmd(ctx, "-C", dir, "ls-remote", "--exit-code", "--heads", remoteName, branchName)
 	if err := cmd.Run(); err != nil {
 		return false
 	}
@@ -817,7 +817,7 @@ func remoteRefExists(ctx context.Context, dir, remoteName, branchName string) bo
 // Returns nil for non-git directories.
 func getGitFileStatusEntries(_ context.Context, repoRoot string) ([]*leapmuxv1.GitFileStatusEntry, error) {
 	// 1. Get file status via porcelain v2.
-	cmd := exec.Command("git", "-C", repoRoot, "status", "--porcelain=v2", "-z")
+	cmd := gitutil.NewGitCmd(context.Background(), "-C", repoRoot, "status", "--porcelain=v2", "-z")
 	statusOut, err := cmd.Output()
 	if err != nil {
 		return nil, nil // Not a git repo or git unavailable.
@@ -835,13 +835,13 @@ func getGitFileStatusEntries(_ context.Context, repoRoot string) ([]*leapmuxv1.G
 	}
 
 	// 2. Get unstaged diff stats.
-	cmd2 := exec.Command("git", "-C", repoRoot, "diff", "--numstat", "-z")
+	cmd2 := gitutil.NewGitCmd(context.Background(), "-C", repoRoot, "diff", "--numstat", "-z")
 	if numstatOut, err := cmd2.Output(); err == nil {
 		applyNumstat(numstatOut, fileMap, false)
 	}
 
 	// 3. Get staged diff stats.
-	cmd3 := exec.Command("git", "-C", repoRoot, "diff", "--numstat", "--staged", "-z")
+	cmd3 := gitutil.NewGitCmd(context.Background(), "-C", repoRoot, "diff", "--numstat", "--staged", "-z")
 	if numstatOut, err := cmd3.Output(); err == nil {
 		applyNumstat(numstatOut, fileMap, true)
 	}
@@ -851,8 +851,7 @@ func getGitFileStatusEntries(_ context.Context, repoRoot string) ([]*leapmuxv1.G
 
 // gitOutput runs a git command and returns its stdout as a string.
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
-	fullArgs := append([]string{"-C", dir}, args...)
-	cmd := exec.CommandContext(ctx, "git", fullArgs...)
+	cmd := gitutil.NewGitCmd(ctx, append([]string{"-C", dir}, args...)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -864,8 +863,7 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 
 // gitOutputBytes runs a git command and returns its stdout as raw bytes.
 func gitOutputBytes(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	fullArgs := append([]string{"-C", dir}, args...)
-	cmd := exec.CommandContext(ctx, "git", fullArgs...)
+	cmd := gitutil.NewGitCmd(ctx, append([]string{"-C", dir}, args...)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -877,8 +875,7 @@ func gitOutputBytes(ctx context.Context, dir string, args ...string) ([]byte, er
 
 // gitOutputStderr runs a git command and returns its stderr as a string.
 func gitOutputStderr(ctx context.Context, dir string, args ...string) (string, error) {
-	fullArgs := append([]string{"-C", dir}, args...)
-	cmd := exec.CommandContext(ctx, "git", fullArgs...)
+	cmd := gitutil.NewGitCmd(ctx, append([]string{"-C", dir}, args...)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -888,10 +885,9 @@ func gitOutputStderr(ctx context.Context, dir string, args ...string) (string, e
 
 // gitCommand runs a git command and returns an error if it fails.
 func gitCommand(ctx context.Context, dir string, args ...string) error {
-	fullArgs := append([]string{"-C", dir}, args...)
-	cmd := exec.CommandContext(ctx, "git", fullArgs...)
-	return cmd.Run()
+	return gitutil.NewGitCmd(ctx, append([]string{"-C", dir}, args...)...).Run()
 }
+
 
 // parseGitStatusCode converts a single character from git status --porcelain
 // into a GitFileStatusCode enum value.

@@ -388,7 +388,6 @@ func TestInspectLastTabClose_WorktreeLastTabPromptsEvenWhenClean(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, expectedPath, resp.GetWorktreePath())
 	assert.Equal(t, "inspect-clean", resp.GetBranchName())
-	assert.Equal(t, "Push", resp.GetPushLabel())
 }
 
 func TestInspectLastTabClose_BranchLastTabCleanDoesNotPrompt(t *testing.T) {
@@ -413,7 +412,6 @@ func TestInspectLastTabClose_BranchLastTabDirtyPrompts(t *testing.T) {
 	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_BRANCH, resp.GetTarget())
 	assert.True(t, resp.GetShouldPrompt())
 	assert.True(t, resp.GetHasUncommittedChanges())
-	assert.Equal(t, "Commit and Push", resp.GetPushLabel())
 }
 
 func TestInspectLastTabClose_BranchMissingRemotePrompts(t *testing.T) {

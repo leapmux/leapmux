@@ -49,10 +49,10 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
 
   const [closingTabKeys, setClosingTabKeys] = createSignal<Set<string>>(new Set())
 
-  type LastTabCloseChoice = 'cancel' | 'push' | 'schedule-delete' | 'close-anyway'
+  type LastTabCloseChoice = 'cancel' | 'schedule-delete' | 'close-anyway'
 
   const [lastTabConfirm, setLastTabConfirm] = createSignal<
-    (InspectLastTabCloseResponse & { resolve: (choice: LastTabCloseChoice) => void }) | null
+    (InspectLastTabCloseResponse & { resolve: (choice: LastTabCloseChoice) => void, onPush: () => Promise<void> }) | null
   >(null)
 
   let isTabEditing: () => boolean = () => false
@@ -107,9 +107,15 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     }
   }
 
-  const askLastTabConfirmation = (status: InspectLastTabCloseResponse): Promise<LastTabCloseChoice> => {
+  const askLastTabConfirmation = (workerId: string, tabType: TabType, tabId: string, status: InspectLastTabCloseResponse): Promise<LastTabCloseChoice> => {
     return new Promise((resolve) => {
-      setLastTabConfirm({ ...status, resolve })
+      const onPush = async () => {
+        await workerRpc.pushBranchForClose(workerId, { tabType, tabId })
+        const updated = await workerRpc.inspectLastTabClose(workerId, { tabType, tabId })
+        setLastTabConfirm(prev => prev ? { ...updated, resolve: prev.resolve, onPush: prev.onPush } : null)
+        showInfoToast('Branch pushed successfully')
+      }
+      setLastTabConfirm({ ...status, resolve, onPush })
     })
   }
 
@@ -140,14 +146,11 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       const workerId = tab.workerId ?? ''
       const status = await workerRpc.inspectLastTabClose(workerId, { tabType, tabId: tab.id })
       if (status.shouldPrompt) {
-        const choice = await askLastTabConfirmation(status)
+        const choice = await askLastTabConfirmation(workerId, tabType, tab.id, status)
         if (choice === 'cancel') {
           return
         }
-        if (choice === 'push') {
-          await workerRpc.pushBranchForClose(workerId, { tabType, tabId: tab.id })
-        }
-        else if (choice === 'schedule-delete') {
+        if (choice === 'schedule-delete') {
           await workerRpc.scheduleWorktreeDeletion(workerId, { worktreeId: status.worktreeId })
           showInfoToast('Worktree deletion scheduled')
         }

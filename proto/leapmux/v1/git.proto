@@ -61,7 +61,6 @@ message InspectLastTabCloseResponse {
   bool remote_branch_missing = 13;
   bool origin_exists = 14;
   bool can_push = 15;
-  string push_label = 16;
 }
 
 message PushBranchForCloseRequest {
