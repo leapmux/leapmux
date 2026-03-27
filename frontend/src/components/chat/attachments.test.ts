@@ -1,9 +1,10 @@
 import type { FileAttachment } from './attachments'
+import type { AttachmentCapabilities } from './providers/registry'
 import { describe, expect, it } from 'vitest'
 import {
   buildAcceptAttribute,
-  describeUnsupportedAttachment,
   clearAttachments,
+  describeUnsupportedAttachment,
   getAttachments,
   inferAttachmentDetails,
   isAttachmentSupported,
@@ -14,7 +15,6 @@ import {
   setAttachments,
   totalAttachmentSize,
 } from './attachments'
-import type { AttachmentCapabilities } from './providers/registry'
 
 const claudeCapabilities: AttachmentCapabilities = {
   text: true,

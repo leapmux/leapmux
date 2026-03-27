@@ -5,6 +5,7 @@ import type { createSectionStore } from '~/stores/section.store'
 import Resizable from '@corvu/resizable'
 import Plus from 'lucide-solid/icons/plus'
 import { createSignal, Show } from 'solid-js'
+import { ChatDropZone } from '~/components/chat/ChatDropZone'
 import { Icon } from '~/components/common/Icon'
 import * as styles from './AppShell.css'
 import { SectionDragProvider } from './SectionDragContext'
@@ -49,6 +50,8 @@ interface DesktopLayoutProps {
   }) => JSX.Element
   editorPanel: JSX.Element | false
   floatingWindowLayer?: JSX.Element
+  onFileDrop?: (files: FileList, shiftKey: boolean) => void
+  fileDropDisabled?: boolean
 }
 
 export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
@@ -215,12 +218,14 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
                       </Show>
                     )}
                   >
-                    <TilingLayout
-                      root={props.layoutStore.state.root}
-                      renderTile={props.renderTile}
-                      onRatioChange={props.onRatioChange}
-                    />
-                    {props.editorPanel}
+                    <ChatDropZone onDrop={props.onFileDrop} disabled={props.fileDropDisabled}>
+                      <TilingLayout
+                        root={props.layoutStore.state.root}
+                        renderTile={props.renderTile}
+                        onRatioChange={props.onRatioChange}
+                      />
+                      {props.editorPanel}
+                    </ChatDropZone>
                   </Show>
                 </Resizable.Panel>
 

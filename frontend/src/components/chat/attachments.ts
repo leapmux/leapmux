@@ -86,7 +86,7 @@ const TEXT_MIME_BY_EXTENSION = new Map<string, string>([
   ['svg', 'image/svg+xml'],
 ])
 
-const TEXT_FILE_EXTENSIONS = Array.from(TEXT_MIME_BY_EXTENSION.keys()).map(ext => `.${ext}`)
+const TEXT_FILE_EXTENSIONS = Array.from(TEXT_MIME_BY_EXTENSION.keys(), ext => `.${ext}`)
 
 const TEXTUAL_MIME_PREFIXES = ['text/']
 const TEXTUAL_MIME_EXACT = new Set([
