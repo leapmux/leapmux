@@ -76,17 +76,21 @@ export function isNotificationThreadWrapper(
 ): wrapper is { messages: unknown[] } {
   if (!wrapper || wrapper.messages.length < 1)
     return false
-  const first = wrapper.messages[0] as Record<string, unknown>
-  const t = first.type as string | undefined
-  if (!t)
-    return false
-  if (BASE_NOTIFICATION_TYPES.has(t))
-    return true
-  if (extraTypes?.has(t))
-    return true
-  if (checkSubtype) {
-    const st = first.subtype as string | undefined
-    return checkSubtype(t, st)
+  for (const entry of wrapper.messages) {
+    if (!isObject(entry))
+      continue
+    const t = entry.type as string | undefined
+    if (!t)
+      continue
+    if (BASE_NOTIFICATION_TYPES.has(t))
+      return true
+    if (extraTypes?.has(t))
+      return true
+    if (checkSubtype) {
+      const st = entry.subtype as string | undefined
+      if (checkSubtype(t, st))
+        return true
+    }
   }
   return false
 }

@@ -103,8 +103,8 @@ function isCodexNotifThread(wrapper: { messages: unknown[] } | null): wrapper is
   // Codex method-based notifications (e.g. account/rateLimits/updated)
   if (!wrapper || wrapper.messages.length < 1)
     return false
-  const first = wrapper.messages[0] as Record<string, unknown>
-  return first.method === 'account/rateLimits/updated'
+  return wrapper.messages.some(msg =>
+    isObject(msg) && msg.method === 'account/rateLimits/updated')
 }
 
 /** Returns true when a Codex rate limit message has all tiers below the warning threshold. */
@@ -121,6 +121,15 @@ function isCodexRateLimitAllAllowed(m: Record<string, unknown>): boolean {
       return false
   }
   return true
+}
+
+function isCodexHiddenNotificationThreadMessage(m: unknown): boolean {
+  if (!isObject(m))
+    return false
+  const msg = m as Record<string, unknown>
+  if (msg.method === 'thread/tokenUsage/updated')
+    return true
+  return isCodexRateLimitAllAllowed(msg)
 }
 
 /** Codex settings panel (model, effort, approval policy, sandbox). */
@@ -298,9 +307,8 @@ const codexPlugin: ProviderPlugin = {
   classify(parent, wrapper): MessageCategory {
     // Notification threads (settings_changed, context_cleared, etc.)
     if (isCodexNotifThread(wrapper)) {
-      // Filter out Codex rate limit messages where all tiers are "allowed".
-      const msgs = wrapper.messages.filter(m =>
-        !isObject(m) || !isCodexRateLimitAllAllowed(m as Record<string, unknown>))
+      // Filter notifications that are intentionally invisible in chat.
+      const msgs = wrapper.messages.filter(m => !isCodexHiddenNotificationThreadMessage(m))
       if (msgs.length === 0)
         return { kind: 'hidden' }
       return { kind: 'notification_thread', messages: msgs }

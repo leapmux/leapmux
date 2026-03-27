@@ -60,6 +60,18 @@ describe('codex classify', () => {
     expect(result).toEqual({ kind: 'hidden' })
   })
 
+  it('classifies mixed wrappers when context_cleared follows a hidden Codex lifecycle event', () => {
+    const wrapper = {
+      old_seqs: [],
+      messages: [
+        { method: 'thread/started', params: { threadId: 'thread-1' } },
+        { type: 'context_cleared' },
+      ],
+    }
+    const result = plugin.classify(undefined, wrapper)
+    expect(result).toEqual({ kind: 'notification_thread', messages: wrapper.messages })
+  })
+
   it('keeps high-usage rate limit notifications visible', () => {
     const parent = {
       method: 'account/rateLimits/updated',
@@ -135,6 +147,36 @@ describe('codex classify', () => {
     }
     const result = plugin.classify(parent, null)
     expect(result).toEqual({ kind: 'hidden' })
+  })
+
+  it('hides notification threads containing only hidden Codex notifications', () => {
+    const wrapper = {
+      old_seqs: [],
+      messages: [
+        {
+          method: 'thread/tokenUsage/updated',
+          params: {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            tokenUsage: {
+              total: { totalTokens: 200, inputTokens: 100, cachedInputTokens: 25, outputTokens: 50, reasoningOutputTokens: 9 },
+              last: { totalTokens: 23, inputTokens: 10, cachedInputTokens: 5, outputTokens: 7, reasoningOutputTokens: 1 },
+              modelContextWindow: 4096,
+            },
+          },
+        },
+        {
+          method: 'account/rateLimits/updated',
+          params: {
+            rateLimits: {
+              primary: { usedPercent: 34, windowMinutes: 300 },
+              secondary: { usedPercent: 10, windowMinutes: 10080 },
+            },
+          },
+        },
+      ],
+    }
+    expect(plugin.classify(undefined, wrapper)).toEqual({ kind: 'hidden' })
   })
 
   it('hides assistant interrupt echo messages with top-level string content', () => {

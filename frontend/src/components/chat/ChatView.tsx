@@ -202,6 +202,23 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // object references for unchanged messages, avoiding full DOM recreation.
   type ClassifiedEntry = ReturnType<typeof classifyParsedMessage> & { msg: AgentChatMessage }
   const entryCache = new Map<string, ClassifiedEntry>()
+  const hasVisibleMessage = (msg: AgentChatMessage): boolean => {
+    const cached = entryCache.get(msg.id)
+    if (cached && cached.msg.seq === msg.seq)
+      return cached.category.kind !== 'hidden'
+
+    const classified = classifyParsedMessage(msg)
+    if (
+      classified.category.kind === 'hidden'
+      && msg.agentProvider === AgentProvider.CODEX
+      && msg.spanType === 'reasoning'
+      && msg.spanId
+      && (props.getCommandStreamBySpanId?.(msg.spanId).length ?? 0) > 0
+    ) {
+      return true
+    }
+    return classified.category.kind !== 'hidden'
+  }
   const visibleEntries = createMemo(() => {
     const showHidden = prefs.showHiddenMessages()
     const newCache = new Map<string, ClassifiedEntry>()
@@ -231,6 +248,11 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     for (const [k, v] of newCache)
       entryCache.set(k, v)
     return result
+  })
+  const hasVisibleEntries = createMemo(() => {
+    if (prefs.showHiddenMessages())
+      return props.messages.length > 0
+    return props.messages.some(msg => hasVisibleMessage(msg))
   })
 
   const scrollToBottom = () => {
@@ -375,7 +397,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       <div class={styles.messageListWrapper}>
         <div ref={messageListRef} class={styles.messageList} onScroll={handleScroll}>
           <Show
-            when={props.messages.length > 0 || props.streamingText || props.agentWorking}
+            when={hasVisibleEntries() || props.streamingText || props.agentWorking}
             fallback={<div class={styles.emptyChat}>Send a message to start</div>}
           >
             <Show when={props.fetchingOlder}>

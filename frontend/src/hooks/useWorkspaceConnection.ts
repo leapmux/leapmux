@@ -188,7 +188,15 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // Extract context usage from assistant messages (rehydrates on reconnect).
         if (msg.role === MessageRole.ASSISTANT) {
           try {
-            const usage = extractAssistantUsage(parseMessageContent(msg))
+            const parsed = parseMessageContent(msg)
+            const method = parsed.parentObject?.method as string | undefined
+            if (method === 'thread/started') {
+              // A new Codex thread starts idle. Clear any stale turn ID that may
+              // have been restored from localStorage so the chat can show its
+              // empty state instead of a phantom thinking indicator.
+              agentSessionStore.updateInfo(agentId, { codexTurnId: '' })
+            }
+            const usage = extractAssistantUsage(parsed)
             if (usage) {
               agentSessionStore.updateInfo(agentId, usage as Record<string, unknown>)
             }

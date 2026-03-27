@@ -202,11 +202,41 @@ function makeCodexWebSearchMessage(params: {
   } as AgentChatMessage
 }
 
+function makeCodexHiddenLifecycleMessage(id: string = 'codex-hidden'): AgentChatMessage {
+  return {
+    $typeName: 'leapmux.v1.AgentChatMessage',
+    id,
+    role: MessageRole.LEAPMUX,
+    content: new TextEncoder().encode(JSON.stringify({
+      old_seqs: [],
+      messages: [
+        {
+          method: 'thread/started',
+          params: { threadId: 'thread-1' },
+        },
+      ],
+    })),
+    contentCompression: ContentCompression.NONE,
+    seq: 1n,
+    createdAt: '',
+    agentProvider: AgentProvider.CODEX,
+  } as AgentChatMessage
+}
+
 describe('chatView', () => {
   it('renders empty state when no messages', () => {
     render(() => (
       <PreferencesProvider>
         <ChatView messages={[]} streamingText="" />
+      </PreferencesProvider>
+    ))
+    expect(screen.getByText('Send a message to start')).toBeTruthy()
+  })
+
+  it('renders empty state when all messages are hidden', () => {
+    render(() => (
+      <PreferencesProvider>
+        <ChatView messages={[makeCodexHiddenLifecycleMessage()]} streamingText="" />
       </PreferencesProvider>
     ))
     expect(screen.getByText('Send a message to start')).toBeTruthy()

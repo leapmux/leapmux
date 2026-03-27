@@ -166,6 +166,17 @@ describe('createAgentSessionStore', () => {
     })
   })
 
+  it('should allow codexTurnId to be reset to an empty string', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      store.updateInfo('agent-1', { codexTurnId: 'turn-stale' })
+      store.updateInfo('agent-1', { codexTurnId: '' })
+      const info = store.getInfo('agent-1')
+      expect(info.codexTurnId).toBe('')
+      dispose()
+    })
+  })
+
   it('should update planFilePath without affecting other fields', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
