@@ -4,6 +4,7 @@ import type { AskQuestionState } from './controls/types'
 import type { ControlRequest } from '~/stores/control.store'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { useControlResponseHandling } from './controlResponseHandling'
 
 function createMinimalAskState(): AskQuestionState {
@@ -63,8 +64,8 @@ function makeAttachment(overrides: Partial<FileAttachment> = {}): FileAttachment
   }
 }
 
-function makeControlRequest(requestId: string, agentId: string): ControlRequest {
-  return { requestId, agentId, payload: { tool_name: 'Bash', tool_input: {} } }
+function makeControlRequest(requestId: string, agentId: string, payload: Record<string, unknown> = { tool_name: 'Bash', tool_input: {} }): ControlRequest {
+  return { requestId, agentId, payload }
 }
 
 describe('handleSend', () => {
@@ -201,5 +202,163 @@ describe('handleControlSend', () => {
     expect(onSendMessage).not.toHaveBeenCalled()
     // onControlResponse should have been called (the allow response).
     expect(onControlResponse).toHaveBeenCalled()
+  })
+
+  it('uses Codex-native request_user_input responses', () => {
+    createRoot((dispose) => {
+      const onControlResponse = vi.fn().mockResolvedValue(undefined)
+      const askState = createMinimalAskState()
+      askState.setSelections({ 0: ['Build'] })
+      const props: ControlResponseHandlingProps = {
+        agentId: 'test-agent',
+        agent: { agentProvider: AgentProvider.CODEX },
+        controlRequests: [makeControlRequest('7', 'test-agent', {
+          method: 'item/tool/requestUserInput',
+          params: {
+            questions: [
+              { id: 'q1', header: 'Action', question: 'What next?', options: [{ label: 'Build' }] },
+            ],
+          },
+        })],
+        onControlResponse,
+        onSendMessage: vi.fn(),
+      }
+      const result = useControlResponseHandling(
+        props,
+        askState,
+        () => undefined,
+        vi.fn(),
+      )
+
+      result.handleControlSend('')
+
+      expect(onControlResponse).toHaveBeenCalledOnce()
+      const [, bytes] = onControlResponse.mock.calls[0]
+      const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
+      expect(parsed).toMatchObject({
+        jsonrpc: '2.0',
+        id: 7,
+        result: {
+          answers: {
+            q1: { answers: ['Build'] },
+          },
+        },
+      })
+      dispose()
+    })
+  })
+
+  it('advances Codex multi-question requests instead of submitting incomplete answers', () => {
+    createRoot((dispose) => {
+      const onControlResponse = vi.fn().mockResolvedValue(undefined)
+      const askState = createMinimalAskState()
+      const editorContentRef = {
+        get: () => 'Build',
+        set: vi.fn(),
+      }
+      const props: ControlResponseHandlingProps = {
+        agentId: 'test-agent',
+        agent: { agentProvider: AgentProvider.CODEX },
+        controlRequests: [makeControlRequest('7', 'test-agent', {
+          method: 'item/tool/requestUserInput',
+          params: {
+            questions: [
+              { id: 'q1', header: 'Action', question: 'What next?', options: [{ label: 'Build' }] },
+              { id: 'q2', header: 'Env', question: 'Where?', options: [{ label: 'Dev' }] },
+            ],
+          },
+        })],
+        onControlResponse,
+        onSendMessage: vi.fn(),
+      }
+      const result = useControlResponseHandling(
+        props,
+        askState,
+        () => editorContentRef,
+        vi.fn(),
+      )
+
+      const submitted = result.handleControlSend('Build')
+
+      expect(submitted).toBe(false)
+      expect(askState.currentPage()).toBe(1)
+      expect(editorContentRef.set).toHaveBeenCalledWith('')
+      expect(onControlResponse).not.toHaveBeenCalled()
+      dispose()
+    })
+  })
+
+  it('uses OpenCode-native question responses', () => {
+    createRoot((dispose) => {
+      const onControlResponse = vi.fn().mockResolvedValue(undefined)
+      const askState = createMinimalAskState()
+      askState.setSelections({ 0: ['Build'] })
+      askState.setCustomTexts({ 1: 'Dev' })
+      const props: ControlResponseHandlingProps = {
+        agentId: 'test-agent',
+        agent: { agentProvider: AgentProvider.OPENCODE },
+        controlRequests: [makeControlRequest('que-1', 'test-agent', {
+          type: 'question.asked',
+          properties: {
+            questions: [
+              { header: 'Task', question: 'Pick a task', options: [{ label: 'Build' }] },
+              { header: 'Env', question: 'Pick an env', options: [{ label: 'Dev' }], custom: true },
+            ],
+          },
+        })],
+        onControlResponse,
+        onSendMessage: vi.fn(),
+      }
+      const result = useControlResponseHandling(props, askState, () => undefined, vi.fn())
+
+      result.handleControlSend('')
+
+      expect(onControlResponse).toHaveBeenCalledOnce()
+      const [, bytes] = onControlResponse.mock.calls[0]
+      const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
+      expect(parsed).toMatchObject({
+        jsonrpc: '2.0',
+        id: 'que-1',
+        result: {
+          answers: [['Build'], ['Dev']],
+        },
+      })
+      dispose()
+    })
+  })
+
+  it('advances OpenCode multi-question requests instead of submitting incomplete answers', () => {
+    createRoot((dispose) => {
+      const onControlResponse = vi.fn().mockResolvedValue(undefined)
+      const askState = createMinimalAskState()
+      const editorContentRef = {
+        get: () => 'Build',
+        set: vi.fn(),
+      }
+      const props: ControlResponseHandlingProps = {
+        agentId: 'test-agent',
+        agent: { agentProvider: AgentProvider.OPENCODE },
+        controlRequests: [makeControlRequest('que-1', 'test-agent', {
+          type: 'question.asked',
+          properties: {
+            questions: [
+              { header: 'Task', question: 'Pick a task', options: [{ label: 'Build' }] },
+              { header: 'Env', question: 'Pick an env', options: [{ label: 'Dev' }] },
+            ],
+          },
+        })],
+        onControlResponse,
+        onSendMessage: vi.fn(),
+      }
+      const result = useControlResponseHandling(props, askState, () => editorContentRef, vi.fn())
+
+      const submitted = result.handleControlSend('Build')
+
+      expect(submitted).toBe(false)
+      expect(askState.currentPage()).toBe(1)
+      expect(editorContentRef.set).toHaveBeenCalledWith('')
+      expect(onControlResponse).not.toHaveBeenCalled()
+      dispose()
+    })
   })
 })

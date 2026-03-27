@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
-import { sendOpenCodePermissionResponse } from '../controls/OpenCodeControlRequest'
+import { sendOpenCodePermissionResponse, sendOpenCodeQuestionResponse } from '../controls/OpenCodeControlRequest'
 import { opencodeResultDividerRenderer } from '../opencodeRenderers'
 import { getProviderPlugin } from './registry'
 
@@ -474,6 +474,14 @@ describe('opencode tool_call_update renderer', () => {
 describe('opencode isAskUserQuestion', () => {
   const plugin = getProviderPlugin(AgentProvider.OPENCODE)!
 
+  it('returns true for question requests', () => {
+    const payload = {
+      type: 'question.asked',
+      properties: { questions: [] },
+    }
+    expect(plugin.isAskUserQuestion!(payload)).toBe(true)
+  })
+
   it('returns false for permission requests', () => {
     const payload = {
       method: 'requestPermission',
@@ -572,6 +580,44 @@ describe('sendOpenCodePermissionResponse', () => {
       jsonrpc: '2.0',
       id: 'abc',
       result: { outcome: { outcome: 'selected', optionId: 'once' } },
+    })
+  })
+})
+
+describe('sendOpenCodeQuestionResponse', () => {
+  function decode(bytes: Uint8Array): Record<string, unknown> {
+    return JSON.parse(new TextDecoder().decode(bytes))
+  }
+
+  function makeAskState() {
+    return {
+      selections: () => ({ 0: ['Build'], 1: [] }),
+      setSelections: vi.fn(),
+      customTexts: () => ({ 1: 'Dev' }),
+      setCustomTexts: vi.fn(),
+      currentPage: () => 0,
+      setCurrentPage: vi.fn(),
+    }
+  }
+
+  it('sends ordered answer arrays for each question', async () => {
+    let captured: Uint8Array | undefined
+    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+      captured = content
+    })
+
+    await sendOpenCodeQuestionResponse('agent1', onRespond, 'que_1', [
+      { question: 'Action?', options: [{ label: 'Build' }] },
+      { question: 'Env?', options: [{ label: 'Dev' }] },
+    ], makeAskState())
+
+    const parsed = decode(captured!)
+    expect(parsed).toMatchObject({
+      jsonrpc: '2.0',
+      id: 'que_1',
+      result: {
+        answers: [['Build'], ['Dev']],
+      },
     })
   })
 })

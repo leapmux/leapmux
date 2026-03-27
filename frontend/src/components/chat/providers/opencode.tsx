@@ -211,8 +211,8 @@ const opencodePlugin: ProviderPlugin = {
     })
   },
 
-  isAskUserQuestion(): boolean {
-    return false
+  isAskUserQuestion(payload?: Record<string, unknown>): boolean {
+    return payload?.type === 'question.asked'
   },
 
   async changePermissionMode(workerId: string, agentId: string, mode: PermissionMode): Promise<void> {

@@ -11,10 +11,14 @@ import (
 
 func codexControlResponseRequestID(content []byte) string {
 	var rpc struct {
-		ID *json.Number `json:"id"`
+		ID json.RawMessage `json:"id"`
 	}
-	if err := json.Unmarshal(content, &rpc); err == nil && rpc.ID != nil {
-		return rpc.ID.String()
+	if err := json.Unmarshal(content, &rpc); err == nil && len(rpc.ID) > 0 && string(rpc.ID) != "null" {
+		var str string
+		if json.Unmarshal(rpc.ID, &str) == nil {
+			return str
+		}
+		return strings.TrimSpace(string(rpc.ID))
 	}
 
 	var cr struct {
@@ -125,12 +129,58 @@ func codexFeedbackMessageText(responseContent []byte) string {
 	return message
 }
 
+func opencodeQuestionAnswersText(requestPayload, responseContent []byte) string {
+	var req struct {
+		Properties struct {
+			Questions []struct {
+				Header   string `json:"header"`
+				Question string `json:"question"`
+			} `json:"questions"`
+		} `json:"properties"`
+	}
+	var resp struct {
+		Result struct {
+			Answers [][]string `json:"answers"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(requestPayload, &req) != nil || json.Unmarshal(responseContent, &resp) != nil {
+		return ""
+	}
+
+	lines := make([]string, 0, len(resp.Result.Answers))
+	for i, answers := range resp.Result.Answers {
+		if len(answers) == 0 {
+			continue
+		}
+		parts := make([]string, 0, len(answers))
+		for _, answer := range answers {
+			if text := strings.TrimSpace(answer); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		if len(parts) == 0 {
+			continue
+		}
+
+		label := fmt.Sprintf("Question %d", i+1)
+		if i < len(req.Properties.Questions) {
+			if header := strings.TrimSpace(req.Properties.Questions[i].Header); header != "" {
+				label = header
+			} else if question := strings.TrimSpace(req.Properties.Questions[i].Question); question != "" {
+				label = question
+			}
+		}
+		lines = append(lines, fmt.Sprintf("%s: %s", label, strings.Join(parts, ", ")))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (svc *Context) codexControlResponseDisplayText(agentID string, provider leapmuxv1.AgentProvider, content []byte) string {
 	switch provider {
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:
 		// handled below
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:
-		return opencodeControlResponseDisplayText(content)
+		// handled below
 	default:
 		return ""
 	}
@@ -150,16 +200,26 @@ func (svc *Context) codexControlResponseDisplayText(agentID string, provider lea
 
 	var payload struct {
 		Method string `json:"method"`
+		Type   string `json:"type"`
 	}
 	if json.Unmarshal(cr.Payload, &payload) != nil {
 		return ""
 	}
 
-	if payload.Method == "item/tool/requestUserInput" {
-		return codexUserInputAnswersText(cr.Payload, content)
+	switch provider {
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:
+		if payload.Method == "item/tool/requestUserInput" {
+			return codexUserInputAnswersText(cr.Payload, content)
+		}
+		return codexFeedbackMessageText(content)
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:
+		if payload.Type == "question.asked" {
+			return opencodeQuestionAnswersText(cr.Payload, content)
+		}
+		return opencodeControlResponseDisplayText(content)
+	default:
+		return ""
 	}
-
-	return codexFeedbackMessageText(content)
 }
 
 // opencodeControlResponseDisplayText extracts a human-readable display text

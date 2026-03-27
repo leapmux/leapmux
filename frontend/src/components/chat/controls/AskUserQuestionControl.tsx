@@ -17,6 +17,11 @@ import { sendResponse } from './types'
 // ---------------------------------------------------------------------------
 
 function toggleSelection(state: AskQuestionState, qIdx: number, label: string, multiSelect: boolean, totalQuestions: number) {
+  state.setCustomTexts((prev) => {
+    if (!(qIdx in prev))
+      return prev
+    return { ...prev, [qIdx]: '' }
+  })
   state.setSelections((prev) => {
     const current = prev[qIdx] ?? []
     if (multiSelect) {
@@ -49,7 +54,7 @@ function isPageAnsweredWithOption(state: AskQuestionState, qIdx: number): boolea
   return !!customText
 }
 
-function buildAskAnswers(
+export function buildAskAnswers(
   state: AskQuestionState,
   questions: Question[],
   input: Record<string, unknown>,
@@ -89,7 +94,7 @@ export function trySubmitAskUserQuestion(
   state: AskQuestionState,
   request: ControlRequest,
   currentContent: string,
-  onRespond: (agentId: string, content: Uint8Array) => void,
+  onSubmit: () => void,
   editorContentRef?: EditorContentRef,
 ): boolean {
   const input = getToolInput(request.payload)
@@ -97,8 +102,8 @@ export function trySubmitAskUserQuestion(
 
   // Save current editor text to the current page.
   const page = state.currentPage()
+  state.setCustomTexts(prev => ({ ...prev, [page]: currentContent }))
   if (currentContent) {
-    state.setCustomTexts(prev => ({ ...prev, [page]: currentContent }))
     state.setSelections(prev => ({ ...prev, [page]: [] }))
   }
 
@@ -128,9 +133,7 @@ export function trySubmitAskUserQuestion(
     return false
 
   // Build and send the response.
-  const response = buildAskAnswers(state, questions, input, request.requestId)
-  const bytes = new TextEncoder().encode(JSON.stringify(response))
-  onRespond(request.agentId, bytes)
+  onSubmit()
   return true
 }
 
@@ -269,9 +272,9 @@ export const AskUserQuestionActions: Component<ActionsProps> = (props) => {
     if (!props.editorContentRef)
       return
     const text = props.editorContentRef.get()
+    const page = props.askState.currentPage()
+    props.askState.setCustomTexts(prev => ({ ...prev, [page]: text }))
     if (text) {
-      const page = props.askState.currentPage()
-      props.askState.setCustomTexts(prev => ({ ...prev, [page]: text }))
       // Clear selections for this page since custom text overrides
       props.askState.setSelections(prev => ({ ...prev, [page]: [] }))
     }
