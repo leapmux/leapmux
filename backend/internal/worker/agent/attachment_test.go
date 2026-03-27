@@ -104,12 +104,11 @@ func TestBuildOpenCodePromptBlocks_fileAttachment(t *testing.T) {
 	assert.Equal(t, "text", textBlock["type"])
 	assert.Equal(t, "analyze", textBlock["text"])
 
-	fileBlock := blocks[1]
-	assert.Equal(t, "file", fileBlock["type"])
-	assert.Equal(t, "image/png", fileBlock["mime"])
-	assert.Equal(t, "img.png", fileBlock["filename"])
-	expectedURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString(data)
-	assert.Equal(t, expectedURI, fileBlock["url"])
+	imageBlock := blocks[1]
+	assert.Equal(t, "image", imageBlock["type"])
+	assert.Equal(t, "image/png", imageBlock["mimeType"])
+	assert.Equal(t, "img.png", imageBlock["uri"])
+	assert.Equal(t, base64.StdEncoding.EncodeToString(data), imageBlock["data"])
 }
 
 func TestBuildOpenCodePromptBlocks_pdfIncluded(t *testing.T) {
@@ -120,9 +119,13 @@ func TestBuildOpenCodePromptBlocks_pdfIncluded(t *testing.T) {
 	blocks := buildOpenCodePromptBlocks("", attachments)
 	require.Len(t, blocks, 1)
 
-	fileBlock := blocks[0]
-	assert.Equal(t, "file", fileBlock["type"])
-	assert.Equal(t, "application/pdf", fileBlock["mime"])
+	resourceBlock := blocks[0]
+	assert.Equal(t, "resource", resourceBlock["type"])
+
+	resource := resourceBlock["resource"].(map[string]interface{})
+	assert.Equal(t, "application/pdf", resource["mimeType"])
+	assert.Equal(t, "doc.pdf", resource["uri"])
+	assert.Equal(t, base64.StdEncoding.EncodeToString(data), resource["blob"])
 }
 
 func TestClaudeCodeAgent_SendInput_withAttachments(t *testing.T) {

@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/util/version"
@@ -382,7 +384,8 @@ func (a *OpenCodeAgent) SendInput(content string, attachments []*leapmuxv1.Attac
 }
 
 // buildOpenCodePromptBlocks converts text + attachments into OpenCode's ACP
-// prompt format. Files use the FilePartInput format with data URIs.
+// prompt format. Attachments must use ACP-native content blocks, not OpenCode's
+// internal "file" parts.
 func buildOpenCodePromptBlocks(content string, attachments []*leapmuxv1.Attachment) []map[string]interface{} {
 	var prompt []map[string]interface{}
 	if content != "" {
@@ -390,18 +393,43 @@ func buildOpenCodePromptBlocks(content string, attachments []*leapmuxv1.Attachme
 	}
 	for _, a := range attachments {
 		mime := a.GetMimeType()
-		dataURI := encodeDataURI(mime, a.GetData())
+		filename := a.GetFilename()
+		data := a.GetData()
+		if strings.HasPrefix(mime, "image/") {
+			prompt = append(prompt, map[string]interface{}{
+				"type":     "image",
+				"mimeType": mime,
+				"data":     base64.StdEncoding.EncodeToString(data),
+				"uri":      filename,
+			})
+			continue
+		}
+
+		resource := map[string]interface{}{
+			"uri":      filename,
+			"mimeType": mime,
+		}
+		if isOpenCodeTextAttachment(mime, data) {
+			resource["text"] = string(data)
+		} else {
+			resource["blob"] = base64.StdEncoding.EncodeToString(data)
+		}
 		prompt = append(prompt, map[string]interface{}{
-			"type":     "file",
-			"mime":     mime,
-			"url":      dataURI,
-			"filename": a.GetFilename(),
+			"type":     "resource",
+			"resource": resource,
 		})
 	}
 	if len(prompt) == 0 {
 		prompt = append(prompt, map[string]interface{}{"type": "text", "text": ""})
 	}
 	return prompt
+}
+
+func isOpenCodeTextAttachment(mime string, data []byte) bool {
+	if strings.HasPrefix(mime, "text/") || mime == "application/json" || mime == "application/xml" || strings.HasSuffix(mime, "+json") || strings.HasSuffix(mime, "+xml") {
+		return utf8.Valid(data)
+	}
+	return false
 }
 
 // handlePromptResponse processes the prompt RPC response, persisting the
