@@ -90,11 +90,34 @@ export interface RenderContext {
   toolResultExpanded?: boolean
   /** Live streamed Codex span content for command, fileChange, and reasoning items. */
   commandStream?: CommandStreamSegment[]
+  /** Stable per-message UI state getter for remount-sensitive renderers. */
+  getMessageUiState?: (key: string) => boolean
+  /** Stable per-message UI state setter for remount-sensitive renderers. */
+  setMessageUiState?: (key: string, value: boolean) => void
 }
 
 export interface MessageContentRenderer {
   /** Try to render the parsed JSON content. Return null if this renderer doesn't handle it. */
   render: (parsed: unknown, role: MessageRole, context?: RenderContext) => JSX.Element | null
+}
+
+export function useSharedExpandedState(
+  context: RenderContext | undefined,
+  key: string,
+  initial = false,
+): [() => boolean, (value: boolean | ((prev: boolean) => boolean)) => void] {
+  const [localExpanded, setLocalExpanded] = createSignal(initial)
+  const expanded = () => context?.getMessageUiState?.(key) ?? localExpanded()
+  const setExpanded = (value: boolean | ((prev: boolean) => boolean)) => {
+    const next = typeof value === 'function'
+      ? (value as (prev: boolean) => boolean)(expanded())
+      : value
+    if (context?.setMessageUiState)
+      context.setMessageUiState(key, next)
+    else
+      setLocalExpanded(next)
+  }
+  return [expanded, setExpanded]
 }
 
 function markdownClass(_role: MessageRole): string {
@@ -125,7 +148,7 @@ const assistantTextRenderer: MessageContentRenderer = {
 
 /** Inner component for thinking messages — owns local expand/collapse state. */
 export function ThinkingMessage(props: { text: string, context?: RenderContext }): JSX.Element {
-  const [expanded, setExpanded] = createSignal(false)
+  const [expanded, setExpanded] = useSharedExpandedState(props.context, 'thinking')
 
   return (
     <>

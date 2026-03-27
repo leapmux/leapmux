@@ -72,6 +72,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // <For> re-renders when new messages are added to the list.
   const [expandedMessages, setExpandedMessages] = createSignal<Set<string>>(new Set())
   const [diffViewOverrides, setDiffViewOverrides] = createSignal<Map<string, 'unified' | 'split'>>(new Map())
+  const [messageUiState, setMessageUiState] = createSignal<Map<string, Map<string, boolean>>>(new Map())
 
   const isMessageExpanded = (messageId: string) => expandedMessages().has(messageId)
   const toggleMessageExpanded = (messageId: string) => {
@@ -89,6 +90,17 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     setDiffViewOverrides((prev) => {
       const next = new Map(prev)
       next.set(messageId, view)
+      return next
+    })
+  }
+  const getMessageUiBool = (messageId: string, key: string): boolean =>
+    messageUiState().get(messageId)?.get(key) ?? false
+  const setMessageUiBool = (messageId: string, key: string, value: boolean) => {
+    setMessageUiState((prev) => {
+      const next = new Map(prev)
+      const current = new Map(next.get(messageId) ?? [])
+      current.set(key, value)
+      next.set(messageId, current)
       return next
     })
   }
@@ -196,6 +208,21 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   onMount(() => {
     props.scrollStateRef?.(getScrollState)
     props.scrollToBottomRef?.(forceScrollToBottom)
+  })
+
+  createEffect(() => {
+    const ids = new Set(props.messages.map(msg => msg.id))
+    setMessageUiState((prev) => {
+      let changed = false
+      const next = new Map<string, Map<string, boolean>>()
+      for (const [messageId, state] of prev) {
+        if (ids.has(messageId))
+          next.set(messageId, state)
+        else
+          changed = true
+      }
+      return changed ? next : prev
+    })
   })
 
   // Cache classified entries by message ID so that <For> receives stable
@@ -372,13 +399,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
             return
           }
         }
-        if (isAtBottom()) {
-          messageListRef.scrollTop = messageListRef.scrollHeight
-          setAtBottom(true)
-        }
-        else {
-          checkAtBottom()
-        }
+        checkAtBottom()
       })
     }
     const observer = new ResizeObserver(handleResize)
@@ -442,6 +463,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                         onToggleToolResultExpanded={() => toggleMessageExpanded(msg.id)}
                         localDiffView={getLocalDiffView(msg.id)}
                         onSetLocalDiffView={view => setLocalDiffView(msg.id, view)}
+                        getMessageUiState={key => getMessageUiBool(msg.id, key)}
+                        setMessageUiState={(key, value) => setMessageUiBool(msg.id, key, value)}
                       />
                     )
 

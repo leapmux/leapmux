@@ -1,6 +1,7 @@
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { CommandStreamSegment } from '~/stores/chat.store'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { ChatView } from '~/components/chat/ChatView'
 import { PreferencesProvider } from '~/context/PreferencesContext'
@@ -296,6 +297,44 @@ describe('chatView', () => {
 
     expect(screen.getByText('building...')).toBeTruthy()
     expect(screen.getByText('> y')).toBeTruthy()
+  })
+
+  it('preserves expanded codex reasoning state when the message updates and new messages are appended', async () => {
+    const initialMessages = [
+      makeCodexReasoningMessage({
+        id: 'reasoning-1',
+        seq: 1n,
+        spanId: 'reasoning-span-1',
+        summary: ['Initial reasoning summary'],
+      }),
+    ]
+    let setMessages!: (messages: AgentChatMessage[]) => void
+
+    render(() => {
+      const [messages, updateMessages] = createSignal(initialMessages)
+      setMessages = updateMessages
+      return (
+        <PreferencesProvider>
+          <ChatView messages={messages()} streamingText="" />
+        </PreferencesProvider>
+      )
+    })
+
+    fireEvent.click(screen.getByText('Thinking'))
+    expect(screen.getByText('Initial reasoning summary')).toBeTruthy()
+
+    setMessages([
+      makeCodexReasoningMessage({
+        id: 'reasoning-1',
+        seq: 2n,
+        spanId: 'reasoning-span-1',
+        summary: ['Initial reasoning summary'],
+      }),
+      makeMessage('assistant', 'Follow-up message', 'assistant-2'),
+    ])
+
+    await waitFor(() => expect(screen.getByText('Initial reasoning summary')).toBeTruthy())
+    expect(screen.getByText('Follow-up message')).toBeTruthy()
   })
 
   it('keeps both codex commandExecution start and completed messages in history', () => {

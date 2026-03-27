@@ -18,7 +18,7 @@ import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { DiffView, rawDiffToHunks } from './diffUtils'
 import { markdownContent } from './markdownContent.css'
-import { ThinkingMessage } from './messageRenderers'
+import { ThinkingMessage, useSharedExpandedState } from './messageRenderers'
 import { resultDivider } from './messageStyles.css'
 import { isObject, relativizePath } from './messageUtils'
 import { COLLAPSED_RESULT_ROWS, renderBashHighlight, stripLeadingBlankLines, ToolUseLayout } from './toolRenderers'
@@ -212,7 +212,7 @@ function ToolCallUpdateMessage(props: {
   const outputText = () => stripLeadingBlankLines(output().text)
   const exitCode = () => typeof metadata()?.exit === 'number' ? metadata()!.exit as number : null
 
-  const [expanded, setExpanded] = createSignal(false)
+  const [expanded, setExpanded] = useSharedExpandedState(props.context, 'opencode-tool-call-update')
   const [commandCopied, setCommandCopied] = createSignal(false)
 
   // Output collapsing
