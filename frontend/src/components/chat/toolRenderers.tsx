@@ -322,7 +322,7 @@ function ToolUseMessage(props: {
   context?: RenderContext
 }): JSX.Element {
   const { diffView, toggleDiffView } = useDiffViewToggle(() => props.context?.diffView)
-  const [expanded, setExpanded] = useSharedExpandedState(props.context, 'tool-use-layout')
+  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, 'tool-use-layout')
   const [commandCopied, setCommandCopied] = createSignal(false)
 
   const title = () => props.detail ?? `${props.toolName}${props.fallbackDisplay || ''}`
@@ -929,7 +929,7 @@ function AgentPromptView(props: {
   text: string
   context?: RenderContext
 }): JSX.Element {
-  const [expanded, setExpanded] = useSharedExpandedState(props.context, 'agent-prompt')
+  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, 'agent-prompt')
   const isCollapsed = () => !expanded() && props.text.split('\n').length > COLLAPSED_RESULT_ROWS
 
   return (

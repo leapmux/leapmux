@@ -102,18 +102,19 @@ export interface MessageContentRenderer {
 }
 
 export function useSharedExpandedState(
-  context: RenderContext | undefined,
+  getContext: () => RenderContext | undefined,
   key: string,
   initial = false,
 ): [() => boolean, (value: boolean | ((prev: boolean) => boolean)) => void] {
   const [localExpanded, setLocalExpanded] = createSignal(initial)
-  const expanded = () => context?.getMessageUiState?.(key) ?? localExpanded()
+  const expanded = () => getContext()?.getMessageUiState?.(key) ?? localExpanded()
   const setExpanded = (value: boolean | ((prev: boolean) => boolean)) => {
+    const ctx = getContext()
     const next = typeof value === 'function'
       ? (value as (prev: boolean) => boolean)(expanded())
       : value
-    if (context?.setMessageUiState)
-      context.setMessageUiState(key, next)
+    if (ctx?.setMessageUiState)
+      ctx.setMessageUiState(key, next)
     else
       setLocalExpanded(next)
   }
@@ -148,7 +149,7 @@ const assistantTextRenderer: MessageContentRenderer = {
 
 /** Inner component for thinking messages — owns local expand/collapse state. */
 export function ThinkingMessage(props: { text: string, context?: RenderContext }): JSX.Element {
-  const [expanded, setExpanded] = useSharedExpandedState(props.context, 'thinking')
+  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, 'thinking')
 
   return (
     <>

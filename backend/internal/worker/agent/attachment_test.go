@@ -171,7 +171,7 @@ func TestNormalizeAttachmentsForProvider_RejectsUnsupportedBinary(t *testing.T) 
 	}
 	_, err := NormalizeAttachmentsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, attachments)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "Codex does not support binary attachments")
+	assert.Contains(t, err.Error(), "codex does not support binary attachments")
 }
 
 func TestNormalizeAttachmentsForProvider_InfersTextMime(t *testing.T) {

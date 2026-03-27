@@ -212,7 +212,7 @@ function ToolCallUpdateMessage(props: {
   const outputText = () => stripLeadingBlankLines(output().text)
   const exitCode = () => typeof metadata()?.exit === 'number' ? metadata()!.exit as number : null
 
-  const [expanded, setExpanded] = useSharedExpandedState(props.context, 'opencode-tool-call-update')
+  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, 'opencode-tool-call-update')
   const [commandCopied, setCommandCopied] = createSignal(false)
 
   // Output collapsing
