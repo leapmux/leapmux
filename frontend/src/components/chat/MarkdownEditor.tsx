@@ -42,6 +42,8 @@ interface MarkdownEditorProps {
   onTogglePlanMode?: () => void
   /** Called when files are pasted from clipboard. Prevents ProseMirror from inserting inline images. */
   onPasteFiles?: (files: File[]) => void
+  /** Called when files are dropped onto the editor. Prevents ProseMirror from inserting inline content. */
+  onDropFiles?: (files: File[]) => void
   /** Called when the upload button in the toolbar is clicked. */
   onUploadClick?: () => void
 }
@@ -306,8 +308,9 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     // Signal that the editor is fully initialized with draft content.
     props.onReady?.()
 
-    // Intercept paste events to capture file attachments before ProseMirror
-    // processes them. This prevents ProseMirror from inserting inline images.
+    // Intercept paste/drop file events before ProseMirror processes them.
+    // This keeps files in the attachment flow instead of inserting inline
+    // content into the editor body.
     const handlePaste = (e: ClipboardEvent) => {
       if (!props.onPasteFiles)
         return
@@ -318,9 +321,21 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         props.onPasteFiles(files)
       }
     }
+    const handleDrop = (e: DragEvent) => {
+      if (!props.onDropFiles)
+        return
+      const files = [...(e.dataTransfer?.files ?? [])]
+      if (files.length > 0) {
+        e.preventDefault()
+        e.stopPropagation()
+        props.onDropFiles(files)
+      }
+    }
     editorRef?.addEventListener('paste', handlePaste, true)
+    editorRef?.addEventListener('drop', handleDrop, true)
     onCleanup(() => {
       editorRef?.removeEventListener('paste', handlePaste, true)
+      editorRef?.removeEventListener('drop', handleDrop, true)
     })
   })
 

@@ -279,6 +279,12 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     addFiles(files, true)
   }
 
+  const handleDropFiles = (files: File[]) => {
+    if (ctrl.activeControlRequest())
+      return
+    addFiles(files)
+  }
+
   // Agent info card (extracted module)
   const info = useAgentInfoCard(props)
   const modelContextWindow = createMemo(() =>
@@ -402,6 +408,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             tryRegisterEditorRef(props.agentId)
           }}
           onPasteFiles={!ctrl.activeControlRequest() ? handlePasteFiles : undefined}
+          onDropFiles={!ctrl.activeControlRequest() ? handleDropFiles : undefined}
           onUploadClick={!ctrl.activeControlRequest() ? () => fileInputRef?.click() : undefined}
           placeholder={ctrl.isAskUserQuestion() ? 'Type a custom answer...' : ctrl.activeControlRequest() ? 'Type a rejection reason...' : undefined}
           allowEmptySend={(!!ctrl.activeControlRequest() && !ctrl.isAskUserQuestion()) || attachments().length > 0}

@@ -14,6 +14,7 @@ interface PersistedLocalMessage {
   contentText: string
   createdAt: string
   deliveryError: string
+  attachments?: Array<{ filename?: string, mime_type?: string }>
 }
 
 const LOCAL_MSG_KEY = 'local-messages'
@@ -41,24 +42,56 @@ function removePersistedLocalMessage(agentId: string, messageId: string) {
   safeSetJson(LOCAL_MSG_KEY, all)
 }
 
-function extractUserMessageText(message: AgentChatMessage): string | null {
+function extractUserMessagePayload(message: AgentChatMessage): { content: string, attachments?: Array<{ filename?: string, mime_type?: string }> } | null {
   if (message.role !== MessageRole.USER)
     return null
   const parsed = parseMessageContent(message)
   const parent = parsed.parentObject
   if (!parent)
     return null
-  if (typeof parent.content === 'string')
-    return parent.content
+  if (typeof parent.content === 'string') {
+    const attachments = Array.isArray(parent.attachments)
+      ? (parent.attachments as Array<{ filename?: string, mime_type?: string }>)
+        .map(att => ({
+          filename: typeof att?.filename === 'string' ? att.filename : undefined,
+          mime_type: typeof att?.mime_type === 'string' ? att.mime_type : undefined,
+        }))
+      : undefined
+    return { content: parent.content, attachments }
+  }
   const msg = parent.message as Record<string, unknown> | undefined
-  if (msg && typeof msg.content === 'string')
-    return msg.content
+  if (msg && typeof msg.content === 'string') {
+    const attachments = Array.isArray(msg.attachments)
+      ? (msg.attachments as Array<{ filename?: string, mime_type?: string }>)
+        .map(att => ({
+          filename: typeof att?.filename === 'string' ? att.filename : undefined,
+          mime_type: typeof att?.mime_type === 'string' ? att.mime_type : undefined,
+        }))
+      : undefined
+    return { content: msg.content, attachments }
+  }
   return null
+}
+
+function userMessageSignature(message: AgentChatMessage): string | null {
+  const payload = extractUserMessagePayload(message)
+  if (!payload)
+    return null
+  return JSON.stringify({
+    content: payload.content,
+    attachments: payload.attachments?.map(att => ({
+      filename: att.filename ?? '',
+      mime_type: att.mime_type ?? '',
+    })) ?? [],
+  })
 }
 
 /** Reconstruct an AgentChatMessage from a persisted local message. */
 function hydrateLocalMessage(p: PersistedLocalMessage): AgentChatMessage {
-  const contentJson = JSON.stringify({ content: p.contentText })
+  const contentJson = JSON.stringify({
+    content: p.contentText,
+    ...(p.attachments && p.attachments.length > 0 ? { attachments: p.attachments } : {}),
+  })
   return {
     $typeName: 'leapmux.v1.AgentChatMessage' as const,
     id: p.id,
@@ -248,14 +281,14 @@ export function createChatStore() {
         // so the localStorage side-effect stays outside the setState updater.
         let reconciledLocalId: string | undefined
         if (message.role === MessageRole.USER) {
-          const incomingText = extractUserMessageText(message)
-          if (incomingText) {
+          const incomingSignature = userMessageSignature(message)
+          if (incomingSignature) {
             const current = state.messagesByAgent[agentId] ?? []
             const local = current.find(candidate =>
               candidate.id.startsWith('local-')
               && candidate.role === MessageRole.USER
               && !candidate.deliveryError
-              && extractUserMessageText(candidate) === incomingText,
+              && userMessageSignature(candidate) === incomingSignature,
             )
             if (local)
               reconciledLocalId = local.id
@@ -359,12 +392,19 @@ export function createChatStore() {
     },
 
     /** Persist a local optimistic message to localStorage. */
-    persistLocalMessage(agentId: string, messageId: string, contentText: string, deliveryError: string) {
+    persistLocalMessage(
+      agentId: string,
+      messageId: string,
+      contentText: string,
+      deliveryError: string,
+      attachments?: Array<{ filename?: string, mime_type?: string }>,
+    ) {
       persistLocalMessage(agentId, {
         id: messageId,
         contentText,
         createdAt: new Date().toISOString(),
         deliveryError,
+        attachments,
       })
     },
 

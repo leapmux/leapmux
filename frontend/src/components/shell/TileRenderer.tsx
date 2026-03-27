@@ -483,7 +483,16 @@ export function createTileRenderer(opts: TileRendererOpts) {
           }
           catch {
             chatStore.setMessageError(localId, 'Failed to deliver')
-            chatStore.persistLocalMessage(id, localId, content, 'Failed to deliver')
+            chatStore.persistLocalMessage(
+              id,
+              localId,
+              content,
+              'Failed to deliver',
+              fileAttachments?.map(a => ({
+                filename: a.filename,
+                mime_type: a.mimeType,
+              })),
+            )
           }
         }}
         addFilesRef={(fn) => { addFilesRef.current = fn }}
