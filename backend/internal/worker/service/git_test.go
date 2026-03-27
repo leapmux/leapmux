@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -347,4 +349,175 @@ func TestCurrentBranchForPath_LinkedWorktreeUsesWorktreeBranch(t *testing.T) {
 
 	require.Equal(t, "main-branch", currentBranchForPath(ctx, dir))
 	require.Equal(t, "feature-branch", currentBranchForPath(ctx, wtDir))
+}
+
+func createAgentForPath(t *testing.T, svc *Context, agentID, workingDir string) {
+	t.Helper()
+	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
+		ID:          agentID,
+		WorkspaceID: "ws-1",
+		WorkingDir:  workingDir,
+		HomeDir:     workingDir,
+	}))
+}
+
+func waitForPathToDisappear(t *testing.T, path string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(path)
+		return os.IsNotExist(err)
+	}, 5*time.Second, 100*time.Millisecond)
+}
+
+func TestInspectLastTabClose_WorktreeLastTabPromptsEvenWhenClean(t *testing.T) {
+	svc, _, _ := setupTestService(t, "ws-1")
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "inspect-clean-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "inspect-clean", wtDir)
+
+	wtID, err := svc.ensureTrackedWorktree(context.Background(), wtDir)
+	require.NoError(t, err)
+	createAgentForPath(t, svc, "agent-1", wtDir)
+	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-1")
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE, resp.GetTarget())
+	assert.True(t, resp.GetShouldPrompt())
+	expectedPath, err := filepath.EvalSymlinks(wtDir)
+	require.NoError(t, err)
+	assert.Equal(t, expectedPath, resp.GetWorktreePath())
+	assert.Equal(t, "inspect-clean", resp.GetBranchName())
+	assert.Equal(t, "Push", resp.GetPushLabel())
+}
+
+func TestInspectLastTabClose_BranchLastTabCleanDoesNotPrompt(t *testing.T) {
+	svc, _, _ := setupTestService(t, "ws-1")
+	repoDir := initRepo(t)
+	createAgentForPath(t, svc, "agent-branch-clean", repoDir)
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-branch-clean")
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget())
+	assert.False(t, resp.GetShouldPrompt())
+}
+
+func TestInspectLastTabClose_BranchLastTabDirtyPrompts(t *testing.T) {
+	svc, _, _ := setupTestService(t, "ws-1")
+	repoDir := initRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644))
+	createAgentForPath(t, svc, "agent-branch-dirty", repoDir)
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-branch-dirty")
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_BRANCH, resp.GetTarget())
+	assert.True(t, resp.GetShouldPrompt())
+	assert.True(t, resp.GetHasUncommittedChanges())
+	assert.Equal(t, "Commit and Push", resp.GetPushLabel())
+}
+
+func TestInspectLastTabClose_BranchMissingRemotePrompts(t *testing.T) {
+	svc, _, _ := setupTestService(t, "ws-1")
+	bareDir := filepath.Join(t.TempDir(), "missing-remote.git")
+	require.NoError(t, os.MkdirAll(bareDir, 0o755))
+	run(t, bareDir, "git", "init", "--bare")
+
+	repoDir := initRepo(t)
+	run(t, repoDir, "git", "remote", "add", "origin", bareDir)
+	run(t, repoDir, "git", "push", "-u", "origin", "HEAD")
+	run(t, repoDir, "git", "checkout", "-b", "feature-missing-remote")
+	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "feature")
+	run(t, repoDir, "git", "push", "-u", "origin", "feature-missing-remote")
+	run(t, repoDir, "git", "push", "origin", "--delete", "feature-missing-remote")
+	createAgentForPath(t, svc, "agent-branch-missing", repoDir)
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-branch-missing")
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_BRANCH, resp.GetTarget())
+	assert.True(t, resp.GetShouldPrompt())
+	assert.True(t, resp.GetRemoteBranchMissing())
+	assert.True(t, resp.GetCanPush())
+}
+
+func TestPushBranchForClose_CreatesWIPCommitAndPushes(t *testing.T) {
+	svc, _, _ := setupTestService(t, "ws-1")
+	bareDir := filepath.Join(t.TempDir(), "push-dirty.git")
+	require.NoError(t, os.MkdirAll(bareDir, 0o755))
+	run(t, bareDir, "git", "init", "--bare")
+
+	repoDir := initRepo(t)
+	run(t, repoDir, "git", "remote", "add", "origin", bareDir)
+	run(t, repoDir, "git", "push", "-u", "origin", "HEAD")
+	run(t, repoDir, "git", "checkout", "-b", "push-dirty")
+	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "feature init")
+	run(t, repoDir, "git", "push", "-u", "origin", "push-dirty")
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("content\n"), 0o644))
+	createAgentForPath(t, svc, "agent-push-dirty", repoDir)
+
+	err := svc.pushBranchForClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-push-dirty")
+	require.NoError(t, err)
+
+	msg, err := gitOutput(context.Background(), repoDir, "log", "-1", "--pretty=%s")
+	require.NoError(t, err)
+	assert.Equal(t, "WIP", strings.TrimSpace(msg))
+
+	remoteHead, err := gitOutput(context.Background(), bareDir, "rev-parse", "refs/heads/push-dirty")
+	require.NoError(t, err)
+	localHead, err := gitOutput(context.Background(), repoDir, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, strings.TrimSpace(localHead), strings.TrimSpace(remoteHead))
+}
+
+func TestPushBranchForClose_RecreatesUpstream(t *testing.T) {
+	svc, _, _ := setupTestService(t, "ws-1")
+	bareDir := filepath.Join(t.TempDir(), "push-upstream.git")
+	require.NoError(t, os.MkdirAll(bareDir, 0o755))
+	run(t, bareDir, "git", "init", "--bare")
+
+	repoDir := initRepo(t)
+	run(t, repoDir, "git", "remote", "add", "origin", bareDir)
+	run(t, repoDir, "git", "push", "-u", "origin", "HEAD")
+	run(t, repoDir, "git", "checkout", "-b", "recreate-upstream")
+	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "branch commit")
+	createAgentForPath(t, svc, "agent-recreate-upstream", repoDir)
+
+	err := svc.pushBranchForClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-recreate-upstream")
+	require.NoError(t, err)
+
+	upstream, err := gitOutput(context.Background(), repoDir, "rev-parse", "--abbrev-ref", "recreate-upstream@{upstream}")
+	require.NoError(t, err)
+	assert.Equal(t, "origin/recreate-upstream", strings.TrimSpace(upstream))
+}
+
+func TestScheduleWorktreeDeletion_ExternalTrackedWorktreeDeletes(t *testing.T) {
+	svc, _, _ := setupTestService(t, "ws-1")
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "external-tracked")
+	run(t, repoDir, "git", "worktree", "add", "-b", "external-tracked", wtDir)
+
+	wtID, err := svc.ensureTrackedWorktree(context.Background(), wtDir)
+	require.NoError(t, err)
+
+	err = svc.scheduleWorktreeDeletion(context.Background(), wtID)
+	require.NoError(t, err)
+	waitForPathToDisappear(t, wtDir)
+
+	_, err = gitOutput(context.Background(), repoDir, "rev-parse", "--verify", "refs/heads/external-tracked")
+	require.Error(t, err)
+}
+
+func TestScheduleWorktreeDeletion_RejectsMultipleOpenTabs(t *testing.T) {
+	svc, _, _ := setupTestService(t, "ws-1")
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "reject-open-tabs")
+	run(t, repoDir, "git", "worktree", "add", "-b", "reject-open-tabs", wtDir)
+
+	wtID, err := svc.ensureTrackedWorktree(context.Background(), wtDir)
+	require.NoError(t, err)
+	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "a-1")
+	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_TERMINAL, "t-1")
+
+	err = svc.scheduleWorktreeDeletion(context.Background(), wtID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tabs are still open")
 }

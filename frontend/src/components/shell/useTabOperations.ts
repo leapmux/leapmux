@@ -1,6 +1,6 @@
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
-import type { CheckWorktreeStatusResponse } from '~/generated/leapmux/v1/git_pb'
+import type { InspectLastTabCloseResponse } from '~/generated/leapmux/v1/git_pb'
 import type { createAgentStore } from '~/stores/agent.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
@@ -9,8 +9,8 @@ import type { createTabStore, FileOpenSource, Tab } from '~/stores/tab.store'
 import type { createTerminalStore } from '~/stores/terminal.store'
 import { batch, createEffect, createSignal } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
+import { showInfoToast, showWarnToast } from '~/components/common/Toast'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
-import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { tabKey } from '~/stores/tab.store'
 
@@ -49,13 +49,11 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
 
   const [closingTabKeys, setClosingTabKeys] = createSignal<Set<string>>(new Set())
 
-  // Pre-close worktree confirmation dialog state
-  const [worktreeConfirm, setWorktreeConfirm] = createSignal<{
-    path: string
-    id: string
-    branchName: string
-    resolve: (choice: 'cancel' | 'keep' | 'remove') => void
-  } | null>(null)
+  type LastTabCloseChoice = 'cancel' | 'push' | 'schedule-delete' | 'close-anyway'
+
+  const [lastTabConfirm, setLastTabConfirm] = createSignal<
+    (InspectLastTabCloseResponse & { resolve: (choice: LastTabCloseChoice) => void }) | null
+  >(null)
 
   let isTabEditing: () => boolean = () => false
 
@@ -109,14 +107,9 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     }
   }
 
-  const askWorktreeConfirmation = (status: CheckWorktreeStatusResponse): Promise<'cancel' | 'keep' | 'remove'> => {
+  const askLastTabConfirmation = (status: InspectLastTabCloseResponse): Promise<LastTabCloseChoice> => {
     return new Promise((resolve) => {
-      setWorktreeConfirm({
-        path: status.worktreePath,
-        id: status.worktreeId,
-        branchName: status.branchName,
-        resolve,
-      })
+      setLastTabConfirm({ ...status, resolve })
     })
   }
 
@@ -142,37 +135,41 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       return
     }
 
-    // Determine the worktree action from a pre-close dirty check.
-    let worktreeAction = WorktreeAction.UNSPECIFIED
     try {
       const tabType = tab.type === TabType.AGENT ? TabType.AGENT : TabType.TERMINAL
-      // Use the closing tab's own workerId, not the active tab's context.
       const workerId = tab.workerId ?? ''
-      const status = await workerRpc.checkWorktreeStatus(workerId, { tabType, tabId: tab.id })
-      if (status.hasWorktree && status.isLastTab && status.isDirty) {
-        const choice = await askWorktreeConfirmation(status)
+      const status = await workerRpc.inspectLastTabClose(workerId, { tabType, tabId: tab.id })
+      if (status.shouldPrompt) {
+        const choice = await askLastTabConfirmation(status)
         if (choice === 'cancel') {
           return
         }
-        worktreeAction = choice === 'keep' ? WorktreeAction.KEEP : WorktreeAction.REMOVE
+        if (choice === 'push') {
+          await workerRpc.pushBranchForClose(workerId, { tabType, tabId: tab.id })
+        }
+        else if (choice === 'schedule-delete') {
+          await workerRpc.scheduleWorktreeDeletion(workerId, { worktreeId: status.worktreeId })
+          showInfoToast('Worktree deletion scheduled')
+        }
       }
     }
-    catch {
-      // If the pre-check fails, proceed with close (best-effort).
+    catch (err) {
+      showWarnToast('Failed to prepare tab close', err)
+      return
     }
 
     const key = tabKey(tab)
     addClosingTabKey(key)
     try {
       if (tab.type === TabType.AGENT) {
-        await agentOps.handleCloseAgent(tab.id, worktreeAction)
+        await agentOps.handleCloseAgent(tab.id)
       }
       else {
         const instance = getTerminalInstance(tab.id)
         if (instance) {
           instance.dispose()
         }
-        await termOps.handleTerminalClose(tab.id, worktreeAction)
+        await termOps.handleTerminalClose(tab.id)
       }
       removeEmptyFloatingWindow(tab.tileId)
     }
@@ -237,8 +234,8 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
 
   return {
     closingTabKeys,
-    worktreeConfirm,
-    setWorktreeConfirm,
+    lastTabConfirm,
+    setLastTabConfirm,
     handleTabSelect,
     handleTabClose,
     handleFileOpen,

@@ -19,6 +19,7 @@ export const ConfirmButton: Component<ConfirmButtonProps> = (props) => {
   const [local, buttonProps] = splitProps(props, ['confirmLabel', 'onClick', 'children'])
   const [armed, setArmed] = createSignal(false)
   let resetTimer: ReturnType<typeof setTimeout> | undefined
+  let blurResetTimer: ReturnType<typeof setTimeout> | undefined
 
   const clearResetTimer = () => {
     if (resetTimer !== undefined) {
@@ -28,11 +29,20 @@ export const ConfirmButton: Component<ConfirmButtonProps> = (props) => {
   }
 
   const reset = () => {
+    if (blurResetTimer !== undefined) {
+      clearTimeout(blurResetTimer)
+      blurResetTimer = undefined
+    }
     clearResetTimer()
     setArmed(false)
   }
 
-  onCleanup(clearResetTimer)
+  onCleanup(() => {
+    if (blurResetTimer !== undefined) {
+      clearTimeout(blurResetTimer)
+    }
+    clearResetTimer()
+  })
 
   const handleClick = () => {
     if (!armed()) {
@@ -54,7 +64,9 @@ export const ConfirmButton: Component<ConfirmButtonProps> = (props) => {
       {...(armed() ? { 'data-variant': 'danger' } : {})}
       data-armed={armed() || undefined}
       onClick={handleClick}
-      onBlur={reset}
+      onBlur={() => {
+        blurResetTimer = setTimeout(reset, 0)
+      }}
     >
       {armed() ? (local.confirmLabel ?? 'Confirm?') : local.children}
     </button>

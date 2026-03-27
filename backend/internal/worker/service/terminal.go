@@ -183,13 +183,8 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		// Soft-delete the terminal record.
 		_ = svc.Queries.CloseTerminal(bgCtx(), terminalID)
 
-		// Handle worktree cleanup.
-		cleanup := svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, r.GetWorktreeAction())
-		sendProtoResponse(sender, &leapmuxv1.CloseTerminalResponse{
-			WorktreeCleanupPending: cleanup.NeedsConfirmation,
-			WorktreePath:           cleanup.WorktreePath,
-			WorktreeId:             cleanup.WorktreeID,
-		})
+		svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID)
+		sendProtoResponse(sender, &leapmuxv1.CloseTerminalResponse{})
 	})
 
 	// SendInput sends input data to a terminal.

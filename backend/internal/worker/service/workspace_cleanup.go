@@ -29,8 +29,6 @@ func handleCleanupWorkspace(svc *Context) channel.HandlerFunc {
 			return
 		}
 
-		var worktrees []*leapmuxv1.WorktreeInfo
-
 		// 1. Stop all active agents for this workspace.
 		agentIDs, err := svc.Queries.ListOpenAgentIDsByWorkspaceID(bgCtx(), workspaceID)
 		if err != nil {
@@ -41,14 +39,7 @@ func handleCleanupWorkspace(svc *Context) channel.HandlerFunc {
 			svc.Agents.StopAgent(row)
 			_ = svc.Queries.CloseAgent(bgCtx(), row)
 
-			// Unregister worktree tab and collect dirty worktree info.
-			cleanup := svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_AGENT, row, leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED)
-			if cleanup.NeedsConfirmation {
-				worktrees = append(worktrees, &leapmuxv1.WorktreeInfo{
-					WorktreeId:   cleanup.WorktreeID,
-					WorktreePath: cleanup.WorktreePath,
-				})
-			}
+			svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_AGENT, row)
 		}
 
 		// 2. Close all agents (including already-closed ones) for consistency.
@@ -68,13 +59,7 @@ func handleCleanupWorkspace(svc *Context) channel.HandlerFunc {
 				svc.Terminals.RemoveTerminal(ts.ID)
 			}
 
-			cleanup := svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_TERMINAL, ts.ID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED)
-			if cleanup.NeedsConfirmation {
-				worktrees = append(worktrees, &leapmuxv1.WorktreeInfo{
-					WorktreeId:   cleanup.WorktreeID,
-					WorktreePath: cleanup.WorktreePath,
-				})
-			}
+			svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_TERMINAL, ts.ID)
 		}
 
 		// 4. Soft-delete active terminals for the workspace.
@@ -83,8 +68,6 @@ func handleCleanupWorkspace(svc *Context) channel.HandlerFunc {
 				"workspace_id", workspaceID, "error", err)
 		}
 
-		sendProtoResponse(sender, &leapmuxv1.CleanupWorkspaceResponse{
-			Worktrees: worktrees,
-		})
+		sendProtoResponse(sender, &leapmuxv1.CleanupWorkspaceResponse{})
 	}
 }

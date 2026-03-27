@@ -32,10 +32,13 @@ import type {
   ForceRemoveWorktreeResponse,
   GetGitFileStatusResponse,
   GetGitInfoResponse,
+  InspectLastTabCloseResponse,
   KeepWorktreeResponse,
   ListGitBranchesResponse,
   ListGitWorktreesResponse,
+  PushBranchForCloseResponse,
   ReadGitFileResponse,
+  ScheduleWorktreeDeletionResponse,
 } from '~/generated/leapmux/v1/git_pb'
 import type {
   CloseTerminalResponse,
@@ -100,14 +103,20 @@ import {
   GetGitFileStatusResponseSchema,
   GetGitInfoRequestSchema,
   GetGitInfoResponseSchema,
+  InspectLastTabCloseRequestSchema,
+  InspectLastTabCloseResponseSchema,
   KeepWorktreeRequestSchema,
   KeepWorktreeResponseSchema,
   ListGitBranchesRequestSchema,
   ListGitBranchesResponseSchema,
   ListGitWorktreesRequestSchema,
   ListGitWorktreesResponseSchema,
+  PushBranchForCloseRequestSchema,
+  PushBranchForCloseResponseSchema,
   ReadGitFileRequestSchema,
   ReadGitFileResponseSchema,
+  ScheduleWorktreeDeletionRequestSchema,
+  ScheduleWorktreeDeletionResponseSchema,
 } from '~/generated/leapmux/v1/git_pb'
 import {
   CloseTerminalRequestSchema,
@@ -372,6 +381,18 @@ export function readGitFile(workerId: string, req: MessageInitShape<typeof ReadG
 
 export function checkWorktreeStatus(workerId: string, req: MessageInitShape<typeof CheckWorktreeStatusRequestSchema>): Promise<CheckWorktreeStatusResponse> {
   return callWorker(workerId, 'CheckWorktreeStatus', CheckWorktreeStatusRequestSchema, CheckWorktreeStatusResponseSchema, req)
+}
+
+export function inspectLastTabClose(workerId: string, req: MessageInitShape<typeof InspectLastTabCloseRequestSchema>): Promise<InspectLastTabCloseResponse> {
+  return callWorker(workerId, 'InspectLastTabClose', InspectLastTabCloseRequestSchema, InspectLastTabCloseResponseSchema, req)
+}
+
+export function pushBranchForClose(workerId: string, req: MessageInitShape<typeof PushBranchForCloseRequestSchema>): Promise<PushBranchForCloseResponse> {
+  return callWorker(workerId, 'PushBranchForClose', PushBranchForCloseRequestSchema, PushBranchForCloseResponseSchema, req)
+}
+
+export function scheduleWorktreeDeletion(workerId: string, req: MessageInitShape<typeof ScheduleWorktreeDeletionRequestSchema>): Promise<ScheduleWorktreeDeletionResponse> {
+  return callWorker(workerId, 'ScheduleWorktreeDeletion', ScheduleWorktreeDeletionRequestSchema, ScheduleWorktreeDeletionResponseSchema, req)
 }
 
 export function forceRemoveWorktree(workerId: string, req: MessageInitShape<typeof ForceRemoveWorktreeRequestSchema>): Promise<ForceRemoveWorktreeResponse> {

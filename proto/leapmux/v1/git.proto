@@ -33,6 +33,50 @@ message CheckWorktreeStatusRequest {
   string tab_id = 2;
 }
 
+enum LastTabCloseTarget {
+  LAST_TAB_CLOSE_TARGET_UNSPECIFIED = 0;
+  LAST_TAB_CLOSE_TARGET_NONE = 1;
+  LAST_TAB_CLOSE_TARGET_WORKTREE = 2;
+  LAST_TAB_CLOSE_TARGET_BRANCH = 3;
+}
+
+message InspectLastTabCloseRequest {
+  TabType tab_type = 1;
+  string tab_id = 2;
+}
+
+message InspectLastTabCloseResponse {
+  LastTabCloseTarget target = 1;
+  bool should_prompt = 2;
+  string repo_root = 3;
+  string worktree_path = 4;
+  string worktree_id = 5;
+  string branch_name = 6;
+  int32 diff_added = 7;
+  int32 diff_deleted = 8;
+  int32 diff_untracked = 9;
+  int32 unpushed_commit_count = 10;
+  bool has_uncommitted_changes = 11;
+  bool upstream_exists = 12;
+  bool remote_branch_missing = 13;
+  bool origin_exists = 14;
+  bool can_push = 15;
+  string push_label = 16;
+}
+
+message PushBranchForCloseRequest {
+  TabType tab_type = 1;
+  string tab_id = 2;
+}
+
+message PushBranchForCloseResponse {}
+
+message ScheduleWorktreeDeletionRequest {
+  string worktree_id = 1;
+}
+
+message ScheduleWorktreeDeletionResponse {}
+
 message CheckWorktreeStatusResponse {
   bool has_worktree = 1;             // True if this tab is associated with a managed worktree
   bool is_last_tab = 2;             // True if this is the last tab referencing the worktree
