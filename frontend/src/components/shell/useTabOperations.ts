@@ -212,6 +212,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
 
     const fileName = path.split('/').pop() ?? path
     const tileId = layoutStore.focusedTileId()
+    const afterKey = tabStore.getActiveTabKeyForTile(tileId)
     const tabId = `file-${++fileTabCounter}-${Date.now()}`
     tabStore.addTab({
       type: TabType.FILE,
@@ -224,7 +225,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       fileViewMode,
       fileDiffBase,
       fileOpenSource: openSource,
-    })
+    }, { afterKey })
     tabStore.setActiveTabForTile(tileId, TabType.FILE, tabId)
   }
 

@@ -121,6 +121,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
   props.isEditingRef?.(() => editingTabKey() !== null)
 
   let editCancelled = false
+  let tabListRef: HTMLDivElement | undefined
 
   const tabLabel = (tab: Tab): string => {
     if (tab.title)
@@ -158,6 +159,16 @@ export const TabBar: Component<TabBarProps> = (props) => {
     const tab = props.tabs.find(t => tabKey(t) === value)
     if (tab)
       props.onSelect(tab)
+  }
+
+  const handleWheel = (e: WheelEvent) => {
+    if (!tabListRef || Math.abs(e.deltaY) <= Math.abs(e.deltaX))
+      return
+    const canScrollHorizontally = tabListRef.scrollWidth > tabListRef.clientWidth
+    if (!canScrollHorizontally)
+      return
+    e.preventDefault()
+    tabListRef.scrollLeft += e.deltaY
   }
 
   // Zone droppable for cross-tile drops (drop target for the whole tab bar area)
@@ -309,10 +320,14 @@ export const TabBar: Component<TabBarProps> = (props) => {
       </Show>
       <div
         role="tablist"
-        ref={zoneDroppable}
+        ref={(el) => {
+          tabListRef = el
+          zoneDroppable?.(el)
+        }}
         class={styles.tabList}
         classList={{ [styles.tabListDropTarget]: isDropTarget() }}
         data-testid="tab-list"
+        onWheel={handleWheel}
         onDblClick={(e: MouseEvent) => {
           const target = e.target as HTMLElement
           if (target.closest('[data-testid="tab"]'))
