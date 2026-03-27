@@ -15,6 +15,7 @@ import (
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	"github.com/leapmux/leapmux/internal/worker/hub"
 	"github.com/leapmux/leapmux/internal/worker/service"
+	"github.com/leapmux/leapmux/internal/worker/wakelock"
 	"github.com/leapmux/leapmux/util/version"
 )
 
@@ -121,6 +122,9 @@ func runWorker(args []string) error {
 
 	homeDir, _ := os.UserHomeDir()
 
+	wakeLockTracker := wakelock.NewActivityTracker()
+	defer wakeLockTracker.Close()
+
 	// Set up E2EE channel manager with service handlers.
 	encMode := cfg.EncryptionModeProto()
 
@@ -131,6 +135,7 @@ func runWorker(args []string) error {
 		client.TerminalManager(),
 		homeDir,
 		cfg.DataDir,
+		wakeLockTracker,
 	)
 
 	channelMgr := channel.NewManager(

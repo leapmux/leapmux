@@ -76,6 +76,7 @@ func Run(ctx context.Context, cfg RunConfig) error {
 			client.TerminalManager(),
 			homeDir,
 			cfg.DataDir,
+			nil, // no wakelock in embedded runner
 		)
 
 		channelMgr := channel.NewManager(

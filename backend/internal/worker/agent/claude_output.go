@@ -122,6 +122,8 @@ type messageEnvelope struct {
 	ToolUseResult json.RawMessage            `json:"tool_use_result"`
 	CostUSD       *float64                   `json:"total_cost_usd"`
 	ModelUsage    map[string]json.RawMessage `json:"modelUsage"`
+	IsError       bool                       `json:"is_error"`
+	Result        string                     `json:"result"`
 
 	// contentBlocks is lazily populated from RawContent.
 	contentBlocks []contentBlock
@@ -347,8 +349,15 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		}
 	}
 
-	// Reset all span tracking at turn-end so the next turn starts clean.
 	if msgType == "result" {
+		// Auto-continue on synthetic API 5xx errors; reset on normal results.
+		if env.IsError && hasSyntheticAPI5xxPrefix(env.Result) {
+			a.sink.ScheduleAutoContinue()
+		} else {
+			a.sink.ResetAutoContinue()
+		}
+
+		// Reset all span tracking so the next turn starts clean.
 		a.sink.ResetSpans()
 	}
 }
@@ -603,6 +612,7 @@ var notificationThreadableSubtypes = map[string]bool{
 	"status":                true,
 	"compact_boundary":      true,
 	"microcompact_boundary": true,
+	"api_retry":             true,
 }
 
 func isNotificationThreadable(content []byte, role leapmuxv1.MessageRole) bool {
@@ -640,6 +650,38 @@ func extractStatusValue(content []byte) (status string, ok bool) {
 		return *msg.Status, true
 	}
 	return "", true
+}
+
+// syntheticAPIErrorPrefix is the prefix Claude Code uses for synthetic API error results.
+const syntheticAPIErrorPrefix = "API Error: "
+
+// hasSyntheticAPI5xxPrefix reports whether s starts with "API Error: 5XX"
+// where XX are two digits (i.e. exactly a 3-digit 5xx HTTP status code).
+func hasSyntheticAPI5xxPrefix(s string) bool {
+	// "API Error: 5XX ..." — prefix is 11 chars, then 5, then two digits.
+	if !strings.HasPrefix(s, syntheticAPIErrorPrefix) {
+		return false
+	}
+	rest := s[len(syntheticAPIErrorPrefix):]
+	return len(rest) >= 3 &&
+		rest[0] == '5' &&
+		rest[1] >= '0' && rest[1] <= '9' &&
+		rest[2] >= '0' && rest[2] <= '9' &&
+		(len(rest) == 3 || rest[3] < '0' || rest[3] > '9')
+}
+
+// isSyntheticAPIError checks whether a result message is a synthetic API 5xx error
+// injected by Claude Code (e.g. "API Error: 500 ..."). These trigger auto-continue.
+func isSyntheticAPIError(content []byte) bool {
+	var msg struct {
+		Type    string `json:"type"`
+		IsError bool   `json:"is_error"`
+		Result  string `json:"result"`
+	}
+	if json.Unmarshal(content, &msg) != nil || msg.Type != "result" || !msg.IsError {
+		return false
+	}
+	return hasSyntheticAPI5xxPrefix(msg.Result)
 }
 
 // isSimpleUserTextEcho returns true if the NDJSON line is a user message echo

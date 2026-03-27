@@ -57,6 +57,9 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		terminalID := id.Generate()
 
 		outputFn := func(data []byte) {
+			if svc.WakeLock != nil {
+				svc.WakeLock.RecordActivity()
+			}
 			svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
 				TerminalId: terminalID,
 				Event: &leapmuxv1.TerminalEvent_Data{
@@ -201,6 +204,10 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		if terminalID == "" {
 			sendInvalidArgument(sender, "terminal_id is required")
 			return
+		}
+
+		if svc.WakeLock != nil {
+			svc.WakeLock.RecordActivity()
 		}
 
 		if err := svc.Terminals.SendInput(terminalID, r.GetData()); err != nil {
