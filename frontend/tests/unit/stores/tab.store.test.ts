@@ -526,10 +526,10 @@ describe('createTabStore', () => {
     createRoot((dispose) => {
       const store = createTabStore()
       // Add tabs without activation (simulates restore)
-      store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' }, false)
-      store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 'tile-1' }, false)
-      store.addTab({ type: TabType.AGENT, id: 'a3', tileId: 'tile-2' }, false)
-      store.addTab({ type: TabType.TERMINAL, id: 't1', tileId: 'tile-3' }, false)
+      store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' }, { activate: false })
+      store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 'tile-1' }, { activate: false })
+      store.addTab({ type: TabType.AGENT, id: 'a3', tileId: 'tile-2' }, { activate: false })
+      store.addTab({ type: TabType.TERMINAL, id: 't1', tileId: 'tile-3' }, { activate: false })
 
       // No tiles should have an active tab yet
       expect(store.getActiveTabKeyForTile('tile-1')).toBeNull()
@@ -550,9 +550,9 @@ describe('createTabStore', () => {
   it('initMissingTileActiveTabs skips tiles that already have active tab', () => {
     createRoot((dispose) => {
       const store = createTabStore()
-      store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' }, false)
-      store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 'tile-1' }, false)
-      store.addTab({ type: TabType.AGENT, id: 'a3', tileId: 'tile-2' }, false)
+      store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' }, { activate: false })
+      store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 'tile-1' }, { activate: false })
+      store.addTab({ type: TabType.AGENT, id: 'a3', tileId: 'tile-2' }, { activate: false })
 
       // Manually set a2 as active in tile-1
       store.setActiveTabForTile('tile-1', TabType.AGENT, 'a2')

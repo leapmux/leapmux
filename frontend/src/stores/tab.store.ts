@@ -63,18 +63,17 @@ export function createTabStore() {
   return {
     state,
 
-    addTab(tab: Tab, options: boolean | AddTabOptions = true) {
-      const normalizedOptions = typeof options === 'boolean' ? { activate: options } : options
-      const activate = normalizedOptions.activate ?? true
-      const anchorIdx = normalizedOptions.afterKey
-        ? state.tabs.findIndex(t => tabKey(t) === normalizedOptions.afterKey)
+    addTab(tab: Tab, options: AddTabOptions = {}) {
+      const activate = options.activate ?? true
+      const anchorIdx = options.afterKey
+        ? state.tabs.findIndex(t => tabKey(t) === options.afterKey)
         : -1
 
       if (!tab.position) {
         if (anchorIdx >= 0) {
           const anchorTab = state.tabs[anchorIdx]
           const nextTab = state.tabs[anchorIdx + 1]
-          const prevPos = anchorTab?.position ?? ''
+          const prevPos = anchorTab.position
           const nextPos = nextTab?.position ?? ''
           tab = {
             ...tab,
