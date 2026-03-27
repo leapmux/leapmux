@@ -1,10 +1,11 @@
 import { execSync } from 'node:child_process'
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
-import path, { join } from 'node:path'
+import { join } from 'node:path'
 import {
   OpenTerminalRequestSchema,
   OpenTerminalResponseSchema,
 } from '../../src/generated/leapmux/v1/terminal_pb'
+import { TabType } from '../../src/generated/leapmux/v1/workspace_pb'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './helpers/api'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
@@ -14,18 +15,17 @@ import {
   closeTerminalViaAPI,
   createGitRepo,
   createWorkspaceWithWorktreeViaAPI,
-  forceRemoveWorktreeViaAPI,
-  keepWorktreeViaAPI,
+  inspectLastTabCloseViaAPI,
   listAgentsViaAPI,
   openNewWorkspaceDialog,
+  pushBranchForCloseViaAPI,
+  scheduleWorktreeDeletionViaAPI,
   setWorkingDir,
   waitForOrgPageReady,
   waitForPathDeleted,
   waitForWorker,
   WORKSPACE_URL_RE,
 } from './helpers/worktree'
-
-const frontendDir = path.resolve(import.meta.dirname, '../..')
 
 test.describe('Worktree Lifecycle', () => {
   test('create workspace with worktree via UI', async ({
@@ -72,7 +72,7 @@ test.describe('Worktree Lifecycle', () => {
     expect(existsSync(worktreeDir)).toBe(true)
   })
 
-  test('clean worktree is auto-deleted when the last tab closes', async ({
+  test('clean worktree last tab prompts and can be scheduled for deletion', async ({
     leapmuxServer,
   }) => {
     const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
@@ -98,15 +98,15 @@ test.describe('Worktree Lifecycle', () => {
     const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
     expect(agents.length).toBeGreaterThan(0)
 
-    // Close the agent (last tab referencing the worktree)
-    const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+    const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
+    expect(inspect.shouldPrompt).toBe(true)
+    expect(inspect.worktreePath).toContain('test-repo-autoclean-worktrees/autoclean-branch')
+    expect(inspect.pushLabel).toBe('Push')
 
-    // Worktree should be clean, so it should have been auto-deleted
-    expect(resp.worktreeCleanupPending).toBeFalsy()
-    // Worktree removal happens asynchronously; wait for it to complete.
+    await scheduleWorktreeDeletionViaAPI(hubUrl, adminToken, workerId, inspect.worktreeId)
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+
     await waitForPathDeleted(worktreeDir)
-
-    // Branch should also be deleted (async, along with worktree removal)
     await waitForPathDeleted(join(repoDir, '.git', 'refs', 'heads', 'autoclean-branch'))
     expect(branchExists(repoDir, 'autoclean-branch')).toBe(false)
   })
@@ -143,26 +143,23 @@ test.describe('Worktree Lifecycle', () => {
     const terminalId = termResp2.terminalId
 
     // Close the terminal — agent still holds reference, worktree should persist
-    const termResp = await closeTerminalViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId, terminalId)
-    expect(termResp.worktreeCleanupPending).toBeFalsy()
+    await closeTerminalViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId, terminalId)
     expect(existsSync(worktreeDir)).toBe(true)
 
     // Now close the agent (last tab)
     const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
     expect(agents.length).toBeGreaterThan(0)
-    const agentResp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+    const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
+    expect(inspect.shouldPrompt).toBe(true)
+    await scheduleWorktreeDeletionViaAPI(hubUrl, adminToken, workerId, inspect.worktreeId)
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
-    // Clean worktree should now be auto-deleted
-    expect(agentResp.worktreeCleanupPending).toBeFalsy()
-    // Worktree removal happens asynchronously; wait for it to complete.
     await waitForPathDeleted(worktreeDir)
-
-    // Branch should also be deleted (async, along with worktree removal)
     await waitForPathDeleted(join(repoDir, '.git', 'refs', 'heads', 'shared-branch'))
     expect(branchExists(repoDir, 'shared-branch')).toBe(false)
   })
 
-  test('existing worktree (not created by us) is not deleted on close', async ({
+  test('existing worktree (not created by us) can be scheduled for deletion', async ({
     leapmuxServer,
   }) => {
     const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
@@ -174,30 +171,55 @@ test.describe('Worktree Lifecycle', () => {
     execSync(`git worktree add ${join(dataDir, 'manual-worktree')} -b manual-branch`, { cwd: repoDir })
     expect(existsSync(manualWorktreeDir)).toBe(true)
 
-    // Create a workspace pointing at the manual worktree WITHOUT createWorktree
+    // Create a workspace and open an agent directly in the manual worktree.
     const workspaceId = await createWorkspaceViaAPI(
       hubUrl,
       adminToken,
       'Existing WT WS',
       adminOrgId,
     )
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, manualWorktreeDir)
 
     // Get the auto-created agent
     const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
     expect(agents.length).toBeGreaterThan(0)
 
-    // Close the agent
-    const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+    const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
+    expect(inspect.shouldPrompt).toBe(true)
+    expect(inspect.branchName).toBe('manual-branch')
 
-    // No worktree cleanup should be triggered (not tracked by LeapMux)
-    expect(resp.worktreeCleanupPending).toBeFalsy()
+    await scheduleWorktreeDeletionViaAPI(hubUrl, adminToken, workerId, inspect.worktreeId)
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
-    // The manual worktree should STILL exist on disk
-    expect(existsSync(manualWorktreeDir)).toBe(true)
+    await waitForPathDeleted(manualWorktreeDir)
+    expect(branchExists(repoDir, 'manual-branch')).toBe(false)
   })
 
-  test('dirty worktree with uncommitted changes triggers confirmation', async ({
+  test('last non-worktree tab prompts only when branch has pending git state', async ({
+    leapmuxServer,
+  }) => {
+    const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-branch-prompt')
+
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Branch Prompt WS', adminOrgId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir)
+
+    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
+    expect(agents.length).toBeGreaterThan(0)
+
+    const cleanInspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
+    expect(cleanInspect.shouldPrompt).toBe(false)
+
+    writeFileSync(join(repoDir, 'dirty-branch.txt'), 'dirty\n')
+    const dirtyInspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
+    expect(dirtyInspect.shouldPrompt).toBe(true)
+    expect(dirtyInspect.pushLabel).toBe('Commit and Push')
+
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+    expect(existsSync(join(repoDir, 'dirty-branch.txt'))).toBe(true)
+  })
+
+  test('dirty worktree with uncommitted changes triggers last-tab prompt', async ({
     leapmuxServer,
   }) => {
     const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
@@ -220,29 +242,20 @@ test.describe('Worktree Lifecycle', () => {
     // Make the worktree dirty: add an uncommitted file
     writeFileSync(join(worktreeDir, 'dirty.txt'), 'uncommitted change\n')
 
-    // Close the agent (last tab)
     const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
     expect(agents.length).toBeGreaterThan(0)
-    const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+    const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
 
-    // Should trigger confirmation (worktree NOT auto-deleted)
-    expect(resp.worktreeCleanupPending).toBe(true)
-    // The response path is the resolved (canonical) path from the worker
-    expect(resp.worktreePath).toContain('test-repo-dirty-worktrees/dirty-branch')
-    expect(resp.worktreeId).toBeTruthy()
+    expect(inspect.shouldPrompt).toBe(true)
+    expect(inspect.worktreePath).toContain('test-repo-dirty-worktrees/dirty-branch')
+    expect(inspect.pushLabel).toBe('Commit and Push')
+    expect(inspect.hasUncommittedChanges).toBe(true)
 
-    // Worktree should still exist
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
     expect(existsSync(worktreeDir)).toBe(true)
-
-    // Now force-remove it
-    await forceRemoveWorktreeViaAPI(hubUrl, adminToken, workerId, resp.worktreeId!)
-    await expect(async () => {
-      expect(existsSync(worktreeDir)).toBe(false)
-      expect(branchExists(repoDir, 'dirty-branch')).toBe(false)
-    }).toPass({ timeout: 15_000 })
   })
 
-  test('worktree with local-only commits and no upstream triggers confirmation', async ({
+  test('worktree with local-only commits and no upstream triggers last-tab prompt', async ({
     leapmuxServer,
   }) => {
     const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
@@ -270,24 +283,21 @@ test.describe('Worktree Lifecycle', () => {
     execSync('git add .', { cwd: worktreeDir })
     execSync('git commit -m "local only"', { cwd: worktreeDir })
 
-    // Close the agent (last tab)
     const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
     expect(agents.length).toBeGreaterThan(0)
-    const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+    const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
 
-    // Should trigger confirmation — commits exist only on this branch
-    expect(resp.worktreeCleanupPending).toBe(true)
+    expect(inspect.shouldPrompt).toBe(true)
+    expect(inspect.canPush).toBe(false)
+    expect(inspect.pushLabel).toBe('Push')
+    expect(inspect.unpushedCommitCount).toBe(0)
     expect(existsSync(worktreeDir)).toBe(true)
 
-    // Force-remove it
-    await forceRemoveWorktreeViaAPI(hubUrl, adminToken, workerId, resp.worktreeId!)
-    await expect(async () => {
-      expect(existsSync(worktreeDir)).toBe(false)
-      expect(branchExists(repoDir, 'no-upstream-branch')).toBe(false)
-    }).toPass({ timeout: 15_000 })
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+    expect(existsSync(worktreeDir)).toBe(true)
   })
 
-  test('dirty worktree with unpushed commits triggers confirmation', async ({
+  test('dirty worktree with uncommitted changes can commit and push before close', async ({
     leapmuxServer,
   }) => {
     const { hubUrl, adminToken, workerId, adminOrgId, dataDir } = leapmuxServer
@@ -321,36 +331,27 @@ test.describe('Worktree Lifecycle', () => {
     )
     expect(existsSync(worktreeDir)).toBe(true)
 
-    // Make an unpushed commit in the worktree and set upstream tracking
+    // Make an uncommitted change in the worktree; the close action should
+    // create a WIP commit and push it.
     execSync('git config user.email "test@test.com"', { cwd: worktreeDir })
     execSync('git config user.name "Test"', { cwd: worktreeDir })
     writeFileSync(join(worktreeDir, 'extra.txt'), 'local only\n')
-    execSync('git add .', { cwd: worktreeDir })
-    execSync('git commit -m "unpushed"', { cwd: worktreeDir })
-    // Push the branch to the remote first, then add another unpushed commit.
-    // This ensures the branch has an upstream so `git log @{upstream}..HEAD` works.
     execSync('git push -u origin unpushed-branch', { cwd: worktreeDir })
-    writeFileSync(join(worktreeDir, 'extra2.txt'), 'also local only\n')
-    execSync('git add .', { cwd: worktreeDir })
-    execSync('git commit -m "another unpushed"', { cwd: worktreeDir })
 
-    // Close the agent (last tab)
     const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
     expect(agents.length).toBeGreaterThan(0)
-    const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+    const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
+    expect(inspect.shouldPrompt).toBe(true)
+    expect(inspect.pushLabel).toBe('Commit and Push')
 
-    // Should trigger confirmation
-    expect(resp.worktreeCleanupPending).toBe(true)
-    expect(existsSync(worktreeDir)).toBe(true)
+    await pushBranchForCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
-    // This time, choose "keep" instead of force-remove
-    await keepWorktreeViaAPI(hubUrl, adminToken, workerId, resp.worktreeId!)
-
-    // Worktree should still exist on disk (kept by user choice)
-    expect(existsSync(worktreeDir)).toBe(true)
-
-    // Branch should also still exist
-    expect(branchExists(repoDir, 'unpushed-branch')).toBe(true)
+    const lastMessage = execSync('git log -1 --pretty=%s', { cwd: worktreeDir }).toString().trim()
+    expect(lastMessage).toBe('WIP')
+    const localHead = execSync('git rev-parse HEAD', { cwd: worktreeDir }).toString().trim()
+    const remoteHead = execSync('git rev-parse refs/remotes/origin/unpushed-branch', { cwd: worktreeDir }).toString().trim()
+    expect(localHead).toBe(remoteHead)
   })
 
   test('dirty worktree confirmation dialog: cancel keeps tab open', async ({
@@ -378,6 +379,7 @@ test.describe('Worktree Lifecycle', () => {
     await loginViaToken(page, adminToken)
     await page.goto(`/o/admin/workspace/${workspaceId}`)
     await waitForWorkspaceReady(page)
+    const closeDialog = page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: 'Close Last Tab' }) })
 
     // Close the agent tab via UI
     const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]')
@@ -386,24 +388,24 @@ test.describe('Worktree Lifecycle', () => {
     await agentCloseBtn.dispatchEvent('click')
 
     // Confirmation dialog should appear BEFORE the tab is closed
-    await expect(page.getByRole('heading', { name: 'Dirty Worktree' })).toBeVisible({ timeout: 10000 })
+    await expect(closeDialog).toBeVisible({ timeout: 10000 })
 
     // Dialog should show the branch name
-    await expect(page.getByRole('dialog').getByText('cancel-branch', { exact: true })).toBeVisible()
+    await expect(closeDialog.getByText('cancel-branch', { exact: true })).toBeVisible()
 
-    // Click "Remove" once — should arm the button (show "Confirm?"), not remove
-    await page.getByRole('button', { name: 'Remove' }).click()
-    await expect(page.getByRole('button', { name: 'Confirm?' })).toBeVisible()
+    // Click "Schedule worktree deletion" once — should arm the button (show "Confirm?"), not remove
+    await closeDialog.getByRole('button', { name: 'Schedule worktree deletion' }).click()
+    await expect(closeDialog.getByRole('button', { name: 'Confirm?' })).toBeVisible()
 
     // Dialog should still be open, tab should still be present
-    await expect(page.getByRole('heading', { name: 'Dirty Worktree' })).toBeVisible()
+    await expect(closeDialog).toBeVisible()
     await expect(agentTab).toBeVisible()
 
     // Click "Cancel" — resets the armed button and closes dialog
-    await page.getByRole('button', { name: 'Cancel' }).click()
+    await closeDialog.getByRole('button', { name: 'Cancel' }).click()
 
     // Dialog should close
-    await expect(page.getByRole('heading', { name: 'Dirty Worktree' })).not.toBeVisible()
+    await expect(closeDialog).not.toBeVisible()
 
     // Tab should still be present (not closed)
     await expect(agentTab).toBeVisible()
@@ -412,7 +414,7 @@ test.describe('Worktree Lifecycle', () => {
     expect(existsSync(worktreeDir)).toBe(true)
   })
 
-  test('dirty worktree confirmation dialog: remove closes tab and deletes worktree', async ({
+  test('dirty worktree confirmation dialog: schedule deletion closes tab and deletes worktree', async ({
     page,
     leapmuxServer,
   }) => {
@@ -443,21 +445,21 @@ test.describe('Worktree Lifecycle', () => {
     await agentTab.locator('[data-testid="tab-close"]').dispatchEvent('click')
 
     // Dialog appears BEFORE tab closes
-    await expect(page.getByRole('heading', { name: 'Dirty Worktree' })).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole('heading', { name: 'Close Last Tab' })).toBeVisible({ timeout: 10000 })
     await expect(page.getByRole('dialog').getByText('test-repo-dialog-worktrees/dialog-branch')).toBeVisible()
 
     // Dialog should show the branch name
     await expect(page.getByRole('dialog').getByText('dialog-branch', { exact: true })).toBeVisible()
 
-    // Click "Remove" once — should arm the button (show "Confirm?")
-    await page.getByRole('button', { name: 'Remove' }).click()
+    // Click the dangerous action once — should arm the button (show "Confirm?")
+    await page.getByRole('button', { name: 'Schedule worktree deletion' }).click()
     await expect(page.getByRole('button', { name: 'Confirm?' })).toBeVisible()
 
     // Click "Confirm?" to actually remove
     await page.getByRole('button', { name: 'Confirm?' }).click()
 
     // Dialog closes and tab is removed
-    await expect(page.getByRole('heading', { name: 'Dirty Worktree' })).not.toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Close Last Tab' })).not.toBeVisible()
     await expect(agentTab).not.toBeVisible({ timeout: 5000 })
 
     // Worktree directory and branch are deleted in the background by
@@ -468,7 +470,7 @@ test.describe('Worktree Lifecycle', () => {
     }).toPass({ timeout: 10_000 })
   })
 
-  test('dirty worktree confirmation dialog: keep closes tab but preserves worktree', async ({
+  test('dirty worktree confirmation dialog: close anyway closes tab but preserves worktree', async ({
     page,
     leapmuxServer,
   }) => {
@@ -481,7 +483,7 @@ test.describe('Worktree Lifecycle', () => {
       hubUrl,
       adminToken,
       workerId,
-      'Keep Test WS',
+      'Close Anyway Test WS',
       adminOrgId,
       repoDir,
       'keep-branch',
@@ -499,16 +501,18 @@ test.describe('Worktree Lifecycle', () => {
     await agentTab.locator('[data-testid="tab-close"]').dispatchEvent('click')
 
     // Dialog appears
-    await expect(page.getByRole('heading', { name: 'Dirty Worktree' })).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole('heading', { name: 'Close Last Tab' })).toBeVisible({ timeout: 10000 })
 
     // Dialog should show the branch name
     await expect(page.getByRole('dialog').getByText('keep-branch', { exact: true })).toBeVisible()
 
-    // Click "Keep"
-    await page.getByRole('button', { name: 'Keep' }).click()
+    // Click "Close anyway"
+    await page.getByRole('button', { name: 'Close anyway' }).click()
+    await expect(page.getByRole('button', { name: 'Confirm?' })).toBeVisible()
+    await page.getByRole('button', { name: 'Confirm?' }).click()
 
     // Dialog closes and tab is removed
-    await expect(page.getByRole('heading', { name: 'Dirty Worktree' })).not.toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Close Last Tab' })).not.toBeVisible()
     await expect(agentTab).not.toBeVisible({ timeout: 5000 })
 
     // Worktree should still exist

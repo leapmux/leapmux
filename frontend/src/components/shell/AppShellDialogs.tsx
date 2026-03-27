@@ -12,7 +12,9 @@ import { sectionClient } from '~/api/clients'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { KeyPinMismatchDialog } from '~/components/common/KeyPinMismatchDialog'
+import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { NewWorkspaceDialog } from '~/components/workspace/NewWorkspaceDialog'
+import { LastTabCloseTarget } from '~/generated/leapmux/v1/git_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { dialogStandard } from '~/styles/shared.css'
 import { NewAgentDialog } from './NewAgentDialog'
@@ -20,11 +22,23 @@ import { NewTerminalDialog } from './NewTerminalDialog'
 import { ResumeSessionDialog } from './ResumeSessionDialog'
 import { nextTabNumber } from './useAgentOperations'
 
-interface WorktreeConfirmState {
-  path: string
-  id: string
+interface LastTabConfirmState {
+  target: LastTabCloseTarget
+  repoRoot: string
+  worktreePath: string
+  worktreeId: string
   branchName: string
-  resolve: (choice: 'cancel' | 'keep' | 'remove') => void
+  diffAdded: number
+  diffDeleted: number
+  diffUntracked: number
+  unpushedCommitCount: number
+  hasUncommittedChanges: boolean
+  upstreamExists: boolean
+  remoteBranchMissing: boolean
+  originExists: boolean
+  canPush: boolean
+  pushLabel: string
+  resolve: (choice: 'cancel' | 'push' | 'schedule-delete' | 'close-anyway') => void
 }
 
 export interface KeyPinConfirmState {
@@ -51,8 +65,8 @@ interface AppShellDialogsProps {
   setConfirmDeleteWs: (v: { workspaceId: string, resolve: (confirmed: boolean) => void } | null) => void
   confirmArchiveWs: { workspaceId: string, resolve: (confirmed: boolean) => void } | null
   setConfirmArchiveWs: (v: { workspaceId: string, resolve: (confirmed: boolean) => void } | null) => void
-  worktreeConfirm: WorktreeConfirmState | null
-  setWorktreeConfirm: (v: WorktreeConfirmState | null) => void
+  lastTabConfirm: LastTabConfirmState | null
+  setLastTabConfirm: (v: LastTabConfirmState | null) => void
   keyPinConfirm: KeyPinConfirmState | null
   setKeyPinConfirm: (v: KeyPinConfirmState | null) => void
   activeWorkspace: () => { id: string } | null
@@ -207,44 +221,92 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
         )}
       </Show>
 
-      <Show when={props.worktreeConfirm}>
+      <Show when={props.lastTabConfirm}>
         {(confirm) => {
           let dlgRef!: HTMLDialogElement
           onMount(() => dlgRef.showModal())
           const handleCancel = () => {
             confirm().resolve('cancel')
-            props.setWorktreeConfirm(null)
+            props.setLastTabConfirm(null)
           }
-          const handleKeep = () => {
-            confirm().resolve('keep')
-            props.setWorktreeConfirm(null)
+          const handlePush = () => {
+            confirm().resolve('push')
+            props.setLastTabConfirm(null)
           }
-          const handleRemove = () => {
-            confirm().resolve('remove')
-            props.setWorktreeConfirm(null)
+          const handleScheduleDelete = () => {
+            confirm().resolve('schedule-delete')
+            props.setLastTabConfirm(null)
+          }
+          const handleCloseAnyway = () => {
+            confirm().resolve('close-anyway')
+            props.setLastTabConfirm(null)
           }
           return (
             <dialog ref={dlgRef} class={dialogStandard} onClose={handleCancel}>
-              <header><h2>Dirty Worktree</h2></header>
+              <header><h2>Close Last Tab</h2></header>
               <section>
-                <p>The worktree has uncommitted changes or unpushed commits:</p>
-                <p><code>{confirm().path}</code></p>
                 <p>
-                  Both the worktree and its branch
-                  <code>{confirm().branchName}</code>
-                  {' '}
-                  will be deleted. Keep them on disk, or cancel?
+                  <Show
+                    when={confirm().target === LastTabCloseTarget.WORKTREE}
+                    fallback={(
+                      <>
+                        You are closing the last non-worktree tab for branch
+                        {' '}
+                        <code>{confirm().branchName}</code>
+                        .
+                      </>
+                    )}
+                  >
+                    <>
+                      You are closing the last tab for worktree
+                      {' '}
+                      <code>{confirm().worktreePath}</code>
+                      .
+                    </>
+                  </Show>
                 </p>
+                <p>
+                  Branch:
+                  {' '}
+                  <code>{confirm().branchName}</code>
+                </p>
+                <Show when={confirm().hasUncommittedChanges}>
+                  <p>
+                    Uncommitted changes:
+                    {' '}
+                    <DiffStatsBadge added={confirm().diffAdded} deleted={confirm().diffDeleted} untracked={confirm().diffUntracked} />
+                  </p>
+                </Show>
+                <Show when={confirm().unpushedCommitCount > 0}>
+                  <p>
+                    {confirm().unpushedCommitCount}
+                    {' '}
+                    commit
+                    {confirm().unpushedCommitCount === 1 ? '' : 's'}
+                    {' '}
+                    not pushed.
+                  </p>
+                </Show>
+                <Show when={confirm().remoteBranchMissing}>
+                  <p>Remote branch does not exist.</p>
+                </Show>
               </section>
               <footer>
                 <button type="button" class="outline" onClick={handleCancel}>
                   Cancel
                 </button>
-                <button type="button" onClick={handleKeep}>
-                  Keep
-                </button>
-                <ConfirmButton data-variant="danger" onClick={handleRemove}>
-                  Remove
+                <Show when={confirm().canPush}>
+                  <button type="button" onClick={handlePush}>
+                    {confirm().pushLabel}
+                  </button>
+                </Show>
+                <Show when={confirm().target === LastTabCloseTarget.WORKTREE}>
+                  <ConfirmButton data-variant="danger" onClick={handleScheduleDelete}>
+                    Schedule worktree deletion
+                  </ConfirmButton>
+                </Show>
+                <ConfirmButton data-variant="danger" onClick={handleCloseAnyway}>
+                  Close anyway
                 </ConfirmButton>
               </footer>
             </dialog>

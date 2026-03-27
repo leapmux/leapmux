@@ -16,7 +16,6 @@ import { CODEX_EXTRA_COLLABORATION_MODE, DEFAULT_CODEX_COLLABORATION_MODE } from
 import { optionGroupDefaultValue, optionGroupLabel } from '~/components/chat/settingsShared'
 import { showWarnToast } from '~/components/common/Toast'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLogger } from '~/lib/logger'
 import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
@@ -366,13 +365,13 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   }
 
   // Close an agent
-  const handleCloseAgent = async (agentId: string, worktreeAction: WorktreeAction = WorktreeAction.UNSPECIFIED) => {
+  const handleCloseAgent = async (agentId: string) => {
     try {
       const workerId = getAgentWorkerId(agentId)
       props.controlStore.clearAgent(agentId)
       clearAttachments(agentId)
       if (workerId) {
-        await workerRpc.closeAgent(workerId, { agentId, worktreeAction })
+        await workerRpc.closeAgent(workerId, { agentId })
       }
       props.agentStore.removeAgent(agentId)
       props.tabStore.removeTab(TabType.AGENT, agentId)

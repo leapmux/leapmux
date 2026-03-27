@@ -15,13 +15,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 )
 
-// worktreeCleanupResult holds the result of attempting to clean up a worktree.
-type worktreeCleanupResult struct {
-	NeedsConfirmation bool
-	WorktreePath      string
-	WorktreeID        string
-}
-
 // createWorktreeIfRequested creates a git worktree on the local filesystem if
 // requested. Returns the final working directory (which may be the worktree
 // path) and the DB worktree ID (empty if no worktree was created/reused).
@@ -67,17 +60,6 @@ func (svc *Context) createWorktreeIfRequested(
 	// Compute worktree path.
 	worktreePath := filepath.Join(filepath.Dir(repoRoot), repoDirName+"-worktrees", branchName)
 
-	// Check if we already track this worktree.
-	existing, err := svc.Queries.GetWorktreeByPath(ctx, worktreePath)
-	if err == nil {
-		slog.Info("reusing existing worktree",
-			"worktree_id", existing.ID, "worktree_path", worktreePath)
-		return worktreePath, existing.ID, nil
-	}
-	if err != sql.ErrNoRows {
-		return "", "", err
-	}
-
 	// Create the worktree on disk.
 	if err := gitCommand(ctx, repoRoot, "worktree", "add", "-b", branchName, worktreePath, startPoint); err != nil {
 		return "", "", err
@@ -85,17 +67,10 @@ func (svc *Context) createWorktreeIfRequested(
 
 	slog.Info("worktree created", "worktree_path", worktreePath, "branch_name", branchName)
 
-	// Track in DB.
-	wtID := id.Generate()
-	if err := svc.Queries.CreateWorktree(ctx, db.CreateWorktreeParams{
-		ID:           wtID,
-		WorktreePath: worktreePath,
-		RepoRoot:     repoRoot,
-		BranchName:   branchName,
-	}); err != nil {
+	wtID, err := svc.ensureTrackedWorktree(ctx, worktreePath)
+	if err != nil {
 		return "", "", err
 	}
-
 	return worktreePath, wtID, nil
 }
 
@@ -115,9 +90,44 @@ func (svc *Context) registerTabForWorktree(worktreeID string, tabType leapmuxv1.
 	}
 }
 
-// removeWorktreeFromDisk force-removes a worktree and its branch from disk,
-// then deletes the DB record. The force parameter controls whether --force
-// is passed to `git worktree remove`.
+func (svc *Context) ensureTrackedWorktree(ctx context.Context, worktreePath string) (string, error) {
+	canonicalPath := worktreePath
+	if resolved, err := filepath.EvalSymlinks(worktreePath); err == nil {
+		canonicalPath = resolved
+	}
+
+	existing, err := svc.Queries.GetWorktreeByPath(ctx, canonicalPath)
+	if err == nil {
+		return existing.ID, nil
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return "", err
+	}
+
+	repoRoot, err := resolveMainRepoRoot(ctx, canonicalPath)
+	if err != nil {
+		return "", err
+	}
+
+	branchName, err := currentLocalBranchForPath(ctx, canonicalPath)
+	if err != nil {
+		branchName = ""
+	}
+
+	wtID := id.Generate()
+	if err := svc.Queries.CreateWorktree(ctx, db.CreateWorktreeParams{
+		ID:           wtID,
+		WorktreePath: canonicalPath,
+		RepoRoot:     repoRoot,
+		BranchName:   branchName,
+	}); err != nil {
+		return "", err
+	}
+	return wtID, nil
+}
+
+// removeWorktreeFromDisk force-removes a worktree and deletes its branch when
+// it is no longer used by any remaining worktree.
 func (svc *Context) removeWorktreeFromDisk(wt db.Worktree, force bool) {
 	ctx := bgCtx()
 	args := []string{"worktree", "remove"}
@@ -130,9 +140,13 @@ func (svc *Context) removeWorktreeFromDisk(wt db.Worktree, force bool) {
 			"worktree_path", wt.WorktreePath, "force", force, "error", err)
 	}
 	if wt.BranchName != "" {
-		if err := gitCommand(ctx, wt.RepoRoot, "branch", "-D", wt.BranchName); err != nil {
-			slog.Debug("failed to delete branch",
-				"branch", wt.BranchName, "error", err)
+		if inUse, err := gitutil.IsBranchInUse(wt.RepoRoot, wt.BranchName); err == nil && !inUse {
+			if err := gitCommand(ctx, wt.RepoRoot, "branch", "-D", wt.BranchName); err != nil {
+				slog.Debug("failed to delete branch",
+					"branch", wt.BranchName, "error", err)
+			}
+		} else if err != nil {
+			slog.Debug("failed to check branch usage", "branch", wt.BranchName, "error", err)
 		}
 	}
 	if err := svc.Queries.DeleteWorktree(ctx, wt.ID); err != nil {
@@ -141,10 +155,9 @@ func (svc *Context) removeWorktreeFromDisk(wt db.Worktree, force bool) {
 	}
 }
 
-// unregisterTabAndCleanup removes a tab's worktree association and cleans up
-// the worktree if it was the last tab. The action parameter conveys the user's
-// pre-close choice; when UNSPECIFIED the backend decides based on dirtiness.
-func (svc *Context) unregisterTabAndCleanup(tabType leapmuxv1.TabType, tabID string, action leapmuxv1.WorktreeAction) worktreeCleanupResult {
+// unregisterTabAndCleanup removes a tab's worktree association but does not
+// delete the worktree. Deletion now requires an explicit schedule RPC.
+func (svc *Context) unregisterTabAndCleanup(tabType leapmuxv1.TabType, tabID string, _ leapmuxv1.WorktreeAction) {
 	ctx := bgCtx()
 
 	// Find the worktree for this tab.
@@ -153,8 +166,7 @@ func (svc *Context) unregisterTabAndCleanup(tabType leapmuxv1.TabType, tabID str
 		TabID:   tabID,
 	})
 	if err != nil {
-		// No worktree associated with this tab.
-		return worktreeCleanupResult{}
+		return
 	}
 
 	// Remove the tab association.
@@ -165,55 +177,7 @@ func (svc *Context) unregisterTabAndCleanup(tabType leapmuxv1.TabType, tabID str
 	}); err != nil {
 		slog.Warn("failed to remove worktree tab",
 			"worktree_id", wt.ID, "tab_id", tabID, "error", err)
-		return worktreeCleanupResult{}
 	}
-
-	// Check if other tabs still use this worktree.
-	count, err := svc.Queries.CountWorktreeTabs(ctx, wt.ID)
-	if err != nil {
-		slog.Warn("failed to count worktree tabs",
-			"worktree_id", wt.ID, "error", err)
-		return worktreeCleanupResult{}
-	}
-	if count > 0 {
-		// Other tabs still using the worktree — never delete, regardless
-		// of the user's choice. This guards against the TOCTOU race where
-		// a new tab is registered between the frontend dialog and close RPC.
-		return worktreeCleanupResult{}
-	}
-
-	// Last tab closed — branch on the user's pre-close action.
-	switch action {
-	case leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP:
-		// User chose to keep the worktree+branch on disk. Delete DB record only.
-		if err := svc.Queries.DeleteWorktree(ctx, wt.ID); err != nil {
-			slog.Warn("failed to delete worktree record",
-				"worktree_id", wt.ID, "error", err)
-		}
-		return worktreeCleanupResult{}
-
-	case leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE:
-		// User chose to force-remove the worktree and branch.
-		svc.removeWorktreeFromDisk(wt, true)
-		return worktreeCleanupResult{}
-
-	default:
-		// UNSPECIFIED — no prior user choice; backend decides based on dirtiness.
-	}
-
-	clean, _ := gitutil.IsWorktreeClean(wt.WorktreePath)
-	if !clean {
-		// Dirty worktree — needs user confirmation.
-		return worktreeCleanupResult{
-			NeedsConfirmation: true,
-			WorktreePath:      wt.WorktreePath,
-			WorktreeID:        wt.ID,
-		}
-	}
-
-	// Clean worktree — remove it automatically.
-	svc.removeWorktreeFromDisk(wt, false)
-	return worktreeCleanupResult{}
 }
 
 // checkoutBranchIfRequested runs `git checkout <branch>` in the given working directory.
@@ -343,12 +307,9 @@ func (svc *Context) useExistingWorktreeIfRequested(workingDir, worktreePath stri
 		return "", "", fmt.Errorf("path %q is not a known worktree", sanitized)
 	}
 
-	// Check if already tracked in DB.
-	var wtID string
-	if existing, err := svc.Queries.GetWorktreeByPath(ctx, sanitized); err == nil {
-		if count, err := svc.Queries.CountWorktreeTabs(ctx, existing.ID); err == nil && count > 0 {
-			wtID = existing.ID
-		}
+	wtID, err := svc.ensureTrackedWorktree(ctx, sanitized)
+	if err != nil {
+		return "", "", err
 	}
 
 	return sanitized, wtID, nil
@@ -418,9 +379,11 @@ func (svc *Context) applyGitMode(workingDir string, r gitModeRequest) (gitModeRe
 
 	// "Use current state" — if the selected dir is an already-managed worktree, register this tab.
 	if !r.GetCreateWorktree() && r.GetCheckoutBranch() == "" && r.GetCreateBranch() == "" && r.GetUseWorktreePath() == "" {
-		if existing, err := svc.Queries.GetWorktreeByPath(bgCtx(), workingDir); err == nil {
-			if count, err := svc.Queries.CountWorktreeTabs(bgCtx(), existing.ID); err == nil && count > 0 {
-				worktreeID = existing.ID
+		if worktreeRoot, err := linkedWorktreeRoot(bgCtx(), workingDir); err == nil && worktreeRoot != "" {
+			if wtID, err := svc.ensureTrackedWorktree(bgCtx(), worktreeRoot); err == nil {
+				worktreeID = wtID
+			} else {
+				slog.Warn("failed to track current worktree", "path", worktreeRoot, "error", err)
 			}
 		}
 	}

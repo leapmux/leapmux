@@ -115,7 +115,33 @@ describe('confirmButton', () => {
     expect(button.textContent).toBe('Confirm?')
 
     fireEvent.blur(button)
+    vi.runAllTimers()
     expect(button.textContent).toBe('Delete')
+  })
+
+  it('does not swallow a click on a neighboring button after arming', () => {
+    const onCancel = vi.fn()
+    render(() => (
+      <>
+        <ConfirmButton onClick={() => {}}>
+          Delete
+        </ConfirmButton>
+        <button type="button" onClick={onCancel}>
+          Cancel
+        </button>
+      </>
+    ))
+
+    const [confirmButton, cancelButton] = screen.getAllByRole('button')
+    fireEvent.click(confirmButton)
+    expect(confirmButton.textContent).toBe('Confirm?')
+
+    fireEvent.blur(confirmButton)
+    fireEvent.click(cancelButton)
+    vi.runAllTimers()
+
+    expect(onCancel).toHaveBeenCalledOnce()
+    expect(confirmButton.textContent).toBe('Delete')
   })
 
   it('sets data-armed attribute when armed', () => {

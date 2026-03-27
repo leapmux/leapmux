@@ -11,8 +11,14 @@ import {
 import {
   ForceRemoveWorktreeRequestSchema,
   ForceRemoveWorktreeResponseSchema,
+  InspectLastTabCloseRequestSchema,
+  InspectLastTabCloseResponseSchema,
   KeepWorktreeRequestSchema,
   KeepWorktreeResponseSchema,
+  PushBranchForCloseRequestSchema,
+  PushBranchForCloseResponseSchema,
+  ScheduleWorktreeDeletionRequestSchema,
+  ScheduleWorktreeDeletionResponseSchema,
 } from '../../../src/generated/leapmux/v1/git_pb'
 import {
   CloseTerminalRequestSchema,
@@ -226,6 +232,88 @@ export async function forceRemoveWorktreeViaAPI(
     ForceRemoveWorktreeRequestSchema,
     ForceRemoveWorktreeResponseSchema,
     { worktreeId },
+  )
+}
+
+/**
+ * Inspect the last-tab close state via E2EE channel.
+ */
+export async function inspectLastTabCloseViaAPI(
+  hubUrl: string,
+  token: string,
+  workerId: string,
+  tabType: number,
+  tabId: string,
+): Promise<{
+  target: number
+  shouldPrompt: boolean
+  worktreePath: string
+  worktreeId: string
+  branchName: string
+  pushLabel: string
+  canPush: boolean
+  hasUncommittedChanges: boolean
+  unpushedCommitCount: number
+  remoteBranchMissing: boolean
+}> {
+  const channel = await getTestChannel(hubUrl, token)
+  const resp = await channel.callWorker(
+    workerId,
+    'InspectLastTabClose',
+    InspectLastTabCloseRequestSchema,
+    InspectLastTabCloseResponseSchema,
+    { tabType, tabId },
+  )
+  return {
+    target: resp.target,
+    shouldPrompt: resp.shouldPrompt,
+    worktreePath: resp.worktreePath,
+    worktreeId: resp.worktreeId,
+    branchName: resp.branchName,
+    pushLabel: resp.pushLabel,
+    canPush: resp.canPush,
+    hasUncommittedChanges: resp.hasUncommittedChanges,
+    unpushedCommitCount: resp.unpushedCommitCount,
+    remoteBranchMissing: resp.remoteBranchMissing,
+  }
+}
+
+/**
+ * Schedule worktree deletion via E2EE channel.
+ */
+export async function scheduleWorktreeDeletionViaAPI(
+  hubUrl: string,
+  token: string,
+  workerId: string,
+  worktreeId: string,
+): Promise<void> {
+  const channel = await getTestChannel(hubUrl, token)
+  await channel.callWorker(
+    workerId,
+    'ScheduleWorktreeDeletion',
+    ScheduleWorktreeDeletionRequestSchema,
+    ScheduleWorktreeDeletionResponseSchema,
+    { worktreeId },
+  )
+}
+
+/**
+ * Push or commit-and-push for close via E2EE channel.
+ */
+export async function pushBranchForCloseViaAPI(
+  hubUrl: string,
+  token: string,
+  workerId: string,
+  tabType: number,
+  tabId: string,
+): Promise<void> {
+  const channel = await getTestChannel(hubUrl, token)
+  await channel.callWorker(
+    workerId,
+    'PushBranchForClose',
+    PushBranchForCloseRequestSchema,
+    PushBranchForCloseResponseSchema,
+    { tabType, tabId },
   )
 }
 

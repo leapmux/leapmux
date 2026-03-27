@@ -168,13 +168,8 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		// Handle worktree cleanup.
-		cleanup := svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, r.GetWorktreeAction())
-		sendProtoResponse(sender, &leapmuxv1.CloseAgentResponse{
-			WorktreeCleanupPending: cleanup.NeedsConfirmation,
-			WorktreePath:           cleanup.WorktreePath,
-			WorktreeId:             cleanup.WorktreeID,
-		})
+		svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, r.GetWorktreeAction())
+		sendProtoResponse(sender, &leapmuxv1.CloseAgentResponse{})
 	})
 
 	d.Register("SendAgentMessage", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {

@@ -8,7 +8,6 @@ import { createEffect, createSignal, on } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
-import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { tabKey } from '~/stores/tab.store'
 
@@ -242,13 +241,13 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     }
   }
 
-  const handleTerminalClose = async (terminalId: string, worktreeAction: WorktreeAction = WorktreeAction.UNSPECIFIED) => {
+  const handleTerminalClose = async (terminalId: string) => {
     const ws = props.activeWorkspace()
     try {
       if (!ws)
         return
       const workerId = getTerminalWorkerId(terminalId)
-      await workerRpc.closeTerminal(workerId, { orgId: props.org.orgId(), workspaceId: ws.id, terminalId, worktreeAction })
+      await workerRpc.closeTerminal(workerId, { orgId: props.org.orgId(), workspaceId: ws.id, terminalId })
     }
     catch {
       // Ignore errors (e.g. terminal already exited or not tracked by worker)

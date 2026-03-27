@@ -1156,8 +1156,8 @@ export const AppShell: ParentComponent = (props) => {
         setConfirmDeleteWs={setConfirmDeleteWs}
         confirmArchiveWs={confirmArchiveWs()}
         setConfirmArchiveWs={setConfirmArchiveWs}
-        worktreeConfirm={tabOps.worktreeConfirm()}
-        setWorktreeConfirm={tabOps.setWorktreeConfirm}
+        lastTabConfirm={tabOps.lastTabConfirm()}
+        setLastTabConfirm={tabOps.setLastTabConfirm}
         keyPinConfirm={keyPinConfirm()}
         setKeyPinConfirm={setKeyPinConfirm}
         activeWorkspace={activeWorkspace}
