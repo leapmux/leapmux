@@ -337,6 +337,72 @@ describe('chatView', () => {
     expect(screen.getByText('Follow-up message')).toBeTruthy()
   })
 
+  it('does not snap to bottom after older messages are prepended while browsing history', async () => {
+    const initialMessages = [
+      makeMessage('assistant', 'Newest 1', 'msg-100'),
+      makeMessage('assistant', 'Newest 2', 'msg-101'),
+    ].map((message, index) => ({ ...message, seq: BigInt(100 + index) }))
+    let setMessages!: (messages: AgentChatMessage[]) => void
+
+    const view = render(() => {
+      const [messages, updateMessages] = createSignal(initialMessages)
+      setMessages = updateMessages
+      return (
+        <PreferencesProvider>
+          <ChatView messages={messages()} streamingText="" hasOlderMessages={true} />
+        </PreferencesProvider>
+      )
+    })
+
+    const chatContainer = screen.getByTestId('chat-container')
+    const messageList = chatContainer.firstElementChild?.firstElementChild as HTMLDivElement
+
+    let scrollTop = 0
+    let scrollHeight = 2000
+    let clientHeight = 500
+    Object.defineProperty(messageList, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value
+      },
+    })
+    Object.defineProperty(messageList, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    })
+    Object.defineProperty(messageList, 'clientHeight', {
+      configurable: true,
+      get: () => clientHeight,
+    })
+
+    setMessages([...initialMessages])
+    await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)))
+
+    scrollTop = 50
+    fireEvent.scroll(messageList)
+
+    scrollHeight = 2600
+    setMessages([
+      { ...makeMessage('assistant', 'Older 1', 'msg-050'), seq: 50n },
+      { ...makeMessage('assistant', 'Older 2', 'msg-051'), seq: 51n },
+      ...initialMessages,
+    ])
+
+    await waitFor(() => expect(scrollTop).toBe(650))
+
+    scrollHeight = 2700
+    setMessages([
+      { ...makeMessage('assistant', 'Older 1', 'msg-050'), seq: 50n },
+      { ...makeMessage('assistant', 'Older 2', 'msg-051'), seq: 51n },
+      ...initialMessages,
+      { ...makeMessage('assistant', 'Newest 3', 'msg-102'), seq: 102n },
+    ])
+
+    await waitFor(() => expect(view.container.textContent).toContain('Newest 3'))
+    expect(scrollTop).toBe(650)
+  })
+
   it('keeps both codex commandExecution start and completed messages in history', () => {
     const messages = [
       makeCodexCommandMessage({ id: 'cmd-start', seq: 1n, spanId: 'cmd-1', status: 'in_progress' }),

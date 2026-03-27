@@ -181,6 +181,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         if (messageListRef) {
           const delta = messageListRef.scrollHeight - prevHeight
           messageListRef.scrollTop += delta
+          // Programmatic viewport anchoring does not reliably emit a scroll
+          // event, so recompute the sticky-bottom signal explicitly.
+          setAtBottom(isAtBottom())
         }
       })
     }
@@ -307,15 +310,24 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     scrollAnimationId = requestAnimationFrame(animate)
   }
 
+  let autoScrollFirstSeq: bigint | undefined
+
   // Auto-scroll the message list to the bottom when new content arrives
   // and the user is already at (or near) the bottom.
   // messageVersion covers thread merges (tool_use_result merged into an
   // existing tool_use) which don't change messages.length.
   createEffect(() => {
+    const firstSeq = props.messages[0]?.seq
+    const prependedOlderMessages = autoScrollFirstSeq !== undefined
+      && firstSeq !== undefined
+      && firstSeq < autoScrollFirstSeq
+    autoScrollFirstSeq = firstSeq
     void props.messages.length
     void props.messageVersion
     void props.streamingText
     void props.agentWorking
+    if (prependedOlderMessages)
+      return
     // Use the atBottom signal (not a fresh DOM check) because by the time
     // this effect runs, SolidJS has already updated the DOM — scrollHeight
     // has grown but scrollTop hasn't, so a fresh measurement would wrongly
