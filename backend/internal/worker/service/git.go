@@ -888,7 +888,6 @@ func gitCommand(ctx context.Context, dir string, args ...string) error {
 	return gitutil.NewGitCmd(ctx, append([]string{"-C", dir}, args...)...).Run()
 }
 
-
 // parseGitStatusCode converts a single character from git status --porcelain
 // into a GitFileStatusCode enum value.
 func parseGitStatusCode(c byte) leapmuxv1.GitFileStatusCode {

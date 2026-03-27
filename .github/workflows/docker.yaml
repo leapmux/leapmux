@@ -14,8 +14,8 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-push:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ${{ matrix.arch == 'amd64' && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
     permissions:
       contents: read
       packages: write
@@ -23,11 +23,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - variant: alpine
-            suffix: ''
-          - variant: ubuntu
-            suffix: '-ubuntu'
+        variant: [alpine, ubuntu]
+        arch: [amd64, arm64]
 
     steps:
       - uses: actions/checkout@v4
@@ -57,21 +54,21 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           flavor: |
-            suffix=${{ matrix.suffix }},onlatest=true
+            suffix=${{ matrix.variant == 'ubuntu' && '-ubuntu' || '' }},onlatest=true
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      - name: Build and push
+      - name: Build and push (per-arch)
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/${{ matrix.arch }}
+          push: false
+          outputs: type=image,"name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}",push-by-digest=true,name-canonical=true,push=true
           build-args: |
             BASE_IMAGE=${{ matrix.variant == 'alpine' && env.ALPINE_IMAGE || env.UBUNTU_IMAGE }}
             BUF_VERSION=${{ env.BUF_VERSION }}
@@ -79,5 +76,76 @@ jobs:
             TASK_VERSION=${{ env.TASK_VERSION }}
             S6_OVERLAY_VERSION=${{ env.S6_OVERLAY_VERSION }}
             VERSION=${{ github.ref_name }}
-          cache-from: type=gha,scope=${{ matrix.variant }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
+          cache-from: type=gha,scope=${{ matrix.variant }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}-${{ matrix.arch }}
+
+      - name: Export digest
+        run: |
+          mkdir -p ${{ runner.temp }}/digests/${{ matrix.variant }}
+          echo "${{ steps.build.outputs.digest }}" > "${{ runner.temp }}/digests/${{ matrix.variant }}/${{ matrix.arch }}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.variant }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/${{ matrix.variant }}/
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: alpine
+            suffix: ''
+          - variant: ubuntu
+            suffix: '-ubuntu'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digest-${{ matrix.variant }}-*
+          path: ${{ runner.temp }}/digests/${{ matrix.variant }}
+          merge-multiple: true
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            suffix=${{ matrix.suffix }},onlatest=true
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Create multi-arch manifest
+        run: |
+          DIGESTS=""
+          for f in ${{ runner.temp }}/digests/${{ matrix.variant }}/*; do
+            DIGESTS="$DIGESTS ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@$(cat "$f")"
+          done
+          # Create and push manifest for each tag
+          for TAG in $(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON"); do
+            docker buildx imagetools create -t "$TAG" $DIGESTS
+          done

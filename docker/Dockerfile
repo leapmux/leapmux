@@ -18,7 +18,7 @@ ARG TASK_VERSION
 WORKDIR /src
 
 # Install build tools
-RUN apk add --no-cache bash curl libgcc libstdc++ rsync yq && \
+RUN apk add --no-cache bash curl libgcc libstdc++ nodejs rsync yq && \
     wget -qO- "https://github.com/go-task/task/releases/download/v${TASK_VERSION}/task_linux_$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/').tar.gz" | tar -xz -C /usr/local/bin task && \
     wget -qO /usr/local/bin/buf "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-$(uname -m)" && chmod +x /usr/local/bin/buf && \
     go install github.com/sqlc-dev/sqlc/cmd/sqlc@v${SQLC_VERSION}
@@ -46,10 +46,11 @@ COPY . .
 # (avoids git clone in Docker; spinners are optional)
 RUN mkdir -p frontend/src/spinners
 
-# Build the backend binary via task (single source of truth)
+# Build the backend binary via task (single source of truth).
+# NITRO_PRESET=node-server avoids bun preset auto-detection which hangs in buildkit.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    task build-backend-docker GOOS=${TARGETOS} GOARCH=${TARGETARCH} VERSION=${VERSION}
+    NITRO_PRESET=node-server task build-backend-docker GOOS=${TARGETOS} GOARCH=${TARGETARCH} VERSION=${VERSION}
 
 # ------------------------------------------------------------------
 # Stage 2: Runtime image with s6-overlay
