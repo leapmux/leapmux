@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
+import type { FileAttachment } from '~/components/chat/attachments'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { createAgentStore } from '~/stores/agent.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
@@ -413,12 +414,21 @@ export function createTileRenderer(opts: TileRendererOpts) {
         agentId={agentId()}
         agent={agentStore.state.agents.find(a => a.id === agentId())}
         // eslint-disable-next-line solid/reactivity -- event handler, not a tracked scope
-        onSendMessage={async (content) => {
+        onSendMessage={async (content, fileAttachments?: FileAttachment[]) => {
           const id = focusedAgentId()
           if (!id)
             return
           forceScrollToBottomRef.current?.()
           const sendAgent = agentStore.state.agents.find(a => a.id === id)
+
+          // Build optimistic message JSON (attachments metadata only — no binary).
+          const optimisticPayload: Record<string, unknown> = { content }
+          if (fileAttachments && fileAttachments.length > 0) {
+            optimisticPayload.attachments = fileAttachments.map(a => ({
+              filename: a.filename,
+              mime_type: a.mimeType,
+            }))
+          }
 
           // Create an optimistic local message so it appears immediately in the chat.
           const localId = `local-${crypto.randomUUID()}`
@@ -426,7 +436,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
             $typeName: 'leapmux.v1.AgentChatMessage' as const,
             id: localId,
             role: MessageRole.USER,
-            content: new TextEncoder().encode(JSON.stringify({ content })),
+            content: new TextEncoder().encode(JSON.stringify(optimisticPayload)),
             contentCompression: ContentCompression.NONE,
             seq: 0n,
             createdAt: new Date().toISOString(),
@@ -437,7 +447,17 @@ export function createTileRenderer(opts: TileRendererOpts) {
           chatStore.addMessage(id, localMsg)
 
           try {
-            await workerRpc.sendAgentMessage(sendAgent?.workerId ?? '', { agentId: id, content })
+            const protoAttachments = fileAttachments?.map(a => ({
+              filename: a.filename,
+              mimeType: a.mimeType,
+              data: a.data,
+            })) ?? []
+
+            await workerRpc.sendAgentMessage(sendAgent?.workerId ?? '', {
+              agentId: id,
+              content,
+              attachments: protoAttachments,
+            })
             // Keep the optimistic message until the persisted message arrives.
             // chatStore.addMessage() reconciles the matching server echo in place.
           }

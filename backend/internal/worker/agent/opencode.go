@@ -344,7 +344,7 @@ func (a *OpenCodeAgent) configurePrimaryAgents(modes []openCodeModeInfo, current
 // SendInput writes a user prompt to the agent. The ACP prompt RPC blocks until
 // the LLM finishes, so it runs in a goroutine. Streaming output arrives via
 // sessionUpdate notifications meanwhile.
-func (a *OpenCodeAgent) SendInput(content string) error {
+func (a *OpenCodeAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
 	a.mu.Lock()
 	if a.stopped {
 		a.mu.Unlock()
@@ -357,11 +357,10 @@ func (a *OpenCodeAgent) SendInput(content string) error {
 		return fmt.Errorf("opencode agent has no active session")
 	}
 
+	prompt := buildOpenCodePromptBlocks(content, attachments)
 	params, _ := json.Marshal(map[string]interface{}{
 		"sessionId": sessionID,
-		"prompt": []map[string]interface{}{
-			{"type": "text", "text": content},
-		},
+		"prompt":    prompt,
 	})
 
 	go func() {
@@ -380,6 +379,29 @@ func (a *OpenCodeAgent) SendInput(content string) error {
 	}()
 
 	return nil
+}
+
+// buildOpenCodePromptBlocks converts text + attachments into OpenCode's ACP
+// prompt format. Files use the FilePartInput format with data URIs.
+func buildOpenCodePromptBlocks(content string, attachments []*leapmuxv1.Attachment) []map[string]interface{} {
+	var prompt []map[string]interface{}
+	if content != "" {
+		prompt = append(prompt, map[string]interface{}{"type": "text", "text": content})
+	}
+	for _, a := range attachments {
+		mime := a.GetMimeType()
+		dataURI := encodeDataURI(mime, a.GetData())
+		prompt = append(prompt, map[string]interface{}{
+			"type":     "file",
+			"mime":     mime,
+			"url":      dataURI,
+			"filename": a.GetFilename(),
+		})
+	}
+	if len(prompt) == 0 {
+		prompt = append(prompt, map[string]interface{}{"type": "text", "text": ""})
+	}
+	return prompt
 }
 
 // handlePromptResponse processes the prompt RPC response, persisting the

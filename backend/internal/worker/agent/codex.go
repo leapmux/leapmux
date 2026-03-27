@@ -300,7 +300,7 @@ func (a *CodexAgent) tryThreadRequest(
 // SendInput writes a user message to the agent. If a turn is already in
 // progress it uses turn/steer; otherwise it starts a new turn via turn/start
 // with the current model, effort, approval policy and sandbox policy.
-func (a *CodexAgent) SendInput(content string) error {
+func (a *CodexAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
 	// Read shared state under lock, then release before the blocking RPC.
 	a.mu.Lock()
 	if a.stopped {
@@ -322,9 +322,7 @@ func (a *CodexAgent) SendInput(content string) error {
 		return fmt.Errorf("codex agent has no active thread")
 	}
 
-	input := []map[string]interface{}{
-		{"type": "text", "text": content},
-	}
+	input := buildCodexInputBlocks(content, attachments)
 
 	// If a turn is active, steer it instead of starting a new one.
 	if turnID != "" {
@@ -340,6 +338,32 @@ func (a *CodexAgent) SendInput(content string) error {
 		collaborationMode: collaborationMode,
 		serviceTier:       serviceTier,
 	})
+}
+
+// buildCodexInputBlocks converts text + attachments into Codex's input format.
+// Images use data URI format; PDF attachments are skipped (unsupported by Codex).
+func buildCodexInputBlocks(content string, attachments []*leapmuxv1.Attachment) []map[string]interface{} {
+	var input []map[string]interface{}
+	if content != "" {
+		input = append(input, map[string]interface{}{"type": "text", "text": content})
+	}
+	for _, a := range attachments {
+		mime := a.GetMimeType()
+		switch mime {
+		case "application/pdf":
+			slog.Warn("codex: skipping unsupported PDF attachment", "filename", a.GetFilename())
+			continue
+		default:
+			// Image types: data URI format per Codex SDK ImageInput.
+			dataURI := encodeDataURI(mime, a.GetData())
+			input = append(input, map[string]interface{}{"type": "image", "url": dataURI})
+		}
+	}
+	if len(input) == 0 {
+		// Fallback: if all attachments were skipped and no text, send empty text.
+		input = append(input, map[string]interface{}{"type": "text", "text": ""})
+	}
+	return input
 }
 
 // turnSettings groups the per-turn settings snapshotted from agent state.

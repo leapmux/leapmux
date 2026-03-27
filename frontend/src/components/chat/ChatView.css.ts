@@ -398,3 +398,9 @@ export const messageRowContent = style({
 export const editorPanelWrapper = style({
   flexShrink: 0,
 })
+
+export const editorPanelDropActive = style({
+  outline: '2px dashed var(--primary)',
+  outlineOffset: '-2px',
+  borderRadius: 'var(--radius-medium)',
+})

@@ -40,6 +40,10 @@ interface MarkdownEditorProps {
   allowEmptySend?: boolean
   /** Called when Shift+Tab is pressed in a plain paragraph (indent level 0). */
   onTogglePlanMode?: () => void
+  /** Called when files are pasted from clipboard. Prevents ProseMirror from inserting inline images. */
+  onPasteFiles?: (files: File[]) => void
+  /** Called when the upload button in the toolbar is clicked. */
+  onUploadClick?: () => void
 }
 
 export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
@@ -301,6 +305,23 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
 
     // Signal that the editor is fully initialized with draft content.
     props.onReady?.()
+
+    // Intercept paste events to capture file attachments before ProseMirror
+    // processes them. This prevents ProseMirror from inserting inline images.
+    const handlePaste = (e: ClipboardEvent) => {
+      if (!props.onPasteFiles)
+        return
+      const files = [...(e.clipboardData?.files ?? [])]
+      if (files.length > 0) {
+        e.preventDefault()
+        e.stopPropagation()
+        props.onPasteFiles(files)
+      }
+    }
+    editorRef?.addEventListener('paste', handlePaste, true)
+    onCleanup(() => {
+      editorRef?.removeEventListener('paste', handlePaste, true)
+    })
   })
 
   onCleanup(() => {
@@ -670,6 +691,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         handleLinkRemove={handleLinkRemove}
         handleCodeBlockClick={handleCodeBlockClick}
         handleInlineCodeClick={handleInlineCodeClick}
+        onUploadClick={props.onUploadClick}
       />
       {props.banner}
       <div

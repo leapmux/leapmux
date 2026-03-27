@@ -253,3 +253,20 @@ globalStyle(`${messageBubble} pre`, {
   fontFamily: 'var(--font-mono)',
   fontVariantLigatures: 'none',
 })
+
+// Attachment list shown inside user message bubbles in chat history
+export const attachmentList = style({
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'flex-end',
+  gap: '2px',
+  fontSize: 'var(--text-8)',
+  marginBottom: 'var(--space-2)',
+})
+
+export const attachmentItem = style({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 'var(--space-1)',
+  color: 'var(--muted-foreground)',
+})

@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { FileAttachment } from './attachments'
 import type { EditorContentRef } from './controls/types'
 import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
@@ -10,6 +11,7 @@ import Square from 'lucide-solid/icons/square'
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
+import { showWarnToast } from '~/components/common/Toast'
 import { Tooltip } from '~/components/common/Tooltip'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { formatResetTimestamp, getResetsAt } from '~/lib/rateLimitUtils'
@@ -18,6 +20,18 @@ import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store
 import { spinner } from '~/styles/animations.css'
 import { iconSize } from '~/styles/tokens'
 import { useAgentInfoCard } from './AgentInfoCard'
+import {
+  ACCEPT_ATTRIBUTE,
+  clearAttachments,
+  getAttachments,
+  isSupportedMimeType,
+  MAX_TOTAL_ATTACHMENT_SIZE,
+  nextPastedImageName,
+  readFileAsAttachment,
+  setAttachments as setAttachmentsCache,
+  totalAttachmentSize,
+} from './attachments'
+import { AttachmentStrip } from './AttachmentStrip'
 import * as styles from './ChatView.css'
 import { ContextUsageGrid } from './ContextUsageGrid'
 import { ControlRequestActions, ControlRequestContent } from './ControlRequestBanner'
@@ -30,7 +44,7 @@ export interface AgentEditorPanelProps {
   agentId: string
   agent?: AgentInfo
   disabled?: boolean
-  onSendMessage: (content: string) => void
+  onSendMessage: (content: string, attachments?: FileAttachment[]) => void
   focusRef?: (focus: () => void) => void
   controlRequests?: ControlRequest[]
   onControlResponse?: (agentId: string, content: Uint8Array) => Promise<void>
@@ -72,8 +86,82 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   const [isDragging, setIsDragging] = createSignal(false)
   const [_editorContentHeight, setEditorContentHeight] = createSignal(0)
   const [hasContent, setHasContent] = createSignal(false)
+  const [attachments, setAttachments] = createSignal<FileAttachment[]>([])
+  const [isDragOver, setIsDragOver] = createSignal(false)
+  let fileInputRef: HTMLInputElement | undefined
   const { loading: sending, start: startSending } = createLoadingSignal()
   const interruptLoading = createLoadingSignal()
+
+  // Swap attachments on agentId change (same pattern as editor height cache).
+  createEffect(on(() => props.agentId, (agentId, prevAgentId) => {
+    if (prevAgentId) {
+      setAttachmentsCache(prevAgentId, attachments())
+    }
+    setAttachments(agentId ? getAttachments(agentId) : [])
+  }))
+
+  /** Validate and add files as attachments. */
+  const addFiles = async (files: FileList | File[], isPastedImage?: boolean) => {
+    const currentAttachments = attachments()
+    let currentSize = totalAttachmentSize(currentAttachments)
+
+    // Phase 1: validate synchronously — filter by type and size.
+    const accepted: { file: File, filename?: string }[] = []
+    let rejectedCount = 0
+    let sizeLimitHit = false
+    for (const file of [...files]) {
+      if (!isSupportedMimeType(file.type)) {
+        rejectedCount++
+        continue
+      }
+      if (currentSize + file.size > MAX_TOTAL_ATTACHMENT_SIZE) {
+        sizeLimitHit = true
+        break
+      }
+      const filename = isPastedImage
+        ? `${nextPastedImageName(props.agentId)}.${file.type.split('/')[1] || 'png'}`
+        : undefined
+      accepted.push({ file, filename })
+      currentSize += file.size
+    }
+
+    if (rejectedCount > 0)
+      showWarnToast(`${rejectedCount} unsupported ${rejectedCount === 1 ? 'file was' : 'files were'} not attached`)
+    if (sizeLimitHit)
+      showWarnToast('Total attachment size exceeds 10 MB')
+
+    if (accepted.length === 0)
+      return
+
+    // Phase 2: read accepted files sequentially to avoid I/O thrashing.
+    const toAdd: FileAttachment[] = []
+    for (const a of accepted)
+      toAdd.push(await readFileAsAttachment(a.file, a.filename))
+    const updated = [...currentAttachments, ...toAdd]
+    setAttachments(updated)
+    if (props.agentId)
+      setAttachmentsCache(props.agentId, updated)
+  }
+
+  const removeAttachment = (id: string) => {
+    const updated = attachments().filter(a => a.id !== id)
+    setAttachments(updated)
+    if (props.agentId)
+      setAttachmentsCache(props.agentId, updated)
+  }
+
+  const clearAllAttachments = () => {
+    setAttachments([])
+    if (props.agentId)
+      clearAttachments(props.agentId)
+  }
+
+  const handleFileInputChange = () => {
+    if (fileInputRef?.files?.length) {
+      addFiles(fileInputRef.files)
+      fileInputRef.value = ''
+    }
+  }
 
   // Per-agent editor min height: reactive signal that switches when agentId changes.
   const [editorMinHeightSignal, setEditorMinHeightSignal] = createSignal<number | undefined>(undefined)
@@ -155,6 +243,11 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     askState,
     () => editorContentRef,
     resetEditorHeight,
+    () => attachments(),
+    (content, fileAttachments) => {
+      props.onSendMessage(content, fileAttachments)
+      clearAllAttachments()
+    },
   )
 
   // Clear interrupt loading when the button hides.
@@ -163,6 +256,35 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       interruptLoading.stop()
     }
   }))
+
+  const handleDragOver = (e: DragEvent) => {
+    if (ctrl.activeControlRequest())
+      return
+    e.preventDefault()
+    setIsDragOver(true)
+  }
+
+  const handleDragLeave = (e: DragEvent) => {
+    if (e.currentTarget === e.target || !panelRef?.contains(e.relatedTarget as Node)) {
+      setIsDragOver(false)
+    }
+  }
+
+  const handleDrop = (e: DragEvent) => {
+    e.preventDefault()
+    setIsDragOver(false)
+    if (ctrl.activeControlRequest())
+      return
+    if (e.dataTransfer?.files.length) {
+      addFiles(e.dataTransfer.files)
+    }
+  }
+
+  const handlePasteFiles = (files: File[]) => {
+    if (ctrl.activeControlRequest())
+      return
+    addFiles(files, true)
+  }
 
   // Agent info card (extracted module)
   const info = useAgentInfoCard(props)
@@ -223,7 +345,14 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   }
 
   return (
-    <div ref={panelRef} class={styles.editorPanelWrapper} data-testid="agent-editor-panel">
+    <div
+      ref={panelRef}
+      class={`${styles.editorPanelWrapper}${isDragOver() ? ` ${styles.editorPanelDropActive}` : ''}`}
+      data-testid="agent-editor-panel"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       <div
         class={`${styles.editorResizeHandle} ${isDragging() ? styles.editorResizeHandleActive : ''}`}
         data-testid="editor-resize-handle"
@@ -231,6 +360,18 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         on:dblclick={handleResizeReset}
       />
       <div class={styles.inputArea}>
+        <Show when={!ctrl.activeControlRequest()}>
+          <AttachmentStrip attachments={attachments} onRemove={removeAttachment} />
+        </Show>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept={ACCEPT_ATTRIBUTE}
+          style={{ display: 'none' }}
+          onChange={handleFileInputChange}
+          data-testid="file-input"
+        />
         <MarkdownEditor
           agentId={props.agentId}
           controlRequestId={ctrl.activeControlRequest()?.requestId}
@@ -267,8 +408,10 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             editorReady = true
             tryRegisterEditorRef(props.agentId)
           }}
+          onPasteFiles={!ctrl.activeControlRequest() ? handlePasteFiles : undefined}
+          onUploadClick={!ctrl.activeControlRequest() ? () => fileInputRef?.click() : undefined}
           placeholder={ctrl.isAskUserQuestion() ? 'Type a custom answer...' : ctrl.activeControlRequest() ? 'Type a rejection reason...' : undefined}
-          allowEmptySend={!!ctrl.activeControlRequest() && !ctrl.isAskUserQuestion()}
+          allowEmptySend={(!!ctrl.activeControlRequest() && !ctrl.isAskUserQuestion()) || attachments().length > 0}
           banner={
             ctrl.activeControlRequest()
               ? (
@@ -412,7 +555,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                       </Show>
                       <button
                         type="button"
-                        disabled={!hasContent() || props.disabled || sending()}
+                        disabled={(!hasContent() && attachments().length === 0) || props.disabled || sending()}
                         onClick={() => {
                           startSending()
                           triggerSend?.()

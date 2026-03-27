@@ -31,7 +31,8 @@ type UserInputMessage struct {
 }
 
 // UserInputContent is the nested message content for stream-json input.
+// Content is string for plain text, or []interface{} for multimodal (text + images/documents).
 type UserInputContent struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string      `json:"role"`
+	Content interface{} `json:"content"`
 }

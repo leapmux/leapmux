@@ -114,7 +114,7 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 }
 
 // SendInput routes a user message to the specified agent.
-func (m *Manager) SendInput(agentID, content string) error {
+func (m *Manager) SendInput(agentID, content string, attachments []*leapmuxv1.Attachment) error {
 	m.mu.RLock()
 	p, ok := m.agents[agentID]
 	m.mu.RUnlock()
@@ -123,7 +123,7 @@ func (m *Manager) SendInput(agentID, content string) error {
 		return fmt.Errorf("%w: %s", ErrAgentNotFound, agentID)
 	}
 
-	return p.SendInput(content)
+	return p.SendInput(content, attachments)
 }
 
 // SendRawInput writes raw bytes directly to the specified agent's stdin

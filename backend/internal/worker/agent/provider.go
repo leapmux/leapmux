@@ -1,6 +1,15 @@
 package agent
 
-import leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+import (
+	"encoding/base64"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+)
+
+// encodeDataURI builds a data URI from a MIME type and raw bytes.
+func encodeDataURI(mime string, data []byte) string {
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
+}
 
 // SpanInfo groups span-related metadata for a persisted message.
 type SpanInfo struct {
@@ -43,7 +52,7 @@ type OutputSink interface {
 // Provider is the interface that all coding agent providers must implement.
 type Provider interface {
 	AgentID() string
-	SendInput(content string) error
+	SendInput(content string, attachments []*leapmuxv1.Attachment) error
 	SendRawInput(data []byte) error
 	Stop()
 	IsStopped() bool

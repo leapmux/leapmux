@@ -146,9 +146,17 @@ message AvailableOptionGroup {
 
 // --- Agent Messaging ---
 
+// Attachment represents a file attached to a user message.
+message Attachment {
+  string filename = 1;
+  string mime_type = 2;
+  bytes data = 3;  // Raw file bytes
+}
+
 message SendAgentMessageRequest {
   string agent_id = 1;
   string content = 2; // User message text
+  repeated Attachment attachments = 3;
 }
 
 message SendAgentMessageResponse {}

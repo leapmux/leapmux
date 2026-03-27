@@ -1,3 +1,4 @@
+import type { FileAttachment } from './attachments'
 import type { ControlResponseHandlingProps } from './controlResponseHandling'
 import type { AskQuestionState } from './controls/types'
 import type { ControlRequest } from '~/stores/control.store'
@@ -27,6 +28,39 @@ function setup(overrides?: Partial<ControlResponseHandlingProps>) {
     resetEditorHeight,
   )
   return { result, onSendMessage, resetEditorHeight }
+}
+
+function setupWithAttachments(
+  attachments: FileAttachment[],
+  overrides?: Partial<ControlResponseHandlingProps>,
+) {
+  const onSendMessage = vi.fn()
+  const props: ControlResponseHandlingProps = {
+    agentId: 'test-agent',
+    onSendMessage,
+    ...overrides,
+  }
+  const resetEditorHeight = vi.fn()
+  const result = useControlResponseHandling(
+    props,
+    createMinimalAskState(),
+    () => undefined,
+    resetEditorHeight,
+    () => attachments,
+  )
+  return { result, onSendMessage, resetEditorHeight }
+}
+
+function makeAttachment(overrides: Partial<FileAttachment> = {}): FileAttachment {
+  return {
+    id: 'att-1',
+    file: new File([], 'test.png'),
+    filename: 'test.png',
+    mimeType: 'image/png',
+    data: new Uint8Array([0x89, 0x50]),
+    size: 100,
+    ...overrides,
+  }
 }
 
 function makeControlRequest(requestId: string, agentId: string): ControlRequest {
@@ -109,7 +143,63 @@ describe('handleSend', () => {
   ])('calls onSendMessage for %s', (_, content) => {
     const { result, onSendMessage, resetEditorHeight } = setup()
     result.handleSend(content)
-    expect(onSendMessage).toHaveBeenCalledWith(content)
+    expect(onSendMessage).toHaveBeenCalledWith(content, undefined)
     expect(resetEditorHeight).toHaveBeenCalled()
+  })
+
+  it('passes attachments when present', () => {
+    const attachments = [makeAttachment()]
+    const { result, onSendMessage } = setupWithAttachments(attachments)
+    result.handleSend('look at this')
+    expect(onSendMessage).toHaveBeenCalledWith('look at this', attachments)
+  })
+
+  it('passes undefined attachments when array is empty', () => {
+    const { result, onSendMessage } = setupWithAttachments([])
+    result.handleSend('hello')
+    expect(onSendMessage).toHaveBeenCalledWith('hello', undefined)
+  })
+
+  it('allows sending with empty text when attachments present', () => {
+    const attachments = [makeAttachment()]
+    const { result, onSendMessage } = setupWithAttachments(attachments)
+    const returned = result.handleSend('')
+    // Should NOT return false — the send should proceed
+    expect(returned).not.toBe(false)
+    expect(onSendMessage).toHaveBeenCalledWith('', attachments)
+  })
+
+  it('blocks sending with empty text and no attachments', () => {
+    const { result, onSendMessage } = setupWithAttachments([])
+    expect(result.handleSend('')).toBe(false)
+    expect(onSendMessage).not.toHaveBeenCalled()
+  })
+})
+
+describe('handleControlSend', () => {
+  it('does not pass attachments to control responses', () => {
+    const onControlResponse = vi.fn().mockResolvedValue(undefined)
+    const attachments = [makeAttachment()]
+    const onSendMessage = vi.fn()
+    const props: ControlResponseHandlingProps = {
+      agentId: 'test-agent',
+      controlRequests: [makeControlRequest('req-1', 'test-agent')],
+      onControlResponse,
+      onSendMessage,
+    }
+    const resetEditorHeight = vi.fn()
+    const result = useControlResponseHandling(
+      props,
+      createMinimalAskState(),
+      () => undefined,
+      resetEditorHeight,
+      () => attachments,
+    )
+    // handleControlSend builds a control response — it should NOT include attachments.
+    result.handleControlSend('')
+    // onSendMessage should NOT have been called (it's a control response, not a user message).
+    expect(onSendMessage).not.toHaveBeenCalled()
+    // onControlResponse should have been called (the allow response).
+    expect(onControlResponse).toHaveBeenCalled()
   })
 })

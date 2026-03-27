@@ -8,14 +8,16 @@ import type { CommandStreamSegment } from '~/stores/chat.store'
 import Bot from 'lucide-solid/icons/bot'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
-import { createSignal, Show } from 'solid-js'
+import FileIcon from 'lucide-solid/icons/file'
+import FileImageIcon from 'lucide-solid/icons/file-image'
+import { createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { createLogger } from '~/lib/logger'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { markdownContent } from './markdownContent.css'
-import { thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
+import { attachmentItem, attachmentList, thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
 import { isObject } from './messageUtils'
 import {
   agentErrorRenderer,
@@ -223,12 +225,44 @@ const userTextContentRenderer: MessageContentRenderer = {
   },
 }
 
-/** Handles user messages: {"content":"..."} */
+/** Handles user messages: {"content":"..."} or {"content":"...", "attachments":[...]} */
 const userContentRenderer: MessageContentRenderer = {
   render(parsed, role, _context) {
     if (!isObject(parsed) || typeof parsed.content !== 'string' || 'type' in parsed)
       return null
-    return <div class={markdownClass(role)} innerHTML={renderMarkdown(parsed.content as string)} />
+    const attachments = Array.isArray((parsed as Record<string, unknown>).attachments)
+      ? (parsed as Record<string, unknown>).attachments as Array<{ filename?: string, mime_type?: string }>
+      : undefined
+    const content = parsed.content as string
+    const hasAttachments = attachments && attachments.length > 0
+    const hasText = content.trim().length > 0
+
+    if (!hasAttachments) {
+      if (!hasText)
+        return null
+      return <div class={markdownClass(role)} innerHTML={renderMarkdown(content)} />
+    }
+
+    return (
+      <>
+        <div class={attachmentList}>
+          <For each={attachments}>
+            {att => (
+              <span class={attachmentItem}>
+                <Icon
+                  icon={att.mime_type?.startsWith('image/') ? FileImageIcon : FileIcon}
+                  size="xs"
+                />
+                {att.filename ?? 'Unnamed file'}
+              </span>
+            )}
+          </For>
+        </div>
+        <Show when={hasText}>
+          <div class={markdownClass(role)} innerHTML={renderMarkdown(content)} />
+        </Show>
+      </>
+    )
   },
 }
 
