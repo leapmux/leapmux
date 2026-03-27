@@ -213,9 +213,19 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     props.scrollToBottomRef?.(forceScrollToBottom)
   })
 
+  let prevMessageCount = 0
   createEffect(() => {
+    const count = props.messages.length
+    // Messages were only added or updated — no cleanup needed.
+    if (count >= prevMessageCount) {
+      prevMessageCount = count
+      return
+    }
+    prevMessageCount = count
     const ids = new Set(props.messages.map(msg => msg.id))
     setMessageUiState((prev) => {
+      if (prev.size === 0)
+        return prev
       let changed = false
       const next = new Map<string, Map<string, boolean>>()
       for (const [messageId, state] of prev) {

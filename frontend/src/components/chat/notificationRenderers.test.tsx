@@ -154,6 +154,30 @@ describe('renderNotificationThread: message ordering', () => {
     expect(interruptedIdx).toBeGreaterThan(clearedIdx)
     expect(modelIdx).toBeGreaterThan(interruptedIdx)
   })
+
+  it('api_retry before context_cleared preserves order in one text line', () => {
+    const messages = [
+      { type: 'system', subtype: 'api_retry', attempt: 1, max_retries: 3 },
+      { type: 'context_cleared' },
+    ]
+    const text = renderText(messages)
+    const retryIdx = text.indexOf('API Retry')
+    const clearedIdx = text.indexOf('Context cleared')
+    expect(retryIdx).toBeGreaterThanOrEqual(0)
+    expect(clearedIdx).toBeGreaterThan(retryIdx)
+  })
+
+  it('context_cleared before api_retry preserves order after backend dedupe', () => {
+    const messages = [
+      { type: 'context_cleared' },
+      { type: 'system', subtype: 'api_retry', attempt: 2, max_retries: 3 },
+    ]
+    const text = renderText(messages)
+    const clearedIdx = text.indexOf('Context cleared')
+    const retryIdx = text.indexOf('API Retry')
+    expect(clearedIdx).toBeGreaterThanOrEqual(0)
+    expect(retryIdx).toBeGreaterThan(clearedIdx)
+  })
 })
 
 describe('renderNotificationThread: agent_renamed', () => {

@@ -21,14 +21,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
 )
 
-// notifThreadGracePeriod is how long a soft-cleared notification thread
-// remains eligible for merging.
-const notifThreadGracePeriod = time.Second
-
-// notifThreadRetryGracePeriod is a longer grace period for api_retry
-// notifications, so consecutive retries consolidate into a single thread.
-const notifThreadRetryGracePeriod = time.Minute
-
 // --- Span Tracker ---
 
 // ActiveSpan tracks a single open subagent span.
@@ -322,9 +314,8 @@ func resolveConnectorSpanID(spanID, connectorSpanID, parentSpanID string, closin
 
 // notifThreadRef tracks the current notification thread for an agent.
 type notifThreadRef struct {
-	msgID     string
-	seq       int64
-	softClear time.Time // Zero = not soft-cleared
+	msgID string
+	seq   int64
 }
 
 // notifThreadWrapper is the content envelope stored in the DB for notification
@@ -687,17 +678,14 @@ func (h *OutputHandler) notifMutex(agentID string) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
-// softClearNotifThread marks the current notification thread as soft-cleared.
+// softClearNotifThread clears the current notification thread boundary.
+// Despite the legacy name, this is now a hard break: any subsequent
+// notification starts a new wrapper unless it is immediately adjacent.
 func (h *OutputHandler) softClearNotifThread(agentID string) {
 	mu := h.notifMutex(agentID)
 	mu.Lock()
 	defer mu.Unlock()
-	if ref, ok := h.lastNotifThread.Load(agentID); ok {
-		threadRef := ref.(*notifThreadRef)
-		if threadRef.softClear.IsZero() {
-			threadRef.softClear = time.Now()
-		}
-	}
+	h.lastNotifThread.Delete(agentID)
 }
 
 // persistAndBroadcast persists a message and broadcasts it to watchers.
@@ -742,6 +730,9 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		return err
 	}
 
+	// Any persisted non-notification message breaks notification adjacency.
+	h.softClearNotifThread(agentID)
+
 	h.broadcastMessage(agentID, &leapmuxv1.AgentChatMessage{
 		Id:                 msgID,
 		Role:               role,
@@ -772,14 +763,8 @@ func (h *OutputHandler) persistNotificationThreaded(agentID string, agentProvide
 
 	if ref, ok := h.lastNotifThread.Load(agentID); ok {
 		threadRef := ref.(*notifThreadRef)
-		grace := notifThreadGracePeriod
-		if isAPIRetryContent(contentJSON) {
-			grace = notifThreadRetryGracePeriod
-		}
-		if threadRef.softClear.IsZero() || time.Since(threadRef.softClear) < grace {
-			if err := h.appendToNotificationThread(agentID, agentProvider, threadRef, role, contentJSON); err == nil {
-				return nil
-			}
+		if err := h.appendToNotificationThread(agentID, agentProvider, threadRef, role, contentJSON); err == nil {
+			return nil
 		}
 	}
 
@@ -917,15 +902,6 @@ func (h *OutputHandler) BroadcastNotification(agentID string, agentProvider leap
 	if err := h.persistNotificationThreaded(agentID, agentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, contentJSON); err != nil {
 		slog.Warn("failed to persist notification", "agent_id", agentID, "error", err)
 	}
-}
-
-// isAPIRetryContent checks whether contentJSON is a system/api_retry notification.
-func isAPIRetryContent(contentJSON []byte) bool {
-	var msg struct {
-		Type    string `json:"type"`
-		Subtype string `json:"subtype"`
-	}
-	return json.Unmarshal(contentJSON, &msg) == nil && msg.Type == "system" && msg.Subtype == "api_retry"
 }
 
 // updatePlan persists a plan file path, content, and title for an agent.

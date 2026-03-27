@@ -359,7 +359,7 @@ describe('chatView', () => {
 
     let scrollTop = 0
     let scrollHeight = 2000
-    let clientHeight = 500
+    const clientHeight = 500
     Object.defineProperty(messageList, 'scrollTop', {
       configurable: true,
       get: () => scrollTop,

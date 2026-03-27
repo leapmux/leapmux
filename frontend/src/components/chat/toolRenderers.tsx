@@ -46,6 +46,7 @@ import { renderMarkdown, shikiHighlighter } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { DiffView, rawDiffToHunks } from './diffUtils'
 import { markdownContent } from './markdownContent.css'
+import { useSharedExpandedState } from './messageRenderers'
 import { getAssistantContent, isObject, relativizePath } from './messageUtils'
 import { parseCatNContent, ReadResultView } from './ReadResultView'
 import { RelativeTime } from './RelativeTime'
@@ -53,7 +54,6 @@ import { formatDuration, formatTaskStatus, formatToolInput } from './rendererUti
 import { spanColorKey } from './SpanLines'
 import { spanLineColors } from './SpanLines.css'
 import { renderToolDetail } from './toolDetailRenderers'
-import { useSharedExpandedState } from './messageRenderers'
 import {
   controlResponseTag,
   toolBodyContent,

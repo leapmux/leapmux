@@ -14,7 +14,7 @@ import ListTodo from 'lucide-solid/icons/list-todo'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import Terminal from 'lucide-solid/icons/terminal'
 import Wrench from 'lucide-solid/icons/wrench'
-import { createEffect, createSignal, For, Show } from 'solid-js'
+import { createEffect, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { TodoList } from '~/components/todo/TodoList'
@@ -25,6 +25,7 @@ import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { inlineFlex } from '~/styles/shared.css'
 import { DiffView, rawDiffToHunks } from './diffUtils'
 import { markdownContent } from './markdownContent.css'
+import { useSharedExpandedState } from './messageRenderers'
 import {
   resultDivider,
   thinkingChevron,
@@ -33,7 +34,6 @@ import {
   thinkingHeader,
 } from './messageStyles.css'
 import { isObject, relativizePath } from './messageUtils'
-import { useSharedExpandedState } from './messageRenderers'
 import { formatDuration } from './rendererUtils'
 import { renderToolDetail } from './toolDetailRenderers'
 import { ToolResultMessage, ToolUseLayout } from './toolRenderers'

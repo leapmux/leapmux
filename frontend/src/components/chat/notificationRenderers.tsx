@@ -352,17 +352,8 @@ function formatCompactionTokens(preTokens: number | undefined, tokensSaved: numb
  * as a combined notification. Used when Hub threads consecutive notifications together.
  */
 export function renderNotificationThread(messages: unknown[]): JSXElement {
-  // Accumulate state across all messages in the thread.
-  const settingsParts: string[] = []
-  let compacting = false
-  let compactLabel: string | null = null
-  let compactPreTokens: number | undefined
-  let compactTokensSaved: number | undefined
-  let microcompactLabel: string | null = null
-  let microcompactPreTokens: number | undefined
-  let microcompactTokensSaved: number | undefined
-  const rateLimitByType: Record<string, Record<string, unknown>> = {}
-  let latestApiRetry: Record<string, unknown> | null = null
+  type RenderEntry = { kind: 'text', text: string } | { kind: 'divider', text: string, loading?: boolean }
+  const entries: RenderEntry[] = []
 
   for (const msg of messages) {
     if (!isObject(msg))
@@ -379,123 +370,95 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
         if (!tier)
           continue
         const info = codexTierToRateLimitInfo(tier)
-        if (info.rateLimitType)
-          rateLimitByType[info.rateLimitType] = { ...info } as unknown as Record<string, unknown>
+        if (info.rateLimitType && info.status !== 'allowed')
+          entries.push({ kind: 'text', text: formatRateLimitMessage(info as unknown as Record<string, unknown>) })
       }
     }
     else if (t === 'rate_limit') {
       const info = m.rate_limit_info
       if (isObject(info)) {
         const rlInfo = info as Record<string, unknown>
-        const key = (typeof rlInfo.rateLimitType === 'string' && rlInfo.rateLimitType) || 'unknown'
-        rateLimitByType[key] = rlInfo
+        if (rlInfo.status !== 'allowed')
+          entries.push({ kind: 'text', text: formatRateLimitMessage(rlInfo) })
       }
     }
     else if (t === 'settings_changed') {
       const changes = m.changes as Record<string, { old: string, new: string }> | undefined
       if (changes) {
+        const parts: string[] = []
         for (const [key, val] of Object.entries(changes)) {
           if (val.old !== val.new)
-            settingsParts.push(`${displayLabel(key)} (${displayValue(key, val.old)} → ${displayValue(key, val.new)})`)
+            parts.push(`${displayLabel(key)} (${displayValue(key, val.old)} → ${displayValue(key, val.new)})`)
         }
+        if (parts.length > 0)
+          entries.push({ kind: 'text', text: parts.join(', ') })
       }
     }
     else if (t === 'context_cleared') {
-      settingsParts.push('Context cleared')
+      entries.push({ kind: 'text', text: 'Context cleared' })
     }
     else if (t === 'plan_execution') {
-      settingsParts.push('Executing plan')
+      entries.push({ kind: 'text', text: 'Executing plan' })
     }
     else if (t === 'agent_error') {
       const error = typeof m.error === 'string' ? m.error : 'Unknown error'
-      settingsParts.push(error)
+      entries.push({ kind: 'text', text: error })
     }
     else if (t === 'interrupted') {
-      settingsParts.push('Interrupted')
+      entries.push({ kind: 'text', text: 'Interrupted' })
     }
     else if (t === 'agent_renamed') {
       const title = typeof m.title === 'string' ? m.title : ''
       if (title)
-        settingsParts.push(`Renamed to ${title}`)
+        entries.push({ kind: 'text', text: `Renamed to ${title}` })
     }
     else if (t === 'system' && st === 'api_retry') {
-      latestApiRetry = m
+      entries.push({ kind: 'text', text: formatApiRetryLabel(m) })
     }
     else if (t === 'compacting' || (t === 'system' && st === 'status' && m.status === 'compacting')) {
-      compacting = true
-    }
-    else if (t === 'system' && st === 'status') {
-      compacting = false
+      entries.push({ kind: 'divider', text: 'Compacting context...', loading: true })
     }
     else if (t === 'system' && st === 'compact_boundary') {
-      compacting = false
       const meta = (isObject(m.compact_metadata) ? m.compact_metadata : m.compactMetadata) as Record<string, unknown> | undefined
-      compactPreTokens = (typeof meta?.pre_tokens === 'number' ? meta.pre_tokens : meta?.preTokens) as number | undefined
-      compactTokensSaved = (typeof meta?.tokens_saved === 'number' ? meta.tokens_saved : meta?.tokensSaved) as number | undefined
-      compactLabel = `Context compacted${formatCompactionTokens(compactPreTokens, compactTokensSaved)}`
+      const compactPreTokens = (typeof meta?.pre_tokens === 'number' ? meta.pre_tokens : meta?.preTokens) as number | undefined
+      const compactTokensSaved = (typeof meta?.tokens_saved === 'number' ? meta.tokens_saved : meta?.tokensSaved) as number | undefined
+      entries.push({ kind: 'divider', text: `Context compacted${formatCompactionTokens(compactPreTokens, compactTokensSaved)}` })
     }
     else if (t === 'system' && st === 'microcompact_boundary') {
-      compacting = false
       const meta = (isObject(m.microcompactMetadata) ? m.microcompactMetadata : m.microcompact_metadata) as Record<string, unknown> | undefined
-      microcompactPreTokens = (typeof meta?.preTokens === 'number' ? meta.preTokens : meta?.pre_tokens) as number | undefined
-      microcompactTokensSaved = (typeof meta?.tokensSaved === 'number' ? meta.tokensSaved : meta?.tokens_saved) as number | undefined
-      microcompactLabel = `Context microcompacted${formatCompactionTokens(microcompactPreTokens, microcompactTokensSaved)}`
+      const microcompactPreTokens = (typeof meta?.preTokens === 'number' ? meta.preTokens : meta?.pre_tokens) as number | undefined
+      const microcompactTokensSaved = (typeof meta?.tokensSaved === 'number' ? meta.tokensSaved : meta?.tokens_saved) as number | undefined
+      entries.push({ kind: 'divider', text: `Context microcompacted${formatCompactionTokens(microcompactPreTokens, microcompactTokensSaved)}` })
     }
   }
 
-  // Add rate limit messages (one per rateLimitType), skipping "allowed" status.
-  for (const info of Object.values(rateLimitByType)) {
-    if (info.status !== 'allowed')
-      settingsParts.push(formatRateLimitMessage(info))
-  }
-
-  const settingsLine = settingsParts.length > 0 ? settingsParts.join(', ') : null
-
   const elements: JSXElement[] = []
+  let pendingText: string[] = []
 
-  // Compaction in progress (spinner).
-  if (compacting && !compactLabel && !microcompactLabel) {
+  const flushPendingText = () => {
+    if (pendingText.length === 0)
+      return
+    elements.push(
+      <div class={controlResponseMessage}>{pendingText.join(', ')}</div>,
+    )
+    pendingText = []
+  }
+
+  for (const entry of entries) {
+    if (entry.kind === 'text') {
+      pendingText.push(entry.text)
+      continue
+    }
+
+    flushPendingText()
     elements.push(
       <div class={resultDivider}>
-        <Icon icon={LoaderCircle} size="sm" class={spinner} />
-        {' Compacting context...'}
+        <Icon icon={entry.loading ? LoaderCircle : ArrowDownToLine} size="sm" class={entry.loading ? spinner : undefined} />
+        {` ${entry.text}`}
       </div>,
     )
   }
-
-  // Compact boundary result.
-  if (compactLabel) {
-    elements.push(
-      <div class={resultDivider}>
-        <Icon icon={ArrowDownToLine} size="sm" />
-        {` ${compactLabel}`}
-      </div>,
-    )
-  }
-
-  // Microcompact boundary result.
-  if (microcompactLabel) {
-    elements.push(
-      <div class={resultDivider}>
-        <Icon icon={ArrowDownToLine} size="sm" />
-        {` ${microcompactLabel}`}
-      </div>,
-    )
-  }
-
-  // API retry (latest only).
-  if (latestApiRetry) {
-    elements.push(
-      <div class={controlResponseMessage}>{formatApiRetryLabel(latestApiRetry)}</div>,
-    )
-  }
-
-  // Settings / context cleared / interrupted line.
-  if (settingsLine) {
-    elements.push(
-      <div class={controlResponseMessage}>{settingsLine}</div>,
-    )
-  }
+  flushPendingText()
 
   if (elements.length === 0)
     return null

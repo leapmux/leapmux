@@ -236,8 +236,6 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 }
 
 // SendInput writes a user message to the agent's stdin.
-// When attachments are present, builds a content block array with text, image,
-// and document blocks per the Claude Code SDK protocol.
 func (a *ClaudeCodeAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
