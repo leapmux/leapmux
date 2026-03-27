@@ -10,6 +10,7 @@ import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
 import { usePreferences } from '~/context/PreferencesContext'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { createLogger } from '~/lib/logger'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
@@ -22,6 +23,8 @@ import { SpanLines } from './SpanLines'
 import { NO_SPAN_MARGIN } from './SpanLines.css'
 import { ThinkingIndicator } from './ThinkingIndicator'
 import { ToolUseLayout } from './toolRenderers'
+
+const logger = createLogger('ChatView')
 
 interface ChatViewProps {
   messages: AgentChatMessage[]
@@ -137,7 +140,35 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   let messageListRef: HTMLDivElement | undefined
   let contentRef: HTMLDivElement | undefined
   const [atBottom, setAtBottom] = createSignal(true)
+  const [preserveBrowsingPosition, setPreserveBrowsingPosition] = createSignal(false)
   let scrollAnimationId: number | null = null
+
+  const shouldDebugScroll = () => {
+    try {
+      return localStorage.getItem('debugChatScroll') === '1'
+    }
+    catch {
+      return false
+    }
+  }
+
+  const logScroll = (reason: string, extra: Record<string, unknown> = {}) => {
+    if (!shouldDebugScroll())
+      return
+    logger.warn(`scroll:${reason}`, {
+      ...extra,
+      atBottom: atBottom(),
+      preserveBrowsingPosition: preserveBrowsingPosition(),
+      fetchingOlder: props.fetchingOlder,
+      messageCount: props.messages.length,
+      messageVersion: props.messageVersion,
+      scrollTop: messageListRef?.scrollTop,
+      scrollHeight: messageListRef?.scrollHeight,
+      clientHeight: messageListRef?.clientHeight,
+      firstSeq: props.messages[0]?.seq?.toString(),
+      lastSeq: props.messages.at(-1)?.seq?.toString(),
+    })
+  }
 
   const cancelScrollAnimation = () => {
     if (scrollAnimationId !== null) {
@@ -153,13 +184,19 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   const checkAtBottom = () => {
     if (!messageListRef || scrollAnimationId !== null)
       return
-    setAtBottom(isAtBottom())
+    const nextAtBottom = isAtBottom()
+    setAtBottom(nextAtBottom)
+    if (nextAtBottom)
+      setPreserveBrowsingPosition(false)
+    logScroll('check-at-bottom', { nextAtBottom })
   }
 
   const handleScroll = () => {
     checkAtBottom()
     if (messageListRef && props.hasOlderMessages && !props.fetchingOlder) {
       if (messageListRef.scrollTop < messageListRef.clientHeight / 2) {
+        setPreserveBrowsingPosition(true)
+        logScroll('load-older-trigger')
         props.onLoadOlderMessages?.()
       }
     }
@@ -180,6 +217,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       // Clear stickiness immediately so a concurrent append cannot snap the
       // view down before the anchor adjustment rAF runs.
       setAtBottom(false)
+      setPreserveBrowsingPosition(true)
+      logScroll('anchor-prepend-start', { anchorFirstSeq: anchorFirstSeq.toString(), newFirstSeq: newFirstSeq.toString() })
       const prevHeight = anchorScrollHeight
       requestAnimationFrame(() => {
         if (messageListRef) {
@@ -188,6 +227,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
           // Programmatic viewport anchoring does not reliably emit a scroll
           // event, so recompute the sticky-bottom signal explicitly.
           setAtBottom(isAtBottom())
+          logScroll('anchor-prepend-apply', { delta, prevHeight })
         }
       })
     }
@@ -210,6 +250,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     if (messageListRef)
       messageListRef.scrollTop = messageListRef.scrollHeight
     setAtBottom(true)
+    setPreserveBrowsingPosition(false)
+    logScroll('force-scroll-to-bottom')
   }
 
   onMount(() => {
@@ -293,6 +335,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       entryCache.set(k, v)
     return result
   })
+  // Intentionally separate from visibleEntries() — this memo short-circuits
+  // via Array.some() and avoids classifying every message, which is cheaper
+  // than materializing the full visibleEntries() array just to check emptiness.
   const hasVisibleEntries = createMemo(() => {
     if (prefs.showHiddenMessages())
       return props.messages.length > 0
@@ -314,6 +359,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         messageListRef.scrollTop = messageListRef.scrollHeight
         scrollAnimationId = null
         setAtBottom(true)
+        setPreserveBrowsingPosition(false)
+        logScroll('scroll-to-bottom-finish')
         return
       }
       const step = remaining > 48 ? remaining * 0.5 : remaining * 0.4
@@ -341,13 +388,15 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     void props.streamingText
     void props.agentWorking
     if (prependedOlderMessages)
+      logScroll('auto-scroll-skip-prepend')
+    if (prependedOlderMessages)
       return
     // Use the atBottom signal (not a fresh DOM check) because by the time
     // this effect runs, SolidJS has already updated the DOM — scrollHeight
     // has grown but scrollTop hasn't, so a fresh measurement would wrongly
     // conclude the user is no longer at the bottom. The signal captures
     // the user's scroll position from before the content changed.
-    if (untrack(atBottom) && messageListRef) {
+    if (untrack(atBottom) && !untrack(preserveBrowsingPosition) && messageListRef) {
       // Skip scroll when hidden (e.g. inactive tab with display:none).
       // The ResizeObserver will scroll to bottom when the tab becomes visible.
       if (messageListRef.clientHeight === 0)
@@ -356,9 +405,16 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       // so deferring to rAF would cause one visible frame where the view
       // appears scrolled up before snapping back to bottom.
       messageListRef.scrollTop = messageListRef.scrollHeight
+      logScroll('auto-scroll-apply')
       if (props.messages.length > MAX_LOADED_CHAT_MESSAGES) {
         props.onTrimOldMessages?.()
       }
+    }
+    else {
+      logScroll('auto-scroll-skip', {
+        untrackedAtBottom: untrack(atBottom),
+        suppressed: untrack(preserveBrowsingPosition),
+      })
     }
   })
 
@@ -410,11 +466,13 @@ export const ChatView: Component<ChatViewProps> = (props) => {
             if (savedScroll.atBottom) {
               messageListRef.scrollTop = messageListRef.scrollHeight
               setAtBottom(true)
+              logScroll('resize-restore-saved-bottom')
             }
             else {
               const maxScroll = messageListRef.scrollHeight - messageListRef.clientHeight
               messageListRef.scrollTop = savedScroll.distFromBottom > maxScroll ? 0 : maxScroll - savedScroll.distFromBottom
               setAtBottom(false)
+              logScroll('resize-restore-saved-distance', { maxScroll, distFromBottom: savedScroll.distFromBottom })
             }
             props.onClearSavedViewportScroll?.()
             return
@@ -422,6 +480,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
           if (savedAtBottom) {
             messageListRef.scrollTop = messageListRef.scrollHeight
             setAtBottom(true)
+            logScroll('resize-restore-captured-bottom')
             return
           }
         }
@@ -539,6 +598,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                   onExpandTick={() => {
                     if (isAtBottom()) {
                       messageListRef!.scrollTop = messageListRef!.scrollHeight
+                      logScroll('thinking-indicator-expand-tick')
                     }
                   }}
                 />
