@@ -142,6 +142,8 @@ func (s *testSink) LoadAndDeletePlanModeToolUse(toolUseID string) (string, bool)
 }
 
 func (s *testSink) UpdatePlan(string, []byte, leapmuxv1.ContentCompression, string) {}
+func (s *testSink) ScheduleAutoContinue()                                           {}
+func (s *testSink) ResetAutoContinue()                                              {}
 
 // MessageCount returns the number of persisted messages.
 func (s *testSink) MessageCount() int {
@@ -287,3 +289,5 @@ func (noopSink) SoftClearNotifThread()                                          
 func (noopSink) StorePlanModeToolUse(string, string)                             {}
 func (noopSink) LoadAndDeletePlanModeToolUse(string) (string, bool)              { return "", false }
 func (noopSink) UpdatePlan(string, []byte, leapmuxv1.ContentCompression, string) {}
+func (noopSink) ScheduleAutoContinue()                                           {}
+func (noopSink) ResetAutoContinue()                                              {}

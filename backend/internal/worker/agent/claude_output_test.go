@@ -359,6 +359,34 @@ func TestHandleOutput_TopLevelAssistantBroadcastsContextUsage(t *testing.T) {
 	assert.Equal(t, int64(30), usage["cacheReadInputTokens"])
 }
 
+func TestIsSyntheticAPIError(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"500 error", `{"type":"result","is_error":true,"result":"API Error: 500 Internal Server Error"}`, true},
+		{"502 error", `{"type":"result","is_error":true,"result":"API Error: 502 Bad Gateway"}`, true},
+		{"529 overloaded", `{"type":"result","is_error":true,"result":"API Error: 529 Overloaded"}`, true},
+		{"599 bare", `{"type":"result","is_error":true,"result":"API Error: 599"}`, true},
+		{"400 not matched", `{"type":"result","is_error":true,"result":"API Error: 400 Bad Request"}`, false},
+		{"single digit 5", `{"type":"result","is_error":true,"result":"API Error: 5"}`, false},
+		{"two digit 50", `{"type":"result","is_error":true,"result":"API Error: 50"}`, false},
+		{"four digit 5000", `{"type":"result","is_error":true,"result":"API Error: 5000"}`, false},
+		{"not error", `{"type":"result","is_error":false,"result":"done"}`, false},
+		{"not result type", `{"type":"assistant","is_error":true,"result":"API Error: 500"}`, false},
+		{"normal result", `{"type":"result","subtype":"success","result":"All done","duration_ms":1234}`, false},
+		{"invalid json", `{invalid`, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isSyntheticAPIError([]byte(tt.input))
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestHandleOutput_SubagentAssistantDoesNotOverwriteContextUsage(t *testing.T) {
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)

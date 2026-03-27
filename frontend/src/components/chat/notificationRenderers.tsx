@@ -117,6 +117,26 @@ export const agentRenamedRenderer: MessageContentRenderer = {
   },
 }
 
+function formatApiRetryLabel(data: Record<string, unknown>): string {
+  const attempt = typeof data.attempt === 'number' ? data.attempt : '?'
+  const maxRetries = typeof data.max_retries === 'number' ? data.max_retries : '?'
+  const errorStatus = data.error_status != null ? String(data.error_status) : null
+  const error = typeof data.error === 'string' ? data.error : null
+  const detail = [errorStatus, error].filter(Boolean).join(' \u00B7 ')
+  return detail
+    ? `API Retry ${attempt}/${maxRetries} (${detail})`
+    : `API Retry ${attempt}/${maxRetries}`
+}
+
+/** Handles api_retry notifications: {"type":"system","subtype":"api_retry","attempt":N,"max_retries":N,...} */
+export const apiRetryRenderer: MessageContentRenderer = {
+  render(parsed, _role, _context) {
+    if (!isObject(parsed) || parsed.type !== 'system' || parsed.subtype !== 'api_retry')
+      return null
+    return <div class={controlResponseMessage}>{formatApiRetryLabel(parsed as Record<string, unknown>)}</div>
+  },
+}
+
 /** Handles rate limit notifications: {"type":"rate_limit","rate_limit_info":{...}} or Codex native format */
 export const rateLimitRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
@@ -313,6 +333,7 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
   let microcompactPreTokens: number | undefined
   let microcompactTokensSaved: number | undefined
   const rateLimitByType: Record<string, Record<string, unknown>> = {}
+  let latestApiRetry: Record<string, unknown> | null = null
 
   for (const msg of messages) {
     if (!isObject(msg))
@@ -367,6 +388,9 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
       const title = typeof m.title === 'string' ? m.title : ''
       if (title)
         settingsParts.push(`Renamed to ${title}`)
+    }
+    else if (t === 'system' && st === 'api_retry') {
+      latestApiRetry = m
     }
     else if (t === 'compacting' || (t === 'system' && st === 'status' && m.status === 'compacting')) {
       compacting = true
@@ -427,6 +451,13 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
         <Icon icon={ArrowDownToLine} size="sm" />
         {` ${microcompactLabel}`}
       </div>,
+    )
+  }
+
+  // API retry (latest only).
+  if (latestApiRetry) {
+    elements.push(
+      <div class={controlResponseMessage}>{formatApiRetryLabel(latestApiRetry)}</div>,
     )
   }
 
