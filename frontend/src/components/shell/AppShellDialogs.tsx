@@ -96,6 +96,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
           onCreated={(agent) => {
             props.setShowNewAgentDialog(false)
             const tileId = props.layoutStore.focusedTileId()
+            const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
             props.agentStore.addAgent(agent)
             props.tabStore.addTab({
               type: TabType.AGENT,
@@ -105,7 +106,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
               workerId: agent.workerId,
               workingDir: agent.workingDir,
               agentProvider: agent.agentProvider,
-            })
+            }, { afterKey })
             props.tabStore.setActiveTabForTile(tileId, TabType.AGENT, agent.id)
             props.persistLayout()
             requestAnimationFrame(() => props.focusEditor())
@@ -126,8 +127,9 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
               return
             const title = `Terminal ${nextTabNumber(props.tabStore.state.tabs, TabType.TERMINAL, 'Terminal')}`
             const tileId = props.layoutStore.focusedTileId()
+            const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
             props.terminalStore.addTerminal({ id: terminalId, workspaceId: ws.id, workerId, workingDir })
-            props.tabStore.addTab({ type: TabType.TERMINAL, id: terminalId, title, tileId, workerId, workingDir })
+            props.tabStore.addTab({ type: TabType.TERMINAL, id: terminalId, title, tileId, workerId, workingDir }, { afterKey })
             props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, terminalId)
             props.persistLayout()
           }}

@@ -13,7 +13,7 @@ import Plus from 'lucide-solid/icons/plus'
 import Rows2 from 'lucide-solid/icons/rows-2'
 import Terminal from 'lucide-solid/icons/terminal'
 import X from 'lucide-solid/icons/x'
-import { createSignal, ErrorBoundary, For, Show } from 'solid-js'
+import { createSignal, ErrorBoundary, For, onCleanup, onMount, Show } from 'solid-js'
 import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
@@ -121,6 +121,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
   props.isEditingRef?.(() => editingTabKey() !== null)
 
   let editCancelled = false
+  let tabListRef: HTMLDivElement | undefined
 
   const tabLabel = (tab: Tab): string => {
     if (tab.title)
@@ -159,6 +160,21 @@ export const TabBar: Component<TabBarProps> = (props) => {
     if (tab)
       props.onSelect(tab)
   }
+
+  const handleWheel = (e: WheelEvent) => {
+    if (!tabListRef || Math.abs(e.deltaY) < Math.abs(e.deltaX))
+      return
+    const canScrollHorizontally = tabListRef.scrollWidth > tabListRef.clientWidth
+    if (!canScrollHorizontally)
+      return
+    e.preventDefault()
+    tabListRef.scrollLeft += e.deltaY
+  }
+
+  onMount(() => {
+    tabListRef?.addEventListener('wheel', handleWheel, { passive: false })
+    onCleanup(() => tabListRef?.removeEventListener('wheel', handleWheel))
+  })
 
   // Zone droppable for cross-tile drops (drop target for the whole tab bar area)
   // May fail if DragDropProvider context isn't available (e.g. during rapid tab creation)
@@ -309,7 +325,10 @@ export const TabBar: Component<TabBarProps> = (props) => {
       </Show>
       <div
         role="tablist"
-        ref={zoneDroppable}
+        ref={(el) => {
+          tabListRef = el
+          zoneDroppable?.(el)
+        }}
         class={styles.tabList}
         classList={{ [styles.tabListDropTarget]: isDropTarget() }}
         data-testid="tab-list"

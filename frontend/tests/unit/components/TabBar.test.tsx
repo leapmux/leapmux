@@ -1,4 +1,4 @@
-import { render, screen } from '@solidjs/testing-library'
+import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { TabBar } from '~/components/shell/TabBar'
 import { PreferencesProvider } from '~/context/PreferencesContext'
@@ -165,5 +165,31 @@ describe('tabBar readOnly prop', () => {
     ))
     expect(screen.queryByTestId('new-agent-button')).toBeNull()
     expect(screen.queryByTestId('new-terminal-button')).toBeNull()
+  })
+
+  it('scrolls the tab list horizontally on vertical wheel input when overflowing', () => {
+    const tabs = [
+      makeTab(TabType.AGENT, 'a1', 'Agent 1'),
+      makeTab(TabType.TERMINAL, 't1', 'Terminal 1'),
+      makeTab(TabType.FILE, 'f1', 'File 1'),
+    ]
+    render(() => (
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          tabs={tabs}
+          readOnly={false}
+        />
+      </PreferencesProvider>
+    ))
+
+    const tabList = screen.getByTestId('tab-list') as HTMLDivElement
+    Object.defineProperty(tabList, 'clientWidth', { configurable: true, value: 120 })
+    Object.defineProperty(tabList, 'scrollWidth', { configurable: true, value: 480 })
+    Object.defineProperty(tabList, 'scrollLeft', { configurable: true, writable: true, value: 0 })
+
+    fireEvent.wheel(tabList, { deltaY: 60, deltaX: 0 })
+
+    expect(tabList.scrollLeft).toBe(60)
   })
 })

@@ -108,6 +108,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       })
       if (resp.agent) {
         const tileId = props.layoutStore.focusedTileId()
+        const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
         props.agentStore.addAgent(resp.agent)
         props.tabStore.addTab({
           type: TabType.AGENT,
@@ -117,7 +118,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
           workerId: resp.agent.workerId,
           workingDir: resp.agent.workingDir,
           agentProvider: resp.agent.agentProvider,
-        })
+        }, { afterKey })
         props.tabStore.setActiveTabForTile(tileId, TabType.AGENT, resp.agent.id)
         props.agentStore.setActiveAgent(resp.agent.id)
         props.persistLayout?.()

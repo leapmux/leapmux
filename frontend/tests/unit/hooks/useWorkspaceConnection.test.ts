@@ -163,7 +163,7 @@ describe('background agent history trimming', () => {
       const chatStore = createChatStore()
       const tabStore = createTabStore()
       tabStore.addTab({ type: TabType.AGENT, id: 'active-agent', tileId: 'tile-1' })
-      tabStore.addTab({ type: TabType.AGENT, id: 'visible-agent', tileId: 'tile-2' }, false)
+      tabStore.addTab({ type: TabType.AGENT, id: 'visible-agent', tileId: 'tile-2' }, { activate: false })
       tabStore.setActiveTabForTile('tile-2', TabType.AGENT, 'visible-agent')
 
       const initial = Array.from({ length: MAX_BACKGROUND_CHAT_MESSAGES }, (_, i) =>

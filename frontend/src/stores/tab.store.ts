@@ -46,6 +46,11 @@ export interface TabStoreState {
   tileMruOrder: Record<string, string[]>
 }
 
+export interface AddTabOptions {
+  activate?: boolean
+  afterKey?: string | null
+}
+
 export function createTabStore() {
   const [state, setState] = createStore<TabStoreState>({
     tabs: [],
@@ -58,14 +63,32 @@ export function createTabStore() {
   return {
     state,
 
-    addTab(tab: Tab, activate = true) {
-      // Assign a position if not already set
+    addTab(tab: Tab, options: AddTabOptions = {}) {
+      const activate = options.activate ?? true
+      const anchorIdx = options.afterKey
+        ? state.tabs.findIndex(t => tabKey(t) === options.afterKey)
+        : -1
+
       if (!tab.position) {
-        const lastTab = state.tabs.at(-1)
-        tab = { ...tab, position: lastTab?.position ? after(lastTab.position) : first() }
+        if (anchorIdx >= 0) {
+          const anchorTab = state.tabs[anchorIdx]
+          const nextTab = state.tabs[anchorIdx + 1]
+          const prevPos = anchorTab.position
+          const nextPos = nextTab?.position ?? ''
+          tab = {
+            ...tab,
+            position: nextPos ? mid(prevPos, nextPos) : prevPos ? after(prevPos) : first(),
+          }
+        }
+        else {
+          const lastTab = state.tabs.at(-1)
+          tab = { ...tab, position: lastTab?.position ? after(lastTab.position) : first() }
+        }
       }
       const key = tabKey(tab)
-      setState('tabs', prev => [...prev, tab])
+      setState('tabs', prev => anchorIdx >= 0
+        ? [...prev.slice(0, anchorIdx + 1), tab, ...prev.slice(anchorIdx + 1)]
+        : [...prev, tab])
       if (activate) {
         setState('activeTabKey', key)
         setState('mruOrder', prev => [key, ...prev.filter(k => k !== key)])
