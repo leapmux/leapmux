@@ -249,9 +249,6 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		}
 	}
 
-	// Non-notification messages soft-clear the notification thread.
-	a.sink.SoftClearNotifThread()
-
 	// Parse the message envelope once for all downstream consumers.
 	var env messageEnvelope
 	if err := json.Unmarshal(content, &env); err != nil {

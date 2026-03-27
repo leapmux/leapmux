@@ -2,6 +2,8 @@
 
 import type { AttachmentCapabilities } from './providers/registry'
 
+const LEADING_SLASHES = /^\/+/
+
 export interface FileAttachment {
   id: string
   file: File
@@ -267,7 +269,7 @@ async function readAllDirectoryEntries(entry: FileSystemDirectoryEntry): Promise
 }
 
 function sortedEntries(entries: FileSystemEntry[]): FileSystemEntry[] {
-  return [...entries].sort((a, b) => a.name.localeCompare(b.name))
+  return entries.toSorted((a, b) => a.name.localeCompare(b.name))
 }
 
 async function collectFilesFromEntry(
@@ -282,7 +284,7 @@ async function collectFilesFromEntry(
     currentSizeRef.value += file.size
     results.push({
       file,
-      filename: entry.fullPath.replace(/^\/+/, ''),
+      filename: entry.fullPath.replace(LEADING_SLASHES, ''),
     })
     return false
   }

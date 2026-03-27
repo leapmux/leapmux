@@ -123,6 +123,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     const accepted: FileAttachment[] = []
     const rejectionReasons = new Map<string, number>()
     let sizeLimitHit = false
+    // Sequential reads to avoid I/O burst; parallelism isn't needed given the 10 MB cap.
     for (const item of [...files]) {
       const file = item instanceof File ? item : item.file
       if (currentSize + file.size > MAX_TOTAL_ATTACHMENT_SIZE) {

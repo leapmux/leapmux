@@ -15,6 +15,9 @@ const (
 )
 
 // autoContinueState tracks exponential-backoff retry state for a single agent.
+// Note: hub/backoff.go serves WebSocket reconnection (a blocking retry loop),
+// whereas this is a timer-based scheduler with generation tracking — different
+// enough that sharing code would add complexity without benefit.
 type autoContinueState struct {
 	mu         sync.Mutex
 	timer      *time.Timer
@@ -25,9 +28,12 @@ type autoContinueState struct {
 // scheduleAutoContinue schedules a "Continue." message for the given agent
 // after an exponentially increasing delay. Each call resets the timer.
 func (h *OutputHandler) scheduleAutoContinue(agentID string) {
-	v, _ := h.autoContinue.LoadOrStore(agentID, &autoContinueState{
-		backoff: autoContinueInitialDelay,
-	})
+	v, ok := h.autoContinue.Load(agentID)
+	if !ok {
+		v, _ = h.autoContinue.LoadOrStore(agentID, &autoContinueState{
+			backoff: autoContinueInitialDelay,
+		})
+	}
 	st := v.(*autoContinueState)
 
 	st.mu.Lock()

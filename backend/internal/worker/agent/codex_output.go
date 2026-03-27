@@ -271,9 +271,6 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		return
 	}
 
-	// Non-notification messages soft-clear the notification thread.
-	a.sink.SoftClearNotifThread()
-
 	parentSpanID := a.codexVisibleParentSpanID(threadID)
 	var collab *codexCollabAgentToolCall
 	if itemType == "collabAgentToolCall" {

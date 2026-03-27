@@ -32,7 +32,7 @@ var supportedImageMIMETypes = map[string]struct{}{
 	"image/webp": {},
 }
 
-var textMimeByExtension = map[string]string{
+var mimeByExtension = map[string]string{
 	".txt":          "text/plain",
 	".md":           "text/markdown",
 	".markdown":     "text/markdown",
@@ -162,7 +162,7 @@ func mimeTypeFromFilename(filename string) string {
 		return "text/plain"
 	}
 	ext := strings.ToLower(filepath.Ext(lower))
-	return textMimeByExtension[ext]
+	return mimeByExtension[ext]
 }
 
 func isSupportedImageMimeType(mimeType string) bool {

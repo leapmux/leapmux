@@ -43,7 +43,6 @@ type OutputSink interface {
 	BroadcastStatusActive(sessionID string)
 	BroadcastSessionInfo(info map[string]interface{})
 	BroadcastNotification(content map[string]interface{})
-	SoftClearNotifThread()
 	StorePlanModeToolUse(toolUseID, targetMode string)
 	LoadAndDeletePlanModeToolUse(toolUseID string) (targetMode string, ok bool)
 	UpdatePlan(filePath string, content []byte, compression leapmuxv1.ContentCompression, title string)

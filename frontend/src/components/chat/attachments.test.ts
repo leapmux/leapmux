@@ -197,7 +197,7 @@ describe('readFileAsAttachment', () => {
 describe('collectDroppedAttachmentFiles', () => {
   function createFileEntry(path: string, file: File) {
     const parts = path.split('/')
-    const name = parts[parts.length - 1] ?? file.name
+    const name = parts.at(-1) ?? file.name
     return {
       isFile: true,
       isDirectory: false,

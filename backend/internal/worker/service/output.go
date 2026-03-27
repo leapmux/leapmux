@@ -642,10 +642,6 @@ func (s *agentOutputSink) BroadcastNotification(content map[string]interface{}) 
 	s.h.BroadcastNotification(s.agentID, s.agentProvider, content)
 }
 
-func (s *agentOutputSink) SoftClearNotifThread() {
-	s.h.softClearNotifThread(s.agentID)
-}
-
 func (s *agentOutputSink) StorePlanModeToolUse(toolUseID, targetMode string) {
 	s.h.planModeToolUse.Store(toolUseID, targetMode)
 }
@@ -678,10 +674,12 @@ func (h *OutputHandler) notifMutex(agentID string) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
-// softClearNotifThread clears the current notification thread boundary.
-// Despite the legacy name, this is now a hard break: any subsequent
-// notification starts a new wrapper unless it is immediately adjacent.
-func (h *OutputHandler) softClearNotifThread(agentID string) {
+// clearNotifThread clears the current notification thread boundary so
+// that the next notification starts a new wrapper.
+func (h *OutputHandler) clearNotifThread(agentID string) {
+	if _, ok := h.lastNotifThread.Load(agentID); !ok {
+		return
+	}
 	mu := h.notifMutex(agentID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -731,7 +729,7 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 	}
 
 	// Any persisted non-notification message breaks notification adjacency.
-	h.softClearNotifThread(agentID)
+	h.clearNotifThread(agentID)
 
 	h.broadcastMessage(agentID, &leapmuxv1.AgentChatMessage{
 		Id:                 msgID,

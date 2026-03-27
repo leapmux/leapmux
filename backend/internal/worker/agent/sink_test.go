@@ -127,8 +127,6 @@ func (s *testSink) BroadcastSessionInfo(info map[string]interface{}) {
 	s.sessionInfos = append(s.sessionInfos, cp)
 }
 func (s *testSink) BroadcastNotification(map[string]interface{}) {}
-func (s *testSink) SoftClearNotifThread()                        {}
-
 func (s *testSink) StorePlanModeToolUse(toolUseID, targetMode string) {
 	s.planModeToolUses.Store(toolUseID, targetMode)
 }
@@ -285,7 +283,6 @@ func (noopSink) UpdatePermissionMode(string)                                    
 func (noopSink) BroadcastStatusActive(string)                                    {}
 func (noopSink) BroadcastSessionInfo(map[string]interface{})                     {}
 func (noopSink) BroadcastNotification(map[string]interface{})                    {}
-func (noopSink) SoftClearNotifThread()                                           {}
 func (noopSink) StorePlanModeToolUse(string, string)                             {}
 func (noopSink) LoadAndDeletePlanModeToolUse(string) (string, bool)              { return "", false }
 func (noopSink) UpdatePlan(string, []byte, leapmuxv1.ContentCompression, string) {}
