@@ -670,20 +670,6 @@ func hasSyntheticAPI5xxPrefix(s string) bool {
 		(len(rest) == 3 || rest[3] < '0' || rest[3] > '9')
 }
 
-// isSyntheticAPIError checks whether a result message is a synthetic API 5xx error
-// injected by Claude Code (e.g. "API Error: 500 ..."). These trigger auto-continue.
-func isSyntheticAPIError(content []byte) bool {
-	var msg struct {
-		Type    string `json:"type"`
-		IsError bool   `json:"is_error"`
-		Result  string `json:"result"`
-	}
-	if json.Unmarshal(content, &msg) != nil || msg.Type != "result" || !msg.IsError {
-		return false
-	}
-	return hasSyntheticAPI5xxPrefix(msg.Result)
-}
-
 // isSimpleUserTextEcho returns true if the NDJSON line is a user message echo
 // with string content (not a tool_result array).
 func isSimpleUserTextEcho(content []byte) bool {

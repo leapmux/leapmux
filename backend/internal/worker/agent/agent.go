@@ -258,7 +258,7 @@ func (a *ClaudeCodeAgent) SendInput(content string, attachments []*leapmuxv1.Att
 		msg.Message.Content = content
 	} else {
 		// Multimodal — build a content block array.
-		blocks := buildClaudeContentBlocks(content, attachments)
+		blocks := buildClaudeContentBlocks(content, classifyAttachments(attachments))
 		msg.Message.Content = blocks
 	}
 
@@ -275,10 +275,10 @@ func (a *ClaudeCodeAgent) SendInput(content string, attachments []*leapmuxv1.Att
 	return nil
 }
 
-// buildClaudeContentBlocks converts text + attachments into Claude Code's
-// content block format: text blocks, image blocks (base64), and document
+// buildClaudeContentBlocks converts text + classified attachments into Claude
+// Code's content block format: text blocks, image blocks (base64), and document
 // blocks (PDF).
-func buildClaudeContentBlocks(content string, attachments []*leapmuxv1.Attachment) []interface{} {
+func buildClaudeContentBlocks(content string, classified []classifiedAttachment) []interface{} {
 	var blocks []interface{}
 	if content != "" {
 		blocks = append(blocks, map[string]interface{}{
@@ -286,7 +286,7 @@ func buildClaudeContentBlocks(content string, attachments []*leapmuxv1.Attachmen
 			"text": content,
 		})
 	}
-	for _, attachment := range classifyAttachments(attachments) {
+	for _, attachment := range classified {
 		switch attachment.kind {
 		case attachmentKindText:
 			blocks = append(blocks, map[string]interface{}{

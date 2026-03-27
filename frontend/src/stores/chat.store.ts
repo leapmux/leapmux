@@ -52,10 +52,10 @@ function extractUserMessagePayload(message: AgentChatMessage): { content: string
   if (typeof parent.content === 'string') {
     const attachments = Array.isArray(parent.attachments)
       ? (parent.attachments as Array<{ filename?: string, mime_type?: string }>)
-        .map(att => ({
-          filename: typeof att?.filename === 'string' ? att.filename : undefined,
-          mime_type: typeof att?.mime_type === 'string' ? att.mime_type : undefined,
-        }))
+          .map(att => ({
+            filename: typeof att?.filename === 'string' ? att.filename : undefined,
+            mime_type: typeof att?.mime_type === 'string' ? att.mime_type : undefined,
+          }))
       : undefined
     return { content: parent.content, attachments }
   }
@@ -63,10 +63,10 @@ function extractUserMessagePayload(message: AgentChatMessage): { content: string
   if (msg && typeof msg.content === 'string') {
     const attachments = Array.isArray(msg.attachments)
       ? (msg.attachments as Array<{ filename?: string, mime_type?: string }>)
-        .map(att => ({
-          filename: typeof att?.filename === 'string' ? att.filename : undefined,
-          mime_type: typeof att?.mime_type === 'string' ? att.mime_type : undefined,
-        }))
+          .map(att => ({
+            filename: typeof att?.filename === 'string' ? att.filename : undefined,
+            mime_type: typeof att?.mime_type === 'string' ? att.mime_type : undefined,
+          }))
       : undefined
     return { content: msg.content, attachments }
   }

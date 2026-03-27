@@ -25,7 +25,7 @@ func TestBuildClaudeContentBlocks_imageAttachment(t *testing.T) {
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "test.png", MimeType: "image/png", Data: data},
 	}
-	blocks := buildClaudeContentBlocks("look at this", attachments)
+	blocks := buildClaudeContentBlocks("look at this", classifyAttachments(attachments))
 	require.Len(t, blocks, 2)
 
 	// First block: text
@@ -47,7 +47,7 @@ func TestBuildClaudeContentBlocks_pdfAttachment(t *testing.T) {
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "report.pdf", MimeType: "application/pdf", Data: data},
 	}
-	blocks := buildClaudeContentBlocks("", attachments)
+	blocks := buildClaudeContentBlocks("", classifyAttachments(attachments))
 	require.Len(t, blocks, 1) // no text block when content is empty
 
 	docBlock := blocks[0].(map[string]interface{})
@@ -61,7 +61,7 @@ func TestBuildClaudeContentBlocks_textAttachment(t *testing.T) {
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "styles.css", MimeType: "", Data: []byte("body {}\n")},
 	}
-	blocks := buildClaudeContentBlocks("review", attachments)
+	blocks := buildClaudeContentBlocks("review", classifyAttachments(attachments))
 	require.Len(t, blocks, 2)
 
 	textBlock := blocks[1].(map[string]interface{})
@@ -82,7 +82,7 @@ func TestBuildCodexInputBlocks_imageAttachment(t *testing.T) {
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "photo.jpg", MimeType: "image/jpeg", Data: data},
 	}
-	blocks := buildCodexInputBlocks("describe this", attachments)
+	blocks := buildCodexInputBlocks("describe this", classifyAttachments(attachments))
 	require.Len(t, blocks, 2)
 
 	textBlock := blocks[0]
@@ -98,7 +98,7 @@ func TestBuildCodexInputBlocks_textAttachment(t *testing.T) {
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "report.csv", MimeType: "", Data: []byte("name,value\nfoo,1\n")},
 	}
-	blocks := buildCodexInputBlocks("", attachments)
+	blocks := buildCodexInputBlocks("", classifyAttachments(attachments))
 	require.Len(t, blocks, 1)
 	assert.Equal(t, "text", blocks[0]["type"])
 	assert.Contains(t, blocks[0]["text"], "BEGIN ATTACHED FILE: report.csv")
@@ -109,7 +109,7 @@ func TestBuildCodexInputBlocks_pdfSkipped(t *testing.T) {
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "doc.pdf", MimeType: "application/pdf", Data: []byte("%PDF")},
 	}
-	blocks := buildCodexInputBlocks("", attachments)
+	blocks := buildCodexInputBlocks("", classifyAttachments(attachments))
 	require.Empty(t, blocks)
 }
 
@@ -118,7 +118,7 @@ func TestBuildOpenCodePromptBlocks_fileAttachment(t *testing.T) {
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "img.png", MimeType: "image/png", Data: data},
 	}
-	blocks := buildOpenCodePromptBlocks("analyze", attachments)
+	blocks := buildOpenCodePromptBlocks("analyze", classifyAttachments(attachments))
 	require.Len(t, blocks, 2)
 
 	textBlock := blocks[0]
@@ -137,7 +137,7 @@ func TestBuildOpenCodePromptBlocks_pdfIncluded(t *testing.T) {
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "doc.pdf", MimeType: "application/pdf", Data: data},
 	}
-	blocks := buildOpenCodePromptBlocks("", attachments)
+	blocks := buildOpenCodePromptBlocks("", classifyAttachments(attachments))
 	require.Len(t, blocks, 1)
 
 	resourceBlock := blocks[0]
@@ -153,7 +153,7 @@ func TestBuildOpenCodePromptBlocks_textAttachment(t *testing.T) {
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "app.css", MimeType: "", Data: []byte("body {}\n")},
 	}
-	blocks := buildOpenCodePromptBlocks("", attachments)
+	blocks := buildOpenCodePromptBlocks("", classifyAttachments(attachments))
 	require.Len(t, blocks, 1)
 
 	resourceBlock := blocks[0]

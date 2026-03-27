@@ -358,7 +358,7 @@ func (a *OpenCodeAgent) SendInput(content string, attachments []*leapmuxv1.Attac
 		return fmt.Errorf("opencode agent has no active session")
 	}
 
-	prompt := buildOpenCodePromptBlocks(content, attachments)
+	prompt := buildOpenCodePromptBlocks(content, classifyAttachments(attachments))
 	params, _ := json.Marshal(map[string]interface{}{
 		"sessionId": sessionID,
 		"prompt":    prompt,
@@ -382,15 +382,14 @@ func (a *OpenCodeAgent) SendInput(content string, attachments []*leapmuxv1.Attac
 	return nil
 }
 
-// buildOpenCodePromptBlocks converts text + attachments into OpenCode's ACP
-// prompt format. Attachments must use ACP-native content blocks, not OpenCode's
-// internal "file" parts.
-func buildOpenCodePromptBlocks(content string, attachments []*leapmuxv1.Attachment) []map[string]interface{} {
+// buildOpenCodePromptBlocks converts text + classified attachments into
+// OpenCode's ACP prompt format.
+func buildOpenCodePromptBlocks(content string, classified []classifiedAttachment) []map[string]interface{} {
 	var prompt []map[string]interface{}
 	if content != "" {
 		prompt = append(prompt, map[string]interface{}{"type": "text", "text": content})
 	}
-	for _, attachment := range classifyAttachments(attachments) {
+	for _, attachment := range classified {
 		if attachment.kind == attachmentKindImage {
 			prompt = append(prompt, map[string]interface{}{
 				"type":     "image",

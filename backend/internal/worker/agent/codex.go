@@ -322,7 +322,7 @@ func (a *CodexAgent) SendInput(content string, attachments []*leapmuxv1.Attachme
 		return fmt.Errorf("codex agent has no active thread")
 	}
 
-	input := buildCodexInputBlocks(content, attachments)
+	input := buildCodexInputBlocks(content, classifyAttachments(attachments))
 
 	// If a turn is active, steer it instead of starting a new one.
 	if turnID != "" {
@@ -340,14 +340,14 @@ func (a *CodexAgent) SendInput(content string, attachments []*leapmuxv1.Attachme
 	})
 }
 
-// buildCodexInputBlocks converts text + attachments into Codex's input format.
-// Images use data URI format; text attachments are inlined into the prompt.
-func buildCodexInputBlocks(content string, attachments []*leapmuxv1.Attachment) []map[string]interface{} {
+// buildCodexInputBlocks converts text + classified attachments into Codex's
+// input format. Images use data URI format; text attachments are inlined.
+func buildCodexInputBlocks(content string, classified []classifiedAttachment) []map[string]interface{} {
 	var input []map[string]interface{}
 	if content != "" {
 		input = append(input, map[string]interface{}{"type": "text", "text": content})
 	}
-	for _, attachment := range classifyAttachments(attachments) {
+	for _, attachment := range classified {
 		switch attachment.kind {
 		case attachmentKindText:
 			input = append(input, map[string]interface{}{

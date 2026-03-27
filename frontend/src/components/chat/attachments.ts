@@ -164,9 +164,10 @@ function isUtf8Text(data: Uint8Array): boolean {
 export function inferAttachmentDetails(filename: string, mimeType: string, data: Uint8Array): AttachmentDetails {
   const normalizedMime = normalizeMimeType(mimeType)
   const inferredMime = inferredMimeTypeFromFilename(filename)
+  const utf8 = isUtf8Text(data)
   const effectiveMime = !GENERIC_BINARY_MIME_TYPES.has(normalizedMime)
     ? normalizedMime
-    : (inferredMime || (isUtf8Text(data) ? 'text/plain' : 'application/octet-stream'))
+    : (inferredMime || (utf8 ? 'text/plain' : 'application/octet-stream'))
 
   if (SUPPORTED_IMAGE_MIME_TYPES.has(effectiveMime))
     return { kind: 'image', mimeType: effectiveMime }
@@ -174,10 +175,10 @@ export function inferAttachmentDetails(filename: string, mimeType: string, data:
   if (effectiveMime === 'application/pdf')
     return { kind: 'pdf', mimeType: effectiveMime }
 
-  if (isTextualMimeType(effectiveMime) && isUtf8Text(data))
+  if (isTextualMimeType(effectiveMime) && utf8)
     return { kind: 'text', mimeType: effectiveMime }
 
-  if (GENERIC_BINARY_MIME_TYPES.has(normalizedMime) && isUtf8Text(data))
+  if (GENERIC_BINARY_MIME_TYPES.has(normalizedMime) && utf8)
     return { kind: 'text', mimeType: inferredMime || 'text/plain' }
 
   return { kind: 'binary', mimeType: effectiveMime || 'application/octet-stream' }
