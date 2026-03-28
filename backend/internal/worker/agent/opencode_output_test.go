@@ -9,9 +9,9 @@ import (
 
 func newOpenCodeAgentWithSink(sink OutputSink) *OpenCodeAgent {
 	return &OpenCodeAgent{
-		processBase: processBase{
+		jsonrpcBase: jsonrpcBase{processBase: processBase{
 			agentID: "test-agent",
-		},
+		}},
 		sink:      sink,
 		sessionID: "test-session",
 	}

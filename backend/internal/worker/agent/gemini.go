@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -20,6 +18,18 @@ const (
 	GeminiCLIModeAutoEdit = "autoEdit"
 	GeminiCLIModeYolo     = "yolo"
 	GeminiCLIModePlan     = "plan"
+)
+
+// Gemini CLI native method names (pre-ACP).
+const (
+	geminiMethodNewSession      = "newSession"
+	geminiMethodLoadSession     = "loadSession"
+	geminiMethodPrompt          = "prompt"
+	geminiMethodCancel          = "cancel"
+	geminiMethodSetSessionMode  = "setSessionMode"
+	geminiMethodSetSessionModel = "unstable_setSessionModel"
+	geminiMethodSessionUpdate   = "sessionUpdate"
+	geminiMethodRequestPermission = "requestPermission"
 )
 
 type geminiCLIModeInfo struct {
@@ -36,7 +46,7 @@ type geminiCLIModelInfo struct {
 
 // GeminiCLIAgent manages a single Gemini CLI ACP process.
 type GeminiCLIAgent struct {
-	processBase
+	jsonrpcBase
 
 	model          string
 	permissionMode string
@@ -45,8 +55,6 @@ type GeminiCLIAgent struct {
 
 	sessionID         string
 	useLegacyMethods  bool
-	nextReqID         atomic.Int64
-	pendingReqs       sync.Map
 	availableModels   []*leapmuxv1.AvailableModel
 	availableModes    []*leapmuxv1.AvailableOption
 	turnAssistantText strings.Builder
@@ -88,7 +96,7 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 	}
 
 	a := &GeminiCLIAgent{
-		processBase: processBase{
+		jsonrpcBase: jsonrpcBase{processBase: processBase{
 			agentID:            opts.AgentID,
 			cmd:                cmd,
 			stdin:              stdin,
@@ -99,7 +107,7 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 			preambleDelimiter:  preambleDelimiter,
 			preambleMetaPrefix: metaPrefix,
 			preambleMeta:       make(map[string]string),
-		},
+		}},
 		model:      opts.Model,
 		workingDir: opts.WorkingDir,
 		sink:       sink,
@@ -114,7 +122,7 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutputLoop(scanner)
+	go a.readOutputLoop(scanner, a.HandleOutput)
 
 	cleanup := func() {
 		a.Stop()
@@ -132,7 +140,7 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 			},
 		},
 	})
-	if _, err := a.sendRequest("initialize", json.RawMessage(initParams), timeout); err != nil {
+	if _, err := a.sendRequest(acpMethodInitialize, json.RawMessage(initParams), timeout); err != nil {
 		cleanup()
 		return nil, a.formatStartupError("initialize", err)
 	}
@@ -144,7 +152,7 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 			slog.Warn("loadSession failed, falling back to newSession",
 				"agent_id", a.agentID, "session_id", opts.ResumeSessionID, "error", err)
 			_, fallbackParams := buildGeminiSessionRequest("", opts.WorkingDir)
-			sessionResp, err = a.sendCompatibleRequest("newSession", legacyGeminiMethod("newSession"), json.RawMessage(fallbackParams), timeout)
+			sessionResp, err = a.sendCompatibleRequest(geminiMethodNewSession, legacyGeminiMethod(geminiMethodNewSession), json.RawMessage(fallbackParams), timeout)
 		}
 		if err != nil {
 			cleanup()
@@ -205,10 +213,10 @@ func buildGeminiSessionRequest(resumeSessionID, workingDir string) (method strin
 		"cwd":        workingDir,
 		"mcpServers": []interface{}{},
 	}
-	method = "newSession"
+	method = geminiMethodNewSession
 	if resumeSessionID != "" {
 		p["sessionId"] = resumeSessionID
-		method = "loadSession"
+		method = geminiMethodLoadSession
 	}
 	params, _ = json.Marshal(p)
 	return method, params
@@ -289,7 +297,7 @@ func (a *GeminiCLIAgent) SendInput(content string, attachments []*leapmuxv1.Atta
 	})
 
 	go func() {
-		resp, err := a.sendCompatibleRequest("prompt", legacyGeminiMethod("prompt"), json.RawMessage(params), 10*time.Minute)
+		resp, err := a.sendCompatibleRequest(geminiMethodPrompt, legacyGeminiMethod(geminiMethodPrompt), json.RawMessage(params), 10*time.Minute)
 		if err != nil {
 			if !a.IsStopped() {
 				slog.Error("gemini prompt failed", "agent_id", a.agentID, "error", err)
@@ -379,7 +387,7 @@ func (a *GeminiCLIAgent) setModel(model string) error {
 		"sessionId": sessionID,
 		"modelId":   model,
 	})
-	resp, err := a.sendCompatibleRequest("unstable_setSessionModel", legacyGeminiMethod("unstable_setSessionModel"), json.RawMessage(params), 10*time.Second)
+	resp, err := a.sendCompatibleRequest(geminiMethodSetSessionModel, legacyGeminiMethod(geminiMethodSetSessionModel), json.RawMessage(params), 10*time.Second)
 	if err != nil {
 		return err
 	}
@@ -407,7 +415,7 @@ func (a *GeminiCLIAgent) setPermissionMode(mode string) error {
 		"sessionId": sessionID,
 		"modeId":    mode,
 	})
-	resp, err := a.sendCompatibleRequest("setSessionMode", legacyGeminiMethod("setSessionMode"), json.RawMessage(params), 10*time.Second)
+	resp, err := a.sendCompatibleRequest(geminiMethodSetSessionMode, legacyGeminiMethod(geminiMethodSetSessionMode), json.RawMessage(params), 10*time.Second)
 	if err != nil {
 		return err
 	}
@@ -432,19 +440,11 @@ func (a *GeminiCLIAgent) SendRawInput(data []byte) error {
 	}
 	if err := json.Unmarshal(data, &msg); err == nil {
 		switch msg.Method {
-		case "cancel", "session/cancel":
+		case geminiMethodCancel, acpMethodSessionCancel:
 			return a.cancelSession()
 		}
 	}
 	return a.processBase.SendRawInput(data)
-}
-
-func (a *GeminiCLIAgent) sendRequest(method string, params json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
-	return sendACPRequest(a.stdin, &a.nextReqID, &a.pendingReqs, a.processDone, a.ctx, a.processExitError, method, params, timeout)
-}
-
-func (a *GeminiCLIAgent) sendNotification(method string, params json.RawMessage) error {
-	return sendACPNotification(a.stdin, method, params)
 }
 
 func (a *GeminiCLIAgent) sendCompatibleRequest(method, legacyMethod string, params json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
@@ -473,14 +473,6 @@ func (a *GeminiCLIAgent) sendCompatibleRequest(method, legacyMethod string, para
 	return legacyResp, nil
 }
 
-func (a *GeminiCLIAgent) readOutputLoop(scanner *bufio.Scanner) {
-	a.readOutput(scanner, a.handleJSONRPCResponse, a.HandleOutput)
-}
-
-func (a *GeminiCLIAgent) handleJSONRPCResponse(line []byte) bool {
-	return handleACPJSONRPCResponse(&a.pendingReqs, line)
-}
-
 func (a *GeminiCLIAgent) cancelSession() error {
 	a.mu.Lock()
 	sessionID := a.sessionID
@@ -489,9 +481,9 @@ func (a *GeminiCLIAgent) cancelSession() error {
 	params, _ := json.Marshal(map[string]interface{}{
 		"sessionId": sessionID,
 	})
-	method := "cancel"
+	method := geminiMethodCancel
 	if a.usesLegacyMethods() {
-		method = legacyGeminiMethod(method)
+		method = legacyGeminiMethod(geminiMethodCancel)
 	}
 	return a.sendNotification(method, json.RawMessage(params))
 }
@@ -502,18 +494,18 @@ func (a *GeminiCLIAgent) formatStartupError(phase string, err error) error {
 
 func legacyGeminiMethod(method string) string {
 	switch method {
-	case "newSession":
-		return "session/new"
-	case "loadSession":
+	case geminiMethodNewSession:
+		return acpMethodSessionNew
+	case geminiMethodLoadSession:
 		return "session/load"
-	case "prompt":
-		return "session/prompt"
-	case "cancel":
-		return "session/cancel"
-	case "setSessionMode":
-		return "session/set_mode"
-	case "unstable_setSessionModel":
-		return "session/set_model"
+	case geminiMethodPrompt:
+		return acpMethodSessionPrompt
+	case geminiMethodCancel:
+		return acpMethodSessionCancel
+	case geminiMethodSetSessionMode:
+		return acpMethodSessionSetMode
+	case geminiMethodSetSessionModel:
+		return acpMethodSessionSetModel
 	default:
 		return method
 	}

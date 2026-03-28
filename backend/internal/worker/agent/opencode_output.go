@@ -29,10 +29,10 @@ func handleOpenCodeOutput(a *OpenCodeAgent, content []byte) {
 	slog.Debug("opencode HandleOutput", "agent_id", a.agentID, "method", envelope.Method, "len", len(content))
 
 	switch envelope.Method {
-	case "session/update":
+	case acpMethodSessionUpdate:
 		a.handleSessionUpdate(envelope.Params)
 
-	case "session/request_permission":
+	case acpMethodSessionRequestPermission:
 		a.handleRequestPermission(envelope.ID, content)
 
 	default:

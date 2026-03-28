@@ -34,9 +34,9 @@ func handleGeminiCLIOutput(a *GeminiCLIAgent, content []byte) {
 	slog.Debug("gemini HandleOutput", "agent_id", a.agentID, "method", envelope.Method, "len", len(content))
 
 	switch envelope.Method {
-	case "sessionUpdate", "session/update":
+	case geminiMethodSessionUpdate, acpMethodSessionUpdate:
 		a.handleSessionUpdate(envelope.Params)
-	case "requestPermission", "session/request_permission":
+	case geminiMethodRequestPermission, acpMethodSessionRequestPermission:
 		a.handleRequestPermission(envelope.ID, content)
 	default:
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, content, SpanInfo{}); err != nil {

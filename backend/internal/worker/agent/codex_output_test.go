@@ -65,9 +65,9 @@ func (s *controlTestSink) LastBroadcastControl() controlRequestRecord {
 
 func newCodexAgentWithSink(sink OutputSink) *CodexAgent {
 	return &CodexAgent{
-		processBase: processBase{
+		jsonrpcBase: jsonrpcBase{processBase: processBase{
 			agentID: "test-agent",
-		},
+		}},
 		sink:     sink,
 		threadID: "main-thread",
 	}

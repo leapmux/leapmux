@@ -1,18 +1,29 @@
 package agent
 
 import (
-	"context"
+	"bufio"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"strings"
 	"sync"
-	"unicode"
 	"sync/atomic"
+	"unicode"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+)
+
+// ACP JSON-RPC method name constants shared across ACP providers (Gemini CLI, OpenCode).
+const (
+	acpMethodInitialize    = "initialize"
+	acpMethodSessionUpdate = "session/update"
+	acpMethodSessionRequestPermission = "session/request_permission"
+	acpMethodSessionCancel  = "session/cancel"
+	acpMethodSessionNew     = "session/new"
+	acpMethodSessionPrompt  = "session/prompt"
+	acpMethodSessionSetModel = "session/set_model"
+	acpMethodSessionSetMode  = "session/set_mode"
 )
 
 // ACP session update type constants shared across providers.
@@ -27,22 +38,21 @@ const (
 	acpUpdateAvailableCommandsUpdate = "available_commands_update"
 )
 
-func sendACPRequest(
-	stdin io.Writer,
-	nextReqID *atomic.Int64,
-	pendingReqs *sync.Map,
-	processDone <-chan struct{},
-	ctx context.Context,
-	processExitError func() error,
-	method string,
-	params json.RawMessage,
-	timeout time.Duration,
-) (json.RawMessage, error) {
-	reqID := nextReqID.Add(1)
+// jsonrpcBase extends processBase with JSON-RPC request/response plumbing
+// shared by all ACP agents (GeminiCLIAgent, OpenCodeAgent) and CodexAgent.
+type jsonrpcBase struct {
+	processBase
+	nextReqID   atomic.Int64
+	pendingReqs sync.Map // reqID (int64) -> chan json.RawMessage
+}
+
+// sendRequest sends a JSON-RPC request and waits for the response.
+func (b *jsonrpcBase) sendRequest(method string, params json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
+	reqID := b.nextReqID.Add(1)
 
 	ch := make(chan json.RawMessage, 1)
-	pendingReqs.Store(reqID, ch)
-	defer pendingReqs.Delete(reqID)
+	b.pendingReqs.Store(reqID, ch)
+	defer b.pendingReqs.Delete(reqID)
 
 	msg := map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -59,7 +69,7 @@ func sendACPRequest(
 	}
 	data = append(data, '\n')
 
-	if _, err := stdin.Write(data); err != nil {
+	if _, err := b.stdin.Write(data); err != nil {
 		return nil, fmt.Errorf("write request: %w", err)
 	}
 
@@ -69,16 +79,17 @@ func sendACPRequest(
 	select {
 	case resp := <-ch:
 		return resp, nil
-	case <-processDone:
-		return nil, processExitError()
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	case <-b.processDone:
+		return nil, b.processExitError()
+	case <-b.ctx.Done():
+		return nil, b.ctx.Err()
 	case <-timer.C:
 		return nil, fmt.Errorf("timeout waiting for %s response", method)
 	}
 }
 
-func sendACPNotification(stdin io.Writer, method string, params json.RawMessage) error {
+// sendNotification sends a JSON-RPC notification (no id, no response expected).
+func (b *jsonrpcBase) sendNotification(method string, params json.RawMessage) error {
 	msg := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"method":  method,
@@ -93,14 +104,16 @@ func sendACPNotification(stdin io.Writer, method string, params json.RawMessage)
 	}
 	data = append(data, '\n')
 
-	if _, err := stdin.Write(data); err != nil {
+	if _, err := b.stdin.Write(data); err != nil {
 		return fmt.Errorf("write notification: %w", err)
 	}
 
 	return nil
 }
 
-func handleACPJSONRPCResponse(pendingReqs *sync.Map, line []byte) bool {
+// handleJSONRPCResponse checks if a line is a JSON-RPC response and routes it
+// to the pending request channel. Returns true if the line was consumed.
+func (b *jsonrpcBase) handleJSONRPCResponse(line []byte) bool {
 	var envelope struct {
 		ID     *json.Number    `json:"id"`
 		Method string          `json:"method"`
@@ -120,7 +133,7 @@ func handleACPJSONRPCResponse(pendingReqs *sync.Map, line []byte) bool {
 		return false
 	}
 
-	val, ok := pendingReqs.Load(reqID)
+	val, ok := b.pendingReqs.Load(reqID)
 	if !ok {
 		return false
 	}
@@ -133,6 +146,12 @@ func handleACPJSONRPCResponse(pendingReqs *sync.Map, line []byte) bool {
 	}
 
 	return true
+}
+
+// readOutputLoop reads JSONL lines from stdout, using handleJSONRPCResponse as
+// the interceptor and forwarding remaining lines to the given output handler.
+func (b *jsonrpcBase) readOutputLoop(scanner *bufio.Scanner, handle outputHandler) {
+	b.readOutput(scanner, b.handleJSONRPCResponse, handle)
 }
 
 func appendACPChunk(update json.RawMessage, builder *strings.Builder, mu *sync.Mutex, sink OutputSink, eventType string) {
