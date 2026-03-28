@@ -154,16 +154,16 @@ func (b *jsonrpcBase) readOutputLoop(scanner *bufio.Scanner, handle outputHandle
 	b.readOutput(scanner, b.handleJSONRPCResponse, handle)
 }
 
-func (p *processBase) appendACPChunk(update json.RawMessage, builder *strings.Builder, sink OutputSink, eventType string) {
+func (b *jsonrpcBase) appendACPChunk(update json.RawMessage, builder *strings.Builder, sink OutputSink, eventType string) {
 	var chunk struct {
 		Content struct {
 			Text string `json:"text"`
 		} `json:"content"`
 	}
 	if json.Unmarshal(update, &chunk) == nil && chunk.Content.Text != "" {
-		p.mu.Lock()
+		b.mu.Lock()
 		builder.WriteString(chunk.Content.Text)
-		p.mu.Unlock()
+		b.mu.Unlock()
 		sink.BroadcastStreamChunk([]byte(chunk.Content.Text), "", eventType)
 	}
 }
@@ -264,7 +264,7 @@ func handleACPToolCall(
 	sink.OpenSpan(tc.ToolCallID, "")
 }
 
-func (p *processBase) handleACPToolCallUpdate(sink OutputSink, update json.RawMessage) {
+func (b *jsonrpcBase) handleACPToolCallUpdate(sink OutputSink, update json.RawMessage) {
 	var tcu struct {
 		ToolCallID string `json:"toolCallId"`
 		Status     string `json:"status"`
@@ -277,9 +277,9 @@ func (p *processBase) handleACPToolCallUpdate(sink OutputSink, update json.RawMe
 	case tcu.Status == "in_progress":
 		sink.BroadcastStreamChunk(update, tcu.ToolCallID, acpUpdateToolCallUpdate)
 	case tcu.Status == "completed" || tcu.Status == "failed" || tcu.Status == "cancelled":
-		p.mu.Lock()
-		p.turnToolUses++
-		p.mu.Unlock()
+		b.mu.Lock()
+		b.turnToolUses++
+		b.mu.Unlock()
 
 		spanType := sink.GetSpanType(tcu.ToolCallID)
 		if spanType == "" {
@@ -288,7 +288,7 @@ func (p *processBase) handleACPToolCallUpdate(sink OutputSink, update json.RawMe
 		if err := sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{
 			SpanID: tcu.ToolCallID, SpanType: spanType, Closing: true,
 		}); err != nil {
-			slog.Error("persist acp tool_call_update", "agent_id", p.agentID, "status", tcu.Status, "error", err)
+			slog.Error("persist acp tool_call_update", "agent_id", b.agentID, "status", tcu.Status, "error", err)
 		}
 		sink.BroadcastStreamEnd(tcu.ToolCallID)
 		sink.CloseSpan(tcu.ToolCallID)
