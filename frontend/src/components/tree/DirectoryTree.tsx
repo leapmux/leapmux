@@ -174,7 +174,7 @@ const TreeContextMenu: Component<{
           ref={triggerProps.ref}
           onPointerDown={(e: PointerEvent) => {
             e.stopPropagation()
-            triggerProps.onPointerDown(e)
+            triggerProps.onPointerDown()
           }}
           aria-expanded={triggerProps['aria-expanded']}
           data-testid="tree-context-button"
@@ -795,7 +795,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
               >
                 <Icon icon={FolderOpen} size="sm" class={styles.folderIcon} />
                 <span class={styles.nodeName}>{rootDisplayName()}</span>
-                {renderNodeDiffStats({ path: rootPath(), displayName: rootDisplayName(), isDir: true }, props.gitStatusStore)}
+                {renderNodeDiffStats({ path: rootPath(), displayName: rootDisplayName(), isDir: true, hidden: false }, props.gitStatusStore)}
                 <div class={styles.nodeActions}>
                   <TreeContextMenu
                     path={rootPath()}

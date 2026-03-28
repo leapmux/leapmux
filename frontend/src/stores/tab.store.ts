@@ -77,7 +77,7 @@ export function createTabStore() {
           const nextPos = nextTab?.position ?? ''
           tab = {
             ...tab,
-            position: nextPos ? mid(prevPos, nextPos) : prevPos ? after(prevPos) : first(),
+            position: nextPos ? mid(prevPos ?? '', nextPos) : prevPos ? after(prevPos) : first(),
           }
         }
         else {

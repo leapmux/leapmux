@@ -361,6 +361,7 @@ export function opencodePlanRenderer(toolUse: Record<string, unknown>, _role: Me
   const todos = entries.map(e => ({
     content: e.content,
     status: e.status === 'completed' ? 'completed' as const : 'pending' as const,
+    activeForm: '',
   }))
 
   return (
@@ -369,7 +370,7 @@ export function opencodePlanRenderer(toolUse: Record<string, unknown>, _role: Me
       toolName="Plan"
       title="Plan"
     >
-      <TodoList items={todos} />
+      <TodoList todos={todos} />
     </ToolUseLayout>
   )
 }

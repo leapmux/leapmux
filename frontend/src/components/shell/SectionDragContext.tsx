@@ -401,7 +401,7 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
         onDragStart={handleDragStart}
         onDragOver={handleDragOver}
         onDragEnd={handleDragEnd}
-        collisionDetector={collisionDetector}
+        collisionDetector={collisionDetector as any}
       >
         <DragDropSensors />
         {props.children}

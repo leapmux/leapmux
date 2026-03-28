@@ -63,6 +63,7 @@ const logger = createLogger('messageRenderers')
 
 /** Context passed to renderers from MessageBubble. */
 export interface RenderContext {
+  [key: string]: unknown
   /** ISO timestamp of the message (for relative time in toolbar). */
   createdAt?: string
   workingDir?: string

@@ -38,7 +38,7 @@ export default defineConfig({
         // referenced in the SSR bundle (which Vinxi always builds even with
         // ssr: false). These font URLs resolve correctly at runtime in the browser.
         name: 'suppress-public-asset-warnings',
-        configResolved(config) {
+        configResolved(config: any) {
           const isPublicAssetWarning = (msg: string) =>
             PUBLIC_ASSET_WARNING_RE.test(msg)
           for (const method of ['warn', 'warnOnce'] as const) {

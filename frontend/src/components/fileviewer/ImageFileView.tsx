@@ -41,7 +41,7 @@ function ImageRender(props: {
   const [containerSize, setContainerSize] = createSignal({ w: 0, h: 0 })
 
   const blobUrl = createMemo(() => {
-    const blob = new Blob([props.content], { type: getMimeType(props.filePath) })
+    const blob = new Blob([props.content as BlobPart], { type: getMimeType(props.filePath) })
     return URL.createObjectURL(blob)
   })
 

@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { FileAttachment } from '~/components/chat/attachments'
+import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { createAgentStore } from '~/stores/agent.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
@@ -472,7 +473,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
             updatedAt: '',
             agentProvider: sendAgent?.agentProvider,
           }
-          chatStore.addMessage(id, localMsg)
+          chatStore.addMessage(id, localMsg as unknown as AgentChatMessage)
 
           try {
             const protoAttachments = fileAttachments?.map(a => ({

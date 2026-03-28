@@ -173,7 +173,10 @@ function completedFileChangeEntries(changes: Array<Record<string, unknown>>): Ar
   | { kind: 'diff', path: string, hunks: StructuredPatchHunk[] }
   | { kind: 'add', path: string, hunks: StructuredPatchHunk[] }
 > {
-  return changes.flatMap((change) => {
+  return changes.flatMap((change): Array<
+    | { kind: 'diff', path: string, hunks: StructuredPatchHunk[] }
+    | { kind: 'add', path: string, hunks: StructuredPatchHunk[] }
+  > => {
     const path = typeof change.path === 'string' ? change.path : ''
     const diffText = typeof change.diff === 'string' ? change.diff : ''
     const parsed = parseCodexUnifiedDiff(diffText)
@@ -215,7 +218,7 @@ function stripToolUseHeaderFromOutput(output: string): string {
       continue
     }
 
-    if (kept.length > 0 && kept.at(-1).includes('<div'))
+    if (kept.length > 0 && kept.at(-1)?.includes('<div'))
       kept.pop()
 
     let depth = 1

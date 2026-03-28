@@ -62,7 +62,7 @@ function responderHandshake(
   let n = 0
 
   function mixHash(data: Uint8Array) {
-    h = blake2b(concatBytes(h, data))
+    h = blake2b(concatBytes(h, data)) as Uint8Array<ArrayBuffer>
   }
   function mixKey(ikm: Uint8Array) {
     const [newCk, tempK] = hkdf(ck, ikm)
@@ -132,7 +132,7 @@ function responderHandshake(
 
   // Hybrid split: mix ML-KEM SS into ck before deriving keys.
   const [ck2] = hkdf(ck, mlkemSS)
-  ck = ck2
+  ck = ck2 as Uint8Array<ArrayBuffer>
   const [tempK1, tempK2] = hkdf(ck, new Uint8Array(0))
 
   return {
