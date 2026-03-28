@@ -191,7 +191,7 @@ export const FileViewer: Component<{
   let contentRef: HTMLDivElement | undefined
 
   // Include the view mode in the scroll key so each mode has independent scroll.
-  // eslint-disable-next-line solid/reactivity
+  // eslint-disable-next-line solid/reactivity -- Read once; workerId and filePath are stable for the component's lifetime
   const scrollStoragePrefix = `leapmux:fileScroll:${props.workerId}:${props.filePath}`
   const scrollStorageKey = () => `${scrollStoragePrefix}:${props.fileViewMode ?? 'working'}`
 
