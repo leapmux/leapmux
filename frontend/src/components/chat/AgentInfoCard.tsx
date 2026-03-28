@@ -6,6 +6,7 @@ import { createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
 import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
+import { useCopyButton } from '~/hooks/useCopyButton'
 import { formatCountdown, formatResetTimestamp, getResetsAt, pickUrgentRateLimit, RATE_LIMIT_POPOVER_LABELS } from '~/lib/rateLimitUtils'
 import * as styles from './ChatView.css'
 import { computePercentage, contextBufferPct, contextSize, resolveContextWindow } from './ContextUsageGrid'
@@ -24,26 +25,8 @@ function formatTokenCount(tokens: number): string {
   return String(tokens)
 }
 
-function useCopyButton(getText: () => string | undefined) {
-  const [copied, setCopied] = createSignal(false)
-  const handleCopy = async () => {
-    const text = getText()
-    if (!text)
-      return
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopied(true)
-      setTimeout(setCopied, 2000, false)
-    }
-    catch {
-      // ignore clipboard errors
-    }
-  }
-  return { copied, handleCopy }
-}
-
 function CopyButton(props: { getText: () => string | undefined, title: string, testId?: string }) {
-  const { copied, handleCopy } = useCopyButton(() => props.getText())
+  const { copied, copy: handleCopy } = useCopyButton(() => props.getText())
   return (
     <button
       class={styles.infoCopyButton}

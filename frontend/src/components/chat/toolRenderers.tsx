@@ -125,10 +125,8 @@ export function ToolUseLayout(props: {
   onCopyContent?: () => void
   contentCopied?: boolean
   copyContentLabel?: string
-  /** Copy markdown callback. */
   onCopyMarkdown?: () => void
   markdownCopied?: boolean
-  /** Reply/quote callback. */
   onReply?: () => void
 }): JSX.Element {
   const expanded = () => props.expanded ?? false
