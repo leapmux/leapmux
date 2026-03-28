@@ -65,9 +65,9 @@ func (s *controlTestSink) LastBroadcastControl() controlRequestRecord {
 
 func newCodexAgentWithSink(sink OutputSink) *CodexAgent {
 	return &CodexAgent{
-		processBase: processBase{
+		jsonrpcBase: jsonrpcBase{processBase: processBase{
 			agentID: "test-agent",
-		},
+		}},
 		sink:     sink,
 		threadID: "main-thread",
 	}
@@ -79,7 +79,7 @@ func TestHandleCodexOutput_RequestUserInput(t *testing.T) {
 
 	input := `{"jsonrpc":"2.0","id":42,"method":"item/tool/requestUserInput","params":{"threadId":"t1","turnId":"turn1","itemId":"item1","questions":[{"id":"q1","header":"Header","question":"Which option?","options":[{"label":"A"}]}]}}`
 
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if sink.PersistedControlCount() != 1 {
 		t.Fatalf("expected 1 persisted control request, got %d", sink.PersistedControlCount())
@@ -120,7 +120,7 @@ func TestHandleCodexOutput_CommandExecutionApproval(t *testing.T) {
 
 	input := `{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{"command":"rm -rf /","reason":"cleanup"}}`
 
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if sink.PersistedControlCount() != 1 {
 		t.Fatalf("expected 1 persisted control request, got %d", sink.PersistedControlCount())
@@ -138,7 +138,7 @@ func TestHandleCodexOutput_FileChangeApproval(t *testing.T) {
 
 	input := `{"jsonrpc":"2.0","id":8,"method":"item/fileChange/requestApproval","params":{"reason":"editing file"}}`
 
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if sink.PersistedControlCount() != 1 {
 		t.Fatalf("expected 1 persisted control request, got %d", sink.PersistedControlCount())
@@ -156,7 +156,7 @@ func TestHandleCodexOutput_PermissionsApproval(t *testing.T) {
 
 	input := `{"jsonrpc":"2.0","id":9,"method":"item/permissions/requestApproval","params":{"reason":"needs access"}}`
 
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if sink.PersistedControlCount() != 1 {
 		t.Fatalf("expected 1 persisted control request, got %d", sink.PersistedControlCount())
@@ -173,7 +173,7 @@ func TestHandleCodexOutput_PlanDelta(t *testing.T) {
 	agent := newCodexAgentWithSink(sink)
 
 	input := `{"method":"item/plan/delta","params":{"delta":"# Plan\n"}}`
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if sink.StreamChunkCount() != 1 {
 		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
@@ -193,7 +193,7 @@ func TestHandleCodexOutput_PlanDelta(t *testing.T) {
 
 	// Second delta should NOT broadcast session info again.
 	input2 := `{"method":"item/plan/delta","params":{"delta":"Step 1\n"}}`
-	handleCodexOutput(agent, []byte(input2))
+	handleCodexOutput(agent, parseLine([]byte(input2)))
 
 	if sink.StreamChunkCount() != 2 {
 		t.Fatalf("expected 2 stream chunks, got %d", sink.StreamChunkCount())
@@ -213,7 +213,7 @@ func TestHandleCodexOutput_ContextCompactionStartPersistsCompactingNotification(
 	agent := newCodexAgentWithSink(sink)
 
 	input := `{"method":"item/started","params":{"item":{"type":"contextCompaction","id":"compact-1"},"threadId":"t1","turnId":"turn1"}}`
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if sink.NotificationCount() != 1 {
 		t.Fatalf("expected 1 notification, got %d", sink.NotificationCount())
@@ -235,7 +235,7 @@ func TestHandleCodexOutput_SpawnAgentStartedOpensSubagentSpan(t *testing.T) {
 	agent := newCodexAgentWithSink(sink)
 
 	input := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if got := sink.OpenSpans(); len(got) != 1 || got[0].SpanID != "call-1" || got[0].ParentSpanID != "" {
 		t.Fatalf("expected only spawnAgent span to open, got %v", got)
@@ -253,9 +253,9 @@ func TestHandleCodexOutput_WaitMessagesStayInsideSpawnAgentSpan(t *testing.T) {
 	waitStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{}}}}`
 	waitCompleted := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
 
-	handleCodexOutput(agent, []byte(spawnStarted))
-	handleCodexOutput(agent, []byte(waitStarted))
-	handleCodexOutput(agent, []byte(waitCompleted))
+	handleCodexOutput(agent, parseLine([]byte(spawnStarted)))
+	handleCodexOutput(agent, parseLine([]byte(waitStarted)))
+	handleCodexOutput(agent, parseLine([]byte(waitCompleted)))
 
 	messages := sink.Messages()
 	if len(messages) != 3 {
@@ -286,9 +286,9 @@ func TestHandleCodexOutput_SubagentCommandPersistsVisibleParentSpan(t *testing.T
 	cmdStarted := `{"method":"item/started","params":{"threadId":"child-1","turnId":"turn2","item":{"type":"commandExecution","id":"cmd-1","status":"inProgress","command":"ls","cwd":"/tmp","processId":"123","commandActions":[]}}}`
 	cmdCompleted := `{"method":"item/completed","params":{"threadId":"child-1","turnId":"turn2","item":{"type":"commandExecution","id":"cmd-1","status":"completed","command":"ls","cwd":"/tmp","processId":"123","commandActions":[],"aggregatedOutput":"ok","exitCode":0,"durationMs":1}}}`
 
-	handleCodexOutput(agent, []byte(spawnStarted))
-	handleCodexOutput(agent, []byte(cmdStarted))
-	handleCodexOutput(agent, []byte(cmdCompleted))
+	handleCodexOutput(agent, parseLine([]byte(spawnStarted)))
+	handleCodexOutput(agent, parseLine([]byte(cmdStarted)))
+	handleCodexOutput(agent, parseLine([]byte(cmdCompleted)))
 
 	messages := sink.Messages()
 	if len(messages) != 3 {
@@ -307,7 +307,7 @@ func TestHandleCodexOutput_SpawnAgentCompletedDoesNotCloseSubagentSpan(t *testin
 	agent := newCodexAgentWithSink(sink)
 
 	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"running","message":null}}}}}`
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if sink.ClosedSpanCount() != 0 {
 		t.Fatalf("expected spawn completion to keep span open, got %v", sink.ClosedSpans())
@@ -322,9 +322,9 @@ func TestHandleCodexOutput_SpawnAgentCompletedRegistersLateReceiverThreads(t *te
 	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"running","message":null}}}}}`
 	cmdStarted := `{"method":"item/started","params":{"threadId":"child-1","turnId":"turn2","item":{"type":"commandExecution","id":"cmd-1","status":"inProgress","command":"ls","cwd":"/tmp","processId":"123","commandActions":[]}}}`
 
-	handleCodexOutput(agent, []byte(started))
-	handleCodexOutput(agent, []byte(completed))
-	handleCodexOutput(agent, []byte(cmdStarted))
+	handleCodexOutput(agent, parseLine([]byte(started)))
+	handleCodexOutput(agent, parseLine([]byte(completed)))
+	handleCodexOutput(agent, parseLine([]byte(cmdStarted)))
 
 	if got := sink.OpenSpans(); len(got) != 2 || got[0].SpanID != "call-1" || got[1].SpanID != "cmd-1" || got[1].ParentSpanID != "call-1" {
 		t.Fatalf("expected child command span to open under spawnAgent span after late registration, got %v", got)
@@ -343,7 +343,7 @@ func TestHandleCodexOutput_WaitCompletedClosesTerminalSubagentSpan(t *testing.T)
 	agent := newCodexAgentWithSink(sink)
 
 	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if got := sink.ClosedSpans(); len(got) != 0 {
 		t.Fatalf("expected wait completion without visible parent span to close no synthetic child spans, got %v", got)
@@ -355,7 +355,7 @@ func TestHandleCodexOutput_WaitCompletedDoesNotCloseNonTerminalOrMissingStatuses
 	agent := newCodexAgentWithSink(sink)
 
 	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"running","message":null}}}}}`
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if got := sink.ClosedSpans(); len(got) != 0 {
 		t.Fatalf("expected non-terminal wait completion to close no spans, got %v", got)
@@ -367,7 +367,7 @@ func TestHandleCodexOutput_CloseAgentCompletedClosesSubagentSpan(t *testing.T) {
 	agent := newCodexAgentWithSink(sink)
 
 	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-3","tool":"closeAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"shutdown","message":null}}}}}`
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if got := sink.ClosedSpans(); len(got) != 0 {
 		t.Fatalf("expected closeAgent completion to close no synthetic child spans, got %v", got)
@@ -379,7 +379,7 @@ func TestHandleCodexOutput_WaitCompletedClosesOnlyTerminalReceivers(t *testing.T
 	agent := newCodexAgentWithSink(sink)
 
 	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-4","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2","child-3"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"},"child-2":{"status":"running","message":null},"child-3":{"status":"notFound","message":null}}}}}`
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if got := sink.ClosedSpans(); len(got) != 0 {
 		t.Fatalf("expected only receiver bookkeeping changes, not synthetic child span closes, got %v", got)
@@ -394,14 +394,14 @@ func TestHandleCodexOutput_WaitCompletedClosesParentSpawnOnlyAfterLastReceiverFi
 	waitCompletedFirst := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
 	waitCompletedSecond := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-3","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-2"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-2":{"status":"completed","message":"done"}}}}}`
 
-	handleCodexOutput(agent, []byte(spawnStarted))
-	handleCodexOutput(agent, []byte(waitCompletedFirst))
+	handleCodexOutput(agent, parseLine([]byte(spawnStarted)))
+	handleCodexOutput(agent, parseLine([]byte(waitCompletedFirst)))
 
 	if got := sink.ClosedSpans(); len(got) != 0 {
 		t.Fatalf("expected parent spawnAgent span to remain open until all receivers finish, got %v", got)
 	}
 
-	handleCodexOutput(agent, []byte(waitCompletedSecond))
+	handleCodexOutput(agent, parseLine([]byte(waitCompletedSecond)))
 
 	if got := sink.ClosedSpans(); len(got) != 1 || got[0] != "call-1" {
 		t.Fatalf("expected parent spawnAgent span to close after the last receiver finishes, got %v", got)
@@ -413,7 +413,7 @@ func TestHandleCodexOutput_ThreadCompactedPersistsBoundaryNotification(t *testin
 	agent := newCodexAgentWithSink(sink)
 
 	input := `{"method":"thread/compacted","params":{"threadId":"t1","turnId":"turn1"}}`
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if sink.NotificationCount() != 1 {
 		t.Fatalf("expected 1 notification, got %d", sink.NotificationCount())
@@ -438,7 +438,7 @@ func TestHandleCodexOutput_CommandExecutionOutputDelta(t *testing.T) {
 	agent := newCodexAgentWithSink(sink)
 
 	input := `{"method":"item/commandExecution/outputDelta","params":{"itemId":"cmd-1","delta":"hello\n","threadId":"t1","turnId":"turn1"}}`
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if sink.StreamChunkCount() != 1 {
 		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
@@ -463,7 +463,7 @@ func TestHandleCodexOutput_ReasoningSummaryTextDelta(t *testing.T) {
 	agent := newCodexAgentWithSink(sink)
 
 	input := `{"method":"item/reasoning/summaryTextDelta","params":{"itemId":"reason-1","delta":"thinking...","summaryIndex":0,"threadId":"t1","turnId":"turn1"}}`
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if sink.StreamChunkCount() != 1 {
 		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
@@ -488,7 +488,7 @@ func TestHandleCodexOutput_ReasoningSummaryPartAdded(t *testing.T) {
 	agent := newCodexAgentWithSink(sink)
 
 	input := `{"method":"item/reasoning/summaryPartAdded","params":{"itemId":"reason-1","summaryIndex":1,"threadId":"t1","turnId":"turn1"}}`
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if sink.StreamChunkCount() != 1 {
 		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
@@ -513,7 +513,7 @@ func TestHandleCodexOutput_ReasoningTextDelta(t *testing.T) {
 	agent := newCodexAgentWithSink(sink)
 
 	input := `{"method":"item/reasoning/textDelta","params":{"itemId":"reason-1","delta":"raw chain","contentIndex":0,"threadId":"t1","turnId":"turn1"}}`
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if sink.StreamChunkCount() != 1 {
 		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
@@ -538,7 +538,7 @@ func TestHandleCodexOutput_CommandExecutionTerminalInteraction(t *testing.T) {
 	agent := newCodexAgentWithSink(sink)
 
 	input := `{"method":"item/commandExecution/terminalInteraction","params":{"itemId":"cmd-1","processId":"123","stdin":"y\n","threadId":"t1","turnId":"turn1"}}`
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if sink.StreamChunkCount() != 1 {
 		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
@@ -563,7 +563,7 @@ func TestHandleCodexOutput_FileChangeOutputDelta(t *testing.T) {
 	agent := newCodexAgentWithSink(sink)
 
 	input := `{"method":"item/fileChange/outputDelta","params":{"itemId":"fc-1","delta":"diff --git a.txt b.txt\n","threadId":"t1","turnId":"turn1"}}`
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if sink.StreamChunkCount() != 1 {
 		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
@@ -589,7 +589,7 @@ func TestHandleCodexOutput_PlanDeltaThenCompleted(t *testing.T) {
 
 	// Send a plan delta first.
 	delta := `{"method":"item/plan/delta","params":{"delta":"# Plan\n"}}`
-	handleCodexOutput(agent, []byte(delta))
+	handleCodexOutput(agent, parseLine([]byte(delta)))
 
 	if sink.SessionInfoCount() != 1 {
 		t.Fatalf("expected 1 session info after delta, got %d", sink.SessionInfoCount())
@@ -597,7 +597,7 @@ func TestHandleCodexOutput_PlanDeltaThenCompleted(t *testing.T) {
 
 	// Send item/completed with plan type.
 	completed := `{"method":"item/completed","params":{"item":{"type":"plan","id":"plan1","text":"# Plan\nStep 1"}}}`
-	handleCodexOutput(agent, []byte(completed))
+	handleCodexOutput(agent, parseLine([]byte(completed)))
 
 	// Session info should now have streamingType "" to clear the plan streaming.
 	if sink.SessionInfoCount() != 2 {
@@ -615,7 +615,7 @@ func TestHandleCodexOutput_PlanDeltaThenCompleted(t *testing.T) {
 
 	// Verify streamingPlan flag was cleared (next delta should re-broadcast).
 	delta2 := `{"method":"item/plan/delta","params":{"delta":"New plan\n"}}`
-	handleCodexOutput(agent, []byte(delta2))
+	handleCodexOutput(agent, parseLine([]byte(delta2)))
 
 	if sink.SessionInfoCount() != 3 {
 		t.Fatalf("expected 3 session info broadcasts, got %d", sink.SessionInfoCount())
@@ -631,7 +631,7 @@ func TestHandleCodexOutput_CommandExecutionCompletedBroadcastsStreamEnd(t *testi
 	agent := newCodexAgentWithSink(sink)
 
 	completed := `{"method":"item/completed","params":{"threadId":"t1","item":{"type":"commandExecution","id":"cmd-1","status":"completed","aggregatedOutput":"done"}}}`
-	handleCodexOutput(agent, []byte(completed))
+	handleCodexOutput(agent, parseLine([]byte(completed)))
 
 	if sink.MessageCount() != 1 {
 		t.Fatalf("expected 1 persisted message, got %d", sink.MessageCount())
@@ -649,7 +649,7 @@ func TestHandleCodexOutput_FileChangeCompletedBroadcastsStreamEnd(t *testing.T) 
 	agent := newCodexAgentWithSink(sink)
 
 	completed := `{"method":"item/completed","params":{"threadId":"t1","item":{"type":"fileChange","id":"fc-1","status":"completed","changes":[{"path":"a.txt","kind":"update","diff":"@@ -1 +1 @@\n-old\n+new"}]}}}`
-	handleCodexOutput(agent, []byte(completed))
+	handleCodexOutput(agent, parseLine([]byte(completed)))
 
 	if sink.MessageCount() != 1 {
 		t.Fatalf("expected 1 persisted message, got %d", sink.MessageCount())
@@ -667,7 +667,7 @@ func TestHandleCodexOutput_ReasoningCompletedBroadcastsStreamEnd(t *testing.T) {
 	agent := newCodexAgentWithSink(sink)
 
 	completed := `{"method":"item/completed","params":{"threadId":"t1","item":{"type":"reasoning","id":"reason-1","summary":["done"]}}}`
-	handleCodexOutput(agent, []byte(completed))
+	handleCodexOutput(agent, parseLine([]byte(completed)))
 
 	if sink.MessageCount() != 1 {
 		t.Fatalf("expected 1 persisted message, got %d", sink.MessageCount())
@@ -687,7 +687,7 @@ func TestHandleCodexOutput_ApprovalWithoutID(t *testing.T) {
 	// Missing "id" field — should be ignored (logged as warning).
 	input := `{"method":"item/tool/requestUserInput","params":{"questions":[]}}`
 
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if sink.PersistedControlCount() != 0 {
 		t.Errorf("expected 0 persisted control requests (no id), got %d", sink.PersistedControlCount())
@@ -703,7 +703,7 @@ func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsage(t *testing.T)
 
 	input := `{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{"total":{"totalTokens":200,"inputTokens":100,"cachedInputTokens":25,"outputTokens":50,"reasoningOutputTokens":9},"last":{"totalTokens":23,"inputTokens":10,"cachedInputTokens":5,"outputTokens":7,"reasoningOutputTokens":1},"modelContextWindow":4096}}}`
 	agent.threadID = "thread-1"
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if sink.NotificationCount() != 1 {
 		t.Fatalf("expected 1 persisted notification, got %d", sink.NotificationCount())
@@ -739,7 +739,7 @@ func TestHandleCodexOutput_TokenUsageUpdatedFallsBackToModelContextWindow(t *tes
 	agent.threadID = "thread-1"
 
 	input := `{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{"total":{"totalTokens":200,"inputTokens":100,"cachedInputTokens":25,"outputTokens":50,"reasoningOutputTokens":9},"last":{"totalTokens":23,"inputTokens":10,"cachedInputTokens":5,"outputTokens":7,"reasoningOutputTokens":1},"modelContextWindow":null}}}`
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	info := sink.LastSessionInfo()
 	usage, ok := info["contextUsage"].(map[string]interface{})
@@ -757,7 +757,7 @@ func TestHandleCodexOutput_TokenUsageUpdatedIgnoresSubagentThreads(t *testing.T)
 	agent.threadID = "main-thread"
 
 	input := `{"method":"thread/tokenUsage/updated","params":{"threadId":"child-thread","turnId":"turn-1","tokenUsage":{"total":{"totalTokens":200,"inputTokens":100,"cachedInputTokens":25,"outputTokens":50,"reasoningOutputTokens":9},"last":{"totalTokens":23,"inputTokens":10,"cachedInputTokens":5,"outputTokens":7,"reasoningOutputTokens":1},"modelContextWindow":4096}}}`
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if sink.NotificationCount() != 0 {
 		t.Fatalf("expected 0 persisted notifications, got %d", sink.NotificationCount())
@@ -773,7 +773,7 @@ func TestHandleCodexOutput_TurnCompletedIgnoresSubagentThreads(t *testing.T) {
 	agent.threadID = "main-thread"
 
 	input := `{"method":"turn/completed","params":{"threadId":"child-thread","turn":{"id":"turn-1","status":"completed","items":[],"error":null}}}`
-	handleCodexOutput(agent, []byte(input))
+	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	if sink.MessageCount() != 0 {
 		t.Fatalf("expected 0 persisted messages, got %d", sink.MessageCount())

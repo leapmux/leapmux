@@ -364,3 +364,126 @@ func TestPersistConfirmedAgentSettings_PersistsDiscoveredPrimaryAgentFromEmpty(t
 	assert.Equal(t, "plan", newExtras["primaryAgent"],
 		"new extra_settings should reflect the requested change")
 }
+
+func TestPersistConfirmedAgentSettings_PersistsAvailableModelsAndGroups(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t, "ws-1")
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-gemini",
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
+		Model:         "auto",
+	}))
+
+	// Preload the manager cache with models and option groups
+	// (simulates what startAgentWith would do after agent starts).
+	models := []*leapmuxv1.AvailableModel{
+		{Id: "gemini-2.5-pro", DisplayName: "Gemini 2.5 Pro"},
+		{Id: "gemini-2.5-flash", DisplayName: "Gemini 2.5 Flash"},
+	}
+	groups := []*leapmuxv1.AvailableOptionGroup{
+		{Key: "thinkingBudget", Label: "Thinking Budget", Options: []*leapmuxv1.AvailableOption{
+			{Id: "low", Name: "Low"},
+			{Id: "high", Name: "High"},
+		}},
+	}
+	svc.Agents.PreloadCache("agent-gemini", models, groups)
+
+	// Persist confirmed settings — should also persist available models/groups.
+	err := svc.persistConfirmedAgentSettings(
+		"agent-gemini",
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
+		"auto", "", "", nil,
+		&leapmuxv1.AgentSettings{Model: "auto"},
+	)
+	require.NoError(t, err)
+
+	// Verify available models/groups were persisted to DB.
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-gemini")
+	require.NoError(t, err)
+	assert.NotEqual(t, "[]", dbAgent.AvailableModels, "available_models should be populated")
+	assert.NotEqual(t, "[]", dbAgent.AvailableOptionGroups, "available_option_groups should be populated")
+
+	// Verify round-trip: unmarshal back and check values.
+	parsedModels := unmarshalAvailableModels(dbAgent.AvailableModels)
+	require.Len(t, parsedModels, 2)
+	assert.Equal(t, "gemini-2.5-pro", parsedModels[0].GetId())
+	assert.Equal(t, "gemini-2.5-flash", parsedModels[1].GetId())
+
+	parsedGroups := unmarshalAvailableOptionGroups(dbAgent.AvailableOptionGroups)
+	require.Len(t, parsedGroups, 1)
+	assert.Equal(t, "thinkingBudget", parsedGroups[0].GetKey())
+	assert.Len(t, parsedGroups[0].GetOptions(), 2)
+}
+
+func TestUpdateAgentSettings_BroadcastsGeminiPermissionModeLabels(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, "ws-1")
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-gemini",
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
+		Model:         "auto",
+	}))
+	require.NoError(t, svc.Queries.UpdateAgentAllSettings(ctx, db.UpdateAgentAllSettingsParams{
+		Model:          "auto",
+		Effort:         "",
+		PermissionMode: "default",
+		ExtraSettings:  "{}",
+		ID:             "agent-gemini",
+	}))
+
+	sender := channel.NewSender(w)
+	svc.Watchers.WatchAgent("agent-gemini", &EventWatcher{
+		ChannelID: w.channelID,
+		Sender:    sender,
+	})
+
+	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+		AgentId: "agent-gemini",
+		Settings: &leapmuxv1.AgentSettings{
+			PermissionMode: "yolo",
+		},
+	}, w)
+
+	require.Empty(t, w.errors)
+	require.NotEmpty(t, w.streams)
+
+	var resp leapmuxv1.WatchEventsResponse
+	require.NoError(t, proto.Unmarshal(w.streams[len(w.streams)-1].GetPayload(), &resp))
+	msg := resp.GetAgentEvent().GetAgentMessage()
+	require.NotNil(t, msg)
+
+	raw, err := msgcodec.Decompress(msg.Content, msg.ContentCompression)
+	require.NoError(t, err)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(raw, &payload))
+
+	if payload["type"] != "settings_changed" {
+		messages, ok := payload["messages"].([]any)
+		require.True(t, ok)
+		for _, entry := range messages {
+			candidate, ok := entry.(map[string]any)
+			if ok && candidate["type"] == "settings_changed" {
+				payload = candidate
+				break
+			}
+		}
+	}
+
+	changes, ok := payload["changes"].(map[string]any)
+	require.True(t, ok)
+	change, ok := changes["permissionMode"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "default", change["old"])
+	assert.Equal(t, "yolo", change["new"])
+	assert.Equal(t, "Default", change["oldLabel"])
+	assert.Equal(t, "YOLO", change["newLabel"])
+}

@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { MessageCategory } from '../messageClassification'
-import type { ProviderPlugin, ProviderSettingsPanelProps, RenderContext } from './registry'
+import type { ClassificationContext, ClassificationInput, ProviderPlugin, ProviderSettingsPanelProps, RenderContext } from './registry'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
 import ChevronsDown from 'lucide-solid/icons/chevrons-down'
@@ -91,6 +91,24 @@ function isCodexJsonRpcResponse(parent: Record<string, unknown>): boolean {
   if ('method' in parent || 'item' in parent || 'turn' in parent)
     return false
   return ('result' in parent || 'error' in parent) && ('id' in parent)
+}
+
+function isCodexEmptyCompletedWebSearch(input: ClassificationInput): boolean {
+  if (input.agentProvider !== AgentProvider.CODEX || input.spanType !== 'webSearch')
+    return false
+
+  const item = input.parentObject?.item as Record<string, unknown> | undefined
+  if (!isObject(item) || item.type !== 'webSearch')
+    return false
+
+  const query = typeof item.query === 'string' ? item.query.trim() : ''
+  const action = isObject(item.action) ? item.action as Record<string, unknown> : null
+  const actionType = typeof action?.type === 'string' ? action.type as string : ''
+
+  if (actionType !== 'other')
+    return false
+
+  return query.length === 0
 }
 
 /** Extra notification types for Codex (agent_error). */
@@ -304,7 +322,10 @@ const codexPlugin: ProviderPlugin = {
     defaultValue: DEFAULT_CODEX_COLLABORATION_MODE,
     setMode: (mode, cb) => cb.onOptionGroupChange?.(CODEX_EXTRA_COLLABORATION_MODE, mode),
   },
-  classify(parent, wrapper): MessageCategory {
+  classify(input: ClassificationInput, context?: ClassificationContext): MessageCategory {
+    const parent = input.parentObject
+    const wrapper = input.wrapper
+
     // Notification threads (settings_changed, context_cleared, etc.)
     if (isCodexNotifThread(wrapper)) {
       // Filter notifications that are intentionally invisible in chat.
@@ -394,15 +415,18 @@ const codexPlugin: ProviderPlugin = {
       }
 
       // webSearch → tool use / result-like native codex message
-      if (itemType === 'webSearch')
+      if (itemType === 'webSearch') {
+        if (isCodexEmptyCompletedWebSearch(input))
+          return { kind: 'hidden' }
         return { kind: 'tool_use', toolName: 'webSearch', toolUse: item, content: [] }
+      }
 
       // reasoning → thinking (hide if both summary and content are empty)
       if (itemType === 'reasoning') {
         const summary = item.summary as unknown[] | undefined
         const content = item.content as unknown[] | undefined
         if ((!summary || summary.length === 0) && (!content || content.length === 0))
-          return { kind: 'hidden' }
+          return context?.hasCommandStream ? { kind: 'assistant_thinking' } : { kind: 'hidden' }
         return { kind: 'assistant_thinking' }
       }
 
@@ -432,6 +456,12 @@ const codexPlugin: ProviderPlugin = {
     if (type === 'settings_changed' || type === 'context_cleared'
       || type === 'interrupted' || type === 'agent_error' || type === 'agent_renamed' || type === 'compacting') {
       return { kind: 'notification' }
+    }
+
+    if ((input.spanType === 'ToolSearch' && (parent.type === 'assistant' || parent.type === 'user'))
+      || (input.spanType === 'TodoWrite' && parent.type === 'user')
+      || (input.spanType === 'EnterPlanMode' && parent.type === 'user')) {
+      return { kind: 'hidden' }
     }
 
     return { kind: 'unknown' }

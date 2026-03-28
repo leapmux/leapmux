@@ -9,7 +9,6 @@ import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Sh
 import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
 import { usePreferences } from '~/context/PreferencesContext'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
@@ -258,16 +257,11 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     if (cached && cached.msg.seq === msg.seq)
       return cached.category.kind !== 'hidden'
 
-    const classified = classifyParsedMessage(msg)
-    if (
-      classified.category.kind === 'hidden'
-      && msg.agentProvider === AgentProvider.CODEX
-      && msg.spanType === 'reasoning'
-      && msg.spanId
-      && (props.getCommandStreamBySpanId?.(msg.spanId).length ?? 0) > 0
-    ) {
-      return true
-    }
+    const commandStreamLength = msg.spanId ? (props.getCommandStreamBySpanId?.(msg.spanId).length ?? 0) : 0
+    const classified = classifyParsedMessage(msg, {
+      hasCommandStream: commandStreamLength > 0,
+      commandStreamLength,
+    })
     return classified.category.kind !== 'hidden'
   }
   const visibleEntries = createMemo(() => {
@@ -280,16 +274,11 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         newCache.set(msg.id, cached)
         return cached
       }
-      let classified = classifyParsedMessage(msg)
-      if (
-        classified.category.kind === 'hidden'
-        && msg.agentProvider === AgentProvider.CODEX
-        && msg.spanType === 'reasoning'
-        && msg.spanId
-        && (props.getCommandStreamBySpanId?.(msg.spanId).length ?? 0) > 0
-      ) {
-        classified = { ...classified, category: { kind: 'assistant_thinking' } }
-      }
+      const commandStreamLength = msg.spanId ? (props.getCommandStreamBySpanId?.(msg.spanId).length ?? 0) : 0
+      const classified = classifyParsedMessage(msg, {
+        hasCommandStream: commandStreamLength > 0,
+        commandStreamLength,
+      })
       const entry = { msg, ...classified }
       newCache.set(msg.id, entry)
       return entry

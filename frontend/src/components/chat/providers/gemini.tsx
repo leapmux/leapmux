@@ -7,7 +7,7 @@ import { createUniqueId, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import * as styles from '../ChatView.css'
-import { OpenCodeControlActions, OpenCodeControlContent } from '../controls/OpenCodeControlRequest'
+import { GeminiControlActions, GeminiControlContent } from '../controls/GeminiControlRequest'
 import { isNotificationThreadWrapper } from '../messageUtils'
 import {
   opencodeAgentMessageRenderer,
@@ -17,43 +17,47 @@ import {
   opencodeToolCallRenderer,
   opencodeToolCallUpdateRenderer,
 } from '../opencodeRenderers'
-import { defaultModelId, modelDisplayName, modelItems, ModelSelect, optionGroup, optionGroupItems, optionLabel, RadioGroup } from '../settingsShared'
+import {
+  defaultModelId,
+  modeLabel,
+  modelDisplayName,
+  modelItems,
+  ModelSelect,
+  permissionModeGroup,
+  permissionModeItems,
+  RadioGroup,
+} from '../settingsShared'
 import { registerProvider } from './registry'
 
-/** Default model for OpenCode agents (discovered dynamically, fallback). */
-const DEFAULT_OPENCODE_MODEL = import.meta.env.LEAPMUX_OPENCODE_DEFAULT_MODEL || ''
-const DEFAULT_OPENCODE_PRIMARY_AGENT = 'build'
-const OPENCODE_PLAN_PRIMARY_AGENT = 'plan'
-const OPENCODE_EXTRA_PRIMARY_AGENT = 'primaryAgent'
+const DEFAULT_GEMINI_MODEL = import.meta.env.LEAPMUX_GEMINI_DEFAULT_MODEL || 'auto'
+const DEFAULT_GEMINI_MODE = 'default'
+const GEMINI_PLAN_MODE = 'plan'
 
-/** Extra notification types for OpenCode (agent_error). */
-const OPENCODE_EXTRA_NOTIF_TYPES = new Set(['agent_error'])
+const GEMINI_EXTRA_NOTIF_TYPES = new Set(['agent_error'])
 
-function isOpenCodeNotifThread(wrapper: { old_seqs: number[], messages: unknown[] } | null): wrapper is { old_seqs: number[], messages: unknown[] } {
-  return isNotificationThreadWrapper(wrapper, OPENCODE_EXTRA_NOTIF_TYPES, (t, st) =>
+function isGeminiNotifThread(wrapper: { messages: unknown[] } | null): boolean {
+  return isNotificationThreadWrapper(wrapper, GEMINI_EXTRA_NOTIF_TYPES, (t, st) =>
     t === 'system' && st !== 'init' && st !== 'task_notification')
 }
 
-/** OpenCode settings panel (model + primary agent). */
-function OpenCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
+function GeminiSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
   const menuId = createUniqueId()
-  const currentModel = () => props.model || defaultModelId(props.availableModels) || DEFAULT_OPENCODE_MODEL
-  const currentPrimaryAgent = () => props.extraSettings?.[OPENCODE_EXTRA_PRIMARY_AGENT] || DEFAULT_OPENCODE_PRIMARY_AGENT
+  const currentModel = () => props.model || defaultModelId(props.availableModels) || DEFAULT_GEMINI_MODEL
+  const currentMode = () => props.permissionMode || DEFAULT_GEMINI_MODE
   const models = () => modelItems(props.availableModels)
-  const primaryAgentGroup = () => optionGroup(props.availableOptionGroups, OPENCODE_EXTRA_PRIMARY_AGENT)
-  const primaryAgentItems = () => optionGroupItems(props.availableOptionGroups, OPENCODE_EXTRA_PRIMARY_AGENT)
-  const hasPrimaryAgent = () => primaryAgentItems().length > 0
+  const modeGroup = () => permissionModeGroup(props.availableOptionGroups)
+  const modeItems = () => permissionModeItems(props.availableOptionGroups)
 
   return (
     <>
-      <Show when={hasPrimaryAgent()}>
+      <Show when={modeItems().length > 0}>
         <RadioGroup
-          label={primaryAgentGroup()?.label || 'Primary Agent'}
-          items={primaryAgentItems()}
-          testIdPrefix="primary-agent"
-          name={`${menuId}-primary-agent`}
-          current={currentPrimaryAgent()}
-          onChange={v => props.onOptionGroupChange?.(OPENCODE_EXTRA_PRIMARY_AGENT, v)}
+          label={modeGroup()?.label || 'Permission Mode'}
+          items={modeItems()}
+          testIdPrefix="permission-mode"
+          name={`${menuId}-permission-mode`}
+          current={currentMode()}
+          onChange={v => props.onPermissionModeChange?.(v as PermissionMode)}
           fieldsetClass={styles.settingsFieldsetFirst}
         />
       </Show>
@@ -64,46 +68,38 @@ function OpenCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
           name={`${menuId}-model`}
           current={currentModel()}
           onChange={v => props.onModelChange?.(v)}
-          fieldsetClass={!hasPrimaryAgent() ? styles.settingsFieldsetFirst : undefined}
+          fieldsetClass={modeItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
         />
       </Show>
     </>
   )
 }
 
-/** OpenCode trigger label (model name + primary agent). */
-function OpenCodeTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
-  const currentModel = () => props.model || defaultModelId(props.availableModels) || DEFAULT_OPENCODE_MODEL
-  const currentPrimaryAgent = () => props.extraSettings?.[OPENCODE_EXTRA_PRIMARY_AGENT] || DEFAULT_OPENCODE_PRIMARY_AGENT
-  const displayName = () => modelDisplayName(props.availableModels, currentModel())
-  const primaryAgent = () => optionLabel(props.availableOptionGroups, OPENCODE_EXTRA_PRIMARY_AGENT, currentPrimaryAgent())
+function GeminiTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
+  const currentModel = () => props.model || defaultModelId(props.availableModels) || DEFAULT_GEMINI_MODEL
+  const currentMode = () => props.permissionMode || DEFAULT_GEMINI_MODE
   return (
     <>
-      {displayName()}
+      {modelDisplayName(props.availableModels, currentModel())}
       {' \u00B7 '}
-      {primaryAgent()}
+      {modeLabel(props.availableOptionGroups, currentMode())}
     </>
   )
 }
 
-/**
- * Classify a persisted ACP message. The backend persists the `update` object
- * from sessionUpdate notifications, and the full JSON-RPC for other messages.
- */
-function classifyOpenCodeMessage(
+function classifyGeminiMessage(
   input: ClassificationInput,
   _context?: ClassificationContext,
 ): MessageCategory {
   const parent = input.parentObject
   const wrapper = input.wrapper
 
-  // Notification threads (settings_changed, context_cleared, etc.)
-  if (isOpenCodeNotifThread(wrapper))
-    return { kind: 'notification_thread', messages: wrapper.messages }
-
-  // Empty wrapper — hide.
-  if (wrapper && (wrapper as { messages: unknown[] }).messages.length === 0)
-    return { kind: 'hidden' }
+  if (wrapper) {
+    if (isGeminiNotifThread(wrapper))
+      return { kind: 'notification_thread', messages: wrapper.messages }
+    if (wrapper.messages.length === 0)
+      return { kind: 'hidden' }
+  }
 
   if (!parent)
     return { kind: 'unknown' }
@@ -112,7 +108,6 @@ function classifyOpenCodeMessage(
   const type = parent.type as string | undefined
   const subtype = parent.subtype as string | undefined
 
-  // ACP sessionUpdate-based classification
   if (sessionUpdate === 'agent_message_chunk')
     return { kind: 'assistant_text' }
 
@@ -124,9 +119,8 @@ function classifyOpenCodeMessage(
 
   if (sessionUpdate === 'tool_call_update') {
     const status = parent.status as string | undefined
-    if (status === 'completed' || status === 'failed')
+    if (status === 'completed' || status === 'failed' || status === 'cancelled')
       return { kind: 'tool_use', toolName: (parent.kind as string) || 'tool_call_update', toolUse: parent, content: [] }
-    // in_progress updates are streaming — hide from chat.
     return { kind: 'hidden' }
   }
 
@@ -136,55 +130,50 @@ function classifyOpenCodeMessage(
   if (sessionUpdate === 'usage_update' || sessionUpdate === 'available_commands_update' || sessionUpdate === 'user_message_chunk')
     return { kind: 'hidden' }
 
-  // Result messages from prompt completion
   if (parent.stopReason !== undefined)
     return { kind: 'result_divider' }
 
-  // System messages
   if (type === 'system') {
-    if (subtype === 'init')
-      return { kind: 'hidden' }
-    if (subtype === 'task_notification')
+    if (subtype === 'init' || subtype === 'task_notification')
       return { kind: 'hidden' }
     return { kind: 'notification' }
   }
 
-  // LeapMux notification types
   if (type === 'settings_changed' || type === 'context_cleared'
     || type === 'interrupted' || type === 'agent_error' || type === 'agent_renamed' || type === 'compacting') {
     return { kind: 'notification' }
   }
 
-  // User content (persisted by LeapMux service layer)
   if (!sessionUpdate && typeof parent.content === 'string') {
     if (parent.hidden === true)
       return { kind: 'hidden' }
     return { kind: 'user_content' }
   }
 
-  // JSON-RPC response (e.g. permission response echo) — hide
   if (!('method' in parent) && ('result' in parent || 'error' in parent) && ('id' in parent))
     return { kind: 'hidden' }
 
   return { kind: 'unknown' }
 }
 
-const opencodePlugin: ProviderPlugin = {
-  defaultModel: DEFAULT_OPENCODE_MODEL || undefined,
+const geminiPlugin: ProviderPlugin = {
+  defaultModel: DEFAULT_GEMINI_MODEL,
+  defaultPermissionMode: DEFAULT_GEMINI_MODE as PermissionMode,
   attachments: {
     text: true,
     image: true,
     pdf: true,
     binary: true,
   },
+  bypassPermissionMode: 'yolo',
   planMode: {
-    currentMode: agent => agent.extraSettings?.[OPENCODE_EXTRA_PRIMARY_AGENT] || DEFAULT_OPENCODE_PRIMARY_AGENT,
-    planValue: OPENCODE_PLAN_PRIMARY_AGENT,
-    defaultValue: DEFAULT_OPENCODE_PRIMARY_AGENT,
-    setMode: (mode, cb) => cb.onOptionGroupChange?.(OPENCODE_EXTRA_PRIMARY_AGENT, mode),
+    currentMode: agent => agent.permissionMode || DEFAULT_GEMINI_MODE,
+    planValue: GEMINI_PLAN_MODE,
+    defaultValue: DEFAULT_GEMINI_MODE,
+    setMode: (mode, cb) => cb.onPermissionModeChange?.(mode as PermissionMode),
   },
 
-  classify: classifyOpenCodeMessage,
+  classify: classifyGeminiMessage,
 
   renderMessage(category: MessageCategory, parsed: unknown, _role: MessageRole, context?: RenderContext): JSX.Element | null {
     if (category.kind === 'assistant_text')
@@ -214,10 +203,6 @@ const opencodePlugin: ProviderPlugin = {
     })
   },
 
-  isAskUserQuestion(payload?: Record<string, unknown>): boolean {
-    return payload?.type === 'question.asked'
-  },
-
   async changePermissionMode(workerId: string, agentId: string, mode: PermissionMode): Promise<void> {
     await workerRpc.updateAgentSettings(workerId, {
       agentId,
@@ -225,10 +210,10 @@ const opencodePlugin: ProviderPlugin = {
     })
   },
 
-  ControlContent: OpenCodeControlContent,
-  ControlActions: OpenCodeControlActions,
-  SettingsPanel: OpenCodeSettingsPanel,
-  settingsTriggerLabel: OpenCodeTriggerLabel,
+  ControlContent: GeminiControlContent,
+  ControlActions: GeminiControlActions,
+  SettingsPanel: GeminiSettingsPanel,
+  settingsTriggerLabel: GeminiTriggerLabel,
 }
 
-registerProvider(AgentProvider.OPENCODE, opencodePlugin)
+registerProvider(AgentProvider.GEMINI_CLI, geminiPlugin)

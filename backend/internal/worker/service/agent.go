@@ -403,6 +403,15 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			if accessibleWsIDs != nil && !accessibleWsIDs[agents[i].WorkspaceID] {
 				continue
 			}
+			// Preload cached models/option groups from DB for inactive agents
+			// so AvailableModels/AvailableOptionGroups return persisted data.
+			if !svc.Agents.HasAgent(agents[i].ID) {
+				svc.Agents.PreloadCache(
+					agents[i].ID,
+					unmarshalAvailableModels(agents[i].AvailableModels),
+					unmarshalAvailableOptionGroups(agents[i].AvailableOptionGroups),
+				)
+			}
 			protoAgents = append(protoAgents, agentToProto(&agents[i], agents[i].PermissionMode, svc.WorkerID, svc.Agents.HasAgent(agents[i].ID), gitStatuses[i], svc.Agents.AvailableModels(agents[i].ID, agents[i].AgentProvider), svc.Agents.AvailableOptionGroups(agents[i].ID, agents[i].AgentProvider)))
 		}
 
@@ -859,6 +868,14 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			if err != nil {
 				slog.Error("failed to fetch agent for status", "agent_id", agentID, "error", err)
 			} else {
+				// Preload cached models/option groups from DB for inactive agents.
+				if !svc.Agents.HasAgent(agentID) {
+					svc.Agents.PreloadCache(
+						agentID,
+						unmarshalAvailableModels(dbAgent.AvailableModels),
+						unmarshalAvailableOptionGroups(dbAgent.AvailableOptionGroups),
+					)
+				}
 				status := leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE
 				if svc.Agents.HasAgent(agentID) {
 					status = leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE
@@ -999,12 +1016,23 @@ func (svc *Context) persistConfirmedAgentSettings(agentID string, provider leapm
 	}
 	confirmedExtraSettings = resolveCodexExtras(confirmedExtraSettings, provider)
 
-	return svc.Queries.UpdateAgentAllSettings(bgCtx(), db.UpdateAgentAllSettingsParams{
+	if err := svc.Queries.UpdateAgentAllSettings(bgCtx(), db.UpdateAgentAllSettingsParams{
 		Model:          confirmedModel,
 		Effort:         confirmedEffort,
 		PermissionMode: confirmedPermissionMode,
 		ExtraSettings:  marshalExtraSettings(confirmedExtraSettings),
 		ID:             agentID,
+	}); err != nil {
+		return err
+	}
+
+	// Persist available models and option groups so they survive backend restarts.
+	models := svc.Agents.AvailableModels(agentID, provider)
+	groups := svc.Agents.AvailableOptionGroups(agentID, provider)
+	return svc.Queries.UpdateAgentAvailableSettings(bgCtx(), db.UpdateAgentAvailableSettingsParams{
+		AvailableModels:       marshalAvailableModels(models),
+		AvailableOptionGroups: marshalAvailableOptionGroups(groups),
+		ID:                    agentID,
 	})
 }
 
@@ -1698,7 +1726,7 @@ func isInterruptRequest(content string) bool {
 	if err := json.Unmarshal([]byte(content), &msg); err != nil {
 		return false
 	}
-	return msg.Request.Subtype == "interrupt" || msg.Method == "turn/interrupt" || msg.Method == "session/cancel"
+	return msg.Request.Subtype == "interrupt" || msg.Method == "turn/interrupt" || msg.Method == "session/cancel" || msg.Method == "cancel"
 }
 
 // broadcastWatchEvent sends a WatchEventsResponse as a stream message.

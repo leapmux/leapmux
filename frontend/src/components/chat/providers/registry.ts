@@ -2,6 +2,7 @@ import type { Component, JSX } from 'solid-js'
 import type { ActionsProps, ContentProps } from '../controls/types'
 import type { MessageCategory } from '../messageClassification'
 import type { AgentProvider, AvailableModel, AvailableOptionGroup, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { PermissionMode } from '~/utils/controlResponse'
 
 export interface ProviderSettingsPanelProps {
@@ -31,6 +32,21 @@ export interface AttachmentCapabilities {
   binary: boolean
 }
 
+export interface ClassificationInput extends ParsedMessageContent {
+  messageRole: MessageRole
+  agentProvider?: AgentProvider
+  spanId?: string
+  spanType?: string
+  parentSpanId?: string
+  seq?: bigint
+  createdAt?: string
+}
+
+export interface ClassificationContext {
+  hasCommandStream?: boolean
+  commandStreamLength?: number
+}
+
 export interface ProviderPlugin {
   /** Default model identifier for this provider. */
   defaultModel?: string
@@ -40,10 +56,7 @@ export interface ProviderPlugin {
   defaultPermissionMode?: PermissionMode
 
   /** Classify a parsed message into a rendering category. */
-  classify: (
-    parent: Record<string, unknown> | undefined,
-    wrapper: { old_seqs: number[], messages: unknown[] } | null,
-  ) => MessageCategory
+  classify: (input: ClassificationInput, context?: ClassificationContext) => MessageCategory
 
   /**
    * Render a message given its category and parsed content.

@@ -17,19 +17,21 @@ var ErrAgentNotFound = errors.New("agent not found")
 
 // Manager tracks active agents and routes messages.
 type Manager struct {
-	mu           sync.RWMutex
-	agents       map[string]Provider                    // agentID -> Provider
-	cachedModels map[string][]*leapmuxv1.AvailableModel // agentID -> last known models
-	onExit       ExitHandler
+	mu                 sync.RWMutex
+	agents             map[string]Provider                          // agentID -> Provider
+	cachedModels       map[string][]*leapmuxv1.AvailableModel       // agentID -> last known models
+	cachedOptionGroups map[string][]*leapmuxv1.AvailableOptionGroup // agentID -> last known option groups
+	onExit             ExitHandler
 }
 
 // NewManager creates a new agent Manager.
 // The optional onExit handler is called when any agent process exits.
 func NewManager(onExit ExitHandler) *Manager {
 	return &Manager{
-		agents:       make(map[string]Provider),
-		cachedModels: make(map[string][]*leapmuxv1.AvailableModel),
-		onExit:       onExit,
+		agents:             make(map[string]Provider),
+		cachedModels:       make(map[string][]*leapmuxv1.AvailableModel),
+		cachedOptionGroups: make(map[string][]*leapmuxv1.AvailableOptionGroup),
+		onExit:             onExit,
 	}
 }
 
@@ -69,6 +71,9 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 	if models := provider.AvailableModels(); len(models) > 0 {
 		m.cachedModels[opts.AgentID] = models
 	}
+	if groups := provider.AvailableOptionGroups(); len(groups) > 0 {
+		m.cachedOptionGroups[opts.AgentID] = groups
+	}
 	m.mu.Unlock()
 
 	// Wait for the agent to exit in the background, then clean up.
@@ -77,6 +82,7 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 		m.mu.Lock()
 		delete(m.agents, opts.AgentID)
 		delete(m.cachedModels, opts.AgentID)
+		delete(m.cachedOptionGroups, opts.AgentID)
 		m.mu.Unlock()
 
 		exitCode := 0
@@ -241,16 +247,20 @@ func withDefaultModelMarked(models []*leapmuxv1.AvailableModel, provider leapmux
 }
 
 // AvailableOptionGroups returns the option groups for an agent, preferring the
-// running provider's runtime groups and falling back to the static registry.
+// running provider's runtime groups, then cached groups, then static defaults.
 func (m *Manager) AvailableOptionGroups(agentID string, provider leapmuxv1.AgentProvider) []*leapmuxv1.AvailableOptionGroup {
 	m.mu.RLock()
 	p, ok := m.agents[agentID]
+	cached := m.cachedOptionGroups[agentID]
 	m.mu.RUnlock()
 
 	if ok {
 		if groups := p.AvailableOptionGroups(); len(groups) > 0 {
 			return groups
 		}
+	}
+	if len(cached) > 0 {
+		return cached
 	}
 	return AvailableOptionGroupsForProvider(provider)
 }
@@ -263,6 +273,21 @@ func AvailableOptionGroupsForProvider(provider leapmuxv1.AgentProvider) []*leapm
 		return reg.optionGroups
 	}
 	return nil
+}
+
+// PreloadCache populates the cached models and option groups for an agent
+// that is not currently running. This is used to restore DB-persisted data
+// so that AvailableModels/AvailableOptionGroups return the correct values
+// without the agent process being active.
+func (m *Manager) PreloadCache(agentID string, models []*leapmuxv1.AvailableModel, groups []*leapmuxv1.AvailableOptionGroup) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(models) > 0 {
+		m.cachedModels[agentID] = models
+	}
+	if len(groups) > 0 {
+		m.cachedOptionGroups[agentID] = groups
+	}
 }
 
 // UpdateSettings applies setting changes to a running agent so that

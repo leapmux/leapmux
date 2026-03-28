@@ -5,6 +5,7 @@ import { AgentProvider, AvailableModelSchema, AvailableOptionGroupSchema, Availa
 import { sendOpenCodePermissionResponse, sendOpenCodeQuestionResponse } from '../controls/OpenCodeControlRequest'
 import { opencodeResultDividerRenderer } from '../opencodeRenderers'
 import { getProviderPlugin } from './registry'
+import { input } from './testUtils'
 
 // Side-effect import to register the OpenCode plugin.
 import './opencode'
@@ -26,7 +27,7 @@ describe('opencode classify', () => {
       sessionUpdate: 'agent_message_chunk',
       content: { type: 'text', text: 'Hello' },
     }
-    expect(plugin.classify(parent, null)).toEqual({ kind: 'assistant_text' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'assistant_text' })
   })
 
   it('classifies agent_thought_chunk as assistant_thinking', () => {
@@ -34,7 +35,7 @@ describe('opencode classify', () => {
       sessionUpdate: 'agent_thought_chunk',
       content: { type: 'text', text: 'thinking...' },
     }
-    expect(plugin.classify(parent, null)).toEqual({ kind: 'assistant_thinking' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'assistant_thinking' })
   })
 
   it('classifies tool_call as tool_use with kind', () => {
@@ -47,7 +48,7 @@ describe('opencode classify', () => {
       locations: [],
       rawInput: {},
     }
-    expect(plugin.classify(parent, null)).toEqual({
+    expect(plugin.classify(input(parent))).toEqual({
       kind: 'tool_use',
       toolName: 'execute',
       toolUse: parent,
@@ -62,7 +63,7 @@ describe('opencode classify', () => {
       title: 'custom_tool',
       status: 'pending',
     }
-    expect(plugin.classify(parent, null)).toEqual({
+    expect(plugin.classify(input(parent))).toEqual({
       kind: 'tool_use',
       toolName: 'tool_call',
       toolUse: parent,
@@ -79,7 +80,7 @@ describe('opencode classify', () => {
       title: 'bash',
       content: [{ type: 'content', content: { type: 'text', text: 'output' } }],
     }
-    expect(plugin.classify(parent, null)).toEqual({
+    expect(plugin.classify(input(parent))).toEqual({
       kind: 'tool_use',
       toolName: 'execute',
       toolUse: parent,
@@ -94,7 +95,7 @@ describe('opencode classify', () => {
       status: 'failed',
       kind: 'execute',
     }
-    expect(plugin.classify(parent, null)).toEqual({
+    expect(plugin.classify(input(parent))).toEqual({
       kind: 'tool_use',
       toolName: 'execute',
       toolUse: parent,
@@ -109,7 +110,7 @@ describe('opencode classify', () => {
       status: 'in_progress',
       kind: 'execute',
     }
-    expect(plugin.classify(parent, null)).toEqual({ kind: 'hidden' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('classifies plan as tool_use', () => {
@@ -119,7 +120,7 @@ describe('opencode classify', () => {
         { priority: 'medium', status: 'pending', content: 'Step 1' },
       ],
     }
-    expect(plugin.classify(parent, null)).toEqual({
+    expect(plugin.classify(input(parent))).toEqual({
       kind: 'tool_use',
       toolName: 'plan',
       toolUse: parent,
@@ -133,7 +134,7 @@ describe('opencode classify', () => {
       used: 1000,
       size: 128000,
     }
-    expect(plugin.classify(parent, null)).toEqual({ kind: 'hidden' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('hides available_commands_update', () => {
@@ -141,7 +142,7 @@ describe('opencode classify', () => {
       sessionUpdate: 'available_commands_update',
       availableCommands: [],
     }
-    expect(plugin.classify(parent, null)).toEqual({ kind: 'hidden' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('hides user_message_chunk', () => {
@@ -149,7 +150,7 @@ describe('opencode classify', () => {
       sessionUpdate: 'user_message_chunk',
       content: { type: 'text', text: 'hello' },
     }
-    expect(plugin.classify(parent, null)).toEqual({ kind: 'hidden' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('classifies result divider (stopReason)', () => {
@@ -157,47 +158,47 @@ describe('opencode classify', () => {
       stopReason: 'end_turn',
       usage: { totalTokens: 100 },
     }
-    expect(plugin.classify(parent, null)).toEqual({ kind: 'result_divider' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'result_divider' })
   })
 
   it('hides system init', () => {
     const parent = { type: 'system', subtype: 'init' }
-    expect(plugin.classify(parent, null)).toEqual({ kind: 'hidden' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('classifies system notification', () => {
     const parent = { type: 'system', subtype: 'compact_boundary' }
-    expect(plugin.classify(parent, null)).toEqual({ kind: 'notification' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification' })
   })
 
   it('classifies settings_changed as notification', () => {
     const parent = { type: 'settings_changed' }
-    expect(plugin.classify(parent, null)).toEqual({ kind: 'notification' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification' })
   })
 
   it('classifies agent_error as notification', () => {
     const parent = { type: 'agent_error', error: 'something went wrong' }
-    expect(plugin.classify(parent, null)).toEqual({ kind: 'notification' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification' })
   })
 
   it('classifies user content', () => {
     const parent = { content: 'Hello agent' }
-    expect(plugin.classify(parent, null)).toEqual({ kind: 'user_content' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'user_content' })
   })
 
   it('hides hidden user content', () => {
     const parent = { content: 'internal', hidden: true }
-    expect(plugin.classify(parent, null)).toEqual({ kind: 'hidden' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('hides JSON-RPC response envelope', () => {
     const parent = { id: 5, result: { outcome: { optionId: 'once' } } }
-    expect(plugin.classify(parent, null)).toEqual({ kind: 'hidden' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('returns unknown for unrecognized parent', () => {
     const parent = { something: 'weird' }
-    expect(plugin.classify(parent, null)).toEqual({ kind: 'unknown' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'unknown' })
   })
 
   it('handles notification thread wrappers', () => {
@@ -205,7 +206,7 @@ describe('opencode classify', () => {
       old_seqs: [1],
       messages: [{ type: 'interrupted' }],
     }
-    expect(plugin.classify(undefined, wrapper)).toEqual({
+    expect(plugin.classify(input(undefined, wrapper))).toEqual({
       kind: 'notification_thread',
       messages: wrapper.messages,
     })
@@ -213,7 +214,7 @@ describe('opencode classify', () => {
 
   it('hides empty wrapper', () => {
     const wrapper = { old_seqs: [], messages: [] }
-    expect(plugin.classify(undefined, wrapper)).toEqual({ kind: 'hidden' })
+    expect(plugin.classify(input(undefined, wrapper))).toEqual({ kind: 'hidden' })
   })
 })
 
@@ -257,7 +258,7 @@ describe('opencode tool_call renderer', () => {
       locations: [],
       rawInput: {},
     }
-    const category = plugin.classify(toolUse, null)
+    const category = plugin.classify(input(toolUse))
     expect(category.kind).toBe('tool_use')
     const result = plugin.renderMessage!(category, toolUse, MessageRole.ASSISTANT)
     expect(result).not.toBeNull()
@@ -270,7 +271,7 @@ describe('opencode tool_call renderer', () => {
       title: 'custom_tool',
       status: 'pending',
     }
-    const category = plugin.classify(toolUse, null)
+    const category = plugin.classify(input(toolUse))
     const result = plugin.renderMessage!(category, toolUse, MessageRole.ASSISTANT)
     expect(result).not.toBeNull()
   })
@@ -359,7 +360,7 @@ describe('opencode tool_call_update renderer', () => {
       },
       content: [{ type: 'content', content: { type: 'text', text: 'abc123 fix something\ndef456 add feature' } }],
     }
-    const category = plugin.classify(toolUse, null)
+    const category = plugin.classify(input(toolUse))
     expect(category.kind).toBe('tool_use')
     const result = plugin.renderMessage!(category, toolUse, MessageRole.ASSISTANT)
     expect(result).not.toBeNull()
@@ -376,7 +377,7 @@ describe('opencode tool_call_update renderer', () => {
       rawOutput: { error: 'command failed', metadata: { exit: 1 } },
       content: [],
     }
-    const category = plugin.classify(toolUse, null)
+    const category = plugin.classify(input(toolUse))
     const result = plugin.renderMessage!(category, toolUse, MessageRole.ASSISTANT)
     expect(result).not.toBeNull()
   })
@@ -392,7 +393,7 @@ describe('opencode tool_call_update renderer', () => {
         { type: 'diff', path: 'src/main.ts', oldText: 'const a = 1', newText: 'const a = 2' },
       ],
     }
-    const category = plugin.classify(toolUse, null)
+    const category = plugin.classify(input(toolUse))
     expect(category.kind).toBe('tool_use')
   })
 
@@ -405,7 +406,7 @@ describe('opencode tool_call_update renderer', () => {
       title: 'simple command',
       content: [{ type: 'content', content: { type: 'text', text: 'output' } }],
     }
-    const category = plugin.classify(toolUse, null)
+    const category = plugin.classify(input(toolUse))
     const result = plugin.renderMessage!(category, toolUse, MessageRole.ASSISTANT)
     expect(result).not.toBeNull()
   })
@@ -428,7 +429,7 @@ describe('opencode tool_call_update renderer', () => {
       },
       content: [{ type: 'content', content: { type: 'text', text: 'Found 24 matches\n...' } }],
     }
-    const category = plugin.classify(toolUse, null)
+    const category = plugin.classify(input(toolUse))
     const result = plugin.renderMessage!(category, toolUse, MessageRole.ASSISTANT)
     expect(result).not.toBeNull()
   })
@@ -451,7 +452,7 @@ describe('opencode tool_call_update renderer', () => {
       },
       content: [{ type: 'content', content: { type: 'text', text: '537: func foo() {\n538:   return\n539: }' } }],
     }
-    const category = plugin.classify(toolUse, null)
+    const category = plugin.classify(input(toolUse))
     const result = plugin.renderMessage!(category, toolUse, MessageRole.ASSISTANT)
     expect(result).not.toBeNull()
   })
@@ -466,7 +467,7 @@ describe('opencode tool_call_update renderer', () => {
       content: [],
       rawOutput: { output: 'everything ok', metadata: { exit: 0 } },
     }
-    const category = plugin.classify(toolUse, null)
+    const category = plugin.classify(input(toolUse))
     const result = plugin.renderMessage!(category, toolUse, MessageRole.ASSISTANT)
     expect(result).not.toBeNull()
   })

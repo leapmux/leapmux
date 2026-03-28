@@ -17,8 +17,9 @@ import (
 // maxStderrSize is the maximum amount of stderr to buffer.
 const maxStderrSize = 1 << 20 // 1MB
 
-// processBase contains the shared process lifecycle state and methods
-// used by both ClaudeCodeAgent (Claude Code) and CodexAgent (Codex).
+// processBase contains the shared process lifecycle state and methods.
+// ClaudeCodeAgent embeds it directly; ACP agents (GeminiCLIAgent, OpenCodeAgent)
+// and CodexAgent embed it via jsonrpcBase which adds JSON-RPC request plumbing.
 type processBase struct {
 	agentID string
 	stdin   io.WriteCloser
@@ -131,15 +132,14 @@ func (p *processBase) processExitError() error {
 	return fmt.Errorf("agent process exited unexpectedly")
 }
 
-// formatStartupError returns a descriptive error including stderr for
-// frontend diagnostics. The optional preambleOutput is included when
-// non-empty (used by Claude Code's shell wrapper).
-func (p *processBase) formatStartupError(phase string, err error, preambleOutput string) error {
+// formatStartupError returns a descriptive error including stderr and
+// preamble output for frontend diagnostics.
+func (p *processBase) formatStartupError(phase string, err error) error {
 	parts := []string{fmt.Sprintf("%s: %s", phase, err)}
 	if stderr := strings.TrimSpace(p.Stderr()); stderr != "" {
 		parts = append(parts, "stderr: "+stderr)
 	}
-	if preamble := strings.TrimSpace(preambleOutput); preamble != "" {
+	if preamble := strings.TrimSpace(p.PreambleOutput()); preamble != "" {
 		parts = append(parts, "shell preamble: "+preamble)
 	}
 	return fmt.Errorf("%s", strings.Join(parts, "; "))
@@ -185,16 +185,39 @@ func (p *processBase) PreambleOutput() string {
 	return strings.Join(p.preambleOutput, "\n")
 }
 
-// outputInterceptor is a function that inspects a line before it is forwarded
-// to HandleOutput. If it returns true, the line is consumed (not forwarded).
-type outputInterceptor func(line []byte) bool
+// parsedLine holds the JSON-parsed superset of all agent output envelope
+// fields. Raw is the original bytes; the typed fields are populated by a
+// single json.Unmarshal in readOutput so downstream consumers never need to
+// re-parse the envelope.
+type parsedLine struct {
+	Raw    []byte
+	ID     *json.Number    `json:"id"`
+	Method string          `json:"method"`
+	Type   string          `json:"type"`
+	Params json.RawMessage `json:"params"`
+	Result json.RawMessage `json:"result"`
+	Error  json.RawMessage `json:"error"`
+}
 
-// outputHandler processes a single output line from the agent process.
-type outputHandler func(content []byte)
+// parseLine creates a parsedLine from raw bytes. Used by HandleOutput methods
+// that accept []byte (e.g. for tests) to bridge into the single-parse pipeline.
+func parseLine(content []byte) *parsedLine {
+	line := &parsedLine{Raw: content}
+	_ = json.Unmarshal(content, line)
+	return line
+}
 
-// readOutput reads JSONL lines from stdout, optionally intercepting responses
-// before forwarding them to the output handler. This shared implementation
-// eliminates duplication between ClaudeCodeAgent and CodexAgent.
+// outputInterceptor is a function that inspects a parsed line before it is
+// forwarded to HandleOutput. If it returns true, the line is consumed (not
+// forwarded).
+type outputInterceptor func(line *parsedLine) bool
+
+// outputHandler processes a single parsed output line from the agent process.
+type outputHandler func(line *parsedLine)
+
+// readOutput reads JSONL lines from stdout, JSON-parses them once into a
+// parsedLine, optionally intercepts responses, then forwards remaining lines
+// to the output handler.
 func (p *processBase) readOutput(scanner *bufio.Scanner, intercept outputInterceptor, handle outputHandler) {
 	p.skipPreamble(scanner)
 
@@ -207,11 +230,17 @@ func (p *processBase) readOutput(scanner *bufio.Scanner, intercept outputInterce
 		lineCopy := make([]byte, len(line))
 		copy(lineCopy, line)
 
-		if intercept(lineCopy) {
+		parsed := &parsedLine{Raw: lineCopy}
+		if err := json.Unmarshal(lineCopy, parsed); err != nil {
+			slog.Warn("invalid agent output JSON", "agent_id", p.agentID, "error", err)
 			continue
 		}
 
-		handle(lineCopy)
+		if intercept(parsed) {
+			continue
+		}
+
+		handle(parsed)
 	}
 
 	if err := scanner.Err(); err != nil {

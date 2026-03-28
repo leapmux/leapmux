@@ -17,3 +17,7 @@ if (typeof globalThis.sessionStorage?.getItem !== 'function' && typeof jsdom !==
     configurable: true,
   })
 }
+
+// Stub HTMLCanvasElement.getContext() to suppress jsdom's
+// "Not implemented" warning when the canvas npm package is not installed.
+HTMLCanvasElement.prototype.getContext = (() => null) as typeof HTMLCanvasElement.prototype.getContext

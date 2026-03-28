@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { MessageCategory } from '../messageClassification'
-import type { ProviderPlugin, ProviderSettingsPanelProps } from './registry'
+import type { ClassificationContext, ClassificationInput, ProviderPlugin, ProviderSettingsPanelProps } from './registry'
 import type { PermissionMode } from '~/utils/controlResponse'
 import ChevronsDown from 'lucide-solid/icons/chevrons-down'
 import ChevronsUp from 'lucide-solid/icons/chevrons-up'
@@ -54,9 +54,12 @@ function isClaudeNotifThread(wrapper: { messages: unknown[] } | null): wrapper i
 
 /** Claude Code message classification. */
 function classifyClaudeCodeMessage(
-  parentObject: Record<string, unknown> | undefined,
-  wrapper: { old_seqs: number[], messages: unknown[] } | null,
+  input: ClassificationInput,
+  _context?: ClassificationContext,
 ): MessageCategory {
+  const parentObject = input.parentObject
+  const wrapper = input.wrapper
+
   // 0. Empty wrapper (all notifications consolidated to no-ops) — hide.
   if (wrapper && wrapper.messages.length === 0)
     return { kind: 'hidden' }
@@ -82,6 +85,8 @@ function classifyClaudeCodeMessage(
 
   // 2. Hidden: system init, or system status (non-compacting)
   if (type === 'system') {
+    if (input.parentSpanId && (subtype === 'task_started' || subtype === 'task_progress'))
+      return { kind: 'hidden' }
     if (subtype === 'init')
       return { kind: 'hidden' }
     if (subtype === 'status' && parentObject.status !== 'compacting')
@@ -121,6 +126,8 @@ function classifyClaudeCodeMessage(
         const contentArr = content as Array<Record<string, unknown>>
         const toolUse = contentArr.find(c => isObject(c) && c.type === 'tool_use') as Record<string, unknown> | undefined
         if (toolUse) {
+          if (input.spanType === 'ToolSearch')
+            return { kind: 'hidden' }
           return {
             kind: 'tool_use',
             toolName: String(toolUse.name || ''),
@@ -139,6 +146,9 @@ function classifyClaudeCodeMessage(
 
   // User messages
   if (type === 'user') {
+    if (input.spanType === 'EnterPlanMode' || parentObject.span_type === 'EnterPlanMode')
+      return { kind: 'hidden' }
+
     const message = parentObject.message as Record<string, unknown> | undefined
     if (isObject(message)) {
       const content = (message as Record<string, unknown>).content
@@ -147,8 +157,11 @@ function classifyClaudeCodeMessage(
       if (Array.isArray(content)) {
         // tool_result takes priority over agent_prompt (subagent tool results
         // also have parent_tool_use_id but should be rendered as tool results).
-        if ((content as Array<Record<string, unknown>>).some(c => isObject(c) && c.type === 'tool_result'))
+        if ((content as Array<Record<string, unknown>>).some(c => isObject(c) && c.type === 'tool_result')) {
+          if (input.spanType === 'TodoWrite' || input.spanType === 'ToolSearch')
+            return { kind: 'hidden' }
           return { kind: 'tool_result' }
+        }
       }
     }
     // Agent prompt: user message with parent_tool_use_id (prompt sent to sub-agent)

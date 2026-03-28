@@ -208,6 +208,66 @@ func TestSendControlResponse_PersistsOpenCodeQuestionAnswer(t *testing.T) {
 	assert.Equal(t, "Task: Build\nEnv: Dev", decodeMessageContent(t, rows[0].Content, rows[0].ContentCompression))
 }
 
+func TestSendControlResponse_PersistsGeminiPermissionSelectionLabel(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, "ws-1")
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
+	}))
+
+	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+		AgentID:   "agent-1",
+		RequestID: "7",
+		Payload: []byte(`{
+			"jsonrpc":"2.0",
+			"id":7,
+			"method":"requestPermission",
+			"params":{
+				"options":[
+					{"optionId":"proceed_once","name":"Allow once","kind":"allow_once"},
+					{"optionId":"cancel","name":"Deny","kind":"reject_once"}
+				]
+			}
+		}`),
+	}))
+
+	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+		AgentID:    "agent-1",
+		Model:      "auto",
+		WorkingDir: t.TempDir(),
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI))
+	require.NoError(t, err)
+	defer svc.Agents.StopAgent("agent-1")
+
+	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+		AgentId: "agent-1",
+		Content: []byte(`{
+			"jsonrpc":"2.0",
+			"id":7,
+			"result":{
+				"outcome":{"outcome":"selected","optionId":"proceed_once"}
+			}
+		}`),
+	}, w)
+
+	require.Empty(t, w.errors)
+
+	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
+		AgentID: "agent-1",
+		Seq:     0,
+		Limit:   10,
+	})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "Allow once", decodeMessageContent(t, rows[0].Content, rows[0].ContentCompression))
+}
+
 func TestExtractControlResponseRequestID(t *testing.T) {
 	// Claude Code format: response.request_id
 	assert.Equal(t, "req-1", extractControlResponseRequestID(

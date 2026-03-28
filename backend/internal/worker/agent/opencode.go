@@ -8,11 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
-	"unicode"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/util/version"
@@ -27,6 +24,10 @@ const (
 	openCodeHiddenSummary     = "summary"
 )
 
+const (
+	openCodeMethodSessionResume = "session/resume"
+)
+
 type openCodeModeInfo struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
@@ -35,21 +36,14 @@ type openCodeModeInfo struct {
 
 // OpenCodeAgent manages a single OpenCode ACP process.
 type OpenCodeAgent struct {
-	processBase // shared process lifecycle (Stop, Wait, Stderr, etc.)
+	acpBase
 
 	model      string
 	workingDir string
-	sink       OutputSink
 
-	// ACP-specific state.
-	sessionID              string       // from newSession response
-	nextReqID              atomic.Int64 // JSON-RPC request ID counter
-	pendingReqs            sync.Map     // reqID (int64) -> chan json.RawMessage
 	availableModels        []*leapmuxv1.AvailableModel
 	currentPrimaryAgent    string
 	availablePrimaryAgents []*leapmuxv1.AvailableOption
-	turnAssistantText      strings.Builder // accumulated assistant text for the current turn
-	turnThinkingText       strings.Builder // accumulated thinking text for the current turn
 }
 
 // StartOpenCode starts an OpenCode ACP agent process and performs the handshake.
@@ -62,6 +56,9 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 
 	cmd.Env = filterEnv(cmd.Environ(), "OPENCODE_CLIENT")
 	cmd.Env = append(cmd.Env, "LEAPMUX_WORKER=1")
+	if opts.LoginShell {
+		cmd.Env = append(cmd.Env, "OPENCODE_CLIENT=1")
+	}
 
 	cmd.Cancel = func() error {
 		return cmd.Process.Signal(syscall.SIGTERM)
@@ -87,22 +84,25 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 	}
 
 	a := &OpenCodeAgent{
-		processBase: processBase{
-			agentID:            opts.AgentID,
-			cmd:                cmd,
-			stdin:              stdin,
-			ctx:                ctx,
-			cancel:             cancel,
-			stderrDone:         make(chan struct{}),
-			processDone:        make(chan struct{}),
-			preambleDelimiter:  preambleDelimiter,
-			preambleMetaPrefix: metaPrefix,
-			preambleMeta:       make(map[string]string),
+		acpBase: acpBase{
+			jsonrpcBase: jsonrpcBase{processBase: processBase{
+				agentID:            opts.AgentID,
+				cmd:                cmd,
+				stdin:              stdin,
+				ctx:                ctx,
+				cancel:             cancel,
+				stderrDone:         make(chan struct{}),
+				processDone:        make(chan struct{}),
+				preambleDelimiter:  preambleDelimiter,
+				preambleMetaPrefix: metaPrefix,
+				preambleMeta:       make(map[string]string),
+			}},
+			sink: sink,
 		},
 		model:      opts.Model,
 		workingDir: opts.WorkingDir,
-		sink:       sink,
 	}
+	a.promptFunc = a.doSendPrompt
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -115,7 +115,7 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 	// Read stdout JSONL in background.
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutputLoop(scanner)
+	go a.readOutputLoop(scanner, a.handleOutput)
 
 	cleanup := func() {
 		a.Stop()
@@ -130,7 +130,7 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 		"clientInfo":      map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
 		"capabilities":    map[string]interface{}{},
 	})
-	if _, err := a.sendRequest("initialize", json.RawMessage(initParams), timeout); err != nil {
+	if _, err := a.sendRequest(acpMethodInitialize, json.RawMessage(initParams), timeout); err != nil {
 		cleanup()
 		return nil, a.formatStartupError("initialize", err)
 	}
@@ -145,7 +145,7 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 			slog.Warn("session/resume failed, falling back to session/new",
 				"agent_id", a.agentID, "session_id", opts.ResumeSessionID, "error", err)
 			_, fallbackParams := buildSessionRequest("", opts.WorkingDir)
-			sessionResp, err = a.sendRequest("session/new", json.RawMessage(fallbackParams), timeout)
+			sessionResp, err = a.sendRequest(acpMethodSessionNew, json.RawMessage(fallbackParams), timeout)
 		}
 		if err != nil {
 			cleanup()
@@ -173,7 +173,7 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 	}
 	if session.SessionID == "" {
 		cleanup()
-		return nil, a.formatStartupError("session/new", fmt.Errorf("response did not contain a session ID"))
+		return nil, a.formatStartupError(acpMethodSessionNew, fmt.Errorf("response did not contain a session ID"))
 	}
 
 	a.sessionID = session.SessionID
@@ -195,33 +195,20 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 	if session.Modes != nil {
 		if err := a.configurePrimaryAgents(session.Modes.AvailableModes, session.Modes.CurrentModeID, requestedPrimaryAgent); err != nil {
 			cleanup()
-			return nil, a.formatStartupError("session/set_mode", err)
+			return nil, a.formatStartupError(acpMethodSessionSetMode, err)
 		}
 	} else {
 		if err := a.configurePrimaryAgents(nil, "", ""); err != nil {
 			cleanup()
-			return nil, a.formatStartupError("session/set_mode", err)
+			return nil, a.formatStartupError(acpMethodSessionSetMode, err)
 		}
 	}
 
 	return a, nil
 }
 
-// buildSessionRequest returns the JSON-RPC method and params for starting or
-// resuming an OpenCode session. When resumeSessionID is non-empty, it produces
-// a "session/resume" request; otherwise a "session/new" request.
 func buildSessionRequest(resumeSessionID, workingDir string) (method string, params []byte) {
-	p := map[string]interface{}{
-		"cwd":        workingDir,
-		"mcpServers": []interface{}{},
-	}
-	method = "session/new"
-	if resumeSessionID != "" {
-		p["sessionId"] = resumeSessionID
-		method = "session/resume"
-	}
-	params, _ = json.Marshal(p)
-	return method, params
+	return buildACPSessionRequest(resumeSessionID, workingDir, acpMethodSessionNew, openCodeMethodSessionResume)
 }
 
 // buildOpenCodeModels converts the ACP newSession models list to proto models.
@@ -238,17 +225,6 @@ func buildOpenCodeModels(models []struct {
 		})
 	}
 	return result
-}
-
-// capitalizeFirst returns s with its first rune upper-cased.
-func capitalizeFirst(s string) string {
-	if s == "" {
-		return s
-	}
-	for _, r := range s {
-		return string(unicode.ToUpper(r)) + s[len(string(r)):]
-	}
-	return s
 }
 
 func buildOpenCodePrimaryAgents(modes []openCodeModeInfo, currentModeID string) []*leapmuxv1.AvailableOption {
@@ -288,18 +264,6 @@ func isHiddenOpenCodePrimaryAgent(id string) bool {
 	}
 }
 
-func hasOpenCodePrimaryAgent(options []*leapmuxv1.AvailableOption, id string) bool {
-	if id == "" {
-		return false
-	}
-	for _, option := range options {
-		if option != nil && option.Id == id {
-			return true
-		}
-	}
-	return false
-}
-
 func firstOpenCodePrimaryAgent(options []*leapmuxv1.AvailableOption) string {
 	for _, option := range options {
 		if option != nil && option.IsDefault && option.Id != "" {
@@ -333,7 +297,7 @@ func (a *OpenCodeAgent) configurePrimaryAgents(modes []openCodeModeInfo, current
 	a.currentPrimaryAgent = current
 	a.mu.Unlock()
 
-	if hasACPModeList && requestedPrimaryAgent != "" && requestedPrimaryAgent != current && hasOpenCodePrimaryAgent(available, requestedPrimaryAgent) {
+	if hasACPModeList && requestedPrimaryAgent != "" && requestedPrimaryAgent != current && hasACPOption(available, requestedPrimaryAgent) {
 		if err := a.setPrimaryAgent(requestedPrimaryAgent); err != nil {
 			return err
 		}
@@ -342,49 +306,20 @@ func (a *OpenCodeAgent) configurePrimaryAgents(modes []openCodeModeInfo, current
 	return nil
 }
 
-// SendInput writes a user prompt to the agent. The ACP prompt RPC blocks until
-// the LLM finishes, so it runs in a goroutine. Streaming output arrives via
-// sessionUpdate notifications meanwhile.
-func (a *OpenCodeAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	a.mu.Lock()
-	if a.stopped {
-		a.mu.Unlock()
-		return fmt.Errorf("agent is stopped")
-	}
-	sessionID := a.sessionID
-	a.mu.Unlock()
-
-	if sessionID == "" {
-		return fmt.Errorf("opencode agent has no active session")
-	}
-
-	prompt := buildOpenCodePromptBlocks(content, classifyAttachments(attachments))
-	params, _ := json.Marshal(map[string]interface{}{
-		"sessionId": sessionID,
-		"prompt":    prompt,
-	})
-
-	go func() {
-		resp, err := a.sendRequest("session/prompt", json.RawMessage(params), 10*time.Minute)
-		if err != nil {
-			if !a.IsStopped() {
-				slog.Error("opencode prompt failed", "agent_id", a.agentID, "error", err)
-				a.sink.BroadcastNotification(map[string]interface{}{
-					"type":  "agent_error",
-					"error": fmt.Sprintf("prompt failed: %v", err),
-				})
-			}
-			return
-		}
-		a.handlePromptResponse(resp)
-	}()
-
-	return nil
+// doSendPrompt sends a single prompt RPC and processes the response. Called by
+// jsonrpcBase.runPrompt on a goroutine.
+func (a *OpenCodeAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attachment) {
+	a.sendPrompt(content, attachments,
+		func(params json.RawMessage) (json.RawMessage, error) {
+			return a.sendRequest(acpMethodSessionPrompt, params, 10*time.Minute)
+		},
+		a.handlePromptResponse,
+	)
 }
 
-// buildOpenCodePromptBlocks converts text + classified attachments into
-// OpenCode's ACP prompt format.
-func buildOpenCodePromptBlocks(content string, classified []classifiedAttachment) []map[string]interface{} {
+// buildACPPromptBlocks converts text + classified attachments into ACP prompt
+// blocks compatible with both OpenCode and Gemini CLI.
+func buildACPPromptBlocks(content string, classified []classifiedAttachment) []map[string]interface{} {
 	var prompt []map[string]interface{}
 	if content != "" {
 		prompt = append(prompt, map[string]interface{}{"type": "text", "text": content})
@@ -417,61 +352,8 @@ func buildOpenCodePromptBlocks(content string, classified []classifiedAttachment
 	return prompt
 }
 
-// handlePromptResponse processes the prompt RPC response, persisting the
-// accumulated assistant text and emitting a result divider.
 func (a *OpenCodeAgent) handlePromptResponse(resp json.RawMessage) {
-	if resp == nil {
-		return
-	}
-
-	// Persist accumulated thinking and assistant text before the result divider.
-	a.mu.Lock()
-	thinkingText := a.turnThinkingText.String()
-	a.turnThinkingText.Reset()
-	assistantText := a.turnAssistantText.String()
-	a.turnAssistantText.Reset()
-	a.mu.Unlock()
-
-	if thinkingText != "" {
-		msgContent, _ := json.Marshal(map[string]interface{}{
-			"sessionUpdate": "agent_thought_chunk",
-			"content": map[string]interface{}{
-				"type": "text",
-				"text": thinkingText,
-			},
-		})
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, msgContent, SpanInfo{}); err != nil {
-			slog.Error("opencode persist thinking text", "agent_id", a.agentID, "error", err)
-		}
-	}
-
-	if assistantText != "" {
-		msgContent, _ := json.Marshal(map[string]interface{}{
-			"sessionUpdate": "agent_message_chunk",
-			"content": map[string]interface{}{
-				"type": "text",
-				"text": assistantText,
-			},
-		})
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, msgContent, SpanInfo{}); err != nil {
-			slog.Error("opencode persist assistant text", "agent_id", a.agentID, "error", err)
-		}
-	}
-
-	// Unwrap the result if it uses the ACP message format {role, content, ...}.
-	// The frontend expects stopReason at the top level.
-	resp = unwrapACPResult(resp)
-
-	enriched := a.enrichWithToolUses(resp)
-	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT, enriched, SpanInfo{}); err != nil {
-		slog.Error("opencode persist prompt result", "agent_id", a.agentID, "error", err)
-	}
-
-	a.sink.ResetSpans()
-
-	a.mu.Lock()
-	a.turnToolUses = 0
-	a.mu.Unlock()
+	a.handleACPPromptResponse(resp, nil)
 }
 
 // CurrentSettings returns the current settings for this agent.
@@ -524,7 +406,7 @@ func (a *OpenCodeAgent) setModel(model string) error {
 		"sessionId": sessionID,
 		"modelId":   model,
 	})
-	resp, err := a.sendRequest("session/set_model", json.RawMessage(params), 10*time.Second)
+	resp, err := a.sendRequest(acpMethodSessionSetModel, json.RawMessage(params), 10*time.Second)
 	if err != nil {
 		return err
 	}
@@ -544,7 +426,7 @@ func (a *OpenCodeAgent) setPrimaryAgent(agent string) error {
 	available := a.availablePrimaryAgents
 	a.mu.Unlock()
 
-	if !hasOpenCodePrimaryAgent(available, agent) {
+	if !hasACPOption(available, agent) {
 		return fmt.Errorf("unknown primary agent: %s", agent)
 	}
 
@@ -552,7 +434,7 @@ func (a *OpenCodeAgent) setPrimaryAgent(agent string) error {
 		"sessionId": sessionID,
 		"modeId":    agent,
 	})
-	resp, err := a.sendRequest("session/set_mode", json.RawMessage(params), 10*time.Second)
+	resp, err := a.sendRequest(acpMethodSessionSetMode, json.RawMessage(params), 10*time.Second)
 	if err != nil {
 		return err
 	}
@@ -580,172 +462,11 @@ func (a *OpenCodeAgent) availablePrimaryAgentGroup() []*leapmuxv1.AvailableOptio
 	}}
 }
 
+func (a *OpenCodeAgent) handleOutput(line *parsedLine) {
+	handleOpenCodeOutput(a, line)
+}
+
 // HandleOutput processes a single JSONL notification from OpenCode.
 func (a *OpenCodeAgent) HandleOutput(content []byte) {
-	handleOpenCodeOutput(a, content)
-}
-
-// --- JSON-RPC helpers ---
-
-// sendRequest sends a JSON-RPC request and waits for the response.
-func (a *OpenCodeAgent) sendRequest(method string, params json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
-	reqID := a.nextReqID.Add(1)
-
-	ch := make(chan json.RawMessage, 1)
-	a.pendingReqs.Store(reqID, ch)
-	defer a.pendingReqs.Delete(reqID)
-
-	msg := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      reqID,
-		"method":  method,
-	}
-	if params != nil {
-		msg["params"] = json.RawMessage(params)
-	}
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
-	}
-	data = append(data, '\n')
-
-	if _, err := a.stdin.Write(data); err != nil {
-		return nil, fmt.Errorf("write request: %w", err)
-	}
-
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-
-	select {
-	case resp := <-ch:
-		return resp, nil
-	case <-a.processDone:
-		return nil, a.processExitError()
-	case <-a.ctx.Done():
-		return nil, a.ctx.Err()
-	case <-timer.C:
-		return nil, fmt.Errorf("timeout waiting for %s response", method)
-	}
-}
-
-// sendNotification sends a JSON-RPC notification (no id, no response expected).
-func (a *OpenCodeAgent) sendNotification(method string, params json.RawMessage) error {
-	msg := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"method":  method,
-	}
-	if params != nil {
-		msg["params"] = json.RawMessage(params)
-	}
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("marshal notification: %w", err)
-	}
-	data = append(data, '\n')
-
-	if _, err := a.stdin.Write(data); err != nil {
-		return fmt.Errorf("write notification: %w", err)
-	}
-
-	return nil
-}
-
-// readOutputLoop reads JSONL lines from stdout and dispatches them.
-func (a *OpenCodeAgent) readOutputLoop(scanner *bufio.Scanner) {
-	a.readOutput(scanner, a.handleJSONRPCResponse, a.HandleOutput)
-}
-
-// handleJSONRPCResponse checks if a line is a JSON-RPC response and routes it.
-// Responses have a numeric "id" but no "method". Server-initiated requests
-// have both "id" and "method" (e.g. requestPermission) — those are passed
-// through to HandleOutput.
-func (a *OpenCodeAgent) handleJSONRPCResponse(line []byte) bool {
-	var envelope struct {
-		ID     *json.Number    `json:"id"`
-		Method string          `json:"method"`
-		Result json.RawMessage `json:"result"`
-		Error  json.RawMessage `json:"error"`
-	}
-	if err := json.Unmarshal(line, &envelope); err != nil {
-		return false
-	}
-
-	// Notifications have "method" but no "id"; responses have "id" but no "method".
-	if envelope.ID == nil || envelope.Method != "" {
-		return false
-	}
-
-	reqID, err := envelope.ID.Int64()
-	if err != nil {
-		return false
-	}
-
-	val, ok := a.pendingReqs.Load(reqID)
-	if !ok {
-		return false
-	}
-
-	ch := val.(chan json.RawMessage)
-	if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
-		// Send error as the response — caller can inspect it.
-		ch <- envelope.Error
-	} else {
-		ch <- envelope.Result
-	}
-
-	return true
-}
-
-// cancelSession sends a cancel notification for the current session.
-func (a *OpenCodeAgent) cancelSession() error {
-	a.mu.Lock()
-	sessionID := a.sessionID
-	a.mu.Unlock()
-
-	params, _ := json.Marshal(map[string]interface{}{
-		"sessionId": sessionID,
-	})
-	return a.sendNotification("session/cancel", json.RawMessage(params))
-}
-
-// formatStartupError includes stderr and preamble output for diagnostics.
-func (a *OpenCodeAgent) formatStartupError(phase string, err error) error {
-	return a.processBase.formatStartupError(phase, err, a.PreambleOutput())
-}
-
-// unwrapACPResult extracts the inner content from an ACP result message.
-// Some OpenCode versions return session/prompt results in the format:
-//
-//	{id, role: "result", seq, created_at, content: {stopReason, usage, ...}}
-//
-// The frontend classifier expects stopReason at the top level, so we unwrap
-// the content and merge any top-level metadata (_meta) into it.
-func unwrapACPResult(resp json.RawMessage) json.RawMessage {
-	var wrapper struct {
-		Role    string          `json:"role"`
-		Content json.RawMessage `json:"content"`
-	}
-	if json.Unmarshal(resp, &wrapper) != nil || wrapper.Role != "result" || len(wrapper.Content) == 0 {
-		return resp
-	}
-	return wrapper.Content
-}
-
-func jsonRPCResultError(resp json.RawMessage) error {
-	if len(resp) == 0 || string(resp) == "null" {
-		return nil
-	}
-	var rpcErr struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(resp, &rpcErr); err != nil {
-		return nil
-	}
-	if rpcErr.Message == "" {
-		return nil
-	}
-	return fmt.Errorf("json-rpc error %d: %s", rpcErr.Code, rpcErr.Message)
+	handleOpenCodeOutput(a, parseLine(content))
 }

@@ -93,8 +93,8 @@ test.describe('Workspace UX Enhancements', () => {
       }
       await expect(page.locator('[data-testid="tab"]')).toHaveCount(0)
 
-      // Click the new agent button — should open dialog, not show a toast
-      await page.locator('[data-testid^="new-agent-button"]').first().click()
+      // Click the empty-state agent button — should open dialog, not show a toast
+      await page.locator('[data-testid="empty-tile-open-agent"]').click()
       await expect(page.getByRole('heading', { name: 'New Agent' })).toBeVisible()
 
       // Verify no error toast was shown

@@ -181,6 +181,8 @@ func (svc *Context) codexControlResponseDisplayText(agentID string, provider lea
 		// handled below
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:
 		// handled below
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:
+		// handled below
 	default:
 		return ""
 	}
@@ -216,15 +218,26 @@ func (svc *Context) codexControlResponseDisplayText(agentID string, provider lea
 		if payload.Type == "question.asked" {
 			return opencodeQuestionAnswersText(cr.Payload, content)
 		}
-		return opencodeControlResponseDisplayText(content)
+		return acpPermissionResponseDisplayText(cr.Payload, content)
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:
+		return acpPermissionResponseDisplayText(cr.Payload, content)
 	default:
 		return ""
 	}
 }
 
-// opencodeControlResponseDisplayText extracts a human-readable display text
-// from an OpenCode permission response (e.g. "Allow once", "Reject").
-func opencodeControlResponseDisplayText(content []byte) string {
+// acpPermissionResponseDisplayText extracts a human-readable display text from
+// an ACP permission response by matching the selected optionId against the
+// original request payload's option list.
+func acpPermissionResponseDisplayText(requestPayload, responseContent []byte) string {
+	var req struct {
+		Params struct {
+			Options []struct {
+				OptionID string `json:"optionId"`
+				Name     string `json:"name"`
+			} `json:"options"`
+		} `json:"params"`
+	}
 	var resp struct {
 		Result struct {
 			Outcome struct {
@@ -232,18 +245,31 @@ func opencodeControlResponseDisplayText(content []byte) string {
 			} `json:"outcome"`
 		} `json:"result"`
 	}
-	if json.Unmarshal(content, &resp) != nil {
+	if json.Unmarshal(requestPayload, &req) != nil || json.Unmarshal(responseContent, &resp) != nil {
 		return ""
 	}
 
-	switch resp.Result.Outcome.OptionID {
-	case "once":
+	optionID := strings.TrimSpace(resp.Result.Outcome.OptionID)
+	if optionID == "" {
+		return ""
+	}
+	for _, option := range req.Params.Options {
+		if strings.TrimSpace(option.OptionID) == optionID {
+			if name := strings.TrimSpace(option.Name); name != "" {
+				return name
+			}
+			break
+		}
+	}
+
+	switch optionID {
+	case "once", "proceed_once":
 		return "Allow once"
-	case "always":
+	case "always", "proceed_always":
 		return "Always allow"
-	case "reject":
+	case "reject", "cancel":
 		return "Reject"
 	default:
-		return resp.Result.Outcome.OptionID
+		return optionID
 	}
 }

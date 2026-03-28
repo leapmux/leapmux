@@ -118,7 +118,7 @@ func TestBuildOpenCodePromptBlocks_fileAttachment(t *testing.T) {
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "img.png", MimeType: "image/png", Data: data},
 	}
-	blocks := buildOpenCodePromptBlocks("analyze", classifyAttachments(attachments))
+	blocks := buildACPPromptBlocks("analyze", classifyAttachments(attachments))
 	require.Len(t, blocks, 2)
 
 	textBlock := blocks[0]
@@ -137,7 +137,7 @@ func TestBuildOpenCodePromptBlocks_pdfIncluded(t *testing.T) {
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "doc.pdf", MimeType: "application/pdf", Data: data},
 	}
-	blocks := buildOpenCodePromptBlocks("", classifyAttachments(attachments))
+	blocks := buildACPPromptBlocks("", classifyAttachments(attachments))
 	require.Len(t, blocks, 1)
 
 	resourceBlock := blocks[0]
@@ -153,7 +153,7 @@ func TestBuildOpenCodePromptBlocks_textAttachment(t *testing.T) {
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "app.css", MimeType: "", Data: []byte("body {}\n")},
 	}
-	blocks := buildOpenCodePromptBlocks("", classifyAttachments(attachments))
+	blocks := buildACPPromptBlocks("", classifyAttachments(attachments))
 	require.Len(t, blocks, 1)
 
 	resourceBlock := blocks[0]
@@ -182,6 +182,19 @@ func TestNormalizeAttachmentsForProvider_InfersTextMime(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, normalized, 1)
 	assert.Equal(t, "text/plain", normalized[0].GetMimeType())
+}
+
+func TestNormalizeAttachmentsForProvider_GeminiAcceptsACPAttachmentSet(t *testing.T) {
+	attachments := []*leapmuxv1.Attachment{
+		{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("hello")},
+		{Filename: "diagram.png", MimeType: "image/png", Data: []byte{0x89, 0x50}},
+		{Filename: "spec.pdf", MimeType: "application/pdf", Data: []byte("%PDF")},
+		{Filename: "archive.bin", MimeType: "application/octet-stream", Data: []byte{0xff, 0x00}},
+	}
+
+	normalized, err := NormalizeAttachmentsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI, attachments)
+	require.NoError(t, err)
+	require.Len(t, normalized, 4)
 }
 
 func TestClaudeCodeAgent_SendInput_withAttachments(t *testing.T) {

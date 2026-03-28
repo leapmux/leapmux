@@ -70,7 +70,7 @@ test.describe('Workspace Archive', () => {
     await page.getByRole('menuitem', { name: 'Unarchive' }).click()
 
     // Workspace is active again — add-tab buttons should be visible
-    await expect(page.locator('[data-testid^="new-agent-button"]')).toBeVisible()
+    await expect(page.locator('[data-testid^="new-agent-button"]').first()).toBeVisible()
   })
 
   test('should not show Move-to when workspace is in the only target section', async ({ page, authenticatedWorkspace }) => {

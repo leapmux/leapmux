@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -66,7 +64,7 @@ func StringOrDefault(value, fallback string) string {
 
 // CodexAgent manages a single Codex app-server process.
 type CodexAgent struct {
-	processBase // shared process lifecycle (Stop, Wait, Stderr, etc.)
+	jsonrpcBase // shared process lifecycle + JSON-RPC plumbing
 
 	model      string
 	effort     string
@@ -74,19 +72,17 @@ type CodexAgent struct {
 	sink       OutputSink
 
 	// Codex-specific state.
-	threadID          string       // from thread/start response
-	turnID            string       // currently active turn ID
-	nextReqID         atomic.Int64 // JSON-RPC request ID counter
-	pendingReqs       sync.Map     // reqID (int64) -> chan json.RawMessage
-	approvalPolicy    string       // Codex approval policy (stored as-is from DB)
-	sandboxPolicy     string       // Codex sandbox policy (e.g. "workspace-write")
-	networkAccess     string       // Codex network access ("restricted" or "enabled")
-	collaborationMode string       // Codex collaboration mode ("default" or "plan")
-	serviceTier       string       // Codex service tier ("default" or "fast")
-	turnSawPlan       bool         // whether the current turn produced a plan item
-	turnPlanText      string       // final text of the current turn's plan item
-	turnAssistantText string       // final assistant message text for the current turn
-	streamingPlan     bool         // whether we've sent streamingType session info for the current plan stream
+	threadID          string // from thread/start response
+	turnID            string // currently active turn ID
+	approvalPolicy    string // Codex approval policy (stored as-is from DB)
+	sandboxPolicy     string // Codex sandbox policy (e.g. "workspace-write")
+	networkAccess     string // Codex network access ("restricted" or "enabled")
+	collaborationMode string // Codex collaboration mode ("default" or "plan")
+	serviceTier       string // Codex service tier ("default" or "fast")
+	turnSawPlan       bool   // whether the current turn produced a plan item
+	turnPlanText      string // final text of the current turn's plan item
+	turnAssistantText string // final assistant message text for the current turn
+	streamingPlan     bool   // whether we've sent streamingType session info for the current plan stream
 	availableModels   []*leapmuxv1.AvailableModel
 	collabThreadSpans map[string]string // child thread ID -> owning spawnAgent span ID
 	collabSpanThreads map[string]int    // spawnAgent span ID -> active child thread count
@@ -132,7 +128,7 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	}
 
 	a := &CodexAgent{
-		processBase: processBase{
+		jsonrpcBase: jsonrpcBase{processBase: processBase{
 			agentID:            opts.AgentID,
 			cmd:                cmd,
 			stdin:              stdin,
@@ -143,7 +139,7 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 			preambleDelimiter:  preambleDelimiter,
 			preambleMetaPrefix: metaPrefix,
 			preambleMeta:       make(map[string]string),
-		},
+		}},
 		model:      opts.Model,
 		effort:     opts.Effort,
 		workingDir: opts.WorkingDir,
@@ -161,7 +157,7 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	// Read stdout JSONL in background.
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutputLoop(scanner)
+	go a.readOutputLoop(scanner, a.handleOutput)
 
 	cleanup := func() {
 		a.Stop()
@@ -765,125 +761,11 @@ func codexEffortName(id string) string {
 	return id
 }
 
+func (a *CodexAgent) handleOutput(line *parsedLine) {
+	handleCodexOutput(a, line)
+}
+
 // HandleOutput processes a single JSONL notification from Codex.
 func (a *CodexAgent) HandleOutput(content []byte) {
-	handleCodexOutput(a, content)
-}
-
-// --- JSON-RPC helpers ---
-
-// sendRequest sends a JSON-RPC request and waits for the response.
-func (a *CodexAgent) sendRequest(method string, params json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
-	reqID := a.nextReqID.Add(1)
-
-	ch := make(chan json.RawMessage, 1)
-	a.pendingReqs.Store(reqID, ch)
-	defer a.pendingReqs.Delete(reqID)
-
-	msg := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      reqID,
-		"method":  method,
-	}
-	if params != nil {
-		msg["params"] = json.RawMessage(params)
-	}
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
-	}
-	data = append(data, '\n')
-
-	if _, err := a.stdin.Write(data); err != nil {
-		return nil, fmt.Errorf("write request: %w", err)
-	}
-
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-
-	select {
-	case resp := <-ch:
-		return resp, nil
-	case <-a.processDone:
-		return nil, a.processExitError()
-	case <-a.ctx.Done():
-		return nil, a.ctx.Err()
-	case <-timer.C:
-		return nil, fmt.Errorf("timeout waiting for %s response", method)
-	}
-}
-
-// sendNotification sends a JSON-RPC notification (no id, no response expected).
-func (a *CodexAgent) sendNotification(method string, params json.RawMessage) error {
-	msg := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"method":  method,
-	}
-	if params != nil {
-		msg["params"] = json.RawMessage(params)
-	}
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("marshal notification: %w", err)
-	}
-	data = append(data, '\n')
-
-	if _, err := a.stdin.Write(data); err != nil {
-		return fmt.Errorf("write notification: %w", err)
-	}
-
-	return nil
-}
-
-// readOutputLoop reads JSONL lines from stdout and dispatches them.
-func (a *CodexAgent) readOutputLoop(scanner *bufio.Scanner) {
-	a.readOutput(scanner, a.handleJSONRPCResponse, a.HandleOutput)
-}
-
-// handleJSONRPCResponse checks if a line is a JSON-RPC response and routes it.
-// JSON-RPC responses have a numeric "id" field. Notifications do not.
-// We unmarshal just the top-level id/method fields — notifications bail out
-// quickly at the nil-ID check without inspecting the payload.
-func (a *CodexAgent) handleJSONRPCResponse(line []byte) bool {
-	var envelope struct {
-		ID     *json.Number    `json:"id"`
-		Method string          `json:"method"`
-		Result json.RawMessage `json:"result"`
-		Error  json.RawMessage `json:"error"`
-	}
-	if err := json.Unmarshal(line, &envelope); err != nil {
-		return false
-	}
-
-	// Notifications have "method" but no "id"; responses have "id" but no "method".
-	if envelope.ID == nil || envelope.Method != "" {
-		return false
-	}
-
-	reqID, err := envelope.ID.Int64()
-	if err != nil {
-		return false
-	}
-
-	val, ok := a.pendingReqs.Load(reqID)
-	if !ok {
-		return false
-	}
-
-	ch := val.(chan json.RawMessage)
-	if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
-		// Send error as the response — caller can inspect it.
-		ch <- envelope.Error
-	} else {
-		ch <- envelope.Result
-	}
-
-	return true
-}
-
-// formatStartupError includes stderr and preamble output for diagnostics.
-func (a *CodexAgent) formatStartupError(phase string, err error) error {
-	return a.processBase.formatStartupError(phase, err, a.PreambleOutput())
+	handleCodexOutput(a, parseLine(content))
 }

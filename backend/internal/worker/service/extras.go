@@ -8,6 +8,8 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 func parseExtraSettings(raw string) map[string]string {
@@ -111,4 +113,65 @@ func resolveCodexExtras(settings map[string]string, provider leapmuxv1.AgentProv
 // in provider-specific defaults.
 func loadExtraSettings(raw string, provider leapmuxv1.AgentProvider) map[string]string {
 	return resolveCodexExtras(parseExtraSettings(raw), provider)
+}
+
+// marshalProtoSlice serializes a slice of proto messages to a JSON array
+// string suitable for DB storage.
+func marshalProtoSlice[T proto.Message](items []T, typeName string) string {
+	if len(items) == 0 {
+		return "[]"
+	}
+	raw := make([]json.RawMessage, 0, len(items))
+	for _, m := range items {
+		b, err := protojson.Marshal(m)
+		if err != nil {
+			slog.Error("failed to marshal "+typeName, "error", err)
+			continue
+		}
+		raw = append(raw, b)
+	}
+	data, _ := json.Marshal(raw)
+	return string(data)
+}
+
+// unmarshalProtoSlice deserializes a JSON array string (from DB) into a
+// slice of proto messages.
+func unmarshalProtoSlice[T any, PT interface {
+	*T
+	proto.Message
+}](raw, typeName string) []*T {
+	if raw == "" || raw == "[]" {
+		return nil
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		slog.Warn("invalid "+typeName+" JSON", "error", err)
+		return nil
+	}
+	result := make([]*T, 0, len(items))
+	for _, item := range items {
+		m := PT(new(T))
+		if err := protojson.Unmarshal(item, m); err != nil {
+			slog.Warn("failed to unmarshal "+typeName, "error", err)
+			continue
+		}
+		result = append(result, (*T)(m))
+	}
+	return result
+}
+
+func marshalAvailableModels(models []*leapmuxv1.AvailableModel) string {
+	return marshalProtoSlice(models, "AvailableModel")
+}
+
+func unmarshalAvailableModels(raw string) []*leapmuxv1.AvailableModel {
+	return unmarshalProtoSlice[leapmuxv1.AvailableModel](raw, "available_models")
+}
+
+func marshalAvailableOptionGroups(groups []*leapmuxv1.AvailableOptionGroup) string {
+	return marshalProtoSlice(groups, "AvailableOptionGroup")
+}
+
+func unmarshalAvailableOptionGroups(raw string) []*leapmuxv1.AvailableOptionGroup {
+	return unmarshalProtoSlice[leapmuxv1.AvailableOptionGroup](raw, "available_option_groups")
 }

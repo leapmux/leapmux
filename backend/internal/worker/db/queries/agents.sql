@@ -42,6 +42,9 @@ UPDATE agents SET extra_settings = ? WHERE id = ?;
 -- name: UpdateAgentAllSettings :exec
 UPDATE agents SET model = ?, effort = ?, permission_mode = ?, extra_settings = ? WHERE id = ?;
 
+-- name: UpdateAgentAvailableSettings :exec
+UPDATE agents SET available_models = ?, available_option_groups = ? WHERE id = ?;
+
 -- name: UpdateAgentHomeDir :exec
 UPDATE agents SET home_dir = ? WHERE id = ?;
 
