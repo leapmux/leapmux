@@ -18,6 +18,7 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/hub"
 	"github.com/leapmux/leapmux/internal/worker/service"
+	"github.com/leapmux/leapmux/internal/worker/wakelock"
 )
 
 // RunConfig holds configuration for running the worker as a library.
@@ -69,6 +70,9 @@ func Run(ctx context.Context, cfg RunConfig) error {
 	if cfg.CompositeKey != nil {
 		homeDir, _ := os.UserHomeDir()
 
+		wakeLockTracker := wakelock.NewActivityTracker()
+		defer wakeLockTracker.Close()
+
 		// Create the service context first so the close callback can reference it.
 		svcCtx := service.NewContext(
 			sqlDB,
@@ -76,7 +80,7 @@ func Run(ctx context.Context, cfg RunConfig) error {
 			client.TerminalManager(),
 			homeDir,
 			cfg.DataDir,
-			nil, // no wakelock in embedded runner
+			wakeLockTracker,
 		)
 
 		channelMgr := channel.NewManager(
