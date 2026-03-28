@@ -25,7 +25,7 @@ func handleOpenCodeOutput(a *OpenCodeAgent, content []byte) {
 	case acpMethodSessionUpdate:
 		a.handleACPSessionUpdate(envelope.Params, nil)
 	case acpMethodSessionRequestPermission:
-		handleACPRequestPermission(a.agentID, a.sink, envelope.ID, content)
+		a.handleRequestPermission(envelope.ID, content)
 	default:
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, content, SpanInfo{}); err != nil {
 			slog.Error("opencode persist notification", "agent_id", a.agentID, "method", envelope.Method, "error", err)

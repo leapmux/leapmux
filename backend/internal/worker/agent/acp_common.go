@@ -87,19 +87,16 @@ func (b *acpBase) handleACPPromptResponse(resp json.RawMessage, prePersist func(
 	b.turnThinkingText.Reset()
 	assistantText := b.turnAssistantText.String()
 	b.turnAssistantText.Reset()
+	b.turnToolUses = 0
 	b.mu.Unlock()
 
 	if prePersist != nil {
 		prePersist(resp)
 	}
 
-	persistACPPromptResponse(b.agentID, b.sink, thinkingText, assistantText, resp, func(resp json.RawMessage) json.RawMessage {
+	b.persistPromptResponse(thinkingText, assistantText, resp, func(resp json.RawMessage) json.RawMessage {
 		return b.enrichWithToolUses(resp)
 	})
-
-	b.mu.Lock()
-	b.turnToolUses = 0
-	b.mu.Unlock()
 }
 
 // acpSessionUpdateHandler is called for session update types not handled by
@@ -130,17 +127,17 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 
 	switch header.SessionUpdate {
 	case acpUpdateAgentMessageChunk:
-		b.appendACPChunk(wrapper.Update, &b.turnAssistantText, b.sink, acpUpdateAgentMessageChunk)
+		b.appendACPChunk(wrapper.Update, &b.turnAssistantText, acpUpdateAgentMessageChunk)
 	case acpUpdateAgentThoughtChunk:
-		b.appendACPChunk(wrapper.Update, &b.turnThinkingText, b.sink, acpUpdateAgentThoughtChunk)
+		b.appendACPChunk(wrapper.Update, &b.turnThinkingText, acpUpdateAgentThoughtChunk)
 	case acpUpdateToolCall:
-		handleACPToolCall(b.agentID, b.sink, wrapper.Update)
+		b.handleToolCall(wrapper.Update)
 	case acpUpdateToolCallUpdate:
-		b.handleACPToolCallUpdate(b.sink, wrapper.Update)
+		b.handleToolCallUpdate(wrapper.Update)
 	case acpUpdatePlan:
-		handleACPPlan(b.agentID, b.sink, wrapper.Update)
+		b.handlePlan(wrapper.Update)
 	case acpUpdateUsageUpdate:
-		handleACPUsageUpdate(b.sink, wrapper.Update)
+		b.handleUsageUpdate(wrapper.Update)
 	case acpUpdateAvailableCommandsUpdate, acpUpdateUserMessageChunk:
 		// No-op.
 	default:
@@ -327,8 +324,24 @@ func (b *jsonrpcBase) runPrompt(content string, attachments []*leapmuxv1.Attachm
 	}
 }
 
-// clearPromptQueue discards any queued messages and resets the prompt-active
-// flag. Called by Stop() and cancelSession() in concrete agents.
+// SendInput queues a user message or starts a new prompt if idle.
+func (b *acpBase) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
+	b.mu.Lock()
+	if b.sessionID == "" {
+		b.mu.Unlock()
+		return fmt.Errorf("agent has no active session")
+	}
+	b.mu.Unlock()
+	return b.enqueueOrSendPrompt(content, attachments)
+}
+
+// Stop clears the prompt queue and terminates the process.
+func (b *acpBase) Stop() {
+	b.clearPromptQueue()
+	b.processBase.Stop()
+}
+
+// clearPromptQueue discards any queued messages and resets the prompt-active flag.
 func (b *jsonrpcBase) clearPromptQueue() {
 	b.mu.Lock()
 	b.pendingMessages = nil
@@ -336,11 +349,9 @@ func (b *jsonrpcBase) clearPromptQueue() {
 	b.mu.Unlock()
 }
 
-// acpSendPrompt builds and sends an ACP prompt, then calls the provided
+// sendPrompt builds and sends an ACP prompt, then calls the provided
 // response handler. Shared by all ACP agent doSendPrompt implementations.
-func acpSendPrompt(
-	b *jsonrpcBase,
-	sink OutputSink,
+func (b *acpBase) sendPrompt(
 	sessionID, content string,
 	attachments []*leapmuxv1.Attachment,
 	sendRPC func(json.RawMessage) (json.RawMessage, error),
@@ -356,7 +367,7 @@ func acpSendPrompt(
 	if err != nil {
 		if !b.IsStopped() {
 			slog.Error("acp prompt failed", "agent_id", b.agentID, "error", err)
-			sink.BroadcastNotification(map[string]interface{}{
+			b.sink.BroadcastNotification(map[string]interface{}{
 				"type":  "agent_error",
 				"error": fmt.Sprintf("prompt failed: %v", err),
 			})
@@ -366,7 +377,7 @@ func acpSendPrompt(
 	handleResponse(resp)
 }
 
-func (b *jsonrpcBase) appendACPChunk(update json.RawMessage, builder *strings.Builder, sink OutputSink, eventType string) {
+func (b *acpBase) appendACPChunk(update json.RawMessage, builder *strings.Builder, eventType string) {
 	var chunk struct {
 		Content struct {
 			Text string `json:"text"`
@@ -376,11 +387,11 @@ func (b *jsonrpcBase) appendACPChunk(update json.RawMessage, builder *strings.Bu
 		b.mu.Lock()
 		builder.WriteString(chunk.Content.Text)
 		b.mu.Unlock()
-		sink.BroadcastStreamChunk([]byte(chunk.Content.Text), "", eventType)
+		b.sink.BroadcastStreamChunk([]byte(chunk.Content.Text), "", eventType)
 	}
 }
 
-func persistACPTextMessage(agentID string, sink OutputSink, sessionUpdate, text string) {
+func (b *acpBase) persistTextMessage(sessionUpdate, text string) {
 	if text == "" {
 		return
 	}
@@ -392,29 +403,27 @@ func persistACPTextMessage(agentID string, sink OutputSink, sessionUpdate, text 
 			"text": text,
 		},
 	})
-	if err := sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, msgContent, SpanInfo{}); err != nil {
-		slog.Error("persist acp text", "agent_id", agentID, "session_update", sessionUpdate, "error", err)
+	if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, msgContent, SpanInfo{}); err != nil {
+		slog.Error("persist acp text", "agent_id", b.agentID, "session_update", sessionUpdate, "error", err)
 	}
 }
 
-func persistACPPromptResponse(
-	agentID string,
-	sink OutputSink,
+func (b *acpBase) persistPromptResponse(
 	thinkingText, assistantText string,
 	resp json.RawMessage,
 	enrich func(json.RawMessage) json.RawMessage,
 ) {
-	persistACPTextMessage(agentID, sink, acpUpdateAgentThoughtChunk, thinkingText)
-	persistACPTextMessage(agentID, sink, acpUpdateAgentMessageChunk, assistantText)
+	b.persistTextMessage(acpUpdateAgentThoughtChunk, thinkingText)
+	b.persistTextMessage(acpUpdateAgentMessageChunk, assistantText)
 
 	resp = unwrapACPResult(resp)
 	if enrich != nil {
 		resp = enrich(resp)
 	}
-	if err := sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT, resp, SpanInfo{}); err != nil {
-		slog.Error("persist acp prompt result", "agent_id", agentID, "error", err)
+	if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT, resp, SpanInfo{}); err != nil {
+		slog.Error("persist acp prompt result", "agent_id", b.agentID, "error", err)
 	}
-	sink.ResetSpans()
+	b.sink.ResetSpans()
 }
 
 // unwrapACPResult extracts the inner content from an ACP result message.
@@ -435,11 +444,7 @@ func unwrapACPResult(resp json.RawMessage) json.RawMessage {
 	return wrapper.Content
 }
 
-func handleACPToolCall(
-	agentID string,
-	sink OutputSink,
-	update json.RawMessage,
-) {
+func (b *acpBase) handleToolCall(update json.RawMessage) {
 	var tc struct {
 		ToolCallID string `json:"toolCallId"`
 		Title      string `json:"title"`
@@ -455,28 +460,28 @@ func handleACPToolCall(
 		spanType = acpUpdateToolCall
 	}
 
-	// Tool calls that arrive already terminal (completed/failed) are
-	// persisted as closing spans immediately — no open/close cycle.
-	if tc.Status == "completed" || tc.Status == "failed" {
-		if err := sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{
+	// Tool calls that arrive already terminal (completed/failed/cancelled)
+	// are persisted as closing spans immediately — no open/close cycle.
+	if tc.Status == "completed" || tc.Status == "failed" || tc.Status == "cancelled" {
+		if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{
 			SpanID: tc.ToolCallID, SpanType: spanType, Closing: true,
 		}); err != nil {
-			slog.Error("persist terminal acp tool_call", "agent_id", agentID, "kind", tc.Kind, "status", tc.Status, "error", err)
+			slog.Error("persist terminal acp tool_call", "agent_id", b.agentID, "kind", tc.Kind, "status", tc.Status, "error", err)
 		}
 		return
 	}
 
-	spanColor := sink.PeekNextSpanColor()
-	if err := sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{
+	spanColor := b.sink.PeekNextSpanColor()
+	if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{
 		SpanID: tc.ToolCallID, SpanType: spanType, SpanColor: spanColor,
 	}); err != nil {
-		slog.Error("persist acp tool_call", "agent_id", agentID, "kind", tc.Kind, "error", err)
+		slog.Error("persist acp tool_call", "agent_id", b.agentID, "kind", tc.Kind, "error", err)
 	}
-	sink.SetSpanType(tc.ToolCallID, spanType)
-	sink.OpenSpan(tc.ToolCallID, "")
+	b.sink.SetSpanType(tc.ToolCallID, spanType)
+	b.sink.OpenSpan(tc.ToolCallID, "")
 }
 
-func (b *jsonrpcBase) handleACPToolCallUpdate(sink OutputSink, update json.RawMessage) {
+func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 	var tcu struct {
 		ToolCallID string `json:"toolCallId"`
 		Status     string `json:"status"`
@@ -487,27 +492,27 @@ func (b *jsonrpcBase) handleACPToolCallUpdate(sink OutputSink, update json.RawMe
 
 	switch tcu.Status {
 	case "in_progress":
-		sink.BroadcastStreamChunk(update, tcu.ToolCallID, acpUpdateToolCallUpdate)
+		b.sink.BroadcastStreamChunk(update, tcu.ToolCallID, acpUpdateToolCallUpdate)
 	case "completed", "failed", "cancelled":
 		b.mu.Lock()
 		b.turnToolUses++
 		b.mu.Unlock()
 
-		spanType := sink.GetSpanType(tcu.ToolCallID)
+		spanType := b.sink.GetSpanType(tcu.ToolCallID)
 		if spanType == "" {
 			spanType = acpUpdateToolCall
 		}
-		if err := sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{
+		if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{
 			SpanID: tcu.ToolCallID, SpanType: spanType, Closing: true,
 		}); err != nil {
 			slog.Error("persist acp tool_call_update", "agent_id", b.agentID, "status", tcu.Status, "error", err)
 		}
-		sink.BroadcastStreamEnd(tcu.ToolCallID)
-		sink.CloseSpan(tcu.ToolCallID)
+		b.sink.BroadcastStreamEnd(tcu.ToolCallID)
+		b.sink.CloseSpan(tcu.ToolCallID)
 	}
 }
 
-func handleACPUsageUpdate(sink OutputSink, update json.RawMessage) {
+func (b *acpBase) handleUsageUpdate(update json.RawMessage) {
 	var usage struct {
 		Used int64 `json:"used"`
 		Size int64 `json:"size"`
@@ -532,38 +537,7 @@ func handleACPUsageUpdate(sink OutputSink, update json.RawMessage) {
 	if usage.Cost.Amount > 0 {
 		info["totalCostUsd"] = usage.Cost.Amount
 	}
-	sink.BroadcastSessionInfo(info)
-}
-
-func broadcastGeminiQuotaSessionInfo(sink OutputSink, resp json.RawMessage) {
-	var result struct {
-		Meta struct {
-			Quota struct {
-				TokenCount struct {
-					InputTokens  int64 `json:"input_tokens"`
-					OutputTokens int64 `json:"output_tokens"`
-				} `json:"token_count"`
-			} `json:"quota"`
-		} `json:"_meta"`
-	}
-	if json.Unmarshal(resp, &result) != nil {
-		return
-	}
-
-	inputTokens := result.Meta.Quota.TokenCount.InputTokens
-	outputTokens := result.Meta.Quota.TokenCount.OutputTokens
-	if inputTokens == 0 && outputTokens == 0 {
-		return
-	}
-
-	sink.BroadcastSessionInfo(map[string]interface{}{
-		"contextUsage": map[string]interface{}{
-			"inputTokens":              inputTokens,
-			"cacheCreationInputTokens": int64(0),
-			"cacheReadInputTokens":     int64(0),
-			"outputTokens":             outputTokens,
-		},
-	})
+	b.sink.BroadcastSessionInfo(info)
 }
 
 // capitalizeFirst returns s with its first rune upper-cased.
@@ -590,18 +564,18 @@ func hasACPOption(options []*leapmuxv1.AvailableOption, id string) bool {
 	return false
 }
 
-func handleACPPlan(agentID string, sink OutputSink, update json.RawMessage) {
-	if err := sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{}); err != nil {
-		slog.Error("persist acp plan", "agent_id", agentID, "error", err)
+func (b *acpBase) handlePlan(update json.RawMessage) {
+	if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{}); err != nil {
+		slog.Error("persist acp plan", "agent_id", b.agentID, "error", err)
 	}
 }
 
-func handleACPRequestPermission(agentID string, sink OutputSink, id *json.Number, content []byte) {
+func (b *acpBase) handleRequestPermission(id *json.Number, content []byte) {
 	if id == nil {
-		slog.Warn("acp requestPermission missing id", "agent_id", agentID)
+		slog.Warn("acp requestPermission missing id", "agent_id", b.agentID)
 		return
 	}
 	requestID := id.String()
-	sink.PersistControlRequest(requestID, content)
-	sink.BroadcastControlRequest(requestID, content)
+	b.sink.PersistControlRequest(requestID, content)
+	b.sink.BroadcastControlRequest(requestID, content)
 }

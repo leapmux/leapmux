@@ -25,7 +25,7 @@ func handleGeminiCLIOutput(a *GeminiCLIAgent, content []byte) {
 	case geminiMethodSessionUpdate, acpMethodSessionUpdate:
 		a.handleSessionUpdate(envelope.Params)
 	case geminiMethodRequestPermission, acpMethodSessionRequestPermission:
-		handleACPRequestPermission(a.agentID, a.sink, envelope.ID, content)
+		a.handleRequestPermission(envelope.ID, content)
 	default:
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, content, SpanInfo{}); err != nil {
 			slog.Error("gemini persist notification", "agent_id", a.agentID, "method", envelope.Method, "error", err)

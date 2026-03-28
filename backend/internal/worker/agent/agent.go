@@ -495,14 +495,9 @@ func init() {
 		},
 		geminiCLIAvailableModels,
 		[]*leapmuxv1.AvailableOptionGroup{{
-			Key:   "permissionMode",
-			Label: "Permission Mode",
-			Options: []*leapmuxv1.AvailableOption{
-				{Id: GeminiCLIModeDefault, Name: "Default", IsDefault: true},
-				{Id: GeminiCLIModeAutoEdit, Name: "Auto Edit"},
-				{Id: GeminiCLIModeYolo, Name: "YOLO"},
-				{Id: GeminiCLIModePlan, Name: "Plan"},
-			},
+			Key:     "permissionMode",
+			Label:   "Permission Mode",
+			Options: fallbackGeminiCLIModes(),
 		}},
 		"LEAPMUX_GEMINI_DEFAULT_MODEL",
 		"",

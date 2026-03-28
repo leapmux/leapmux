@@ -267,16 +267,6 @@ func fallbackGeminiCLIModes() []*leapmuxv1.AvailableOption {
 	}
 }
 
-func (a *GeminiCLIAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	a.mu.Lock()
-	if a.sessionID == "" {
-		a.mu.Unlock()
-		return fmt.Errorf("gemini cli agent has no active session")
-	}
-	a.mu.Unlock()
-	return a.enqueueOrSendPrompt(content, attachments)
-}
-
 // doSendPrompt sends a single prompt RPC and processes the response. Called by
 // jsonrpcBase.runPrompt on a goroutine.
 func (a *GeminiCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attachment) {
@@ -284,7 +274,7 @@ func (a *GeminiCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.A
 	sessionID := a.sessionID
 	a.mu.Unlock()
 
-	acpSendPrompt(&a.jsonrpcBase, a.sink, sessionID, content, attachments,
+	a.sendPrompt(sessionID, content, attachments,
 		func(params json.RawMessage) (json.RawMessage, error) {
 			return a.sendCompatibleRequest(geminiMethodPrompt, legacyGeminiMethod(geminiMethodPrompt), params, 10*time.Minute)
 		},
@@ -295,6 +285,37 @@ func (a *GeminiCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.A
 func (a *GeminiCLIAgent) handlePromptResponse(resp json.RawMessage) {
 	a.handleACPPromptResponse(resp, func(r json.RawMessage) {
 		broadcastGeminiQuotaSessionInfo(a.sink, r)
+	})
+}
+
+func broadcastGeminiQuotaSessionInfo(sink OutputSink, resp json.RawMessage) {
+	var result struct {
+		Meta struct {
+			Quota struct {
+				TokenCount struct {
+					InputTokens  int64 `json:"input_tokens"`
+					OutputTokens int64 `json:"output_tokens"`
+				} `json:"token_count"`
+			} `json:"quota"`
+		} `json:"_meta"`
+	}
+	if json.Unmarshal(resp, &result) != nil {
+		return
+	}
+
+	inputTokens := result.Meta.Quota.TokenCount.InputTokens
+	outputTokens := result.Meta.Quota.TokenCount.OutputTokens
+	if inputTokens == 0 && outputTokens == 0 {
+		return
+	}
+
+	sink.BroadcastSessionInfo(map[string]interface{}{
+		"contextUsage": map[string]interface{}{
+			"inputTokens":              inputTokens,
+			"cacheCreationInputTokens": int64(0),
+			"cacheReadInputTokens":     int64(0),
+			"outputTokens":             outputTokens,
+		},
 	})
 }
 
@@ -390,11 +411,6 @@ func (a *GeminiCLIAgent) setPermissionMode(mode string) error {
 	a.permissionMode = mode
 	a.mu.Unlock()
 	return nil
-}
-
-func (a *GeminiCLIAgent) Stop() {
-	a.clearPromptQueue()
-	a.processBase.Stop()
 }
 
 func (a *GeminiCLIAgent) HandleOutput(content []byte) {

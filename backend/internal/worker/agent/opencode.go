@@ -307,18 +307,6 @@ func (a *OpenCodeAgent) configurePrimaryAgents(modes []openCodeModeInfo, current
 	return nil
 }
 
-// SendInput writes a user prompt to the agent. If a prompt is already in
-// flight, the message is queued and coalesced into the next prompt.
-func (a *OpenCodeAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	a.mu.Lock()
-	if a.sessionID == "" {
-		a.mu.Unlock()
-		return fmt.Errorf("opencode agent has no active session")
-	}
-	a.mu.Unlock()
-	return a.enqueueOrSendPrompt(content, attachments)
-}
-
 // doSendPrompt sends a single prompt RPC and processes the response. Called by
 // jsonrpcBase.runPrompt on a goroutine.
 func (a *OpenCodeAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attachment) {
@@ -326,7 +314,7 @@ func (a *OpenCodeAgent) doSendPrompt(content string, attachments []*leapmuxv1.At
 	sessionID := a.sessionID
 	a.mu.Unlock()
 
-	acpSendPrompt(&a.jsonrpcBase, a.sink, sessionID, content, attachments,
+	a.sendPrompt(sessionID, content, attachments,
 		func(params json.RawMessage) (json.RawMessage, error) {
 			return a.sendRequest(acpMethodSessionPrompt, params, 10*time.Minute)
 		},
@@ -482,12 +470,6 @@ func (a *OpenCodeAgent) availablePrimaryAgentGroup() []*leapmuxv1.AvailableOptio
 // HandleOutput processes a single JSONL notification from OpenCode.
 func (a *OpenCodeAgent) HandleOutput(content []byte) {
 	handleOpenCodeOutput(a, content)
-}
-
-// Stop terminates the agent, discarding any queued messages first.
-func (a *OpenCodeAgent) Stop() {
-	a.clearPromptQueue()
-	a.processBase.Stop()
 }
 
 // formatStartupError includes stderr and preamble output for diagnostics.
