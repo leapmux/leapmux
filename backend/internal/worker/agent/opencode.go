@@ -106,6 +106,7 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 		workingDir: opts.WorkingDir,
 		sink:       sink,
 	}
+	a.promptFunc = a.doSendPrompt
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -322,44 +323,31 @@ func (a *OpenCodeAgent) configurePrimaryAgents(modes []openCodeModeInfo, current
 	return nil
 }
 
-// SendInput writes a user prompt to the agent. The ACP prompt RPC blocks until
-// the LLM finishes, so it runs in a goroutine. Streaming output arrives via
-// sessionUpdate notifications meanwhile.
+// SendInput writes a user prompt to the agent. If a prompt is already in
+// flight, the message is queued and coalesced into the next prompt.
 func (a *OpenCodeAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
 	a.mu.Lock()
-	if a.stopped {
+	if a.sessionID == "" {
 		a.mu.Unlock()
-		return fmt.Errorf("agent is stopped")
+		return fmt.Errorf("opencode agent has no active session")
 	}
+	a.mu.Unlock()
+	return a.enqueueOrSendPrompt(content, attachments)
+}
+
+// doSendPrompt sends a single prompt RPC and processes the response. Called by
+// jsonrpcBase.runPrompt on a goroutine.
+func (a *OpenCodeAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attachment) {
+	a.mu.Lock()
 	sessionID := a.sessionID
 	a.mu.Unlock()
 
-	if sessionID == "" {
-		return fmt.Errorf("opencode agent has no active session")
-	}
-
-	prompt := buildACPPromptBlocks(content, classifyAttachments(attachments))
-	params, _ := json.Marshal(map[string]interface{}{
-		"sessionId": sessionID,
-		"prompt":    prompt,
-	})
-
-	go func() {
-		resp, err := a.sendRequest(acpMethodSessionPrompt, json.RawMessage(params), 10*time.Minute)
-		if err != nil {
-			if !a.IsStopped() {
-				slog.Error("opencode prompt failed", "agent_id", a.agentID, "error", err)
-				a.sink.BroadcastNotification(map[string]interface{}{
-					"type":  "agent_error",
-					"error": fmt.Sprintf("prompt failed: %v", err),
-				})
-			}
-			return
-		}
-		a.handlePromptResponse(resp)
-	}()
-
-	return nil
+	acpSendPrompt(&a.jsonrpcBase, a.sink, sessionID, content, attachments,
+		func(params json.RawMessage) (json.RawMessage, error) {
+			return a.sendRequest(acpMethodSessionPrompt, params, 10*time.Minute)
+		},
+		a.handlePromptResponse,
+	)
 }
 
 // buildACPPromptBlocks converts text + classified attachments into ACP prompt
@@ -531,16 +519,10 @@ func (a *OpenCodeAgent) HandleOutput(content []byte) {
 	handleOpenCodeOutput(a, content)
 }
 
-// cancelSession sends a cancel notification for the current session.
-func (a *OpenCodeAgent) cancelSession() error {
-	a.mu.Lock()
-	sessionID := a.sessionID
-	a.mu.Unlock()
-
-	params, _ := json.Marshal(map[string]interface{}{
-		"sessionId": sessionID,
-	})
-	return a.sendNotification(acpMethodSessionCancel, json.RawMessage(params))
+// Stop terminates the agent, discarding any queued messages first.
+func (a *OpenCodeAgent) Stop() {
+	a.clearPromptQueue()
+	a.processBase.Stop()
 }
 
 // formatStartupError includes stderr and preamble output for diagnostics.

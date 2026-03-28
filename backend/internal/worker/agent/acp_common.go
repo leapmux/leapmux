@@ -38,12 +38,29 @@ const (
 	acpUpdateAvailableCommandsUpdate = "available_commands_update"
 )
 
+// acpPendingInput holds a user message queued while a prompt is in flight.
+type acpPendingInput struct {
+	content     string
+	attachments []*leapmuxv1.Attachment
+}
+
 // jsonrpcBase extends processBase with JSON-RPC request/response plumbing
 // shared by all ACP agents (GeminiCLIAgent, OpenCodeAgent) and CodexAgent.
 type jsonrpcBase struct {
 	processBase
 	nextReqID   atomic.Int64
 	pendingReqs sync.Map // reqID (int64) -> chan json.RawMessage
+
+	// Prompt queueing: ACP servers support only one active prompt per session.
+	// Messages arriving mid-turn are queued and coalesced into a single prompt
+	// once the current turn completes.
+	promptActive    bool              // true while a prompt RPC is in flight
+	pendingMessages []acpPendingInput // queued messages waiting for current turn
+
+	// promptFunc is set by the concrete agent during construction. It sends
+	// a single prompt RPC and blocks until the turn completes (including
+	// response handling). Called by runPrompt on a goroutine.
+	promptFunc func(content string, attachments []*leapmuxv1.Attachment)
 }
 
 // sendRequest sends a JSON-RPC request and waits for the response.
@@ -152,6 +169,101 @@ func (b *jsonrpcBase) handleJSONRPCResponse(line []byte) bool {
 // the interceptor and forwarding remaining lines to the given output handler.
 func (b *jsonrpcBase) readOutputLoop(scanner *bufio.Scanner, handle outputHandler) {
 	b.readOutput(scanner, b.handleJSONRPCResponse, handle)
+}
+
+// enqueueOrSendPrompt queues a message if a prompt is in flight, or starts
+// a new prompt goroutine if idle. Returns an error only if the agent is stopped.
+func (b *jsonrpcBase) enqueueOrSendPrompt(content string, attachments []*leapmuxv1.Attachment) error {
+	b.mu.Lock()
+	if b.stopped {
+		b.mu.Unlock()
+		return fmt.Errorf("agent is stopped")
+	}
+	if b.promptActive {
+		b.pendingMessages = append(b.pendingMessages, acpPendingInput{content, attachments})
+		b.mu.Unlock()
+		return nil
+	}
+	b.promptActive = true
+	b.mu.Unlock()
+
+	go b.runPrompt(content, attachments)
+	return nil
+}
+
+// runPrompt calls the agent's promptFunc and then drains any queued messages.
+// It runs on a dedicated goroutine and loops until the queue is empty.
+func (b *jsonrpcBase) runPrompt(content string, attachments []*leapmuxv1.Attachment) {
+	b.promptFunc(content, attachments)
+	b.drainPendingOrReset()
+}
+
+// drainPendingOrReset checks for queued messages after a turn completes.
+// If messages are queued, they are coalesced into a single prompt and sent
+// in the current goroutine. If the queue is empty, promptActive is cleared.
+func (b *jsonrpcBase) drainPendingOrReset() {
+	b.mu.Lock()
+	if len(b.pendingMessages) == 0 || b.stopped {
+		b.promptActive = false
+		b.pendingMessages = nil
+		b.mu.Unlock()
+		return
+	}
+
+	pending := b.pendingMessages
+	b.pendingMessages = nil
+	// promptActive stays true — we are about to send another prompt.
+	b.mu.Unlock()
+
+	var parts []string
+	var allAttachments []*leapmuxv1.Attachment
+	for _, p := range pending {
+		if p.content != "" {
+			parts = append(parts, p.content)
+		}
+		allAttachments = append(allAttachments, p.attachments...)
+	}
+
+	b.runPrompt(strings.Join(parts, "\n\n"), allAttachments)
+}
+
+// clearPromptQueue discards any queued messages and resets the prompt-active
+// flag. Called by Stop() and cancelSession() in concrete agents.
+func (b *jsonrpcBase) clearPromptQueue() {
+	b.mu.Lock()
+	b.pendingMessages = nil
+	b.promptActive = false
+	b.mu.Unlock()
+}
+
+// acpSendPrompt builds and sends an ACP prompt, then calls the provided
+// response handler. Shared by all ACP agent doSendPrompt implementations.
+func acpSendPrompt(
+	b *jsonrpcBase,
+	sink OutputSink,
+	sessionID, content string,
+	attachments []*leapmuxv1.Attachment,
+	sendRPC func(json.RawMessage) (json.RawMessage, error),
+	handleResponse func(json.RawMessage),
+) {
+	prompt := buildACPPromptBlocks(content, classifyAttachments(attachments))
+	params, _ := json.Marshal(map[string]interface{}{
+		"sessionId": sessionID,
+		"prompt":    prompt,
+	})
+
+	resp, err := sendRPC(json.RawMessage(params))
+	if err != nil {
+		if !b.IsStopped() {
+			slog.Error("acp prompt failed", "agent_id", b.agentID, "error", err)
+			sink.BroadcastNotification(map[string]interface{}{
+				"type":  "agent_error",
+				"error": fmt.Sprintf("prompt failed: %v", err),
+			})
+		}
+		return
+	}
+	handleResponse(resp)
 }
 
 func (b *jsonrpcBase) appendACPChunk(update json.RawMessage, builder *strings.Builder, sink OutputSink, eventType string) {

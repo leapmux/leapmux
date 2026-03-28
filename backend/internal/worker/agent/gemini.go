@@ -115,6 +115,7 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 		workingDir: opts.WorkingDir,
 		sink:       sink,
 	}
+	a.promptFunc = a.doSendPrompt
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -281,39 +282,27 @@ func fallbackGeminiCLIModes() []*leapmuxv1.AvailableOption {
 
 func (a *GeminiCLIAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
 	a.mu.Lock()
-	if a.stopped {
+	if a.sessionID == "" {
 		a.mu.Unlock()
-		return fmt.Errorf("agent is stopped")
+		return fmt.Errorf("gemini cli agent has no active session")
 	}
+	a.mu.Unlock()
+	return a.enqueueOrSendPrompt(content, attachments)
+}
+
+// doSendPrompt sends a single prompt RPC and processes the response. Called by
+// jsonrpcBase.runPrompt on a goroutine.
+func (a *GeminiCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attachment) {
+	a.mu.Lock()
 	sessionID := a.sessionID
 	a.mu.Unlock()
 
-	if sessionID == "" {
-		return fmt.Errorf("gemini cli agent has no active session")
-	}
-
-	prompt := buildACPPromptBlocks(content, classifyAttachments(attachments))
-	params, _ := json.Marshal(map[string]interface{}{
-		"sessionId": sessionID,
-		"prompt":    prompt,
-	})
-
-	go func() {
-		resp, err := a.sendCompatibleRequest(geminiMethodPrompt, legacyGeminiMethod(geminiMethodPrompt), json.RawMessage(params), 10*time.Minute)
-		if err != nil {
-			if !a.IsStopped() {
-				slog.Error("gemini prompt failed", "agent_id", a.agentID, "error", err)
-				a.sink.BroadcastNotification(map[string]interface{}{
-					"type":  "agent_error",
-					"error": fmt.Sprintf("prompt failed: %v", err),
-				})
-			}
-			return
-		}
-		a.handlePromptResponse(resp)
-	}()
-
-	return nil
+	acpSendPrompt(&a.jsonrpcBase, a.sink, sessionID, content, attachments,
+		func(params json.RawMessage) (json.RawMessage, error) {
+			return a.sendCompatibleRequest(geminiMethodPrompt, legacyGeminiMethod(geminiMethodPrompt), params, 10*time.Minute)
+		},
+		a.handlePromptResponse,
+	)
 }
 
 func (a *GeminiCLIAgent) handlePromptResponse(resp json.RawMessage) {
@@ -431,22 +420,13 @@ func (a *GeminiCLIAgent) setPermissionMode(mode string) error {
 	return nil
 }
 
-func (a *GeminiCLIAgent) HandleOutput(content []byte) {
-	handleGeminiCLIOutput(a, content)
+func (a *GeminiCLIAgent) Stop() {
+	a.clearPromptQueue()
+	a.processBase.Stop()
 }
 
-func (a *GeminiCLIAgent) SendRawInput(data []byte) error {
-	var msg struct {
-		Method string          `json:"method"`
-		Params json.RawMessage `json:"params"`
-	}
-	if err := json.Unmarshal(data, &msg); err == nil {
-		switch msg.Method {
-		case geminiMethodCancel, acpMethodSessionCancel:
-			return a.cancelSession()
-		}
-	}
-	return a.processBase.SendRawInput(data)
+func (a *GeminiCLIAgent) HandleOutput(content []byte) {
+	handleGeminiCLIOutput(a, content)
 }
 
 func (a *GeminiCLIAgent) sendCompatibleRequest(method, legacyMethod string, params json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
