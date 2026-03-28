@@ -17,7 +17,7 @@ import { WorkspaceContextMenu } from './WorkspaceContextMenu'
 import * as styles from './workspaceList.css'
 import { buildTree, WorkspaceTabTree } from './WorkspaceTabTree'
 
-/** Apply a solid-dnd directive (sortable/droppable) to an element. */
+/** solid-dnd directives are callable but typed as objects; this wraps the unsafe cast. */
 function applyDirective(directive: { ref: unknown }, el: HTMLElement) {
   (directive as unknown as (el: HTMLElement) => void)(el)
 }
