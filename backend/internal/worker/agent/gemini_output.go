@@ -8,11 +8,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-var geminiToolCallPersistStatuses = map[string]bool{
-	"completed": true,
-	"failed":    true,
-}
-
 var geminiToolCallUpdatePersistStatuses = map[string]bool{
 	"completed": true,
 	"failed":    true,
@@ -102,7 +97,7 @@ func (a *GeminiCLIAgent) handleAgentChunk(update json.RawMessage, builder *strin
 }
 
 func (a *GeminiCLIAgent) handleToolCall(update json.RawMessage) {
-	handleACPToolCall(a.agentID, a.sink, update, geminiToolCallPersistStatuses)
+	handleACPToolCall(a.agentID, a.sink, update)
 }
 
 func (a *GeminiCLIAgent) handleToolCallUpdate(update json.RawMessage) {

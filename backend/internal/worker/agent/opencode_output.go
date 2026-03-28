@@ -116,7 +116,7 @@ func (a *OpenCodeAgent) handleAgentChunk(update json.RawMessage, builder *string
 
 // handleToolCall processes tool_call — a new tool invocation (status: pending).
 func (a *OpenCodeAgent) handleToolCall(update json.RawMessage) {
-	handleACPToolCall(a.agentID, a.sink, update, nil)
+	handleACPToolCall(a.agentID, a.sink, update)
 }
 
 // handleToolCallUpdate processes tool_call_update — progress or completion.

@@ -412,7 +412,7 @@ func (a *OpenCodeAgent) handlePromptResponse(resp json.RawMessage) {
 	assistantText := a.turnAssistantText.String()
 	a.turnAssistantText.Reset()
 	a.mu.Unlock()
-	persistACPPromptResponse(a.agentID, a.sink, thinkingText, assistantText, resp, unwrapACPResult, func(resp json.RawMessage) json.RawMessage {
+	persistACPPromptResponse(a.agentID, a.sink, thinkingText, assistantText, resp, func(resp json.RawMessage) json.RawMessage {
 		return a.enrichWithToolUses(resp)
 	})
 
@@ -549,23 +549,6 @@ func (a *OpenCodeAgent) formatStartupError(phase string, err error) error {
 	return a.processBase.formatStartupError(phase, err, a.PreambleOutput())
 }
 
-// unwrapACPResult extracts the inner content from an ACP result message.
-// Some OpenCode versions return session/prompt results in the format:
-//
-//	{id, role: "result", seq, created_at, content: {stopReason, usage, ...}}
-//
-// The frontend classifier expects stopReason at the top level, so we unwrap
-// the content and merge any top-level metadata (_meta) into it.
-func unwrapACPResult(resp json.RawMessage) json.RawMessage {
-	var wrapper struct {
-		Role    string          `json:"role"`
-		Content json.RawMessage `json:"content"`
-	}
-	if json.Unmarshal(resp, &wrapper) != nil || wrapper.Role != "result" || len(wrapper.Content) == 0 {
-		return resp
-	}
-	return wrapper.Content
-}
 
 func jsonRPCResultError(resp json.RawMessage) error {
 	if len(resp) == 0 || string(resp) == "null" {

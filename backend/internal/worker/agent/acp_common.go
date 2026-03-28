@@ -190,15 +190,12 @@ func persistACPPromptResponse(
 	sink OutputSink,
 	thinkingText, assistantText string,
 	resp json.RawMessage,
-	unwrap func(json.RawMessage) json.RawMessage,
 	enrich func(json.RawMessage) json.RawMessage,
 ) {
 	persistACPTextMessage(agentID, sink, "agent_thought_chunk", thinkingText)
 	persistACPTextMessage(agentID, sink, "agent_message_chunk", assistantText)
 
-	if unwrap != nil {
-		resp = unwrap(resp)
-	}
+	resp = unwrapACPResult(resp)
 	if enrich != nil {
 		resp = enrich(resp)
 	}
@@ -208,11 +205,28 @@ func persistACPPromptResponse(
 	sink.ResetSpans()
 }
 
+// unwrapACPResult extracts the inner content from an ACP result message.
+// Some ACP server versions return session/prompt results wrapped in:
+//
+//	{id, role: "result", seq, created_at, content: {stopReason, usage, ...}}
+//
+// The frontend classifier expects stopReason at the top level, so we unwrap
+// the content field. This is a no-op when the response is not wrapped.
+func unwrapACPResult(resp json.RawMessage) json.RawMessage {
+	var wrapper struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(resp, &wrapper) != nil || wrapper.Role != "result" || len(wrapper.Content) == 0 {
+		return resp
+	}
+	return wrapper.Content
+}
+
 func handleACPToolCall(
 	agentID string,
 	sink OutputSink,
 	update json.RawMessage,
-	closeStatuses map[string]bool,
 ) {
 	var tc struct {
 		ToolCallID string `json:"toolCallId"`
@@ -229,7 +243,9 @@ func handleACPToolCall(
 		spanType = acpUpdateToolCall
 	}
 
-	if closeStatuses[tc.Status] {
+	// Tool calls that arrive already terminal (completed/failed) are
+	// persisted as closing spans immediately — no open/close cycle.
+	if tc.Status == "completed" || tc.Status == "failed" {
 		if err := sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{
 			SpanID: tc.ToolCallID, SpanType: spanType, Closing: true,
 		}); err != nil {

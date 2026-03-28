@@ -329,7 +329,7 @@ func (a *GeminiCLIAgent) handlePromptResponse(resp json.RawMessage) {
 	a.turnAssistantText.Reset()
 	a.mu.Unlock()
 	broadcastGeminiQuotaSessionInfo(a.sink, resp)
-	persistACPPromptResponse(a.agentID, a.sink, thinkingText, assistantText, resp, nil, func(resp json.RawMessage) json.RawMessage {
+	persistACPPromptResponse(a.agentID, a.sink, thinkingText, assistantText, resp, func(resp json.RawMessage) json.RawMessage {
 		return a.enrichWithToolUses(resp)
 	})
 
