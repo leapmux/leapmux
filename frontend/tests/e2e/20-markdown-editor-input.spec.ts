@@ -771,7 +771,7 @@ test.describe('Syntax Highlighting', () => {
     const langLabel = editor.locator('.code-lang-label')
     await langLabel.click()
     // Type 'javascript' in the combobox input and select it
-    const langInput = page.locator('[data-testid="code-lang-input"]')
+    const langInput = page.locator('[data-testid="code-lang-filter"]')
     await langInput.fill('javascript')
     await page.keyboard.press('Enter')
 

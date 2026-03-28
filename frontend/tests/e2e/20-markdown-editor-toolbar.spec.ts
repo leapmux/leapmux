@@ -224,7 +224,7 @@ test.describe('Code Language Label', () => {
     await langLabel.click()
 
     // The language input should appear
-    const langInput = page.locator('[data-testid="code-lang-input"]')
+    const langInput = page.locator('[data-testid="code-lang-filter"]')
     await expect(langInput).toBeVisible()
 
     // Type and select a language
