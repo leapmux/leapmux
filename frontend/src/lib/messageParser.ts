@@ -101,6 +101,14 @@ export function getInnerMessageType(parsed: ParsedMessageContent): string | unde
 // Domain-specific extractors
 // ---------------------------------------------------------------------------
 
+/** Convert todo items to a markdown checklist string. */
+export function todosToMarkdown(items: ReadonlyArray<{ status: string, content: string }>): string {
+  return items.map((t) => {
+    const mark = t.status === 'completed' ? 'x' : t.status === 'in_progress' ? '~' : ' '
+    return `- [${mark}] ${t.content}`
+  }).join('\n')
+}
+
 /** Convert a Codex plan array (from turn/plan/updated) to TodoItem[]. */
 export function codexPlanToTodos(plan: unknown[]): TodoItem[] {
   return plan.flatMap((entry) => {
