@@ -17,7 +17,7 @@ import { parseMessageContent } from '~/lib/messageParser'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { formatUnifiedDiffText, rawDiffToHunks } from './diffUtils'
 import * as styles from './MessageBubble.css'
-import { classifyMessage, messageBubbleClass, messageRowClass } from './messageClassification'
+import { buildClassificationInput, classifyMessage, messageBubbleClass, messageRowClass } from './messageClassification'
 import { renderMessageContent, ToolHeaderActions } from './messageRenderers'
 import * as chatStyles from './messageStyles.css'
 import { getAssistantContent, isObject } from './messageUtils'
@@ -91,44 +91,13 @@ function injectCopyButtons(container: HTMLElement) {
   }
 }
 
-function isCodexEmptyCompletedWebSearch(message: AgentChatMessage, parsed: ParsedMessageContent): boolean {
-  if (message.agentProvider !== AgentProvider.CODEX || message.spanType !== 'webSearch')
-    return false
-
-  const item = parsed.parentObject?.item as Record<string, unknown> | undefined
-  if (!isObject(item) || item.type !== 'webSearch')
-    return false
-
-  const query = typeof item.query === 'string' ? item.query.trim() : ''
-  const action = isObject(item.action) ? item.action as Record<string, unknown> : null
-  const actionType = typeof action?.type === 'string' ? action.type as string : ''
-
-  if (actionType !== 'other')
-    return false
-
-  return query.length === 0
-}
-
 /** Classify a message, returning both the parsed content and category. */
-export function classifyParsedMessage(message: AgentChatMessage) {
+export function classifyParsedMessage(
+  message: AgentChatMessage,
+  classificationContext?: { hasCommandStream?: boolean, commandStreamLength?: number },
+) {
   const parsed = parseMessageContent(message)
-  let category = classifyMessage(parsed.parentObject, parsed.wrapper, message.agentProvider)
-  // Hide task_started/task_progress system messages inside spans — progress is shown via the span's context.
-  if (category.kind === 'notification' && message.parentSpanId
-    && (parsed.parentObject?.subtype === 'task_started' || parsed.parentObject?.subtype === 'task_progress')) {
-    category = { kind: 'hidden' }
-  }
-  // Hide ToolSearch tool_use and tool_result — they are internal plumbing, not user-visible.
-  if ((category.kind === 'tool_use' || category.kind === 'tool_result') && message.spanType === 'ToolSearch') {
-    category = { kind: 'hidden' }
-  }
-  // Hide TodoWrite tool_result — the tool_use already shows the full todo list.
-  if (category.kind === 'tool_result' && message.spanType === 'TodoWrite') {
-    category = { kind: 'hidden' }
-  }
-  if ((category.kind === 'tool_use' || category.kind === 'tool_result') && isCodexEmptyCompletedWebSearch(message, parsed)) {
-    category = { kind: 'hidden' }
-  }
+  const category = classifyMessage(buildClassificationInput(parsed, message), classificationContext)
   return { parsed, category }
 }
 

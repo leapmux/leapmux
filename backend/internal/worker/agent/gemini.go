@@ -215,14 +215,26 @@ func buildGeminiSessionRequest(resumeSessionID, workingDir string) (method strin
 }
 
 func buildGeminiCLIModels(models []geminiCLIModelInfo, currentModelID string) []*leapmuxv1.AvailableModel {
-	result := make([]*leapmuxv1.AvailableModel, 0, len(models))
+	hasAuto := false
+	result := make([]*leapmuxv1.AvailableModel, 0, len(models)+1)
 	for _, m := range models {
+		if m.ModelID == "auto" {
+			hasAuto = true
+		}
 		result = append(result, &leapmuxv1.AvailableModel{
 			Id:          m.ModelID,
 			DisplayName: m.Name,
 			Description: m.Description,
 			IsDefault:   m.ModelID == currentModelID,
 		})
+	}
+	if !hasAuto {
+		result = append([]*leapmuxv1.AvailableModel{{
+			Id:          "auto",
+			DisplayName: "Auto",
+			Description: "Automatically selects the best Gemini model",
+			IsDefault:   currentModelID == "" || currentModelID == "auto",
+		}}, result...)
 	}
 	return result
 }

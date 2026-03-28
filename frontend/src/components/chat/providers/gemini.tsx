@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { MessageCategory } from '../messageClassification'
-import type { ProviderPlugin, ProviderSettingsPanelProps, RenderContext } from './registry'
+import type { ClassificationContext, ClassificationInput, NotificationWrapper, ProviderPlugin, ProviderSettingsPanelProps, RenderContext } from './registry'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
 import { createUniqueId, Show } from 'solid-js'
@@ -27,7 +27,7 @@ import {
   permissionModeItems,
   RadioGroup,
 } from '../settingsShared'
-import { registerProvider } from './registry'
+import { normalizeClassificationArgs, registerProvider } from './registry'
 
 const DEFAULT_GEMINI_MODEL = import.meta.env.LEAPMUX_GEMINI_DEFAULT_MODEL || 'auto'
 const DEFAULT_GEMINI_MODE = 'default'
@@ -88,9 +88,14 @@ function GeminiTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
 }
 
 function classifyGeminiMessage(
-  parent: Record<string, unknown> | undefined,
-  wrapper: { old_seqs: number[], messages: unknown[] } | null,
+  inputOrParent: ClassificationInput | Record<string, unknown> | undefined,
+  wrapperOrContext?: NotificationWrapper | ClassificationContext | null,
+  context?: ClassificationContext,
 ): MessageCategory {
+  const { input } = normalizeClassificationArgs(inputOrParent, wrapperOrContext, context)
+  const parent = input.parentObject
+  const wrapper = input.wrapper
+
   if (wrapper) {
     if (isGeminiNotifThread(wrapper))
       return { kind: 'notification_thread', messages: wrapper.messages }

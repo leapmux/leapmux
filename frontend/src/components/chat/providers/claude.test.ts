@@ -37,4 +37,44 @@ describe('claude classify', () => {
     }
     expect(plugin.classify(parent, null)).toEqual({ kind: 'result_divider' })
   })
+
+  it('hides EnterPlanMode tool_result wrappers persisted as user messages', () => {
+    const parent = {
+      role: 'user',
+      span_type: 'EnterPlanMode',
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            content: 'Entered plan mode. You should now focus on exploring the codebase and designing an implementation approach.',
+            tool_use_id: 'toolu_01U3MQbUE7bmTs1SnJx4SPU3',
+          },
+        ],
+      },
+      tool_use_result: {
+        message: 'Entered plan mode. You should now focus on exploring the codebase and designing an implementation approach.',
+      },
+    }
+    expect(plugin.classify(parent, null)).toEqual({ kind: 'hidden' })
+  })
+
+  it('keeps non-plan tool_result user messages visible', () => {
+    const parent = {
+      type: 'user',
+      span_type: 'Read',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            content: 'file contents',
+            tool_use_id: 'toolu_read_1',
+          },
+        ],
+      },
+    }
+    expect(plugin.classify(parent, null)).toEqual({ kind: 'tool_result' })
+  })
 })

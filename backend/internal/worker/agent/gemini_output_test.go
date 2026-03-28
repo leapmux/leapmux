@@ -153,6 +153,50 @@ func TestGeminiHandlePromptResponsePersistsTurn(t *testing.T) {
 	}
 }
 
+func TestBuildGeminiCLIModels_withAuto(t *testing.T) {
+	models := []geminiCLIModelInfo{
+		{ModelID: "auto", Name: "Auto", Description: "Automatic"},
+		{ModelID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro", Description: "Detailed"},
+	}
+	result := buildGeminiCLIModels(models, "auto")
+	if len(result) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(result))
+	}
+	if result[0].Id != "auto" || !result[0].IsDefault {
+		t.Fatalf("expected auto to be default, got id=%q default=%v", result[0].Id, result[0].IsDefault)
+	}
+}
+
+func TestBuildGeminiCLIModels_withoutAuto(t *testing.T) {
+	models := []geminiCLIModelInfo{
+		{ModelID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro", Description: "Detailed"},
+		{ModelID: "gemini-2.5-flash", Name: "Gemini 2.5 Flash", Description: "Fast"},
+	}
+	result := buildGeminiCLIModels(models, "gemini-2.5-pro")
+	if len(result) != 3 {
+		t.Fatalf("expected 3 models (synthetic auto + 2), got %d", len(result))
+	}
+	if result[0].Id != "auto" || result[0].IsDefault {
+		t.Fatalf("expected synthetic auto first and not default, got id=%q default=%v", result[0].Id, result[0].IsDefault)
+	}
+	if result[1].Id != "gemini-2.5-pro" || !result[1].IsDefault {
+		t.Fatalf("expected gemini-2.5-pro to be default, got id=%q default=%v", result[1].Id, result[1].IsDefault)
+	}
+}
+
+func TestBuildGeminiCLIModels_withoutAutoEmptyCurrentModel(t *testing.T) {
+	models := []geminiCLIModelInfo{
+		{ModelID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro"},
+	}
+	result := buildGeminiCLIModels(models, "")
+	if len(result) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(result))
+	}
+	if result[0].Id != "auto" || !result[0].IsDefault {
+		t.Fatalf("expected synthetic auto to be default when currentModelID is empty, got id=%q default=%v", result[0].Id, result[0].IsDefault)
+	}
+}
+
 func TestGeminiCurrentSettingsIncludesPermissionMode(t *testing.T) {
 	agent := &GeminiCLIAgent{
 		model:          "auto",

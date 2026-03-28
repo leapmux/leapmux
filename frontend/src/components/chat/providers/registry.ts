@@ -2,6 +2,7 @@ import type { Component, JSX } from 'solid-js'
 import type { ActionsProps, ContentProps } from '../controls/types'
 import type { MessageCategory } from '../messageClassification'
 import type { AgentProvider, AvailableModel, AvailableOptionGroup, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { PermissionMode } from '~/utils/controlResponse'
 
 export interface ProviderSettingsPanelProps {
@@ -31,6 +32,64 @@ export interface AttachmentCapabilities {
   binary: boolean
 }
 
+export interface NotificationWrapper {
+  old_seqs: number[]
+  messages: unknown[]
+}
+
+export interface ClassificationInput extends ParsedMessageContent {
+  messageRole: MessageRole
+  agentProvider?: AgentProvider
+  spanId?: string
+  spanType?: string
+  parentSpanId?: string
+  seq?: bigint
+  createdAt?: string
+}
+
+export interface ClassificationContext {
+  hasCommandStream?: boolean
+  commandStreamLength?: number
+}
+
+function isNotificationWrapper(value: unknown): value is NotificationWrapper {
+  return typeof value === 'object' && value !== null && 'messages' in value && Array.isArray((value as { messages?: unknown[] }).messages)
+}
+
+export function isClassificationInput(value: unknown): value is ClassificationInput {
+  return typeof value === 'object' && value !== null
+    && 'rawText' in value
+    && 'topLevel' in value
+    && 'wrapper' in value
+    && 'messageRole' in value
+}
+
+export function normalizeClassificationArgs(
+  inputOrParent: ClassificationInput | Record<string, unknown> | undefined,
+  wrapperOrContext?: NotificationWrapper | ClassificationContext | null,
+  context?: ClassificationContext,
+): { input: ClassificationInput, context?: ClassificationContext } {
+  if (isClassificationInput(inputOrParent)) {
+    return {
+      input: inputOrParent,
+      context: wrapperOrContext && !isNotificationWrapper(wrapperOrContext)
+        ? wrapperOrContext as ClassificationContext
+        : context,
+    }
+  }
+
+  return {
+    input: {
+      rawText: '',
+      topLevel: inputOrParent ?? null,
+      parentObject: inputOrParent,
+      wrapper: isNotificationWrapper(wrapperOrContext) ? wrapperOrContext : null,
+      messageRole: 0 as MessageRole,
+    },
+    context,
+  }
+}
+
 export interface ProviderPlugin {
   /** Default model identifier for this provider. */
   defaultModel?: string
@@ -40,10 +99,10 @@ export interface ProviderPlugin {
   defaultPermissionMode?: PermissionMode
 
   /** Classify a parsed message into a rendering category. */
-  classify: (
-    parent: Record<string, unknown> | undefined,
-    wrapper: { old_seqs: number[], messages: unknown[] } | null,
-  ) => MessageCategory
+  classify: {
+    (input: ClassificationInput, context?: ClassificationContext): MessageCategory
+    (parent: Record<string, unknown> | undefined, wrapper: NotificationWrapper | null, context?: ClassificationContext): MessageCategory
+  }
 
   /**
    * Render a message given its category and parsed content.

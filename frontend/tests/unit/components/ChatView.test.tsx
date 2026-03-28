@@ -224,6 +224,36 @@ function makeCodexHiddenLifecycleMessage(id: string = 'codex-hidden'): AgentChat
   } as AgentChatMessage
 }
 
+function makeClaudeEnterPlanModeResultMessage(id: string = 'claude-enter-plan-result'): AgentChatMessage {
+  return {
+    $typeName: 'leapmux.v1.AgentChatMessage',
+    id,
+    role: MessageRole.USER,
+    content: new TextEncoder().encode(JSON.stringify({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            content: 'Entered plan mode. You should now focus on exploring the codebase and designing an implementation approach.',
+            tool_use_id: 'toolu_01U3MQbUE7bmTs1SnJx4SPU3',
+          },
+        ],
+      },
+      tool_use_result: {
+        message: 'Entered plan mode. You should now focus on exploring the codebase and designing an implementation approach.',
+      },
+    })),
+    contentCompression: ContentCompression.NONE,
+    seq: 1n,
+    createdAt: '',
+    agentProvider: AgentProvider.CLAUDE_CODE,
+    spanId: 'toolu_01U3MQbUE7bmTs1SnJx4SPU3',
+    spanType: 'EnterPlanMode',
+  } as AgentChatMessage
+}
+
 describe('chatView', () => {
   it('renders empty state when no messages', () => {
     render(() => (
@@ -241,6 +271,16 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
     expect(screen.getByText('Send a message to start')).toBeTruthy()
+  })
+
+  it('hides EnterPlanMode tool_result messages in chat history', () => {
+    render(() => (
+      <PreferencesProvider>
+        <ChatView messages={[makeClaudeEnterPlanModeResultMessage()]} streamingText="" />
+      </PreferencesProvider>
+    ))
+    expect(screen.getByText('Send a message to start')).toBeTruthy()
+    expect(screen.queryByText('Entered plan mode')).toBeNull()
   })
 
   it('renders messages', () => {

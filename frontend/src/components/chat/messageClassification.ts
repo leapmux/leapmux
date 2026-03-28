@@ -1,3 +1,4 @@
+import type { ClassificationContext, ClassificationInput } from './providers/registry'
 import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import * as chatStyles from './messageStyles.css'
 import { getProviderPlugin } from './providers'
@@ -23,6 +24,30 @@ export type MessageCategory
     | { kind: 'compact_summary' }
     | { kind: 'unknown' }
 
+export function buildClassificationInput(
+  parsed: Pick<ClassificationInput, 'rawText' | 'topLevel' | 'parentObject' | 'wrapper'>,
+  message: {
+    role: MessageRole
+    agentProvider?: AgentProvider
+    spanId?: string
+    spanType?: string
+    parentSpanId?: string
+    seq?: bigint
+    createdAt?: string
+  },
+): ClassificationInput {
+  return {
+    ...parsed,
+    messageRole: message.role,
+    agentProvider: message.agentProvider,
+    spanId: message.spanId,
+    spanType: message.spanType,
+    parentSpanId: message.parentSpanId,
+    seq: message.seq,
+    createdAt: message.createdAt,
+  }
+}
+
 /**
  * Classify a parsed message into exactly one category.
  *
@@ -30,15 +55,35 @@ export type MessageCategory
  * (Claude Code, Codex, etc.) registers its own classify implementation.
  */
 export function classifyMessage(
-  parentObject: Record<string, unknown> | undefined,
-  wrapper: { old_seqs: number[], messages: unknown[] } | null,
-  agentProvider?: AgentProvider,
+  inputOrParent: ClassificationInput | Record<string, unknown> | undefined,
+  wrapperOrContext?: { old_seqs: number[], messages: unknown[] } | ClassificationContext | null,
+  agentProviderOrContext?: AgentProvider | ClassificationContext,
+  maybeContext?: ClassificationContext,
 ): MessageCategory {
-  const provider = agentProvider ?? AgentProvider.CLAUDE_CODE
+  const input = (() => {
+    if (inputOrParent && typeof inputOrParent === 'object' && 'rawText' in inputOrParent && 'messageRole' in inputOrParent)
+      return inputOrParent as ClassificationInput
+    return buildClassificationInput(
+      {
+        rawText: '',
+        topLevel: inputOrParent ?? null,
+        parentObject: inputOrParent,
+        wrapper: wrapperOrContext && typeof wrapperOrContext === 'object' && 'messages' in wrapperOrContext
+          ? wrapperOrContext as { old_seqs: number[], messages: unknown[] }
+          : null,
+      },
+      { role: MessageRole.SYSTEM, agentProvider: typeof agentProviderOrContext === 'number' ? agentProviderOrContext : undefined },
+    )
+  })()
+  const context = (wrapperOrContext && typeof wrapperOrContext === 'object' && !('messages' in wrapperOrContext))
+    ? wrapperOrContext as ClassificationContext
+    : (typeof agentProviderOrContext === 'object' ? agentProviderOrContext as ClassificationContext : maybeContext)
+
+  const provider = input.agentProvider ?? (typeof agentProviderOrContext === 'number' ? agentProviderOrContext : undefined) ?? AgentProvider.CLAUDE_CODE
   const plugin = getProviderPlugin(provider)
     ?? getProviderPlugin(AgentProvider.CLAUDE_CODE)
   if (plugin)
-    return plugin.classify(parentObject, wrapper)
+    return plugin.classify(input, context)
   return { kind: 'unknown' }
 }
 
