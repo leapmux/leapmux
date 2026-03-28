@@ -9,11 +9,13 @@ import (
 
 func newGeminiAgentWithSink(sink OutputSink) *GeminiCLIAgent {
 	return &GeminiCLIAgent{
-		jsonrpcBase: jsonrpcBase{processBase: processBase{
-			agentID: "test-agent",
-		}},
-		sink:      sink,
-		sessionID: "test-session",
+		acpBase: acpBase{
+			jsonrpcBase: jsonrpcBase{processBase: processBase{
+				agentID: "test-agent",
+			}},
+			sink:      sink,
+			sessionID: "test-session",
+		},
 	}
 }
 

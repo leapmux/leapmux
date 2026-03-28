@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 	"syscall"
 	"time"
 
@@ -46,19 +45,15 @@ type geminiCLIModelInfo struct {
 
 // GeminiCLIAgent manages a single Gemini CLI ACP process.
 type GeminiCLIAgent struct {
-	jsonrpcBase
+	acpBase
 
 	model          string
 	permissionMode string
 	workingDir     string
-	sink           OutputSink
 
-	sessionID         string
-	useLegacyMethods  bool
-	availableModels   []*leapmuxv1.AvailableModel
-	availableModes    []*leapmuxv1.AvailableOption
-	turnAssistantText strings.Builder
-	turnThinkingText  strings.Builder
+	useLegacyMethods bool
+	availableModels  []*leapmuxv1.AvailableModel
+	availableModes   []*leapmuxv1.AvailableOption
 }
 
 // StartGeminiCLI starts a Gemini CLI ACP agent process and performs the handshake.
@@ -99,21 +94,23 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 	}
 
 	a := &GeminiCLIAgent{
-		jsonrpcBase: jsonrpcBase{processBase: processBase{
-			agentID:            opts.AgentID,
-			cmd:                cmd,
-			stdin:              stdin,
-			ctx:                ctx,
-			cancel:             cancel,
-			stderrDone:         make(chan struct{}),
-			processDone:        make(chan struct{}),
-			preambleDelimiter:  preambleDelimiter,
-			preambleMetaPrefix: metaPrefix,
-			preambleMeta:       make(map[string]string),
-		}},
+		acpBase: acpBase{
+			jsonrpcBase: jsonrpcBase{processBase: processBase{
+				agentID:            opts.AgentID,
+				cmd:                cmd,
+				stdin:              stdin,
+				ctx:                ctx,
+				cancel:             cancel,
+				stderrDone:         make(chan struct{}),
+				processDone:        make(chan struct{}),
+				preambleDelimiter:  preambleDelimiter,
+				preambleMetaPrefix: metaPrefix,
+				preambleMeta:       make(map[string]string),
+			}},
+			sink: sink,
+		},
 		model:      opts.Model,
 		workingDir: opts.WorkingDir,
-		sink:       sink,
 	}
 	a.promptFunc = a.doSendPrompt
 
@@ -213,17 +210,7 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 }
 
 func buildGeminiSessionRequest(resumeSessionID, workingDir string) (method string, params []byte) {
-	p := map[string]interface{}{
-		"cwd":        workingDir,
-		"mcpServers": []interface{}{},
-	}
-	method = geminiMethodNewSession
-	if resumeSessionID != "" {
-		p["sessionId"] = resumeSessionID
-		method = geminiMethodLoadSession
-	}
-	params, _ = json.Marshal(p)
-	return method, params
+	return buildACPSessionRequest(resumeSessionID, workingDir, geminiMethodNewSession, geminiMethodLoadSession)
 }
 
 func buildGeminiCLIModels(models []geminiCLIModelInfo, currentModelID string) []*leapmuxv1.AvailableModel {
@@ -306,24 +293,9 @@ func (a *GeminiCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.A
 }
 
 func (a *GeminiCLIAgent) handlePromptResponse(resp json.RawMessage) {
-	if resp == nil {
-		return
-	}
-
-	a.mu.Lock()
-	thinkingText := a.turnThinkingText.String()
-	a.turnThinkingText.Reset()
-	assistantText := a.turnAssistantText.String()
-	a.turnAssistantText.Reset()
-	a.mu.Unlock()
-	broadcastGeminiQuotaSessionInfo(a.sink, resp)
-	persistACPPromptResponse(a.agentID, a.sink, thinkingText, assistantText, resp, func(resp json.RawMessage) json.RawMessage {
-		return a.enrichWithToolUses(resp)
+	a.handleACPPromptResponse(resp, func(r json.RawMessage) {
+		broadcastGeminiQuotaSessionInfo(a.sink, r)
 	})
-
-	a.mu.Lock()
-	a.turnToolUses = 0
-	a.mu.Unlock()
 }
 
 func (a *GeminiCLIAgent) CurrentSettings() *leapmuxv1.AgentSettings {
@@ -479,7 +451,7 @@ func legacyGeminiMethod(method string) string {
 	case geminiMethodNewSession:
 		return acpMethodSessionNew
 	case geminiMethodLoadSession:
-		return "session/load"
+		return acpMethodSessionLoad
 	case geminiMethodPrompt:
 		return acpMethodSessionPrompt
 	case geminiMethodCancel:

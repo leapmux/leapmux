@@ -37,19 +37,14 @@ type openCodeModeInfo struct {
 
 // OpenCodeAgent manages a single OpenCode ACP process.
 type OpenCodeAgent struct {
-	jsonrpcBase // shared process lifecycle + JSON-RPC plumbing
+	acpBase
 
 	model      string
 	workingDir string
-	sink       OutputSink
 
-	// ACP-specific state.
-	sessionID              string // from newSession response
 	availableModels        []*leapmuxv1.AvailableModel
 	currentPrimaryAgent    string
 	availablePrimaryAgents []*leapmuxv1.AvailableOption
-	turnAssistantText      strings.Builder // accumulated assistant text for the current turn
-	turnThinkingText       strings.Builder // accumulated thinking text for the current turn
 }
 
 // StartOpenCode starts an OpenCode ACP agent process and performs the handshake.
@@ -90,21 +85,23 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 	}
 
 	a := &OpenCodeAgent{
-		jsonrpcBase: jsonrpcBase{processBase: processBase{
-			agentID:            opts.AgentID,
-			cmd:                cmd,
-			stdin:              stdin,
-			ctx:                ctx,
-			cancel:             cancel,
-			stderrDone:         make(chan struct{}),
-			processDone:        make(chan struct{}),
-			preambleDelimiter:  preambleDelimiter,
-			preambleMetaPrefix: metaPrefix,
-			preambleMeta:       make(map[string]string),
-		}},
+		acpBase: acpBase{
+			jsonrpcBase: jsonrpcBase{processBase: processBase{
+				agentID:            opts.AgentID,
+				cmd:                cmd,
+				stdin:              stdin,
+				ctx:                ctx,
+				cancel:             cancel,
+				stderrDone:         make(chan struct{}),
+				processDone:        make(chan struct{}),
+				preambleDelimiter:  preambleDelimiter,
+				preambleMetaPrefix: metaPrefix,
+				preambleMeta:       make(map[string]string),
+			}},
+			sink: sink,
+		},
 		model:      opts.Model,
 		workingDir: opts.WorkingDir,
-		sink:       sink,
 	}
 	a.promptFunc = a.doSendPrompt
 
@@ -211,21 +208,8 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 	return a, nil
 }
 
-// buildSessionRequest returns the JSON-RPC method and params for starting or
-// resuming an OpenCode session. When resumeSessionID is non-empty, it produces
-// a "session/resume" request; otherwise a "session/new" request.
 func buildSessionRequest(resumeSessionID, workingDir string) (method string, params []byte) {
-	p := map[string]interface{}{
-		"cwd":        workingDir,
-		"mcpServers": []interface{}{},
-	}
-	method = acpMethodSessionNew
-	if resumeSessionID != "" {
-		p["sessionId"] = resumeSessionID
-		method = openCodeMethodSessionResume
-	}
-	params, _ = json.Marshal(p)
-	return method, params
+	return buildACPSessionRequest(resumeSessionID, workingDir, acpMethodSessionNew, openCodeMethodSessionResume)
 }
 
 // buildOpenCodeModels converts the ACP newSession models list to proto models.
@@ -385,27 +369,8 @@ func buildACPPromptBlocks(content string, classified []classifiedAttachment) []m
 	return prompt
 }
 
-// handlePromptResponse processes the prompt RPC response, persisting the
-// accumulated assistant text and emitting a result divider.
 func (a *OpenCodeAgent) handlePromptResponse(resp json.RawMessage) {
-	if resp == nil {
-		return
-	}
-
-	// Persist accumulated thinking and assistant text before the result divider.
-	a.mu.Lock()
-	thinkingText := a.turnThinkingText.String()
-	a.turnThinkingText.Reset()
-	assistantText := a.turnAssistantText.String()
-	a.turnAssistantText.Reset()
-	a.mu.Unlock()
-	persistACPPromptResponse(a.agentID, a.sink, thinkingText, assistantText, resp, func(resp json.RawMessage) json.RawMessage {
-		return a.enrichWithToolUses(resp)
-	})
-
-	a.mu.Lock()
-	a.turnToolUses = 0
-	a.mu.Unlock()
+	a.handleACPPromptResponse(resp, nil)
 }
 
 // CurrentSettings returns the current settings for this agent.

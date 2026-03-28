@@ -21,6 +21,7 @@ const (
 	acpMethodSessionRequestPermission = "session/request_permission"
 	acpMethodSessionCancel            = "session/cancel"
 	acpMethodSessionNew               = "session/new"
+	acpMethodSessionLoad              = "session/load"
 	acpMethodSessionPrompt            = "session/prompt"
 	acpMethodSessionSetModel          = "session/set_model"
 	acpMethodSessionSetMode           = "session/set_mode"
@@ -36,6 +37,7 @@ const (
 	acpUpdateUsageUpdate             = "usage_update"
 	acpUpdateUserMessageChunk        = "user_message_chunk"
 	acpUpdateAvailableCommandsUpdate = "available_commands_update"
+	acpUpdateCurrentModeUpdate       = "current_mode_update"
 )
 
 // acpPendingInput holds a user message queued while a prompt is in flight.
@@ -61,6 +63,109 @@ type jsonrpcBase struct {
 	// a single prompt RPC and blocks until the turn completes (including
 	// response handling). Called by runPrompt on a goroutine.
 	promptFunc func(content string, attachments []*leapmuxv1.Attachment)
+}
+
+// acpBase extends jsonrpcBase with fields and methods shared by all ACP
+// agents (GeminiCLIAgent, OpenCodeAgent) but not CodexAgent.
+type acpBase struct {
+	jsonrpcBase
+	sink              OutputSink
+	sessionID         string
+	turnAssistantText strings.Builder
+	turnThinkingText  strings.Builder
+}
+
+// handleACPPromptResponse extracts accumulated turn text, calls the optional
+// prePersist hook, persists the prompt response, and resets the tool-use count.
+func (b *acpBase) handleACPPromptResponse(resp json.RawMessage, prePersist func(json.RawMessage)) {
+	if resp == nil {
+		return
+	}
+
+	b.mu.Lock()
+	thinkingText := b.turnThinkingText.String()
+	b.turnThinkingText.Reset()
+	assistantText := b.turnAssistantText.String()
+	b.turnAssistantText.Reset()
+	b.mu.Unlock()
+
+	if prePersist != nil {
+		prePersist(resp)
+	}
+
+	persistACPPromptResponse(b.agentID, b.sink, thinkingText, assistantText, resp, func(resp json.RawMessage) json.RawMessage {
+		return b.enrichWithToolUses(resp)
+	})
+
+	b.mu.Lock()
+	b.turnToolUses = 0
+	b.mu.Unlock()
+}
+
+// acpSessionUpdateHandler is called for session update types not handled by
+// the shared dispatcher. Return true if the update was consumed.
+type acpSessionUpdateHandler func(sessionUpdate string, update json.RawMessage) bool
+
+// handleACPSessionUpdate dispatches ACP sessionUpdate notifications by type.
+func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessionUpdateHandler) {
+	var wrapper struct {
+		SessionID string          `json:"sessionId"`
+		Update    json.RawMessage `json:"update"`
+	}
+	if json.Unmarshal(params, &wrapper) != nil || len(wrapper.Update) == 0 {
+		return
+	}
+
+	var header struct {
+		SessionUpdate string `json:"sessionUpdate"`
+		Role          string `json:"role"`
+	}
+	if json.Unmarshal(wrapper.Update, &header) != nil {
+		return
+	}
+
+	if header.Role == "result" {
+		return
+	}
+
+	switch header.SessionUpdate {
+	case acpUpdateAgentMessageChunk:
+		b.appendACPChunk(wrapper.Update, &b.turnAssistantText, b.sink, acpUpdateAgentMessageChunk)
+	case acpUpdateAgentThoughtChunk:
+		b.appendACPChunk(wrapper.Update, &b.turnThinkingText, b.sink, acpUpdateAgentThoughtChunk)
+	case acpUpdateToolCall:
+		handleACPToolCall(b.agentID, b.sink, wrapper.Update)
+	case acpUpdateToolCallUpdate:
+		b.handleACPToolCallUpdate(b.sink, wrapper.Update)
+	case acpUpdatePlan:
+		handleACPPlan(b.agentID, b.sink, wrapper.Update)
+	case acpUpdateUsageUpdate:
+		handleACPUsageUpdate(b.sink, wrapper.Update)
+	case acpUpdateAvailableCommandsUpdate, acpUpdateUserMessageChunk:
+		// No-op.
+	default:
+		if extra != nil && extra(header.SessionUpdate, wrapper.Update) {
+			return
+		}
+		if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, wrapper.Update, SpanInfo{}); err != nil {
+			slog.Error("persist unknown acp sessionUpdate", "agent_id", b.agentID, "type", header.SessionUpdate, "error", err)
+		}
+	}
+}
+
+// buildACPSessionRequest builds a newSession or loadSession JSON-RPC request.
+func buildACPSessionRequest(resumeSessionID, workingDir, newMethod, resumeMethod string) (method string, params []byte) {
+	p := map[string]interface{}{
+		"cwd":        workingDir,
+		"mcpServers": []interface{}{},
+	}
+	method = newMethod
+	if resumeSessionID != "" {
+		p["sessionId"] = resumeSessionID
+		method = resumeMethod
+	}
+	params, _ = json.Marshal(p)
+	return method, params
 }
 
 // sendRequest sends a JSON-RPC request and waits for the response.
@@ -194,37 +299,32 @@ func (b *jsonrpcBase) enqueueOrSendPrompt(content string, attachments []*leapmux
 // runPrompt calls the agent's promptFunc and then drains any queued messages.
 // It runs on a dedicated goroutine and loops until the queue is empty.
 func (b *jsonrpcBase) runPrompt(content string, attachments []*leapmuxv1.Attachment) {
-	b.promptFunc(content, attachments)
-	b.drainPendingOrReset()
-}
+	for {
+		b.promptFunc(content, attachments)
 
-// drainPendingOrReset checks for queued messages after a turn completes.
-// If messages are queued, they are coalesced into a single prompt and sent
-// in the current goroutine. If the queue is empty, promptActive is cleared.
-func (b *jsonrpcBase) drainPendingOrReset() {
-	b.mu.Lock()
-	if len(b.pendingMessages) == 0 || b.stopped {
-		b.promptActive = false
+		b.mu.Lock()
+		if len(b.pendingMessages) == 0 || b.stopped {
+			b.promptActive = false
+			b.pendingMessages = nil
+			b.mu.Unlock()
+			return
+		}
+		pending := b.pendingMessages
 		b.pendingMessages = nil
 		b.mu.Unlock()
-		return
-	}
 
-	pending := b.pendingMessages
-	b.pendingMessages = nil
-	// promptActive stays true — we are about to send another prompt.
-	b.mu.Unlock()
-
-	var parts []string
-	var allAttachments []*leapmuxv1.Attachment
-	for _, p := range pending {
-		if p.content != "" {
-			parts = append(parts, p.content)
+		// Coalesce queued messages into a single prompt.
+		var parts []string
+		var allAttachments []*leapmuxv1.Attachment
+		for _, p := range pending {
+			if p.content != "" {
+				parts = append(parts, p.content)
+			}
+			allAttachments = append(allAttachments, p.attachments...)
 		}
-		allAttachments = append(allAttachments, p.attachments...)
+		content = strings.Join(parts, "\n\n")
+		attachments = allAttachments
 	}
-
-	b.runPrompt(strings.Join(parts, "\n\n"), allAttachments)
 }
 
 // clearPromptQueue discards any queued messages and resets the prompt-active
@@ -304,8 +404,8 @@ func persistACPPromptResponse(
 	resp json.RawMessage,
 	enrich func(json.RawMessage) json.RawMessage,
 ) {
-	persistACPTextMessage(agentID, sink, "agent_thought_chunk", thinkingText)
-	persistACPTextMessage(agentID, sink, "agent_message_chunk", assistantText)
+	persistACPTextMessage(agentID, sink, acpUpdateAgentThoughtChunk, thinkingText)
+	persistACPTextMessage(agentID, sink, acpUpdateAgentMessageChunk, assistantText)
 
 	resp = unwrapACPResult(resp)
 	if enrich != nil {
@@ -494,4 +594,14 @@ func handleACPPlan(agentID string, sink OutputSink, update json.RawMessage) {
 	if err := sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{}); err != nil {
 		slog.Error("persist acp plan", "agent_id", agentID, "error", err)
 	}
+}
+
+func handleACPRequestPermission(agentID string, sink OutputSink, id *json.Number, content []byte) {
+	if id == nil {
+		slog.Warn("acp requestPermission missing id", "agent_id", agentID)
+		return
+	}
+	requestID := id.String()
+	sink.PersistControlRequest(requestID, content)
+	sink.BroadcastControlRequest(requestID, content)
 }

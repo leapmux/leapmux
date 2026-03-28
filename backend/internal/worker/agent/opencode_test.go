@@ -29,15 +29,17 @@ func newOpenCodeAgentForRPC(t *testing.T) (*OpenCodeAgent, func() []openCodeReco
 	}
 
 	agent := &OpenCodeAgent{
-		jsonrpcBase: jsonrpcBase{processBase: processBase{
-			agentID:     "test-agent",
-			stdin:       writePipe,
-			ctx:         ctx,
-			cancel:      cancel,
-			processDone: make(chan struct{}),
-			stderrDone:  make(chan struct{}),
-		}},
-		sessionID: "session-1",
+		acpBase: acpBase{
+			jsonrpcBase: jsonrpcBase{processBase: processBase{
+				agentID:     "test-agent",
+				stdin:       writePipe,
+				ctx:         ctx,
+				cancel:      cancel,
+				processDone: make(chan struct{}),
+				stderrDone:  make(chan struct{}),
+			}},
+			sessionID: "session-1",
+		},
 	}
 	close(agent.stderrDone)
 
