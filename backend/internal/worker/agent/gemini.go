@@ -22,13 +22,13 @@ const (
 
 // Gemini CLI native method names (pre-ACP).
 const (
-	geminiMethodNewSession      = "newSession"
-	geminiMethodLoadSession     = "loadSession"
-	geminiMethodPrompt          = "prompt"
-	geminiMethodCancel          = "cancel"
-	geminiMethodSetSessionMode  = "setSessionMode"
-	geminiMethodSetSessionModel = "unstable_setSessionModel"
-	geminiMethodSessionUpdate   = "sessionUpdate"
+	geminiMethodNewSession        = "newSession"
+	geminiMethodLoadSession       = "loadSession"
+	geminiMethodPrompt            = "prompt"
+	geminiMethodCancel            = "cancel"
+	geminiMethodSetSessionMode    = "setSessionMode"
+	geminiMethodSetSessionModel   = "unstable_setSessionModel"
+	geminiMethodSessionUpdate     = "sessionUpdate"
 	geminiMethodRequestPermission = "requestPermission"
 )
 
@@ -278,7 +278,6 @@ func fallbackGeminiCLIModes() []*leapmuxv1.AvailableOption {
 		{Id: GeminiCLIModePlan, Name: "Plan"},
 	}
 }
-
 
 func (a *GeminiCLIAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
 	a.mu.Lock()

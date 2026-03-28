@@ -8,33 +8,33 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"unicode"
 	"time"
+	"unicode"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 // ACP JSON-RPC method name constants shared across ACP providers (Gemini CLI, OpenCode).
 const (
-	acpMethodInitialize    = "initialize"
-	acpMethodSessionUpdate = "session/update"
+	acpMethodInitialize               = "initialize"
+	acpMethodSessionUpdate            = "session/update"
 	acpMethodSessionRequestPermission = "session/request_permission"
-	acpMethodSessionCancel  = "session/cancel"
-	acpMethodSessionNew     = "session/new"
-	acpMethodSessionPrompt  = "session/prompt"
-	acpMethodSessionSetModel = "session/set_model"
-	acpMethodSessionSetMode  = "session/set_mode"
+	acpMethodSessionCancel            = "session/cancel"
+	acpMethodSessionNew               = "session/new"
+	acpMethodSessionPrompt            = "session/prompt"
+	acpMethodSessionSetModel          = "session/set_model"
+	acpMethodSessionSetMode           = "session/set_mode"
 )
 
 // ACP session update type constants shared across providers.
 const (
-	acpUpdateAgentMessageChunk    = "agent_message_chunk"
-	acpUpdateAgentThoughtChunk    = "agent_thought_chunk"
-	acpUpdateToolCall             = "tool_call"
-	acpUpdateToolCallUpdate       = "tool_call_update"
-	acpUpdatePlan                 = "plan"
-	acpUpdateUsageUpdate          = "usage_update"
-	acpUpdateUserMessageChunk     = "user_message_chunk"
+	acpUpdateAgentMessageChunk       = "agent_message_chunk"
+	acpUpdateAgentThoughtChunk       = "agent_thought_chunk"
+	acpUpdateToolCall                = "tool_call"
+	acpUpdateToolCallUpdate          = "tool_call_update"
+	acpUpdatePlan                    = "plan"
+	acpUpdateUsageUpdate             = "usage_update"
+	acpUpdateUserMessageChunk        = "user_message_chunk"
 	acpUpdateAvailableCommandsUpdate = "available_commands_update"
 )
 
@@ -273,10 +273,10 @@ func (b *jsonrpcBase) handleACPToolCallUpdate(sink OutputSink, update json.RawMe
 		return
 	}
 
-	switch {
-	case tcu.Status == "in_progress":
+	switch tcu.Status {
+	case "in_progress":
 		sink.BroadcastStreamChunk(update, tcu.ToolCallID, acpUpdateToolCallUpdate)
-	case tcu.Status == "completed" || tcu.Status == "failed" || tcu.Status == "cancelled":
+	case "completed", "failed", "cancelled":
 		b.mu.Lock()
 		b.turnToolUses++
 		b.mu.Unlock()

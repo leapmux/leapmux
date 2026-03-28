@@ -280,7 +280,6 @@ func isHiddenOpenCodePrimaryAgent(id string) bool {
 	}
 }
 
-
 func firstOpenCodePrimaryAgent(options []*leapmuxv1.AvailableOption) string {
 	for _, option := range options {
 		if option != nil && option.IsDefault && option.Id != "" {
@@ -548,7 +547,6 @@ func (a *OpenCodeAgent) cancelSession() error {
 func (a *OpenCodeAgent) formatStartupError(phase string, err error) error {
 	return a.processBase.formatStartupError(phase, err, a.PreambleOutput())
 }
-
 
 func jsonRPCResultError(resp json.RawMessage) error {
 	if len(resp) == 0 || string(resp) == "null" {

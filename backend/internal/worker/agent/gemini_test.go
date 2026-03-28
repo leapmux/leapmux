@@ -110,7 +110,7 @@ func TestHelperProcessGeminiCLI(t *testing.T) {
 
 	scanner := bufio.NewScanner(os.Stdin)
 	writer := bufio.NewWriter(os.Stdout)
-	defer writer.Flush()
+	defer func() { _ = writer.Flush() }()
 
 	scenario := os.Getenv("LEAPMUX_GEMINI_TEST_SCENARIO")
 
@@ -186,10 +186,10 @@ func TestStartGeminiCLI_NewSessionHandshake(t *testing.T) {
 	installFakeGeminiCLI(t, "new")
 
 	provider, err := StartGeminiCLI(context.Background(), Options{
-		AgentID:     "gemini-new",
-		WorkingDir:  t.TempDir(),
-		Shell:       "/bin/sh",
-		LoginShell:  false,
+		AgentID:       "gemini-new",
+		WorkingDir:    t.TempDir(),
+		Shell:         "/bin/sh",
+		LoginShell:    false,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
 	}, &testSink{})
 	require.NoError(t, err)
