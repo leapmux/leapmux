@@ -365,6 +365,60 @@ func TestPersistConfirmedAgentSettings_PersistsDiscoveredPrimaryAgentFromEmpty(t
 		"new extra_settings should reflect the requested change")
 }
 
+func TestPersistConfirmedAgentSettings_PersistsAvailableModelsAndGroups(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t, "ws-1")
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-gemini",
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
+		Model:         "auto",
+	}))
+
+	// Preload the manager cache with models and option groups
+	// (simulates what startAgentWith would do after agent starts).
+	models := []*leapmuxv1.AvailableModel{
+		{Id: "gemini-2.5-pro", DisplayName: "Gemini 2.5 Pro"},
+		{Id: "gemini-2.5-flash", DisplayName: "Gemini 2.5 Flash"},
+	}
+	groups := []*leapmuxv1.AvailableOptionGroup{
+		{Key: "thinkingBudget", Label: "Thinking Budget", Options: []*leapmuxv1.AvailableOption{
+			{Id: "low", Name: "Low"},
+			{Id: "high", Name: "High"},
+		}},
+	}
+	svc.Agents.PreloadCache("agent-gemini", models, groups)
+
+	// Persist confirmed settings — should also persist available models/groups.
+	err := svc.persistConfirmedAgentSettings(
+		"agent-gemini",
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
+		"auto", "", "", nil,
+		&leapmuxv1.AgentSettings{Model: "auto"},
+	)
+	require.NoError(t, err)
+
+	// Verify available models/groups were persisted to DB.
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-gemini")
+	require.NoError(t, err)
+	assert.NotEqual(t, "[]", dbAgent.AvailableModels, "available_models should be populated")
+	assert.NotEqual(t, "[]", dbAgent.AvailableOptionGroups, "available_option_groups should be populated")
+
+	// Verify round-trip: unmarshal back and check values.
+	parsedModels := unmarshalAvailableModels(dbAgent.AvailableModels)
+	require.Len(t, parsedModels, 2)
+	assert.Equal(t, "gemini-2.5-pro", parsedModels[0].GetId())
+	assert.Equal(t, "gemini-2.5-flash", parsedModels[1].GetId())
+
+	parsedGroups := unmarshalAvailableOptionGroups(dbAgent.AvailableOptionGroups)
+	require.Len(t, parsedGroups, 1)
+	assert.Equal(t, "thinkingBudget", parsedGroups[0].GetKey())
+	assert.Len(t, parsedGroups[0].GetOptions(), 2)
+}
+
 func TestUpdateAgentSettings_BroadcastsGeminiPermissionModeLabels(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")

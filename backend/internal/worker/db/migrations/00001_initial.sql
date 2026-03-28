@@ -18,6 +18,8 @@ CREATE TABLE agents (
     permission_mode  TEXT NOT NULL DEFAULT 'default',
     effort           TEXT NOT NULL DEFAULT 'high',
     extra_settings   TEXT NOT NULL DEFAULT '{}',
+    available_models         TEXT NOT NULL DEFAULT '[]',
+    available_option_groups  TEXT NOT NULL DEFAULT '[]',
     agent_provider   INTEGER NOT NULL DEFAULT 1,
     session_start_seq INTEGER NOT NULL DEFAULT 0,
     created_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),

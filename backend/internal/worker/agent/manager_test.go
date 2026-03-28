@@ -230,6 +230,69 @@ func TestManager_AvailableOptionGroupsPrefersRuntimeGroups(t *testing.T) {
 	assert.Equal(t, OpenCodePrimaryAgentBuild, staticGroups[0].Options[0].Id)
 }
 
+func TestManager_PreloadCache(t *testing.T) {
+	m := NewManager(nil)
+
+	models := []*leapmuxv1.AvailableModel{
+		{Id: "gemini-2.5-pro", DisplayName: "Gemini 2.5 Pro"},
+		{Id: "gemini-2.5-flash", DisplayName: "Gemini 2.5 Flash"},
+	}
+	groups := []*leapmuxv1.AvailableOptionGroup{
+		{Key: "thinkingBudget", Label: "Thinking Budget", Options: []*leapmuxv1.AvailableOption{
+			{Id: "low", Name: "Low"},
+			{Id: "high", Name: "High"},
+		}},
+	}
+
+	// Preload cache for a non-running agent.
+	m.PreloadCache("preloaded-agent", models, groups)
+
+	// AvailableModels should return preloaded models (not static defaults).
+	got := m.AvailableModels("preloaded-agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI)
+	require.Len(t, got, 2)
+	assert.Equal(t, "gemini-2.5-pro", got[0].GetId())
+	assert.Equal(t, "gemini-2.5-flash", got[1].GetId())
+
+	// AvailableOptionGroups should return preloaded groups (not static defaults).
+	gotGroups := m.AvailableOptionGroups("preloaded-agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI)
+	require.Len(t, gotGroups, 1)
+	assert.Equal(t, "thinkingBudget", gotGroups[0].GetKey())
+	assert.Len(t, gotGroups[0].GetOptions(), 2)
+}
+
+func TestManager_PreloadCacheSkipsEmpty(t *testing.T) {
+	m := NewManager(nil)
+
+	// Preload with nil slices — should not populate cache.
+	m.PreloadCache("empty-agent", nil, nil)
+
+	// Should fall back to static defaults.
+	models := m.AvailableModels("empty-agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI)
+	require.NotEmpty(t, models)
+	assert.Equal(t, "auto", models[0].GetId(), "should fall back to static Gemini defaults")
+}
+
+func TestManager_AvailableOptionGroupsCachedFallback(t *testing.T) {
+	m := NewManager(nil)
+
+	cachedGroups := []*leapmuxv1.AvailableOptionGroup{{
+		Key:   "thinkingBudget",
+		Label: "Thinking Budget",
+		Options: []*leapmuxv1.AvailableOption{
+			{Id: "low", Name: "Low"},
+		},
+	}}
+
+	m.mu.Lock()
+	m.cachedOptionGroups["cached-agent"] = cachedGroups
+	m.mu.Unlock()
+
+	// Agent is not running — should return cached groups, not static defaults.
+	got := m.AvailableOptionGroups("cached-agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE)
+	require.Len(t, got, 1)
+	assert.Equal(t, "thinkingBudget", got[0].GetKey())
+}
+
 func TestManager_AvailableModelsFallsBackToGeminiDefaults(t *testing.T) {
 	m := NewManager(nil)
 
