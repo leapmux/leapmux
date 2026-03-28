@@ -45,7 +45,7 @@ export function useControlResponseHandling(
   getAttachments?: () => FileAttachment[],
   onSendMessageOverride?: (content: string, attachments?: FileAttachment[]) => void,
 ): ControlResponseHandlingResult {
-  const planModeConfig = () => getProviderPlugin(props.agent?.agentProvider)?.planMode
+  const planModeConfig = () => props.agent?.agentProvider ? getProviderPlugin(props.agent.agentProvider)?.planMode : undefined
 
   // Track previous non-plan mode for Shift+Tab toggling.
   let previousNonPlanMode = planModeConfig()?.defaultValue ?? 'default'

@@ -155,6 +155,7 @@ export function useTabPersistence(opts: UseTabPersistenceOpts) {
       workspaceId: string
       layout: ReturnType<typeof layoutStore.toProto>
       tabs: Array<{ tabType: number, tabId: string, position: string, tileId: string, workerId: string }>
+      floatingWindows?: ReturnType<NonNullable<typeof opts.floatingWindowStore>['toProto']>
     }> = []
 
     // Active workspace: use live stores

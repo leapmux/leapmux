@@ -95,15 +95,15 @@ function isCodexJsonRpcResponse(parent: Record<string, unknown>): boolean {
 
 /** Extra notification types for Codex (agent_error). */
 const CODEX_EXTRA_NOTIF_TYPES = new Set(['agent_error'])
-function isCodexNotifThread(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
+function isCodexNotifThread(wrapper: { old_seqs: number[], messages: unknown[] } | null): wrapper is { old_seqs: number[], messages: unknown[] } {
   if (isNotificationThreadWrapper(wrapper, CODEX_EXTRA_NOTIF_TYPES, (t, st) =>
     t === 'system' && st !== 'init' && st !== 'task_notification')) {
     return true
   }
   // Codex method-based notifications (e.g. account/rateLimits/updated)
-  if (!wrapper || wrapper.messages.length < 1)
+  if (!wrapper || (wrapper as { messages: unknown[] }).messages.length < 1)
     return false
-  return wrapper.messages.some(msg =>
+  return (wrapper as { messages: unknown[] }).messages.some((msg: unknown) =>
     isObject(msg) && msg.method === 'account/rateLimits/updated')
 }
 
@@ -315,7 +315,7 @@ const codexPlugin: ProviderPlugin = {
     }
 
     // Empty wrapper — hide.
-    if (wrapper && wrapper.messages.length === 0)
+    if (wrapper && (wrapper as { messages: unknown[] }).messages.length === 0)
       return { kind: 'hidden' }
 
     if (!parent)

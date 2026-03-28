@@ -552,7 +552,7 @@ export function createChatStore() {
         }
         if (!resp.hasMore || resp.messages.length === 0)
           break
-        cursor = resp.messages.at(-1).seq
+        cursor = resp.messages.at(-1)!.seq
       }
     },
 

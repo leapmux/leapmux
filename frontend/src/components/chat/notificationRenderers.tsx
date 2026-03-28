@@ -2,6 +2,7 @@
 /* eslint-disable solid/no-innerhtml -- HTML is produced from user/assistant text via remark, not arbitrary user input */
 import type { JSXElement } from 'solid-js'
 import type { MessageContentRenderer } from './messageRenderers'
+import type { RateLimitInfo } from '~/stores/agentSession.store'
 import ArrowDownToLine from 'lucide-solid/icons/arrow-down-to-line'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { Icon } from '~/components/common/Icon'
@@ -174,9 +175,10 @@ export const rateLimitRenderer: MessageContentRenderer = {
       if (!isObject(info))
         return <div class={controlResponseMessage}>Rate limit update</div>
       // Hide "allowed" status from chat — the popover still shows it.
-      if ((info as Record<string, unknown>).status === 'allowed')
+      const rl = info as RateLimitInfo
+      if (rl.status === 'allowed')
         return null
-      return <div class={controlResponseMessage}>{formatRateLimitMessage(info as Record<string, unknown>)}</div>
+      return <div class={controlResponseMessage}>{formatRateLimitMessage(rl)}</div>
     }
     // Codex native format: {method: "account/rateLimits/updated", params: {rateLimits: {...}}}
     if (parsed.method === 'account/rateLimits/updated')
@@ -200,7 +202,7 @@ function renderCodexRateLimits(parsed: Record<string, unknown>): JSXElement {
     const info = codexTierToRateLimitInfo(tier)
     if (info.status === 'allowed')
       continue
-    parts.push(formatRateLimitMessage(info as unknown as Record<string, unknown>))
+    parts.push(formatRateLimitMessage(info))
   }
   if (parts.length === 0)
     return null
@@ -371,7 +373,7 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
           continue
         const info = codexTierToRateLimitInfo(tier)
         if (info.rateLimitType && info.status !== 'allowed')
-          entries.push({ kind: 'text', text: formatRateLimitMessage(info as unknown as Record<string, unknown>) })
+          entries.push({ kind: 'text', text: formatRateLimitMessage(info) })
       }
     }
     else if (t === 'rate_limit') {

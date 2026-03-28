@@ -363,6 +363,7 @@ export function opencodePlanRenderer(toolUse: Record<string, unknown>, _role: Me
   const todos = entries.map(e => ({
     content: e.content,
     status: e.status === 'completed' ? 'completed' as const : 'pending' as const,
+    activeForm: '',
   }))
 
   const md = todosToMarkdown(todos)
@@ -379,7 +380,7 @@ export function opencodePlanRenderer(toolUse: Record<string, unknown>, _role: Me
       onCopyMarkdown={copy}
       markdownCopied={copied()}
     >
-      <TodoList items={todos} />
+      <TodoList todos={todos} />
     </ToolUseLayout>
   )
 }

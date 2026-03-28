@@ -48,7 +48,7 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
     const workspace = props.workspaces.find(w => w.id === wsId)
     return workspace
       ? <div class={wsDragOverlay}>{workspace.title || 'Untitled'}</div>
-      : null as unknown as JSX.Element
+      : null
   })
   onCleanup(() => {
     disposeWsDragHandler()

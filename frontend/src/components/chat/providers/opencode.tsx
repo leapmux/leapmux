@@ -29,7 +29,7 @@ const OPENCODE_EXTRA_PRIMARY_AGENT = 'primaryAgent'
 /** Extra notification types for OpenCode (agent_error). */
 const OPENCODE_EXTRA_NOTIF_TYPES = new Set(['agent_error'])
 
-function isOpenCodeNotifThread(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
+function isOpenCodeNotifThread(wrapper: { old_seqs: number[], messages: unknown[] } | null): wrapper is { old_seqs: number[], messages: unknown[] } {
   return isNotificationThreadWrapper(wrapper, OPENCODE_EXTRA_NOTIF_TYPES, (t, st) =>
     t === 'system' && st !== 'init' && st !== 'task_notification')
 }
@@ -99,7 +99,7 @@ function classifyOpenCodeMessage(
     return { kind: 'notification_thread', messages: wrapper.messages }
 
   // Empty wrapper — hide.
-  if (wrapper && wrapper.messages.length === 0)
+  if (wrapper && (wrapper as { messages: unknown[] }).messages.length === 0)
     return { kind: 'hidden' }
 
   if (!parent)

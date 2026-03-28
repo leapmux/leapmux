@@ -1,5 +1,5 @@
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
-import type { ContextUsageInfo } from '~/stores/agentSession.store'
+import type { ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
 import type { TodoItem } from '~/stores/chat.store'
 import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { decompressContentToString } from '~/lib/decompress'
@@ -275,7 +275,7 @@ export function extractResultMetadata(parsed: ParsedMessageContent): {
 /** Extract rate limit info from a LEAPMUX rate_limit or Codex rateLimits/updated inner message. */
 export function extractRateLimitInfo(parsed: ParsedMessageContent): {
   key: string
-  info: Record<string, unknown>
+  info: RateLimitInfo
 }[] {
   const inner = getInnerMessage(parsed)
   if (!inner)
@@ -287,7 +287,7 @@ export function extractRateLimitInfo(parsed: ParsedMessageContent): {
     if (!rlInfo || typeof rlInfo !== 'object')
       return []
     const key = (rlInfo.rateLimitType as string) || 'unknown'
-    return [{ key, info: rlInfo }]
+    return [{ key, info: rlInfo as RateLimitInfo }]
   }
 
   // Codex native format: {method: "account/rateLimits/updated", params: {rateLimits: {primary: {...}, secondary: {...}}}}
@@ -296,14 +296,14 @@ export function extractRateLimitInfo(parsed: ParsedMessageContent): {
     const rl = params?.rateLimits as Record<string, unknown> | undefined
     if (!rl)
       return []
-    const results: { key: string, info: Record<string, unknown> }[] = []
+    const results: { key: string, info: RateLimitInfo }[] = []
     for (const tierKey of ['primary', 'secondary']) {
       const tier = rl[tierKey] as Record<string, unknown> | undefined
       if (!tier)
         continue
       const info = codexTierToRateLimitInfo(tier)
       if (info.rateLimitType)
-        results.push({ key: info.rateLimitType, info: info as unknown as Record<string, unknown> })
+        results.push({ key: info.rateLimitType, info })
     }
     return results
   }

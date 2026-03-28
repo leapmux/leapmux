@@ -321,7 +321,8 @@ export function computeGapMap(
   }
 
   // Trailing gap (lines after the last hunk)
-  const lastHunk = hunks.at(-1)
+  // hunks.length > 0 is guaranteed by the early return above
+  const lastHunk = hunks.at(-1)!
   const trailingStart = lastHunk.oldStart + lastHunk.oldLines // 1-based
   if (trailingStart <= originalFileLines.length) {
     trailing = {
@@ -496,7 +497,7 @@ function DiffGapSeparator(props: {
         setTokenMap((prev) => {
           const next = new Map(prev)
           for (let j = 0; j < untokenizedIndices.length; j++)
-            next.set(untokenizedIndices[j], tokens[j])
+            next.set(untokenizedIndices[j], tokens![j])
           return next
         })
         setTokenizing(false)

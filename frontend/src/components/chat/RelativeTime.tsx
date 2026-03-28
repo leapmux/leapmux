@@ -1,4 +1,4 @@
-import type { Component } from 'solid-js'
+import type { LucideIcon } from 'lucide-solid'
 
 import Clock1 from 'lucide-solid/icons/clock-1'
 import Clock2 from 'lucide-solid/icons/clock-2'
@@ -17,7 +17,7 @@ import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { formatLocalDateTime } from '~/lib/dateFormat'
 
-const clockIcons: Component<{ size: number }>[] = [
+const clockIcons: LucideIcon[] = [
   Clock12,
   Clock1,
   Clock2,

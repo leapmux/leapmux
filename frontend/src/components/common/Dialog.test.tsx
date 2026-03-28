@@ -1,3 +1,4 @@
+/// <reference types="vitest/globals" />
 import { render } from '@solidjs/testing-library'
 import { createSignal, Show } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'

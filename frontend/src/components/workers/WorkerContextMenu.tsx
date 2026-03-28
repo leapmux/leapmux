@@ -36,7 +36,7 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
           ref={triggerProps.ref}
           onPointerDown={(e: PointerEvent) => {
             e.stopPropagation()
-            triggerProps.onPointerDown(e)
+            triggerProps.onPointerDown()
           }}
           aria-expanded={triggerProps['aria-expanded']}
         />

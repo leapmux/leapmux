@@ -101,9 +101,12 @@ export const Tile: Component<TileProps> = (props) => {
               icon={Ellipsis}
               size="md"
               class={styles.tinyOverlayTrigger}
-              onClick={e => e.stopPropagation()}
               title="Tile menu"
               {...triggerProps}
+              onClick={(e: MouseEvent) => {
+                e.stopPropagation()
+                triggerProps.onClick()
+              }}
             />
           )}
         >

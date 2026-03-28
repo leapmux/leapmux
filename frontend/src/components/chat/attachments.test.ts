@@ -194,6 +194,11 @@ describe('readFileAsAttachment', () => {
   })
 })
 
+/** Create a minimal DataTransfer-like object for testing. */
+function mockDataTransfer(items: { webkitGetAsEntry: () => unknown }[]): DataTransfer {
+  return { items, files: [] } as unknown as DataTransfer
+}
+
 describe('collectDroppedAttachmentFiles', () => {
   function createFileEntry(path: string, file: File) {
     const parts = path.split('/')
@@ -234,10 +239,7 @@ describe('collectDroppedAttachmentFiles', () => {
     const logo = createFileEntry('project/assets/logo.png', new File([new Uint8Array([1, 2, 3])], 'logo.png', { type: 'image/png' }))
     const assets = createDirectoryEntry('assets', [logo])
     const project = createDirectoryEntry('project', [assets, readme])
-    const dataTransfer = {
-      items: [{ webkitGetAsEntry: () => project }],
-      files: [],
-    } as unknown as DataTransfer
+    const dataTransfer = mockDataTransfer([{ webkitGetAsEntry: () => project }])
 
     const result = await collectDroppedAttachmentFiles(dataTransfer)
 
@@ -256,10 +258,7 @@ describe('collectDroppedAttachmentFiles', () => {
     )
     const late = createFileEntry('big/late.txt', new File([new Uint8Array(64)], 'late.txt', { type: 'text/plain' }))
     const directory = createDirectoryEntry('big', [first, tooLarge, late])
-    const dataTransfer = {
-      items: [{ webkitGetAsEntry: () => directory }],
-      files: [],
-    } as unknown as DataTransfer
+    const dataTransfer = mockDataTransfer([{ webkitGetAsEntry: () => directory }])
 
     const result = await collectDroppedAttachmentFiles(dataTransfer, MAX_TOTAL_ATTACHMENT_SIZE - 96)
 

@@ -314,7 +314,7 @@ export async function collectDroppedAttachmentFiles(
   const items = [...(dataTransfer.items ?? [])] as WebkitDataTransferItem[]
   const entries = items
     .map(item => item.webkitGetAsEntry?.() ?? null)
-    .filter((entry): entry is FileSystemEntry => entry !== null)
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== null) as FileSystemEntry[]
 
   if (entries.length > 0) {
     for (const entry of sortedEntries(entries)) {

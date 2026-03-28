@@ -11,6 +11,7 @@ import type { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { createTerminalStore } from '~/stores/terminal.store'
+import { create } from '@bufbuild/protobuf'
 import Bot from 'lucide-solid/icons/bot'
 import Terminal from 'lucide-solid/icons/terminal'
 import { createEffect, createMemo, For, onCleanup, Show } from 'solid-js'
@@ -22,7 +23,7 @@ import { Icon } from '~/components/common/Icon'
 import { showWarnToast } from '~/components/common/Toast'
 import { FileViewer } from '~/components/fileviewer/FileViewer'
 import { TerminalView } from '~/components/terminal/TerminalView'
-import { ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
@@ -460,18 +461,15 @@ export function createTileRenderer(opts: TileRendererOpts) {
 
           // Create an optimistic local message so it appears immediately in the chat.
           const localId = `local-${crypto.randomUUID()}`
-          const localMsg = {
-            $typeName: 'leapmux.v1.AgentChatMessage' as const,
+          const localMsg = create(AgentChatMessageSchema, {
             id: localId,
             role: MessageRole.USER,
             content: new TextEncoder().encode(JSON.stringify(optimisticPayload)),
             contentCompression: ContentCompression.NONE,
             seq: 0n,
             createdAt: new Date().toISOString(),
-            deliveryError: '',
-            updatedAt: '',
             agentProvider: sendAgent?.agentProvider,
-          }
+          })
           chatStore.addMessage(id, localMsg)
 
           try {

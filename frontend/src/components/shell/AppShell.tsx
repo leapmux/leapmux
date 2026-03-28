@@ -294,7 +294,7 @@ export const AppShell: ParentComponent = (props) => {
 
   // Whether the active workspace can be mutated
   const isActiveWorkspaceMutatable = createMemo(() =>
-    isWorkspaceMutatable(activeWorkspace(), auth.user()?.id ?? '', isActiveWorkspaceArchived()),
+    isWorkspaceMutatable(activeWorkspace() ?? undefined, auth.user()?.id ?? '', isActiveWorkspaceArchived()),
   )
 
   // Active tab derived state
@@ -462,7 +462,7 @@ export const AppShell: ParentComponent = (props) => {
     floatingWindowStore,
     agentOps,
     termOps,
-    activeTab,
+    activeTab: () => activeTab() ?? undefined,
     getCurrentTabContext,
     focusEditor: () => focusEditorRef.current?.(),
     getScrollState: () => getScrollStateRef.current?.(),
@@ -868,8 +868,8 @@ export const AppShell: ParentComponent = (props) => {
       const existing = registry.get(workspaceId)
       registry.set(workspaceId, {
         workspaceId,
-        tabs: { tabs, activeTabKey: existing?.tabs.activeTabKey ?? null, mruOrder: [] },
-        layout: existing?.layout ?? { root: { type: 'leaf', id: 'default' } },
+        tabs: { tabs, activeTabKey: existing?.tabs.activeTabKey ?? null, mruOrder: [], tileActiveTabKeys: {}, tileMruOrder: {} },
+        layout: existing?.layout ?? { root: { type: 'leaf', id: 'default' }, focusedTileId: null },
         agents: allAgents,
         terminals: existing?.terminals ?? [],
         restored: false,
