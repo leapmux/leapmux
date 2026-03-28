@@ -262,7 +262,7 @@ describe('channelManager', () => {
    */
   function simulateClaimAccept() {
     const lastSent = mockWs.sent.at(-1)
-    const sentMsg = decodeWireMessage(lastSent)
+    const sentMsg = decodeWireMessage(lastSent!)
     const channelId = sentMsg.channelId
     const pair = sessions.get(channelId)!
 
@@ -800,7 +800,7 @@ describe('channelManager', () => {
 
       // Simulate claim accept for the small manager.
       const lastSent = mockWs.sent.at(-1)
-      const sentMsg = decodeWireMessage(lastSent)
+      const sentMsg = decodeWireMessage(lastSent!)
       const chId = sentMsg.channelId
       const pair = sessions.get(chId)!
       pair.responder.receive.decrypt(sentMsg.ciphertext)
@@ -868,7 +868,7 @@ describe('channelManager', () => {
 
       // Simulate claim accept.
       const lastSent = mockWs.sent.at(-1)
-      const sentMsg = decodeWireMessage(lastSent)
+      const sentMsg = decodeWireMessage(lastSent!)
       const chId = sentMsg.channelId
       const pair = sessions.get(chId)!
       pair.responder.receive.decrypt(sentMsg.ciphertext)
@@ -903,7 +903,7 @@ describe('channelManager', () => {
 
       // Simulate claim accept.
       const lastSent = mockWs.sent.at(-1)
-      const sentMsg = decodeWireMessage(lastSent)
+      const sentMsg = decodeWireMessage(lastSent!)
       const chId = sentMsg.channelId
       const pair = sessions.get(chId)!
       pair.responder.receive.decrypt(sentMsg.ciphertext)
@@ -947,7 +947,7 @@ describe('channelManager', () => {
 
       // Simulate claim accept.
       const lastSent = mockWs.sent.at(-1)
-      const sentMsg = decodeWireMessage(lastSent)
+      const sentMsg = decodeWireMessage(lastSent!)
       const chId = sentMsg.channelId
       const pair = sessions.get(chId)!
       pair.responder.receive.decrypt(sentMsg.ciphertext)
@@ -1057,7 +1057,7 @@ describe('channelManager', () => {
 
       // Simulate claim accept (encrypted with test session).
       const lastSent = classicWs.sent.at(-1)
-      const sentMsg = decodeWireMessage(lastSent)
+      const sentMsg = decodeWireMessage(lastSent!)
       const chId = sentMsg.channelId
       const pair = classicSessions.get(chId)!
 

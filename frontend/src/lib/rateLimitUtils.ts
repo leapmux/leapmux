@@ -78,12 +78,9 @@ export function pickUrgentRateLimit(rateLimits: Record<string, RateLimitInfo>): 
 }
 
 /** Build a human-readable rate limit notification message. Defensive: all fields may be absent. */
-export function formatRateLimitMessage(info: Record<string, unknown>): string {
-  const status = info.status as string | undefined
-  const rateLimitType = info.rateLimitType as string | undefined
-  const utilization = info.utilization as number | undefined
-  const isUsingOverage = info.isUsingOverage as boolean | undefined
-  const resetsAt = (isUsingOverage ? info.overageResetsAt : info.resetsAt) as number | undefined
+export function formatRateLimitMessage(info: RateLimitInfo): string {
+  const { status, rateLimitType, utilization, isUsingOverage } = info
+  const resetsAt = isUsingOverage ? info.overageResetsAt : info.resetsAt
 
   const knownLabel = RATE_LIMIT_TYPE_LABELS[rateLimitType ?? '']
   const prefix = knownLabel

@@ -317,7 +317,7 @@ function codeAwareMarkRule(
     const { tr } = state
     const matchLength = match.length
 
-    let group = match[matchLength - 1]
+    let group: string | undefined = match[matchLength - 1]
     let fullMatch = match[0]
     let initialStoredMarks: readonly Mark[] = []
 

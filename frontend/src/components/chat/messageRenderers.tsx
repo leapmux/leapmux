@@ -63,6 +63,7 @@ const logger = createLogger('messageRenderers')
 
 /** Context passed to renderers from MessageBubble. */
 export interface RenderContext {
+  [key: string]: unknown
   /** ISO timestamp of the message (for relative time in toolbar). */
   createdAt?: string
   workingDir?: string
@@ -70,6 +71,8 @@ export interface RenderContext {
   homeDir?: string
   /** User's preferred diff view. */
   diffView?: DiffViewPreference
+  /** Reply/quote callback — inserts quoted text into the editor. */
+  onReply?: (quotedText: string) => void
   /** Copy raw JSON to clipboard. */
   onCopyJson?: () => void
   /** Whether JSON was just copied (for feedback). */

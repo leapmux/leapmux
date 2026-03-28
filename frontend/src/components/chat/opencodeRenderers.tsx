@@ -13,6 +13,8 @@ import Wrench from 'lucide-solid/icons/wrench'
 import { createSignal, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { TodoList } from '~/components/todo/TodoList'
+import { useCopyButton } from '~/hooks/useCopyButton'
+import { todosToMarkdown } from '~/lib/messageParser'
 import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
@@ -352,7 +354,7 @@ export function opencodeResultDividerRenderer(parsed: unknown): JSX.Element | nu
 }
 
 /** Render an OpenCode plan (todo list). */
-export function opencodePlanRenderer(toolUse: Record<string, unknown>, _role: MessageRole, _context?: RenderContext): JSX.Element {
+export function opencodePlanRenderer(toolUse: Record<string, unknown>, _role: MessageRole, context?: RenderContext): JSX.Element {
   const entries = toolUse.entries as Array<{ priority?: string, status?: string, content: string }> | undefined
 
   if (!entries || entries.length === 0)
@@ -361,15 +363,24 @@ export function opencodePlanRenderer(toolUse: Record<string, unknown>, _role: Me
   const todos = entries.map(e => ({
     content: e.content,
     status: e.status === 'completed' ? 'completed' as const : 'pending' as const,
+    activeForm: '',
   }))
+
+  const md = todosToMarkdown(todos)
+  const { copied, copy } = useCopyButton(() => md)
+  const reply = context?.onReply ? () => context.onReply!(md) : undefined
 
   return (
     <ToolUseLayout
       icon={ListTodo}
       toolName="Plan"
       title="Plan"
+      context={context}
+      onReply={reply}
+      onCopyMarkdown={copy}
+      markdownCopied={copied()}
     >
-      <TodoList items={todos} />
+      <TodoList todos={todos} />
     </ToolUseLayout>
   )
 }

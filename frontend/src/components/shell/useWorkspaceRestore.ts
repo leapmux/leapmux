@@ -251,7 +251,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
           agentProvider: a.agentProvider,
           gitBranch: a.gitStatus?.branch || undefined,
           gitOriginUrl: a.gitStatus?.originUrl || undefined,
-        }, false)
+        }, { activate: false })
         addedTabKeys.add(key)
       }
 
@@ -272,7 +272,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
             workingDir: termData?.workingDir,
             gitBranch: term.gitBranch || undefined,
             gitOriginUrl: term.gitOriginUrl || undefined,
-          }, false)
+          }, { activate: false })
           addedTabKeys.add(key)
         }
       }
@@ -292,7 +292,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
             id: t.tabId,
             tileId,
             workerId: t.workerId,
-          }, false)
+          }, { activate: false })
           addedTabKeys.add(key)
         }
       }
@@ -315,7 +315,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
               workingDir: snapTab.workingDir,
               gitBranch: snapTab.gitBranch,
               gitOriginUrl: snapTab.gitOriginUrl,
-            }, false)
+            }, { activate: false })
           }
         }
       }
@@ -358,7 +358,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
               displayMode: lt.displayMode,
               fileViewMode: lt.fileViewMode as Tab['fileViewMode'],
               fileDiffBase: lt.fileDiffBase as Tab['fileDiffBase'],
-            }, false)
+            }, { activate: false })
           }
         }
       }

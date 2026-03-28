@@ -3,6 +3,7 @@
     "target": "ES2021",
     "jsx": "preserve",
     "jsxImportSource": "solid-js",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "bundler",
     "paths": {

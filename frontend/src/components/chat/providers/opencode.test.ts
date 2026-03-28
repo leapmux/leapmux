@@ -1,6 +1,7 @@
+import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, AvailableModelSchema, AvailableOptionGroupSchema, AvailableOptionSchema, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { sendOpenCodePermissionResponse, sendOpenCodeQuestionResponse } from '../controls/OpenCodeControlRequest'
 import { opencodeResultDividerRenderer } from '../opencodeRenderers'
 import { getProviderPlugin } from './registry'
@@ -298,15 +299,15 @@ describe('opencode settings panel', () => {
     render(() => plugin.SettingsPanel!({
       model: 'openai/gpt-5',
       extraSettings: { primaryAgent: 'build' },
-      availableModels: [{ id: 'openai/gpt-5', displayName: 'GPT-5', isDefault: true, supportedEfforts: [] }],
-      availableOptionGroups: [{
+      availableModels: [create(AvailableModelSchema, { id: 'openai/gpt-5', displayName: 'GPT-5', isDefault: true })],
+      availableOptionGroups: [create(AvailableOptionGroupSchema, {
         key: 'primaryAgent',
         label: 'Primary Agent',
         options: [
-          { id: 'build', name: 'build', isDefault: true },
-          { id: 'plan', name: 'plan' },
+          create(AvailableOptionSchema, { id: 'build', name: 'build', isDefault: true }),
+          create(AvailableOptionSchema, { id: 'plan', name: 'plan' }),
         ],
-      }],
+      })],
       onOptionGroupChange,
     }))
 
@@ -322,15 +323,15 @@ describe('opencode settings panel', () => {
     render(() => plugin.settingsTriggerLabel!({
       model: 'openai/gpt-5',
       extraSettings: { primaryAgent: 'plan' },
-      availableModels: [{ id: 'openai/gpt-5', displayName: 'GPT-5', isDefault: true, supportedEfforts: [] }],
-      availableOptionGroups: [{
+      availableModels: [create(AvailableModelSchema, { id: 'openai/gpt-5', displayName: 'GPT-5', isDefault: true })],
+      availableOptionGroups: [create(AvailableOptionGroupSchema, {
         key: 'primaryAgent',
         label: 'Primary Agent',
         options: [
-          { id: 'build', name: 'Build', isDefault: true },
-          { id: 'plan', name: 'Plan' },
+          create(AvailableOptionSchema, { id: 'build', name: 'Build', isDefault: true }),
+          create(AvailableOptionSchema, { id: 'plan', name: 'Plan' }),
         ],
-      }],
+      })],
     }))
 
     expect(screen.getByText('GPT-5 \u00B7 Plan')).toBeTruthy()

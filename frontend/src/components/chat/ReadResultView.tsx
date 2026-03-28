@@ -95,7 +95,7 @@ export function ReadResultView(props: {
   // Dynamic line number column width based on the largest line number
   const lineNumWidth = () => {
     const maxNum = props.lines.length > 0
-      ? props.lines.at(-1).num
+      ? props.lines.at(-1)!.num
       : 0
     return `${Math.max(String(maxNum).length, 1)}ch`
   }

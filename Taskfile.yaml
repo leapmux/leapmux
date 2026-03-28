@@ -281,6 +281,7 @@ tasks:
       - frontend/eslint.config.ts
     cmds:
       - cd frontend && bun run lint .
+      - cd frontend && bun run typecheck
 
   lint-fix:
     desc: Auto-fix lint violations (Go + frontend)
@@ -555,3 +556,4 @@ tasks:
       - rm -rf frontend/src/spinners/
       - rm -rf desktop/build/ desktop/leapmux-desktop
       - rm -rf .task/
+
