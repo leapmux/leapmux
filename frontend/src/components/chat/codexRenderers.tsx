@@ -19,7 +19,8 @@ import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { TodoList } from '~/components/todo/TodoList'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
-import { codexPlanToTodos } from '~/lib/messageParser'
+import { useCopyButton } from '~/hooks/useCopyButton'
+import { codexPlanToTodos, todosToMarkdown } from '~/lib/messageParser'
 import { renderMarkdown, shikiHighlighter } from '~/lib/renderMarkdown'
 import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { inlineFlex } from '~/styles/shared.css'
@@ -335,6 +336,8 @@ export function codexPlanRenderer(parsed: unknown, _role: MessageRole, context?:
   const text = (item.text as string) || ''
   if (!text)
     return null
+  const { copied, copy } = useCopyButton(() => text)
+  const reply = context?.onReply ? () => context.onReply!(text) : undefined
   return (
     <ToolUseLayout
       icon={PlaneTakeoff}
@@ -343,6 +346,9 @@ export function codexPlanRenderer(parsed: unknown, _role: MessageRole, context?:
       alwaysVisible={true}
       bordered={false}
       context={context}
+      onReply={reply}
+      onCopyMarkdown={copy}
+      markdownCopied={copied()}
     >
       <hr />
       <div class={markdownContent} style={{ 'font-size': 'var(--text-regular)' }} innerHTML={renderMarkdown(text)} />
@@ -366,6 +372,10 @@ export function codexTurnPlanRenderer(parsed: unknown, _role: MessageRole, conte
   const explanation = typeof params.explanation === 'string' ? params.explanation.trim() : ''
   const label = `${todos.length} task${todos.length === 1 ? '' : 's'}${explanation ? ` - ${explanation}` : ''}`
 
+  const md = todosToMarkdown(todos)
+  const { copied, copy } = useCopyButton(() => md)
+  const reply = context?.onReply ? () => context.onReply!(md) : undefined
+
   return (
     <ToolUseLayout
       icon={ListTodo}
@@ -373,6 +383,9 @@ export function codexTurnPlanRenderer(parsed: unknown, _role: MessageRole, conte
       title={label}
       alwaysVisible={true}
       context={context}
+      onReply={reply}
+      onCopyMarkdown={copy}
+      markdownCopied={copied()}
     >
       <TodoList todos={todos} />
     </ToolUseLayout>

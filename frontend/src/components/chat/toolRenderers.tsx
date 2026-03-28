@@ -125,9 +125,12 @@ export function ToolUseLayout(props: {
   onCopyContent?: () => void
   contentCopied?: boolean
   copyContentLabel?: string
+  onCopyMarkdown?: () => void
+  markdownCopied?: boolean
+  onReply?: () => void
 }): JSX.Element {
   const expanded = () => props.expanded ?? false
-  const hasActions = () => !!props.onToggleExpand || !!props.context?.onCopyJson || !!props.hasDiff || !!props.onCopyContent
+  const hasActions = () => !!props.onToggleExpand || !!props.context?.onCopyJson || !!props.hasDiff || !!props.onCopyContent || !!props.onCopyMarkdown || !!props.onReply
   return (
     <div class={toolMessage} data-tool-message>
       <div class={toolUseHeader}>
@@ -139,17 +142,21 @@ export function ToolUseLayout(props: {
         {typeof props.title === 'string'
           ? <span class={toolInputText}>{props.title}</span>
           : props.title}
-        <Show when={props.context && hasActions()}>
+        <Show when={hasActions()}>
           <ToolHeaderActions
-            createdAt={props.context!.createdAt}
+            inline
+            createdAt={props.context?.createdAt}
             expanded={expanded()}
             onToggleExpand={props.onToggleExpand}
             expandLabel={props.expandLabel}
             onCopyContent={props.onCopyContent}
             contentCopied={props.contentCopied}
             copyContentLabel={props.copyContentLabel}
-            onCopyJson={props.context!.onCopyJson}
-            jsonCopied={props.context!.jsonCopied ?? false}
+            onReply={props.onReply}
+            onCopyMarkdown={props.onCopyMarkdown}
+            markdownCopied={props.markdownCopied}
+            onCopyJson={props.context?.onCopyJson}
+            jsonCopied={props.context?.jsonCopied ?? false}
             hasDiff={props.hasDiff}
             diffView={props.diffView}
             onToggleDiffView={props.onDiffViewChange ? () => props.onDiffViewChange!(props.diffView === 'unified' ? 'split' : 'unified') : undefined}
@@ -226,51 +233,84 @@ export function ToolHeaderActions(props: {
   /** Copy markdown callback — when provided, shows a copy markdown button. */
   onCopyMarkdown?: () => void
   markdownCopied?: boolean
+  /** When true, use inline tool header order; when false (default), use bubble order. */
+  inline?: boolean
 }): JSX.Element {
   const timestamp = () => props.createdAt
+
+  const replyButton = (
+    <Show when={props.onReply}>
+      <IconButton
+        icon={Quote}
+        size="sm"
+        data-testid="message-quote"
+        onClick={() => props.onReply?.()}
+        title="Quote"
+      />
+    </Show>
+  )
+  const timestampEl = (
+    <Show when={timestamp()}>
+      <RelativeTime
+        timestamp={timestamp()!}
+        class={toolHeaderTimestamp}
+      />
+    </Show>
+  )
+  const copyJsonButton = (
+    <Show when={props.onCopyJson}>
+      <IconButton
+        icon={props.jsonCopied ? Check : Braces}
+        size="sm"
+        data-testid="message-copy-json"
+        onClick={() => props.onCopyJson?.()}
+        title={props.jsonCopied ? 'Copied' : 'Copy Raw JSON'}
+      />
+    </Show>
+  )
+  const copyMarkdownButton = (
+    <Show when={props.onCopyMarkdown}>
+      <IconButton
+        icon={props.markdownCopied ? Check : Copy}
+        size="sm"
+        data-testid="message-copy-markdown"
+        onClick={() => props.onCopyMarkdown?.()}
+        title={props.markdownCopied ? 'Copied' : 'Copy Markdown'}
+      />
+    </Show>
+  )
+  const copyContentButton = (
+    <Show when={props.onCopyContent}>
+      <IconButton
+        icon={props.contentCopied ? Check : Copy}
+        size="sm"
+        onClick={() => props.onCopyContent?.()}
+        title={props.contentCopied ? 'Copied' : (props.copyContentLabel || 'Copy')}
+      />
+    </Show>
+  )
+
   return (
     <div class={toolHeaderActions} data-testid="message-toolbar">
-      <Show when={props.onReply}>
-        <IconButton
-          icon={Quote}
-          size="sm"
-          data-testid="message-quote"
-          onClick={() => props.onReply?.()}
-          title="Quote"
-        />
-      </Show>
-      <Show when={timestamp()}>
-        <RelativeTime
-          timestamp={timestamp()!}
-          class={toolHeaderTimestamp}
-        />
-      </Show>
-      <Show when={props.onCopyMarkdown}>
-        <IconButton
-          icon={props.markdownCopied ? Check : Copy}
-          size="sm"
-          data-testid="message-copy-markdown"
-          onClick={() => props.onCopyMarkdown?.()}
-          title={props.markdownCopied ? 'Copied' : 'Copy Markdown'}
-        />
-      </Show>
-      <Show when={props.onCopyJson}>
-        <IconButton
-          icon={props.jsonCopied ? Check : Braces}
-          size="sm"
-          data-testid="message-copy-json"
-          onClick={() => props.onCopyJson?.()}
-          title={props.jsonCopied ? 'Copied' : 'Copy Raw JSON'}
-        />
-      </Show>
-      <Show when={props.onCopyContent}>
-        <IconButton
-          icon={props.contentCopied ? Check : Copy}
-          size="sm"
-          onClick={() => props.onCopyContent?.()}
-          title={props.contentCopied ? 'Copied' : (props.copyContentLabel || 'Copy')}
-        />
-      </Show>
+      {props.inline
+        ? (
+            <>
+              {timestampEl}
+              {copyJsonButton}
+              {copyMarkdownButton}
+              {copyContentButton}
+              {replyButton}
+            </>
+          )
+        : (
+            <>
+              {replyButton}
+              {timestampEl}
+              {copyMarkdownButton}
+              {copyJsonButton}
+              {copyContentButton}
+            </>
+          )}
       <Show when={props.hasDiff && props.onToggleDiffView}>
         <IconButton
           icon={props.diffView === 'unified' ? Columns2 : Rows2}

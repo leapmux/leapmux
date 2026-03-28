@@ -7,6 +7,8 @@ import ListTodo from 'lucide-solid/icons/list-todo'
 import Vote from 'lucide-solid/icons/vote'
 import { For, Show } from 'solid-js'
 import { TodoList } from '~/components/todo/TodoList'
+import { useCopyButton } from '~/hooks/useCopyButton'
+import { todosToMarkdown } from '~/lib/messageParser'
 import { getAssistantContent, isObject } from './messageUtils'
 import { ToolUseLayout } from './toolRenderers'
 import {
@@ -28,6 +30,10 @@ export function renderTodoWrite(toolUse: Record<string, unknown>, context?: Rend
   const count = todos.length
   const label = `${count} task${count === 1 ? '' : 's'}`
 
+  const md = todosToMarkdown(todos)
+  const { copied, copy } = useCopyButton(() => md)
+  const reply = context?.onReply ? () => context.onReply!(md) : undefined
+
   return (
     <ToolUseLayout
       icon={ListTodo}
@@ -35,6 +41,9 @@ export function renderTodoWrite(toolUse: Record<string, unknown>, context?: Rend
       title={label}
       alwaysVisible={true}
       context={context}
+      onReply={reply}
+      onCopyMarkdown={copy}
+      markdownCopied={copied()}
     >
       <TodoList todos={todos} />
     </ToolUseLayout>
