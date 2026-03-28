@@ -52,6 +52,7 @@ import { useWorkspaceLoader } from './useWorkspaceLoader'
 import { useWorkspaceRestore } from './useWorkspaceRestore'
 
 const log = createLogger('AppShell')
+let turnEndAudio: HTMLAudioElement | undefined
 
 export const AppShell: ParentComponent = (props) => {
   const auth = useAuth()
@@ -151,10 +152,13 @@ export const AppShell: ParentComponent = (props) => {
   // Drives sound playback, git file status refresh, and directory tree refresh.
   const [turnEndTrigger, setTurnEndTrigger] = createSignal(0)
 
+  // Lazily create the Audio element once on first mount.
+  if (!turnEndAudio)
+    turnEndAudio = new Audio('/sounds/benkirb-electronic-doorbell-262895.mp3')
+
   // Debounced turn-end handler
   const TURN_END_SOUND_COOLDOWN_MS = 60_000
   let lastSoundPlayedAt = 0
-  const turnEndAudio = new Audio('/sounds/benkirb-electronic-doorbell-262895.mp3')
   // Late-bound ref: set once useTabOperations is initialized (after useWorkspaceConnection).
   let isAgentClosing: (agentId: string) => boolean = () => false
   const handleTurnEnd = (agentId: string, numToolUses?: number) => {
@@ -171,9 +175,9 @@ export const AppShell: ParentComponent = (props) => {
     const sound = preferences.turnEndSound()
     if (sound === 'ding-dong') {
       lastSoundPlayedAt = now
-      turnEndAudio.currentTime = 0
-      turnEndAudio.volume = preferences.turnEndSoundVolume() / 100
-      turnEndAudio.play().catch(() => {})
+      turnEndAudio!.currentTime = 0
+      turnEndAudio!.volume = preferences.turnEndSoundVolume() / 100
+      turnEndAudio!.play().catch(() => {})
     }
   }
 
