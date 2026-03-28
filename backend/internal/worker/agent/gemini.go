@@ -123,7 +123,7 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutputLoop(scanner, a.HandleOutput)
+	go a.readOutputLoop(scanner, a.handleOutput)
 
 	cleanup := func() {
 		a.Stop()
@@ -270,11 +270,7 @@ func fallbackGeminiCLIModes() []*leapmuxv1.AvailableOption {
 // doSendPrompt sends a single prompt RPC and processes the response. Called by
 // jsonrpcBase.runPrompt on a goroutine.
 func (a *GeminiCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attachment) {
-	a.mu.Lock()
-	sessionID := a.sessionID
-	a.mu.Unlock()
-
-	a.sendPrompt(sessionID, content, attachments,
+	a.sendPrompt(content, attachments,
 		func(params json.RawMessage) (json.RawMessage, error) {
 			return a.sendCompatibleRequest(geminiMethodPrompt, legacyGeminiMethod(geminiMethodPrompt), params, 10*time.Minute)
 		},
@@ -413,8 +409,13 @@ func (a *GeminiCLIAgent) setPermissionMode(mode string) error {
 	return nil
 }
 
+// handleOutput adapts the parsedLine to the existing HandleOutput method.
+func (a *GeminiCLIAgent) handleOutput(line *parsedLine) {
+	handleGeminiCLIOutput(a, line)
+}
+
 func (a *GeminiCLIAgent) HandleOutput(content []byte) {
-	handleGeminiCLIOutput(a, content)
+	handleGeminiCLIOutput(a, parseLine(content))
 }
 
 func (a *GeminiCLIAgent) sendCompatibleRequest(method, legacyMethod string, params json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
@@ -451,15 +452,7 @@ func (a *GeminiCLIAgent) cancelSession() error {
 	params, _ := json.Marshal(map[string]interface{}{
 		"sessionId": sessionID,
 	})
-	method := geminiMethodCancel
-	if a.usesLegacyMethods() {
-		method = legacyGeminiMethod(geminiMethodCancel)
-	}
-	return a.sendNotification(method, json.RawMessage(params))
-}
-
-func (a *GeminiCLIAgent) formatStartupError(phase string, err error) error {
-	return a.processBase.formatStartupError(phase, err, a.PreambleOutput())
+	return a.sendNotification(a.resolveMethod(geminiMethodCancel), json.RawMessage(params))
 }
 
 func legacyGeminiMethod(method string) string {
@@ -491,4 +484,13 @@ func (a *GeminiCLIAgent) setLegacyMethods(enabled bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.useLegacyMethods = enabled
+}
+
+// resolveMethod returns the legacy ACP method name if the agent uses legacy
+// methods, or the native Gemini method name otherwise.
+func (a *GeminiCLIAgent) resolveMethod(method string) string {
+	if a.usesLegacyMethods() {
+		return legacyGeminiMethod(method)
+	}
+	return method
 }

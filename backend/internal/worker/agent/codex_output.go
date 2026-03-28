@@ -8,66 +8,56 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-// handleCodexOutput processes a single JSONL notification from the Codex app-server.
+// handleCodexOutput processes a single parsed JSONL notification from the Codex app-server.
 // Codex messages are stored in their native JSON-RPC format.
-func handleCodexOutput(a *CodexAgent, content []byte) {
-	var envelope struct {
-		ID     *json.Number    `json:"id"`
-		Method string          `json:"method"`
-		Params json.RawMessage `json:"params"`
-	}
-	if err := json.Unmarshal(content, &envelope); err != nil {
-		slog.Warn("invalid codex output JSON", "agent_id", a.agentID, "error", err)
-		return
-	}
+func handleCodexOutput(a *CodexAgent, line *parsedLine) {
+	slog.Debug("codex HandleOutput", "agent_id", a.agentID, "method", line.Method, "len", len(line.Raw))
 
-	slog.Debug("codex HandleOutput", "agent_id", a.agentID, "method", envelope.Method, "len", len(content))
-
-	switch envelope.Method {
+	switch line.Method {
 	case "turn/started":
-		a.handleTurnStarted(envelope.Params)
+		a.handleTurnStarted(line.Params)
 
 	case "item/agentMessage/delta":
-		a.handleAgentMessageDelta(envelope.Params)
+		a.handleAgentMessageDelta(line.Params)
 
 	case "item/plan/delta":
-		a.handlePlanDelta(envelope.Params)
+		a.handlePlanDelta(line.Params)
 
 	case "item/reasoning/summaryTextDelta":
-		a.handleReasoningSummaryTextDelta(envelope.Params)
+		a.handleReasoningSummaryTextDelta(line.Params)
 
 	case "item/reasoning/summaryPartAdded":
-		a.handleReasoningSummaryPartAdded(envelope.Params)
+		a.handleReasoningSummaryPartAdded(line.Params)
 
 	case "item/reasoning/textDelta":
-		a.handleReasoningTextDelta(envelope.Params)
+		a.handleReasoningTextDelta(line.Params)
 
 	case "item/commandExecution/outputDelta":
-		a.handleCommandExecutionOutputDelta(envelope.Params)
+		a.handleCommandExecutionOutputDelta(line.Params)
 
 	case "item/commandExecution/terminalInteraction":
-		a.handleCommandExecutionTerminalInteraction(envelope.Params)
+		a.handleCommandExecutionTerminalInteraction(line.Params)
 
 	case "item/fileChange/outputDelta":
-		a.handleFileChangeOutputDelta(envelope.Params)
+		a.handleFileChangeOutputDelta(line.Params)
 
 	case "item/started":
-		a.handleItemStarted(envelope.Params)
+		a.handleItemStarted(line.Params)
 
 	case "item/completed":
-		a.handleItemCompleted(envelope.Params)
+		a.handleItemCompleted(line.Params)
 
 	case "thread/compacted":
-		a.handleThreadCompacted(envelope.Params)
+		a.handleThreadCompacted(line.Params)
 
 	case "turn/completed":
-		a.handleTurnCompleted(envelope.Params)
+		a.handleTurnCompleted(line.Params)
 
 	case "thread/tokenUsage/updated":
-		a.handleTokenUsageUpdated(content, envelope.Params)
+		a.handleTokenUsageUpdated(line.Raw, line.Params)
 
 	case "thread/name/updated":
-		a.handleThreadNameUpdated(envelope.Params)
+		a.handleThreadNameUpdated(line.Params)
 
 	// Server requests (approval requests) — the server sends these as JSON-RPC
 	// requests with an "id" field, but we detect them here by method name when
@@ -76,21 +66,21 @@ func handleCodexOutput(a *CodexAgent, content []byte) {
 		"item/fileChange/requestApproval",
 		"item/permissions/requestApproval",
 		"item/tool/requestUserInput":
-		a.handleApprovalRequest(envelope.ID, content)
+		a.handleApprovalRequest(line.ID, line.Raw)
 
 	case "serverRequest/resolved":
-		a.handleServerRequestResolved(envelope.Params)
+		a.handleServerRequestResolved(line.Params)
 
 	case "account/rateLimits/updated":
-		a.handleRateLimitsUpdated(content, envelope.Params)
+		a.handleRateLimitsUpdated(line.Raw, line.Params)
 
 	case "error":
-		a.handleErrorNotification(envelope.Params)
+		a.handleErrorNotification(line.Params)
 
 	default:
 		// Persist unknown notifications so the frontend can decide how to render them.
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, content, SpanInfo{}); err != nil {
-			slog.Error("codex persist notification", "agent_id", a.agentID, "method", envelope.Method, "error", err)
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, line.Raw, SpanInfo{}); err != nil {
+			slog.Error("codex persist notification", "agent_id", a.agentID, "method", line.Method, "error", err)
 		}
 	}
 }

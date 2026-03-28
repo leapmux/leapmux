@@ -2,7 +2,6 @@ package agent
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -314,12 +313,6 @@ func buildClaudeContentBlocks(content string, classified []classifiedAttachment)
 	return blocks
 }
 
-// formatStartupError returns a descriptive error including stderr and
-// preamble output (if any) for frontend diagnostics.
-func (a *ClaudeCodeAgent) formatStartupError(phase string, err error) error {
-	return a.processBase.formatStartupError(phase, err, a.PreambleOutput())
-}
-
 // CurrentSettings returns the current settings for this agent.
 func (a *ClaudeCodeAgent) CurrentSettings() *leapmuxv1.AgentSettings {
 	return &leapmuxv1.AgentSettings{
@@ -566,17 +559,16 @@ func (a *ClaudeCodeAgent) unregisterPendingControl(requestID string) {
 	delete(a.pendingControl, requestID)
 }
 
-// handlePendingControlResponse checks if a line is a control_response matching
-// a pending request. If so, it sends the result to the waiting channel and
-// returns true (the line should be consumed, not forwarded).
-func (a *ClaudeCodeAgent) handlePendingControlResponse(line []byte) bool {
-	// Quick check to avoid parsing non-control_response lines.
-	if !bytes.Contains(line, []byte(`"control_response"`)) {
+// handlePendingControlResponse checks if a parsed line is a control_response
+// matching a pending request. If so, it sends the result to the waiting
+// channel and returns true (the line should be consumed, not forwarded).
+func (a *ClaudeCodeAgent) handlePendingControlResponse(line *parsedLine) bool {
+	// Quick check using the pre-parsed Type field.
+	if line.Type != "control_response" {
 		return false
 	}
 
 	var envelope struct {
-		Type     string `json:"type"`
 		Response struct {
 			Subtype   string `json:"subtype"`
 			RequestID string `json:"request_id"`
@@ -586,7 +578,7 @@ func (a *ClaudeCodeAgent) handlePendingControlResponse(line []byte) bool {
 			Error string `json:"error"`
 		} `json:"response"`
 	}
-	if err := json.Unmarshal(line, &envelope); err != nil || envelope.Type != "control_response" {
+	if err := json.Unmarshal(line.Raw, &envelope); err != nil {
 		return false
 	}
 
@@ -609,7 +601,13 @@ func (a *ClaudeCodeAgent) handlePendingControlResponse(line []byte) bool {
 }
 
 func (a *ClaudeCodeAgent) readOutputLoop(scanner *bufio.Scanner) {
-	a.readOutput(scanner, a.handlePendingControlResponse, a.HandleOutput)
+	a.readOutput(scanner, a.handlePendingControlResponse, a.handleOutput)
+}
+
+// handleOutput adapts the parsedLine to the existing HandleOutput method,
+// passing the pre-parsed Type to avoid re-parsing the envelope.
+func (a *ClaudeCodeAgent) handleOutput(line *parsedLine) {
+	a.handleClaudeOutput(line.Raw, line.Type)
 }
 
 func generateRequestID() string {

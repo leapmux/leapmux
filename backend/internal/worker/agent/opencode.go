@@ -116,7 +116,7 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 	// Read stdout JSONL in background.
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutputLoop(scanner, a.HandleOutput)
+	go a.readOutputLoop(scanner, a.handleOutput)
 
 	cleanup := func() {
 		a.Stop()
@@ -310,11 +310,7 @@ func (a *OpenCodeAgent) configurePrimaryAgents(modes []openCodeModeInfo, current
 // doSendPrompt sends a single prompt RPC and processes the response. Called by
 // jsonrpcBase.runPrompt on a goroutine.
 func (a *OpenCodeAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attachment) {
-	a.mu.Lock()
-	sessionID := a.sessionID
-	a.mu.Unlock()
-
-	a.sendPrompt(sessionID, content, attachments,
+	a.sendPrompt(content, attachments,
 		func(params json.RawMessage) (json.RawMessage, error) {
 			return a.sendRequest(acpMethodSessionPrompt, params, 10*time.Minute)
 		},
@@ -467,42 +463,12 @@ func (a *OpenCodeAgent) availablePrimaryAgentGroup() []*leapmuxv1.AvailableOptio
 	}}
 }
 
+// handleOutput adapts the parsedLine to the existing HandleOutput method.
+func (a *OpenCodeAgent) handleOutput(line *parsedLine) {
+	handleOpenCodeOutput(a, line)
+}
+
 // HandleOutput processes a single JSONL notification from OpenCode.
 func (a *OpenCodeAgent) HandleOutput(content []byte) {
-	handleOpenCodeOutput(a, content)
-}
-
-// formatStartupError includes stderr and preamble output for diagnostics.
-func (a *OpenCodeAgent) formatStartupError(phase string, err error) error {
-	return a.processBase.formatStartupError(phase, err, a.PreambleOutput())
-}
-
-func jsonRPCResultError(resp json.RawMessage) error {
-	if len(resp) == 0 || string(resp) == "null" {
-		return nil
-	}
-	var rpcErr struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(resp, &rpcErr); err != nil {
-		return nil
-	}
-	if rpcErr.Message == "" {
-		return nil
-	}
-	return fmt.Errorf("json-rpc error %d: %s", rpcErr.Code, rpcErr.Message)
-}
-
-func isJSONRPCMethodNotFound(resp json.RawMessage) bool {
-	if len(resp) == 0 || string(resp) == "null" {
-		return false
-	}
-	var rpcErr struct {
-		Code int `json:"code"`
-	}
-	if err := json.Unmarshal(resp, &rpcErr); err != nil {
-		return false
-	}
-	return rpcErr.Code == -32601
+	handleOpenCodeOutput(a, parseLine(content))
 }

@@ -138,8 +138,8 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 		b.handlePlan(wrapper.Update)
 	case acpUpdateUsageUpdate:
 		b.handleUsageUpdate(wrapper.Update)
-	case acpUpdateAvailableCommandsUpdate, acpUpdateUserMessageChunk:
-		// No-op.
+	case acpUpdateUserMessageChunk, acpUpdateAvailableCommandsUpdate:
+		// No-op: user_message_chunk is history replay; available_commands_update is informational.
 	default:
 		if extra != nil && extra(header.SessionUpdate, wrapper.Update) {
 			return
@@ -165,6 +165,16 @@ func buildACPSessionRequest(resumeSessionID, workingDir, newMethod, resumeMethod
 	return method, params
 }
 
+// jsonrpcMessage is a typed struct for serializing JSON-RPC requests and
+// notifications. ID is omitted for notifications (IDs start at 1 via
+// nextReqID.Add(1), so 0 is safely treated as "absent").
+type jsonrpcMessage struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      int64           `json:"id,omitempty"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params,omitempty"`
+}
+
 // sendRequest sends a JSON-RPC request and waits for the response.
 func (b *jsonrpcBase) sendRequest(method string, params json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
 	reqID := b.nextReqID.Add(1)
@@ -173,16 +183,12 @@ func (b *jsonrpcBase) sendRequest(method string, params json.RawMessage, timeout
 	b.pendingReqs.Store(reqID, ch)
 	defer b.pendingReqs.Delete(reqID)
 
-	msg := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      reqID,
-		"method":  method,
-	}
-	if params != nil {
-		msg["params"] = json.RawMessage(params)
-	}
-
-	data, err := json.Marshal(msg)
+	data, err := json.Marshal(jsonrpcMessage{
+		JSONRPC: "2.0",
+		ID:      reqID,
+		Method:  method,
+		Params:  params,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
@@ -209,15 +215,11 @@ func (b *jsonrpcBase) sendRequest(method string, params json.RawMessage, timeout
 
 // sendNotification sends a JSON-RPC notification (no id, no response expected).
 func (b *jsonrpcBase) sendNotification(method string, params json.RawMessage) error {
-	msg := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"method":  method,
-	}
-	if params != nil {
-		msg["params"] = json.RawMessage(params)
-	}
-
-	data, err := json.Marshal(msg)
+	data, err := json.Marshal(jsonrpcMessage{
+		JSONRPC: "2.0",
+		Method:  method,
+		Params:  params,
+	})
 	if err != nil {
 		return fmt.Errorf("marshal notification: %w", err)
 	}
@@ -230,24 +232,14 @@ func (b *jsonrpcBase) sendNotification(method string, params json.RawMessage) er
 	return nil
 }
 
-// handleJSONRPCResponse checks if a line is a JSON-RPC response and routes it
-// to the pending request channel. Returns true if the line was consumed.
-func (b *jsonrpcBase) handleJSONRPCResponse(line []byte) bool {
-	var envelope struct {
-		ID     *json.Number    `json:"id"`
-		Method string          `json:"method"`
-		Result json.RawMessage `json:"result"`
-		Error  json.RawMessage `json:"error"`
-	}
-	if err := json.Unmarshal(line, &envelope); err != nil {
+// handleJSONRPCResponse checks if a parsed line is a JSON-RPC response and
+// routes it to the pending request channel. Returns true if the line was consumed.
+func (b *jsonrpcBase) handleJSONRPCResponse(line *parsedLine) bool {
+	if line.ID == nil || line.Method != "" {
 		return false
 	}
 
-	if envelope.ID == nil || envelope.Method != "" {
-		return false
-	}
-
-	reqID, err := envelope.ID.Int64()
+	reqID, err := line.ID.Int64()
 	if err != nil {
 		return false
 	}
@@ -258,10 +250,10 @@ func (b *jsonrpcBase) handleJSONRPCResponse(line []byte) bool {
 	}
 
 	ch := val.(chan json.RawMessage)
-	if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
-		ch <- envelope.Error
+	if len(line.Error) > 0 && string(line.Error) != "null" {
+		ch <- line.Error
 	} else {
-		ch <- envelope.Result
+		ch <- line.Result
 	}
 
 	return true
@@ -352,11 +344,15 @@ func (b *jsonrpcBase) clearPromptQueue() {
 // sendPrompt builds and sends an ACP prompt, then calls the provided
 // response handler. Shared by all ACP agent doSendPrompt implementations.
 func (b *acpBase) sendPrompt(
-	sessionID, content string,
+	content string,
 	attachments []*leapmuxv1.Attachment,
 	sendRPC func(json.RawMessage) (json.RawMessage, error),
 	handleResponse func(json.RawMessage),
 ) {
+	b.mu.Lock()
+	sessionID := b.sessionID
+	b.mu.Unlock()
+
 	prompt := buildACPPromptBlocks(content, classifyAttachments(attachments))
 	params, _ := json.Marshal(map[string]interface{}{
 		"sessionId": sessionID,
@@ -538,6 +534,40 @@ func (b *acpBase) handleUsageUpdate(update json.RawMessage) {
 		info["totalCostUsd"] = usage.Cost.Amount
 	}
 	b.sink.BroadcastSessionInfo(info)
+}
+
+// parseJSONRPCError extracts the code and message from a JSON-RPC error
+// response. Returns ok=false if resp is empty, null, or not an error object.
+func parseJSONRPCError(resp json.RawMessage) (code int, message string, ok bool) {
+	if len(resp) == 0 || string(resp) == "null" {
+		return 0, "", false
+	}
+	var rpcErr struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(resp, &rpcErr); err != nil {
+		return 0, "", false
+	}
+	if rpcErr.Message == "" {
+		return 0, "", false
+	}
+	return rpcErr.Code, rpcErr.Message, true
+}
+
+// jsonRPCResultError returns an error if resp is a JSON-RPC error response.
+func jsonRPCResultError(resp json.RawMessage) error {
+	code, message, ok := parseJSONRPCError(resp)
+	if !ok {
+		return nil
+	}
+	return fmt.Errorf("json-rpc error %d: %s", code, message)
+}
+
+// isJSONRPCMethodNotFound returns true if resp is a JSON-RPC "method not found" error.
+func isJSONRPCMethodNotFound(resp json.RawMessage) bool {
+	code, _, ok := parseJSONRPCError(resp)
+	return ok && code == -32601
 }
 
 // capitalizeFirst returns s with its first rune upper-cased.

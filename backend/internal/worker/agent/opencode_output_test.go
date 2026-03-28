@@ -24,7 +24,7 @@ func TestHandleOpenCodeOutput_AgentMessageChunk(t *testing.T) {
 	agent := newOpenCodeAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hello world"}}}}`
-	handleOpenCodeOutput(agent, []byte(input))
+	handleOpenCodeOutput(agent, parseLine([]byte(input)))
 
 	if sink.StreamChunkCount() != 1 {
 		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
@@ -49,7 +49,7 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk(t *testing.T) {
 	agent := newOpenCodeAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"thinking..."}}}}`
-	handleOpenCodeOutput(agent, []byte(input))
+	handleOpenCodeOutput(agent, parseLine([]byte(input)))
 
 	if sink.StreamChunkCount() != 1 {
 		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
@@ -137,7 +137,7 @@ func TestHandleOpenCodeOutput_ToolCallOpensSpan(t *testing.T) {
 	agent := newOpenCodeAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"bash","kind":"execute","status":"pending","locations":[],"rawInput":{}}}}`
-	handleOpenCodeOutput(agent, []byte(input))
+	handleOpenCodeOutput(agent, parseLine([]byte(input)))
 
 	if sink.MessageCount() != 1 {
 		t.Fatalf("expected 1 persisted message, got %d", sink.MessageCount())
@@ -167,7 +167,7 @@ func TestHandleOpenCodeOutput_ToolCallUpdateInProgress(t *testing.T) {
 	agent := newOpenCodeAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"in_progress","kind":"execute","title":"bash"}}}`
-	handleOpenCodeOutput(agent, []byte(input))
+	handleOpenCodeOutput(agent, parseLine([]byte(input)))
 
 	if sink.StreamChunkCount() != 1 {
 		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
@@ -189,7 +189,7 @@ func TestHandleOpenCodeOutput_ToolCallUpdateCompleted(t *testing.T) {
 	agent := newOpenCodeAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"completed","kind":"execute","title":"bash","content":[{"type":"content","content":{"type":"text","text":"output"}}],"rawOutput":{"output":"output"}}}}`
-	handleOpenCodeOutput(agent, []byte(input))
+	handleOpenCodeOutput(agent, parseLine([]byte(input)))
 
 	if sink.MessageCount() != 1 {
 		t.Fatalf("expected 1 persisted message, got %d", sink.MessageCount())
@@ -220,7 +220,7 @@ func TestHandleOpenCodeOutput_ToolCallUpdateFailed(t *testing.T) {
 	agent := newOpenCodeAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"failed","kind":"execute","title":"bash","content":[{"type":"content","content":{"type":"text","text":"error"}}],"rawOutput":{"error":"error"}}}}`
-	handleOpenCodeOutput(agent, []byte(input))
+	handleOpenCodeOutput(agent, parseLine([]byte(input)))
 
 	if sink.MessageCount() != 1 {
 		t.Fatalf("expected 1 persisted message, got %d", sink.MessageCount())
@@ -244,7 +244,7 @@ func TestHandleOpenCodeOutput_UsageUpdate(t *testing.T) {
 	agent := newOpenCodeAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"usage_update","used":1000,"size":128000,"cost":{"amount":0.05,"currency":"USD"}}}}`
-	handleOpenCodeOutput(agent, []byte(input))
+	handleOpenCodeOutput(agent, parseLine([]byte(input)))
 
 	if sink.SessionInfoCount() != 1 {
 		t.Fatalf("expected 1 session info broadcast, got %d", sink.SessionInfoCount())
@@ -273,7 +273,7 @@ func TestHandleOpenCodeOutput_UsageUpdateNoCost(t *testing.T) {
 	agent := newOpenCodeAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"usage_update","used":500,"size":64000,"cost":{"amount":0,"currency":"USD"}}}}`
-	handleOpenCodeOutput(agent, []byte(input))
+	handleOpenCodeOutput(agent, parseLine([]byte(input)))
 
 	if sink.SessionInfoCount() != 1 {
 		t.Fatalf("expected 1 session info broadcast, got %d", sink.SessionInfoCount())
@@ -289,7 +289,7 @@ func TestHandleOpenCodeOutput_Plan(t *testing.T) {
 	agent := newOpenCodeAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"plan","entries":[{"priority":"medium","status":"pending","content":"Step 1"},{"priority":"medium","status":"completed","content":"Step 2"}]}}}`
-	handleOpenCodeOutput(agent, []byte(input))
+	handleOpenCodeOutput(agent, parseLine([]byte(input)))
 
 	if sink.MessageCount() != 1 {
 		t.Fatalf("expected 1 persisted message, got %d", sink.MessageCount())
@@ -322,7 +322,7 @@ func TestHandleOpenCodeOutput_RequestPermission(t *testing.T) {
 	agent := newOpenCodeAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"tc-1","title":"Run command: ls","kind":"execute","status":"pending"},"options":[{"optionId":"once","kind":"allow_once","name":"Allow once"},{"optionId":"always","kind":"allow_always","name":"Always allow"},{"optionId":"reject","kind":"reject_once","name":"Reject"}]}}`
-	handleOpenCodeOutput(agent, []byte(input))
+	handleOpenCodeOutput(agent, parseLine([]byte(input)))
 
 	if sink.PersistedControlCount() != 1 {
 		t.Fatalf("expected 1 persisted control request, got %d", sink.PersistedControlCount())
@@ -363,7 +363,7 @@ func TestHandleOpenCodeOutput_RequestPermissionWithoutID(t *testing.T) {
 
 	// Missing "id" field — should be ignored (logged as warning).
 	input := `{"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"tc-1"}}}`
-	handleOpenCodeOutput(agent, []byte(input))
+	handleOpenCodeOutput(agent, parseLine([]byte(input)))
 
 	if sink.PersistedControlCount() != 0 {
 		t.Errorf("expected 0 persisted control requests (no id), got %d", sink.PersistedControlCount())
@@ -378,7 +378,7 @@ func TestHandleOpenCodeOutput_UserMessageChunkIgnored(t *testing.T) {
 	agent := newOpenCodeAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"replayed input"}}}}`
-	handleOpenCodeOutput(agent, []byte(input))
+	handleOpenCodeOutput(agent, parseLine([]byte(input)))
 
 	if sink.MessageCount() != 0 {
 		t.Fatalf("expected 0 persisted messages for user_message_chunk, got %d", sink.MessageCount())
@@ -393,7 +393,7 @@ func TestHandleOpenCodeOutput_AvailableCommandsUpdateIgnored(t *testing.T) {
 	agent := newOpenCodeAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"compact","description":"compact the session"}]}}}`
-	handleOpenCodeOutput(agent, []byte(input))
+	handleOpenCodeOutput(agent, parseLine([]byte(input)))
 
 	if sink.MessageCount() != 0 {
 		t.Fatalf("expected 0 persisted messages for available_commands_update, got %d", sink.MessageCount())
@@ -405,7 +405,7 @@ func TestHandleOpenCodeOutput_UnknownMethod(t *testing.T) {
 	agent := newOpenCodeAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","method":"someUnknownMethod","params":{"data":"test"}}`
-	handleOpenCodeOutput(agent, []byte(input))
+	handleOpenCodeOutput(agent, parseLine([]byte(input)))
 
 	if sink.MessageCount() != 1 {
 		t.Fatalf("expected 1 persisted message for unknown method, got %d", sink.MessageCount())
@@ -418,11 +418,11 @@ func TestHandleOpenCodeOutput_ToolCallThenCompleted(t *testing.T) {
 
 	// tool_call opens a span.
 	toolCall := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"read","kind":"read","status":"pending","locations":[{"path":"file.txt"}],"rawInput":{"filePath":"file.txt"}}}}`
-	handleOpenCodeOutput(agent, []byte(toolCall))
+	handleOpenCodeOutput(agent, parseLine([]byte(toolCall)))
 
 	// tool_call_update completes it.
 	toolUpdate := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"completed","kind":"read","title":"read","content":[{"type":"content","content":{"type":"text","text":"file contents"}}],"rawOutput":{"output":"file contents"}}}}`
-	handleOpenCodeOutput(agent, []byte(toolUpdate))
+	handleOpenCodeOutput(agent, parseLine([]byte(toolUpdate)))
 
 	if sink.MessageCount() != 2 {
 		t.Fatalf("expected 2 persisted messages, got %d", sink.MessageCount())
@@ -519,7 +519,7 @@ func TestHandleOpenCodeOutput_SessionUpdateResultRoleIgnored(t *testing.T) {
 
 	// A session/update with role "result" should be ignored (handled by handlePromptResponse).
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"role":"result","id":"msg-1","seq":4,"created_at":"2026-03-26T10:46:48.015Z","content":{"_meta":{},"stopReason":"end_turn","usage":{"totalTokens":100}}}}}`
-	handleOpenCodeOutput(agent, []byte(input))
+	handleOpenCodeOutput(agent, parseLine([]byte(input)))
 
 	if sink.MessageCount() != 0 {
 		t.Fatalf("expected 0 persisted messages for session/update with role=result, got %d", sink.MessageCount())
@@ -532,7 +532,7 @@ func TestHandleOpenCodeOutput_ToolCallUpdateCompletedIncrementsToolUses(t *testi
 
 	for i := 0; i < 3; i++ {
 		input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-` + string(rune('1'+i)) + `","status":"completed","kind":"execute","title":"bash"}}}`
-		handleOpenCodeOutput(agent, []byte(input))
+		handleOpenCodeOutput(agent, parseLine([]byte(input)))
 	}
 
 	agent.mu.Lock()

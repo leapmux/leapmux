@@ -157,7 +157,7 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	// Read stdout JSONL in background.
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutputLoop(scanner, a.HandleOutput)
+	go a.readOutputLoop(scanner, a.handleOutput)
 
 	cleanup := func() {
 		a.Stop()
@@ -761,12 +761,12 @@ func codexEffortName(id string) string {
 	return id
 }
 
-// HandleOutput processes a single JSONL notification from Codex.
-func (a *CodexAgent) HandleOutput(content []byte) {
-	handleCodexOutput(a, content)
+// handleOutput adapts the parsedLine to the existing HandleOutput method.
+func (a *CodexAgent) handleOutput(line *parsedLine) {
+	handleCodexOutput(a, line)
 }
 
-// formatStartupError includes stderr and preamble output for diagnostics.
-func (a *CodexAgent) formatStartupError(phase string, err error) error {
-	return a.processBase.formatStartupError(phase, err, a.PreambleOutput())
+// HandleOutput processes a single JSONL notification from Codex.
+func (a *CodexAgent) HandleOutput(content []byte) {
+	handleCodexOutput(a, parseLine(content))
 }

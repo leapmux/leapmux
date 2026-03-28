@@ -27,16 +27,26 @@ type contextUsageSnapshot struct {
 // HandleOutput processes a single NDJSON line from Claude Code.
 // This is the Claude Code-specific implementation of the Provider interface.
 func (a *ClaudeCodeAgent) HandleOutput(content []byte) {
-	var envelope struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(content, &envelope); err != nil {
-		slog.Warn("invalid agent output JSON", "agent_id", a.agentID, "error", err)
-		return
+	a.handleClaudeOutput(content, "")
+}
+
+// handleClaudeOutput is the shared implementation. When msgType is empty, the
+// type is parsed from the content; otherwise it uses the pre-parsed value from
+// the output pipeline.
+func (a *ClaudeCodeAgent) handleClaudeOutput(content []byte, msgType string) {
+	if msgType == "" {
+		var envelope struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(content, &envelope); err != nil {
+			slog.Warn("invalid agent output JSON", "agent_id", a.agentID, "error", err)
+			return
+		}
+		msgType = envelope.Type
 	}
 
 	var role leapmuxv1.MessageRole
-	switch envelope.Type {
+	switch msgType {
 	case "user":
 		role = leapmuxv1.MessageRole_MESSAGE_ROLE_USER
 	case "assistant":
@@ -47,11 +57,11 @@ func (a *ClaudeCodeAgent) HandleOutput(content []byte) {
 		role = leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT
 	}
 
-	slog.Debug("HandleOutput", "agent_id", a.agentID, "type", envelope.Type, "len", len(content))
+	slog.Debug("HandleOutput", "agent_id", a.agentID, "type", msgType, "len", len(content))
 
-	switch envelope.Type {
+	switch msgType {
 	case "assistant", "system", "result":
-		a.handlePersistableMessage(content, envelope.Type, role)
+		a.handlePersistableMessage(content, msgType, role)
 
 	case "user":
 		if isSimpleUserTextEcho(content) {
@@ -62,15 +72,15 @@ func (a *ClaudeCodeAgent) HandleOutput(content []byte) {
 			a.turnToolUses = 0
 			a.mu.Unlock()
 		} else {
-			a.handlePersistableMessage(content, envelope.Type, role)
+			a.handlePersistableMessage(content, msgType, role)
 		}
 
 	case "context_cleared", "interrupted", "plan_execution":
-		if envelope.Type == "interrupted" {
+		if msgType == "interrupted" {
 			a.sink.ResetSpans()
 		}
 		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, content); err != nil {
-			slog.Error("persist agent notification", "agent_id", a.agentID, "type", envelope.Type, "error", err)
+			slog.Error("persist agent notification", "agent_id", a.agentID, "type", msgType, "error", err)
 		}
 
 	case "control_request":

@@ -7,28 +7,18 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-// handleGeminiCLIOutput processes a single JSONL message from the Gemini CLI ACP server.
-func handleGeminiCLIOutput(a *GeminiCLIAgent, content []byte) {
-	var envelope struct {
-		ID     *json.Number    `json:"id"`
-		Method string          `json:"method"`
-		Params json.RawMessage `json:"params"`
-	}
-	if err := json.Unmarshal(content, &envelope); err != nil {
-		slog.Warn("invalid gemini output JSON", "agent_id", a.agentID, "error", err)
-		return
-	}
+// handleGeminiCLIOutput processes a single parsed JSONL message from the Gemini CLI ACP server.
+func handleGeminiCLIOutput(a *GeminiCLIAgent, line *parsedLine) {
+	slog.Debug("gemini HandleOutput", "agent_id", a.agentID, "method", line.Method, "len", len(line.Raw))
 
-	slog.Debug("gemini HandleOutput", "agent_id", a.agentID, "method", envelope.Method, "len", len(content))
-
-	switch envelope.Method {
+	switch line.Method {
 	case geminiMethodSessionUpdate, acpMethodSessionUpdate:
-		a.handleSessionUpdate(envelope.Params)
+		a.handleSessionUpdate(line.Params)
 	case geminiMethodRequestPermission, acpMethodSessionRequestPermission:
-		a.handleRequestPermission(envelope.ID, content)
+		a.handleRequestPermission(line.ID, line.Raw)
 	default:
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, content, SpanInfo{}); err != nil {
-			slog.Error("gemini persist notification", "agent_id", a.agentID, "method", envelope.Method, "error", err)
+		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, line.Raw, SpanInfo{}); err != nil {
+			slog.Error("gemini persist notification", "agent_id", a.agentID, "method", line.Method, "error", err)
 		}
 	}
 }
