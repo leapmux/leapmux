@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { sendCodexDecision, sendCodexUserInputResponse, toRpcId } from '../controls/CodexControlRequest'
 import { getProviderPlugin } from './registry'
+import { input } from './testUtils'
 
 // Side-effect import to register the Codex plugin.
 import './codex'
@@ -27,7 +28,7 @@ describe('codex classify', () => {
         threadId: '019d0b79-3982-7bf2-b85c-890371421ade',
       },
     }
-    const result = plugin.classify(parent, null)
+    const result = plugin.classify(input(parent))
     expect(result).toEqual({ kind: 'hidden' })
   })
 
@@ -41,7 +42,7 @@ describe('codex classify', () => {
         },
       },
     }
-    const result = plugin.classify(parent, null)
+    const result = plugin.classify(input(parent))
     expect(result).toEqual({ kind: 'hidden' })
   })
 
@@ -56,7 +57,7 @@ describe('codex classify', () => {
         },
       },
     }
-    const result = plugin.classify(parent, null)
+    const result = plugin.classify(input(parent))
     expect(result).toEqual({ kind: 'hidden' })
   })
 
@@ -68,7 +69,7 @@ describe('codex classify', () => {
         { type: 'context_cleared' },
       ],
     }
-    const result = plugin.classify(undefined, wrapper)
+    const result = plugin.classify(input(undefined, wrapper))
     expect(result).toEqual({ kind: 'notification_thread', messages: wrapper.messages })
   })
 
@@ -84,19 +85,19 @@ describe('codex classify', () => {
         },
       },
     }
-    const result = plugin.classify(parent, null)
+    const result = plugin.classify(input(parent))
     expect(result).toEqual({ kind: 'notification' })
   })
 
   it('classifies compacting as notification', () => {
     const parent = { type: 'compacting' }
-    const result = plugin.classify(parent, null)
+    const result = plugin.classify(input(parent))
     expect(result).toEqual({ kind: 'notification' })
   })
 
   it('classifies compact_boundary system messages as notification', () => {
     const parent = { type: 'system', subtype: 'compact_boundary' }
-    const result = plugin.classify(parent, null)
+    const result = plugin.classify(input(parent))
     expect(result).toEqual({ kind: 'notification' })
   })
 
@@ -113,7 +114,7 @@ describe('codex classify', () => {
         ],
       },
     }
-    const result = plugin.classify(parent, null)
+    const result = plugin.classify(input(parent))
     expect(result).toEqual({ kind: 'tool_use', toolName: 'turnPlan', toolUse: parent, content: [] })
   })
 
@@ -128,7 +129,7 @@ describe('codex classify', () => {
       threadId: 'thread-1',
       turnId: 'turn-1',
     }
-    const result = plugin.classify(parent, null)
+    const result = plugin.classify(input(parent))
     expect(result).toEqual({ kind: 'tool_use', toolName: 'webSearch', toolUse: parent.item, content: [] })
   })
 
@@ -145,7 +146,7 @@ describe('codex classify', () => {
         },
       },
     }
-    const result = plugin.classify(parent, null)
+    const result = plugin.classify(input(parent))
     expect(result).toEqual({ kind: 'hidden' })
   })
 
@@ -176,7 +177,7 @@ describe('codex classify', () => {
         },
       ],
     }
-    expect(plugin.classify(undefined, wrapper)).toEqual({ kind: 'hidden' })
+    expect(plugin.classify(input(undefined, wrapper))).toEqual({ kind: 'hidden' })
   })
 
   it('hides assistant interrupt echo messages with top-level string content', () => {
@@ -184,7 +185,7 @@ describe('codex classify', () => {
       role: 'assistant',
       content: '{"jsonrpc":"2.0","id":1001,"method":"turn/interrupt","params":{"threadId":"thread-1","turnId":"turn-1"}}',
     }
-    const result = plugin.classify(parent, null)
+    const result = plugin.classify(input(parent))
     expect(result).toEqual({ kind: 'hidden' })
   })
 
@@ -201,7 +202,7 @@ describe('codex classify', () => {
         ],
       },
     }
-    const result = plugin.classify(parent, null)
+    const result = plugin.classify(input(parent))
     expect(result).toEqual({ kind: 'hidden' })
   })
 
@@ -210,7 +211,7 @@ describe('codex classify', () => {
       id: 1001,
       result: {},
     }
-    const result = plugin.classify(parent, null)
+    const result = plugin.classify(input(parent))
     expect(result).toEqual({ kind: 'hidden' })
   })
 })
@@ -228,7 +229,7 @@ describe('codex result divider', () => {
       },
       turn: { id: 'turn-1', status: 'completed' },
     }
-    expect(plugin.classify(parent, null)).toEqual({ kind: 'result_divider' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'result_divider' })
   })
 
   it('renders result_divider via renderMessage', () => {

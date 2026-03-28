@@ -8,10 +8,23 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"unicode"
 	"sync/atomic"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+)
+
+// ACP session update type constants shared across providers.
+const (
+	acpUpdateAgentMessageChunk    = "agent_message_chunk"
+	acpUpdateAgentThoughtChunk    = "agent_thought_chunk"
+	acpUpdateToolCall             = "tool_call"
+	acpUpdateToolCallUpdate       = "tool_call_update"
+	acpUpdatePlan                 = "plan"
+	acpUpdateUsageUpdate          = "usage_update"
+	acpUpdateUserMessageChunk     = "user_message_chunk"
+	acpUpdateAvailableCommandsUpdate = "available_commands_update"
 )
 
 func sendACPRequest(
@@ -194,7 +207,7 @@ func handleACPToolCall(
 
 	spanType := tc.Kind
 	if spanType == "" {
-		spanType = "tool_call"
+		spanType = acpUpdateToolCall
 	}
 
 	if closeStatuses[tc.Status] {
@@ -234,7 +247,7 @@ func handleACPToolCallUpdate(
 
 	switch {
 	case tcu.Status == "in_progress":
-		sink.BroadcastStreamChunk(update, tcu.ToolCallID, "tool_call_update")
+		sink.BroadcastStreamChunk(update, tcu.ToolCallID, acpUpdateToolCallUpdate)
 	case terminalStatuses[tcu.Status]:
 		mu.Lock()
 		*turnToolUses = *turnToolUses + 1
@@ -242,7 +255,7 @@ func handleACPToolCallUpdate(
 
 		spanType := sink.GetSpanType(tcu.ToolCallID)
 		if spanType == "" {
-			spanType = "tool_call"
+			spanType = acpUpdateToolCall
 		}
 		if err := sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{
 			SpanID: tcu.ToolCallID, SpanType: spanType, Closing: true,
@@ -311,6 +324,30 @@ func broadcastGeminiQuotaSessionInfo(sink OutputSink, resp json.RawMessage) {
 			"outputTokens":             outputTokens,
 		},
 	})
+}
+
+// capitalizeFirst returns s with its first rune upper-cased.
+func capitalizeFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	for _, r := range s {
+		return string(unicode.ToUpper(r)) + s[len(string(r)):]
+	}
+	return s
+}
+
+// hasACPOption returns true if any option in the slice has the given id.
+func hasACPOption(options []*leapmuxv1.AvailableOption, id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, option := range options {
+		if option != nil && option.Id == id {
+			return true
+		}
+	}
+	return false
 }
 
 func handleACPPlan(agentID string, sink OutputSink, update json.RawMessage) {

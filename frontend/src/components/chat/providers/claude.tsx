@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { MessageCategory } from '../messageClassification'
-import type { ClassificationContext, ClassificationInput, NotificationWrapper, ProviderPlugin, ProviderSettingsPanelProps } from './registry'
+import type { ClassificationContext, ClassificationInput, ProviderPlugin, ProviderSettingsPanelProps } from './registry'
 import type { PermissionMode } from '~/utils/controlResponse'
 import ChevronsDown from 'lucide-solid/icons/chevrons-down'
 import ChevronsUp from 'lucide-solid/icons/chevrons-up'
@@ -16,7 +16,7 @@ import * as styles from '../ChatView.css'
 import { ClaudeCodeControlActions, ClaudeCodeControlContent } from '../controls/ClaudeCodeControlRequest'
 import { isNotificationThreadWrapper, isObject } from '../messageUtils'
 import { effortItems, hasEfforts, modeLabel, modelDisplayName, modelItems, ModelSelect, permissionModeGroup, permissionModeItems, RadioGroup } from '../settingsShared'
-import { normalizeClassificationArgs, registerProvider } from './registry'
+import { registerProvider } from './registry'
 
 function generateRandomId(): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
@@ -54,11 +54,9 @@ function isClaudeNotifThread(wrapper: { messages: unknown[] } | null): wrapper i
 
 /** Claude Code message classification. */
 function classifyClaudeCodeMessage(
-  inputOrParent: ClassificationInput | Record<string, unknown> | undefined,
-  wrapperOrContext?: NotificationWrapper | ClassificationContext | null,
-  context?: ClassificationContext,
+  input: ClassificationInput,
+  _context?: ClassificationContext,
 ): MessageCategory {
-  const { input } = normalizeClassificationArgs(inputOrParent, wrapperOrContext, context)
   const parentObject = input.parentObject
   const wrapper = input.wrapper
 

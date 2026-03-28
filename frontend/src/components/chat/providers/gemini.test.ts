@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentProvider, AvailableModelSchema, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/leapmux/v1/agent_pb'
 import { getProviderPlugin } from './registry'
+import { input } from './testUtils'
 
 import './gemini'
 
@@ -28,7 +29,7 @@ describe('gemini provider', () => {
       sessionUpdate: 'agent_message_chunk',
       content: { type: 'text', text: 'Hello' },
     }
-    expect(plugin.classify(parent, null)).toEqual({ kind: 'assistant_text' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'assistant_text' })
   })
 
   it('classifies tool_call_update cancelled as tool_use', () => {
@@ -38,7 +39,7 @@ describe('gemini provider', () => {
       status: 'cancelled',
       kind: 'execute',
     }
-    expect(plugin.classify(parent, null)).toEqual({
+    expect(plugin.classify(input(parent))).toEqual({
       kind: 'tool_use',
       toolName: 'execute',
       toolUse: parent,

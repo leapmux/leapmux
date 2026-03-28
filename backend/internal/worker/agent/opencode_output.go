@@ -8,6 +8,11 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
+var openCodeToolCallUpdatePersistStatuses = map[string]bool{
+	"completed": true,
+	"failed":    true,
+}
+
 // handleOpenCodeOutput processes a single JSONL message from the OpenCode ACP server.
 // Messages are stored in their native ACP JSON-RPC format.
 func handleOpenCodeOutput(a *OpenCodeAgent, content []byte) {
@@ -63,25 +68,25 @@ func (a *OpenCodeAgent) handleSessionUpdate(params json.RawMessage) {
 	}
 
 	switch header.SessionUpdate {
-	case "agent_message_chunk":
+	case acpUpdateAgentMessageChunk:
 		a.handleAgentMessageChunk(wrapper.Update)
 
-	case "agent_thought_chunk":
+	case acpUpdateAgentThoughtChunk:
 		a.handleAgentThoughtChunk(wrapper.Update)
 
-	case "tool_call":
+	case acpUpdateToolCall:
 		a.handleToolCall(wrapper.Update)
 
-	case "tool_call_update":
+	case acpUpdateToolCallUpdate:
 		a.handleToolCallUpdate(wrapper.Update)
 
-	case "usage_update":
+	case acpUpdateUsageUpdate:
 		a.handleUsageUpdate(wrapper.Update)
 
-	case "plan":
+	case acpUpdatePlan:
 		a.handlePlan(wrapper.Update)
 
-	case "user_message_chunk", "available_commands_update":
+	case acpUpdateUserMessageChunk, acpUpdateAvailableCommandsUpdate:
 		// No-op: user_message_chunk is replay, available_commands_update is informational.
 
 	default:
@@ -116,10 +121,7 @@ func (a *OpenCodeAgent) handleToolCall(update json.RawMessage) {
 
 // handleToolCallUpdate processes tool_call_update — progress or completion.
 func (a *OpenCodeAgent) handleToolCallUpdate(update json.RawMessage) {
-	handleACPToolCallUpdate(a.agentID, a.sink, &a.mu, &a.turnToolUses, update, map[string]bool{
-		"completed": true,
-		"failed":    true,
-	})
+	handleACPToolCallUpdate(a.agentID, a.sink, &a.mu, &a.turnToolUses, update, openCodeToolCallUpdatePersistStatuses)
 }
 
 // handleUsageUpdate processes usage_update — token/cost reporting.

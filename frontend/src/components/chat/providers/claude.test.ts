@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { getProviderPlugin } from './registry'
+import { input } from './testUtils'
 
 // Side-effect import to register the Claude plugin.
 import './claude'
@@ -26,7 +27,7 @@ describe('claude classify', () => {
       num_turns: 1,
       stop_reason: 'end_turn',
     }
-    expect(plugin.classify(parent, null)).toEqual({ kind: 'result_divider' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'result_divider' })
   })
 
   it('classifies error result divider', () => {
@@ -35,7 +36,7 @@ describe('claude classify', () => {
       is_error: true,
       errors: ['something went wrong'],
     }
-    expect(plugin.classify(parent, null)).toEqual({ kind: 'result_divider' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'result_divider' })
   })
 
   it('hides EnterPlanMode tool_result wrappers persisted as user messages', () => {
@@ -57,7 +58,7 @@ describe('claude classify', () => {
         message: 'Entered plan mode. You should now focus on exploring the codebase and designing an implementation approach.',
       },
     }
-    expect(plugin.classify(parent, null)).toEqual({ kind: 'hidden' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
   it('keeps non-plan tool_result user messages visible', () => {
@@ -75,6 +76,6 @@ describe('claude classify', () => {
         ],
       },
     }
-    expect(plugin.classify(parent, null)).toEqual({ kind: 'tool_result' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'tool_result' })
   })
 })

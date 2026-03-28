@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { MessageCategory } from '../messageClassification'
-import type { ClassificationContext, ClassificationInput, NotificationWrapper, ProviderPlugin, ProviderSettingsPanelProps, RenderContext } from './registry'
+import type { ClassificationContext, ClassificationInput, ProviderPlugin, ProviderSettingsPanelProps, RenderContext } from './registry'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
 import ChevronsDown from 'lucide-solid/icons/chevrons-down'
@@ -27,7 +27,7 @@ import {
 import { CodexControlActions, CodexControlContent } from '../controls/CodexControlRequest'
 import { isNotificationThreadWrapper, isObject } from '../messageUtils'
 import { defaultModelId, effortItems, hasEfforts, modeLabel, modelDisplayName, modelItems, ModelSelect, optionGroup, optionGroupItems, optionLabel, permissionModeGroup, permissionModeItems, RadioGroup } from '../settingsShared'
-import { normalizeClassificationArgs, registerProvider } from './registry'
+import { registerProvider } from './registry'
 
 /** Default model for Codex agents. */
 const DEFAULT_CODEX_MODEL = import.meta.env.LEAPMUX_CODEX_DEFAULT_MODEL || 'gpt-5.4'
@@ -322,8 +322,7 @@ const codexPlugin: ProviderPlugin = {
     defaultValue: DEFAULT_CODEX_COLLABORATION_MODE,
     setMode: (mode, cb) => cb.onOptionGroupChange?.(CODEX_EXTRA_COLLABORATION_MODE, mode),
   },
-  classify(inputOrParent: ClassificationInput | Record<string, unknown> | undefined, wrapperOrContext?: NotificationWrapper | ClassificationContext | null, context?: ClassificationContext): MessageCategory {
-    const { input, context: runtimeContext } = normalizeClassificationArgs(inputOrParent, wrapperOrContext, context)
+  classify(input: ClassificationInput, context?: ClassificationContext): MessageCategory {
     const parent = input.parentObject
     const wrapper = input.wrapper
 
@@ -427,7 +426,7 @@ const codexPlugin: ProviderPlugin = {
         const summary = item.summary as unknown[] | undefined
         const content = item.content as unknown[] | undefined
         if ((!summary || summary.length === 0) && (!content || content.length === 0))
-          return runtimeContext?.hasCommandStream ? { kind: 'assistant_thinking' } : { kind: 'hidden' }
+          return context?.hasCommandStream ? { kind: 'assistant_thinking' } : { kind: 'hidden' }
         return { kind: 'assistant_thinking' }
       }
 

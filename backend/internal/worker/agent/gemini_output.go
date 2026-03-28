@@ -8,6 +8,17 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
+var geminiToolCallPersistStatuses = map[string]bool{
+	"completed": true,
+	"failed":    true,
+}
+
+var geminiToolCallUpdatePersistStatuses = map[string]bool{
+	"completed": true,
+	"failed":    true,
+	"cancelled": true,
+}
+
 // handleGeminiCLIOutput processes a single JSONL message from the Gemini CLI ACP server.
 func handleGeminiCLIOutput(a *GeminiCLIAgent, content []byte) {
 	var envelope struct {
@@ -56,22 +67,21 @@ func (a *GeminiCLIAgent) handleSessionUpdate(params json.RawMessage) {
 	}
 
 	switch header.SessionUpdate {
-	case "agent_message_chunk":
+	case acpUpdateAgentMessageChunk:
 		a.handleAgentMessageChunk(wrapper.Update)
-	case "agent_thought_chunk":
+	case acpUpdateAgentThoughtChunk:
 		a.handleAgentThoughtChunk(wrapper.Update)
-	case "tool_call":
+	case acpUpdateToolCall:
 		a.handleToolCall(wrapper.Update)
-	case "tool_call_update":
+	case acpUpdateToolCallUpdate:
 		a.handleToolCallUpdate(wrapper.Update)
-	case "plan":
+	case acpUpdatePlan:
 		a.handlePlan(wrapper.Update)
-	case "usage_update":
+	case acpUpdateUsageUpdate:
 		handleACPUsageUpdate(a.sink, wrapper.Update)
 	case "current_mode_update":
 		a.handleCurrentModeUpdate(wrapper.Update)
-	case "available_commands_update", "user_message_chunk":
-		// Informational updates are not persisted in chat.
+	case acpUpdateAvailableCommandsUpdate, acpUpdateUserMessageChunk:
 	default:
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, wrapper.Update, SpanInfo{}); err != nil {
 			slog.Error("gemini persist unknown sessionUpdate", "agent_id", a.agentID, "type", header.SessionUpdate, "error", err)
@@ -92,18 +102,11 @@ func (a *GeminiCLIAgent) handleAgentChunk(update json.RawMessage, builder *strin
 }
 
 func (a *GeminiCLIAgent) handleToolCall(update json.RawMessage) {
-	handleACPToolCall(a.agentID, a.sink, update, map[string]bool{
-		"completed": true,
-		"failed":    true,
-	})
+	handleACPToolCall(a.agentID, a.sink, update, geminiToolCallPersistStatuses)
 }
 
 func (a *GeminiCLIAgent) handleToolCallUpdate(update json.RawMessage) {
-	handleACPToolCallUpdate(a.agentID, a.sink, &a.mu, &a.turnToolUses, update, map[string]bool{
-		"completed": true,
-		"failed":    true,
-		"cancelled": true,
-	})
+	handleACPToolCallUpdate(a.agentID, a.sink, &a.mu, &a.turnToolUses, update, geminiToolCallUpdatePersistStatuses)
 }
 
 func (a *GeminiCLIAgent) handlePlan(update json.RawMessage) {

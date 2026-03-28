@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-	"unicode"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/util/version"
@@ -240,17 +239,6 @@ func buildOpenCodeModels(models []struct {
 	return result
 }
 
-// capitalizeFirst returns s with its first rune upper-cased.
-func capitalizeFirst(s string) string {
-	if s == "" {
-		return s
-	}
-	for _, r := range s {
-		return string(unicode.ToUpper(r)) + s[len(string(r)):]
-	}
-	return s
-}
-
 func buildOpenCodePrimaryAgents(modes []openCodeModeInfo, currentModeID string) []*leapmuxv1.AvailableOption {
 	result := make([]*leapmuxv1.AvailableOption, 0, len(modes))
 	for _, mode := range modes {
@@ -288,17 +276,6 @@ func isHiddenOpenCodePrimaryAgent(id string) bool {
 	}
 }
 
-func hasOpenCodePrimaryAgent(options []*leapmuxv1.AvailableOption, id string) bool {
-	if id == "" {
-		return false
-	}
-	for _, option := range options {
-		if option != nil && option.Id == id {
-			return true
-		}
-	}
-	return false
-}
 
 func firstOpenCodePrimaryAgent(options []*leapmuxv1.AvailableOption) string {
 	for _, option := range options {
@@ -333,7 +310,7 @@ func (a *OpenCodeAgent) configurePrimaryAgents(modes []openCodeModeInfo, current
 	a.currentPrimaryAgent = current
 	a.mu.Unlock()
 
-	if hasACPModeList && requestedPrimaryAgent != "" && requestedPrimaryAgent != current && hasOpenCodePrimaryAgent(available, requestedPrimaryAgent) {
+	if hasACPModeList && requestedPrimaryAgent != "" && requestedPrimaryAgent != current && hasACPOption(available, requestedPrimaryAgent) {
 		if err := a.setPrimaryAgent(requestedPrimaryAgent); err != nil {
 			return err
 		}
@@ -510,7 +487,7 @@ func (a *OpenCodeAgent) setPrimaryAgent(agent string) error {
 	available := a.availablePrimaryAgents
 	a.mu.Unlock()
 
-	if !hasOpenCodePrimaryAgent(available, agent) {
+	if !hasACPOption(available, agent) {
 		return fmt.Errorf("unknown primary agent: %s", agent)
 	}
 

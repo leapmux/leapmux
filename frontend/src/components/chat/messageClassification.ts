@@ -55,31 +55,10 @@ export function buildClassificationInput(
  * (Claude Code, Codex, etc.) registers its own classify implementation.
  */
 export function classifyMessage(
-  inputOrParent: ClassificationInput | Record<string, unknown> | undefined,
-  wrapperOrContext?: { old_seqs: number[], messages: unknown[] } | ClassificationContext | null,
-  agentProviderOrContext?: AgentProvider | ClassificationContext,
-  maybeContext?: ClassificationContext,
+  input: ClassificationInput,
+  context?: ClassificationContext,
 ): MessageCategory {
-  const input = (() => {
-    if (inputOrParent && typeof inputOrParent === 'object' && 'rawText' in inputOrParent && 'messageRole' in inputOrParent)
-      return inputOrParent as ClassificationInput
-    return buildClassificationInput(
-      {
-        rawText: '',
-        topLevel: inputOrParent ?? null,
-        parentObject: inputOrParent,
-        wrapper: wrapperOrContext && typeof wrapperOrContext === 'object' && 'messages' in wrapperOrContext
-          ? wrapperOrContext as { old_seqs: number[], messages: unknown[] }
-          : null,
-      },
-      { role: MessageRole.SYSTEM, agentProvider: typeof agentProviderOrContext === 'number' ? agentProviderOrContext : undefined },
-    )
-  })()
-  const context = (wrapperOrContext && typeof wrapperOrContext === 'object' && !('messages' in wrapperOrContext))
-    ? wrapperOrContext as ClassificationContext
-    : (typeof agentProviderOrContext === 'object' ? agentProviderOrContext as ClassificationContext : maybeContext)
-
-  const provider = input.agentProvider ?? (typeof agentProviderOrContext === 'number' ? agentProviderOrContext : undefined) ?? AgentProvider.CLAUDE_CODE
+  const provider = input.agentProvider ?? AgentProvider.CLAUDE_CODE
   const plugin = getProviderPlugin(provider)
     ?? getProviderPlugin(AgentProvider.CLAUDE_CODE)
   if (plugin)

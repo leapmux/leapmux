@@ -268,14 +268,6 @@ func fallbackGeminiCLIModes() []*leapmuxv1.AvailableOption {
 	}
 }
 
-func hasGeminiCLIMode(options []*leapmuxv1.AvailableOption, id string) bool {
-	for _, option := range options {
-		if option != nil && option.Id == id {
-			return true
-		}
-	}
-	return false
-}
 
 func (a *GeminiCLIAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
 	a.mu.Lock()
@@ -407,7 +399,7 @@ func (a *GeminiCLIAgent) setPermissionMode(mode string) error {
 	available := a.availableModes
 	a.mu.Unlock()
 
-	if len(available) > 0 && !hasGeminiCLIMode(available, mode) {
+	if len(available) > 0 && !hasACPOption(available, mode) {
 		return fmt.Errorf("unknown permission mode: %s", mode)
 	}
 
