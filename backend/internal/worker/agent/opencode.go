@@ -62,6 +62,9 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 
 	cmd.Env = filterEnv(cmd.Environ(), "OPENCODE_CLIENT")
 	cmd.Env = append(cmd.Env, "LEAPMUX_WORKER=1")
+	if opts.LoginShell {
+		cmd.Env = append(cmd.Env, "OPENCODE_CLIENT=1")
+	}
 
 	cmd.Cancel = func() error {
 		return cmd.Process.Signal(syscall.SIGTERM)
