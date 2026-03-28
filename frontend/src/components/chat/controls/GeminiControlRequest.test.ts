@@ -1,6 +1,15 @@
+import type { AskQuestionState } from './types'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { GeminiControlActions, sendGeminiPermissionResponse } from './GeminiControlRequest'
+
+function makeAskState(): AskQuestionState {
+  const [selections, setSelections] = createSignal<Record<number, string[]>>({})
+  const [customTexts, setCustomTexts] = createSignal<Record<number, string>>({})
+  const [currentPage, setCurrentPage] = createSignal(0)
+  return { selections, setSelections, customTexts, setCustomTexts, currentPage, setCurrentPage }
+}
 
 describe('sendGeminiPermissionResponse', () => {
   it('sends an ACP permission response with the selected option', async () => {
@@ -41,6 +50,9 @@ describe('sendGeminiPermissionResponse', () => {
         },
       },
       onRespond,
+      askState: makeAskState(),
+      hasEditorContent: false,
+      onTriggerSend: vi.fn(),
       bypassPermissionMode: 'yolo',
       onPermissionModeChange,
     }))

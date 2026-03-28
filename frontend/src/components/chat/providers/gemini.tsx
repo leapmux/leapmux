@@ -35,7 +35,7 @@ const GEMINI_PLAN_MODE = 'plan'
 
 const GEMINI_EXTRA_NOTIF_TYPES = new Set(['agent_error'])
 
-function isGeminiNotifThread(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
+function isGeminiNotifThread(wrapper: { messages: unknown[] } | null): boolean {
   return isNotificationThreadWrapper(wrapper, GEMINI_EXTRA_NOTIF_TYPES, (t, st) =>
     t === 'system' && st !== 'init' && st !== 'task_notification')
 }
@@ -91,11 +91,12 @@ function classifyGeminiMessage(
   parent: Record<string, unknown> | undefined,
   wrapper: { old_seqs: number[], messages: unknown[] } | null,
 ): MessageCategory {
-  if (isGeminiNotifThread(wrapper))
-    return { kind: 'notification_thread', messages: wrapper.messages }
-
-  if (wrapper && wrapper.messages.length === 0)
-    return { kind: 'hidden' }
+  if (wrapper) {
+    if (isGeminiNotifThread(wrapper))
+      return { kind: 'notification_thread', messages: wrapper.messages }
+    if (wrapper.messages.length === 0)
+      return { kind: 'hidden' }
+  }
 
   if (!parent)
     return { kind: 'unknown' }
