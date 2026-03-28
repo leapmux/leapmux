@@ -106,112 +106,30 @@ func (a *OpenCodeAgent) handleAgentThoughtChunk(update json.RawMessage) {
 // handleAgentChunk extracts text from a chunk update, appends it to the
 // given builder (under lock), and broadcasts it as a stream chunk.
 func (a *OpenCodeAgent) handleAgentChunk(update json.RawMessage, builder *strings.Builder, eventType string) {
-	var chunk struct {
-		Content struct {
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if json.Unmarshal(update, &chunk) == nil && chunk.Content.Text != "" {
-		a.mu.Lock()
-		builder.WriteString(chunk.Content.Text)
-		a.mu.Unlock()
-		a.sink.BroadcastStreamChunk([]byte(chunk.Content.Text), "", eventType)
-	}
+	appendACPChunk(update, builder, &a.mu, a.sink, eventType)
 }
 
 // handleToolCall processes tool_call — a new tool invocation (status: pending).
 func (a *OpenCodeAgent) handleToolCall(update json.RawMessage) {
-	var tc struct {
-		ToolCallID string `json:"toolCallId"`
-		Title      string `json:"title"`
-		Kind       string `json:"kind"`
-	}
-	if json.Unmarshal(update, &tc) != nil || tc.ToolCallID == "" {
-		return
-	}
-
-	spanType := tc.Kind
-	if spanType == "" {
-		spanType = "tool_call"
-	}
-	spanColor := a.sink.PeekNextSpanColor()
-
-	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{
-		SpanID: tc.ToolCallID, SpanType: spanType, SpanColor: spanColor,
-	}); err != nil {
-		slog.Error("opencode persist tool_call", "agent_id", a.agentID, "kind", tc.Kind, "error", err)
-	}
-	a.sink.SetSpanType(tc.ToolCallID, spanType)
-	a.sink.OpenSpan(tc.ToolCallID, "")
+	handleACPToolCall(a.agentID, a.sink, update, nil)
 }
 
 // handleToolCallUpdate processes tool_call_update — progress or completion.
 func (a *OpenCodeAgent) handleToolCallUpdate(update json.RawMessage) {
-	var tcu struct {
-		ToolCallID string `json:"toolCallId"`
-		Status     string `json:"status"`
-	}
-	if json.Unmarshal(update, &tcu) != nil || tcu.ToolCallID == "" {
-		return
-	}
-
-	switch tcu.Status {
-	case "in_progress":
-		a.sink.BroadcastStreamChunk(update, tcu.ToolCallID, "tool_call_update")
-
-	case "completed", "failed":
-		a.mu.Lock()
-		a.turnToolUses++
-		a.mu.Unlock()
-
-		spanType := a.sink.GetSpanType(tcu.ToolCallID)
-		if spanType == "" {
-			spanType = "tool_call"
-		}
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{
-			SpanID: tcu.ToolCallID, SpanType: spanType, Closing: true,
-		}); err != nil {
-			slog.Error("opencode persist tool_call_update", "agent_id", a.agentID, "status", tcu.Status, "error", err)
-		}
-		a.sink.BroadcastStreamEnd(tcu.ToolCallID)
-		a.sink.CloseSpan(tcu.ToolCallID)
-	}
+	handleACPToolCallUpdate(a.agentID, a.sink, &a.mu, &a.turnToolUses, update, map[string]bool{
+		"completed": true,
+		"failed":    true,
+	})
 }
 
 // handleUsageUpdate processes usage_update — token/cost reporting.
 func (a *OpenCodeAgent) handleUsageUpdate(update json.RawMessage) {
-	var usage struct {
-		Used int64 `json:"used"`
-		Size int64 `json:"size"`
-		Cost struct {
-			Amount   float64 `json:"amount"`
-			Currency string  `json:"currency"`
-		} `json:"cost"`
-	}
-	if json.Unmarshal(update, &usage) != nil {
-		return
-	}
-
-	info := map[string]interface{}{
-		"contextUsage": map[string]interface{}{
-			"inputTokens":              usage.Used,
-			"cacheCreationInputTokens": int64(0),
-			"cacheReadInputTokens":     int64(0),
-			"outputTokens":             int64(0),
-			"contextWindow":            usage.Size,
-		},
-	}
-	if usage.Cost.Amount > 0 {
-		info["totalCostUsd"] = usage.Cost.Amount
-	}
-	a.sink.BroadcastSessionInfo(info)
+	handleACPUsageUpdate(a.sink, update)
 }
 
 // handlePlan processes plan — todo list entries.
 func (a *OpenCodeAgent) handlePlan(update json.RawMessage) {
-	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{}); err != nil {
-		slog.Error("opencode persist plan", "agent_id", a.agentID, "error", err)
-	}
+	handleACPPlan(a.agentID, a.sink, update)
 }
 
 // handleRequestPermission processes requestPermission server requests.

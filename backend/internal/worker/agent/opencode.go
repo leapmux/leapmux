@@ -358,7 +358,7 @@ func (a *OpenCodeAgent) SendInput(content string, attachments []*leapmuxv1.Attac
 		return fmt.Errorf("opencode agent has no active session")
 	}
 
-	prompt := buildOpenCodePromptBlocks(content, classifyAttachments(attachments))
+	prompt := buildACPPromptBlocks(content, classifyAttachments(attachments))
 	params, _ := json.Marshal(map[string]interface{}{
 		"sessionId": sessionID,
 		"prompt":    prompt,
@@ -382,9 +382,9 @@ func (a *OpenCodeAgent) SendInput(content string, attachments []*leapmuxv1.Attac
 	return nil
 }
 
-// buildOpenCodePromptBlocks converts text + classified attachments into
-// OpenCode's ACP prompt format.
-func buildOpenCodePromptBlocks(content string, classified []classifiedAttachment) []map[string]interface{} {
+// buildACPPromptBlocks converts text + classified attachments into ACP prompt
+// blocks compatible with both OpenCode and Gemini CLI.
+func buildACPPromptBlocks(content string, classified []classifiedAttachment) []map[string]interface{} {
 	var prompt []map[string]interface{}
 	if content != "" {
 		prompt = append(prompt, map[string]interface{}{"type": "text", "text": content})
@@ -431,43 +431,9 @@ func (a *OpenCodeAgent) handlePromptResponse(resp json.RawMessage) {
 	assistantText := a.turnAssistantText.String()
 	a.turnAssistantText.Reset()
 	a.mu.Unlock()
-
-	if thinkingText != "" {
-		msgContent, _ := json.Marshal(map[string]interface{}{
-			"sessionUpdate": "agent_thought_chunk",
-			"content": map[string]interface{}{
-				"type": "text",
-				"text": thinkingText,
-			},
-		})
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, msgContent, SpanInfo{}); err != nil {
-			slog.Error("opencode persist thinking text", "agent_id", a.agentID, "error", err)
-		}
-	}
-
-	if assistantText != "" {
-		msgContent, _ := json.Marshal(map[string]interface{}{
-			"sessionUpdate": "agent_message_chunk",
-			"content": map[string]interface{}{
-				"type": "text",
-				"text": assistantText,
-			},
-		})
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, msgContent, SpanInfo{}); err != nil {
-			slog.Error("opencode persist assistant text", "agent_id", a.agentID, "error", err)
-		}
-	}
-
-	// Unwrap the result if it uses the ACP message format {role, content, ...}.
-	// The frontend expects stopReason at the top level.
-	resp = unwrapACPResult(resp)
-
-	enriched := a.enrichWithToolUses(resp)
-	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT, enriched, SpanInfo{}); err != nil {
-		slog.Error("opencode persist prompt result", "agent_id", a.agentID, "error", err)
-	}
-
-	a.sink.ResetSpans()
+	persistACPPromptResponse(a.agentID, a.sink, thinkingText, assistantText, resp, unwrapACPResult, func(resp json.RawMessage) json.RawMessage {
+		return a.enrichWithToolUses(resp)
+	})
 
 	a.mu.Lock()
 	a.turnToolUses = 0
@@ -589,67 +555,12 @@ func (a *OpenCodeAgent) HandleOutput(content []byte) {
 
 // sendRequest sends a JSON-RPC request and waits for the response.
 func (a *OpenCodeAgent) sendRequest(method string, params json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
-	reqID := a.nextReqID.Add(1)
-
-	ch := make(chan json.RawMessage, 1)
-	a.pendingReqs.Store(reqID, ch)
-	defer a.pendingReqs.Delete(reqID)
-
-	msg := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      reqID,
-		"method":  method,
-	}
-	if params != nil {
-		msg["params"] = json.RawMessage(params)
-	}
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
-	}
-	data = append(data, '\n')
-
-	if _, err := a.stdin.Write(data); err != nil {
-		return nil, fmt.Errorf("write request: %w", err)
-	}
-
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-
-	select {
-	case resp := <-ch:
-		return resp, nil
-	case <-a.processDone:
-		return nil, a.processExitError()
-	case <-a.ctx.Done():
-		return nil, a.ctx.Err()
-	case <-timer.C:
-		return nil, fmt.Errorf("timeout waiting for %s response", method)
-	}
+	return sendACPRequest(a.stdin, &a.nextReqID, &a.pendingReqs, a.processDone, a.ctx, a.processExitError, method, params, timeout)
 }
 
 // sendNotification sends a JSON-RPC notification (no id, no response expected).
 func (a *OpenCodeAgent) sendNotification(method string, params json.RawMessage) error {
-	msg := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"method":  method,
-	}
-	if params != nil {
-		msg["params"] = json.RawMessage(params)
-	}
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("marshal notification: %w", err)
-	}
-	data = append(data, '\n')
-
-	if _, err := a.stdin.Write(data); err != nil {
-		return fmt.Errorf("write notification: %w", err)
-	}
-
-	return nil
+	return sendACPNotification(a.stdin, method, params)
 }
 
 // readOutputLoop reads JSONL lines from stdout and dispatches them.
@@ -662,40 +573,7 @@ func (a *OpenCodeAgent) readOutputLoop(scanner *bufio.Scanner) {
 // have both "id" and "method" (e.g. requestPermission) — those are passed
 // through to HandleOutput.
 func (a *OpenCodeAgent) handleJSONRPCResponse(line []byte) bool {
-	var envelope struct {
-		ID     *json.Number    `json:"id"`
-		Method string          `json:"method"`
-		Result json.RawMessage `json:"result"`
-		Error  json.RawMessage `json:"error"`
-	}
-	if err := json.Unmarshal(line, &envelope); err != nil {
-		return false
-	}
-
-	// Notifications have "method" but no "id"; responses have "id" but no "method".
-	if envelope.ID == nil || envelope.Method != "" {
-		return false
-	}
-
-	reqID, err := envelope.ID.Int64()
-	if err != nil {
-		return false
-	}
-
-	val, ok := a.pendingReqs.Load(reqID)
-	if !ok {
-		return false
-	}
-
-	ch := val.(chan json.RawMessage)
-	if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
-		// Send error as the response — caller can inspect it.
-		ch <- envelope.Error
-	} else {
-		ch <- envelope.Result
-	}
-
-	return true
+	return handleACPJSONRPCResponse(&a.pendingReqs, line)
 }
 
 // cancelSession sends a cancel notification for the current session.
@@ -748,4 +626,17 @@ func jsonRPCResultError(resp json.RawMessage) error {
 		return nil
 	}
 	return fmt.Errorf("json-rpc error %d: %s", rpcErr.Code, rpcErr.Message)
+}
+
+func isJSONRPCMethodNotFound(resp json.RawMessage) bool {
+	if len(resp) == 0 || string(resp) == "null" {
+		return false
+	}
+	var rpcErr struct {
+		Code int `json:"code"`
+	}
+	if err := json.Unmarshal(resp, &rpcErr); err != nil {
+		return false
+	}
+	return rpcErr.Code == -32601
 }

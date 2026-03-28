@@ -364,3 +364,72 @@ func TestPersistConfirmedAgentSettings_PersistsDiscoveredPrimaryAgentFromEmpty(t
 	assert.Equal(t, "plan", newExtras["primaryAgent"],
 		"new extra_settings should reflect the requested change")
 }
+
+func TestUpdateAgentSettings_BroadcastsGeminiPermissionModeLabels(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, "ws-1")
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:             "agent-gemini",
+		WorkspaceID:    "ws-1",
+		WorkingDir:     t.TempDir(),
+		HomeDir:        t.TempDir(),
+		AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
+		Model:          "auto",
+	}))
+	require.NoError(t, svc.Queries.UpdateAgentAllSettings(ctx, db.UpdateAgentAllSettingsParams{
+		Model:          "auto",
+		Effort:         "",
+		PermissionMode: "default",
+		ExtraSettings:  "{}",
+		ID:             "agent-gemini",
+	}))
+
+	sender := channel.NewSender(w)
+	svc.Watchers.WatchAgent("agent-gemini", &EventWatcher{
+		ChannelID: w.channelID,
+		Sender:    sender,
+	})
+
+	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+		AgentId: "agent-gemini",
+		Settings: &leapmuxv1.AgentSettings{
+			PermissionMode: "yolo",
+		},
+	}, w)
+
+	require.Empty(t, w.errors)
+	require.NotEmpty(t, w.streams)
+
+	var resp leapmuxv1.WatchEventsResponse
+	require.NoError(t, proto.Unmarshal(w.streams[len(w.streams)-1].GetPayload(), &resp))
+	msg := resp.GetAgentEvent().GetAgentMessage()
+	require.NotNil(t, msg)
+
+	raw, err := msgcodec.Decompress(msg.Content, msg.ContentCompression)
+	require.NoError(t, err)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(raw, &payload))
+
+	if payload["type"] != "settings_changed" {
+		messages, ok := payload["messages"].([]any)
+		require.True(t, ok)
+		for _, entry := range messages {
+			candidate, ok := entry.(map[string]any)
+			if ok && candidate["type"] == "settings_changed" {
+				payload = candidate
+				break
+			}
+		}
+	}
+
+	changes, ok := payload["changes"].(map[string]any)
+	require.True(t, ok)
+	change, ok := changes["permissionMode"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "default", change["old"])
+	assert.Equal(t, "yolo", change["new"])
+	assert.Equal(t, "Default", change["oldLabel"])
+	assert.Equal(t, "YOLO", change["newLabel"])
+}

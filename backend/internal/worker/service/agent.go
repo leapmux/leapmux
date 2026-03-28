@@ -1698,7 +1698,7 @@ func isInterruptRequest(content string) bool {
 	if err := json.Unmarshal([]byte(content), &msg); err != nil {
 		return false
 	}
-	return msg.Request.Subtype == "interrupt" || msg.Method == "turn/interrupt" || msg.Method == "session/cancel"
+	return msg.Request.Subtype == "interrupt" || msg.Method == "turn/interrupt" || msg.Method == "session/cancel" || msg.Method == "cancel"
 }
 
 // broadcastWatchEvent sends a WatchEventsResponse as a stream message.

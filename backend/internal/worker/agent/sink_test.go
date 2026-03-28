@@ -14,6 +14,7 @@ type testSink struct {
 	streamChunks     []testSinkStreamChunk
 	streamEnds       []string
 	sessionIDs       []string
+	permissionModes  []string
 	sessionInfos     []map[string]interface{}
 	spanTypes        map[string]string
 	openSpans        []testSinkSpanOpen
@@ -114,7 +115,11 @@ func (s *testSink) UpdateSessionID(sessionID string) {
 	defer s.mu.Unlock()
 	s.sessionIDs = append(s.sessionIDs, sessionID)
 }
-func (s *testSink) UpdatePermissionMode(string)  {}
+func (s *testSink) UpdatePermissionMode(mode string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.permissionModes = append(s.permissionModes, mode)
+}
 func (s *testSink) BroadcastStatusActive(string) {}
 func (s *testSink) BroadcastSessionInfo(info map[string]interface{}) {
 	s.mu.Lock()
@@ -212,6 +217,15 @@ func (s *testSink) LastSessionID() string {
 		return ""
 	}
 	return s.sessionIDs[len(s.sessionIDs)-1]
+}
+
+func (s *testSink) PermissionMode() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.permissionModes) == 0 {
+		return ""
+	}
+	return s.permissionModes[len(s.permissionModes)-1]
 }
 
 // SessionInfoCount returns the number of BroadcastSessionInfo calls.

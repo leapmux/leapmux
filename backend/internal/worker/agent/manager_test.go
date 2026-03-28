@@ -229,3 +229,12 @@ func TestManager_AvailableOptionGroupsPrefersRuntimeGroups(t *testing.T) {
 	assert.Equal(t, OpenCodeExtraPrimaryAgent, staticGroups[0].Key)
 	assert.Equal(t, OpenCodePrimaryAgentBuild, staticGroups[0].Options[0].Id)
 }
+
+func TestManager_AvailableModelsFallsBackToGeminiDefaults(t *testing.T) {
+	m := NewManager(nil)
+
+	models := m.AvailableModels("missing-agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI)
+	require.NotEmpty(t, models)
+	assert.Equal(t, "auto", models[0].GetId())
+	assert.True(t, models[0].GetIsDefault())
+}

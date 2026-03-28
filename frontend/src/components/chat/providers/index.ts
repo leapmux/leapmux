@@ -1,6 +1,7 @@
 // Import all provider modules to trigger side-effect registrations.
 import './claude'
 import './codex'
+import './gemini'
 import './opencode'
 import './stubs'
 

@@ -487,6 +487,27 @@ func init() {
 		"LEAPMUX_OPENCODE_DEFAULT_EFFORT",
 		"opencode",
 	)
+
+	registerProvider(
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
+		func(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+			return StartGeminiCLI(ctx, opts, sink)
+		},
+		geminiCLIAvailableModels,
+		[]*leapmuxv1.AvailableOptionGroup{{
+			Key:   "permissionMode",
+			Label: "Permission Mode",
+			Options: []*leapmuxv1.AvailableOption{
+				{Id: GeminiCLIModeDefault, Name: "Default", IsDefault: true},
+				{Id: GeminiCLIModeAutoEdit, Name: "Auto Edit"},
+				{Id: GeminiCLIModeYolo, Name: "YOLO"},
+				{Id: GeminiCLIModePlan, Name: "Plan"},
+			},
+		}},
+		"LEAPMUX_GEMINI_DEFAULT_MODEL",
+		"",
+		"gemini",
+	)
 }
 
 var claudeCodeAvailableModels = []*leapmuxv1.AvailableModel{
@@ -495,6 +516,13 @@ var claudeCodeAvailableModels = []*leapmuxv1.AvailableModel{
 	{Id: "sonnet", DisplayName: "Sonnet", Description: "Best for everyday tasks", DefaultEffort: "high", SupportedEfforts: claudeCodeEffortNoMax, ContextWindow: 200_000},
 	{Id: "sonnet[1m]", DisplayName: "Sonnet (1M context)", Description: "Best for everyday tasks", DefaultEffort: "high", SupportedEfforts: claudeCodeEffortNoMax, ContextWindow: 1_000_000},
 	{Id: "haiku", DisplayName: "Haiku", Description: "Fastest for quick answers", DefaultEffort: "high", ContextWindow: 200_000},
+}
+
+var geminiCLIAvailableModels = []*leapmuxv1.AvailableModel{
+	{Id: "auto", DisplayName: "Auto", Description: "Let Gemini CLI choose the best model for the task", IsDefault: true},
+	{Id: "gemini-2.5-pro", DisplayName: "Gemini 2.5 Pro", Description: "Most capable for complex reasoning and coding"},
+	{Id: "gemini-2.5-flash", DisplayName: "Gemini 2.5 Flash", Description: "Fast, balanced model for most tasks"},
+	{Id: "gemini-2.5-flash-lite", DisplayName: "Gemini 2.5 Flash Lite", Description: "Fastest option for lightweight tasks"},
 }
 
 // sendControlAndWait sends a control request to the agent and waits for the
