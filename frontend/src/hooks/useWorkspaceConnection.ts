@@ -1,7 +1,7 @@
 import type { AgentEvent, TerminalEvent, WatchAgentEntry } from '~/generated/leapmux/v1/workspace_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { createAgentStore } from '~/stores/agent.store'
-import type { createAgentSessionStore } from '~/stores/agentSession.store'
+import type { createAgentSessionStore, RateLimitInfo } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
 import type { createTabStore } from '~/stores/tab.store'
@@ -142,7 +142,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             }
             const rls = extractRateLimitInfo(parsed)
             if (rls.length > 0) {
-              const rateLimits: Record<string, Record<string, unknown>> = {}
+              const rateLimits: Record<string, RateLimitInfo> = {}
               for (const rl of rls)
                 rateLimits[rl.key] = rl.info
               agentSessionStore.updateInfo(agentId, { rateLimits } as Record<string, unknown>)

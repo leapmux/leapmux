@@ -17,6 +17,11 @@ import { WorkspaceContextMenu } from './WorkspaceContextMenu'
 import * as styles from './workspaceList.css'
 import { buildTree, WorkspaceTabTree } from './WorkspaceTabTree'
 
+/** Apply a solid-dnd directive (sortable/droppable) to an element. */
+function applyDirective(directive: { ref: unknown }, el: HTMLElement) {
+  (directive as unknown as (el: HTMLElement) => void)(el)
+}
+
 export interface WorkspaceSectionContentProps {
   workspaces: Workspace[]
   sectionId: string
@@ -203,8 +208,8 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                 <>
                   <div
                     ref={(el: HTMLElement) => {
-                      (sortable as unknown as (el: HTMLElement) => void)(el);
-                      (wsDroppable as unknown as (el: HTMLElement) => void)(el)
+                      applyDirective(sortable, el)
+                      applyDirective(wsDroppable, el)
                     }}
                     class={styles.item}
                     classList={{
