@@ -8,12 +8,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-var geminiToolCallUpdatePersistStatuses = map[string]bool{
-	"completed": true,
-	"failed":    true,
-	"cancelled": true,
-}
-
 // handleGeminiCLIOutput processes a single JSONL message from the Gemini CLI ACP server.
 func handleGeminiCLIOutput(a *GeminiCLIAgent, content []byte) {
 	var envelope struct {
@@ -93,7 +87,7 @@ func (a *GeminiCLIAgent) handleAgentThoughtChunk(update json.RawMessage) {
 }
 
 func (a *GeminiCLIAgent) handleAgentChunk(update json.RawMessage, builder *strings.Builder, eventType string) {
-	appendACPChunk(update, builder, &a.mu, a.sink, eventType)
+	a.appendACPChunk(update, builder, a.sink, eventType)
 }
 
 func (a *GeminiCLIAgent) handleToolCall(update json.RawMessage) {
@@ -101,7 +95,7 @@ func (a *GeminiCLIAgent) handleToolCall(update json.RawMessage) {
 }
 
 func (a *GeminiCLIAgent) handleToolCallUpdate(update json.RawMessage) {
-	handleACPToolCallUpdate(a.agentID, a.sink, &a.mu, &a.turnToolUses, update, geminiToolCallUpdatePersistStatuses)
+	a.handleACPToolCallUpdate(a.sink, update)
 }
 
 func (a *GeminiCLIAgent) handlePlan(update json.RawMessage) {

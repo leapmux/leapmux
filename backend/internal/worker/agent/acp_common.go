@@ -154,16 +154,16 @@ func (b *jsonrpcBase) readOutputLoop(scanner *bufio.Scanner, handle outputHandle
 	b.readOutput(scanner, b.handleJSONRPCResponse, handle)
 }
 
-func appendACPChunk(update json.RawMessage, builder *strings.Builder, mu *sync.Mutex, sink OutputSink, eventType string) {
+func (p *processBase) appendACPChunk(update json.RawMessage, builder *strings.Builder, sink OutputSink, eventType string) {
 	var chunk struct {
 		Content struct {
 			Text string `json:"text"`
 		} `json:"content"`
 	}
 	if json.Unmarshal(update, &chunk) == nil && chunk.Content.Text != "" {
-		mu.Lock()
+		p.mu.Lock()
 		builder.WriteString(chunk.Content.Text)
-		mu.Unlock()
+		p.mu.Unlock()
 		sink.BroadcastStreamChunk([]byte(chunk.Content.Text), "", eventType)
 	}
 }
@@ -264,14 +264,7 @@ func handleACPToolCall(
 	sink.OpenSpan(tc.ToolCallID, "")
 }
 
-func handleACPToolCallUpdate(
-	agentID string,
-	sink OutputSink,
-	mu *sync.Mutex,
-	turnToolUses *int,
-	update json.RawMessage,
-	terminalStatuses map[string]bool,
-) {
+func (p *processBase) handleACPToolCallUpdate(sink OutputSink, update json.RawMessage) {
 	var tcu struct {
 		ToolCallID string `json:"toolCallId"`
 		Status     string `json:"status"`
@@ -283,10 +276,10 @@ func handleACPToolCallUpdate(
 	switch {
 	case tcu.Status == "in_progress":
 		sink.BroadcastStreamChunk(update, tcu.ToolCallID, acpUpdateToolCallUpdate)
-	case terminalStatuses[tcu.Status]:
-		mu.Lock()
-		*turnToolUses = *turnToolUses + 1
-		mu.Unlock()
+	case tcu.Status == "completed" || tcu.Status == "failed" || tcu.Status == "cancelled":
+		p.mu.Lock()
+		p.turnToolUses++
+		p.mu.Unlock()
 
 		spanType := sink.GetSpanType(tcu.ToolCallID)
 		if spanType == "" {
@@ -295,7 +288,7 @@ func handleACPToolCallUpdate(
 		if err := sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{
 			SpanID: tcu.ToolCallID, SpanType: spanType, Closing: true,
 		}); err != nil {
-			slog.Error("persist acp tool_call_update", "agent_id", agentID, "status", tcu.Status, "error", err)
+			slog.Error("persist acp tool_call_update", "agent_id", p.agentID, "status", tcu.Status, "error", err)
 		}
 		sink.BroadcastStreamEnd(tcu.ToolCallID)
 		sink.CloseSpan(tcu.ToolCallID)

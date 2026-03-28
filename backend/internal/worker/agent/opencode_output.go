@@ -8,11 +8,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-var openCodeToolCallUpdatePersistStatuses = map[string]bool{
-	"completed": true,
-	"failed":    true,
-}
-
 // handleOpenCodeOutput processes a single JSONL message from the OpenCode ACP server.
 // Messages are stored in their native ACP JSON-RPC format.
 func handleOpenCodeOutput(a *OpenCodeAgent, content []byte) {
@@ -111,7 +106,7 @@ func (a *OpenCodeAgent) handleAgentThoughtChunk(update json.RawMessage) {
 // handleAgentChunk extracts text from a chunk update, appends it to the
 // given builder (under lock), and broadcasts it as a stream chunk.
 func (a *OpenCodeAgent) handleAgentChunk(update json.RawMessage, builder *strings.Builder, eventType string) {
-	appendACPChunk(update, builder, &a.mu, a.sink, eventType)
+	a.appendACPChunk(update, builder, a.sink, eventType)
 }
 
 // handleToolCall processes tool_call — a new tool invocation (status: pending).
@@ -121,7 +116,7 @@ func (a *OpenCodeAgent) handleToolCall(update json.RawMessage) {
 
 // handleToolCallUpdate processes tool_call_update — progress or completion.
 func (a *OpenCodeAgent) handleToolCallUpdate(update json.RawMessage) {
-	handleACPToolCallUpdate(a.agentID, a.sink, &a.mu, &a.turnToolUses, update, openCodeToolCallUpdatePersistStatuses)
+	a.handleACPToolCallUpdate(a.sink, update)
 }
 
 // handleUsageUpdate processes usage_update — token/cost reporting.
