@@ -189,18 +189,13 @@ test.describe('TabBar Improvements', () => {
     await expect(agentTab.locator('[class*="tabText"]')).toHaveText('My Agent')
   })
 
-  test('should create a new agent by double-clicking empty tab bar area', async ({ page, authenticatedWorkspace }) => {
-    // Count initial agent tabs
-    const initialCount = await page.locator('[data-testid="tab"][data-tab-type="agent"]').count()
-
+  test('should open new agent dialog by double-clicking empty tab bar area', async ({ page, authenticatedWorkspace }) => {
     // Double-click the empty area in the tab list (not on a tab)
     const tabList = page.locator('[data-testid="tab-list"]')
     const box = await tabList.boundingBox()
     await tabList.dblclick({ position: { x: box!.width - 10, y: box!.height / 2 } })
 
-    // Verify a new agent tab is created
-    await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(initialCount + 1)
-    // Verify the ProseMirror editor is visible (agent is ready)
-    await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
+    // Verify the New Agent dialog opens
+    await expect(page.getByRole('heading', { name: 'New Agent' })).toBeVisible()
   })
 })
