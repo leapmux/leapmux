@@ -133,20 +133,13 @@ func (p *processBase) processExitError() error {
 }
 
 // formatStartupError returns a descriptive error including stderr and
-// preamble output for frontend diagnostics. It calls PreambleOutput()
-// internally so callers don't need to pass it explicitly.
+// preamble output for frontend diagnostics.
 func (p *processBase) formatStartupError(phase string, err error) error {
-	return p.formatStartupErrorWithPreamble(phase, err, p.PreambleOutput())
-}
-
-// formatStartupErrorWithPreamble is the internal implementation that accepts
-// an explicit preambleOutput string.
-func (p *processBase) formatStartupErrorWithPreamble(phase string, err error, preambleOutput string) error {
 	parts := []string{fmt.Sprintf("%s: %s", phase, err)}
 	if stderr := strings.TrimSpace(p.Stderr()); stderr != "" {
 		parts = append(parts, "stderr: "+stderr)
 	}
-	if preamble := strings.TrimSpace(preambleOutput); preamble != "" {
+	if preamble := strings.TrimSpace(p.PreambleOutput()); preamble != "" {
 		parts = append(parts, "shell preamble: "+preamble)
 	}
 	return fmt.Errorf("%s", strings.Join(parts, "; "))

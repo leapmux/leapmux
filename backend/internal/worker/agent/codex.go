@@ -761,7 +761,6 @@ func codexEffortName(id string) string {
 	return id
 }
 
-// handleOutput adapts the parsedLine to the existing HandleOutput method.
 func (a *CodexAgent) handleOutput(line *parsedLine) {
 	handleCodexOutput(a, line)
 }

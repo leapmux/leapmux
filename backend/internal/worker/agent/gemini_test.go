@@ -254,7 +254,7 @@ func TestStartGeminiCLI_FallsBackToLegacySessionMethods(t *testing.T) {
 	})
 
 	assert.Equal(t, "session-legacy", agent.sessionID)
-	assert.True(t, agent.useLegacyMethods)
+	assert.True(t, agent.usesLegacyMethods())
 }
 
 func TestGeminiUpdateSettingsSendsLiveACPRequests(t *testing.T) {
@@ -299,7 +299,7 @@ func TestGeminiUpdateSettingsFallsBackToLegacyMethods(t *testing.T) {
 		PermissionMode: GeminiCLIModePlan,
 	})
 	require.True(t, updated)
-	assert.True(t, agent.useLegacyMethods)
+	assert.True(t, agent.usesLegacyMethods())
 	require.Eventually(t, func() bool { return len(requests()) == 3 }, time.Second, 10*time.Millisecond)
 	recorded := requests()
 	require.Len(t, recorded, 3)

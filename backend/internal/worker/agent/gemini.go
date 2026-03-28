@@ -147,13 +147,13 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 	}
 
 	sessionMethod, sessionParams := buildGeminiSessionRequest(opts.ResumeSessionID, opts.WorkingDir)
-	sessionResp, err := a.sendCompatibleRequest(sessionMethod, legacyGeminiMethod(sessionMethod), json.RawMessage(sessionParams), timeout)
+	sessionResp, err := a.sendCompatibleRequest(sessionMethod, json.RawMessage(sessionParams), timeout)
 	if err != nil {
 		if opts.ResumeSessionID != "" {
 			slog.Warn("loadSession failed, falling back to newSession",
 				"agent_id", a.agentID, "session_id", opts.ResumeSessionID, "error", err)
 			_, fallbackParams := buildGeminiSessionRequest("", opts.WorkingDir)
-			sessionResp, err = a.sendCompatibleRequest(geminiMethodNewSession, legacyGeminiMethod(geminiMethodNewSession), json.RawMessage(fallbackParams), timeout)
+			sessionResp, err = a.sendCompatibleRequest(geminiMethodNewSession, json.RawMessage(fallbackParams), timeout)
 		}
 		if err != nil {
 			cleanup()
@@ -176,7 +176,7 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 		cleanup()
 		return nil, a.formatStartupError("newSession parse", err)
 	}
-	if session.SessionID == "" && opts.ResumeSessionID != "" && sessionMethod == "loadSession" {
+	if session.SessionID == "" && opts.ResumeSessionID != "" && sessionMethod == geminiMethodLoadSession {
 		session.SessionID = opts.ResumeSessionID
 	}
 	if session.SessionID == "" {
@@ -272,7 +272,7 @@ func fallbackGeminiCLIModes() []*leapmuxv1.AvailableOption {
 func (a *GeminiCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attachment) {
 	a.sendPrompt(content, attachments,
 		func(params json.RawMessage) (json.RawMessage, error) {
-			return a.sendCompatibleRequest(geminiMethodPrompt, legacyGeminiMethod(geminiMethodPrompt), params, 10*time.Minute)
+			return a.sendCompatibleRequest(geminiMethodPrompt, params, 10*time.Minute)
 		},
 		a.handlePromptResponse,
 	)
@@ -367,7 +367,7 @@ func (a *GeminiCLIAgent) setModel(model string) error {
 		"sessionId": sessionID,
 		"modelId":   model,
 	})
-	resp, err := a.sendCompatibleRequest(geminiMethodSetSessionModel, legacyGeminiMethod(geminiMethodSetSessionModel), json.RawMessage(params), 10*time.Second)
+	resp, err := a.sendCompatibleRequest(geminiMethodSetSessionModel, json.RawMessage(params), 10*time.Second)
 	if err != nil {
 		return err
 	}
@@ -395,7 +395,7 @@ func (a *GeminiCLIAgent) setPermissionMode(mode string) error {
 		"sessionId": sessionID,
 		"modeId":    mode,
 	})
-	resp, err := a.sendCompatibleRequest(geminiMethodSetSessionMode, legacyGeminiMethod(geminiMethodSetSessionMode), json.RawMessage(params), 10*time.Second)
+	resp, err := a.sendCompatibleRequest(geminiMethodSetSessionMode, json.RawMessage(params), 10*time.Second)
 	if err != nil {
 		return err
 	}
@@ -409,7 +409,6 @@ func (a *GeminiCLIAgent) setPermissionMode(mode string) error {
 	return nil
 }
 
-// handleOutput adapts the parsedLine to the existing HandleOutput method.
 func (a *GeminiCLIAgent) handleOutput(line *parsedLine) {
 	handleGeminiCLIOutput(a, line)
 }
@@ -418,8 +417,9 @@ func (a *GeminiCLIAgent) HandleOutput(content []byte) {
 	handleGeminiCLIOutput(a, parseLine(content))
 }
 
-func (a *GeminiCLIAgent) sendCompatibleRequest(method, legacyMethod string, params json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
-	if legacyMethod == "" || method == legacyMethod {
+func (a *GeminiCLIAgent) sendCompatibleRequest(method string, params json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
+	legacyMethod := legacyGeminiMethod(method)
+	if legacyMethod == method {
 		return a.sendRequest(method, params, timeout)
 	}
 	if a.usesLegacyMethods() {

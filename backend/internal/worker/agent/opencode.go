@@ -24,7 +24,6 @@ const (
 	openCodeHiddenSummary     = "summary"
 )
 
-// OpenCode-specific method names.
 const (
 	openCodeMethodSessionResume = "session/resume"
 )
@@ -174,7 +173,7 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 	}
 	if session.SessionID == "" {
 		cleanup()
-		return nil, a.formatStartupError("session/new", fmt.Errorf("response did not contain a session ID"))
+		return nil, a.formatStartupError(acpMethodSessionNew, fmt.Errorf("response did not contain a session ID"))
 	}
 
 	a.sessionID = session.SessionID
@@ -196,12 +195,12 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 	if session.Modes != nil {
 		if err := a.configurePrimaryAgents(session.Modes.AvailableModes, session.Modes.CurrentModeID, requestedPrimaryAgent); err != nil {
 			cleanup()
-			return nil, a.formatStartupError("session/set_mode", err)
+			return nil, a.formatStartupError(acpMethodSessionSetMode, err)
 		}
 	} else {
 		if err := a.configurePrimaryAgents(nil, "", ""); err != nil {
 			cleanup()
-			return nil, a.formatStartupError("session/set_mode", err)
+			return nil, a.formatStartupError(acpMethodSessionSetMode, err)
 		}
 	}
 
@@ -463,7 +462,6 @@ func (a *OpenCodeAgent) availablePrimaryAgentGroup() []*leapmuxv1.AvailableOptio
 	}}
 }
 
-// handleOutput adapts the parsedLine to the existing HandleOutput method.
 func (a *OpenCodeAgent) handleOutput(line *parsedLine) {
 	handleOpenCodeOutput(a, line)
 }

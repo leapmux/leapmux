@@ -121,14 +121,14 @@ func marshalProtoSlice[T proto.Message](items []T, typeName string) string {
 	if len(items) == 0 {
 		return "[]"
 	}
-	raw := make([]json.RawMessage, len(items))
-	for i, m := range items {
+	raw := make([]json.RawMessage, 0, len(items))
+	for _, m := range items {
 		b, err := protojson.Marshal(m)
 		if err != nil {
 			slog.Error("failed to marshal "+typeName, "error", err)
-			return "[]"
+			continue
 		}
-		raw[i] = b
+		raw = append(raw, b)
 	}
 	data, _ := json.Marshal(raw)
 	return string(data)
