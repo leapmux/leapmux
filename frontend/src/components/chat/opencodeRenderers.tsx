@@ -352,7 +352,7 @@ export function opencodeResultDividerRenderer(parsed: unknown): JSX.Element | nu
 }
 
 /** Render an OpenCode plan (todo list). */
-export function opencodePlanRenderer(toolUse: Record<string, unknown>, _role: MessageRole, _context?: RenderContext): JSX.Element {
+export function opencodePlanRenderer(toolUse: Record<string, unknown>, _role: MessageRole, context?: RenderContext): JSX.Element {
   const entries = toolUse.entries as Array<{ priority?: string, status?: string, content: string }> | undefined
 
   if (!entries || entries.length === 0)
@@ -363,11 +363,24 @@ export function opencodePlanRenderer(toolUse: Record<string, unknown>, _role: Me
     status: e.status === 'completed' ? 'completed' as const : 'pending' as const,
   }))
 
+  const entriesToMarkdown = () => entries.map(e => `- [${e.status === 'completed' ? 'x' : ' '}] ${e.content}`).join('\n')
+  const [copied, setCopied] = createSignal(false)
+  const copyMarkdown = () => {
+    void navigator.clipboard.writeText(entriesToMarkdown())
+    setCopied(true)
+    setTimeout(setCopied, 2000, false)
+  }
+  const reply = context?.onReply ? () => context.onReply!(entriesToMarkdown()) : undefined
+
   return (
     <ToolUseLayout
       icon={ListTodo}
       toolName="Plan"
       title="Plan"
+      context={context}
+      onReply={reply}
+      onCopyMarkdown={copyMarkdown}
+      markdownCopied={copied()}
     >
       <TodoList items={todos} />
     </ToolUseLayout>

@@ -2,7 +2,7 @@
 import type { JSX } from 'solid-js'
 import type { MessageContentRenderer, RenderContext } from './messageRenderers'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
-import { Show } from 'solid-js'
+import { createSignal, Show } from 'solid-js'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { markdownContent } from './markdownContent.css'
 import { getAssistantContent, isObject } from './messageUtils'
@@ -12,6 +12,15 @@ import { ToolUseLayout } from './toolRenderers'
 export function renderExitPlanMode(toolUse: Record<string, unknown>, context?: RenderContext): JSX.Element {
   const input = toolUse.input
   const planText = isObject(input) ? String((input as Record<string, unknown>).plan || '') : ''
+  const [copied, setCopied] = createSignal(false)
+  const copyMarkdown = planText
+    ? () => {
+        void navigator.clipboard.writeText(planText)
+        setCopied(true)
+        setTimeout(setCopied, 2000, false)
+      }
+    : undefined
+  const reply = planText && context?.onReply ? () => context.onReply!(planText) : undefined
 
   return (
     <ToolUseLayout
@@ -21,6 +30,9 @@ export function renderExitPlanMode(toolUse: Record<string, unknown>, context?: R
       alwaysVisible={true}
       bordered={false}
       context={context}
+      onReply={reply}
+      onCopyMarkdown={copyMarkdown}
+      markdownCopied={copied()}
     >
       <Show when={planText}>
         <hr />

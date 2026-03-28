@@ -5,7 +5,7 @@ import type { TodoItem } from '~/stores/chat.store'
 import Check from 'lucide-solid/icons/check'
 import ListTodo from 'lucide-solid/icons/list-todo'
 import Vote from 'lucide-solid/icons/vote'
-import { For, Show } from 'solid-js'
+import { createSignal, For, Show } from 'solid-js'
 import { TodoList } from '~/components/todo/TodoList'
 import { getAssistantContent, isObject } from './messageUtils'
 import { ToolUseLayout } from './toolRenderers'
@@ -28,6 +28,16 @@ export function renderTodoWrite(toolUse: Record<string, unknown>, context?: Rend
   const count = todos.length
   const label = `${count} task${count === 1 ? '' : 's'}`
 
+  const statusMark = (s: TodoItem['status']) => s === 'completed' ? 'x' : s === 'in_progress' ? '~' : ' '
+  const todosToMarkdown = () => todos.map(t => `- [${statusMark(t.status)}] ${t.content}`).join('\n')
+  const [copied, setCopied] = createSignal(false)
+  const copyMarkdown = () => {
+    void navigator.clipboard.writeText(todosToMarkdown())
+    setCopied(true)
+    setTimeout(setCopied, 2000, false)
+  }
+  const reply = context?.onReply ? () => context.onReply!(todosToMarkdown()) : undefined
+
   return (
     <ToolUseLayout
       icon={ListTodo}
@@ -35,6 +45,9 @@ export function renderTodoWrite(toolUse: Record<string, unknown>, context?: Rend
       title={label}
       alwaysVisible={true}
       context={context}
+      onReply={reply}
+      onCopyMarkdown={copyMarkdown}
+      markdownCopied={copied()}
     >
       <TodoList todos={todos} />
     </ToolUseLayout>

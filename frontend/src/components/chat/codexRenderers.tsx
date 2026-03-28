@@ -14,7 +14,7 @@ import ListTodo from 'lucide-solid/icons/list-todo'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import Terminal from 'lucide-solid/icons/terminal'
 import Wrench from 'lucide-solid/icons/wrench'
-import { createEffect, For, Show } from 'solid-js'
+import { createEffect, createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { TodoList } from '~/components/todo/TodoList'
@@ -332,6 +332,13 @@ export function codexPlanRenderer(parsed: unknown, _role: MessageRole, context?:
   const text = (item.text as string) || ''
   if (!text)
     return null
+  const [copied, setCopied] = createSignal(false)
+  const copyMarkdown = () => {
+    void navigator.clipboard.writeText(text)
+    setCopied(true)
+    setTimeout(setCopied, 2000, false)
+  }
+  const reply = context?.onReply ? () => context.onReply!(text) : undefined
   return (
     <ToolUseLayout
       icon={PlaneTakeoff}
@@ -340,6 +347,9 @@ export function codexPlanRenderer(parsed: unknown, _role: MessageRole, context?:
       alwaysVisible={true}
       bordered={false}
       context={context}
+      onReply={reply}
+      onCopyMarkdown={copyMarkdown}
+      markdownCopied={copied()}
     >
       <hr />
       <div class={markdownContent} style={{ 'font-size': 'var(--text-regular)' }} innerHTML={renderMarkdown(text)} />
@@ -363,6 +373,15 @@ export function codexTurnPlanRenderer(parsed: unknown, _role: MessageRole, conte
   const explanation = typeof params.explanation === 'string' ? params.explanation.trim() : ''
   const label = `${todos.length} task${todos.length === 1 ? '' : 's'}${explanation ? ` - ${explanation}` : ''}`
 
+  const todosToMarkdown = () => todos.map(t => `- [${t.status === 'completed' ? 'x' : ' '}] ${t.content}`).join('\n')
+  const [copied, setCopied] = createSignal(false)
+  const copyMarkdown = () => {
+    void navigator.clipboard.writeText(todosToMarkdown())
+    setCopied(true)
+    setTimeout(setCopied, 2000, false)
+  }
+  const reply = context?.onReply ? () => context.onReply!(todosToMarkdown()) : undefined
+
   return (
     <ToolUseLayout
       icon={ListTodo}
@@ -370,6 +389,9 @@ export function codexTurnPlanRenderer(parsed: unknown, _role: MessageRole, conte
       title={label}
       alwaysVisible={true}
       context={context}
+      onReply={reply}
+      onCopyMarkdown={copyMarkdown}
+      markdownCopied={copied()}
     >
       <TodoList todos={todos} />
     </ToolUseLayout>
