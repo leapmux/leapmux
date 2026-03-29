@@ -71,14 +71,14 @@ type jsonrpcBase struct {
 // agents (GeminiCLIAgent, OpenCodeAgent, CopilotCLIAgent) but not CodexAgent.
 type acpBase struct {
 	jsonrpcBase
-	sink              OutputSink
-	providerName      string // e.g. "copilot", "gemini", "opencode" — used in log messages
+	sink               OutputSink
+	providerName       string                  // e.g. "copilot", "gemini", "opencode" — used in log messages
 	extraSessionUpdate acpSessionUpdateHandler // optional provider-specific session update handler
-	sessionID         string
-	model             string
-	availableModels   []*leapmuxv1.AvailableModel
-	turnAssistantText strings.Builder
-	turnThinkingText  strings.Builder
+	sessionID          string
+	model              string
+	availableModels    []*leapmuxv1.AvailableModel
+	turnAssistantText  strings.Builder
+	turnThinkingText   strings.Builder
 }
 
 // handleACPPromptResponse extracts accumulated turn text, calls the optional
