@@ -5,6 +5,7 @@ package wakelock
 import (
 	"log/slog"
 	"os/exec"
+	"syscall"
 )
 
 type linuxWakeLock struct {
@@ -24,6 +25,11 @@ func (w *linuxWakeLock) Acquire() error {
 		"--mode=block",
 		"cat",
 	)
+	// Ask the kernel to send SIGTERM to the child when the worker process
+	// dies (e.g. SIGKILL), preventing an orphaned inhibitor.
+	w.cmd.SysProcAttr = &syscall.SysProcAttr{
+		Pdeathsig: syscall.SIGTERM,
+	}
 	if err := w.cmd.Start(); err != nil {
 		return err
 	}
