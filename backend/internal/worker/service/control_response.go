@@ -9,7 +9,7 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-func codexControlResponseRequestID(content []byte) string {
+func controlResponseRequestID(content []byte) string {
 	var rpc struct {
 		ID json.RawMessage `json:"id"`
 	}
@@ -175,7 +175,7 @@ func opencodeQuestionAnswersText(requestPayload, responseContent []byte) string 
 	return strings.Join(lines, "\n")
 }
 
-func (svc *Context) codexControlResponseDisplayText(agentID string, provider leapmuxv1.AgentProvider, content []byte) string {
+func (svc *Context) controlResponseDisplayText(agentID string, provider leapmuxv1.AgentProvider, content []byte) string {
 	switch provider {
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:
 		// handled below
@@ -183,11 +183,13 @@ func (svc *Context) codexControlResponseDisplayText(agentID string, provider lea
 		// handled below
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:
 		// handled below
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_COPILOT_CLI:
+		// handled below
 	default:
 		return ""
 	}
 
-	reqID := codexControlResponseRequestID(content)
+	reqID := controlResponseRequestID(content)
 	if reqID == "" {
 		return ""
 	}
@@ -219,9 +221,8 @@ func (svc *Context) codexControlResponseDisplayText(agentID string, provider lea
 			return opencodeQuestionAnswersText(cr.Payload, content)
 		}
 		return acpPermissionResponseDisplayText(cr.Payload, content)
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:
-		return acpPermissionResponseDisplayText(cr.Payload, content)
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_COPILOT_CLI:
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_COPILOT_CLI:
 		return acpPermissionResponseDisplayText(cr.Payload, content)
 	default:
 		return ""

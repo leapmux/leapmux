@@ -24,7 +24,7 @@ func TestHandleGeminiOutput_AgentMessageChunk(t *testing.T) {
 	agent := newGeminiAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hello Gemini"}}}}`
-	handleGeminiCLIOutput(agent, parseLine([]byte(input)))
+	agent.HandleOutput([]byte(input))
 
 	if sink.StreamChunkCount() != 1 {
 		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
@@ -43,7 +43,7 @@ func TestHandleGeminiOutput_ToolCallOpensSpan(t *testing.T) {
 	agent := newGeminiAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"shell","kind":"execute","status":"pending"}}}`
-	handleGeminiCLIOutput(agent, parseLine([]byte(input)))
+	agent.HandleOutput([]byte(input))
 
 	if sink.MessageCount() != 1 {
 		t.Fatalf("expected 1 persisted message, got %d", sink.MessageCount())
@@ -65,7 +65,7 @@ func TestHandleGeminiOutput_RequestPermission(t *testing.T) {
 	agent := newGeminiAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"s1","options":[{"optionId":"proceed_once","name":"Allow","kind":"allow_once"}],"toolCall":{"toolCallId":"tc-1","title":"shell","kind":"execute"}}}`
-	handleGeminiCLIOutput(agent, parseLine([]byte(input)))
+	agent.HandleOutput([]byte(input))
 
 	if sink.PersistedControlCount() != 1 {
 		t.Fatalf("expected 1 persisted control request, got %d", sink.PersistedControlCount())
@@ -80,7 +80,7 @@ func TestHandleGeminiOutput_UsageUpdateBroadcastsSessionInfo(t *testing.T) {
 	agent := newGeminiAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"usage_update","used":321,"size":12345,"cost":{"amount":0.25,"currency":"USD"}}}}`
-	handleGeminiCLIOutput(agent, parseLine([]byte(input)))
+	agent.HandleOutput([]byte(input))
 
 	if sink.SessionInfoCount() != 1 {
 		t.Fatalf("expected 1 session info update, got %d", sink.SessionInfoCount())
@@ -106,7 +106,7 @@ func TestHandleGeminiOutput_CurrentModeUpdateBroadcastsPermissionMode(t *testing
 	agent := newGeminiAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"current_mode_update","currentModeId":"plan"}}}`
-	handleGeminiCLIOutput(agent, parseLine([]byte(input)))
+	agent.HandleOutput([]byte(input))
 
 	if agent.permissionMode != "plan" {
 		t.Fatalf("expected permission mode plan, got %q", agent.permissionMode)
@@ -124,7 +124,9 @@ func TestGeminiHandlePromptResponsePersistsTurn(t *testing.T) {
 	agent.turnAssistantText.WriteString("answer")
 
 	resp := json.RawMessage(`{"stopReason":"end_turn","_meta":{"quota":{"token_count":{"input_tokens":1,"output_tokens":2}}}}`)
-	agent.handlePromptResponse(resp)
+	agent.handleACPPromptResponse(resp, func(r json.RawMessage) {
+		broadcastGeminiQuotaSessionInfo(agent.sink, r)
+	})
 
 	if sink.MessageCount() != 3 {
 		t.Fatalf("expected 3 persisted messages, got %d", sink.MessageCount())

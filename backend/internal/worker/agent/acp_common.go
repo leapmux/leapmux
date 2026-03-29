@@ -15,7 +15,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-// ACP JSON-RPC method name constants shared across ACP providers (Gemini CLI, OpenCode).
+// ACP JSON-RPC method name constants shared across all ACP providers.
 const (
 	acpMethodInitialize               = "initialize"
 	acpMethodSessionUpdate            = "session/update"
@@ -28,7 +28,7 @@ const (
 	acpMethodSessionSetMode           = "session/set_mode"
 )
 
-// ACP session update type constants shared across providers.
+// ACP session update type constants.
 const (
 	acpUpdateAgentMessageChunk       = "agent_message_chunk"
 	acpUpdateAgentThoughtChunk       = "agent_thought_chunk"
@@ -823,4 +823,30 @@ func (b *acpBase) handleRequestPermission(id *json.Number, content []byte) {
 	requestID := id.String()
 	b.sink.PersistControlRequest(requestID, content)
 	b.sink.BroadcastControlRequest(requestID, content)
+}
+
+// handleACPOutput is the shared output dispatcher for all ACP providers.
+// It routes session updates and permission requests, persisting anything else.
+func (b *acpBase) handleACPOutput(line *parsedLine, extraSessionUpdate acpSessionUpdateHandler) {
+	switch line.Method {
+	case acpMethodSessionUpdate:
+		b.handleACPSessionUpdate(line.Params, extraSessionUpdate)
+	case acpMethodSessionRequestPermission:
+		b.handleRequestPermission(line.ID, line.Raw)
+	default:
+		if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, line.Raw, SpanInfo{}); err != nil {
+			slog.Error("acp persist notification", "agent_id", b.agentID, "method", line.Method, "error", err)
+		}
+	}
+}
+
+// doSendACPPrompt sends a single ACP prompt RPC and processes the response.
+// Used as the promptFunc for all ACP agents; handleResponse varies per provider.
+func (b *acpBase) doSendACPPrompt(content string, attachments []*leapmuxv1.Attachment, handleResponse func(json.RawMessage)) {
+	b.sendPrompt(content, attachments,
+		func(params json.RawMessage) (json.RawMessage, error) {
+			return b.sendRequest(acpMethodSessionPrompt, params, 10*time.Minute)
+		},
+		handleResponse,
+	)
 }

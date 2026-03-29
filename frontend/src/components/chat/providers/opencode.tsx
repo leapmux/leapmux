@@ -3,7 +3,6 @@ import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { OpenCodeControlActions, OpenCodeControlContent } from '../controls/OpenCodeControlRequest'
 import {
   buildACPInterruptContent,
-  changeACPPermissionMode,
   classifyACPMessage,
   createACPSettingsPanel,
   createACPTriggerLabel,
@@ -37,7 +36,6 @@ registerProvider(AgentProvider.OPENCODE, {
   classify: classifyACPMessage(),
   renderMessage: renderACPMessage,
   buildInterruptContent: buildACPInterruptContent,
-  changePermissionMode: changeACPPermissionMode,
 
   isAskUserQuestion(payload?: Record<string, unknown>): boolean {
     return payload?.type === 'question.asked'

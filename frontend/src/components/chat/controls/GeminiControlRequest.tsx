@@ -108,3 +108,6 @@ export const GeminiControlActions: Component<ActionsProps> = (props) => {
     </div>
   )
 }
+
+// Provider-neutral aliases used by all ACP providers.
+export { GeminiControlActions as ACPControlActions, GeminiControlContent as ACPControlContent }

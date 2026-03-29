@@ -154,16 +154,9 @@ func fallbackCopilotCLIModes() []*leapmuxv1.AvailableOption {
 }
 
 func (a *CopilotCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attachment) {
-	a.sendPrompt(content, attachments,
-		func(params json.RawMessage) (json.RawMessage, error) {
-			return a.sendRequest(acpMethodSessionPrompt, params, 10*time.Minute)
-		},
-		a.handlePromptResponse,
-	)
-}
-
-func (a *CopilotCLIAgent) handlePromptResponse(resp json.RawMessage) {
-	a.handleACPPromptResponse(resp, nil)
+	a.doSendACPPrompt(content, attachments, func(resp json.RawMessage) {
+		a.handleACPPromptResponse(resp, nil)
+	})
 }
 
 func (a *CopilotCLIAgent) CurrentSettings() *leapmuxv1.AgentSettings {
@@ -235,81 +228,3 @@ func (a *CopilotCLIAgent) setPermissionMode(mode string) error {
 	return nil
 }
 
-func (a *CopilotCLIAgent) cancelSession() error {
-	return a.acpCancelSession()
-}
-
-func (a *CopilotCLIAgent) handleOutput(line *parsedLine) {
-	handleCopilotCLIOutput(a, line)
-}
-
-func (a *CopilotCLIAgent) HandleOutput(content []byte) {
-	handleCopilotCLIOutput(a, parseLine(content))
-}
-
-// syncConfigOptions updates the agent's model and mode from the given config options.
-// It returns the updated mode value, or "" if no mode was found.
-func (a *CopilotCLIAgent) syncConfigOptions(options []copilotCLIConfigOption) string {
-	if len(options) == 0 {
-		return ""
-	}
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	var updatedMode string
-	for _, option := range options {
-		switch option.ID {
-		case "model":
-			if option.CurrentValue != "" {
-				a.model = option.CurrentValue
-			}
-			if len(option.Options) > 0 {
-				models := make([]*leapmuxv1.AvailableModel, 0, len(option.Options))
-				for _, candidate := range option.Options {
-					if candidate.Value == "" {
-						continue
-					}
-					name := candidate.Name
-					if name == "" {
-						name = candidate.Value
-					}
-					models = append(models, &leapmuxv1.AvailableModel{
-						Id:          candidate.Value,
-						DisplayName: name,
-						IsDefault:   candidate.Value == option.CurrentValue,
-					})
-				}
-				if len(models) > 0 {
-					a.availableModels = models
-				}
-			}
-		case "mode":
-			if option.CurrentValue != "" {
-				a.permissionMode = option.CurrentValue
-				updatedMode = option.CurrentValue
-			}
-			if len(option.Options) > 0 {
-				modes := make([]*leapmuxv1.AvailableOption, 0, len(option.Options))
-				for _, candidate := range option.Options {
-					if candidate.Value == "" {
-						continue
-					}
-					name := candidate.Name
-					if name == "" {
-						name = candidate.Value
-					}
-					modes = append(modes, &leapmuxv1.AvailableOption{
-						Id:        candidate.Value,
-						Name:      name,
-						IsDefault: candidate.Value == option.CurrentValue,
-					})
-				}
-				if len(modes) > 0 {
-					a.availableModes = modes
-				}
-			}
-		}
-	}
-	return updatedMode
-}

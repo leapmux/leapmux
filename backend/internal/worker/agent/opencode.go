@@ -31,8 +31,7 @@ const (
 type OpenCodeAgent struct {
 	acpBase
 
-	model      string
-	workingDir string
+	model string
 
 	availableModels        []*leapmuxv1.AvailableModel
 	currentPrimaryAgent    string
@@ -92,8 +91,7 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 			}},
 			sink: sink,
 		},
-		model:      opts.Model,
-		workingDir: opts.WorkingDir,
+		model: opts.Model,
 	}
 	a.promptFunc = a.doSendPrompt
 
@@ -135,18 +133,16 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 }
 
 func buildOpenCodePrimaryAgents(modes []acpModeInfo, currentModeID string) []*leapmuxv1.AvailableOption {
-	// Normalize names: OpenCode agents often report name == id or whitespace-only names.
-	normalized := make([]acpModeInfo, len(modes))
-	for i, m := range modes {
-		normalized[i] = m
-		name := strings.TrimSpace(m.Name)
-		if name == "" || name == m.ID {
-			normalized[i].Name = ""
+	// Normalize names in place: OpenCode agents often report name == id or whitespace-only names.
+	for i := range modes {
+		name := strings.TrimSpace(modes[i].Name)
+		if name == "" || name == modes[i].ID {
+			modes[i].Name = ""
 		} else {
-			normalized[i].Name = name
+			modes[i].Name = name
 		}
 	}
-	return buildACPModes(normalized, currentModeID, isHiddenOpenCodePrimaryAgent)
+	return buildACPModes(modes, currentModeID, isHiddenOpenCodePrimaryAgent)
 }
 
 func fallbackOpenCodePrimaryAgents() []*leapmuxv1.AvailableOption {
@@ -207,15 +203,10 @@ func (a *OpenCodeAgent) configurePrimaryAgents(modes []acpModeInfo, currentModeI
 	return nil
 }
 
-// doSendPrompt sends a single prompt RPC and processes the response. Called by
-// jsonrpcBase.runPrompt on a goroutine.
 func (a *OpenCodeAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attachment) {
-	a.sendPrompt(content, attachments,
-		func(params json.RawMessage) (json.RawMessage, error) {
-			return a.sendRequest(acpMethodSessionPrompt, params, 10*time.Minute)
-		},
-		a.handlePromptResponse,
-	)
+	a.doSendACPPrompt(content, attachments, func(resp json.RawMessage) {
+		a.handleACPPromptResponse(resp, nil)
+	})
 }
 
 // buildACPPromptBlocks converts text + classified attachments into ACP prompt
@@ -253,10 +244,6 @@ func buildACPPromptBlocks(content string, classified []classifiedAttachment) []m
 	return prompt
 }
 
-func (a *OpenCodeAgent) handlePromptResponse(resp json.RawMessage) {
-	a.handleACPPromptResponse(resp, nil)
-}
-
 // CurrentSettings returns the current settings for this agent.
 func (a *OpenCodeAgent) CurrentSettings() *leapmuxv1.AgentSettings {
 	a.mu.Lock()
@@ -273,6 +260,8 @@ func (a *OpenCodeAgent) CurrentSettings() *leapmuxv1.AgentSettings {
 
 // AvailableModels returns the models reported by the OpenCode process.
 func (a *OpenCodeAgent) AvailableModels() []*leapmuxv1.AvailableModel {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	return a.availableModels
 }
 
@@ -336,11 +325,3 @@ func (a *OpenCodeAgent) availablePrimaryAgentGroup() []*leapmuxv1.AvailableOptio
 	}}
 }
 
-func (a *OpenCodeAgent) handleOutput(line *parsedLine) {
-	handleOpenCodeOutput(a, line)
-}
-
-// HandleOutput processes a single JSONL notification from OpenCode.
-func (a *OpenCodeAgent) HandleOutput(content []byte) {
-	handleOpenCodeOutput(a, parseLine(content))
-}

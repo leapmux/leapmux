@@ -7,29 +7,21 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-func handleCopilotCLIOutput(a *CopilotCLIAgent, line *parsedLine) {
+func (a *CopilotCLIAgent) handleOutput(line *parsedLine) {
 	slog.Debug("copilot HandleOutput", "agent_id", a.agentID, "method", line.Method, "len", len(line.Raw))
-
-	switch line.Method {
-	case acpMethodSessionUpdate:
-		a.handleSessionUpdate(line.Params)
-	case acpMethodSessionRequestPermission:
-		a.handleRequestPermission(line.ID, line.Raw)
-	default:
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, line.Raw, SpanInfo{}); err != nil {
-			slog.Error("copilot persist notification", "agent_id", a.agentID, "method", line.Method, "error", err)
-		}
-	}
+	a.handleACPOutput(line, a.handleExtraSessionUpdate)
 }
 
-func (a *CopilotCLIAgent) handleSessionUpdate(params json.RawMessage) {
-	a.handleACPSessionUpdate(params, func(sessionUpdate string, update json.RawMessage) bool {
-		if sessionUpdate == acpUpdateConfigOptionUpdate {
-			a.handleConfigOptionUpdate(update)
-			return true
-		}
-		return false
-	})
+func (a *CopilotCLIAgent) HandleOutput(content []byte) {
+	a.handleOutput(parseLine(content))
+}
+
+func (a *CopilotCLIAgent) handleExtraSessionUpdate(sessionUpdate string, update json.RawMessage) bool {
+	if sessionUpdate == acpUpdateConfigOptionUpdate {
+		a.handleConfigOptionUpdate(update)
+		return true
+	}
+	return false
 }
 
 func (a *CopilotCLIAgent) handleConfigOptionUpdate(update json.RawMessage) {
@@ -43,4 +35,76 @@ func (a *CopilotCLIAgent) handleConfigOptionUpdate(update json.RawMessage) {
 	if mode := a.syncConfigOptions(payload.ConfigOptions); mode != "" {
 		a.sink.UpdatePermissionMode(mode)
 	}
+}
+
+// cancelSession sends a session/cancel notification.
+func (a *CopilotCLIAgent) cancelSession() error {
+	return a.acpCancelSession()
+}
+
+// syncConfigOptions updates the agent's model and mode from the given config options.
+// It returns the updated mode value, or "" if no mode was found.
+func (a *CopilotCLIAgent) syncConfigOptions(options []copilotCLIConfigOption) string {
+	if len(options) == 0 {
+		return ""
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	var updatedMode string
+	for _, option := range options {
+		switch option.ID {
+		case "model":
+			if option.CurrentValue != "" {
+				a.model = option.CurrentValue
+			}
+			if len(option.Options) > 0 {
+				models := make([]*leapmuxv1.AvailableModel, 0, len(option.Options))
+				for _, candidate := range option.Options {
+					if candidate.Value == "" {
+						continue
+					}
+					name := candidate.Name
+					if name == "" {
+						name = candidate.Value
+					}
+					models = append(models, &leapmuxv1.AvailableModel{
+						Id:          candidate.Value,
+						DisplayName: name,
+						IsDefault:   candidate.Value == option.CurrentValue,
+					})
+				}
+				if len(models) > 0 {
+					a.availableModels = models
+				}
+			}
+		case "mode":
+			if option.CurrentValue != "" {
+				a.permissionMode = option.CurrentValue
+				updatedMode = option.CurrentValue
+			}
+			if len(option.Options) > 0 {
+				modes := make([]*leapmuxv1.AvailableOption, 0, len(option.Options))
+				for _, candidate := range option.Options {
+					if candidate.Value == "" {
+						continue
+					}
+					name := candidate.Name
+					if name == "" {
+						name = candidate.Value
+					}
+					modes = append(modes, &leapmuxv1.AvailableOption{
+						Id:        candidate.Value,
+						Name:      name,
+						IsDefault: candidate.Value == option.CurrentValue,
+					})
+				}
+				if len(modes) > 0 {
+					a.availableModes = modes
+				}
+			}
+		}
+	}
+	return updatedMode
 }

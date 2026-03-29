@@ -1,7 +1,7 @@
 import type { ACPSettingsPanelConfig } from './acpShared'
 import type { PermissionMode } from '~/utils/controlResponse'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { GeminiControlActions, GeminiControlContent } from '../controls/GeminiControlRequest'
+import { ACPControlActions, ACPControlContent } from '../controls/GeminiControlRequest'
 import {
   buildACPInterruptContent,
   changeACPPermissionMode,
@@ -41,8 +41,8 @@ registerProvider(AgentProvider.GEMINI_CLI, {
   buildInterruptContent: buildACPInterruptContent,
   changePermissionMode: changeACPPermissionMode,
 
-  ControlContent: GeminiControlContent,
-  ControlActions: GeminiControlActions,
+  ControlContent: ACPControlContent,
+  ControlActions: ACPControlActions,
   SettingsPanel: createACPSettingsPanel(settingsConfig),
   settingsTriggerLabel: createACPTriggerLabel(settingsConfig),
 })

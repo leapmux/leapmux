@@ -24,7 +24,6 @@ type GeminiCLIAgent struct {
 
 	model          string
 	permissionMode string
-	workingDir     string
 
 	availableModels []*leapmuxv1.AvailableModel
 	availableModes  []*leapmuxv1.AvailableOption
@@ -83,8 +82,7 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 			}},
 			sink: sink,
 		},
-		model:      opts.Model,
-		workingDir: opts.WorkingDir,
+		model: opts.Model,
 	}
 	a.promptFunc = a.doSendPrompt
 
@@ -120,12 +118,9 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 	}
 
 	if requested := StringOrDefault(opts.PermissionMode, ""); requested != "" && requested != a.permissionMode {
-		cleanup := func() {
+		if err := a.setPermissionMode(requested); err != nil {
 			a.Stop()
 			_ = a.Wait()
-		}
-		if err := a.setPermissionMode(requested); err != nil {
-			cleanup()
 			return nil, a.formatStartupError("session/set_mode", err)
 		}
 	}
@@ -134,19 +129,23 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 }
 
 func buildGeminiCLIModels(models []acpModelInfo, currentModelID string) []*leapmuxv1.AvailableModel {
-	result := buildACPModels(models, currentModelID)
-	// Inject a synthetic "auto" entry if the server didn't provide one.
-	for _, m := range result {
-		if m.Id == "auto" {
-			return result
+	hasAuto := false
+	for _, m := range models {
+		if m.ModelID == "auto" {
+			hasAuto = true
+			break
 		}
 	}
-	return append([]*leapmuxv1.AvailableModel{{
-		Id:          "auto",
-		DisplayName: "Auto",
-		Description: "Automatically selects the best Gemini model",
-		IsDefault:   currentModelID == "" || currentModelID == "auto",
-	}}, result...)
+	result := buildACPModels(models, currentModelID)
+	if !hasAuto {
+		result = append([]*leapmuxv1.AvailableModel{{
+			Id:          "auto",
+			DisplayName: "Auto",
+			Description: "Automatically selects the best Gemini model",
+			IsDefault:   currentModelID == "" || currentModelID == "auto",
+		}}, result...)
+	}
+	return result
 }
 
 func fallbackGeminiCLIModes() []*leapmuxv1.AvailableOption {
@@ -158,20 +157,11 @@ func fallbackGeminiCLIModes() []*leapmuxv1.AvailableOption {
 	}
 }
 
-// doSendPrompt sends a single prompt RPC and processes the response. Called by
-// jsonrpcBase.runPrompt on a goroutine.
 func (a *GeminiCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attachment) {
-	a.sendPrompt(content, attachments,
-		func(params json.RawMessage) (json.RawMessage, error) {
-			return a.sendRequest(acpMethodSessionPrompt, params, 10*time.Minute)
-		},
-		a.handlePromptResponse,
-	)
-}
-
-func (a *GeminiCLIAgent) handlePromptResponse(resp json.RawMessage) {
-	a.handleACPPromptResponse(resp, func(r json.RawMessage) {
-		broadcastGeminiQuotaSessionInfo(a.sink, r)
+	a.doSendACPPrompt(content, attachments, func(resp json.RawMessage) {
+		a.handleACPPromptResponse(resp, func(r json.RawMessage) {
+			broadcastGeminiQuotaSessionInfo(a.sink, r)
+		})
 	})
 }
 
@@ -216,6 +206,8 @@ func (a *GeminiCLIAgent) CurrentSettings() *leapmuxv1.AgentSettings {
 }
 
 func (a *GeminiCLIAgent) AvailableModels() []*leapmuxv1.AvailableModel {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	return a.availableModels
 }
 
@@ -273,14 +265,3 @@ func (a *GeminiCLIAgent) setPermissionMode(mode string) error {
 	return nil
 }
 
-func (a *GeminiCLIAgent) handleOutput(line *parsedLine) {
-	handleGeminiCLIOutput(a, line)
-}
-
-func (a *GeminiCLIAgent) HandleOutput(content []byte) {
-	handleGeminiCLIOutput(a, parseLine(content))
-}
-
-func (a *GeminiCLIAgent) cancelSession() error {
-	return a.acpCancelSession()
-}
