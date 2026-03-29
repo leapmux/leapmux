@@ -75,6 +75,8 @@ type acpBase struct {
 	providerName      string // e.g. "copilot", "gemini", "opencode" — used in log messages
 	extraSessionUpdate acpSessionUpdateHandler // optional provider-specific session update handler
 	sessionID         string
+	model             string
+	availableModels   []*leapmuxv1.AvailableModel
 	turnAssistantText strings.Builder
 	turnThinkingText  strings.Builder
 }
@@ -736,8 +738,15 @@ func buildACPModes(modes []acpModeInfo, currentModeID string, filter func(id str
 	return result
 }
 
-// acpSetModel sends a session/set_model request and returns nil on success.
-func (b *acpBase) acpSetModel(model string) error {
+// AvailableModels returns the models reported by the ACP provider.
+func (b *acpBase) AvailableModels() []*leapmuxv1.AvailableModel {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.availableModels
+}
+
+// setModel sends a session/set_model request and updates the local model field.
+func (b *acpBase) setModel(model string) error {
 	b.mu.Lock()
 	sessionID := b.sessionID
 	b.mu.Unlock()
@@ -750,7 +759,13 @@ func (b *acpBase) acpSetModel(model string) error {
 	if err != nil {
 		return err
 	}
-	return jsonRPCResultError(resp)
+	if err := jsonRPCResultError(resp); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	b.model = model
+	b.mu.Unlock()
+	return nil
 }
 
 // acpSetMode sends a session/set_mode request and returns nil on success.

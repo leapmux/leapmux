@@ -188,7 +188,7 @@ func TestOpenCodeUpdateSettingsSendsSessionSetMode(t *testing.T) {
 }
 
 func TestOpenCodeCurrentSettingsExposesPrimaryAgent(t *testing.T) {
-	agent := &OpenCodeAgent{model: "openai/gpt-5", currentPrimaryAgent: OpenCodePrimaryAgentPlan}
+	agent := &OpenCodeAgent{acpBase: acpBase{model: "openai/gpt-5"}, currentPrimaryAgent: OpenCodePrimaryAgentPlan}
 	settings := agent.CurrentSettings()
 	if settings.GetModel() != "openai/gpt-5" {
 		t.Fatalf("expected model to round-trip")

@@ -188,7 +188,7 @@ func TestBuildGeminiCLIModels_withoutAutoEmptyCurrentModel(t *testing.T) {
 
 func TestGeminiCurrentSettingsIncludesPermissionMode(t *testing.T) {
 	agent := &GeminiCLIAgent{
-		model:          "auto",
+		acpBase:        acpBase{model: "auto"},
 		permissionMode: GeminiCLIModePlan,
 	}
 

@@ -30,11 +30,8 @@ type copilotCLIConfigOption struct {
 type CopilotCLIAgent struct {
 	acpBase
 
-	model          string
 	permissionMode string
-
-	availableModels []*leapmuxv1.AvailableModel
-	availableModes  []*leapmuxv1.AvailableOption
+	availableModes []*leapmuxv1.AvailableOption
 }
 
 // StartCopilotCLI starts a Copilot CLI ACP agent process and performs the handshake.
@@ -68,8 +65,8 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 			}},
 			sink:         sink,
 			providerName: "copilot",
+			model:        opts.Model,
 		},
-		model: opts.Model,
 	}
 	a.extraSessionUpdate = a.handleExtraSessionUpdate
 	a.promptFunc = a.doSendPrompt
@@ -151,12 +148,6 @@ func (a *CopilotCLIAgent) CurrentSettings() *leapmuxv1.AgentSettings {
 	}
 }
 
-func (a *CopilotCLIAgent) AvailableModels() []*leapmuxv1.AvailableModel {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.availableModels
-}
-
 func (a *CopilotCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -185,16 +176,6 @@ func (a *CopilotCLIAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 		}
 	}
 	return true
-}
-
-func (a *CopilotCLIAgent) setModel(model string) error {
-	if err := a.acpSetModel(model); err != nil {
-		return err
-	}
-	a.mu.Lock()
-	a.model = model
-	a.mu.Unlock()
-	return nil
 }
 
 func (a *CopilotCLIAgent) setPermissionMode(mode string) error {

@@ -29,9 +29,6 @@ const (
 type OpenCodeAgent struct {
 	acpBase
 
-	model string
-
-	availableModels        []*leapmuxv1.AvailableModel
 	currentPrimaryAgent    string
 	availablePrimaryAgents []*leapmuxv1.AvailableOption
 }
@@ -71,8 +68,8 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 			}},
 			sink:         sink,
 			providerName: "opencode",
+			model:        opts.Model,
 		},
-		model: opts.Model,
 	}
 	a.promptFunc = a.doSendPrompt
 
@@ -241,13 +238,6 @@ func (a *OpenCodeAgent) CurrentSettings() *leapmuxv1.AgentSettings {
 	}
 }
 
-// AvailableModels returns the models reported by the OpenCode process.
-func (a *OpenCodeAgent) AvailableModels() []*leapmuxv1.AvailableModel {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.availableModels
-}
-
 // AvailableOptionGroups returns the available primary-agent group.
 func (a *OpenCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	return a.availablePrimaryAgentGroup()
@@ -268,16 +258,6 @@ func (a *OpenCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 		}
 	}
 	return true
-}
-
-func (a *OpenCodeAgent) setModel(model string) error {
-	if err := a.acpSetModel(model); err != nil {
-		return err
-	}
-	a.mu.Lock()
-	a.model = model
-	a.mu.Unlock()
-	return nil
 }
 
 func (a *OpenCodeAgent) setPrimaryAgent(agent string) error {

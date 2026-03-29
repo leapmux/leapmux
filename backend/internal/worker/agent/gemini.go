@@ -20,11 +20,8 @@ const (
 type GeminiCLIAgent struct {
 	acpBase
 
-	model          string
 	permissionMode string
-
-	availableModels []*leapmuxv1.AvailableModel
-	availableModes  []*leapmuxv1.AvailableOption
+	availableModes []*leapmuxv1.AvailableOption
 }
 
 // StartGeminiCLI starts a Gemini CLI ACP agent process and performs the handshake.
@@ -62,8 +59,8 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 			}},
 			sink:         sink,
 			providerName: "gemini",
+			model:        opts.Model,
 		},
-		model: opts.Model,
 	}
 	a.extraSessionUpdate = a.handleExtraSessionUpdate
 	a.promptFunc = a.doSendPrompt
@@ -187,12 +184,6 @@ func (a *GeminiCLIAgent) CurrentSettings() *leapmuxv1.AgentSettings {
 	}
 }
 
-func (a *GeminiCLIAgent) AvailableModels() []*leapmuxv1.AvailableModel {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.availableModels
-}
-
 func (a *GeminiCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -221,16 +212,6 @@ func (a *GeminiCLIAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 		}
 	}
 	return true
-}
-
-func (a *GeminiCLIAgent) setModel(model string) error {
-	if err := a.acpSetModel(model); err != nil {
-		return err
-	}
-	a.mu.Lock()
-	a.model = model
-	a.mu.Unlock()
-	return nil
 }
 
 func (a *GeminiCLIAgent) setPermissionMode(mode string) error {
