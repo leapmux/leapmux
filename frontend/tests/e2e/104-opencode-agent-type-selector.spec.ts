@@ -2,11 +2,10 @@ import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
-test.describe('OpenCode Agent Type Selector', () => {
+test.describe('opencode agent type selector', () => {
   test('OpenCode appears in the provider selector', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
 
-    // Create a workspace with Claude Code (default provider).
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `selector-opencode-${Date.now()}`, adminOrgId)
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
 
@@ -15,16 +14,18 @@ test.describe('OpenCode Agent Type Selector', () => {
       await page.goto(`/o/admin/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
-      // Open the agent type selector.
-      const agentTypeBtn = page.locator('[data-testid="agent-type-selector"]')
-      if (await agentTypeBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
-        await agentTypeBtn.click()
+      const newAgentBtn = page.locator('[data-testid="new-agent-btn"]')
+      if (await newAgentBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
+        await newAgentBtn.click()
 
-        // OpenCode should appear as an option.
-        const opencodeOption = page.locator('[data-testid="agent-type-opencode"], [data-value="OPENCODE"]')
-        await expect(opencodeOption).toBeVisible({ timeout: 5000 }).catch(() => {
-          // Selector UI may vary; this is best-effort.
-        })
+        const dialog = page.locator('[role="dialog"]')
+        await expect(dialog).toBeVisible({ timeout: 5000 })
+
+        const select = dialog.locator('select').filter({ hasText: 'Claude Code' })
+        if (await select.isVisible({ timeout: 3000 }).catch(() => false)) {
+          const options = await select.locator('option').allTextContents()
+          expect(options).toContain('OpenCode')
+        }
       }
     }
     finally {

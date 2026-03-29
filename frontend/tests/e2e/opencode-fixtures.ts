@@ -2,12 +2,11 @@
  * OpenCode-specific e2e test fixtures.
  */
 import type { ACPFixtureConfig, WorkspaceFixture } from './acp-fixture-factory'
-import { authenticateACPWorkspace, createACPWorkspace } from './acp-fixture-factory'
+import { AgentProvider, authenticateACPWorkspace, createACPWorkspace } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
 
-// AgentProvider.OPENCODE = 4
 const opencodeConfig: ACPFixtureConfig = {
-  agentProvider: 4,
+  agentProvider: AgentProvider.OPENCODE,
   workspacePrefix: 'opencode-e2e',
 }
 

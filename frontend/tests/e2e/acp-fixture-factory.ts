@@ -10,6 +10,8 @@ import {
 } from './helpers/api'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
+export { AgentProvider } from '../../src/generated/leapmux/v1/agent_pb'
+
 export interface ACPFixtureConfig {
   agentProvider: number
   /** CLI binary name to check on PATH (e.g. 'copilot', 'gemini'). Null skips the check. */

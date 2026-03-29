@@ -2,12 +2,11 @@
  * Copilot-specific e2e test fixtures.
  */
 import type { ACPFixtureConfig, WorkspaceFixture } from './acp-fixture-factory'
-import { authenticateACPWorkspace, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
+import { AgentProvider, authenticateACPWorkspace, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
 
-// AgentProvider.COPILOT_CLI = 5
 const copilotConfig: ACPFixtureConfig = {
-  agentProvider: 5,
+  agentProvider: AgentProvider.COPILOT_CLI,
   cliBinary: 'copilot',
   skipMessage: 'Copilot E2E requires a copilot CLI on PATH',
   workspacePrefix: 'copilot-e2e',
