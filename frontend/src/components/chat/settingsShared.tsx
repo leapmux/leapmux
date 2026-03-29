@@ -6,6 +6,9 @@ import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import * as styles from './ChatView.css'
 
+/** Option group key for the permission mode setting, shared across providers. */
+export const PERMISSION_MODE_KEY = 'permissionMode' as const
+
 /** Shared item type used by RadioGroup and settings helpers. */
 export interface SettingsItem {
   label: string
@@ -58,12 +61,12 @@ export function optionGroupItems(availableOptionGroups: AvailableOptionGroup[] |
 
 /** Find the permission mode option group. */
 export function permissionModeGroup(availableOptionGroups: AvailableOptionGroup[] | undefined) {
-  return optionGroup(availableOptionGroups, 'permissionMode')
+  return optionGroup(availableOptionGroups, PERMISSION_MODE_KEY)
 }
 
 /** Build permission mode radio items. */
 export function permissionModeItems(availableOptionGroups: AvailableOptionGroup[] | undefined): SettingsItem[] {
-  return optionGroupItems(availableOptionGroups, 'permissionMode')
+  return optionGroupItems(availableOptionGroups, PERMISSION_MODE_KEY)
 }
 
 /** Resolve model display name from available models. */
@@ -83,17 +86,6 @@ export function hasEfforts(availableModels: AvailableModel[] | undefined, curren
     return model ? model.supportedEfforts.length > 0 : false
   }
   return false
-}
-
-/** Resolve permission mode label from available option groups. */
-export function modeLabel(availableOptionGroups: AvailableOptionGroup[] | undefined, currentMode: string): string {
-  const group = optionGroup(availableOptionGroups, 'permissionMode')
-  if (group) {
-    const opt = group.options.find(o => o.id === currentMode)
-    if (opt)
-      return opt.name || opt.id
-  }
-  return currentMode
 }
 
 /** Resolve any option-group label from available option groups. */

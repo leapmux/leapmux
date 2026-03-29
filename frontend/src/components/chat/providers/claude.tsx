@@ -15,7 +15,7 @@ import { getToolName } from '~/utils/controlResponse'
 import * as styles from '../ChatView.css'
 import { ClaudeCodeControlActions, ClaudeCodeControlContent } from '../controls/ClaudeCodeControlRequest'
 import { isNotificationThreadWrapper, isObject } from '../messageUtils'
-import { effortItems, hasEfforts, modeLabel, modelDisplayName, modelItems, ModelSelect, permissionModeGroup, permissionModeItems, RadioGroup } from '../settingsShared'
+import { effortItems, hasEfforts, modelDisplayName, modelItems, ModelSelect, optionLabel, PERMISSION_MODE_KEY, permissionModeGroup, permissionModeItems, RadioGroup } from '../settingsShared'
 import { registerProvider } from './registry'
 
 function generateRandomId(): string {
@@ -256,7 +256,7 @@ function ClaudeCodeTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element 
   }
 
   const hasEffort = () => hasEfforts(props.availableModels, currentModel())
-  const mode = () => modeLabel(props.availableOptionGroups, currentMode())
+  const mode = () => optionLabel(props.availableOptionGroups, PERMISSION_MODE_KEY, currentMode())
 
   return (
     <>

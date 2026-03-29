@@ -2,7 +2,7 @@ import type { AskQuestionState } from './types'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { GeminiControlActions, sendGeminiPermissionResponse } from './GeminiControlRequest'
+import { ACPControlActions, sendACPPermissionResponse } from './ACPControlRequest'
 
 function makeAskState(): AskQuestionState {
   const [selections, setSelections] = createSignal<Record<number, string[]>>({})
@@ -11,11 +11,11 @@ function makeAskState(): AskQuestionState {
   return { selections, setSelections, customTexts, setCustomTexts, currentPage, setCurrentPage }
 }
 
-describe('sendGeminiPermissionResponse', () => {
+describe('sendACPPermissionResponse', () => {
   it('sends an ACP permission response with the selected option', async () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
 
-    await sendGeminiPermissionResponse('agent1', onRespond, '7', 'proceed_once')
+    await sendACPPermissionResponse('agent1', onRespond, '7', 'proceed_once')
 
     expect(onRespond).toHaveBeenCalledTimes(1)
     const [, content] = onRespond.mock.calls[0]
@@ -36,7 +36,7 @@ describe('sendGeminiPermissionResponse', () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
     const onPermissionModeChange = vi.fn()
 
-    render(() => GeminiControlActions({
+    render(() => ACPControlActions({
       request: {
         agentId: 'agent1',
         requestId: '7',

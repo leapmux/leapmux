@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"syscall"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -104,27 +103,9 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 		cmd.Env = append(cmd.Env, "CODEX_CI=1")
 	}
 
-	cmd.Cancel = func() error {
-		return cmd.Process.Signal(syscall.SIGTERM)
-	}
-	cmd.WaitDelay = 5 * time.Second
-
-	stdin, err := cmd.StdinPipe()
+	stdin, stdout, stderrPipe, err := setupProcessPipes(cmd, cancel)
 	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("stdin pipe: %w", err)
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("stdout pipe: %w", err)
-	}
-
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("stderr pipe: %w", err)
+		return nil, err
 	}
 
 	a := &CodexAgent{

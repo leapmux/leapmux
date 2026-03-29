@@ -3,7 +3,9 @@
 package wakelock
 
 import (
+	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 )
 
@@ -16,11 +18,14 @@ func newPlatformWakeLock() WakeLock {
 }
 
 func (w *darwinWakeLock) Acquire() error {
-	w.cmd = exec.Command("caffeinate", "-i")
+	// Use -w to tie caffeinate's lifetime to the current process.
+	// If the worker is killed (e.g. SIGKILL), caffeinate exits automatically
+	// instead of remaining as an orphan.
+	w.cmd = exec.Command("caffeinate", "-i", "-w", fmt.Sprintf("%d", os.Getpid()))
 	if err := w.cmd.Start(); err != nil {
 		return err
 	}
-	slog.Debug("wakelock acquired (caffeinate -i)", "pid", w.cmd.Process.Pid)
+	slog.Debug("wakelock acquired (caffeinate -i -w)", "pid", w.cmd.Process.Pid)
 	return nil
 }
 

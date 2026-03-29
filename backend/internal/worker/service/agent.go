@@ -719,7 +719,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		persistedCodexText := svc.codexControlResponseDisplayText(agentID, dbAgent.AgentProvider, content)
+		displayText := svc.controlResponseDisplayText(agentID, dbAgent.AgentProvider, content)
 
 		// Detect plan mode changes from the control response before
 		// forwarding to the agent. This mirrors the main-branch Hub logic
@@ -727,7 +727,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// approval or rejection.
 		svc.handleControlResponsePlanMode(agentID, content)
 
-		svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, persistedCodexText)
+		svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, displayText)
 
 		if err := svc.Agents.SendRawInput(agentID, content); err != nil {
 			slog.Error("failed to send control response to agent",

@@ -2,6 +2,7 @@
  * Codex-specific e2e test fixtures.
  * Extends the base fixtures with a Codex agent instead of Claude Code.
  */
+import { AgentProvider } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
 import {
   createWorkspaceViaAPI,
@@ -9,9 +10,6 @@ import {
   openAgentViaAPI,
 } from './helpers/api'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
-
-// AgentProvider.CODEX = 2
-const AGENT_PROVIDER_CODEX = 2
 
 interface WorkspaceFixture {
   workspaceId: string
@@ -31,7 +29,7 @@ export const codexTest = base.extend<{
       adminOrgId,
     )
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, undefined, {
-      agentProvider: AGENT_PROVIDER_CODEX,
+      agentProvider: AgentProvider.CODEX,
     })
     const workspaceUrl = `/o/admin/workspace/${workspaceId}`
 

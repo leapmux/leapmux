@@ -98,7 +98,7 @@ export const IconButton: Component<IconButtonProps> = (props) => {
         style={local.style}
         disabled={isDisabled()}
         aria-label={local.title}
-        // eslint-disable-next-line solid/reactivity -- onClick is forwarded from props, reactivity not needed
+        // eslint-disable-next-line solid/reactivity -- native event binding; onClick identity doesn't change at runtime
         onClick={local.onClick}
         {...rest}
       >

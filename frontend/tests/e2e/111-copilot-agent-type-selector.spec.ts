@@ -2,11 +2,11 @@ import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
-test.describe('opencode agent type selector', () => {
-  test('OpenCode appears in the provider selector', async ({ page, leapmuxServer }) => {
+test.describe('copilot agent type selector', () => {
+  test('Copilot CLI appears in the provider selector', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, adminOrgId, workerId } = leapmuxServer
 
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `selector-opencode-${Date.now()}`, adminOrgId)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `selector-copilot-${Date.now()}`, adminOrgId)
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
 
     try {
@@ -24,7 +24,7 @@ test.describe('opencode agent type selector', () => {
         const select = dialog.locator('select').filter({ hasText: 'Claude Code' })
         if (await select.isVisible({ timeout: 3000 }).catch(() => false)) {
           const options = await select.locator('option').allTextContents()
-          expect(options).toContain('OpenCode')
+          expect(options).toContain('Copilot CLI')
         }
       }
     }

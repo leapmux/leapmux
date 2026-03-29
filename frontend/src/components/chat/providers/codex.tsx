@@ -26,7 +26,7 @@ import {
 } from '../codexRenderers'
 import { CodexControlActions, CodexControlContent } from '../controls/CodexControlRequest'
 import { isNotificationThreadWrapper, isObject } from '../messageUtils'
-import { defaultModelId, effortItems, hasEfforts, modeLabel, modelDisplayName, modelItems, ModelSelect, optionGroup, optionGroupItems, optionLabel, permissionModeGroup, permissionModeItems, RadioGroup } from '../settingsShared'
+import { defaultModelId, effortItems, hasEfforts, modelDisplayName, modelItems, ModelSelect, optionGroup, optionGroupItems, optionLabel, PERMISSION_MODE_KEY, permissionModeGroup, permissionModeItems, RadioGroup } from '../settingsShared'
 import { registerProvider } from './registry'
 
 /** Default model for Codex agents. */
@@ -294,7 +294,7 @@ function CodexTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
   const hasEffort = () => hasEfforts(props.availableModels, currentModel())
   const mode = () => currentCollaborationMode() === 'plan'
     ? optionLabel(props.availableOptionGroups, CODEX_EXTRA_COLLABORATION_MODE, currentCollaborationMode())
-    : modeLabel(props.availableOptionGroups, currentMode())
+    : optionLabel(props.availableOptionGroups, PERMISSION_MODE_KEY, currentMode())
   return (
     <>
       {displayName()}

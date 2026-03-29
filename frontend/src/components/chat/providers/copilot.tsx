@@ -13,31 +13,32 @@ import {
 } from './acpShared'
 import { registerProvider } from './registry'
 
-const DEFAULT_GEMINI_MODEL = import.meta.env.LEAPMUX_GEMINI_DEFAULT_MODEL || 'auto'
-const DEFAULT_GEMINI_MODE = 'default'
-const GEMINI_PLAN_MODE = 'plan'
+const DEFAULT_COPILOT_MODEL = import.meta.env.LEAPMUX_COPILOT_DEFAULT_MODEL || ''
+const COPILOT_MODE_AGENT = 'https://agentclientprotocol.com/protocol/session-modes#agent'
+const COPILOT_MODE_PLAN = 'https://agentclientprotocol.com/protocol/session-modes#plan'
+const COPILOT_MODE_AUTOPILOT = 'https://agentclientprotocol.com/protocol/session-modes#autopilot'
 
 const settingsConfig: ACPSettingsPanelConfig = {
-  defaultModel: DEFAULT_GEMINI_MODEL,
+  defaultModel: DEFAULT_COPILOT_MODEL,
   optionGroupKey: PERMISSION_MODE_KEY,
-  defaultOptionValue: DEFAULT_GEMINI_MODE,
-  fallbackLabel: 'Permission Mode',
+  defaultOptionValue: COPILOT_MODE_AGENT,
+  fallbackLabel: 'Mode',
   testIdPrefix: 'permission-mode',
 }
 
-registerProvider(AgentProvider.GEMINI_CLI, {
-  defaultModel: DEFAULT_GEMINI_MODEL,
-  defaultPermissionMode: DEFAULT_GEMINI_MODE as PermissionMode,
+registerProvider(AgentProvider.COPILOT_CLI, {
+  defaultModel: DEFAULT_COPILOT_MODEL || undefined,
+  defaultPermissionMode: COPILOT_MODE_AGENT,
   attachments: { text: true, image: true, pdf: true, binary: true },
-  bypassPermissionMode: 'yolo',
+  bypassPermissionMode: COPILOT_MODE_AUTOPILOT,
   planMode: {
-    currentMode: agent => agent.permissionMode || DEFAULT_GEMINI_MODE,
-    planValue: GEMINI_PLAN_MODE,
-    defaultValue: DEFAULT_GEMINI_MODE,
+    currentMode: agent => agent.permissionMode || COPILOT_MODE_AGENT,
+    planValue: COPILOT_MODE_PLAN,
+    defaultValue: COPILOT_MODE_AGENT,
     setMode: (mode, cb) => cb.onPermissionModeChange?.(mode as PermissionMode),
   },
 
-  classify: classifyACPMessage(),
+  classify: classifyACPMessage({ extraHiddenSessionUpdates: new Set(['config_option_update']) }),
   renderMessage: renderACPMessage,
   buildInterruptContent: buildACPInterruptContent,
   changePermissionMode: changeACPPermissionMode,

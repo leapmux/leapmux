@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -183,6 +184,35 @@ func (p *processBase) PreambleOutput() string {
 		return ""
 	}
 	return strings.Join(p.preambleOutput, "\n")
+}
+
+// setupProcessPipes configures the command's cancel/wait behavior and opens
+// stdin, stdout, and stderr pipes. On error it calls cancel() and returns.
+func setupProcessPipes(cmd *exec.Cmd, cancel func()) (stdin io.WriteCloser, stdout, stderr io.ReadCloser, err error) {
+	cmd.Cancel = func() error {
+		return cmd.Process.Signal(syscall.SIGTERM)
+	}
+	cmd.WaitDelay = 5 * time.Second
+
+	stdin, err = cmd.StdinPipe()
+	if err != nil {
+		cancel()
+		return nil, nil, nil, fmt.Errorf("stdin pipe: %w", err)
+	}
+
+	stdout, err = cmd.StdoutPipe()
+	if err != nil {
+		cancel()
+		return nil, nil, nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+
+	stderr, err = cmd.StderrPipe()
+	if err != nil {
+		cancel()
+		return nil, nil, nil, fmt.Errorf("stderr pipe: %w", err)
+	}
+
+	return stdin, stdout, stderr, nil
 }
 
 // parsedLine holds the JSON-parsed superset of all agent output envelope

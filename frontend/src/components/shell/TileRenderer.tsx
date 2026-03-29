@@ -442,7 +442,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       <AgentEditorPanel
         agentId={agentId()}
         agent={agentStore.state.agents.find(a => a.id === agentId())}
-        // eslint-disable-next-line solid/reactivity -- event handler, not a tracked scope
+        // eslint-disable-next-line solid/reactivity -- async event handler; reactive tracking isn't needed for user-invoked callbacks
         onSendMessage={async (content, fileAttachments?: FileAttachment[]) => {
           const id = focusedAgentId()
           if (!id)

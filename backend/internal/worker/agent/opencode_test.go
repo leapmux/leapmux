@@ -83,8 +83,8 @@ func newOpenCodeAgentForRPC(t *testing.T) (*OpenCodeAgent, func() []openCodeReco
 }
 
 func TestBuildSessionRequest_NewSession(t *testing.T) {
-	method, params := buildSessionRequest("", "/workspace")
-	assert.Equal(t, "session/new", method)
+	method, params := buildACPSessionRequest("", "/workspace", acpMethodSessionNew, openCodeMethodSessionResume)
+	assert.Equal(t, acpMethodSessionNew, method)
 
 	var parsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(params, &parsed))
@@ -93,8 +93,8 @@ func TestBuildSessionRequest_NewSession(t *testing.T) {
 }
 
 func TestBuildSessionRequest_ResumeSession(t *testing.T) {
-	method, params := buildSessionRequest("session-123", "/workspace")
-	assert.Equal(t, "session/resume", method)
+	method, params := buildACPSessionRequest("session-123", "/workspace", acpMethodSessionNew, openCodeMethodSessionResume)
+	assert.Equal(t, openCodeMethodSessionResume, method)
 
 	var parsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(params, &parsed))
@@ -104,7 +104,7 @@ func TestBuildSessionRequest_ResumeSession(t *testing.T) {
 
 func TestOpenCodeConfigurePrimaryAgentsUsesSessionCurrentMode(t *testing.T) {
 	agent := &OpenCodeAgent{}
-	err := agent.configurePrimaryAgents([]openCodeModeInfo{
+	err := agent.configurePrimaryAgents([]acpModeInfo{
 		{ID: OpenCodePrimaryAgentBuild, Name: OpenCodePrimaryAgentBuild},
 		{ID: OpenCodePrimaryAgentPlan, Name: OpenCodePrimaryAgentPlan},
 		{ID: openCodeHiddenCompaction, Name: openCodeHiddenCompaction},
@@ -123,7 +123,7 @@ func TestOpenCodeConfigurePrimaryAgentsUsesSessionCurrentMode(t *testing.T) {
 
 func TestOpenCodeConfigurePrimaryAgentsRestoresSavedPrimaryAgent(t *testing.T) {
 	agent, requests := newOpenCodeAgentForRPC(t)
-	err := agent.configurePrimaryAgents([]openCodeModeInfo{
+	err := agent.configurePrimaryAgents([]acpModeInfo{
 		{ID: OpenCodePrimaryAgentBuild, Name: OpenCodePrimaryAgentBuild},
 		{ID: OpenCodePrimaryAgentPlan, Name: OpenCodePrimaryAgentPlan},
 	}, OpenCodePrimaryAgentBuild, OpenCodePrimaryAgentPlan)
@@ -148,7 +148,7 @@ func TestOpenCodeConfigurePrimaryAgentsRestoresSavedPrimaryAgent(t *testing.T) {
 
 func TestOpenCodeConfigurePrimaryAgentsIgnoresUnknownSavedPrimaryAgent(t *testing.T) {
 	agent, requests := newOpenCodeAgentForRPC(t)
-	err := agent.configurePrimaryAgents([]openCodeModeInfo{
+	err := agent.configurePrimaryAgents([]acpModeInfo{
 		{ID: OpenCodePrimaryAgentBuild, Name: OpenCodePrimaryAgentBuild},
 		{ID: OpenCodePrimaryAgentPlan, Name: OpenCodePrimaryAgentPlan},
 	}, OpenCodePrimaryAgentBuild, "unknown")
@@ -188,7 +188,7 @@ func TestOpenCodeUpdateSettingsSendsSessionSetMode(t *testing.T) {
 }
 
 func TestOpenCodeCurrentSettingsExposesPrimaryAgent(t *testing.T) {
-	agent := &OpenCodeAgent{model: "openai/gpt-5", currentPrimaryAgent: OpenCodePrimaryAgentPlan}
+	agent := &OpenCodeAgent{acpBase: acpBase{model: "openai/gpt-5"}, currentPrimaryAgent: OpenCodePrimaryAgentPlan}
 	settings := agent.CurrentSettings()
 	if settings.GetModel() != "openai/gpt-5" {
 		t.Fatalf("expected model to round-trip")
