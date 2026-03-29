@@ -24,7 +24,7 @@ func handleCopilotCLIOutput(a *CopilotCLIAgent, line *parsedLine) {
 
 func (a *CopilotCLIAgent) handleSessionUpdate(params json.RawMessage) {
 	a.handleACPSessionUpdate(params, func(sessionUpdate string, update json.RawMessage) bool {
-		if sessionUpdate == "config_option_update" {
+		if sessionUpdate == acpUpdateConfigOptionUpdate {
 			a.handleConfigOptionUpdate(update)
 			return true
 		}
@@ -40,12 +40,7 @@ func (a *CopilotCLIAgent) handleConfigOptionUpdate(update json.RawMessage) {
 		return
 	}
 
-	a.syncConfigOptions(payload.ConfigOptions)
-
-	for _, option := range payload.ConfigOptions {
-		if option.ID == "mode" && option.CurrentValue != "" {
-			a.sink.UpdatePermissionMode(option.CurrentValue)
-			break
-		}
+	if mode := a.syncConfigOptions(payload.ConfigOptions); mode != "" {
+		a.sink.UpdatePermissionMode(mode)
 	}
 }

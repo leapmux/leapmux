@@ -23,7 +23,7 @@ func TestHandleGeminiOutput_AgentMessageChunk(t *testing.T) {
 	sink := &testSink{}
 	agent := newGeminiAgentWithSink(sink)
 
-	input := `{"jsonrpc":"2.0","method":"sessionUpdate","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hello Gemini"}}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hello Gemini"}}}}`
 	handleGeminiCLIOutput(agent, parseLine([]byte(input)))
 
 	if sink.StreamChunkCount() != 1 {
@@ -42,7 +42,7 @@ func TestHandleGeminiOutput_ToolCallOpensSpan(t *testing.T) {
 	sink := &testSink{}
 	agent := newGeminiAgentWithSink(sink)
 
-	input := `{"jsonrpc":"2.0","method":"sessionUpdate","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"shell","kind":"execute","status":"pending"}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"shell","kind":"execute","status":"pending"}}}`
 	handleGeminiCLIOutput(agent, parseLine([]byte(input)))
 
 	if sink.MessageCount() != 1 {
@@ -64,7 +64,7 @@ func TestHandleGeminiOutput_RequestPermission(t *testing.T) {
 	sink := &controlTestSink{}
 	agent := newGeminiAgentWithSink(sink)
 
-	input := `{"jsonrpc":"2.0","id":7,"method":"requestPermission","params":{"sessionId":"s1","options":[{"optionId":"proceed_once","name":"Allow","kind":"allow_once"}],"toolCall":{"toolCallId":"tc-1","title":"shell","kind":"execute"}}}`
+	input := `{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"s1","options":[{"optionId":"proceed_once","name":"Allow","kind":"allow_once"}],"toolCall":{"toolCallId":"tc-1","title":"shell","kind":"execute"}}}`
 	handleGeminiCLIOutput(agent, parseLine([]byte(input)))
 
 	if sink.PersistedControlCount() != 1 {
@@ -75,29 +75,11 @@ func TestHandleGeminiOutput_RequestPermission(t *testing.T) {
 	}
 }
 
-func TestHandleGeminiOutput_LegacyNotificationNames(t *testing.T) {
-	sink := &controlTestSink{}
-	agent := newGeminiAgentWithSink(sink)
-
-	update := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hello legacy Gemini"}}}}`
-	handleGeminiCLIOutput(agent, parseLine([]byte(update)))
-
-	request := `{"jsonrpc":"2.0","id":8,"method":"session/request_permission","params":{"sessionId":"s1","options":[{"optionId":"approve","name":"Approve","kind":"allow_once"}]}}`
-	handleGeminiCLIOutput(agent, parseLine([]byte(request)))
-
-	if sink.StreamChunkCount() != 1 {
-		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
-	}
-	if got := sink.LastPersistedControl().RequestID; got != "8" {
-		t.Fatalf("expected control request id 8, got %q", got)
-	}
-}
-
 func TestHandleGeminiOutput_UsageUpdateBroadcastsSessionInfo(t *testing.T) {
 	sink := &testSink{}
 	agent := newGeminiAgentWithSink(sink)
 
-	input := `{"jsonrpc":"2.0","method":"sessionUpdate","params":{"sessionId":"s1","update":{"sessionUpdate":"usage_update","used":321,"size":12345,"cost":{"amount":0.25,"currency":"USD"}}}}`
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"usage_update","used":321,"size":12345,"cost":{"amount":0.25,"currency":"USD"}}}}`
 	handleGeminiCLIOutput(agent, parseLine([]byte(input)))
 
 	if sink.SessionInfoCount() != 1 {
@@ -156,7 +138,7 @@ func TestGeminiHandlePromptResponsePersistsTurn(t *testing.T) {
 }
 
 func TestBuildGeminiCLIModels_withAuto(t *testing.T) {
-	models := []geminiCLIModelInfo{
+	models := []acpModelInfo{
 		{ModelID: "auto", Name: "Auto", Description: "Automatic"},
 		{ModelID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro", Description: "Detailed"},
 	}
@@ -170,7 +152,7 @@ func TestBuildGeminiCLIModels_withAuto(t *testing.T) {
 }
 
 func TestBuildGeminiCLIModels_withoutAuto(t *testing.T) {
-	models := []geminiCLIModelInfo{
+	models := []acpModelInfo{
 		{ModelID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro", Description: "Detailed"},
 		{ModelID: "gemini-2.5-flash", Name: "Gemini 2.5 Flash", Description: "Fast"},
 	}
@@ -187,7 +169,7 @@ func TestBuildGeminiCLIModels_withoutAuto(t *testing.T) {
 }
 
 func TestBuildGeminiCLIModels_withoutAutoEmptyCurrentModel(t *testing.T) {
-	models := []geminiCLIModelInfo{
+	models := []acpModelInfo{
 		{ModelID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro"},
 	}
 	result := buildGeminiCLIModels(models, "")

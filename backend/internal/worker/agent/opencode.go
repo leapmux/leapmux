@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -27,12 +26,6 @@ const (
 const (
 	openCodeMethodSessionResume = "session/resume"
 )
-
-type openCodeModeInfo struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-}
 
 // OpenCodeAgent manages a single OpenCode ACP process.
 type OpenCodeAgent struct {
@@ -109,143 +102,51 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 		return nil, fmt.Errorf("start opencode: %w", err)
 	}
 
-	// Drain stderr in background.
-	a.drainStderr(stderrPipe)
-
-	// Read stdout JSONL in background.
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutputLoop(scanner, a.handleOutput)
-
-	cleanup := func() {
-		a.Stop()
-		_ = a.Wait()
-	}
-
-	timeout := opts.startupTimeout()
-
-	// 1. Send "initialize" request.
 	initParams, _ := json.Marshal(map[string]interface{}{
 		"protocolVersion": 1,
 		"clientInfo":      map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
 		"capabilities":    map[string]interface{}{},
 	})
-	if _, err := a.sendRequest(acpMethodInitialize, json.RawMessage(initParams), timeout); err != nil {
-		cleanup()
-		return nil, a.formatStartupError("initialize", err)
-	}
-
-	// 2. Send "session/resume" (if resuming) or "session/new" (fresh session).
-	sessionMethod, sessionParams := buildSessionRequest(opts.ResumeSessionID, opts.WorkingDir)
-	sessionResp, err := a.sendRequest(sessionMethod, json.RawMessage(sessionParams), timeout)
+	handshake, err := a.startACPHandshake(stdout, stderrPipe, a.handleOutput, opts, initParams,
+		acpSessionConfig{newMethod: acpMethodSessionNew, resumeMethod: openCodeMethodSessionResume})
 	if err != nil {
-		if opts.ResumeSessionID != "" {
-			// Resume failed — fall back to a fresh session so the agent
-			// is still usable (e.g. the old session was garbage-collected).
-			slog.Warn("session/resume failed, falling back to session/new",
-				"agent_id", a.agentID, "session_id", opts.ResumeSessionID, "error", err)
-			_, fallbackParams := buildSessionRequest("", opts.WorkingDir)
-			sessionResp, err = a.sendRequest(acpMethodSessionNew, json.RawMessage(fallbackParams), timeout)
-		}
-		if err != nil {
-			cleanup()
-			return nil, a.formatStartupError(sessionMethod, err)
-		}
+		return nil, err
 	}
 
-	var session struct {
-		SessionID string `json:"sessionId"`
-		Models    struct {
-			CurrentModelID  string `json:"currentModelId"`
-			AvailableModels []struct {
-				ModelID string `json:"modelId"`
-				Name    string `json:"name"`
-			} `json:"availableModels"`
-		} `json:"models"`
-		Modes *struct {
-			CurrentModeID  string             `json:"currentModeId"`
-			AvailableModes []openCodeModeInfo `json:"availableModes"`
-		} `json:"modes"`
-	}
-	if err := json.Unmarshal(sessionResp, &session); err != nil {
-		cleanup()
-		return nil, a.formatStartupError("newSession parse", err)
-	}
-	if session.SessionID == "" {
-		cleanup()
-		return nil, a.formatStartupError(acpMethodSessionNew, fmt.Errorf("response did not contain a session ID"))
+	a.availableModels = buildACPModels(handshake.Models, handshake.CurrentModelID)
+	if a.model == "" && handshake.CurrentModelID != "" {
+		a.model = handshake.CurrentModelID
 	}
 
-	a.sessionID = session.SessionID
-	sink.UpdateSessionID(a.sessionID)
-	sink.BroadcastStatusActive(a.sessionID)
-
-	// Build available models from the session response.
-	a.availableModels = buildOpenCodeModels(session.Models.AvailableModels, session.Models.CurrentModelID)
-
-	// Use the model from the session response if not explicitly set.
-	if a.model == "" && session.Models.CurrentModelID != "" {
-		a.model = session.Models.CurrentModelID
+	cleanup := func() {
+		a.Stop()
+		_ = a.Wait()
 	}
-
 	var requestedPrimaryAgent string
 	if opts.ExtraSettings != nil {
 		requestedPrimaryAgent = opts.ExtraSettings[OpenCodeExtraPrimaryAgent]
 	}
-	if session.Modes != nil {
-		if err := a.configurePrimaryAgents(session.Modes.AvailableModes, session.Modes.CurrentModeID, requestedPrimaryAgent); err != nil {
-			cleanup()
-			return nil, a.formatStartupError(acpMethodSessionSetMode, err)
-		}
-	} else {
-		if err := a.configurePrimaryAgents(nil, "", ""); err != nil {
-			cleanup()
-			return nil, a.formatStartupError(acpMethodSessionSetMode, err)
-		}
+	if err := a.configurePrimaryAgents(handshake.Modes, handshake.CurrentModeID, requestedPrimaryAgent); err != nil {
+		cleanup()
+		return nil, a.formatStartupError(acpMethodSessionSetMode, err)
 	}
 
 	return a, nil
 }
 
-func buildSessionRequest(resumeSessionID, workingDir string) (method string, params []byte) {
-	return buildACPSessionRequest(resumeSessionID, workingDir, acpMethodSessionNew, openCodeMethodSessionResume)
-}
-
-// buildOpenCodeModels converts the ACP newSession models list to proto models.
-func buildOpenCodeModels(models []struct {
-	ModelID string `json:"modelId"`
-	Name    string `json:"name"`
-}, currentModelID string) []*leapmuxv1.AvailableModel {
-	var result []*leapmuxv1.AvailableModel
-	for _, m := range models {
-		result = append(result, &leapmuxv1.AvailableModel{
-			Id:          m.ModelID,
-			DisplayName: m.Name,
-			IsDefault:   m.ModelID == currentModelID,
-		})
-	}
-	return result
-}
-
-func buildOpenCodePrimaryAgents(modes []openCodeModeInfo, currentModeID string) []*leapmuxv1.AvailableOption {
-	result := make([]*leapmuxv1.AvailableOption, 0, len(modes))
-	for _, mode := range modes {
-		if isHiddenOpenCodePrimaryAgent(mode.ID) {
-			continue
+func buildOpenCodePrimaryAgents(modes []acpModeInfo, currentModeID string) []*leapmuxv1.AvailableOption {
+	// Normalize names: OpenCode agents often report name == id or whitespace-only names.
+	normalized := make([]acpModeInfo, len(modes))
+	for i, m := range modes {
+		normalized[i] = m
+		name := strings.TrimSpace(m.Name)
+		if name == "" || name == m.ID {
+			normalized[i].Name = ""
+		} else {
+			normalized[i].Name = name
 		}
-		name := strings.TrimSpace(mode.Name)
-		if name == "" || name == mode.ID {
-			// Capitalize when the agent provides no separate display name.
-			name = capitalizeFirst(mode.ID)
-		}
-		result = append(result, &leapmuxv1.AvailableOption{
-			Id:          mode.ID,
-			Name:        name,
-			Description: mode.Description,
-			IsDefault:   mode.ID == currentModeID,
-		})
 	}
-	return result
+	return buildACPModes(normalized, currentModeID, isHiddenOpenCodePrimaryAgent)
 }
 
 func fallbackOpenCodePrimaryAgents() []*leapmuxv1.AvailableOption {
@@ -278,7 +179,7 @@ func firstOpenCodePrimaryAgent(options []*leapmuxv1.AvailableOption) string {
 	return ""
 }
 
-func (a *OpenCodeAgent) configurePrimaryAgents(modes []openCodeModeInfo, currentModeID, requestedPrimaryAgent string) error {
+func (a *OpenCodeAgent) configurePrimaryAgents(modes []acpModeInfo, currentModeID, requestedPrimaryAgent string) error {
 	available := buildOpenCodePrimaryAgents(modes, currentModeID)
 	hasACPModeList := len(available) > 0
 	current := currentModeID
@@ -398,22 +299,9 @@ func (a *OpenCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 }
 
 func (a *OpenCodeAgent) setModel(model string) error {
-	a.mu.Lock()
-	sessionID := a.sessionID
-	a.mu.Unlock()
-
-	params, _ := json.Marshal(map[string]interface{}{
-		"sessionId": sessionID,
-		"modelId":   model,
-	})
-	resp, err := a.sendRequest(acpMethodSessionSetModel, json.RawMessage(params), 10*time.Second)
-	if err != nil {
+	if err := a.acpSetModel(model); err != nil {
 		return err
 	}
-	if err := jsonRPCResultError(resp); err != nil {
-		return err
-	}
-
 	a.mu.Lock()
 	a.model = model
 	a.mu.Unlock()
@@ -422,26 +310,12 @@ func (a *OpenCodeAgent) setModel(model string) error {
 
 func (a *OpenCodeAgent) setPrimaryAgent(agent string) error {
 	a.mu.Lock()
-	sessionID := a.sessionID
 	available := a.availablePrimaryAgents
 	a.mu.Unlock()
 
-	if !hasACPOption(available, agent) {
-		return fmt.Errorf("unknown primary agent: %s", agent)
-	}
-
-	params, _ := json.Marshal(map[string]interface{}{
-		"sessionId": sessionID,
-		"modeId":    agent,
-	})
-	resp, err := a.sendRequest(acpMethodSessionSetMode, json.RawMessage(params), 10*time.Second)
-	if err != nil {
+	if err := a.acpSetMode(agent, available); err != nil {
 		return err
 	}
-	if err := jsonRPCResultError(resp); err != nil {
-		return err
-	}
-
 	a.mu.Lock()
 	a.currentPrimaryAgent = agent
 	a.mu.Unlock()

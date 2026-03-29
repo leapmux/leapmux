@@ -143,7 +143,7 @@ func TestHelperProcessCopilotCLI(t *testing.T) {
 }
 
 func TestBuildCopilotSessionRequest_NewSession(t *testing.T) {
-	method, params := buildCopilotSessionRequest("", "/workspace")
+	method, params := buildACPSessionRequest("", "/workspace", acpMethodSessionNew, acpMethodSessionLoad)
 	assert.Equal(t, acpMethodSessionNew, method)
 
 	var parsed map[string]interface{}
@@ -153,7 +153,7 @@ func TestBuildCopilotSessionRequest_NewSession(t *testing.T) {
 }
 
 func TestBuildCopilotSessionRequest_LoadSession(t *testing.T) {
-	method, params := buildCopilotSessionRequest("session-123", "/workspace")
+	method, params := buildACPSessionRequest("session-123", "/workspace", acpMethodSessionNew, acpMethodSessionLoad)
 	assert.Equal(t, acpMethodSessionLoad, method)
 
 	var parsed map[string]interface{}

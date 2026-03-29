@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"sync"
@@ -38,6 +39,7 @@ const (
 	acpUpdateUserMessageChunk        = "user_message_chunk"
 	acpUpdateAvailableCommandsUpdate = "available_commands_update"
 	acpUpdateCurrentModeUpdate       = "current_mode_update"
+	acpUpdateConfigOptionUpdate      = "config_option_update"
 )
 
 // acpPendingInput holds a user message queued while a prompt is in flight.
@@ -564,10 +566,223 @@ func jsonRPCResultError(resp json.RawMessage) error {
 	return fmt.Errorf("json-rpc error %d: %s", code, message)
 }
 
-// isJSONRPCMethodNotFound returns true if resp is a JSON-RPC "method not found" error.
-func isJSONRPCMethodNotFound(resp json.RawMessage) bool {
-	code, _, ok := parseJSONRPCError(resp)
-	return ok && code == -32601
+// acpSessionConfig describes the session methods for a specific ACP provider.
+type acpSessionConfig struct {
+	newMethod    string // e.g. "session/new"
+	resumeMethod string // e.g. "session/load" or "session/resume"
+}
+
+// acpSessionResult holds the parsed result of the ACP session handshake.
+type acpSessionResult struct {
+	SessionID      string
+	CurrentModelID string
+	Models         []acpModelInfo
+	CurrentModeID  string
+	Modes          []acpModeInfo
+	Raw            json.RawMessage // full session response for provider-specific parsing
+}
+
+// startACPHandshake performs the common ACP startup handshake: stderr drain,
+// scanner setup, initialize request, session request with resume-fallback,
+// session ID validation, and UpdateSessionID/BroadcastStatusActive.
+func (b *acpBase) startACPHandshake(
+	stdout, stderr io.ReadCloser,
+	handleOutput outputHandler,
+	opts Options,
+	initParams json.RawMessage,
+	sessionCfg acpSessionConfig,
+) (*acpSessionResult, error) {
+	b.drainStderr(stderr)
+
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
+	go b.readOutputLoop(scanner, handleOutput)
+
+	cleanup := func() {
+		b.Stop()
+		_ = b.Wait()
+	}
+
+	timeout := opts.startupTimeout()
+
+	// 1. Send "initialize" request.
+	initResp, err := b.sendRequest(acpMethodInitialize, initParams, timeout)
+	if err != nil {
+		cleanup()
+		return nil, b.formatStartupError("initialize", err)
+	}
+	if err := jsonRPCResultError(initResp); err != nil {
+		cleanup()
+		return nil, b.formatStartupError("initialize", err)
+	}
+
+	// 2. Send session request (resume or new).
+	sessionMethod, sessionParams := buildACPSessionRequest(opts.ResumeSessionID, opts.WorkingDir, sessionCfg.newMethod, sessionCfg.resumeMethod)
+	sessionResp, err := b.sendRequest(sessionMethod, json.RawMessage(sessionParams), timeout)
+	if err != nil {
+		if opts.ResumeSessionID != "" {
+			slog.Warn("session resume failed, falling back to new session",
+				"agent_id", b.agentID, "session_id", opts.ResumeSessionID, "error", err)
+			_, fallbackParams := buildACPSessionRequest("", opts.WorkingDir, sessionCfg.newMethod, sessionCfg.resumeMethod)
+			sessionResp, err = b.sendRequest(sessionCfg.newMethod, json.RawMessage(fallbackParams), timeout)
+		}
+		if err != nil {
+			cleanup()
+			return nil, b.formatStartupError(sessionMethod, err)
+		}
+	}
+	if err := jsonRPCResultError(sessionResp); err != nil {
+		cleanup()
+		return nil, b.formatStartupError(sessionMethod, err)
+	}
+
+	// 3. Parse the common session fields.
+	var session struct {
+		SessionID string `json:"sessionId"`
+		Models    struct {
+			CurrentModelID  string         `json:"currentModelId"`
+			AvailableModels []acpModelInfo `json:"availableModels"`
+		} `json:"models"`
+		Modes *struct {
+			CurrentModeID  string        `json:"currentModeId"`
+			AvailableModes []acpModeInfo `json:"availableModes"`
+		} `json:"modes"`
+	}
+	if err := json.Unmarshal(sessionResp, &session); err != nil {
+		cleanup()
+		return nil, b.formatStartupError("session parse", err)
+	}
+	if session.SessionID == "" && opts.ResumeSessionID != "" && sessionMethod == sessionCfg.resumeMethod {
+		session.SessionID = opts.ResumeSessionID
+	}
+	if session.SessionID == "" {
+		cleanup()
+		return nil, b.formatStartupError(sessionMethod, fmt.Errorf("response did not contain a session ID"))
+	}
+
+	b.sessionID = session.SessionID
+	b.sink.UpdateSessionID(b.sessionID)
+	b.sink.BroadcastStatusActive(b.sessionID)
+
+	result := &acpSessionResult{
+		SessionID:      session.SessionID,
+		CurrentModelID: session.Models.CurrentModelID,
+		Models:         session.Models.AvailableModels,
+		Raw:            sessionResp,
+	}
+	if session.Modes != nil {
+		result.CurrentModeID = session.Modes.CurrentModeID
+		result.Modes = session.Modes.AvailableModes
+	}
+
+	return result, nil
+}
+
+// acpModeInfo is the JSON shape shared by all ACP providers for mode metadata.
+type acpModeInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// acpModelInfo is the JSON shape shared by all ACP providers for model metadata.
+type acpModelInfo struct {
+	ModelID     string `json:"modelId"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// buildACPModels converts a list of acpModelInfo into proto AvailableModel messages.
+func buildACPModels(models []acpModelInfo, currentModelID string) []*leapmuxv1.AvailableModel {
+	result := make([]*leapmuxv1.AvailableModel, 0, len(models))
+	for _, m := range models {
+		if m.ModelID == "" {
+			continue
+		}
+		result = append(result, &leapmuxv1.AvailableModel{
+			Id:          m.ModelID,
+			DisplayName: m.Name,
+			Description: m.Description,
+			IsDefault:   m.ModelID == currentModelID,
+		})
+	}
+	return result
+}
+
+// buildACPModes converts a list of acpModeInfo into proto AvailableOption messages.
+// If filter is non-nil, modes for which filter returns true are skipped.
+func buildACPModes(modes []acpModeInfo, currentModeID string, filter func(id string) bool) []*leapmuxv1.AvailableOption {
+	result := make([]*leapmuxv1.AvailableOption, 0, len(modes))
+	for _, mode := range modes {
+		if mode.ID == "" {
+			continue
+		}
+		if filter != nil && filter(mode.ID) {
+			continue
+		}
+		name := mode.Name
+		if name == "" {
+			name = capitalizeFirst(mode.ID)
+		}
+		result = append(result, &leapmuxv1.AvailableOption{
+			Id:          mode.ID,
+			Name:        name,
+			Description: mode.Description,
+			IsDefault:   mode.ID == currentModeID,
+		})
+	}
+	return result
+}
+
+// acpSetModel sends a session/set_model request and returns nil on success.
+func (b *acpBase) acpSetModel(model string) error {
+	b.mu.Lock()
+	sessionID := b.sessionID
+	b.mu.Unlock()
+
+	params, _ := json.Marshal(map[string]interface{}{
+		"sessionId": sessionID,
+		"modelId":   model,
+	})
+	resp, err := b.sendRequest(acpMethodSessionSetModel, json.RawMessage(params), 10*time.Second)
+	if err != nil {
+		return err
+	}
+	return jsonRPCResultError(resp)
+}
+
+// acpSetMode sends a session/set_mode request and returns nil on success.
+// If available is non-empty and modeID is not found, an error is returned.
+func (b *acpBase) acpSetMode(modeID string, available []*leapmuxv1.AvailableOption) error {
+	if len(available) > 0 && !hasACPOption(available, modeID) {
+		return fmt.Errorf("unknown mode: %s", modeID)
+	}
+
+	b.mu.Lock()
+	sessionID := b.sessionID
+	b.mu.Unlock()
+
+	params, _ := json.Marshal(map[string]interface{}{
+		"sessionId": sessionID,
+		"modeId":    modeID,
+	})
+	resp, err := b.sendRequest(acpMethodSessionSetMode, json.RawMessage(params), 10*time.Second)
+	if err != nil {
+		return err
+	}
+	return jsonRPCResultError(resp)
+}
+
+// acpCancelSession sends a session/cancel notification.
+func (b *acpBase) acpCancelSession() error {
+	b.mu.Lock()
+	sessionID := b.sessionID
+	b.mu.Unlock()
+
+	params, _ := json.Marshal(map[string]interface{}{
+		"sessionId": sessionID,
+	})
+	return b.sendNotification(acpMethodSessionCancel, json.RawMessage(params))
 }
 
 // capitalizeFirst returns s with its first rune upper-cased.

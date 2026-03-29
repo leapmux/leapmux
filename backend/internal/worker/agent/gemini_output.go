@@ -12,9 +12,9 @@ func handleGeminiCLIOutput(a *GeminiCLIAgent, line *parsedLine) {
 	slog.Debug("gemini HandleOutput", "agent_id", a.agentID, "method", line.Method, "len", len(line.Raw))
 
 	switch line.Method {
-	case geminiMethodSessionUpdate, acpMethodSessionUpdate:
+	case acpMethodSessionUpdate:
 		a.handleSessionUpdate(line.Params)
-	case geminiMethodRequestPermission, acpMethodSessionRequestPermission:
+	case acpMethodSessionRequestPermission:
 		a.handleRequestPermission(line.ID, line.Raw)
 	default:
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, line.Raw, SpanInfo{}); err != nil {

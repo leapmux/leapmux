@@ -137,26 +137,12 @@ func TestHelperProcessGeminiCLI(t *testing.T) {
 		switch req.Method {
 		case "initialize":
 			writeResponse(req.ID, `{}`, false)
-		case "newSession":
-			if scenario == "legacy" {
-				writeResponse(req.ID, `{"code":-32601,"message":"\"Method not found\": newSession"}`, true)
-				continue
-			}
+		case "session/new":
 			writeResponse(req.ID, `{"sessionId":"session-new","models":{"currentModelId":"gemini-2.5-pro","availableModels":[{"modelId":"auto","name":"Auto","description":"Automatic"},{"modelId":"gemini-2.5-pro","name":"Gemini 2.5 Pro","description":"Detailed"}]},"modes":{"currentModeId":"default","availableModes":[{"id":"default","name":"Default"},{"id":"plan","name":"Plan"}]}}`, false)
-		case "loadSession":
+		case "session/load":
 			if scenario == "load" {
 				writeResponse(req.ID, `{"models":{"currentModelId":"gemini-2.5-flash","availableModels":[{"modelId":"auto","name":"Auto"},{"modelId":"gemini-2.5-flash","name":"Gemini 2.5 Flash"}]},"modes":{"currentModeId":"plan","availableModes":[{"id":"default","name":"Default"},{"id":"plan","name":"Plan"}]}}`, false)
 			}
-		case "session/new":
-			if scenario == "legacy" {
-				writeResponse(req.ID, `{"sessionId":"session-legacy","models":{"currentModelId":"auto","availableModels":[{"modelId":"auto","name":"Auto"}]},"modes":{"currentModeId":"default","availableModes":[{"id":"default","name":"Default"},{"id":"plan","name":"Plan"}]}}`, false)
-			}
-		case "setSessionMode", "unstable_setSessionModel", "prompt":
-			if scenario == "legacy" {
-				writeResponse(req.ID, fmt.Sprintf(`{"code":-32601,"message":"\"Method not found\": %s"}`, req.Method), true)
-				continue
-			}
-			writeResponse(req.ID, `{}`, false)
 		case "session/set_mode", "session/set_model", "session/prompt":
 			writeResponse(req.ID, `{}`, false)
 		}
@@ -165,8 +151,8 @@ func TestHelperProcessGeminiCLI(t *testing.T) {
 }
 
 func TestBuildGeminiSessionRequest_NewSession(t *testing.T) {
-	method, params := buildGeminiSessionRequest("", "/workspace")
-	assert.Equal(t, "newSession", method)
+	method, params := buildACPSessionRequest("", "/workspace", acpMethodSessionNew, acpMethodSessionLoad)
+	assert.Equal(t, acpMethodSessionNew, method)
 
 	var parsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(params, &parsed))
@@ -175,8 +161,8 @@ func TestBuildGeminiSessionRequest_NewSession(t *testing.T) {
 }
 
 func TestBuildGeminiSessionRequest_LoadSession(t *testing.T) {
-	method, params := buildGeminiSessionRequest("session-123", "/workspace")
-	assert.Equal(t, "loadSession", method)
+	method, params := buildACPSessionRequest("session-123", "/workspace", acpMethodSessionNew, acpMethodSessionLoad)
+	assert.Equal(t, acpMethodSessionLoad, method)
 
 	var parsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(params, &parsed))
@@ -235,28 +221,6 @@ func TestStartGeminiCLI_LoadSessionUsesResumeID(t *testing.T) {
 	assert.Equal(t, "plan", agent.permissionMode)
 }
 
-func TestStartGeminiCLI_FallsBackToLegacySessionMethods(t *testing.T) {
-	installFakeGeminiCLI(t, "legacy")
-
-	provider, err := StartGeminiCLI(context.Background(), Options{
-		AgentID:       "gemini-legacy",
-		WorkingDir:    t.TempDir(),
-		Shell:         "/bin/sh",
-		LoginShell:    false,
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
-	}, &testSink{})
-	require.NoError(t, err)
-
-	agent := provider.(*GeminiCLIAgent)
-	t.Cleanup(func() {
-		agent.Stop()
-		_ = agent.Wait()
-	})
-
-	assert.Equal(t, "session-legacy", agent.sessionID)
-	assert.True(t, agent.usesLegacyMethods())
-}
-
 func TestGeminiUpdateSettingsSendsLiveACPRequests(t *testing.T) {
 	agent, requests := newGeminiAgentForRPC(t)
 	agent.availableModes = []*leapmuxv1.AvailableOption{
@@ -274,43 +238,14 @@ func TestGeminiUpdateSettingsSendsLiveACPRequests(t *testing.T) {
 
 	recorded := requests()
 	require.Len(t, recorded, 2)
-	assert.Equal(t, "unstable_setSessionModel", recorded[0].Method)
+	assert.Equal(t, "session/set_model", recorded[0].Method)
 	assert.Equal(t, "gemini-2.5-flash", recorded[0].Params["modelId"])
-	assert.Equal(t, "setSessionMode", recorded[1].Method)
+	assert.Equal(t, "session/set_mode", recorded[1].Method)
 	assert.Equal(t, GeminiCLIModePlan, recorded[1].Params["modeId"])
 }
 
-func TestGeminiUpdateSettingsFallsBackToLegacyMethods(t *testing.T) {
-	agent, requests := newGeminiAgentForRPCWithResponder(t, func(method string) json.RawMessage {
-		switch method {
-		case "unstable_setSessionModel", "setSessionMode":
-			return json.RawMessage(`{"code":-32601,"message":"method not found"}`)
-		default:
-			return json.RawMessage(`{}`)
-		}
-	})
-	agent.availableModes = []*leapmuxv1.AvailableOption{
-		{Id: GeminiCLIModeDefault, Name: "Default", IsDefault: true},
-		{Id: GeminiCLIModePlan, Name: "Plan"},
-	}
-
-	updated := agent.UpdateSettings(&leapmuxv1.AgentSettings{
-		Model:          "gemini-2.5-flash",
-		PermissionMode: GeminiCLIModePlan,
-	})
-	require.True(t, updated)
-	assert.True(t, agent.usesLegacyMethods())
-	require.Eventually(t, func() bool { return len(requests()) == 3 }, time.Second, 10*time.Millisecond)
-	recorded := requests()
-	require.Len(t, recorded, 3)
-	assert.Equal(t, "unstable_setSessionModel", recorded[0].Method)
-	assert.Equal(t, "session/set_model", recorded[1].Method)
-	assert.Equal(t, "session/set_mode", recorded[2].Method)
-}
-
-func TestGeminiCancelSessionSendsLegacyMethodWhenNeeded(t *testing.T) {
+func TestGeminiCancelSessionSendsACPMethod(t *testing.T) {
 	agent, requests := newGeminiAgentForRPC(t)
-	agent.useLegacyMethods = true
 
 	err := agent.cancelSession()
 	require.NoError(t, err)
@@ -337,7 +272,7 @@ func newGeminiAgentWithGate(t *testing.T) (*GeminiCLIAgent, func() []geminiRecor
 
 	gate := make(chan struct{}, 8)
 	agent, requests := newGeminiAgentForRPCWithResponder(t, func(method string) json.RawMessage {
-		if method == geminiMethodPrompt || method == acpMethodSessionPrompt {
+		if method == acpMethodSessionPrompt {
 			<-gate // Block until test releases the gate.
 		}
 		return json.RawMessage(`{}`)
@@ -362,7 +297,7 @@ func TestGeminiSendInputQueuesWhenPromptActive(t *testing.T) {
 
 	// Only one prompt request should have been sent so far.
 	assert.Len(t, requests(), 1)
-	assert.Equal(t, geminiMethodPrompt, requests()[0].Method)
+	assert.Equal(t, acpMethodSessionPrompt, requests()[0].Method)
 
 	// Release the first prompt.
 	gate <- struct{}{}
@@ -435,9 +370,9 @@ func TestGeminiCancelDrainsQueueAfterTurnEnds(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 
 	recorded := requests()
-	assert.Equal(t, geminiMethodPrompt, recorded[0].Method) // first prompt
-	assert.Equal(t, geminiMethodCancel, recorded[1].Method) // cancel notification
-	assert.Equal(t, geminiMethodPrompt, recorded[2].Method) // queued "second"
+	assert.Equal(t, acpMethodSessionPrompt, recorded[0].Method) // first prompt
+	assert.Equal(t, acpMethodSessionCancel, recorded[1].Method) // cancel notification
+	assert.Equal(t, acpMethodSessionPrompt, recorded[2].Method) // queued "second"
 }
 
 func TestGeminiStopClearsQueue(t *testing.T) {

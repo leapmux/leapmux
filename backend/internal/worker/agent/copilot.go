@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -19,18 +18,6 @@ const (
 	CopilotCLIModeAutopilot = "https://agentclientprotocol.com/protocol/session-modes#autopilot"
 )
 
-type copilotCLIModeInfo struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-}
-
-type copilotCLIModelInfo struct {
-	ModelID     string `json:"modelId"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-}
-
 type copilotCLIConfigOption struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
@@ -47,7 +34,6 @@ type CopilotCLIAgent struct {
 
 	model          string
 	permissionMode string
-	workingDir     string
 
 	availableModels []*leapmuxv1.AvailableModel
 	availableModes  []*leapmuxv1.AvailableOption
@@ -101,8 +87,7 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 			}},
 			sink: sink,
 		},
-		model:      opts.Model,
-		workingDir: opts.WorkingDir,
+		model: opts.Model,
 	}
 	a.promptFunc = a.doSendPrompt
 
@@ -111,93 +96,39 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 		return nil, fmt.Errorf("start copilot: %w", err)
 	}
 
-	a.drainStderr(stderrPipe)
-
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutputLoop(scanner, a.handleOutput)
-
-	cleanup := func() {
-		a.Stop()
-		_ = a.Wait()
-	}
-
-	timeout := opts.startupTimeout()
-
 	initParams, _ := json.Marshal(map[string]interface{}{
 		"protocolVersion": 1,
 		"clientInfo":      map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
 		"capabilities":    map[string]interface{}{},
 	})
-	initResp, err := a.sendRequest(acpMethodInitialize, json.RawMessage(initParams), timeout)
+	handshake, err := a.startACPHandshake(stdout, stderrPipe, a.handleOutput, opts, initParams,
+		acpSessionConfig{newMethod: acpMethodSessionNew, resumeMethod: acpMethodSessionLoad})
 	if err != nil {
-		cleanup()
-		return nil, a.formatStartupError("initialize", err)
-	}
-	if err := jsonRPCResultError(initResp); err != nil {
-		cleanup()
-		return nil, a.formatStartupError("initialize", err)
+		return nil, err
 	}
 
-	sessionMethod, sessionParams := buildCopilotSessionRequest(opts.ResumeSessionID, opts.WorkingDir)
-	sessionResp, err := a.sendRequest(sessionMethod, json.RawMessage(sessionParams), timeout)
-	if err != nil {
-		if opts.ResumeSessionID != "" {
-			slog.Warn("session/load failed, falling back to session/new",
-				"agent_id", a.agentID, "session_id", opts.ResumeSessionID, "error", err)
-			_, fallbackParams := buildCopilotSessionRequest("", opts.WorkingDir)
-			sessionResp, err = a.sendRequest(acpMethodSessionNew, json.RawMessage(fallbackParams), timeout)
-		}
-		if err != nil {
-			cleanup()
-			return nil, a.formatStartupError(sessionMethod, err)
-		}
-	}
-	if err := jsonRPCResultError(sessionResp); err != nil {
-		cleanup()
-		return nil, a.formatStartupError(sessionMethod, err)
+	a.availableModels = buildACPModels(handshake.Models, handshake.CurrentModelID)
+	if a.model == "" && handshake.CurrentModelID != "" {
+		a.model = handshake.CurrentModelID
 	}
 
-	var session struct {
-		SessionID string `json:"sessionId"`
-		Models    struct {
-			CurrentModelID  string                `json:"currentModelId"`
-			AvailableModels []copilotCLIModelInfo `json:"availableModels"`
-		} `json:"models"`
-		Modes struct {
-			CurrentModeID  string               `json:"currentModeId"`
-			AvailableModes []copilotCLIModeInfo `json:"availableModes"`
-		} `json:"modes"`
-		ConfigOptions []copilotCLIConfigOption `json:"configOptions"`
-	}
-	if err := json.Unmarshal(sessionResp, &session); err != nil {
-		cleanup()
-		return nil, a.formatStartupError("session/new parse", err)
-	}
-	if session.SessionID == "" && opts.ResumeSessionID != "" && sessionMethod == acpMethodSessionLoad {
-		session.SessionID = opts.ResumeSessionID
-	}
-	if session.SessionID == "" {
-		cleanup()
-		return nil, a.formatStartupError(sessionMethod, fmt.Errorf("response did not contain a session ID"))
-	}
-
-	a.sessionID = session.SessionID
-	sink.UpdateSessionID(a.sessionID)
-	sink.BroadcastStatusActive(a.sessionID)
-
-	a.availableModels = buildCopilotCLIModels(session.Models.AvailableModels, session.Models.CurrentModelID)
-	if a.model == "" && session.Models.CurrentModelID != "" {
-		a.model = session.Models.CurrentModelID
-	}
-
-	a.availableModes = buildCopilotCLIModes(session.Modes.AvailableModes, session.Modes.CurrentModeID)
-	a.permissionMode = session.Modes.CurrentModeID
+	a.availableModes = buildACPModes(handshake.Modes, handshake.CurrentModeID, nil)
+	a.permissionMode = handshake.CurrentModeID
 	if a.permissionMode == "" {
 		a.permissionMode = CopilotCLIModeAgent
 	}
-	a.syncConfigOptions(session.ConfigOptions)
 
+	// Parse Copilot-specific configOptions from the raw session response.
+	var copilotSession struct {
+		ConfigOptions []copilotCLIConfigOption `json:"configOptions"`
+	}
+	_ = json.Unmarshal(handshake.Raw, &copilotSession)
+	a.syncConfigOptions(copilotSession.ConfigOptions)
+
+	cleanup := func() {
+		a.Stop()
+		_ = a.Wait()
+	}
 	if requested := StringOrDefault(opts.PermissionMode, ""); requested != "" && requested != a.permissionMode {
 		if err := a.setPermissionMode(requested); err != nil {
 			cleanup()
@@ -212,46 +143,6 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 	}
 
 	return a, nil
-}
-
-func buildCopilotSessionRequest(resumeSessionID, workingDir string) (method string, params []byte) {
-	return buildACPSessionRequest(resumeSessionID, workingDir, acpMethodSessionNew, acpMethodSessionLoad)
-}
-
-func buildCopilotCLIModels(models []copilotCLIModelInfo, currentModelID string) []*leapmuxv1.AvailableModel {
-	result := make([]*leapmuxv1.AvailableModel, 0, len(models))
-	for _, m := range models {
-		if m.ModelID == "" {
-			continue
-		}
-		result = append(result, &leapmuxv1.AvailableModel{
-			Id:          m.ModelID,
-			DisplayName: m.Name,
-			Description: m.Description,
-			IsDefault:   m.ModelID == currentModelID,
-		})
-	}
-	return result
-}
-
-func buildCopilotCLIModes(modes []copilotCLIModeInfo, currentModeID string) []*leapmuxv1.AvailableOption {
-	result := make([]*leapmuxv1.AvailableOption, 0, len(modes))
-	for _, mode := range modes {
-		if mode.ID == "" {
-			continue
-		}
-		name := mode.Name
-		if name == "" {
-			name = capitalizeFirst(mode.ID)
-		}
-		result = append(result, &leapmuxv1.AvailableOption{
-			Id:          mode.ID,
-			Name:        name,
-			Description: mode.Description,
-			IsDefault:   mode.ID == currentModeID,
-		})
-	}
-	return result
 }
 
 func fallbackCopilotCLIModes() []*leapmuxv1.AvailableOption {
@@ -285,6 +176,8 @@ func (a *CopilotCLIAgent) CurrentSettings() *leapmuxv1.AgentSettings {
 }
 
 func (a *CopilotCLIAgent) AvailableModels() []*leapmuxv1.AvailableModel {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	return a.availableModels
 }
 
@@ -319,22 +212,9 @@ func (a *CopilotCLIAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 }
 
 func (a *CopilotCLIAgent) setModel(model string) error {
-	a.mu.Lock()
-	sessionID := a.sessionID
-	a.mu.Unlock()
-
-	params, _ := json.Marshal(map[string]interface{}{
-		"sessionId": sessionID,
-		"modelId":   model,
-	})
-	resp, err := a.sendRequest(acpMethodSessionSetModel, json.RawMessage(params), 10*time.Second)
-	if err != nil {
+	if err := a.acpSetModel(model); err != nil {
 		return err
 	}
-	if err := jsonRPCResultError(resp); err != nil {
-		return err
-	}
-
 	a.mu.Lock()
 	a.model = model
 	a.mu.Unlock()
@@ -343,26 +223,12 @@ func (a *CopilotCLIAgent) setModel(model string) error {
 
 func (a *CopilotCLIAgent) setPermissionMode(mode string) error {
 	a.mu.Lock()
-	sessionID := a.sessionID
 	available := a.availableModes
 	a.mu.Unlock()
 
-	if len(available) > 0 && !hasACPOption(available, mode) {
-		return fmt.Errorf("unknown mode: %s", mode)
-	}
-
-	params, _ := json.Marshal(map[string]interface{}{
-		"sessionId": sessionID,
-		"modeId":    mode,
-	})
-	resp, err := a.sendRequest(acpMethodSessionSetMode, json.RawMessage(params), 10*time.Second)
-	if err != nil {
+	if err := a.acpSetMode(mode, available); err != nil {
 		return err
 	}
-	if err := jsonRPCResultError(resp); err != nil {
-		return err
-	}
-
 	a.mu.Lock()
 	a.permissionMode = mode
 	a.mu.Unlock()
@@ -370,14 +236,7 @@ func (a *CopilotCLIAgent) setPermissionMode(mode string) error {
 }
 
 func (a *CopilotCLIAgent) cancelSession() error {
-	a.mu.Lock()
-	sessionID := a.sessionID
-	a.mu.Unlock()
-
-	params, _ := json.Marshal(map[string]interface{}{
-		"sessionId": sessionID,
-	})
-	return a.sendNotification(acpMethodSessionCancel, json.RawMessage(params))
+	return a.acpCancelSession()
 }
 
 func (a *CopilotCLIAgent) handleOutput(line *parsedLine) {
@@ -388,14 +247,17 @@ func (a *CopilotCLIAgent) HandleOutput(content []byte) {
 	handleCopilotCLIOutput(a, parseLine(content))
 }
 
-func (a *CopilotCLIAgent) syncConfigOptions(options []copilotCLIConfigOption) {
+// syncConfigOptions updates the agent's model and mode from the given config options.
+// It returns the updated mode value, or "" if no mode was found.
+func (a *CopilotCLIAgent) syncConfigOptions(options []copilotCLIConfigOption) string {
 	if len(options) == 0 {
-		return
+		return ""
 	}
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	var updatedMode string
 	for _, option := range options {
 		switch option.ID {
 		case "model":
@@ -425,6 +287,7 @@ func (a *CopilotCLIAgent) syncConfigOptions(options []copilotCLIConfigOption) {
 		case "mode":
 			if option.CurrentValue != "" {
 				a.permissionMode = option.CurrentValue
+				updatedMode = option.CurrentValue
 			}
 			if len(option.Options) > 0 {
 				modes := make([]*leapmuxv1.AvailableOption, 0, len(option.Options))
@@ -448,4 +311,5 @@ func (a *CopilotCLIAgent) syncConfigOptions(options []copilotCLIConfigOption) {
 			}
 		}
 	}
+	return updatedMode
 }

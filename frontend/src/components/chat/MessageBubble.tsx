@@ -409,14 +409,13 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const toggleDiffView = () => props.onSetLocalDiffView?.(diffView() === 'unified' ? 'split' : 'unified')
 
   // Build render context for message renderers.
-  // eslint-disable-next-line solid/reactivity -- onReply is a stable callback prop
-  const contextReply: RenderContext['onReply'] = props.onReply ? text => props.onReply!(formatChatQuote(text)) : undefined
   const renderContext = (): RenderContext => ({
     createdAt: props.message.createdAt,
     workingDir: props.workingDir,
     homeDir: props.homeDir,
     diffView: diffView(),
-    onReply: contextReply,
+    // eslint-disable-next-line solid/reactivity -- reactive: renderContext() is a getter re-invoked in JSX; props.onReply is read each call
+    onReply: props.onReply ? (text: string) => props.onReply!(formatChatQuote(text)) : undefined,
     onCopyJson: copyJson,
     jsonCopied: jsonCopied(),
     toolUseMessage: toolUseMessage(),
