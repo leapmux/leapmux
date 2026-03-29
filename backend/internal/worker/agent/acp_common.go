@@ -115,12 +115,10 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 	}
 	update := wrapper.Update
 
-	// Parse header fields from the same update bytes (second unmarshal into
-	// the update, but avoids the previous third unmarshal per sub-handler for
-	// the common fields).
 	var header struct {
-		SessionUpdate string `json:"sessionUpdate"`
-		Role          string `json:"role"`
+		SessionUpdate string          `json:"sessionUpdate"`
+		Role          string          `json:"role"`
+		Content       json.RawMessage `json:"content"`
 	}
 	if json.Unmarshal(update, &header) != nil {
 		return
@@ -132,9 +130,9 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 
 	switch header.SessionUpdate {
 	case acpUpdateAgentMessageChunk:
-		b.appendACPChunk(update, &b.turnAssistantText, acpUpdateAgentMessageChunk)
+		b.broadcastACPChunk(header.Content, &b.turnAssistantText, acpUpdateAgentMessageChunk)
 	case acpUpdateAgentThoughtChunk:
-		b.appendACPChunk(update, &b.turnThinkingText, acpUpdateAgentThoughtChunk)
+		b.broadcastACPChunk(header.Content, &b.turnThinkingText, acpUpdateAgentThoughtChunk)
 	case acpUpdateToolCall:
 		b.handleToolCall(update)
 	case acpUpdateToolCallUpdate:
@@ -376,18 +374,20 @@ func (b *acpBase) sendPrompt(
 	handleResponse(resp)
 }
 
-func (b *acpBase) appendACPChunk(update json.RawMessage, builder *strings.Builder, eventType string) {
-	var chunk struct {
-		Content struct {
-			Text string `json:"text"`
-		} `json:"content"`
+// broadcastACPChunk extracts text from a pre-parsed content RawMessage and
+// broadcasts it. The content JSON is already extracted from the header parse,
+// avoiding a full re-unmarshal of the update on the streaming hot path.
+func (b *acpBase) broadcastACPChunk(content json.RawMessage, builder *strings.Builder, eventType string) {
+	var c struct {
+		Text string `json:"text"`
 	}
-	if json.Unmarshal(update, &chunk) == nil && chunk.Content.Text != "" {
-		b.mu.Lock()
-		builder.WriteString(chunk.Content.Text)
-		b.mu.Unlock()
-		b.sink.BroadcastStreamChunk([]byte(chunk.Content.Text), "", eventType)
+	if json.Unmarshal(content, &c) != nil || c.Text == "" {
+		return
 	}
+	b.mu.Lock()
+	builder.WriteString(c.Text)
+	b.mu.Unlock()
+	b.sink.BroadcastStreamChunk([]byte(c.Text), "", eventType)
 }
 
 func (b *acpBase) persistTextMessage(sessionUpdate, text string) {

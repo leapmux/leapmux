@@ -82,7 +82,6 @@ export function isACPNotifThread(wrapper: { messages: unknown[] } | null): boole
 
 export interface ACPClassifyConfig {
   extraHiddenSessionUpdates?: Set<string>
-  cancelledIsVisible?: boolean // default true
 }
 
 export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: ClassificationInput, context?: ClassificationContext) => MessageCategory {
@@ -90,8 +89,6 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
   const hiddenSessionUpdates = config.extraHiddenSessionUpdates
     ? new Set([...baseHidden, ...config.extraHiddenSessionUpdates])
     : baseHidden
-  const cancelledIsVisible = config.cancelledIsVisible !== false
-
   return (input: ClassificationInput, _context?: ClassificationContext): MessageCategory => {
     const parent = input.parentObject
     const wrapper = input.wrapper
@@ -121,7 +118,7 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
 
     if (sessionUpdate === 'tool_call_update') {
       const status = parent.status as string | undefined
-      if (status === 'completed' || status === 'failed' || (cancelledIsVisible && status === 'cancelled'))
+      if (status === 'completed' || status === 'failed' || status === 'cancelled')
         return { kind: 'tool_use', toolName: (parent.kind as string) || 'tool_call_update', toolUse: parent, content: [] }
       return { kind: 'hidden' }
     }
