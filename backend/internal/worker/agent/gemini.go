@@ -79,8 +79,7 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 			},
 		},
 	})
-	handshake, err := a.startACPHandshake(stdout, stderrPipe, opts, initParams,
-		acpSessionConfig{newMethod: acpMethodSessionNew, resumeMethod: acpMethodSessionLoad})
+	handshake, err := a.startACPHandshake(stdout, stderrPipe, opts, initParams, acpDefaultSessionConfig)
 	if err != nil {
 		return nil, err
 	}

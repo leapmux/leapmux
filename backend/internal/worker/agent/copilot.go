@@ -81,8 +81,7 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 		"clientInfo":      map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
 		"capabilities":    map[string]interface{}{},
 	})
-	handshake, err := a.startACPHandshake(stdout, stderrPipe, opts, initParams,
-		acpSessionConfig{newMethod: acpMethodSessionNew, resumeMethod: acpMethodSessionLoad})
+	handshake, err := a.startACPHandshake(stdout, stderrPipe, opts, initParams, acpDefaultSessionConfig)
 	if err != nil {
 		return nil, err
 	}

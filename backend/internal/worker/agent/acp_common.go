@@ -577,6 +577,12 @@ type acpSessionConfig struct {
 	resumeMethod string // e.g. "session/load" or "session/resume"
 }
 
+// acpDefaultSessionConfig is the standard ACP session config used by most providers.
+var acpDefaultSessionConfig = acpSessionConfig{
+	newMethod:    acpMethodSessionNew,
+	resumeMethod: acpMethodSessionLoad,
+}
+
 // acpSessionResult holds the parsed result of the ACP session handshake.
 type acpSessionResult struct {
 	SessionID      string
@@ -845,7 +851,7 @@ func (b *acpBase) handleRequestPermission(id *json.Number, content []byte) {
 // handleOutput dispatches a single parsed output line using the provider's
 // extraSessionUpdate handler. Used as the outputHandler for readOutputLoop.
 func (b *acpBase) handleOutput(line *parsedLine) {
-	slog.Debug(b.providerName+" HandleOutput", "agent_id", b.agentID, "method", line.Method, "len", len(line.Raw))
+	slog.Debug("acp HandleOutput", "provider", b.providerName, "agent_id", b.agentID, "method", line.Method, "len", len(line.Raw))
 	b.handleACPOutput(line, b.extraSessionUpdate)
 }
 
