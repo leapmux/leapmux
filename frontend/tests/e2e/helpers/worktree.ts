@@ -250,7 +250,6 @@ export async function inspectLastTabCloseViaAPI(
   worktreePath: string
   worktreeId: string
   branchName: string
-  pushLabel: string
   canPush: boolean
   hasUncommittedChanges: boolean
   unpushedCommitCount: number
@@ -270,7 +269,6 @@ export async function inspectLastTabCloseViaAPI(
     worktreePath: resp.worktreePath,
     worktreeId: resp.worktreeId,
     branchName: resp.branchName,
-    pushLabel: resp.pushLabel,
     canPush: resp.canPush,
     hasUncommittedChanges: resp.hasUncommittedChanges,
     unpushedCommitCount: resp.unpushedCommitCount,

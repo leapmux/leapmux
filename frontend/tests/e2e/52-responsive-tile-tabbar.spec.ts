@@ -164,8 +164,15 @@ test.describe('Responsive Tile TabBar', () => {
 
     // Close all tabs to remove active tab context
     while (await page.locator('[data-testid="tab-close"]').count() > 0) {
-      await page.locator('[data-testid="tab-close"]').first().click()
-      await page.waitForTimeout(300)
+      const countBefore = await page.locator('[data-testid="tab-close"]').count()
+      await page.locator('[data-testid="tab-close"]').first().click({ timeout: 5000 })
+      // Handle last-tab-close confirmation dialog if it appears
+      const confirmBtn = page.locator('[data-testid="confirm-dialog-confirm"]')
+      if (await confirmBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+        await confirmBtn.click()
+      }
+      // Wait for the tab to actually be removed
+      await expect(page.locator('[data-testid="tab-close"]')).toHaveCount(countBefore - 1, { timeout: 5000 }).catch(() => {})
     }
 
     // Now tooltips should show the "..." variant

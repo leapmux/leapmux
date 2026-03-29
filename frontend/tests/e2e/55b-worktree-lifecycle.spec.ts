@@ -101,8 +101,6 @@ test.describe('Worktree Lifecycle', () => {
     const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
     expect(inspect.shouldPrompt).toBe(true)
     expect(inspect.worktreePath).toContain('test-repo-autoclean-worktrees/autoclean-branch')
-    expect(inspect.pushLabel).toBe('Push')
-
     await scheduleWorktreeDeletionViaAPI(hubUrl, adminToken, workerId, inspect.worktreeId)
     await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
@@ -213,7 +211,7 @@ test.describe('Worktree Lifecycle', () => {
     writeFileSync(join(repoDir, 'dirty-branch.txt'), 'dirty\n')
     const dirtyInspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
     expect(dirtyInspect.shouldPrompt).toBe(true)
-    expect(dirtyInspect.pushLabel).toBe('Commit and Push')
+    expect(dirtyInspect.hasUncommittedChanges).toBe(true)
 
     await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
     expect(existsSync(join(repoDir, 'dirty-branch.txt'))).toBe(true)
@@ -248,7 +246,6 @@ test.describe('Worktree Lifecycle', () => {
 
     expect(inspect.shouldPrompt).toBe(true)
     expect(inspect.worktreePath).toContain('test-repo-dirty-worktrees/dirty-branch')
-    expect(inspect.pushLabel).toBe('Commit and Push')
     expect(inspect.hasUncommittedChanges).toBe(true)
 
     await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
@@ -289,7 +286,6 @@ test.describe('Worktree Lifecycle', () => {
 
     expect(inspect.shouldPrompt).toBe(true)
     expect(inspect.canPush).toBe(false)
-    expect(inspect.pushLabel).toBe('Push')
     expect(inspect.unpushedCommitCount).toBe(0)
     expect(existsSync(worktreeDir)).toBe(true)
 
@@ -342,7 +338,7 @@ test.describe('Worktree Lifecycle', () => {
     expect(agents.length).toBeGreaterThan(0)
     const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
     expect(inspect.shouldPrompt).toBe(true)
-    expect(inspect.pushLabel).toBe('Commit and Push')
+    expect(inspect.hasUncommittedChanges).toBe(true)
 
     await pushBranchForCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
     await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
@@ -393,8 +389,8 @@ test.describe('Worktree Lifecycle', () => {
     // Dialog should show the branch name
     await expect(closeDialog.getByText('cancel-branch', { exact: true })).toBeVisible()
 
-    // Click "Schedule worktree deletion" once — should arm the button (show "Confirm?"), not remove
-    await closeDialog.getByRole('button', { name: 'Schedule worktree deletion' }).click()
+    // Click "Delete" once — should arm the button (show "Confirm?"), not remove
+    await closeDialog.getByRole('button', { name: 'Delete' }).click()
     await expect(closeDialog.getByRole('button', { name: 'Confirm?' })).toBeVisible()
 
     // Dialog should still be open, tab should still be present
@@ -452,7 +448,7 @@ test.describe('Worktree Lifecycle', () => {
     await expect(page.getByRole('dialog').getByText('dialog-branch', { exact: true })).toBeVisible()
 
     // Click the dangerous action once — should arm the button (show "Confirm?")
-    await page.getByRole('button', { name: 'Schedule worktree deletion' }).click()
+    await page.getByRole('button', { name: 'Delete' }).click()
     await expect(page.getByRole('button', { name: 'Confirm?' })).toBeVisible()
 
     // Click "Confirm?" to actually remove
