@@ -37,7 +37,6 @@ func (a *CopilotCLIAgent) handleConfigOptionUpdate(update json.RawMessage) {
 	}
 }
 
-// cancelSession sends a session/cancel notification.
 func (a *CopilotCLIAgent) cancelSession() error {
 	return a.acpCancelSession()
 }

@@ -108,18 +108,21 @@ type acpSessionUpdateHandler func(sessionUpdate string, update json.RawMessage) 
 // handleACPSessionUpdate dispatches ACP sessionUpdate notifications by type.
 func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessionUpdateHandler) {
 	var wrapper struct {
-		SessionID string          `json:"sessionId"`
-		Update    json.RawMessage `json:"update"`
+		Update json.RawMessage `json:"update"`
 	}
 	if json.Unmarshal(params, &wrapper) != nil || len(wrapper.Update) == 0 {
 		return
 	}
+	update := wrapper.Update
 
+	// Parse header fields from the same update bytes (second unmarshal into
+	// the update, but avoids the previous third unmarshal per sub-handler for
+	// the common fields).
 	var header struct {
 		SessionUpdate string `json:"sessionUpdate"`
 		Role          string `json:"role"`
 	}
-	if json.Unmarshal(wrapper.Update, &header) != nil {
+	if json.Unmarshal(update, &header) != nil {
 		return
 	}
 
@@ -129,24 +132,24 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 
 	switch header.SessionUpdate {
 	case acpUpdateAgentMessageChunk:
-		b.appendACPChunk(wrapper.Update, &b.turnAssistantText, acpUpdateAgentMessageChunk)
+		b.appendACPChunk(update, &b.turnAssistantText, acpUpdateAgentMessageChunk)
 	case acpUpdateAgentThoughtChunk:
-		b.appendACPChunk(wrapper.Update, &b.turnThinkingText, acpUpdateAgentThoughtChunk)
+		b.appendACPChunk(update, &b.turnThinkingText, acpUpdateAgentThoughtChunk)
 	case acpUpdateToolCall:
-		b.handleToolCall(wrapper.Update)
+		b.handleToolCall(update)
 	case acpUpdateToolCallUpdate:
-		b.handleToolCallUpdate(wrapper.Update)
+		b.handleToolCallUpdate(update)
 	case acpUpdatePlan:
-		b.handlePlan(wrapper.Update)
+		b.handlePlan(update)
 	case acpUpdateUsageUpdate:
-		b.handleUsageUpdate(wrapper.Update)
+		b.handleUsageUpdate(update)
 	case acpUpdateUserMessageChunk, acpUpdateAvailableCommandsUpdate:
 		// No-op: user_message_chunk is history replay; available_commands_update is informational.
 	default:
-		if extra != nil && extra(header.SessionUpdate, wrapper.Update) {
+		if extra != nil && extra(header.SessionUpdate, update) {
 			return
 		}
-		if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, wrapper.Update, SpanInfo{}); err != nil {
+		if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{}); err != nil {
 			slog.Error("persist unknown acp sessionUpdate", "agent_id", b.agentID, "type", header.SessionUpdate, "error", err)
 		}
 	}
@@ -177,7 +180,6 @@ type jsonrpcMessage struct {
 	Params  json.RawMessage `json:"params,omitempty"`
 }
 
-// sendRequest sends a JSON-RPC request and waits for the response.
 func (b *jsonrpcBase) sendRequest(method string, params json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
 	reqID := b.nextReqID.Add(1)
 
@@ -215,7 +217,6 @@ func (b *jsonrpcBase) sendRequest(method string, params json.RawMessage, timeout
 	}
 }
 
-// sendNotification sends a JSON-RPC notification (no id, no response expected).
 func (b *jsonrpcBase) sendNotification(method string, params json.RawMessage) error {
 	data, err := json.Marshal(jsonrpcMessage{
 		JSONRPC: "2.0",

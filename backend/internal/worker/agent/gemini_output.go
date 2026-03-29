@@ -36,7 +36,6 @@ func (a *GeminiCLIAgent) handleCurrentModeUpdate(update json.RawMessage) {
 	a.sink.UpdatePermissionMode(mode.CurrentModeID)
 }
 
-// cancelSession sends a session/cancel notification.
 func (a *GeminiCLIAgent) cancelSession() error {
 	return a.acpCancelSession()
 }
