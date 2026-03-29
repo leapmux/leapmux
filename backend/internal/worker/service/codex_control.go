@@ -221,6 +221,8 @@ func (svc *Context) codexControlResponseDisplayText(agentID string, provider lea
 		return acpPermissionResponseDisplayText(cr.Payload, content)
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:
 		return acpPermissionResponseDisplayText(cr.Payload, content)
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_COPILOT_CLI:
+		return acpPermissionResponseDisplayText(cr.Payload, content)
 	default:
 		return ""
 	}

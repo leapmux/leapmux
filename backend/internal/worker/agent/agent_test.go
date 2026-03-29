@@ -175,7 +175,9 @@ func TestAvailableOptionGroups_DefaultOptionMetadata(t *testing.T) {
 	for _, provider := range []leapmuxv1.AgentProvider{
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_COPILOT_CLI,
 	} {
 		groups := AvailableOptionGroupsForProvider(provider)
 		require.NotEmpty(t, groups)

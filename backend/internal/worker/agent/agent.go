@@ -496,6 +496,22 @@ func init() {
 		"",
 		"gemini",
 	)
+
+	registerProvider(
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_COPILOT_CLI,
+		func(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+			return StartCopilotCLI(ctx, opts, sink)
+		},
+		nil, // models discovered dynamically from session/new
+		[]*leapmuxv1.AvailableOptionGroup{{
+			Key:     "permissionMode",
+			Label:   "Mode",
+			Options: fallbackCopilotCLIModes(),
+		}},
+		"LEAPMUX_COPILOT_DEFAULT_MODEL",
+		"",
+		"copilot",
+	)
 }
 
 var claudeCodeAvailableModels = []*leapmuxv1.AvailableModel{
