@@ -308,3 +308,24 @@ func (a *OpenCodeAgent) availablePrimaryAgentGroup() []*leapmuxv1.AvailableOptio
 	}}
 }
 
+func init() {
+	registerProvider(
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+		func(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+			return StartOpenCode(ctx, opts, sink)
+		},
+		nil, // models discovered dynamically from newSession
+		[]*leapmuxv1.AvailableOptionGroup{{
+			Key:   OpenCodeExtraPrimaryAgent,
+			Label: "Primary Agent",
+			Options: []*leapmuxv1.AvailableOption{
+				{Id: OpenCodePrimaryAgentBuild, Name: "Build", IsDefault: true},
+				{Id: OpenCodePrimaryAgentPlan, Name: "Plan"},
+			},
+		}},
+		"LEAPMUX_OPENCODE_DEFAULT_MODEL",
+		"LEAPMUX_OPENCODE_DEFAULT_EFFORT",
+		"opencode",
+	)
+}
+
