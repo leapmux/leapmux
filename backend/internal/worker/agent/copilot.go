@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"syscall"
-	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/util/version"
@@ -48,27 +46,10 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 	)
 
 	cmd.Env = append(cmd.Environ(), "LEAPMUX_WORKER=1")
-	cmd.Cancel = func() error {
-		return cmd.Process.Signal(syscall.SIGTERM)
-	}
-	cmd.WaitDelay = 5 * time.Second
 
-	stdin, err := cmd.StdinPipe()
+	stdin, stdout, stderrPipe, err := setupProcessPipes(cmd, cancel)
 	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("stdin pipe: %w", err)
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("stdout pipe: %w", err)
-	}
-
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("stderr pipe: %w", err)
+		return nil, err
 	}
 
 	a := &CopilotCLIAgent{
@@ -85,10 +66,12 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 				preambleMetaPrefix: metaPrefix,
 				preambleMeta:       make(map[string]string),
 			}},
-			sink: sink,
+			sink:         sink,
+			providerName: "copilot",
 		},
 		model: opts.Model,
 	}
+	a.extraSessionUpdate = a.handleExtraSessionUpdate
 	a.promptFunc = a.doSendPrompt
 
 	if err := cmd.Start(); err != nil {
@@ -101,7 +84,7 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 		"clientInfo":      map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
 		"capabilities":    map[string]interface{}{},
 	})
-	handshake, err := a.startACPHandshake(stdout, stderrPipe, a.handleOutput, opts, initParams,
+	handshake, err := a.startACPHandshake(stdout, stderrPipe, opts, initParams,
 		acpSessionConfig{newMethod: acpMethodSessionNew, resumeMethod: acpMethodSessionLoad})
 	if err != nil {
 		return nil, err

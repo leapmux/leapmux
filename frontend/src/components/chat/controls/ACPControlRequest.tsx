@@ -7,22 +7,22 @@ import * as styles from '../ControlRequestBanner.css'
 import { toRpcId } from './CodexControlRequest'
 import { sendResponse } from './types'
 
-interface GeminiPermissionOption {
+interface ACPPermissionOption {
   optionId: string
   kind: string
   name: string
 }
 
-function getGeminiParams(payload: Record<string, unknown>): Record<string, unknown> | undefined {
+function getACPParams(payload: Record<string, unknown>): Record<string, unknown> | undefined {
   return payload.params as Record<string, unknown> | undefined
 }
 
 function getToolCall(payload: Record<string, unknown>): Record<string, unknown> | undefined {
-  return getGeminiParams(payload)?.toolCall as Record<string, unknown> | undefined
+  return getACPParams(payload)?.toolCall as Record<string, unknown> | undefined
 }
 
-function getOptions(payload: Record<string, unknown>): GeminiPermissionOption[] {
-  return (getGeminiParams(payload)?.options as GeminiPermissionOption[] | undefined) ?? []
+function getOptions(payload: Record<string, unknown>): ACPPermissionOption[] {
+  return (getACPParams(payload)?.options as ACPPermissionOption[] | undefined) ?? []
 }
 
 function defaultAllowOptionId(payload: Record<string, unknown>): string | undefined {
@@ -31,7 +31,7 @@ function defaultAllowOptionId(payload: Record<string, unknown>): string | undefi
     ?? options.find(option => option.kind !== 'reject_once')?.optionId
 }
 
-export function sendGeminiPermissionResponse(
+export function sendACPPermissionResponse(
   agentId: string,
   onRespond: (agentId: string, content: Uint8Array) => Promise<void>,
   requestId: string,
@@ -44,7 +44,7 @@ export function sendGeminiPermissionResponse(
   })
 }
 
-export const GeminiControlContent: Component<ContentProps> = (props) => {
+export const ACPControlContent: Component<ContentProps> = (props) => {
   const toolCall = () => getToolCall(props.request.payload)
   const title = () => (toolCall()?.title as string) || 'Permission Request'
   const kind = () => toolCall()?.kind as string | undefined
@@ -59,18 +59,18 @@ export const GeminiControlContent: Component<ContentProps> = (props) => {
   )
 }
 
-export const GeminiControlActions: Component<ActionsProps> = (props) => {
+export const ACPControlActions: Component<ActionsProps> = (props) => {
   const options = () => getOptions(props.request.payload)
 
   const handleOption = (optionId: string) => {
-    sendGeminiPermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, optionId)
+    sendACPPermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, optionId)
   }
 
   const handleBypassPermissions = () => {
     const allowOptionId = defaultAllowOptionId(props.request.payload)
     if (!allowOptionId)
       return
-    sendGeminiPermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, allowOptionId)
+    sendACPPermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, allowOptionId)
     if (props.bypassPermissionMode)
       props.onPermissionModeChange?.(props.bypassPermissionMode)
   }
@@ -108,6 +108,3 @@ export const GeminiControlActions: Component<ActionsProps> = (props) => {
     </div>
   )
 }
-
-// Provider-neutral aliases used by all ACP providers.
-export { GeminiControlActions as ACPControlActions, GeminiControlContent as ACPControlContent }

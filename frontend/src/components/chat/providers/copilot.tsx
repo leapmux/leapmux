@@ -1,7 +1,8 @@
 import type { ACPSettingsPanelConfig } from './acpShared'
 import type { PermissionMode } from '~/utils/controlResponse'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { ACPControlActions, ACPControlContent } from '../controls/GeminiControlRequest'
+import { ACPControlActions, ACPControlContent } from '../controls/ACPControlRequest'
+import { PERMISSION_MODE_KEY } from '../settingsShared'
 import {
   buildACPInterruptContent,
   changeACPPermissionMode,
@@ -19,7 +20,7 @@ const COPILOT_MODE_AUTOPILOT = 'https://agentclientprotocol.com/protocol/session
 
 const settingsConfig: ACPSettingsPanelConfig = {
   defaultModel: DEFAULT_COPILOT_MODEL,
-  optionGroupKey: 'permissionMode',
+  optionGroupKey: PERMISSION_MODE_KEY,
   defaultOptionValue: COPILOT_MODE_AGENT,
   fallbackLabel: 'Mode',
   testIdPrefix: 'permission-mode',

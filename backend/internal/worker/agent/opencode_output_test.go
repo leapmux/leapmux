@@ -13,8 +13,9 @@ func newOpenCodeAgentWithSink(sink OutputSink) *OpenCodeAgent {
 			jsonrpcBase: jsonrpcBase{processBase: processBase{
 				agentID: "test-agent",
 			}},
-			sink:      sink,
-			sessionID: "test-session",
+			sink:         sink,
+			providerName: "opencode",
+			sessionID:    "test-session",
 		},
 	}
 }

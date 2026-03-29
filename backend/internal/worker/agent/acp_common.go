@@ -68,10 +68,12 @@ type jsonrpcBase struct {
 }
 
 // acpBase extends jsonrpcBase with fields and methods shared by all ACP
-// agents (GeminiCLIAgent, OpenCodeAgent) but not CodexAgent.
+// agents (GeminiCLIAgent, OpenCodeAgent, CopilotCLIAgent) but not CodexAgent.
 type acpBase struct {
 	jsonrpcBase
 	sink              OutputSink
+	providerName      string // e.g. "copilot", "gemini", "opencode" — used in log messages
+	extraSessionUpdate acpSessionUpdateHandler // optional provider-specific session update handler
 	sessionID         string
 	turnAssistantText strings.Builder
 	turnThinkingText  strings.Builder
@@ -588,7 +590,6 @@ type acpSessionResult struct {
 // session ID validation, and UpdateSessionID/BroadcastStatusActive.
 func (b *acpBase) startACPHandshake(
 	stdout, stderr io.ReadCloser,
-	handleOutput outputHandler,
 	opts Options,
 	initParams json.RawMessage,
 	sessionCfg acpSessionConfig,
@@ -597,7 +598,7 @@ func (b *acpBase) startACPHandshake(
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go b.readOutputLoop(scanner, handleOutput)
+	go b.readOutputLoop(scanner, b.handleOutput)
 
 	cleanup := func() {
 		b.Stop()
@@ -774,8 +775,8 @@ func (b *acpBase) acpSetMode(modeID string, available []*leapmuxv1.AvailableOpti
 	return jsonRPCResultError(resp)
 }
 
-// acpCancelSession sends a session/cancel notification.
-func (b *acpBase) acpCancelSession() error {
+// cancelSession sends a session/cancel notification.
+func (b *acpBase) cancelSession() error {
 	b.mu.Lock()
 	sessionID := b.sessionID
 	b.mu.Unlock()
@@ -824,6 +825,18 @@ func (b *acpBase) handleRequestPermission(id *json.Number, content []byte) {
 	requestID := id.String()
 	b.sink.PersistControlRequest(requestID, content)
 	b.sink.BroadcastControlRequest(requestID, content)
+}
+
+// handleOutput dispatches a single parsed output line using the provider's
+// extraSessionUpdate handler. Used as the outputHandler for readOutputLoop.
+func (b *acpBase) handleOutput(line *parsedLine) {
+	slog.Debug(b.providerName+" HandleOutput", "agent_id", b.agentID, "method", line.Method, "len", len(line.Raw))
+	b.handleACPOutput(line, b.extraSessionUpdate)
+}
+
+// HandleOutput processes a single JSONL notification from an ACP provider.
+func (b *acpBase) HandleOutput(content []byte) {
+	b.handleOutput(parseLine(content))
 }
 
 // handleACPOutput is the shared output dispatcher for all ACP providers.

@@ -2,19 +2,9 @@ package agent
 
 import (
 	"encoding/json"
-	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
-
-func (a *CopilotCLIAgent) handleOutput(line *parsedLine) {
-	slog.Debug("copilot HandleOutput", "agent_id", a.agentID, "method", line.Method, "len", len(line.Raw))
-	a.handleACPOutput(line, a.handleExtraSessionUpdate)
-}
-
-func (a *CopilotCLIAgent) HandleOutput(content []byte) {
-	a.handleOutput(parseLine(content))
-}
 
 func (a *CopilotCLIAgent) handleExtraSessionUpdate(sessionUpdate string, update json.RawMessage) bool {
 	if sessionUpdate == acpUpdateConfigOptionUpdate {
@@ -35,10 +25,6 @@ func (a *CopilotCLIAgent) handleConfigOptionUpdate(update json.RawMessage) {
 	if mode := a.syncConfigOptions(payload.ConfigOptions); mode != "" {
 		a.sink.UpdatePermissionMode(mode)
 	}
-}
-
-func (a *CopilotCLIAgent) cancelSession() error {
-	return a.acpCancelSession()
 }
 
 // syncConfigOptions updates the agent's model and mode from the given config options.

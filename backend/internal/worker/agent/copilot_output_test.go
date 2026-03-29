@@ -3,15 +3,18 @@ package agent
 import "testing"
 
 func newCopilotAgentWithSink(sink OutputSink) *CopilotCLIAgent {
-	return &CopilotCLIAgent{
+	a := &CopilotCLIAgent{
 		acpBase: acpBase{
 			jsonrpcBase: jsonrpcBase{processBase: processBase{
 				agentID: "test-agent",
 			}},
-			sink:      sink,
-			sessionID: "test-session",
+			sink:         sink,
+			providerName: "copilot",
+			sessionID:    "test-session",
 		},
 	}
+	a.extraSessionUpdate = a.handleExtraSessionUpdate
+	return a
 }
 
 func TestHandleCopilotOutput_AgentMessageChunk(t *testing.T) {

@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"syscall"
-	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/util/version"
@@ -52,27 +50,9 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 		cmd.Env = append(cmd.Env, "OPENCODE_CLIENT=1")
 	}
 
-	cmd.Cancel = func() error {
-		return cmd.Process.Signal(syscall.SIGTERM)
-	}
-	cmd.WaitDelay = 5 * time.Second
-
-	stdin, err := cmd.StdinPipe()
+	stdin, stdout, stderrPipe, err := setupProcessPipes(cmd, cancel)
 	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("stdin pipe: %w", err)
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("stdout pipe: %w", err)
-	}
-
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("stderr pipe: %w", err)
+		return nil, err
 	}
 
 	a := &OpenCodeAgent{
@@ -89,7 +69,8 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 				preambleMetaPrefix: metaPrefix,
 				preambleMeta:       make(map[string]string),
 			}},
-			sink: sink,
+			sink:         sink,
+			providerName: "opencode",
 		},
 		model: opts.Model,
 	}
@@ -105,7 +86,7 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 		"clientInfo":      map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
 		"capabilities":    map[string]interface{}{},
 	})
-	handshake, err := a.startACPHandshake(stdout, stderrPipe, a.handleOutput, opts, initParams,
+	handshake, err := a.startACPHandshake(stdout, stderrPipe, opts, initParams,
 		acpSessionConfig{newMethod: acpMethodSessionNew, resumeMethod: openCodeMethodSessionResume})
 	if err != nil {
 		return nil, err
@@ -133,16 +114,18 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 }
 
 func buildOpenCodePrimaryAgents(modes []acpModeInfo, currentModeID string) []*leapmuxv1.AvailableOption {
-	// Normalize names in place: OpenCode agents often report name == id or whitespace-only names.
-	for i := range modes {
-		name := strings.TrimSpace(modes[i].Name)
-		if name == "" || name == modes[i].ID {
-			modes[i].Name = ""
+	// Copy then normalize names: OpenCode agents often report name == id or whitespace-only names.
+	normalized := make([]acpModeInfo, len(modes))
+	copy(normalized, modes)
+	for i := range normalized {
+		name := strings.TrimSpace(normalized[i].Name)
+		if name == "" || name == normalized[i].ID {
+			normalized[i].Name = ""
 		} else {
-			modes[i].Name = name
+			normalized[i].Name = name
 		}
 	}
-	return buildACPModes(modes, currentModeID, isHiddenOpenCodePrimaryAgent)
+	return buildACPModes(normalized, currentModeID, isHiddenOpenCodePrimaryAgent)
 }
 
 func fallbackOpenCodePrimaryAgents() []*leapmuxv1.AvailableOption {

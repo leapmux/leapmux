@@ -17,6 +17,7 @@ import {
 } from './messageStyles.css'
 import { isObject } from './messageUtils'
 import { formatDuration } from './rendererUtils'
+import { PERMISSION_MODE_KEY } from './settingsShared'
 
 // ---------------------------------------------------------------------------
 // Display helpers for settings change notifications
@@ -26,7 +27,7 @@ function displayLabel(key: string): string {
   switch (key) {
     case 'model': return 'Model'
     case 'effort': return 'Effort'
-    case 'permissionMode': return 'Permission Mode'
+    case PERMISSION_MODE_KEY: return 'Permission Mode'
     default: return getCachedSettingsGroupLabel(key) ?? key
   }
 }

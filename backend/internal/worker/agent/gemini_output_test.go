@@ -8,15 +8,18 @@ import (
 )
 
 func newGeminiAgentWithSink(sink OutputSink) *GeminiCLIAgent {
-	return &GeminiCLIAgent{
+	a := &GeminiCLIAgent{
 		acpBase: acpBase{
 			jsonrpcBase: jsonrpcBase{processBase: processBase{
 				agentID: "test-agent",
 			}},
-			sink:      sink,
-			sessionID: "test-session",
+			sink:         sink,
+			providerName: "gemini",
+			sessionID:    "test-session",
 		},
 	}
+	a.extraSessionUpdate = a.handleExtraSessionUpdate
+	return a
 }
 
 func TestHandleGeminiOutput_AgentMessageChunk(t *testing.T) {

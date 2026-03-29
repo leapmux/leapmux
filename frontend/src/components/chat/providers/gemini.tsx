@@ -1,7 +1,8 @@
 import type { ACPSettingsPanelConfig } from './acpShared'
 import type { PermissionMode } from '~/utils/controlResponse'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { ACPControlActions, ACPControlContent } from '../controls/GeminiControlRequest'
+import { ACPControlActions, ACPControlContent } from '../controls/ACPControlRequest'
+import { PERMISSION_MODE_KEY } from '../settingsShared'
 import {
   buildACPInterruptContent,
   changeACPPermissionMode,
@@ -18,7 +19,7 @@ const GEMINI_PLAN_MODE = 'plan'
 
 const settingsConfig: ACPSettingsPanelConfig = {
   defaultModel: DEFAULT_GEMINI_MODEL,
-  optionGroupKey: 'permissionMode',
+  optionGroupKey: PERMISSION_MODE_KEY,
   defaultOptionValue: DEFAULT_GEMINI_MODE,
   fallbackLabel: 'Permission Mode',
   testIdPrefix: 'permission-mode',

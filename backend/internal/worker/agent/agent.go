@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -136,34 +135,11 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		cmd.Env = append(cmd.Env, "CLAUDECODE=1")
 	}
 
-	// Send SIGTERM (instead of the default SIGKILL) when the context is
-	// cancelled, giving Claude Code a chance to persist its session state.
-	// If the process doesn't exit within WaitDelay after SIGTERM, Go will
-	// send SIGKILL automatically.
-	cmd.Cancel = func() error {
-		return cmd.Process.Signal(syscall.SIGTERM)
-	}
-	cmd.WaitDelay = 5 * time.Second
-
-	stdin, err := cmd.StdinPipe()
+	// setupProcessPipes configures SIGTERM cancel, WaitDelay, and opens
+	// stdin/stdout/stderr pipes.
+	stdin, stdout, stderrPipe, err := setupProcessPipes(cmd, cancel)
 	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("stdin pipe: %w", err)
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("stdout pipe: %w", err)
-	}
-
-	// Capture stderr via a goroutine that actively drains the pipe. This
-	// prevents the process from blocking if stderr output exceeds the OS
-	// pipe buffer (~64KB). Buffer is capped at 1MB.
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("stderr pipe: %w", err)
+		return nil, err
 	}
 
 	a := &ClaudeCodeAgent{
