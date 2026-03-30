@@ -36,10 +36,10 @@ describe('genericToolActions', () => {
       />
     ))
 
-    expect(screen.getByTestId('control-deny-btn')).toBeTruthy()
-    expect(screen.getByTestId('control-deny-btn').textContent).toBe('Reject')
-    expect(screen.getByTestId('control-allow-btn')).toBeTruthy()
-    expect(screen.getByTestId('control-bypass-btn')).toBeTruthy()
+    expect(screen.getByTestId('control-deny-btn')).toBeInTheDocument()
+    expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Reject')
+    expect(screen.getByTestId('control-allow-btn')).toBeInTheDocument()
+    expect(screen.getByTestId('control-bypass-btn')).toBeInTheDocument()
   })
 
   it('shows only Send Feedback when editor has content', () => {
@@ -54,10 +54,10 @@ describe('genericToolActions', () => {
       />
     ))
 
-    expect(screen.getByTestId('control-deny-btn')).toBeTruthy()
-    expect(screen.getByTestId('control-deny-btn').textContent).toBe('Send Feedback')
-    expect(screen.queryByTestId('control-allow-btn')).toBeNull()
-    expect(screen.queryByTestId('control-bypass-btn')).toBeNull()
+    expect(screen.getByTestId('control-deny-btn')).toBeInTheDocument()
+    expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Send Feedback')
+    expect(screen.queryByTestId('control-allow-btn')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('control-bypass-btn')).not.toBeInTheDocument()
   })
 
   it('sends allow response with original tool input when allow is clicked', () => {
@@ -133,7 +133,7 @@ describe('genericToolActions', () => {
       />
     ))
 
-    expect(screen.getByTestId('control-bypass-btn').getAttribute('title'))
-      .toBe('Allow this request and stop asking for permissions')
+    expect(screen.getByTestId('control-bypass-btn'))
+      .toHaveAttribute('title', 'Allow this request and stop asking for permissions')
   })
 })

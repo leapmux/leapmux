@@ -21,10 +21,10 @@ describe('genericToolContent', () => {
   it('renders tool name and short JSON without toggle', () => {
     render(() => <GenericToolContent request={makeRequest({ command: 'ls' })} />)
 
-    expect(screen.getByText(PERMISSION_REQUIRED_RE)).toBeTruthy()
-    expect(screen.getByText(BASH_RE)).toBeTruthy()
+    expect(screen.getByText(PERMISSION_REQUIRED_RE)).toBeInTheDocument()
+    expect(screen.getByText(BASH_RE)).toBeInTheDocument()
     // Short JSON should be fully visible with no toggle
-    expect(screen.queryByRole('button')).toBeNull()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
   })
 
   it('truncates long JSON and shows toggle', () => {
@@ -35,7 +35,7 @@ describe('genericToolContent', () => {
     render(() => <GenericToolContent request={makeRequest(longInput)} />)
 
     const toggle = screen.getByRole('button')
-    expect(toggle.textContent).toContain('more line')
+    expect(toggle).toHaveTextContent('more line')
   })
 
   it('expands long JSON when toggle is clicked', () => {
@@ -48,7 +48,7 @@ describe('genericToolContent', () => {
     fireEvent.click(screen.getByRole('button'))
 
     // All keys should now be visible
-    expect(screen.getByText(KEY_19_RE)).toBeTruthy()
-    expect(screen.getByRole('button').textContent).toBe('Show less')
+    expect(screen.getByText(KEY_19_RE)).toBeInTheDocument()
+    expect(screen.getByRole('button')).toHaveTextContent('Show less')
   })
 })

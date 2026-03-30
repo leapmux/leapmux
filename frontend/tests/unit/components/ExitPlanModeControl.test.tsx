@@ -34,9 +34,9 @@ describe('exitPlanModeActions', () => {
       />
     ))
 
-    expect(screen.getByTestId('plan-reject-btn')).toBeTruthy()
-    expect(screen.getByTestId('plan-approve-btn')).toBeTruthy()
-    expect(screen.getByTestId('control-bypass-btn')).toBeTruthy()
+    expect(screen.getByTestId('plan-reject-btn')).toBeInTheDocument()
+    expect(screen.getByTestId('plan-approve-btn')).toBeInTheDocument()
+    expect(screen.getByTestId('control-bypass-btn')).toBeInTheDocument()
   })
 
   it('shows only Reject when editor has content', () => {
@@ -50,9 +50,9 @@ describe('exitPlanModeActions', () => {
       />
     ))
 
-    expect(screen.getByTestId('plan-reject-btn')).toBeTruthy()
-    expect(screen.queryByTestId('plan-approve-btn')).toBeNull()
-    expect(screen.queryByTestId('control-bypass-btn')).toBeNull()
+    expect(screen.getByTestId('plan-reject-btn')).toBeInTheDocument()
+    expect(screen.queryByTestId('plan-approve-btn')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('control-bypass-btn')).not.toBeInTheDocument()
   })
 
   it('sends allow response with permissionMode in the control response', () => {
@@ -117,7 +117,7 @@ describe('exitPlanModeActions', () => {
       />
     ))
 
-    expect(screen.getByTestId('control-bypass-btn').getAttribute('title'))
-      .toBe('Approve this plan and stop asking for permissions')
+    expect(screen.getByTestId('control-bypass-btn'))
+      .toHaveAttribute('title', 'Approve this plan and stop asking for permissions')
   })
 })

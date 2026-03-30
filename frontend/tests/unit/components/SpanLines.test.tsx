@@ -8,7 +8,7 @@ describe('spanLines', () => {
       <SpanLines lines={[]} />
     ))
     // The <Show> guard prevents rendering when lines is empty.
-    expect(container.children.length).toBe(0)
+    expect(container).toBeEmptyDOMElement()
   })
 
   it('renders a container with one column per line entry', () => {
@@ -20,7 +20,7 @@ describe('spanLines', () => {
     ))
     // Should render a container div with one child (the column).
     const wrapper = container.firstElementChild
-    expect(wrapper).not.toBeNull()
+    expect(wrapper).toBeInTheDocument()
     expect(wrapper!.children.length).toBe(1)
   })
 
@@ -32,7 +32,7 @@ describe('spanLines', () => {
       />
     ))
     const wrapper = container.firstElementChild
-    expect(wrapper).not.toBeNull()
+    expect(wrapper).toBeInTheDocument()
     // 3 columns: connected, empty, active
     expect(wrapper!.children.length).toBe(3)
   })
@@ -49,7 +49,7 @@ describe('spanLines', () => {
       />
     ))
     const wrapper = container.firstElementChild
-    expect(wrapper).not.toBeNull()
+    expect(wrapper).toBeInTheDocument()
     expect(wrapper!.children.length).toBe(3)
   })
 })

@@ -27,7 +27,7 @@ describe('fileBrowser', () => {
         onFileSelect={() => {}}
       />
     ))
-    expect(screen.getByText('Empty directory')).toBeTruthy()
+    expect(screen.getByText('Empty directory')).toBeInTheDocument()
   })
 
   it('renders loading state', () => {
@@ -41,7 +41,7 @@ describe('fileBrowser', () => {
         onFileSelect={() => {}}
       />
     ))
-    expect(screen.getByText('Loading...')).toBeTruthy()
+    expect(screen.getByText('Loading...')).toBeInTheDocument()
   })
 
   it('renders error state', () => {
@@ -55,7 +55,7 @@ describe('fileBrowser', () => {
         onFileSelect={() => {}}
       />
     ))
-    expect(screen.getByText('Failed to load')).toBeTruthy()
+    expect(screen.getByText('Failed to load')).toBeInTheDocument()
   })
 
   it('renders file entries sorted (dirs first)', () => {
@@ -74,9 +74,9 @@ describe('fileBrowser', () => {
         onFileSelect={() => {}}
       />
     ))
-    expect(screen.getByText('src')).toBeTruthy()
-    expect(screen.getByText('main.go')).toBeTruthy()
-    expect(screen.getByText('README.md')).toBeTruthy()
+    expect(screen.getByText('src')).toBeInTheDocument()
+    expect(screen.getByText('main.go')).toBeInTheDocument()
+    expect(screen.getByText('README.md')).toBeInTheDocument()
   })
 
   it('calls onNavigate when directory is clicked', () => {

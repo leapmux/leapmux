@@ -20,7 +20,7 @@ describe('viewToggle', () => {
         onMention={() => {}}
       />
     ))
-    expect(screen.getByTestId('file-mention-button')).toBeTruthy()
+    expect(screen.getByTestId('file-mention-button')).toBeInTheDocument()
   })
 
   it('hides mention button when onMention is undefined', () => {
@@ -30,7 +30,7 @@ describe('viewToggle', () => {
         onToggle={noop}
       />
     ))
-    expect(screen.queryByTestId('file-mention-button')).toBeNull()
+    expect(screen.queryByTestId('file-mention-button')).not.toBeInTheDocument()
   })
 
   it('calls onMention when mention button is clicked', () => {

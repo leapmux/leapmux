@@ -91,8 +91,8 @@ describe('goose settings panel', () => {
       onPermissionModeChange,
     }))
 
-    expect(screen.getByText('Mode')).toBeTruthy()
-    expect(screen.getByTestId(`permission-mode-${MODE_APPROVE}`)).toBeTruthy()
+    expect(screen.getByText('Mode')).toBeInTheDocument()
+    expect(screen.getByTestId(`permission-mode-${MODE_APPROVE}`)).toBeInTheDocument()
 
     await fireEvent.click(screen.getByDisplayValue(MODE_APPROVE))
     expect(onPermissionModeChange).toHaveBeenCalledWith(MODE_APPROVE)
@@ -113,6 +113,6 @@ describe('goose settings panel', () => {
       })],
     }))
 
-    expect(screen.getByText('Fast Model \u00B7 Approve')).toBeTruthy()
+    expect(screen.getByText('Fast Model \u00B7 Approve')).toBeInTheDocument()
   })
 })

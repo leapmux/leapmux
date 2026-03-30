@@ -1,3 +1,5 @@
+import '@testing-library/jest-dom/vitest'
+
 // Node.js 25+ exposes a broken localStorage/sessionStorage stub on globalThis
 // (bare object with no Storage methods). Vitest's jsdom environment uses
 // populateGlobal() which skips keys already present on globalThis, so jsdom's

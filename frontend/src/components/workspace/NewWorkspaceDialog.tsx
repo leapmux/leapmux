@@ -1,8 +1,9 @@
 import type { Component } from 'solid-js'
+import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { generateSlug } from 'random-word-slugs'
-import { createMemo, createSignal, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, Show } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { Dialog } from '~/components/common/Dialog'
@@ -13,9 +14,10 @@ import { isWorkspaceCreateDisabled } from '~/components/shell/dialogValidation'
 import { DirectorySelector } from '~/components/shell/DirectorySelector'
 import { GitOptions } from '~/components/shell/GitOptions'
 import { WorkerSelector } from '~/components/shell/WorkerSelector'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
+import { getDefaultAgentProvider } from '~/lib/agentProviders'
+import { touchMruProvider } from '~/lib/mruAgentProviders'
 import { sanitizeName } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
 import { dialogLeftPanel, dialogRightPanel, dialogSingleColumn, dialogTopSection, dialogTopTwoColumn, dialogTwoColumn, dialogWide, errorText, labelRow } from '~/styles/shared.css'
@@ -34,8 +36,18 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
   const randomTitle = () => generateSlug(3, { format: 'title' })
   const [title, setTitle] = createSignal(randomTitle())
   const [submitting, setSubmitting] = createSignal(false)
-  const [agentProvider, setAgentProvider] = createSignal<AgentProvider>(AgentProvider.CLAUDE_CODE)
+  const defaultAgentProvider = createMemo(() => getDefaultAgentProvider(props.availableProviders))
+  // eslint-disable-next-line solid/reactivity -- one-time initial value, kept in sync below
+  const [agentProvider, setAgentProvider] = createSignal<AgentProvider>(defaultAgentProvider())
   const titleError = createMemo(() => sanitizeName(title()).error)
+  let providerTouched = false
+
+  createEffect(() => {
+    const nextProvider = defaultAgentProvider()
+    if (!providerTouched || !props.availableProviders?.includes(agentProvider())) {
+      setAgentProvider(nextProvider)
+    }
+  })
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
@@ -73,6 +85,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       })
 
       if (agentResp.agent) {
+        touchMruProvider(agentProvider())
         workspaceClient.addTab({
           workspaceId: wsResp.workspace.id,
           tab: { tabType: TabType.AGENT, tabId: agentResp.agent.id, workerId: wid },
@@ -100,7 +113,15 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
             <div class={dialogTopSection}>
               <div class={dialogTopTwoColumn}>
                 <WorkerSelector state={state} />
-                <AgentProviderSelector value={agentProvider} onChange={setAgentProvider} availableProviders={props.availableProviders} onRefresh={props.onRefreshProviders} />
+                <AgentProviderSelector
+                  value={agentProvider}
+                  onChange={(provider) => {
+                    providerTouched = true
+                    setAgentProvider(provider)
+                  }}
+                  availableProviders={props.availableProviders}
+                  onRefresh={props.onRefreshProviders}
+                />
               </div>
               <div>
                 <div class={labelRow}>

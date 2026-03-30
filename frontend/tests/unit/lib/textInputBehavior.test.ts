@@ -16,16 +16,16 @@ describe('disableTextSubstitutions', () => {
     const textarea = root.querySelector('textarea')!
     const checkbox = root.querySelector('input[type="checkbox"]')!
 
-    expect(textInput.getAttribute('autocorrect')).toBe('off')
-    expect(textInput.getAttribute('autocapitalize')).toBe('off')
+    expect(textInput).toHaveAttribute('autocorrect', 'off')
+    expect(textInput).toHaveAttribute('autocapitalize', 'off')
     expect(textInput.spellcheck).toBe(false)
 
-    expect(textarea.getAttribute('autocorrect')).toBe('off')
-    expect(textarea.getAttribute('autocapitalize')).toBe('off')
+    expect(textarea).toHaveAttribute('autocorrect', 'off')
+    expect(textarea).toHaveAttribute('autocapitalize', 'off')
     expect(textarea.spellcheck).toBe(false)
 
-    expect(checkbox.getAttribute('autocorrect')).toBeNull()
-    expect(checkbox.getAttribute('autocapitalize')).toBeNull()
+    expect(checkbox).not.toHaveAttribute('autocorrect')
+    expect(checkbox).not.toHaveAttribute('autocapitalize')
   })
 
   it('applies attrs to contenteditable elements', () => {
@@ -36,8 +36,8 @@ describe('disableTextSubstitutions', () => {
 
     disableTextSubstitutions(root)
 
-    expect(editable.getAttribute('autocorrect')).toBe('off')
-    expect(editable.getAttribute('autocapitalize')).toBe('off')
+    expect(editable).toHaveAttribute('autocorrect', 'off')
+    expect(editable).toHaveAttribute('autocapitalize', 'off')
     expect(editable.spellcheck).toBe(false)
   })
 })

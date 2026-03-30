@@ -1,11 +1,14 @@
 import type { Accessor, Setter } from 'solid-js'
-import { For } from 'solid-js'
-import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
+import Check from 'lucide-solid/icons/check'
+import ChevronDown from 'lucide-solid/icons/chevron-down'
+import { createMemo, For } from 'solid-js'
+import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
+import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { getAvailableAgentProviders, sortAgentProvidersByName } from '~/lib/agentProviders'
 import { labelRow } from '~/styles/shared.css'
-
-const allProviders = [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX, AgentProvider.GEMINI_CLI, AgentProvider.OPENCODE, AgentProvider.GITHUB_COPILOT, AgentProvider.CURSOR]
+import * as styles from './AgentProviderSelector.css'
 
 interface AgentProviderSelectorProps {
   value: Accessor<AgentProvider>
@@ -15,9 +18,11 @@ interface AgentProviderSelectorProps {
 }
 
 export function AgentProviderSelector(props: AgentProviderSelectorProps) {
-  const providers = () => props.availableProviders?.length
-    ? props.availableProviders
-    : allProviders
+  const providers = createMemo(() => sortAgentProvidersByName(getAvailableAgentProviders(props.availableProviders)))
+  const currentProvider = createMemo(() => {
+    const current = props.value()
+    return providers().includes(current) ? current : providers()[0] ?? AgentProvider.CLAUDE_CODE
+  })
 
   return (
     <div>
@@ -27,14 +32,47 @@ export function AgentProviderSelector(props: AgentProviderSelectorProps) {
           <RefreshButton onClick={() => props.onRefresh?.()} title="Refresh available providers" />
         )}
       </div>
-      <select
-        value={props.value()}
-        onChange={e => props.onChange(Number(e.currentTarget.value) as AgentProvider)}
+      <DropdownMenu
+        class={styles.menu}
+        data-testid="agent-provider-selector-menu"
+        trigger={triggerProps => (
+          <button
+            type="button"
+            aria-expanded={triggerProps['aria-expanded']}
+            ref={triggerProps.ref}
+            onPointerDown={triggerProps.onPointerDown}
+            onClick={triggerProps.onClick}
+            class={styles.trigger}
+            data-testid="agent-provider-selector-trigger"
+          >
+            <span class={styles.triggerValue}>
+              <AgentProviderIcon provider={currentProvider()} size={16} />
+              <span class={styles.triggerLabel}>{agentProviderLabel(currentProvider())}</span>
+            </span>
+            <ChevronDown size={16} class={styles.triggerChevron} />
+          </button>
+        )}
       >
         <For each={providers()}>
-          {p => <option value={p}>{agentProviderLabel(p)}</option>}
+          {provider => (
+            <button
+              type="button"
+              role="menuitem"
+              class={`${styles.menuItem}${provider === currentProvider() ? ` ${styles.menuItemSelected}` : ''}`}
+              data-testid={`agent-provider-option-${provider}`}
+              onClick={() => props.onChange(provider)}
+            >
+              <span class={styles.menuItemValue}>
+                <AgentProviderIcon provider={provider} size={16} />
+                <span>{agentProviderLabel(provider)}</span>
+              </span>
+              <For each={provider === currentProvider() ? [provider] : []}>
+                {() => <Check size={14} class={styles.check} />}
+              </For>
+            </button>
+          )}
         </For>
-      </select>
+      </DropdownMenu>
     </div>
   )
 }

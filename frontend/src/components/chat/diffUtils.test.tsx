@@ -316,8 +316,8 @@ describe('diffView gap rendering without original file', () => {
     ))
 
     expect(getAllByText('3 lines hidden')).toHaveLength(1)
-    expect(queryByRole('button', { name: EXPAND_RE })).toBeNull()
-    expect(queryByRole('button', { name: COLLAPSE_RE })).toBeNull()
+    expect(queryByRole('button', { name: EXPAND_RE })).not.toBeInTheDocument()
+    expect(queryByRole('button', { name: COLLAPSE_RE })).not.toBeInTheDocument()
   })
 
   it('renders non-clickable hidden-line gaps in split view', () => {
@@ -326,7 +326,7 @@ describe('diffView gap rendering without original file', () => {
     ))
 
     expect(getAllByText('3 lines hidden')).toHaveLength(1)
-    expect(queryByRole('button', { name: EXPAND_RE })).toBeNull()
-    expect(queryByRole('button', { name: COLLAPSE_RE })).toBeNull()
+    expect(queryByRole('button', { name: EXPAND_RE })).not.toBeInTheDocument()
+    expect(queryByRole('button', { name: COLLAPSE_RE })).not.toBeInTheDocument()
   })
 })

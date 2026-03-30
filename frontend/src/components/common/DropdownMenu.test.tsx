@@ -28,9 +28,9 @@ describe('dropdownMenu', () => {
       </DropdownMenu>
     ))
 
-    expect(screen.getByTestId('trigger')).toBeTruthy()
-    expect(screen.getByTestId('popover')).toBeTruthy()
-    expect(screen.getByText('Item 1')).toBeTruthy()
+    expect(screen.getByTestId('trigger')).toBeInTheDocument()
+    expect(screen.getByTestId('popover')).toBeInTheDocument()
+    expect(screen.getByText('Item 1')).toBeInTheDocument()
   })
 
   it('render-prop trigger receives aria-expanded and click handlers', () => {
@@ -55,8 +55,8 @@ describe('dropdownMenu', () => {
 
     const trigger = screen.getByTestId('trigger')
     // No popovertarget — toggling is handled via onClick + togglePopover()
-    expect(trigger.getAttribute('popovertarget')).toBeNull()
-    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    expect(trigger).not.toHaveAttribute('popovertarget')
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('jSX element trigger is wrapped in a div with display:contents', () => {
@@ -72,7 +72,7 @@ describe('dropdownMenu', () => {
     const innerBtn = screen.getByTestId('inner-btn')
     const wrapper = innerBtn.parentElement
     expect(wrapper?.tagName).toBe('DIV')
-    expect(wrapper?.style.display).toBe('contents')
+    expect(wrapper).toHaveStyle({ display: 'contents' })
   })
 
   it('popoverRef callback is called with the popover DOM element', () => {
@@ -88,8 +88,8 @@ describe('dropdownMenu', () => {
       </DropdownMenu>
     ))
 
-    expect(refEl).toBeTruthy()
-    expect(refEl?.getAttribute('data-testid')).toBe('popover-ref-test')
+    expect(refEl).toBeInTheDocument()
+    expect(refEl).toHaveAttribute('data-testid', 'popover-ref-test')
   })
 
   it('renders as="div" instead of menu', () => {
@@ -132,7 +132,7 @@ describe('dropdownMenu', () => {
     ))
 
     const popover = document.getElementById('custom-id')
-    expect(popover).toBeTruthy()
+    expect(popover).toBeInTheDocument()
     expect(popover?.tagName).toBe('MENU')
   })
 
@@ -148,7 +148,7 @@ describe('dropdownMenu', () => {
     ))
 
     const popover = screen.getByTestId('class-test')
-    expect(popover.classList.contains('my-custom-class')).toBe(true)
+    expect(popover).toHaveClass('my-custom-class')
   })
 
   it('solid accessor trigger (zero-arg function) is resolved and wrapped like JSX element', () => {
@@ -168,11 +168,11 @@ describe('dropdownMenu', () => {
     ))
 
     const btn = screen.getByTestId('accessor-btn')
-    expect(btn).toBeTruthy()
+    expect(btn).toBeInTheDocument()
     // Should be wrapped in a div with display:contents, same as JSX element path
     const wrapper = btn.parentElement
     expect(wrapper?.tagName).toBe('DIV')
-    expect(wrapper?.style.display).toBe('contents')
+    expect(wrapper).toHaveStyle({ display: 'contents' })
   })
 
   it('render-prop (function with parameter) is NOT treated as accessor', () => {
@@ -198,8 +198,8 @@ describe('dropdownMenu', () => {
 
     const btn = screen.getByTestId('rp-btn')
     // Render-prop button uses onClick/onPointerDown — no display:contents wrapper
-    expect(btn.getAttribute('popovertarget')).toBeNull()
-    expect(btn.parentElement?.style.display).not.toBe('contents')
+    expect(btn).not.toHaveAttribute('popovertarget')
+    expect(btn.parentElement).not.toHaveStyle({ display: 'contents' })
   })
 
   it('renders without trigger when anchorRef is provided', () => {
@@ -215,7 +215,7 @@ describe('dropdownMenu', () => {
     ))
 
     const popover = screen.getByTestId('no-trigger-popover')
-    expect(popover).toBeTruthy()
-    expect(screen.getByText('Content')).toBeTruthy()
+    expect(popover).toBeInTheDocument()
+    expect(screen.getByText('Content')).toBeInTheDocument()
   })
 })

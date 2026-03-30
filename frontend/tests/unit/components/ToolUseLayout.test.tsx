@@ -36,9 +36,9 @@ describe('toolUseLayout', () => {
       </PreferencesProvider>
     ))
 
-    expect(container.textContent).toContain('3 tasks')
+    expect(container).toHaveTextContent('3 tasks')
     // Icon should be present as an SVG element
-    expect(container.querySelector('svg')).not.toBeNull()
+    expect(container.querySelector('svg')).toBeInTheDocument()
   })
 
   it('shows summary inside bordered area', () => {
@@ -54,12 +54,12 @@ describe('toolUseLayout', () => {
       </PreferencesProvider>
     ))
 
-    expect(container.textContent).toContain('Summary text')
-    expect(screen.getByTestId('test-summary')).not.toBeNull()
+    expect(container).toHaveTextContent('Summary text')
+    expect(screen.getByTestId('test-summary')).toBeInTheDocument()
     // Summary should be inside the toolBodyContent wrapper (bordered area)
     const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
-    expect(bodyWrapper).not.toBeNull()
-    expect(bodyWrapper!.textContent).toContain('Summary text')
+    expect(bodyWrapper).toBeInTheDocument()
+    expect(bodyWrapper!).toHaveTextContent('Summary text')
   })
 
   it('hides children when collapsed (default)', () => {
@@ -78,8 +78,8 @@ describe('toolUseLayout', () => {
       </PreferencesProvider>
     ))
 
-    expect(container.textContent).not.toContain('Body content')
-    expect(screen.queryByTestId('body-content')).toBeNull()
+    expect(container).not.toHaveTextContent('Body content')
+    expect(screen.queryByTestId('body-content')).not.toBeInTheDocument()
   })
 
   it('shows children when expanded', () => {
@@ -98,8 +98,8 @@ describe('toolUseLayout', () => {
       </PreferencesProvider>
     ))
 
-    expect(container.textContent).toContain('Body content')
-    expect(screen.getByTestId('body-content')).not.toBeNull()
+    expect(container).toHaveTextContent('Body content')
+    expect(screen.getByTestId('body-content')).toBeInTheDocument()
   })
 
   it('alwaysVisible bypasses expand gating', () => {
@@ -119,8 +119,8 @@ describe('toolUseLayout', () => {
       </PreferencesProvider>
     ))
 
-    expect(container.textContent).toContain('Always visible body')
-    expect(screen.getByTestId('body-content')).not.toBeNull()
+    expect(container).toHaveTextContent('Always visible body')
+    expect(screen.getByTestId('body-content')).toBeInTheDocument()
   })
 
   it('applies left border by default', () => {
@@ -137,7 +137,7 @@ describe('toolUseLayout', () => {
     ))
 
     const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
-    expect(bodyWrapper).not.toBeNull()
+    expect(bodyWrapper).toBeInTheDocument()
   })
 
   it('bordered={false} omits left border', () => {
@@ -158,7 +158,7 @@ describe('toolUseLayout', () => {
     ))
 
     const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
-    expect(bodyWrapper).toBeNull()
+    expect(bodyWrapper).not.toBeInTheDocument()
   })
 
   it('renders JSX title without toolInputText wrapper', () => {
@@ -173,10 +173,10 @@ describe('toolUseLayout', () => {
       </PreferencesProvider>
     ))
 
-    expect(screen.getByTestId('custom-title')).not.toBeNull()
-    expect(container.textContent).toContain('Custom JSX')
+    expect(screen.getByTestId('custom-title')).toBeInTheDocument()
+    expect(container).toHaveTextContent('Custom JSX')
     // Should NOT wrap JSX title in toolInputText span
     const toolInputTextSpan = container.querySelector(`.${toolInputText}`)
-    expect(toolInputTextSpan).toBeNull()
+    expect(toolInputTextSpan).not.toBeInTheDocument()
   })
 })

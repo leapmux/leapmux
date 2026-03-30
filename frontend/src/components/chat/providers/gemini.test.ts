@@ -97,9 +97,9 @@ describe('gemini settings panel', () => {
       onPermissionModeChange,
     }))
 
-    expect(screen.getByText('Permission Mode')).toBeTruthy()
-    expect(screen.getByTestId('permission-mode-default')).toBeTruthy()
-    expect(screen.getByTestId('permission-mode-plan')).toBeTruthy()
+    expect(screen.getByText('Permission Mode')).toBeInTheDocument()
+    expect(screen.getByTestId('permission-mode-default')).toBeInTheDocument()
+    expect(screen.getByTestId('permission-mode-plan')).toBeInTheDocument()
 
     await fireEvent.click(screen.getByDisplayValue('plan'))
     expect(onPermissionModeChange).toHaveBeenCalledWith('plan')
@@ -120,6 +120,6 @@ describe('gemini settings panel', () => {
       })],
     }))
 
-    expect(screen.getByText('Gemini 2.5 Pro \u00B7 Plan')).toBeTruthy()
+    expect(screen.getByText('Gemini 2.5 Pro \u00B7 Plan')).toBeInTheDocument()
   })
 })

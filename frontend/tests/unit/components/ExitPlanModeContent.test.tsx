@@ -26,8 +26,8 @@ describe('exitPlanModeContent', () => {
   it('shows fallback message when no permissions are requested', () => {
     render(() => <ExitPlanModeContent request={makeRequest()} />)
 
-    expect(screen.getByText('Plan Ready for Review')).toBeTruthy()
-    expect(screen.getByText('The agent has finished planning and is ready to proceed.')).toBeTruthy()
+    expect(screen.getByText('Plan Ready for Review')).toBeInTheDocument()
+    expect(screen.getByText('The agent has finished planning and is ready to proceed.')).toBeInTheDocument()
   })
 
   it('groups permissions by tool name', () => {
@@ -38,9 +38,9 @@ describe('exitPlanModeContent', () => {
     ]
     render(() => <ExitPlanModeContent request={makeRequest(prompts)} />)
 
-    expect(screen.getByText('Requested permissions:')).toBeTruthy()
+    expect(screen.getByText('Requested permissions:')).toBeInTheDocument()
     // All Bash prompts should be joined in a single list item
-    expect(screen.getByText(BASH_ALL_PROMPTS_RE)).toBeTruthy()
+    expect(screen.getByText(BASH_ALL_PROMPTS_RE)).toBeInTheDocument()
   })
 
   it('renders separate groups for different tools', () => {
@@ -52,9 +52,9 @@ describe('exitPlanModeContent', () => {
     render(() => <ExitPlanModeContent request={makeRequest(prompts)} />)
 
     // Bash group should have both prompts joined
-    expect(screen.getByText(BASH_TWO_PROMPTS_RE)).toBeTruthy()
+    expect(screen.getByText(BASH_TWO_PROMPTS_RE)).toBeInTheDocument()
     // Read group should be separate
-    expect(screen.getByText(READ_CONFIG_RE)).toBeTruthy()
+    expect(screen.getByText(READ_CONFIG_RE)).toBeInTheDocument()
   })
 
   it('does not show collapsible toggle with 3 or fewer groups', () => {
@@ -66,7 +66,7 @@ describe('exitPlanModeContent', () => {
     render(() => <ExitPlanModeContent request={makeRequest(prompts)} />)
 
     // No toggle button should be present
-    expect(screen.queryByRole('button')).toBeNull()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
   })
 
   it('shows collapsible toggle with more than 3 groups', () => {
@@ -80,7 +80,7 @@ describe('exitPlanModeContent', () => {
     render(() => <ExitPlanModeContent request={makeRequest(prompts)} />)
 
     const toggle = screen.getByRole('button')
-    expect(toggle.textContent).toContain('Show 2 more')
+    expect(toggle).toHaveTextContent('Show 2 more')
   })
 
   it('expands all groups when toggle is clicked', () => {
@@ -95,8 +95,8 @@ describe('exitPlanModeContent', () => {
 
     fireEvent.click(screen.getByRole('button'))
 
-    expect(screen.getByText(SEARCH_CODE_RE)).toBeTruthy()
-    expect(screen.getByText(FIND_FILES_RE)).toBeTruthy()
-    expect(screen.getByRole('button').textContent).toBe('Show less')
+    expect(screen.getByText(SEARCH_CODE_RE)).toBeInTheDocument()
+    expect(screen.getByText(FIND_FILES_RE)).toBeInTheDocument()
+    expect(screen.getByRole('button')).toHaveTextContent('Show less')
   })
 })

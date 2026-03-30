@@ -99,9 +99,9 @@ describe('askUserQuestion thread rendering', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('Question about Uncommitted?')
-    expect(bubble.textContent).toContain('Option A')
-    expect(bubble.textContent).toContain('Option B')
+    expect(bubble).toHaveTextContent('Question about Uncommitted?')
+    expect(bubble).toHaveTextContent('Option A')
+    expect(bubble).toHaveTextContent('Option B')
   })
 
   it('shows question count for multi-question tool_use', () => {
@@ -118,9 +118,9 @@ describe('askUserQuestion thread rendering', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('2 questions')
-    expect(bubble.textContent).toContain('Auth')
-    expect(bubble.textContent).toContain('Database')
+    expect(bubble).toHaveTextContent('2 questions')
+    expect(bubble).toHaveTextContent('Auth')
+    expect(bubble).toHaveTextContent('Database')
   })
 })
 
@@ -149,8 +149,8 @@ describe('thinking message toolbar buttons', () => {
       </PreferencesProvider>
     ))
 
-    expect(screen.queryByTestId('message-quote')).not.toBeNull()
-    expect(screen.queryByTestId('message-copy-markdown')).not.toBeNull()
+    expect(screen.queryByTestId('message-quote')).toBeInTheDocument()
+    expect(screen.queryByTestId('message-copy-markdown')).toBeInTheDocument()
   })
 
   it('copies thinking content to clipboard via Copy Markdown', async () => {
@@ -326,7 +326,7 @@ describe('todoWrite collapse/expand', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('3 tasks')
+    expect(bubble).toHaveTextContent('3 tasks')
   })
 
   it('always shows TodoList (alwaysVisible)', () => {
@@ -347,8 +347,8 @@ describe('todoWrite collapse/expand', () => {
 
     const bubble = screen.getByTestId('message-content')
     // Tasks are always visible (alwaysVisible=true)
-    expect(bubble.textContent).toContain('Task A')
-    expect(bubble.textContent).toContain('Task B')
+    expect(bubble).toHaveTextContent('Task A')
+    expect(bubble).toHaveTextContent('Task B')
   })
 
   it('shows all task statuses in TodoList', () => {
@@ -369,9 +369,9 @@ describe('todoWrite collapse/expand', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('Task A')
-    expect(bubble.textContent).toContain('Running tests')
-    expect(bubble.textContent).toContain('Task C')
+    expect(bubble).toHaveTextContent('Task A')
+    expect(bubble).toHaveTextContent('Running tests')
+    expect(bubble).toHaveTextContent('Task C')
   })
 
   it('hides expand/collapse button (alwaysVisible)', () => {
@@ -391,7 +391,7 @@ describe('todoWrite collapse/expand', () => {
     ))
 
     // Expand button should not exist since alwaysVisible hides it
-    expect(screen.queryByRole('button', { name: 'Expand 1 tool result' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Expand 1 tool result' })).not.toBeInTheDocument()
   })
 
   it('body has left border (always visible)', () => {
@@ -411,7 +411,7 @@ describe('todoWrite collapse/expand', () => {
 
     // Body should have left border without needing to expand
     const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
-    expect(bodyWrapper).not.toBeNull()
+    expect(bodyWrapper).toBeInTheDocument()
   })
 })
 
@@ -452,7 +452,7 @@ describe('taskOutput rendering', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('Waiting for output')
+    expect(bubble).toHaveTextContent('Waiting for output')
   })
 
   it('hides metadata when no child result', () => {
@@ -469,7 +469,7 @@ describe('taskOutput rendering', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).not.toContain('task_id:')
+    expect(bubble).not.toHaveTextContent('task_id:')
   })
 })
 
@@ -492,7 +492,7 @@ describe('askUserQuestion left border', () => {
     ))
 
     const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
-    expect(bodyWrapper).not.toBeNull()
+    expect(bodyWrapper).toBeInTheDocument()
   })
 })
 
@@ -525,7 +525,7 @@ describe('header-only renderers', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('Entering Plan Mode')
+    expect(bubble).toHaveTextContent('Entering Plan Mode')
   })
 
   it('skill renders header only', () => {
@@ -552,7 +552,7 @@ describe('header-only renderers', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('Skill: /commit')
+    expect(bubble).toHaveTextContent('Skill: /commit')
   })
 
   it('agent renders header with description (no child result)', () => {
@@ -579,8 +579,8 @@ describe('header-only renderers', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('Search codebase')
-    expect(bubble.textContent).toContain('Explore')
+    expect(bubble).toHaveTextContent('Search codebase')
+    expect(bubble).toHaveTextContent('Explore')
   })
 })
 
@@ -613,8 +613,8 @@ describe('grep result summary', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('TODO')
-    expect(bubble.textContent).toContain('/home/user/project')
+    expect(bubble).toHaveTextContent('TODO')
+    expect(bubble).toHaveTextContent('/home/user/project')
   })
 })
 
@@ -647,7 +647,7 @@ describe('glob result summary', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('**/*.tsx')
+    expect(bubble).toHaveTextContent('**/*.tsx')
   })
 })
 
@@ -680,12 +680,12 @@ describe('agent stats summary', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('Search files')
-    expect(bubble.textContent).toContain('Explore')
+    expect(bubble).toHaveTextContent('Search files')
+    expect(bubble).toHaveTextContent('Explore')
     // Without child result, stats and "Complete" should not appear
-    expect(bubble.textContent).not.toContain('Complete')
-    expect(bubble.textContent).not.toContain('tokens')
-    expect(bubble.textContent).not.toContain('tool uses')
+    expect(bubble).not.toHaveTextContent('Complete')
+    expect(bubble).not.toHaveTextContent('tokens')
+    expect(bubble).not.toHaveTextContent('tool uses')
   })
 
   it('formats title with subagent prefix', () => {
@@ -712,7 +712,7 @@ describe('agent stats summary', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('Explore: message classification')
+    expect(bubble).toHaveTextContent('Explore: message classification')
   })
 })
 
@@ -730,7 +730,7 @@ describe('pending user bubble state', () => {
       </PreferencesProvider>
     ))
 
-    expect(screen.getByTestId('message-bubble').className).not.toContain(chatStyles.userMessagePending)
+    expect(screen.getByTestId('message-bubble')).not.toHaveClass(chatStyles.userMessagePending)
   })
 
   it('keeps pulsation for a local user message without a delivery error', () => {
@@ -746,7 +746,7 @@ describe('pending user bubble state', () => {
       </PreferencesProvider>
     ))
 
-    expect(screen.getByTestId('message-bubble').className).toContain(chatStyles.userMessagePending)
+    expect(screen.getByTestId('message-bubble')).toHaveClass(chatStyles.userMessagePending)
   })
 })
 
@@ -801,7 +801,7 @@ describe('edit/write tool_use rendering', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('app.ts')
+    expect(bubble).toHaveTextContent('app.ts')
   })
 
   it('write shows file path in header', () => {
@@ -818,7 +818,7 @@ describe('edit/write tool_use rendering', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    expect(bubble.textContent).toContain('new-file.ts')
+    expect(bubble).toHaveTextContent('new-file.ts')
   })
 
   it('write with empty content renders without error', () => {
@@ -836,6 +836,6 @@ describe('edit/write tool_use rendering', () => {
 
     // No diff view should be rendered for empty content without child result
     const diffView = container.querySelector('[data-diff-view]')
-    expect(diffView).toBeNull()
+    expect(diffView).not.toBeInTheDocument()
   })
 })

@@ -21,10 +21,10 @@ test.describe('kilo agent type selector', () => {
         const dialog = page.locator('[role="dialog"]')
         await expect(dialog).toBeVisible({ timeout: 5000 })
 
-        const select = dialog.locator('select').filter({ hasText: 'Claude Code' })
-        if (await select.isVisible({ timeout: 3000 }).catch(() => false)) {
-          const options = await select.locator('option').allTextContents()
-          expect(options).toContain('Kilo')
+        const trigger = dialog.getByTestId('agent-provider-selector-trigger')
+        if (await trigger.isVisible({ timeout: 3000 }).catch(() => false)) {
+          await trigger.click()
+          await expect(dialog.getByTestId('agent-provider-option-6')).toContainText('Kilo')
         }
       }
     }

@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
-import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
-import { createSignal, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, Show } from 'solid-js'
 import { agentLoadingTimeoutMs } from '~/api/transport'
 import * as workerRpc from '~/api/workerRpc'
 import { Dialog } from '~/components/common/Dialog'
@@ -11,9 +11,10 @@ import { isAgentCreateDisabled } from '~/components/shell/dialogValidation'
 import { DirectorySelector } from '~/components/shell/DirectorySelector'
 import { GitOptions } from '~/components/shell/GitOptions'
 import { WorkerSelector } from '~/components/shell/WorkerSelector'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
+import { getDefaultAgentProvider } from '~/lib/agentProviders'
+import { touchMruProvider } from '~/lib/mruAgentProviders'
 import { spinner } from '~/styles/animations.css'
 import { dialogLeftPanel, dialogRightPanel, dialogSingleColumn, dialogTopSection, dialogTopTwoColumn, dialogTwoColumn, dialogWide, errorText } from '~/styles/shared.css'
 
@@ -39,7 +40,17 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
   })
   const submitting = createLoadingSignal(agentLoadingTimeoutMs(false))
 
-  const [agentProvider, setAgentProvider] = createSignal<AgentProvider>(props.defaultAgentProvider ?? AgentProvider.CLAUDE_CODE)
+  const defaultAgentProvider = createMemo(() => getDefaultAgentProvider(props.availableProviders))
+  // eslint-disable-next-line solid/reactivity -- one-time initial value, kept in sync below
+  const [agentProvider, setAgentProvider] = createSignal<AgentProvider>(defaultAgentProvider())
+  let providerTouched = false
+
+  createEffect(() => {
+    const nextProvider = defaultAgentProvider()
+    if (!providerTouched || !props.availableProviders?.includes(agentProvider())) {
+      setAgentProvider(nextProvider)
+    }
+  })
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
@@ -67,6 +78,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
         ...(props.sessionId ? { agentSessionId: props.sessionId } : {}),
       })
       if (resp.agent) {
+        touchMruProvider(agentProvider())
         props.onCreated(resp.agent)
       }
     }
@@ -86,7 +98,15 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
             <div class={state.showGitOptions() ? dialogTopSection : undefined}>
               <div class={dialogTopTwoColumn}>
                 <WorkerSelector state={state} />
-                <AgentProviderSelector value={agentProvider} onChange={setAgentProvider} availableProviders={props.availableProviders} onRefresh={props.onRefreshProviders} />
+                <AgentProviderSelector
+                  value={agentProvider}
+                  onChange={(provider) => {
+                    providerTouched = true
+                    setAgentProvider(provider)
+                  }}
+                  availableProviders={props.availableProviders}
+                  onRefresh={props.onRefreshProviders}
+                />
               </div>
             </div>
             <div class={state.showGitOptions() ? dialogTwoColumn : dialogSingleColumn}>

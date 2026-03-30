@@ -16,19 +16,19 @@ describe('icon', () => {
     const svg = () => container.querySelector('svg')!
 
     // Initial render should show the Eye icon.
-    expect(svg().classList.contains('lucide-eye')).toBe(true)
-    expect(svg().classList.contains('lucide-eye-off')).toBe(false)
+    expect(svg()).toHaveClass('lucide-eye')
+    expect(svg()).not.toHaveClass('lucide-eye-off')
 
     // Switch to EyeOff — the rendered SVG should update.
     setIcon(() => EyeOff)
 
-    expect(svg().classList.contains('lucide-eye-off')).toBe(true)
-    expect(svg().classList.contains('lucide-eye')).toBe(false)
+    expect(svg()).toHaveClass('lucide-eye-off')
+    expect(svg()).not.toHaveClass('lucide-eye')
 
     // Switch back to Eye.
     setIcon(() => Eye)
 
-    expect(svg().classList.contains('lucide-eye')).toBe(true)
-    expect(svg().classList.contains('lucide-eye-off')).toBe(false)
+    expect(svg()).toHaveClass('lucide-eye')
+    expect(svg()).not.toHaveClass('lucide-eye-off')
   })
 })
