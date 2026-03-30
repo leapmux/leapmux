@@ -13,7 +13,7 @@ vi.mock('~/api/workerRpc', () => ({
 }))
 
 describe('cursor provider', () => {
-  const plugin = getProviderPlugin(AgentProvider.CURSOR_CLI)!
+  const plugin = getProviderPlugin(AgentProvider.CURSOR)!
 
   it('exposes attachment capabilities', () => {
     expect(plugin.attachments).toEqual({
@@ -60,7 +60,7 @@ describe('cursor provider', () => {
 })
 
 describe('cursor settings panel', () => {
-  const plugin = getProviderPlugin(AgentProvider.CURSOR_CLI)!
+  const plugin = getProviderPlugin(AgentProvider.CURSOR)!
 
   it('renders runtime modes and updates via permission-mode callback', async () => {
     const onPermissionModeChange = vi.fn()

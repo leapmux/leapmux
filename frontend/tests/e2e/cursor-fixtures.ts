@@ -3,7 +3,7 @@ import { AgentProvider, authenticateACPWorkspace, createACPWorkspace, detectACPS
 import { test as base, expect } from './fixtures'
 
 const cursorConfig: ACPFixtureConfig = {
-  agentProvider: AgentProvider.CURSOR_CLI,
+  agentProvider: AgentProvider.CURSOR,
   cliBinary: 'cursor-agent',
   skipMessage: 'Cursor E2E requires a cursor-agent CLI on PATH',
   workspacePrefix: 'cursor-e2e',

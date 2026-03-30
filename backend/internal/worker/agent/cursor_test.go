@@ -149,7 +149,7 @@ func TestStartCursorCLI_NewSessionHandshake(t *testing.T) {
 		WorkingDir:    t.TempDir(),
 		Shell:         "/bin/sh",
 		LoginShell:    false,
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR_CLI,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 	}, &testSink{})
 	require.NoError(t, err)
 
@@ -177,7 +177,7 @@ func TestStartCursorCLI_LoadSessionUsesResumeID(t *testing.T) {
 		ResumeSessionID: "cursor-resume",
 		Shell:           "/bin/sh",
 		LoginShell:      false,
-		AgentProvider:   leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR_CLI,
+		AgentProvider:   leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 	}, &testSink{})
 	require.NoError(t, err)
 
@@ -227,5 +227,5 @@ func TestBuildCursorCLIModelsNormalizesAuto(t *testing.T) {
 }
 
 func TestCursorDefaultModelIsAuto(t *testing.T) {
-	assert.Equal(t, "auto", DefaultModel(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR_CLI))
+	assert.Equal(t, "auto", DefaultModel(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR))
 }

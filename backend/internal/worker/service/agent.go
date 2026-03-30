@@ -1478,7 +1478,7 @@ func (svc *Context) handleCodexPlanModePromptResponse(agentID string, content []
 // DB lookup in controlResponseDisplayText.
 func (svc *Context) normalizeProviderControlResponse(agentID string, provider leapmuxv1.AgentProvider, content []byte) (normalized []byte, displayText string) {
 	switch provider {
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR_CLI:
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR:
 		if transformed, text, ok := svc.transformCursorControlResponse(agentID, content); ok {
 			return transformed, text
 		}

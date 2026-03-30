@@ -170,7 +170,7 @@ func TestStartCopilotCLI_NewSessionHandshake(t *testing.T) {
 		WorkingDir:    t.TempDir(),
 		Shell:         "/bin/sh",
 		LoginShell:    false,
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_COPILOT_CLI,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
 	}, &testSink{})
 	require.NoError(t, err)
 
@@ -198,7 +198,7 @@ func TestStartCopilotCLI_LoadSessionUsesResumeID(t *testing.T) {
 		ResumeSessionID: "copilot-resume",
 		Shell:           "/bin/sh",
 		LoginShell:      false,
-		AgentProvider:   leapmuxv1.AgentProvider_AGENT_PROVIDER_COPILOT_CLI,
+		AgentProvider:   leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
 	}, &testSink{})
 	require.NoError(t, err)
 
@@ -257,5 +257,5 @@ func TestCopilotAvailableOptionGroupsFallsBack(t *testing.T) {
 
 func TestDefaultModel_CopilotUsesEnvOverride(t *testing.T) {
 	t.Setenv("LEAPMUX_COPILOT_DEFAULT_MODEL", "gpt-5.4-mini")
-	assert.Equal(t, "gpt-5.4-mini", DefaultModel(leapmuxv1.AgentProvider_AGENT_PROVIDER_COPILOT_CLI))
+	assert.Equal(t, "gpt-5.4-mini", DefaultModel(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT))
 }

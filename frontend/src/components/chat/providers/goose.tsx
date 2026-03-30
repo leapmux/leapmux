@@ -23,7 +23,7 @@ const settingsConfig: ACPSettingsPanelConfig = {
   testIdPrefix: 'permission-mode',
 }
 
-registerProvider(AgentProvider.GOOSE_CLI, {
+registerProvider(AgentProvider.GOOSE, {
   defaultModel: DEFAULT_GOOSE_MODEL || undefined,
   defaultPermissionMode: GOOSE_MODE_AUTO,
   attachments: { text: true, image: true, pdf: true, binary: true },
