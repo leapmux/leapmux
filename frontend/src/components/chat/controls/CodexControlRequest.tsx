@@ -280,27 +280,29 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
             {props.infoTrigger}
           </div>
           <div class={styles.controlFooterRight}>
-            <ButtonGroup>
-              <button
-                class="outline"
-                onClick={() => {
-                  if (props.hasEditorContent) {
-                    props.onTriggerSend()
-                    return
-                  }
-                  sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildDenyResponse(props.request.requestId, ''))
-                }}
-                data-testid="control-deny-btn"
-              >
-                {props.hasEditorContent ? 'Send Feedback' : 'Stay in Plan Mode'}
-              </button>
-              <button
-                onClick={() => sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId, getToolInput(props.request.payload)))}
-                data-testid="control-allow-btn"
-              >
-                Implement Plan
-              </button>
-            </ButtonGroup>
+            <button
+              class="outline"
+              onClick={() => {
+                if (props.hasEditorContent) {
+                  props.onTriggerSend()
+                  return
+                }
+                sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildDenyResponse(props.request.requestId, ''))
+              }}
+              data-testid="control-deny-btn"
+            >
+              {props.hasEditorContent ? 'Send Feedback' : 'Stay in Plan Mode'}
+            </button>
+            <Show when={!props.hasEditorContent}>
+              <ButtonGroup>
+                <button
+                  onClick={() => sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId, getToolInput(props.request.payload)))}
+                  data-testid="control-allow-btn"
+                >
+                  Implement Plan
+                </button>
+              </ButtonGroup>
+            </Show>
           </div>
         </div>
       </Match>
