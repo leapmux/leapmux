@@ -3,7 +3,7 @@ import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProviderSelector } from '~/components/shell/AgentProviderSelector'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { getDefaultAgentProvider, sortAgentProvidersByName } from '~/lib/agentProviders'
+import { sortAgentProvidersByName } from '~/lib/agentProviders'
 
 vi.mock('~/components/common/DropdownMenu', () => ({
   DropdownMenu: (props: any) => (
@@ -34,29 +34,6 @@ describe('agentProviderSelector', () => {
       AgentProvider.CODEX,
       AgentProvider.CURSOR,
     ])
-  })
-
-  it('defaults to the most recently used available provider', () => {
-    localStorage.setItem('leapmux:mru-agent-providers', JSON.stringify([
-      AgentProvider.OPENCODE,
-      AgentProvider.CODEX,
-    ]))
-
-    expect(getDefaultAgentProvider([
-      AgentProvider.CODEX,
-      AgentProvider.OPENCODE,
-    ])).toBe(AgentProvider.OPENCODE)
-  })
-
-  it('falls back to the alphabetically first provider when MRU is unavailable', () => {
-    localStorage.setItem('leapmux:mru-agent-providers', JSON.stringify([
-      AgentProvider.OPENCODE,
-    ]))
-
-    expect(getDefaultAgentProvider([
-      AgentProvider.CODEX,
-      AgentProvider.CLAUDE_CODE,
-    ])).toBe(AgentProvider.CLAUDE_CODE)
   })
 
   it('shows disabled empty state when no providers are available', () => {

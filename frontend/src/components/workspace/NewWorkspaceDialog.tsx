@@ -3,7 +3,7 @@ import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { generateSlug } from 'random-word-slugs'
-import { createMemo, createSignal, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, Show } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import { agentLoadingTimeoutMs } from '~/api/transport'
 import * as workerRpc from '~/api/workerRpc'
@@ -18,7 +18,8 @@ import { WorkerSelector } from '~/components/shell/WorkerSelector'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
-import { useAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
+import { useMruProviders } from '~/hooks/useMruProviders'
+import { getAvailableAgentProviders } from '~/lib/agentProviders'
 import { sanitizeName } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
 import { dialogLeftPanel, dialogRightPanel, dialogSingleColumn, dialogTopSection, dialogTopTwoColumn, dialogTwoColumn, dialogWide, errorText, labelRow } from '~/styles/shared.css'
@@ -37,7 +38,17 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
   const randomTitle = () => generateSlug(3, { format: 'title' })
   const [title, setTitle] = createSignal(randomTitle())
   const submitting = createLoadingSignal(agentLoadingTimeoutMs(false))
-  const { agentProvider, noProviders, handleProviderChange, commitSelection } = useAgentProviderSelection(() => props.availableProviders)
+
+  const available = () => getAvailableAgentProviders(props.availableProviders)
+  const { mruProviders, recordProviderUse } = useMruProviders(available, 1)
+  const [agentProvider, setAgentProvider] = createSignal(mruProviders()[0])
+  const noProviders = () => available().length === 0
+
+  createEffect(() => {
+    const best = mruProviders()[0]
+    if (best !== undefined && !available().includes(agentProvider()))
+      setAgentProvider(best)
+  })
   const titleError = createMemo(() => sanitizeName(title()).error)
 
   const handleSubmit = async (e: Event) => {
@@ -76,7 +87,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       })
 
       if (agentResp.agent) {
-        commitSelection()
+        recordProviderUse(agentProvider())
         workspaceClient.addTab({
           workspaceId: wsResp.workspace.id,
           tab: { tabType: TabType.AGENT, tabId: agentResp.agent.id, workerId: wid },
@@ -106,7 +117,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
                 <WorkerSelector state={state} />
                 <AgentProviderSelector
                   value={agentProvider}
-                  onChange={handleProviderChange}
+                  onChange={setAgentProvider}
                   availableProviders={props.availableProviders}
                   onRefresh={props.onRefreshProviders}
                 />

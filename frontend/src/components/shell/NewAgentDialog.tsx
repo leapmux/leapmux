@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
-import { Show } from 'solid-js'
+import { createEffect, createSignal, Show } from 'solid-js'
 import { agentLoadingTimeoutMs } from '~/api/transport'
 import * as workerRpc from '~/api/workerRpc'
 import { Dialog } from '~/components/common/Dialog'
@@ -13,7 +13,8 @@ import { GitOptions } from '~/components/shell/GitOptions'
 import { WorkerSelector } from '~/components/shell/WorkerSelector'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
-import { useAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
+import { useMruProviders } from '~/hooks/useMruProviders'
+import { getAvailableAgentProviders } from '~/lib/agentProviders'
 import { spinner } from '~/styles/animations.css'
 import { dialogLeftPanel, dialogRightPanel, dialogSingleColumn, dialogTopSection, dialogTopTwoColumn, dialogTwoColumn, dialogWide, errorText } from '~/styles/shared.css'
 
@@ -39,7 +40,16 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
   })
   const submitting = createLoadingSignal(agentLoadingTimeoutMs(false))
 
-  const { agentProvider, noProviders, handleProviderChange, commitSelection } = useAgentProviderSelection(() => props.availableProviders)
+  const available = () => getAvailableAgentProviders(props.availableProviders)
+  const { mruProviders, recordProviderUse } = useMruProviders(available, 1)
+  const [agentProvider, setAgentProvider] = createSignal(mruProviders()[0])
+  const noProviders = () => available().length === 0
+
+  createEffect(() => {
+    const best = mruProviders()[0]
+    if (best !== undefined && !available().includes(agentProvider()))
+      setAgentProvider(best)
+  })
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
@@ -67,7 +77,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
         ...(props.sessionId ? { agentSessionId: props.sessionId } : {}),
       })
       if (resp.agent) {
-        commitSelection()
+        recordProviderUse(agentProvider())
         props.onCreated(resp.agent)
       }
     }
@@ -89,7 +99,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
                 <WorkerSelector state={state} />
                 <AgentProviderSelector
                   value={agentProvider}
-                  onChange={handleProviderChange}
+                  onChange={setAgentProvider}
                   availableProviders={props.availableProviders}
                   onRefresh={props.onRefreshProviders}
                 />
