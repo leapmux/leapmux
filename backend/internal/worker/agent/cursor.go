@@ -112,14 +112,10 @@ func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 }
 
 func normalizeCursorModelID(model string) string {
-	switch model {
-	case "", cursorCLIModelAuto:
-		return model
-	case cursorCLIModelAutoWire:
+	if model == cursorCLIModelAutoWire {
 		return cursorCLIModelAuto
-	default:
-		return model
 	}
+	return model
 }
 
 func cursorModelIDForWire(model string) string {

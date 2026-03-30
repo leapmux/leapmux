@@ -614,7 +614,9 @@ func jsonRPCResultError(resp json.RawMessage) error {
 	return fmt.Errorf("json-rpc error %d: %s", code, message)
 }
 
-func extractJSONRPCID(content []byte) (json.RawMessage, string, bool) {
+// ExtractJSONRPCID extracts the JSON-RPC "id" field from a raw JSON payload,
+// returning the raw bytes, its string representation, and whether extraction succeeded.
+func ExtractJSONRPCID(content []byte) (json.RawMessage, string, bool) {
 	var payload struct {
 		ID json.RawMessage `json:"id"`
 	}

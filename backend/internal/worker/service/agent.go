@@ -1505,7 +1505,7 @@ func (svc *Context) transformCursorControlResponse(agentID string, content []byt
 		return nil, false
 	}
 
-	idRaw, _, ok := controlResponseRPCID(cr.Payload)
+	idRaw, _, ok := agent.ExtractJSONRPCID(cr.Payload)
 	if !ok {
 		return nil, false
 	}
@@ -1538,23 +1538,6 @@ func (svc *Context) transformCursorControlResponse(agentID string, content []byt
 	return encoded, true
 }
 
-func controlResponseRPCID(content []byte) ([]byte, string, bool) {
-	var payload struct {
-		ID json.RawMessage `json:"id"`
-	}
-	if json.Unmarshal(content, &payload) != nil || len(payload.ID) == 0 || string(payload.ID) == "null" {
-		return nil, "", false
-	}
-	var text string
-	if json.Unmarshal(payload.ID, &text) == nil {
-		return payload.ID, text, true
-	}
-	text = strings.TrimSpace(string(payload.ID))
-	if text == "" {
-		return nil, "", false
-	}
-	return payload.ID, text, true
-}
 
 // extractControlResponseRequestID extracts the control request ID from a
 // control response's raw JSON content.  It supports both Claude Code format

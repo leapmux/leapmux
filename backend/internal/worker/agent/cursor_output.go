@@ -47,7 +47,7 @@ func (a *CursorCLIAgent) handleExtraMethod(line *parsedLine) bool {
 		return false
 	}
 
-	idRaw, requestID, ok := extractJSONRPCID(line.Raw)
+	idRaw, requestID, ok := ExtractJSONRPCID(line.Raw)
 	if !ok {
 		return true
 	}

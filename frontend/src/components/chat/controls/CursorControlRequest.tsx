@@ -21,7 +21,7 @@ function isCursorCreatePlanPayload(payload: Record<string, unknown>): boolean {
   return payload.method === 'cursor/create_plan'
 }
 
-function getCursorQuestions(payload: Record<string, unknown>): Question[] {
+export function getCursorQuestions(payload: Record<string, unknown>): Question[] {
   const params = getCursorParams(payload)
   const rawQuestions = (params?.questions as Array<Record<string, unknown>> | undefined) ?? []
   return rawQuestions.map(question => ({
@@ -112,14 +112,12 @@ export const CursorControlContent: Component<ContentProps> = (props) => {
         />
       </Match>
       <Match when={isCursorCreatePlanPayload(props.request.payload)}>
-        <>
-          <div class={styles.controlBannerTitle}>
-            {planName() ? `Create Plan: ${planName()}` : 'Create Plan'}
-          </div>
-          <Show when={overview()}>
-            <div class={styles.codexReason}>{overview()}</div>
-          </Show>
-        </>
+        <div class={styles.controlBannerTitle}>
+          {planName() ? `Create Plan: ${planName()}` : 'Create Plan'}
+        </div>
+        <Show when={overview()}>
+          <div class={styles.codexReason}>{overview()}</div>
+        </Show>
       </Match>
     </Switch>
   )
