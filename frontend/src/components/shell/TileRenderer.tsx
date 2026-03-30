@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { FileAttachment } from '~/components/chat/attachments'
+import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { createAgentStore } from '~/stores/agent.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
@@ -57,7 +58,7 @@ interface TileRendererOpts {
   setIsTabEditing: (fn: () => boolean) => void
   persistLayout: () => void
   closingTabKeys: () => Set<string>
-  newAgentLoading: () => boolean
+  newAgentLoadingProvider: () => AgentProvider | null
   newTerminalLoading: () => boolean
   newShellLoading: () => boolean
   isMobile: () => boolean
@@ -98,7 +99,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     setIsTabEditing,
     persistLayout,
     closingTabKeys,
-    newAgentLoading,
+    newAgentLoadingProvider,
     newTerminalLoading,
     newShellLoading,
     isMobile,
@@ -160,7 +161,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       onResumeSession={() => setShowResumeDialog(true)}
       onNewAgentAdvanced={() => setShowNewAgentDialog(true)}
       onNewTerminalAdvanced={() => setShowNewTerminalDialog(true)}
-      newAgentLoading={newAgentLoading()}
+      newAgentLoadingProvider={newAgentLoadingProvider()}
       newTerminalLoading={newTerminalLoading()}
       newShellLoading={newShellLoading()}
       closingTabKeys={closingTabKeys()}

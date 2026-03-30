@@ -5,6 +5,7 @@ import './codex'
 import './cursor'
 import './gemini'
 import './goose'
+import './kilo'
 import './opencode'
 import './stubs'
 

@@ -12,6 +12,7 @@ export function agentProviderLabel(provider?: AgentProvider): string {
     case AgentProvider.GITHUB_COPILOT: return 'GitHub Copilot'
     case AgentProvider.CURSOR: return 'Cursor'
     case AgentProvider.GOOSE: return 'Goose'
+    case AgentProvider.KILO: return 'Kilo'
     default: return 'Unknown'
   }
 }
@@ -144,6 +145,23 @@ function GooseIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
+function KiloIcon(props: { size: number, class?: string }): JSX.Element {
+  return (
+    <svg
+      fill-rule="evenodd"
+      height={props.size}
+      width={props.size}
+      viewBox="-1 -1 26 26"
+      xmlns="http://www.w3.org/2000/svg"
+      class={props.class}
+      style={iconStyle(props.size)}
+    >
+      <rect x="1.778" y="1.778" width="20.444" height="20.444" fill="#faf74f" />
+      <path fill="#1a1a1a" d="M0 0v24h24V0H0zm22.222 22.222H1.778V1.778h20.444v20.444zm-7.555-4.964h2.222v1.778h-2.794L12.89 17.83v-2.794h1.778v2.222zm4 0h-1.778v-2.222h-2.222v-1.778h2.793l1.207 1.207v2.793zm-7.556-2.591H9.333v-1.778h1.778v1.778zm-5.778-1.778h1.778v4h4v1.778H6.54L5.333 17.46V12.89zm13.334-3.556v1.778h-5.778V9.333h1.987V7.111h-1.987V5.333h2.558l1.206 1.207v2.793h2.014zm-11.556-2h2.222l1.778 1.778v2H9.333v-2H7.111v2H5.333V5.333h1.778v2zm4 0H9.333v-2h1.778v2z" />
+    </svg>
+  )
+}
+
 function CursorIcon(props: { size: number, class?: string }): JSX.Element {
   return (
     <svg
@@ -156,7 +174,6 @@ function CursorIcon(props: { size: number, class?: string }): JSX.Element {
       class={props.class}
       style={iconStyle(props.size)}
     >
-      <title>Cursor</title>
       <path d="M22.106 5.68 12.5.135a.998.998 0 0 0-.998 0L1.893 5.68a.84.84 0 0 0-.419.726v11.186c0 .3.16.577.42.727l9.607 5.547a.999.999 0 0 0 .998 0l9.608-5.547a.84.84 0 0 0 .42-.727V6.407a.84.84 0 0 0-.42-.726zm-.603 1.176L12.228 22.92c-.063.108-.228.064-.228-.061V12.34a.59.59 0 0 0-.295-.51l-9.11-5.26c-.107-.062-.063-.228.062-.228h18.55c.264 0 .428.286.296.514z" />
     </svg>
   )
@@ -191,6 +208,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.GOOSE}>
         <GooseIcon size={props.size} class={props.class} />
+      </Match>
+      <Match when={props.provider === AgentProvider.KILO}>
+        <KiloIcon size={props.size} class={props.class} />
       </Match>
     </Switch>
   )

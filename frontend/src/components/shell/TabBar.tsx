@@ -80,7 +80,7 @@ interface TabBarProps {
   onResumeSession?: () => void
   onNewAgentAdvanced?: () => void
   onNewTerminalAdvanced?: () => void
-  newAgentLoading?: boolean
+  newAgentLoadingProvider?: AgentProvider | null
   newTerminalLoading?: boolean
   newShellLoading?: boolean
   hasActiveTabContext?: boolean
@@ -403,7 +403,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
               {provider => (
                 <TabBarTooltip text={`New ${agentProviderLabel(provider)} agent`}>
                   <Show
-                    when={!props.newAgentLoading}
+                    when={props.newAgentLoadingProvider !== provider}
                     fallback={(
                       <IconButton
                         icon={Bot}
