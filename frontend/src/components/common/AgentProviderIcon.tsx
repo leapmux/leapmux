@@ -151,7 +151,7 @@ function KiloIcon(props: { size: number, class?: string }): JSX.Element {
       fill-rule="evenodd"
       height={props.size}
       width={props.size}
-      viewBox="0 0 24 24"
+      viewBox="-1 -1 26 26"
       xmlns="http://www.w3.org/2000/svg"
       class={props.class}
       style={iconStyle(props.size)}
