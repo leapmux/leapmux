@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -49,7 +50,12 @@ func codexUserInputAnswersText(requestPayload, responseContent []byte) string {
 			} `json:"answers"`
 		} `json:"result"`
 	}
-	if json.Unmarshal(requestPayload, &req) != nil || json.Unmarshal(responseContent, &resp) != nil {
+	if err := json.Unmarshal(requestPayload, &req); err != nil {
+		slog.Warn("codex user input request unmarshal failed", "error", err)
+		return ""
+	}
+	if err := json.Unmarshal(responseContent, &resp); err != nil {
+		slog.Warn("codex user input response unmarshal failed", "error", err)
 		return ""
 	}
 
@@ -143,7 +149,12 @@ func opencodeQuestionAnswersText(requestPayload, responseContent []byte) string 
 			Answers [][]string `json:"answers"`
 		} `json:"result"`
 	}
-	if json.Unmarshal(requestPayload, &req) != nil || json.Unmarshal(responseContent, &resp) != nil {
+	if err := json.Unmarshal(requestPayload, &req); err != nil {
+		slog.Warn("opencode question request unmarshal failed", "error", err)
+		return ""
+	}
+	if err := json.Unmarshal(responseContent, &resp); err != nil {
+		slog.Warn("opencode question response unmarshal failed", "error", err)
 		return ""
 	}
 
@@ -200,7 +211,12 @@ func cursorQuestionAnswersText(requestPayload, responseContent []byte) string {
 			} `json:"outcome"`
 		} `json:"result"`
 	}
-	if json.Unmarshal(requestPayload, &req) != nil || json.Unmarshal(responseContent, &resp) != nil {
+	if err := json.Unmarshal(requestPayload, &req); err != nil {
+		slog.Warn("cursor question request unmarshal failed", "error", err)
+		return ""
+	}
+	if err := json.Unmarshal(responseContent, &resp); err != nil {
+		slog.Warn("cursor question response unmarshal failed", "error", err)
 		return ""
 	}
 
@@ -282,7 +298,8 @@ func cursorCreatePlanResponseDisplayText(responseContent []byte) string {
 			} `json:"outcome"`
 		} `json:"result"`
 	}
-	if json.Unmarshal(responseContent, &resp) != nil {
+	if err := json.Unmarshal(responseContent, &resp); err != nil {
+		slog.Warn("cursor create plan response unmarshal failed", "error", err)
 		return ""
 	}
 
@@ -337,7 +354,8 @@ func (svc *Context) controlResponseDisplayText(agentID string, provider leapmuxv
 		Method string `json:"method"`
 		Type   string `json:"type"`
 	}
-	if json.Unmarshal(cr.Payload, &payload) != nil {
+	if err := json.Unmarshal(cr.Payload, &payload); err != nil {
+		slog.Warn("control response display text unmarshal failed", "agent_id", agentID, "error", err)
 		return ""
 	}
 
@@ -388,7 +406,12 @@ func acpPermissionResponseDisplayText(requestPayload, responseContent []byte) st
 			} `json:"outcome"`
 		} `json:"result"`
 	}
-	if json.Unmarshal(requestPayload, &req) != nil || json.Unmarshal(responseContent, &resp) != nil {
+	if err := json.Unmarshal(requestPayload, &req); err != nil {
+		slog.Warn("acp permission request unmarshal failed", "error", err)
+		return ""
+	}
+	if err := json.Unmarshal(responseContent, &resp); err != nil {
+		slog.Warn("acp permission response unmarshal failed", "error", err)
 		return ""
 	}
 

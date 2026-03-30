@@ -351,7 +351,8 @@ func (a *CodexAgent) handleThreadCompacted(params json.RawMessage) {
 		ThreadID string `json:"threadId"`
 		TurnID   string `json:"turnId"`
 	}
-	if json.Unmarshal(params, &notif) != nil {
+	if err := json.Unmarshal(params, &notif); err != nil {
+		slog.Warn("codex thread_compacted unmarshal failed", "agent_id", a.agentID, "error", err)
 		return
 	}
 	content, err := json.Marshal(map[string]interface{}{
@@ -474,7 +475,8 @@ func (a *CodexAgent) handleTokenUsageUpdated(content []byte, params json.RawMess
 			ModelContextWindow *int64 `json:"modelContextWindow"`
 		} `json:"tokenUsage"`
 	}
-	if json.Unmarshal(params, &notif) != nil {
+	if err := json.Unmarshal(params, &notif); err != nil {
+		slog.Warn("codex token_usage_updated unmarshal failed", "agent_id", a.agentID, "error", err)
 		return
 	}
 	if !a.isMainThreadID(notif.ThreadID) {
@@ -582,7 +584,8 @@ func (a *CodexAgent) handleRateLimitsUpdated(content []byte, params json.RawMess
 			Secondary *codexRateLimitTier `json:"secondary"`
 		} `json:"rateLimits"`
 	}
-	if json.Unmarshal(params, &notif) != nil {
+	if err := json.Unmarshal(params, &notif); err != nil {
+		slog.Warn("codex rate limit unmarshal failed", "agent_id", a.agentID, "error", err)
 		return
 	}
 
@@ -728,7 +731,8 @@ func isTerminalCollabAgentStatus(status string) bool {
 
 func parseCollabToolCall(item json.RawMessage) *codexCollabAgentToolCall {
 	var collab codexCollabAgentToolCall
-	if json.Unmarshal(item, &collab) != nil {
+	if err := json.Unmarshal(item, &collab); err != nil {
+		slog.Warn("codex collab tool call unmarshal failed", "error", err)
 		return nil
 	}
 	return &collab
@@ -910,7 +914,11 @@ func extractCodexItem(params json.RawMessage) (item json.RawMessage, itemType, i
 		Item     json.RawMessage `json:"item"`
 		ThreadID string          `json:"threadId"`
 	}
-	if json.Unmarshal(params, &wrapper) != nil || len(wrapper.Item) == 0 {
+	if err := json.Unmarshal(params, &wrapper); err != nil {
+		slog.Warn("codex extract item wrapper unmarshal failed", "error", err)
+		return nil, "", "", ""
+	}
+	if len(wrapper.Item) == 0 {
 		return nil, "", "", ""
 	}
 
@@ -918,7 +926,8 @@ func extractCodexItem(params json.RawMessage) (item json.RawMessage, itemType, i
 		Type string `json:"type"`
 		ID   string `json:"id"`
 	}
-	if json.Unmarshal(wrapper.Item, &header) != nil {
+	if err := json.Unmarshal(wrapper.Item, &header); err != nil {
+		slog.Warn("codex extract item header unmarshal failed", "error", err)
 		return nil, "", "", ""
 	}
 

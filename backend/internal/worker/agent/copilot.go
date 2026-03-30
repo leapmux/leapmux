@@ -76,7 +76,7 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 		return nil, err
 	}
 
-	a.availableModels = buildACPModels(handshake.Models, handshake.CurrentModelID)
+	a.availableModels = buildACPModels(handshake.Models, handshake.CurrentModelID, nil)
 	if a.model == "" && handshake.CurrentModelID != "" {
 		a.model = handshake.CurrentModelID
 	}

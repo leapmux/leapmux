@@ -147,7 +147,9 @@ func (e *messageEnvelope) ContentBlocks() []contentBlock {
 		e.contentParsed = true
 		raw := e.Message.RawContent
 		if len(raw) > 0 && raw[0] == '[' {
-			_ = json.Unmarshal(raw, &e.contentBlocks)
+			if err := json.Unmarshal(raw, &e.contentBlocks); err != nil {
+				slog.Warn("claude content blocks unmarshal failed", "error", err)
+			}
 		}
 	}
 	return e.contentBlocks
@@ -189,7 +191,8 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(env *messageEnvelope) {
 				OldString string `json:"old_string"`
 				NewString string `json:"new_string"`
 			}
-			if json.Unmarshal(block.Input, &input) != nil {
+			if err := json.Unmarshal(block.Input, &input); err != nil {
+				slog.Warn("claude tool input unmarshal failed", "agent_id", a.agentID, "tool", block.Name, "error", err)
 				continue
 			}
 			filePath := input.FilePath
@@ -441,7 +444,9 @@ func (a *ClaudeCodeAgent) claudeCodeHandleRateLimitEvent(content []byte) {
 	var rlType struct {
 		RateLimitType string `json:"rateLimitType"`
 	}
-	_ = json.Unmarshal(rle.RateLimitInfo, &rlType)
+	if err := json.Unmarshal(rle.RateLimitInfo, &rlType); err != nil {
+		slog.Warn("claude rate limit info unmarshal failed", "agent_id", a.agentID, "error", err)
+	}
 	if rlType.RateLimitType == "" {
 		rlType.RateLimitType = "unknown"
 	}
@@ -628,7 +633,8 @@ func isNotificationThreadable(content []byte, role leapmuxv1.MessageRole) bool {
 		var msg struct {
 			Type string `json:"type"`
 		}
-		if json.Unmarshal(content, &msg) != nil {
+		if err := json.Unmarshal(content, &msg); err != nil {
+			slog.Warn("notification threadable unmarshal failed", "role", "leapmux", "error", err)
 			return false
 		}
 		return msg.Type == "settings_changed" || msg.Type == "context_cleared" || msg.Type == "interrupted" || msg.Type == "rate_limit" || msg.Type == "agent_error" || msg.Type == "compacting"
@@ -636,7 +642,8 @@ func isNotificationThreadable(content []byte, role leapmuxv1.MessageRole) bool {
 		var msg struct {
 			Subtype string `json:"subtype"`
 		}
-		if json.Unmarshal(content, &msg) != nil {
+		if err := json.Unmarshal(content, &msg); err != nil {
+			slog.Warn("notification threadable unmarshal failed", "role", "system", "error", err)
 			return false
 		}
 		return notificationThreadableSubtypes[msg.Subtype]
@@ -650,7 +657,11 @@ func extractStatusValue(content []byte) (status string, ok bool) {
 		Subtype string  `json:"subtype"`
 		Status  *string `json:"status"`
 	}
-	if json.Unmarshal(content, &msg) != nil || msg.Subtype != "status" {
+	if err := json.Unmarshal(content, &msg); err != nil {
+		slog.Warn("extract status value unmarshal failed", "error", err)
+		return "", false
+	}
+	if msg.Subtype != "status" {
 		return "", false
 	}
 	if msg.Status != nil {
@@ -686,7 +697,11 @@ func isSimpleUserTextEcho(content []byte) bool {
 			Content json.RawMessage `json:"content"`
 		} `json:"message"`
 	}
-	if json.Unmarshal(content, &msg) != nil || msg.Type != "user" {
+	if err := json.Unmarshal(content, &msg); err != nil {
+		slog.Warn("user text echo unmarshal failed", "error", err)
+		return false
+	}
+	if msg.Type != "user" {
 		return false
 	}
 	trimmed := bytes.TrimSpace(msg.Message.Content)

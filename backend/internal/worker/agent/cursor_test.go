@@ -220,7 +220,7 @@ func TestBuildCursorCLIModelsNormalizesAuto(t *testing.T) {
 		{ModelID: cursorCLIModelAutoWire, Name: "Auto"},
 		{ModelID: "gpt-5.4[reasoning=medium]", Name: "GPT-5.4"},
 	}
-	result := buildCursorCLIModels(models, cursorCLIModelAutoWire)
+	result := buildACPModels(models, cursorCLIModelAutoWire, normalizeCursorModelID)
 	require.Len(t, result, 2)
 	assert.Equal(t, "auto", result[0].Id)
 	assert.True(t, result[0].IsDefault)

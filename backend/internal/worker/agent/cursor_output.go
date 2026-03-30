@@ -75,7 +75,8 @@ func (a *CursorCLIAgent) handleAskQuestionRequest(raw []byte, requestID string) 
 
 func (a *CursorCLIAgent) buildAskQuestionPayload(raw []byte) ([]byte, bool) {
 	var payload map[string]interface{}
-	if json.Unmarshal(raw, &payload) != nil {
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		slog.Warn("cursor ask_question unmarshal failed", "agent_id", a.agentID, "error", err)
 		return nil, false
 	}
 
@@ -129,6 +130,7 @@ func (a *CursorCLIAgent) buildAskQuestionPayload(raw []byte) ([]byte, bool) {
 
 	encoded, err := json.Marshal(payload)
 	if err != nil {
+		slog.Warn("cursor ask_question marshal failed", "agent_id", a.agentID, "error", err)
 		return nil, false
 	}
 	return encoded, true
@@ -136,13 +138,15 @@ func (a *CursorCLIAgent) buildAskQuestionPayload(raw []byte) ([]byte, bool) {
 
 func (a *CursorCLIAgent) handleCreatePlanRequest(raw []byte, requestID string) {
 	var payload map[string]interface{}
-	if json.Unmarshal(raw, &payload) != nil {
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		slog.Warn("cursor create_plan unmarshal failed", "agent_id", a.agentID, "error", err)
 		return
 	}
 
 	payload["type"] = "cursor.create_plan"
 	encoded, err := json.Marshal(payload)
 	if err != nil {
+		slog.Warn("cursor create_plan marshal failed", "agent_id", a.agentID, "error", err)
 		return
 	}
 

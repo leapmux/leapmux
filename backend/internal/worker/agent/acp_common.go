@@ -110,8 +110,6 @@ func (b *acpBase) handleACPPromptResponse(resp json.RawMessage, prePersist func(
 // the shared dispatcher. Return true if the update was consumed.
 type acpSessionUpdateHandler func(sessionUpdate string, update json.RawMessage) bool
 
-// configOptionSessionUpdateHandler returns an acpSessionUpdateHandler that
-// dispatches config_option_update events to the given handler.
 func configOptionSessionUpdateHandler(handler func(json.RawMessage)) acpSessionUpdateHandler {
 	return func(sessionUpdate string, update json.RawMessage) bool {
 		if sessionUpdate == acpUpdateConfigOptionUpdate {
@@ -131,7 +129,11 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 	var wrapper struct {
 		Update json.RawMessage `json:"update"`
 	}
-	if json.Unmarshal(params, &wrapper) != nil || len(wrapper.Update) == 0 {
+	if err := json.Unmarshal(params, &wrapper); err != nil {
+		slog.Warn("acp session update unmarshal wrapper failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
+		return
+	}
+	if len(wrapper.Update) == 0 {
 		return
 	}
 	update := wrapper.Update
@@ -141,7 +143,8 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 		Role          string          `json:"role"`
 		Content       json.RawMessage `json:"content"`
 	}
-	if json.Unmarshal(update, &header) != nil {
+	if err := json.Unmarshal(update, &header); err != nil {
+		slog.Warn("acp session update unmarshal header failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
 		return
 	}
 
@@ -185,7 +188,10 @@ func buildACPSessionRequest(resumeSessionID, workingDir, newMethod, resumeMethod
 		p["sessionId"] = resumeSessionID
 		method = resumeMethod
 	}
-	params, _ = json.Marshal(p)
+	params, err := json.Marshal(p)
+	if err != nil {
+		slog.Warn("acp session request marshal failed", "error", err)
+	}
 	return method, params
 }
 
@@ -440,7 +446,11 @@ func (b *acpBase) broadcastACPChunk(content json.RawMessage, builder *strings.Bu
 	var c struct {
 		Text string `json:"text"`
 	}
-	if json.Unmarshal(content, &c) != nil || c.Text == "" {
+	if err := json.Unmarshal(content, &c); err != nil {
+		slog.Warn("acp broadcast chunk unmarshal failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
+		return
+	}
+	if c.Text == "" {
 		return
 	}
 	b.mu.Lock()
@@ -496,7 +506,11 @@ func unwrapACPResult(resp json.RawMessage) json.RawMessage {
 		Role    string          `json:"role"`
 		Content json.RawMessage `json:"content"`
 	}
-	if json.Unmarshal(resp, &wrapper) != nil || wrapper.Role != "result" || len(wrapper.Content) == 0 {
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		slog.Warn("acp unwrap result unmarshal failed", "error", err)
+		return resp
+	}
+	if wrapper.Role != "result" || len(wrapper.Content) == 0 {
 		return resp
 	}
 	return wrapper.Content
@@ -509,7 +523,11 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 		Kind       string `json:"kind"`
 		Status     string `json:"status"`
 	}
-	if json.Unmarshal(update, &tc) != nil || tc.ToolCallID == "" {
+	if err := json.Unmarshal(update, &tc); err != nil {
+		slog.Warn("acp tool_call unmarshal failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
+		return
+	}
+	if tc.ToolCallID == "" {
 		return
 	}
 
@@ -544,7 +562,11 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 		ToolCallID string `json:"toolCallId"`
 		Status     string `json:"status"`
 	}
-	if json.Unmarshal(update, &tcu) != nil || tcu.ToolCallID == "" {
+	if err := json.Unmarshal(update, &tcu); err != nil {
+		slog.Warn("acp tool_call_update unmarshal failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
+		return
+	}
+	if tcu.ToolCallID == "" {
 		return
 	}
 
@@ -579,7 +601,8 @@ func (b *acpBase) handleUsageUpdate(update json.RawMessage) {
 			Currency string  `json:"currency"`
 		} `json:"cost"`
 	}
-	if json.Unmarshal(update, &usage) != nil {
+	if err := json.Unmarshal(update, &usage); err != nil {
+		slog.Warn("acp usage update unmarshal failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
 		return
 	}
 
@@ -632,7 +655,11 @@ func ExtractJSONRPCID(content []byte) (json.RawMessage, string, bool) {
 	var payload struct {
 		ID json.RawMessage `json:"id"`
 	}
-	if json.Unmarshal(content, &payload) != nil || len(payload.ID) == 0 || string(payload.ID) == "null" {
+	if err := json.Unmarshal(content, &payload); err != nil {
+		slog.Warn("json-rpc id unmarshal failed", "error", err)
+		return nil, "", false
+	}
+	if len(payload.ID) == 0 || string(payload.ID) == "null" {
 		return nil, "", false
 	}
 
@@ -797,17 +824,29 @@ type acpConfigOptionValue struct {
 }
 
 // buildACPModels converts a list of acpModelInfo into proto AvailableModel messages.
-func buildACPModels(models []acpModelInfo, currentModelID string) []*leapmuxv1.AvailableModel {
+// If normalize is non-nil, it is applied to each model ID (and the currentModelID) before use.
+func buildACPModels(models []acpModelInfo, currentModelID string, normalize func(string) string) []*leapmuxv1.AvailableModel {
+	if normalize != nil {
+		currentModelID = normalize(currentModelID)
+	}
 	result := make([]*leapmuxv1.AvailableModel, 0, len(models))
 	for _, m := range models {
-		if m.ModelID == "" {
+		id := m.ModelID
+		if normalize != nil {
+			id = normalize(id)
+		}
+		if id == "" {
 			continue
 		}
+		name := m.Name
+		if name == "" {
+			name = id
+		}
 		result = append(result, &leapmuxv1.AvailableModel{
-			Id:          m.ModelID,
-			DisplayName: m.Name,
+			Id:          id,
+			DisplayName: name,
 			Description: m.Description,
-			IsDefault:   m.ModelID == currentModelID,
+			IsDefault:   id == currentModelID,
 		})
 	}
 	return result
@@ -842,7 +881,8 @@ func parseACPConfigOptions(raw json.RawMessage) []acpConfigOption {
 	var payload struct {
 		ConfigOptions []acpConfigOption `json:"configOptions"`
 	}
-	if json.Unmarshal(raw, &payload) != nil {
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		slog.Warn("acp config options unmarshal failed", "error", err)
 		return nil
 	}
 	return payload.ConfigOptions

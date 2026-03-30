@@ -80,7 +80,7 @@ func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 		return nil, err
 	}
 
-	a.availableModels = buildCursorCLIModels(handshake.Models, handshake.CurrentModelID)
+	a.availableModels = buildACPModels(handshake.Models, handshake.CurrentModelID, normalizeCursorModelID)
 	if a.model == "" && handshake.CurrentModelID != "" {
 		a.model = normalizeCursorModelID(handshake.CurrentModelID)
 	}
@@ -123,28 +123,6 @@ func cursorModelIDForWire(model string) string {
 		return cursorCLIModelAutoWire
 	}
 	return model
-}
-
-func buildCursorCLIModels(models []acpModelInfo, currentModelID string) []*leapmuxv1.AvailableModel {
-	currentModelID = normalizeCursorModelID(currentModelID)
-	result := make([]*leapmuxv1.AvailableModel, 0, len(models))
-	for _, model := range models {
-		id := normalizeCursorModelID(model.ModelID)
-		if id == "" {
-			continue
-		}
-		name := model.Name
-		if name == "" {
-			name = id
-		}
-		result = append(result, &leapmuxv1.AvailableModel{
-			Id:          id,
-			DisplayName: name,
-			Description: model.Description,
-			IsDefault:   id == currentModelID,
-		})
-	}
-	return result
 }
 
 func fallbackCursorCLIModes() []*leapmuxv1.AvailableOption {

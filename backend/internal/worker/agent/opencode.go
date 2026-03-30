@@ -89,7 +89,7 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 		return nil, err
 	}
 
-	a.availableModels = buildACPModels(handshake.Models, handshake.CurrentModelID)
+	a.availableModels = buildACPModels(handshake.Models, handshake.CurrentModelID, nil)
 	if a.model == "" && handshake.CurrentModelID != "" {
 		a.model = handshake.CurrentModelID
 	}

@@ -233,7 +233,9 @@ type parsedLine struct {
 // that accept []byte (e.g. for tests) to bridge into the single-parse pipeline.
 func parseLine(content []byte) *parsedLine {
 	line := &parsedLine{Raw: content}
-	_ = json.Unmarshal(content, line)
+	if err := json.Unmarshal(content, line); err != nil {
+		slog.Warn("parse line unmarshal failed", "error", err)
+	}
 	return line
 }
 
