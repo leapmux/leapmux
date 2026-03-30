@@ -11,7 +11,7 @@ import {
 import { registerProvider } from './registry'
 
 const DEFAULT_KILO_MODEL = import.meta.env.LEAPMUX_KILO_DEFAULT_MODEL || ''
-const DEFAULT_KILO_PRIMARY_AGENT = 'build'
+const DEFAULT_KILO_PRIMARY_AGENT = 'code'
 const KILO_PLAN_PRIMARY_AGENT = 'plan'
 const KILO_EXTRA_PRIMARY_AGENT = 'primaryAgent'
 

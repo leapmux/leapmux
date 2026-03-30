@@ -282,7 +282,7 @@ describe('kilo plan mode', () => {
 
   it('reads the current mode from extraSettings.primaryAgent', () => {
     expect(plugin.planMode?.currentMode({ extraSettings: { primaryAgent: 'plan' } })).toBe('plan')
-    expect(plugin.planMode?.currentMode({ extraSettings: {} })).toBe('build')
+    expect(plugin.planMode?.currentMode({ extraSettings: {} })).toBe('code')
   })
 
   it('setMode writes primaryAgent through onOptionGroupChange', () => {
@@ -299,13 +299,13 @@ describe('kilo settings panel', () => {
     const onOptionGroupChange = vi.fn()
     render(() => plugin.SettingsPanel!({
       model: 'openai/gpt-5',
-      extraSettings: { primaryAgent: 'build' },
+      extraSettings: { primaryAgent: 'code' },
       availableModels: [create(AvailableModelSchema, { id: 'openai/gpt-5', displayName: 'GPT-5', isDefault: true })],
       availableOptionGroups: [create(AvailableOptionGroupSchema, {
         key: 'primaryAgent',
         label: 'Primary Agent',
         options: [
-          create(AvailableOptionSchema, { id: 'build', name: 'build', isDefault: true }),
+          create(AvailableOptionSchema, { id: 'code', name: 'code', isDefault: true }),
           create(AvailableOptionSchema, { id: 'plan', name: 'plan' }),
         ],
       })],
@@ -313,7 +313,7 @@ describe('kilo settings panel', () => {
     }))
 
     expect(screen.getByText('Primary Agent')).toBeTruthy()
-    expect(screen.getByTestId('primary-agent-build')).toBeTruthy()
+    expect(screen.getByTestId('primary-agent-code')).toBeTruthy()
     expect(screen.getByTestId('primary-agent-plan')).toBeTruthy()
 
     await fireEvent.click(screen.getByDisplayValue('plan'))
@@ -329,7 +329,7 @@ describe('kilo settings panel', () => {
         key: 'primaryAgent',
         label: 'Primary Agent',
         options: [
-          create(AvailableOptionSchema, { id: 'build', name: 'Build', isDefault: true }),
+          create(AvailableOptionSchema, { id: 'code', name: 'Code', isDefault: true }),
           create(AvailableOptionSchema, { id: 'plan', name: 'Plan' }),
         ],
       })],

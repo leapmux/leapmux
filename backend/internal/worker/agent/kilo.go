@@ -10,6 +10,11 @@ import (
 	"github.com/leapmux/leapmux/util/version"
 )
 
+const (
+	KiloPrimaryAgentCode = "code"
+	KiloPrimaryAgentPlan = "plan"
+)
+
 // KiloAgent manages a single Kilo ACP process.
 type KiloAgent struct {
 	acpBase
@@ -95,14 +100,21 @@ func StartKilo(ctx context.Context, opts Options, sink OutputSink) (Provider, er
 	return a, nil
 }
 
+func fallbackKiloPrimaryAgents() []*leapmuxv1.AvailableOption {
+	return []*leapmuxv1.AvailableOption{
+		{Id: KiloPrimaryAgentCode, Name: titleCaseID(KiloPrimaryAgentCode, ""), IsDefault: true},
+		{Id: KiloPrimaryAgentPlan, Name: titleCaseID(KiloPrimaryAgentPlan, "")},
+	}
+}
+
 func (a *KiloAgent) configurePrimaryAgents(modes []acpModeInfo, currentModeID, requestedPrimaryAgent string) error {
 	available := buildOpenCodePrimaryAgents(modes, currentModeID)
 	hasACPModeList := len(available) > 0
 	current := currentModeID
 	if !hasACPModeList {
-		available = fallbackOpenCodePrimaryAgents()
+		available = fallbackKiloPrimaryAgents()
 		if current == "" {
-			current = OpenCodePrimaryAgentBuild
+			current = KiloPrimaryAgentCode
 		}
 	}
 	if current == "" {
@@ -181,7 +193,7 @@ func (a *KiloAgent) availablePrimaryAgentGroup() []*leapmuxv1.AvailableOptionGro
 	defer a.mu.Unlock()
 	options := a.availablePrimaryAgents
 	if len(options) == 0 {
-		options = fallbackOpenCodePrimaryAgents()
+		options = fallbackKiloPrimaryAgents()
 	}
 	return []*leapmuxv1.AvailableOptionGroup{{
 		Key:     OpenCodeExtraPrimaryAgent,
@@ -201,8 +213,8 @@ func init() {
 			Key:   OpenCodeExtraPrimaryAgent,
 			Label: "Primary Agent",
 			Options: []*leapmuxv1.AvailableOption{
-				{Id: OpenCodePrimaryAgentBuild, Name: "Build", IsDefault: true},
-				{Id: OpenCodePrimaryAgentPlan, Name: "Plan"},
+				{Id: KiloPrimaryAgentCode, Name: "Code", IsDefault: true},
+				{Id: KiloPrimaryAgentPlan, Name: "Plan"},
 			},
 		}},
 		"LEAPMUX_KILO_DEFAULT_MODEL",
