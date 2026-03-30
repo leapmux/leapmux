@@ -16,10 +16,10 @@ function createTestPng(name = 'test.png'): string {
   return path
 }
 
-/** Create a minimal text file (unsupported type) for rejection testing. */
-function createTestTxt(name = 'test.txt'): string {
+/** Create a minimal binary file (unsupported for the default provider) for rejection testing. */
+function createTestBinary(name = 'test.bin'): string {
   const path = join(tmpdir(), `leapmux-e2e-${Date.now()}-${name}`)
-  writeFileSync(path, 'hello world')
+  writeFileSync(path, Buffer.from([0x00, 0xFF, 0x01, 0xFE]))
   return path
 }
 
@@ -128,16 +128,16 @@ test.describe('Attachment Support', () => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
-    // Upload a .txt file (unsupported type).
+    // Upload a binary file (unsupported type for the default provider).
     const fileInput = page.locator('[data-testid="file-input"]')
-    await fileInput.setInputFiles(createTestTxt())
+    await fileInput.setInputFiles(createTestBinary())
 
     // No attachment pill should appear.
     await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(0)
 
     // A toast should have been shown in the DOM (output element with .toast-message).
     const toast = page.locator('output .toast-message')
-    await expect(toast).toContainText('unsupported', { timeout: 5000 })
+    await expect(toast).toContainText('binary', { timeout: 5000 })
   })
 
   test('attachment-only message (no text) can be sent', async ({ page, authenticatedWorkspace }) => {
