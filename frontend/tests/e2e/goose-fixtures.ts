@@ -6,7 +6,7 @@ import { AgentProvider, authenticateACPWorkspace, createACPWorkspace, detectACPS
 import { test as base, expect } from './fixtures'
 
 const gooseConfig: ACPFixtureConfig = {
-  agentProvider: AgentProvider.GOOSE_CLI,
+  agentProvider: AgentProvider.GOOSE,
   cliBinary: 'goose',
   skipMessage: 'Goose E2E requires a goose CLI on PATH',
   workspacePrefix: 'goose-e2e',

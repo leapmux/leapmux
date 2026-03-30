@@ -199,7 +199,7 @@ func validateAttachmentForProvider(provider leapmuxv1.AgentProvider, attachment 
 		return nil
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:
 		return nil
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_COPILOT_CLI:
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT:
 		return nil
 	}
 	return nil

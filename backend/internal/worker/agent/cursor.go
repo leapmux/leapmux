@@ -209,7 +209,7 @@ var cursorCLIAvailableModels = []*leapmuxv1.AvailableModel{
 
 func init() {
 	registerProvider(
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR_CLI,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 		func(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
 			return StartCursorCLI(ctx, opts, sink)
 		},

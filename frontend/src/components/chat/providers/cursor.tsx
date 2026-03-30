@@ -25,7 +25,7 @@ const settingsConfig: ACPSettingsPanelConfig = {
   testIdPrefix: 'permission-mode',
 }
 
-registerProvider(AgentProvider.CURSOR_CLI, {
+registerProvider(AgentProvider.CURSOR, {
   defaultModel: DEFAULT_CURSOR_MODEL,
   defaultPermissionMode: 'agent' as PermissionMode,
   attachments: { text: true, image: true, pdf: true, binary: true },

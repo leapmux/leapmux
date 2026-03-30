@@ -18,7 +18,7 @@ const MODE_SMART_APPROVE = 'smart_approve'
 const MODE_CHAT = 'chat'
 
 describe('goose provider', () => {
-  const plugin = getProviderPlugin(AgentProvider.GOOSE_CLI)!
+  const plugin = getProviderPlugin(AgentProvider.GOOSE)!
 
   it('exposes attachment capabilities', () => {
     expect(plugin.attachments).toEqual({
@@ -67,7 +67,7 @@ describe('goose provider', () => {
 })
 
 describe('goose settings panel', () => {
-  const plugin = getProviderPlugin(AgentProvider.GOOSE_CLI)!
+  const plugin = getProviderPlugin(AgentProvider.GOOSE)!
 
   it('renders runtime modes and updates through permission-mode callback', async () => {
     const onPermissionModeChange = vi.fn()

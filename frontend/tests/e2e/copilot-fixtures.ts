@@ -6,7 +6,7 @@ import { AgentProvider, authenticateACPWorkspace, createACPWorkspace, detectACPS
 import { test as base, expect } from './fixtures'
 
 const copilotConfig: ACPFixtureConfig = {
-  agentProvider: AgentProvider.COPILOT_CLI,
+  agentProvider: AgentProvider.GITHUB_COPILOT,
   cliBinary: 'copilot',
   skipMessage: 'Copilot E2E requires a copilot CLI on PATH',
   workspacePrefix: 'copilot-e2e',

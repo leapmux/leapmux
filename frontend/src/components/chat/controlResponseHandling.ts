@@ -178,7 +178,7 @@ export function useControlResponseHandling(
               multiSelect: (question.multiSelect as boolean | undefined) ?? (question.multiple as boolean | undefined),
             })) as Question[]
           }
-          case AgentProvider.CURSOR_CLI:
+          case AgentProvider.CURSOR:
             return getCursorQuestions(req.payload)
           default:
             return (getToolInput(req.payload).questions as Question[] | undefined) ?? []
@@ -202,7 +202,7 @@ export function useControlResponseHandling(
           case AgentProvider.OPENCODE:
             void sendOpenCodeQuestionResponse(req.agentId, sendControlResponse, req.requestId, normalizedQuestions, askState)
             break
-          case AgentProvider.CURSOR_CLI:
+          case AgentProvider.CURSOR:
             void sendCursorQuestionResponse(req.agentId, sendControlResponse, req.requestId, normalizedQuestions, askState)
             break
           default: {

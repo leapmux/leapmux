@@ -181,7 +181,7 @@ func (a *GooseCLIAgent) setPermissionMode(mode string) error {
 
 func init() {
 	registerProvider(
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE_CLI,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 		func(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
 			return StartGooseCLI(ctx, opts, sink)
 		},

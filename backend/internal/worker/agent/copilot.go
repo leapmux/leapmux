@@ -179,7 +179,7 @@ func (a *CopilotCLIAgent) setPermissionMode(mode string) error {
 
 func init() {
 	registerProvider(
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_COPILOT_CLI,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
 		func(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
 			return StartCopilotCLI(ctx, opts, sink)
 		},

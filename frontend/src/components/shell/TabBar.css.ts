@@ -175,6 +175,14 @@ export const providerButton = style({
   },
 })
 
+export const providerIconsRow = style({
+  display: 'flex',
+  flexWrap: 'wrap',
+  alignItems: 'center',
+  gap: 'var(--space-1)',
+  padding: 'var(--space-1) var(--space-3)',
+})
+
 // --- Collapsed new-tab button (visible at minimal/micro) ---
 export const collapsedNewTab = style({
   display: 'none',
@@ -190,6 +198,15 @@ export const collapsedOverflow = style({
 // ======================================================================
 // Responsive styles using ancestor [data-tile-size] / [data-tile-height]
 // ======================================================================
+
+// --- Narrow (360-479px): full tabs but new-tab buttons collapse into + dropdown ---
+globalStyle(`[data-tile-size="narrow"] ${newTabWrapper}`, {
+  display: 'none',
+})
+
+globalStyle(`[data-tile-size="narrow"] ${collapsedNewTab}`, {
+  display: 'flex',
+})
 
 // --- Compact (240-359px): icon-only tabs, hide close unless hovered ---
 globalStyle(`[data-tile-size="compact"] ${tabBar}`, {
@@ -213,6 +230,14 @@ globalStyle(`[data-tile-size="compact"] ${tabClose}`, {
 
 globalStyle(`[data-tile-size="compact"] ${tab}:hover ${tabClose}`, {
   display: 'inline-flex',
+})
+
+globalStyle(`[data-tile-size="compact"] ${newTabWrapper}`, {
+  display: 'none',
+})
+
+globalStyle(`[data-tile-size="compact"] ${collapsedNewTab}`, {
+  display: 'flex',
 })
 
 // --- Minimal (140-239px): also icon-only tabs + collapse new-tab buttons ---

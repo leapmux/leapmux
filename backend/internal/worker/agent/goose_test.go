@@ -150,7 +150,7 @@ func TestStartGooseCLI_NewSessionHandshake(t *testing.T) {
 		WorkingDir:    t.TempDir(),
 		Shell:         "/bin/sh",
 		LoginShell:    false,
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE_CLI,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 	}, &testSink{})
 	require.NoError(t, err)
 
@@ -184,7 +184,7 @@ func TestStartGooseCLI_LoadSessionUsesResumeID(t *testing.T) {
 		ResumeSessionID: "goose-resume",
 		Shell:           "/bin/sh",
 		LoginShell:      false,
-		AgentProvider:   leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE_CLI,
+		AgentProvider:   leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 	}, &testSink{})
 	require.NoError(t, err)
 
@@ -243,5 +243,5 @@ func TestGooseAvailableOptionGroupsFallsBack(t *testing.T) {
 
 func TestDefaultModel_GooseUsesEnvOverride(t *testing.T) {
 	t.Setenv("LEAPMUX_GOOSE_DEFAULT_MODEL", "custom-model")
-	assert.Equal(t, "custom-model", DefaultModel(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE_CLI))
+	assert.Equal(t, "custom-model", DefaultModel(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE))
 }

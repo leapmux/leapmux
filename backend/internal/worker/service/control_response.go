@@ -330,9 +330,9 @@ func (svc *Context) controlResponseDisplayText(agentID string, provider leapmuxv
 		// handled below
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:
 		// handled below
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_COPILOT_CLI:
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT:
 		// handled below
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR_CLI:
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR:
 		// handled below
 	default:
 		return ""
@@ -372,9 +372,9 @@ func (svc *Context) controlResponseDisplayText(agentID string, provider leapmuxv
 		}
 		return acpPermissionResponseDisplayText(cr.Payload, content)
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_COPILOT_CLI:
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT:
 		return acpPermissionResponseDisplayText(cr.Payload, content)
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR_CLI:
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR:
 		switch payload.Method {
 		case agent.CursorMethodAskQuestion:
 			return cursorQuestionAnswersText(cr.Payload, content)

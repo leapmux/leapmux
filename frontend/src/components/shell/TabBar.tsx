@@ -3,7 +3,6 @@ import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { Tab } from '~/stores/tab.store'
 import { createDroppable, createSortable, SortableProvider, transformStyle } from '@thisbeyond/solid-dnd'
 import Bot from 'lucide-solid/icons/bot'
-import ChevronDown from 'lucide-solid/icons/chevron-down'
 import Columns2 from 'lucide-solid/icons/columns-2'
 import Ellipsis from 'lucide-solid/icons/ellipsis'
 import FileText from 'lucide-solid/icons/file-text'
@@ -20,6 +19,7 @@ import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
+import { useMruProviders } from '~/hooks/useMruProviders'
 import { tabKey, TabType } from '~/stores/tab.store'
 import { menuSectionHeader, monoFont } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
@@ -95,6 +95,12 @@ interface TabBarProps {
 
 export const TabBar: Component<TabBarProps> = (props) => {
   const prefs = usePreferences()
+  const { mruProviders, recordProviderUse } = useMruProviders(() => props.availableProviders ?? [], 2)
+  const handleNewAgent = (provider?: AgentProvider) => {
+    if (provider !== undefined)
+      recordProviderUse(provider)
+    props.onNewAgent(provider)
+  }
   const newTerminalLabel = () => props.hasActiveTabContext ? 'New terminal at the current working directory' : 'New terminal...'
 
   const [editingTabKey, setEditingTabKey] = createSignal<string | null>(null)
@@ -276,6 +282,23 @@ export const TabBar: Component<TabBarProps> = (props) => {
   const renderMoreMenuItems = () => (
     <>
       <li class={menuSectionHeader}>Agents</li>
+      <Show when={props.availableProviders?.length}>
+        <li class={styles.providerIconsRow}>
+          <For each={props.availableProviders}>
+            {provider => (
+              <TabBarTooltip text={`New ${agentProviderLabel(provider)} agent`}>
+                <button
+                  type="button"
+                  class={styles.providerButton}
+                  onClick={() => handleNewAgent(provider)}
+                >
+                  <AgentProviderIcon provider={provider} size={16} />
+                </button>
+              </TabBarTooltip>
+            )}
+          </For>
+        </li>
+      </Show>
       <button role="menuitem" onClick={() => props.onNewAgentAdvanced?.()}>
         New agent...
       </button>
@@ -362,33 +385,48 @@ export const TabBar: Component<TabBarProps> = (props) => {
       <Show when={props.showAddButton}>
         {/* Full / Compact: individual new-tab buttons */}
         <div class={styles.newTabWrapper}>
-          <For each={props.availableProviders ?? []}>
-            {provider => (
-              <TabBarTooltip text={`New ${agentProviderLabel(provider)} agent`}>
-                <Show
-                  when={!props.newAgentLoading}
-                  fallback={(
-                    <IconButton
-                      icon={Bot}
-                      iconSize="md"
-                      size="md"
-                      state={IconButtonState.Loading}
-                      data-testid={`new-agent-button-${provider}`}
-                    />
-                  )}
-                >
-                  <button
-                    type="button"
-                    class={styles.providerButton}
-                    data-testid={`new-agent-button-${provider}`}
-                    onClick={() => props.onNewAgent(provider)}
-                  >
-                    <AgentProviderIcon provider={provider} size={16} />
-                  </button>
-                </Show>
+          <Show
+            when={mruProviders().length > 0}
+            fallback={(
+              <TabBarTooltip text="No agents available">
+                <IconButton
+                  icon={Bot}
+                  iconSize="md"
+                  size="md"
+                  state={IconButtonState.Disabled}
+                  data-testid="new-agent-button-disabled"
+                />
               </TabBarTooltip>
             )}
-          </For>
+          >
+            <For each={mruProviders()}>
+              {provider => (
+                <TabBarTooltip text={`New ${agentProviderLabel(provider)} agent`}>
+                  <Show
+                    when={!props.newAgentLoading}
+                    fallback={(
+                      <IconButton
+                        icon={Bot}
+                        iconSize="md"
+                        size="md"
+                        state={IconButtonState.Loading}
+                        data-testid={`new-agent-button-${provider}`}
+                      />
+                    )}
+                  >
+                    <button
+                      type="button"
+                      class={styles.providerButton}
+                      data-testid={`new-agent-button-${provider}`}
+                      onClick={() => handleNewAgent(provider)}
+                    >
+                      <AgentProviderIcon provider={provider} size={16} />
+                    </button>
+                  </Show>
+                </TabBarTooltip>
+              )}
+            </For>
+          </Show>
           <TabBarTooltip text={newTerminalLabel()}>
             <IconButton
               icon={Terminal}
@@ -403,7 +441,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
             trigger={triggerProps => (
               <TabBarTooltip text="More options">
                 <IconButton
-                  icon={ChevronDown}
+                  icon={Plus}
                   iconSize="md"
                   size="md"
                   state={props.newShellLoading ? IconButtonState.Loading : IconButtonState.Enabled}

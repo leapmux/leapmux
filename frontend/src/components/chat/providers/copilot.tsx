@@ -26,7 +26,7 @@ const settingsConfig: ACPSettingsPanelConfig = {
   testIdPrefix: 'permission-mode',
 }
 
-registerProvider(AgentProvider.COPILOT_CLI, {
+registerProvider(AgentProvider.GITHUB_COPILOT, {
   defaultModel: DEFAULT_COPILOT_MODEL || undefined,
   defaultPermissionMode: COPILOT_MODE_AGENT,
   attachments: { text: true, image: true, pdf: true, binary: true },

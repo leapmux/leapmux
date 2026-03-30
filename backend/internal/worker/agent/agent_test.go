@@ -14,7 +14,7 @@ func TestAvailableOptionGroups_DefaultOptionMetadata(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_COPILOT_CLI,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
 	} {
 		groups := AvailableOptionGroupsForProvider(provider)
 		require.NotEmpty(t, groups)

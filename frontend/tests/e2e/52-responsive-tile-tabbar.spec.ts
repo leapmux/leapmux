@@ -55,9 +55,8 @@ test.describe('Responsive Tile TabBar', () => {
       await expect(rightTile).toHaveAttribute('data-tile-size', 'compact')
 
       // Tab text should be hidden (display: none via CSS)
-      // New agent/terminal buttons should still be visible
-      await expect(rightTile.locator('[data-testid^="new-agent-button"]')).toBeVisible()
-      await expect(rightTile.locator('[data-testid="new-terminal-button"]')).toBeVisible()
+      // Individual new-tab buttons should be collapsed into the + dropdown
+      await expect(rightTile.locator('[data-testid="collapsed-new-tab-button"]')).toBeVisible()
     }
   })
 
@@ -89,7 +88,7 @@ test.describe('Responsive Tile TabBar', () => {
     // which should be compact. Verify at least all tiles have a size class
     for (let i = 0; i < 3; i++) {
       const size = await tiles.nth(i).getAttribute('data-tile-size')
-      expect(['full', 'compact', 'minimal', 'micro']).toContain(size)
+      expect(['full', 'narrow', 'compact', 'minimal', 'micro']).toContain(size)
     }
   })
 
@@ -104,16 +103,16 @@ test.describe('Responsive Tile TabBar', () => {
     const leftTile = tiles.nth(0)
     const rightTile = tiles.nth(1)
 
-    // Both tiles should initially be at full or compact (each ~50% of ~788px ≈ ~394px)
+    // Both tiles should initially be at full or narrow (each ~50% of ~788px ≈ ~394px)
     const leftSize = await leftTile.getAttribute('data-tile-size')
-    expect(leftSize).toBe('full')
+    expect(['full', 'narrow']).toContain(leftSize)
 
     // Drag resize handle far left to make left tile very narrow
     await dragResizeHandle(page, 0, -200, 0)
 
-    // Left tile should now be compact or smaller
+    // Left tile should now be narrow or smaller
     const newLeftSize = await leftTile.getAttribute('data-tile-size')
-    expect(['compact', 'minimal', 'micro']).toContain(newLeftSize)
+    expect(['narrow', 'compact', 'minimal', 'micro']).toContain(newLeftSize)
 
     // Right tile should be full (wider than before)
     const newRightSize = await rightTile.getAttribute('data-tile-size')

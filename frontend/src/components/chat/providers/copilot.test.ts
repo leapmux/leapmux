@@ -17,7 +17,7 @@ const MODE_PLAN = 'https://agentclientprotocol.com/protocol/session-modes#plan'
 const MODE_AUTOPILOT = 'https://agentclientprotocol.com/protocol/session-modes#autopilot'
 
 describe('copilot provider', () => {
-  const plugin = getProviderPlugin(AgentProvider.COPILOT_CLI)!
+  const plugin = getProviderPlugin(AgentProvider.GITHUB_COPILOT)!
 
   it('exposes attachment capabilities', () => {
     expect(plugin.attachments).toEqual({
@@ -71,7 +71,7 @@ describe('copilot provider', () => {
 })
 
 describe('copilot settings panel', () => {
-  const plugin = getProviderPlugin(AgentProvider.COPILOT_CLI)!
+  const plugin = getProviderPlugin(AgentProvider.GITHUB_COPILOT)!
 
   it('renders runtime modes and updates through permission-mode callback', async () => {
     const onPermissionModeChange = vi.fn()
