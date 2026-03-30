@@ -2,6 +2,7 @@
 import './claude'
 import './copilot'
 import './codex'
+import './cursor'
 import './gemini'
 import './opencode'
 import './stubs'

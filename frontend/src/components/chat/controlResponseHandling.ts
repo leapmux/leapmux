@@ -10,6 +10,7 @@ import { safeGetJson, safeRemoveItem, safeSetJson } from '~/lib/safeStorage'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import { buildAskAnswers, trySubmitAskUserQuestion } from './controls/AskUserQuestionControl'
 import { sendCodexUserInputResponse } from './controls/CodexControlRequest'
+import { sendCursorQuestionResponse } from './controls/CursorControlRequest'
 import { sendOpenCodeQuestionResponse } from './controls/OpenCodeControlRequest'
 import { getProviderPlugin } from './providers'
 
@@ -177,6 +178,20 @@ export function useControlResponseHandling(
               multiSelect: (question.multiSelect as boolean | undefined) ?? (question.multiple as boolean | undefined),
             })) as Question[]
           }
+          case AgentProvider.CURSOR_CLI: {
+            const params = req.payload.params as Record<string, unknown> | undefined
+            const rawQuestions = (params?.questions as Array<Record<string, unknown>> | undefined) ?? []
+            return rawQuestions.map(question => ({
+              id: question.id as string | undefined,
+              question: (question.prompt as string | undefined) ?? '',
+              header: (question.prompt as string | undefined) ?? (question.id as string | undefined),
+              multiSelect: (question.allowMultiple as boolean | undefined) ?? false,
+              options: ((question.options as Array<Record<string, unknown>> | undefined) ?? []).map(option => ({
+                id: option.id as string | undefined,
+                label: (option.label as string | undefined) ?? (option.id as string | undefined) ?? '',
+              })),
+            })) as Question[]
+          }
           default:
             return (getToolInput(req.payload).questions as Question[] | undefined) ?? []
         }
@@ -198,6 +213,9 @@ export function useControlResponseHandling(
             break
           case AgentProvider.OPENCODE:
             void sendOpenCodeQuestionResponse(req.agentId, sendControlResponse, req.requestId, normalizedQuestions, askState)
+            break
+          case AgentProvider.CURSOR_CLI:
+            void sendCursorQuestionResponse(req.agentId, sendControlResponse, req.requestId, normalizedQuestions, askState)
             break
           default: {
             const response = buildAskAnswers(askState, normalizedQuestions, getToolInput(req.payload), req.requestId)

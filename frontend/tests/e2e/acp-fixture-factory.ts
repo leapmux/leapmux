@@ -20,6 +20,8 @@ export interface ACPFixtureConfig {
   skipMessage?: string
   /** Prefix for workspace names (e.g. 'copilot-e2e', 'gemini-e2e', 'opencode-e2e'). */
   workspacePrefix: string
+  /** Optional explicit model to use when opening the agent. */
+  model?: string
 }
 
 export interface WorkspaceFixture {
@@ -53,6 +55,7 @@ export async function createACPWorkspace(
   )
   await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, undefined, {
     agentProvider: config.agentProvider,
+    model: config.model,
   })
   const workspaceUrl = `/o/admin/workspace/${workspaceId}`
 

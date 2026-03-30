@@ -16,16 +16,6 @@ const (
 	CopilotCLIModeAutopilot = "https://agentclientprotocol.com/protocol/session-modes#autopilot"
 )
 
-type copilotCLIConfigOption struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	CurrentValue string `json:"currentValue"`
-	Options      []struct {
-		Value string `json:"value"`
-		Name  string `json:"name"`
-	} `json:"options"`
-}
-
 // CopilotCLIAgent manages a single Copilot CLI ACP process.
 type CopilotCLIAgent struct {
 	acpBase
@@ -98,11 +88,7 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 	}
 
 	// Parse Copilot-specific configOptions from the raw session response.
-	var copilotSession struct {
-		ConfigOptions []copilotCLIConfigOption `json:"configOptions"`
-	}
-	_ = json.Unmarshal(handshake.Raw, &copilotSession)
-	a.syncConfigOptions(copilotSession.ConfigOptions)
+	a.syncConfigOptions(handshake.ConfigOptions)
 
 	cleanup := func() {
 		a.Stop()

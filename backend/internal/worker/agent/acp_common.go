@@ -74,6 +74,7 @@ type acpBase struct {
 	sink               OutputSink
 	providerName       string                  // e.g. "copilot", "gemini", "opencode" — used in log messages
 	extraSessionUpdate acpSessionUpdateHandler // optional provider-specific session update handler
+	extraMethod        acpMethodHandler        // optional provider-specific request/notification handler
 	sessionID          string
 	model              string
 	availableModels    []*leapmuxv1.AvailableModel
@@ -108,6 +109,10 @@ func (b *acpBase) handleACPPromptResponse(resp json.RawMessage, prePersist func(
 // acpSessionUpdateHandler is called for session update types not handled by
 // the shared dispatcher. Return true if the update was consumed.
 type acpSessionUpdateHandler func(sessionUpdate string, update json.RawMessage) bool
+
+// acpMethodHandler is called for JSON-RPC methods not handled by the shared
+// ACP dispatcher. Return true if the method was consumed.
+type acpMethodHandler func(line *parsedLine) bool
 
 // handleACPSessionUpdate dispatches ACP sessionUpdate notifications by type.
 func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessionUpdateHandler) {
@@ -182,6 +187,13 @@ type jsonrpcMessage struct {
 	Params  json.RawMessage `json:"params,omitempty"`
 }
 
+type jsonrpcResponseMessage struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Result  any             `json:"result,omitempty"`
+	Error   any             `json:"error,omitempty"`
+}
+
 func (b *jsonrpcBase) sendRequest(method string, params json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
 	reqID := b.nextReqID.Add(1)
 
@@ -234,6 +246,37 @@ func (b *jsonrpcBase) sendNotification(method string, params json.RawMessage) er
 		return fmt.Errorf("write notification: %w", err)
 	}
 
+	return nil
+}
+
+func (b *jsonrpcBase) sendResponse(id json.RawMessage, result any) error {
+	return b.writeJSONRPCResponse(jsonrpcResponseMessage{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result:  result,
+	})
+}
+
+func (b *jsonrpcBase) sendErrorResponse(id json.RawMessage, code int, message string) error {
+	return b.writeJSONRPCResponse(jsonrpcResponseMessage{
+		JSONRPC: "2.0",
+		ID:      id,
+		Error: map[string]interface{}{
+			"code":    code,
+			"message": message,
+		},
+	})
+}
+
+func (b *jsonrpcBase) writeJSONRPCResponse(resp jsonrpcResponseMessage) error {
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Errorf("marshal response: %w", err)
+	}
+	data = append(data, '\n')
+	if _, err := b.stdin.Write(data); err != nil {
+		return fmt.Errorf("write response: %w", err)
+	}
 	return nil
 }
 
@@ -571,6 +614,26 @@ func jsonRPCResultError(resp json.RawMessage) error {
 	return fmt.Errorf("json-rpc error %d: %s", code, message)
 }
 
+func extractJSONRPCID(content []byte) (json.RawMessage, string, bool) {
+	var payload struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if json.Unmarshal(content, &payload) != nil || len(payload.ID) == 0 || string(payload.ID) == "null" {
+		return nil, "", false
+	}
+
+	var text string
+	if json.Unmarshal(payload.ID, &text) == nil {
+		return payload.ID, text, true
+	}
+
+	text = strings.TrimSpace(string(payload.ID))
+	if text == "" {
+		return nil, "", false
+	}
+	return payload.ID, text, true
+}
+
 // acpSessionConfig describes the session methods for a specific ACP provider.
 type acpSessionConfig struct {
 	newMethod    string // e.g. "session/new"
@@ -590,6 +653,7 @@ type acpSessionResult struct {
 	Models         []acpModelInfo
 	CurrentModeID  string
 	Modes          []acpModeInfo
+	ConfigOptions  []acpConfigOption
 	Raw            json.RawMessage // full session response for provider-specific parsing
 }
 
@@ -657,6 +721,7 @@ func (b *acpBase) startACPHandshake(
 			CurrentModeID  string        `json:"currentModeId"`
 			AvailableModes []acpModeInfo `json:"availableModes"`
 		} `json:"modes"`
+		ConfigOptions []acpConfigOption `json:"configOptions"`
 	}
 	if err := json.Unmarshal(sessionResp, &session); err != nil {
 		cleanup()
@@ -678,6 +743,7 @@ func (b *acpBase) startACPHandshake(
 		SessionID:      session.SessionID,
 		CurrentModelID: session.Models.CurrentModelID,
 		Models:         session.Models.AvailableModels,
+		ConfigOptions:  session.ConfigOptions,
 		Raw:            sessionResp,
 	}
 	if session.Modes != nil {
@@ -698,6 +764,20 @@ type acpModeInfo struct {
 // acpModelInfo is the JSON shape shared by all ACP providers for model metadata.
 type acpModelInfo struct {
 	ModelID     string `json:"modelId"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+type acpConfigOption struct {
+	ID           string                 `json:"id"`
+	Name         string                 `json:"name"`
+	Description  string                 `json:"description"`
+	CurrentValue string                 `json:"currentValue"`
+	Options      []acpConfigOptionValue `json:"options"`
+}
+
+type acpConfigOptionValue struct {
+	Value       string `json:"value"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
 }
@@ -742,6 +822,94 @@ func buildACPModes(modes []acpModeInfo, currentModeID string, filter func(id str
 		})
 	}
 	return result
+}
+
+func parseACPConfigOptions(raw json.RawMessage) []acpConfigOption {
+	var payload struct {
+		ConfigOptions []acpConfigOption `json:"configOptions"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return nil
+	}
+	return payload.ConfigOptions
+}
+
+func syncACPConfigOptions(
+	model *string,
+	mode *string,
+	availableModels *[]*leapmuxv1.AvailableModel,
+	availableModes *[]*leapmuxv1.AvailableOption,
+	options []acpConfigOption,
+	normalize func(configID, value string) string,
+) string {
+	if len(options) == 0 {
+		return ""
+	}
+	if normalize == nil {
+		normalize = func(_ string, value string) string { return value }
+	}
+
+	var updatedMode string
+	for _, option := range options {
+		switch option.ID {
+		case "model":
+			currentValue := normalize(option.ID, option.CurrentValue)
+			if currentValue != "" {
+				*model = currentValue
+			}
+			if len(option.Options) > 0 {
+				models := make([]*leapmuxv1.AvailableModel, 0, len(option.Options))
+				for _, candidate := range option.Options {
+					value := normalize(option.ID, candidate.Value)
+					if value == "" {
+						continue
+					}
+					name := candidate.Name
+					if name == "" {
+						name = value
+					}
+					models = append(models, &leapmuxv1.AvailableModel{
+						Id:          value,
+						DisplayName: name,
+						Description: candidate.Description,
+						IsDefault:   value == currentValue,
+					})
+				}
+				if len(models) > 0 {
+					*availableModels = models
+				}
+			}
+		case "mode":
+			currentValue := normalize(option.ID, option.CurrentValue)
+			if currentValue != "" {
+				*mode = currentValue
+				updatedMode = currentValue
+			}
+			if len(option.Options) > 0 {
+				modes := make([]*leapmuxv1.AvailableOption, 0, len(option.Options))
+				for _, candidate := range option.Options {
+					value := normalize(option.ID, candidate.Value)
+					if value == "" {
+						continue
+					}
+					name := candidate.Name
+					if name == "" {
+						name = value
+					}
+					modes = append(modes, &leapmuxv1.AvailableOption{
+						Id:          value,
+						Name:        name,
+						Description: candidate.Description,
+						IsDefault:   value == currentValue,
+					})
+				}
+				if len(modes) > 0 {
+					*availableModes = modes
+				}
+			}
+		}
+	}
+	return updatedMode
 }
 
 // AvailableModels returns the models reported by the ACP provider.
@@ -852,7 +1020,7 @@ func (b *acpBase) handleRequestPermission(id *json.Number, content []byte) {
 // extraSessionUpdate handler. Used as the outputHandler for readOutputLoop.
 func (b *acpBase) handleOutput(line *parsedLine) {
 	slog.Debug("acp HandleOutput", "provider", b.providerName, "agent_id", b.agentID, "method", line.Method, "len", len(line.Raw))
-	b.handleACPOutput(line, b.extraSessionUpdate)
+	b.handleACPOutput(line, b.extraSessionUpdate, b.extraMethod)
 }
 
 // HandleOutput processes a single JSONL notification from an ACP provider.
@@ -862,13 +1030,16 @@ func (b *acpBase) HandleOutput(content []byte) {
 
 // handleACPOutput is the shared output dispatcher for all ACP providers.
 // It routes session updates and permission requests, persisting anything else.
-func (b *acpBase) handleACPOutput(line *parsedLine, extraSessionUpdate acpSessionUpdateHandler) {
+func (b *acpBase) handleACPOutput(line *parsedLine, extraSessionUpdate acpSessionUpdateHandler, extraMethod acpMethodHandler) {
 	switch line.Method {
 	case acpMethodSessionUpdate:
 		b.handleACPSessionUpdate(line.Params, extraSessionUpdate)
 	case acpMethodSessionRequestPermission:
 		b.handleRequestPermission(line.ID, line.Raw)
 	default:
+		if extraMethod != nil && extraMethod(line) {
+			return
+		}
 		if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, line.Raw, SpanInfo{}); err != nil {
 			slog.Error("acp persist notification", "agent_id", b.agentID, "method", line.Method, "error", err)
 		}

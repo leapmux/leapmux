@@ -5,7 +5,7 @@ import { RefreshButton } from '~/components/common/RefreshButton'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { labelRow } from '~/styles/shared.css'
 
-const allProviders = [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX, AgentProvider.GEMINI_CLI, AgentProvider.OPENCODE, AgentProvider.COPILOT_CLI]
+const allProviders = [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX, AgentProvider.GEMINI_CLI, AgentProvider.OPENCODE, AgentProvider.COPILOT_CLI, AgentProvider.CURSOR_CLI]
 
 interface AgentProviderSelectorProps {
   value: Accessor<AgentProvider>

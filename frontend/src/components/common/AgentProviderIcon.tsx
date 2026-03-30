@@ -10,6 +10,7 @@ export function agentProviderLabel(provider?: AgentProvider): string {
     case AgentProvider.GEMINI_CLI: return 'Gemini CLI'
     case AgentProvider.OPENCODE: return 'OpenCode'
     case AgentProvider.COPILOT_CLI: return 'Copilot CLI'
+    case AgentProvider.CURSOR_CLI: return 'Cursor CLI'
     default: return 'Unknown'
   }
 }
@@ -127,6 +128,24 @@ function CopilotCliIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
+function CursorCliIcon(props: { size: number, class?: string }): JSX.Element {
+  return (
+    <svg
+      fill="#000"
+      fill-rule="evenodd"
+      height={props.size}
+      width={props.size}
+      viewBox="0 0 24 24"
+      xmlns="http://www.w3.org/2000/svg"
+      class={props.class}
+      style={iconStyle(props.size)}
+    >
+      <title>Cursor</title>
+      <path d="M22.106 5.68 12.5.135a.998.998 0 0 0-.998 0L1.893 5.68a.84.84 0 0 0-.419.726v11.186c0 .3.16.577.42.727l9.607 5.547a.999.999 0 0 0 .998 0l9.608-5.547a.84.84 0 0 0 .42-.727V6.407a.84.84 0 0 0-.42-.726zm-.603 1.176L12.228 22.92c-.063.108-.228.064-.228-.061V12.34a.59.59 0 0 0-.295-.51l-9.11-5.26c-.107-.062-.063-.228.062-.228h18.55c.264 0 .428.286.296.514z" />
+    </svg>
+  )
+}
+
 export interface AgentProviderIconProps {
   provider?: AgentProvider
   size: number
@@ -150,6 +169,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.COPILOT_CLI}>
         <CopilotCliIcon size={props.size} class={props.class} />
+      </Match>
+      <Match when={props.provider === AgentProvider.CURSOR_CLI}>
+        <CursorCliIcon size={props.size} class={props.class} />
       </Match>
     </Switch>
   )

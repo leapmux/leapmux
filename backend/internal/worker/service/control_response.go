@@ -175,6 +175,135 @@ func opencodeQuestionAnswersText(requestPayload, responseContent []byte) string 
 	return strings.Join(lines, "\n")
 }
 
+func cursorQuestionAnswersText(requestPayload, responseContent []byte) string {
+	var req struct {
+		Params struct {
+			Questions []struct {
+				ID      string `json:"id"`
+				Prompt  string `json:"prompt"`
+				Options []struct {
+					ID    string `json:"id"`
+					Label string `json:"label"`
+				} `json:"options"`
+			} `json:"questions"`
+		} `json:"params"`
+	}
+	var resp struct {
+		Result struct {
+			Outcome struct {
+				Outcome string `json:"outcome"`
+				Reason  string `json:"reason"`
+				Answers []struct {
+					QuestionID        string   `json:"questionId"`
+					SelectedOptionIDs []string `json:"selectedOptionIds"`
+				} `json:"answers"`
+			} `json:"outcome"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(requestPayload, &req) != nil || json.Unmarshal(responseContent, &resp) != nil {
+		return ""
+	}
+
+	switch resp.Result.Outcome.Outcome {
+	case "answered":
+		labels := make(map[string]string, len(req.Params.Questions))
+		optionLabels := make(map[string]map[string]string, len(req.Params.Questions))
+		order := make([]string, 0, len(req.Params.Questions))
+		for _, q := range req.Params.Questions {
+			if strings.TrimSpace(q.ID) == "" {
+				continue
+			}
+			labels[q.ID] = strings.TrimSpace(q.Prompt)
+			options := make(map[string]string, len(q.Options))
+			for _, option := range q.Options {
+				if strings.TrimSpace(option.ID) == "" {
+					continue
+				}
+				label := strings.TrimSpace(option.Label)
+				if label == "" {
+					label = option.ID
+				}
+				options[option.ID] = label
+			}
+			optionLabels[q.ID] = options
+			order = append(order, q.ID)
+		}
+
+		answerByQuestion := make(map[string][]string, len(resp.Result.Outcome.Answers))
+		for _, answer := range resp.Result.Outcome.Answers {
+			if strings.TrimSpace(answer.QuestionID) == "" {
+				continue
+			}
+			mapped := make([]string, 0, len(answer.SelectedOptionIDs))
+			for _, optionID := range answer.SelectedOptionIDs {
+				optionID = strings.TrimSpace(optionID)
+				if optionID == "" {
+					continue
+				}
+				label := optionID
+				if options := optionLabels[answer.QuestionID]; options != nil {
+					if mappedLabel := strings.TrimSpace(options[optionID]); mappedLabel != "" {
+						label = mappedLabel
+					}
+				}
+				mapped = append(mapped, label)
+			}
+			if len(mapped) > 0 {
+				answerByQuestion[answer.QuestionID] = mapped
+			}
+		}
+
+		lines := make([]string, 0, len(answerByQuestion))
+		for _, questionID := range order {
+			mapped := answerByQuestion[questionID]
+			if len(mapped) == 0 {
+				continue
+			}
+			label := strings.TrimSpace(labels[questionID])
+			if label == "" {
+				label = questionID
+			}
+			lines = append(lines, fmt.Sprintf("%s: %s", label, strings.Join(mapped, ", ")))
+		}
+		return strings.Join(lines, "\n")
+	case "cancelled", "skipped":
+		return strings.TrimSpace(resp.Result.Outcome.Reason)
+	default:
+		return ""
+	}
+}
+
+func cursorCreatePlanResponseDisplayText(responseContent []byte) string {
+	var resp struct {
+		Result struct {
+			Outcome struct {
+				Outcome string `json:"outcome"`
+				Reason  string `json:"reason"`
+			} `json:"outcome"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(responseContent, &resp) != nil {
+		return ""
+	}
+
+	switch resp.Result.Outcome.Outcome {
+	case "accepted":
+		return "Accept"
+	case "rejected":
+		if reason := strings.TrimSpace(resp.Result.Outcome.Reason); reason != "" {
+			return reason
+		}
+		return "Reject"
+	case "cancelled":
+		if reason := strings.TrimSpace(resp.Result.Outcome.Reason); reason != "" {
+			return reason
+		}
+		return "Cancel"
+	default:
+		return ""
+	}
+}
+
 func (svc *Context) controlResponseDisplayText(agentID string, provider leapmuxv1.AgentProvider, content []byte) string {
 	switch provider {
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:
@@ -184,6 +313,8 @@ func (svc *Context) controlResponseDisplayText(agentID string, provider leapmuxv
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:
 		// handled below
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_COPILOT_CLI:
+		// handled below
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR_CLI:
 		// handled below
 	default:
 		return ""
@@ -224,6 +355,15 @@ func (svc *Context) controlResponseDisplayText(agentID string, provider leapmuxv
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_COPILOT_CLI:
 		return acpPermissionResponseDisplayText(cr.Payload, content)
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR_CLI:
+		switch payload.Method {
+		case "cursor/ask_question":
+			return cursorQuestionAnswersText(cr.Payload, content)
+		case "cursor/create_plan":
+			return cursorCreatePlanResponseDisplayText(content)
+		default:
+			return ""
+		}
 	default:
 		return ""
 	}

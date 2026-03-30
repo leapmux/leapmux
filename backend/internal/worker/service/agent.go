@@ -719,6 +719,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
+		content = svc.normalizeProviderControlResponse(agentID, dbAgent.AgentProvider, content)
 		displayText := svc.controlResponseDisplayText(agentID, dbAgent.AgentProvider, content)
 
 		// Detect plan mode changes from the control response before
@@ -1455,6 +1456,104 @@ func (svc *Context) handleCodexPlanModePromptResponse(agentID string, content []
 	}
 
 	return true
+}
+
+func (svc *Context) normalizeProviderControlResponse(agentID string, provider leapmuxv1.AgentProvider, content []byte) []byte {
+	switch provider {
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR_CLI:
+		if transformed, ok := svc.transformCursorControlResponse(agentID, content); ok {
+			return transformed
+		}
+	}
+	return content
+}
+
+func (svc *Context) transformCursorControlResponse(agentID string, content []byte) ([]byte, bool) {
+	var crPayload struct {
+		Response struct {
+			RequestID string `json:"request_id"`
+			Response  struct {
+				Behavior string `json:"behavior"`
+				Message  string `json:"message"`
+			} `json:"response"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(content, &crPayload); err != nil {
+		return nil, false
+	}
+
+	reqID := strings.TrimSpace(crPayload.Response.RequestID)
+	if reqID == "" {
+		return nil, false
+	}
+
+	cr, err := svc.Queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{
+		AgentID:   agentID,
+		RequestID: reqID,
+	})
+	if err != nil {
+		return nil, false
+	}
+
+	var req struct {
+		Method string `json:"method"`
+	}
+	if json.Unmarshal(cr.Payload, &req) != nil {
+		return nil, false
+	}
+	if req.Method != "cursor/create_plan" {
+		return nil, false
+	}
+
+	idRaw, _, ok := controlResponseRPCID(cr.Payload)
+	if !ok {
+		return nil, false
+	}
+
+	outcome := "accepted"
+	response := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      json.RawMessage(idRaw),
+		"result": map[string]interface{}{
+			"outcome": map[string]interface{}{
+				"outcome": outcome,
+			},
+		},
+	}
+
+	if crPayload.Response.Response.Behavior == agent.ControlBehaviorDeny {
+		outcome = "rejected"
+		result := response["result"].(map[string]interface{})
+		outcomeBody := result["outcome"].(map[string]interface{})
+		outcomeBody["outcome"] = outcome
+		if reason := strings.TrimSpace(crPayload.Response.Response.Message); reason != "" && reason != "Rejected by user." {
+			outcomeBody["reason"] = reason
+		}
+	}
+
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		return nil, false
+	}
+	return encoded, true
+}
+
+func controlResponseRPCID(content []byte) ([]byte, string, bool) {
+	var payload struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if json.Unmarshal(content, &payload) != nil || len(payload.ID) == 0 || string(payload.ID) == "null" {
+		return nil, "", false
+	}
+	var text string
+	if json.Unmarshal(payload.ID, &text) == nil {
+		return payload.ID, text, true
+	}
+	text = strings.TrimSpace(string(payload.ID))
+	if text == "" {
+		return nil, "", false
+	}
+	return payload.ID, text, true
 }
 
 // extractControlResponseRequestID extracts the control request ID from a
