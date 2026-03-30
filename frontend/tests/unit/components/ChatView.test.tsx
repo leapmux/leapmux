@@ -9,13 +9,23 @@ import { AgentProvider, ContentCompression, MessageRole } from '~/generated/leap
 
 const A_TXT_RE = /a\.txt/
 const B_TXT_RE = /b\.txt/
+const resizeObserverCallbacks: ResizeObserverCallback[] = []
 
 // jsdom does not provide ResizeObserver or Worker
 beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
+  globalThis.ResizeObserver = class {
+    private callback: ResizeObserverCallback
+    constructor(callback: ResizeObserverCallback) {
+      this.callback = callback
+      resizeObserverCallbacks.push(callback)
+    }
     observe() {}
     unobserve() {}
-    disconnect() {}
+    disconnect() {
+      const idx = resizeObserverCallbacks.indexOf(this.callback)
+      if (idx >= 0)
+        resizeObserverCallbacks.splice(idx, 1)
+    }
   } as unknown as typeof ResizeObserver
   globalThis.Worker ??= class {
     onmessage: ((e: MessageEvent) => void) | null = null
@@ -27,6 +37,16 @@ beforeAll(() => {
     dispatchEvent() { return false }
   } as unknown as typeof Worker
 })
+
+async function flushAnimationFrame() {
+  await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)))
+}
+
+async function triggerResizeObservers() {
+  for (const callback of [...resizeObserverCallbacks])
+    callback([], {} as ResizeObserver)
+  await flushAnimationFrame()
+}
 
 function makeMessage(role: string, text: string, id: string = '1'): AgentChatMessage {
   const content = JSON.stringify({
@@ -417,7 +437,7 @@ describe('chatView', () => {
     })
 
     setMessages([...initialMessages])
-    await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)))
+    await flushAnimationFrame()
 
     scrollTop = 50
     fireEvent.scroll(messageList)
@@ -483,7 +503,7 @@ describe('chatView', () => {
     })
 
     setMessages([...initialMessages])
-    await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)))
+    await flushAnimationFrame()
 
     scrollTop = 50
     fireEvent.scroll(messageList)
@@ -548,7 +568,7 @@ describe('chatView', () => {
     })
 
     setMessages([...initialMessages])
-    await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)))
+    await flushAnimationFrame()
 
     scrollTop = 50
     fireEvent.scroll(messageList)
@@ -574,6 +594,144 @@ describe('chatView', () => {
 
     await waitFor(() => expect(view.container).toHaveTextContent('Newest 3'))
     expect(scrollTop).toBe(650)
+  })
+
+  it('suppresses passive older-message loading when restored to top after trim clamping', async () => {
+    const messages = [
+      makeMessage('assistant', 'Retained 1', 'msg-1'),
+      makeMessage('assistant', 'Retained 2', 'msg-2'),
+    ].map((message, index) => ({ ...message, seq: BigInt(index + 1) }))
+    const onLoadOlderMessages = vi.fn()
+    const onClearSavedViewportScroll = vi.fn()
+
+    render(() => (
+      <PreferencesProvider>
+        <ChatView
+          messages={messages}
+          streamingText=""
+          hasOlderMessages={true}
+          savedViewportScroll={{ distFromBottom: 9999, atBottom: false }}
+          onLoadOlderMessages={onLoadOlderMessages}
+          onClearSavedViewportScroll={onClearSavedViewportScroll}
+        />
+      </PreferencesProvider>
+    ))
+
+    const chatContainer = screen.getByTestId('chat-container')
+    const messageList = chatContainer.firstElementChild?.firstElementChild as HTMLDivElement
+
+    let scrollTop = 0
+    let scrollHeight = 300
+    let clientHeight = 0
+    Object.defineProperty(messageList, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value
+      },
+    })
+    Object.defineProperty(messageList, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    })
+    Object.defineProperty(messageList, 'clientHeight', {
+      configurable: true,
+      get: () => clientHeight,
+    })
+
+    clientHeight = 100
+    await triggerResizeObservers()
+
+    expect(scrollTop).toBe(0)
+    expect(onClearSavedViewportScroll).toHaveBeenCalledTimes(1)
+
+    fireEvent.scroll(messageList)
+    expect(onLoadOlderMessages).not.toHaveBeenCalled()
+  })
+
+  it('loads older messages on explicit upward wheel intent while at top', () => {
+    const messages = [
+      makeMessage('assistant', 'Retained 1', 'msg-1'),
+      makeMessage('assistant', 'Retained 2', 'msg-2'),
+    ].map((message, index) => ({ ...message, seq: BigInt(index + 1) }))
+    const onLoadOlderMessages = vi.fn()
+
+    render(() => (
+      <PreferencesProvider>
+        <ChatView
+          messages={messages}
+          streamingText=""
+          hasOlderMessages={true}
+          onLoadOlderMessages={onLoadOlderMessages}
+        />
+      </PreferencesProvider>
+    ))
+
+    const chatContainer = screen.getByTestId('chat-container')
+    const messageList = chatContainer.firstElementChild?.firstElementChild as HTMLDivElement
+    Object.defineProperty(messageList, 'scrollTop', { configurable: true, get: () => 0 })
+    Object.defineProperty(messageList, 'clientHeight', { configurable: true, get: () => 200 })
+
+    fireEvent.wheel(messageList, { deltaY: -20 })
+    expect(onLoadOlderMessages).toHaveBeenCalledTimes(1)
+  })
+
+  it('loads older messages on explicit upward keyboard intent while at top', () => {
+    const messages = [
+      makeMessage('assistant', 'Retained 1', 'msg-1'),
+      makeMessage('assistant', 'Retained 2', 'msg-2'),
+    ].map((message, index) => ({ ...message, seq: BigInt(index + 1) }))
+    const onLoadOlderMessages = vi.fn()
+
+    render(() => (
+      <PreferencesProvider>
+        <ChatView
+          messages={messages}
+          streamingText=""
+          hasOlderMessages={true}
+          onLoadOlderMessages={onLoadOlderMessages}
+        />
+      </PreferencesProvider>
+    ))
+
+    const chatContainer = screen.getByTestId('chat-container')
+    const messageList = chatContainer.firstElementChild?.firstElementChild as HTMLDivElement
+    Object.defineProperty(messageList, 'scrollTop', { configurable: true, get: () => 0 })
+    Object.defineProperty(messageList, 'clientHeight', { configurable: true, get: () => 200 })
+
+    fireEvent.keyDown(messageList, { key: 'PageUp' })
+    expect(onLoadOlderMessages).toHaveBeenCalledTimes(1)
+  })
+
+  it('loads older messages on touch and pointer overscroll intent while at top', () => {
+    const messages = [
+      makeMessage('assistant', 'Retained 1', 'msg-1'),
+      makeMessage('assistant', 'Retained 2', 'msg-2'),
+    ].map((message, index) => ({ ...message, seq: BigInt(index + 1) }))
+    const onLoadOlderMessages = vi.fn()
+
+    render(() => (
+      <PreferencesProvider>
+        <ChatView
+          messages={messages}
+          streamingText=""
+          hasOlderMessages={true}
+          onLoadOlderMessages={onLoadOlderMessages}
+        />
+      </PreferencesProvider>
+    ))
+
+    const chatContainer = screen.getByTestId('chat-container')
+    const messageList = chatContainer.firstElementChild?.firstElementChild as HTMLDivElement
+    Object.defineProperty(messageList, 'scrollTop', { configurable: true, get: () => 0 })
+    Object.defineProperty(messageList, 'clientHeight', { configurable: true, get: () => 200 })
+
+    fireEvent.touchStart(messageList, { touches: [{ clientY: 100 }] })
+    fireEvent.touchMove(messageList, { touches: [{ clientY: 120 }] })
+    fireEvent.pointerDown(messageList, { pointerType: 'touch', clientY: 100 })
+    fireEvent.pointerMove(messageList, { pointerType: 'touch', clientY: 120 })
+
+    expect(onLoadOlderMessages).toHaveBeenCalledTimes(2)
   })
 
   it('keeps both codex commandExecution start and completed messages in history', () => {
