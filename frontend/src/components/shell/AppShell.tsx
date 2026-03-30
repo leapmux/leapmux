@@ -1,6 +1,7 @@
 import type { ParentComponent } from 'solid-js'
 import type { KeyPinConfirmState } from './AppShellDialogs'
 import type { SidebarElementsOpts } from './SidebarElements'
+import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createSignal, on, Show, untrack } from 'solid-js'
@@ -88,7 +89,7 @@ export const AppShell: ParentComponent = (props) => {
   const [showResumeDialog, setShowResumeDialog] = createSignal(false)
   const [showNewAgentDialog, setShowNewAgentDialog] = createSignal(false)
   const [showNewTerminalDialog, setShowNewTerminalDialog] = createSignal(false)
-  const [newAgentLoading, setNewAgentLoading] = createSignal(false)
+  const [newAgentLoadingProvider, setNewAgentLoadingProvider] = createSignal<AgentProvider | null>(null)
   const [newTerminalLoading, setNewTerminalLoading] = createSignal(false)
   const [newShellLoading, setNewShellLoading] = createSignal(false)
   const settingsLoading = createLoadingSignal(agentLoadingTimeoutMs(true))
@@ -434,7 +435,7 @@ export const AppShell: ParentComponent = (props) => {
     activeWorkspace,
     getCurrentTabContext,
     setShowNewAgentDialog,
-    setNewAgentLoading,
+    setNewAgentLoadingProvider,
     setShowResumeDialog,
     persistLayout,
     focusEditor: () => focusEditorRef.current?.(),
@@ -952,7 +953,7 @@ export const AppShell: ParentComponent = (props) => {
     setIsTabEditing: tabOps.setIsTabEditing,
     persistLayout,
     closingTabKeys: tabOps.closingTabKeys,
-    newAgentLoading,
+    newAgentLoadingProvider,
     newTerminalLoading,
     newShellLoading,
     isMobile,

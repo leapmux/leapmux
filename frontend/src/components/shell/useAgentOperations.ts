@@ -51,7 +51,7 @@ export interface UseAgentOperationsProps {
   activeWorkspace: () => Workspace | null
   getCurrentTabContext: () => { workerId: string, workingDir: string }
   setShowNewAgentDialog: (show: boolean) => void
-  setNewAgentLoading: (loading: boolean) => void
+  setNewAgentLoadingProvider: (provider: AgentProvider | null) => void
   setShowResumeDialog: (show: boolean) => void
   persistLayout?: () => void
   focusEditor?: () => void
@@ -152,12 +152,12 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       return
     }
     const provider = providerOverride ?? AgentProvider.CLAUDE_CODE
-    props.setNewAgentLoading(true)
+    props.setNewAgentLoadingProvider(provider)
     try {
       await openAgentInWorkspace(ws.id, ctx.workerId, ctx.workingDir, undefined, provider)
     }
     finally {
-      props.setNewAgentLoading(false)
+      props.setNewAgentLoadingProvider(null)
     }
   }
 
