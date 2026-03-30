@@ -174,7 +174,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         ) {
           chatStore.trimOldMessages(agentId, MAX_BACKGROUND_CHAT_MESSAGES)
         }
-        chatStore.clearStreamingText(agentId)
+        // Keep accumulating top-level assistant stream text until the turn's
+        // explicit completion boundary. Persisted user echoes, tool messages,
+        // and LEAPMUX notifications should not wipe the in-progress stream.
+        if (msg.role === MessageRole.RESULT)
+          chatStore.clearStreamingText(agentId)
 
         if (msg.spanId && (msg.spanType === 'commandExecution' || msg.spanType === 'fileChange' || msg.spanType === 'reasoning') && msg.role === MessageRole.ASSISTANT) {
           try {

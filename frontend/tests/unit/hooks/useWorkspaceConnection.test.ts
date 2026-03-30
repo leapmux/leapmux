@@ -236,3 +236,33 @@ describe('codex result replay handling', () => {
     })
   })
 })
+
+describe('streaming text preservation', () => {
+  it('keeps accumulated assistant streaming text when a persisted user message arrives mid-stream', () => {
+    createRoot((dispose) => {
+      const chatStore = createChatStore()
+
+      chatStore.setStreamingText('agent-1', 'Hello')
+
+      const echoedUserMessage = {
+        id: 'server-user-1',
+        role: MessageRole.USER,
+        content: new TextEncoder().encode(JSON.stringify({ content: 'follow-up' })),
+        contentCompression: ContentCompression.NONE,
+        seq: 1n,
+      } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
+
+      chatStore.addMessage('agent-1', echoedUserMessage)
+      if (echoedUserMessage.role !== MessageRole.USER)
+        chatStore.clearStreamingText('agent-1')
+
+      chatStore.setStreamingText('agent-1', `${chatStore.state.streamingText['agent-1'] ?? ''} world`)
+
+      expect(chatStore.state.streamingText['agent-1']).toBe('Hello world')
+
+      chatStore.clearStreamingText('agent-1')
+      expect(chatStore.state.streamingText['agent-1']).toBe('')
+      dispose()
+    })
+  })
+})
