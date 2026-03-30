@@ -21,6 +21,10 @@ const (
 	ControlBehaviorDeny  = "deny"
 )
 
+// OptionGroupKeyPermissionMode is the key used in AvailableOptionGroup
+// to identify the permission-mode option group across all providers.
+const OptionGroupKeyPermissionMode = "permissionMode"
+
 // ExitHandler is called when an agent process exits.
 // agentID identifies the agent, exitCode is the process exit code,
 // and err is non-nil if the process exited with an error.

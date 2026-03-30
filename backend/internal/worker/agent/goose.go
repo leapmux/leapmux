@@ -143,7 +143,7 @@ func (a *GooseCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGrou
 		options = fallbackGooseCLIModes()
 	}
 	return []*leapmuxv1.AvailableOptionGroup{{
-		Key:     "permissionMode",
+		Key:     OptionGroupKeyPermissionMode,
 		Label:   "Mode",
 		Options: options,
 	}}
@@ -187,7 +187,7 @@ func init() {
 		},
 		nil, // models discovered dynamically from session/new
 		[]*leapmuxv1.AvailableOptionGroup{{
-			Key:     "permissionMode",
+			Key:     OptionGroupKeyPermissionMode,
 			Label:   "Mode",
 			Options: fallbackGooseCLIModes(),
 		}},

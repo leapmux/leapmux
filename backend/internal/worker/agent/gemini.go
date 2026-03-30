@@ -192,7 +192,7 @@ func (a *GeminiCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGro
 		options = fallbackGeminiCLIModes()
 	}
 	return []*leapmuxv1.AvailableOptionGroup{{
-		Key:     "permissionMode",
+		Key:     OptionGroupKeyPermissionMode,
 		Label:   "Permission Mode",
 		Options: options,
 	}}
@@ -243,7 +243,7 @@ func init() {
 		},
 		geminiCLIAvailableModels,
 		[]*leapmuxv1.AvailableOptionGroup{{
-			Key:     "permissionMode",
+			Key:     OptionGroupKeyPermissionMode,
 			Label:   "Permission Mode",
 			Options: fallbackGeminiCLIModes(),
 		}},

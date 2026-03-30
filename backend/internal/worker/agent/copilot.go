@@ -141,7 +141,7 @@ func (a *CopilotCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGr
 		options = fallbackCopilotCLIModes()
 	}
 	return []*leapmuxv1.AvailableOptionGroup{{
-		Key:     "permissionMode",
+		Key:     OptionGroupKeyPermissionMode,
 		Label:   "Mode",
 		Options: options,
 	}}
@@ -185,7 +185,7 @@ func init() {
 		},
 		nil, // models discovered dynamically from session/new
 		[]*leapmuxv1.AvailableOptionGroup{{
-			Key:     "permissionMode",
+			Key:     OptionGroupKeyPermissionMode,
 			Label:   "Mode",
 			Options: fallbackCopilotCLIModes(),
 		}},

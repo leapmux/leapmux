@@ -676,7 +676,7 @@ func init() {
 				},
 			},
 			{
-				Key:   "permissionMode",
+				Key:   OptionGroupKeyPermissionMode,
 				Label: "Approval Policy",
 				Options: []*leapmuxv1.AvailableOption{
 					{Id: "never", Name: "Full Auto"},

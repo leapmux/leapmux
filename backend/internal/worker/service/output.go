@@ -613,7 +613,7 @@ func (s *agentOutputSink) UpdatePermissionMode(mode string) {
 		s.BroadcastNotification(map[string]interface{}{
 			"type": "settings_changed",
 			"changes": map[string]interface{}{
-				"permissionMode": map[string]string{"old": oldMode, "new": mode},
+				agent.OptionGroupKeyPermissionMode: map[string]string{"old": oldMode, "new": mode},
 			},
 		})
 	}
