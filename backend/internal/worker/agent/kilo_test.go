@@ -106,15 +106,15 @@ func TestKiloConfigurePrimaryAgentsUsesSessionCurrentMode(t *testing.T) {
 	agent := &KiloAgent{}
 	err := agent.configurePrimaryAgents([]acpModeInfo{
 		{ID: KiloPrimaryAgentCode, Name: KiloPrimaryAgentCode},
-		{ID: KiloPrimaryAgentPlan, Name: KiloPrimaryAgentPlan},
+		{ID: OpenCodePrimaryAgentPlan, Name: OpenCodePrimaryAgentPlan},
 		{ID: openCodeHiddenCompaction, Name: openCodeHiddenCompaction},
-	}, KiloPrimaryAgentPlan, "")
+	}, OpenCodePrimaryAgentPlan, "")
 	if err != nil {
 		t.Fatalf("configurePrimaryAgents: %v", err)
 	}
 
-	if agent.currentPrimaryAgent != KiloPrimaryAgentPlan {
-		t.Fatalf("expected current primary agent %q, got %q", KiloPrimaryAgentPlan, agent.currentPrimaryAgent)
+	if agent.currentPrimaryAgent != OpenCodePrimaryAgentPlan {
+		t.Fatalf("expected current primary agent %q, got %q", OpenCodePrimaryAgentPlan, agent.currentPrimaryAgent)
 	}
 	if len(agent.availablePrimaryAgents) != 2 {
 		t.Fatalf("expected 2 visible primary agents, got %d", len(agent.availablePrimaryAgents))
@@ -125,14 +125,14 @@ func TestKiloConfigurePrimaryAgentsRestoresSavedPrimaryAgent(t *testing.T) {
 	agent, requests := newKiloAgentForRPC(t)
 	err := agent.configurePrimaryAgents([]acpModeInfo{
 		{ID: KiloPrimaryAgentCode, Name: KiloPrimaryAgentCode},
-		{ID: KiloPrimaryAgentPlan, Name: KiloPrimaryAgentPlan},
-	}, KiloPrimaryAgentCode, KiloPrimaryAgentPlan)
+		{ID: OpenCodePrimaryAgentPlan, Name: OpenCodePrimaryAgentPlan},
+	}, KiloPrimaryAgentCode, OpenCodePrimaryAgentPlan)
 	if err != nil {
 		t.Fatalf("configurePrimaryAgents: %v", err)
 	}
 
-	if agent.currentPrimaryAgent != KiloPrimaryAgentPlan {
-		t.Fatalf("expected restored primary agent %q, got %q", KiloPrimaryAgentPlan, agent.currentPrimaryAgent)
+	if agent.currentPrimaryAgent != OpenCodePrimaryAgentPlan {
+		t.Fatalf("expected restored primary agent %q, got %q", OpenCodePrimaryAgentPlan, agent.currentPrimaryAgent)
 	}
 	recorded := requests()
 	if len(recorded) != 1 {
@@ -141,8 +141,8 @@ func TestKiloConfigurePrimaryAgentsRestoresSavedPrimaryAgent(t *testing.T) {
 	if recorded[0].Method != "session/set_mode" {
 		t.Fatalf("expected session/set_mode, got %q", recorded[0].Method)
 	}
-	if got := recorded[0].Params["modeId"]; got != KiloPrimaryAgentPlan {
-		t.Fatalf("expected modeId %q, got %#v", KiloPrimaryAgentPlan, got)
+	if got := recorded[0].Params["modeId"]; got != OpenCodePrimaryAgentPlan {
+		t.Fatalf("expected modeId %q, got %#v", OpenCodePrimaryAgentPlan, got)
 	}
 }
 
@@ -150,7 +150,7 @@ func TestKiloConfigurePrimaryAgentsIgnoresUnknownSavedPrimaryAgent(t *testing.T)
 	agent, requests := newKiloAgentForRPC(t)
 	err := agent.configurePrimaryAgents([]acpModeInfo{
 		{ID: KiloPrimaryAgentCode, Name: KiloPrimaryAgentCode},
-		{ID: KiloPrimaryAgentPlan, Name: KiloPrimaryAgentPlan},
+		{ID: OpenCodePrimaryAgentPlan, Name: OpenCodePrimaryAgentPlan},
 	}, KiloPrimaryAgentCode, "unknown")
 	if err != nil {
 		t.Fatalf("configurePrimaryAgents: %v", err)
@@ -168,18 +168,18 @@ func TestKiloUpdateSettingsSendsSessionSetMode(t *testing.T) {
 	agent, requests := newKiloAgentForRPC(t)
 	agent.availablePrimaryAgents = []*leapmuxv1.AvailableOption{
 		{Id: KiloPrimaryAgentCode, Name: KiloPrimaryAgentCode, IsDefault: true},
-		{Id: KiloPrimaryAgentPlan, Name: KiloPrimaryAgentPlan},
+		{Id: OpenCodePrimaryAgentPlan, Name: OpenCodePrimaryAgentPlan},
 	}
 	agent.currentPrimaryAgent = KiloPrimaryAgentCode
 
 	updated := agent.UpdateSettings(&leapmuxv1.AgentSettings{
-		ExtraSettings: map[string]string{OpenCodeExtraPrimaryAgent: KiloPrimaryAgentPlan},
+		ExtraSettings: map[string]string{OpenCodeExtraPrimaryAgent: OpenCodePrimaryAgentPlan},
 	})
 	if !updated {
 		t.Fatalf("expected update to succeed")
 	}
-	if agent.currentPrimaryAgent != KiloPrimaryAgentPlan {
-		t.Fatalf("expected current primary agent %q, got %q", KiloPrimaryAgentPlan, agent.currentPrimaryAgent)
+	if agent.currentPrimaryAgent != OpenCodePrimaryAgentPlan {
+		t.Fatalf("expected current primary agent %q, got %q", OpenCodePrimaryAgentPlan, agent.currentPrimaryAgent)
 	}
 	recorded := requests()
 	if len(recorded) != 1 || recorded[0].Method != "session/set_mode" {
@@ -188,13 +188,13 @@ func TestKiloUpdateSettingsSendsSessionSetMode(t *testing.T) {
 }
 
 func TestKiloCurrentSettingsExposesPrimaryAgent(t *testing.T) {
-	agent := &KiloAgent{acpBase: acpBase{model: "openai/gpt-5"}, currentPrimaryAgent: KiloPrimaryAgentPlan}
+	agent := &KiloAgent{acpBase: acpBase{model: "openai/gpt-5"}, currentPrimaryAgent: OpenCodePrimaryAgentPlan}
 	settings := agent.CurrentSettings()
 	if settings.GetModel() != "openai/gpt-5" {
 		t.Fatalf("expected model to round-trip")
 	}
-	if got := settings.GetExtraSettings()[OpenCodeExtraPrimaryAgent]; got != KiloPrimaryAgentPlan {
-		t.Fatalf("expected primaryAgent %q, got %q", KiloPrimaryAgentPlan, got)
+	if got := settings.GetExtraSettings()[OpenCodeExtraPrimaryAgent]; got != OpenCodePrimaryAgentPlan {
+		t.Fatalf("expected primaryAgent %q, got %q", OpenCodePrimaryAgentPlan, got)
 	}
 }
 

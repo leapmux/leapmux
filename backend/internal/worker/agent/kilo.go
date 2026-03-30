@@ -10,10 +10,7 @@ import (
 	"github.com/leapmux/leapmux/util/version"
 )
 
-const (
-	KiloPrimaryAgentCode = "code"
-	KiloPrimaryAgentPlan = "plan"
-)
+const KiloPrimaryAgentCode = "code"
 
 // KiloAgent manages a single Kilo ACP process.
 type KiloAgent struct {
@@ -103,7 +100,7 @@ func StartKilo(ctx context.Context, opts Options, sink OutputSink) (Provider, er
 func fallbackKiloPrimaryAgents() []*leapmuxv1.AvailableOption {
 	return []*leapmuxv1.AvailableOption{
 		{Id: KiloPrimaryAgentCode, Name: titleCaseID(KiloPrimaryAgentCode, ""), IsDefault: true},
-		{Id: KiloPrimaryAgentPlan, Name: titleCaseID(KiloPrimaryAgentPlan, "")},
+		{Id: OpenCodePrimaryAgentPlan, Name: titleCaseID(OpenCodePrimaryAgentPlan, "")},
 	}
 }
 
@@ -214,7 +211,7 @@ func init() {
 			Label: "Primary Agent",
 			Options: []*leapmuxv1.AvailableOption{
 				{Id: KiloPrimaryAgentCode, Name: "Code", IsDefault: true},
-				{Id: KiloPrimaryAgentPlan, Name: "Plan"},
+				{Id: OpenCodePrimaryAgentPlan, Name: "Plan"},
 			},
 		}},
 		"LEAPMUX_KILO_DEFAULT_MODEL",
