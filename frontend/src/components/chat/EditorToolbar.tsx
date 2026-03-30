@@ -22,11 +22,11 @@ import List from 'lucide-solid/icons/list'
 import ListChecks from 'lucide-solid/icons/list-checks'
 import ListOrdered from 'lucide-solid/icons/list-ordered'
 import Minus from 'lucide-solid/icons/minus'
+import Paperclip from 'lucide-solid/icons/paperclip'
 import Pilcrow from 'lucide-solid/icons/pilcrow'
 import SquareCode from 'lucide-solid/icons/square-code'
 import Strikethrough from 'lucide-solid/icons/strikethrough'
 import TextQuote from 'lucide-solid/icons/text-quote'
-import Upload from 'lucide-solid/icons/upload'
 import { createUniqueId, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
@@ -468,10 +468,10 @@ export const EditorToolbar: Component<EditorToolbarProps> = (props) => {
       </div>
       <Show when={props.onUploadClick}>
         <IconButton
-          icon={Upload}
+          icon={Paperclip}
           size="md"
           data-testid="toolbar-upload"
-          title="Upload file"
+          title="Attach file"
           onClick={() => props.onUploadClick?.()}
         />
       </Show>
