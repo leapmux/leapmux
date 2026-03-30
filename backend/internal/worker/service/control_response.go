@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -375,9 +376,9 @@ func (svc *Context) controlResponseDisplayText(agentID string, provider leapmuxv
 		return acpPermissionResponseDisplayText(cr.Payload, content)
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR_CLI:
 		switch payload.Method {
-		case "cursor/ask_question":
+		case agent.CursorMethodAskQuestion:
 			return cursorQuestionAnswersText(cr.Payload, content)
-		case "cursor/create_plan":
+		case agent.CursorMethodCreatePlan:
 			return cursorCreatePlanResponseDisplayText(content)
 		default:
 			return ""

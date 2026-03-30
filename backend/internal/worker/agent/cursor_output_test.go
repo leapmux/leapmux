@@ -79,7 +79,7 @@ func TestHandleCursorOutput_AskQuestionPersistsControlRequest(t *testing.T) {
 	if err := json.Unmarshal(sink.LastPersistedControl().Payload, &payload); err != nil {
 		t.Fatalf("failed to unmarshal control payload: %v", err)
 	}
-	if payload.Method != cursorMethodAskQuestion {
+	if payload.Method != CursorMethodAskQuestion {
 		t.Fatalf("expected cursor ask method, got %q", payload.Method)
 	}
 	if payload.Request.ToolName != "AskUserQuestion" {
@@ -108,7 +108,7 @@ func TestHandleCursorOutput_CreatePlanPersistsControlRequest(t *testing.T) {
 	if err := json.Unmarshal(sink.LastPersistedControl().Payload, &payload); err != nil {
 		t.Fatalf("failed to unmarshal create-plan payload: %v", err)
 	}
-	if payload.Type != "cursor.create_plan" || payload.Method != cursorMethodCreatePlan {
+	if payload.Type != "cursor.create_plan" || payload.Method != CursorMethodCreatePlan {
 		t.Fatalf("expected cursor create-plan payload, got %#v", payload)
 	}
 }

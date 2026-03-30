@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	cursorMethodAskQuestion   = "cursor/ask_question"
-	cursorMethodCreatePlan    = "cursor/create_plan"
+	CursorMethodAskQuestion   = "cursor/ask_question"
+	CursorMethodCreatePlan    = "cursor/create_plan"
 	cursorMethodUpdateTodos   = "cursor/update_todos"
 	cursorMethodTask          = "cursor/task"
 	cursorMethodGenerateImage = "cursor/generate_image"
@@ -45,10 +45,10 @@ func (a *CursorCLIAgent) handleExtraMethod(line *parsedLine) bool {
 	}
 
 	switch line.Method {
-	case cursorMethodAskQuestion:
+	case CursorMethodAskQuestion:
 		a.handleAskQuestionRequest(line.Raw, requestID)
 		return true
-	case cursorMethodCreatePlan:
+	case CursorMethodCreatePlan:
 		a.handleCreatePlanRequest(line.Raw, requestID)
 		return true
 	case cursorMethodUpdateTodos, cursorMethodTask, cursorMethodGenerateImage:
