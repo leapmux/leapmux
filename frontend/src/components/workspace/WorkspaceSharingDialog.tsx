@@ -3,10 +3,12 @@ import type { OrgMember } from '~/generated/leapmux/v1/org_pb'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createSignal, For, onMount, Show } from 'solid-js'
 import { orgClient, workspaceClient } from '~/api/clients'
+import { apiLoadingTimeoutMs } from '~/api/transport'
 import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
 import { useOrg } from '~/context/OrgContext'
 import { ShareMode } from '~/generated/leapmux/v1/common_pb'
+import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { spinner } from '~/styles/animations.css'
 import * as styles from './WorkspaceSharingDialog.css'
 
@@ -22,7 +24,7 @@ export const WorkspaceSharingDialog: Component<WorkspaceSharingDialogProps> = (p
   const [selectedUserIds, setSelectedUserIds] = createSignal<string[]>([])
   const [members, setMembers] = createSignal<OrgMember[]>([])
   const [loading, setLoading] = createSignal(true)
-  const [saving, setSaving] = createSignal(false)
+  const saving = createLoadingSignal(apiLoadingTimeoutMs())
   const [error, setError] = createSignal<string | null>(null)
 
   onMount(async () => {
@@ -50,7 +52,7 @@ export const WorkspaceSharingDialog: Component<WorkspaceSharingDialogProps> = (p
   }
 
   const handleSave = async () => {
-    setSaving(true)
+    saving.start()
     setError(null)
     try {
       await workspaceClient.updateWorkspaceSharing({
@@ -64,12 +66,12 @@ export const WorkspaceSharingDialog: Component<WorkspaceSharingDialogProps> = (p
       setError(e instanceof Error ? e.message : 'Failed to update sharing')
     }
     finally {
-      setSaving(false)
+      saving.stop()
     }
   }
 
   return (
-    <Dialog title="Workspace Sharing" onClose={() => props.onClose()}>
+    <Dialog title="Workspace Sharing" busy={saving.loading()} onClose={() => props.onClose()}>
       <Show when={!loading()} fallback={<div>Loading...</div>}>
         <section>
           <div class="vstack gap-4">
@@ -111,12 +113,12 @@ export const WorkspaceSharingDialog: Component<WorkspaceSharingDialogProps> = (p
           </div>
         </section>
         <footer>
-          <button class="outline" onClick={() => props.onClose()}>
+          <button class="outline" disabled={saving.loading()} onClick={() => props.onClose()}>
             Cancel
           </button>
-          <button onClick={() => handleSave()} disabled={saving()}>
-            <Show when={saving()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
-            {saving() ? 'Saving...' : 'Save'}
+          <button onClick={() => handleSave()} disabled={saving.loading()}>
+            <Show when={saving.loading()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
+            {saving.loading() ? 'Saving...' : 'Save'}
           </button>
         </footer>
       </Show>

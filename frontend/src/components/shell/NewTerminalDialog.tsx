@@ -123,7 +123,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
   )
 
   return (
-    <Dialog title="New Terminal" tall class={dialogWide} onClose={() => props.onClose()}>
+    <Dialog title="New Terminal" tall busy={submitting.loading()} class={dialogWide} onClose={() => props.onClose()}>
       <form onSubmit={handleSubmit}>
         <section>
           <div class="vstack gap-4">
@@ -156,7 +156,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
           </Show>
         </section>
         <footer>
-          <button type="button" class="outline" onClick={() => props.onClose()}>
+          <button type="button" class="outline" disabled={submitting.loading()} onClick={() => props.onClose()}>
             Cancel
           </button>
           <button

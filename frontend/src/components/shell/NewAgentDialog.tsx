@@ -80,7 +80,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
   }
 
   return (
-    <Dialog title="New Agent" tall class={dialogWide} onClose={() => props.onClose()}>
+    <Dialog title="New Agent" tall busy={submitting.loading()} class={dialogWide} onClose={() => props.onClose()}>
       <form onSubmit={handleSubmit}>
         <section>
           <div class="vstack gap-4">
@@ -118,7 +118,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
           </Show>
         </section>
         <footer>
-          <button type="button" class="outline" onClick={() => props.onClose()}>
+          <button type="button" class="outline" disabled={submitting.loading()} onClick={() => props.onClose()}>
             Cancel
           </button>
           <button

@@ -41,6 +41,57 @@ describe('dialog', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
+  it('disables the X button when busy', () => {
+    const onClose = vi.fn()
+
+    const { getByRole } = render(() => (
+      <Dialog title="Test" busy onClose={onClose}>
+        <p>Content</p>
+      </Dialog>
+    ))
+
+    const closeButton = getByRole('button', { name: 'Close' })
+    expect(closeButton).toBeDisabled()
+    closeButton.click()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('sets closedby to "none" when busy', () => {
+    const { container } = render(() => (
+      <Dialog title="Test" busy onClose={() => {}}>
+        <p>Content</p>
+      </Dialog>
+    ))
+
+    const dialog = container.querySelector('dialog')!
+    expect(dialog.getAttribute('closedby')).toBe('none')
+  })
+
+  it('sets closedby to "any" when not busy', () => {
+    const { container } = render(() => (
+      <Dialog title="Test" onClose={() => {}}>
+        <p>Content</p>
+      </Dialog>
+    ))
+
+    const dialog = container.querySelector('dialog')!
+    expect(dialog.getAttribute('closedby')).toBe('any')
+  })
+
+  it('does not call onClose when native close event fires while busy', () => {
+    const onClose = vi.fn()
+
+    const { container } = render(() => (
+      <Dialog title="Test" busy onClose={onClose}>
+        <p>Content</p>
+      </Dialog>
+    ))
+
+    const dialog = container.querySelector('dialog')!
+    dialog.dispatchEvent(new Event('close'))
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
   it('does not access stale keyed Show accessor on cleanup', () => {
     const [state, setState] = createSignal<{ resolve: (v: boolean) => void } | null>({
       resolve: vi.fn(),

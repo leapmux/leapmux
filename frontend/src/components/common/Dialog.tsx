@@ -2,11 +2,12 @@ import type { Component, JSX } from 'solid-js'
 import X from 'lucide-solid/icons/x'
 import { onCleanup, onMount } from 'solid-js'
 import { dialogBody, dialogCloseButton, dialogHeader, dialogStandard, dialogTall } from '~/styles/shared.css'
-import { IconButton } from './IconButton'
+import { IconButton, IconButtonState } from './IconButton'
 
 interface DialogProps {
   'title': string
   'tall'?: boolean
+  'busy'?: boolean
   'class'?: string
   'data-testid'?: string
   'onClose': () => void
@@ -31,9 +32,10 @@ export const Dialog: Component<DialogProps> = (props) => {
       class={`${dialogStandard}${props.tall ? ` ${dialogTall}` : ''}${props.class ? ` ${props.class}` : ''}`}
       data-testid={props['data-testid']}
       aria-label={props.title}
-      closedby="any"
+      aria-busy={props.busy || undefined}
+      closedby={props.busy ? 'none' : 'any'}
       onClose={() => {
-        if (!unmounting)
+        if (!unmounting && !props.busy)
           props.onClose()
       }}
     >
@@ -43,7 +45,11 @@ export const Dialog: Component<DialogProps> = (props) => {
           icon={X}
           size="sm"
           class={dialogCloseButton}
-          onClick={() => props.onClose()}
+          state={props.busy ? IconButtonState.Disabled : undefined}
+          onClick={() => {
+            if (!props.busy)
+              props.onClose()
+          }}
           aria-label="Close"
         />
       </header>

@@ -5,6 +5,7 @@ import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { generateSlug } from 'random-word-slugs'
 import { createMemo, createSignal, Show } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
+import { agentLoadingTimeoutMs } from '~/api/transport'
 import * as workerRpc from '~/api/workerRpc'
 import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
@@ -15,6 +16,7 @@ import { DirectorySelector } from '~/components/shell/DirectorySelector'
 import { GitOptions } from '~/components/shell/GitOptions'
 import { WorkerSelector } from '~/components/shell/WorkerSelector'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
 import { useAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
 import { sanitizeName } from '~/lib/validate'
@@ -34,7 +36,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
   const state = createWorkerDialogState({ preselectedWorkerId: props.preselectedWorkerId })
   const randomTitle = () => generateSlug(3, { format: 'title' })
   const [title, setTitle] = createSignal(randomTitle())
-  const [submitting, setSubmitting] = createSignal(false)
+  const submitting = createLoadingSignal(agentLoadingTimeoutMs(false))
   const { agentProvider, noProviders, handleProviderChange, commitSelection } = useAgentProviderSelection(() => props.availableProviders)
   const titleError = createMemo(() => sanitizeName(title()).error)
 
@@ -43,7 +45,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
     if (!state.workerId() || !state.workingDir().trim())
       return
 
-    setSubmitting(true)
+    submitting.start()
     state.setError(null)
     let createdWorkspaceId: string | undefined
     try {
@@ -90,12 +92,12 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       state.setError(err instanceof Error ? err.message : 'Failed to create workspace')
     }
     finally {
-      setSubmitting(false)
+      submitting.stop()
     }
   }
 
   return (
-    <Dialog title="New Workspace" tall class={dialogWide} onClose={() => props.onClose()}>
+    <Dialog title="New Workspace" tall busy={submitting.loading()} class={dialogWide} onClose={() => props.onClose()}>
       <form onSubmit={handleSubmit}>
         <section>
           <div class="vstack gap-4">
@@ -148,15 +150,15 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
           </Show>
         </section>
         <footer>
-          <button type="button" class="outline" onClick={() => props.onClose()}>
+          <button type="button" class="outline" disabled={submitting.loading()} onClick={() => props.onClose()}>
             Cancel
           </button>
           <button
             type="submit"
-            disabled={isWorkspaceCreateDisabled({ submitting: submitting(), workerId: state.workerId(), workingDir: state.workingDir(), noProviders: noProviders(), titleError: titleError(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), createBranchError: state.createBranchError(), useWorktreePath: state.useWorktreePath() })}
+            disabled={isWorkspaceCreateDisabled({ submitting: submitting.loading(), workerId: state.workerId(), workingDir: state.workingDir(), noProviders: noProviders(), titleError: titleError(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), createBranchError: state.createBranchError(), useWorktreePath: state.useWorktreePath() })}
           >
-            <Show when={submitting()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
-            {submitting() ? 'Creating...' : 'Create'}
+            <Show when={submitting.loading()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
+            {submitting.loading() ? 'Creating...' : 'Create'}
           </button>
         </footer>
       </form>
