@@ -433,7 +433,7 @@ func init() {
 		},
 		claudeCodeAvailableModels,
 		[]*leapmuxv1.AvailableOptionGroup{{
-			Key:   "permissionMode",
+			Key:   OptionGroupKeyPermissionMode,
 			Label: "Permission Mode",
 			Options: []*leapmuxv1.AvailableOption{
 				{Id: PermissionModeDefault, Name: "Default", IsDefault: true},

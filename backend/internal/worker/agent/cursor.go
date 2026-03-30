@@ -156,7 +156,7 @@ func (a *CursorCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGro
 		options = fallbackCursorCLIModes()
 	}
 	return []*leapmuxv1.AvailableOptionGroup{{
-		Key:     "permissionMode",
+		Key:     OptionGroupKeyPermissionMode,
 		Label:   "Mode",
 		Options: options,
 	}}
@@ -215,7 +215,7 @@ func init() {
 		},
 		cursorCLIAvailableModels,
 		[]*leapmuxv1.AvailableOptionGroup{{
-			Key:     "permissionMode",
+			Key:     OptionGroupKeyPermissionMode,
 			Label:   "Mode",
 			Options: fallbackCursorCLIModes(),
 		}},

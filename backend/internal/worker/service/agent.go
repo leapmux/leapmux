@@ -677,7 +677,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			}
 		}
 		if dbAgent.PermissionMode != newPermissionMode {
-			changes["permissionMode"] = map[string]string{
+			changes[agent.OptionGroupKeyPermissionMode] = map[string]string{
 				"old": dbAgent.PermissionMode, "new": newPermissionMode,
 				"oldLabel": svc.permissionModeLabel(agentID, dbAgent.PermissionMode, dbAgent.AgentProvider), "newLabel": svc.permissionModeLabel(agentID, newPermissionMode, dbAgent.AgentProvider),
 			}
@@ -1253,7 +1253,7 @@ func (svc *Context) setAgentPermissionMode(agentID, mode string) {
 		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 			"type": "settings_changed",
 			"changes": map[string]interface{}{
-				"permissionMode": map[string]string{
+				agent.OptionGroupKeyPermissionMode: map[string]string{
 					"old": oldMode, "new": mode,
 					"oldLabel": svc.permissionModeLabel(agentID, oldMode, dbAgent.AgentProvider), "newLabel": svc.permissionModeLabel(agentID, mode, dbAgent.AgentProvider),
 				},

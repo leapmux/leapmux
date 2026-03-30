@@ -127,8 +127,8 @@ func buildOpenCodePrimaryAgents(modes []acpModeInfo, currentModeID string) []*le
 
 func fallbackOpenCodePrimaryAgents() []*leapmuxv1.AvailableOption {
 	return []*leapmuxv1.AvailableOption{
-		{Id: OpenCodePrimaryAgentBuild, Name: capitalizeFirst(OpenCodePrimaryAgentBuild), IsDefault: true},
-		{Id: OpenCodePrimaryAgentPlan, Name: capitalizeFirst(OpenCodePrimaryAgentPlan)},
+		{Id: OpenCodePrimaryAgentBuild, Name: titleCaseID(OpenCodePrimaryAgentBuild, ""), IsDefault: true},
+		{Id: OpenCodePrimaryAgentPlan, Name: titleCaseID(OpenCodePrimaryAgentPlan, "")},
 	}
 }
 

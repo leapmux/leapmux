@@ -863,10 +863,7 @@ func buildACPModes(modes []acpModeInfo, currentModeID string, filter func(id str
 		if filter != nil && filter(mode.ID) {
 			continue
 		}
-		name := mode.Name
-		if name == "" {
-			name = capitalizeFirst(mode.ID)
-		}
+		name := titleCaseID(mode.ID, mode.Name)
 		result = append(result, &leapmuxv1.AvailableOption{
 			Id:          mode.ID,
 			Name:        name,
@@ -946,10 +943,7 @@ func syncACPConfigOptions(
 					if value == "" {
 						continue
 					}
-					name := candidate.Name
-					if name == "" {
-						name = value
-					}
+					name := titleCaseID(value, candidate.Name)
 					modes = append(modes, &leapmuxv1.AvailableOption{
 						Id:          value,
 						Name:        name,
@@ -1039,6 +1033,29 @@ func capitalizeFirst(s string) string {
 		return string(unicode.ToUpper(r)) + s[len(string(r)):]
 	}
 	return s
+}
+
+// titleCaseID returns name if it is a distinct display name (non-empty and
+// different from id). Otherwise it title-cases the id by splitting on
+// underscores or hyphens, capitalizing each word, and joining with spaces
+// (e.g. "smart_approve" → "Smart Approve", "full-auto" → "Full Auto").
+func titleCaseID(id, name string) string {
+	if name != "" && name != id {
+		return name
+	}
+	if id == "" {
+		return ""
+	}
+	// Determine separator: prefer underscore, fall back to hyphen.
+	sep := "_"
+	if !strings.Contains(id, "_") && strings.Contains(id, "-") {
+		sep = "-"
+	}
+	parts := strings.Split(id, sep)
+	for i, p := range parts {
+		parts[i] = capitalizeFirst(p)
+	}
+	return strings.Join(parts, " ")
 }
 
 // hasACPOption returns true if any option in the slice has the given id.

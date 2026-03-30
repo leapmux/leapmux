@@ -209,7 +209,7 @@ func (svc *Context) settingsDisplayLabels(agentID string, provider leapmuxv1.Age
 // by looking up the "permissionMode" option group for the running agent when
 // available, then falling back to the provider registry.
 func (svc *Context) permissionModeLabel(agentID, mode string, provider leapmuxv1.AgentProvider) string {
-	return svc.optionLabel(agentID, "permissionMode", mode, provider)
+	return svc.optionLabel(agentID, agent.OptionGroupKeyPermissionMode, mode, provider)
 }
 
 func (svc *Context) optionGroupLabel(agentID, key string, provider leapmuxv1.AgentProvider) string {

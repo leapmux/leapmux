@@ -11,25 +11,26 @@ import (
 )
 
 const (
-	CopilotCLIModeAgent     = "https://agentclientprotocol.com/protocol/session-modes#agent"
-	CopilotCLIModePlan      = "https://agentclientprotocol.com/protocol/session-modes#plan"
-	CopilotCLIModeAutopilot = "https://agentclientprotocol.com/protocol/session-modes#autopilot"
+	GooseCLIModeAuto         = "auto"
+	GooseCLIModeApprove      = "approve"
+	GooseCLIModeSmartApprove = "smart_approve"
+	GooseCLIModeChat         = "chat"
 )
 
-// CopilotCLIAgent manages a single Copilot CLI ACP process.
-type CopilotCLIAgent struct {
+// GooseCLIAgent manages a single Goose CLI ACP process.
+type GooseCLIAgent struct {
 	acpBase
 
 	permissionMode string
 	availableModes []*leapmuxv1.AvailableOption
 }
 
-// StartCopilotCLI starts a Copilot CLI ACP agent process and performs the handshake.
-func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+// StartGooseCLI starts a Goose CLI ACP agent process and performs the handshake.
+func StartGooseCLI(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
-		ctx, opts.Shell, opts.LoginShell, "copilot", nil, []string{"--acp", "--stdio"}, nil, opts.WorkingDir,
+		ctx, opts.Shell, opts.LoginShell, "goose", nil, []string{"acp"}, nil, opts.WorkingDir,
 	)
 
 	cmd.Env = append(cmd.Environ(), "LEAPMUX_WORKER=1")
@@ -39,7 +40,7 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 		return nil, err
 	}
 
-	a := &CopilotCLIAgent{
+	a := &GooseCLIAgent{
 		acpBase: acpBase{
 			jsonrpcBase: jsonrpcBase{processBase: processBase{
 				agentID:            opts.AgentID,
@@ -54,7 +55,7 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 				preambleMeta:       make(map[string]string),
 			}},
 			sink:         sink,
-			providerName: "copilot",
+			providerName: "goose",
 			model:        opts.Model,
 		},
 	}
@@ -63,7 +64,7 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 
 	if err := cmd.Start(); err != nil {
 		cancel()
-		return nil, fmt.Errorf("start copilot: %w", err)
+		return nil, fmt.Errorf("start goose: %w", err)
 	}
 
 	initParams, _ := json.Marshal(map[string]interface{}{
@@ -84,10 +85,10 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 	a.availableModes = buildACPModes(handshake.Modes, handshake.CurrentModeID, nil)
 	a.permissionMode = handshake.CurrentModeID
 	if a.permissionMode == "" {
-		a.permissionMode = CopilotCLIModeAgent
+		a.permissionMode = GooseCLIModeAuto
 	}
 
-	// Parse Copilot-specific configOptions from the raw session response.
+	// Parse Goose-specific configOptions from the raw session response.
 	a.syncConfigOptions(handshake.ConfigOptions)
 
 	cleanup := func() {
@@ -110,21 +111,22 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 	return a, nil
 }
 
-func fallbackCopilotCLIModes() []*leapmuxv1.AvailableOption {
+func fallbackGooseCLIModes() []*leapmuxv1.AvailableOption {
 	return []*leapmuxv1.AvailableOption{
-		{Id: CopilotCLIModeAgent, Name: "Agent", IsDefault: true},
-		{Id: CopilotCLIModePlan, Name: "Plan"},
-		{Id: CopilotCLIModeAutopilot, Name: "Autopilot"},
+		{Id: GooseCLIModeAuto, Name: "Auto", IsDefault: true},
+		{Id: GooseCLIModeApprove, Name: "Approve"},
+		{Id: GooseCLIModeSmartApprove, Name: "Smart Approve"},
+		{Id: GooseCLIModeChat, Name: "Chat"},
 	}
 }
 
-func (a *CopilotCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attachment) {
+func (a *GooseCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attachment) {
 	a.doSendACPPrompt(content, attachments, func(resp json.RawMessage) {
 		a.handleACPPromptResponse(resp, nil)
 	})
 }
 
-func (a *CopilotCLIAgent) CurrentSettings() *leapmuxv1.AgentSettings {
+func (a *GooseCLIAgent) CurrentSettings() *leapmuxv1.AgentSettings {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return &leapmuxv1.AgentSettings{
@@ -133,12 +135,12 @@ func (a *CopilotCLIAgent) CurrentSettings() *leapmuxv1.AgentSettings {
 	}
 }
 
-func (a *CopilotCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
+func (a *GooseCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	options := a.availableModes
 	if len(options) == 0 {
-		options = fallbackCopilotCLIModes()
+		options = fallbackGooseCLIModes()
 	}
 	return []*leapmuxv1.AvailableOptionGroup{{
 		Key:     OptionGroupKeyPermissionMode,
@@ -147,23 +149,23 @@ func (a *CopilotCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGr
 	}}
 }
 
-func (a *CopilotCLIAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
+func (a *GooseCLIAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	if model := s.GetModel(); model != "" {
 		if err := a.setModel(model); err != nil {
-			slog.Warn("copilot session/set_model failed", "agent_id", a.agentID, "error", err)
+			slog.Warn("goose session/set_model failed", "agent_id", a.agentID, "error", err)
 			return false
 		}
 	}
 	if mode := s.GetPermissionMode(); mode != "" {
 		if err := a.setPermissionMode(mode); err != nil {
-			slog.Warn("copilot session/set_mode failed", "agent_id", a.agentID, "error", err)
+			slog.Warn("goose session/set_mode failed", "agent_id", a.agentID, "error", err)
 			return false
 		}
 	}
 	return true
 }
 
-func (a *CopilotCLIAgent) setPermissionMode(mode string) error {
+func (a *GooseCLIAgent) setPermissionMode(mode string) error {
 	a.mu.Lock()
 	available := a.availableModes
 	a.mu.Unlock()
@@ -179,18 +181,18 @@ func (a *CopilotCLIAgent) setPermissionMode(mode string) error {
 
 func init() {
 	registerProvider(
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_COPILOT_CLI,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE_CLI,
 		func(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
-			return StartCopilotCLI(ctx, opts, sink)
+			return StartGooseCLI(ctx, opts, sink)
 		},
 		nil, // models discovered dynamically from session/new
 		[]*leapmuxv1.AvailableOptionGroup{{
 			Key:     OptionGroupKeyPermissionMode,
 			Label:   "Mode",
-			Options: fallbackCopilotCLIModes(),
+			Options: fallbackGooseCLIModes(),
 		}},
-		"LEAPMUX_COPILOT_DEFAULT_MODEL",
+		"LEAPMUX_GOOSE_DEFAULT_MODEL",
 		"",
-		"copilot",
+		"goose",
 	)
 }

@@ -12,6 +12,7 @@ enum AgentProvider {
   AGENT_PROVIDER_OPENCODE = 4;
   AGENT_PROVIDER_COPILOT_CLI = 5;
   AGENT_PROVIDER_CURSOR_CLI = 6;
+  AGENT_PROVIDER_GOOSE_CLI = 7;
 }
 
 // AgentStatus tracks the lifecycle state of an agent.
