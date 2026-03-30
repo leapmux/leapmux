@@ -148,6 +148,8 @@ function GooseIcon(props: { size: number, class?: string }): JSX.Element {
 function KiloIcon(props: { size: number, class?: string }): JSX.Element {
   return (
     <svg
+      fill="#656363"
+      fill-rule="evenodd"
       height={props.size}
       width={props.size}
       viewBox="0 0 24 24"
@@ -155,8 +157,7 @@ function KiloIcon(props: { size: number, class?: string }): JSX.Element {
       class={props.class}
       style={iconStyle(props.size)}
     >
-      <rect x="1.778" y="1.778" width="20.444" height="20.444" fill="#faf74f" />
-      <path fill="#1a1a1a" fill-rule="evenodd" d="M0 0v24h24V0H0zm22.222 22.222H1.778V1.778h20.444v20.444zm-13.333-4.89V6.668h1.778v4.534l3.555-4.534h2.134l-3.556 4.534 3.556 6.13h-2.134l-2.667-4.534-.888 1.066v3.468H8.889z" />
+      <path d="M0 0v24h24V0H0zm22.222 22.222H1.778V1.778h20.444v20.444zm-7.555-4.964h2.222v1.778h-2.794L12.89 17.83v-2.794h1.778v2.222zm4 0h-1.778v-2.222h-2.222v-1.778h2.793l1.207 1.207v2.793zm-7.556-2.591H9.333v-1.778h1.778v1.778zm-5.778-1.778h1.778v4h4v1.778H6.54L5.333 17.46V12.89zm13.334-3.556v1.778h-5.778V9.333h1.987V7.111h-1.987V5.333h2.558l1.206 1.207v2.793h2.014zm-11.556-2h2.222l1.778 1.778v2H9.333v-2H7.111v2H5.333V5.333h1.778v2zm4 0H9.333v-2h1.778v2z" />
     </svg>
   )
 }
