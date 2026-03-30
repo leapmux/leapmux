@@ -15,12 +15,16 @@ const resizeObserverCallbacks: ResizeObserverCallback[] = []
 beforeAll(() => {
   globalThis.ResizeObserver = class {
     private callback: ResizeObserverCallback
+
     constructor(callback: ResizeObserverCallback) {
       this.callback = callback
       resizeObserverCallbacks.push(callback)
     }
+
     observe() {}
+
     unobserve() {}
+
     disconnect() {
       const idx = resizeObserverCallbacks.indexOf(this.callback)
       if (idx >= 0)
@@ -621,7 +625,7 @@ describe('chatView', () => {
     const messageList = chatContainer.firstElementChild?.firstElementChild as HTMLDivElement
 
     let scrollTop = 0
-    let scrollHeight = 300
+    const scrollHeight = 300
     let clientHeight = 0
     Object.defineProperty(messageList, 'scrollTop', {
       configurable: true,
