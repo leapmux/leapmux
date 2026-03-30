@@ -13,7 +13,11 @@ interface BaseDialogState {
   useWorktreePath: string
 }
 
-interface WorkspaceDialogState extends BaseDialogState {
+interface AgentDialogState extends BaseDialogState {
+  noProviders: boolean
+}
+
+interface WorkspaceDialogState extends AgentDialogState {
   titleError: string | null
 }
 
@@ -42,14 +46,16 @@ export function isWorkspaceCreateDisabled(state: WorkspaceDialogState): boolean 
   return state.submitting
     || !state.workerId
     || !state.workingDir.trim()
+    || state.noProviders
     || !!state.titleError
     || isGitModeInvalid(state)
 }
 
-export function isAgentCreateDisabled(state: BaseDialogState): boolean {
+export function isAgentCreateDisabled(state: AgentDialogState): boolean {
   return state.submitting
     || !state.workerId
     || !state.workingDir.trim()
+    || state.noProviders
     || isGitModeInvalid(state)
 }
 

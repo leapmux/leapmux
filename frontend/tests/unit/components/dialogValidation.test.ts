@@ -9,6 +9,7 @@ const validBase = {
   submitting: false,
   workerId: 'worker-1',
   workingDir: '/home/user/project',
+  noProviders: false,
   gitMode: 'current' as const,
   worktreeBranchError: null,
   checkoutBranch: '',
@@ -42,6 +43,10 @@ describe('isWorkspaceCreateDisabled', () => {
     expect(isWorkspaceCreateDisabled({ ...valid, titleError: 'Name must not be empty' })).toBe(true)
   })
 
+  it('returns true when no providers are available', () => {
+    expect(isWorkspaceCreateDisabled({ ...valid, noProviders: true })).toBe(true)
+  })
+
   it('returns true when worktree branch has an error in create-worktree mode', () => {
     expect(isWorkspaceCreateDisabled({ ...valid, gitMode: 'create-worktree', worktreeBranchError: 'Invalid branch' })).toBe(true)
   })
@@ -72,6 +77,10 @@ describe('isAgentCreateDisabled', () => {
     expect(isAgentCreateDisabled(validBase)).toBe(false)
   })
 
+  it('returns true when no providers are available', () => {
+    expect(isAgentCreateDisabled({ ...validBase, noProviders: true })).toBe(true)
+  })
+
   it('returns true when submitting', () => {
     expect(isAgentCreateDisabled({ ...validBase, submitting: true })).toBe(true)
   })
@@ -98,7 +107,8 @@ describe('isAgentCreateDisabled', () => {
 })
 
 describe('isTerminalCreateDisabled', () => {
-  const valid = { ...validBase, shell: '/bin/bash' }
+  const { noProviders: _, ...terminalBase } = validBase
+  const valid = { ...terminalBase, shell: '/bin/bash' }
 
   it('returns false when all fields are valid', () => {
     expect(isTerminalCreateDisabled(valid)).toBe(false)

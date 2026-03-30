@@ -59,6 +59,22 @@ describe('agentProviderSelector', () => {
     ])).toBe(AgentProvider.CLAUDE_CODE)
   })
 
+  it('shows disabled empty state when no providers are available', () => {
+    const [value] = createSignal(AgentProvider.CLAUDE_CODE)
+
+    render(() => (
+      <AgentProviderSelector
+        value={value}
+        onChange={() => {}}
+        availableProviders={[]}
+      />
+    ))
+
+    const trigger = screen.getByTestId('agent-provider-selector-trigger')
+    expect(trigger).toHaveTextContent('No agents available')
+    expect(trigger).toBeDisabled()
+  })
+
   it('renders icon-capable trigger and updates selection', async () => {
     const [value, setValue] = createSignal(AgentProvider.CODEX)
     const onChange = vi.fn((provider: AgentProvider) => setValue(provider))

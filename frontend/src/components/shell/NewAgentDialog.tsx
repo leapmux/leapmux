@@ -39,7 +39,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
   })
   const submitting = createLoadingSignal(agentLoadingTimeoutMs(false))
 
-  const { agentProvider, handleProviderChange, commitSelection } = useAgentProviderSelection(() => props.availableProviders)
+  const { agentProvider, noProviders, handleProviderChange, commitSelection } = useAgentProviderSelection(() => props.availableProviders)
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
@@ -123,7 +123,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
           </button>
           <button
             type="submit"
-            disabled={isAgentCreateDisabled({ submitting: submitting.loading(), workerId: state.workerId(), workingDir: state.workingDir(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), createBranchError: state.createBranchError(), useWorktreePath: state.useWorktreePath() })}
+            disabled={isAgentCreateDisabled({ submitting: submitting.loading(), workerId: state.workerId(), workingDir: state.workingDir(), noProviders: noProviders(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), createBranchError: state.createBranchError(), useWorktreePath: state.useWorktreePath() })}
           >
             <Show when={submitting.loading()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
             {submitting.loading() ? 'Creating...' : 'Create'}

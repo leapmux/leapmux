@@ -35,7 +35,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
   const randomTitle = () => generateSlug(3, { format: 'title' })
   const [title, setTitle] = createSignal(randomTitle())
   const [submitting, setSubmitting] = createSignal(false)
-  const { agentProvider, handleProviderChange, commitSelection } = useAgentProviderSelection(() => props.availableProviders)
+  const { agentProvider, noProviders, handleProviderChange, commitSelection } = useAgentProviderSelection(() => props.availableProviders)
   const titleError = createMemo(() => sanitizeName(title()).error)
 
   const handleSubmit = async (e: Event) => {
@@ -153,7 +153,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
           </button>
           <button
             type="submit"
-            disabled={isWorkspaceCreateDisabled({ submitting: submitting(), workerId: state.workerId(), workingDir: state.workingDir(), titleError: titleError(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), createBranchError: state.createBranchError(), useWorktreePath: state.useWorktreePath() })}
+            disabled={isWorkspaceCreateDisabled({ submitting: submitting(), workerId: state.workerId(), workingDir: state.workingDir(), noProviders: noProviders(), titleError: titleError(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), createBranchError: state.createBranchError(), useWorktreePath: state.useWorktreePath() })}
           >
             <Show when={submitting()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
             {submitting() ? 'Creating...' : 'Create'}

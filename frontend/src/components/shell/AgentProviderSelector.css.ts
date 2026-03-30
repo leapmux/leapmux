@@ -25,6 +25,11 @@ export const trigger = style({
   },
 })
 
+export const triggerDisabled = style({
+  opacity: 0.5,
+  cursor: 'not-allowed',
+})
+
 export const triggerValue = style({
   display: 'flex',
   alignItems: 'center',

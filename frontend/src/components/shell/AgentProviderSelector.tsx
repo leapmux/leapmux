@@ -1,9 +1,11 @@
 import type { Accessor } from 'solid-js'
+import Bot from 'lucide-solid/icons/bot'
 import Check from 'lucide-solid/icons/check'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
 import { createMemo, For, Show } from 'solid-js'
 import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
+import { Icon } from '~/components/common/Icon'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { getAvailableAgentProviders, sortAgentProvidersByName } from '~/lib/agentProviders'
@@ -32,47 +34,64 @@ export function AgentProviderSelector(props: AgentProviderSelectorProps) {
           <RefreshButton onClick={() => props.onRefresh?.()} title="Refresh available providers" />
         )}
       </div>
-      <DropdownMenu
-        class={styles.menu}
-        data-testid="agent-provider-selector-menu"
-        trigger={triggerProps => (
+      <Show
+        when={providers().length > 0}
+        fallback={(
           <button
             type="button"
-            aria-expanded={triggerProps['aria-expanded']}
-            ref={triggerProps.ref}
-            onPointerDown={triggerProps.onPointerDown}
-            onClick={triggerProps.onClick}
-            class={styles.trigger}
+            class={`${styles.trigger} ${styles.triggerDisabled}`}
+            disabled
             data-testid="agent-provider-selector-trigger"
           >
             <span class={styles.triggerValue}>
-              <AgentProviderIcon provider={currentProvider()} size={16} />
-              <span class={styles.triggerLabel}>{agentProviderLabel(currentProvider())}</span>
+              <Icon icon={Bot} size="sm" />
+              <span class={styles.triggerLabel}>No agents available</span>
             </span>
-            <ChevronDown size={16} class={styles.triggerChevron} />
           </button>
         )}
       >
-        <For each={providers()}>
-          {provider => (
+        <DropdownMenu
+          class={styles.menu}
+          data-testid="agent-provider-selector-menu"
+          trigger={triggerProps => (
             <button
               type="button"
-              role="menuitem"
-              class={`${styles.menuItem}${provider === currentProvider() ? ` ${styles.menuItemSelected}` : ''}`}
-              data-testid={`agent-provider-option-${provider}`}
-              onClick={() => props.onChange(provider)}
+              aria-expanded={triggerProps['aria-expanded']}
+              ref={triggerProps.ref}
+              onPointerDown={triggerProps.onPointerDown}
+              onClick={triggerProps.onClick}
+              class={styles.trigger}
+              data-testid="agent-provider-selector-trigger"
             >
-              <span class={styles.menuItemValue}>
-                <AgentProviderIcon provider={provider} size={16} />
-                <span>{agentProviderLabel(provider)}</span>
+              <span class={styles.triggerValue}>
+                <AgentProviderIcon provider={currentProvider()} size={16} />
+                <span class={styles.triggerLabel}>{agentProviderLabel(currentProvider())}</span>
               </span>
-              <Show when={provider === currentProvider()}>
-                <Check size={14} class={styles.check} />
-              </Show>
+              <ChevronDown size={16} class={styles.triggerChevron} />
             </button>
           )}
-        </For>
-      </DropdownMenu>
+        >
+          <For each={providers()}>
+            {provider => (
+              <button
+                type="button"
+                role="menuitem"
+                class={`${styles.menuItem}${provider === currentProvider() ? ` ${styles.menuItemSelected}` : ''}`}
+                data-testid={`agent-provider-option-${provider}`}
+                onClick={() => props.onChange(provider)}
+              >
+                <span class={styles.menuItemValue}>
+                  <AgentProviderIcon provider={provider} size={16} />
+                  <span>{agentProviderLabel(provider)}</span>
+                </span>
+                <Show when={provider === currentProvider()}>
+                  <Check size={14} class={styles.check} />
+                </Show>
+              </button>
+            )}
+          </For>
+        </DropdownMenu>
+      </Show>
     </div>
   )
 }

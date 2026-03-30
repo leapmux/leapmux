@@ -15,7 +15,7 @@ export const DEFAULT_AGENT_PROVIDERS: AgentProvider[] = [
 ]
 
 export function getAvailableAgentProviders(availableProviders?: AgentProvider[]): AgentProvider[] {
-  return availableProviders?.length ? availableProviders : DEFAULT_AGENT_PROVIDERS
+  return availableProviders ?? DEFAULT_AGENT_PROVIDERS
 }
 
 export function sortAgentProvidersByName(providers: AgentProvider[]): AgentProvider[] {
