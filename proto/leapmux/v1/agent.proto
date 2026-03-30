@@ -13,6 +13,7 @@ enum AgentProvider {
   AGENT_PROVIDER_GITHUB_COPILOT = 5;
   AGENT_PROVIDER_CURSOR = 6;
   AGENT_PROVIDER_GOOSE = 7;
+  AGENT_PROVIDER_KILO = 8;
 }
 
 // AgentStatus tracks the lifecycle state of an agent.

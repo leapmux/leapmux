@@ -12,6 +12,7 @@ export function agentProviderLabel(provider?: AgentProvider): string {
     case AgentProvider.GITHUB_COPILOT: return 'GitHub Copilot'
     case AgentProvider.CURSOR: return 'Cursor'
     case AgentProvider.GOOSE: return 'Goose'
+    case AgentProvider.KILO: return 'Kilo'
     default: return 'Unknown'
   }
 }
@@ -144,6 +145,22 @@ function GooseIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
+function KiloIcon(props: { size: number, class?: string }): JSX.Element {
+  return (
+    <svg
+      height={props.size}
+      width={props.size}
+      viewBox="0 0 24 24"
+      xmlns="http://www.w3.org/2000/svg"
+      class={props.class}
+      style={iconStyle(props.size)}
+    >
+      <rect x="1.778" y="1.778" width="20.444" height="20.444" fill="#faf74f" />
+      <path fill="#1a1a1a" fill-rule="evenodd" d="M0 0v24h24V0H0zm22.222 22.222H1.778V1.778h20.444v20.444zm-13.333-4.89V6.668h1.778v4.534l3.555-4.534h2.134l-3.556 4.534 3.556 6.13h-2.134l-2.667-4.534-.888 1.066v3.468H8.889z" />
+    </svg>
+  )
+}
+
 function CursorIcon(props: { size: number, class?: string }): JSX.Element {
   return (
     <svg
@@ -191,6 +208,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.GOOSE}>
         <GooseIcon size={props.size} class={props.class} />
+      </Match>
+      <Match when={props.provider === AgentProvider.KILO}>
+        <KiloIcon size={props.size} class={props.class} />
       </Match>
     </Switch>
   )
