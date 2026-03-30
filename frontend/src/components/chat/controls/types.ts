@@ -4,6 +4,7 @@ import type { ControlRequest } from '~/stores/control.store'
 import type { PermissionMode } from '~/utils/controlResponse'
 
 interface QuestionOption {
+  id?: string
   label: string
   description?: string
 }

@@ -30,12 +30,46 @@ async function splitHorizontal(page: Page, tile?: Locator) {
   }
 }
 
-/** Simulate a drag-and-drop from one element to another using mouse events. */
+/**
+ * Compute the visible bounding box of an element, clipped to its scroll parent.
+ * Returns the intersection of the element's box with the nearest ancestor that
+ * has `overflow` scrolling enabled, so the drag starts on a point the user can
+ * actually see (and that receives pointer events).
+ */
+async function visibleBox(locator: Locator) {
+  return locator.evaluate((el: HTMLElement) => {
+    const rect = el.getBoundingClientRect()
+    // Walk up to find the nearest scrollable ancestor
+    let parent = el.parentElement
+    while (parent) {
+      const style = getComputedStyle(parent)
+      if (style.overflowX === 'auto' || style.overflowX === 'scroll'
+        || style.overflowY === 'auto' || style.overflowY === 'scroll') {
+        const parentRect = parent.getBoundingClientRect()
+        // Clip to the scroll parent
+        return {
+          x: Math.max(rect.x, parentRect.x),
+          y: Math.max(rect.y, parentRect.y),
+          width: Math.min(rect.right, parentRect.right) - Math.max(rect.x, parentRect.x),
+          height: Math.min(rect.bottom, parentRect.bottom) - Math.max(rect.y, parentRect.y),
+        }
+      }
+      parent = parent.parentElement
+    }
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+  })
+}
+
+/** Simulate a drag-and-drop from one element to another using pointer events. */
 async function dragTo(page: Page, source: Locator, target: Locator) {
-  const sourceBox = await source.boundingBox()
+  // Scroll the source into view so it's not clipped by its scroll parent
+  await source.scrollIntoViewIfNeeded()
+
+  // Use the visible portion of the source to avoid clicking on overlapping elements
+  const sourceBox = await visibleBox(source)
   const targetBox = await target.boundingBox()
-  if (!sourceBox || !targetBox)
-    throw new Error('Could not get bounding boxes for drag operation')
+  if (sourceBox.width <= 0 || sourceBox.height <= 0 || !targetBox)
+    throw new Error('Could not get valid bounding boxes for drag operation')
 
   const srcX = sourceBox.x + sourceBox.width / 2
   const srcY = sourceBox.y + sourceBox.height / 2
@@ -43,17 +77,11 @@ async function dragTo(page: Page, source: Locator, target: Locator) {
   const tgtY = targetBox.y + targetBox.height / 2
 
   await page.mouse.move(srcX, srcY)
+  await page.waitForTimeout(100)
   await page.mouse.down()
-  // Move in steps to trigger DnD sensors
-  const steps = 5
-  for (let i = 1; i <= steps; i++) {
-    await page.mouse.move(
-      srcX + (tgtX - srcX) * (i / steps),
-      srcY + (tgtY - srcY) * (i / steps),
-      { steps: 1 },
-    )
-    await page.waitForTimeout(30)
-  }
+  await page.waitForTimeout(100)
+  await page.mouse.move(tgtX, tgtY, { steps: 15 })
+  await page.waitForTimeout(100)
   await page.mouse.up()
 }
 
@@ -159,6 +187,7 @@ test.describe('Cross-Tile Tabs', () => {
     // Drag terminal tab from tile 1 to tile 2's tab bar
     const terminalTab = tile1.locator('[data-testid="tab"][data-tab-type="terminal"]')
     const tile2TabList = tile2.locator('[data-testid="tab-list"]')
+
     await dragTo(page, terminalTab, tile2TabList)
 
     // Wait for the move to settle

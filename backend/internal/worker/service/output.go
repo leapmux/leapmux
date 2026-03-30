@@ -1005,7 +1005,8 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 
 	for i, raw := range messages {
 		var env envelope
-		if json.Unmarshal(raw, &env) != nil {
+		if err := json.Unmarshal(raw, &env); err != nil {
+			slog.Warn("consolidate notification unmarshal failed", "error", err)
 			keepAll = append(keepAll, indexedRaw{i, raw})
 			continue
 		}
@@ -1027,7 +1028,8 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 			// context_cleared supersedes any earlier compaction boundaries.
 			keepAll = slices.DeleteFunc(keepAll, func(ir indexedRaw) bool {
 				var e envelope
-				if json.Unmarshal(ir.raw, &e) != nil {
+				if err := json.Unmarshal(ir.raw, &e); err != nil {
+					slog.Warn("consolidate context_cleared filter unmarshal failed", "error", err)
 					return false
 				}
 				return e.Type == "system" && (e.Subtype == "compact_boundary" || e.Subtype == "microcompact_boundary")

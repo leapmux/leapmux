@@ -114,7 +114,7 @@ func buildGeminiCLIModels(models []acpModelInfo, currentModelID string) []*leapm
 			break
 		}
 	}
-	result := buildACPModels(models, currentModelID)
+	result := buildACPModels(models, currentModelID, nil)
 	if !hasAuto {
 		result = append([]*leapmuxv1.AvailableModel{{
 			Id:          "auto",
@@ -154,7 +154,8 @@ func broadcastGeminiQuotaSessionInfo(sink OutputSink, resp json.RawMessage) {
 			} `json:"quota"`
 		} `json:"_meta"`
 	}
-	if json.Unmarshal(resp, &result) != nil {
+	if err := json.Unmarshal(resp, &result); err != nil {
+		slog.Warn("gemini quota session info unmarshal failed", "error", err)
 		return
 	}
 

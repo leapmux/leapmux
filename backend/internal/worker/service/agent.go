@@ -234,9 +234,15 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			for i, a := range attachments {
 				meta[i] = attachmentMeta{Filename: a.GetFilename(), MimeType: a.GetMimeType()}
 			}
-			innerJSON, _ = json.Marshal(map[string]interface{}{"content": content, "attachments": meta})
+			innerJSON, err = json.Marshal(map[string]interface{}{"content": content, "attachments": meta})
+			if err != nil {
+				slog.Warn("user message marshal failed", "agent_id", agentID, "error", err)
+			}
 		} else {
-			innerJSON, _ = json.Marshal(map[string]string{"content": content})
+			innerJSON, err = json.Marshal(map[string]string{"content": content})
+			if err != nil {
+				slog.Warn("user message marshal failed", "agent_id", agentID, "error", err)
+			}
 		}
 		compressed, compressionType := msgcodec.Compress(innerJSON)
 
@@ -719,7 +725,11 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		displayText := svc.controlResponseDisplayText(agentID, dbAgent.AgentProvider, content)
+		var displayText string
+		content, displayText = svc.normalizeProviderControlResponse(agentID, dbAgent.AgentProvider, content)
+		if displayText == "" {
+			displayText = svc.controlResponseDisplayText(agentID, dbAgent.AgentProvider, content)
+		}
 
 		// Detect plan mode changes from the control response before
 		// forwarding to the agent. This mirrors the main-branch Hub logic
@@ -1426,7 +1436,11 @@ func (svc *Context) handleCodexPlanModePromptResponse(agentID string, content []
 			ToolName string `json:"tool_name"`
 		} `json:"request"`
 	}
-	if json.Unmarshal(cr.Payload, &crBody) != nil || crBody.Request.ToolName != "CodexPlanModePrompt" {
+	if err := json.Unmarshal(cr.Payload, &crBody); err != nil {
+		slog.Warn("codex plan mode prompt unmarshal failed", "agent_id", agentID, "error", err)
+		return false
+	}
+	if crBody.Request.ToolName != "CodexPlanModePrompt" {
 		return false
 	}
 
@@ -1457,6 +1471,85 @@ func (svc *Context) handleCodexPlanModePromptResponse(agentID string, content []
 	return true
 }
 
+// normalizeProviderControlResponse transforms provider-specific control
+// responses into the wire format expected by the agent process.  It returns
+// the (possibly transformed) content and, when the transform already computed
+// the display text, a non-empty displayText so the caller can skip a second
+// DB lookup in controlResponseDisplayText.
+func (svc *Context) normalizeProviderControlResponse(agentID string, provider leapmuxv1.AgentProvider, content []byte) (normalized []byte, displayText string) {
+	switch provider {
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR_CLI:
+		if transformed, text, ok := svc.transformCursorControlResponse(agentID, content); ok {
+			return transformed, text
+		}
+	}
+	return content, ""
+}
+
+func (svc *Context) transformCursorControlResponse(agentID string, content []byte) ([]byte, string, bool) {
+	var crPayload struct {
+		Response struct {
+			RequestID string `json:"request_id"`
+			Response  struct {
+				Behavior string `json:"behavior"`
+				Message  string `json:"message"`
+			} `json:"response"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(content, &crPayload); err != nil {
+		return nil, "", false
+	}
+
+	reqID := strings.TrimSpace(crPayload.Response.RequestID)
+	if reqID == "" {
+		return nil, "", false
+	}
+
+	cr, err := svc.Queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{
+		AgentID:   agentID,
+		RequestID: reqID,
+	})
+	if err != nil {
+		return nil, "", false
+	}
+
+	var req struct {
+		Method string `json:"method"`
+	}
+	if err := json.Unmarshal(cr.Payload, &req); err != nil {
+		slog.Warn("cursor control response unmarshal method failed", "agent_id", agentID, "error", err)
+		return nil, "", false
+	}
+	if req.Method != agent.CursorMethodCreatePlan {
+		return nil, "", false
+	}
+
+	idRaw, _, ok := agent.ExtractJSONRPCID(cr.Payload)
+	if !ok {
+		return nil, "", false
+	}
+
+	outcomeBody := map[string]interface{}{
+		"outcome": "accepted",
+	}
+	if crPayload.Response.Response.Behavior == agent.ControlBehaviorDeny {
+		outcomeBody["outcome"] = "rejected"
+		if reason := strings.TrimSpace(crPayload.Response.Response.Message); reason != "" && reason != "Rejected by user." {
+			outcomeBody["reason"] = reason
+		}
+	}
+
+	encoded, err := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      json.RawMessage(idRaw),
+		"result":  map[string]interface{}{"outcome": outcomeBody},
+	})
+	if err != nil {
+		return nil, "", false
+	}
+	return encoded, cursorCreatePlanResponseDisplayText(encoded), true
+}
+
 // extractControlResponseRequestID extracts the control request ID from a
 // control response's raw JSON content.  It supports both Claude Code format
 // (response.request_id) and OpenCode/ACP JSON-RPC format (top-level id).
@@ -1469,7 +1562,8 @@ func extractControlResponseRequestID(content []byte) string {
 		// OpenCode / ACP JSON-RPC format (id can be number or string)
 		ID json.RawMessage `json:"id"`
 	}
-	if json.Unmarshal(content, &parsed) != nil {
+	if err := json.Unmarshal(content, &parsed); err != nil {
+		slog.Warn("extract control response request ID unmarshal failed", "error", err)
 		return ""
 	}
 	if parsed.Response.RequestID != "" {
@@ -1525,7 +1619,8 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 			ToolUseID string `json:"tool_use_id"`
 		} `json:"request"`
 	}
-	if json.Unmarshal(cr.Payload, &crBody) != nil {
+	if err := json.Unmarshal(cr.Payload, &crBody); err != nil {
+		slog.Warn("codex cancel request unmarshal failed", "agent_id", agentID, "error", err)
 		return
 	}
 	toolName := crBody.Request.ToolName

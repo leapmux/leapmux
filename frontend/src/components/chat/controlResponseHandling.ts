@@ -10,6 +10,7 @@ import { safeGetJson, safeRemoveItem, safeSetJson } from '~/lib/safeStorage'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import { buildAskAnswers, trySubmitAskUserQuestion } from './controls/AskUserQuestionControl'
 import { sendCodexUserInputResponse } from './controls/CodexControlRequest'
+import { getCursorQuestions, sendCursorQuestionResponse } from './controls/CursorControlRequest'
 import { sendOpenCodeQuestionResponse } from './controls/OpenCodeControlRequest'
 import { getProviderPlugin } from './providers'
 
@@ -177,6 +178,8 @@ export function useControlResponseHandling(
               multiSelect: (question.multiSelect as boolean | undefined) ?? (question.multiple as boolean | undefined),
             })) as Question[]
           }
+          case AgentProvider.CURSOR_CLI:
+            return getCursorQuestions(req.payload)
           default:
             return (getToolInput(req.payload).questions as Question[] | undefined) ?? []
         }
@@ -198,6 +201,9 @@ export function useControlResponseHandling(
             break
           case AgentProvider.OPENCODE:
             void sendOpenCodeQuestionResponse(req.agentId, sendControlResponse, req.requestId, normalizedQuestions, askState)
+            break
+          case AgentProvider.CURSOR_CLI:
+            void sendCursorQuestionResponse(req.agentId, sendControlResponse, req.requestId, normalizedQuestions, askState)
             break
           default: {
             const response = buildAskAnswers(askState, normalizedQuestions, getToolInput(req.payload), req.requestId)

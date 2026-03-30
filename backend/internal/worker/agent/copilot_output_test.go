@@ -13,7 +13,7 @@ func newCopilotAgentWithSink(sink OutputSink) *CopilotCLIAgent {
 			sessionID:    "test-session",
 		},
 	}
-	a.extraSessionUpdate = a.handleExtraSessionUpdate
+	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)
 	return a
 }
 

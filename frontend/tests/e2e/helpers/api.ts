@@ -224,6 +224,7 @@ export async function openAgentViaAPI(
   workspaceId: string,
   workingDir?: string,
   options?: {
+    model?: string
     createWorktree?: boolean
     worktreeBranch?: string
     worktreeBaseBranch?: string
@@ -243,6 +244,7 @@ export async function openAgentViaAPI(
       workspaceId,
       workerId,
       workingDir: workingDir ?? '',
+      ...(options?.model ? { model: options.model } : {}),
       ...(options?.agentProvider ? { agentProvider: options.agentProvider } : {}),
       ...(options?.createWorktree ? { createWorktree: true, worktreeBranch: options.worktreeBranch ?? '' } : {}),
       ...(options?.worktreeBaseBranch ? { worktreeBaseBranch: options.worktreeBaseBranch } : {}),
