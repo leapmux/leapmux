@@ -19,7 +19,7 @@ func newCursorAgentWithSink(sink OutputSink) *CursorCLIAgent {
 			sessionID:    "test-session",
 		},
 	}
-	a.extraSessionUpdate = a.handleExtraSessionUpdate
+	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)
 	a.extraMethod = a.handleExtraMethod
 	return a
 }

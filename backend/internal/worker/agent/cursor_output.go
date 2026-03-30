@@ -14,14 +14,6 @@ const (
 	cursorMethodGenerateImage = "cursor/generate_image"
 )
 
-func (a *CursorCLIAgent) handleExtraSessionUpdate(sessionUpdate string, update json.RawMessage) bool {
-	if sessionUpdate == acpUpdateConfigOptionUpdate {
-		a.handleConfigOptionUpdate(update)
-		return true
-	}
-	return false
-}
-
 func (a *CursorCLIAgent) handleConfigOptionUpdate(update json.RawMessage) {
 	options := parseACPConfigOptions(update)
 	if len(options) == 0 {

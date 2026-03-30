@@ -61,7 +61,7 @@ func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 			model:        normalizeCursorModelID(opts.Model),
 		},
 	}
-	a.extraSessionUpdate = a.handleExtraSessionUpdate
+	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)
 	a.extraMethod = a.handleExtraMethod
 	a.promptFunc = a.doSendPrompt
 

@@ -3,7 +3,7 @@ import type { PermissionMode } from '~/utils/controlResponse'
 import { createMemo, Show } from 'solid-js'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { ACPControlActions, ACPControlContent } from '../controls/ACPControlRequest'
-import { CursorControlActions, CursorControlContent } from '../controls/CursorControlRequest'
+import { CursorControlActions, CursorControlContent, isCursorAskQuestionPayload, isCursorControlPayload } from '../controls/CursorControlRequest'
 import { PERMISSION_MODE_KEY } from '../settingsShared'
 import {
   buildACPInterruptContent,
@@ -42,27 +42,21 @@ registerProvider(AgentProvider.CURSOR_CLI, {
   changePermissionMode: changeACPPermissionMode,
 
   isAskUserQuestion(payload?: Record<string, unknown>): boolean {
-    return payload?.method === 'cursor/ask_question'
+    return !!payload && isCursorAskQuestionPayload(payload)
   },
 
   ControlContent: (props) => {
-    const isCursorControl = createMemo(() => (
-      props.request.payload.method === 'cursor/ask_question'
-      || props.request.payload.method === 'cursor/create_plan'
-    ))
+    const isCursor = createMemo(() => isCursorControlPayload(props.request.payload))
     return (
-      <Show when={isCursorControl()} fallback={<ACPControlContent {...props} />}>
+      <Show when={isCursor()} fallback={<ACPControlContent {...props} />}>
         <CursorControlContent {...props} />
       </Show>
     )
   },
   ControlActions: (props) => {
-    const isCursorControl = createMemo(() => (
-      props.request.payload.method === 'cursor/ask_question'
-      || props.request.payload.method === 'cursor/create_plan'
-    ))
+    const isCursor = createMemo(() => isCursorControlPayload(props.request.payload))
     return (
-      <Show when={isCursorControl()} fallback={<ACPControlActions {...props} />}>
+      <Show when={isCursor()} fallback={<ACPControlActions {...props} />}>
         <CursorControlActions {...props} />
       </Show>
     )

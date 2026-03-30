@@ -2,14 +2,6 @@ package agent
 
 import "encoding/json"
 
-func (a *CopilotCLIAgent) handleExtraSessionUpdate(sessionUpdate string, update json.RawMessage) bool {
-	if sessionUpdate == acpUpdateConfigOptionUpdate {
-		a.handleConfigOptionUpdate(update)
-		return true
-	}
-	return false
-}
-
 func (a *CopilotCLIAgent) handleConfigOptionUpdate(update json.RawMessage) {
 	options := parseACPConfigOptions(update)
 	if len(options) == 0 {

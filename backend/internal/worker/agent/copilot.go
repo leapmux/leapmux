@@ -58,7 +58,7 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 			model:        opts.Model,
 		},
 	}
-	a.extraSessionUpdate = a.handleExtraSessionUpdate
+	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)
 	a.promptFunc = a.doSendPrompt
 
 	if err := cmd.Start(); err != nil {

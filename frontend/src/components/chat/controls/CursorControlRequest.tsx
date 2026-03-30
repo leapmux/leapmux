@@ -13,12 +13,16 @@ function getCursorParams(payload: Record<string, unknown>): Record<string, unkno
   return payload.params as Record<string, unknown> | undefined
 }
 
-function isCursorAskQuestionPayload(payload: Record<string, unknown>): boolean {
+export function isCursorAskQuestionPayload(payload: Record<string, unknown>): boolean {
   return payload.method === 'cursor/ask_question'
 }
 
-function isCursorCreatePlanPayload(payload: Record<string, unknown>): boolean {
+export function isCursorCreatePlanPayload(payload: Record<string, unknown>): boolean {
   return payload.method === 'cursor/create_plan'
+}
+
+export function isCursorControlPayload(payload: Record<string, unknown>): boolean {
+  return isCursorAskQuestionPayload(payload) || isCursorCreatePlanPayload(payload)
 }
 
 export function getCursorQuestions(payload: Record<string, unknown>): Question[] {

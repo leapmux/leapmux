@@ -110,6 +110,18 @@ func (b *acpBase) handleACPPromptResponse(resp json.RawMessage, prePersist func(
 // the shared dispatcher. Return true if the update was consumed.
 type acpSessionUpdateHandler func(sessionUpdate string, update json.RawMessage) bool
 
+// configOptionSessionUpdateHandler returns an acpSessionUpdateHandler that
+// dispatches config_option_update events to the given handler.
+func configOptionSessionUpdateHandler(handler func(json.RawMessage)) acpSessionUpdateHandler {
+	return func(sessionUpdate string, update json.RawMessage) bool {
+		if sessionUpdate == acpUpdateConfigOptionUpdate {
+			handler(update)
+			return true
+		}
+		return false
+	}
+}
+
 // acpMethodHandler is called for JSON-RPC methods not handled by the shared
 // ACP dispatcher. Return true if the method was consumed.
 type acpMethodHandler func(line *parsedLine) bool
