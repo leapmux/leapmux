@@ -201,11 +201,19 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           try {
             const parsed = parseMessageContent(msg)
             const method = parsed.parentObject?.method as string | undefined
+            const item = parsed.parentObject?.item as Record<string, unknown> | undefined
             if (method === 'thread/started') {
               // A new Codex thread starts idle. Clear any stale turn ID that may
               // have been restored from localStorage so the chat can show its
               // empty state instead of a phantom thinking indicator.
               agentSessionStore.updateInfo(agentId, { codexTurnId: '' })
+            }
+            if (item?.type === 'agentMessage') {
+              chatStore.clearStreamingText(agentId)
+            }
+            else if (item?.type === 'plan') {
+              chatStore.clearStreamingText(agentId)
+              agentSessionStore.updateInfo(agentId, { streamingType: '' })
             }
             const usage = extractAssistantUsage(parsed)
             if (usage) {
