@@ -282,9 +282,9 @@ export const TabBar: Component<TabBarProps> = (props) => {
   const renderMoreMenuItems = () => (
     <>
       <li class={menuSectionHeader}>Agents</li>
-      <Show when={(props.availableProviders ?? []).length > 0}>
+      <Show when={props.availableProviders?.length}>
         <li class={styles.providerIconsRow}>
-          <For each={props.availableProviders ?? []}>
+          <For each={props.availableProviders}>
             {provider => (
               <TabBarTooltip text={`New ${agentProviderLabel(provider)} agent`}>
                 <button
@@ -385,33 +385,48 @@ export const TabBar: Component<TabBarProps> = (props) => {
       <Show when={props.showAddButton}>
         {/* Full / Compact: individual new-tab buttons */}
         <div class={styles.newTabWrapper}>
-          <For each={mruProviders()}>
-            {provider => (
-              <TabBarTooltip text={`New ${agentProviderLabel(provider)} agent`}>
-                <Show
-                  when={!props.newAgentLoading}
-                  fallback={(
-                    <IconButton
-                      icon={Bot}
-                      iconSize="md"
-                      size="md"
-                      state={IconButtonState.Loading}
-                      data-testid={`new-agent-button-${provider}`}
-                    />
-                  )}
-                >
-                  <button
-                    type="button"
-                    class={styles.providerButton}
-                    data-testid={`new-agent-button-${provider}`}
-                    onClick={() => handleNewAgent(provider)}
-                  >
-                    <AgentProviderIcon provider={provider} size={16} />
-                  </button>
-                </Show>
+          <Show
+            when={mruProviders().length > 0}
+            fallback={(
+              <TabBarTooltip text="No agents available">
+                <IconButton
+                  icon={Bot}
+                  iconSize="md"
+                  size="md"
+                  state={IconButtonState.Disabled}
+                  data-testid="new-agent-button-disabled"
+                />
               </TabBarTooltip>
             )}
-          </For>
+          >
+            <For each={mruProviders()}>
+              {provider => (
+                <TabBarTooltip text={`New ${agentProviderLabel(provider)} agent`}>
+                  <Show
+                    when={!props.newAgentLoading}
+                    fallback={(
+                      <IconButton
+                        icon={Bot}
+                        iconSize="md"
+                        size="md"
+                        state={IconButtonState.Loading}
+                        data-testid={`new-agent-button-${provider}`}
+                      />
+                    )}
+                  >
+                    <button
+                      type="button"
+                      class={styles.providerButton}
+                      data-testid={`new-agent-button-${provider}`}
+                      onClick={() => handleNewAgent(provider)}
+                    >
+                      <AgentProviderIcon provider={provider} size={16} />
+                    </button>
+                  </Show>
+                </TabBarTooltip>
+              )}
+            </For>
+          </Show>
           <TabBarTooltip text={newTerminalLabel()}>
             <IconButton
               icon={Terminal}
