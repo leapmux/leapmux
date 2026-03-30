@@ -10,16 +10,6 @@ import (
 	"github.com/leapmux/leapmux/util/version"
 )
 
-const (
-	KiloExtraPrimaryAgent = "primaryAgent"
-	KiloPrimaryAgentBuild = "build"
-	KiloPrimaryAgentPlan  = "plan"
-)
-
-const (
-	kiloMethodSessionResume = "session/resume"
-)
-
 // KiloAgent manages a single Kilo ACP process.
 type KiloAgent struct {
 	acpBase
@@ -79,7 +69,7 @@ func StartKilo(ctx context.Context, opts Options, sink OutputSink) (Provider, er
 		"capabilities":    map[string]interface{}{},
 	})
 	handshake, err := a.startACPHandshake(stdout, stderrPipe, opts, initParams,
-		acpSessionConfig{newMethod: acpMethodSessionNew, resumeMethod: kiloMethodSessionResume})
+		acpSessionConfig{newMethod: acpMethodSessionNew, resumeMethod: openCodeMethodSessionResume})
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +85,7 @@ func StartKilo(ctx context.Context, opts Options, sink OutputSink) (Provider, er
 	}
 	var requestedPrimaryAgent string
 	if opts.ExtraSettings != nil {
-		requestedPrimaryAgent = opts.ExtraSettings[KiloExtraPrimaryAgent]
+		requestedPrimaryAgent = opts.ExtraSettings[OpenCodeExtraPrimaryAgent]
 	}
 	if err := a.configurePrimaryAgents(handshake.Modes, handshake.CurrentModeID, requestedPrimaryAgent); err != nil {
 		cleanup()
@@ -112,7 +102,7 @@ func (a *KiloAgent) configurePrimaryAgents(modes []acpModeInfo, currentModeID, r
 	if !hasACPModeList {
 		available = fallbackOpenCodePrimaryAgents()
 		if current == "" {
-			current = KiloPrimaryAgentBuild
+			current = OpenCodePrimaryAgentBuild
 		}
 	}
 	if current == "" {
@@ -139,13 +129,12 @@ func (a *KiloAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attach
 	})
 }
 
-// CurrentSettings returns the current settings for this agent.
 func (a *KiloAgent) CurrentSettings() *leapmuxv1.AgentSettings {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	extra := map[string]string{}
 	if a.currentPrimaryAgent != "" {
-		extra[KiloExtraPrimaryAgent] = a.currentPrimaryAgent
+		extra[OpenCodeExtraPrimaryAgent] = a.currentPrimaryAgent
 	}
 	return &leapmuxv1.AgentSettings{
 		Model:         a.model,
@@ -153,12 +142,10 @@ func (a *KiloAgent) CurrentSettings() *leapmuxv1.AgentSettings {
 	}
 }
 
-// AvailableOptionGroups returns the available primary-agent group.
 func (a *KiloAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	return a.availablePrimaryAgentGroup()
 }
 
-// UpdateSettings applies setting changes to a running agent.
 func (a *KiloAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	if m := s.GetModel(); m != "" {
 		if err := a.setModel(m); err != nil {
@@ -166,7 +153,7 @@ func (a *KiloAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 			return false
 		}
 	}
-	if primaryAgent := s.GetExtraSettings()[KiloExtraPrimaryAgent]; primaryAgent != "" {
+	if primaryAgent := s.GetExtraSettings()[OpenCodeExtraPrimaryAgent]; primaryAgent != "" {
 		if err := a.setPrimaryAgent(primaryAgent); err != nil {
 			slog.Warn("kilo session/set_mode failed", "agent_id", a.agentID, "error", err)
 			return false
@@ -197,7 +184,7 @@ func (a *KiloAgent) availablePrimaryAgentGroup() []*leapmuxv1.AvailableOptionGro
 		options = fallbackOpenCodePrimaryAgents()
 	}
 	return []*leapmuxv1.AvailableOptionGroup{{
-		Key:     KiloExtraPrimaryAgent,
+		Key:     OpenCodeExtraPrimaryAgent,
 		Label:   "Primary Agent",
 		Options: options,
 	}}
@@ -211,11 +198,11 @@ func init() {
 		},
 		nil, // models discovered dynamically from newSession
 		[]*leapmuxv1.AvailableOptionGroup{{
-			Key:   KiloExtraPrimaryAgent,
+			Key:   OpenCodeExtraPrimaryAgent,
 			Label: "Primary Agent",
 			Options: []*leapmuxv1.AvailableOption{
-				{Id: KiloPrimaryAgentBuild, Name: "Build", IsDefault: true},
-				{Id: KiloPrimaryAgentPlan, Name: "Plan"},
+				{Id: OpenCodePrimaryAgentBuild, Name: "Build", IsDefault: true},
+				{Id: OpenCodePrimaryAgentPlan, Name: "Plan"},
 			},
 		}},
 		"LEAPMUX_KILO_DEFAULT_MODEL",
