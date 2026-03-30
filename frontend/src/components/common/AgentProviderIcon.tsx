@@ -11,6 +11,7 @@ export function agentProviderLabel(provider?: AgentProvider): string {
     case AgentProvider.OPENCODE: return 'OpenCode'
     case AgentProvider.COPILOT_CLI: return 'Copilot CLI'
     case AgentProvider.CURSOR_CLI: return 'Cursor CLI'
+    case AgentProvider.GOOSE_CLI: return 'Goose CLI'
     default: return 'Unknown'
   }
 }
@@ -128,6 +129,21 @@ function CopilotCliIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
+function GooseCliIcon(props: { size: number, class?: string }): JSX.Element {
+  return (
+    <svg
+      height={props.size}
+      width={props.size}
+      viewBox="0 0 24 24"
+      xmlns="http://www.w3.org/2000/svg"
+      class={props.class}
+      style={iconStyle(props.size)}
+    >
+      <path fill="#000" d="M17.873 3.808c-.58-.16-1.208-.048-1.748.192a4.44 4.44 0 00-1.452 1.056c-.78.828-1.332 1.884-1.668 2.988-.168.552-.288 1.116-.372 1.692-.504-.132-1.032-.168-1.548-.096a3.96 3.96 0 00-2.412 1.356c-.348.396-.624.852-.804 1.344a5.76 5.76 0 00-.3 1.512c-.048.756.012 1.524.18 2.268.168.744.444 1.464.84 2.112.384.636.888 1.2 1.5 1.62a4.14 4.14 0 002.052.684c.372.024.744-.012 1.104-.108.348-.096.684-.24.996-.432.624-.384 1.116-.936 1.44-1.572.336-.648.504-1.368.528-2.1.024-.732-.072-1.464-.264-2.172a8.88 8.88 0 00-.852-2.016c.456-.264.876-.588 1.248-.96.564-.564 1.032-1.224 1.356-1.944.324-.72.504-1.5.504-2.292 0-.396-.048-.792-.156-1.176a3.12 3.12 0 00-.492-.996 2.16 2.16 0 00-.828-.672 1.62 1.62 0 00-.552-.168l-.072-.012-.024-.004a1.44 1.44 0 00-.216-.024h-.024c.012 0 .024 0 .024-.012a.48.48 0 00-.168-.012l.048.012zm.216 1.2h.048l.024.012c.012 0 .024.012.036.012l.036.012a.84.84 0 01.336.3c.108.156.192.336.24.528.06.204.084.42.084.636 0 .576-.132 1.152-.384 1.692-.252.528-.624 1.008-1.068 1.416a5.64 5.64 0 01-.72.564c.024-.396.024-.792-.012-1.188a10.08 10.08 0 00-.168-1.416c-.096-.504-.24-1.008-.432-1.488a5.28 5.28 0 00-.36-.72c.3-.336.636-.624 1.008-.852.36-.24.756-.42 1.14-.492l.024-.012h.084l.048-.012.036.012zm-1.716 5.724c.312.54.564 1.116.744 1.716.18.612.276 1.248.264 1.884a3.48 3.48 0 01-.36 1.572c-.192.384-.48.72-.84.948a2.04 2.04 0 01-.648.276 2.16 2.16 0 01-.684.06 2.64 2.64 0 01-1.32-.456c-.408-.276-.744-.66-1.008-1.092a6.12 6.12 0 01-.66-1.752 6.48 6.48 0 01-.144-1.848c.024-.42.108-.84.252-1.236.12-.348.312-.672.564-.948.264-.288.588-.504.948-.636.372-.132.78-.168 1.176-.084.264.06.516.156.756.3a5.4 5.4 0 01.96 1.296z" />
+    </svg>
+  )
+}
+
 function CursorCliIcon(props: { size: number, class?: string }): JSX.Element {
   return (
     <svg
@@ -172,6 +188,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.CURSOR_CLI}>
         <CursorCliIcon size={props.size} class={props.class} />
+      </Match>
+      <Match when={props.provider === AgentProvider.GOOSE_CLI}>
+        <GooseCliIcon size={props.size} class={props.class} />
       </Match>
     </Switch>
   )

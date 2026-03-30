@@ -4,6 +4,7 @@ import './copilot'
 import './codex'
 import './cursor'
 import './gemini'
+import './goose'
 import './opencode'
 import './stubs'
 
