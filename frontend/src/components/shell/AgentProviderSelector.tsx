@@ -1,7 +1,7 @@
-import type { Accessor, Setter } from 'solid-js'
+import type { Accessor } from 'solid-js'
 import Check from 'lucide-solid/icons/check'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
-import { createMemo, For } from 'solid-js'
+import { createMemo, For, Show } from 'solid-js'
 import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { RefreshButton } from '~/components/common/RefreshButton'
@@ -12,7 +12,7 @@ import * as styles from './AgentProviderSelector.css'
 
 interface AgentProviderSelectorProps {
   value: Accessor<AgentProvider>
-  onChange: Setter<AgentProvider>
+  onChange: (provider: AgentProvider) => void
   availableProviders?: AgentProvider[]
   onRefresh?: () => void
 }
@@ -66,9 +66,9 @@ export function AgentProviderSelector(props: AgentProviderSelectorProps) {
                 <AgentProviderIcon provider={provider} size={16} />
                 <span>{agentProviderLabel(provider)}</span>
               </span>
-              <For each={provider === currentProvider() ? [provider] : []}>
-                {() => <Check size={14} class={styles.check} />}
-              </For>
+              <Show when={provider === currentProvider()}>
+                <Check size={14} class={styles.check} />
+              </Show>
             </button>
           )}
         </For>

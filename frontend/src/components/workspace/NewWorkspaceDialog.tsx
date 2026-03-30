@@ -3,7 +3,7 @@ import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { generateSlug } from 'random-word-slugs'
-import { createEffect, createMemo, createSignal, Show } from 'solid-js'
+import { createMemo, createSignal, Show } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { Dialog } from '~/components/common/Dialog'
@@ -16,8 +16,7 @@ import { GitOptions } from '~/components/shell/GitOptions'
 import { WorkerSelector } from '~/components/shell/WorkerSelector'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
-import { getDefaultAgentProvider } from '~/lib/agentProviders'
-import { touchMruProvider } from '~/lib/mruAgentProviders'
+import { useAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
 import { sanitizeName } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
 import { dialogLeftPanel, dialogRightPanel, dialogSingleColumn, dialogTopSection, dialogTopTwoColumn, dialogTwoColumn, dialogWide, errorText, labelRow } from '~/styles/shared.css'
@@ -36,18 +35,8 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
   const randomTitle = () => generateSlug(3, { format: 'title' })
   const [title, setTitle] = createSignal(randomTitle())
   const [submitting, setSubmitting] = createSignal(false)
-  const defaultAgentProvider = createMemo(() => getDefaultAgentProvider(props.availableProviders))
-  // eslint-disable-next-line solid/reactivity -- one-time initial value, kept in sync below
-  const [agentProvider, setAgentProvider] = createSignal<AgentProvider>(defaultAgentProvider())
+  const { agentProvider, handleProviderChange, commitSelection } = useAgentProviderSelection(() => props.availableProviders)
   const titleError = createMemo(() => sanitizeName(title()).error)
-  let providerTouched = false
-
-  createEffect(() => {
-    const nextProvider = defaultAgentProvider()
-    if (!providerTouched || !props.availableProviders?.includes(agentProvider())) {
-      setAgentProvider(nextProvider)
-    }
-  })
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
@@ -85,7 +74,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       })
 
       if (agentResp.agent) {
-        touchMruProvider(agentProvider())
+        commitSelection()
         workspaceClient.addTab({
           workspaceId: wsResp.workspace.id,
           tab: { tabType: TabType.AGENT, tabId: agentResp.agent.id, workerId: wid },
@@ -115,10 +104,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
                 <WorkerSelector state={state} />
                 <AgentProviderSelector
                   value={agentProvider}
-                  onChange={(provider) => {
-                    providerTouched = true
-                    setAgentProvider(provider)
-                  }}
+                  onChange={handleProviderChange}
                   availableProviders={props.availableProviders}
                   onRefresh={props.onRefreshProviders}
                 />
