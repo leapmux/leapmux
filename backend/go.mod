@@ -8,12 +8,12 @@ require (
 	github.com/cloudflare/circl v1.6.3
 	github.com/coder/websocket v1.8.14
 	github.com/creack/pty v1.1.24
-	github.com/klauspost/compress v1.18.4
+	github.com/klauspost/compress v1.18.5
 	github.com/knadh/koanf/parsers/yaml v1.1.0
 	github.com/knadh/koanf/providers/confmap v1.0.0
 	github.com/knadh/koanf/providers/env v1.1.0
 	github.com/knadh/koanf/providers/file v1.2.1
-	github.com/knadh/koanf/v2 v2.3.3
+	github.com/knadh/koanf/v2 v2.3.4
 	github.com/lmittmann/tint v1.1.3
 	github.com/matoous/go-nanoid/v2 v2.1.0
 	github.com/mattn/go-isatty v0.0.20
@@ -23,10 +23,10 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/stretchr/testify v1.11.1
-	golang.org/x/crypto v0.48.0
-	golang.org/x/net v0.51.0
+	golang.org/x/crypto v0.49.0
+	golang.org/x/net v0.52.0
 	google.golang.org/protobuf v1.36.11
-	modernc.org/sqlite v1.46.1
+	modernc.org/sqlite v1.48.0
 )
 
 require (
@@ -56,8 +56,8 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/term v0.40.0 // indirect
-	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/term v0.41.0 // indirect
+	golang.org/x/text v0.35.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
