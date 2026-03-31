@@ -152,16 +152,6 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
                 <DirectorySelector state={state} />
               </div>
               <div class={dialogRightPanel}>
-                <Show when={state.workerId()}>
-                  <GitOptions
-                    workerId={state.workerId()}
-                    selectedPath={state.workingDir()}
-                    homeDir={state.workerInfoStore.getHomeDir(state.workerId())}
-                    refreshKey={state.refreshKey()}
-                    onGitModeChange={state.handleGitModeChange}
-                    onVisibilityChange={state.setShowGitOptions}
-                  />
-                </Show>
                 <div>
                   <div class={labelRow}>Resume an existing session</div>
                   <input
@@ -174,6 +164,16 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
                     <span class={errorText}>{sessionIdError()}</span>
                   </Show>
                 </div>
+                <Show when={state.workerId()}>
+                  <GitOptions
+                    workerId={state.workerId()}
+                    selectedPath={state.workingDir()}
+                    homeDir={state.workerInfoStore.getHomeDir(state.workerId())}
+                    refreshKey={state.refreshKey()}
+                    onGitModeChange={state.handleGitModeChange}
+                    onVisibilityChange={state.setShowGitOptions}
+                  />
+                </Show>
               </div>
             </div>
           </div>

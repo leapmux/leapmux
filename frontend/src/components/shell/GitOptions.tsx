@@ -359,173 +359,175 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
 
   return (
     <Show when={!loading() && showGitOptions()}>
-      <div class={labelRow}>&nbsp;</div>
-      <div class={radioGroup}>
-        {/* Use current state */}
-        <label class={radioRow}>
-          <input
-            type="radio"
-            name="git-mode"
-            checked={gitMode() === 'current'}
-            onChange={() => setGitMode('current')}
-          />
-          Use current state
-        </label>
-        <Show when={gitMode() === 'current' && currentBranch()}>
-          <div class={radioSubContent}>
-            <div class={pathPreview}>
-              {'Currently on branch: '}
-              {currentBranch()}
-            </div>
-          </div>
-        </Show>
-
-        {/* Switch to branch */}
-        <label class={radioRow}>
-          <input
-            type="radio"
-            name="git-mode"
-            checked={gitMode() === 'switch-branch'}
-            onChange={() => setGitMode('switch-branch')}
-          />
-          Switch to branch
-        </label>
-        <Show when={gitMode() === 'switch-branch'}>
-          <div class={radioSubContent}>
-            <Show when={isDirty()}>
-              <div class={warningText}>
-                The working copy has uncommitted changes. Switching branches may fail or discard changes.
-              </div>
-            </Show>
-            <BranchSelect value={selectedCheckoutBranch} setValue={setSelectedCheckoutBranch} showPrompt />
-            <Show when={checkoutBranchWarning()}>
-              <div class={warningText}>{checkoutBranchWarning()}</div>
-            </Show>
-          </div>
-        </Show>
-
-        {/* Create new branch */}
-        <label class={radioRow}>
-          <input
-            type="radio"
-            name="git-mode"
-            checked={gitMode() === 'create-branch'}
-            onChange={() => setGitMode('create-branch')}
-          />
-          Create new branch
-        </label>
-        <Show when={gitMode() === 'create-branch'}>
-          <div class={radioSubContent}>
-            <Show when={isDirty()}>
-              <div class={warningText}>
-                The working copy has uncommitted changes. Creating a new branch will include them.
-              </div>
-            </Show>
-            <div>
-              <div class={labelRow}>
-                Branch Name
-                <RefreshButton onClick={randomizeNewBranch} title="Generate random name" />
-              </div>
-              <input
-                type="text"
-                value={newBranchName()}
-                onInput={e => setNewBranchName(e.currentTarget.value)}
-                placeholder="feature-branch"
-              />
-              <Show when={newBranchError()}>
-                <div class={errorText}>{newBranchError()}</div>
-              </Show>
-            </div>
-            <div>
-              <div class={labelRow}>Base Branch</div>
-              <BranchSelect value={selectedNewBranchBase} setValue={setSelectedNewBranchBase} showCurrent />
-            </div>
-          </div>
-        </Show>
-
-        {/* Create new worktree */}
-        <label class={radioRow}>
-          <input
-            type="radio"
-            name="git-mode"
-            checked={gitMode() === 'create-worktree'}
-            onChange={() => setGitMode('create-worktree')}
-          />
-          Create new worktree
-        </label>
-        <Show when={gitMode() === 'create-worktree'}>
-          <div class={radioSubContent}>
-            <Show when={isDirty()}>
-              <div class={warningText}>
-                The selected working copy has uncommitted changes that will not be transferred to the new worktree.
-              </div>
-            </Show>
-            <div>
-              <div class={labelRow}>
-                Branch Name
-                <RefreshButton onClick={randomizeBranch} title="Generate random name" />
-              </div>
-              <input
-                type="text"
-                value={branchName()}
-                onInput={e => setBranchName(e.currentTarget.value)}
-                placeholder="feature-branch"
-              />
-              <Show when={branchError()}>
-                <div class={errorText}>{branchError()}</div>
-              </Show>
-            </div>
-            <div>
-              <div class={labelRow}>Base Branch</div>
-              <BranchSelect value={selectedBaseBranch} setValue={setSelectedBaseBranch} showCurrent />
-            </div>
-            <Show when={worktreePath()}>
+      <div class="vstack gap-2">
+        <div class={labelRow}>Git options</div>
+        <div class={radioGroup}>
+          {/* Use current state */}
+          <label class={radioRow}>
+            <input
+              type="radio"
+              name="git-mode"
+              checked={gitMode() === 'current'}
+              onChange={() => setGitMode('current')}
+            />
+            Use current state
+          </label>
+          <Show when={gitMode() === 'current' && currentBranch()}>
+            <div class={radioSubContent}>
               <div class={pathPreview}>
-                Worktree path:
-                {' '}
-                <Tooltip text={worktreePath()}><code>{tildify(worktreePath(), props.homeDir)}</code></Tooltip>
+                {'Currently on branch: '}
+                {currentBranch()}
               </div>
-            </Show>
-          </div>
-        </Show>
+            </div>
+          </Show>
 
-        {/* Use existing worktree */}
-        <label class={radioRow}>
-          <input
-            type="radio"
-            name="git-mode"
-            checked={gitMode() === 'use-worktree'}
-            onChange={() => setGitMode('use-worktree')}
-          />
-          Use existing worktree
-        </label>
-        <Show when={gitMode() === 'use-worktree'}>
-          <div class={radioSubContent}>
-            <select
-              value={selectedWorktreePath()}
-              onChange={e => setSelectedWorktreePath(e.currentTarget.value)}
-              disabled={worktreesLoading()}
-            >
-              <Show when={worktreesLoading()}>
-                <option value="">Loading worktrees...</option>
+          {/* Switch to branch */}
+          <label class={radioRow}>
+            <input
+              type="radio"
+              name="git-mode"
+              checked={gitMode() === 'switch-branch'}
+              onChange={() => setGitMode('switch-branch')}
+            />
+            Switch to branch
+          </label>
+          <Show when={gitMode() === 'switch-branch'}>
+            <div class={radioSubContent}>
+              <Show when={isDirty()}>
+                <div class={warningText}>
+                  The working copy has uncommitted changes. Switching branches may fail or discard changes.
+                </div>
               </Show>
-              <Show when={!worktreesLoading() && worktrees().length === 0}>
-                <option value="">No worktrees found</option>
+              <BranchSelect value={selectedCheckoutBranch} setValue={setSelectedCheckoutBranch} showPrompt />
+              <Show when={checkoutBranchWarning()}>
+                <div class={warningText}>{checkoutBranchWarning()}</div>
               </Show>
-              <Show when={!worktreesLoading() && worktrees().length > 0}>
-                <option value="">Select a worktree...</option>
-                <For each={worktrees()}>
-                  {wt => (
-                    <option value={wt.path}>
-                      {wt.branch ? `${wt.branch} \u2014 ` : ''}
-                      {tildify(wt.path, props.homeDir)}
-                    </option>
-                  )}
-                </For>
+            </div>
+          </Show>
+
+          {/* Create new branch */}
+          <label class={radioRow}>
+            <input
+              type="radio"
+              name="git-mode"
+              checked={gitMode() === 'create-branch'}
+              onChange={() => setGitMode('create-branch')}
+            />
+            Create new branch
+          </label>
+          <Show when={gitMode() === 'create-branch'}>
+            <div class={radioSubContent}>
+              <Show when={isDirty()}>
+                <div class={warningText}>
+                  The working copy has uncommitted changes. Creating a new branch will include them.
+                </div>
               </Show>
-            </select>
-          </div>
-        </Show>
+              <div>
+                <div class={labelRow}>
+                  Branch Name
+                  <RefreshButton onClick={randomizeNewBranch} title="Generate random name" />
+                </div>
+                <input
+                  type="text"
+                  value={newBranchName()}
+                  onInput={e => setNewBranchName(e.currentTarget.value)}
+                  placeholder="feature-branch"
+                />
+                <Show when={newBranchError()}>
+                  <div class={errorText}>{newBranchError()}</div>
+                </Show>
+              </div>
+              <div>
+                <div class={labelRow}>Base Branch</div>
+                <BranchSelect value={selectedNewBranchBase} setValue={setSelectedNewBranchBase} showCurrent />
+              </div>
+            </div>
+          </Show>
+
+          {/* Create new worktree */}
+          <label class={radioRow}>
+            <input
+              type="radio"
+              name="git-mode"
+              checked={gitMode() === 'create-worktree'}
+              onChange={() => setGitMode('create-worktree')}
+            />
+            Create new worktree
+          </label>
+          <Show when={gitMode() === 'create-worktree'}>
+            <div class={radioSubContent}>
+              <Show when={isDirty()}>
+                <div class={warningText}>
+                  The selected working copy has uncommitted changes that will not be transferred to the new worktree.
+                </div>
+              </Show>
+              <div>
+                <div class={labelRow}>
+                  Branch Name
+                  <RefreshButton onClick={randomizeBranch} title="Generate random name" />
+                </div>
+                <input
+                  type="text"
+                  value={branchName()}
+                  onInput={e => setBranchName(e.currentTarget.value)}
+                  placeholder="feature-branch"
+                />
+                <Show when={branchError()}>
+                  <div class={errorText}>{branchError()}</div>
+                </Show>
+              </div>
+              <div>
+                <div class={labelRow}>Base Branch</div>
+                <BranchSelect value={selectedBaseBranch} setValue={setSelectedBaseBranch} showCurrent />
+              </div>
+              <Show when={worktreePath()}>
+                <div class={pathPreview}>
+                  Worktree path:
+                  {' '}
+                  <Tooltip text={worktreePath()}><code>{tildify(worktreePath(), props.homeDir)}</code></Tooltip>
+                </div>
+              </Show>
+            </div>
+          </Show>
+
+          {/* Use existing worktree */}
+          <label class={radioRow}>
+            <input
+              type="radio"
+              name="git-mode"
+              checked={gitMode() === 'use-worktree'}
+              onChange={() => setGitMode('use-worktree')}
+            />
+            Use existing worktree
+          </label>
+          <Show when={gitMode() === 'use-worktree'}>
+            <div class={radioSubContent}>
+              <select
+                value={selectedWorktreePath()}
+                onChange={e => setSelectedWorktreePath(e.currentTarget.value)}
+                disabled={worktreesLoading()}
+              >
+                <Show when={worktreesLoading()}>
+                  <option value="">Loading worktrees...</option>
+                </Show>
+                <Show when={!worktreesLoading() && worktrees().length === 0}>
+                  <option value="">No worktrees found</option>
+                </Show>
+                <Show when={!worktreesLoading() && worktrees().length > 0}>
+                  <option value="">Select a worktree...</option>
+                  <For each={worktrees()}>
+                    {wt => (
+                      <option value={wt.path}>
+                        {wt.branch ? `${wt.branch} \u2014 ` : ''}
+                        {tildify(wt.path, props.homeDir)}
+                      </option>
+                    )}
+                  </For>
+                </Show>
+              </select>
+            </div>
+          </Show>
+        </div>
       </div>
     </Show>
   )

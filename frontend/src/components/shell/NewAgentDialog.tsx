@@ -118,16 +118,6 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
                 <DirectorySelector state={state} />
               </div>
               <div class={dialogRightPanel}>
-                <Show when={state.workerId() && !state.worktreeResolving()}>
-                  <GitOptions
-                    workerId={state.workerId()}
-                    selectedPath={state.workingDir()}
-                    homeDir={state.workerInfoStore.getHomeDir(state.workerId())}
-                    refreshKey={state.refreshKey()}
-                    onGitModeChange={state.handleGitModeChange}
-                    onVisibilityChange={state.setShowGitOptions}
-                  />
-                </Show>
                 <div>
                   <div class={labelRow}>Resume an existing session</div>
                   <input
@@ -140,6 +130,16 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
                     <span class={errorText}>{sessionIdError()}</span>
                   </Show>
                 </div>
+                <Show when={state.workerId() && !state.worktreeResolving()}>
+                  <GitOptions
+                    workerId={state.workerId()}
+                    selectedPath={state.workingDir()}
+                    homeDir={state.workerInfoStore.getHomeDir(state.workerId())}
+                    refreshKey={state.refreshKey()}
+                    onGitModeChange={state.handleGitModeChange}
+                    onVisibilityChange={state.setShowGitOptions}
+                  />
+                </Show>
               </div>
             </div>
           </div>
