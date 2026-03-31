@@ -202,7 +202,7 @@ export const controlFooterLeft = style({
 export const controlFooterRight = style({
   display: 'flex',
   alignItems: 'center',
-  gap: 'var(--space-2)',
+  gap: 'var(--space-1)',
   justifyContent: 'flex-end',
   gridColumn: 3,
 })
