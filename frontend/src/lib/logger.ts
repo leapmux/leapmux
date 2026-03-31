@@ -1,20 +1,24 @@
-import { Logger } from 'tslog'
+interface Logger {
+  debug: (...args: unknown[]) => void
+  info: (...args: unknown[]) => void
+  warn: (...args: unknown[]) => void
+  error: (...args: unknown[]) => void
+}
 
-// Root logger: only warn+ goes to console by default.
-// tslog levels: 0=silly, 1=trace, 2=debug, 3=info, 4=warn, 5=error, 6=fatal
-const rootLogger = new Logger({
-  name: 'leapmux',
-  minLevel: 4,
-  type: 'pretty',
-  stylePrettyLogs: false,
-})
+const loggers = new Map<string, Logger>()
 
-const loggers = new Map<string, Logger<unknown>>()
-
-export function createLogger(name: string) {
+export function createLogger(name: string): Logger {
   let logger = loggers.get(name)
   if (!logger) {
-    logger = rootLogger.getSubLogger({ name })
+    const prefix = `[${name}]`
+    logger = {
+      // eslint-disable-next-line no-console
+      debug: (...args: unknown[]) => console.debug(prefix, ...args),
+      // eslint-disable-next-line no-console
+      info: (...args: unknown[]) => console.info(prefix, ...args),
+      warn: (...args: unknown[]) => console.warn(prefix, ...args),
+      error: (...args: unknown[]) => console.error(prefix, ...args),
+    }
     loggers.set(name, logger)
   }
   return logger

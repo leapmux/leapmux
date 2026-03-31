@@ -15,54 +15,55 @@ describe('createLogger', () => {
     expect(a).not.toBe(b)
   })
 
-  describe('level gating', () => {
-    let consoleSpy: ReturnType<typeof vi.spyOn>
+  describe('output delegation', () => {
+    let debugSpy: ReturnType<typeof vi.spyOn>
+    let infoSpy: ReturnType<typeof vi.spyOn>
+    let warnSpy: ReturnType<typeof vi.spyOn>
+    let errorSpy: ReturnType<typeof vi.spyOn>
 
     beforeEach(() => {
-      // tslog 'pretty' type writes to console.log for all levels
-      consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {})
+      infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {})
+      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     })
 
     afterEach(() => {
-      consoleSpy.mockRestore()
+      debugSpy.mockRestore()
+      infoSpy.mockRestore()
+      warnSpy.mockRestore()
+      errorSpy.mockRestore()
     })
 
-    it('suppresses debug output at default warn level', () => {
-      const log = createLogger('level-debug')
-      log.debug('should not appear')
-      expect(consoleSpy).not.toHaveBeenCalled()
+    it('delegates debug to console.debug with prefix', () => {
+      const log = createLogger('test-debug')
+      log.debug('msg')
+      expect(debugSpy).toHaveBeenCalledWith('[test-debug]', 'msg')
     })
 
-    it('suppresses info output at default warn level', () => {
-      const log = createLogger('level-info')
-      log.info('should not appear')
-      expect(consoleSpy).not.toHaveBeenCalled()
+    it('delegates info to console.info with prefix', () => {
+      const log = createLogger('test-info')
+      log.info('msg')
+      expect(infoSpy).toHaveBeenCalledWith('[test-info]', 'msg')
     })
 
-    it('allows warn output at default warn level', () => {
-      const log = createLogger('level-warn')
-      log.warn('should appear')
-      expect(consoleSpy).toHaveBeenCalled()
+    it('delegates warn to console.warn with prefix', () => {
+      const log = createLogger('test-warn')
+      log.warn('msg')
+      expect(warnSpy).toHaveBeenCalledWith('[test-warn]', 'msg')
     })
 
-    it('allows error output at default warn level', () => {
-      const log = createLogger('level-error')
-      log.error('should appear')
-      expect(consoleSpy).toHaveBeenCalled()
+    it('delegates error to console.error with prefix', () => {
+      const log = createLogger('test-error')
+      log.error('msg')
+      expect(errorSpy).toHaveBeenCalledWith('[test-error]', 'msg')
     })
-  })
 
-  describe('transport attachment', () => {
-    it('receives log entries via attached transport', () => {
-      const log = createLogger('transport-test')
-      const entries: unknown[] = []
-
-      log.attachTransport((entry) => {
-        entries.push(entry)
-      })
-
-      log.warn('test message')
-      expect(entries.length).toBe(1)
+    it('passes multiple arguments', () => {
+      const log = createLogger('test-multi')
+      const err = new Error('boom')
+      log.warn('failed', err)
+      expect(warnSpy).toHaveBeenCalledWith('[test-multi]', 'failed', err)
     })
   })
 })
