@@ -97,6 +97,14 @@ const processor = unified()
   .use(rehypeExternalLinks)
   .use(rehypeStringify)
 
+/** Fallback processor without Shiki (used when syntax highlighting fails). */
+const plainProcessor = unified()
+  .use(remarkParse)
+  .use(remarkGfm)
+  .use(remarkRehype)
+  .use(rehypeExternalLinks)
+  .use(rehypeStringify)
+
 // LRU cache for rendered markdown: avoids re-running the full remark+shiki pipeline
 // for identical content (e.g. on tab switch, thread expand/collapse, re-mount).
 const CACHE_MAX_SIZE = 256
@@ -113,7 +121,15 @@ export function renderMarkdown(text: string, skipCache = false): string {
     }
   }
 
-  const result = String(processor.processSync(text))
+  let result: string
+  try {
+    result = String(processor.processSync(text))
+  }
+  catch {
+    // Shiki's regex engine may fail on certain grammars (e.g. unsupported
+    // lookbehind in Safari). Fall back to rendering without syntax highlighting.
+    result = String(plainProcessor.processSync(text))
+  }
 
   if (!skipCache) {
     // Evict oldest entry if at capacity

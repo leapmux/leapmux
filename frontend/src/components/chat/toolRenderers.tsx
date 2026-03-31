@@ -414,12 +414,22 @@ function ToolUseMessage(props: {
   )
 }
 
+const RE_AMP = /&/g
+const RE_LT = /</g
+const RE_GT = />/g
+
 export function renderBashHighlight(code: string): string {
-  return shikiHighlighter.codeToHtml(code, {
-    lang: 'bash',
-    themes: { light: 'github-light', dark: 'github-dark' },
-    defaultColor: false,
-  })
+  try {
+    return shikiHighlighter.codeToHtml(code, {
+      lang: 'bash',
+      themes: { light: 'github-light', dark: 'github-dark' },
+      defaultColor: false,
+    })
+  }
+  catch {
+    const escaped = code.replace(RE_AMP, '&amp;').replace(RE_LT, '&lt;').replace(RE_GT, '&gt;')
+    return `<pre><code>${escaped}</code></pre>`
+  }
 }
 
 /** Derive a summary element for a generic tool_use (Bash command, search paths). */

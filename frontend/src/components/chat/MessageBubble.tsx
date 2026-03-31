@@ -7,7 +7,7 @@ import type { CommandStreamSegment } from '~/stores/chat.store'
 
 import Check from 'lucide-solid/icons/check'
 import Copy from 'lucide-solid/icons/copy'
-import { createMemo, createSignal, ErrorBoundary, onMount, Show } from 'solid-js'
+import { createMemo, createResource, createSignal, ErrorBoundary, onMount, Show } from 'solid-js'
 import { render } from 'solid-js/web'
 import { IconButton } from '~/components/common/IconButton'
 import { usePreferences } from '~/context/PreferencesContext'
@@ -15,6 +15,7 @@ import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { createLogger } from '~/lib/logger'
 import { parseMessageContent } from '~/lib/messageParser'
 import { formatChatQuote } from '~/lib/quoteUtils'
+import { resolveStack } from '~/lib/resolveStack'
 import { formatUnifiedDiffText, rawDiffToHunks } from './diffUtils'
 import * as styles from './MessageBubble.css'
 import { buildClassificationInput, classifyMessage, messageBubbleClass, messageRowClass } from './messageClassification'
@@ -31,13 +32,17 @@ function renderErrorFallback(label: string) {
   return (err: unknown) => {
     logger.warn(label, err)
     const message = err instanceof Error ? err.message : String(err)
-    const stack = err instanceof Error ? err.stack : undefined
+    const rawStack = err instanceof Error ? err.stack : undefined
+    const [resolved] = createResource(
+      () => rawStack,
+      stack => stack ? resolveStack(stack) : Promise.resolve(undefined),
+    )
     return (
       <span class={chatStyles.systemMessage}>
         {'Failed to render message: '}
         {message}
-        <Show when={stack}>
-          <pre>{stack}</pre>
+        <Show when={resolved() ?? rawStack}>
+          {stack => <pre>{stack()}</pre>}
         </Show>
       </span>
     )
