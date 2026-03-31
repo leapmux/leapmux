@@ -133,6 +133,21 @@ describe('codex classify', () => {
     expect(result).toEqual({ kind: 'tool_use', toolName: 'webSearch', toolUse: parent.item, content: [] })
   })
 
+  it('hides webSearch openPage items with null url', () => {
+    const parent = {
+      item: {
+        type: 'webSearch',
+        id: 'ws-2',
+        query: '',
+        action: { type: 'openPage', url: null },
+      },
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+    }
+    const result = plugin.classify(input(parent))
+    expect(result).toEqual({ kind: 'hidden' })
+  })
+
   it('hides thread/tokenUsage/updated notifications', () => {
     const parent = {
       method: 'thread/tokenUsage/updated',

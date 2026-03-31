@@ -93,22 +93,18 @@ function isCodexJsonRpcResponse(parent: Record<string, unknown>): boolean {
   return ('result' in parent || 'error' in parent) && ('id' in parent)
 }
 
-function isCodexEmptyCompletedWebSearch(input: ClassificationInput): boolean {
-  if (input.agentProvider !== AgentProvider.CODEX || input.spanType !== 'webSearch')
-    return false
-
-  const item = input.parentObject?.item as Record<string, unknown> | undefined
-  if (!isObject(item) || item.type !== 'webSearch')
-    return false
-
+function isCodexEmptyCompletedWebSearch(item: Record<string, unknown>): boolean {
   const query = typeof item.query === 'string' ? item.query.trim() : ''
   const action = isObject(item.action) ? item.action as Record<string, unknown> : null
   const actionType = typeof action?.type === 'string' ? action.type as string : ''
 
-  if (actionType !== 'other')
-    return false
+  if (actionType === 'other')
+    return query.length === 0
 
-  return query.length === 0
+  if (actionType === 'openPage')
+    return !action?.url
+
+  return false
 }
 
 /** Extra notification types for Codex (agent_error). */
@@ -416,7 +412,7 @@ const codexPlugin: ProviderPlugin = {
 
       // webSearch → tool use / result-like native codex message
       if (itemType === 'webSearch') {
-        if (isCodexEmptyCompletedWebSearch(input))
+        if (isCodexEmptyCompletedWebSearch(item))
           return { kind: 'hidden' }
         return { kind: 'tool_use', toolName: 'webSearch', toolUse: item, content: [] }
       }
