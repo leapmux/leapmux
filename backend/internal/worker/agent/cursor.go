@@ -32,7 +32,7 @@ func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 	ctx, cancel := context.WithCancel(ctx)
 
 	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
-		ctx, opts.Shell, opts.LoginShell, "agent", nil, []string{"acp"}, nil, opts.WorkingDir,
+		ctx, opts.Shell, opts.LoginShell, "cursor-agent", nil, []string{"acp"}, nil, opts.WorkingDir,
 	)
 
 	cmd.Env = append(cmd.Environ(), "LEAPMUX_WORKER=1")
@@ -221,6 +221,6 @@ func init() {
 		}},
 		"LEAPMUX_CURSOR_DEFAULT_MODEL",
 		"",
-		"agent",
+		"cursor-agent",
 	)
 }

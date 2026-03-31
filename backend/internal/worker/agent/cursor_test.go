@@ -88,7 +88,7 @@ func installFakeCursorCLI(t *testing.T, scenario string) {
 	t.Helper()
 
 	dir := t.TempDir()
-	launcher := filepath.Join(dir, "agent")
+	launcher := filepath.Join(dir, "cursor-agent")
 	script := fmt.Sprintf("#!/bin/sh\nLEAPMUX_CURSOR_TEST_SCENARIO=%q exec %q -test.run=TestHelperProcessCursorCLI -- \"$@\"\n", scenario, os.Args[0])
 	require.NoError(t, os.WriteFile(launcher, []byte(script), 0o755))
 
