@@ -19,7 +19,7 @@ export interface ParsedCatLine {
 }
 
 /** Regex to match a single Read output line: optional whitespace, digits, →, content. */
-const CAT_N_LINE_RE = /^\s*(\d+)→(.*)$/
+const CAT_N_LINE_RE = /^\s*(\d+)[→\t](.*)$/
 
 /** Skip syntax highlighting for files above this many lines. */
 const HIGHLIGHT_LINE_LIMIT = 1000
