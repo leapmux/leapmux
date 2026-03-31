@@ -137,6 +137,8 @@ export interface ChannelManagerOpts {
 export class ChannelManager {
   private transport: ChannelTransport
   private channels = new Map<string, ActiveChannel>()
+  /** In-flight openChannel promises per worker, for deduplication. */
+  private openingChannels = new Map<string, Promise<string>>()
   private ws: WebSocket | null = null
   private wsPromise: Promise<void> | null = null
   private handshake1: typeof initiatorHandshake1
@@ -427,7 +429,17 @@ export class ChannelManager {
         return channelId
       }
     }
-    return this.openChannel(workerId)
+
+    // Deduplicate concurrent openChannel calls for the same worker.
+    const inflight = this.openingChannels.get(workerId)
+    if (inflight)
+      return inflight
+
+    const promise = this.openChannel(workerId).finally(() => {
+      this.openingChannels.delete(workerId)
+    })
+    this.openingChannels.set(workerId, promise)
+    return promise
   }
 
   /** Check if a channel is open. */
@@ -893,6 +905,11 @@ export class ChannelManager {
       }
       ch.streamListeners.clear()
       ch.reassembly.clear()
+
+      // Reject pending claim verification.
+      ch.claimReject?.(new ChannelError('transport', 'channel disconnected'))
+      ch.claimResolve = undefined
+      ch.claimReject = undefined
 
       ch.closed = true
       this.channels.delete(channelId)
