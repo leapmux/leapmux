@@ -174,6 +174,30 @@ export const BrowserAppearanceSettings: Component = () => {
           </div>
         </Show>
       </div>
+
+      <div class={styles.section}>
+        <h2>Debug Logging</h2>
+        <div class={styles.pillGroup}>
+          <button
+            class={prefs.browserDebugLogging() === null ? styles.pillOptionActive : styles.pillOption}
+            onClick={() => prefs.setBrowserDebugLogging(null)}
+          >
+            Use account default
+          </button>
+          <button
+            class={prefs.browserDebugLogging() === true ? styles.pillOptionActive : styles.pillOption}
+            onClick={() => prefs.setBrowserDebugLogging(true)}
+          >
+            On
+          </button>
+          <button
+            class={prefs.browserDebugLogging() === false ? styles.pillOptionActive : styles.pillOption}
+            onClick={() => prefs.setBrowserDebugLogging(false)}
+          >
+            Off
+          </button>
+        </div>
+      </div>
     </>
   )
 }
@@ -213,6 +237,16 @@ export const AccountAppearanceSettings: Component = () => {
 
   const handleAccountTurnEndSoundChange = async (newSound: TurnEndSoundPreference) => {
     prefs.setAccountTurnEndSound(newSound)
+    try {
+      await prefs.saveAccountPreferences()
+    }
+    catch {
+      // Best effort
+    }
+  }
+
+  const handleAccountDebugLoggingChange = async (enabled: boolean) => {
+    prefs.setAccountDebugLogging(enabled)
     try {
       await prefs.saveAccountPreferences()
     }
@@ -278,6 +312,15 @@ export const AccountAppearanceSettings: Component = () => {
             </div>
           </div>
         </Show>
+      </div>
+
+      <div class={styles.section}>
+        <h2>Debug Logging</h2>
+        {renderThemeButtons(
+          () => prefs.accountDebugLogging() ? 'on' : 'off',
+          v => handleAccountDebugLoggingChange(v === 'on'),
+          [{ value: 'on', label: 'On' }, { value: 'off', label: 'Off' }],
+        )}
       </div>
     </>
   )

@@ -64,6 +64,7 @@ message UpdatePreferencesRequest {
   DiffView diff_view = 7;
   TurnEndSound turn_end_sound = 8;
   uint32 turn_end_sound_volume = 9;
+  bool debug_logging = 10;
 }
 
 message UpdatePreferencesResponse {
@@ -88,4 +89,5 @@ message UserPreferences {
   DiffView diff_view = 7;
   TurnEndSound turn_end_sound = 8;
   uint32 turn_end_sound_volume = 9;
+  bool debug_logging = 10;
 }

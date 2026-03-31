@@ -1,9 +1,10 @@
 import type { ParentComponent } from 'solid-js'
 import type { ThemePreference } from '~/app'
 import type { TerminalThemePreference } from '~/lib/terminal'
-import { createContext, createSignal, onMount, useContext } from 'solid-js'
+import { createContext, createEffect, createSignal, onMount, useContext } from 'solid-js'
 import { userClient } from '~/api/clients'
 import { DiffView, TurnEndSound } from '~/generated/leapmux/v1/user_pb'
+import { setDebugEnabled } from '~/lib/logger'
 
 const DEFAULT_MONO_FONT_FAMILY = '"Hack NF", Hack, "SF Mono", Consolas, monospace'
 
@@ -39,6 +40,8 @@ interface PreferencesState {
   turnEndSound: () => TurnEndSoundPreference
   /** Resolved turn end sound volume (0-100). */
   turnEndSoundVolume: () => number
+  /** Resolved debug logging preference. */
+  debugLogging: () => boolean
   /** Whether hidden messages are shown in the chat view (developer feature). */
   showHiddenMessages: () => boolean
   setShowHiddenMessages: (value: boolean) => void
@@ -55,6 +58,8 @@ interface PreferencesState {
   setBrowserTurnEndSound: (value: TurnEndSoundPreference | null) => void
   browserTurnEndSoundVolume: () => number | null
   setBrowserTurnEndSoundVolume: (value: number | null) => void
+  browserDebugLogging: () => boolean | null
+  setBrowserDebugLogging: (value: boolean | null) => void
 
   // --- Account-level setters (Hub DB) ---
   /** Account-level theme default. */
@@ -65,6 +70,7 @@ interface PreferencesState {
   accountDiffView: () => DiffViewPreference
   accountTurnEndSound: () => TurnEndSoundPreference
   accountTurnEndSoundVolume: () => number
+  accountDebugLogging: () => boolean
 
   setAccountTheme: (value: ThemePreference) => void
   setAccountTerminalTheme: (value: TerminalThemePreference) => void
@@ -73,6 +79,7 @@ interface PreferencesState {
   setAccountDiffView: (value: DiffViewPreference) => void
   setAccountTurnEndSound: (value: TurnEndSoundPreference) => void
   setAccountTurnEndSoundVolume: (value: number) => void
+  setAccountDebugLogging: (value: boolean) => void
   setUiFonts: (fonts: string[]) => void
   setMonoFonts: (fonts: string[]) => void
   /** Save current account preferences to Hub. */
@@ -131,6 +138,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
   const [accountDiffView, setAccountDiffView] = createSignal<DiffViewPreference>('unified')
   const [accountTurnEndSound, setAccountTurnEndSound] = createSignal<TurnEndSoundPreference>('ding-dong')
   const [accountTurnEndSoundVolume, setAccountTurnEndSoundVolume] = createSignal<number>(100)
+  const [accountDebugLogging, setAccountDebugLogging] = createSignal(false)
 
   // --- Browser-level (localStorage) ---
   const [browserTheme, setBrowserThemeSignal] = createSignal<ThemePreference | null>(
@@ -185,6 +193,20 @@ export const PreferencesProvider: ParentComponent = (props) => {
     writeLocalStorage('leapmux-turn-end-sound-volume', value !== null ? String(value) : null)
   }
 
+  const [browserDebugLogging, setBrowserDebugLoggingSignal] = createSignal<boolean | null>(
+    (() => {
+      const v = readLocalStorage('leapmux-debug-logging')
+      if (v === null)
+        return null
+      return v === 'true'
+    })(),
+  )
+
+  const setBrowserDebugLogging = (value: boolean | null) => {
+    setBrowserDebugLoggingSignal(value)
+    writeLocalStorage('leapmux-debug-logging', value !== null ? String(value) : null)
+  }
+
   // --- Browser-only developer preferences ---
   const [showHiddenMessages, setShowHiddenMessagesSignal] = createSignal(
     readLocalStorage('leapmux-show-hidden-messages') === 'true',
@@ -202,6 +224,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
   const diffView = (): DiffViewPreference => browserDiffView() ?? accountDiffView()
   const turnEndSound = (): TurnEndSoundPreference => browserTurnEndSound() ?? accountTurnEndSound()
   const turnEndSoundVolume = (): number => browserTurnEndSoundVolume() ?? accountTurnEndSoundVolume()
+  const debugLogging = (): boolean => browserDebugLogging() ?? accountDebugLogging()
 
   const monoFontFamily = () => {
     if (!monoFontCustomEnabled() || monoFonts().length === 0) {
@@ -231,6 +254,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
         setAccountDiffView(diffViewFromProto(p.diffView))
         setAccountTurnEndSound(turnEndSoundFromProto(p.turnEndSound))
         setAccountTurnEndSoundVolume(p.turnEndSoundVolume || 100)
+        setAccountDebugLogging(p.debugLogging)
       }
     }
     catch {
@@ -249,8 +273,13 @@ export const PreferencesProvider: ParentComponent = (props) => {
       diffView: diffViewToProto(accountDiffView()),
       turnEndSound: turnEndSoundToProto(accountTurnEndSound()),
       turnEndSoundVolume: accountTurnEndSoundVolume(),
+      debugLogging: accountDebugLogging(),
     })
   }
+
+  createEffect(() => {
+    setDebugEnabled(debugLogging())
+  })
 
   onMount(() => {
     reload()
@@ -260,6 +289,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
     <PreferencesContext.Provider value={{
       theme,
       terminalTheme,
+      debugLogging,
       showHiddenMessages,
       setShowHiddenMessages,
       uiFontCustomEnabled,
@@ -281,6 +311,8 @@ export const PreferencesProvider: ParentComponent = (props) => {
       setBrowserTurnEndSound,
       browserTurnEndSoundVolume,
       setBrowserTurnEndSoundVolume,
+      browserDebugLogging,
+      setBrowserDebugLogging,
       accountTheme,
       accountTerminalTheme,
       accountUiFontCustomEnabled,
@@ -288,6 +320,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
       accountDiffView,
       accountTurnEndSound,
       accountTurnEndSoundVolume,
+      accountDebugLogging,
       setAccountTheme,
       setAccountTerminalTheme,
       setAccountUiFontCustomEnabled,
@@ -295,6 +328,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
       setAccountDiffView,
       setAccountTurnEndSound,
       setAccountTurnEndSoundVolume,
+      setAccountDebugLogging,
       setUiFonts,
       setMonoFonts,
       saveAccountPreferences,

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createLogger } from './logger'
+import { createLogger, setDebugEnabled } from './logger'
 
 describe('createLogger', () => {
   it('returns the same instance for the same name (singleton)', () => {
@@ -29,16 +29,24 @@ describe('createLogger', () => {
     })
 
     afterEach(() => {
+      setDebugEnabled(false)
       debugSpy.mockRestore()
       infoSpy.mockRestore()
       warnSpy.mockRestore()
       errorSpy.mockRestore()
     })
 
-    it('delegates debug to console.debug with prefix', () => {
-      const log = createLogger('test-debug')
+    it('suppresses debug by default', () => {
+      const log = createLogger('test-debug-off')
       log.debug('msg')
-      expect(debugSpy).toHaveBeenCalledWith('[test-debug]', 'msg')
+      expect(debugSpy).not.toHaveBeenCalled()
+    })
+
+    it('delegates debug to console.debug when enabled', () => {
+      setDebugEnabled(true)
+      const log = createLogger('test-debug-on')
+      log.debug('msg')
+      expect(debugSpy).toHaveBeenCalledWith('[test-debug-on]', 'msg')
     })
 
     it('delegates info to console.info with prefix', () => {
@@ -64,6 +72,16 @@ describe('createLogger', () => {
       const err = new Error('boom')
       log.warn('failed', err)
       expect(warnSpy).toHaveBeenCalledWith('[test-multi]', 'failed', err)
+    })
+
+    it('does not affect info/warn/error when debug is disabled', () => {
+      const log = createLogger('test-other-levels')
+      log.info('i')
+      log.warn('w')
+      log.error('e')
+      expect(infoSpy).toHaveBeenCalledWith('[test-other-levels]', 'i')
+      expect(warnSpy).toHaveBeenCalledWith('[test-other-levels]', 'w')
+      expect(errorSpy).toHaveBeenCalledWith('[test-other-levels]', 'e')
     })
   })
 })
