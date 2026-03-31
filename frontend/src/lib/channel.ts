@@ -915,6 +915,7 @@ export class ChannelManager {
       this.channels.delete(channelId)
     }
 
+    this.openingChannels.clear()
     this.notifyStateChange()
   }
 }

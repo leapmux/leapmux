@@ -15,6 +15,28 @@ const DEFAULT_SIDEBAR_PX = 250
 const MIN_SIDEBAR_PX = 250
 const COLLAPSED_SIZE_PX = 45
 
+interface SidebarFactoryOpts {
+  isCollapsed: Accessor<boolean>
+  onExpand: () => void
+  onCollapse: () => void
+  initialOpenSections?: Record<string, boolean>
+  initialSectionSizes?: Record<string, number>
+  onStateChange?: (open: Record<string, boolean>, sizes: Record<string, number>) => void
+}
+
+interface SidebarState {
+  leftSize?: number
+  rightSize?: number
+  leftCollapsed?: boolean
+  rightCollapsed?: boolean
+  autoCollapsedLeft?: boolean
+  autoCollapsedRight?: boolean
+  leftOpenSections?: Record<string, boolean>
+  leftSectionSizes?: Record<string, number>
+  rightOpenSections?: Record<string, boolean>
+  rightSectionSizes?: Record<string, number>
+}
+
 interface DesktopLayoutProps {
   sectionStore: ReturnType<typeof createSectionStore>
   layoutStore: ReturnType<typeof createLayoutStore>
@@ -35,22 +57,8 @@ interface DesktopLayoutProps {
   renderTile: (tileId: string) => JSX.Element
   onRatioChange: (splitId: string, ratios: number[]) => void
   // Sidebar factories
-  createLeftSidebar: (opts: {
-    isCollapsed: Accessor<boolean>
-    onExpand: () => void
-    onCollapse: () => void
-    initialOpenSections?: Record<string, boolean>
-    initialSectionSizes?: Record<string, number>
-    onStateChange?: (open: Record<string, boolean>, sizes: Record<string, number>) => void
-  }) => JSX.Element
-  createRightSidebar: (opts: {
-    isCollapsed: Accessor<boolean>
-    onExpand: () => void
-    onCollapse: () => void
-    initialOpenSections?: Record<string, boolean>
-    initialSectionSizes?: Record<string, number>
-    onStateChange?: (open: Record<string, boolean>, sizes: Record<string, number>) => void
-  }) => JSX.Element
+  createLeftSidebar: (opts: SidebarFactoryOpts) => JSX.Element
+  createRightSidebar: (opts: SidebarFactoryOpts) => JSX.Element
   editorPanel: JSX.Element | false
   floatingWindowLayer?: JSX.Element
   onFileDrop?: (dataTransfer: DataTransfer, shiftKey: boolean) => void
@@ -97,18 +105,6 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
   // Read saved sidebar state (read-once at mount time).
   // eslint-disable-next-line solid/reactivity -- read-once at mount time, matching original IIFE behavior
   const wsId = props.activeWorkspaceId
-  interface SidebarState {
-    leftSize?: number
-    rightSize?: number
-    leftCollapsed?: boolean
-    rightCollapsed?: boolean
-    autoCollapsedLeft?: boolean
-    autoCollapsedRight?: boolean
-    leftOpenSections?: Record<string, boolean>
-    leftSectionSizes?: Record<string, number>
-    rightOpenSections?: Record<string, boolean>
-    rightSectionSizes?: Record<string, number>
-  }
   const savedSidebar: SidebarState | null = (() => {
     if (!wsId)
       return null
@@ -266,8 +262,10 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
   window.addEventListener('resize', handleViewportResize)
   onCleanup(() => {
     window.removeEventListener('resize', handleViewportResize)
-    if (sidebarSaveTimer)
+    if (sidebarSaveTimer) {
       clearTimeout(sidebarSaveTimer)
+      doSaveSidebarState()
+    }
   })
 
   // Computed widths for CSS.
