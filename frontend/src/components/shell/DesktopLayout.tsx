@@ -66,6 +66,8 @@ function useSidebarDrag(opts: {
 }) {
   const onPointerDown = (e: PointerEvent) => {
     e.preventDefault()
+    const handle = e.currentTarget as HTMLElement
+    handle.dataset.dragging = ''
     const startX = e.clientX
     const startWidth = opts.getWidth()
     const sign = opts.direction === 'left' ? 1 : -1
@@ -75,13 +77,16 @@ function useSidebarDrag(opts: {
       opts.setWidth(Math.max(opts.minWidth, startWidth + delta))
     }
     const onPointerUp = () => {
+      delete handle.dataset.dragging
       document.removeEventListener('pointermove', onPointerMove)
       document.removeEventListener('pointerup', onPointerUp)
+      document.removeEventListener('pointercancel', onPointerUp)
       document.body.style.removeProperty('cursor')
       document.body.style.removeProperty('user-select')
     }
     document.addEventListener('pointermove', onPointerMove)
     document.addEventListener('pointerup', onPointerUp)
+    document.addEventListener('pointercancel', onPointerUp)
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
   }
@@ -259,7 +264,11 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
   }
 
   window.addEventListener('resize', handleViewportResize)
-  onCleanup(() => window.removeEventListener('resize', handleViewportResize))
+  onCleanup(() => {
+    window.removeEventListener('resize', handleViewportResize)
+    if (sidebarSaveTimer)
+      clearTimeout(sidebarSaveTimer)
+  })
 
   // Computed widths for CSS.
   const leftPxStyle = () => `${leftCollapsed() ? COLLAPSED_SIZE_PX : leftWidth()}px`
@@ -282,7 +291,7 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
           {/* Left sidebar */}
           <div
             class={styles.sidebar}
-            style={{ 'width': leftPxStyle(), 'min-width': leftPxStyle(), 'max-width': leftPxStyle() }}
+            style={{ flex: `0 0 ${leftPxStyle()}` }}
           >
             {props.createLeftSidebar({
               isCollapsed: leftCollapsed,
@@ -315,6 +324,7 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
                   props.setCenterPanelHeight(entry.contentRect.height)
               })
               observer.observe(el)
+              onCleanup(() => observer.disconnect())
             }}
           >
             <Show
@@ -356,7 +366,7 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
           {/* Right sidebar */}
           <div
             class={styles.rightPanel}
-            style={{ 'width': rightPxStyle(), 'min-width': rightPxStyle(), 'max-width': rightPxStyle() }}
+            style={{ flex: `0 0 ${rightPxStyle()}` }}
           >
             {props.createRightSidebar({
               isCollapsed: rightCollapsed,

@@ -41,7 +41,7 @@ import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
 import { parseMessageContent } from '~/lib/messageParser'
-import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
+import { containsAnsi, escapeHtml, renderAnsi } from '~/lib/renderAnsi'
 import { renderMarkdown, shikiHighlighter } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { DiffView, rawDiffToHunks } from './diffUtils'
@@ -414,10 +414,6 @@ function ToolUseMessage(props: {
   )
 }
 
-const RE_AMP = /&/g
-const RE_LT = /</g
-const RE_GT = />/g
-
 export function renderBashHighlight(code: string): string {
   try {
     return shikiHighlighter.codeToHtml(code, {
@@ -427,8 +423,7 @@ export function renderBashHighlight(code: string): string {
     })
   }
   catch {
-    const escaped = code.replace(RE_AMP, '&amp;').replace(RE_LT, '&lt;').replace(RE_GT, '&gt;')
-    return `<pre><code>${escaped}</code></pre>`
+    return `<pre><code>${escapeHtml(code)}</code></pre>`
   }
 }
 

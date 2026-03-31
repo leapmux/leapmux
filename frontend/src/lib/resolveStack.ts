@@ -1,7 +1,7 @@
 import { SourceMapConsumer } from 'source-map-js'
 
-/** Cache of parsed source map consumers keyed by JS file URL. */
-const consumerCache = new Map<string, SourceMapConsumer | null>()
+/** Cache of parsed source map consumers (or in-flight promises) keyed by JS file URL. */
+const consumerCache = new Map<string, Promise<SourceMapConsumer | null>>()
 
 /** Regex to parse stack frames like "name@url:line:col" or "at name (url:line:col)". */
 const FRAME_RE = /(?:@| +at (?:.+? \()?)(https?:\/\/.+):(\d+):(\d+)\)?$/
@@ -17,8 +17,17 @@ const LAST_SLASH_RE = /.*\//
  */
 export async function resolveStack(stack: string): Promise<string> {
   const lines = stack.split('\n')
-  const resolved: string[] = []
 
+  // Pre-fetch all unique source map consumers in parallel.
+  const urlsToFetch = new Set<string>()
+  for (const line of lines) {
+    const match = FRAME_RE.exec(line)
+    if (match)
+      urlsToFetch.add(match[1])
+  }
+  await Promise.all(Array.from(urlsToFetch, url => getConsumer(url)))
+
+  const resolved: string[] = []
   for (const line of lines) {
     const match = FRAME_RE.exec(line)
     if (!match) {
@@ -55,26 +64,27 @@ export async function resolveStack(stack: string): Promise<string> {
   return resolved.join('\n')
 }
 
-async function getConsumer(jsUrl: string): Promise<SourceMapConsumer | null> {
+function getConsumer(jsUrl: string): Promise<SourceMapConsumer | null> {
   const cached = consumerCache.get(jsUrl)
-  if (cached !== undefined)
+  if (cached)
     return cached
 
+  const promise = fetchConsumer(jsUrl)
+  consumerCache.set(jsUrl, promise)
+  return promise
+}
+
+async function fetchConsumer(jsUrl: string): Promise<SourceMapConsumer | null> {
   try {
     const mapUrl = `${jsUrl}.map`
     const resp = await fetch(mapUrl)
-    if (!resp.ok) {
-      consumerCache.set(jsUrl, null)
+    if (!resp.ok)
       return null
-    }
 
     const rawMap = await resp.json()
-    const consumer = new SourceMapConsumer(rawMap)
-    consumerCache.set(jsUrl, consumer)
-    return consumer
+    return new SourceMapConsumer(rawMap)
   }
   catch {
-    consumerCache.set(jsUrl, null)
     return null
   }
 }

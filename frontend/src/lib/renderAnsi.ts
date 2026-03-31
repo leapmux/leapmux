@@ -35,6 +35,6 @@ const RE_AMP = /&/g
 const RE_LT = /</g
 const RE_GT = />/g
 
-function escapeHtml(s: string): string {
+export function escapeHtml(s: string): string {
   return s.replace(RE_AMP, '&amp;').replace(RE_LT, '&lt;').replace(RE_GT, '&gt;')
 }

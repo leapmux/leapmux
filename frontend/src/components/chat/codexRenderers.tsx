@@ -21,7 +21,7 @@ import { TodoList } from '~/components/todo/TodoList'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { codexPlanToTodos, todosToMarkdown } from '~/lib/messageParser'
-import { renderMarkdown, shikiHighlighter } from '~/lib/renderMarkdown'
+import { renderMarkdown } from '~/lib/renderMarkdown'
 import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { inlineFlex } from '~/styles/shared.css'
 import { DiffView, rawDiffToHunks } from './diffUtils'
@@ -37,7 +37,7 @@ import {
 import { isObject, relativizePath } from './messageUtils'
 import { formatDuration } from './rendererUtils'
 import { renderToolDetail } from './toolDetailRenderers'
-import { ToolResultMessage, ToolUseLayout } from './toolRenderers'
+import { renderBashHighlight, ToolResultMessage, ToolUseLayout } from './toolRenderers'
 import {
   commandStreamContainer,
   commandStreamInteraction,
@@ -94,14 +94,6 @@ function extractItem(parsed: unknown): Record<string, unknown> | null {
 
 function firstCommandLine(command: string): string {
   return command.split('\n').find(line => line.trim()) || command
-}
-
-function renderBashHighlight(code: string): string {
-  return shikiHighlighter.codeToHtml(code, {
-    lang: 'bash',
-    themes: { light: 'github-light', dark: 'github-dark' },
-    defaultColor: false,
-  })
 }
 
 function parseCodexUnifiedDiff(diff: string): ParsedCodexDiff | null {
