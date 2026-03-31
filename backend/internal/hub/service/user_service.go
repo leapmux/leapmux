@@ -247,4 +247,3 @@ func (s *UserService) UpdatePreferences(ctx context.Context, req *connect.Reques
 		},
 	}), nil
 }
-
