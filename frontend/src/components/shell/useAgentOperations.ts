@@ -59,7 +59,7 @@ export interface UseAgentOperationsProps {
 }
 
 export function useAgentOperations(props: UseAgentOperationsProps) {
-  const [availableProviders, setAvailableProviders] = createSignal<AgentProvider[]>([])
+  const [availableProviders, setAvailableProviders] = createSignal<AgentProvider[] | undefined>(undefined)
 
   const loadAvailableProviders = () => {
     const ctx = props.getCurrentTabContext()
@@ -70,7 +70,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
         setAvailableProviders([...resp.providers])
       })
       .catch(() => {
-        setAvailableProviders([])
+        setAvailableProviders(undefined)
       })
   }
 
