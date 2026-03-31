@@ -17,7 +17,7 @@ describe('confirmButton', () => {
         Delete
       </ConfirmButton>
     ))
-    expect(screen.getByRole('button').textContent).toBe('Delete')
+    expect(screen.getByRole('button')).toHaveTextContent('Delete')
   })
 
   it('shows confirm label after first click', () => {
@@ -27,7 +27,7 @@ describe('confirmButton', () => {
       </ConfirmButton>
     ))
     fireEvent.click(screen.getByRole('button'))
-    expect(screen.getByRole('button').textContent).toBe('Confirm?')
+    expect(screen.getByRole('button')).toHaveTextContent('Confirm?')
   })
 
   it('shows custom confirm label', () => {
@@ -37,7 +37,7 @@ describe('confirmButton', () => {
       </ConfirmButton>
     ))
     fireEvent.click(screen.getByRole('button'))
-    expect(screen.getByRole('button').textContent).toBe('Sure?')
+    expect(screen.getByRole('button')).toHaveTextContent('Sure?')
   })
 
   it('does not call onClick on first click', () => {
@@ -74,7 +74,7 @@ describe('confirmButton', () => {
     const button = screen.getByRole('button')
     fireEvent.click(button)
     fireEvent.click(button)
-    expect(button.textContent).toBe('Delete')
+    expect(button).toHaveTextContent('Delete')
   })
 
   it('resets after 10 seconds of inactivity', () => {
@@ -85,10 +85,10 @@ describe('confirmButton', () => {
     ))
     const button = screen.getByRole('button')
     fireEvent.click(button)
-    expect(button.textContent).toBe('Confirm?')
+    expect(button).toHaveTextContent('Confirm?')
 
     vi.advanceTimersByTime(10_000)
-    expect(button.textContent).toBe('Delete')
+    expect(button).toHaveTextContent('Delete')
   })
 
   it('does not reset before 10 seconds', () => {
@@ -101,7 +101,7 @@ describe('confirmButton', () => {
     fireEvent.click(button)
 
     vi.advanceTimersByTime(9_999)
-    expect(button.textContent).toBe('Confirm?')
+    expect(button).toHaveTextContent('Confirm?')
   })
 
   it('resets on blur', () => {
@@ -112,11 +112,11 @@ describe('confirmButton', () => {
     ))
     const button = screen.getByRole('button')
     fireEvent.click(button)
-    expect(button.textContent).toBe('Confirm?')
+    expect(button).toHaveTextContent('Confirm?')
 
     fireEvent.blur(button)
     vi.runAllTimers()
-    expect(button.textContent).toBe('Delete')
+    expect(button).toHaveTextContent('Delete')
   })
 
   it('does not swallow a click on a neighboring button after arming', () => {
@@ -134,14 +134,14 @@ describe('confirmButton', () => {
 
     const [confirmButton, cancelButton] = screen.getAllByRole('button')
     fireEvent.click(confirmButton)
-    expect(confirmButton.textContent).toBe('Confirm?')
+    expect(confirmButton).toHaveTextContent('Confirm?')
 
     fireEvent.blur(confirmButton)
     fireEvent.click(cancelButton)
     vi.runAllTimers()
 
     expect(onCancel).toHaveBeenCalledOnce()
-    expect(confirmButton.textContent).toBe('Delete')
+    expect(confirmButton).toHaveTextContent('Delete')
   })
 
   it('sets data-armed attribute when armed', () => {
@@ -151,9 +151,9 @@ describe('confirmButton', () => {
       </ConfirmButton>
     ))
     const button = screen.getByRole('button')
-    expect(button.getAttribute('data-armed')).toBeNull()
+    expect(button).not.toHaveAttribute('data-armed')
 
     fireEvent.click(button)
-    expect(button.getAttribute('data-armed')).not.toBeNull()
+    expect(button).toHaveAttribute('data-armed')
   })
 })

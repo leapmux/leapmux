@@ -138,6 +138,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   const [atBottom, setAtBottom] = createSignal(true)
   const [preserveBrowsingPosition, setPreserveBrowsingPosition] = createSignal(false)
   let scrollAnimationId: number | null = null
+  let suppressAutoLoadOlderAfterRestore = false
+  let touchOverscrollStartY: number | null = null
+  let pointerOverscrollStartY: number | null = null
 
   const cancelScrollAnimation = () => {
     if (scrollAnimationId !== null) {
@@ -159,14 +162,81 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       setPreserveBrowsingPosition(false)
   }
 
+  const isNearTop = () =>
+    !!messageListRef && messageListRef.scrollTop < messageListRef.clientHeight / 2
+
+  const canLoadOlderMessages = () =>
+    !!messageListRef && !!props.hasOlderMessages && !props.fetchingOlder
+
+  const loadOlderMessages = () => {
+    if (!canLoadOlderMessages() || !isNearTop())
+      return false
+    setPreserveBrowsingPosition(true)
+    props.onLoadOlderMessages?.()
+    return true
+  }
+
+  const tryLoadOlderOnExplicitTopIntent = () => {
+    if (!messageListRef || messageListRef.scrollTop !== 0)
+      return false
+    suppressAutoLoadOlderAfterRestore = false
+    return loadOlderMessages()
+  }
+
   const handleScroll = () => {
     checkAtBottom()
-    if (messageListRef && props.hasOlderMessages && !props.fetchingOlder) {
-      if (messageListRef.scrollTop < messageListRef.clientHeight / 2) {
-        setPreserveBrowsingPosition(true)
-        props.onLoadOlderMessages?.()
-      }
-    }
+    if (suppressAutoLoadOlderAfterRestore)
+      return
+    loadOlderMessages()
+  }
+
+  const handleWheel = (event: WheelEvent) => {
+    if (event.ctrlKey)
+      return
+    if (event.deltaY < 0)
+      tryLoadOlderOnExplicitTopIntent()
+  }
+
+  const handleKeyDown = (event: KeyboardEvent) => {
+    if (event.altKey || event.ctrlKey || event.metaKey)
+      return
+    if (event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home')
+      tryLoadOlderOnExplicitTopIntent()
+  }
+
+  const maybeLoadOlderOnDragAtTop = (startY: number | null, currentY: number) => {
+    if (startY === null || !messageListRef || messageListRef.scrollTop !== 0)
+      return false
+    if (currentY - startY < 12)
+      return false
+    return tryLoadOlderOnExplicitTopIntent()
+  }
+
+  const handleTouchStart = (event: TouchEvent) => {
+    touchOverscrollStartY = event.touches[0]?.clientY ?? null
+  }
+
+  const handleTouchMove = (event: TouchEvent) => {
+    if (maybeLoadOlderOnDragAtTop(touchOverscrollStartY, event.touches[0]?.clientY ?? 0))
+      touchOverscrollStartY = null
+  }
+
+  const clearTouchOverscroll = () => {
+    touchOverscrollStartY = null
+  }
+
+  const handlePointerDown = (event: PointerEvent) => {
+    if (event.pointerType !== 'mouse')
+      pointerOverscrollStartY = event.clientY
+  }
+
+  const handlePointerMove = (event: PointerEvent) => {
+    if (event.pointerType !== 'mouse' && maybeLoadOlderOnDragAtTop(pointerOverscrollStartY, event.clientY))
+      pointerOverscrollStartY = null
+  }
+
+  const clearPointerOverscroll = () => {
+    pointerOverscrollStartY = null
   }
 
   // Scroll anchoring: when older messages are prepended, adjust scrollTop
@@ -410,11 +480,14 @@ export const ChatView: Component<ChatViewProps> = (props) => {
             if (savedScroll.atBottom) {
               messageListRef.scrollTop = messageListRef.scrollHeight
               setAtBottom(true)
+              suppressAutoLoadOlderAfterRestore = false
             }
             else {
               const maxScroll = messageListRef.scrollHeight - messageListRef.clientHeight
-              messageListRef.scrollTop = savedScroll.distFromBottom > maxScroll ? 0 : maxScroll - savedScroll.distFromBottom
+              const clampedToTop = savedScroll.distFromBottom > maxScroll
+              messageListRef.scrollTop = clampedToTop ? 0 : maxScroll - savedScroll.distFromBottom
               setAtBottom(false)
+              suppressAutoLoadOlderAfterRestore = clampedToTop
             }
             props.onClearSavedViewportScroll?.()
             return
@@ -422,9 +495,11 @@ export const ChatView: Component<ChatViewProps> = (props) => {
           if (savedAtBottom) {
             messageListRef.scrollTop = messageListRef.scrollHeight
             setAtBottom(true)
+            suppressAutoLoadOlderAfterRestore = false
             return
           }
         }
+        suppressAutoLoadOlderAfterRestore = false
         checkAtBottom()
       })
     }
@@ -442,7 +517,22 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   return (
     <div ref={containerRef} class={styles.container} data-testid="chat-container">
       <div class={styles.messageListWrapper}>
-        <div ref={messageListRef} class={styles.messageList} onScroll={handleScroll}>
+        <div
+          ref={messageListRef}
+          class={styles.messageList}
+          tabIndex={0}
+          onScroll={handleScroll}
+          onWheel={handleWheel}
+          onKeyDown={handleKeyDown}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={clearTouchOverscroll}
+          onTouchCancel={clearTouchOverscroll}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={clearPointerOverscroll}
+          onPointerCancel={clearPointerOverscroll}
+        >
           <Show
             when={hasVisibleEntries() || props.streamingText || props.agentWorking}
             fallback={<div class={styles.emptyChat}>Send a message to start</div>}

@@ -10,7 +10,7 @@
       "~/*": ["./src/*"]
     },
     "resolveJsonModule": true,
-    "types": ["vinxi/types/client"],
+    "types": ["vinxi/types/client", "vitest/globals", "@testing-library/jest-dom"],
     "strict": true,
     "noEmit": true,
     "esModuleInterop": true,

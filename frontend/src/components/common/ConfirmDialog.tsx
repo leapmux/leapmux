@@ -9,27 +9,28 @@ interface ConfirmDialogProps {
   confirmLabel?: string
   cancelLabel?: string
   danger?: boolean
+  busy?: boolean
   onConfirm: () => void
   onCancel: () => void
 }
 
 export const ConfirmDialog: Component<ConfirmDialogProps> = (props) => {
   return (
-    <Dialog title={props.title} onClose={() => props.onCancel()}>
+    <Dialog title={props.title} busy={props.busy} onClose={() => props.onCancel()}>
       <section>{props.children}</section>
       <footer>
-        <button type="button" class="outline" onClick={() => props.onCancel()}>
+        <button type="button" class="outline" disabled={props.busy} onClick={() => props.onCancel()}>
           {props.cancelLabel ?? 'Cancel'}
         </button>
         <Show
           when={props.danger}
           fallback={(
-            <button type="button" onClick={() => props.onConfirm()}>
+            <button type="button" disabled={props.busy} onClick={() => props.onConfirm()}>
               {props.confirmLabel ?? 'OK'}
             </button>
           )}
         >
-          <ConfirmButton data-variant="danger" onClick={() => props.onConfirm()}>
+          <ConfirmButton data-variant="danger" disabled={props.busy} onClick={() => props.onConfirm()}>
             {props.confirmLabel ?? 'OK'}
           </ConfirmButton>
         </Show>

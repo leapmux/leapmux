@@ -1,8 +1,7 @@
 import type { Component } from 'solid-js'
 import type { KeyPinDecision } from '~/lib/channel'
-import { onMount } from 'solid-js'
-import { dialogStandard } from '~/styles/shared.css'
 import { ConfirmButton } from './ConfirmButton'
+import { Dialog } from './Dialog'
 
 interface KeyPinMismatchDialogProps {
   workerId: string
@@ -12,10 +11,6 @@ interface KeyPinMismatchDialogProps {
 }
 
 export const KeyPinMismatchDialog: Component<KeyPinMismatchDialogProps> = (props) => {
-  let dlgRef!: HTMLDialogElement
-
-  onMount(() => dlgRef.showModal())
-
   const handleReject = () => {
     props.resolve('reject')
   }
@@ -25,8 +20,7 @@ export const KeyPinMismatchDialog: Component<KeyPinMismatchDialogProps> = (props
   }
 
   return (
-    <dialog ref={dlgRef} class={dialogStandard} onClose={handleReject} data-testid="key-pin-mismatch-dialog">
-      <header><h2>Worker Public Key Changed</h2></header>
+    <Dialog title="Worker Public Key Changed" data-testid="key-pin-mismatch-dialog" onClose={handleReject}>
       <section>
         <p>
           The public key for worker
@@ -60,6 +54,6 @@ export const KeyPinMismatchDialog: Component<KeyPinMismatchDialogProps> = (props
           Accept
         </ConfirmButton>
       </footer>
-    </dialog>
+    </Dialog>
   )
 }

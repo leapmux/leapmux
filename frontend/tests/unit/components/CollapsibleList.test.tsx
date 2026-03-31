@@ -12,10 +12,10 @@ describe('collapsibleList', () => {
       />
     ))
 
-    expect(screen.getByTestId('item-a')).toBeTruthy()
-    expect(screen.getByTestId('item-b')).toBeTruthy()
-    expect(screen.getByTestId('item-c')).toBeTruthy()
-    expect(screen.queryByRole('button')).toBeNull()
+    expect(screen.getByTestId('item-a')).toBeInTheDocument()
+    expect(screen.getByTestId('item-b')).toBeInTheDocument()
+    expect(screen.getByTestId('item-c')).toBeInTheDocument()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
   })
 
   it('renders all items when count equals maxVisible', () => {
@@ -27,10 +27,10 @@ describe('collapsibleList', () => {
       />
     ))
 
-    expect(screen.getByTestId('item-a')).toBeTruthy()
-    expect(screen.getByTestId('item-b')).toBeTruthy()
-    expect(screen.getByTestId('item-c')).toBeTruthy()
-    expect(screen.queryByRole('button')).toBeNull()
+    expect(screen.getByTestId('item-a')).toBeInTheDocument()
+    expect(screen.getByTestId('item-b')).toBeInTheDocument()
+    expect(screen.getByTestId('item-c')).toBeInTheDocument()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
   })
 
   it('collapses items exceeding maxVisible and shows toggle', () => {
@@ -42,14 +42,14 @@ describe('collapsibleList', () => {
       />
     ))
 
-    expect(screen.getByTestId('item-a')).toBeTruthy()
-    expect(screen.getByTestId('item-b')).toBeTruthy()
-    expect(screen.queryByTestId('item-c')).toBeNull()
-    expect(screen.queryByTestId('item-d')).toBeNull()
-    expect(screen.queryByTestId('item-e')).toBeNull()
+    expect(screen.getByTestId('item-a')).toBeInTheDocument()
+    expect(screen.getByTestId('item-b')).toBeInTheDocument()
+    expect(screen.queryByTestId('item-c')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('item-d')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('item-e')).not.toBeInTheDocument()
 
     const toggle = screen.getByRole('button')
-    expect(toggle.textContent).toBe('Show 3 more\u2026')
+    expect(toggle).toHaveTextContent('Show 3 more\u2026')
   })
 
   it('expands all items when toggle is clicked', () => {
@@ -63,13 +63,13 @@ describe('collapsibleList', () => {
 
     fireEvent.click(screen.getByRole('button'))
 
-    expect(screen.getByTestId('item-a')).toBeTruthy()
-    expect(screen.getByTestId('item-b')).toBeTruthy()
-    expect(screen.getByTestId('item-c')).toBeTruthy()
-    expect(screen.getByTestId('item-d')).toBeTruthy()
-    expect(screen.getByTestId('item-e')).toBeTruthy()
+    expect(screen.getByTestId('item-a')).toBeInTheDocument()
+    expect(screen.getByTestId('item-b')).toBeInTheDocument()
+    expect(screen.getByTestId('item-c')).toBeInTheDocument()
+    expect(screen.getByTestId('item-d')).toBeInTheDocument()
+    expect(screen.getByTestId('item-e')).toBeInTheDocument()
 
-    expect(screen.getByRole('button').textContent).toBe('Show less')
+    expect(screen.getByRole('button')).toHaveTextContent('Show less')
   })
 
   it('collapses back when toggle is clicked twice', () => {
@@ -85,8 +85,8 @@ describe('collapsibleList', () => {
     fireEvent.click(toggle) // expand
     fireEvent.click(toggle) // collapse
 
-    expect(screen.queryByTestId('item-c')).toBeNull()
-    expect(toggle.textContent).toBe('Show 3 more\u2026')
+    expect(screen.queryByTestId('item-c')).not.toBeInTheDocument()
+    expect(toggle).toHaveTextContent('Show 3 more\u2026')
   })
 
   it('uses custom moreLabel and lessLabel', () => {
@@ -101,10 +101,10 @@ describe('collapsibleList', () => {
     ))
 
     const toggle = screen.getByRole('button')
-    expect(toggle.textContent).toBe('2 hidden items')
+    expect(toggle).toHaveTextContent('2 hidden items')
 
     fireEvent.click(toggle)
-    expect(toggle.textContent).toBe('Collapse')
+    expect(toggle).toHaveTextContent('Collapse')
   })
 
   it('handles singular "more" label for 1 hidden item', () => {
@@ -116,6 +116,6 @@ describe('collapsibleList', () => {
       />
     ))
 
-    expect(screen.getByRole('button').textContent).toBe('Show 1 more\u2026')
+    expect(screen.getByRole('button')).toHaveTextContent('Show 1 more\u2026')
   })
 })

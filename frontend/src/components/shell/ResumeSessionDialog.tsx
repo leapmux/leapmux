@@ -89,7 +89,7 @@ export const ResumeSessionDialog: Component<ResumeSessionDialogProps> = (props) 
   }
 
   return (
-    <Dialog title="Resume an existing session" onClose={() => props.onClose()}>
+    <Dialog title="Resume an existing session" busy={submitting.loading()} onClose={() => props.onClose()}>
       <form onSubmit={handleSubmit}>
         <section>
           <div class="vstack gap-4">
@@ -130,6 +130,7 @@ export const ResumeSessionDialog: Component<ResumeSessionDialogProps> = (props) 
           <button
             type="button"
             class="outline"
+            disabled={submitting.loading()}
             onClick={() => props.onClose()}
           >
             Cancel

@@ -67,10 +67,10 @@ describe('workspaceContextMenu', () => {
         sections={sections}
       />
     ))
-    expect(screen.queryByText('Move to')).toBeNull()
+    expect(screen.queryByText('Move to')).not.toBeInTheDocument()
     // Unarchive should be visible instead of Archive
-    expect(screen.getByText('Unarchive')).toBeTruthy()
-    expect(screen.queryByText('Archive')).toBeNull()
+    expect(screen.getByText('Unarchive')).toBeInTheDocument()
+    expect(screen.queryByText('Archive')).not.toBeInTheDocument()
   })
 
   it('hides Move-to when no other target sections exist', () => {
@@ -89,7 +89,7 @@ describe('workspaceContextMenu', () => {
     ))
     // Move to should not be visible because the only target sections
     // are the current section, archived (excluded), and files (excluded)
-    expect(screen.queryByText('Move to')).toBeNull()
+    expect(screen.queryByText('Move to')).not.toBeInTheDocument()
   })
 
   it('shows Move-to when other target sections exist', () => {
@@ -104,10 +104,10 @@ describe('workspaceContextMenu', () => {
         currentSectionId="sec-ip"
       />
     ))
-    expect(screen.getByText('Move to')).toBeTruthy()
+    expect(screen.getByText('Move to')).toBeInTheDocument()
     // The submenu should list the custom section but not the current section
-    expect(screen.getByText('My Section')).toBeTruthy()
-    expect(screen.queryByText('In Progress')).toBeNull()
+    expect(screen.getByText('My Section')).toBeInTheDocument()
+    expect(screen.queryByText('In Progress')).not.toBeInTheDocument()
   })
 
   it('excludes current section from Move-to list', () => {
@@ -124,9 +124,9 @@ describe('workspaceContextMenu', () => {
       />
     ))
     // Alpha (current section) should not appear; others should
-    expect(screen.queryByText('Alpha')).toBeNull()
-    expect(screen.getByText('In Progress')).toBeTruthy()
-    expect(screen.getByText('Beta')).toBeTruthy()
+    expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
+    expect(screen.getByText('In Progress')).toBeInTheDocument()
+    expect(screen.getByText('Beta')).toBeInTheDocument()
   })
 
   it('shows "Share..." label', () => {
@@ -136,7 +136,7 @@ describe('workspaceContextMenu', () => {
         sections={[makeSection('sec-ip', 'In Progress', SectionType.WORKSPACES_IN_PROGRESS)]}
       />
     ))
-    expect(screen.getByText('Share...')).toBeTruthy()
+    expect(screen.getByText('Share...')).toBeInTheDocument()
   })
 
   it('shows Archive for non-archived workspaces', () => {
@@ -147,8 +147,8 @@ describe('workspaceContextMenu', () => {
         sections={[makeSection('sec-ip', 'In Progress', SectionType.WORKSPACES_IN_PROGRESS)]}
       />
     ))
-    expect(screen.getByText('Archive')).toBeTruthy()
-    expect(screen.queryByText('Unarchive')).toBeNull()
+    expect(screen.getByText('Archive')).toBeInTheDocument()
+    expect(screen.queryByText('Unarchive')).not.toBeInTheDocument()
   })
 
   it('shows Unarchive for archived workspaces', () => {
@@ -160,8 +160,8 @@ describe('workspaceContextMenu', () => {
         currentSectionId="sec-archived"
       />
     ))
-    expect(screen.getByText('Unarchive')).toBeTruthy()
-    expect(screen.queryByText('Archive')).toBeNull()
+    expect(screen.getByText('Unarchive')).toBeInTheDocument()
+    expect(screen.queryByText('Archive')).not.toBeInTheDocument()
   })
 
   it('hides owner-only items when not owner', () => {
@@ -172,10 +172,10 @@ describe('workspaceContextMenu', () => {
         sections={[makeSection('sec-ip', 'In Progress', SectionType.WORKSPACES_IN_PROGRESS)]}
       />
     ))
-    expect(screen.queryByText('Rename')).toBeNull()
-    expect(screen.queryByText('Share...')).toBeNull()
-    expect(screen.queryByText('Delete')).toBeNull()
+    expect(screen.queryByText('Rename')).not.toBeInTheDocument()
+    expect(screen.queryByText('Share...')).not.toBeInTheDocument()
+    expect(screen.queryByText('Delete')).not.toBeInTheDocument()
     // Archive should still be visible (not owner-only)
-    expect(screen.getByText('Archive')).toBeTruthy()
+    expect(screen.getByText('Archive')).toBeInTheDocument()
   })
 })

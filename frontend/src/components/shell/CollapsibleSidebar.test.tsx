@@ -48,8 +48,8 @@ describe('collapsibleSidebar', () => {
       ],
     })
 
-    expect(screen.getByText('Section A')).toBeTruthy()
-    expect(screen.getByText('Section B')).toBeTruthy()
+    expect(screen.getByText('Section A')).toBeInTheDocument()
+    expect(screen.getByText('Section B')).toBeInTheDocument()
   })
 
   it('shows resize handle between 2 expanded sections', () => {
@@ -235,8 +235,8 @@ describe('collapsibleSidebar', () => {
     ))
 
     // Sidebar inner container should be hidden (content stays mounted)
-    expect(screen.getByTestId('sidebar-left').style.display).toBe('none')
+    expect(screen.getByTestId('sidebar-left')).toHaveStyle({ display: 'none' })
     // Expand button should be visible
-    expect(screen.getByRole('button', { name: 'Expand left sidebar' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Expand left sidebar' })).toBeInTheDocument()
   })
 })

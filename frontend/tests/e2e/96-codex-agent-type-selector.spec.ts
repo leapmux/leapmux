@@ -11,12 +11,11 @@ test.describe('Codex Agent Type Selector', () => {
       const dialog = page.locator('[role="dialog"]')
       await expect(dialog).toBeVisible({ timeout: 5000 })
 
-      // Look for the provider dropdown with Claude Code and Codex options.
-      const select = dialog.locator('select').filter({ hasText: 'Claude Code' })
-      if (await select.isVisible({ timeout: 3000 }).catch(() => false)) {
-        const options = await select.locator('option').allTextContents()
-        expect(options).toContain('Claude Code')
-        expect(options).toContain('Codex')
+      const trigger = dialog.getByTestId('agent-provider-selector-trigger')
+      if (await trigger.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await trigger.click()
+        await expect(dialog.getByTestId('agent-provider-option-1')).toContainText('Claude Code')
+        await expect(dialog.getByTestId('agent-provider-option-2')).toContainText('Codex')
       }
     }
   })
@@ -35,12 +34,11 @@ test.describe('Codex Agent Type Selector', () => {
       const dialog = page.locator('[role="dialog"]')
       await expect(dialog).toBeVisible({ timeout: 5000 })
 
-      // Look for the provider dropdown.
-      const select = dialog.locator('select').filter({ hasText: 'Claude Code' })
-      if (await select.isVisible({ timeout: 3000 }).catch(() => false)) {
-        const options = await select.locator('option').allTextContents()
-        expect(options).toContain('Claude Code')
-        expect(options).toContain('Codex')
+      const trigger = dialog.getByTestId('agent-provider-selector-trigger')
+      if (await trigger.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await trigger.click()
+        await expect(dialog.getByTestId('agent-provider-option-1')).toContainText('Claude Code')
+        await expect(dialog.getByTestId('agent-provider-option-2')).toContainText('Codex')
       }
     }
   })

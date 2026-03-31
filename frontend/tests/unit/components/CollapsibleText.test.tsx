@@ -13,7 +13,7 @@ describe('collapsibleText', () => {
     render(() => <CollapsibleText text={text} maxLines={5} />)
 
     expect(getPreText()).toBe(text)
-    expect(screen.queryByRole('button')).toBeNull()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
   })
 
   it('renders full text when lines equal maxLines', () => {
@@ -21,7 +21,7 @@ describe('collapsibleText', () => {
     render(() => <CollapsibleText text={text} maxLines={3} />)
 
     expect(getPreText()).toBe(text)
-    expect(screen.queryByRole('button')).toBeNull()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
   })
 
   it('truncates text exceeding maxLines and shows toggle', () => {
@@ -30,7 +30,7 @@ describe('collapsibleText', () => {
     expect(getPreText()).toBe('line 1\nline 2')
 
     const toggle = screen.getByRole('button')
-    expect(toggle.textContent).toBe('Show 3 more lines\u2026')
+    expect(toggle).toHaveTextContent('Show 3 more lines\u2026')
   })
 
   it('expands to full text when toggle is clicked', () => {
@@ -40,7 +40,7 @@ describe('collapsibleText', () => {
     fireEvent.click(screen.getByRole('button'))
 
     expect(getPreText()).toBe(text)
-    expect(screen.getByRole('button').textContent).toBe('Show less')
+    expect(screen.getByRole('button')).toHaveTextContent('Show less')
   })
 
   it('collapses back when toggle is clicked twice', () => {
@@ -51,13 +51,13 @@ describe('collapsibleText', () => {
     fireEvent.click(toggle) // collapse
 
     expect(getPreText()).toBe('line 1\nline 2')
-    expect(toggle.textContent).toBe('Show 3 more lines\u2026')
+    expect(toggle).toHaveTextContent('Show 3 more lines\u2026')
   })
 
   it('renders as pre tag by default', () => {
     render(() => <CollapsibleText text="hello" maxLines={5} />)
-    expect(document.querySelector('pre')).toBeTruthy()
-    expect(document.querySelector('pre')!.textContent).toBe('hello')
+    expect(document.querySelector('pre')).toBeInTheDocument()
+    expect(document.querySelector('pre')).toHaveTextContent('hello')
   })
 
   it('renders as div tag when specified', () => {
@@ -65,17 +65,17 @@ describe('collapsibleText', () => {
     // The render wrapper is a <div>, the CollapsibleText also renders a <div>.
     // Find the inner div (child of the container).
     const innerDiv = container.querySelector('div')
-    expect(innerDiv).toBeTruthy()
-    expect(innerDiv!.textContent).toBe('hello')
+    expect(innerDiv).toBeInTheDocument()
+    expect(innerDiv).toHaveTextContent('hello')
   })
 
   it('applies custom class', () => {
     render(() => <CollapsibleText text="hello" maxLines={5} class="my-class" />)
-    expect(document.querySelector('pre.my-class')).toBeTruthy()
+    expect(document.querySelector('pre.my-class')).toBeInTheDocument()
   })
 
   it('handles singular line label', () => {
     render(() => <CollapsibleText text={'line 1\nline 2\nline 3'} maxLines={2} />)
-    expect(screen.getByRole('button').textContent).toBe('Show 1 more line\u2026')
+    expect(screen.getByRole('button')).toHaveTextContent('Show 1 more line\u2026')
   })
 })

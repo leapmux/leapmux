@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
-import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
-import { createSignal, Show } from 'solid-js'
+import { createEffect, createSignal, Show } from 'solid-js'
 import { agentLoadingTimeoutMs } from '~/api/transport'
 import * as workerRpc from '~/api/workerRpc'
 import { Dialog } from '~/components/common/Dialog'
@@ -11,9 +11,10 @@ import { isAgentCreateDisabled } from '~/components/shell/dialogValidation'
 import { DirectorySelector } from '~/components/shell/DirectorySelector'
 import { GitOptions } from '~/components/shell/GitOptions'
 import { WorkerSelector } from '~/components/shell/WorkerSelector'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
+import { useMruProviders } from '~/hooks/useMruProviders'
+import { getAvailableAgentProviders } from '~/lib/agentProviders'
 import { spinner } from '~/styles/animations.css'
 import { dialogLeftPanel, dialogRightPanel, dialogSingleColumn, dialogTopSection, dialogTopTwoColumn, dialogTwoColumn, dialogWide, errorText } from '~/styles/shared.css'
 
@@ -39,7 +40,16 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
   })
   const submitting = createLoadingSignal(agentLoadingTimeoutMs(false))
 
-  const [agentProvider, setAgentProvider] = createSignal<AgentProvider>(props.defaultAgentProvider ?? AgentProvider.CLAUDE_CODE)
+  const available = () => getAvailableAgentProviders(props.availableProviders)
+  const { mruProviders, recordProviderUse } = useMruProviders(available, 1)
+  const [agentProvider, setAgentProvider] = createSignal(mruProviders()[0])
+  const noProviders = () => available().length === 0
+
+  createEffect(() => {
+    const best = mruProviders()[0]
+    if (best !== undefined && !available().includes(agentProvider()))
+      setAgentProvider(best)
+  })
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
@@ -67,6 +77,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
         ...(props.sessionId ? { agentSessionId: props.sessionId } : {}),
       })
       if (resp.agent) {
+        recordProviderUse(agentProvider())
         props.onCreated(resp.agent)
       }
     }
@@ -79,14 +90,19 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
   }
 
   return (
-    <Dialog title="New Agent" tall class={dialogWide} onClose={() => props.onClose()}>
+    <Dialog title="New Agent" tall busy={submitting.loading()} class={dialogWide} onClose={() => props.onClose()}>
       <form onSubmit={handleSubmit}>
         <section>
           <div class="vstack gap-4">
             <div class={state.showGitOptions() ? dialogTopSection : undefined}>
               <div class={dialogTopTwoColumn}>
                 <WorkerSelector state={state} />
-                <AgentProviderSelector value={agentProvider} onChange={setAgentProvider} availableProviders={props.availableProviders} onRefresh={props.onRefreshProviders} />
+                <AgentProviderSelector
+                  value={agentProvider}
+                  onChange={setAgentProvider}
+                  availableProviders={props.availableProviders}
+                  onRefresh={props.onRefreshProviders}
+                />
               </div>
             </div>
             <div class={state.showGitOptions() ? dialogTwoColumn : dialogSingleColumn}>
@@ -112,12 +128,12 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
           </Show>
         </section>
         <footer>
-          <button type="button" class="outline" onClick={() => props.onClose()}>
+          <button type="button" class="outline" disabled={submitting.loading()} onClick={() => props.onClose()}>
             Cancel
           </button>
           <button
             type="submit"
-            disabled={isAgentCreateDisabled({ submitting: submitting.loading(), workerId: state.workerId(), workingDir: state.workingDir(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), createBranchError: state.createBranchError(), useWorktreePath: state.useWorktreePath() })}
+            disabled={isAgentCreateDisabled({ submitting: submitting.loading(), workerId: state.workerId(), workingDir: state.workingDir(), noProviders: noProviders(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), createBranchError: state.createBranchError(), useWorktreePath: state.useWorktreePath() })}
           >
             <Show when={submitting.loading()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
             {submitting.loading() ? 'Creating...' : 'Create'}

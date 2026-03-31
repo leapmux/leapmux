@@ -66,6 +66,7 @@
     "@playwright/test": "^1.58.2",
     "@resvg/resvg-js": "^2.6.2",
     "@solidjs/testing-library": "^0.8.10",
+    "@testing-library/jest-dom": "^6.9.1",
     "@vanilla-extract/vite-plugin": "^5.1.4",
     "ds-store": "^0.1.6",
     "eslint": "^10.0.3",

@@ -163,8 +163,8 @@ describe('tabBar readOnly prop', () => {
         />
       </PreferencesProvider>
     ))
-    expect(screen.queryByTestId('new-agent-button')).toBeNull()
-    expect(screen.queryByTestId('new-terminal-button')).toBeNull()
+    expect(screen.queryByTestId('new-agent-button')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('new-terminal-button')).not.toBeInTheDocument()
   })
 
   it('scrolls the tab list horizontally on vertical wheel input when overflowing', () => {

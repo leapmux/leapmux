@@ -9,13 +9,27 @@ import { AgentProvider, ContentCompression, MessageRole } from '~/generated/leap
 
 const A_TXT_RE = /a\.txt/
 const B_TXT_RE = /b\.txt/
+const resizeObserverCallbacks: ResizeObserverCallback[] = []
 
 // jsdom does not provide ResizeObserver or Worker
 beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
+  globalThis.ResizeObserver = class {
+    private callback: ResizeObserverCallback
+
+    constructor(callback: ResizeObserverCallback) {
+      this.callback = callback
+      resizeObserverCallbacks.push(callback)
+    }
+
     observe() {}
+
     unobserve() {}
-    disconnect() {}
+
+    disconnect() {
+      const idx = resizeObserverCallbacks.indexOf(this.callback)
+      if (idx >= 0)
+        resizeObserverCallbacks.splice(idx, 1)
+    }
   } as unknown as typeof ResizeObserver
   globalThis.Worker ??= class {
     onmessage: ((e: MessageEvent) => void) | null = null
@@ -27,6 +41,16 @@ beforeAll(() => {
     dispatchEvent() { return false }
   } as unknown as typeof Worker
 })
+
+async function flushAnimationFrame() {
+  await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)))
+}
+
+async function triggerResizeObservers() {
+  for (const callback of [...resizeObserverCallbacks])
+    callback([], {} as ResizeObserver)
+  await flushAnimationFrame()
+}
 
 function makeMessage(role: string, text: string, id: string = '1'): AgentChatMessage {
   const content = JSON.stringify({
@@ -261,7 +285,7 @@ describe('chatView', () => {
         <ChatView messages={[]} streamingText="" />
       </PreferencesProvider>
     ))
-    expect(screen.getByText('Send a message to start')).toBeTruthy()
+    expect(screen.getByText('Send a message to start')).toBeInTheDocument()
   })
 
   it('renders empty state when all messages are hidden', () => {
@@ -270,7 +294,7 @@ describe('chatView', () => {
         <ChatView messages={[makeCodexHiddenLifecycleMessage()]} streamingText="" />
       </PreferencesProvider>
     ))
-    expect(screen.getByText('Send a message to start')).toBeTruthy()
+    expect(screen.getByText('Send a message to start')).toBeInTheDocument()
   })
 
   it('hides EnterPlanMode tool_result messages in chat history', () => {
@@ -279,8 +303,8 @@ describe('chatView', () => {
         <ChatView messages={[makeClaudeEnterPlanModeResultMessage()]} streamingText="" />
       </PreferencesProvider>
     ))
-    expect(screen.getByText('Send a message to start')).toBeTruthy()
-    expect(screen.queryByText('Entered plan mode')).toBeNull()
+    expect(screen.getByText('Send a message to start')).toBeInTheDocument()
+    expect(screen.queryByText('Entered plan mode')).not.toBeInTheDocument()
   })
 
   it('renders messages', () => {
@@ -293,8 +317,8 @@ describe('chatView', () => {
         <ChatView messages={messages} streamingText="" />
       </PreferencesProvider>
     ))
-    expect(screen.getByText('Hello')).toBeTruthy()
-    expect(screen.getByText('Hi there')).toBeTruthy()
+    expect(screen.getByText('Hello')).toBeInTheDocument()
+    expect(screen.getByText('Hi there')).toBeInTheDocument()
   })
 
   it('renders streaming text', async () => {
@@ -304,7 +328,7 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
     // Streaming text rendering is throttled via requestAnimationFrame
-    await waitFor(() => expect(screen.getByText('Thinking...')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('Thinking...')).toBeInTheDocument())
   })
 
   it('renders chat container', () => {
@@ -313,7 +337,7 @@ describe('chatView', () => {
         <ChatView messages={[]} streamingText="" />
       </PreferencesProvider>
     ))
-    expect(screen.getByTestId('chat-container')).toBeTruthy()
+    expect(screen.getByTestId('chat-container')).toBeInTheDocument()
   })
 
   it('renders live command stream inside the matching codex command bubble', () => {
@@ -335,8 +359,8 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(screen.getByText('building...')).toBeTruthy()
-    expect(screen.getByText('> y')).toBeTruthy()
+    expect(screen.getByText('building...')).toBeInTheDocument()
+    expect(screen.getByText('> y')).toBeInTheDocument()
   })
 
   it('preserves expanded codex reasoning state when the message updates and new messages are appended', async () => {
@@ -361,7 +385,7 @@ describe('chatView', () => {
     })
 
     fireEvent.click(screen.getByText('Thinking'))
-    expect(screen.getByText('Initial reasoning summary')).toBeTruthy()
+    expect(screen.getByText('Initial reasoning summary')).toBeInTheDocument()
 
     setMessages([
       makeCodexReasoningMessage({
@@ -373,8 +397,8 @@ describe('chatView', () => {
       makeMessage('assistant', 'Follow-up message', 'assistant-2'),
     ])
 
-    await waitFor(() => expect(screen.getByText('Initial reasoning summary')).toBeTruthy())
-    expect(screen.getByText('Follow-up message')).toBeTruthy()
+    await waitFor(() => expect(screen.getByText('Initial reasoning summary')).toBeInTheDocument())
+    expect(screen.getByText('Follow-up message')).toBeInTheDocument()
   })
 
   it('does not snap to bottom after older messages are prepended while browsing history', async () => {
@@ -417,7 +441,7 @@ describe('chatView', () => {
     })
 
     setMessages([...initialMessages])
-    await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)))
+    await flushAnimationFrame()
 
     scrollTop = 50
     fireEvent.scroll(messageList)
@@ -439,7 +463,7 @@ describe('chatView', () => {
       { ...makeMessage('assistant', 'Newest 3', 'msg-102'), seq: 102n },
     ])
 
-    await waitFor(() => expect(view.container.textContent).toContain('Newest 3'))
+    await waitFor(() => expect(view.container).toHaveTextContent('Newest 3'))
     expect(scrollTop).toBe(650)
   })
 
@@ -483,7 +507,7 @@ describe('chatView', () => {
     })
 
     setMessages([...initialMessages])
-    await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)))
+    await flushAnimationFrame()
 
     scrollTop = 50
     fireEvent.scroll(messageList)
@@ -496,7 +520,7 @@ describe('chatView', () => {
       { ...makeMessage('assistant', 'Newest 3', 'msg-102'), seq: 102n },
     ])
 
-    await waitFor(() => expect(view.container.textContent).toContain('Newest 3'))
+    await waitFor(() => expect(view.container).toHaveTextContent('Newest 3'))
     await waitFor(() => expect(scrollTop).toBe(750))
   })
 
@@ -548,7 +572,7 @@ describe('chatView', () => {
     })
 
     setMessages([...initialMessages])
-    await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)))
+    await flushAnimationFrame()
 
     scrollTop = 50
     fireEvent.scroll(messageList)
@@ -572,8 +596,146 @@ describe('chatView', () => {
       { ...makeMessage('assistant', 'Newest 3', 'msg-102'), seq: 102n },
     ])
 
-    await waitFor(() => expect(view.container.textContent).toContain('Newest 3'))
+    await waitFor(() => expect(view.container).toHaveTextContent('Newest 3'))
     expect(scrollTop).toBe(650)
+  })
+
+  it('suppresses passive older-message loading when restored to top after trim clamping', async () => {
+    const messages = [
+      makeMessage('assistant', 'Retained 1', 'msg-1'),
+      makeMessage('assistant', 'Retained 2', 'msg-2'),
+    ].map((message, index) => ({ ...message, seq: BigInt(index + 1) }))
+    const onLoadOlderMessages = vi.fn()
+    const onClearSavedViewportScroll = vi.fn()
+
+    render(() => (
+      <PreferencesProvider>
+        <ChatView
+          messages={messages}
+          streamingText=""
+          hasOlderMessages={true}
+          savedViewportScroll={{ distFromBottom: 9999, atBottom: false }}
+          onLoadOlderMessages={onLoadOlderMessages}
+          onClearSavedViewportScroll={onClearSavedViewportScroll}
+        />
+      </PreferencesProvider>
+    ))
+
+    const chatContainer = screen.getByTestId('chat-container')
+    const messageList = chatContainer.firstElementChild?.firstElementChild as HTMLDivElement
+
+    let scrollTop = 0
+    const scrollHeight = 300
+    let clientHeight = 0
+    Object.defineProperty(messageList, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value
+      },
+    })
+    Object.defineProperty(messageList, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    })
+    Object.defineProperty(messageList, 'clientHeight', {
+      configurable: true,
+      get: () => clientHeight,
+    })
+
+    clientHeight = 100
+    await triggerResizeObservers()
+
+    expect(scrollTop).toBe(0)
+    expect(onClearSavedViewportScroll).toHaveBeenCalledTimes(1)
+
+    fireEvent.scroll(messageList)
+    expect(onLoadOlderMessages).not.toHaveBeenCalled()
+  })
+
+  it('loads older messages on explicit upward wheel intent while at top', () => {
+    const messages = [
+      makeMessage('assistant', 'Retained 1', 'msg-1'),
+      makeMessage('assistant', 'Retained 2', 'msg-2'),
+    ].map((message, index) => ({ ...message, seq: BigInt(index + 1) }))
+    const onLoadOlderMessages = vi.fn()
+
+    render(() => (
+      <PreferencesProvider>
+        <ChatView
+          messages={messages}
+          streamingText=""
+          hasOlderMessages={true}
+          onLoadOlderMessages={onLoadOlderMessages}
+        />
+      </PreferencesProvider>
+    ))
+
+    const chatContainer = screen.getByTestId('chat-container')
+    const messageList = chatContainer.firstElementChild?.firstElementChild as HTMLDivElement
+    Object.defineProperty(messageList, 'scrollTop', { configurable: true, get: () => 0 })
+    Object.defineProperty(messageList, 'clientHeight', { configurable: true, get: () => 200 })
+
+    fireEvent.wheel(messageList, { deltaY: -20 })
+    expect(onLoadOlderMessages).toHaveBeenCalledTimes(1)
+  })
+
+  it('loads older messages on explicit upward keyboard intent while at top', () => {
+    const messages = [
+      makeMessage('assistant', 'Retained 1', 'msg-1'),
+      makeMessage('assistant', 'Retained 2', 'msg-2'),
+    ].map((message, index) => ({ ...message, seq: BigInt(index + 1) }))
+    const onLoadOlderMessages = vi.fn()
+
+    render(() => (
+      <PreferencesProvider>
+        <ChatView
+          messages={messages}
+          streamingText=""
+          hasOlderMessages={true}
+          onLoadOlderMessages={onLoadOlderMessages}
+        />
+      </PreferencesProvider>
+    ))
+
+    const chatContainer = screen.getByTestId('chat-container')
+    const messageList = chatContainer.firstElementChild?.firstElementChild as HTMLDivElement
+    Object.defineProperty(messageList, 'scrollTop', { configurable: true, get: () => 0 })
+    Object.defineProperty(messageList, 'clientHeight', { configurable: true, get: () => 200 })
+
+    fireEvent.keyDown(messageList, { key: 'PageUp' })
+    expect(onLoadOlderMessages).toHaveBeenCalledTimes(1)
+  })
+
+  it('loads older messages on touch and pointer overscroll intent while at top', () => {
+    const messages = [
+      makeMessage('assistant', 'Retained 1', 'msg-1'),
+      makeMessage('assistant', 'Retained 2', 'msg-2'),
+    ].map((message, index) => ({ ...message, seq: BigInt(index + 1) }))
+    const onLoadOlderMessages = vi.fn()
+
+    render(() => (
+      <PreferencesProvider>
+        <ChatView
+          messages={messages}
+          streamingText=""
+          hasOlderMessages={true}
+          onLoadOlderMessages={onLoadOlderMessages}
+        />
+      </PreferencesProvider>
+    ))
+
+    const chatContainer = screen.getByTestId('chat-container')
+    const messageList = chatContainer.firstElementChild?.firstElementChild as HTMLDivElement
+    Object.defineProperty(messageList, 'scrollTop', { configurable: true, get: () => 0 })
+    Object.defineProperty(messageList, 'clientHeight', { configurable: true, get: () => 200 })
+
+    fireEvent.touchStart(messageList, { touches: [{ clientY: 100 }] })
+    fireEvent.touchMove(messageList, { touches: [{ clientY: 120 }] })
+    fireEvent.pointerDown(messageList, { pointerType: 'touch', clientY: 100 })
+    fireEvent.pointerMove(messageList, { pointerType: 'touch', clientY: 120 })
+
+    expect(onLoadOlderMessages).toHaveBeenCalledTimes(2)
   })
 
   it('keeps both codex commandExecution start and completed messages in history', () => {
@@ -589,8 +751,8 @@ describe('chatView', () => {
     ))
 
     expect(screen.getAllByTestId('message-bubble')).toHaveLength(2)
-    expect(screen.getByText('done')).toBeTruthy()
-    expect(view.container.textContent).toContain('echo hi')
+    expect(screen.getByText('done')).toBeInTheDocument()
+    expect(view.container).toHaveTextContent('echo hi')
   })
 
   it('renders long completed codex command output with the shared collapsed result UI', () => {
@@ -610,10 +772,10 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(screen.getByTestId('message-toolbar')).toBeTruthy()
-    expect(view.container.textContent).toContain('line1')
-    expect(view.container.textContent).toContain('line3')
-    expect(screen.queryByText('line4')).toBeNull()
+    expect(screen.getByTestId('message-toolbar')).toBeInTheDocument()
+    expect(view.container).toHaveTextContent('line1')
+    expect(view.container).toHaveTextContent('line3')
+    expect(screen.queryByText('line4')).not.toBeInTheDocument()
   })
 
   it('strips tool use header DOM from completed codex command output', () => {
@@ -641,8 +803,8 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(view.container.textContent).toContain('real failure output')
-    expect(screen.queryByText('0 files')).toBeNull()
+    expect(view.container).toHaveTextContent('real failure output')
+    expect(screen.queryByText('0 files')).not.toBeInTheDocument()
   })
 
   it('renders process ID and exit code in completed codex command failures without output', () => {
@@ -664,7 +826,7 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(view.container.textContent).toContain('Error (exit code: 1)')
+    expect(view.container).toHaveTextContent('Error (exit code: 1)')
   })
 
   it('renders live fileChange stream inside the matching codex fileChange bubble', () => {
@@ -685,7 +847,7 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(screen.getByText('updating a.txt')).toBeTruthy()
+    expect(screen.getByText('updating a.txt')).toBeInTheDocument()
   })
 
   it('keeps both codex fileChange start and completed messages in history', () => {
@@ -701,8 +863,8 @@ describe('chatView', () => {
     ))
 
     expect(screen.getAllByTestId('message-bubble')).toHaveLength(2)
-    expect(screen.getByText('0 files')).toBeTruthy()
-    expect(screen.getByText('old')).toBeTruthy()
+    expect(screen.getByText('0 files')).toBeInTheDocument()
+    expect(screen.getByText('old')).toBeInTheDocument()
   })
 
   it('does not render a diff in the codex fileChange start message', () => {
@@ -722,9 +884,9 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(view.container.textContent).toContain('a.txt')
-    expect(view.container.textContent).not.toContain('-old')
-    expect(view.container.textContent).not.toContain('+new')
+    expect(view.container).toHaveTextContent('a.txt')
+    expect(view.container).not.toHaveTextContent('-old')
+    expect(view.container).not.toHaveTextContent('+new')
   })
 
   it('renders a simple codex fileChange with Edit-style diff content', () => {
@@ -738,11 +900,11 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(screen.queryByText('completed')).toBeNull()
-    expect(screen.getByText('old')).toBeTruthy()
-    expect(screen.getByText('new')).toBeTruthy()
-    expect(screen.queryByText(A_TXT_RE)).toBeNull()
-    expect(screen.queryByTestId('git-diff-stats')).toBeNull()
+    expect(screen.queryByText('completed')).not.toBeInTheDocument()
+    expect(screen.getByText('old')).toBeInTheDocument()
+    expect(screen.getByText('new')).toBeInTheDocument()
+    expect(screen.queryByText(A_TXT_RE)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('git-diff-stats')).not.toBeInTheDocument()
   })
 
   it('renders a simple codex add fileChange start message like Write tool_use', () => {
@@ -762,8 +924,8 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(view.container.textContent).toContain('new-file.ts')
-    expect(view.container.textContent).not.toContain('export const hello = "world"')
+    expect(view.container).toHaveTextContent('new-file.ts')
+    expect(view.container).not.toHaveTextContent('export const hello = "world"')
   })
 
   it('renders a simple codex add fileChange completion like Write tool_use_result', () => {
@@ -783,8 +945,8 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(view.container.textContent).toContain('export const hello = "world"')
-    expect(screen.getByTestId('message-toolbar')).toBeTruthy()
+    expect(view.container).toHaveTextContent('export const hello = "world"')
+    expect(screen.getByTestId('message-toolbar')).toBeInTheDocument()
   })
 
   it('renders multi-file codex fileChange entries with per-file labels including adds', () => {
@@ -807,12 +969,12 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(view.container.textContent).toContain('a.ts +1 -1')
-    expect(view.container.textContent).toContain('new-file.tsx +1')
-    expect(view.container.textContent).toContain('+1')
-    expect(view.container.textContent).toContain('oldValue')
-    expect(view.container.textContent).toContain('newValue')
-    expect(view.container.textContent).toContain('export const hello = "world"')
+    expect(view.container).toHaveTextContent('a.ts +1 -1')
+    expect(view.container).toHaveTextContent('new-file.tsx +1')
+    expect(view.container).toHaveTextContent('+1')
+    expect(view.container).toHaveTextContent('oldValue')
+    expect(view.container).toHaveTextContent('newValue')
+    expect(view.container).toHaveTextContent('export const hello = "world"')
   })
 
   it('shows shared toolbar actions for completed codex fileChange messages', () => {
@@ -827,8 +989,8 @@ describe('chatView', () => {
     ))
 
     const toolbar = screen.getByTestId('message-toolbar')
-    expect(toolbar).toBeTruthy()
-    expect(screen.getByTestId('message-copy-json')).toBeTruthy()
+    expect(toolbar).toBeInTheDocument()
+    expect(screen.getByTestId('message-copy-json')).toBeInTheDocument()
     expect(view.container.querySelectorAll('[data-testid="message-toolbar"] button').length).toBeGreaterThanOrEqual(2)
   })
 
@@ -852,9 +1014,9 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(screen.getByText('2 files changed')).toBeTruthy()
-    expect(screen.queryByText(A_TXT_RE)).toBeNull()
-    expect(screen.queryByText(B_TXT_RE)).toBeNull()
+    expect(screen.getByText('2 files changed')).toBeInTheDocument()
+    expect(screen.queryByText(A_TXT_RE)).not.toBeInTheDocument()
+    expect(screen.queryByText(B_TXT_RE)).not.toBeInTheDocument()
   })
 
   it('renders live reasoning stream inside the matching codex reasoning bubble', () => {
@@ -878,7 +1040,7 @@ describe('chatView', () => {
     ))
 
     expect(screen.getAllByTestId('message-bubble')).toHaveLength(1)
-    expect(screen.getByText('Thinking')).toBeTruthy()
+    expect(screen.getByText('Thinking')).toBeInTheDocument()
   })
 
   it('keeps completed codex reasoning visible while empty start reasoning remains hidden', () => {
@@ -894,7 +1056,7 @@ describe('chatView', () => {
     ))
 
     expect(screen.getAllByTestId('message-bubble')).toHaveLength(1)
-    expect(screen.getByText('Thinking')).toBeTruthy()
+    expect(screen.getByText('Thinking')).toBeInTheDocument()
   })
 
   it('renders turn/plan/updated with the TodoWrite-style todo list UI', () => {
@@ -916,10 +1078,10 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(view.container.textContent).toContain('3 tasks')
-    expect(view.container.textContent).toContain('Inspect message filtering')
-    expect(view.container.textContent).toContain('Implement renderer')
-    expect(view.container.textContent).toContain('Run tests')
+    expect(view.container).toHaveTextContent('3 tasks')
+    expect(view.container).toHaveTextContent('Inspect message filtering')
+    expect(view.container).toHaveTextContent('Implement renderer')
+    expect(view.container).toHaveTextContent('Run tests')
   })
 
   it('renders turn/plan/updated explanation in the title when present', () => {
@@ -941,7 +1103,7 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(view.container.textContent).toContain('2 tasks - Need to keep start and complete messages visible')
+    expect(view.container).toHaveTextContent('2 tasks - Need to keep start and complete messages visible')
   })
 
   it('renders codex webSearch start and completed search messages separately', () => {
@@ -972,15 +1134,15 @@ describe('chatView', () => {
     ))
 
     expect(screen.getAllByTestId('message-bubble')).toHaveLength(1)
-    expect(view.container.textContent).not.toContain('Searching the web')
-    expect(view.container.textContent).toContain('codex app server')
-    expect(view.container.textContent).not.toContain('site:github.com openai codex')
-    expect(view.container.textContent).not.toContain('site:github.com "turn/plan/updated" codex app server')
+    expect(view.container).not.toHaveTextContent('Searching the web')
+    expect(view.container).toHaveTextContent('codex app server')
+    expect(view.container).not.toHaveTextContent('site:github.com openai codex')
+    expect(view.container).not.toHaveTextContent('site:github.com "turn/plan/updated" codex app server')
 
     fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
 
-    expect(view.container.textContent).toContain('site:github.com openai codex "turn/plan/updated"')
-    expect(view.container.textContent).toContain('site:github.com "turn/plan/updated" codex app server')
+    expect(view.container).toHaveTextContent('site:github.com openai codex "turn/plan/updated"')
+    expect(view.container).toHaveTextContent('site:github.com "turn/plan/updated" codex app server')
   })
 
   it('renders codex webSearch openPage messages like a fetch/opened-page result', () => {
@@ -1004,9 +1166,9 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(view.container.textContent).toContain('https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md')
-    expect(screen.getByTestId('message-toolbar')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'Expand' })).toBeNull()
+    expect(view.container).toHaveTextContent('https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md')
+    expect(screen.getByTestId('message-toolbar')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Expand' })).not.toBeInTheDocument()
   })
 
   it('renders codex webSearch findInPage messages with pattern and URL', () => {
@@ -1031,9 +1193,9 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(view.container.textContent).toContain('turn/plan/updated')
-    expect(view.container.textContent).toContain('https://example.com/readme')
-    expect(screen.getByTestId('message-toolbar')).toBeTruthy()
+    expect(view.container).toHaveTextContent('turn/plan/updated')
+    expect(view.container).toHaveTextContent('https://example.com/readme')
+    expect(screen.getByTestId('message-toolbar')).toBeInTheDocument()
   })
 
   it('hides empty completed codex webSearch messages with no query or detail', () => {
@@ -1054,8 +1216,8 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(screen.queryByText('Searched')).toBeNull()
-    expect(screen.queryByText('Searching the web')).toBeNull()
-    expect(screen.queryByTestId('message-bubble')).toBeNull()
+    expect(screen.queryByText('Searched')).not.toBeInTheDocument()
+    expect(screen.queryByText('Searching the web')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('message-bubble')).not.toBeInTheDocument()
   })
 })

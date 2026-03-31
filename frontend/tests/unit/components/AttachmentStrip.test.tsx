@@ -22,7 +22,7 @@ describe('attachmentStrip', () => {
     const { container } = render(() => (
       <AttachmentStrip attachments={attachments} onRemove={() => {}} />
     ))
-    expect(container.children.length).toBe(0)
+    expect(container).toBeEmptyDOMElement()
   })
 
   it('renders pills for each attachment', () => {
@@ -48,8 +48,8 @@ describe('attachmentStrip', () => {
       <AttachmentStrip attachments={attachments} onRemove={() => {}} />
     ))
     const pills = container.querySelectorAll('[data-testid="attachment-pill"]')
-    expect(pills[0].textContent).toContain('screenshot.png')
-    expect(pills[1].textContent).toContain('document.pdf')
+    expect(pills[0]).toHaveTextContent('screenshot.png')
+    expect(pills[1]).toHaveTextContent('document.pdf')
   })
 
   it('provides the full filename to the tooltip trigger', () => {
@@ -61,9 +61,9 @@ describe('attachmentStrip', () => {
       <AttachmentStrip attachments={attachments} onRemove={() => {}} />
     ))
     const filename = container.querySelector('[data-testid="attachment-pill"] span[title]') as HTMLSpanElement
-    expect(filename).not.toBeNull()
+    expect(filename).toBeInTheDocument()
     expect(filename.title).toBe('very/long/nested/path/to/screenshot.png')
-    expect(filename.textContent).toBe('very/long/nested/path/to/screenshot.png')
+    expect(filename).toHaveTextContent('very/long/nested/path/to/screenshot.png')
   })
 
   it('calls onRemove with the correct id when remove button is clicked', () => {
@@ -76,7 +76,7 @@ describe('attachmentStrip', () => {
       <AttachmentStrip attachments={attachments} onRemove={onRemove} />
     ))
     const removeBtn = container.querySelector('[data-testid="attachment-remove"]') as HTMLButtonElement
-    expect(removeBtn).not.toBeNull()
+    expect(removeBtn).toBeInTheDocument()
     removeBtn.click()
     expect(onRemove).toHaveBeenCalledWith('remove-me')
   })
@@ -91,9 +91,9 @@ describe('attachmentStrip', () => {
     ))
     // The icon should be an SVG element inside the pill
     const pill = container.querySelector('[data-testid="attachment-pill"]')
-    expect(pill).not.toBeNull()
+    expect(pill).toBeInTheDocument()
     const svg = pill!.querySelector('svg')
-    expect(svg).not.toBeNull()
+    expect(svg).toBeInTheDocument()
   })
 
   it('sets up horizontal scroll on wheel event', () => {
@@ -107,7 +107,7 @@ describe('attachmentStrip', () => {
       <AttachmentStrip attachments={attachments} onRemove={() => {}} />
     ))
     const strip = container.querySelector('[data-testid="attachment-strip"]')
-    expect(strip).not.toBeNull()
+    expect(strip).toBeInTheDocument()
     // The strip element should exist and have the wheel handler attached
     // (we can't easily test scrollLeft changes in jsdom, but we verify the element exists)
     expect(strip!.children.length).toBe(3)

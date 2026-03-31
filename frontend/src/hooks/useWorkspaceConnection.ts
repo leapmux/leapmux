@@ -174,7 +174,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         ) {
           chatStore.trimOldMessages(agentId, MAX_BACKGROUND_CHAT_MESSAGES)
         }
-        chatStore.clearStreamingText(agentId)
+        // Keep accumulating top-level assistant stream text until the turn's
+        // explicit completion boundary. Persisted user echoes, tool messages,
+        // and LEAPMUX notifications should not wipe the in-progress stream.
+        if (msg.role === MessageRole.RESULT)
+          chatStore.clearStreamingText(agentId)
 
         if (msg.spanId && (msg.spanType === 'commandExecution' || msg.spanType === 'fileChange' || msg.spanType === 'reasoning') && msg.role === MessageRole.ASSISTANT) {
           try {
@@ -197,11 +201,19 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           try {
             const parsed = parseMessageContent(msg)
             const method = parsed.parentObject?.method as string | undefined
+            const item = parsed.parentObject?.item as Record<string, unknown> | undefined
             if (method === 'thread/started') {
               // A new Codex thread starts idle. Clear any stale turn ID that may
               // have been restored from localStorage so the chat can show its
               // empty state instead of a phantom thinking indicator.
               agentSessionStore.updateInfo(agentId, { codexTurnId: '' })
+            }
+            if (item?.type === 'agentMessage') {
+              chatStore.clearStreamingText(agentId)
+            }
+            else if (item?.type === 'plan') {
+              chatStore.clearStreamingText(agentId)
+              agentSessionStore.updateInfo(agentId, { streamingType: '' })
             }
             const usage = extractAssistantUsage(parsed)
             if (usage) {

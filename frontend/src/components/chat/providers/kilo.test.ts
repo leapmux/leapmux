@@ -312,9 +312,9 @@ describe('kilo settings panel', () => {
       onOptionGroupChange,
     }))
 
-    expect(screen.getByText('Primary Agent')).toBeTruthy()
-    expect(screen.getByTestId('primary-agent-code')).toBeTruthy()
-    expect(screen.getByTestId('primary-agent-plan')).toBeTruthy()
+    expect(screen.getByText('Primary Agent')).toBeInTheDocument()
+    expect(screen.getByTestId('primary-agent-code')).toBeInTheDocument()
+    expect(screen.getByTestId('primary-agent-plan')).toBeInTheDocument()
 
     await fireEvent.click(screen.getByDisplayValue('plan'))
     expect(onOptionGroupChange).toHaveBeenCalledWith('primaryAgent', 'plan')
@@ -335,7 +335,7 @@ describe('kilo settings panel', () => {
       })],
     }))
 
-    expect(screen.getByText('GPT-5 \u00B7 Plan')).toBeTruthy()
+    expect(screen.getByText('GPT-5 \u00B7 Plan')).toBeInTheDocument()
   })
 })
 

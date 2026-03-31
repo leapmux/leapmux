@@ -83,7 +83,7 @@ describe('cursor settings panel', () => {
       onPermissionModeChange,
     }))
 
-    expect(screen.getByText('Mode')).toBeTruthy()
+    expect(screen.getByText('Mode')).toBeInTheDocument()
     await fireEvent.click(screen.getByDisplayValue('plan'))
     expect(onPermissionModeChange).toHaveBeenCalledWith('plan')
   })
@@ -103,6 +103,6 @@ describe('cursor settings panel', () => {
       })],
     }))
 
-    expect(screen.getByText('Auto \u00B7 Plan')).toBeTruthy()
+    expect(screen.getByText('Auto \u00B7 Plan')).toBeInTheDocument()
   })
 })

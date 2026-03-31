@@ -94,8 +94,8 @@ describe('copilot settings panel', () => {
       onPermissionModeChange,
     }))
 
-    expect(screen.getByText('Mode')).toBeTruthy()
-    expect(screen.getByTestId(`permission-mode-${MODE_PLAN}`)).toBeTruthy()
+    expect(screen.getByText('Mode')).toBeInTheDocument()
+    expect(screen.getByTestId(`permission-mode-${MODE_PLAN}`)).toBeInTheDocument()
 
     await fireEvent.click(screen.getByDisplayValue(MODE_PLAN))
     expect(onPermissionModeChange).toHaveBeenCalledWith(MODE_PLAN)
@@ -116,6 +116,6 @@ describe('copilot settings panel', () => {
       })],
     }))
 
-    expect(screen.getByText('GPT-5.4 mini \u00B7 Plan')).toBeTruthy()
+    expect(screen.getByText('GPT-5.4 mini \u00B7 Plan')).toBeInTheDocument()
   })
 })

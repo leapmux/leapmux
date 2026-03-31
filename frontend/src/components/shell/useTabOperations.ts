@@ -12,6 +12,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 import { tabKey } from '~/stores/tab.store'
 
 interface UseTabOperationsOpts {
@@ -70,6 +71,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     // Read scroll state before any store updates so the DOM measurement
     // happens while the previous tab is still visible.
     const prevAgentId = agentStore.state.activeAgentId
+    const prevTab = activeTab()
     const scrollState = prevAgentId ? getScrollState() : undefined
 
     // Batch the scroll-save and tab-switch store updates so that
@@ -89,6 +91,20 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
         terminalStore.setActiveTerminal(tab.id)
       }
     })
+
+    // When switching tabs within the same tile, the previous agent becomes
+    // hidden immediately. Trim it now instead of waiting for future messages
+    // or for the visible ChatView's bottom-sticky path to run.
+    if (
+      prevAgentId
+      && prevTab?.type === TabType.AGENT
+      && prevTab.id !== tab.id
+      && prevTab.tileId
+      && prevTab.tileId === tab.tileId
+      && chatStore.getMessages(prevAgentId).length > MAX_BACKGROUND_CHAT_MESSAGES
+    ) {
+      chatStore.trimOldMessages(prevAgentId, MAX_BACKGROUND_CHAT_MESSAGES)
+    }
 
     if (tab.type === TabType.AGENT) {
       requestAnimationFrame(() => {

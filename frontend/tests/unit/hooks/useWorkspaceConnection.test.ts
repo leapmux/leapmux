@@ -236,3 +236,106 @@ describe('codex result replay handling', () => {
     })
   })
 })
+
+describe('streaming text preservation', () => {
+  it('keeps accumulated assistant streaming text when a persisted user message arrives mid-stream', () => {
+    createRoot((dispose) => {
+      const chatStore = createChatStore()
+
+      chatStore.setStreamingText('agent-1', 'Hello')
+
+      const echoedUserMessage = {
+        id: 'server-user-1',
+        role: MessageRole.USER,
+        content: new TextEncoder().encode(JSON.stringify({ content: 'follow-up' })),
+        contentCompression: ContentCompression.NONE,
+        seq: 1n,
+      } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
+
+      chatStore.addMessage('agent-1', echoedUserMessage)
+      if (echoedUserMessage.role !== MessageRole.USER)
+        chatStore.clearStreamingText('agent-1')
+
+      chatStore.setStreamingText('agent-1', `${chatStore.state.streamingText['agent-1'] ?? ''} world`)
+
+      expect(chatStore.state.streamingText['agent-1']).toBe('Hello world')
+
+      chatStore.clearStreamingText('agent-1')
+      expect(chatStore.state.streamingText['agent-1']).toBe('')
+      dispose()
+    })
+  })
+
+  it('clears top-level streaming text when a persisted codex agentMessage completion arrives', () => {
+    createRoot((dispose) => {
+      const chatStore = createChatStore()
+
+      chatStore.setStreamingText('agent-1', 'Hello')
+
+      const completedAssistantMessage = {
+        id: 'assistant-1',
+        role: MessageRole.ASSISTANT,
+        content: new TextEncoder().encode(JSON.stringify({
+          item: {
+            type: 'agentMessage',
+            id: 'msg-1',
+            text: 'Hello world',
+          },
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+        })),
+        contentCompression: ContentCompression.NONE,
+        seq: 2n,
+        agentProvider: AgentProvider.CODEX,
+      } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
+
+      chatStore.addMessage('agent-1', completedAssistantMessage)
+      const parsed = parseMessageContent(completedAssistantMessage)
+      const item = parsed.parentObject?.item as Record<string, unknown> | undefined
+      if (item?.type === 'agentMessage')
+        chatStore.clearStreamingText('agent-1')
+
+      expect(chatStore.state.streamingText['agent-1']).toBe('')
+      dispose()
+    })
+  })
+
+  it('clears top-level plan streaming text and streamingType when a persisted codex plan completion arrives', () => {
+    createRoot((dispose) => {
+      const chatStore = createChatStore()
+      const agentSessionStore = createAgentSessionStore()
+
+      chatStore.setStreamingText('agent-1', '# Plan\n')
+      agentSessionStore.updateInfo('agent-1', { streamingType: 'plan' })
+
+      const completedPlanMessage = {
+        id: 'plan-1',
+        role: MessageRole.ASSISTANT,
+        content: new TextEncoder().encode(JSON.stringify({
+          item: {
+            type: 'plan',
+            id: 'plan-1',
+            text: '# Plan\nStep 1',
+          },
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+        })),
+        contentCompression: ContentCompression.NONE,
+        seq: 2n,
+        agentProvider: AgentProvider.CODEX,
+      } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
+
+      chatStore.addMessage('agent-1', completedPlanMessage)
+      const parsed = parseMessageContent(completedPlanMessage)
+      const item = parsed.parentObject?.item as Record<string, unknown> | undefined
+      if (item?.type === 'plan') {
+        chatStore.clearStreamingText('agent-1')
+        agentSessionStore.updateInfo('agent-1', { streamingType: '' })
+      }
+
+      expect(chatStore.state.streamingText['agent-1']).toBe('')
+      expect(agentSessionStore.getInfo('agent-1').streamingType).toBe('')
+      dispose()
+    })
+  })
+})

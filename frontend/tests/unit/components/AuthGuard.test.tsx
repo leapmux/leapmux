@@ -38,7 +38,7 @@ describe('authGuard', () => {
       </AuthGuard>
     ))
 
-    expect(screen.getByText('Protected Content')).toBeTruthy()
+    expect(screen.getByText('Protected Content')).toBeInTheDocument()
   })
 
   it('renders children for admin when requireAdmin is true', () => {
@@ -52,7 +52,7 @@ describe('authGuard', () => {
       </AuthGuard>
     ))
 
-    expect(screen.getByText('Admin Content')).toBeTruthy()
+    expect(screen.getByText('Admin Content')).toBeInTheDocument()
   })
 
   it('shows NotFoundPage for non-admin when requireAdmin is true', () => {
@@ -67,9 +67,9 @@ describe('authGuard', () => {
     ))
 
     // Should not show admin content
-    expect(screen.queryByText('Admin Content')).toBeNull()
+    expect(screen.queryByText('Admin Content')).not.toBeInTheDocument()
     // Should show 404 page
-    expect(screen.getByText('Not Found')).toBeTruthy()
+    expect(screen.getByText('Not Found')).toBeInTheDocument()
   })
 
   it('shows loading while auth is loading', () => {
@@ -83,7 +83,7 @@ describe('authGuard', () => {
       </AuthGuard>
     ))
 
-    expect(screen.getByText('Loading...')).toBeTruthy()
-    expect(screen.queryByText('Protected Content')).toBeNull()
+    expect(screen.getByText('Loading...')).toBeInTheDocument()
+    expect(screen.queryByText('Protected Content')).not.toBeInTheDocument()
   })
 })

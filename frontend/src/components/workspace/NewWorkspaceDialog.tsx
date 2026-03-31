@@ -1,9 +1,11 @@
 import type { Component } from 'solid-js'
+import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { generateSlug } from 'random-word-slugs'
-import { createMemo, createSignal, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, Show } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
+import { agentLoadingTimeoutMs } from '~/api/transport'
 import * as workerRpc from '~/api/workerRpc'
 import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
@@ -13,9 +15,11 @@ import { isWorkspaceCreateDisabled } from '~/components/shell/dialogValidation'
 import { DirectorySelector } from '~/components/shell/DirectorySelector'
 import { GitOptions } from '~/components/shell/GitOptions'
 import { WorkerSelector } from '~/components/shell/WorkerSelector'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
+import { useMruProviders } from '~/hooks/useMruProviders'
+import { getAvailableAgentProviders } from '~/lib/agentProviders'
 import { sanitizeName } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
 import { dialogLeftPanel, dialogRightPanel, dialogSingleColumn, dialogTopSection, dialogTopTwoColumn, dialogTwoColumn, dialogWide, errorText, labelRow } from '~/styles/shared.css'
@@ -33,8 +37,18 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
   const state = createWorkerDialogState({ preselectedWorkerId: props.preselectedWorkerId })
   const randomTitle = () => generateSlug(3, { format: 'title' })
   const [title, setTitle] = createSignal(randomTitle())
-  const [submitting, setSubmitting] = createSignal(false)
-  const [agentProvider, setAgentProvider] = createSignal<AgentProvider>(AgentProvider.CLAUDE_CODE)
+  const submitting = createLoadingSignal(agentLoadingTimeoutMs(false))
+
+  const available = () => getAvailableAgentProviders(props.availableProviders)
+  const { mruProviders, recordProviderUse } = useMruProviders(available, 1)
+  const [agentProvider, setAgentProvider] = createSignal(mruProviders()[0])
+  const noProviders = () => available().length === 0
+
+  createEffect(() => {
+    const best = mruProviders()[0]
+    if (best !== undefined && !available().includes(agentProvider()))
+      setAgentProvider(best)
+  })
   const titleError = createMemo(() => sanitizeName(title()).error)
 
   const handleSubmit = async (e: Event) => {
@@ -42,7 +56,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
     if (!state.workerId() || !state.workingDir().trim())
       return
 
-    setSubmitting(true)
+    submitting.start()
     state.setError(null)
     let createdWorkspaceId: string | undefined
     try {
@@ -73,6 +87,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       })
 
       if (agentResp.agent) {
+        recordProviderUse(agentProvider())
         workspaceClient.addTab({
           workspaceId: wsResp.workspace.id,
           tab: { tabType: TabType.AGENT, tabId: agentResp.agent.id, workerId: wid },
@@ -88,19 +103,24 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       state.setError(err instanceof Error ? err.message : 'Failed to create workspace')
     }
     finally {
-      setSubmitting(false)
+      submitting.stop()
     }
   }
 
   return (
-    <Dialog title="New Workspace" tall class={dialogWide} onClose={() => props.onClose()}>
+    <Dialog title="New Workspace" tall busy={submitting.loading()} class={dialogWide} onClose={() => props.onClose()}>
       <form onSubmit={handleSubmit}>
         <section>
           <div class="vstack gap-4">
             <div class={dialogTopSection}>
               <div class={dialogTopTwoColumn}>
                 <WorkerSelector state={state} />
-                <AgentProviderSelector value={agentProvider} onChange={setAgentProvider} availableProviders={props.availableProviders} onRefresh={props.onRefreshProviders} />
+                <AgentProviderSelector
+                  value={agentProvider}
+                  onChange={setAgentProvider}
+                  availableProviders={props.availableProviders}
+                  onRefresh={props.onRefreshProviders}
+                />
               </div>
               <div>
                 <div class={labelRow}>
@@ -141,15 +161,15 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
           </Show>
         </section>
         <footer>
-          <button type="button" class="outline" onClick={() => props.onClose()}>
+          <button type="button" class="outline" disabled={submitting.loading()} onClick={() => props.onClose()}>
             Cancel
           </button>
           <button
             type="submit"
-            disabled={isWorkspaceCreateDisabled({ submitting: submitting(), workerId: state.workerId(), workingDir: state.workingDir(), titleError: titleError(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), createBranchError: state.createBranchError(), useWorktreePath: state.useWorktreePath() })}
+            disabled={isWorkspaceCreateDisabled({ submitting: submitting.loading(), workerId: state.workerId(), workingDir: state.workingDir(), noProviders: noProviders(), titleError: titleError(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), createBranchError: state.createBranchError(), useWorktreePath: state.useWorktreePath() })}
           >
-            <Show when={submitting()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
-            {submitting() ? 'Creating...' : 'Create'}
+            <Show when={submitting.loading()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
+            {submitting.loading() ? 'Creating...' : 'Create'}
           </button>
         </footer>
       </form>
