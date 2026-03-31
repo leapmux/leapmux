@@ -2,15 +2,40 @@ import type { Accessor, Component, JSX } from 'solid-js'
 import type { Sidebar } from '~/generated/leapmux/v1/section_pb'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createSectionStore } from '~/stores/section.store'
-import Resizable from '@corvu/resizable'
 import Plus from 'lucide-solid/icons/plus'
-import { createSignal, Show } from 'solid-js'
+import { createSignal, onCleanup, Show } from 'solid-js'
 import { ChatDropZone } from '~/components/chat/ChatDropZone'
 import { Icon } from '~/components/common/Icon'
 import * as styles from './AppShell.css'
 import { SectionDragProvider } from './SectionDragContext'
 import { TabDragProvider } from './TabDragContext'
 import { TilingLayout } from './TilingLayout'
+
+const DEFAULT_SIDEBAR_PX = 250
+const MIN_SIDEBAR_PX = 250
+const COLLAPSED_SIZE_PX = 45
+
+interface SidebarFactoryOpts {
+  isCollapsed: Accessor<boolean>
+  onExpand: () => void
+  onCollapse: () => void
+  initialOpenSections?: Record<string, boolean>
+  initialSectionSizes?: Record<string, number>
+  onStateChange?: (open: Record<string, boolean>, sizes: Record<string, number>) => void
+}
+
+interface SidebarState {
+  leftSize?: number
+  rightSize?: number
+  leftCollapsed?: boolean
+  rightCollapsed?: boolean
+  autoCollapsedLeft?: boolean
+  autoCollapsedRight?: boolean
+  leftOpenSections?: Record<string, boolean>
+  leftSectionSizes?: Record<string, number>
+  rightOpenSections?: Record<string, boolean>
+  rightSectionSizes?: Record<string, number>
+}
 
 interface DesktopLayoutProps {
   sectionStore: ReturnType<typeof createSectionStore>
@@ -32,42 +57,53 @@ interface DesktopLayoutProps {
   renderTile: (tileId: string) => JSX.Element
   onRatioChange: (splitId: string, ratios: number[]) => void
   // Sidebar factories
-  createLeftSidebar: (opts: {
-    isCollapsed: Accessor<boolean>
-    onExpand: () => void
-    onCollapse: () => void
-    initialOpenSections?: Record<string, boolean>
-    initialSectionSizes?: Record<string, number>
-    onStateChange?: (open: Record<string, boolean>, sizes: Record<string, number>) => void
-  }) => JSX.Element
-  createRightSidebar: (opts: {
-    isCollapsed: Accessor<boolean>
-    onExpand: () => void
-    onCollapse: () => void
-    initialOpenSections?: Record<string, boolean>
-    initialSectionSizes?: Record<string, number>
-    onStateChange?: (open: Record<string, boolean>, sizes: Record<string, number>) => void
-  }) => JSX.Element
+  createLeftSidebar: (opts: SidebarFactoryOpts) => JSX.Element
+  createRightSidebar: (opts: SidebarFactoryOpts) => JSX.Element
   editorPanel: JSX.Element | false
   floatingWindowLayer?: JSX.Element
   onFileDrop?: (dataTransfer: DataTransfer, shiftKey: boolean) => void
   fileDropDisabled?: boolean
 }
 
+function useSidebarDrag(opts: {
+  getWidth: () => number
+  setWidth: (px: number) => void
+  minWidth: number
+  direction: 'left' | 'right'
+}) {
+  const onPointerDown = (e: PointerEvent) => {
+    e.preventDefault()
+    const handle = e.currentTarget as HTMLElement
+    handle.dataset.dragging = ''
+    const startX = e.clientX
+    const startWidth = opts.getWidth()
+    const sign = opts.direction === 'left' ? 1 : -1
+
+    const onPointerMove = (ev: PointerEvent) => {
+      const delta = (ev.clientX - startX) * sign
+      opts.setWidth(Math.max(opts.minWidth, startWidth + delta))
+    }
+    const onPointerUp = () => {
+      delete handle.dataset.dragging
+      document.removeEventListener('pointermove', onPointerMove)
+      document.removeEventListener('pointerup', onPointerUp)
+      document.removeEventListener('pointercancel', onPointerUp)
+      document.body.style.removeProperty('cursor')
+      document.body.style.removeProperty('user-select')
+    }
+    document.addEventListener('pointermove', onPointerMove)
+    document.addEventListener('pointerup', onPointerUp)
+    document.addEventListener('pointercancel', onPointerUp)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }
+  return onPointerDown
+}
+
 export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
-  // Read saved sidebar state before Resizable mounts (initialSize is read-once).
+  // Read saved sidebar state (read-once at mount time).
   // eslint-disable-next-line solid/reactivity -- read-once at mount time, matching original IIFE behavior
   const wsId = props.activeWorkspaceId
-  interface SidebarState {
-    leftSize?: number
-    rightSize?: number
-    leftCollapsed?: boolean
-    rightCollapsed?: boolean
-    leftOpenSections?: Record<string, boolean>
-    leftSectionSizes?: Record<string, number>
-    rightOpenSections?: Record<string, boolean>
-    rightSectionSizes?: Record<string, number>
-  }
   const savedSidebar: SidebarState | null = (() => {
     if (!wsId)
       return null
@@ -76,16 +112,176 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
     }
     catch { return null }
   })()
-  const initLeft = savedSidebar?.leftSize ?? 0.18
-  const initRight = savedSidebar?.rightSize ?? 0.20
-  const initCenter = 1 - initLeft - initRight
+
+  // Sidebar widths stored as pixels. Clamp to minimum.
+  const initLeftPx = Math.max(savedSidebar?.leftSize ?? DEFAULT_SIDEBAR_PX, MIN_SIDEBAR_PX)
+  const initRightPx = Math.max(savedSidebar?.rightSize ?? DEFAULT_SIDEBAR_PX, MIN_SIDEBAR_PX)
 
   let leftOpenSections: Record<string, boolean> = savedSidebar?.leftOpenSections ?? {}
   let leftSectionSizes: Record<string, number> = savedSidebar?.leftSectionSizes ?? {}
   let rightOpenSections: Record<string, boolean> = savedSidebar?.rightOpenSections ?? {}
   let rightSectionSizes: Record<string, number> = savedSidebar?.rightSectionSizes ?? {}
 
-  let saveSidebarRef: (() => void) | undefined
+  // Reactive sidebar state.
+  const [leftWidth, setLeftWidth] = createSignal(initLeftPx)
+  const [rightWidth, setRightWidth] = createSignal(initRightPx)
+  const [leftCollapsed, setLeftCollapsed] = createSignal(savedSidebar?.leftCollapsed ?? false)
+  const [rightCollapsed, setRightCollapsed] = createSignal(savedSidebar?.rightCollapsed ?? false)
+  const [autoCollapsedLeft, setAutoCollapsedLeft] = createSignal(savedSidebar?.autoCollapsedLeft ?? false)
+  const [autoCollapsedRight, setAutoCollapsedRight] = createSignal(savedSidebar?.autoCollapsedRight ?? false)
+
+  let leftWidthBeforeCollapse = initLeftPx
+  let rightWidthBeforeCollapse = initRightPx
+
+  // --- Persistence ---
+  const doSaveSidebarState = () => {
+    const id = props.activeWorkspaceId
+    if (!id)
+      return
+    const state: SidebarState = {
+      leftSize: leftCollapsed() ? leftWidthBeforeCollapse : leftWidth(),
+      rightSize: rightCollapsed() ? rightWidthBeforeCollapse : rightWidth(),
+      leftCollapsed: leftCollapsed(),
+      rightCollapsed: rightCollapsed(),
+      autoCollapsedLeft: autoCollapsedLeft(),
+      autoCollapsedRight: autoCollapsedRight(),
+      leftOpenSections,
+      leftSectionSizes,
+      rightOpenSections,
+      rightSectionSizes,
+    }
+    sessionStorage.setItem(`leapmux:sidebar:${id}`, JSON.stringify(state))
+  }
+  let sidebarSaveTimer: ReturnType<typeof setTimeout> | null = null
+  const saveSidebarState = () => {
+    if (sidebarSaveTimer)
+      clearTimeout(sidebarSaveTimer)
+    sidebarSaveTimer = setTimeout(doSaveSidebarState, 300)
+  }
+
+  // --- Collapse / Expand ---
+  const collapseLeft = () => {
+    leftWidthBeforeCollapse = leftWidth()
+    setAutoCollapsedLeft(false)
+    setLeftCollapsed(true)
+    saveSidebarState()
+  }
+  const expandLeft = () => {
+    setAutoCollapsedLeft(false)
+    setLeftCollapsed(false)
+    setLeftWidth(leftWidthBeforeCollapse)
+    saveSidebarState()
+  }
+  const collapseRight = () => {
+    rightWidthBeforeCollapse = rightWidth()
+    setAutoCollapsedRight(false)
+    setRightCollapsed(true)
+    saveSidebarState()
+  }
+  const expandRight = () => {
+    setAutoCollapsedRight(false)
+    setRightCollapsed(false)
+    setRightWidth(rightWidthBeforeCollapse)
+    saveSidebarState()
+  }
+
+  // --- Drag handles ---
+  const leftDrag = useSidebarDrag({
+    getWidth: leftWidth,
+    setWidth: (px) => {
+      setLeftWidth(px)
+      saveSidebarState()
+    },
+    minWidth: MIN_SIDEBAR_PX,
+    direction: 'left',
+  })
+  const rightDrag = useSidebarDrag({
+    getWidth: rightWidth,
+    setWidth: (px) => {
+      setRightWidth(px)
+      saveSidebarState()
+    },
+    minWidth: MIN_SIDEBAR_PX,
+    direction: 'right',
+  })
+
+  // --- Auto-collapse / expand on viewport resize ---
+  const applyViewportResize = () => {
+    const newWidth = window.innerWidth
+    const halfViewport = newWidth / 2
+
+    const leftPx = leftCollapsed() ? 0 : leftWidth()
+    const rightPx = rightCollapsed() ? 0 : rightWidth()
+    const visibleTotal = leftPx + rightPx
+
+    if (visibleTotal > halfViewport && visibleTotal > 0) {
+      if (!leftCollapsed()) {
+        leftWidthBeforeCollapse = leftWidth()
+        setAutoCollapsedLeft(true)
+        setLeftCollapsed(true)
+      }
+      if (!rightCollapsed()) {
+        rightWidthBeforeCollapse = rightWidth()
+        setAutoCollapsedRight(true)
+        setRightCollapsed(true)
+      }
+      saveSidebarState()
+    }
+    else {
+      const wantExpandLeft = autoCollapsedLeft() && leftCollapsed()
+      const wantExpandRight = autoCollapsedRight() && rightCollapsed()
+      if (wantExpandLeft || wantExpandRight) {
+        let wouldUse = 0
+        if (wantExpandLeft)
+          wouldUse += leftWidthBeforeCollapse
+        else if (!leftCollapsed())
+          wouldUse += leftWidth()
+        if (wantExpandRight)
+          wouldUse += rightWidthBeforeCollapse
+        else if (!rightCollapsed())
+          wouldUse += rightWidth()
+
+        if (wouldUse <= halfViewport) {
+          if (wantExpandLeft) {
+            setAutoCollapsedLeft(false)
+            setLeftCollapsed(false)
+            setLeftWidth(leftWidthBeforeCollapse)
+          }
+          if (wantExpandRight) {
+            setAutoCollapsedRight(false)
+            setRightCollapsed(false)
+            setRightWidth(rightWidthBeforeCollapse)
+          }
+          saveSidebarState()
+        }
+      }
+    }
+  }
+
+  let resizeRafId: number | null = null
+  const handleViewportResize = () => {
+    if (resizeRafId !== null)
+      return
+    resizeRafId = requestAnimationFrame(() => {
+      resizeRafId = null
+      applyViewportResize()
+    })
+  }
+
+  window.addEventListener('resize', handleViewportResize)
+  onCleanup(() => {
+    window.removeEventListener('resize', handleViewportResize)
+    if (resizeRafId !== null)
+      cancelAnimationFrame(resizeRafId)
+    if (sidebarSaveTimer) {
+      clearTimeout(sidebarSaveTimer)
+      doSaveSidebarState()
+    }
+  })
+
+  // Computed widths for CSS.
+  const leftPxStyle = () => `${leftCollapsed() ? COLLAPSED_SIZE_PX : leftWidth()}px`
+  const rightPxStyle = () => `${rightCollapsed() ? COLLAPSED_SIZE_PX : rightWidth()}px`
 
   return (
     <SectionDragProvider
@@ -100,169 +296,101 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
         lookupTileIdForTab={props.lookupTileIdForTab}
         renderDragOverlay={props.renderDragOverlay}
       >
-        <Resizable orientation="horizontal" class={styles.shell} onSizesChange={() => saveSidebarRef?.()}>
-          {() => {
-            const ctx = Resizable.useContext()
-            const [leftCollapsed, setLeftCollapsed] = createSignal(false)
-            const [rightCollapsed, setRightCollapsed] = createSignal(false)
-            let leftSizeBeforeCollapse = initLeft
-            let rightSizeBeforeCollapse = initRight
+        <div class={styles.shell} style={{ display: 'flex' }}>
+          {/* Left sidebar */}
+          <div
+            class={styles.sidebar}
+            style={{ flex: `0 0 ${leftPxStyle()}` }}
+          >
+            {props.createLeftSidebar({
+              isCollapsed: leftCollapsed,
+              onExpand: expandLeft,
+              onCollapse: collapseLeft,
+              initialOpenSections: savedSidebar?.leftOpenSections,
+              initialSectionSizes: savedSidebar?.leftSectionSizes,
+              onStateChange: (open, sizes) => {
+                leftOpenSections = open
+                leftSectionSizes = sizes
+                doSaveSidebarState()
+              },
+            })}
+          </div>
 
-            const doSaveSidebarState = () => {
-              const id = props.activeWorkspaceId
-              if (!id)
-                return
-              const sizes = ctx.sizes()
-              const state: SidebarState = {
-                leftSize: leftCollapsed() ? leftSizeBeforeCollapse : sizes[0],
-                rightSize: rightCollapsed() ? rightSizeBeforeCollapse : sizes[2],
-                leftCollapsed: leftCollapsed(),
-                rightCollapsed: rightCollapsed(),
-                leftOpenSections,
-                leftSectionSizes,
-                rightOpenSections,
-                rightSectionSizes,
-              }
-              sessionStorage.setItem(`leapmux:sidebar:${id}`, JSON.stringify(state))
-            }
-            let sidebarSaveTimer: ReturnType<typeof setTimeout> | null = null
-            const saveSidebarState = () => {
-              if (sidebarSaveTimer)
-                clearTimeout(sidebarSaveTimer)
-              sidebarSaveTimer = setTimeout(doSaveSidebarState, 300)
-            }
-            saveSidebarRef = saveSidebarState
+          {/* Left resize handle */}
+          <div
+            class={styles.resizeHandle}
+            data-testid="resize-handle"
+            onPointerDown={leftDrag}
+          />
 
-            const collapseLeft = () => {
-              leftSizeBeforeCollapse = ctx.sizes()[0] ?? initLeft
-              ctx.collapse(0)
-            }
-            const expandLeft = () => {
-              ctx.expand(0)
-              ctx.resize(0, leftSizeBeforeCollapse)
-            }
-            const collapseRight = () => {
-              rightSizeBeforeCollapse = ctx.sizes()[2] ?? initRight
-              ctx.collapse(2)
-            }
-            const expandRight = () => {
-              ctx.expand(2)
-              ctx.resize(2, rightSizeBeforeCollapse)
-            }
+          {/* Center panel */}
+          <div
+            class={styles.center}
+            style={{ 'flex': '1 1 0px', 'min-width': '0px' }}
+            ref={(el) => {
+              const observer = new ResizeObserver((entries) => {
+                for (const entry of entries)
+                  props.setCenterPanelHeight(entry.contentRect.height)
+              })
+              observer.observe(el)
+              onCleanup(() => observer.disconnect())
+            }}
+          >
+            <Show
+              when={props.activeWorkspace() && !props.workspaceLoading}
+              fallback={(
+                <Show when={!props.activeWorkspace() && !props.activeWorkspaceId}>
+                  <div class={styles.emptyTileActions} data-testid="no-workspace-empty-state">
+                    <button
+                      class="outline"
+                      data-testid="create-workspace-button"
+                      onClick={props.onNewWorkspace}
+                    >
+                      <Icon icon={Plus} size="sm" />
+                      {' '}
+                      Create a new workspace...
+                    </button>
+                  </div>
+                </Show>
+              )}
+            >
+              <ChatDropZone onDrop={props.onFileDrop} disabled={props.fileDropDisabled}>
+                <TilingLayout
+                  root={props.layoutStore.state.root}
+                  renderTile={props.renderTile}
+                  onRatioChange={props.onRatioChange}
+                />
+                {props.editorPanel}
+              </ChatDropZone>
+            </Show>
+          </div>
 
-            if (savedSidebar?.leftCollapsed)
-              queueMicrotask(() => collapseLeft())
-            if (savedSidebar?.rightCollapsed)
-              queueMicrotask(() => collapseRight())
+          {/* Right resize handle */}
+          <div
+            class={styles.resizeHandle}
+            data-testid="resize-handle"
+            onPointerDown={rightDrag}
+          />
 
-            return (
-              <>
-                <Resizable.Panel
-                  initialSize={initLeft}
-                  minSize={0.10}
-                  collapsible
-                  collapsedSize="45px"
-                  collapseThreshold={0.05}
-                  class={styles.sidebar}
-                  onCollapse={() => {
-                    setLeftCollapsed(true)
-                    saveSidebarState()
-                  }}
-                  onExpand={() => {
-                    setLeftCollapsed(false)
-                    saveSidebarState()
-                  }}
-                >
-                  {props.createLeftSidebar({
-                    isCollapsed: leftCollapsed,
-                    onExpand: expandLeft,
-                    onCollapse: collapseLeft,
-                    initialOpenSections: savedSidebar?.leftOpenSections,
-                    initialSectionSizes: savedSidebar?.leftSectionSizes,
-                    onStateChange: (open, sizes) => {
-                      leftOpenSections = open
-                      leftSectionSizes = sizes
-                      doSaveSidebarState()
-                    },
-                  })}
-                </Resizable.Panel>
-
-                <Resizable.Handle class={styles.resizeHandle} data-testid="resize-handle" />
-
-                <Resizable.Panel
-                  initialSize={initCenter}
-                  class={styles.center}
-                  ref={(el: HTMLElement) => {
-                    const observer = new ResizeObserver((entries) => {
-                      for (const entry of entries)
-                        props.setCenterPanelHeight(entry.contentRect.height)
-                    })
-                    observer.observe(el)
-                  }}
-                >
-                  <Show
-                    when={props.activeWorkspace() && !props.workspaceLoading}
-                    fallback={(
-                      <Show when={!props.activeWorkspace() && !props.activeWorkspaceId}>
-                        <div class={styles.emptyTileActions} data-testid="no-workspace-empty-state">
-                          <button
-                            class="outline"
-                            data-testid="create-workspace-button"
-                            onClick={props.onNewWorkspace}
-                          >
-                            <Icon icon={Plus} size="sm" />
-                            {' '}
-                            Create a new workspace...
-                          </button>
-                        </div>
-                      </Show>
-                    )}
-                  >
-                    <ChatDropZone onDrop={props.onFileDrop} disabled={props.fileDropDisabled}>
-                      <TilingLayout
-                        root={props.layoutStore.state.root}
-                        renderTile={props.renderTile}
-                        onRatioChange={props.onRatioChange}
-                      />
-                      {props.editorPanel}
-                    </ChatDropZone>
-                  </Show>
-                </Resizable.Panel>
-
-                <Resizable.Handle class={styles.resizeHandle} data-testid="resize-handle" />
-                <Resizable.Panel
-                  initialSize={initRight}
-                  minSize={0.10}
-                  collapsible
-                  collapsedSize="45px"
-                  collapseThreshold={0.05}
-                  class={styles.rightPanel}
-                  onCollapse={() => {
-                    setRightCollapsed(true)
-                    saveSidebarState()
-                  }}
-                  onExpand={() => {
-                    setRightCollapsed(false)
-                    saveSidebarState()
-                  }}
-                >
-                  {props.createRightSidebar({
-                    isCollapsed: rightCollapsed,
-                    onExpand: expandRight,
-                    onCollapse: collapseRight,
-                    initialOpenSections: savedSidebar?.rightOpenSections,
-                    initialSectionSizes: savedSidebar?.rightSectionSizes,
-                    onStateChange: (open, sizes) => {
-                      rightOpenSections = open
-                      rightSectionSizes = sizes
-                      doSaveSidebarState()
-                    },
-                  })}
-                </Resizable.Panel>
-              </>
-            )
-          }}
-        </Resizable>
+          {/* Right sidebar */}
+          <div
+            class={styles.rightPanel}
+            style={{ flex: `0 0 ${rightPxStyle()}` }}
+          >
+            {props.createRightSidebar({
+              isCollapsed: rightCollapsed,
+              onExpand: expandRight,
+              onCollapse: collapseRight,
+              initialOpenSections: savedSidebar?.rightOpenSections,
+              initialSectionSizes: savedSidebar?.rightSectionSizes,
+              onStateChange: (open, sizes) => {
+                rightOpenSections = open
+                rightSectionSizes = sizes
+                doSaveSidebarState()
+              },
+            })}
+          </div>
+        </div>
         {props.floatingWindowLayer}
       </TabDragProvider>
     </SectionDragProvider>

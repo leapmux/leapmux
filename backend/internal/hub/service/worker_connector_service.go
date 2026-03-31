@@ -13,9 +13,9 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
-	"github.com/leapmux/leapmux/internal/hub/validate"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/validate"
 )
 
 // WorkerConnectorService implements the Hub-side service called by Worker

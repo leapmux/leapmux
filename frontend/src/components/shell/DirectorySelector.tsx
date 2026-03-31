@@ -23,7 +23,7 @@ export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
   }, { defer: true }))
 
   return (
-    <div>
+    <div class="vstack gap-1">
       <div class={labelRow}>
         Working Directory
         <IconButton

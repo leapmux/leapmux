@@ -19,9 +19,22 @@ export function containsAnsi(text: string): boolean {
  * CSS variable-based dual-theme coloring (--shiki-light / --shiki-dark).
  */
 export function renderAnsi(text: string): string {
-  return shikiHighlighter.codeToHtml(text, {
-    lang: 'ansi',
-    themes: { light: 'github-light', dark: 'github-dark' },
-    defaultColor: false,
-  })
+  try {
+    return shikiHighlighter.codeToHtml(text, {
+      lang: 'ansi',
+      themes: { light: 'github-light', dark: 'github-dark' },
+      defaultColor: false,
+    })
+  }
+  catch {
+    return `<pre><code>${escapeHtml(text)}</code></pre>`
+  }
+}
+
+const RE_AMP = /&/g
+const RE_LT = /</g
+const RE_GT = />/g
+
+export function escapeHtml(s: string): string {
+  return s.replace(RE_AMP, '&amp;').replace(RE_LT, '&lt;').replace(RE_GT, '&gt;')
 }

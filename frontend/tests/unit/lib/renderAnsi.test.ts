@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
+import { shikiHighlighter } from '~/lib/renderMarkdown'
 
 const SPAN_TAG_RE = /<span/g
 
@@ -83,5 +84,22 @@ describe('renderAnsi', () => {
     // Background colors produce --shiki-light-bg / --shiki-dark-bg variables
     expect(html).toContain('--shiki-light-bg:')
     expect(html).toContain('--shiki-dark-bg:')
+  })
+
+  describe('fallback on shiki error', () => {
+    afterEach(() => {
+      vi.restoreAllMocks()
+    })
+
+    it('falls back to escaped HTML when shiki throws', () => {
+      vi.spyOn(shikiHighlighter, 'codeToHtml').mockImplementation(() => {
+        throw new Error('regex engine failure')
+      })
+
+      const html = renderAnsi('<b>bold</b>')
+      expect(html).toContain('<pre><code>')
+      expect(html).toContain('&lt;b&gt;bold&lt;/b&gt;')
+      expect(html).not.toContain('<b>')
+    })
   })
 })

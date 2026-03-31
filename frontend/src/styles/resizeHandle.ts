@@ -31,5 +31,9 @@ export function resizeHandleSelectors(
       background: 'var(--primary)',
       ...(isH ? { width: '1px' } : { height: '1px' }),
     },
+    [`${prefix}[data-dragging]::before`]: {
+      background: 'var(--primary)',
+      ...(isH ? { width: '1px' } : { height: '1px' }),
+    },
   }
 }

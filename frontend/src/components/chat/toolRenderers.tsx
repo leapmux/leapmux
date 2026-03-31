@@ -41,7 +41,7 @@ import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
 import { parseMessageContent } from '~/lib/messageParser'
-import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
+import { containsAnsi, escapeHtml, renderAnsi } from '~/lib/renderAnsi'
 import { renderMarkdown, shikiHighlighter } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { DiffView, rawDiffToHunks } from './diffUtils'
@@ -90,6 +90,11 @@ export function ControlResponseTag(props: { response?: { action: string, comment
       )}
     </Show>
   )
+}
+
+/** Renders a "To-do list cleared" placeholder for empty todo/plan tool_use messages. */
+export function EmptyTodoLayout(props: { toolName: string, context?: RenderContext }): JSX.Element {
+  return <ToolUseLayout icon={ListTodo} toolName={props.toolName} title="To-do list cleared" context={props.context} />
 }
 
 /** Shared layout for tool_use messages. Renders header boilerplate and optional body. */
@@ -415,11 +420,16 @@ function ToolUseMessage(props: {
 }
 
 export function renderBashHighlight(code: string): string {
-  return shikiHighlighter.codeToHtml(code, {
-    lang: 'bash',
-    themes: { light: 'github-light', dark: 'github-dark' },
-    defaultColor: false,
-  })
+  try {
+    return shikiHighlighter.codeToHtml(code, {
+      lang: 'bash',
+      themes: { light: 'github-light', dark: 'github-dark' },
+      defaultColor: false,
+    })
+  }
+  catch {
+    return `<pre><code>${escapeHtml(code)}</code></pre>`
+  }
 }
 
 /** Derive a summary element for a generic tool_use (Bash command, search paths). */

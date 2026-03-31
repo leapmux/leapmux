@@ -23,7 +23,7 @@ import { markdownContent } from './markdownContent.css'
 import { ThinkingMessage, useSharedExpandedState } from './messageRenderers'
 import { resultDivider } from './messageStyles.css'
 import { isObject, relativizePath } from './messageUtils'
-import { COLLAPSED_RESULT_ROWS, renderBashHighlight, stripLeadingBlankLines, ToolUseLayout } from './toolRenderers'
+import { COLLAPSED_RESULT_ROWS, EmptyTodoLayout, renderBashHighlight, stripLeadingBlankLines, ToolUseLayout } from './toolRenderers'
 import {
   toolInputCode,
   toolInputPath,
@@ -358,7 +358,7 @@ export function opencodePlanRenderer(toolUse: Record<string, unknown>, _role: Me
   const entries = toolUse.entries as Array<{ priority?: string, status?: string, content: string }> | undefined
 
   if (!entries || entries.length === 0)
-    return <></>
+    return <EmptyTodoLayout toolName="Plan" context={context} />
 
   const todos = entries.map(e => ({
     content: e.content,

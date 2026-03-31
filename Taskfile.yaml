@@ -262,6 +262,7 @@ tasks:
       - backend/go.mod
       - backend/go.sum
       - "backend/**/*.go"
+      - "backend/**/migrations/*.sql"
       - backend/.golangci.yml
     cmds:
       - golangci-lint run ./...
@@ -535,6 +536,15 @@ tasks:
     desc: Lint desktop Go code
     deps: [prepare-desktop-non-darwin]
     dir: desktop
+    sources:
+      - desktop/go.mod
+      - desktop/go.sum
+      - "desktop/**/*.go"
+      - backend/go.mod
+      - backend/go.sum
+      - "backend/**/*.go"
+      - "backend/**/migrations/*.sql"
+      - backend/.golangci.yml
     cmds:
       - golangci-lint run ./...
 

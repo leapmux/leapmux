@@ -2,6 +2,7 @@ import type { JSX } from 'solid-js'
 import type { CachedToken } from '~/lib/tokenCache'
 import { createEffect, createSignal, For, on, onCleanup, Show } from 'solid-js'
 import { guessLanguage } from '~/lib/languageMap'
+import { shikiHighlighter } from '~/lib/renderMarkdown'
 import { tokenizeAsync } from '~/lib/shikiWorkerClient'
 import { getCachedTokens } from '~/lib/tokenCache'
 import {
@@ -70,6 +71,23 @@ export function ReadResultView(props: {
         return
 
       const code = lines.map(line => line.text).join('\n')
+
+      // ANSI is a special Shiki built-in — tokenize synchronously on the main
+      // thread since the web worker's highlighter core may not support it.
+      if (l === 'ansi') {
+        try {
+          const result = shikiHighlighter.codeToTokens(code, {
+            lang: 'ansi',
+            themes: { light: 'github-light', dark: 'github-dark' },
+            defaultColor: false,
+          })
+          setTokenizedLines(result.tokens.map(line =>
+            line.map(t => ({ content: t.content, htmlStyle: t.htmlStyle })),
+          ))
+        }
+        catch { /* fall through to plain text */ }
+        return
+      }
 
       // Synchronous cache check — avoids flash of unstyled text on re-expand
       const cached = getCachedTokens(l, code)

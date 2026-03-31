@@ -7,13 +7,22 @@ interface Logger {
 
 const loggers = new Map<string, Logger>()
 
+let debugEnabled = false
+
+export function setDebugEnabled(enabled: boolean) {
+  debugEnabled = enabled
+}
+
 export function createLogger(name: string): Logger {
   let logger = loggers.get(name)
   if (!logger) {
     const prefix = `[${name}]`
     logger = {
-      // eslint-disable-next-line no-console
-      debug: (...args: unknown[]) => console.debug(prefix, ...args),
+      debug: (...args: unknown[]) => {
+        if (debugEnabled)
+          // eslint-disable-next-line no-console
+          console.debug(prefix, ...args)
+      },
       // eslint-disable-next-line no-console
       info: (...args: unknown[]) => console.info(prefix, ...args),
       warn: (...args: unknown[]) => console.warn(prefix, ...args),

@@ -11,9 +11,24 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/validate"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
+	"github.com/leapmux/leapmux/internal/util/validate"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// storedPreferences maps to the JSON blob stored in user_preferences.prefs.
+type storedPreferences struct {
+	Theme                 string   `json:"theme,omitempty"`
+	TerminalTheme         string   `json:"terminalTheme,omitempty"`
+	UIFontCustomEnabled   bool     `json:"uiFontCustomEnabled,omitempty"`
+	MonoFontCustomEnabled bool     `json:"monoFontCustomEnabled,omitempty"`
+	UIFonts               []string `json:"uiFonts,omitempty"`
+	MonoFonts             []string `json:"monoFonts,omitempty"`
+	DiffView              int      `json:"diffView,omitempty"`
+	TurnEndSound          int      `json:"turnEndSound,omitempty"`
+	TurnEndSoundVolume    *int     `json:"turnEndSoundVolume,omitempty"`
+	DebugLogging          bool     `json:"debugLogging,omitempty"`
+}
 
 // UserService implements the leapmux.v1.UserService ConnectRPC handler.
 type UserService struct {
@@ -125,7 +140,7 @@ func (s *UserService) GetPreferences(ctx context.Context, req *connect.Request[l
 		return nil, err
 	}
 
-	prefs, err := s.queries.GetUserPreferences(ctx, userInfo.ID)
+	row, err := s.queries.GetUserPreferences(ctx, userInfo.ID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return connect.NewResponse(&leapmuxv1.GetPreferencesResponse{
@@ -135,26 +150,23 @@ func (s *UserService) GetPreferences(ctx context.Context, req *connect.Request[l
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	var uiFonts []string
-	if err := json.Unmarshal([]byte(prefs.UiFonts), &uiFonts); err != nil {
-		uiFonts = nil
-	}
-	var monoFonts []string
-	if err := json.Unmarshal([]byte(prefs.MonoFonts), &monoFonts); err != nil {
-		monoFonts = nil
+	var sp storedPreferences
+	if err := json.Unmarshal([]byte(row.Prefs), &sp); err != nil {
+		sp = storedPreferences{}
 	}
 
 	return connect.NewResponse(&leapmuxv1.GetPreferencesResponse{
 		Preferences: &leapmuxv1.UserPreferences{
-			Theme:                 prefs.Theme,
-			TerminalTheme:         prefs.TerminalTheme,
-			UiFontCustomEnabled:   prefs.UiFontCustomEnabled != 0,
-			MonoFontCustomEnabled: prefs.MonoFontCustomEnabled != 0,
-			UiFonts:               uiFonts,
-			MonoFonts:             monoFonts,
-			DiffView:              leapmuxv1.DiffView(prefs.DiffView),
-			TurnEndSound:          leapmuxv1.TurnEndSound(prefs.TurnEndSound),
-			TurnEndSoundVolume:    uint32(prefs.TurnEndSoundVolume),
+			Theme:                 sp.Theme,
+			TerminalTheme:         sp.TerminalTheme,
+			UiFontCustomEnabled:   sp.UIFontCustomEnabled,
+			MonoFontCustomEnabled: sp.MonoFontCustomEnabled,
+			UiFonts:               sp.UIFonts,
+			MonoFonts:             sp.MonoFonts,
+			DiffView:              leapmuxv1.DiffView(sp.DiffView),
+			TurnEndSound:          leapmuxv1.TurnEndSound(sp.TurnEndSound),
+			TurnEndSoundVolume:    ptrconv.Convert[int, uint32](sp.TurnEndSoundVolume),
+			DebugLogging:          sp.DebugLogging,
 		},
 	}), nil
 }
@@ -195,35 +207,27 @@ func (s *UserService) UpdatePreferences(ctx context.Context, req *connect.Reques
 		monoFonts[i] = sanitized
 	}
 
-	uiFontsJSON, err := json.Marshal(uiFonts)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("marshal ui_fonts: %w", err))
-	}
-	monoFontsJSON, err := json.Marshal(monoFonts)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("marshal mono_fonts: %w", err))
+	sp := storedPreferences{
+		Theme:                 req.Msg.GetTheme(),
+		TerminalTheme:         req.Msg.GetTerminalTheme(),
+		UIFontCustomEnabled:   req.Msg.GetUiFontCustomEnabled(),
+		MonoFontCustomEnabled: req.Msg.GetMonoFontCustomEnabled(),
+		UIFonts:               uiFonts,
+		MonoFonts:             monoFonts,
+		DiffView:              int(req.Msg.GetDiffView()),
+		TurnEndSound:          int(req.Msg.GetTurnEndSound()),
+		TurnEndSoundVolume:    ptrconv.Convert[uint32, int](req.Msg.TurnEndSoundVolume),
+		DebugLogging:          req.Msg.GetDebugLogging(),
 	}
 
-	var uiFontCustomEnabled int64
-	if req.Msg.GetUiFontCustomEnabled() {
-		uiFontCustomEnabled = 1
-	}
-	var monoFontCustomEnabled int64
-	if req.Msg.GetMonoFontCustomEnabled() {
-		monoFontCustomEnabled = 1
+	prefsJSON, err := json.Marshal(sp)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("marshal prefs: %w", err))
 	}
 
 	if err := s.queries.UpsertUserPreferences(ctx, db.UpsertUserPreferencesParams{
-		UserID:                userInfo.ID,
-		Theme:                 req.Msg.GetTheme(),
-		TerminalTheme:         req.Msg.GetTerminalTheme(),
-		UiFontCustomEnabled:   uiFontCustomEnabled,
-		MonoFontCustomEnabled: monoFontCustomEnabled,
-		UiFonts:               string(uiFontsJSON),
-		MonoFonts:             string(monoFontsJSON),
-		DiffView:              int64(req.Msg.GetDiffView()),
-		TurnEndSound:          int64(req.Msg.GetTurnEndSound()),
-		TurnEndSoundVolume:    int64(req.Msg.GetTurnEndSoundVolume()),
+		UserID: userInfo.ID,
+		Prefs:  string(prefsJSON),
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -238,7 +242,8 @@ func (s *UserService) UpdatePreferences(ctx context.Context, req *connect.Reques
 			MonoFonts:             req.Msg.GetMonoFonts(),
 			DiffView:              req.Msg.GetDiffView(),
 			TurnEndSound:          req.Msg.GetTurnEndSound(),
-			TurnEndSoundVolume:    req.Msg.GetTurnEndSoundVolume(),
+			TurnEndSoundVolume:    req.Msg.TurnEndSoundVolume,
+			DebugLogging:          req.Msg.GetDebugLogging(),
 		},
 	}), nil
 }

@@ -21,7 +21,7 @@ import { TodoList } from '~/components/todo/TodoList'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { codexPlanToTodos, todosToMarkdown } from '~/lib/messageParser'
-import { renderMarkdown, shikiHighlighter } from '~/lib/renderMarkdown'
+import { renderMarkdown } from '~/lib/renderMarkdown'
 import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { inlineFlex } from '~/styles/shared.css'
 import { DiffView, rawDiffToHunks } from './diffUtils'
@@ -37,7 +37,7 @@ import {
 import { isObject, relativizePath } from './messageUtils'
 import { formatDuration } from './rendererUtils'
 import { renderToolDetail } from './toolDetailRenderers'
-import { ToolResultMessage, ToolUseLayout } from './toolRenderers'
+import { EmptyTodoLayout, renderBashHighlight, ToolResultMessage, ToolUseLayout } from './toolRenderers'
 import {
   commandStreamContainer,
   commandStreamInteraction,
@@ -94,14 +94,6 @@ function extractItem(parsed: unknown): Record<string, unknown> | null {
 
 function firstCommandLine(command: string): string {
   return command.split('\n').find(line => line.trim()) || command
-}
-
-function renderBashHighlight(code: string): string {
-  return shikiHighlighter.codeToHtml(code, {
-    lang: 'bash',
-    themes: { light: 'github-light', dark: 'github-dark' },
-    defaultColor: false,
-  })
 }
 
 function parseCodexUnifiedDiff(diff: string): ParsedCodexDiff | null {
@@ -366,8 +358,9 @@ export function codexTurnPlanRenderer(parsed: unknown, _role: MessageRole, conte
   if (!Array.isArray(plan))
     return null
   const todos = codexPlanToTodos(plan)
+
   if (todos.length === 0)
-    return null
+    return <EmptyTodoLayout toolName="Plan Update" context={context} />
 
   const explanation = typeof params.explanation === 'string' ? params.explanation.trim() : ''
   const label = `${todos.length} task${todos.length === 1 ? '' : 's'}${explanation ? ` - ${explanation}` : ''}`

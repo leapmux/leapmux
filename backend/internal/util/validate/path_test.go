@@ -51,6 +51,8 @@ func TestSanitizePath(t *testing.T) {
 		{"control chars empty", "\x01\x02\x03", "", ""},
 		{"DEL stripped", "/home/\x7Fuser", "", "/home/user"},
 		{"tilde control chars", "~/\x01projects", "/home/user", "/home/user/projects"},
+		{"dollar stripped", "/home/$USER", "", "/home/USER"},
+		{"percent stripped", "/home/%user", "", "/home/user"},
 
 		// Normalization.
 		{"trailing slash", "/home/user/", "", "/home/user"},

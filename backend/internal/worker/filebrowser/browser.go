@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/leapmux/leapmux/internal/hub/validate"
+	"github.com/leapmux/leapmux/internal/util/validate"
 )
 
 const defaultReadLimit = 64 * 1024 // 64KB

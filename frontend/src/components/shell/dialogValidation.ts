@@ -15,6 +15,7 @@ interface BaseDialogState {
 
 interface AgentDialogState extends BaseDialogState {
   noProviders: boolean
+  sessionIdError: string | null
 }
 
 interface WorkspaceDialogState extends AgentDialogState {
@@ -48,6 +49,7 @@ export function isWorkspaceCreateDisabled(state: WorkspaceDialogState): boolean 
     || !state.workingDir.trim()
     || state.noProviders
     || !!state.titleError
+    || !!state.sessionIdError
     || isGitModeInvalid(state)
 }
 
@@ -56,6 +58,7 @@ export function isAgentCreateDisabled(state: AgentDialogState): boolean {
     || !state.workerId
     || !state.workingDir.trim()
     || state.noProviders
+    || !!state.sessionIdError
     || isGitModeInvalid(state)
 }
 

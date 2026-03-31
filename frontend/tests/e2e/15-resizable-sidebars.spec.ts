@@ -1,5 +1,81 @@
 import { expect, test } from './fixtures'
 
+test.describe('Pixel-based sidebar widths', () => {
+  test('should preserve sidebar pixel widths when viewport is resized', async ({ page, authenticatedWorkspace }) => {
+    await page.waitForTimeout(1000)
+
+    // Use resize handles to identify neighbouring sidebar panels.
+    const handles = page.locator('[data-testid="resize-handle"]')
+    const leftPanel = page.locator('[data-testid="resize-handle"]').first().evaluate(
+      el => el.previousElementSibling!.getBoundingClientRect().width,
+    )
+    const rightPanel = page.locator('[data-testid="resize-handle"]').last().evaluate(
+      el => el.nextElementSibling!.getBoundingClientRect().width,
+    )
+    const leftWidthBefore = await leftPanel
+    const rightWidthBefore = await rightPanel
+
+    // Resize viewport wider
+    const currentSize = page.viewportSize()!
+    await page.setViewportSize({ width: currentSize.width + 200, height: currentSize.height })
+    await page.waitForTimeout(500)
+
+    // Sidebar widths should remain the same (within small tolerance)
+    const leftWidthAfter = await handles.first().evaluate(
+      el => el.previousElementSibling!.getBoundingClientRect().width,
+    )
+    const rightWidthAfter = await handles.last().evaluate(
+      el => el.nextElementSibling!.getBoundingClientRect().width,
+    )
+    expect(Math.abs(leftWidthAfter - leftWidthBefore)).toBeLessThan(5)
+    expect(Math.abs(rightWidthAfter - rightWidthBefore)).toBeLessThan(5)
+
+    // Restore viewport
+    await page.setViewportSize(currentSize)
+  })
+
+  test('should auto-collapse sidebars when viewport becomes too narrow', async ({ page, authenticatedWorkspace }) => {
+    await page.waitForTimeout(1000)
+
+    const handles = page.locator('[data-testid="resize-handle"]')
+
+    // Verify sidebars are expanded (width > collapsed size of 45px)
+    const leftBefore = await handles.first().evaluate(
+      el => el.previousElementSibling!.getBoundingClientRect().width,
+    )
+    expect(leftBefore).toBeGreaterThan(100)
+
+    // Shrink viewport so sidebars exceed half the width (must stay above 768px mobile breakpoint)
+    const currentSize = page.viewportSize()!
+    await page.setViewportSize({ width: 900, height: currentSize.height })
+    await page.waitForTimeout(500)
+
+    // Both sidebars should be auto-collapsed (width ≈ 45px)
+    const leftAfterShrink = await handles.first().evaluate(
+      el => el.previousElementSibling!.getBoundingClientRect().width,
+    )
+    const rightAfterShrink = await handles.last().evaluate(
+      el => el.nextElementSibling!.getBoundingClientRect().width,
+    )
+    expect(leftAfterShrink).toBeLessThan(50)
+    expect(rightAfterShrink).toBeLessThan(50)
+
+    // Grow viewport back
+    await page.setViewportSize(currentSize)
+    await page.waitForTimeout(500)
+
+    // Both sidebars should auto-expand (width > 100px)
+    const leftAfterGrow = await handles.first().evaluate(
+      el => el.previousElementSibling!.getBoundingClientRect().width,
+    )
+    const rightAfterGrow = await handles.last().evaluate(
+      el => el.nextElementSibling!.getBoundingClientRect().width,
+    )
+    expect(leftAfterGrow).toBeGreaterThan(100)
+    expect(rightAfterGrow).toBeGreaterThan(100)
+  })
+})
+
 test.describe('Resizable Sidebars', () => {
   test('should render left and right panels', async ({ page, authenticatedWorkspace }) => {
     // Left sidebar should be visible (use section header testid to avoid ambiguity with breadcrumbs)

@@ -22,10 +22,10 @@ import (
 //   - Tilde paths (when homeDir is empty)
 //   - Empty or whitespace-only strings
 func SanitizePath(value, homeDir string) string {
-	// Strip control characters (< 0x20 and 0x7F).
+	// Strip control characters (< 0x20, 0x7F) and environment-variable chars ($, %).
 	var b strings.Builder
 	for _, r := range value {
-		if r < 0x20 || r == 0x7F {
+		if r < 0x20 || r == 0x7F || r == '$' || r == '%' {
 			continue
 		}
 		b.WriteRune(r)

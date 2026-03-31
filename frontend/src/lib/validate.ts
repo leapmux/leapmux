@@ -1,9 +1,9 @@
 // eslint-disable-next-line no-control-regex
-const NAME_FORBIDDEN_G = /[\x00-\x1F\x7F"\\]/g
+const NAME_FORBIDDEN_G = /[\x00-\x1F\x7F"\\$%]/g
 
 /**
  * Sanitizes and validates a name/title string.
- * Forbidden characters (control characters, " and \) are silently stripped.
+ * Forbidden characters (control characters, ", \, $, %) are silently stripped.
  * Returns the sanitized string and an error if the result is empty or exceeds 128 characters.
  */
 export function sanitizeName(name: string): { value: string, error: string | null } {
@@ -18,10 +18,10 @@ export function sanitizeName(name: string): { value: string, error: string | nul
   return { value, error }
 }
 
-// Characters forbidden in git branch names: space ~ ^ : ? * [ ] \
+// Characters forbidden in git branch names: space ~ ^ : ? * [ ] \ $ %
 // Also control characters (0x00-0x1F, 0x7F).
 // eslint-disable-next-line no-control-regex
-const BRANCH_FORBIDDEN_CHARS = /[\x00-\x1F\x7F ~^:?*[\]\\]/
+const BRANCH_FORBIDDEN_CHARS = /[\x00-\x1F\x7F ~^:?*[\]\\$%]/
 
 /**
  * Validates a git branch name according to git-check-ref-format rules.
@@ -60,6 +60,21 @@ export function validateBranchName(name: string): string | null {
  */
 export function isValidBranchName(name: string): boolean {
   return validateBranchName(name) === null
+}
+
+/**
+ * Validates a session ID for resuming an agent session.
+ * Delegates to sanitizeName for control-character and length checks,
+ * and additionally rejects input that contains forbidden characters.
+ * Returns an error message string, or null if valid.
+ */
+export function validateSessionId(value: string): string | null {
+  const { value: sanitized, error } = sanitizeName(value)
+  if (error)
+    return error
+  if (sanitized !== value)
+    return 'Session ID contains invalid characters.'
+  return null
 }
 
 const SLUG_PATTERN = /^[a-z0-9-]+$/

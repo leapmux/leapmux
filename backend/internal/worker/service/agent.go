@@ -16,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
+	"github.com/leapmux/leapmux/internal/util/validate"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -41,6 +42,11 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		var r leapmuxv1.OpenAgentRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
+			return
+		}
+
+		if err := validate.ValidateSessionID(r.GetAgentSessionId()); err != nil {
+			sendInvalidArgument(sender, err.Error())
 			return
 		}
 

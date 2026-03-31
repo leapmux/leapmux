@@ -94,6 +94,7 @@ globalStyle(':root', {
     '--lm-danger-subtle': 'rgb(253 235 233)',
     '--lm-success-subtle': 'rgb(236 247 220)',
     '--lm-warning-subtle': 'rgb(254 245 221)',
+    '--lm-icon-monochrome': 'rgb(101 99 99)',
   },
 })
 
@@ -149,6 +150,9 @@ globalStyle('[data-theme="dark"]', {
     '--lm-danger-subtle': 'rgb(50 30 28)',
     '--lm-success-subtle': 'rgb(28 38 20)',
     '--lm-warning-subtle': 'rgb(46 40 24)',
+    '--lm-icon-monochrome': 'rgb(190 187 183)',
+    '--lm-opencode-inner': '#4B4646',
+    '--lm-opencode-outer': '#F1ECEC',
   },
 })
 
@@ -161,6 +165,11 @@ globalStyle('code, pre', {
 // Prevent double background when code/pre are nested.
 globalStyle('pre code, pre pre, code pre, code code', {
   backgroundColor: 'transparent',
+})
+
+// Reduce hr margin inside dropdown menus (Oat base sets var(--space-8) = 2rem).
+globalStyle('ot-dropdown hr', {
+  margin: 'var(--space-2) 0',
 })
 
 // Remove italic from blockquotes (Oat default).

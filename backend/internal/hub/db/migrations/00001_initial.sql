@@ -121,17 +121,9 @@ CREATE INDEX idx_workspace_section_items_section ON workspace_section_items(sect
 
 -- User preferences
 CREATE TABLE user_preferences (
-    user_id                  TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    theme                    TEXT NOT NULL DEFAULT '',
-    terminal_theme           TEXT NOT NULL DEFAULT '',
-    ui_font_custom_enabled   INTEGER NOT NULL DEFAULT 0,
-    mono_font_custom_enabled INTEGER NOT NULL DEFAULT 0,
-    ui_fonts                 TEXT NOT NULL DEFAULT '[]',
-    mono_fonts               TEXT NOT NULL DEFAULT '[]',
-    diff_view                INTEGER NOT NULL DEFAULT 0,
-    turn_end_sound           INTEGER NOT NULL DEFAULT 0,
-    turn_end_sound_volume    INTEGER NOT NULL DEFAULT 100,
-    updated_at               DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    user_id    TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    prefs      TEXT NOT NULL DEFAULT '{}',
+    updated_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
 -- Cross-user Worker access grants (for workspace sharing)

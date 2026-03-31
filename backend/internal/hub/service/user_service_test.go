@@ -221,6 +221,29 @@ func TestUserService_UpdatePreferences_InvalidFontName(t *testing.T) {
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
+func TestUserService_UpdatePreferences_DebugLogging(t *testing.T) {
+	env := setupUserTest(t)
+
+	_, err := env.client.UpdatePreferences(context.Background(), authedReq(&leapmuxv1.UpdatePreferencesRequest{
+		DebugLogging: true,
+	}, env.token))
+	require.NoError(t, err)
+
+	resp, err := env.client.GetPreferences(context.Background(), authedReq(&leapmuxv1.GetPreferencesRequest{}, env.token))
+	require.NoError(t, err)
+	assert.True(t, resp.Msg.GetPreferences().GetDebugLogging())
+
+	// Disable again.
+	_, err = env.client.UpdatePreferences(context.Background(), authedReq(&leapmuxv1.UpdatePreferencesRequest{
+		DebugLogging: false,
+	}, env.token))
+	require.NoError(t, err)
+
+	resp, err = env.client.GetPreferences(context.Background(), authedReq(&leapmuxv1.GetPreferencesRequest{}, env.token))
+	require.NoError(t, err)
+	assert.False(t, resp.Msg.GetPreferences().GetDebugLogging())
+}
+
 func TestUserService_Unauthenticated(t *testing.T) {
 	env := setupUserTest(t)
 

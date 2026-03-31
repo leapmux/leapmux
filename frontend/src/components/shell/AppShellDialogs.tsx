@@ -24,7 +24,6 @@ import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { spinner } from '~/styles/animations.css'
 import { NewAgentDialog } from './NewAgentDialog'
 import { NewTerminalDialog } from './NewTerminalDialog'
-import { ResumeSessionDialog } from './ResumeSessionDialog'
 import { nextTabNumber } from './useAgentOperations'
 
 type LastTabCloseChoice = 'cancel' | 'schedule-delete' | 'close-anyway'
@@ -42,8 +41,6 @@ export interface KeyPinConfirmState {
 }
 
 interface AppShellDialogsProps {
-  showResumeDialog: boolean
-  setShowResumeDialog: (v: boolean) => void
   showNewAgentDialog: boolean
   setShowNewAgentDialog: (v: boolean) => void
   showNewTerminalDialog: boolean
@@ -82,14 +79,6 @@ interface AppShellDialogsProps {
 export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
   return (
     <>
-      <Show when={props.showResumeDialog}>
-        <ResumeSessionDialog
-          defaultWorkerId={props.getCurrentTabContext().workerId}
-          onResume={props.agentOps.handleResumeAgent}
-          onClose={() => props.setShowResumeDialog(false)}
-        />
-      </Show>
-
       <Show when={props.showNewAgentDialog}>
         <NewAgentDialog
           workspaceId={props.activeWorkspace()?.id ?? ''}

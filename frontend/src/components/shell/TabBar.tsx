@@ -77,7 +77,6 @@ interface TabBarProps {
   availableShells?: string[]
   defaultShell?: string
   onNewTerminalWithShell?: (shell: string) => void
-  onResumeSession?: () => void
   onNewAgentAdvanced?: () => void
   onNewTerminalAdvanced?: () => void
   newAgentLoadingProvider?: AgentProvider | null
@@ -301,9 +300,6 @@ export const TabBar: Component<TabBarProps> = (props) => {
       </Show>
       <button role="menuitem" onClick={() => props.onNewAgentAdvanced?.()}>
         New agent...
-      </button>
-      <button role="menuitem" onClick={() => props.onResumeSession?.()}>
-        Resume an existing session
       </button>
       <hr />
       <li class={menuSectionHeader}>Terminals</li>

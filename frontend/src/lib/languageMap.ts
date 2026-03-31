@@ -46,6 +46,8 @@ const EXT_TO_LANG: Record<string, string> = {
   // Diff
   diff: 'diff',
   patch: 'diff',
+  // Logs (ANSI escape highlighting)
+  log: 'ansi',
   // C/C++
   c: 'c',
   h: 'c',

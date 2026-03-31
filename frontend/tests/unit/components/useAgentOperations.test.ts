@@ -68,8 +68,7 @@ function setup() {
     activeWorkspace: () => ({ id: 'ws-1' } as Workspace),
     getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp' }),
     setShowNewAgentDialog: vi.fn(),
-    setNewAgentLoading: vi.fn(),
-    setShowResumeDialog: vi.fn(),
+    setNewAgentLoadingProvider: vi.fn(),
   })
 
   return { agentStore, agentSessionStore, controlStore, tabStore, layoutStore, chatStore, ops }

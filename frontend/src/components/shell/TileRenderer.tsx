@@ -64,7 +64,6 @@ interface TileRendererOpts {
   isMobile: () => boolean
   toggleLeftSidebar: () => void
   toggleRightSidebar: () => void
-  setShowResumeDialog: (v: boolean) => void
   setShowNewAgentDialog: (v: boolean) => void
   setShowNewTerminalDialog: (v: boolean) => void
   focusEditorRef: { current: (() => void) | undefined }
@@ -105,7 +104,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
     isMobile,
     toggleLeftSidebar,
     toggleRightSidebar,
-    setShowResumeDialog,
     setShowNewAgentDialog,
     setShowNewTerminalDialog,
     focusEditorRef,
@@ -158,7 +156,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
       availableShells={termOps.availableShells()}
       defaultShell={termOps.defaultShell()}
       onNewTerminalWithShell={termOps.handleOpenTerminalWithShell}
-      onResumeSession={() => setShowResumeDialog(true)}
       onNewAgentAdvanced={() => setShowNewAgentDialog(true)}
       onNewTerminalAdvanced={() => setShowNewTerminalDialog(true)}
       newAgentLoadingProvider={newAgentLoadingProvider()}
