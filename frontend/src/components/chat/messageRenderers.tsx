@@ -23,6 +23,7 @@ import {
   agentErrorRenderer,
   agentRenamedRenderer,
   apiRetryRenderer,
+  codexMcpStartupStatusRenderer,
   compactBoundaryRenderer,
   compactingRenderer,
   contextClearedRenderer,
@@ -341,6 +342,7 @@ const KIND_RENDERERS: Record<string, (parsed: unknown, role: MessageRole, contex
       ?? compactingRenderer.render(parsed, role, context)
       ?? agentErrorRenderer.render(parsed, role, context)
       ?? agentRenamedRenderer.render(parsed, role, context)
+      ?? codexMcpStartupStatusRenderer.render(parsed, role, context)
       ?? rateLimitRenderer.render(parsed, role, context)
       ?? apiRetryRenderer.render(parsed, role, context)
       ?? compactBoundaryRenderer.render(parsed, role, context)
@@ -405,6 +407,7 @@ function getFallbackRenderers(): MessageContentRenderer[] {
       compactingRenderer,
       agentErrorRenderer,
       agentRenamedRenderer,
+      codexMcpStartupStatusRenderer,
       rateLimitRenderer,
       apiRetryRenderer,
       compactBoundaryRenderer,

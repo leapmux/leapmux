@@ -448,6 +448,9 @@ const codexPlugin: ProviderPlugin = {
       return { kind: 'notification' }
     }
 
+    if (parent.method === 'mcpServer/startupStatus/updated')
+      return { kind: 'notification' }
+
     // LeapMux notification types
     if (type === 'settings_changed' || type === 'context_cleared'
       || type === 'interrupted' || type === 'agent_error' || type === 'agent_renamed' || type === 'compacting') {

@@ -188,6 +188,99 @@ export const rateLimitRenderer: MessageContentRenderer = {
   },
 }
 
+function codexStartupStateAndError(status: unknown, fallbackError: unknown): { state: string, error: string } {
+  if (typeof status === 'string') {
+    return {
+      state: status,
+      error: typeof fallbackError === 'string' ? fallbackError : '',
+    }
+  }
+
+  if (isObject(status)) {
+    return {
+      state: typeof status.state === 'string' ? status.state : '',
+      error: typeof status.error === 'string' ? status.error : typeof fallbackError === 'string' ? fallbackError : '',
+    }
+  }
+
+  return {
+    state: '',
+    error: typeof fallbackError === 'string' ? fallbackError : '',
+  }
+}
+
+function formatCodexStartupStatus(parsed: Record<string, unknown>): string | null {
+  if (parsed.method !== 'mcpServer/startupStatus/updated')
+    return null
+
+  const params = isObject(parsed.params) ? parsed.params as Record<string, unknown> : undefined
+  const name = typeof params?.name === 'string' ? params.name.trim() : ''
+  const { state, error } = codexStartupStateAndError(params?.status, params?.error)
+  const normalizedState = state.trim()
+  const normalizedError = error.trim()
+  const suffix = normalizedError ? ` (${normalizedError})` : ''
+
+  switch (normalizedState) {
+    case 'starting':
+      return name ? `Starting MCP server: ${name}` : 'Starting MCP server'
+    case 'ready':
+      return name ? `MCP server ready: ${name}` : 'MCP server ready'
+    case 'failed':
+      return name ? `MCP server failed to start: ${name}${suffix}` : `MCP server failed to start${suffix}`
+    case 'cancelled':
+      return name ? `MCP server startup cancelled: ${name}${suffix}` : `MCP server startup cancelled${suffix}`
+    default: {
+      const stateLabel = normalizedState || 'unknown'
+      if (name)
+        return `MCP server status update: ${name} (${stateLabel})${suffix}`
+      return `MCP server status update (${stateLabel})${suffix}`
+    }
+  }
+}
+
+interface CodexStartupGroupEntry {
+  groupKey: string
+  prefix: string
+  entry: string
+}
+
+function codexStartupGroupEntry(parsed: Record<string, unknown>): CodexStartupGroupEntry | null {
+  if (parsed.method !== 'mcpServer/startupStatus/updated')
+    return null
+
+  const params = isObject(parsed.params) ? parsed.params as Record<string, unknown> : undefined
+  const name = typeof params?.name === 'string' ? params.name.trim() : ''
+  const { state, error } = codexStartupStateAndError(params?.status, params?.error)
+  const normalizedState = state.trim() || 'unknown'
+  const normalizedError = error.trim()
+  const baseName = name || 'unknown'
+  const errorSuffix = normalizedError ? ` (${normalizedError})` : ''
+
+  switch (normalizedState) {
+    case 'starting':
+      return { groupKey: 'starting', prefix: 'Starting MCP server', entry: baseName }
+    case 'ready':
+      return { groupKey: 'ready', prefix: 'MCP server ready', entry: baseName }
+    case 'failed':
+      return { groupKey: 'failed', prefix: 'MCP server failed to start', entry: `${baseName}${errorSuffix}` }
+    case 'cancelled':
+      return { groupKey: 'cancelled', prefix: 'MCP server startup cancelled', entry: `${baseName}${errorSuffix}` }
+    default:
+      return { groupKey: `status:${normalizedState}`, prefix: `MCP server status update (${normalizedState})`, entry: `${baseName}${errorSuffix}` }
+  }
+}
+
+export const codexMcpStartupStatusRenderer: MessageContentRenderer = {
+  render(parsed, _role, _context) {
+    if (!isObject(parsed))
+      return null
+    const label = formatCodexStartupStatus(parsed)
+    if (!label)
+      return null
+    return <div class={controlResponseMessage}>{label}</div>
+  },
+}
+
 /** Render Codex native rate limit notification. */
 function renderCodexRateLimits(parsed: Record<string, unknown>): JSXElement {
   const params = parsed.params as Record<string, unknown> | undefined
@@ -357,6 +450,21 @@ function formatCompactionTokens(preTokens: number | undefined, tokensSaved: numb
 export function renderNotificationThread(messages: unknown[]): JSXElement {
   type RenderEntry = { kind: 'text', text: string } | { kind: 'divider', text: string, loading?: boolean }
   const entries: RenderEntry[] = []
+  const startupGroupOrder: string[] = []
+  const startupGroups = new Map<string, { prefix: string, entries: string[] }>()
+
+  const flushStartupGroups = () => {
+    if (startupGroupOrder.length === 0)
+      return
+    for (const key of startupGroupOrder) {
+      const group = startupGroups.get(key)
+      if (!group || group.entries.length === 0)
+        continue
+      entries.push({ kind: 'text', text: `${group.prefix}: ${group.entries.join(', ')}` })
+    }
+    startupGroups.clear()
+    startupGroupOrder.length = 0
+  }
 
   for (const msg of messages) {
     if (!isObject(msg))
@@ -364,6 +472,19 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
     const m = msg as Record<string, unknown>
     const t = m.type as string | undefined
     const st = m.subtype as string | undefined
+
+    const startup = codexStartupGroupEntry(m)
+    if (startup) {
+      if (!startupGroups.has(startup.groupKey)) {
+        startupGroups.set(startup.groupKey, { prefix: startup.prefix, entries: [startup.entry] })
+        startupGroupOrder.push(startup.groupKey)
+      } else {
+        startupGroups.get(startup.groupKey)!.entries.push(startup.entry)
+      }
+      continue
+    }
+
+    flushStartupGroups()
 
     if (m.method === 'account/rateLimits/updated') {
       const params = m.params as Record<string, unknown> | undefined
@@ -434,6 +555,8 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
       entries.push({ kind: 'divider', text: `Context microcompacted${formatCompactionTokens(microcompactPreTokens, microcompactTokensSaved)}` })
     }
   }
+
+  flushStartupGroups()
 
   const elements: JSXElement[] = []
   let pendingText: string[] = []

@@ -966,6 +966,9 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 		Subtype string                    `json:"subtype"`
 		Method  string                    `json:"method"`
 		Changes map[string]settingsChange `json:"changes,omitempty"`
+		Params  *struct {
+			Name string `json:"name,omitempty"`
+		} `json:"params,omitempty"`
 		RLInfo  *struct {
 			RateLimitType string `json:"rateLimitType"`
 		} `json:"rate_limit_info,omitempty"`
@@ -1002,6 +1005,8 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 		raw json.RawMessage
 	}
 	var keepAll []indexedRaw
+
+	startupStatusByServer := map[string]indexedRaw{}
 
 	for i, raw := range messages {
 		var env envelope
@@ -1055,6 +1060,13 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 			// Codex native rate limit notification: deduplicate, keep last.
 			codexRateLimitRaw = raw
 			codexRateLimitLastIdx = i
+
+		case env.Method == "mcpServer/startupStatus/updated":
+			key := "unknown"
+			if env.Params != nil && env.Params.Name != "" {
+				key = env.Params.Name
+			}
+			startupStatusByServer[key] = indexedRaw{idx: i, raw: raw}
 
 		case env.Type == "compacting":
 			latestStatusRaw = raw
@@ -1124,6 +1136,10 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 
 	if codexRateLimitLastIdx >= 0 {
 		entries = append(entries, indexedRaw{codexRateLimitLastIdx, codexRateLimitRaw})
+	}
+
+	for _, startupRaw := range startupStatusByServer {
+		entries = append(entries, startupRaw)
 	}
 
 	if statusLastIdx >= 0 {

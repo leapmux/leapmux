@@ -89,6 +89,24 @@ describe('codex classify', () => {
     expect(result).toEqual({ kind: 'notification' })
   })
 
+  it('classifies MCP startup starting notifications as visible', () => {
+    const parent = {
+      method: 'mcpServer/startupStatus/updated',
+      params: { name: 'codex_apps', status: 'starting', error: null },
+    }
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification' })
+  })
+
+  it('classifies MCP startup terminal notifications as visible', () => {
+    for (const status of ['ready', 'failed', 'cancelled']) {
+      const parent = {
+        method: 'mcpServer/startupStatus/updated',
+        params: { name: 'codex_apps', status, error: status === 'failed' ? 'boom' : null },
+      }
+      expect(plugin.classify(input(parent))).toEqual({ kind: 'notification' })
+    }
+  })
+
   it('classifies compacting as notification', () => {
     const parent = { type: 'compacting' }
     const result = plugin.classify(input(parent))

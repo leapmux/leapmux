@@ -36,7 +36,12 @@ func types(t *testing.T, msgs []json.RawMessage) []string {
 	t.Helper()
 	result := make([]string, len(msgs))
 	for i, m := range msgs {
-		result[i] = msgType(t, m)
+		parsed := parseRaw(t, m)
+		if method, ok := parsed["method"].(string); ok && method != "" {
+			result[i] = method
+			continue
+		}
+		result[i] = parsed["type"].(string)
 	}
 	return result
 }
@@ -46,6 +51,17 @@ func settingsChanged(old, new string) map[string]interface{} {
 		"type": "settings_changed",
 		"changes": map[string]interface{}{
 			"model": map[string]interface{}{"old": old, "new": new},
+		},
+	}
+}
+
+func codexStartupStatus(name, status string, errorText interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		"method": "mcpServer/startupStatus/updated",
+		"params": map[string]interface{}{
+			"name":   name,
+			"status": status,
+			"error":  errorText,
 		},
 	}
 }
@@ -333,4 +349,63 @@ func TestConsolidateNotificationThread_CompactingDroppedByBoundary(t *testing.T)
 func TestConsolidateNotificationThread_Empty(t *testing.T) {
 	result := consolidateNotificationThread(nil)
 	assert.Equal(t, []json.RawMessage{}, result)
+}
+
+func TestConsolidateNotificationThread_CodexMcpStartupStatus(t *testing.T) {
+	t.Run("starting then ready collapses to ready", func(t *testing.T) {
+		msgs := []json.RawMessage{
+			raw(t, codexStartupStatus("codex_apps", "starting", nil)),
+			raw(t, codexStartupStatus("codex_apps", "ready", nil)),
+		}
+		result := consolidateNotificationThread(msgs)
+		require.Len(t, result, 1)
+		m := parseRaw(t, result[0])
+		assert.Equal(t, "mcpServer/startupStatus/updated", m["method"])
+		params := m["params"].(map[string]interface{})
+		assert.Equal(t, "codex_apps", params["name"])
+		assert.Equal(t, "ready", params["status"])
+	})
+
+	t.Run("starting then failed collapses to failed", func(t *testing.T) {
+		msgs := []json.RawMessage{
+			raw(t, codexStartupStatus("codex_apps", "starting", nil)),
+			raw(t, codexStartupStatus("codex_apps", "failed", "boom")),
+		}
+		result := consolidateNotificationThread(msgs)
+		require.Len(t, result, 1)
+		params := parseRaw(t, result[0])["params"].(map[string]interface{})
+		assert.Equal(t, "failed", params["status"])
+		assert.Equal(t, "boom", params["error"])
+	})
+
+	t.Run("starting then cancelled collapses to cancelled", func(t *testing.T) {
+		msgs := []json.RawMessage{
+			raw(t, codexStartupStatus("codex_apps", "starting", nil)),
+			raw(t, codexStartupStatus("codex_apps", "cancelled", nil)),
+		}
+		result := consolidateNotificationThread(msgs)
+		require.Len(t, result, 1)
+		params := parseRaw(t, result[0])["params"].(map[string]interface{})
+		assert.Equal(t, "cancelled", params["status"])
+	})
+
+	t.Run("different servers keep separate latest entries in order", func(t *testing.T) {
+		msgs := []json.RawMessage{
+			raw(t, codexStartupStatus("codex_apps", "starting", nil)),
+			raw(t, map[string]interface{}{"type": "context_cleared"}),
+			raw(t, codexStartupStatus("other", "starting", nil)),
+			raw(t, codexStartupStatus("codex_apps", "ready", nil)),
+			raw(t, codexStartupStatus("other", "failed", "boom")),
+		}
+		result := consolidateNotificationThread(msgs)
+		assert.Equal(t, []string{"context_cleared", "mcpServer/startupStatus/updated", "mcpServer/startupStatus/updated"}, types(t, result))
+
+		firstParams := parseRaw(t, result[1])["params"].(map[string]interface{})
+		secondParams := parseRaw(t, result[2])["params"].(map[string]interface{})
+		assert.Equal(t, "codex_apps", firstParams["name"])
+		assert.Equal(t, "ready", firstParams["status"])
+		assert.Equal(t, "other", secondParams["name"])
+		assert.Equal(t, "failed", secondParams["status"])
+		assert.Equal(t, "boom", secondParams["error"])
+	})
 }
