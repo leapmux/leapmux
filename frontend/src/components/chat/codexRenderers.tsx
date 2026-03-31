@@ -37,7 +37,7 @@ import {
 import { isObject, relativizePath } from './messageUtils'
 import { formatDuration } from './rendererUtils'
 import { renderToolDetail } from './toolDetailRenderers'
-import { renderBashHighlight, ToolResultMessage, ToolUseLayout } from './toolRenderers'
+import { EmptyTodoLayout, renderBashHighlight, ToolResultMessage, ToolUseLayout } from './toolRenderers'
 import {
   commandStreamContainer,
   commandStreamInteraction,
@@ -359,16 +359,8 @@ export function codexTurnPlanRenderer(parsed: unknown, _role: MessageRole, conte
     return null
   const todos = codexPlanToTodos(plan)
 
-  if (todos.length === 0) {
-    return (
-      <ToolUseLayout
-        icon={ListTodo}
-        toolName="Plan Update"
-        title="To-do list cleared"
-        context={context}
-      />
-    )
-  }
+  if (todos.length === 0)
+    return <EmptyTodoLayout toolName="Plan Update" context={context} />
 
   const explanation = typeof params.explanation === 'string' ? params.explanation.trim() : ''
   const label = `${todos.length} task${todos.length === 1 ? '' : 's'}${explanation ? ` - ${explanation}` : ''}`

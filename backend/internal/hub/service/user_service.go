@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/validate"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -164,7 +165,7 @@ func (s *UserService) GetPreferences(ctx context.Context, req *connect.Request[l
 			MonoFonts:             sp.MonoFonts,
 			DiffView:              leapmuxv1.DiffView(sp.DiffView),
 			TurnEndSound:          leapmuxv1.TurnEndSound(sp.TurnEndSound),
-			TurnEndSoundVolume:    intPtrToUint32Ptr(sp.TurnEndSoundVolume),
+			TurnEndSoundVolume:    ptrconv.Convert[int, uint32](sp.TurnEndSoundVolume),
 			DebugLogging:          sp.DebugLogging,
 		},
 	}), nil
@@ -215,7 +216,7 @@ func (s *UserService) UpdatePreferences(ctx context.Context, req *connect.Reques
 		MonoFonts:             monoFonts,
 		DiffView:              int(req.Msg.GetDiffView()),
 		TurnEndSound:          int(req.Msg.GetTurnEndSound()),
-		TurnEndSoundVolume:    uint32PtrToIntPtr(req.Msg.TurnEndSoundVolume),
+		TurnEndSoundVolume:    ptrconv.Convert[uint32, int](req.Msg.TurnEndSoundVolume),
 		DebugLogging:          req.Msg.GetDebugLogging(),
 	}
 
@@ -247,18 +248,3 @@ func (s *UserService) UpdatePreferences(ctx context.Context, req *connect.Reques
 	}), nil
 }
 
-func intPtrToUint32Ptr(v *int) *uint32 {
-	if v == nil {
-		return nil
-	}
-	u := uint32(*v)
-	return &u
-}
-
-func uint32PtrToIntPtr(v *uint32) *int {
-	if v == nil {
-		return nil
-	}
-	i := int(*v)
-	return &i
-}

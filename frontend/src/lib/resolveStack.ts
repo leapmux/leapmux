@@ -1,6 +1,9 @@
 import { SourceMapConsumer } from 'source-map-js'
 
-/** Cache of parsed source map consumers (or in-flight promises) keyed by JS file URL. */
+/**
+ * Cache of parsed source map consumers (or in-flight promises) keyed by JS file URL.
+ * Unbounded, but practically limited to the small set of static JS bundles produced by Vite.
+ */
 const consumerCache = new Map<string, Promise<SourceMapConsumer | null>>()
 
 /** Regex to parse stack frames like "name@url:line:col" or "at name (url:line:col)". */

@@ -10,7 +10,7 @@ import { TodoList } from '~/components/todo/TodoList'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { todosToMarkdown } from '~/lib/messageParser'
 import { getAssistantContent, isObject } from './messageUtils'
-import { ToolUseLayout } from './toolRenderers'
+import { EmptyTodoLayout, ToolUseLayout } from './toolRenderers'
 import {
   toolInputSummary,
 } from './toolStyles.css'
@@ -29,16 +29,8 @@ export function renderTodoWrite(toolUse: Record<string, unknown>, context?: Rend
 
   const count = todos.length
 
-  if (count === 0) {
-    return (
-      <ToolUseLayout
-        icon={ListTodo}
-        toolName="TodoWrite"
-        title="To-do list cleared"
-        context={context}
-      />
-    )
-  }
+  if (count === 0)
+    return <EmptyTodoLayout toolName="TodoWrite" context={context} />
 
   const label = `${count} task${count === 1 ? '' : 's'}`
   const md = todosToMarkdown(todos)

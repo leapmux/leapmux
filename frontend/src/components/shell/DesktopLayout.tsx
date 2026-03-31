@@ -65,7 +65,6 @@ interface DesktopLayoutProps {
   fileDropDisabled?: boolean
 }
 
-/** Custom drag handler for sidebar resize handles. */
 function useSidebarDrag(opts: {
   getWidth: () => number
   setWidth: (px: number) => void
@@ -207,7 +206,7 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
   })
 
   // --- Auto-collapse / expand on viewport resize ---
-  const handleViewportResize = () => {
+  const applyViewportResize = () => {
     const newWidth = window.innerWidth
     const halfViewport = newWidth / 2
 
@@ -259,9 +258,21 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
     }
   }
 
+  let resizeRafId: number | null = null
+  const handleViewportResize = () => {
+    if (resizeRafId !== null)
+      return
+    resizeRafId = requestAnimationFrame(() => {
+      resizeRafId = null
+      applyViewportResize()
+    })
+  }
+
   window.addEventListener('resize', handleViewportResize)
   onCleanup(() => {
     window.removeEventListener('resize', handleViewportResize)
+    if (resizeRafId !== null)
+      cancelAnimationFrame(resizeRafId)
     if (sidebarSaveTimer) {
       clearTimeout(sidebarSaveTimer)
       doSaveSidebarState()

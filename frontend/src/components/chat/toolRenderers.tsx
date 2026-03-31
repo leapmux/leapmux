@@ -92,6 +92,11 @@ export function ControlResponseTag(props: { response?: { action: string, comment
   )
 }
 
+/** Renders a "To-do list cleared" placeholder for empty todo/plan tool_use messages. */
+export function EmptyTodoLayout(props: { toolName: string, context?: RenderContext }): JSX.Element {
+  return <ToolUseLayout icon={ListTodo} toolName={props.toolName} title="To-do list cleared" context={props.context} />
+}
+
 /** Shared layout for tool_use messages. Renders header boilerplate and optional body. */
 export function ToolUseLayout(props: {
   /** Lucide icon component (e.g. ListTodo, Vote, SquareTerminal). */
