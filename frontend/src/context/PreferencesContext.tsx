@@ -253,7 +253,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
         setMonoFonts(p.monoFonts)
         setAccountDiffView(diffViewFromProto(p.diffView))
         setAccountTurnEndSound(turnEndSoundFromProto(p.turnEndSound))
-        setAccountTurnEndSoundVolume(p.turnEndSoundVolume || 100)
+        setAccountTurnEndSoundVolume(p.turnEndSoundVolume ?? 100)
         setAccountDebugLogging(p.debugLogging)
       }
     }

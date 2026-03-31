@@ -3,6 +3,7 @@ import type { Session } from '~/lib/noise'
 import { create, toBinary } from '@bufbuild/protobuf'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  ChannelMessageFlags,
   ChannelMessageSchema,
   EncryptionMode,
   InnerMessageSchema,
@@ -161,6 +162,74 @@ describe('channelManager handleWebSocketClose', () => {
     // openChannel should reject with a transport error, NOT hang forever.
     await expect(openPromise).rejects.toThrow(ChannelError)
     await expect(openPromise).rejects.toThrow('channel disconnected')
+  })
+})
+
+describe('channelManager closeChannel during claim', () => {
+  it('should reject pending claim when closeChannel is called during claim exchange', async () => {
+    let ws: MockWebSocket | null = null
+    const transport = makeMockTransport(() => {
+      ws = new MockWebSocket()
+      return ws
+    })
+
+    const cm = new ChannelManager(transport, {
+      classicHandshake1: (_rs: Uint8Array) => ({
+        message1: new Uint8Array(48),
+        handshakeState: {} as any,
+      }),
+      classicHandshake2: (_hs: any, _payload: Uint8Array) => makeMockSession(),
+    })
+
+    const openPromise = cm.openChannel('worker-1')
+
+    // Let openChannel progress to sendUserIdClaim (claim pending).
+    await new Promise(r => setTimeout(r, 10))
+
+    // Close the channel while the claim is still pending.
+    await cm.closeChannel('ch-1')
+
+    // openChannel should reject, NOT hang forever.
+    await expect(openPromise).rejects.toThrow(ChannelError)
+    await expect(openPromise).rejects.toThrow('channel closed')
+  })
+})
+
+describe('channelManager CLOSE sentinel during claim', () => {
+  it('should reject pending claim when server sends CLOSE during claim exchange', async () => {
+    let ws: MockWebSocket | null = null
+    const transport = makeMockTransport(() => {
+      ws = new MockWebSocket()
+      return ws
+    })
+
+    const cm = new ChannelManager(transport, {
+      classicHandshake1: (_rs: Uint8Array) => ({
+        message1: new Uint8Array(48),
+        handshakeState: {} as any,
+      }),
+      classicHandshake2: (_hs: any, _payload: Uint8Array) => makeMockSession(),
+    })
+
+    const openPromise = cm.openChannel('worker-1')
+
+    // Let openChannel progress to sendUserIdClaim (claim pending).
+    await new Promise(r => setTimeout(r, 10))
+
+    // Simulate server sending a CLOSE sentinel for the channel.
+    const closeMsg = create(ChannelMessageSchema, {
+      channelId: 'ch-1',
+      flags: ChannelMessageFlags.CLOSE,
+    })
+    const msgBytes = toBinary(ChannelMessageSchema, closeMsg)
+    const frame = new Uint8Array(4 + msgBytes.length)
+    new DataView(frame.buffer).setUint32(0, msgBytes.length)
+    frame.set(msgBytes, 4)
+    ws!.dispatchEvent(new MessageEvent('message', { data: frame.buffer }))
+
+    // openChannel should reject, NOT hang forever.
+    await expect(openPromise).rejects.toThrow(ChannelError)
+    await expect(openPromise).rejects.toThrow('channel closed by server')
   })
 })
 

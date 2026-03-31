@@ -25,7 +25,7 @@ type storedPreferences struct {
 	MonoFonts             []string `json:"monoFonts,omitempty"`
 	DiffView              int      `json:"diffView,omitempty"`
 	TurnEndSound          int      `json:"turnEndSound,omitempty"`
-	TurnEndSoundVolume    int      `json:"turnEndSoundVolume,omitempty"`
+	TurnEndSoundVolume    *int     `json:"turnEndSoundVolume,omitempty"`
 	DebugLogging          bool     `json:"debugLogging,omitempty"`
 }
 
@@ -164,7 +164,7 @@ func (s *UserService) GetPreferences(ctx context.Context, req *connect.Request[l
 			MonoFonts:             sp.MonoFonts,
 			DiffView:              leapmuxv1.DiffView(sp.DiffView),
 			TurnEndSound:          leapmuxv1.TurnEndSound(sp.TurnEndSound),
-			TurnEndSoundVolume:    uint32(sp.TurnEndSoundVolume),
+			TurnEndSoundVolume:    intPtrToUint32Ptr(sp.TurnEndSoundVolume),
 			DebugLogging:          sp.DebugLogging,
 		},
 	}), nil
@@ -215,7 +215,7 @@ func (s *UserService) UpdatePreferences(ctx context.Context, req *connect.Reques
 		MonoFonts:             monoFonts,
 		DiffView:              int(req.Msg.GetDiffView()),
 		TurnEndSound:          int(req.Msg.GetTurnEndSound()),
-		TurnEndSoundVolume:    int(req.Msg.GetTurnEndSoundVolume()),
+		TurnEndSoundVolume:    uint32PtrToIntPtr(req.Msg.TurnEndSoundVolume),
 		DebugLogging:          req.Msg.GetDebugLogging(),
 	}
 
@@ -241,8 +241,24 @@ func (s *UserService) UpdatePreferences(ctx context.Context, req *connect.Reques
 			MonoFonts:             req.Msg.GetMonoFonts(),
 			DiffView:              req.Msg.GetDiffView(),
 			TurnEndSound:          req.Msg.GetTurnEndSound(),
-			TurnEndSoundVolume:    req.Msg.GetTurnEndSoundVolume(),
+			TurnEndSoundVolume:    req.Msg.TurnEndSoundVolume,
 			DebugLogging:          req.Msg.GetDebugLogging(),
 		},
 	}), nil
+}
+
+func intPtrToUint32Ptr(v *int) *uint32 {
+	if v == nil {
+		return nil
+	}
+	u := uint32(*v)
+	return &u
+}
+
+func uint32PtrToIntPtr(v *uint32) *int {
+	if v == nil {
+		return nil
+	}
+	i := int(*v)
+	return &i
 }

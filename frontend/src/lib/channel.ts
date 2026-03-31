@@ -309,6 +309,11 @@ export class ChannelManager {
     ch.streamListeners.clear()
     ch.reassembly.clear()
 
+    // Reject pending claim verification.
+    ch.claimReject?.(new ChannelError('client', 'channel closed'))
+    ch.claimResolve = undefined
+    ch.claimReject = undefined
+
     this.channels.delete(channelId)
 
     this.notifyStateChange()
@@ -718,6 +723,9 @@ export class ChannelManager {
       }
       ch.streamListeners.clear()
       ch.reassembly.clear()
+      ch.claimReject?.(new ChannelError('transport', 'channel closed by server'))
+      ch.claimResolve = undefined
+      ch.claimReject = undefined
       ch.closed = true
       this.channels.delete(channelId)
       this.notifyStateChange()

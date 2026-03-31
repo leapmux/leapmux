@@ -63,7 +63,7 @@ message UpdatePreferencesRequest {
   bool mono_font_custom_enabled = 6;
   DiffView diff_view = 7;
   TurnEndSound turn_end_sound = 8;
-  uint32 turn_end_sound_volume = 9;
+  optional uint32 turn_end_sound_volume = 9;
   bool debug_logging = 10;
 }
 
@@ -88,6 +88,6 @@ message UserPreferences {
   bool mono_font_custom_enabled = 6;
   DiffView diff_view = 7;
   TurnEndSound turn_end_sound = 8;
-  uint32 turn_end_sound_volume = 9;
+  optional uint32 turn_end_sound_volume = 9;
   bool debug_logging = 10;
 }
