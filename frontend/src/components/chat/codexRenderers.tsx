@@ -366,8 +366,17 @@ export function codexTurnPlanRenderer(parsed: unknown, _role: MessageRole, conte
   if (!Array.isArray(plan))
     return null
   const todos = codexPlanToTodos(plan)
-  if (todos.length === 0)
-    return null
+
+  if (todos.length === 0) {
+    return (
+      <ToolUseLayout
+        icon={ListTodo}
+        toolName="Plan Update"
+        title="To-do list cleared"
+        context={context}
+      />
+    )
+  }
 
   const explanation = typeof params.explanation === 'string' ? params.explanation.trim() : ''
   const label = `${todos.length} task${todos.length === 1 ? '' : 's'}${explanation ? ` - ${explanation}` : ''}`

@@ -28,8 +28,19 @@ export function renderTodoWrite(toolUse: Record<string, unknown>, context?: Rend
   }))
 
   const count = todos.length
-  const label = `${count} task${count === 1 ? '' : 's'}`
 
+  if (count === 0) {
+    return (
+      <ToolUseLayout
+        icon={ListTodo}
+        toolName="TodoWrite"
+        title="To-do list cleared"
+        context={context}
+      />
+    )
+  }
+
+  const label = `${count} task${count === 1 ? '' : 's'}`
   const md = todosToMarkdown(todos)
   const { copied, copy } = useCopyButton(() => md)
   const reply = context?.onReply ? () => context.onReply!(md) : undefined

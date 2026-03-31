@@ -357,8 +357,16 @@ export function opencodeResultDividerRenderer(parsed: unknown): JSX.Element | nu
 export function opencodePlanRenderer(toolUse: Record<string, unknown>, _role: MessageRole, context?: RenderContext): JSX.Element {
   const entries = toolUse.entries as Array<{ priority?: string, status?: string, content: string }> | undefined
 
-  if (!entries || entries.length === 0)
-    return <></>
+  if (!entries || entries.length === 0) {
+    return (
+      <ToolUseLayout
+        icon={ListTodo}
+        toolName="Plan"
+        title="To-do list cleared"
+        context={context}
+      />
+    )
+  }
 
   const todos = entries.map(e => ({
     content: e.content,
