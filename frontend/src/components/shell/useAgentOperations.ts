@@ -52,7 +52,6 @@ export interface UseAgentOperationsProps {
   getCurrentTabContext: () => { workerId: string, workingDir: string }
   setShowNewAgentDialog: (show: boolean) => void
   setNewAgentLoadingProvider: (provider: AgentProvider | null) => void
-  setShowResumeDialog: (show: boolean) => void
   persistLayout?: () => void
   focusEditor?: () => void
   forceScrollToBottom?: () => void
@@ -158,25 +157,6 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
     finally {
       props.setNewAgentLoadingProvider(null)
-    }
-  }
-
-  // Resume an agent from an existing session ID
-  const handleResumeAgent = async (sessionId: string, workerId: string) => {
-    if (!props.isActiveWorkspaceMutatable())
-      return
-    const ws = props.activeWorkspace()
-    if (!ws)
-      return
-    try {
-      const ctx = props.getCurrentTabContext()
-      await openAgentInWorkspace(ws.id, workerId, ctx.workingDir || '~', sessionId)
-    }
-    catch (err) {
-      showWarnToast('Failed to resume session', err)
-    }
-    finally {
-      props.setShowResumeDialog(false)
     }
   }
 
@@ -392,7 +372,6 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     loadAvailableProviders,
     openAgentInWorkspace,
     handleOpenAgent,
-    handleResumeAgent,
     handleControlResponse,
     handleModelOrEffortChange,
     handleInterrupt,

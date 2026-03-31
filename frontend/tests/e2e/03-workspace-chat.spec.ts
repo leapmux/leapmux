@@ -99,7 +99,6 @@ test.describe('Workspace Chat', () => {
     // so scope assertions to the visible popover.
     const openMenu = page.locator('menu[popover]:visible')
     await expect(openMenu.getByText('Agents', { exact: true })).toBeVisible()
-    await expect(openMenu.getByRole('menuitem', { name: 'Resume an existing session' })).toBeVisible()
     await expect(openMenu.getByText('Terminals', { exact: true })).toBeVisible()
 
     // Click a shell item to create a terminal tab
@@ -140,13 +139,14 @@ test.describe('Workspace Chat', () => {
 
     // Open the dropdown
     await page.locator('[data-testid="tab-more-menu"]').click()
-    await expect(page.getByRole('menuitem', { name: 'Resume an existing session' })).toBeVisible()
+    const openMenu = page.locator('menu[popover]:visible')
+    await expect(openMenu.getByText('Agents', { exact: true })).toBeVisible()
 
     // Press Escape to dismiss the dropdown
     await page.keyboard.press('Escape')
 
     // Dropdown should be closed
-    await expect(page.getByRole('menuitem', { name: 'Resume an existing session' })).not.toBeVisible()
+    await expect(openMenu.getByText('Agents', { exact: true })).not.toBeVisible()
   })
 
   test('should truncate long tab titles', async ({ page, authenticatedWorkspace }) => {

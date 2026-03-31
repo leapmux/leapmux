@@ -38,11 +38,10 @@ test.describe('TabBar Improvements', () => {
 
     // Scope to the visible popover menu (TabBar renders items in multiple responsive menus)
     const openMenu = page.locator('menu[popover]:visible')
-    // Verify "Agents" label and "Resume an existing session" item
+    // Verify "Agents" and "Terminals" section labels
     await expect(openMenu.getByText('Agents', { exact: true })).toBeVisible()
-    await expect(openMenu.getByRole('menuitem', { name: 'Resume an existing session' })).toBeVisible()
 
-    // Verify separator and "Terminals" label are visible
+    // Verify "Terminals" label is visible
     await expect(openMenu.getByText('Terminals', { exact: true })).toBeVisible()
 
     // Close the dropdown
@@ -75,34 +74,6 @@ test.describe('TabBar Improvements', () => {
     }
     // If no shells found, close menu and skip
     await page.keyboard.press('Escape')
-  })
-
-  test('should open and validate resume session dialog', async ({ page, authenticatedWorkspace }) => {
-    // Open the more menu and click "Resume an existing session"
-    await page.locator('[data-testid="tab-more-menu"]').click()
-    await page.getByRole('menuitem', { name: 'Resume an existing session' }).click()
-
-    // Verify dialog appears
-    await expect(page.locator('[data-testid="resume-session-id-input"]')).toBeVisible()
-    await expect(page.locator('[data-testid="resume-session-submit"]')).toBeVisible()
-
-    // Enter invalid characters - verify validation error
-    await page.locator('[data-testid="resume-session-id-input"]').fill('invalid chars!@#')
-    await expect(page.getByText('Only letters, numbers, dashes, and underscores are allowed')).toBeVisible()
-
-    // Resume button should be disabled with invalid input
-    await expect(page.locator('[data-testid="resume-session-submit"]')).toBeDisabled()
-
-    // Enter valid session ID
-    await page.locator('[data-testid="resume-session-id-input"]').fill('valid-session-123')
-    await expect(page.getByText('Only letters, numbers, dashes')).not.toBeVisible()
-
-    // Resume button should be enabled
-    await expect(page.locator('[data-testid="resume-session-submit"]')).toBeEnabled()
-
-    // Cancel the dialog
-    await page.getByRole('button', { name: 'Cancel' }).click()
-    await expect(page.locator('[data-testid="resume-session-id-input"]')).not.toBeVisible()
   })
 
   test('should display session ID in ChatView footer after agent starts', async ({ page, authenticatedWorkspace }) => {

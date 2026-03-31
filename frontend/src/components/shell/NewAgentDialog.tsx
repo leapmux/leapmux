@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
-import { createEffect, createSignal, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, Show } from 'solid-js'
 import { agentLoadingTimeoutMs } from '~/api/transport'
 import * as workerRpc from '~/api/workerRpc'
 import { Dialog } from '~/components/common/Dialog'
@@ -15,8 +15,9 @@ import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
 import { useMruProviders } from '~/hooks/useMruProviders'
 import { getAvailableAgentProviders } from '~/lib/agentProviders'
+import { validateSessionId } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
-import { dialogLeftPanel, dialogRightPanel, dialogSingleColumn, dialogTopSection, dialogTopTwoColumn, dialogTwoColumn, dialogWide, errorText } from '~/styles/shared.css'
+import { dialogLeftPanel, dialogRightPanel, dialogTopSection, dialogTopTwoColumn, dialogTwoColumn, dialogWide, errorText, labelRow } from '~/styles/shared.css'
 
 interface NewAgentDialogProps {
   workspaceId: string
@@ -25,7 +26,6 @@ interface NewAgentDialogProps {
   defaultModel?: string
   defaultTitle?: string
   defaultAgentProvider?: AgentProvider
-  sessionId?: string
   availableProviders?: AgentProvider[]
   onRefreshProviders?: () => void
   onCreated: (agent: AgentInfo) => void
@@ -51,6 +51,14 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
       setAgentProvider(best)
   })
 
+  const [sessionId, setSessionId] = createSignal('')
+  const sessionIdError = createMemo(() => {
+    const v = sessionId().trim()
+    if (!v)
+      return null
+    return validateSessionId(v)
+  })
+
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
     if (!state.workerId() || !state.workingDir().trim())
@@ -74,7 +82,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
         createBranch: state.gitMode() === 'create-branch' ? state.createBranch() : '',
         createBranchBase: state.gitMode() === 'create-branch' ? state.createBranchBase() : '',
         useWorktreePath: state.gitMode() === 'use-worktree' ? state.useWorktreePath() : '',
-        ...(props.sessionId ? { agentSessionId: props.sessionId } : {}),
+        ...(sessionId().trim() ? { agentSessionId: sessionId().trim() } : {}),
       })
       if (resp.agent) {
         recordProviderUse(agentProvider())
@@ -94,7 +102,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
       <form onSubmit={handleSubmit}>
         <section>
           <div class="vstack gap-4">
-            <div class={state.showGitOptions() ? dialogTopSection : undefined}>
+            <div class={dialogTopSection}>
               <div class={dialogTopTwoColumn}>
                 <WorkerSelector state={state} />
                 <AgentProviderSelector
@@ -105,11 +113,11 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
                 />
               </div>
             </div>
-            <div class={state.showGitOptions() ? dialogTwoColumn : dialogSingleColumn}>
+            <div class={dialogTwoColumn}>
               <div class={dialogLeftPanel}>
                 <DirectorySelector state={state} />
               </div>
-              <div class={state.showGitOptions() ? dialogRightPanel : undefined}>
+              <div class={dialogRightPanel}>
                 <Show when={state.workerId() && !state.worktreeResolving()}>
                   <GitOptions
                     workerId={state.workerId()}
@@ -120,6 +128,18 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
                     onVisibilityChange={state.setShowGitOptions}
                   />
                 </Show>
+                <div>
+                  <div class={labelRow}>Resume an existing session</div>
+                  <input
+                    type="text"
+                    value={sessionId()}
+                    onInput={e => setSessionId(e.currentTarget.value)}
+                    placeholder="Session ID"
+                  />
+                  <Show when={sessionIdError()}>
+                    <span class={errorText}>{sessionIdError()}</span>
+                  </Show>
+                </div>
               </div>
             </div>
           </div>
@@ -133,7 +153,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
           </button>
           <button
             type="submit"
-            disabled={isAgentCreateDisabled({ submitting: submitting.loading(), workerId: state.workerId(), workingDir: state.workingDir(), noProviders: noProviders(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), createBranchError: state.createBranchError(), useWorktreePath: state.useWorktreePath() })}
+            disabled={isAgentCreateDisabled({ submitting: submitting.loading(), workerId: state.workerId(), workingDir: state.workingDir(), noProviders: noProviders(), sessionIdError: sessionIdError(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), createBranchError: state.createBranchError(), useWorktreePath: state.useWorktreePath() })}
           >
             <Show when={submitting.loading()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
             {submitting.loading() ? 'Creating...' : 'Create'}

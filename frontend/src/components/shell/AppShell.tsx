@@ -86,7 +86,6 @@ export const AppShell: ParentComponent = (props) => {
   const [preselectedWorkerId, setPreselectedWorkerId] = createSignal<string | undefined>(undefined)
   const [newWorkspaceTargetSectionId, setNewWorkspaceTargetSectionId] = createSignal<string | null>(null)
   const [workspaceLoading, setWorkspaceLoading] = createSignal(true)
-  const [showResumeDialog, setShowResumeDialog] = createSignal(false)
   const [showNewAgentDialog, setShowNewAgentDialog] = createSignal(false)
   const [showNewTerminalDialog, setShowNewTerminalDialog] = createSignal(false)
   const [newAgentLoadingProvider, setNewAgentLoadingProvider] = createSignal<AgentProvider | null>(null)
@@ -436,7 +435,6 @@ export const AppShell: ParentComponent = (props) => {
     getCurrentTabContext,
     setShowNewAgentDialog,
     setNewAgentLoadingProvider,
-    setShowResumeDialog,
     persistLayout,
     focusEditor: () => focusEditorRef.current?.(),
     forceScrollToBottom: () => forceScrollToBottomRef.current?.(),
@@ -959,7 +957,6 @@ export const AppShell: ParentComponent = (props) => {
     isMobile,
     toggleLeftSidebar,
     toggleRightSidebar,
-    setShowResumeDialog,
     setShowNewAgentDialog,
     setShowNewTerminalDialog,
     focusEditorRef,
@@ -1145,8 +1142,6 @@ export const AppShell: ParentComponent = (props) => {
       </Show>
 
       <AppShellDialogs
-        showResumeDialog={showResumeDialog()}
-        setShowResumeDialog={setShowResumeDialog}
         showNewAgentDialog={showNewAgentDialog()}
         setShowNewAgentDialog={setShowNewAgentDialog}
         showNewTerminalDialog={showNewTerminalDialog()}

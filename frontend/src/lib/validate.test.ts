@@ -20,7 +20,6 @@ describe('sanitizeName', () => {
     expect(sanitizeName('it\'s fine').error).toBeNull()
     expect(sanitizeName('a + b = c').error).toBeNull()
     expect(sanitizeName('project (draft)').error).toBeNull()
-    expect(sanitizeName('100%').error).toBeNull()
   })
 
   it('accepts unicode characters', () => {
@@ -48,11 +47,12 @@ describe('sanitizeName', () => {
     expect(sanitizeName('hello\nworld')).toEqual({ value: 'helloworld', error: null })
     expect(sanitizeName('hello\x00world')).toEqual({ value: 'helloworld', error: null })
     expect(sanitizeName('hello\x7Fworld')).toEqual({ value: 'helloworld', error: null })
+    expect(sanitizeName('hello$world')).toEqual({ value: 'helloworld', error: null })
+    expect(sanitizeName('100%done')).toEqual({ value: '100done', error: null })
   })
 
   it('preserves allowed special characters', () => {
     expect(sanitizeName('name@here!')).toEqual({ value: 'name@here!', error: null })
-    expect(sanitizeName('100%')).toEqual({ value: '100%', error: null })
     expect(sanitizeName('café')).toEqual({ value: 'café', error: null })
   })
 

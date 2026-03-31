@@ -20,9 +20,9 @@ import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
 import { useMruProviders } from '~/hooks/useMruProviders'
 import { getAvailableAgentProviders } from '~/lib/agentProviders'
-import { sanitizeName } from '~/lib/validate'
+import { sanitizeName, validateSessionId } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
-import { dialogLeftPanel, dialogRightPanel, dialogSingleColumn, dialogTopSection, dialogTopTwoColumn, dialogTwoColumn, dialogWide, errorText, labelRow } from '~/styles/shared.css'
+import { dialogLeftPanel, dialogRightPanel, dialogTopSection, dialogTopTwoColumn, dialogTwoColumn, dialogWide, errorText, labelRow } from '~/styles/shared.css'
 
 interface NewWorkspaceDialogProps {
   onCreated: (workspace: Workspace, workerId: string) => void
@@ -50,6 +50,14 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       setAgentProvider(best)
   })
   const titleError = createMemo(() => sanitizeName(title()).error)
+
+  const [sessionId, setSessionId] = createSignal('')
+  const sessionIdError = createMemo(() => {
+    const v = sessionId().trim()
+    if (!v)
+      return null
+    return validateSessionId(v)
+  })
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
@@ -84,6 +92,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
         createBranch: state.gitMode() === 'create-branch' ? state.createBranch() : '',
         createBranchBase: state.gitMode() === 'create-branch' ? state.createBranchBase() : '',
         useWorktreePath: state.gitMode() === 'use-worktree' ? state.useWorktreePath() : '',
+        ...(sessionId().trim() ? { agentSessionId: sessionId().trim() } : {}),
       })
 
       if (agentResp.agent) {
@@ -138,11 +147,11 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
                 </Show>
               </div>
             </div>
-            <div class={state.showGitOptions() ? dialogTwoColumn : dialogSingleColumn}>
+            <div class={dialogTwoColumn}>
               <div class={dialogLeftPanel}>
                 <DirectorySelector state={state} />
               </div>
-              <div class={state.showGitOptions() ? dialogRightPanel : undefined}>
+              <div class={dialogRightPanel}>
                 <Show when={state.workerId()}>
                   <GitOptions
                     workerId={state.workerId()}
@@ -153,6 +162,18 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
                     onVisibilityChange={state.setShowGitOptions}
                   />
                 </Show>
+                <div>
+                  <div class={labelRow}>Resume an existing session</div>
+                  <input
+                    type="text"
+                    value={sessionId()}
+                    onInput={e => setSessionId(e.currentTarget.value)}
+                    placeholder="Session ID"
+                  />
+                  <Show when={sessionIdError()}>
+                    <span class={errorText}>{sessionIdError()}</span>
+                  </Show>
+                </div>
               </div>
             </div>
           </div>
@@ -166,7 +187,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
           </button>
           <button
             type="submit"
-            disabled={isWorkspaceCreateDisabled({ submitting: submitting.loading(), workerId: state.workerId(), workingDir: state.workingDir(), noProviders: noProviders(), titleError: titleError(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), createBranchError: state.createBranchError(), useWorktreePath: state.useWorktreePath() })}
+            disabled={isWorkspaceCreateDisabled({ submitting: submitting.loading(), workerId: state.workerId(), workingDir: state.workingDir(), noProviders: noProviders(), titleError: titleError(), sessionIdError: sessionIdError(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), createBranchError: state.createBranchError(), useWorktreePath: state.useWorktreePath() })}
           >
             <Show when={submitting.loading()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
             {submitting.loading() ? 'Creating...' : 'Create'}

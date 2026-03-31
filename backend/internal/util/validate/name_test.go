@@ -28,7 +28,6 @@ func TestSanitizeName(t *testing.T) {
 			{"special chars '", "it's fine", "it's fine"},
 			{"special chars +", "a + b = c", "a + b = c"},
 			{"special chars parens", "project (draft)", "project (draft)"},
-			{"special chars %", "100%", "100%"},
 			{"unicode", "café", "café"},
 			{"emoji", "hello\U0001F600", "hello\U0001F600"},
 			{"128 chars", strings.Repeat("a", 128), strings.Repeat("a", 128)},
@@ -41,6 +40,8 @@ func TestSanitizeName(t *testing.T) {
 			{"strips control chars", "hello\x00world", "helloworld"},
 			{"strips 0x1F", "hello\x1Fworld", "helloworld"},
 			{"strips 0x7F", "hello\x7Fworld", "helloworld"},
+			{"strips dollar", "hello$world", "helloworld"},
+			{"strips percent", "100%done", "100done"},
 		}
 
 		for _, tt := range tests {
@@ -69,5 +70,23 @@ func TestSanitizeName(t *testing.T) {
 				assert.Error(t, err, "SanitizeName(%q) should return error", tt.input)
 			})
 		}
+	})
+}
+
+func TestValidateSessionID(t *testing.T) {
+	t.Run("accepts valid", func(t *testing.T) {
+		assert.NoError(t, ValidateSessionID(""))
+		assert.NoError(t, ValidateSessionID("abc-123"))
+		assert.NoError(t, ValidateSessionID("session_456"))
+		assert.NoError(t, ValidateSessionID("thread-uuid-v4-compat"))
+	})
+
+	t.Run("rejects invalid", func(t *testing.T) {
+		assert.Error(t, ValidateSessionID("has\"quote"))
+		assert.Error(t, ValidateSessionID("has\\backslash"))
+		assert.Error(t, ValidateSessionID("has$dollar"))
+		assert.Error(t, ValidateSessionID("has%percent"))
+		assert.Error(t, ValidateSessionID("has\ttab"))
+		assert.Error(t, ValidateSessionID(strings.Repeat("a", 129)))
 	})
 }

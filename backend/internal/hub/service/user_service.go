@@ -11,7 +11,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/validate"
+	"github.com/leapmux/leapmux/internal/util/validate"
 	"golang.org/x/crypto/bcrypt"
 )
 
