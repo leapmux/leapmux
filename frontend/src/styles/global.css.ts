@@ -163,6 +163,11 @@ globalStyle('pre code, pre pre, code pre, code code', {
   backgroundColor: 'transparent',
 })
 
+// Reduce hr margin inside dropdown menus (Oat base sets var(--space-8) = 2rem).
+globalStyle('ot-dropdown hr', {
+  margin: 'var(--space-2) 0',
+})
+
 // Remove italic from blockquotes (Oat default).
 globalStyle('blockquote', {
   fontStyle: 'normal',
