@@ -632,7 +632,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 					PermissionMode:  newPermissionMode,
 					ExtraSettings:   newExtraSettings,
 					StartupTimeout:  svc.agentStartupTimeout(),
-			APITimeout:      svc.agentAPITimeout(),
+					APITimeout:      svc.agentAPITimeout(),
 					Shell:           svc.agentShell(),
 					LoginShell:      svc.agentLoginShell(),
 					HomeDir:         svc.HomeDir,
@@ -1166,7 +1166,7 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 		PermissionMode:  dbAgent.PermissionMode,
 		ExtraSettings:   extraSettings,
 		StartupTimeout:  svc.agentStartupTimeout(),
-			APITimeout:      svc.agentAPITimeout(),
+		APITimeout:      svc.agentAPITimeout(),
 		Shell:           svc.agentShell(),
 		LoginShell:      svc.agentLoginShell(),
 		HomeDir:         svc.HomeDir,
@@ -1232,7 +1232,11 @@ func (svc *Context) setAgentPermissionMode(agentID, mode string) {
 		slog.Error("set permission mode: agent not found", "agent_id", agentID, "error", err)
 		return
 	}
+	svc.setAgentPermissionModeWithAgent(dbAgent, mode)
+}
 
+func (svc *Context) setAgentPermissionModeWithAgent(dbAgent db.Agent, mode string) {
+	agentID := dbAgent.ID
 	oldMode := dbAgent.PermissionMode
 	if err := svc.Queries.SetAgentPermissionMode(bgCtx(), db.SetAgentPermissionModeParams{
 		PermissionMode: mode,
@@ -1282,7 +1286,11 @@ func (svc *Context) setAgentCollaborationMode(agentID, mode string) {
 		slog.Error("set Codex collaboration mode: agent not found", "agent_id", agentID, "error", err)
 		return
 	}
+	svc.setAgentCollaborationModeWithAgent(dbAgent, mode)
+}
 
+func (svc *Context) setAgentCollaborationModeWithAgent(dbAgent db.Agent, mode string) {
+	agentID := dbAgent.ID
 	extras := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
 	oldMode := extras[agent.CodexExtraCollaborationMode]
 	extras[agent.CodexExtraCollaborationMode] = mode
@@ -1340,7 +1348,11 @@ func (svc *Context) setCodexBypassExtras(agentID string) {
 		slog.Error("set Codex bypass extras: agent not found", "agent_id", agentID, "error", err)
 		return
 	}
+	svc.setCodexBypassExtrasWithAgent(dbAgent)
+}
 
+func (svc *Context) setCodexBypassExtrasWithAgent(dbAgent db.Agent) {
+	agentID := dbAgent.ID
 	extras := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
 	changes := map[string]interface{}{}
 
@@ -1545,12 +1557,18 @@ func (svc *Context) handleCodexPlanModePromptResponse(agentID string, content []
 
 	switch crPayload.Response.Response.Behavior {
 	case agent.ControlBehaviorAllow:
-		svc.setAgentCollaborationMode(agentID, agent.CodexCollaborationDefault)
+		dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+		if err != nil {
+			slog.Error("codex plan mode prompt: agent not found", "agent_id", agentID, "error", err)
+			return false
+		}
+
+		svc.setAgentCollaborationModeWithAgent(dbAgent, agent.CodexCollaborationDefault)
 
 		// Apply bypass permissions if requested.
 		if crPayload.PermissionMode != "" {
-			svc.setAgentPermissionMode(agentID, crPayload.PermissionMode)
-			svc.setCodexBypassExtras(agentID)
+			svc.setAgentPermissionModeWithAgent(dbAgent, crPayload.PermissionMode)
+			svc.setCodexBypassExtrasWithAgent(dbAgent)
 		}
 
 		if crPayload.ClearContext {
@@ -1760,14 +1778,14 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 	if crPayload.Response.Response.Behavior == agent.ControlBehaviorAllow {
 		switch toolName {
 		case "EnterPlanMode":
-			svc.setAgentPermissionMode(agentID, agent.PermissionModePlan)
+			svc.setAgentPermissionModeWithAgent(dbAgent, agent.PermissionModePlan)
 		case "ExitPlanMode":
 			// Determine target permission mode from control_response.
 			targetMode := agent.PermissionModeAcceptEdits
 			if crPayload.PermissionMode != "" {
 				targetMode = crPayload.PermissionMode
 			}
-			svc.setAgentPermissionMode(agentID, targetMode)
+			svc.setAgentPermissionModeWithAgent(dbAgent, targetMode)
 
 			// Remove the planModeToolUse entry so detectPlanModeFromToolResult
 			// does not override the mode we just set.

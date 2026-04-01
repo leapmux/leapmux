@@ -9,11 +9,15 @@ import * as styles from '../ControlRequestBanner.css'
 
 export interface PlanApprovalState {
   clearContext: Accessor<boolean>
+  setClearContext: (v: boolean) => void
+  bypassPermissions: Accessor<boolean>
+  setBypassPermissions: (v: boolean) => void
   permissionMode: Accessor<PermissionMode | undefined>
+  contextPct: Accessor<number | null>
 }
 
 /** Creates shared plan approval state (clear context + bypass permissions). */
-export function createPlanApprovalState(props: Pick<ActionsProps, 'contextUsage' | 'modelContextWindow' | 'agentProvider' | 'bypassPermissionMode'>): PlanApprovalState & { contextPct: Accessor<number | null>, bypassPermissions: Accessor<boolean>, setClearContext: (v: boolean) => void, setBypassPermissions: (v: boolean) => void } {
+export function createPlanApprovalState(props: Pick<ActionsProps, 'contextUsage' | 'modelContextWindow' | 'agentProvider' | 'bypassPermissionMode'>): PlanApprovalState {
   const [clearContext, setClearContext] = createSignal(false)
   const [bypassPermissions, setBypassPermissions] = createSignal(false)
   const contextPct = () => {
@@ -27,7 +31,7 @@ export function createPlanApprovalState(props: Pick<ActionsProps, 'contextUsage'
 
 /** Shared checkboxes for plan approval (Clear Context + Bypass Permissions). */
 export const PlanApprovalCheckboxes: Component<{
-  state: ReturnType<typeof createPlanApprovalState>
+  state: PlanApprovalState
   bypassPermissionMode?: PermissionMode
 }> = (props) => {
   return (

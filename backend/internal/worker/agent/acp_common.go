@@ -75,8 +75,8 @@ type acpBase struct {
 	providerName       string                  // e.g. "copilot", "gemini", "opencode" — used in log messages
 	extraSessionUpdate acpSessionUpdateHandler // optional provider-specific session update handler
 	extraMethod        acpMethodHandler        // optional provider-specific request/notification handler
-	sessionID  string
-	workingDir string
+	sessionID          string
+	workingDir         string
 	model              string
 	availableModels    []*leapmuxv1.AvailableModel
 	turnAssistantText  strings.Builder

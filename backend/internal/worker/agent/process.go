@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -35,9 +36,10 @@ type processBase struct {
 	stderrMu   sync.Mutex
 	stderrDone chan struct{}
 
-	mu             sync.Mutex
-	stopped        bool
-	discardOutput  bool
+	mu      sync.Mutex
+	stopped bool
+
+	discardOutput atomic.Bool
 
 	// Preamble handling (from shell wrapper).
 	preambleDelimiter  string            // if set, skipPreamble skips lines until this delimiter
@@ -118,15 +120,11 @@ func (p *processBase) ClearContext() (string, bool) { return "", false }
 // be restarted (e.g. plan execution) to avoid persisting spurious error
 // messages from closed streams.
 func (p *processBase) DiscardOutput() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.discardOutput = true
+	p.discardOutput.Store(true)
 }
 
 func (p *processBase) isDiscardingOutput() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.discardOutput
+	return p.discardOutput.Load()
 }
 
 // Wait blocks until the process exits and returns its exit error.

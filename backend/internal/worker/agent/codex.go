@@ -296,25 +296,14 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 		threadParams["serviceTier"] = *st
 	}
 
-	paramsJSON, _ := json.Marshal(threadParams)
-	resp, err := a.sendRequest("thread/start", paramsJSON, a.APITimeout())
-	if err != nil {
+	threadID, _, err := a.tryThreadRequest(threadParams, "thread/start", a.agentID, a.APITimeout())
+	if err != nil || threadID == "" {
 		slog.Error("codex ClearContext: thread/start failed", "agent_id", a.agentID, "error", err)
 		return "", false
 	}
 
-	var result struct {
-		Thread struct {
-			ID string `json:"id"`
-		} `json:"thread"`
-	}
-	if err := json.Unmarshal(resp, &result); err != nil || result.Thread.ID == "" {
-		slog.Error("codex ClearContext: invalid thread/start response", "agent_id", a.agentID, "error", err, "response", string(resp))
-		return "", false
-	}
-
 	a.mu.Lock()
-	a.threadID = result.Thread.ID
+	a.threadID = threadID
 	a.turnID = ""
 	a.turnSawPlan = false
 	a.turnPlanText = ""
@@ -322,8 +311,8 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	a.streamingPlan = false
 	a.mu.Unlock()
 
-	a.sink.UpdateSessionID(result.Thread.ID)
-	return result.Thread.ID, true
+	a.sink.UpdateSessionID(threadID)
+	return threadID, true
 }
 
 // SendInput writes a user message to the agent. If a turn is already in
