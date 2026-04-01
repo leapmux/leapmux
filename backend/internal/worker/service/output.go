@@ -5,6 +5,7 @@ package service
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"slices"
 	"sort"
@@ -278,7 +279,11 @@ func (t *SpanTracker) Snapshot(parentSpanID, connectorSpanID string, closing boo
 		}
 	}
 
-	data, _ := json.Marshal(lines)
+	data, err := json.Marshal(lines)
+	if err != nil {
+		slog.Warn("marshal span lines", "error", err)
+		return depth, "[]", connectorColorOut
+	}
 	return depth, string(data), connectorColorOut
 }
 
@@ -330,7 +335,11 @@ func wrapNotifContent(rawJSON []byte) []byte {
 	w := notifThreadWrapper{
 		Messages: []json.RawMessage{rawJSON},
 	}
-	data, _ := json.Marshal(w)
+	data, err := json.Marshal(w)
+	if err != nil {
+		slog.Warn("marshal notification wrapper", "error", err)
+		return []byte(`{"messages":[]}`)
+	}
 	return data
 }
 
@@ -796,7 +805,10 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 	wrapper.Messages = append(wrapper.Messages, contentJSON)
 	wrapper.Messages = consolidateNotificationThread(wrapper.Messages)
 
-	merged, _ := json.Marshal(wrapper)
+	merged, err := json.Marshal(wrapper)
+	if err != nil {
+		return fmt.Errorf("marshal notification thread: %w", err)
+	}
 
 	mergedCompressed, mergedCompType := msgcodec.Compress(merged)
 	newSeq, err := h.queries.UpdateNotificationThread(bgCtx(), db.UpdateNotificationThreadParams{
@@ -883,7 +895,11 @@ func (h *OutputHandler) broadcastAgentSessionInfo(agentID string, info map[strin
 		"type": "agent_session_info",
 		"info": info,
 	}
-	contentJSON, _ := json.Marshal(content)
+	contentJSON, err := json.Marshal(content)
+	if err != nil {
+		slog.Warn("marshal agent session info", "agent_id", agentID, "error", err)
+		return
+	}
 	compressed, compressionType := msgcodec.Compress(contentJSON)
 	h.broadcastMessage(agentID, &leapmuxv1.AgentChatMessage{
 		Id:                 id.Generate(),
@@ -896,7 +912,11 @@ func (h *OutputHandler) broadcastAgentSessionInfo(agentID string, info map[strin
 
 // BroadcastNotification persists and broadcasts a LEAPMUX notification.
 func (h *OutputHandler) BroadcastNotification(agentID string, agentProvider leapmuxv1.AgentProvider, content map[string]interface{}) {
-	contentJSON, _ := json.Marshal(content)
+	contentJSON, err := json.Marshal(content)
+	if err != nil {
+		slog.Warn("marshal notification content", "agent_id", agentID, "error", err)
+		return
+	}
 	if err := h.persistNotificationThreaded(agentID, agentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, contentJSON); err != nil {
 		slog.Warn("failed to persist notification", "agent_id", agentID, "error", err)
 	}

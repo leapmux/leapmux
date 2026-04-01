@@ -66,11 +66,14 @@ func StartKilo(ctx context.Context, opts Options, sink OutputSink) (Provider, er
 		return nil, fmt.Errorf("start kilo: %w", err)
 	}
 
-	initParams, _ := json.Marshal(map[string]interface{}{
+	initParams, err := json.Marshal(map[string]interface{}{
 		"protocolVersion": 1,
 		"clientInfo":      map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
 		"capabilities":    map[string]interface{}{},
 	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal initialize params: %w", err)
+	}
 	handshake, err := a.startACPHandshake(stdout, stderrPipe, opts, initParams,
 		acpSessionConfig{newMethod: acpMethodSessionNew, resumeMethod: openCodeMethodSessionResume})
 	if err != nil {

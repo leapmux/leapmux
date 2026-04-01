@@ -149,13 +149,17 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	timeout := opts.startupTimeout()
 
 	// 1. Send "initialize" request.
-	initParams, _ := json.Marshal(map[string]interface{}{
+	initParams, err := json.Marshal(map[string]interface{}{
 		"clientInfo": map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
 		"capabilities": map[string]interface{}{
 			"experimentalApi":           true,
 			"optOutNotificationMethods": []string{"turn/diff/updated"},
 		},
 	})
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("marshal initialize params: %w", err)
+	}
 	if _, err := a.sendRequest("initialize", json.RawMessage(initParams), timeout); err != nil {
 		cleanup()
 		return nil, a.formatStartupError("initialize", err)
@@ -241,7 +245,10 @@ func (a *CodexAgent) tryThreadRequest(
 ) (threadID string, fallback bool, err error) {
 	canFallback := method == "thread/resume"
 
-	paramsJSON, _ := json.Marshal(threadParams)
+	paramsJSON, err := json.Marshal(threadParams)
+	if err != nil {
+		return "", false, fmt.Errorf("marshal %s params: %w", method, err)
+	}
 	resp, err := a.sendRequest(method, paramsJSON, timeout)
 	if err != nil {
 		if canFallback {

@@ -1218,7 +1218,11 @@ func (svc *Context) persistSyntheticUserMessage(agentID string, provider leapmux
 		return
 	}
 
-	innerJSON, _ := json.Marshal(map[string]string{"content": content})
+	innerJSON, err := json.Marshal(map[string]string{"content": content})
+	if err != nil {
+		slog.Warn("synthetic user message: marshal failed", "agent_id", agentID, "error", err)
+		return
+	}
 	if err := svc.Output.persistAndBroadcast(agentID, provider, leapmuxv1.MessageRole_MESSAGE_ROLE_USER, innerJSON, agent.SpanInfo{}, nil); err != nil {
 		slog.Error("synthetic user message: failed to persist message", "agent_id", agentID, "error", err)
 	}
@@ -1235,7 +1239,7 @@ func (svc *Context) setAgentPermissionMode(agentID, mode string) {
 	svc.setAgentPermissionModeWithAgent(dbAgent, mode)
 }
 
-func (svc *Context) setAgentPermissionModeWithAgent(dbAgent db.Agent, mode string) {
+func (svc *Context) setAgentPermissionModeWithAgent(dbAgent db.Agent, mode string) db.Agent {
 	agentID := dbAgent.ID
 	oldMode := dbAgent.PermissionMode
 	if err := svc.Queries.SetAgentPermissionMode(bgCtx(), db.SetAgentPermissionModeParams{
@@ -1243,8 +1247,10 @@ func (svc *Context) setAgentPermissionModeWithAgent(dbAgent db.Agent, mode strin
 		ID:             agentID,
 	}); err != nil {
 		slog.Error("set permission mode: DB update failed", "agent_id", agentID, "error", err)
-		return
+		return dbAgent
 	}
+
+	dbAgent.PermissionMode = mode
 
 	// Broadcast statusChange so frontends update their settings display.
 	svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
@@ -1276,6 +1282,8 @@ func (svc *Context) setAgentPermissionModeWithAgent(dbAgent db.Agent, mode strin
 			},
 		})
 	}
+
+	return dbAgent
 }
 
 // setAgentCollaborationMode updates the agent's collaboration mode
@@ -1289,18 +1297,21 @@ func (svc *Context) setAgentCollaborationMode(agentID, mode string) {
 	svc.setAgentCollaborationModeWithAgent(dbAgent, mode)
 }
 
-func (svc *Context) setAgentCollaborationModeWithAgent(dbAgent db.Agent, mode string) {
+func (svc *Context) setAgentCollaborationModeWithAgent(dbAgent db.Agent, mode string) db.Agent {
 	agentID := dbAgent.ID
 	extras := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
 	oldMode := extras[agent.CodexExtraCollaborationMode]
 	extras[agent.CodexExtraCollaborationMode] = mode
+	newExtraSettings := marshalExtraSettings(extras)
 	if err := svc.Queries.SetAgentExtraSettings(bgCtx(), db.SetAgentExtraSettingsParams{
-		ExtraSettings: marshalExtraSettings(extras),
+		ExtraSettings: newExtraSettings,
 		ID:            agentID,
 	}); err != nil {
 		slog.Error("set Codex collaboration mode: DB update failed", "agent_id", agentID, "error", err)
-		return
+		return dbAgent
 	}
+
+	dbAgent.ExtraSettings = newExtraSettings
 
 	if svc.Agents.HasAgent(agentID) {
 		svc.Agents.UpdateSettings(agentID, &leapmuxv1.AgentSettings{ExtraSettings: map[string]string{
@@ -1338,11 +1349,13 @@ func (svc *Context) setAgentCollaborationModeWithAgent(dbAgent db.Agent, mode st
 			},
 		})
 	}
+
+	return dbAgent
 }
 
 // setCodexBypassExtrasWithAgent sets the Codex-specific extra settings for
 // bypass mode (full network access and no sandbox restrictions).
-func (svc *Context) setCodexBypassExtrasWithAgent(dbAgent db.Agent) {
+func (svc *Context) setCodexBypassExtrasWithAgent(dbAgent db.Agent) db.Agent {
 	agentID := dbAgent.ID
 	extras := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
 	changes := map[string]interface{}{}
@@ -1364,16 +1377,19 @@ func (svc *Context) setCodexBypassExtrasWithAgent(dbAgent db.Agent) {
 	setExtra(agent.CodexExtraSandboxPolicy, agent.CodexSandboxDangerFullAccess)
 
 	if len(changes) == 0 {
-		return
+		return dbAgent
 	}
 
+	newExtraSettings := marshalExtraSettings(extras)
 	if err := svc.Queries.SetAgentExtraSettings(bgCtx(), db.SetAgentExtraSettingsParams{
-		ExtraSettings: marshalExtraSettings(extras),
+		ExtraSettings: newExtraSettings,
 		ID:            agentID,
 	}); err != nil {
 		slog.Error("set Codex bypass extras: DB update failed", "agent_id", agentID, "error", err)
-		return
+		return dbAgent
 	}
+
+	dbAgent.ExtraSettings = newExtraSettings
 
 	if svc.Agents.HasAgent(agentID) {
 		svc.Agents.UpdateSettings(agentID, &leapmuxv1.AgentSettings{ExtraSettings: map[string]string{
@@ -1404,6 +1420,8 @@ func (svc *Context) setCodexBypassExtrasWithAgent(dbAgent db.Agent) {
 		"type":    "settings_changed",
 		"changes": changes,
 	})
+
+	return dbAgent
 }
 
 // sendSyntheticUserMessage persists and broadcasts a user message, then sends
@@ -1418,7 +1436,11 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
 
 	messageID := id.Generate()
 	now := time.Now().UTC()
-	innerJSON, _ := json.Marshal(map[string]string{"content": content})
+	innerJSON, err := json.Marshal(map[string]string{"content": content})
+	if err != nil {
+		slog.Warn("synthetic user message: marshal failed", "agent_id", agentID, "error", err)
+		return
+	}
 	compressed, compressionType := msgcodec.Compress(innerJSON)
 
 	seq, err := svc.Queries.CreateMessage(bgCtx(), db.CreateMessageParams{
@@ -1554,18 +1576,10 @@ func (svc *Context) handleCodexPlanModePromptResponse(agentID string, content []
 			return false
 		}
 
-		svc.setAgentCollaborationModeWithAgent(dbAgent, agent.CodexCollaborationDefault)
+		dbAgent = svc.setAgentCollaborationModeWithAgent(dbAgent, agent.CodexCollaborationDefault)
 
-		// Apply bypass permissions if requested. Re-fetch dbAgent because
-		// setAgentCollaborationModeWithAgent wrote new ExtraSettings to the DB
-		// and the snapshot is now stale.
 		if crPayload.PermissionMode != "" {
-			dbAgent, err = svc.Queries.GetAgentByID(bgCtx(), agentID)
-			if err != nil {
-				slog.Error("codex plan mode prompt: agent re-fetch failed", "agent_id", agentID, "error", err)
-				return false
-			}
-			svc.setAgentPermissionModeWithAgent(dbAgent, crPayload.PermissionMode)
+			dbAgent = svc.setAgentPermissionModeWithAgent(dbAgent, crPayload.PermissionMode)
 			svc.setCodexBypassExtrasWithAgent(dbAgent)
 		}
 
@@ -1753,7 +1767,7 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 	// Persist a display message for the control response.
 	// Skip for AskUserQuestion — the tool_result already shows the user's answers.
 	// Skip for ExitPlanMode — the tool_result already shows approval/feedback.
-	if toolName != "AskUserQuestion" && toolName != "ExitPlanMode" {
+	if toolName != agent.ToolNameAskUserQuestion && toolName != agent.ToolNameExitPlanMode {
 		action := "approved"
 		if crPayload.Response.Response.Behavior == agent.ControlBehaviorDeny {
 			action = "rejected"
@@ -1765,8 +1779,10 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 				"comment": crPayload.Response.Response.Message,
 			},
 		}
-		displayJSON, _ := json.Marshal(displayContent)
-		if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, displayJSON, agent.SpanInfo{}, nil); err != nil {
+		displayJSON, marshalErr := json.Marshal(displayContent)
+		if marshalErr != nil {
+			slog.Warn("marshal control response notification", "agent_id", agentID, "error", marshalErr)
+		} else if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, displayJSON, agent.SpanInfo{}, nil); err != nil {
 			slog.Warn("failed to persist control response notification", "agent_id", agentID, "error", err)
 		}
 	}
@@ -1775,9 +1791,9 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 	skipSend := false
 	if crPayload.Response.Response.Behavior == agent.ControlBehaviorAllow {
 		switch toolName {
-		case "EnterPlanMode":
+		case agent.ToolNameEnterPlanMode:
 			svc.setAgentPermissionModeWithAgent(dbAgent, agent.PermissionModePlan)
-		case "ExitPlanMode":
+		case agent.ToolNameExitPlanMode:
 			// Determine target permission mode from control_response.
 			targetMode := agent.PermissionModeAcceptEdits
 			if crPayload.PermissionMode != "" {
@@ -1885,10 +1901,14 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 
 	// Persist the plan execution message so the frontend can render it as
 	// a collapsible "Execute plan" bubble.
-	innerJSON, _ := json.Marshal(map[string]interface{}{
+	innerJSON, err := json.Marshal(map[string]interface{}{
 		"content":       planMsg,
 		"planExecution": true,
 	})
+	if err != nil {
+		slog.Warn("plan exec: marshal plan execution message", "agent_id", agentID, "error", err)
+		return
+	}
 	if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_USER, innerJSON, agent.SpanInfo{}, nil); err != nil {
 		slog.Warn("plan exec: failed to persist plan execution message", "agent_id", agentID, "error", err)
 	}
