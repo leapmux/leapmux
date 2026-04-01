@@ -8,6 +8,19 @@
 
 LeapMux is a **multiplexer for AI coding agents**. Run multiple agent instances in parallel from a single workspace, in the browser or as a native desktop app. Connect local and remote development backends (even behind NATs), organize work across tiling workspaces, interact with terminals, browse and diff files with full git awareness, and collaborate with your team, all with end-to-end encrypted communication.
 
+## Supported Agents
+
+<p>
+  <img src="icons/claude-code.svg" width="64" height="64" title="Claude Code">&nbsp;
+  <img src="icons/codex.svg" width="64" height="64" title="Codex">&nbsp;
+  <img src="icons/gemini-cli.svg" width="64" height="64" title="Gemini CLI">&nbsp;
+  <img src="icons/cursor.svg" width="64" height="64" title="Cursor">&nbsp;
+  <img src="icons/github-copilot.svg" width="64" height="64" title="GitHub Copilot">&nbsp;
+  <img src="icons/kilo.svg" width="64" height="64" title="Kilo">&nbsp;
+  <img src="icons/opencode.svg" width="64" height="64" title="OpenCode">&nbsp;
+  <img src="icons/goose.svg" width="64" height="64" title="Goose">
+</p>
+
 ## Key Features
 
 - **Multi-Agent Workspaces**
@@ -29,8 +42,6 @@ LeapMux is a **multiplexer for AI coding agents**. Run multiple agent instances 
 - **NAT Traversal**
   - Workers initiate outbound connections, so they run behind firewalls without port forwarding
 
----
-
 ## Table of Contents
 
 - [Architecture](#architecture)
@@ -43,8 +54,6 @@ LeapMux is a **multiplexer for AI coding agents**. Run multiple agent instances 
 - [Contributing](#contributing)
 - [License](#license)
 - [Project Status](#project-status)
-
----
 
 ## Architecture
 
@@ -146,8 +155,6 @@ LeapMux is a single binary with these subcommands:
   - For local workers on the same machine, connect via Unix domain socket using `unix:<socket-path>` as the Hub URL.
 - **Message Format**: Protocol Buffers (defined in `/proto/leapmux/v1/`)
 
----
-
 ## Prerequisites
 
 Before you begin, ensure you have the following installed:
@@ -199,8 +206,6 @@ yay -S mprocs-bin wails
 
 LeapMux is developed and tested on macOS and Linux. Windows support may require WSL.
 
----
-
 ## Quick Start
 
 Get LeapMux running locally:
@@ -230,8 +235,6 @@ To run in solo mode (localhost-only, no login) instead of dev mode during develo
 ```bash
 task dev-solo
 ```
-
----
 
 ## Development
 
@@ -343,8 +346,6 @@ Remove all build artifacts and generated code:
 task clean
 ```
 
----
-
 ## Docker
 
 Build Docker images containing the full LeapMux stack:
@@ -384,8 +385,6 @@ Pre-built images are published to GHCR in two variants:
 | Ubuntu           | `:<version>-ubuntu` | `ghcr.io/org/leapmux:1.0.0-ubuntu` |
 
 Tool and base image versions are centralized in the `versions.yaml` file at the repository root.
-
----
 
 ## Technology Stack
 
@@ -436,8 +435,6 @@ Tool and base image versions are centralized in the `versions.yaml` file at the 
 - **[golangci-lint](https://golangci-lint.run/)** - Go linting
 - **[mprocs](https://github.com/pvolok/mprocs)** - Multi-process runner for development
 - **[Task](https://taskfile.dev/)** - Build orchestration with checksum-based caching
-
----
 
 ## Project Structure
 
@@ -538,11 +535,9 @@ leapmux/
 └── versions.yaml           # Version string and tool/image versions
 ```
 
----
-
 ## Contributing
 
-We welcome contributions to LeapMux! Here's how to get started:
+We don't accept code contribution at the moment. Please feel free to create issues, though; we will follow them up.
 
 ### Development Workflow
 
@@ -582,8 +577,6 @@ When you modify Protocol Buffer definitions or SQL queries:
 2. Generated code is `.gitignore`'d and should not be committed — only commit the source changes
 3. Ensure tests still pass after regeneration
 
----
-
 ## License
 
 LeapMux is licensed under the **Functional Source License, Version 1.1, Apache 2.0 Future License (FSL-1.1-ALv2)**.
@@ -595,15 +588,6 @@ This means:
 
 See the [LICENSE](LICENSE.md) file for full details.
 
----
+## Disclaimer
 
-## Project Status
-
-**Version**: 0.0.1-dev
-**Status**: Early Alpha (Active Development)
-
-LeapMux is in active development. The API and architecture may change as we iterate toward a stable release.
-
----
-
-**Built with ❤️ by the LeapMux team**
+All product names, logos, and trademarks are the property of their respective owners. LeapMux is not affiliated with, endorsed by, or sponsored by Anthropic, OpenAI, Google, GitHub, Microsoft, Anysphere, Block, Kilo Code, Anomaly, or any other third party. Agent icons are used solely to indicate compatibility and are reproduced here for identification purposes only.
