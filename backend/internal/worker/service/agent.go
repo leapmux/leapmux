@@ -1382,8 +1382,8 @@ func (svc *Context) setCodexBypassExtrasWithAgent(dbAgent db.Agent) db.Agent {
 
 	if svc.Agents.HasAgent(agentID) {
 		svc.Agents.UpdateSettings(agentID, &leapmuxv1.AgentSettings{ExtraSettings: map[string]string{
-			agent.CodexExtraNetworkAccess:  extras[agent.CodexExtraNetworkAccess],
-			agent.CodexExtraSandboxPolicy:  extras[agent.CodexExtraSandboxPolicy],
+			agent.CodexExtraNetworkAccess: extras[agent.CodexExtraNetworkAccess],
+			agent.CodexExtraSandboxPolicy: extras[agent.CodexExtraSandboxPolicy],
 		}})
 	}
 

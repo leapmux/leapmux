@@ -24,9 +24,9 @@ const (
 
 // Tool name constants used in control requests.
 const (
-	ToolNameAskUserQuestion    = "AskUserQuestion"
-	ToolNameEnterPlanMode      = "EnterPlanMode"
-	ToolNameExitPlanMode       = "ExitPlanMode"
+	ToolNameAskUserQuestion     = "AskUserQuestion"
+	ToolNameEnterPlanMode       = "EnterPlanMode"
+	ToolNameExitPlanMode        = "ExitPlanMode"
 	ToolNameCodexPlanModePrompt = "CodexPlanModePrompt"
 )
 
