@@ -24,7 +24,7 @@ LeapMux is a **multiplexer for AI coding agents**. Run multiple agent instances 
 ## Key Features
 
 - **Multi-Agent Workspaces**
-  - Run multiple coding agent instances simultaneously
+  - Run multiple local or remote coding agent instances simultaneously
 - **Tiling Layout**
   - Split the workspace into resizable horizontal/vertical panes — run chats and terminals side by side
 - **Desktop App**
