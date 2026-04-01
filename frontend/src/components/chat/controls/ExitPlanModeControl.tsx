@@ -88,7 +88,9 @@ export const ExitPlanModeActions: Component<ActionsProps> = (props) => {
         {props.infoTrigger}
       </div>
       <div class={styles.controlFooterRight}>
-        <PlanApprovalCheckboxes state={planApproval} bypassPermissionMode={props.bypassPermissionMode} />
+        <Show when={!props.hasEditorContent}>
+          <PlanApprovalCheckboxes state={planApproval} bypassPermissionMode={props.bypassPermissionMode} />
+        </Show>
         <button
           class="outline"
           onClick={handleReject}
