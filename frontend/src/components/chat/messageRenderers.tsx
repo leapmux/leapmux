@@ -10,6 +10,7 @@ import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FileIcon from 'lucide-solid/icons/file'
 import FileImageIcon from 'lucide-solid/icons/file-image'
+import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import { createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
@@ -177,6 +178,44 @@ export function ThinkingMessage(props: { text: string, context?: RenderContext }
   )
 }
 
+/** Inner component for plan execution messages — owns local expand/collapse state. */
+export function PlanExecutionMessage(props: { text: string, context?: RenderContext }): JSX.Element {
+  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, 'planExecution')
+
+  return (
+    <>
+      <div class={thinkingHeader} onClick={() => setExpanded(v => !v)}>
+        <Tooltip text="Execute plan">
+          <span class={inlineFlex}>
+            <Icon icon={PlaneTakeoff} size="md" class={toolUseIcon} />
+          </span>
+        </Tooltip>
+        <span class={toolInputText}>Execute plan</span>
+        <span class={`${inlineFlex} ${thinkingChevron}${expanded() ? ` ${thinkingChevronExpanded}` : ''}`}>
+          <Icon icon={ChevronRight} size="sm" class={toolUseIcon} />
+        </span>
+      </div>
+      <Show when={expanded()}>
+        <div class={thinkingContent}>
+          <div class={markdownContent} innerHTML={renderMarkdown(props.text)} />
+        </div>
+      </Show>
+    </>
+  )
+}
+
+/** Handles plan execution messages: {"content":"...","planExecution":true} */
+const planExecutionRenderer: MessageContentRenderer = {
+  render(parsed, _role, context) {
+    if (!isObject(parsed) || parsed.planExecution !== true)
+      return null
+    const content = parsed.content as string | undefined
+    if (!content)
+      return null
+    return <PlanExecutionMessage text={content} context={context} />
+  },
+}
+
 /** Handles assistant thinking messages: {"type":"assistant","message":{"content":[{"type":"thinking","thinking":"..."}]}} */
 const assistantThinkingRenderer: MessageContentRenderer = {
   render(parsed, _role, context) {
@@ -333,6 +372,7 @@ const KIND_RENDERERS: Record<string, (parsed: unknown, role: MessageRole, contex
   assistant_thinking: assistantThinkingRenderer.render,
   user_text: userTextContentRenderer.render,
   user_content: userContentRenderer.render,
+  plan_execution: planExecutionRenderer.render,
   task_notification: taskNotificationRenderer.render,
   notification: (parsed, role, context) => {
     // Try each notification renderer in order

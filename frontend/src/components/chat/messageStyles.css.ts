@@ -50,6 +50,13 @@ export const thinkingMessage = style([messageBubble, {
   alignSelf: 'flex-start',
 }])
 
+export const planExecutionMessage = style([messageBubble, {
+  backgroundColor: 'var(--accent)',
+  border: '1px dashed var(--border)',
+  color: 'var(--foreground)',
+  alignSelf: 'flex-end',
+}])
+
 export const thinkingHeader = style({
   display: 'flex',
   alignItems: 'center',

@@ -1889,9 +1889,19 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 
 	slog.Info("plan exec: agent restarted successfully", "agent_id", agentID)
 
-	// Send plan content as user message.
+	// Send plan content as user message and persist it for the frontend.
 	if err := svc.Agents.SendInput(agentID, planMsg, nil); err != nil {
 		slog.Error("plan exec: failed to send plan content", "agent_id", agentID, "error", err)
+	}
+
+	// Persist the plan execution message so the frontend can render it as
+	// a collapsible "Execute plan" bubble.
+	innerJSON, _ := json.Marshal(map[string]interface{}{
+		"content":       planMsg,
+		"planExecution": true,
+	})
+	if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_USER, innerJSON, agent.SpanInfo{}, nil); err != nil {
+		slog.Warn("plan exec: failed to persist plan execution message", "agent_id", agentID, "error", err)
 	}
 }
 

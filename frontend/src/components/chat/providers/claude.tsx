@@ -174,6 +174,8 @@ function classifyClaudeCodeMessage(
   if (!type && typeof parentObject.content === 'string') {
     if (parentObject.hidden === true)
       return { kind: 'hidden' }
+    if (parentObject.planExecution === true)
+      return { kind: 'plan_execution' }
     return { kind: 'user_content' }
   }
 
