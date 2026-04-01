@@ -17,5 +17,5 @@ globalStyle(`${compactSwitch} input[type="checkbox"][role="switch"]::before`, {
 })
 
 globalStyle(`${compactSwitch} input[type="checkbox"][role="switch"]:checked::before`, {
-  transform: 'translate(1em, -50%)',
+  transform: 'translate(calc(2.25em - 100% - 4px), -50%)',
 })
