@@ -212,27 +212,6 @@ export const planApprovalCheckboxes = style({
   flexDirection: 'column',
 })
 
-// Compact switch labels inside the control footer to match button height.
-globalStyle(`${controlFooter} label:has(input[type="checkbox"][role="switch"])`, {
-  fontSize: 'var(--text-8)',
-  marginBottom: 0,
-  gap: '0.25em',
-})
-
-globalStyle(`${controlFooter} input[type="checkbox"][role="switch"]`, {
-  height: '1.25em',
-  width: '2.25em',
-})
-
-globalStyle(`${controlFooter} input[type="checkbox"][role="switch"]::before`, {
-  height: 'calc(1.25em - 4px)',
-  width: 'calc(1.25em - 4px)',
-})
-
-globalStyle(`${controlFooter} input[type="checkbox"][role="switch"]:checked::before`, {
-  transform: 'translateX(1em)',
-})
-
 export const collapsibleToggle = style({
   'all': 'unset',
   'display': 'inline',

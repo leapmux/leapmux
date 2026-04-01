@@ -4,6 +4,7 @@ import type { PermissionMode } from '~/utils/controlResponse'
 
 import { createSignal, Show } from 'solid-js'
 import { computePercentage } from '~/components/chat/ContextUsageGrid'
+import { CompactSwitch } from '~/components/common/CompactSwitch'
 import * as styles from '../ControlRequestBanner.css'
 
 export interface PlanApprovalState {
@@ -31,13 +32,12 @@ export const PlanApprovalCheckboxes: Component<{
 }> = (props) => {
   return (
     <div class={styles.planApprovalCheckboxes}>
-      <label data-testid="plan-clear-context-checkbox">
-        <input
-          type="checkbox"
-          role="switch"
-          checked={props.state.clearContext()}
-          onChange={e => props.state.setClearContext(e.currentTarget.checked)}
-        />
+      <CompactSwitch
+        checked={props.state.clearContext()}
+        onChange={props.state.setClearContext}
+        data-testid="plan-clear-context-checkbox"
+        fontSize="var(--text-8)"
+      >
         Clear Context
         <Show when={props.state.contextPct() !== null}>
           {' '}
@@ -45,17 +45,16 @@ export const PlanApprovalCheckboxes: Component<{
           {props.state.contextPct()}
           %)
         </Show>
-      </label>
+      </CompactSwitch>
       <Show when={props.bypassPermissionMode}>
-        <label data-testid="plan-bypass-permissions-checkbox">
-          <input
-            type="checkbox"
-            role="switch"
-            checked={props.state.bypassPermissions()}
-            onChange={e => props.state.setBypassPermissions(e.currentTarget.checked)}
-          />
+        <CompactSwitch
+          checked={props.state.bypassPermissions()}
+          onChange={props.state.setBypassPermissions}
+          data-testid="plan-bypass-permissions-checkbox"
+          fontSize="var(--text-8)"
+        >
           Bypass Permissions
-        </label>
+        </CompactSwitch>
       </Show>
     </div>
   )
