@@ -1340,17 +1340,8 @@ func (svc *Context) setAgentCollaborationModeWithAgent(dbAgent db.Agent, mode st
 	}
 }
 
-// setCodexBypassExtras sets the Codex-specific extra settings for bypass mode
-// (full network access and no sandbox restrictions).
-func (svc *Context) setCodexBypassExtras(agentID string) {
-	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
-	if err != nil {
-		slog.Error("set Codex bypass extras: agent not found", "agent_id", agentID, "error", err)
-		return
-	}
-	svc.setCodexBypassExtrasWithAgent(dbAgent)
-}
-
+// setCodexBypassExtrasWithAgent sets the Codex-specific extra settings for
+// bypass mode (full network access and no sandbox restrictions).
 func (svc *Context) setCodexBypassExtrasWithAgent(dbAgent db.Agent) {
 	agentID := dbAgent.ID
 	extras := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
@@ -1537,7 +1528,7 @@ func (svc *Context) handleCodexPlanModePromptResponse(agentID string, content []
 		slog.Warn("codex plan mode prompt unmarshal failed", "agent_id", agentID, "error", err)
 		return false
 	}
-	if crBody.Request.ToolName != "CodexPlanModePrompt" {
+	if crBody.Request.ToolName != agent.ToolNameCodexPlanModePrompt {
 		return false
 	}
 
@@ -1565,8 +1556,15 @@ func (svc *Context) handleCodexPlanModePromptResponse(agentID string, content []
 
 		svc.setAgentCollaborationModeWithAgent(dbAgent, agent.CodexCollaborationDefault)
 
-		// Apply bypass permissions if requested.
+		// Apply bypass permissions if requested. Re-fetch dbAgent because
+		// setAgentCollaborationModeWithAgent wrote new ExtraSettings to the DB
+		// and the snapshot is now stale.
 		if crPayload.PermissionMode != "" {
+			dbAgent, err = svc.Queries.GetAgentByID(bgCtx(), agentID)
+			if err != nil {
+				slog.Error("codex plan mode prompt: agent re-fetch failed", "agent_id", agentID, "error", err)
+				return false
+			}
 			svc.setAgentPermissionModeWithAgent(dbAgent, crPayload.PermissionMode)
 			svc.setCodexBypassExtrasWithAgent(dbAgent)
 		}

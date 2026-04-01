@@ -78,7 +78,6 @@ func extractPlanTitle(content string) string {
 		return r
 	}, line)
 
-	// Strip common "plan" prefixes (e.g. "Plan:", "Plan -", "[Plan]").
 	line = rePlanPrefix.ReplaceAllString(line, "")
 	line = strings.TrimSpace(line)
 

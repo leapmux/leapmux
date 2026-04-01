@@ -2,7 +2,7 @@ import type { Accessor, Component } from 'solid-js'
 import type { ActionsProps } from './types'
 import type { PermissionMode } from '~/utils/controlResponse'
 
-import { createSignal, Show } from 'solid-js'
+import { createMemo, createSignal, Show } from 'solid-js'
 import { computePercentage } from '~/components/chat/ContextUsageGrid'
 import { CompactSwitch } from '~/components/common/CompactSwitch'
 import * as styles from '../ControlRequestBanner.css'
@@ -20,10 +20,10 @@ export interface PlanApprovalState {
 export function createPlanApprovalState(props: Pick<ActionsProps, 'contextUsage' | 'modelContextWindow' | 'agentProvider' | 'bypassPermissionMode'>): PlanApprovalState {
   const [clearContext, setClearContext] = createSignal(false)
   const [bypassPermissions, setBypassPermissions] = createSignal(false)
-  const contextPct = () => {
+  const contextPct = createMemo(() => {
     const pct = computePercentage(props.contextUsage, props.modelContextWindow, props.agentProvider)
     return pct !== null ? Math.round(pct) : null
-  }
+  })
   const permissionMode = () => bypassPermissions() ? props.bypassPermissionMode : undefined
 
   return { clearContext, setClearContext, bypassPermissions, setBypassPermissions, contextPct, permissionMode }

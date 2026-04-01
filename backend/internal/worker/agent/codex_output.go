@@ -443,7 +443,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 				"type":       "control_request",
 				"request_id": requestID,
 				"request": map[string]interface{}{
-					"tool_name": "CodexPlanModePrompt",
+					"tool_name": ToolNameCodexPlanModePrompt,
 					"input":     map[string]interface{}{},
 				},
 			})

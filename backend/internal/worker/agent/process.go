@@ -111,8 +111,6 @@ func (p *processBase) APITimeout() time.Duration {
 	return DefaultAPITimeout
 }
 
-// ClearContext is a no-op for providers that don't support in-place context
-// clearing. Providers that support it (e.g. Codex) override this method.
 func (p *processBase) ClearContext() (string, bool) { return "", false }
 
 // DiscardOutput marks the process so that the readOutput loop silently
@@ -287,19 +285,16 @@ func (p *processBase) readOutput(scanner *bufio.Scanner, intercept outputInterce
 			continue
 		}
 
+		if p.isDiscardingOutput() {
+			continue
+		}
+
 		lineCopy := make([]byte, len(line))
 		copy(lineCopy, line)
 
 		parsed := &parsedLine{Raw: lineCopy}
 		if err := json.Unmarshal(lineCopy, parsed); err != nil {
 			slog.Warn("invalid agent output JSON", "agent_id", p.agentID, "error", err)
-			continue
-		}
-
-		// When marked for output discard (e.g. plan execution restart),
-		// drop remaining lines to avoid persisting spurious error messages
-		// from closed streams.
-		if p.isDiscardingOutput() {
 			continue
 		}
 

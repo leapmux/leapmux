@@ -22,6 +22,10 @@ const (
 	ControlBehaviorDeny  = "deny"
 )
 
+// ToolNameCodexPlanModePrompt is the synthetic tool_name used in control
+// requests when Codex completes a plan and prompts the user for approval.
+const ToolNameCodexPlanModePrompt = "CodexPlanModePrompt"
+
 // OptionGroupKeyPermissionMode is the key used in AvailableOptionGroup
 // to identify the permission-mode option group across all providers.
 const OptionGroupKeyPermissionMode = "permissionMode"

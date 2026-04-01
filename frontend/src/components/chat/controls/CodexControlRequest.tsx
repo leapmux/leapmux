@@ -173,7 +173,7 @@ const CodexPlanModePromptActions: Component<ActionsProps> = (props) => {
   const planApproval = createPlanApprovalState(props)
 
   const handleApprove = () => {
-    sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId, getToolInput(props.request.payload), planApproval.permissionMode(), planApproval.clearContext()))
+    sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId, getToolInput(props.request.payload), { permissionMode: planApproval.permissionMode(), clearContext: planApproval.clearContext() }))
   }
 
   return (
