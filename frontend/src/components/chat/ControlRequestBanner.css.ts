@@ -210,6 +210,7 @@ export const controlFooterRight = style({
 export const planApprovalCheckboxes = style({
   display: 'flex',
   flexDirection: 'column',
+  marginRight: 'var(--space-1)',
 })
 
 export const collapsibleToggle = style({
