@@ -8,10 +8,23 @@
 
 LeapMux is a **multiplexer for AI coding agents**. Run multiple agent instances in parallel from a single workspace, in the browser or as a native desktop app. Connect local and remote development backends (even behind NATs), organize work across tiling workspaces, interact with terminals, browse and diff files with full git awareness, and collaborate with your team, all with end-to-end encrypted communication.
 
+## Supported Agents
+
+<p>
+  <img src="icons/claude-code.svg" width="64" height="64" title="Claude Code">&nbsp;
+  <img src="icons/codex.svg" width="64" height="64" title="Codex">&nbsp;
+  <img src="icons/gemini-cli.svg" width="64" height="64" title="Gemini CLI">&nbsp;
+  <img src="icons/cursor.svg" width="64" height="64" title="Cursor">&nbsp;
+  <img src="icons/github-copilot.svg" width="64" height="64" title="GitHub Copilot">&nbsp;
+  <img src="icons/kilo.svg" width="64" height="64" title="Kilo">&nbsp;
+  <img src="icons/opencode.svg" width="64" height="64" title="OpenCode">&nbsp;
+  <img src="icons/goose.svg" width="64" height="64" title="Goose">
+</p>
+
 ## Key Features
 
 - **Multi-Agent Workspaces**
-  - Run multiple local or remote Claude Code instances simultaneously
+  - Run multiple local or remote coding agent instances simultaneously
 - **Tiling Layout**
   - Split the workspace into resizable horizontal/vertical panes — run chats and terminals side by side
 - **Desktop App**
@@ -29,8 +42,6 @@ LeapMux is a **multiplexer for AI coding agents**. Run multiple agent instances 
 - **NAT Traversal**
   - Workers initiate outbound connections, so they run behind firewalls without port forwarding
 
----
-
 ## Table of Contents
 
 - [Architecture](#architecture)
@@ -42,9 +53,7 @@ LeapMux is a **multiplexer for AI coding agents**. Run multiple agent instances 
 - [Project Structure](#project-structure)
 - [Contributing](#contributing)
 - [License](#license)
-- [Project Status](#project-status)
-
----
+- [Disclaimer](#disclaimer)
 
 ## Architecture
 
@@ -61,7 +70,7 @@ Run `leapmux` with no subcommand for a zero-config, single-user setup. Hub and W
 │  ┌─────────────┐  in-process   ┌──────────────────┐  │
 │  │     Hub     │◄─────────────►│     Worker       │  │
 │  │  (no auth)  │               │  ┌────────────┐  │  │
-│  │  + SQLite   │               │  │Claude Code │  │  │
+│  │  + SQLite   │               │  │   Agents   │  │  │
 │  │             │               │  │ (multiple) │  │  │
 │  └─────────────┘               │  └────────────┘  │  │
 │         ▲                      │  + SQLite        │  │
@@ -85,7 +94,7 @@ For multi-user and remote setups, run `leapmux hub` and `leapmux worker` separat
 ┌─────────────────┐              ┌──────────────────┐              ┌───────────────────┐
 │                 │  ConnectRPC  │                  │     gRPC     │  Worker 1         │
 │    Frontend     │◄────────────►│       Hub        │◄────────────►│  ┌─────────────┐  │
-│   (Browser /    │  WebSocket   │     (Relay)      │              │  │ Claude Code │  │
+│   (Browser /    │  WebSocket   │     (Relay)      │              │  │   Agents    │  │
 │   Desktop App)  │              │                  │              │  │ (multiple)  │  │
 │                 │              │    Go Service    │              │  └─────────────┘  │
 └─────────────────┘              │    + Database    │              │  + SQLite         │
@@ -94,7 +103,7 @@ For multi-user and remote setups, run `leapmux hub` and `leapmux worker` separat
                                                                    ┌───────────────────┐
                                                                    │  Worker N         │
                                                                    │  ┌─────────────┐  │
-                                                                   │  │ Claude Code │  │
+                                                                   │  │   Agents    │  │
                                                                    │  │ (multiple)  │  │
                                                                    │  └─────────────┘  │
                                                                    │  + SQLite         │
@@ -130,7 +139,7 @@ LeapMux is a single binary with these subcommands:
 - No access to channel plaintext — acts as an authenticated relay
 
 **Worker (Go)**
-- Wraps Claude Code instances and provides system access
+- Wraps coding agent instances and provides system access
 - Handles agent lifecycle, terminal sessions, file browsing, and git operations
 - Maintains its own SQLite database for agent and terminal state
 - Communicates with Hub via gRPC (over TCP or Unix domain socket)
@@ -145,8 +154,6 @@ LeapMux is a single binary with these subcommands:
   - Workers initiate outbound connections to the Hub, so they can run behind NATs, without requiring inbound port access.
   - For local workers on the same machine, connect via Unix domain socket using `unix:<socket-path>` as the Hub URL.
 - **Message Format**: Protocol Buffers (defined in `/proto/leapmux/v1/`)
-
----
 
 ## Prerequisites
 
@@ -199,8 +206,6 @@ yay -S mprocs-bin wails
 
 LeapMux is developed and tested on macOS and Linux. Windows support may require WSL.
 
----
-
 ## Quick Start
 
 Get LeapMux running locally:
@@ -230,8 +235,6 @@ To run in solo mode (localhost-only, no login) instead of dev mode during develo
 ```bash
 task dev-solo
 ```
-
----
 
 ## Development
 
@@ -313,7 +316,7 @@ task generate
 You can also run each generator individually:
 ```bash
 task generate-proto   # Generate Protocol Buffer code (Go and TypeScript)
-task generate-sqlc    # Generate type-safe SQL code for the hub
+task generate-sqlc    # Generate type-safe SQL code (hub and worker)
 ```
 
 Task uses checksums to skip generation when source files haven't changed. To force regeneration, use `task --force generate`.
@@ -342,8 +345,6 @@ Remove all build artifacts and generated code:
 ```bash
 task clean
 ```
-
----
 
 ## Docker
 
@@ -385,8 +386,6 @@ Pre-built images are published to GHCR in two variants:
 
 Tool and base image versions are centralized in the `versions.yaml` file at the repository root.
 
----
-
 ## Technology Stack
 
 ### Frontend
@@ -417,9 +416,9 @@ Tool and base image versions are centralized in the `versions.yaml` file at the 
 - **[SQLite](https://sqlite.org/)** - Embedded database
 - **[sqlc](https://sqlc.dev/)** - Type-safe SQL code generation
 
-### Worker (Claude Code Wrapper)
+### Worker (Agent Wrapper)
 
-- **[flynn/noise](https://github.com/flynn/noise)** - Noise protocol implementation for E2EE channel handling
+- **[CIRCL](https://github.com/cloudflare/circl)** - Post-quantum cryptographic primitives (ML-KEM, SLH-DSA) for E2EE channel handling
 - **[Git](https://git-scm.com/)** - Repository info and worktree management
 - **[Go](https://go.dev/)** - Primary language
 - **[gRPC](https://grpc.io/)** - Communication with Hub
@@ -436,8 +435,6 @@ Tool and base image versions are centralized in the `versions.yaml` file at the 
 - **[golangci-lint](https://golangci-lint.run/)** - Go linting
 - **[mprocs](https://github.com/pvolok/mprocs)** - Multi-process runner for development
 - **[Task](https://taskfile.dev/)** - Build orchestration with checksum-based caching
-
----
 
 ## Project Structure
 
@@ -463,20 +460,15 @@ leapmux/
 │   │   ├── config/         # Shared configuration loading (koanf-based)
 │   │   │
 │   │   ├── hub/            # Hub implementation
-│   │   │   ├── agentmgr/   # Agent event broadcasting
 │   │   │   ├── auth/       # Session-based authentication
 │   │   │   ├── bootstrap/  # Database initialization and seeding
 │   │   │   ├── channelmgr/ # E2EE channel routing and chunk validation
 │   │   │   ├── config/     # Hub configuration
 │   │   │   ├── db/         # Database driver, migrations, and queries
 │   │   │   ├── frontend/   # Frontend asset embedding and dev proxy
-│   │   │   ├── generated/  # sqlc-generated code (gitignored)
 │   │   │   ├── layout/     # Workspace tiling layout management
 │   │   │   ├── notifier/   # Worker notification queue (persistent delivery with retries)
 │   │   │   ├── service/    # RPC service implementations (auth, workspace, channel relay)
-│   │   │   ├── terminalmgr/# Terminal session management
-│   │   │   ├── timeout/    # Timeout configuration
-│   │   │   ├── validate/   # Input validation
 │   │   │   └── workermgr/  # Worker connection registry and pending approvals
 │   │   │
 │   │   ├── logging/        # Structured logging and middleware
@@ -485,7 +477,7 @@ leapmux/
 │   │   ├── util/           # Shared utilities (id, lexorank, msgcodec, timefmt, testutil)
 │   │   │
 │   │   └── worker/         # Worker implementation
-│   │       ├── agent/      # Claude Code process management
+│   │       ├── agent/      # Agent process management
 │   │       ├── channel/    # E2EE channel session management and dispatch
 │   │       ├── config/     # Worker configuration
 │   │       ├── db/         # Worker database driver, migrations, and queries
@@ -493,7 +485,8 @@ leapmux/
 │   │       ├── gitutil/    # Git repository utilities
 │   │       ├── hub/        # gRPC client to Hub (with auto-reconnect)
 │   │       ├── service/    # Agent, terminal, file, and git service handlers
-│   │       └── terminal/   # PTY session management
+│   │       ├── terminal/   # PTY session management
+│   │       └── wakelock/   # System wake lock management
 │   │
 │   ├── solo/               # Shared solo mode startup logic
 │   │
@@ -523,7 +516,8 @@ leapmux/
 │   │   └── utils/          # Shared utility functions
 │   └── tests/              # Unit tests (Vitest) and E2E tests (Playwright)
 │
-├── icons/                  # SVG icons (light, dark, and default variants)
+├── icons/                  # SVG icons (app logo and agent provider icons)
+├── scripts/                # Utility scripts
 │
 ├── proto/                  # Protocol Buffer definitions
 │   └── leapmux/v1/        # Service and message definitions
@@ -538,51 +532,9 @@ leapmux/
 └── versions.yaml           # Version string and tool/image versions
 ```
 
----
-
 ## Contributing
 
-We welcome contributions to LeapMux! Here's how to get started:
-
-### Development Workflow
-
-1. **Fork the repository** and clone your fork
-2. **Create a feature branch**: `git checkout -b feature/your-feature-name`
-3. **Make your changes** following the code style guidelines
-4. **Run code generation** if you modified `.proto` or `.sql` files: `task generate`
-5. **Run tests**: `task test`
-6. **Run linters**: `task lint`
-7. **Commit your changes** with clear commit messages
-8. **Push to your fork** and submit a pull request
-
-### Code Style Guidelines
-
-- **Go**: Follow standard Go conventions (run `gofmt`, use `golangci-lint`)
-- **TypeScript/JavaScript**: Follow ESLint rules configured in the project
-- **Protocol Buffers**: Use `buf lint` to validate `.proto` files
-
-### Testing Requirements
-
-All contributions should include:
-- Unit tests for new functionality
-- Integration tests for cross-component features
-- E2E tests for user-facing features (when applicable)
-
-Ensure all linters and tests pass before submitting:
-```bash
-task lint
-task test
-task test-e2e
-```
-
-### Code Generation
-
-When you modify Protocol Buffer definitions or SQL queries:
-1. Run `task generate-proto` for `.proto` changes, `task generate-sqlc` for `.sql` changes, or `task generate` for both
-2. Generated code is `.gitignore`'d and should not be committed — only commit the source changes
-3. Ensure tests still pass after regeneration
-
----
+We don't accept code contributions at the moment. Please feel free to create issues, though; we will follow them up.
 
 ## License
 
@@ -595,15 +547,6 @@ This means:
 
 See the [LICENSE](LICENSE.md) file for full details.
 
----
+## Disclaimer
 
-## Project Status
-
-**Version**: 0.0.1-dev
-**Status**: Early Alpha (Active Development)
-
-LeapMux is in active development. The API and architecture may change as we iterate toward a stable release.
-
----
-
-**Built with ❤️ by the LeapMux team**
+All product names, logos, and trademarks are the property of their respective owners. LeapMux is not affiliated with, endorsed by, or sponsored by Anthropic, OpenAI, Google, GitHub, Microsoft, Anysphere, Block, Kilo Code, Anomaly, or any other third party. Agent icons are used solely to indicate compatibility and are reproduced here for identification purposes only.
