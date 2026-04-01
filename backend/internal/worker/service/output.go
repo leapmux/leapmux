@@ -969,7 +969,7 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 		Params  *struct {
 			Name string `json:"name,omitempty"`
 		} `json:"params,omitempty"`
-		RLInfo  *struct {
+		RLInfo *struct {
 			RateLimitType string `json:"rateLimitType"`
 		} `json:"rate_limit_info,omitempty"`
 	}
