@@ -432,12 +432,12 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 		if promptText == "" {
 			promptText = assistantText
 		}
-		// Persist plan content so initiatePlanExecution can use it.
-		if promptText != "" && collaborationMode == CodexCollaborationPlan {
-			compressed, compression := msgcodec.Compress([]byte(promptText))
-			a.sink.UpdatePlan("", compressed, compression, extractPlanTitle(promptText))
-		}
 		if turnStatus == "completed" && collaborationMode == CodexCollaborationPlan && (sawPlan || promptText != "") {
+			// Persist plan content so initiatePlanExecution can use it.
+			if promptText != "" {
+				compressed, compression := msgcodec.Compress([]byte(promptText))
+				a.sink.UpdatePlan("", compressed, compression, extractPlanTitle(promptText))
+			}
 			requestID := fmt.Sprintf("codex-plan-prompt-%s", turnID)
 			payload, err := json.Marshal(map[string]interface{}{
 				"type":       "control_request",

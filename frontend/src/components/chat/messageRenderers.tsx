@@ -1,5 +1,6 @@
 /* eslint-disable solid/components-return-once -- render methods are not Solid components */
 /* eslint-disable solid/no-innerhtml -- HTML is produced from user/assistant text via remark, not arbitrary user input */
+import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
 import type { MessageCategory } from './messageClassification'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
@@ -152,19 +153,20 @@ const assistantTextRenderer: MessageContentRenderer = {
   },
 }
 
-/** Inner component for thinking messages — owns local expand/collapse state. */
-export function ThinkingMessage(props: { text: string, context?: RenderContext }): JSX.Element {
-  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, 'thinking')
+/** Collapsible message with icon, label, and markdown body. */
+function CollapsibleMessage(props: { text: string, icon: LucideIcon, label: string, stateKey: string, context?: RenderContext }): JSX.Element {
+  // eslint-disable-next-line solid/reactivity -- stateKey is a static string, never changes
+  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, props.stateKey)
 
   return (
     <>
       <div class={thinkingHeader} onClick={() => setExpanded(v => !v)}>
-        <Tooltip text="Thinking">
+        <Tooltip text={props.label}>
           <span class={inlineFlex}>
-            <Icon icon={Brain} size="md" class={toolUseIcon} />
+            <Icon icon={props.icon} size="md" class={toolUseIcon} />
           </span>
         </Tooltip>
-        <span class={toolInputText}>Thinking</span>
+        <span class={toolInputText}>{props.label}</span>
         <span class={`${inlineFlex} ${thinkingChevron}${expanded() ? ` ${thinkingChevronExpanded}` : ''}`}>
           <Icon icon={ChevronRight} size="sm" class={toolUseIcon} />
         </span>
@@ -178,30 +180,12 @@ export function ThinkingMessage(props: { text: string, context?: RenderContext }
   )
 }
 
-/** Inner component for plan execution messages — owns local expand/collapse state. */
-export function PlanExecutionMessage(props: { text: string, context?: RenderContext }): JSX.Element {
-  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, 'planExecution')
+export function ThinkingMessage(props: { text: string, context?: RenderContext }): JSX.Element {
+  return <CollapsibleMessage text={props.text} icon={Brain} label="Thinking" stateKey="thinking" context={props.context} />
+}
 
-  return (
-    <>
-      <div class={thinkingHeader} onClick={() => setExpanded(v => !v)}>
-        <Tooltip text="Execute plan">
-          <span class={inlineFlex}>
-            <Icon icon={PlaneTakeoff} size="md" class={toolUseIcon} />
-          </span>
-        </Tooltip>
-        <span class={toolInputText}>Execute plan</span>
-        <span class={`${inlineFlex} ${thinkingChevron}${expanded() ? ` ${thinkingChevronExpanded}` : ''}`}>
-          <Icon icon={ChevronRight} size="sm" class={toolUseIcon} />
-        </span>
-      </div>
-      <Show when={expanded()}>
-        <div class={thinkingContent}>
-          <div class={markdownContent} innerHTML={renderMarkdown(props.text)} />
-        </div>
-      </Show>
-    </>
-  )
+export function PlanExecutionMessage(props: { text: string, context?: RenderContext }): JSX.Element {
+  return <CollapsibleMessage text={props.text} icon={PlaneTakeoff} label="Execute plan" stateKey="planExecution" context={props.context} />
 }
 
 /** Handles plan execution messages: {"content":"...","planExecution":true} */
