@@ -16,6 +16,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	"github.com/leapmux/leapmux/internal/worker/config"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
@@ -51,7 +52,7 @@ func (svc *Context) agentStartupTimeout() time.Duration {
 	if svc.AgentStartupTimeout > 0 {
 		return svc.AgentStartupTimeout
 	}
-	return 30 * time.Second
+	return time.Duration(config.DefaultAgentStartupTimeoutSeconds) * time.Second
 }
 
 // NewContext creates a new service context with all dependencies.
