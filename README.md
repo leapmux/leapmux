@@ -11,14 +11,14 @@ LeapMux is a **multiplexer for AI coding agents**. Run multiple agent instances 
 ## Supported Agents
 
 <p>
-  <img src="icons/claude-code.svg" width="64" height="64" title="Claude Code">&nbsp;
-  <img src="icons/codex.svg" width="64" height="64" title="Codex">&nbsp;
-  <img src="icons/gemini-cli.svg" width="64" height="64" title="Gemini CLI">&nbsp;
-  <img src="icons/cursor.svg" width="64" height="64" title="Cursor">&nbsp;
-  <img src="icons/github-copilot.svg" width="64" height="64" title="GitHub Copilot">&nbsp;
-  <img src="icons/kilo.svg" width="64" height="64" title="Kilo">&nbsp;
-  <img src="icons/opencode.svg" width="64" height="64" title="OpenCode">&nbsp;
-  <img src="icons/goose.svg" width="64" height="64" title="Goose">
+  <a href="https://claude.com/product/claude-code"><img src="icons/claude-code.svg" width="64" height="64" title="Claude Code"></a>&nbsp;
+  <a href="https://openai.com/codex/"><img src="icons/codex.svg" width="64" height="64" title="Codex"></a>&nbsp;
+  <a href="https://geminicli.com/"><img src="icons/gemini-cli.svg" width="64" height="64" title="Gemini CLI"></a>&nbsp;
+  <a href="https://cursor.com/cli"><img src="icons/cursor.svg" width="64" height="64" title="Cursor"></a>&nbsp;
+  <a href="https://github.com/features/copilot/cli"><img src="icons/github-copilot.svg" width="64" height="64" title="GitHub Copilot"></a>&nbsp;
+  <a href="https://kilo.ai/cli"><img src="icons/kilo.svg" width="64" height="64" title="Kilo"></a>&nbsp;
+  <a href="https://opencode.ai/"><img src="icons/opencode.svg" width="64" height="64" title="OpenCode"></a>&nbsp;
+  <a href="https://block.github.io/goose/"><img src="icons/goose.svg" width="64" height="64" title="Goose"></a>
 </p>
 
 ## Key Features
