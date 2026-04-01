@@ -25,6 +25,9 @@ const (
 // to identify the permission-mode option group across all providers.
 const OptionGroupKeyPermissionMode = "permissionMode"
 
+// APITimeout is the default timeout for JSON-RPC requests to the agent process.
+const APITimeout = 30 * time.Second
+
 // ExitHandler is called when an agent process exits.
 // agentID identifies the agent, exitCode is the process exit code,
 // and err is non-nil if the process exited with an error.
@@ -50,7 +53,7 @@ func (o Options) startupTimeout() time.Duration {
 	if o.StartupTimeout > 0 {
 		return o.StartupTimeout
 	}
-	return 30 * time.Second
+	return APITimeout
 }
 
 // providerRegistration holds the factory function, default model list,

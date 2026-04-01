@@ -296,7 +296,7 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	}
 
 	paramsJSON, _ := json.Marshal(threadParams)
-	resp, err := a.sendRequest("thread/start", paramsJSON, 30*time.Second)
+	resp, err := a.sendRequest("thread/start", paramsJSON, APITimeout)
 	if err != nil {
 		slog.Error("codex ClearContext: thread/start failed", "agent_id", a.agentID, "error", err)
 		return "", false
@@ -436,7 +436,7 @@ func (a *CodexAgent) sendTurnStart(
 		return fmt.Errorf("marshal turn/start params: %w", err)
 	}
 
-	resp, err := a.sendRequest("turn/start", paramsJSON, 30*time.Second)
+	resp, err := a.sendRequest("turn/start", paramsJSON, APITimeout)
 	if err != nil {
 		return fmt.Errorf("turn/start: %w", err)
 	}
@@ -468,7 +468,7 @@ func (a *CodexAgent) sendTurnSteer(threadID, turnID string, input []map[string]i
 		return fmt.Errorf("marshal turn/steer params: %w", err)
 	}
 
-	_, err = a.sendRequest("turn/steer", paramsJSON, 30*time.Second)
+	_, err = a.sendRequest("turn/steer", paramsJSON, APITimeout)
 	if err != nil {
 		return fmt.Errorf("turn/steer: %w", err)
 	}

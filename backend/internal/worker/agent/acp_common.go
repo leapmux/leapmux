@@ -182,7 +182,7 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 // replacing the current session with a fresh one.
 func (b *acpBase) ClearContext() (string, bool) {
 	_, params := buildACPSessionRequest("", b.workingDir, acpMethodSessionNew, "")
-	resp, err := b.sendRequest(acpMethodSessionNew, json.RawMessage(params), 30*time.Second)
+	resp, err := b.sendRequest(acpMethodSessionNew, json.RawMessage(params), APITimeout)
 	if err != nil {
 		slog.Error("acp ClearContext failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
 		return "", false
