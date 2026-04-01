@@ -100,6 +100,10 @@ func (p *processBase) IsStopped() bool {
 	return p.stopped
 }
 
+// ClearContext is a no-op for providers that don't support in-place context
+// clearing. Providers that support it (e.g. Codex) override this method.
+func (p *processBase) ClearContext() (string, bool) { return "", false }
+
 // DiscardOutput marks the process so that the readOutput loop silently
 // drops all remaining lines. Use this before stopping an agent that will
 // be restarted (e.g. plan execution) to avoid persisting spurious error

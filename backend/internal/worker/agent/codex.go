@@ -274,6 +274,57 @@ func (a *CodexAgent) tryThreadRequest(
 	return result.Thread.ID, false, nil
 }
 
+// ClearContext sends a new thread/start on the running Codex process,
+// replacing the current thread with a fresh one.
+func (a *CodexAgent) ClearContext() (string, bool) {
+	a.mu.Lock()
+	approvalPolicy := a.approvalPolicy
+	sandboxPolicy := a.sandboxPolicy
+	serviceTier := a.serviceTier
+	model := a.model
+	workingDir := a.workingDir
+	a.mu.Unlock()
+
+	threadParams := map[string]interface{}{
+		"model":          model,
+		"cwd":            workingDir,
+		"approvalPolicy": approvalPolicy,
+		"sandbox":        sandboxPolicy,
+	}
+	if st := codexServiceTierValue(serviceTier); st != nil {
+		threadParams["serviceTier"] = *st
+	}
+
+	paramsJSON, _ := json.Marshal(threadParams)
+	resp, err := a.sendRequest("thread/start", paramsJSON, 30*time.Second)
+	if err != nil {
+		slog.Error("codex ClearContext: thread/start failed", "agent_id", a.agentID, "error", err)
+		return "", false
+	}
+
+	var result struct {
+		Thread struct {
+			ID string `json:"id"`
+		} `json:"thread"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil || result.Thread.ID == "" {
+		slog.Error("codex ClearContext: invalid thread/start response", "agent_id", a.agentID, "error", err, "response", string(resp))
+		return "", false
+	}
+
+	a.mu.Lock()
+	a.threadID = result.Thread.ID
+	a.turnID = ""
+	a.turnSawPlan = false
+	a.turnPlanText = ""
+	a.turnAssistantText = ""
+	a.streamingPlan = false
+	a.mu.Unlock()
+
+	a.sink.UpdateSessionID(result.Thread.ID)
+	return result.Thread.ID, true
+}
+
 // SendInput writes a user message to the agent. If a turn is already in
 // progress it uses turn/steer; otherwise it starts a new turn via turn/start
 // with the current model, effort, approval policy and sandbox policy.

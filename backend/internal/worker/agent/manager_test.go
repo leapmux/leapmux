@@ -22,6 +22,7 @@ func (s *stubProvider) SendRawInput([]byte) error                               
 func (s *stubProvider) Stop()                                                    {}
 func (s *stubProvider) IsStopped() bool                                          { return false }
 func (s *stubProvider) DiscardOutput()                                           {}
+func (s *stubProvider) ClearContext() (string, bool)                             { return "", false }
 func (s *stubProvider) Wait() error                                              { return nil }
 func (s *stubProvider) Stderr() string                                           { return "" }
 func (s *stubProvider) CurrentSettings() *leapmuxv1.AgentSettings                { return &leapmuxv1.AgentSettings{} }

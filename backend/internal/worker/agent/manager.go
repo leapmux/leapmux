@@ -200,6 +200,19 @@ func (m *Manager) stopAndWait(agentID string, discardOutput bool) bool {
 	return true
 }
 
+// ClearContext attempts to clear the agent's context in-place (e.g. by
+// starting a new Codex thread). Returns the new session ID and true if
+// successful, or ("", false) if the provider doesn't support it.
+func (m *Manager) ClearContext(agentID string) (string, bool) {
+	m.mu.RLock()
+	p, ok := m.agents[agentID]
+	m.mu.RUnlock()
+	if !ok {
+		return "", false
+	}
+	return p.ClearContext()
+}
+
 // AvailableModels returns the models reported by the agent process.
 // Falls back to the cached model list, then to the provider's static defaults.
 func (m *Manager) AvailableModels(agentID string, provider leapmuxv1.AgentProvider) []*leapmuxv1.AvailableModel {

@@ -1792,9 +1792,10 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 	return skipSend
 }
 
-// initiatePlanExecution stops the agent, clears its context, and restarts
-// it with the plan content as a synthetic user message. This enables
-// "plan mode" where the agent executes the approved plan with fresh context.
+// initiatePlanExecution clears the agent's context and sends the plan as a
+// user message. For providers that support in-place context clearing (Codex),
+// it sends a new thread/start on the running process. For others (Claude Code),
+// it stops and restarts the agent process entirely.
 func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {
@@ -1827,6 +1828,55 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 		return
 	}
 
+	planMsg := "Execute the following plan:\n\n---\n\n" + planContent
+	if dbAgent.PlanFilePath != "" {
+		planMsg += "\n\n---\n\nThe above plan has been written to " + dbAgent.PlanFilePath + " — re-read it if needed."
+	}
+
+	// Try in-place context clearing first (e.g. Codex thread/start on
+	// the running process). Fall back to full restart if not supported.
+	if newSessionID, ok := svc.Agents.ClearContext(agentID); ok {
+		slog.Info("plan exec: context cleared in-place", "agent_id", agentID, "session_id", newSessionID)
+
+		// Update the session ID in the DB.
+		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
+			AgentSessionID: newSessionID,
+			ID:             agentID,
+		})
+
+		// Clear span tracking and broadcast notifications.
+		svc.Output.ResetSpanTracker(agentID)
+		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+			"type": "context_cleared",
+		})
+		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+			"type":           "plan_execution",
+			"plan_file_path": dbAgent.PlanFilePath,
+		})
+	} else {
+		// Full restart path (Claude Code and other providers).
+		svc.initiatePlanExecutionRestart(agentID, targetMode, dbAgent, planMsg)
+	}
+
+	// Send plan content as user message and persist it for the frontend.
+	if err := svc.Agents.SendInput(agentID, planMsg, nil); err != nil {
+		slog.Error("plan exec: failed to send plan content", "agent_id", agentID, "error", err)
+	}
+
+	// Persist the plan execution message so the frontend can render it as
+	// a collapsible "Execute plan" bubble.
+	innerJSON, _ := json.Marshal(map[string]interface{}{
+		"content":       planMsg,
+		"planExecution": true,
+	})
+	if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_USER, innerJSON, agent.SpanInfo{}, nil); err != nil {
+		slog.Warn("plan exec: failed to persist plan execution message", "agent_id", agentID, "error", err)
+	}
+}
+
+// initiatePlanExecutionRestart performs a full stop-and-restart to clear
+// context for providers that don't support in-place clearing (e.g. Claude Code).
+func (svc *Context) initiatePlanExecutionRestart(agentID, targetMode string, dbAgent db.Agent, planMsg string) {
 	// Discard remaining output and stop the agent. DiscardOutput prevents
 	// persisting spurious errors (e.g. "stream closed") emitted during
 	// shutdown. Waits for the process to fully exit so StartAgent below
@@ -1846,15 +1896,6 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 	})
 
 	// Restart agent with plan content.
-	// Don't clear agentSessionId before starting — the frontend uses it for
-	// isWatchable. On success, handleSystemInit will overwrite it with the
-	// new session ID. On failure, clear it so ensureAgentRunning won't try
-	// to resume a stale session.
-	planMsg := "Execute the following plan:\n\n---\n\n" + planContent
-	if dbAgent.PlanFilePath != "" {
-		planMsg += "\n\n---\n\nThe above plan has been written to " + dbAgent.PlanFilePath + " — re-read it if needed."
-	}
-
 	model := modelOrDefault(dbAgent.Model, dbAgent.AgentProvider)
 	extraSettings := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
@@ -1888,21 +1929,6 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 	}
 
 	slog.Info("plan exec: agent restarted successfully", "agent_id", agentID)
-
-	// Send plan content as user message and persist it for the frontend.
-	if err := svc.Agents.SendInput(agentID, planMsg, nil); err != nil {
-		slog.Error("plan exec: failed to send plan content", "agent_id", agentID, "error", err)
-	}
-
-	// Persist the plan execution message so the frontend can render it as
-	// a collapsible "Execute plan" bubble.
-	innerJSON, _ := json.Marshal(map[string]interface{}{
-		"content":       planMsg,
-		"planExecution": true,
-	})
-	if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_USER, innerJSON, agent.SpanInfo{}, nil); err != nil {
-		slog.Warn("plan exec: failed to persist plan execution message", "agent_id", agentID, "error", err)
-	}
 }
 
 // parseSetPermissionMode checks if a control_request is a set_permission_mode

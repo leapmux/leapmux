@@ -68,4 +68,9 @@ type Provider interface {
 	// the next turn picks them up without a restart. Providers that do
 	// not support live updates (e.g. Claude Code) return false.
 	UpdateSettings(s *leapmuxv1.AgentSettings) bool
+	// ClearContext starts a new thread/session on the running process,
+	// effectively clearing conversation context without a full restart.
+	// Returns the new session ID, or ("", false) if the provider does not
+	// support in-place context clearing (caller should restart instead).
+	ClearContext() (sessionID string, ok bool)
 }
