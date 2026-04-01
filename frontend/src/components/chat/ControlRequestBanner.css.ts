@@ -207,6 +207,17 @@ export const controlFooterRight = style({
   gridColumn: 3,
 })
 
+// Compact switch labels inside the control footer to match button height.
+globalStyle(`${controlFooter} label:has(input[type="checkbox"][role="switch"])`, {
+  fontSize: 'var(--text-8)',
+  marginBottom: 0,
+})
+
+globalStyle(`${controlFooter} input[type="checkbox"][role="switch"]`, {
+  height: '1em',
+  width: '1.75em',
+})
+
 export const collapsibleToggle = style({
   'all': 'unset',
   'display': 'inline',
