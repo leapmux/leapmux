@@ -229,6 +229,10 @@ globalStyle(`${controlFooter} input[type="checkbox"][role="switch"]::before`, {
   width: 'calc(1.25em - 4px)',
 })
 
+globalStyle(`${controlFooter} input[type="checkbox"][role="switch"]:checked::before`, {
+  transform: 'translateX(1em)',
+})
+
 export const collapsibleToggle = style({
   'all': 'unset',
   'display': 'inline',
