@@ -478,7 +478,8 @@ export function renderNotificationThread(messages: unknown[]): JSXElement {
       if (!startupGroups.has(startup.groupKey)) {
         startupGroups.set(startup.groupKey, { prefix: startup.prefix, entries: [startup.entry] })
         startupGroupOrder.push(startup.groupKey)
-      } else {
+      }
+      else {
         startupGroups.get(startup.groupKey)!.entries.push(startup.entry)
       }
       continue

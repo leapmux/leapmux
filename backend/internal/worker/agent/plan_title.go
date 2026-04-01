@@ -19,6 +19,10 @@ var (
 	reLink          = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
 	reWikiLink      = regexp.MustCompile(`\[\[(.+?)\]\]`)
 
+	// rePlanPrefix matches common "plan" prefixes in titles, e.g.
+	// "Plan:", "Plan -", "[Plan]", "(Plan)", "*Plan*", etc.
+	rePlanPrefix = regexp.MustCompile(`(?i)^[\[({<*]*plan[\])}>*]*[\s:\-–—]+`)
+
 	htmlPolicy = bluemonday.StrictPolicy()
 )
 
@@ -73,6 +77,10 @@ func extractPlanTitle(content string) string {
 		}
 		return r
 	}, line)
+
+	// Strip common "plan" prefixes (e.g. "Plan:", "Plan -", "[Plan]").
+	line = rePlanPrefix.ReplaceAllString(line, "")
+	line = strings.TrimSpace(line)
 
 	// Truncate to 128 characters.
 	if len([]rune(line)) > 128 {

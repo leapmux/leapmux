@@ -23,10 +23,12 @@ export function buildAllowResponse(
   requestId: string,
   updatedInput: Record<string, unknown>,
   permissionMode?: PermissionMode,
+  clearContext?: boolean,
 ): Record<string, unknown> {
   return {
     type: 'control_response',
     permissionMode, // optional, consumed by hub for ExitPlanMode
+    ...(clearContext ? { clearContext: true } : {}),
     response: {
       subtype: 'success',
       request_id: requestId,

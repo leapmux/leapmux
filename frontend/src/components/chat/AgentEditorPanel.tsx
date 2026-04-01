@@ -467,6 +467,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                     editorContentRef={editorContentRef}
                     bypassPermissionMode={props.agent?.agentProvider ? getProviderPlugin(props.agent.agentProvider)?.bypassPermissionMode : undefined}
                     onPermissionModeChange={props.onPermissionModeChange}
+                    contextUsage={props.agentSessionInfo?.contextUsage}
+                    modelContextWindow={modelContextWindow()}
                     infoTrigger={
                       info.showInfoTrigger()
                         ? (

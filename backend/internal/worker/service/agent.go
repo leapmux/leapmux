@@ -741,15 +741,17 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// forwarding to the agent. This mirrors the main-branch Hub logic
 		// that updated permission mode based on EnterPlanMode/ExitPlanMode
 		// approval or rejection.
-		svc.handleControlResponsePlanMode(agentID, content)
+		skipSend := svc.handleControlResponsePlanMode(agentID, content)
 
 		svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, displayText)
 
-		if err := svc.Agents.SendRawInput(agentID, content); err != nil {
-			slog.Error("failed to send control response to agent",
-				"agent_id", agentID, "error", err)
-			sendNotFoundError(sender, "agent not found or not running")
-			return
+		if !skipSend {
+			if err := svc.Agents.SendRawInput(agentID, content); err != nil {
+				slog.Error("failed to send control response to agent",
+					"agent_id", agentID, "error", err)
+				sendNotFoundError(sender, "agent not found or not running")
+				return
+			}
 		}
 
 		// Delete the resolved control request from the DB so it is not
@@ -1326,6 +1328,77 @@ func (svc *Context) setAgentCollaborationMode(agentID, mode string) {
 	}
 }
 
+// setCodexBypassExtras sets the Codex-specific extra settings for bypass mode
+// (full network access and no sandbox restrictions).
+func (svc *Context) setCodexBypassExtras(agentID string) {
+	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+	if err != nil {
+		slog.Error("set Codex bypass extras: agent not found", "agent_id", agentID, "error", err)
+		return
+	}
+
+	extras := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
+	changes := map[string]interface{}{}
+
+	setExtra := func(key, newVal string) {
+		oldVal := extras[key]
+		if oldVal == newVal {
+			return
+		}
+		extras[key] = newVal
+		changes[key] = map[string]string{
+			"old": oldVal, "new": newVal,
+			"label":    svc.optionGroupLabel(agentID, key, dbAgent.AgentProvider),
+			"oldLabel": svc.optionLabel(agentID, key, oldVal, dbAgent.AgentProvider),
+			"newLabel": svc.optionLabel(agentID, key, newVal, dbAgent.AgentProvider),
+		}
+	}
+	setExtra(agent.CodexExtraNetworkAccess, agent.CodexNetworkEnabled)
+	setExtra(agent.CodexExtraSandboxPolicy, agent.CodexSandboxDangerFullAccess)
+
+	if len(changes) == 0 {
+		return
+	}
+
+	if err := svc.Queries.SetAgentExtraSettings(bgCtx(), db.SetAgentExtraSettingsParams{
+		ExtraSettings: marshalExtraSettings(extras),
+		ID:            agentID,
+	}); err != nil {
+		slog.Error("set Codex bypass extras: DB update failed", "agent_id", agentID, "error", err)
+		return
+	}
+
+	if svc.Agents.HasAgent(agentID) {
+		svc.Agents.UpdateSettings(agentID, &leapmuxv1.AgentSettings{ExtraSettings: map[string]string{
+			agent.CodexExtraNetworkAccess:  extras[agent.CodexExtraNetworkAccess],
+			agent.CodexExtraSandboxPolicy:  extras[agent.CodexExtraSandboxPolicy],
+		}})
+	}
+
+	svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
+		AgentId: agentID,
+		Event: &leapmuxv1.AgentEvent_StatusChange{
+			StatusChange: &leapmuxv1.AgentStatusChange{
+				AgentId:        agentID,
+				Status:         leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED,
+				AgentSessionId: dbAgent.AgentSessionID,
+				WorkerOnline:   true,
+				PermissionMode: dbAgent.PermissionMode,
+				Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
+				Effort:         dbAgent.Effort,
+				GitStatus:      gitutil.GetGitStatus(dbAgent.WorkingDir),
+				AgentProvider:  dbAgent.AgentProvider,
+				ExtraSettings:  extras,
+			},
+		},
+	})
+
+	svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+		"type":    "settings_changed",
+		"changes": changes,
+	})
+}
+
 // sendSyntheticUserMessage persists and broadcasts a user message, then sends
 // it to the agent process if possible. This is used for local plan-mode flows
 // that originate from a UI prompt rather than a frontend SendAgentMessage RPC.
@@ -1412,7 +1485,9 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
 
 func (svc *Context) handleCodexPlanModePromptResponse(agentID string, content []byte) bool {
 	var crPayload struct {
-		Response struct {
+		PermissionMode string `json:"permissionMode"`
+		ClearContext   bool   `json:"clearContext"`
+		Response       struct {
 			RequestID string `json:"request_id"`
 			Response  struct {
 				Behavior string `json:"behavior"`
@@ -1467,7 +1542,22 @@ func (svc *Context) handleCodexPlanModePromptResponse(agentID string, content []
 	switch crPayload.Response.Response.Behavior {
 	case agent.ControlBehaviorAllow:
 		svc.setAgentCollaborationMode(agentID, agent.CodexCollaborationDefault)
-		svc.sendSyntheticUserMessage(agentID, "Implement the plan.")
+
+		// Apply bypass permissions if requested.
+		if crPayload.PermissionMode != "" {
+			svc.setAgentPermissionMode(agentID, crPayload.PermissionMode)
+			svc.setCodexBypassExtras(agentID)
+		}
+
+		if crPayload.ClearContext {
+			targetMode := crPayload.PermissionMode
+			if targetMode == "" {
+				targetMode = agent.PermissionModeDefault
+			}
+			go svc.initiatePlanExecution(agentID, targetMode, true)
+		} else {
+			svc.sendSyntheticUserMessage(agentID, "Implement the plan.")
+		}
 	case agent.ControlBehaviorDeny:
 		if msg := strings.TrimSpace(crPayload.Response.Response.Message); msg != "" && msg != "Rejected by user." {
 			svc.sendSyntheticUserMessage(agentID, msg)
@@ -1589,10 +1679,12 @@ func extractControlResponseRequestID(content []byte) string {
 // handleControlResponsePlanMode detects plan mode changes from control
 // responses. When the frontend approves/rejects an EnterPlanMode or
 // ExitPlanMode control request, this updates the permission mode and
-// initiates plan execution as needed.
-func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte) {
+// initiates plan execution as needed. Returns true when the caller
+// should skip sending the response to the agent (clearContext path).
+func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte) bool {
 	var crPayload struct {
 		PermissionMode string `json:"permissionMode"`
+		ClearContext   bool   `json:"clearContext"`
 		Response       struct {
 			RequestID string `json:"request_id"`
 			Response  struct {
@@ -1602,12 +1694,12 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 		} `json:"response"`
 	}
 	if err := json.Unmarshal(content, &crPayload); err != nil {
-		return
+		return false
 	}
 
 	reqID := crPayload.Response.RequestID
 	if reqID == "" {
-		return
+		return false
 	}
 
 	// Look up the original control request to get the tool_name.
@@ -1616,7 +1708,7 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 		RequestID: reqID,
 	})
 	if err != nil {
-		return
+		return false
 	}
 
 	var crBody struct {
@@ -1627,7 +1719,7 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 	}
 	if err := json.Unmarshal(cr.Payload, &crBody); err != nil {
 		slog.Warn("codex cancel request unmarshal failed", "agent_id", agentID, "error", err)
-		return
+		return false
 	}
 	toolName := crBody.Request.ToolName
 	toolUseID := crBody.Request.ToolUseID
@@ -1635,7 +1727,7 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 	// Look up the agent's provider for message persistence.
 	dbAgent, dbErr := svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if dbErr != nil {
-		return
+		return false
 	}
 
 	// Persist a display message for the control response.
@@ -1660,6 +1752,7 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 	}
 
 	// Detect plan mode changes from control responses (agent-initiated).
+	skipSend := false
 	if crPayload.Response.Response.Behavior == agent.ControlBehaviorAllow {
 		switch toolName {
 		case "EnterPlanMode":
@@ -1678,9 +1771,15 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 				svc.Output.planModeToolUse.Delete(toolUseID)
 			}
 
-			// Initiate plan execution: stop agent, clear context, restart
-			// with plan content as a synthetic user message.
-			go svc.initiatePlanExecution(agentID, targetMode)
+			if crPayload.ClearContext {
+				// When clearing context, don't send the approval to the
+				// agent — we're about to stop it anyway. This avoids
+				// the race where the agent acts on the approval before
+				// initiatePlanExecution kills it.
+				go svc.initiatePlanExecution(agentID, targetMode, true)
+				skipSend = true
+			}
+			// When !clearContext, the agent continues in current context.
 		}
 	}
 
@@ -1689,12 +1788,16 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 		AgentID:   agentID,
 		RequestID: reqID,
 	})
+
+	return skipSend
 }
 
 // initiatePlanExecution stops the agent, clears its context, and restarts
 // it with the plan content as a synthetic user message. This enables
 // "plan mode" where the agent executes the approved plan with fresh context.
-func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
+// When skipWait is true, the 2-second sleep before stopping is skipped
+// (used when the approval was not sent to the agent).
+func (svc *Context) initiatePlanExecution(agentID string, targetMode string, skipWait bool) {
 	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {
 		slog.Error("plan exec: failed to fetch agent", "agent_id", agentID, "error", err)
@@ -1728,8 +1831,11 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 
 	// Wait for the control_response to be delivered to the agent before
 	// stopping it. The agent needs to process the approval and output its
-	// tool_result before we kill it.
-	time.Sleep(2 * time.Second)
+	// tool_result before we kill it. Skip when the approval was not sent
+	// (clearContext path — agent never received the response).
+	if !skipWait {
+		time.Sleep(2 * time.Second)
+	}
 
 	// Stop the running agent and wait for it to fully exit so that
 	// StartAgent below doesn't fail with "agent already running".

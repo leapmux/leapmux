@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { enterPlanPrompt, EXIT_PLAN_PROMPT } from './helpers/plan-mode'
+import { enterAndExitPlanMode, enterPlanPrompt, EXIT_PLAN_PROMPT } from './helpers/plan-mode'
 import { sendMessage, waitForAgentIdle, waitForControlBanner } from './helpers/ui'
 
 test.describe('Plan Mode', () => {
@@ -51,7 +51,12 @@ test.describe('Plan Mode', () => {
     const exitBanner2 = await waitForControlBanner(page)
     await expect(exitBanner2.getByText('Plan Ready for Review')).toBeVisible()
 
-    // ── Step 5: Approve the plan this time ──
+    // ── Step 5: Verify clear context checkbox is visible and unchecked ──
+    const clearContextCheckbox = page.locator('[data-testid="plan-clear-context-checkbox"] input[type="checkbox"]')
+    await expect(clearContextCheckbox).toBeVisible()
+    await expect(clearContextCheckbox).not.toBeChecked()
+
+    // ── Step 6: Approve the plan (without clearing context) ──
     const approveBtn = page.locator('[data-testid="plan-approve-btn"]')
     await expect(approveBtn).toBeEnabled()
     await approveBtn.click()
@@ -59,7 +64,36 @@ test.describe('Plan Mode', () => {
     // Verify dropdown switches to Accept Edits (plan approval sets acceptEdits mode)
     await expect(trigger).toContainText('Accept Edits')
 
-    // ── Step 6: Verify Plan File is shown in the popover ──
+    // Without clear context, the agent continues in current context —
+    // no plan_execution notification, so no plan file row in the popover.
+  })
+
+  test('approve with clear context checkbox checked', async ({ page, authenticatedWorkspace }) => {
+    // Enter plan mode, write a plan, exit — get the approval banner.
+    const banner = await enterAndExitPlanMode(page, 'clear-ctx')
+    await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
+
+    // Verify checkbox is visible and unchecked by default.
+    const clearContextCheckbox = page.locator('[data-testid="plan-clear-context-checkbox"] input[type="checkbox"]')
+    await expect(clearContextCheckbox).toBeVisible()
+    await expect(clearContextCheckbox).not.toBeChecked()
+
+    // Check the clear context checkbox.
+    await clearContextCheckbox.check()
+    await expect(clearContextCheckbox).toBeChecked()
+
+    // Approve the plan.
+    const approveBtn = page.locator('[data-testid="plan-approve-btn"]')
+    await expect(approveBtn).toBeEnabled()
+    await approveBtn.click()
+
+    // Verify control banner disappears.
+    await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
+
+    // Verify context_cleared notification appears in the chat.
+    await expect(page.locator('text=Context cleared')).toBeVisible({ timeout: 30_000 })
+
+    // Verify Plan File is shown in the popover (plan_execution fires on clear context).
     const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
     await expect(infoTrigger).toBeVisible({ timeout: 30_000 })
     await infoTrigger.click()
