@@ -76,6 +76,8 @@ type acpBase struct {
 	extraSessionUpdate acpSessionUpdateHandler // optional provider-specific session update handler
 	extraMethod        acpMethodHandler        // optional provider-specific request/notification handler
 	sessionID          string
+	sessionNewMethod   string // JSON-RPC method for creating a new session (e.g. "session/new")
+	workingDir         string
 	model              string
 	availableModels    []*leapmuxv1.AvailableModel
 	turnAssistantText  strings.Builder
@@ -175,6 +177,43 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 			slog.Error("persist unknown acp sessionUpdate", "agent_id", b.agentID, "type", header.SessionUpdate, "error", err)
 		}
 	}
+}
+
+// ClearContext sends a new session request on the running ACP process,
+// replacing the current session with a fresh one.
+func (b *acpBase) ClearContext() (string, bool) {
+	method := b.sessionNewMethod
+	if method == "" {
+		return "", false
+	}
+
+	_, params := buildACPSessionRequest("", b.workingDir, method, "")
+	resp, err := b.sendRequest(method, json.RawMessage(params), 30*time.Second)
+	if err != nil {
+		slog.Error("acp ClearContext failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
+		return "", false
+	}
+	if err := jsonRPCResultError(resp); err != nil {
+		slog.Error("acp ClearContext: RPC error", "provider", b.providerName, "agent_id", b.agentID, "error", err)
+		return "", false
+	}
+
+	var session struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(resp, &session); err != nil || session.SessionID == "" {
+		slog.Error("acp ClearContext: invalid response", "provider", b.providerName, "agent_id", b.agentID, "error", err, "response", string(resp))
+		return "", false
+	}
+
+	b.mu.Lock()
+	b.sessionID = session.SessionID
+	b.turnAssistantText.Reset()
+	b.turnThinkingText.Reset()
+	b.mu.Unlock()
+
+	b.sink.UpdateSessionID(session.SessionID)
+	return session.SessionID, true
 }
 
 // buildACPSessionRequest builds a newSession or loadSession JSON-RPC request.
@@ -777,6 +816,8 @@ func (b *acpBase) startACPHandshake(
 	}
 
 	b.sessionID = session.SessionID
+	b.sessionNewMethod = sessionCfg.newMethod
+	b.workingDir = opts.WorkingDir
 	b.sink.UpdateSessionID(b.sessionID)
 	b.sink.BroadcastStatusActive(b.sessionID)
 
