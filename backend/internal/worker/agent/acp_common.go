@@ -75,9 +75,8 @@ type acpBase struct {
 	providerName       string                  // e.g. "copilot", "gemini", "opencode" — used in log messages
 	extraSessionUpdate acpSessionUpdateHandler // optional provider-specific session update handler
 	extraMethod        acpMethodHandler        // optional provider-specific request/notification handler
-	sessionID          string
-	sessionNewMethod   string // JSON-RPC method for creating a new session (e.g. "session/new")
-	workingDir         string
+	sessionID  string
+	workingDir string
 	model              string
 	availableModels    []*leapmuxv1.AvailableModel
 	turnAssistantText  strings.Builder
@@ -179,16 +178,11 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 	}
 }
 
-// ClearContext sends a new session request on the running ACP process,
+// ClearContext sends a session/new request on the running ACP process,
 // replacing the current session with a fresh one.
 func (b *acpBase) ClearContext() (string, bool) {
-	method := b.sessionNewMethod
-	if method == "" {
-		return "", false
-	}
-
-	_, params := buildACPSessionRequest("", b.workingDir, method, "")
-	resp, err := b.sendRequest(method, json.RawMessage(params), 30*time.Second)
+	_, params := buildACPSessionRequest("", b.workingDir, acpMethodSessionNew, "")
+	resp, err := b.sendRequest(acpMethodSessionNew, json.RawMessage(params), 30*time.Second)
 	if err != nil {
 		slog.Error("acp ClearContext failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
 		return "", false
@@ -816,7 +810,6 @@ func (b *acpBase) startACPHandshake(
 	}
 
 	b.sessionID = session.SessionID
-	b.sessionNewMethod = sessionCfg.newMethod
 	b.workingDir = opts.WorkingDir
 	b.sink.UpdateSessionID(b.sessionID)
 	b.sink.BroadcastStatusActive(b.sessionID)
