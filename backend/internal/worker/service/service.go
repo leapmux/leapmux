@@ -42,6 +42,7 @@ type Context struct {
 	Watchers            *WatcherManager           // Fan-out manager for event broadcasting
 	Output              *OutputHandler            // Agent output NDJSON processor
 	AgentStartupTimeout time.Duration             // Timeout for agent startup handshake (default: 30s)
+	APITimeout          time.Duration             // Timeout for JSON-RPC requests (default: 10s)
 	UseLoginShell       bool                      // Wrap claude invocation in user's login shell
 	WakeLock            *wakelock.ActivityTracker // Keep-awake tracker (nil = disabled)
 }
@@ -53,6 +54,14 @@ func (svc *Context) agentStartupTimeout() time.Duration {
 		return svc.AgentStartupTimeout
 	}
 	return time.Duration(config.DefaultAgentStartupTimeoutSeconds) * time.Second
+}
+
+// agentAPITimeout returns the configured API timeout, or the default if not set.
+func (svc *Context) agentAPITimeout() time.Duration {
+	if svc.APITimeout > 0 {
+		return svc.APITimeout
+	}
+	return agent.DefaultAPITimeout
 }
 
 // NewContext creates a new service context with all dependencies.

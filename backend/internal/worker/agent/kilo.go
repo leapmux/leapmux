@@ -52,6 +52,7 @@ func StartKilo(ctx context.Context, opts Options, sink OutputSink) (Provider, er
 				preambleDelimiter:  preambleDelimiter,
 				preambleMetaPrefix: metaPrefix,
 				preambleMeta:       make(map[string]string),
+				apiTimeout:         opts.apiTimeout(),
 			}},
 			sink:         sink,
 			providerName: "kilo",

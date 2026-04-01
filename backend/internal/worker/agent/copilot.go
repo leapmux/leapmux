@@ -52,6 +52,7 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 				preambleDelimiter:  preambleDelimiter,
 				preambleMetaPrefix: metaPrefix,
 				preambleMeta:       make(map[string]string),
+				apiTimeout:         opts.apiTimeout(),
 			}},
 			sink:         sink,
 			providerName: "copilot",

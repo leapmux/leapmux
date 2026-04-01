@@ -45,7 +45,8 @@ type processBase struct {
 	preambleMeta       map[string]string // parsed key=value metadata from preamble
 	preambleOutput     []string          // captured preamble lines (before delimiter)
 
-	turnToolUses int // number of tool uses in the current turn
+	apiTimeout   time.Duration // timeout for JSON-RPC requests
+	turnToolUses int           // number of tool uses in the current turn
 }
 
 // SendRawInput writes raw bytes directly to the process's stdin without
@@ -98,6 +99,14 @@ func (p *processBase) IsStopped() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.stopped
+}
+
+// APITimeout returns the configured API timeout, or DefaultAPITimeout if unset.
+func (p *processBase) APITimeout() time.Duration {
+	if p.apiTimeout > 0 {
+		return p.apiTimeout
+	}
+	return DefaultAPITimeout
 }
 
 // ClearContext is a no-op for providers that don't support in-place context

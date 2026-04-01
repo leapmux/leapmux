@@ -182,7 +182,7 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 // replacing the current session with a fresh one.
 func (b *acpBase) ClearContext() (string, bool) {
 	_, params := buildACPSessionRequest("", b.workingDir, acpMethodSessionNew, "")
-	resp, err := b.sendRequest(acpMethodSessionNew, json.RawMessage(params), APITimeout)
+	resp, err := b.sendRequest(acpMethodSessionNew, json.RawMessage(params), b.APITimeout())
 	if err != nil {
 		slog.Error("acp ClearContext failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
 		return "", false
@@ -1011,7 +1011,7 @@ func (b *acpBase) setModel(model string) error {
 		"sessionId": sessionID,
 		"modelId":   model,
 	})
-	resp, err := b.sendRequest(acpMethodSessionSetModel, json.RawMessage(params), 10*time.Second)
+	resp, err := b.sendRequest(acpMethodSessionSetModel, json.RawMessage(params), b.APITimeout())
 	if err != nil {
 		return err
 	}
@@ -1039,7 +1039,7 @@ func (b *acpBase) acpSetMode(modeID string, available []*leapmuxv1.AvailableOpti
 		"sessionId": sessionID,
 		"modeId":    modeID,
 	})
-	resp, err := b.sendRequest(acpMethodSessionSetMode, json.RawMessage(params), 10*time.Second)
+	resp, err := b.sendRequest(acpMethodSessionSetMode, json.RawMessage(params), b.APITimeout())
 	if err != nil {
 		return err
 	}

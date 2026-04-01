@@ -177,6 +177,7 @@ func runSolo(args []string, soloMode bool) error {
 			MaxMessageSize:       hubCfg.MaxMessageSize,
 			MaxIncompleteChunked: hubCfg.MaxIncompleteChunked,
 			AgentStartupTimeout:  hubCfg.AgentStartupTimeout(),
+			APITimeout:           hubCfg.APITimeout(),
 			EncryptionMode:       workerconfig.ParseEncryptionMode(hubCfg.Extras["encryption_mode"]),
 		}); err != nil {
 			slog.Error("worker error", "error", err)

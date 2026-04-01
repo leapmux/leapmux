@@ -115,6 +115,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 			preambleDelimiter:  preambleDelimiter,
 			preambleMetaPrefix: metaPrefix,
 			preambleMeta:       make(map[string]string),
+			apiTimeout:         opts.apiTimeout(),
 		},
 		model:                  opts.Model,
 		workingDir:             opts.WorkingDir,

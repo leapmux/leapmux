@@ -56,6 +56,7 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 				preambleDelimiter:  preambleDelimiter,
 				preambleMetaPrefix: metaPrefix,
 				preambleMeta:       make(map[string]string),
+				apiTimeout:         opts.apiTimeout(),
 			}},
 			sink:         sink,
 			providerName: "gemini",

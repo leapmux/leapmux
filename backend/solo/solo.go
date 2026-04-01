@@ -218,6 +218,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 			MaxMessageSize:       hubCfg.MaxMessageSize,
 			MaxIncompleteChunked: hubCfg.MaxIncompleteChunked,
 			AgentStartupTimeout:  hubCfg.AgentStartupTimeout(),
+			APITimeout:           hubCfg.APITimeout(),
 			EncryptionMode:       workerconfig.ParseEncryptionMode(hubCfg.Extras["encryption_mode"]),
 			UseLoginShell:        parseBool(hubCfg.Extras["use_login_shell"], true),
 		}); wErr != nil {

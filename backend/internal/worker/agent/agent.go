@@ -12,6 +12,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
@@ -25,8 +26,9 @@ const (
 // to identify the permission-mode option group across all providers.
 const OptionGroupKeyPermissionMode = "permissionMode"
 
-// APITimeout is the default timeout for JSON-RPC requests to the agent process.
-const APITimeout = 30 * time.Second
+// DefaultAPITimeout is the fallback timeout for JSON-RPC requests to the
+// agent process, used when no configured value is provided.
+const DefaultAPITimeout = time.Duration(config.DefaultAPITimeoutSeconds) * time.Second
 
 // ExitHandler is called when an agent process exits.
 // agentID identifies the agent, exitCode is the process exit code,
@@ -43,6 +45,7 @@ type Options struct {
 	PermissionMode  string                  // Permission mode to set on startup (default, acceptEdits, plan, bypassPermissions)
 	ExtraSettings   map[string]string       // Provider-specific persisted settings (e.g. Codex extras)
 	StartupTimeout  time.Duration           // Timeout for the startup handshake (default: 30s)
+	APITimeout      time.Duration           // Timeout for JSON-RPC requests (default: 10s)
 	Shell           string                  // Default shell path (always set when using shell wrapper)
 	LoginShell      bool                    // If true, use interactive+login shell flags
 	HomeDir         string                  // User's home directory (for reading Claude Code settings)
@@ -53,7 +56,14 @@ func (o Options) startupTimeout() time.Duration {
 	if o.StartupTimeout > 0 {
 		return o.StartupTimeout
 	}
-	return APITimeout
+	return time.Duration(config.DefaultAgentStartupTimeoutSeconds) * time.Second
+}
+
+func (o Options) apiTimeout() time.Duration {
+	if o.APITimeout > 0 {
+		return o.APITimeout
+	}
+	return DefaultAPITimeout
 }
 
 // providerRegistration holds the factory function, default model list,
