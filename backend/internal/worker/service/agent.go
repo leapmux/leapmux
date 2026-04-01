@@ -1228,6 +1228,28 @@ func (svc *Context) persistSyntheticUserMessage(agentID string, provider leapmux
 	}
 }
 
+// broadcastSettingsStatusChange broadcasts an AgentStatusChange event
+// so frontends update their settings display. If extras is non-nil, the
+// ExtraSettings field is included in the broadcast.
+func (svc *Context) broadcastSettingsStatusChange(dbAgent db.Agent, extras map[string]string) {
+	sc := &leapmuxv1.AgentStatusChange{
+		AgentId:        dbAgent.ID,
+		Status:         leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED,
+		AgentSessionId: dbAgent.AgentSessionID,
+		WorkerOnline:   true,
+		PermissionMode: dbAgent.PermissionMode,
+		Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
+		Effort:         dbAgent.Effort,
+		GitStatus:      gitutil.GetGitStatus(dbAgent.WorkingDir),
+		AgentProvider:  dbAgent.AgentProvider,
+		ExtraSettings:  extras,
+	}
+	svc.Watchers.BroadcastAgentEvent(dbAgent.ID, &leapmuxv1.AgentEvent{
+		AgentId: dbAgent.ID,
+		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: sc},
+	})
+}
+
 // setAgentPermissionMode updates the agent's permission mode in the DB
 // and broadcasts a statusChange + settings_changed notification.
 func (svc *Context) setAgentPermissionMode(agentID, mode string) {
@@ -1252,25 +1274,8 @@ func (svc *Context) setAgentPermissionModeWithAgent(dbAgent db.Agent, mode strin
 
 	dbAgent.PermissionMode = mode
 
-	// Broadcast statusChange so frontends update their settings display.
-	svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
-		AgentId: agentID,
-		Event: &leapmuxv1.AgentEvent_StatusChange{
-			StatusChange: &leapmuxv1.AgentStatusChange{
-				AgentId:        agentID,
-				Status:         leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED,
-				AgentSessionId: dbAgent.AgentSessionID,
-				WorkerOnline:   true,
-				PermissionMode: mode,
-				Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
-				Effort:         dbAgent.Effort,
-				GitStatus:      gitutil.GetGitStatus(dbAgent.WorkingDir),
-				AgentProvider:  dbAgent.AgentProvider,
-			},
-		},
-	})
+	svc.broadcastSettingsStatusChange(dbAgent, nil)
 
-	// Broadcast settings_changed notification for the chat view.
 	if oldMode != "" && oldMode != mode {
 		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 			"type": "settings_changed",
@@ -1319,23 +1324,7 @@ func (svc *Context) setAgentCollaborationModeWithAgent(dbAgent db.Agent, mode st
 		}})
 	}
 
-	svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
-		AgentId: agentID,
-		Event: &leapmuxv1.AgentEvent_StatusChange{
-			StatusChange: &leapmuxv1.AgentStatusChange{
-				AgentId:        agentID,
-				Status:         leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED,
-				AgentSessionId: dbAgent.AgentSessionID,
-				WorkerOnline:   true,
-				PermissionMode: dbAgent.PermissionMode,
-				Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
-				Effort:         dbAgent.Effort,
-				GitStatus:      gitutil.GetGitStatus(dbAgent.WorkingDir),
-				AgentProvider:  dbAgent.AgentProvider,
-				ExtraSettings:  extras,
-			},
-		},
-	})
+	svc.broadcastSettingsStatusChange(dbAgent, extras)
 
 	if oldMode != mode {
 		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
@@ -1398,23 +1387,7 @@ func (svc *Context) setCodexBypassExtrasWithAgent(dbAgent db.Agent) db.Agent {
 		}})
 	}
 
-	svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
-		AgentId: agentID,
-		Event: &leapmuxv1.AgentEvent_StatusChange{
-			StatusChange: &leapmuxv1.AgentStatusChange{
-				AgentId:        agentID,
-				Status:         leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED,
-				AgentSessionId: dbAgent.AgentSessionID,
-				WorkerOnline:   true,
-				PermissionMode: dbAgent.PermissionMode,
-				Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
-				Effort:         dbAgent.Effort,
-				GitStatus:      gitutil.GetGitStatus(dbAgent.WorkingDir),
-				AgentProvider:  dbAgent.AgentProvider,
-				ExtraSettings:  extras,
-			},
-		},
-	})
+	svc.broadcastSettingsStatusChange(dbAgent, extras)
 
 	svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 		"type":    "settings_changed",
