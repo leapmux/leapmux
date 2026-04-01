@@ -65,6 +65,7 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 				preambleDelimiter:  preambleDelimiter,
 				preambleMetaPrefix: metaPrefix,
 				preambleMeta:       make(map[string]string),
+				apiTimeout:         opts.apiTimeout(),
 			}},
 			sink:         sink,
 			providerName: "opencode",
@@ -78,11 +79,14 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 		return nil, fmt.Errorf("start opencode: %w", err)
 	}
 
-	initParams, _ := json.Marshal(map[string]interface{}{
+	initParams, err := json.Marshal(map[string]interface{}{
 		"protocolVersion": 1,
 		"clientInfo":      map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
 		"capabilities":    map[string]interface{}{},
 	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal initialize params: %w", err)
+	}
 	handshake, err := a.startACPHandshake(stdout, stderrPipe, opts, initParams,
 		acpSessionConfig{newMethod: acpMethodSessionNew, resumeMethod: openCodeMethodSessionResume})
 	if err != nil {

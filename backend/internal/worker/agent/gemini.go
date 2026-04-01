@@ -56,6 +56,7 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 				preambleDelimiter:  preambleDelimiter,
 				preambleMetaPrefix: metaPrefix,
 				preambleMeta:       make(map[string]string),
+				apiTimeout:         opts.apiTimeout(),
 			}},
 			sink:         sink,
 			providerName: "gemini",
@@ -70,7 +71,7 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 		return nil, fmt.Errorf("start gemini: %w", err)
 	}
 
-	initParams, _ := json.Marshal(map[string]interface{}{
+	initParams, err := json.Marshal(map[string]interface{}{
 		"protocolVersion": 1,
 		"clientCapabilities": map[string]interface{}{
 			"fs": map[string]bool{
@@ -79,6 +80,9 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 			},
 		},
 	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal initialize params: %w", err)
+	}
 	handshake, err := a.startACPHandshake(stdout, stderrPipe, opts, initParams, acpDefaultSessionConfig)
 	if err != nil {
 		return nil, err

@@ -52,6 +52,7 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 				preambleDelimiter:  preambleDelimiter,
 				preambleMetaPrefix: metaPrefix,
 				preambleMeta:       make(map[string]string),
+				apiTimeout:         opts.apiTimeout(),
 			}},
 			sink:         sink,
 			providerName: "copilot",
@@ -66,11 +67,14 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 		return nil, fmt.Errorf("start copilot: %w", err)
 	}
 
-	initParams, _ := json.Marshal(map[string]interface{}{
+	initParams, err := json.Marshal(map[string]interface{}{
 		"protocolVersion": 1,
 		"clientInfo":      map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
 		"capabilities":    map[string]interface{}{},
 	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal initialize params: %w", err)
+	}
 	handshake, err := a.startACPHandshake(stdout, stderrPipe, opts, initParams, acpDefaultSessionConfig)
 	if err != nil {
 		return nil, err

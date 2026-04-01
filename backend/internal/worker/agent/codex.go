@@ -120,6 +120,7 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 			preambleDelimiter:  preambleDelimiter,
 			preambleMetaPrefix: metaPrefix,
 			preambleMeta:       make(map[string]string),
+			apiTimeout:         opts.apiTimeout(),
 		}},
 		model:      opts.Model,
 		effort:     opts.Effort,
@@ -148,13 +149,17 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	timeout := opts.startupTimeout()
 
 	// 1. Send "initialize" request.
-	initParams, _ := json.Marshal(map[string]interface{}{
+	initParams, err := json.Marshal(map[string]interface{}{
 		"clientInfo": map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
 		"capabilities": map[string]interface{}{
 			"experimentalApi":           true,
 			"optOutNotificationMethods": []string{"turn/diff/updated"},
 		},
 	})
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("marshal initialize params: %w", err)
+	}
 	if _, err := a.sendRequest("initialize", json.RawMessage(initParams), timeout); err != nil {
 		cleanup()
 		return nil, a.formatStartupError("initialize", err)
@@ -240,7 +245,10 @@ func (a *CodexAgent) tryThreadRequest(
 ) (threadID string, fallback bool, err error) {
 	canFallback := method == "thread/resume"
 
-	paramsJSON, _ := json.Marshal(threadParams)
+	paramsJSON, err := json.Marshal(threadParams)
+	if err != nil {
+		return "", false, fmt.Errorf("marshal %s params: %w", method, err)
+	}
 	resp, err := a.sendRequest(method, paramsJSON, timeout)
 	if err != nil {
 		if canFallback {
@@ -272,6 +280,46 @@ func (a *CodexAgent) tryThreadRequest(
 	}
 
 	return result.Thread.ID, false, nil
+}
+
+// ClearContext sends a new thread/start on the running Codex process,
+// replacing the current thread with a fresh one.
+func (a *CodexAgent) ClearContext() (string, bool) {
+	a.mu.Lock()
+	approvalPolicy := a.approvalPolicy
+	sandboxPolicy := a.sandboxPolicy
+	serviceTier := a.serviceTier
+	model := a.model
+	workingDir := a.workingDir
+	a.mu.Unlock()
+
+	threadParams := map[string]interface{}{
+		"model":          model,
+		"cwd":            workingDir,
+		"approvalPolicy": approvalPolicy,
+		"sandbox":        sandboxPolicy,
+	}
+	if st := codexServiceTierValue(serviceTier); st != nil {
+		threadParams["serviceTier"] = *st
+	}
+
+	threadID, _, err := a.tryThreadRequest(threadParams, "thread/start", a.agentID, a.APITimeout())
+	if err != nil || threadID == "" {
+		slog.Error("codex ClearContext: thread/start failed", "agent_id", a.agentID, "error", err)
+		return "", false
+	}
+
+	a.mu.Lock()
+	a.threadID = threadID
+	a.turnID = ""
+	a.turnSawPlan = false
+	a.turnPlanText = ""
+	a.turnAssistantText = ""
+	a.streamingPlan = false
+	a.mu.Unlock()
+
+	a.sink.UpdateSessionID(threadID)
+	return threadID, true
 }
 
 // SendInput writes a user message to the agent. If a turn is already in
@@ -385,7 +433,7 @@ func (a *CodexAgent) sendTurnStart(
 		return fmt.Errorf("marshal turn/start params: %w", err)
 	}
 
-	resp, err := a.sendRequest("turn/start", paramsJSON, 30*time.Second)
+	resp, err := a.sendRequest("turn/start", paramsJSON, a.APITimeout())
 	if err != nil {
 		return fmt.Errorf("turn/start: %w", err)
 	}
@@ -417,7 +465,7 @@ func (a *CodexAgent) sendTurnSteer(threadID, turnID string, input []map[string]i
 		return fmt.Errorf("marshal turn/steer params: %w", err)
 	}
 
-	_, err = a.sendRequest("turn/steer", paramsJSON, 30*time.Second)
+	_, err = a.sendRequest("turn/steer", paramsJSON, a.APITimeout())
 	if err != nil {
 		return fmt.Errorf("turn/steer: %w", err)
 	}

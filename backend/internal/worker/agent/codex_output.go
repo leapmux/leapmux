@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/msgcodec"
 )
 
 // handleCodexOutput processes a single parsed JSONL notification from the Codex app-server.
@@ -432,12 +433,17 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 			promptText = assistantText
 		}
 		if turnStatus == "completed" && collaborationMode == CodexCollaborationPlan && (sawPlan || promptText != "") {
+			// Persist plan content so initiatePlanExecution can use it.
+			if promptText != "" {
+				compressed, compression := msgcodec.Compress([]byte(promptText))
+				a.sink.UpdatePlan("", compressed, compression, extractPlanTitle(promptText))
+			}
 			requestID := fmt.Sprintf("codex-plan-prompt-%s", turnID)
 			payload, err := json.Marshal(map[string]interface{}{
 				"type":       "control_request",
 				"request_id": requestID,
 				"request": map[string]interface{}{
-					"tool_name": "CodexPlanModePrompt",
+					"tool_name": ToolNameCodexPlanModePrompt,
 					"input":     map[string]interface{}{},
 				},
 			})

@@ -19,6 +19,7 @@ export type MessageCategory
     | { kind: 'assistant_thinking' }
     | { kind: 'user_text' }
     | { kind: 'user_content' }
+    | { kind: 'plan_execution' }
     | { kind: 'result_divider' }
     | { kind: 'control_response' }
     | { kind: 'compact_summary' }
@@ -105,6 +106,8 @@ export function messageBubbleClass(kind: MessageCategory['kind'], role: MessageR
     return chatStyles.systemMessage
   if (kind === 'assistant_thinking')
     return chatStyles.thinkingMessage
+  if (kind === 'plan_execution')
+    return chatStyles.planExecutionMessage
   if (META_KINDS.has(kind))
     return chatStyles.metaMessage
   return roleStyle(role)

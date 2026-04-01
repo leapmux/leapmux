@@ -27,6 +27,10 @@ const (
 	// DefaultAgentStartupTimeoutSeconds is the default timeout (in seconds) for
 	// agent startup handshake. Must match the hub's default.
 	DefaultAgentStartupTimeoutSeconds = 30
+
+	// DefaultAPITimeoutSeconds is the default timeout (in seconds) for
+	// JSON-RPC requests to agent processes (e.g. turn/start, session/new).
+	DefaultAPITimeoutSeconds = 10
 )
 
 // Config holds the worker's runtime configuration.
@@ -38,6 +42,7 @@ type Config struct {
 	MaxMessageSize             int    `koanf:"max_message_size" json:"max_message_size"`
 	MaxIncompleteChunked       int    `koanf:"max_incomplete_chunked" json:"max_incomplete_chunked"`
 	AgentStartupTimeoutSeconds int    `koanf:"agent_startup_timeout_seconds" json:"agent_startup_timeout_seconds"`
+	APITimeoutSeconds          int    `koanf:"api_timeout_seconds" json:"api_timeout_seconds"`
 	LogLevel                   string `koanf:"log_level" json:"log_level"`
 	EncryptionMode             string `koanf:"encryption_mode" json:"encryption_mode"`
 	UseLoginShell              bool   `koanf:"use_login_shell" json:"use_login_shell"`
@@ -65,6 +70,15 @@ func (c *Config) AgentStartupTimeout() time.Duration {
 	v := c.AgentStartupTimeoutSeconds
 	if v <= 0 {
 		v = DefaultAgentStartupTimeoutSeconds
+	}
+	return time.Duration(v) * time.Second
+}
+
+// APITimeout returns the JSON-RPC request timeout as a duration.
+func (c *Config) APITimeout() time.Duration {
+	v := c.APITimeoutSeconds
+	if v <= 0 {
+		v = DefaultAPITimeoutSeconds
 	}
 	return time.Duration(v) * time.Second
 }
@@ -144,6 +158,7 @@ func Load(args []string) (*Config, bool, error) {
 	fs.Int("max-message-size", 0, "maximum reassembled channel message size in bytes (default 16 MiB)")
 	fs.Int("max-incomplete-chunked", 0, "maximum in-flight chunked sequences per channel (default 4)")
 	fs.Int("agent-startup-timeout-seconds", DefaultAgentStartupTimeoutSeconds, "agent startup timeout in seconds")
+	fs.Int("api-timeout-seconds", DefaultAPITimeoutSeconds, "JSON-RPC request timeout in seconds")
 	fs.String("log-level", defaultLogLevel, "log level (debug, info, warn, error)")
 	fs.String("encryption-mode", "post-quantum", "encryption mode (classic, post-quantum)")
 	fs.Bool("use-login-shell", true, "wrap claude invocation in user's login shell")
@@ -166,6 +181,7 @@ func Load(args []string) (*Config, bool, error) {
 		"max-message-size":              "max_message_size",
 		"max-incomplete-chunked":        "max_incomplete_chunked",
 		"agent-startup-timeout-seconds": "agent_startup_timeout_seconds",
+		"api-timeout-seconds":           "api_timeout_seconds",
 		"log-level":                     "log_level",
 		"encryption-mode":               "encryption_mode",
 		"use-login-shell":               "use_login_shell",
@@ -179,6 +195,7 @@ func Load(args []string) (*Config, bool, error) {
 		"max_message_size":              0,
 		"max_incomplete_chunked":        0,
 		"agent_startup_timeout_seconds": DefaultAgentStartupTimeoutSeconds,
+		"api_timeout_seconds":           DefaultAPITimeoutSeconds,
 		"log_level":                     defaultLogLevel,
 		"encryption_mode":               "post-quantum",
 		"use_login_shell":               true,

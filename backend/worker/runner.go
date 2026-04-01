@@ -34,6 +34,7 @@ type RunConfig struct {
 	MaxMessageSize       int                         // Maximum reassembled channel message size in bytes (0 = 16 MiB default)
 	MaxIncompleteChunked int                         // Maximum in-flight chunked sequences per channel (0 = 4 default)
 	AgentStartupTimeout  time.Duration               // Timeout for agent startup handshake (0 = 30s default)
+	APITimeout           time.Duration               // Timeout for JSON-RPC requests (0 = 10s default)
 	EncryptionMode       leapmuxv1.EncryptionMode    // Encryption mode (classic, post-quantum)
 	UseLoginShell        bool                        // Wrap claude invocation in user's login shell
 }
@@ -100,6 +101,7 @@ func Run(ctx context.Context, cfg RunConfig) error {
 			svcCtx.Name = hostname
 		}
 		svcCtx.AgentStartupTimeout = cfg.AgentStartupTimeout
+		svcCtx.APITimeout = cfg.APITimeout
 		svcCtx.UseLoginShell = cfg.UseLoginShell
 		svcCtx.Send = client.Send
 		svcCtx.Channels = channelMgr

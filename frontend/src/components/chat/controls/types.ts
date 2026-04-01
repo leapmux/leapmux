@@ -1,5 +1,6 @@
 import type { Accessor, JSX, Setter } from 'solid-js'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
 import type { PermissionMode } from '~/utils/controlResponse'
 
@@ -54,6 +55,8 @@ export interface ActionsProps {
   bypassPermissionMode?: PermissionMode
   /** Optional callback to change the agent's permission mode. */
   onPermissionModeChange?: (mode: PermissionMode) => void
+  contextUsage?: ContextUsageInfo
+  modelContextWindow?: number
 }
 
 export function sendResponse(

@@ -3,10 +3,10 @@ import type { ActionsProps } from './types'
 import type { ControlRequest } from '~/stores/control.store'
 
 import { Show } from 'solid-js'
-import { ButtonGroup } from '~/components/common/ButtonGroup'
 import { buildAllowResponse, getToolInput } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
 import { CollapsibleList } from './CollapsibleList'
+import { createPlanApprovalState, PlanApprovalCheckboxes } from './PlanApprovalCheckboxes'
 import { sendResponse } from './types'
 
 interface ToolGroup {
@@ -71,21 +71,15 @@ export const ExitPlanModeContent: Component<{ request: ControlRequest }> = (prop
 }
 
 export const ExitPlanModeActions: Component<ActionsProps> = (props) => {
+  const planApproval = createPlanApprovalState(props)
+
   const handleReject = () => {
     // Editor text is used as reject comment via onSend handler
     props.onTriggerSend()
   }
 
   const handleApprove = () => {
-    sendResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId, getToolInput(props.request.payload)))
-  }
-
-  const handleBypassPermissions = () => {
-    sendResponse(
-      props.request.agentId,
-      props.onRespond,
-      buildAllowResponse(props.request.requestId, getToolInput(props.request.payload), props.bypassPermissionMode || 'bypassPermissions'),
-    )
+    sendResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId, getToolInput(props.request.payload), { permissionMode: planApproval.permissionMode(), clearContext: planApproval.clearContext() }))
   }
 
   return (
@@ -94,6 +88,9 @@ export const ExitPlanModeActions: Component<ActionsProps> = (props) => {
         {props.infoTrigger}
       </div>
       <div class={styles.controlFooterRight}>
+        <Show when={!props.hasEditorContent}>
+          <PlanApprovalCheckboxes state={planApproval} bypassPermissionMode={props.bypassPermissionMode} />
+        </Show>
         <button
           class="outline"
           onClick={handleReject}
@@ -102,22 +99,12 @@ export const ExitPlanModeActions: Component<ActionsProps> = (props) => {
           {props.hasEditorContent ? 'Send Feedback' : 'Reject'}
         </button>
         <Show when={!props.hasEditorContent}>
-          <ButtonGroup>
-            <button
-              onClick={handleApprove}
-              data-testid="plan-approve-btn"
-            >
-              Approve
-            </button>
-            <button
-              data-variant="secondary"
-              onClick={handleBypassPermissions}
-              data-testid="control-bypass-btn"
-              title="Approve this plan and stop asking for permissions"
-            >
-              & Bypass Permissions
-            </button>
-          </ButtonGroup>
+          <button
+            onClick={handleApprove}
+            data-testid="plan-approve-btn"
+          >
+            Approve
+          </button>
         </Show>
       </div>
     </div>

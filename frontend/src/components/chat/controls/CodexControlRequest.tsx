@@ -7,6 +7,7 @@ import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from
 import * as styles from '../ControlRequestBanner.css'
 import { AskUserQuestionActions, AskUserQuestionContent } from './AskUserQuestionControl'
 import { CollapsibleText } from './CollapsibleText'
+import { createPlanApprovalState, PlanApprovalCheckboxes } from './PlanApprovalCheckboxes'
 import { sendResponse } from './types'
 
 /** Extract Codex approval params from the control request payload. */
@@ -167,6 +168,49 @@ export const CodexControlContent: Component<ContentProps> = (props) => {
   )
 }
 
+/** Codex plan mode prompt action buttons (with clear context + bypass checkboxes). */
+const CodexPlanModePromptActions: Component<ActionsProps> = (props) => {
+  const planApproval = createPlanApprovalState(props)
+
+  const handleApprove = () => {
+    sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId, getToolInput(props.request.payload), { permissionMode: planApproval.permissionMode(), clearContext: planApproval.clearContext() }))
+  }
+
+  return (
+    <div class={styles.controlFooter}>
+      <div class={styles.controlFooterLeft}>
+        {props.infoTrigger}
+      </div>
+      <div class={styles.controlFooterRight}>
+        <Show when={!props.hasEditorContent}>
+          <PlanApprovalCheckboxes state={planApproval} bypassPermissionMode={props.bypassPermissionMode} />
+        </Show>
+        <button
+          class="outline"
+          onClick={() => {
+            if (props.hasEditorContent) {
+              props.onTriggerSend()
+              return
+            }
+            sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildDenyResponse(props.request.requestId, ''))
+          }}
+          data-testid="control-deny-btn"
+        >
+          {props.hasEditorContent ? 'Send Feedback' : 'Stay in Plan Mode'}
+        </button>
+        <Show when={!props.hasEditorContent}>
+          <button
+            onClick={handleApprove}
+            data-testid="control-allow-btn"
+          >
+            Implement Plan
+          </button>
+        </Show>
+      </div>
+    </div>
+  )
+}
+
 /** Codex-specific control request action buttons. */
 export const CodexControlActions: Component<ActionsProps> = (props) => {
   const toolName = () => getToolName(props.request.payload)
@@ -275,36 +319,7 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
       )}
     >
       <Match when={toolName() === 'CodexPlanModePrompt'}>
-        <div class={styles.controlFooter}>
-          <div class={styles.controlFooterLeft}>
-            {props.infoTrigger}
-          </div>
-          <div class={styles.controlFooterRight}>
-            <button
-              class="outline"
-              onClick={() => {
-                if (props.hasEditorContent) {
-                  props.onTriggerSend()
-                  return
-                }
-                sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildDenyResponse(props.request.requestId, ''))
-              }}
-              data-testid="control-deny-btn"
-            >
-              {props.hasEditorContent ? 'Send Feedback' : 'Stay in Plan Mode'}
-            </button>
-            <Show when={!props.hasEditorContent}>
-              <ButtonGroup>
-                <button
-                  onClick={() => sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId, getToolInput(props.request.payload)))}
-                  data-testid="control-allow-btn"
-                >
-                  Implement Plan
-                </button>
-              </ButtonGroup>
-            </Show>
-          </div>
-        </div>
+        <CodexPlanModePromptActions {...props} />
       </Match>
       <Match when={method() === 'item/tool/requestUserInput'}>
         <AskUserQuestionActions

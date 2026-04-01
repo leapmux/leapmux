@@ -130,7 +130,11 @@ func marshalProtoSlice[T proto.Message](items []T, typeName string) string {
 		}
 		raw = append(raw, b)
 	}
-	data, _ := json.Marshal(raw)
+	data, err := json.Marshal(raw)
+	if err != nil {
+		slog.Warn("marshal "+typeName+" slice", "error", err)
+		return "[]"
+	}
 	return string(data)
 }
 

@@ -180,8 +180,10 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 		state.MlkemPrivateKey = base64.StdEncoding.EncodeToString(ck.MlkemDecapsulationKey.Bytes())
 		state.SlhdsaPublicKey = base64.StdEncoding.EncodeToString(slhdsaPub)
 		state.SlhdsaPrivateKey = base64.StdEncoding.EncodeToString(slhdsaPriv)
-		stateData, _ := json.MarshalIndent(state, "", "  ")
-		if writeErr := os.WriteFile(statePath, stateData, 0o600); writeErr != nil {
+		stateData, err := json.MarshalIndent(state, "", "  ")
+		if err != nil {
+			slog.Warn("failed to marshal state", "error", err)
+		} else if writeErr := os.WriteFile(statePath, stateData, 0o600); writeErr != nil {
 			slog.Warn("failed to save keypair", "error", writeErr)
 		}
 	}
@@ -218,6 +220,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 			MaxMessageSize:       hubCfg.MaxMessageSize,
 			MaxIncompleteChunked: hubCfg.MaxIncompleteChunked,
 			AgentStartupTimeout:  hubCfg.AgentStartupTimeout(),
+			APITimeout:           hubCfg.APITimeout(),
 			EncryptionMode:       workerconfig.ParseEncryptionMode(hubCfg.Extras["encryption_mode"]),
 			UseLoginShell:        parseBool(hubCfg.Extras["use_login_shell"], true),
 		}); wErr != nil {

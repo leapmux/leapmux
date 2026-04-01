@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -38,13 +39,16 @@ type processBase struct {
 	mu      sync.Mutex
 	stopped bool
 
+	discardOutput atomic.Bool
+
 	// Preamble handling (from shell wrapper).
 	preambleDelimiter  string            // if set, skipPreamble skips lines until this delimiter
 	preambleMetaPrefix string            // prefix for metadata lines (before delimiter)
 	preambleMeta       map[string]string // parsed key=value metadata from preamble
 	preambleOutput     []string          // captured preamble lines (before delimiter)
 
-	turnToolUses int // number of tool uses in the current turn
+	apiTimeout   time.Duration // timeout for JSON-RPC requests
+	turnToolUses int           // number of tool uses in the current turn
 }
 
 // SendRawInput writes raw bytes directly to the process's stdin without
@@ -97,6 +101,28 @@ func (p *processBase) IsStopped() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.stopped
+}
+
+// APITimeout returns the configured API timeout, or DefaultAPITimeout if unset.
+func (p *processBase) APITimeout() time.Duration {
+	if p.apiTimeout > 0 {
+		return p.apiTimeout
+	}
+	return DefaultAPITimeout
+}
+
+func (p *processBase) ClearContext() (string, bool) { return "", false }
+
+// DiscardOutput marks the process so that the readOutput loop silently
+// drops all remaining lines. Use this before stopping an agent that will
+// be restarted (e.g. plan execution) to avoid persisting spurious error
+// messages from closed streams.
+func (p *processBase) DiscardOutput() {
+	p.discardOutput.Store(true)
+}
+
+func (p *processBase) isDiscardingOutput() bool {
+	return p.discardOutput.Load()
 }
 
 // Wait blocks until the process exits and returns its exit error.
@@ -256,6 +282,10 @@ func (p *processBase) readOutput(scanner *bufio.Scanner, intercept outputInterce
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
+			continue
+		}
+
+		if p.isDiscardingOutput() {
 			continue
 		}
 

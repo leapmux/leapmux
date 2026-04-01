@@ -76,6 +76,7 @@ type acpBase struct {
 	extraSessionUpdate acpSessionUpdateHandler // optional provider-specific session update handler
 	extraMethod        acpMethodHandler        // optional provider-specific request/notification handler
 	sessionID          string
+	workingDir         string
 	model              string
 	availableModels    []*leapmuxv1.AvailableModel
 	turnAssistantText  strings.Builder
@@ -175,6 +176,38 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 			slog.Error("persist unknown acp sessionUpdate", "agent_id", b.agentID, "type", header.SessionUpdate, "error", err)
 		}
 	}
+}
+
+// ClearContext sends a session/new request on the running ACP process,
+// replacing the current session with a fresh one.
+func (b *acpBase) ClearContext() (string, bool) {
+	_, params := buildACPSessionRequest("", b.workingDir, acpMethodSessionNew, "")
+	resp, err := b.sendRequest(acpMethodSessionNew, json.RawMessage(params), b.APITimeout())
+	if err != nil {
+		slog.Error("acp ClearContext failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
+		return "", false
+	}
+	if err := jsonRPCResultError(resp); err != nil {
+		slog.Error("acp ClearContext: RPC error", "provider", b.providerName, "agent_id", b.agentID, "error", err)
+		return "", false
+	}
+
+	var session struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(resp, &session); err != nil || session.SessionID == "" {
+		slog.Error("acp ClearContext: invalid response", "provider", b.providerName, "agent_id", b.agentID, "error", err, "response", string(resp))
+		return "", false
+	}
+
+	b.mu.Lock()
+	b.sessionID = session.SessionID
+	b.turnAssistantText.Reset()
+	b.turnThinkingText.Reset()
+	b.mu.Unlock()
+
+	b.sink.UpdateSessionID(session.SessionID)
+	return session.SessionID, true
 }
 
 // buildACPSessionRequest builds a newSession or loadSession JSON-RPC request.
@@ -420,10 +453,14 @@ func (b *acpBase) sendPrompt(
 	b.mu.Unlock()
 
 	prompt := buildACPPromptBlocks(content, classifyAttachments(attachments))
-	params, _ := json.Marshal(map[string]interface{}{
+	params, err := json.Marshal(map[string]interface{}{
 		"sessionId": sessionID,
 		"prompt":    prompt,
 	})
+	if err != nil {
+		slog.Warn("acp marshal prompt params", "agent_id", b.agentID, "error", err)
+		return
+	}
 
 	resp, err := sendRPC(json.RawMessage(params))
 	if err != nil {
@@ -464,13 +501,17 @@ func (b *acpBase) persistTextMessage(sessionUpdate, text string) {
 		return
 	}
 
-	msgContent, _ := json.Marshal(map[string]interface{}{
+	msgContent, err := json.Marshal(map[string]interface{}{
 		"sessionUpdate": sessionUpdate,
 		"content": map[string]interface{}{
 			"type": "text",
 			"text": text,
 		},
 	})
+	if err != nil {
+		slog.Warn("marshal acp text content", "agent_id", b.agentID, "error", err)
+		return
+	}
 	if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, msgContent, SpanInfo{}); err != nil {
 		slog.Error("persist acp text", "agent_id", b.agentID, "session_update", sessionUpdate, "error", err)
 	}
@@ -777,6 +818,7 @@ func (b *acpBase) startACPHandshake(
 	}
 
 	b.sessionID = session.SessionID
+	b.workingDir = opts.WorkingDir
 	b.sink.UpdateSessionID(b.sessionID)
 	b.sink.BroadcastStatusActive(b.sessionID)
 
@@ -973,11 +1015,14 @@ func (b *acpBase) setModel(model string) error {
 	sessionID := b.sessionID
 	b.mu.Unlock()
 
-	params, _ := json.Marshal(map[string]interface{}{
+	params, err := json.Marshal(map[string]interface{}{
 		"sessionId": sessionID,
 		"modelId":   model,
 	})
-	resp, err := b.sendRequest(acpMethodSessionSetModel, json.RawMessage(params), 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("marshal setModel params: %w", err)
+	}
+	resp, err := b.sendRequest(acpMethodSessionSetModel, json.RawMessage(params), b.APITimeout())
 	if err != nil {
 		return err
 	}
@@ -1001,11 +1046,14 @@ func (b *acpBase) acpSetMode(modeID string, available []*leapmuxv1.AvailableOpti
 	sessionID := b.sessionID
 	b.mu.Unlock()
 
-	params, _ := json.Marshal(map[string]interface{}{
+	params, err := json.Marshal(map[string]interface{}{
 		"sessionId": sessionID,
 		"modeId":    modeID,
 	})
-	resp, err := b.sendRequest(acpMethodSessionSetMode, json.RawMessage(params), 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("marshal setMode params: %w", err)
+	}
+	resp, err := b.sendRequest(acpMethodSessionSetMode, json.RawMessage(params), b.APITimeout())
 	if err != nil {
 		return err
 	}
@@ -1018,9 +1066,12 @@ func (b *acpBase) cancelSession() error {
 	sessionID := b.sessionID
 	b.mu.Unlock()
 
-	params, _ := json.Marshal(map[string]interface{}{
+	params, err := json.Marshal(map[string]interface{}{
 		"sessionId": sessionID,
 	})
+	if err != nil {
+		return fmt.Errorf("marshal cancel params: %w", err)
+	}
 	return b.sendNotification(acpMethodSessionCancel, json.RawMessage(params))
 }
 

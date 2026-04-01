@@ -1,5 +1,6 @@
 /* eslint-disable solid/components-return-once -- render methods are not Solid components */
 /* eslint-disable solid/no-innerhtml -- HTML is produced from user/assistant text via remark, not arbitrary user input */
+import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
 import type { MessageCategory } from './messageClassification'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
@@ -10,6 +11,7 @@ import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FileIcon from 'lucide-solid/icons/file'
 import FileImageIcon from 'lucide-solid/icons/file-image'
+import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import { createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
@@ -151,19 +153,20 @@ const assistantTextRenderer: MessageContentRenderer = {
   },
 }
 
-/** Inner component for thinking messages — owns local expand/collapse state. */
-export function ThinkingMessage(props: { text: string, context?: RenderContext }): JSX.Element {
-  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, 'thinking')
+/** Collapsible message with icon, label, and markdown body. */
+function CollapsibleMessage(props: { text: string, icon: LucideIcon, label: string, stateKey: string, context?: RenderContext }): JSX.Element {
+  // eslint-disable-next-line solid/reactivity -- stateKey is a static string, never changes
+  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, props.stateKey)
 
   return (
     <>
       <div class={thinkingHeader} onClick={() => setExpanded(v => !v)}>
-        <Tooltip text="Thinking">
+        <Tooltip text={props.label}>
           <span class={inlineFlex}>
-            <Icon icon={Brain} size="md" class={toolUseIcon} />
+            <Icon icon={props.icon} size="md" class={toolUseIcon} />
           </span>
         </Tooltip>
-        <span class={toolInputText}>Thinking</span>
+        <span class={toolInputText}>{props.label}</span>
         <span class={`${inlineFlex} ${thinkingChevron}${expanded() ? ` ${thinkingChevronExpanded}` : ''}`}>
           <Icon icon={ChevronRight} size="sm" class={toolUseIcon} />
         </span>
@@ -175,6 +178,26 @@ export function ThinkingMessage(props: { text: string, context?: RenderContext }
       </Show>
     </>
   )
+}
+
+export function ThinkingMessage(props: { text: string, context?: RenderContext }): JSX.Element {
+  return <CollapsibleMessage text={props.text} icon={Brain} label="Thinking" stateKey="thinking" context={props.context} />
+}
+
+export function PlanExecutionMessage(props: { text: string, context?: RenderContext }): JSX.Element {
+  return <CollapsibleMessage text={props.text} icon={PlaneTakeoff} label="Execute plan" stateKey="planExecution" context={props.context} />
+}
+
+/** Handles plan execution messages: {"content":"...","planExecution":true} */
+const planExecutionRenderer: MessageContentRenderer = {
+  render(parsed, _role, context) {
+    if (!isObject(parsed) || parsed.planExecution !== true)
+      return null
+    const content = parsed.content as string | undefined
+    if (!content)
+      return null
+    return <PlanExecutionMessage text={content} context={context} />
+  },
 }
 
 /** Handles assistant thinking messages: {"type":"assistant","message":{"content":[{"type":"thinking","thinking":"..."}]}} */
@@ -333,6 +356,7 @@ const KIND_RENDERERS: Record<string, (parsed: unknown, role: MessageRole, contex
   assistant_thinking: assistantThinkingRenderer.render,
   user_text: userTextContentRenderer.render,
   user_content: userContentRenderer.render,
+  plan_execution: planExecutionRenderer.render,
   task_notification: taskNotificationRenderer.render,
   notification: (parsed, role, context) => {
     // Try each notification renderer in order

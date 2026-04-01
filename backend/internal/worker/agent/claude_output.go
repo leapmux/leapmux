@@ -174,9 +174,9 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(env *messageEnvelope) {
 		// Plan mode tracking (EnterPlanMode/ExitPlanMode).
 		if block.ID != "" {
 			switch block.Name {
-			case "EnterPlanMode":
+			case ToolNameEnterPlanMode:
 				a.sink.StorePlanModeToolUse(block.ID, PermissionModePlan)
-			case "ExitPlanMode":
+			case ToolNameExitPlanMode:
 				a.sink.StorePlanModeToolUse(block.ID, PermissionModeDefault)
 			}
 
@@ -458,10 +458,14 @@ func (a *ClaudeCodeAgent) claudeCodeHandleRateLimitEvent(content []byte) {
 		"rateLimits": rateLimits,
 	})
 
-	notifContent, _ := json.Marshal(map[string]interface{}{
+	notifContent, err := json.Marshal(map[string]interface{}{
 		"type":            "rate_limit",
 		"rate_limit_info": rle.RateLimitInfo,
 	})
+	if err != nil {
+		slog.Warn("marshal rate_limit notification", "agent_id", a.agentID, "error", err)
+		return
+	}
 	if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, notifContent); err != nil {
 		slog.Error("persist rate_limit notification", "agent_id", a.agentID, "error", err)
 	}

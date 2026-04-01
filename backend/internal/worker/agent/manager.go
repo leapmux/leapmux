@@ -165,6 +165,18 @@ func (m *Manager) StopAgent(agentID string) bool {
 // agent to avoid the "agent already running" error from StartAgent.
 // Returns true if the agent was found and stopped, false if it was not running.
 func (m *Manager) StopAndWaitAgent(agentID string) bool {
+	return m.stopAndWait(agentID, false)
+}
+
+// DiscardOutputAndStopAgent marks the agent to discard remaining output,
+// then stops and waits for it to exit. Use this when restarting an agent
+// (e.g. plan execution) to avoid persisting spurious error messages from
+// closed streams.
+func (m *Manager) DiscardOutputAndStopAgent(agentID string) bool {
+	return m.stopAndWait(agentID, true)
+}
+
+func (m *Manager) stopAndWait(agentID string, discardOutput bool) bool {
 	m.mu.RLock()
 	p, ok := m.agents[agentID]
 	m.mu.RUnlock()
@@ -173,6 +185,9 @@ func (m *Manager) StopAndWaitAgent(agentID string) bool {
 		return false
 	}
 
+	if discardOutput {
+		p.DiscardOutput()
+	}
 	p.Stop()
 	_ = p.Wait()
 
@@ -183,6 +198,19 @@ func (m *Manager) StopAndWaitAgent(agentID string) bool {
 	m.mu.Unlock()
 
 	return true
+}
+
+// ClearContext attempts to clear the agent's context in-place (e.g. by
+// starting a new Codex thread). Returns the new session ID and true if
+// successful, or ("", false) if the provider doesn't support it.
+func (m *Manager) ClearContext(agentID string) (string, bool) {
+	m.mu.RLock()
+	p, ok := m.agents[agentID]
+	m.mu.RUnlock()
+	if !ok {
+		return "", false
+	}
+	return p.ClearContext()
 }
 
 // AvailableModels returns the models reported by the agent process.

@@ -207,6 +207,12 @@ export const controlFooterRight = style({
   gridColumn: 3,
 })
 
+export const planApprovalCheckboxes = style({
+  display: 'flex',
+  flexDirection: 'column',
+  marginRight: 'var(--space-1)',
+})
+
 export const collapsibleToggle = style({
   'all': 'unset',
   'display': 'inline',

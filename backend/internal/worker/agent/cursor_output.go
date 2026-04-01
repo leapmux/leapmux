@@ -122,7 +122,7 @@ func (a *CursorCLIAgent) buildAskQuestionPayload(raw []byte) ([]byte, bool) {
 	}
 
 	payload["request"] = map[string]interface{}{
-		"tool_name": "AskUserQuestion",
+		"tool_name": ToolNameAskUserQuestion,
 		"input": map[string]interface{}{
 			"questions": questions,
 		},
