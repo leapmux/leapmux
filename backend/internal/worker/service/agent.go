@@ -1554,7 +1554,7 @@ func (svc *Context) handleCodexPlanModePromptResponse(agentID string, content []
 			if targetMode == "" {
 				targetMode = agent.PermissionModeDefault
 			}
-			go svc.initiatePlanExecution(agentID, targetMode, true)
+			go svc.initiatePlanExecution(agentID, targetMode)
 		} else {
 			svc.sendSyntheticUserMessage(agentID, "Implement the plan.")
 		}
@@ -1776,7 +1776,7 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 				// agent — we're about to stop it anyway. This avoids
 				// the race where the agent acts on the approval before
 				// initiatePlanExecution kills it.
-				go svc.initiatePlanExecution(agentID, targetMode, true)
+				go svc.initiatePlanExecution(agentID, targetMode)
 				skipSend = true
 			}
 			// When !clearContext, the agent continues in current context.
@@ -1795,9 +1795,7 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 // initiatePlanExecution stops the agent, clears its context, and restarts
 // it with the plan content as a synthetic user message. This enables
 // "plan mode" where the agent executes the approved plan with fresh context.
-// When skipWait is true, the 2-second sleep before stopping is skipped
-// (used when the approval was not sent to the agent).
-func (svc *Context) initiatePlanExecution(agentID string, targetMode string, skipWait bool) {
+func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {
 		slog.Error("plan exec: failed to fetch agent", "agent_id", agentID, "error", err)
@@ -1829,17 +1827,11 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string, ski
 		return
 	}
 
-	// Wait for the control_response to be delivered to the agent before
-	// stopping it. The agent needs to process the approval and output its
-	// tool_result before we kill it. Skip when the approval was not sent
-	// (clearContext path — agent never received the response).
-	if !skipWait {
-		time.Sleep(2 * time.Second)
-	}
-
-	// Stop the running agent and wait for it to fully exit so that
-	// StartAgent below doesn't fail with "agent already running".
-	svc.Agents.StopAndWaitAgent(agentID)
+	// Discard remaining output and stop the agent. DiscardOutput prevents
+	// persisting spurious errors (e.g. "stream closed") emitted during
+	// shutdown. Waits for the process to fully exit so StartAgent below
+	// doesn't fail with "agent already running".
+	svc.Agents.DiscardOutputAndStopAgent(agentID)
 
 	// Clear span tracking state from the previous session.
 	svc.Output.ResetSpanTracker(agentID)

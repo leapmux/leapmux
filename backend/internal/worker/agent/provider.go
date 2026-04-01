@@ -57,6 +57,7 @@ type Provider interface {
 	SendRawInput(data []byte) error
 	Stop()
 	IsStopped() bool
+	DiscardOutput()
 	Wait() error
 	Stderr() string
 	CurrentSettings() *leapmuxv1.AgentSettings

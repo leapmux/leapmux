@@ -35,8 +35,9 @@ type processBase struct {
 	stderrMu   sync.Mutex
 	stderrDone chan struct{}
 
-	mu      sync.Mutex
-	stopped bool
+	mu             sync.Mutex
+	stopped        bool
+	discardOutput  bool
 
 	// Preamble handling (from shell wrapper).
 	preambleDelimiter  string            // if set, skipPreamble skips lines until this delimiter
@@ -97,6 +98,22 @@ func (p *processBase) IsStopped() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.stopped
+}
+
+// DiscardOutput marks the process so that the readOutput loop silently
+// drops all remaining lines. Use this before stopping an agent that will
+// be restarted (e.g. plan execution) to avoid persisting spurious error
+// messages from closed streams.
+func (p *processBase) DiscardOutput() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.discardOutput = true
+}
+
+func (p *processBase) isDiscardingOutput() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.discardOutput
 }
 
 // Wait blocks until the process exits and returns its exit error.
@@ -265,6 +282,13 @@ func (p *processBase) readOutput(scanner *bufio.Scanner, intercept outputInterce
 		parsed := &parsedLine{Raw: lineCopy}
 		if err := json.Unmarshal(lineCopy, parsed); err != nil {
 			slog.Warn("invalid agent output JSON", "agent_id", p.agentID, "error", err)
+			continue
+		}
+
+		// When marked for output discard (e.g. plan execution restart),
+		// drop remaining lines to avoid persisting spurious error messages
+		// from closed streams.
+		if p.isDiscardingOutput() {
 			continue
 		}
 
