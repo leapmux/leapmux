@@ -4,6 +4,7 @@ import type { PermissionMode } from '~/utils/controlResponse'
 
 import { createSignal, Show } from 'solid-js'
 import { computePercentage } from '~/components/chat/ContextUsageGrid'
+import * as styles from '../ControlRequestBanner.css'
 
 export interface PlanApprovalState {
   clearContext: Accessor<boolean>
@@ -29,7 +30,7 @@ export const PlanApprovalCheckboxes: Component<{
   bypassPermissionMode?: PermissionMode
 }> = (props) => {
   return (
-    <div>
+    <div class={styles.planApprovalCheckboxes}>
       <label data-testid="plan-clear-context-checkbox">
         <input
           type="checkbox"
