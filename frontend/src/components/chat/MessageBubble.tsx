@@ -469,7 +469,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // Extract user text for the quote button.
   const extractUserText = (): string | null => {
     const cat = category()
-    if (cat.kind !== 'user_text' && cat.kind !== 'user_content')
+    if (cat.kind !== 'user_text' && cat.kind !== 'user_content' && cat.kind !== 'plan_execution')
       return null
     const obj = parsed().parentObject
     if (!obj)
@@ -479,7 +479,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       if (typeof msg?.content === 'string')
         return msg.content.trim() || null
     }
-    if (cat.kind === 'user_content' && typeof obj.content === 'string')
+    if ((cat.kind === 'user_content' || cat.kind === 'plan_execution') && typeof obj.content === 'string')
       return (obj.content as string).trim() || null
     return null
   }
