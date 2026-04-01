@@ -424,3 +424,36 @@ func TestHandleOutput_SubagentAssistantDoesNotOverwriteContextUsage(t *testing.T
 	assert.Equal(t, int64(500), usage["inputTokens"], "subagent should not overwrite top-level inputTokens")
 	assert.Equal(t, int64(200), usage["outputTokens"], "subagent should not overwrite top-level outputTokens")
 }
+
+func TestHandleOutput_ResultModelUsagePicksLargestContextWindow(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	// Send an assistant message so there is usage to broadcast.
+	agent.HandleOutput([]byte(`{
+		"type": "assistant",
+		"message": {
+			"role": "assistant",
+			"content": [{"type": "text", "text": "hello"}],
+			"usage": {"input_tokens": 100, "output_tokens": 50}
+		}
+	}`))
+
+	// A result message with modelUsage containing two models — haiku (200k)
+	// and opus (1M). The max (opus) should be selected regardless of map
+	// iteration order.
+	agent.HandleOutput([]byte(`{
+		"type": "result",
+		"subtype": "success",
+		"modelUsage": {
+			"claude-haiku-4-5-20251001": {"contextWindow": 200000},
+			"claude-opus-4-6[1m]": {"contextWindow": 1000000}
+		}
+	}`))
+
+	require.GreaterOrEqual(t, sink.SessionInfoCount(), 1)
+	info := sink.LastSessionInfo()
+	usage, ok := info["contextUsage"].(map[string]interface{})
+	require.True(t, ok, "expected contextUsage in session info")
+	assert.Equal(t, int64(1000000), usage["contextWindow"], "should pick largest contextWindow across models")
+}

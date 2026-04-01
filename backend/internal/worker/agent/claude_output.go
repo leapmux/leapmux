@@ -487,16 +487,23 @@ func (a *ClaudeCodeAgent) extractAndBroadcastUsage(env *messageEnvelope, msgType
 	}
 
 	if msgType == "result" && env.ModelUsage != nil {
+		// Pick the largest contextWindow across all models in the usage
+		// map. A session may use multiple models (e.g. opus + haiku) and
+		// map iteration order is non-deterministic, so taking the max
+		// ensures we report the primary model's context window.
+		var maxCW int64
 		for _, raw := range env.ModelUsage {
 			var mu struct {
 				ContextWindow int64 `json:"contextWindow"`
 			}
-			if json.Unmarshal(raw, &mu) == nil && mu.ContextWindow > 0 {
-				snapshot.mu.Lock()
-				snapshot.ContextWindow = mu.ContextWindow
-				snapshot.mu.Unlock()
-				break
+			if json.Unmarshal(raw, &mu) == nil && mu.ContextWindow > maxCW {
+				maxCW = mu.ContextWindow
 			}
+		}
+		if maxCW > 0 {
+			snapshot.mu.Lock()
+			snapshot.ContextWindow = maxCW
+			snapshot.mu.Unlock()
 		}
 	}
 
