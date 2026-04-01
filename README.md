@@ -440,96 +440,96 @@ Tool and base image versions are centralized in the `versions.yaml` file at the 
 
 ```
 leapmux/
-├── .github/workflows/      # CI, Docker, and release workflows
+├── .github/workflows/       # CI, Docker, and release workflows
 │
-├── backend/                # Go backend module
-│   ├── build/              # Build output (gitignored)
+├── backend/                 # Go backend module
+│   ├── build/               # Build output (gitignored)
 │   │
-│   ├── cmd/leapmux/        # Unified binary entry point
-│   │   ├── hub.go          # Hub mode
-│   │   ├── main.go         # Subcommand routing (hub, worker, solo, dev)
-│   │   ├── solo.go         # Solo/dev mode (hub + worker, default)
-│   │   └── worker.go       # Worker mode
+│   ├── cmd/leapmux/         # Unified binary entry point
+│   │   ├── hub.go           # Hub mode
+│   │   ├── main.go          # Subcommand routing (hub, worker, solo, dev)
+│   │   ├── solo.go          # Solo/dev mode (hub + worker, default)
+│   │   └── worker.go        # Worker mode
 │   │
-│   ├── generated/proto/    # Generated Go protobuf code (gitignored)
+│   ├── generated/proto/     # Generated Go protobuf code (gitignored)
 │   │
-│   ├── hub/                # Hub public API (thin wrapper)
-│   │   └── server.go       # NewServer(), Serve(), RegisterBackend(), etc.
+│   ├── hub/                 # Hub public API (thin wrapper)
+│   │   └── server.go        # NewServer(), Serve(), RegisterBackend(), etc.
 │   │
 │   ├── internal/
-│   │   ├── config/         # Shared configuration loading (koanf-based)
+│   │   ├── config/          # Shared configuration loading (koanf-based)
 │   │   │
-│   │   ├── hub/            # Hub implementation
-│   │   │   ├── auth/       # Session-based authentication
-│   │   │   ├── bootstrap/  # Database initialization and seeding
-│   │   │   ├── channelmgr/ # E2EE channel routing and chunk validation
-│   │   │   ├── config/     # Hub configuration
-│   │   │   ├── db/         # Database driver, migrations, and queries
-│   │   │   ├── frontend/   # Frontend asset embedding and dev proxy
-│   │   │   ├── layout/     # Workspace tiling layout management
-│   │   │   ├── notifier/   # Worker notification queue (persistent delivery with retries)
-│   │   │   ├── service/    # RPC service implementations (auth, workspace, channel relay)
-│   │   │   └── workermgr/  # Worker connection registry and pending approvals
+│   │   ├── hub/             # Hub implementation
+│   │   │   ├── auth/        # Session-based authentication
+│   │   │   ├── bootstrap/   # Database initialization and seeding
+│   │   │   ├── channelmgr/  # E2EE channel routing and chunk validation
+│   │   │   ├── config/      # Hub configuration
+│   │   │   ├── db/          # Database driver, migrations, and queries
+│   │   │   ├── frontend/    # Frontend asset embedding and dev proxy
+│   │   │   ├── layout/      # Workspace tiling layout management
+│   │   │   ├── notifier/    # Worker notification queue (persistent delivery with retries)
+│   │   │   ├── service/     # RPC service implementations (auth, workspace, channel relay)
+│   │   │   └── workermgr/   # Worker connection registry and pending approvals
 │   │   │
-│   │   ├── logging/        # Structured logging and middleware
-│   │   ├── metrics/        # Prometheus metrics and interceptors
-│   │   ├── noise/          # Noise_NK protocol and key fingerprinting
-│   │   ├── util/           # Shared utilities (id, lexorank, msgcodec, timefmt, testutil)
+│   │   ├── logging/         # Structured logging and middleware
+│   │   ├── metrics/         # Prometheus metrics and interceptors
+│   │   ├── noise/           # Noise_NK protocol and key fingerprinting
+│   │   ├── util/            # Shared utilities (id, lexorank, msgcodec, timefmt, testutil)
 │   │   │
-│   │   └── worker/         # Worker implementation
-│   │       ├── agent/      # Agent process management
-│   │       ├── channel/    # E2EE channel session management and dispatch
-│   │       ├── config/     # Worker configuration
-│   │       ├── db/         # Worker database driver, migrations, and queries
-│   │       ├── filebrowser/# File system access
-│   │       ├── gitutil/    # Git repository utilities
-│   │       ├── hub/        # gRPC client to Hub (with auto-reconnect)
-│   │       ├── service/    # Agent, terminal, file, and git service handlers
-│   │       ├── terminal/   # PTY session management
-│   │       └── wakelock/   # System wake lock management
+│   │   └── worker/          # Worker implementation
+│   │       ├── agent/       # Agent process management
+│   │       ├── channel/     # E2EE channel session management and dispatch
+│   │       ├── config/      # Worker configuration
+│   │       ├── db/          # Worker database driver, migrations, and queries
+│   │       ├── filebrowser/ # File system access
+│   │       ├── gitutil/     # Git repository utilities
+│   │       ├── hub/         # gRPC client to Hub (with auto-reconnect)
+│   │       ├── service/     # Agent, terminal, file, and git service handlers
+│   │       ├── terminal/    # PTY session management
+│   │       └── wakelock/    # System wake lock management
 │   │
-│   ├── solo/               # Shared solo mode startup logic
+│   ├── solo/                # Shared solo mode startup logic
 │   │
-│   └── worker/             # Worker public API (thin wrapper)
-│       └── runner.go       # Run(), RunConfig
+│   └── worker/              # Worker public API (thin wrapper)
+│       └── runner.go        # Run(), RunConfig
 │
-├── desktop/                # Wails desktop application (optional)
-│   ├── build/              # Build output (gitignored)
-│   ├── frontend/           # Minimal loader page (redirects to embedded UI)
-│   ├── platform/           # Platform-specific build resources (icons, manifests)
-│   └── scripts/            # Icon generation, DMG creation
+├── desktop/                 # Wails desktop application (optional)
+│   ├── build/               # Build output (gitignored)
+│   ├── frontend/            # Minimal loader page (redirects to embedded UI)
+│   ├── platform/            # Platform-specific build resources (icons, manifests)
+│   └── scripts/             # Icon generation, DMG creation
 │
-├── docker/                 # Dockerfile and s6-overlay service definitions
+├── docker/                  # Dockerfile and s6-overlay service definitions
 │
-├── frontend/               # SolidJS web application
+├── frontend/                # SolidJS web application
 │   ├── src/
-│   │   ├── api/            # ConnectRPC client setup
-│   │   ├── components/     # UI components (chat, terminal, filebrowser, shell, etc.)
-│   │   ├── context/        # Auth, Org, Workspace, and Preferences providers
-│   │   ├── generated/      # Generated TypeScript protobuf code (gitignored)
-│   │   ├── hooks/          # Custom hooks
-│   │   ├── lib/            # Utility libraries
-│   │   ├── routes/         # Route definitions
-│   │   ├── stores/         # State management (agents, chat, terminals, etc.)
-│   │   ├── styles/         # Global styles and themes
-│   │   ├── types/          # TypeScript type definitions
-│   │   └── utils/          # Shared utility functions
-│   └── tests/              # Unit tests (Vitest) and E2E tests (Playwright)
+│   │   ├── api/             # ConnectRPC client setup
+│   │   ├── components/      # UI components (chat, terminal, filebrowser, shell, etc.)
+│   │   ├── context/         # Auth, Org, Workspace, and Preferences providers
+│   │   ├── generated/       # Generated TypeScript protobuf code (gitignored)
+│   │   ├── hooks/           # Custom hooks
+│   │   ├── lib/             # Utility libraries
+│   │   ├── routes/          # Route definitions
+│   │   ├── stores/          # State management (agents, chat, terminals, etc.)
+│   │   ├── styles/          # Global styles and themes
+│   │   ├── types/           # TypeScript type definitions
+│   │   └── utils/           # Shared utility functions
+│   └── tests/               # Unit tests (Vitest) and E2E tests (Playwright)
 │
-├── icons/                  # SVG icons (app logo and agent provider icons)
-├── scripts/                # Utility scripts
+├── icons/                   # SVG icons (app logo and agent provider icons)
+├── scripts/                 # Utility scripts
 │
-├── proto/                  # Protocol Buffer definitions
-│   └── leapmux/v1/        # Service and message definitions
+├── proto/                   # Protocol Buffer definitions
+│   └── leapmux/v1/          # Service and message definitions
 │
-├── buf.gen.yaml            # Protocol Buffer code generation targets
-├── buf.yaml                # Protocol Buffer linting configuration
-├── go.work                 # Go workspace (backend + desktop modules)
-├── mprocs.yaml             # Dev mode process configuration (task dev)
-├── mprocs-solo.yaml        # Solo mode process configuration (task dev-solo)
-├── README.md               # This file
-├── Taskfile.yaml           # Build orchestration (go-task.dev)
-└── versions.yaml           # Version string and tool/image versions
+├── buf.gen.yaml             # Protocol Buffer code generation targets
+├── buf.yaml                 # Protocol Buffer linting configuration
+├── go.work                  # Go workspace (backend + desktop modules)
+├── mprocs.yaml              # Dev mode process configuration (task dev)
+├── mprocs-solo.yaml         # Solo mode process configuration (task dev-solo)
+├── README.md                # This file
+├── Taskfile.yaml            # Build orchestration (go-task.dev)
+└── versions.yaml            # Version string and tool/image versions
 ```
 
 ## Contributing
