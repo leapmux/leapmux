@@ -15,3 +15,5 @@ export function GetVersion():Promise<string>;
 export function OpenFullDiskAccessSettings():Promise<void>;
 
 export function Restart():Promise<void>;
+
+export function SwitchMode():Promise<void>;

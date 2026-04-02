@@ -19,3 +19,7 @@ export async function loadSystemInfo(): Promise<void> {
 export function isSoloMode(): boolean {
   return soloMode
 }
+
+export function isDesktopApp(): boolean {
+  return typeof (window as any).__lm_switchMode === 'function'
+}

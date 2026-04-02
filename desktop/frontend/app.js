@@ -176,14 +176,10 @@ function animateWindowResize(targetW, targetH, durationMs) {
     const startW = cur.w;
     const startH = cur.h;
 
-    // Nothing to do if already at or larger than target.
-    if (startW >= targetW && startH >= targetH) {
+    // Nothing to do if already at the target size.
+    if (startW === targetW && startH === targetH) {
       return;
     }
-
-    // Only grow dimensions that are smaller than the target.
-    const endW = Math.max(startW, targetW);
-    const endH = Math.max(startH, targetH);
 
     return new Promise(function (resolve) {
       const startTime = performance.now();
@@ -194,8 +190,8 @@ function animateWindowResize(targetW, targetH, durationMs) {
         // Ease-out cubic: 1 - (1 - t)^3
         const eased = 1 - Math.pow(1 - t, 3);
 
-        const w = Math.round(startW + (endW - startW) * eased);
-        const h = Math.round(startH + (endH - startH) * eased);
+        const w = Math.round(startW + (targetW - startW) * eased);
+        const h = Math.round(startH + (targetH - startH) * eased);
 
         rt.WindowSetSize(w, h);
         rt.WindowCenter();
@@ -253,9 +249,57 @@ async function connect(showUI) {
   }
 }
 
+// Animate the window back to the launcher dimensions (matching main.go defaults).
+function resizeToLauncher() {
+  return animateWindowResize(900, 680, 400);
+}
+
 // Initialize on load: restore saved config, display version, and auto-connect
 // if the user has previously connected successfully.
 async function init() {
+  // Handle the switchMode action: stop the backend, clear saved mode, and
+  // show the mode selection UI without auto-connecting.
+  var params = new URLSearchParams(window.location.search);
+  if (params.get('action') === 'switchMode') {
+    // Remove the query string so reloads don't re-trigger the action.
+    history.replaceState(null, '', window.location.pathname);
+
+    try {
+      await window.go.main.App.SwitchMode();
+    } catch (_) {
+      // Best-effort; the config may already be cleared.
+    }
+
+    await resizeToLauncher();
+
+    // Load the config for pre-filling UI (hub_url, saved window size, etc.)
+    // but skip auto-connect.
+    try {
+      savedConfig = await window.go.main.App.GetConfig();
+      if (savedConfig && savedConfig.hub_url) {
+        hubUrlInput.value = savedConfig.hub_url;
+      }
+    } catch (_) {
+      // Ignore.
+    }
+
+    try {
+      var ver = await window.go.main.App.GetVersion();
+      if (ver) {
+        versionEl.textContent = 'v' + ver;
+      }
+    } catch (_) {
+      // Ignore.
+    }
+
+    await checkFullDiskAccess();
+    if (!fullDiskAccessGranted) {
+      startFullDiskAccessPoll();
+    }
+    fadeIn();
+    return;
+  }
+
   try {
     const config = await window.go.main.App.GetConfig();
     if (config && config.mode) {

@@ -6,7 +6,7 @@ import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { PreferencesDialog } from '~/components/settings/PreferencesDialog'
 import { useAuth } from '~/context/AuthContext'
 import { useOrg } from '~/context/OrgContext'
-import { isSoloMode } from '~/lib/systemInfo'
+import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem, menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './UserMenu.css'
 
@@ -28,10 +28,17 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
     navigate('/login', { replace: true })
   }
 
+  const handleSwitchMode = () => {
+    const fn = (window as any).__lm_switchMode
+    if (typeof fn === 'function') {
+      fn()
+    }
+  }
+
   const renderMenuItems = () => (
     <>
       <button role="menuitem" onClick={() => setShowPreferencesDialog(true)}>
-        Preferences
+        Preferences...
       </button>
       <Show when={!isSoloMode()}>
         <hr />
@@ -60,6 +67,12 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
         </Show>
         <button role="menuitem" class={dangerMenuItem} onClick={() => handleLogout()}>
           Log out
+        </button>
+      </Show>
+      <Show when={isDesktopApp()}>
+        <hr />
+        <button role="menuitem" onClick={handleSwitchMode}>
+          Switch mode...
         </button>
       </Show>
     </>
