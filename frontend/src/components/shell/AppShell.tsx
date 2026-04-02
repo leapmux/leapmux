@@ -23,6 +23,7 @@ import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { useIsMobile } from '~/hooks/useIsMobile'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { createLogger } from '~/lib/logger'
+import { printConsoleBanner } from '~/lib/systemInfo'
 import { createAgentStore } from '~/stores/agent.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
@@ -64,6 +65,8 @@ export const AppShell: ParentComponent = (props) => {
   const [searchParams, setSearchParams] = useSearchParams()
   const location = useLocation()
   const navigate = useNavigate()
+
+  printConsoleBanner()
 
   const workspaceStore = createWorkspaceStore()
   const sectionStore = createSectionStore()

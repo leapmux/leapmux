@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/mattn/go-isatty"
 	"github.com/mdp/qrterminal/v3"
@@ -13,60 +14,65 @@ import (
 
 // ANSI color codes.
 const (
-	reset   = "\033[0m"
-	bold    = "\033[1m"
-	cyan    = "\033[36m"
-	green   = "\033[32m"
-	yellow  = "\033[33m"
-	magenta = "\033[35m"
-	dim     = "\033[2m"
+	reset = "\033[0m"
+	bold  = "\033[1m"
+	dim   = "\033[2m"
+	green = "\033[32m"
+
+	// Logo color: teal (#0D9488) — 256-color fallback: 36 (dark cyan).
+	logoColor256 = "\033[38;2;13;148;136m" // 24-bit
+	logoColor16  = "\033[36m"              // 16-color cyan
+
+	// Mode color: amber (#F59E0B) — 256-color fallback: 33 (yellow).
+	modeColor256 = "\033[38;2;245;158;11m" // 24-bit
+	modeColor16  = "\033[33m"              // 16-color yellow
 )
 
-// Logo lines — base LeapMux ASCII art.
-var logoLines = [6]string{
-	`  _                      __  __            `,
-	` | |    ___  __ _ _ __  |  \/  |_   ___  __`,
-	` | |   / _ \/ _` + "`" + ` | '_ \ | |\/| | | | \ \/ /`,
-	` | |__|  __/ (_| | |_) || |  | | |_| |>  < `,
-	` |_____\___|\__,_| .__/ |_|  |_|\__,_/_/\_\`,
-	`                 |_|                        `,
+// Logo lines — compact LeapMux block art (2.5 visual lines).
+// Spaces are replaced with figure space (U+2007) at init for consistent
+// glyph width in proportional fonts.
+var logoLines = [3]string{
+	`  █   █▀▀ █▀█ █▀█ █▄ ▄█ █ █ █ █`,
+	`  █   █▀  █▀█ █▀▀ █ ▀ █ █ █ ▄▀▄`,
+	`  ▀▀▀ ▀▀▀ ▀ ▀ ▀   ▀   ▀ ▀▀▀ ▀ ▀`,
 }
 
-// Mode-specific ASCII art (right-side, same height as logo).
-var hubArt = [6]string{
-	`  _   _       _     `,
-	` | | | |_   _| |__  `,
-	` | |_| | | | | '_ \ `,
-	` |  _  | |_| | |_) |`,
-	` |_| |_|\__,_|_.__/ `,
-	`                     `,
+// Mode-specific block art (right-side, same height as logo).
+var hubArt = [3]string{
+	`   █ █ █ █ █▀▄`,
+	`   █▀█ █ █ █▀▄`,
+	`   ▀ ▀ ▀▀▀ ▀▀ `,
 }
 
-var workerArt = [6]string{
-	` __        __         _             `,
-	` \ \      / /__  _ __| | _____ _ __ `,
-	`  \ \ /\ / / _ \| '__| |/ / _ \ '__|`,
-	`   \ V  V / (_) | |  |   <  __/ |   `,
-	`    \_/\_/ \___/|_|  |_|\_\___|_|   `,
-	`                                     `,
+var workerArt = [3]string{
+	`   █   █ █▀█ █▀█ █ █ █▀▀ █▀█`,
+	`   █ █ █ █ █ █▀▄ █▀▄ █▀  █▀▄`,
+	`    ▀ ▀  ▀▀▀ ▀ ▀ ▀ ▀ ▀▀▀ ▀ ▀`,
 }
 
-var soloArt = [6]string{
-	`  ____        _       `,
-	` / ___|  ___ | | ___  `,
-	` \___ \ / _ \| |/ _ \ `,
-	`  ___) | (_) | | (_) |`,
-	` |____/ \___/|_|\___/ `,
-	`                      `,
+var soloArt = [3]string{
+	`   █▀▀ █▀█ █   █▀█`,
+	`   ▀▀█ █ █ █   █ █`,
+	`   ▀▀▀ ▀▀▀ ▀▀▀ ▀▀▀`,
 }
 
-var devArt = [6]string{
-	`  ____             `,
-	` |  _ \  _____   __`,
-	` | | | |/ _ \ \ / /`,
-	` | |_| |  __/\ V / `,
-	` |____/ \___| \_/  `,
-	`                   `,
+var devArt = [3]string{
+	`   █▀▄ █▀▀ █ █`,
+	`   █ █ █▀  █ █`,
+	`   ▀▀  ▀▀▀  ▀ `,
+}
+
+func init() {
+	// Replace ASCII spaces with figure space (U+2007) so the art
+	// aligns correctly in proportional fonts.
+	for i := range logoLines {
+		logoLines[i] = strings.ReplaceAll(logoLines[i], " ", "\u2007")
+	}
+	for _, art := range []*[3]string{&hubArt, &workerArt, &soloArt, &devArt} {
+		for i := range art {
+			art[i] = strings.ReplaceAll(art[i], " ", "\u2007")
+		}
+	}
 }
 
 // PrintBanner prints the LeapMux ASCII art logo with mode-specific
@@ -75,28 +81,30 @@ var devArt = [6]string{
 func PrintBanner(mode, ver, commitHash, buildTime string) {
 	color := isatty.IsTerminal(os.Stderr.Fd()) || isatty.IsCygwinTerminal(os.Stderr.Fd())
 
-	var modeArt *[6]string
-	var modeColor string
+	var modeArt *[3]string
 	switch mode {
 	case "hub":
 		modeArt = &hubArt
-		modeColor = green
 	case "worker":
 		modeArt = &workerArt
-		modeColor = yellow
 	case "dev":
 		modeArt = &devArt
-		modeColor = yellow
 	default: // solo
 		modeArt = &soloArt
-		modeColor = magenta
 	}
 
-	for i := 0; i < 6; i++ {
+	// Pick 24-bit or 16-color codes based on COLORTERM.
+	lColor, mColor := logoColor16, modeColor16
+	ct := strings.ToLower(os.Getenv("COLORTERM"))
+	if ct == "truecolor" || ct == "24bit" {
+		lColor, mColor = logoColor256, modeColor256
+	}
+
+	for i := 0; i < 3; i++ {
 		if color {
 			fmt.Fprintf(os.Stderr, "%s%s%s%s%s%s\n",
-				bold+cyan, logoLines[i], reset,
-				bold+modeColor, modeArt[i], reset)
+				bold+lColor, logoLines[i], reset,
+				bold+mColor, modeArt[i], reset)
 		} else {
 			fmt.Fprintf(os.Stderr, "%s%s\n", logoLines[i], modeArt[i])
 		}
@@ -108,7 +116,11 @@ func PrintBanner(mode, ver, commitHash, buildTime string) {
 		info += " (" + commitHash + ")"
 	}
 	if buildTime != "" {
-		info += " \u00b7 " + buildTime
+		display := buildTime
+		if t, err := time.Parse(time.RFC3339, buildTime); err == nil {
+			display = t.Local().Format("Mon, 1/2/2006, 3:04:05 PM")
+		}
+		info += " \u00b7 " + display
 	}
 
 	// Info lines below the art.

@@ -50,3 +50,68 @@ export function getBackendBuildInfo(): BuildInfo {
 export function getFrontendBuildInfo(): BuildInfo {
   return frontendBuildInfo
 }
+
+const logoColor = '#0D9488'
+
+const logoArt = [
+  '  █   █▀▀ █▀█ █▀█ █▄ ▄█ █ █ █ █',
+  '  █   █▀  █▀█ █▀▀ █ ▀ █ █ █ ▄▀▄',
+  '  ▀▀▀ ▀▀▀ ▀ ▀ ▀   ▀   ▀ ▀▀▀ ▀ ▀',
+].map(l => l.replaceAll(' ', '\u2007'))
+
+function formatBuildTime(iso: string): string {
+  if (!iso)
+    return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime()))
+    return iso
+  return d.toLocaleString(undefined, {
+    weekday: 'short',
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
+function formatVersionLine(info: BuildInfo): string {
+  let line = info.version || 'dev'
+  if (info.commitHash)
+    line += ` (${info.commitHash})`
+  const time = formatBuildTime(info.buildTime)
+  if (time)
+    line += ` \u00B7 ${time}`
+  return line
+}
+
+let bannerPrinted = false
+
+export function printConsoleBanner(): void {
+  if (bannerPrinted)
+    return
+  bannerPrinted = true
+
+  const backend = backendBuildInfo
+  const frontend = frontendBuildInfo
+  const same = formatVersionLine(backend) === formatVersionLine(frontend)
+
+  // Build styled console.log arguments.
+  // Each art line: logo portion in teal, then reset.
+  const lines = logoArt.map(l => `%c${l}%c`)
+  const styles = logoArt.flatMap(() => [`color:${logoColor};font-weight:bold`, ''])
+
+  // Version info below the art.
+  if (same) {
+    lines.push(`  ${formatVersionLine(backend)}`)
+  }
+  else {
+    lines.push(`  Backend:  ${formatVersionLine(backend)}`)
+    lines.push(`  Frontend: ${formatVersionLine(frontend)}`)
+  }
+  lines.push('  Copyright \u00A9 Event Loop, Inc.')
+
+  // eslint-disable-next-line no-console
+  console.log(lines.join('\n'), ...styles)
+}

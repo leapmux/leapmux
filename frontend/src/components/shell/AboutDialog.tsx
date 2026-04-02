@@ -3,7 +3,7 @@ import type { BuildInfo } from '~/lib/systemInfo'
 import { Show } from 'solid-js'
 import { Dialog } from '~/components/common/Dialog'
 import { getBackendBuildInfo, getFrontendBuildInfo } from '~/lib/systemInfo'
-import * as styles from './AboutDialog.css'
+import { labelRow } from '~/styles/shared.css'
 
 function formatBuildTime(iso: string): string {
   if (!iso)
@@ -32,10 +32,6 @@ function formatVersionLine(info: BuildInfo): string {
   return line
 }
 
-function buildInfoEquals(a: BuildInfo, b: BuildInfo): boolean {
-  return a.version === b.version && a.commitHash === b.commitHash && a.buildTime === b.buildTime
-}
-
 interface AboutDialogProps {
   onClose: () => void
 }
@@ -43,29 +39,60 @@ interface AboutDialogProps {
 export const AboutDialog: Component<AboutDialogProps> = (props) => {
   const backend = getBackendBuildInfo()
   const frontend = getFrontendBuildInfo()
-  const same = buildInfoEquals(backend, frontend)
+  const same = formatVersionLine(backend) === formatVersionLine(frontend)
 
   return (
     <Dialog title="About" onClose={props.onClose}>
       <section>
-        <div class={styles.container}>
-          <a class={styles.appName} href="https://github.com/leapmux/leapmux" target="_blank" rel="noopener noreferrer">
-            LeapMux
-          </a>
+        <div class="vstack gap-4">
+          <div>
+            <strong>LeapMux</strong>
+            {' - AI Coding Agent Multiplexer'}
+          </div>
           <Show
             when={!same}
-            fallback={<span class={styles.versionLine}>{formatVersionLine(backend)}</span>}
+            fallback={(
+              <div>
+                <div class={labelRow}>Version</div>
+                {formatVersionLine(backend)}
+              </div>
+            )}
           >
             <div>
-              <div class={styles.versionLabel}>Backend</div>
-              <span class={styles.versionLine}>{formatVersionLine(backend)}</span>
+              <div class={labelRow}>Backend</div>
+              {formatVersionLine(backend)}
             </div>
             <div>
-              <div class={styles.versionLabel}>Frontend</div>
-              <span class={styles.versionLine}>{formatVersionLine(frontend)}</span>
+              <div class={labelRow}>Frontend</div>
+              {formatVersionLine(frontend)}
             </div>
           </Show>
-          <span class={styles.copyright}>Copyright &copy; Event Loop, Inc.</span>
+          <div>
+            <div class={labelRow}>Homepage</div>
+            <a href="https://github.com/leapmux/leapmux" target="_blank" rel="noopener noreferrer">
+              github.com/leapmux/leapmux
+            </a>
+          </div>
+          <div>
+            <div class={labelRow}>License</div>
+            <a href="https://github.com/leapmux/leapmux/blob/main/LICENSE.md" target="_blank" rel="noopener noreferrer">
+              Functional Source License, Version 1.1, ALv2 Future License
+            </a>
+          </div>
+          <div>
+            <div class={labelRow}>Third-party licenses</div>
+            <a href="https://github.com/leapmux/leapmux/blob/main/NOTICE.md" target="_blank" rel="noopener noreferrer">
+              NOTICE.md
+            </a>
+          </div>
+          <div>Copyright &copy; Event Loop, Inc.</div>
+          <div>
+            <small>
+              All product names, logos, and trademarks are the property of their respective owners.
+              LeapMux is not affiliated with, endorsed by, or sponsored by any third party.
+              Agent icons are used solely to indicate compatibility and are reproduced for identification purposes only.
+            </small>
+          </div>
         </div>
       </section>
     </Dialog>
