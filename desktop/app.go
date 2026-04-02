@@ -88,6 +88,18 @@ func (a *App) domReady(_ context.Context) {
 			if (window.__lm_post) window.__lm_post('BO:' + href);
 		}
 	}, true);
+	window.__lm_switchMode = function() {
+		var bg = getComputedStyle(document.documentElement).getPropertyValue('--background').trim() || '#000';
+		var overlay = document.createElement('div');
+		overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:' + bg + ';opacity:0;transition:opacity .3s ease';
+		document.body.appendChild(overlay);
+		requestAnimationFrame(function() {
+			overlay.style.opacity = '1';
+		});
+		overlay.addEventListener('transitionend', function() {
+			window.location.href = 'wails://wails/?action=switchMode';
+		}, { once: true });
+	};
 	document.addEventListener('keydown', function(e) {
 		if (e.key === 'F12') {
 			if (window.__lm_post) window.__lm_post('%s');
@@ -144,6 +156,24 @@ func (a *App) GetVersion() string {
 	return version.Value
 }
 
+// BuildInfo holds version, commit hash, and build time for the frontend.
+type BuildInfo struct {
+	Version    string `json:"version"`
+	CommitHash string `json:"commit_hash"`
+	CommitTime string `json:"commit_time"`
+	BuildTime  string `json:"build_time"`
+}
+
+// GetBuildInfo returns the full build information.
+func (a *App) GetBuildInfo() BuildInfo {
+	return BuildInfo{
+		Version:    version.Value,
+		CommitHash: version.CommitHash,
+		CommitTime: version.CommitTime,
+		BuildTime:  version.BuildTime,
+	}
+}
+
 // CheckFullDiskAccess returns true if the app has Full Disk Access (macOS only).
 // On other platforms it always returns true.
 func (a *App) CheckFullDiskAccess() bool {
@@ -164,6 +194,29 @@ func (a *App) Restart() {
 	}
 	_ = exec.Command(exe).Start()
 	wailsRuntime.Quit(a.ctx)
+}
+
+// SwitchMode stops the current backend (if solo), saves the current window
+// size, clears the saved mode from the config, and saves it. The frontend
+// is responsible for navigating back to the launcher page and resizing the
+// window.
+func (a *App) SwitchMode() error {
+	// Preserve window size so the next Connect restores it.
+	if a.connected {
+		w, h := wailsRuntime.WindowGetSize(a.ctx)
+		if w > 0 && h > 0 {
+			a.config.WindowWidth = w
+			a.config.WindowHeight = h
+		}
+	}
+
+	a.stopSolo()
+	a.connected = false
+	a.config.Mode = ""
+	if err := SaveConfig(a.config); err != nil {
+		return fmt.Errorf("saving config: %w", err)
+	}
+	return nil
 }
 
 // ConnectSolo starts the in-process Hub and Worker, waits for readiness,

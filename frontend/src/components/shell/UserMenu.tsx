@@ -6,8 +6,9 @@ import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { PreferencesDialog } from '~/components/settings/PreferencesDialog'
 import { useAuth } from '~/context/AuthContext'
 import { useOrg } from '~/context/OrgContext'
-import { isSoloMode } from '~/lib/systemInfo'
+import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem, menuSectionHeader } from '~/styles/shared.css'
+import { AboutDialog } from './AboutDialog'
 import * as styles from './UserMenu.css'
 
 interface UserMenuProps {
@@ -22,16 +23,27 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
 
   const [showPreferencesDialog, setShowPreferencesDialog] = createSignal(false)
   const [showAdminDialog, setShowAdminDialog] = createSignal(false)
+  const [showAboutDialog, setShowAboutDialog] = createSignal(false)
 
   const handleLogout = async () => {
     await auth.logout()
     navigate('/login', { replace: true })
   }
 
+  const handleSwitchMode = () => {
+    const fn = (window as any).__lm_switchMode
+    if (typeof fn === 'function') {
+      fn()
+    }
+  }
+
   const renderMenuItems = () => (
     <>
       <button role="menuitem" onClick={() => setShowPreferencesDialog(true)}>
-        Preferences
+        Preferences...
+      </button>
+      <button role="menuitem" onClick={() => setShowAboutDialog(true)}>
+        About...
       </button>
       <Show when={!isSoloMode()}>
         <hr />
@@ -60,6 +72,12 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
         </Show>
         <button role="menuitem" class={dangerMenuItem} onClick={() => handleLogout()}>
           Log out
+        </button>
+      </Show>
+      <Show when={isDesktopApp()}>
+        <hr />
+        <button role="menuitem" onClick={handleSwitchMode}>
+          Switch mode...
         </button>
       </Show>
     </>
@@ -92,6 +110,9 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
       </Show>
       <Show when={showAdminDialog()}>
         <AdminDialog onClose={() => setShowAdminDialog(false)} />
+      </Show>
+      <Show when={showAboutDialog()}>
+        <AboutDialog onClose={() => setShowAboutDialog(false)} />
       </Show>
     </>
   )

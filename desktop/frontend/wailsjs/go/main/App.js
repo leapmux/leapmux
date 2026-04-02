@@ -14,6 +14,10 @@ export function ConnectSolo() {
   return window['go']['main']['App']['ConnectSolo']();
 }
 
+export function GetBuildInfo() {
+  return window['go']['main']['App']['GetBuildInfo']();
+}
+
 export function GetConfig() {
   return window['go']['main']['App']['GetConfig']();
 }
@@ -28,4 +32,8 @@ export function OpenFullDiskAccessSettings() {
 
 export function Restart() {
   return window['go']['main']['App']['Restart']();
+}
+
+export function SwitchMode() {
+  return window['go']['main']['App']['SwitchMode']();
 }

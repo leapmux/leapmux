@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/validate"
+	"github.com/leapmux/leapmux/util/version"
 )
 
 // AuthService implements the leapmux.v1.AuthService ConnectRPC handler.
@@ -242,6 +243,10 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 	return connect.NewResponse(&leapmuxv1.GetSystemInfoResponse{
 		SignupEnabled: s.cfg.SignupEnabled,
 		SoloMode:      s.cfg.SoloMode,
+		Version:       version.Value,
+		CommitHash:    version.CommitHash,
+		CommitTime:    version.CommitTime,
+		BuildTime:     version.BuildTime,
 	}), nil
 }
 

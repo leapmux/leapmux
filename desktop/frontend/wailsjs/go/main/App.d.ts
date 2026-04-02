@@ -8,6 +8,8 @@ export function ConnectDistributed(arg1:string):Promise<string>;
 
 export function ConnectSolo():Promise<string>;
 
+export function GetBuildInfo():Promise<main.BuildInfo>;
+
 export function GetConfig():Promise<main.DesktopConfig>;
 
 export function GetVersion():Promise<string>;
@@ -15,3 +17,5 @@ export function GetVersion():Promise<string>;
 export function OpenFullDiskAccessSettings():Promise<void>;
 
 export function Restart():Promise<void>;
+
+export function SwitchMode():Promise<void>;
