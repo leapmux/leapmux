@@ -57,9 +57,9 @@ export function getFrontendBuildInfo(): BuildInfo {
 const logoColor = '#0D9488'
 
 const logoArt = [
-  '  █   █▀▀ █▀█ █▀█ █▄ ▄█ █ █ █ █',
-  '  █   █▀  █▀█ █▀▀ █ ▀ █ █ █ ▄▀▄',
-  '  ▀▀▀ ▀▀▀ ▀ ▀ ▀   ▀   ▀ ▀▀▀ ▀ ▀',
+  '█   █▀▀ █▀█ █▀█ █▄ ▄█ █ █ █ █',
+  '█   █▀  █▀█ █▀▀ █ ▀ █ █ █ ▄▀▄',
+  '▀▀▀ ▀▀▀ ▀ ▀ ▀   ▀   ▀ ▀▀▀ ▀ ▀',
 ].map(l => l.replaceAll(' ', '\u2007'))
 
 export function formatBuildTime(iso: string): string {
@@ -107,14 +107,14 @@ export function printConsoleBanner(): void {
 
   // Version info below the art.
   if (same) {
-    lines.push(`  ${formatVersionLine(backend)}`)
+    lines.push(formatVersionLine(backend))
   }
   else {
-    lines.push(`  Backend:  ${formatVersionLine(backend)}`)
-    lines.push(`  Frontend: ${formatVersionLine(frontend)}`)
+    lines.push(`Backend:  ${formatVersionLine(backend)}`)
+    lines.push(`Frontend: ${formatVersionLine(frontend)}`)
   }
   const year = backend.commitTime ? new Date(backend.commitTime).getFullYear() : new Date().getFullYear()
-  lines.push(`  Copyright \u00A9 ${year} Event Loop, Inc.`)
+  lines.push(`Copyright \u00A9 ${year} Event Loop, Inc.`)
 
   // eslint-disable-next-line no-console
   console.log(lines.join('\n'), ...styles)
