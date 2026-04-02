@@ -108,6 +108,7 @@ func PrintBanner(mode string, vi VersionInfo) {
 		lColor, mColor = logoColor256, modeColor256
 	}
 
+	fmt.Fprintln(os.Stderr)
 	for i := 0; i < 3; i++ {
 		if color {
 			fmt.Fprintf(os.Stderr, "%s%s%s%s%s%s\n",
