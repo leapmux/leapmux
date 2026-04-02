@@ -70,9 +70,9 @@ var devArt = [6]string{
 }
 
 // PrintBanner prints the LeapMux ASCII art logo with mode-specific
-// art appended to the right. Below the art it prints version and
-// listen address. Colors are used only when stderr is a TTY.
-func PrintBanner(mode, ver, addr string) {
+// art appended to the right. Below the art it prints version info
+// and copyright. Colors are used only when stderr is a TTY.
+func PrintBanner(mode, ver, commitHash, buildTime string) {
 	color := isatty.IsTerminal(os.Stderr.Fd()) || isatty.IsCygwinTerminal(os.Stderr.Fd())
 
 	var modeArt *[6]string
@@ -102,12 +102,23 @@ func PrintBanner(mode, ver, addr string) {
 		}
 	}
 
-	// Info line below the art.
+	// Build the version info line: "0.0.1-dev (deadbeef) · Fri, 4/3/2026, 2:00:00 AM"
+	info := ver
+	if commitHash != "" {
+		info += " (" + commitHash + ")"
+	}
+	if buildTime != "" {
+		info += " \u00b7 " + buildTime
+	}
+
+	// Info lines below the art.
+	copyright := "Copyright \u00a9 Event Loop, Inc."
 	if color {
-		fmt.Fprintf(os.Stderr, "\n  %sversion%s %s   %saddr%s %s\n\n",
-			dim, reset, ver, dim, reset, addr)
+		fmt.Fprintf(os.Stderr, "\n  %s%s%s\n", dim, info, reset)
+		fmt.Fprintf(os.Stderr, "  %s%s%s\n\n", dim, copyright, reset)
 	} else {
-		fmt.Fprintf(os.Stderr, "\n  version %s   addr %s\n\n", ver, addr)
+		fmt.Fprintf(os.Stderr, "\n  %s\n", info)
+		fmt.Fprintf(os.Stderr, "  %s\n\n", copyright)
 	}
 }
 

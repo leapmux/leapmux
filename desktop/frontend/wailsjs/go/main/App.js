@@ -14,6 +14,10 @@ export function ConnectSolo() {
   return window['go']['main']['App']['ConnectSolo']();
 }
 
+export function GetBuildInfo() {
+  return window['go']['main']['App']['GetBuildInfo']();
+}
+
 export function GetConfig() {
   return window['go']['main']['App']['GetConfig']();
 }

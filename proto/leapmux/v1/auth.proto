@@ -76,4 +76,7 @@ message GetSystemInfoRequest {}
 message GetSystemInfoResponse {
   bool signup_enabled = 1;
   bool solo_mode = 2;
+  string version = 3;
+  string commit_hash = 4;
+  string build_time = 5;
 }

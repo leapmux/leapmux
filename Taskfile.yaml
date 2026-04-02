@@ -5,6 +5,14 @@ run: once
 vars:
   VERSION:
     sh: yq '.version' versions.yaml
+  COMMIT_HASH:
+    sh: git rev-parse --short HEAD 2>/dev/null || echo ""
+  BUILD_TIME:
+    sh: date -u '+%Y-%m-%dT%H:%M:%SZ'
+  VERSION_LDFLAGS: >-
+    -X github.com/leapmux/leapmux/util/version.Value={{.VERSION}}
+    -X github.com/leapmux/leapmux/util/version.CommitHash={{.COMMIT_HASH}}
+    -X github.com/leapmux/leapmux/util/version.BuildTime={{.BUILD_TIME}}
   ALPINE_IMAGE:
     sh: yq '.alpine-image' versions.yaml
   UBUNTU_IMAGE:
@@ -150,7 +158,7 @@ tasks:
       - backend/build/bin/leapmux
     cmds:
       - mkdir -p build/bin
-      - go build -ldflags "-X github.com/leapmux/leapmux/util/version.Value={{.VERSION}}" -o ./build/bin/leapmux ./cmd/leapmux
+      - go build -ldflags "{{.VERSION_LDFLAGS}}" -o ./build/bin/leapmux ./cmd/leapmux
 
   build-backend-docker:
     desc: Build leapmux binary for Docker (static, cross-compiled)
@@ -160,7 +168,7 @@ tasks:
       - mkdir -p build/bin
       - >-
         CGO_ENABLED=0 GOOS={{.GOOS | default "linux"}} GOARCH={{.GOARCH | default "amd64"}}
-        go build -ldflags "-s -w -X github.com/leapmux/leapmux/util/version.Value={{.VERSION}}"
+        go build -ldflags "-s -w {{.VERSION_LDFLAGS}}"
         -o ./build/bin/leapmux ./cmd/leapmux
 
   generate-web-icons:
@@ -193,7 +201,7 @@ tasks:
       - frontend/.output/**/*
       - frontend/.vinxi/**/*
     cmds:
-      - cd frontend && bun run build
+      - cd frontend && LEAPMUX_VERSION={{.VERSION}} LEAPMUX_COMMIT_HASH={{.COMMIT_HASH}} LEAPMUX_BUILD_TIME={{.BUILD_TIME}} bun run build
 
   # --- Testing ---
 
@@ -448,7 +456,7 @@ tasks:
     generates:
       - desktop/build/bin/LeapMux.app/Contents/MacOS/LeapMux
     cmds:
-      - wails build -tags devtools -platform darwin/universal -ldflags "-X github.com/leapmux/leapmux/util/version.Value={{.VERSION}}"
+      - wails build -tags devtools -platform darwin/universal -ldflags "{{.VERSION_LDFLAGS}}"
       - codesign --force --sign - --identifier dev.leapmux.desktop --options runtime build/bin/LeapMux.app
       - task: package-desktop-dmg
 
@@ -486,7 +494,7 @@ tasks:
     generates:
       - desktop/build/bin/leapmux-desktop
     cmds:
-      - wails build -tags devtools -o leapmux-desktop -platform linux/amd64 -ldflags "-X github.com/leapmux/leapmux/util/version.Value={{.VERSION}}"
+      - wails build -tags devtools -o leapmux-desktop -platform linux/amd64 -ldflags "{{.VERSION_LDFLAGS}}"
       - cp build/linux/leapmux-desktop.desktop build/bin/
       - cp build/appicon.png build/bin/leapmux-desktop.png
       - cp ../icons/leapmux-icon-corners.svg build/bin/leapmux-desktop.svg
@@ -508,7 +516,7 @@ tasks:
     generates:
       - desktop/build/bin/leapmux-desktop
     cmds:
-      - wails build -tags devtools -o leapmux-desktop -platform linux/arm64 -ldflags "-X github.com/leapmux/leapmux/util/version.Value={{.VERSION}}"
+      - wails build -tags devtools -o leapmux-desktop -platform linux/arm64 -ldflags "{{.VERSION_LDFLAGS}}"
       - cp build/linux/leapmux-desktop.desktop build/bin/
       - cp build/appicon.png build/bin/leapmux-desktop.png
       - cp ../icons/leapmux-icon-corners.svg build/bin/leapmux-desktop.svg
@@ -530,7 +538,7 @@ tasks:
     generates:
       - desktop/build/bin/LeapMux.exe
     cmds:
-      - wails build -tags devtools -platform windows/amd64 -ldflags "-X github.com/leapmux/leapmux/util/version.Value={{.VERSION}}"
+      - wails build -tags devtools -platform windows/amd64 -ldflags "{{.VERSION_LDFLAGS}}"
 
   lint-desktop:
     desc: Lint desktop Go code

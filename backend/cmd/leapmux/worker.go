@@ -36,7 +36,7 @@ func runWorker(args []string) error {
 	}
 	logging.SetLevel(level)
 
-	logging.PrintBanner("worker", version.Value, cfg.HubURL)
+	logging.PrintBanner("worker", version.Value, version.CommitHash, version.BuildTime)
 
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("validate config: %w", err)

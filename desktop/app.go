@@ -156,6 +156,22 @@ func (a *App) GetVersion() string {
 	return version.Value
 }
 
+// BuildInfo holds version, commit hash, and build time for the frontend.
+type BuildInfo struct {
+	Version    string `json:"version"`
+	CommitHash string `json:"commit_hash"`
+	BuildTime  string `json:"build_time"`
+}
+
+// GetBuildInfo returns the full build information.
+func (a *App) GetBuildInfo() BuildInfo {
+	return BuildInfo{
+		Version:    version.Value,
+		CommitHash: version.CommitHash,
+		BuildTime:  version.BuildTime,
+	}
+}
+
 // CheckFullDiskAccess returns true if the app has Full Disk Access (macOS only).
 // On other platforms it always returns true.
 func (a *App) CheckFullDiskAccess() bool {

@@ -115,7 +115,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 	logging.SetLevel(level)
 
 	if !cfg.SkipBanner {
-		logging.PrintBanner(modeName, version.Value, hubCfg.Addr)
+		logging.PrintBanner(modeName, version.Value, version.CommitHash, version.BuildTime)
 		logging.PrintAccessURL(modeName, hubCfg.Addr)
 	}
 
