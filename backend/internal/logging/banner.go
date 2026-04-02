@@ -75,10 +75,17 @@ func init() {
 	}
 }
 
+// VersionInfo holds the fields displayed below the banner art.
+type VersionInfo struct {
+	Version    string
+	CommitHash string
+	BuildTime  string
+}
+
 // PrintBanner prints the LeapMux ASCII art logo with mode-specific
 // art appended to the right. Below the art it prints version info
 // and copyright. Colors are used only when stderr is a TTY.
-func PrintBanner(mode, ver, commitHash, buildTime string) {
+func PrintBanner(mode string, vi VersionInfo) {
 	color := isatty.IsTerminal(os.Stderr.Fd()) || isatty.IsCygwinTerminal(os.Stderr.Fd())
 
 	var modeArt *[3]string
@@ -111,13 +118,13 @@ func PrintBanner(mode, ver, commitHash, buildTime string) {
 	}
 
 	// Build the version info line: "0.0.1-dev (deadbeef) · Fri, 4/3/2026, 2:00:00 AM"
-	info := ver
-	if commitHash != "" {
-		info += " (" + commitHash + ")"
+	info := vi.Version
+	if vi.CommitHash != "" {
+		info += " (" + vi.CommitHash + ")"
 	}
-	if buildTime != "" {
-		display := buildTime
-		if t, err := time.Parse(time.RFC3339, buildTime); err == nil {
+	if vi.BuildTime != "" {
+		display := vi.BuildTime
+		if t, err := time.Parse(time.RFC3339, vi.BuildTime); err == nil {
 			display = t.Local().Format("Mon, 1/2/2006, 3:04:05 PM")
 		}
 		info += " \u00b7 " + display
@@ -126,10 +133,10 @@ func PrintBanner(mode, ver, commitHash, buildTime string) {
 	// Info lines below the art.
 	copyright := "Copyright \u00a9 Event Loop, Inc."
 	if color {
-		fmt.Fprintf(os.Stderr, "\n  %s%s%s\n", dim, info, reset)
+		fmt.Fprintf(os.Stderr, "  %s%s%s\n", dim, info, reset)
 		fmt.Fprintf(os.Stderr, "  %s%s%s\n\n", dim, copyright, reset)
 	} else {
-		fmt.Fprintf(os.Stderr, "\n  %s\n", info)
+		fmt.Fprintf(os.Stderr, "  %s\n", info)
 		fmt.Fprintf(os.Stderr, "  %s\n\n", copyright)
 	}
 }

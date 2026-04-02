@@ -59,7 +59,7 @@ const logoArt = [
   '  ▀▀▀ ▀▀▀ ▀ ▀ ▀   ▀   ▀ ▀▀▀ ▀ ▀',
 ].map(l => l.replaceAll(' ', '\u2007'))
 
-function formatBuildTime(iso: string): string {
+export function formatBuildTime(iso: string): string {
   if (!iso)
     return ''
   const d = new Date(iso)
@@ -76,7 +76,7 @@ function formatBuildTime(iso: string): string {
   })
 }
 
-function formatVersionLine(info: BuildInfo): string {
+export function formatVersionLine(info: BuildInfo): string {
   let line = info.version || 'dev'
   if (info.commitHash)
     line += ` (${info.commitHash})`

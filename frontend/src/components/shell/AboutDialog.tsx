@@ -1,36 +1,8 @@
 import type { Component } from 'solid-js'
-import type { BuildInfo } from '~/lib/systemInfo'
 import { Show } from 'solid-js'
 import { Dialog } from '~/components/common/Dialog'
-import { getBackendBuildInfo, getFrontendBuildInfo } from '~/lib/systemInfo'
+import { formatVersionLine, getBackendBuildInfo, getFrontendBuildInfo } from '~/lib/systemInfo'
 import { labelRow } from '~/styles/shared.css'
-
-function formatBuildTime(iso: string): string {
-  if (!iso)
-    return ''
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime()))
-    return iso
-  return d.toLocaleString(undefined, {
-    weekday: 'short',
-    year: 'numeric',
-    month: 'numeric',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    second: '2-digit',
-  })
-}
-
-function formatVersionLine(info: BuildInfo): string {
-  let line = info.version || 'dev'
-  if (info.commitHash)
-    line += ` (${info.commitHash})`
-  const time = formatBuildTime(info.buildTime)
-  if (time)
-    line += ` \u00B7 ${time}`
-  return line
-}
 
 interface AboutDialogProps {
   onClose: () => void
