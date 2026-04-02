@@ -99,7 +99,7 @@ function restartApp() {
 // Start polling for Full Disk Access status.
 function startFullDiskAccessPoll() {
   stopFullDiskAccessPoll();
-  fullDiskAccessPollTimer = setInterval(checkFullDiskAccess, 5000);
+  fullDiskAccessPollTimer = setInterval(checkFullDiskAccess, 1000);
 }
 
 // Stop polling for Full Disk Access status.
