@@ -76,15 +76,13 @@ async function checkFullDiskAccess() {
     fullDiskAccessGranted = true;
   }
 
-  if (fullDiskAccessGranted === prev) return;
-
-  if (fullDiskAccessGranted) {
+  if (fullDiskAccessGranted && !prev) {
     stopFullDiskAccessPoll();
     restartApp();
-  } else {
-    fullDiskAccessSection.classList.add('visible');
+    return;
   }
 
+  fullDiskAccessSection.classList.toggle('visible', !fullDiskAccessGranted);
   updateConnectBtn();
 }
 
