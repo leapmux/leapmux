@@ -245,6 +245,7 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 		SoloMode:      s.cfg.SoloMode,
 		Version:       version.Value,
 		CommitHash:    version.CommitHash,
+		CommitTime:    version.CommitTime,
 		BuildTime:     version.BuildTime,
 	}), nil
 }

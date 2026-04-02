@@ -3,17 +3,19 @@ import { authClient } from '~/api/clients'
 export interface BuildInfo {
   version: string
   commitHash: string
+  commitTime: string
   buildTime: string
 }
 
 let soloMode = false
 let loaded = false
 
-let backendBuildInfo: BuildInfo = { version: '', commitHash: '', buildTime: '' }
+let backendBuildInfo: BuildInfo = { version: '', commitHash: '', commitTime: '', buildTime: '' }
 
 const frontendBuildInfo: BuildInfo = {
   version: import.meta.env.LEAPMUX_VERSION || '',
   commitHash: import.meta.env.LEAPMUX_COMMIT_HASH || '',
+  commitTime: import.meta.env.LEAPMUX_COMMIT_TIME || '',
   buildTime: import.meta.env.LEAPMUX_BUILD_TIME || '',
 }
 
@@ -26,6 +28,7 @@ export async function loadSystemInfo(): Promise<void> {
     backendBuildInfo = {
       version: resp.version,
       commitHash: resp.commitHash,
+      commitTime: resp.commitTime,
       buildTime: resp.buildTime,
     }
     loaded = true
@@ -110,7 +113,8 @@ export function printConsoleBanner(): void {
     lines.push(`  Backend:  ${formatVersionLine(backend)}`)
     lines.push(`  Frontend: ${formatVersionLine(frontend)}`)
   }
-  lines.push('  Copyright \u00A9 Event Loop, Inc.')
+  const year = backend.commitTime ? new Date(backend.commitTime).getFullYear() : new Date().getFullYear()
+  lines.push(`  Copyright \u00A9 ${year} Event Loop, Inc.`)
 
   // eslint-disable-next-line no-console
   console.log(lines.join('\n'), ...styles)

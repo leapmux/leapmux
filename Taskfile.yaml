@@ -7,11 +7,14 @@ vars:
     sh: yq '.version' versions.yaml
   COMMIT_HASH:
     sh: git rev-parse --short HEAD 2>/dev/null || echo ""
+  COMMIT_TIME:
+    sh: git log -1 --format=%cI 2>/dev/null || echo ""
   BUILD_TIME:
     sh: date -u '+%Y-%m-%dT%H:%M:%SZ'
   VERSION_LDFLAGS: >-
     -X github.com/leapmux/leapmux/util/version.Value={{.VERSION}}
     -X github.com/leapmux/leapmux/util/version.CommitHash={{.COMMIT_HASH}}
+    -X github.com/leapmux/leapmux/util/version.CommitTime={{.COMMIT_TIME}}
     -X github.com/leapmux/leapmux/util/version.BuildTime={{.BUILD_TIME}}
   ALPINE_IMAGE:
     sh: yq '.alpine-image' versions.yaml
@@ -201,7 +204,7 @@ tasks:
       - frontend/.output/**/*
       - frontend/.vinxi/**/*
     cmds:
-      - cd frontend && LEAPMUX_VERSION={{.VERSION}} LEAPMUX_COMMIT_HASH={{.COMMIT_HASH}} LEAPMUX_BUILD_TIME={{.BUILD_TIME}} bun run build
+      - cd frontend && LEAPMUX_VERSION={{.VERSION}} LEAPMUX_COMMIT_HASH={{.COMMIT_HASH}} LEAPMUX_COMMIT_TIME={{.COMMIT_TIME}} LEAPMUX_BUILD_TIME={{.BUILD_TIME}} bun run build
 
   # --- Testing ---
 

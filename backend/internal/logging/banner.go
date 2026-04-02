@@ -79,6 +79,7 @@ func init() {
 type VersionInfo struct {
 	Version    string
 	CommitHash string
+	CommitTime string
 	BuildTime  string
 }
 
@@ -131,7 +132,13 @@ func PrintBanner(mode string, vi VersionInfo) {
 	}
 
 	// Info lines below the art.
-	copyright := "Copyright \u00a9 Event Loop, Inc."
+	year := time.Now().Format("2006")
+	if vi.CommitTime != "" {
+		if t, err := time.Parse(time.RFC3339, vi.CommitTime); err == nil {
+			year = t.Format("2006")
+		}
+	}
+	copyright := fmt.Sprintf("Copyright \u00a9 %s Event Loop, Inc.", year)
 	if color {
 		fmt.Fprintf(os.Stderr, "  %s%s%s\n", dim, info, reset)
 		fmt.Fprintf(os.Stderr, "  %s%s%s\n\n", dim, copyright, reset)

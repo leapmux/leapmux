@@ -78,5 +78,6 @@ message GetSystemInfoResponse {
   bool solo_mode = 2;
   string version = 3;
   string commit_hash = 4;
-  string build_time = 5;
+  string commit_time = 5;
+  string build_time = 6;
 }

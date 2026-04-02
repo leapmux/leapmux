@@ -12,6 +12,7 @@ export const AboutDialog: Component<AboutDialogProps> = (props) => {
   const backend = getBackendBuildInfo()
   const frontend = getFrontendBuildInfo()
   const same = formatVersionLine(backend) === formatVersionLine(frontend)
+  const buildYear = backend.commitTime ? new Date(backend.commitTime).getFullYear() : new Date().getFullYear()
 
   return (
     <Dialog title="About" onClose={props.onClose}>
@@ -57,7 +58,7 @@ export const AboutDialog: Component<AboutDialogProps> = (props) => {
               NOTICE.md
             </a>
           </div>
-          <div>Copyright &copy; Event Loop, Inc.</div>
+          <div>{`Copyright \u00A9 ${buildYear} Event Loop, Inc.`}</div>
           <div>
             <small>
               All product names, logos, and trademarks are the property of their respective owners.

@@ -160,6 +160,7 @@ func (a *App) GetVersion() string {
 type BuildInfo struct {
 	Version    string `json:"version"`
 	CommitHash string `json:"commit_hash"`
+	CommitTime string `json:"commit_time"`
 	BuildTime  string `json:"build_time"`
 }
 
@@ -168,6 +169,7 @@ func (a *App) GetBuildInfo() BuildInfo {
 	return BuildInfo{
 		Version:    version.Value,
 		CommitHash: version.CommitHash,
+		CommitTime: version.CommitTime,
 		BuildTime:  version.BuildTime,
 	}
 }

@@ -75,7 +75,7 @@ func runSolo(args []string, soloMode bool) error {
 	}
 	logging.SetLevel(level)
 
-	logging.PrintBanner(modeName, logging.VersionInfo{Version: version.Value, CommitHash: version.CommitHash, BuildTime: version.BuildTime})
+	logging.PrintBanner(modeName, logging.VersionInfo{Version: version.Value, CommitHash: version.CommitHash, CommitTime: version.CommitTime, BuildTime: version.BuildTime})
 	logging.PrintAccessURL(modeName, hubCfg.Addr)
 
 	// Split the data dir into hub and worker subdirectories.
