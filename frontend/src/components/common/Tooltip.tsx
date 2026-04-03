@@ -5,6 +5,11 @@ import * as styles from './Tooltip.css'
 
 const SHOW_DELAY_MS = 700
 const HIDE_DELAY_MS = 100
+/** Extra margin around trigger rect for the pointermove hit-test. */
+const HOVER_MARGIN_PX = 4
+
+/** Dismiss callback of the currently visible tooltip (at most one). */
+let activeHide: (() => void) | undefined
 
 export interface TooltipProps {
   /** Tooltip text. When empty/undefined, the tooltip is disabled. */
@@ -43,6 +48,38 @@ export function Tooltip(props: TooltipProps) {
   const getTriggerRect = () =>
     (triggerEl?.firstElementChild ?? triggerEl)?.getBoundingClientRect()
 
+  /** Dismiss this tooltip immediately. */
+  const dismiss = () => {
+    clearTimers()
+    if (activeHide === dismiss)
+      activeHide = undefined
+    // eslint-disable-next-line ts/no-use-before-define -- mutual recursion between dismiss and onPointerMove
+    document.removeEventListener('pointermove', onPointerMove)
+    setVisible(false)
+  }
+
+  /**
+   * Global pointermove handler active while the tooltip is visible.
+   * Hides the tooltip when the pointer leaves the trigger bounds,
+   * working around unreliable mouseleave on display:contents elements.
+   */
+  const onPointerMove = (e: PointerEvent) => {
+    const rect = getTriggerRect()
+    if (!rect) {
+      dismiss()
+      return
+    }
+    const { clientX: x, clientY: y } = e
+    if (
+      x < rect.left - HOVER_MARGIN_PX
+      || x > rect.right + HOVER_MARGIN_PX
+      || y < rect.top - HOVER_MARGIN_PX
+      || y > rect.bottom + HOVER_MARGIN_PX
+    ) {
+      dismiss()
+    }
+  }
+
   const show = () => {
     if (!props.text)
       return
@@ -51,11 +88,19 @@ export function Tooltip(props: TooltipProps) {
       const rect = getTriggerRect()
       if (!rect)
         return
+
+      // Dismiss any other visible tooltip first.
+      activeHide?.()
+      activeHide = dismiss
+
       // Position above the trigger, centered horizontally.
       // transform: translate(-50%, -100%) places the tooltip's
       // bottom-center at this point.
       setPos({ top: rect.top - 6, left: rect.left + rect.width / 2 })
       setVisible(true)
+
+      // Start watching pointer position as a fallback for mouseleave.
+      document.addEventListener('pointermove', onPointerMove)
 
       // Clamp to viewport after the tooltip renders.
       requestAnimationFrame(() => {
@@ -79,10 +124,10 @@ export function Tooltip(props: TooltipProps) {
 
   const hide = () => {
     clearTimers()
-    hideTimer = setTimeout(setVisible, HIDE_DELAY_MS, false)
+    hideTimer = setTimeout(dismiss, HIDE_DELAY_MS)
   }
 
-  onCleanup(clearTimers)
+  onCleanup(dismiss)
 
   return (
     <>
