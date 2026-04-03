@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/solo"
+	tunnelpkg "github.com/leapmux/leapmux/tunnel"
 	"github.com/leapmux/leapmux/util/version"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -235,7 +236,8 @@ func (a *App) ConnectSolo() error {
 	// Create proxy via Unix socket.
 	a.proxy = newUnixSocketProxy(socketPath)
 
-	a.config = &DesktopConfig{Mode: "solo"}
+	a.config.Mode = "solo"
+	a.config.HubURL = ""
 	if err := SaveConfig(a.config); err != nil {
 		fmt.Printf("warning: failed to save config: %v\n", err)
 	}
@@ -265,7 +267,8 @@ func (a *App) ConnectDistributed(hubURL string) error {
 	a.proxy = newHTTPProxy(hubURL)
 	a.hubURL = hubURL
 
-	a.config = &DesktopConfig{Mode: "distributed", HubURL: hubURL}
+	a.config.Mode = "distributed"
+	a.config.HubURL = hubURL
 	if err := SaveConfig(a.config); err != nil {
 		fmt.Printf("warning: failed to save config: %v\n", err)
 	}
