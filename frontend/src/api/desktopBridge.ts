@@ -76,10 +76,17 @@ export function waitForWailsBindings(): Promise<void> {
   if (typeof window.go?.main?.App?.ProxyHTTP === 'function')
     return Promise.resolve()
   return new Promise((resolve) => {
+    let attempts = 0
     const check = setInterval(() => {
+      attempts++
       if (typeof window.go?.main?.App?.ProxyHTTP === 'function') {
         clearInterval(check)
         resolve()
+        return
+      }
+      // Log every 20 attempts (1 second) to diagnose hangs.
+      if (attempts % 20 === 0) {
+        console.warn(`[waitForWailsBindings] still waiting after ${attempts * 50}ms`, 'go:', typeof window.go, 'main:', typeof (window.go as any)?.main, 'App:', typeof (window.go as any)?.main?.App)
       }
     }, 50)
   })
