@@ -161,6 +161,23 @@ func addrToURL(addr string) string {
 	return "http://localhost:" + port
 }
 
+// PrintRegistrationURL prints a registration approval message with the URL
+// (or relative path for Unix sockets) to stderr, using colors when available.
+func PrintRegistrationURL(url string, isRelativePath bool) {
+	isTTY := isatty.IsTerminal(os.Stderr.Fd()) || isatty.IsCygwinTerminal(os.Stderr.Fd())
+
+	label := "Approve this worker at:"
+	if isRelativePath {
+		label = "Approve this worker at the Hub's web UI:"
+	}
+
+	if isTTY {
+		fmt.Fprintf(os.Stderr, "\n  %s%s%s\n\n  %s%s➜%s  %s%s%s\n\n", dim, label, reset, bold, green, reset, bold, url, reset)
+	} else {
+		fmt.Fprintf(os.Stderr, "\n  %s\n\n  ➜  %s\n\n", label, url)
+	}
+}
+
 // PrintAccessURL prints the full access URL to stderr.
 func PrintAccessURL(addr string) {
 	u := addrToURL(addr)

@@ -13,6 +13,7 @@ import (
 	"connectrpc.com/connect"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/logging"
 )
 
 // RegistrationResult contains the credentials obtained after registration approval.
@@ -94,14 +95,14 @@ func registerWithClient(
 			"path", regPath,
 			"token", regToken,
 		)
-		fmt.Printf("\n  Approve this worker at the Hub's web UI: %s\n\n", regPath)
+		logging.PrintRegistrationURL(regPath, true)
 	} else {
 		regURL := hubURL + regPath
 		slog.Info("registration requested — approve in browser",
 			"url", regURL,
 			"token", regToken,
 		)
-		fmt.Printf("\n  Approve this worker at: %s\n\n", regURL)
+		logging.PrintRegistrationURL(regURL, false)
 	}
 
 	// Step 2: Long-poll until approved or expired.
