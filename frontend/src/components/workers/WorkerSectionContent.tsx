@@ -28,14 +28,14 @@ const statusClass: Record<ChannelStatus, string> = {
 
 export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props) => {
   const tunnel = useTunnel()
-  const [expandedIds, setExpandedIds] = createSignal<Set<string>>(new Set())
+  const [collapsedIds, setCollapsedIds] = createSignal<Set<string>>(new Set())
 
   function isExpanded(id: string): boolean {
-    return expandedIds().has(id)
+    return !collapsedIds().has(id)
   }
 
   function toggleExpanded(id: string) {
-    setExpandedIds((prev) => {
+    setCollapsedIds((prev) => {
       const next = new Set(prev)
       if (next.has(id))
         next.delete(id)
