@@ -69,8 +69,11 @@ export const modeHeader = style({
 })
 
 export const modeIcon = style({
-  fontSize: '1.5rem',
+  fontSize: '1.25rem',
   lineHeight: 1,
+  width: '1.5rem',
+  textAlign: 'center',
+  flexShrink: 0,
 })
 
 export const modeTitle = style({
