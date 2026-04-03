@@ -131,6 +131,13 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
     }
     catch { /* ignore */ }
 
+    // Animate resize to launcher dimensions while still invisible
+    // (opacity 0), so the user sees a smooth resize without content.
+    try {
+      await animateWindowResize(900, 680)
+    }
+    catch { /* ignore resize errors */ }
+
     try {
       const config = await app().GetConfig()
       if (config.mode === 'distributed' && config.hub_url) {
@@ -139,10 +146,6 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
       if (config.mode) {
         setMode(config.mode as 'solo' | 'distributed')
       }
-
-      // Animate resize to launcher dimensions while still invisible
-      // (opacity 0), so the user sees a smooth resize without content.
-      await animateWindowResize(900, 680)
 
       // Auto-connect if user has previously connected.
       if (config.mode) {
@@ -167,7 +170,10 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
         setVisible(true)
       }
     }
-    catch { /* ignore */ }
+    catch {
+      // Config load failed — show launcher anyway.
+      setVisible(true)
+    }
   })
 
   onCleanup(() => stopFDAPoll())
