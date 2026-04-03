@@ -17,7 +17,6 @@ func (a *App) startSolo() error {
 	inst, err := solo.Start(a.ctx, solo.Config{
 		SkipBanner: true,
 		NoTCP:      true,
-		Args:       []string{"--log-level", "debug"},
 	})
 	if err != nil {
 		return err

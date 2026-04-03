@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -85,9 +83,6 @@ func (a *App) SendChannelMessage(b64Data string) error {
 		return fmt.Errorf("decode: %w", err)
 	}
 
-	h := sha256.Sum256(data)
-	slog.Debug("channel relay send", "b64_len", len(b64Data), "data_len", len(data), "sha256", hex.EncodeToString(h[:8]))
-
 	a.relay.mu.Lock()
 	defer a.relay.mu.Unlock()
 	return a.relay.ws.Write(a.relay.ctx, websocket.MessageBinary, data)
@@ -123,9 +118,7 @@ func (r *ChannelRelay) readLoop() {
 			wailsRuntime.EventsEmit(r.wailsCtx, "channel:close")
 			return
 		}
-		h := sha256.Sum256(data)
 		b64 := base64.StdEncoding.EncodeToString(data)
-		slog.Debug("channel relay recv", "data_len", len(data), "b64_len", len(b64), "sha256", hex.EncodeToString(h[:8]))
 		wailsRuntime.EventsEmit(r.wailsCtx, "channel:message", b64)
 	}
 }

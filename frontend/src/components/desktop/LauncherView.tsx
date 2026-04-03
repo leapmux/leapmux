@@ -5,6 +5,7 @@ import { createLogger } from '~/lib/logger'
 import * as styles from './LauncherView.css'
 
 const log = createLogger('launcher')
+
 const httpSchemeRegex = /^https?:\/\//i
 
 /**
@@ -123,10 +124,7 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
   }
 
   onMount(async () => {
-    // Wait for Wails to inject window.go bindings (async on reload).
-    log.info('waiting for wails bindings...')
     await waitForWailsBindings()
-    log.info('wails bindings ready')
 
     try {
       const ver = await app().GetVersion()
@@ -137,13 +135,10 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
 
     // Animate resize to launcher dimensions while still invisible
     // (opacity 0), so the user sees a smooth resize without content.
-    log.info('starting resize to 900x680...')
     await animateWindowResize(900, 680)
-    log.info('resize complete')
 
     try {
       const config = await app().GetConfig()
-      log.info('config loaded', config)
       if (config.mode === 'distributed' && config.hub_url) {
         setHubUrl(config.hub_url)
       }
@@ -153,12 +148,10 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
 
       // Auto-connect if user has previously connected.
       if (config.mode) {
-        log.info(`auto-connecting mode=${config.mode}`)
         if (config.mode === 'solo') {
           await checkFDA()
           if (!fdaGranted()) {
             startFDAPoll()
-            log.info('FDA not granted, showing launcher')
             setVisible(true)
             return
           }
@@ -170,17 +163,15 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
       }
       else {
         // First launch or returning from Switch Mode — show launcher.
-        log.info('no saved mode, showing launcher')
         await checkFDA()
         if (!fdaGranted())
           startFDAPoll()
         setVisible(true)
-        log.info('setVisible(true) called')
       }
     }
     catch (err) {
       // Config load failed — show launcher anyway.
-      log.error('error in init:', err)
+      log.error('failed to initialize launcher:', err)
       setVisible(true)
     }
   })
