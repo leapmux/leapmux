@@ -53,13 +53,9 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		// Solo mode: auto-authenticate as the solo user.
 		user = h.soloUser
 	} else {
-		// Extract auth token from subprotocol header or query param (legacy).
 		token := extractTokenFromSubprotocols(r.Header.Get("Sec-WebSocket-Protocol"))
 		if token == "" {
-			token = r.URL.Query().Get("token")
-		}
-		if token == "" {
-			http.Error(w, "missing token", http.StatusBadRequest)
+			http.Error(w, "missing auth token in subprotocol header", http.StatusBadRequest)
 			return
 		}
 
