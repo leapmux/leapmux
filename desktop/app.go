@@ -288,6 +288,9 @@ func (a *App) IsConnected() bool {
 
 // CreateTunnel creates a new TCP/IP tunnel to a worker.
 func (a *App) CreateTunnel(config TunnelConfig) (*TunnelInfo, error) {
+	// The frontend may pass window.location.origin as the Hub URL, which is
+	// "wails://wails" inside the Wails webview. Always use the real Hub URL.
+	config.HubURL = a.hubURL
 	return a.tunnels.CreateTunnel(a.ctx, config)
 }
 
