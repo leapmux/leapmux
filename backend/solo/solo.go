@@ -130,7 +130,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 
 	if !cfg.SkipBanner {
 		logging.PrintBanner(modeName, logging.VersionInfo{Version: version.Value, CommitHash: version.CommitHash, CommitTime: version.CommitTime, BuildTime: version.BuildTime})
-		logging.PrintAccessURL(modeName, hubCfg.Addr)
+		logging.PrintAccessURL(hubCfg.Addr)
 	}
 
 	// Split data dir into hub and worker subdirectories.
