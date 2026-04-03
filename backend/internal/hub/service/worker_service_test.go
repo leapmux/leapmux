@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
@@ -476,6 +477,7 @@ func setupUnixSocketTestServer(t *testing.T) *unixSocketTestEnv {
 
 	connSvc := service.NewWorkerConnectorService(q, bgMgr)
 	connSvc.SetChannelMgr(cMgr)
+	connSvc.SetPollTimeout(500 * time.Millisecond)
 	connPath, connHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(connSvc, opts)
 	mux.Handle(connPath, connHandler)
 

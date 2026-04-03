@@ -21,18 +21,27 @@ import (
 
 // WorkerConnectorService implements the Hub-side service called by Worker
 // instances for registration and bidirectional streaming.
+// DefaultPollTimeout is the long-poll duration for PollRegistration.
+const DefaultPollTimeout = 30 * time.Second
+
 type WorkerConnectorService struct {
-	queries    *db.Queries
-	workerMgr  *workermgr.Manager
-	channelMgr *channelmgr.Manager
-	pending    *workermgr.PendingRequests
-	notifier   *notifier.Notifier
-	shutdownCh <-chan struct{}
+	queries     *db.Queries
+	workerMgr   *workermgr.Manager
+	channelMgr  *channelmgr.Manager
+	pending     *workermgr.PendingRequests
+	notifier    *notifier.Notifier
+	shutdownCh  <-chan struct{}
+	pollTimeout time.Duration
 }
 
 // NewWorkerConnectorService creates a new WorkerConnectorService.
 func NewWorkerConnectorService(q *db.Queries, mgr *workermgr.Manager) *WorkerConnectorService {
-	return &WorkerConnectorService{queries: q, workerMgr: mgr}
+	return &WorkerConnectorService{queries: q, workerMgr: mgr, pollTimeout: DefaultPollTimeout}
+}
+
+// SetPollTimeout overrides the long-poll timeout for PollRegistration.
+func (s *WorkerConnectorService) SetPollTimeout(d time.Duration) {
+	s.pollTimeout = d
 }
 
 // SetChannelMgr sets the channel manager for routing encrypted channel traffic.
@@ -188,7 +197,7 @@ func (s *WorkerConnectorService) PollRegistration(
 
 	// Long-poll: if still pending, wait for notification or timeout.
 	if reg.Status == leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_PENDING {
-		_ = s.workerMgr.WaitForRegistrationChange(ctx, regID, 30*time.Second)
+		_ = s.workerMgr.WaitForRegistrationChange(ctx, regID, s.pollTimeout)
 
 		// Re-query after waking up.
 		reg, err = s.queries.GetRegistrationByID(ctx, regID)
