@@ -1,17 +1,18 @@
 import { keyframes, style } from '@vanilla-extract/css'
 
 export const container = style({
-  display: 'flex',
-  flexDirection: 'column',
-  alignItems: 'center',
-  justifyContent: 'center',
-  minHeight: '100vh',
-  maxWidth: '720px',
-  margin: '0 auto',
-  padding: '2rem',
-  gap: '2rem',
-  transition: 'opacity 0.3s ease',
-})
+  '--container-gap': '2rem',
+  'display': 'flex',
+  'flexDirection': 'column',
+  'alignItems': 'center',
+  'justifyContent': 'center',
+  'minHeight': '100vh',
+  'maxWidth': '720px',
+  'margin': '0 auto',
+  'padding': '2rem',
+  'gap': 'var(--container-gap)',
+  'transition': 'opacity 0.3s ease',
+} as any)
 
 export const header = style({
   textAlign: 'center',
@@ -50,6 +51,7 @@ export const modeCard = style({
   'textAlign': 'left',
   'minWidth': 0,
   'whiteSpace': 'normal',
+  'color': 'var(--card-foreground)',
   ':hover': {
     borderColor: 'var(--muted-foreground)',
   },
@@ -101,9 +103,24 @@ export const radioSelected = style({
   },
 })
 
-export const section = style({
+// Collapsible section — animated height via grid 0fr → 1fr
+export const collapsible = style({
+  display: 'grid',
+  gridTemplateRows: '0fr',
+  transition: 'grid-template-rows 0.3s ease, margin-top 0.3s ease',
   width: '100%',
   maxWidth: '640px',
+  marginTop: 'calc(-1 * var(--container-gap))',
+})
+
+export const collapsibleVisible = style({
+  gridTemplateRows: '1fr',
+  marginTop: 0,
+})
+
+export const collapsibleInner = style({
+  overflow: 'hidden',
+  minHeight: 0,
 })
 
 export const label = style({
@@ -139,20 +156,20 @@ export const connectSection = style({
 })
 
 export const connectBtn = style({
-  'width': '100%',
-  'padding': '0.7rem 1.5rem',
-  'border': 'none',
-  'borderRadius': '0.5rem',
-  'background': 'var(--primary)',
-  'color': 'var(--primary-foreground)',
-  'fontSize': '0.95rem',
-  'fontWeight': 500,
-  'cursor': 'pointer',
-  'transition': 'opacity 0.15s',
-  ':hover': {
-    opacity: 0.9,
-  },
-  'selectors': {
+  width: '100%',
+  padding: '0.7rem 1.5rem',
+  border: 'none',
+  borderRadius: '0.5rem',
+  background: 'var(--primary)',
+  color: 'var(--primary-foreground)',
+  fontSize: '0.95rem',
+  fontWeight: 500,
+  cursor: 'pointer',
+  transition: 'opacity 0.15s',
+  selectors: {
+    '&:hover:not(:disabled)': {
+      opacity: 0.9,
+    },
     '&:disabled': {
       opacity: 0.5,
       cursor: 'not-allowed',
@@ -194,6 +211,11 @@ export const fdaHeader = style({
   display: 'flex',
   alignItems: 'center',
   gap: '0.5rem',
+})
+
+export const fdaIcon = style({
+  fontSize: '1.1rem',
+  lineHeight: 1,
 })
 
 export const fdaTitle = style({

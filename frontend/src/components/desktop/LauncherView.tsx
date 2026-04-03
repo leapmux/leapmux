@@ -1,7 +1,8 @@
 import type { Component } from 'solid-js'
-import { createSignal, onCleanup, onMount, Show } from 'solid-js'
+import { createSignal, onCleanup, onMount } from 'solid-js'
 import { animateWindowResize, waitForWailsBindings } from '~/api/desktopBridge'
 import { createLogger } from '~/lib/logger'
+import { formatBuildTime } from '~/lib/systemInfo'
 import * as styles from './LauncherView.css'
 
 const log = createLogger('launcher')
@@ -18,7 +19,7 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
   const [hubUrl, setHubUrl] = createSignal('')
   const [loading, setLoading] = createSignal(false)
   const [error, setError] = createSignal('')
-  const [version, setVersion] = createSignal('')
+  const [versionLine, setVersionLine] = createSignal('')
   const [fdaGranted, setFdaGranted] = createSignal(true)
   const [visible, setVisible] = createSignal(false)
   let fdaPollTimer: ReturnType<typeof setInterval> | null = null
@@ -127,9 +128,16 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
     await waitForWailsBindings()
 
     try {
-      const ver = await app().GetVersion()
-      if (ver)
-        setVersion(ver)
+      const info = await app().GetBuildInfo()
+      if (info.version) {
+        let line = info.version
+        if (info.commit_hash)
+          line += ` (${info.commit_hash})`
+        const time = formatBuildTime(info.build_time)
+        if (time)
+          line += ` \u00B7 ${time}`
+        setVersionLine(line)
+      }
     }
     catch { /* ignore */ }
 
@@ -215,8 +223,9 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
         </button>
       </div>
 
-      <Show when={mode() === 'distributed'}>
-        <div class={styles.section}>
+      {/* Collapsible hub URL input — animated height via grid 0fr → 1fr */}
+      <div class={`${styles.collapsible} ${mode() === 'distributed' ? styles.collapsibleVisible : ''}`}>
+        <div class={styles.collapsibleInner}>
           <label class={styles.label} for="hubUrl">Hub URL</label>
           <input
             id="hubUrl"
@@ -234,13 +243,14 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
             spellcheck={false}
           />
         </div>
-      </Show>
+      </div>
 
-      <Show when={mode() === 'solo' && !fdaGranted()}>
-        <div class={styles.section}>
+      {/* Collapsible Full Disk Access notice */}
+      <div class={`${styles.collapsible} ${mode() === 'solo' && !fdaGranted() ? styles.collapsibleVisible : ''}`}>
+        <div class={styles.collapsibleInner}>
           <div class={styles.fdaCard}>
             <div class={styles.fdaHeader}>
-              <span>&#x1F512;</span>
+              <span class={styles.fdaIcon}>&#x1F512;</span>
               <h4 class={styles.fdaTitle}>Full Disk Access Required</h4>
             </div>
             <div class={styles.fdaBody}>
@@ -258,7 +268,7 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
             </div>
           </div>
         </div>
-      </Show>
+      </div>
 
       <div class={styles.connectSection}>
         <button
@@ -268,20 +278,18 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
         >
           Connect
         </button>
-        <Show when={loading()}>
-          <div class={styles.spinner} />
-        </Show>
-        <Show when={error()}>
-          <div class={styles.errorText}>{error()}</div>
-        </Show>
+        {loading() && <div class={styles.spinner} />}
+        {/* Collapsible error message */}
+        <div class={`${styles.collapsible} ${error() ? styles.collapsibleVisible : ''}`} style={{ 'margin-top': 0 }}>
+          <div class={styles.collapsibleInner}>
+            <div class={styles.errorText}>{error()}</div>
+          </div>
+        </div>
       </div>
 
-      <Show when={version()}>
-        <div class={styles.versionText}>
-          v
-          {version()}
-        </div>
-      </Show>
+      <div class={styles.versionText}>
+        {versionLine() || '\u00A0'}
+      </div>
     </div>
   )
 }
