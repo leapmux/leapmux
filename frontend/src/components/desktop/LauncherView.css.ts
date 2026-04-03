@@ -77,6 +77,7 @@ export const modeIcon = style({
 export const modeTitle = style({
   fontSize: '1rem',
   fontWeight: 600,
+  margin: 0,
 })
 
 export const modeDescription = style({
