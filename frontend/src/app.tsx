@@ -1,7 +1,9 @@
 import type { ParentComponent } from 'solid-js'
 import { Router } from '@solidjs/router'
 import { FileRoutes } from '@solidjs/start/router'
-import { createEffect, createSignal, onCleanup, onMount, Suspense } from 'solid-js'
+import { createEffect, createSignal, onCleanup, onMount, Show, Suspense } from 'solid-js'
+import { isWailsApp } from '~/api/desktopBridge'
+import { LauncherView } from '~/components/desktop/LauncherView'
 import { AuthProvider } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { disableTextSubstitutions } from '~/lib/textInputBehavior'
@@ -54,6 +56,7 @@ const PreferencesApplier: ParentComponent = (props) => {
 }
 
 export default function App() {
+  const [desktopConnected, setDesktopConnected] = createSignal(!isWailsApp())
   const [themePreference, setThemePreference] = createSignal<ThemePreference>(getStoredTheme())
   const [resolvedTheme, setResolvedTheme] = createSignal(resolveTheme(getStoredTheme()))
 
@@ -120,15 +123,20 @@ export default function App() {
 
   return (
     <div class={heightFull}>
-      <AuthProvider>
-        <PreferencesProvider>
-          <PreferencesApplier>
-            <Router root={props => <Suspense>{props.children}</Suspense>}>
-              <FileRoutes />
-            </Router>
-          </PreferencesApplier>
-        </PreferencesProvider>
-      </AuthProvider>
+      <Show
+        when={desktopConnected()}
+        fallback={<LauncherView onConnected={() => setDesktopConnected(true)} />}
+      >
+        <AuthProvider>
+          <PreferencesProvider>
+            <PreferencesApplier>
+              <Router root={props => <Suspense>{props.children}</Suspense>}>
+                <FileRoutes />
+              </Router>
+            </PreferencesApplier>
+          </PreferencesProvider>
+        </AuthProvider>
+      </Show>
     </div>
   )
 }

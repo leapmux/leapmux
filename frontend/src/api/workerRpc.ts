@@ -60,6 +60,7 @@ import type {
 import type { ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '~/lib/channel'
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
 import { createClient } from '@connectrpc/connect'
+import { arrayBufferToBase64, base64ToArrayBuffer, isWailsApp } from '~/api/desktopBridge'
 import { getToken, transport } from '~/api/transport'
 import {
   CloseAgentRequestSchema,
@@ -195,6 +196,10 @@ class BrowserChannelTransport implements ChannelTransport {
   }
 
   createWebSocket(): WebSocket {
+    if (isWailsApp()) {
+      return new WailsWebSocket() as unknown as WebSocket
+    }
+
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsUrl = `${wsProtocol}//${window.location.host}/ws/channel`
     const protocols = ['channel-relay']
@@ -222,6 +227,64 @@ class BrowserChannelTransport implements ChannelTransport {
       throw new Error('getUserId not registered')
     }
     return getUserIdFn()
+  }
+}
+
+/**
+ * WailsWebSocket provides a WebSocket-like interface that bridges through
+ * Wails Go bindings and events. Binary data is base64-encoded at the
+ * boundary.
+ */
+class WailsWebSocket {
+  readyState: number = WebSocket.CONNECTING
+  binaryType: BinaryType = 'arraybuffer'
+
+  onopen: ((ev: Event) => void) | null = null
+  onmessage: ((ev: MessageEvent) => void) | null = null
+  onclose: ((ev: CloseEvent) => void) | null = null
+  onerror: ((ev: Event) => void) | null = null
+
+  constructor() {
+    const token = isSoloMode() ? '' : (getToken() ?? '')
+    window.go!.main.App.OpenChannelRelay(token).then(() => {
+      // Listen for messages from Go.
+      window.runtime!.EventsOn('channel:message', (...args: unknown[]) => {
+        const b64 = args[0] as string
+        if (this.onmessage) {
+          this.onmessage({ data: base64ToArrayBuffer(b64) } as MessageEvent)
+        }
+      })
+      // Listen for relay close.
+      window.runtime!.EventsOn('channel:close', () => {
+        this.readyState = WebSocket.CLOSED
+        if (this.onclose) {
+          this.onclose({ code: 1000, reason: '', wasClean: true } as CloseEvent)
+        }
+      })
+      this.readyState = WebSocket.OPEN
+      if (this.onopen) {
+        this.onopen({} as Event)
+      }
+    }).catch((err: unknown) => {
+      this.readyState = WebSocket.CLOSED
+      if (this.onerror) {
+        this.onerror(new ErrorEvent('error', { message: String(err) }))
+      }
+    })
+  }
+
+  send(data: ArrayBuffer | Uint8Array): void {
+    window.go!.main.App.SendChannelMessage(arrayBufferToBase64(data))
+  }
+
+  close(): void {
+    window.go!.main.App.CloseChannelRelay()
+    this.readyState = WebSocket.CLOSED
+    window.runtime!.EventsOff('channel:message')
+    window.runtime!.EventsOff('channel:close')
+    if (this.onclose) {
+      this.onclose({ code: 1000, reason: '', wasClean: true } as CloseEvent)
+    }
   }
 }
 

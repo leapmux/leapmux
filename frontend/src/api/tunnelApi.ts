@@ -1,8 +1,4 @@
-declare global {
-  interface Window {
-    __lm_call?: (method: string, args: unknown[]) => Promise<unknown>
-  }
-}
+import { isWailsApp } from '~/api/desktopBridge'
 
 export interface TunnelConfig {
   workerId: string
@@ -27,18 +23,18 @@ export interface TunnelInfo {
 }
 
 export function isTunnelAvailable(): boolean {
-  return typeof window.__lm_call === 'function'
+  return isWailsApp()
 }
 
 export async function createTunnel(config: TunnelConfig): Promise<TunnelInfo> {
-  return window.__lm_call!('main.App.CreateTunnel', [config]) as Promise<TunnelInfo>
+  return window.go!.main.App.CreateTunnel(config) as Promise<TunnelInfo>
 }
 
 export async function deleteTunnel(tunnelId: string): Promise<void> {
-  await window.__lm_call!('main.App.DeleteTunnel', [tunnelId])
+  await window.go!.main.App.DeleteTunnel(tunnelId)
 }
 
 export async function listTunnels(): Promise<TunnelInfo[]> {
-  const result = await window.__lm_call!('main.App.ListTunnels', [])
+  const result = await window.go!.main.App.ListTunnels()
   return (result as TunnelInfo[] | null) ?? []
 }

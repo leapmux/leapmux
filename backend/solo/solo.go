@@ -40,6 +40,10 @@ type Config struct {
 	DevMode bool
 	// SkipBanner suppresses the ASCII art banner and access URL.
 	SkipBanner bool
+	// NoTCP disables the TCP listener. When true, the Hub only listens on
+	// the Unix domain socket. This is used by the desktop app to avoid
+	// opening a TCP port.
+	NoTCP bool
 }
 
 // Instance represents a running solo Hub+Worker pair.
@@ -47,11 +51,17 @@ type Instance struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	addr   string
+	server *hub.Server
 }
 
 // Addr returns the listen address of the running instance.
 func (i *Instance) Addr() string {
 	return i.addr
+}
+
+// Server returns the underlying Hub server instance.
+func (i *Instance) Server() *hub.Server {
+	return i.server
 }
 
 // Stop gracefully shuts down the Hub and Worker.
@@ -114,6 +124,10 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 	}
 	logging.SetLevel(level)
 
+	if cfg.NoTCP {
+		hubCfg.Addr = ""
+	}
+
 	if !cfg.SkipBanner {
 		logging.PrintBanner(modeName, logging.VersionInfo{Version: version.Value, CommitHash: version.CommitHash, CommitTime: version.CommitTime, BuildTime: version.BuildTime})
 		logging.PrintAccessURL(modeName, hubCfg.Addr)
@@ -135,7 +149,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 
 	soloCtx, cancel := context.WithCancel(ctx)
 
-	inst := &Instance{cancel: cancel, addr: hubCfg.Addr}
+	inst := &Instance{cancel: cancel, addr: hubCfg.Addr, server: server}
 
 	// Start Hub.
 	hubErrCh := make(chan error, 1)

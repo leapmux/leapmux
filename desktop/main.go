@@ -1,9 +1,9 @@
 package main
 
 import (
-	"embed"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"runtime"
 
@@ -15,9 +15,6 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
-
-//go:embed all:frontend
-var assets embed.FS
 
 func main() {
 	app := NewApp()
@@ -33,6 +30,10 @@ func main() {
 		defer release()
 	}
 
+	// Serve the SPA frontend from the embedded assets. The SPA handles
+	// both the launcher view (mode selection) and the main app.
+	spaFS, _ := fs.Sub(spaAssets, "spa")
+
 	// Build the application menu. On macOS the menu lives in the system
 	// menu bar and costs no window space. On Windows and Linux the menu
 	// bar consumes vertical space, so we omit it entirely and handle the
@@ -44,7 +45,7 @@ func main() {
 		appMenu.Append(menu.EditMenu())
 		viewMenu := appMenu.AddSubmenu("View")
 		viewMenu.AddText("Toggle Developer Tools", keys.Key("f12"), func(_ *menu.CallbackData) {
-			wailsRuntime.WindowExecJS(app.ctx, `if (window.__lm_post) window.__lm_post('wails:openInspector');`)
+			wailsRuntime.WindowExecJS(app.ctx, `if (window.runtime) window.runtime.openInspector();`)
 		})
 		appMenu.Append(menu.WindowMenu())
 	}
@@ -57,16 +58,11 @@ func main() {
 		MinHeight: 600,
 		Menu:      appMenu,
 		AssetServer: &assetserver.Options{
-			Assets: assets,
+			Handler: newSPAHandler(spaFS),
 		},
-		// After connecting, the WebView navigates from the wails:// launcher
-		// page to the real frontend (e.g. http://127.0.0.1:4327). Allow
-		// that origin so JS→Go IPC (keyboard shortcuts, external links)
-		// continues to work on the navigated page.
-		BindingsAllowedOrigins: "http://*,https://*",
-		OnStartup:              app.startup,
-		OnDomReady:             app.domReady,
-		OnShutdown:             app.shutdown,
+		OnStartup:  app.startup,
+		OnDomReady: app.domReady,
+		OnShutdown: app.shutdown,
 		Mac: &mac.Options{
 			Preferences: &mac.Preferences{
 				FullscreenEnabled: mac.Enabled,

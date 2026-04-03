@@ -1,0 +1,125 @@
+/**
+ * Desktop bridge for communicating with the Wails Go backend.
+ *
+ * When the SPA runs inside the Wails desktop app, `window.go.main.App.*`
+ * bindings are available natively. This module provides typed wrappers
+ * and a custom fetch implementation that proxies ConnectRPC requests
+ * through the Go backend (which forwards them to the Hub via Unix socket
+ * or HTTPS, depending on the mode).
+ */
+
+// ---------------------------------------------------------------------------
+// Type declarations for Wails bindings
+// ---------------------------------------------------------------------------
+
+declare global {
+  interface Window {
+    go?: {
+      main: {
+        App: {
+          ProxyHTTP: (method: string, path: string, headersJSON: string, bodyBase64: string) => Promise<{
+            status: number
+            headers: Record<string, string>
+            body: string
+          }>
+          OpenChannelRelay: (token: string) => Promise<void>
+          SendChannelMessage: (b64Data: string) => Promise<void>
+          CloseChannelRelay: () => Promise<void>
+          ConnectSolo: () => Promise<void>
+          ConnectDistributed: (hubURL: string) => Promise<void>
+          GetConfig: () => Promise<{ mode: string, hub_url: string, window_width: number, window_height: number }>
+          GetVersion: () => Promise<string>
+          GetBuildInfo: () => Promise<{ version: string, commit_hash: string, commit_time: string, build_time: string }>
+          CheckFullDiskAccess: () => Promise<boolean>
+          OpenFullDiskAccessSettings: () => Promise<void>
+          Restart: () => Promise<void>
+          SwitchMode: () => Promise<void>
+          GetHubURL: () => Promise<string>
+          IsConnected: () => Promise<boolean>
+          CreateTunnel: (config: unknown) => Promise<unknown>
+          DeleteTunnel: (tunnelId: string) => Promise<void>
+          ListTunnels: () => Promise<unknown[]>
+        }
+      }
+    }
+    runtime?: {
+      EventsOn: (event: string, callback: (...args: unknown[]) => void) => void
+      EventsOff: (event: string) => void
+      BrowserOpenURL: (url: string) => void
+      Quit: () => void
+      WindowSetSize: (width: number, height: number) => void
+      WindowGetSize: () => { w: number, h: number }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Desktop detection
+// ---------------------------------------------------------------------------
+
+/** Returns true when running inside the Wails desktop app. */
+export function isWailsApp(): boolean {
+  return typeof window.go?.main?.App?.ProxyHTTP === 'function'
+}
+
+// ---------------------------------------------------------------------------
+// Base64 helpers
+// ---------------------------------------------------------------------------
+
+export function arrayBufferToBase64(buf: ArrayBuffer | Uint8Array | string | null | undefined): string {
+  if (!buf)
+    return ''
+  if (typeof buf === 'string') {
+    // Already a string (e.g. JSON body) — encode as UTF-8 bytes.
+    const bytes = new TextEncoder().encode(buf)
+    return uint8ArrayToBase64(bytes)
+  }
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf)
+  return uint8ArrayToBase64(bytes)
+}
+
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i])
+  }
+  return btoa(binary)
+}
+
+export function base64ToArrayBuffer(b64: string): ArrayBuffer {
+  if (!b64)
+    return new ArrayBuffer(0)
+  const binary = atob(b64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+  return bytes.buffer
+}
+
+// ---------------------------------------------------------------------------
+// Custom fetch for ConnectRPC
+// ---------------------------------------------------------------------------
+
+/**
+ * Custom fetch implementation that proxies HTTP requests through Wails
+ * Go bindings. Used by ConnectRPC transport when running in desktop mode.
+ */
+export const desktopFetch: typeof globalThis.fetch = async (input, init) => {
+  const url = typeof input === 'string' ? input : (input as Request).url
+  const method = init?.method ?? 'POST'
+  const headers = Object.fromEntries(new Headers(init?.headers).entries())
+  const body = init?.body ? arrayBufferToBase64(init.body as ArrayBuffer | Uint8Array | string) : ''
+
+  const resp = await window.go!.main.App.ProxyHTTP(
+    method,
+    new URL(url).pathname,
+    JSON.stringify(headers),
+    body,
+  )
+
+  return new Response(base64ToArrayBuffer(resp.body), {
+    status: resp.status,
+    headers: resp.headers,
+  })
+}

@@ -31,10 +31,9 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
   }
 
   const handleSwitchMode = () => {
-    const fn = (window as any).__lm_switchMode
-    if (typeof fn === 'function') {
-      fn()
-    }
+    window.go?.main?.App?.SwitchMode().then(() => {
+      window.location.reload()
+    })
   }
 
   const renderMenuItems = () => (

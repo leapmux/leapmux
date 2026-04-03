@@ -1,4 +1,5 @@
 import { authClient } from '~/api/clients'
+import { isWailsApp } from '~/api/desktopBridge'
 
 export interface BuildInfo {
   version: string
@@ -43,7 +44,7 @@ export function isSoloMode(): boolean {
 }
 
 export function isDesktopApp(): boolean {
-  return typeof (window as any).__lm_switchMode === 'function'
+  return isWailsApp()
 }
 
 export function getBackendBuildInfo(): BuildInfo {

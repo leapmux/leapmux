@@ -144,6 +144,16 @@ tasks:
       - rsync -a backend/internal/hub/frontend.embed backend/internal/hub/generated/frontend/embed.go
       - rsync -a --delete frontend/.output/public/ backend/internal/hub/generated/frontend/public/
 
+  embed-frontend-desktop:
+    desc: Embed frontend assets into desktop app for go:embed
+    deps: [build-frontend]
+    sources:
+      - frontend/.output/public/**/*
+    generates:
+      - desktop/spa/**/*
+    cmds:
+      - rsync -a --delete frontend/.output/public/ desktop/spa/
+
   build-backend:
     desc: Build leapmux binary
     deps: [prepare-backend, embed-frontend]
@@ -417,6 +427,7 @@ tasks:
     cmds:
       - task: generate
       - task: embed-frontend
+      - task: embed-frontend-desktop
       - rsync -a desktop/platform/ desktop/build/
       - task: generate-desktop-icons-non-darwin
 
@@ -425,6 +436,7 @@ tasks:
     cmds:
       - task: generate
       - task: embed-frontend
+      - task: embed-frontend-desktop
       - rsync -a desktop/platform/ desktop/build/
       - task: generate-desktop-icons-darwin
 
@@ -435,6 +447,7 @@ tasks:
       - desktop/go.sum
       - "desktop/**/*.go"
       - desktop/frontend/**/*
+      - desktop/spa/**/*
       - desktop/build/appicon.png
       - desktop/build/windows/icon.ico
       - backend/go.mod
@@ -452,6 +465,7 @@ tasks:
       - desktop/go.sum
       - "desktop/**/*.go"
       - desktop/frontend/**/*
+      - desktop/spa/**/*
       - desktop/build/appicon.png
       - backend/go.mod
       - backend/go.sum
@@ -489,6 +503,7 @@ tasks:
       - desktop/go.sum
       - "desktop/**/*.go"
       - desktop/frontend/**/*
+      - desktop/spa/**/*
       - desktop/build/appicon.png
       - desktop/build/windows/icon.ico
       - backend/go.mod
@@ -511,6 +526,7 @@ tasks:
       - desktop/go.sum
       - "desktop/**/*.go"
       - desktop/frontend/**/*
+      - desktop/spa/**/*
       - desktop/build/appicon.png
       - desktop/build/windows/icon.ico
       - backend/go.mod
@@ -533,6 +549,7 @@ tasks:
       - desktop/go.sum
       - "desktop/**/*.go"
       - desktop/frontend/**/*
+      - desktop/spa/**/*
       - desktop/build/appicon.png
       - desktop/build/windows/icon.ico
       - backend/go.mod
