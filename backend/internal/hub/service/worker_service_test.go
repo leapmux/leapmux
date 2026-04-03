@@ -64,7 +64,7 @@ func setupWorkerTestServer(t *testing.T) *workerTestEnv {
 	mux.Handle(authPath, authHandler)
 
 	connPath, connHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(
-		service.NewWorkerConnectorService(q, bgMgr), opts)
+		service.NewWorkerConnectorService(q, bgMgr, nil, nil, nil, nil, nil), opts)
 	mux.Handle(connPath, connHandler)
 
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(
@@ -478,9 +478,7 @@ func setupUnixSocketTestServer(t *testing.T) *unixSocketTestEnv {
 	broadcaster := service.NewHubEventBroadcaster(cMgr)
 	broadcaster.SetDebounceInterval(50 * time.Millisecond)
 
-	connSvc := service.NewWorkerConnectorService(q, bgMgr)
-	connSvc.SetChannelMgr(cMgr)
-	connSvc.SetBroadcaster(broadcaster)
+	connSvc := service.NewWorkerConnectorService(q, bgMgr, cMgr, broadcaster, nil, nil, nil)
 	connSvc.SetPollTimeout(3 * time.Second)
 	connPath, connHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(connSvc, opts)
 	mux.Handle(connPath, connHandler)

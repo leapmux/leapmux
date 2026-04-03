@@ -123,7 +123,7 @@ func OpenChannel(ctx context.Context, hubURL, token, userID, workerID string, op
 
 	subprotocols := []string{"channel-relay"}
 	if token != "" {
-		subprotocols = append(subprotocols, "auth.token."+token)
+		subprotocols = append(subprotocols, channelwire.AuthTokenSubprotocolPrefix+token)
 	}
 
 	wsDialOpts := &websocket.DialOptions{

@@ -219,17 +219,13 @@ func sendChannelClose(conn *workermgr.Conn, channelID string) {
 	})
 }
 
-// authTokenSubprotocolPrefix is the prefix for auth tokens passed via
-// the Sec-WebSocket-Protocol header (e.g. "auth.token.<token>").
-const authTokenSubprotocolPrefix = "auth.token."
-
 // extractTokenFromSubprotocols parses a comma-separated Sec-WebSocket-Protocol
 // header value and returns the token from an "auth.token.<token>" entry.
 func extractTokenFromSubprotocols(header string) string {
 	for _, proto := range strings.Split(header, ",") {
 		proto = strings.TrimSpace(proto)
-		if strings.HasPrefix(proto, authTokenSubprotocolPrefix) {
-			return strings.TrimPrefix(proto, authTokenSubprotocolPrefix)
+		if strings.HasPrefix(proto, channelwire.AuthTokenSubprotocolPrefix) {
+			return strings.TrimPrefix(proto, channelwire.AuthTokenSubprotocolPrefix)
 		}
 	}
 	return ""

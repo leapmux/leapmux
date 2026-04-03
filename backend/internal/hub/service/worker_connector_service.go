@@ -36,39 +36,30 @@ type WorkerConnectorService struct {
 }
 
 // NewWorkerConnectorService creates a new WorkerConnectorService.
-func NewWorkerConnectorService(q *db.Queries, mgr *workermgr.Manager) *WorkerConnectorService {
-	return &WorkerConnectorService{queries: q, workerMgr: mgr, pollTimeout: DefaultPollTimeout}
+func NewWorkerConnectorService(
+	q *db.Queries,
+	mgr *workermgr.Manager,
+	cMgr *channelmgr.Manager,
+	b *HubEventBroadcaster,
+	pr *workermgr.PendingRequests,
+	n *notifier.Notifier,
+	shutdownCh <-chan struct{},
+) *WorkerConnectorService {
+	return &WorkerConnectorService{
+		queries:     q,
+		workerMgr:   mgr,
+		channelMgr:  cMgr,
+		broadcaster: b,
+		pending:     pr,
+		notifier:    n,
+		shutdownCh:  shutdownCh,
+		pollTimeout: DefaultPollTimeout,
+	}
 }
 
 // SetPollTimeout overrides the long-poll timeout for PollRegistration.
 func (s *WorkerConnectorService) SetPollTimeout(d time.Duration) {
 	s.pollTimeout = d
-}
-
-// SetChannelMgr sets the channel manager for routing encrypted channel traffic.
-func (s *WorkerConnectorService) SetChannelMgr(cm *channelmgr.Manager) {
-	s.channelMgr = cm
-}
-
-// SetBroadcaster sets the hub event broadcaster for debounced control frames.
-func (s *WorkerConnectorService) SetBroadcaster(b *HubEventBroadcaster) {
-	s.broadcaster = b
-}
-
-// SetPendingRequests sets the pending requests tracker for file operations.
-func (s *WorkerConnectorService) SetPendingRequests(pr *workermgr.PendingRequests) {
-	s.pending = pr
-}
-
-// SetNotifier sets the notifier for processing pending notifications on connect.
-func (s *WorkerConnectorService) SetNotifier(n *notifier.Notifier) {
-	s.notifier = n
-}
-
-// SetShutdownCh sets the channel used to signal hub shutdown.
-// When closed, cleanupWorker skips DB operations and broadcasts.
-func (s *WorkerConnectorService) SetShutdownCh(ch <-chan struct{}) {
-	s.shutdownCh = ch
 }
 
 func (s *WorkerConnectorService) RequestRegistration(

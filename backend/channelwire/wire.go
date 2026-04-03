@@ -30,6 +30,10 @@ const (
 	// It must exceed the max ciphertext size to accommodate the 4-byte length
 	// prefix and protobuf framing of a ChannelMessage.
 	WSReadLimit = 65535 + 4096
+
+	// AuthTokenSubprotocolPrefix is the prefix for auth tokens passed via
+	// the Sec-WebSocket-Protocol header (e.g. "auth.token.<token>").
+	AuthTokenSubprotocolPrefix = "auth.token."
 )
 
 // HTTPToWS converts an http(s) URL to the corresponding ws(s) URL.
