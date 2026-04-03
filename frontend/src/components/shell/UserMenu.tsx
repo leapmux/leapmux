@@ -1,6 +1,7 @@
 import type { Component, JSX } from 'solid-js'
 import { useNavigate } from '@solidjs/router'
 import { createSignal, For, Show } from 'solid-js'
+import { animateWindowResize } from '~/api/desktopBridge'
 import { AdminDialog } from '~/components/admin/AdminDialog'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { PreferencesDialog } from '~/components/settings/PreferencesDialog'
@@ -30,10 +31,10 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
     navigate('/login', { replace: true })
   }
 
-  const handleSwitchMode = () => {
-    window.go?.main?.App?.SwitchMode().then(() => {
-      window.location.reload()
-    })
+  const handleSwitchMode = async () => {
+    await window.go?.main?.App?.SwitchMode()
+    await animateWindowResize(900, 680)
+    window.location.reload()
   }
 
   const renderMenuItems = () => (

@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
 import { createSignal, onCleanup, onMount, Show } from 'solid-js'
-import { waitForWailsBindings } from '~/api/desktopBridge'
+import { animateWindowResize, waitForWailsBindings } from '~/api/desktopBridge'
 import * as styles from './LauncherView.css'
 
 const httpSchemeRegex = /^https?:\/\//i
@@ -92,11 +92,11 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
       else {
         await app().ConnectDistributed(hubUrl().trim())
       }
-      // Resize window to saved or default dimensions.
+      // Animate window to saved or default dimensions.
       const config = await app().GetConfig()
       const targetW = config.window_width > 0 ? config.window_width : 1280
       const targetH = config.window_height > 0 ? config.window_height : 800
-      window.runtime?.WindowSetSize(targetW, targetH)
+      await animateWindowResize(targetW, targetH)
       props.onConnected()
     }
     catch (err) {

@@ -48,7 +48,8 @@ declare global {
       BrowserOpenURL: (url: string) => void
       Quit: () => void
       WindowSetSize: (width: number, height: number) => void
-      WindowGetSize: () => { w: number, h: number }
+      WindowGetSize: () => Promise<{ w: number, h: number }>
+      WindowCenter: () => void
     }
   }
 }
@@ -116,6 +117,48 @@ export function base64ToArrayBuffer(b64: string): ArrayBuffer {
     bytes[i] = binary.charCodeAt(i)
   }
   return bytes.buffer
+}
+
+// ---------------------------------------------------------------------------
+// Window animation
+// ---------------------------------------------------------------------------
+
+/**
+ * Animate the window from its current size to the target size over the given
+ * duration (ms), keeping it centered. Uses an ease-out cubic curve.
+ */
+export function animateWindowResize(targetW: number, targetH: number, durationMs = 400): Promise<void> {
+  const rt = window.runtime
+  if (!rt?.WindowGetSize || !rt?.WindowSetSize)
+    return Promise.resolve()
+
+  return rt.WindowGetSize().then((cur: { w: number, h: number }) => {
+    if (cur.w === targetW && cur.h === targetH)
+      return
+
+    return new Promise<void>((resolve) => {
+      const startW = cur.w
+      const startH = cur.h
+      const startTime = performance.now()
+
+      function step(now: number) {
+        const t = Math.min((now - startTime) / durationMs, 1)
+        // Ease-out cubic: 1 - (1 - t)^3
+        const eased = 1 - (1 - t) ** 3
+        const w = Math.round(startW + (targetW - startW) * eased)
+        const h = Math.round(startH + (targetH - startH) * eased)
+        rt!.WindowSetSize(w, h)
+        rt!.WindowCenter()
+
+        if (t < 1)
+          requestAnimationFrame(step)
+        else
+          resolve()
+      }
+
+      requestAnimationFrame(step)
+    })
+  })
 }
 
 // ---------------------------------------------------------------------------
