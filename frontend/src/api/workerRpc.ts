@@ -248,6 +248,7 @@ class WailsWebSocket {
   onerror: ((ev: Event) => void) | null = null
 
   private listeners = new Map<WSEventType, WSListener[]>()
+  private sendQueue: Promise<void> = Promise.resolve()
 
   constructor() {
     const token = isSoloMode() ? '' : (getToken() ?? '')
@@ -310,7 +311,14 @@ class WailsWebSocket {
   }
 
   send(data: ArrayBuffer | Uint8Array): void {
-    window.go!.main.App.SendChannelMessage(arrayBufferToBase64(data))
+    // Serialize sends through a promise chain to preserve ordering.
+    // Wails binding calls spawn concurrent Go goroutines, so without
+    // serialization, messages can arrive at the Hub out of order,
+    // which breaks the Noise protocol's sequential nonce counter.
+    const b64 = arrayBufferToBase64(data)
+    this.sendQueue = this.sendQueue.then(
+      () => window.go!.main.App.SendChannelMessage(b64),
+    ).catch(() => { /* send errors handled by channel manager */ })
   }
 
   close(): void {
