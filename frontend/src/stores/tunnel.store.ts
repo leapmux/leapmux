@@ -8,6 +8,7 @@ export interface TunnelStore {
   refresh: () => Promise<void>
   add: (config: TunnelConfig) => Promise<TunnelInfo>
   remove: (tunnelId: string) => Promise<void>
+  removeAllForWorker: (workerId: string) => Promise<void>
 }
 
 export function createTunnelStore(): TunnelStore {
@@ -27,6 +28,11 @@ export function createTunnelStore(): TunnelStore {
     remove: async (tunnelId: string) => {
       await deleteTunnel(tunnelId)
       setTunnels(prev => prev.filter(t => t.id !== tunnelId))
+    },
+    removeAllForWorker: async (workerId: string) => {
+      const toDelete = tunnels().filter(t => t.workerId === workerId)
+      await Promise.all(toDelete.map(t => deleteTunnel(t.id)))
+      setTunnels(prev => prev.filter(t => t.workerId !== workerId))
     },
   }
 }

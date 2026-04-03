@@ -13,7 +13,9 @@ import { dangerMenuItem } from '~/styles/shared.css'
 interface WorkerContextMenuProps {
   workerInfo: WorkerInfo | null
   isOwner: boolean
+  hasTunnels: boolean
   onAddTunnel: () => void
+  onDeleteAllTunnels: () => void
   onDeregister: () => void
 }
 
@@ -62,6 +64,11 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
         <button role="menuitem" onClick={() => props.onAddTunnel()}>
           Add tunnel...
         </button>
+        <Show when={props.hasTunnels}>
+          <button role="menuitem" class={dangerMenuItem} onClick={() => props.onDeleteAllTunnels()}>
+            Delete all tunnels...
+          </button>
+        </Show>
       </Show>
       <Show when={!isSoloMode()}>
         <hr />

@@ -19,15 +19,18 @@ beforeAll(() => {
   HTMLElement.prototype.togglePopover = vi.fn()
 })
 
-function renderMenu(opts?: { isOwner?: boolean }) {
+function renderMenu(opts?: { isOwner?: boolean, hasTunnels?: boolean }) {
   const onAddTunnel = vi.fn()
+  const onDeleteAllTunnels = vi.fn()
   const onDeregister = vi.fn()
 
   render(() => (
     <WorkerContextMenu
       workerInfo={{ name: 'test', os: 'linux', arch: 'amd64', homeDir: '/home', version: '1.0', updatedAt: Date.now() }}
       isOwner={opts?.isOwner ?? true}
+      hasTunnels={opts?.hasTunnels ?? false}
       onAddTunnel={onAddTunnel}
+      onDeleteAllTunnels={onDeleteAllTunnels}
       onDeregister={onDeregister}
     />
   ))
@@ -36,7 +39,7 @@ function renderMenu(opts?: { isOwner?: boolean }) {
   const trigger = screen.getByRole('button')
   trigger.click()
 
-  return { onAddTunnel, onDeregister }
+  return { onAddTunnel, onDeleteAllTunnels, onDeregister }
 }
 
 describe('workerContextMenu', () => {

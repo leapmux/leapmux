@@ -31,7 +31,7 @@ export const TunnelContextMenu: Component<TunnelContextMenuProps> = (props) => {
       )}
     >
       <button role="menuitem" class={dangerMenuItem} onClick={() => props.onDelete()}>
-        Delete
+        Delete...
       </button>
     </DropdownMenu>
   )

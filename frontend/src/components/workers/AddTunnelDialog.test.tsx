@@ -28,6 +28,7 @@ function createMockTunnelStore(overrides?: Partial<TunnelStore>): TunnelStore {
       targetPort: 3000,
     }),
     remove: vi.fn().mockResolvedValue(undefined),
+    removeAllForWorker: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   }
 }
