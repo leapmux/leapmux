@@ -375,4 +375,37 @@ describe('resultRenderer', () => {
     expect(isRenderedAsError(parsed)).toBe(false)
     expect(renderResultText(parsed)).toBe('Cancelled (2.0s)')
   })
+
+  it('renders error with subtype as humanized divider + detail', () => {
+    const parsed = {
+      type: 'result',
+      is_error: true,
+      subtype: 'error_during_execution',
+      errors: ['[ede_diagnostic] result_type=user', 'Error: Request was aborted.'],
+      duration_ms: 28563,
+    }
+    expect(isRenderedAsError(parsed)).toBe(true)
+    const text = renderResultText(parsed)
+    expect(text).toContain('Error during execution (29s)')
+    expect(text).toContain('[ede_diagnostic] result_type=user')
+    expect(text).toContain('Error: Request was aborted.')
+  })
+
+  it('renders error with subtype but no errors array shows subtype only', () => {
+    const parsed = {
+      type: 'result',
+      is_error: true,
+      subtype: 'error_during_execution',
+      duration_ms: 5000,
+    }
+    const text = renderResultText(parsed)
+    expect(text).toBe('Error during execution (5.0s)')
+  })
+
+  it('renders error without subtype as inline error (legacy behavior)', () => {
+    const parsed = { type: 'result', is_error: true, result: 'Something went wrong', duration_ms: 100 }
+    const text = renderResultText(parsed)
+    expect(text).toBe('Something went wrong (100ms)')
+    expect(text).not.toContain('\n')
+  })
 })
