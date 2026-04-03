@@ -6,27 +6,36 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/channelproto"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/solo"
 	"github.com/leapmux/leapmux/tunnel"
 )
 
 // startTestSolo starts a solo Hub+Worker instance for integration testing.
-// Returns the hub URL, admin token, admin user ID, and worker ID.
-func startTestSolo(t *testing.T) (hubURL, token, userID, workerID string) {
+// Returns the hub URL, socket path, admin token, admin user ID, and worker ID.
+func startTestSolo(t *testing.T) (hubURL, socketPath, token, userID, workerID string) {
 	t.Helper()
 
-	dataDir := t.TempDir()
+	// Use a short path under /tmp to stay within the 104-byte macOS Unix
+	// socket path limit. The solo instance creates hub.sock inside dataDir.
+	dataDir, err := os.MkdirTemp("", "lm")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dataDir) })
+
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
@@ -46,6 +55,7 @@ func startTestSolo(t *testing.T) (hubURL, token, userID, workerID string) {
 	t.Cleanup(inst.Stop)
 
 	hubURL = "http://" + addr
+	socketPath = inst.Server().SocketPath()
 
 	// Wait for Hub to be ready.
 	require.NoError(t, waitForHTTP(hubURL, 30*time.Second))
@@ -85,7 +95,7 @@ func startTestSolo(t *testing.T) (hubURL, token, userID, workerID string) {
 	}
 	require.NotEmpty(t, wID, "worker did not come online in time")
 
-	return hubURL, token, userID, wID
+	return hubURL, socketPath, token, userID, wID
 }
 
 func waitForHTTP(url string, timeout time.Duration) error {
@@ -102,13 +112,12 @@ func waitForHTTP(url string, timeout time.Duration) error {
 	return fmt.Errorf("server at %s not ready after %v", url, timeout)
 }
 
-
 func TestChannelOpenAndCallRPC(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	hubURL, token, userID, workerID := startTestSolo(t)
+	hubURL, _, token, userID, workerID := startTestSolo(t)
 	ctx := context.Background()
 
 	// Open an E2EE channel.
@@ -137,7 +146,7 @@ func TestChannelTunnelEchoFlow(t *testing.T) {
 	echoAddr := testutil.StartEchoServer(t)
 	echoHost, echoPort := testutil.ParseAddr(echoAddr)
 
-	hubURL, token, userID, workerID := startTestSolo(t)
+	hubURL, _, token, userID, workerID := startTestSolo(t)
 	ctx := context.Background()
 
 	ch, err := tunnel.OpenChannel(ctx, hubURL, token, userID, workerID, nil)
@@ -225,7 +234,7 @@ func TestChannelSocks5EchoFlow(t *testing.T) {
 	echoAddr := testutil.StartEchoServer(t)
 	echoHost, echoPort := testutil.ParseAddr(echoAddr)
 
-	hubURL, token, userID, workerID := startTestSolo(t)
+	hubURL, _, token, userID, workerID := startTestSolo(t)
 	ctx := context.Background()
 
 	ch, err := tunnel.OpenChannel(ctx, hubURL, token, userID, workerID, nil)
@@ -419,12 +428,77 @@ func TestChannelSocks5EchoFlow(t *testing.T) {
 	assert.Equal(t, string(testData), string(echoed), "expected data echoed through SOCKS5 tunnel")
 }
 
+func TestRegistration_AutoApproveViaUnixSocket_E2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	hubURL, socketPath, _, _, _ := startTestSolo(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Connect a WebSocket to /ws/channel (solo mode auto-authenticates).
+	wsURL := "ws" + hubURL[len("http"):] + "/ws/channel"
+	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		Subprotocols: []string{"channel-relay"},
+	})
+	require.NoError(t, err)
+	defer func() { _ = ws.CloseNow() }()
+
+	// Register a new worker via Unix socket — should be auto-approved.
+	unixClient := newUnixHTTPClient(socketPath)
+	connClient := leapmuxv1connect.NewWorkerConnectorServiceClient(unixClient, "http://localhost")
+
+	regResp, err := connClient.RequestRegistration(ctx, connect.NewRequest(
+		&leapmuxv1.RequestRegistrationRequest{Version: "0.1.0"},
+	))
+	require.NoError(t, err)
+	regToken := regResp.Msg.GetRegistrationToken()
+	require.NotEmpty(t, regToken)
+
+	// Poll should immediately return APPROVED.
+	pollResp, err := connClient.PollRegistration(ctx, connect.NewRequest(
+		&leapmuxv1.PollRegistrationRequest{RegistrationToken: regToken},
+	))
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_APPROVED, pollResp.Msg.GetStatus())
+	assert.NotEmpty(t, pollResp.Msg.GetWorkerId())
+	assert.NotEmpty(t, pollResp.Msg.GetAuthToken())
+
+	// Read from the WebSocket and verify a HubControlFrame with WORKERS_CHANGED
+	// arrives. The Hub debounces control frames (default 3s), so we wait.
+	var frame leapmuxv1.HubControlFrame
+	for {
+		msg, readErr := channelproto.ReadChannelMessage(ctx, ws)
+		require.NoError(t, readErr, "timeout waiting for control frame on WebSocket")
+
+		if msg.GetChannelId() != channelmgr.HubControlChannelID {
+			continue // skip non-control messages (e.g. channel close notifications)
+		}
+
+		require.NoError(t, proto.Unmarshal(msg.GetCiphertext(), &frame))
+		break
+	}
+
+	assert.Contains(t, frame.GetEvents(), leapmuxv1.HubControlEvent_HUB_CONTROL_EVENT_WORKERS_CHANGED)
+}
+
+func newUnixHTTPClient(socketPath string) *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", socketPath)
+			},
+		},
+	}
+}
+
 func TestChannelMultipleRPCs(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	hubURL, token, userID, workerID := startTestSolo(t)
+	hubURL, _, token, userID, workerID := startTestSolo(t)
 	ctx := context.Background()
 
 	ch, err := tunnel.OpenChannel(ctx, hubURL, token, userID, workerID, nil)

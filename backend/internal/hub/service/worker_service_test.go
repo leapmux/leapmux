@@ -558,37 +558,6 @@ func (e *unixSocketTestEnv) assertWorkersChangedReceived(t *testing.T, index int
 	assert.Contains(t, frame.GetEvents(), leapmuxv1.HubControlEvent_HUB_CONTROL_EVENT_WORKERS_CHANGED)
 }
 
-func TestRegistration_AutoApproveViaUnixSocket(t *testing.T) {
-	env := setupUnixSocketTestServer(t)
-	ctx := context.Background()
-
-	// Register the admin user as a control frame listener.
-	admin, err := env.queries.GetUserByUsername(ctx, "admin")
-	require.NoError(t, err)
-	env.bindControlFrameListener(admin.ID)
-
-	// Request registration via Unix socket — should be auto-approved.
-	regResp, err := env.unixConnClient.RequestRegistration(ctx, connect.NewRequest(
-		&leapmuxv1.RequestRegistrationRequest{Version: "0.1.0"},
-	))
-	require.NoError(t, err)
-	regToken := regResp.Msg.GetRegistrationToken()
-	assert.NotEmpty(t, regToken)
-
-	// Poll should immediately return APPROVED.
-	pollResp, err := env.unixConnClient.PollRegistration(ctx, connect.NewRequest(
-		&leapmuxv1.PollRegistrationRequest{RegistrationToken: regToken},
-	))
-	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_APPROVED, pollResp.Msg.GetStatus())
-	assert.NotEmpty(t, pollResp.Msg.GetWorkerId())
-	assert.NotEmpty(t, pollResp.Msg.GetAuthToken())
-
-	// Verify WorkersChanged control frame was sent (after debounce).
-	env.waitForDebounce()
-	env.assertWorkersChangedReceived(t, 0)
-}
-
 func TestRegistration_NotAutoApprovedViaTCP(t *testing.T) {
 	env := setupUnixSocketTestServer(t)
 	ctx := context.Background()
