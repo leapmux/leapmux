@@ -55,6 +55,7 @@ type TunnelManager struct {
 	tunnels  map[string]*tunnel
 	channels map[string]*tunnelpkg.Channel // per-worker E2EE channel
 	chanSF   singleflight.Group            // dedup concurrent channel opens per worker
+	chanOpts *tunnelpkg.OpenChannelOptions  // optional transport overrides (e.g. Unix socket)
 }
 
 // NewTunnelManager creates a new TunnelManager.
@@ -63,6 +64,13 @@ func NewTunnelManager() *TunnelManager {
 		tunnels:  make(map[string]*tunnel),
 		channels: make(map[string]*tunnelpkg.Channel),
 	}
+}
+
+// SetChannelOptions sets transport options for opening E2EE channels.
+func (m *TunnelManager) SetChannelOptions(opts *tunnelpkg.OpenChannelOptions) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.chanOpts = opts
 }
 
 // CreateTunnel creates and starts a new tunnel.
@@ -209,7 +217,7 @@ func (m *TunnelManager) getOrOpenChannel(ctx context.Context, cfg TunnelConfig) 
 		}
 		m.mu.Unlock()
 
-		ch, err := tunnelpkg.OpenChannel(ctx, cfg.HubURL, cfg.Token, cfg.UserID, cfg.WorkerID)
+		ch, err := tunnelpkg.OpenChannel(ctx, cfg.HubURL, cfg.Token, cfg.UserID, cfg.WorkerID, m.chanOpts)
 		if err != nil {
 			return nil, err
 		}

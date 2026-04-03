@@ -112,7 +112,7 @@ func TestChannelOpenAndCallRPC(t *testing.T) {
 	ctx := context.Background()
 
 	// Open an E2EE channel.
-	ch, err := tunnel.OpenChannel(ctx, hubURL, token, userID, workerID)
+	ch, err := tunnel.OpenChannel(ctx, hubURL, token, userID, workerID, nil)
 	require.NoError(t, err)
 	t.Cleanup(ch.Close)
 
@@ -140,7 +140,7 @@ func TestChannelTunnelEchoFlow(t *testing.T) {
 	hubURL, token, userID, workerID := startTestSolo(t)
 	ctx := context.Background()
 
-	ch, err := tunnel.OpenChannel(ctx, hubURL, token, userID, workerID)
+	ch, err := tunnel.OpenChannel(ctx, hubURL, token, userID, workerID, nil)
 	require.NoError(t, err)
 	t.Cleanup(ch.Close)
 
@@ -228,7 +228,7 @@ func TestChannelSocks5EchoFlow(t *testing.T) {
 	hubURL, token, userID, workerID := startTestSolo(t)
 	ctx := context.Background()
 
-	ch, err := tunnel.OpenChannel(ctx, hubURL, token, userID, workerID)
+	ch, err := tunnel.OpenChannel(ctx, hubURL, token, userID, workerID, nil)
 	require.NoError(t, err)
 	t.Cleanup(ch.Close)
 
@@ -427,7 +427,7 @@ func TestChannelMultipleRPCs(t *testing.T) {
 	hubURL, token, userID, workerID := startTestSolo(t)
 	ctx := context.Background()
 
-	ch, err := tunnel.OpenChannel(ctx, hubURL, token, userID, workerID)
+	ch, err := tunnel.OpenChannel(ctx, hubURL, token, userID, workerID, nil)
 	require.NoError(t, err)
 	t.Cleanup(ch.Close)
 

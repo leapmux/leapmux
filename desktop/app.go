@@ -288,9 +288,17 @@ func (a *App) IsConnected() bool {
 
 // CreateTunnel creates a new TCP/IP tunnel to a worker.
 func (a *App) CreateTunnel(config TunnelConfig) (*TunnelInfo, error) {
-	// The frontend may pass window.location.origin as the Hub URL, which is
-	// "wails://wails" inside the Wails webview. Always use the real Hub URL.
-	config.HubURL = a.hubURL
+	if a.proxy == nil {
+		return nil, fmt.Errorf("not connected")
+	}
+
+	// Use the proxy's base URL and HTTP clients so that tunnels work in both
+	// Solo mode (Unix socket) and Distributed mode (remote Hub).
+	config.HubURL = a.proxy.baseURL
+	a.tunnels.SetChannelOptions(&tunnelpkg.OpenChannelOptions{
+		HTTPClient:          a.proxy.client,
+		WebSocketHTTPClient: a.proxy.wsClient,
+	})
 	return a.tunnels.CreateTunnel(a.ctx, config)
 }
 

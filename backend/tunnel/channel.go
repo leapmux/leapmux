@@ -43,9 +43,27 @@ type chunkBuffer struct {
 	total int
 }
 
+// OpenChannelOptions configures how OpenChannel connects to the Hub.
+type OpenChannelOptions struct {
+	// HTTPClient is the HTTP client for ConnectRPC calls (GetWorkerPublicKey, etc.).
+	// When nil, a default client with 30s timeout is used.
+	HTTPClient *http.Client
+
+	// WebSocketHTTPClient is the HTTP/1.1 client used for WebSocket upgrade.
+	// When nil, websocket.Dial uses the default transport.
+	WebSocketHTTPClient *http.Client
+}
+
 // OpenChannel opens a new E2EE channel to the specified worker via Hub.
-func OpenChannel(ctx context.Context, hubURL, token, userID, workerID string) (*Channel, error) {
+func OpenChannel(ctx context.Context, hubURL, token, userID, workerID string, opts *OpenChannelOptions) (*Channel, error) {
 	httpClient := &http.Client{Timeout: 30 * time.Second}
+	var wsHTTPClient *http.Client
+	if opts != nil {
+		if opts.HTTPClient != nil {
+			httpClient = opts.HTTPClient
+		}
+		wsHTTPClient = opts.WebSocketHTTPClient
+	}
 	channelClient := leapmuxv1connect.NewChannelServiceClient(httpClient, hubURL, withAuth(token))
 
 	// 1. Get Worker's public key.
@@ -108,9 +126,13 @@ func OpenChannel(ctx context.Context, hubURL, token, userID, workerID string) (*
 		subprotocols = append(subprotocols, "auth.token."+token)
 	}
 
-	wsConn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+	wsDialOpts := &websocket.DialOptions{
 		Subprotocols: subprotocols,
-	})
+	}
+	if wsHTTPClient != nil {
+		wsDialOpts.HTTPClient = wsHTTPClient
+	}
+	wsConn, _, err := websocket.Dial(ctx, wsURL, wsDialOpts)
 	if err != nil {
 		return nil, fmt.Errorf("websocket dial: %w", err)
 	}
