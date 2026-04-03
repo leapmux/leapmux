@@ -5,12 +5,13 @@ import { generateSlug } from 'random-word-slugs'
 import { batch, createEffect, createMemo, createSignal, For, on, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { tildify } from '~/components/chat/messageUtils'
+import { labelRow, pathPreview, radioGroup, radioRow, radioSubContent } from '~/components/common/Dialog.css'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { Tooltip } from '~/components/common/Tooltip'
 import { useOrg } from '~/context/OrgContext'
 import { createLogger } from '~/lib/logger'
 import { validateBranchName } from '~/lib/validate'
-import { errorText, labelRow, pathPreview, radioGroup, radioRow, radioSubContent, warningText } from '~/styles/shared.css'
+import { errorText, warningText } from '~/styles/shared.css'
 
 const log = createLogger('GitOptions')
 const LAST_PATH_SEGMENT_RE = /\/[^/]+$/

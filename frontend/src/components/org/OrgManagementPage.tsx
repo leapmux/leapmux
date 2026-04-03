@@ -11,6 +11,7 @@ import { OrgMemberRole } from '~/generated/leapmux/v1/org_pb'
 import { formatLocalDateTime } from '~/lib/dateFormat'
 import { isSoloMode } from '~/lib/systemInfo'
 import { sanitizeSlug } from '~/lib/validate'
+import { emptyState, errorText, successText } from '~/styles/shared.css'
 import * as styles from './OrgManagementPage.css'
 
 export const OrgManagementPage: Component = () => {
@@ -261,10 +262,10 @@ export const OrgManagementPage: Component = () => {
           </div>
         </Show>
         <Show when={nameError()}>
-          <div class={styles.errorText}>{nameError()}</div>
+          <div class={errorText}>{nameError()}</div>
         </Show>
         <Show when={nameSuccess()}>
-          <div class={styles.successText}>{nameSuccess()}</div>
+          <div class={successText}>{nameSuccess()}</div>
         </Show>
       </div>
 
@@ -296,24 +297,24 @@ export const OrgManagementPage: Component = () => {
           </button>
         </div>
         <Show when={inviteError()}>
-          <div class={styles.errorText}>{inviteError()}</div>
+          <div class={errorText}>{inviteError()}</div>
         </Show>
         <Show when={inviteSuccess()}>
-          <div class={styles.successText}>{inviteSuccess()}</div>
+          <div class={successText}>{inviteSuccess()}</div>
         </Show>
 
         {/* Members Table */}
         <Show when={membersLoading()}>
-          <div class={styles.emptyState}>Loading members...</div>
+          <div class={emptyState}>Loading members...</div>
         </Show>
         <Show when={membersError()}>
-          <div class={styles.errorText}>{membersError()}</div>
+          <div class={errorText}>{membersError()}</div>
         </Show>
         <Show
           when={!membersLoading() && members().length > 0}
           fallback={(
             <Show when={!membersLoading()}>
-              <div class={styles.emptyState}>No members found.</div>
+              <div class={emptyState}>No members found.</div>
             </Show>
           )}
         >
@@ -380,10 +381,10 @@ export const OrgManagementPage: Component = () => {
           </button>
         </div>
         <Show when={createOrgError()}>
-          <div class={styles.errorText}>{createOrgError()}</div>
+          <div class={errorText}>{createOrgError()}</div>
         </Show>
         <Show when={createOrgSuccess()}>
-          <div class={styles.successText}>{createOrgSuccess()}</div>
+          <div class={successText}>{createOrgSuccess()}</div>
         </Show>
       </div>
 
@@ -402,7 +403,7 @@ export const OrgManagementPage: Component = () => {
             {deletingOrg() ? 'Deleting...' : 'Delete Organization'}
           </button>
           <Show when={deleteError()}>
-            <div class={styles.errorText}>{deleteError()}</div>
+            <div class={errorText}>{deleteError()}</div>
           </Show>
         </div>
       </Show>

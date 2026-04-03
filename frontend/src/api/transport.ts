@@ -1,6 +1,7 @@
 import type { CallOptions, Interceptor } from '@connectrpc/connect'
 import { Code, ConnectError, createClient } from '@connectrpc/connect'
 import { createConnectTransport } from '@connectrpc/connect-web'
+import { desktopFetch, isWailsApp } from '~/api/desktopBridge'
 import { UserService } from '~/generated/leapmux/v1/user_pb'
 
 const TOKEN_KEY = 'leapmux_token'
@@ -44,7 +45,8 @@ const authInterceptor: Interceptor = next => async (req) => {
 }
 
 export const transport = createConnectTransport({
-  baseUrl: window.location.origin,
+  baseUrl: isWailsApp() ? 'http://localhost' : window.location.origin,
+  fetch: isWailsApp() ? desktopFetch : undefined,
   interceptors: [authInterceptor],
   defaultTimeoutMs: 30_000,
 })

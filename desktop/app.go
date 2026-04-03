@@ -3,13 +3,15 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
 
-	"github.com/leapmux/leapmux/util/version"
 	"github.com/leapmux/leapmux/solo"
+	tunnelpkg "github.com/leapmux/leapmux/tunnel"
+	"github.com/leapmux/leapmux/util/version"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -20,11 +22,17 @@ type App struct {
 	solo       *solo.Instance
 	logHandler *webviewHandler
 	connected  bool // true after a successful Connect call
+	tunnels    *TunnelManager
+	proxy      *HubProxy
+	relay      *ChannelRelay
+	hubURL     string // the Hub URL (for distributed mode)
 }
 
 // NewApp creates a new App instance.
 func NewApp() *App {
-	return &App{}
+	return &App{
+		tunnels: NewTunnelManager(),
+	}
 }
 
 // startup is called when the app starts. The context is saved for runtime calls.
@@ -43,30 +51,27 @@ func (a *App) domReady(_ context.Context) {
 	wailsRuntime.WindowCenter(a.ctx)
 	installTabKeyHandler()
 
-	// Inject JS handlers for external links, keyboard shortcuts (F12, Ctrl+Q),
-	// using native postMessage since Wails runtime JS is unavailable after
-	// the WebView navigates away from the wails:// launcher page.
-	// The inspector message differs per platform:
+	// Build a native message poster for opening the WebView inspector.
+	// The Wails JS runtime does not expose an openInspector API; the
+	// native WebView message handler must be used directly.
+	// The inspector message name differs per platform:
 	//   macOS:   "wails:openInspector"
 	//   Linux:   "wails:showInspector"
-	//   Windows: handled natively by WebView2 (F12 key), no message needed
+	//   Windows: handled by WebView2 natively (F12 key), no message needed
 	inspectorMsg := "wails:showInspector"
 	if runtime.GOOS == "darwin" {
 		inspectorMsg = "wails:openInspector"
 	}
 
+	// Inject minimal JS helpers for external links and keyboard shortcuts.
+	// Since the SPA is served from wails://, Go bindings (window.go.main.App.*)
+	// work natively. We only need link interception and dev tools shortcuts.
 	wailsRuntime.WindowExecJS(a.ctx, fmt.Sprintf(`
 (function() {
-	// Build a postMessage helper that works whether or not the Wails
-	// runtime JS has been loaded into this page. The WebKit user-content
-	// manager ("external" handler) is attached to the webview, so
-	// webkit.messageHandlers.external.postMessage is always available,
-	// even on pages not served via the wails:// scheme.
-	window.__lm_post = (function() {
-		// Windows (WebView2)
+	// Build a postMessage helper for the native WebView message handler.
+	var __post = (function() {
 		if (window.chrome && window.chrome.webview && window.chrome.webview.postMessage)
 			return function(m) { window.chrome.webview.postMessage(m); };
-		// macOS / Linux (WebKit)
 		if (window.webkit && window.webkit.messageHandlers &&
 		    window.webkit.messageHandlers.external &&
 		    window.webkit.messageHandlers.external.postMessage)
@@ -85,28 +90,17 @@ func (a *App) domReady(_ context.Context) {
 		if (href && /^https?:\/\//.test(href)) {
 			e.preventDefault();
 			e.stopPropagation();
-			if (window.__lm_post) window.__lm_post('BO:' + href);
+			if (__post) __post('BO:' + href);
 		}
 	}, true);
-	window.__lm_switchMode = function() {
-		var bg = getComputedStyle(document.documentElement).getPropertyValue('--background').trim() || '#000';
-		var overlay = document.createElement('div');
-		overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:' + bg + ';opacity:0;transition:opacity .3s ease';
-		document.body.appendChild(overlay);
-		requestAnimationFrame(function() {
-			overlay.style.opacity = '1';
-		});
-		overlay.addEventListener('transitionend', function() {
-			window.location.href = 'wails://wails/?action=switchMode';
-		}, { once: true });
-	};
+
 	document.addEventListener('keydown', function(e) {
 		if (e.key === 'F12') {
-			if (window.__lm_post) window.__lm_post('%s');
+			if (__post) __post('%s');
 		}
 		if (e.key === 'q' && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
-			if (window.__lm_post) window.__lm_post('Q');
+			if (__post) __post('Q');
 		}
 	}, true);
 })();
@@ -143,6 +137,8 @@ func (a *App) shutdown(_ context.Context) {
 			_ = SaveConfig(a.config)
 		}
 	}
+	a.closeChannelRelay()
+	a.tunnels.CloseAll()
 	a.stopSolo()
 }
 
@@ -210,41 +206,59 @@ func (a *App) SwitchMode() error {
 		}
 	}
 
+	a.closeChannelRelay()
+	a.tunnels.CloseAll()
 	a.stopSolo()
+	// Restore the original slog handler if we were forwarding to WebView.
+	// stopSolo handles this for solo mode; this covers distributed mode.
+	if a.logHandler != nil {
+		slog.SetDefault(slog.New(a.logHandler.inner))
+		a.logHandler = nil
+	}
 	a.connected = false
+	a.proxy = nil
+	a.hubURL = ""
 	a.config.Mode = ""
 	if err := SaveConfig(a.config); err != nil {
 		return fmt.Errorf("saving config: %w", err)
 	}
+
 	return nil
 }
 
-// ConnectSolo starts the in-process Hub and Worker, waits for readiness,
-// saves the config, and returns the local URL.
-func (a *App) ConnectSolo() (string, error) {
+// ConnectSolo starts the in-process Hub and Worker with no TCP listener,
+// creates a proxy via Unix socket, switches to the SPA, and returns.
+func (a *App) ConnectSolo() error {
 	if err := a.startSolo(); err != nil {
-		return "", err
+		return err
 	}
 
-	if err := a.waitForSoloReady(a.ctx); err != nil {
+	// Wait for Unix socket readiness.
+	socketPath := a.solo.Server().SocketPath()
+	if err := a.waitForSoloReady(a.ctx, socketPath); err != nil {
 		a.stopSolo()
-		return "", fmt.Errorf("waiting for LeapMux to start: %w", err)
+		return fmt.Errorf("waiting for LeapMux to start: %w", err)
 	}
 
-	a.config = &DesktopConfig{Mode: "solo"}
+	// Create proxy via Unix socket.
+	a.proxy = newUnixSocketProxy(socketPath)
+
+	a.config.Mode = "solo"
+	a.config.HubURL = ""
 	if err := SaveConfig(a.config); err != nil {
 		fmt.Printf("warning: failed to save config: %v\n", err)
 	}
 
 	a.connected = true
-	return "http://127.0.0.1:4327", nil
+	return nil
 }
 
-// ConnectDistributed probes the remote Hub URL and saves the config.
-func (a *App) ConnectDistributed(hubURL string) (string, error) {
+// ConnectDistributed probes the remote Hub URL, creates an HTTP proxy,
+// switches to the SPA, and returns.
+func (a *App) ConnectDistributed(hubURL string) error {
 	hubURL = strings.TrimRight(strings.TrimSpace(hubURL), "/")
 	if hubURL == "" {
-		return "", fmt.Errorf("hub URL is required")
+		return fmt.Errorf("hub URL is required")
 	}
 
 	// Ensure the URL has a scheme.
@@ -253,14 +267,65 @@ func (a *App) ConnectDistributed(hubURL string) (string, error) {
 	}
 
 	if err := probeHub(hubURL); err != nil {
-		return "", fmt.Errorf("cannot reach Hub at %s: %w", hubURL, err)
+		return fmt.Errorf("cannot reach Hub at %s: %w", hubURL, err)
 	}
 
-	a.config = &DesktopConfig{Mode: "distributed", HubURL: hubURL}
+	// Create proxy to remote Hub.
+	a.proxy = newHTTPProxy(hubURL)
+	a.hubURL = hubURL
+
+	// Forward Go logs to the WebView console (Web Inspector / F12).
+	a.logHandler = newWebviewHandler(
+		slog.Default().Handler(),
+		func(js string) { wailsRuntime.WindowExecJS(a.ctx, js) },
+	)
+	slog.SetDefault(slog.New(a.logHandler))
+	a.logHandler.SetReady()
+
+	a.config.Mode = "distributed"
+	a.config.HubURL = hubURL
 	if err := SaveConfig(a.config); err != nil {
 		fmt.Printf("warning: failed to save config: %v\n", err)
 	}
 
 	a.connected = true
-	return hubURL, nil
+	return nil
+}
+
+// GetHubURL returns the Hub URL for the frontend. In solo mode this returns
+// a dummy URL since routing happens through the proxy. In distributed mode
+// it returns the actual Hub URL.
+func (a *App) GetHubURL() string {
+	return a.hubURL
+}
+
+// IsConnected returns whether the app has connected to a Hub.
+func (a *App) IsConnected() bool {
+	return a.connected
+}
+
+// CreateTunnel creates a new TCP/IP tunnel to a worker.
+func (a *App) CreateTunnel(config TunnelConfig) (*TunnelInfo, error) {
+	if a.proxy == nil {
+		return nil, fmt.Errorf("not connected")
+	}
+
+	// Use the proxy's base URL and HTTP clients so that tunnels work in both
+	// Solo mode (Unix socket) and Distributed mode (remote Hub).
+	config.HubURL = a.proxy.baseURL
+	a.tunnels.SetChannelOptions(&tunnelpkg.OpenChannelOptions{
+		HTTPClient:          a.proxy.client,
+		WebSocketHTTPClient: a.proxy.wsClient,
+	})
+	return a.tunnels.CreateTunnel(a.ctx, config)
+}
+
+// DeleteTunnel stops and removes a tunnel.
+func (a *App) DeleteTunnel(tunnelID string) error {
+	return a.tunnels.DeleteTunnel(tunnelID)
+}
+
+// ListTunnels returns info about all active tunnels.
+func (a *App) ListTunnels() []TunnelInfo {
+	return a.tunnels.ListTunnels()
 }

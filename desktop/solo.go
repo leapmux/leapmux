@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/leapmux/leapmux/solo"
@@ -11,9 +12,11 @@ import (
 )
 
 // startSolo launches a Hub and Worker in-process via the solo package.
+// NoTCP is set so no TCP port is opened.
 func (a *App) startSolo() error {
 	inst, err := solo.Start(a.ctx, solo.Config{
 		SkipBanner: true,
+		NoTCP:      true,
 	})
 	if err != nil {
 		return err
@@ -27,6 +30,10 @@ func (a *App) startSolo() error {
 		func(js string) { wailsRuntime.WindowExecJS(a.ctx, js) },
 	)
 	slog.SetDefault(slog.New(a.logHandler))
+
+	// The DOM is already ready (domReady fired during the launcher page),
+	// so mark the handler ready immediately to flush any buffered logs.
+	a.logHandler.SetReady()
 
 	return nil
 }
@@ -45,16 +52,16 @@ func (a *App) stopSolo() {
 	a.solo = nil
 }
 
-// waitForSoloReady polls the solo instance until it responds to GetSystemInfo.
-func (a *App) waitForSoloReady(ctx context.Context) error {
+// waitForSoloReady polls for the Unix socket file until it exists.
+func (a *App) waitForSoloReady(ctx context.Context, socketPath string) error {
 	const (
-		pollInterval = 200 * time.Millisecond
+		pollInterval = 100 * time.Millisecond
 		timeout      = 30 * time.Second
 	)
 
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if err := probeHub("http://127.0.0.1:4327"); err == nil {
+		if _, err := os.Stat(socketPath); err == nil {
 			return nil
 		}
 		select {

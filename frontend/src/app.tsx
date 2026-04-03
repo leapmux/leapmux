@@ -1,7 +1,10 @@
 import type { ParentComponent } from 'solid-js'
 import { Router } from '@solidjs/router'
 import { FileRoutes } from '@solidjs/start/router'
-import { createEffect, createSignal, onCleanup, onMount, Suspense } from 'solid-js'
+import { createEffect, createSignal, onCleanup, onMount, Show, Suspense } from 'solid-js'
+import { isWailsApp } from '~/api/desktopBridge'
+import { channelManager } from '~/api/workerRpc'
+import { LauncherView } from '~/components/desktop/LauncherView'
 import { AuthProvider } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { disableTextSubstitutions } from '~/lib/textInputBehavior'
@@ -53,7 +56,40 @@ const PreferencesApplier: ParentComponent = (props) => {
   )
 }
 
+/**
+ * Wraps app content in desktop mode to prevent a brief flash of
+ * "Loading..." from AuthGuard while auth is resolving. Starts at
+ * opacity 0 and fades in after a short delay.
+ */
+const DesktopFadeIn: ParentComponent = (props) => {
+  const [opacity, setOpacity] = createSignal(isWailsApp() ? 0 : 1)
+
+  onMount(() => {
+    if (!isWailsApp())
+      return
+    // Delay slightly to let auth resolve before fading in.
+    const timer = setTimeout(setOpacity, 150, 1)
+    onCleanup(() => clearTimeout(timer))
+  })
+
+  return (
+    <div style={{ height: '100%', opacity: opacity(), transition: 'opacity 0.3s ease' }}>
+      {props.children}
+    </div>
+  )
+}
+
 export default function App() {
+  const [desktopConnected, setDesktopConnected] = createSignal(!isWailsApp())
+  // Expose so UserMenu's "Switch mode..." can reset without page reload.
+  // Wails doesn't re-inject window.go after reload, so we switch in-place.
+  ;(window as any).__leapmux_disconnectDesktop = () => {
+    // Close all cached channels and the WebSocket relay so the new
+    // Hub instance starts with a clean slate.
+    channelManager.closeAll()
+    setDesktopConnected(false)
+  }
+
   const [themePreference, setThemePreference] = createSignal<ThemePreference>(getStoredTheme())
   const [resolvedTheme, setResolvedTheme] = createSignal(resolveTheme(getStoredTheme()))
 
@@ -120,15 +156,22 @@ export default function App() {
 
   return (
     <div class={heightFull}>
-      <AuthProvider>
-        <PreferencesProvider>
-          <PreferencesApplier>
-            <Router root={props => <Suspense>{props.children}</Suspense>}>
-              <FileRoutes />
-            </Router>
-          </PreferencesApplier>
-        </PreferencesProvider>
-      </AuthProvider>
+      <Show
+        when={desktopConnected()}
+        fallback={<LauncherView onConnected={() => setDesktopConnected(true)} />}
+      >
+        <DesktopFadeIn>
+          <AuthProvider>
+            <PreferencesProvider>
+              <PreferencesApplier>
+                <Router root={props => <Suspense>{props.children}</Suspense>}>
+                  <FileRoutes />
+                </Router>
+              </PreferencesApplier>
+            </PreferencesProvider>
+          </AuthProvider>
+        </DesktopFadeIn>
+      </Show>
     </div>
   )
 }

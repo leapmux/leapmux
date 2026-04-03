@@ -275,6 +275,9 @@ func (c *Client) handleMessage(msg *leapmuxv1.ConnectResponse) {
 	case *leapmuxv1.ConnectResponse_ChannelClose:
 		c.handleChannelClose(payload.ChannelClose)
 
+	case *leapmuxv1.ConnectResponse_ChannelAccessUpdate:
+		c.handleChannelAccessUpdate(payload.ChannelAccessUpdate)
+
 	default:
 		slog.Warn("unhandled hub message", "request_id", msg.GetRequestId(), "payload_type", fmt.Sprintf("%T", msg.GetPayload()))
 	}

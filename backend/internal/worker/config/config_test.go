@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	workerdb "github.com/leapmux/leapmux/internal/worker/db"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,7 +20,7 @@ func TestLoad(t *testing.T) {
 		assert.False(t, showVersion)
 		assert.Equal(t, "http://localhost:4327", cfg.HubURL)
 		assert.Equal(t, filepath.Join(home, ".config/leapmux/worker"), cfg.DataDir)
-		assert.Equal(t, workerdb.DefaultMaxConns, cfg.DBMaxConns)
+		assert.Equal(t, sqlitedb.DefaultMaxConns, cfg.DBMaxConns)
 		assert.Equal(t, 0, cfg.MaxMessageSize)
 		assert.Equal(t, "info", cfg.LogLevel)
 	})

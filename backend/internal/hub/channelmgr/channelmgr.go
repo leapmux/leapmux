@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
@@ -63,8 +64,8 @@ type config struct {
 
 func defaultConfig() *config {
 	return &config{
-		maxMessageSize:       DefaultMaxMessageSize,
-		maxIncompleteChunked: DefaultMaxIncompleteChunked,
+		maxMessageSize:       channelwire.DefaultMaxMessageSize,
+		maxIncompleteChunked: channelwire.DefaultMaxIncompleteChunked,
 	}
 }
 
@@ -366,6 +367,28 @@ func sendCloseNotification(sender SendFunc, channelID string) {
 			"channel_id", channelID,
 			"error", err,
 		)
+	}
+}
+
+// HubControlChannelID is the reserved channel ID used for Hub-originated
+// control frames sent to frontends via the existing /ws/channel WebSocket.
+const HubControlChannelID = "_hub"
+
+// SendToUser sends a ChannelMessage to all WebSocket connections of a specific user.
+func (m *Manager) SendToUser(userID string, msg *leapmuxv1.ChannelMessage) {
+	m.mu.RLock()
+	var senders []SendFunc
+	if conns := m.userSenders[userID]; conns != nil {
+		for _, uc := range conns {
+			senders = append(senders, uc.sendFn)
+		}
+	}
+	m.mu.RUnlock()
+
+	for _, sender := range senders {
+		if err := sender(msg); err != nil {
+			slog.Debug("failed to send control frame to user", "user_id", userID, "error", err)
+		}
 	}
 }
 

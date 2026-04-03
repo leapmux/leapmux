@@ -21,6 +21,7 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import * as styles from './DirectoryTree.css'
 import { DiffStatsBadge, getGitFileIconClass } from './gitStatusUtils'
+import { menuTrigger, sidebarActions } from './sidebarActions.css'
 
 export interface DirectoryTreeHandle {
   collapseAll: () => void
@@ -166,7 +167,7 @@ const TreeContextMenu: Component<{
           icon={MoreHorizontal}
           iconSize="xs"
           size="sm"
-          class={styles.nodeMenuTrigger}
+          class={menuTrigger}
           onClick={(e: MouseEvent) => {
             e.stopPropagation()
             triggerProps.onClick()
@@ -470,7 +471,7 @@ const TreeNode: Component<{
         </Show>
         <span class={props.node.hidden ? styles.nodeNameMuted : styles.nodeName}>{props.node.displayName}</span>
         {renderNodeDiffStats(props.node, tree.gitStatusStore())}
-        <div class={styles.nodeActions}>
+        <div class={sidebarActions}>
           <TreeContextMenu
             path={props.node.path}
             isDir={props.node.isDir}
@@ -796,7 +797,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
                 <Icon icon={FolderOpen} size="sm" class={styles.folderIcon} />
                 <span class={styles.nodeName}>{rootDisplayName()}</span>
                 {renderNodeDiffStats({ path: rootPath(), displayName: rootDisplayName(), isDir: true, hidden: false }, props.gitStatusStore)}
-                <div class={styles.nodeActions}>
+                <div class={sidebarActions}>
                   <TreeContextMenu
                     path={rootPath()}
                     isDir

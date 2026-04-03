@@ -70,6 +70,8 @@ export interface SectionDefContext {
   workers: Worker[]
   workerInfoFn: (id: string) => WorkerInfo | null
   channelStatusFn: (id: string) => ChannelStatus
+  currentUserId: string
+  onAddTunnel: (worker: Worker) => void
   onDeregisterWorker: (worker: Worker) => void
 }
 
@@ -246,6 +248,8 @@ export function buildSectionDef(
           workers={ctx.workers}
           workerInfo={ctx.workerInfoFn}
           channelStatus={ctx.channelStatusFn}
+          currentUserId={ctx.currentUserId}
+          onAddTunnel={ctx.onAddTunnel}
           onDeregister={ctx.onDeregisterWorker}
         />
       ),

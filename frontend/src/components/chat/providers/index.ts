@@ -8,6 +8,3 @@ import './goose'
 import './kilo'
 import './opencode'
 import './stubs'
-
-export { getProviderPlugin, registerProvider } from './registry'
-export type { ProviderPlugin } from './registry'

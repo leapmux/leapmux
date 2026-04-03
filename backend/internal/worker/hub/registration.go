@@ -18,9 +18,10 @@ import (
 
 // RegistrationResult contains the credentials obtained after registration approval.
 type RegistrationResult struct {
-	WorkerID  string
-	AuthToken string
-	OrgID     string
+	WorkerID     string
+	AuthToken    string
+	OrgID        string
+	RegisteredBy string
 }
 
 // Register performs the registration flow with automatic retries:
@@ -94,15 +95,14 @@ func registerWithClient(
 			"path", regPath,
 			"token", regToken,
 		)
-		fmt.Printf("\n  Approve this worker at the Hub's web UI: %s\n\n", regPath)
+		logging.PrintRegistrationURL(regPath, true)
 	} else {
 		regURL := hubURL + regPath
 		slog.Info("registration requested — approve in browser",
 			"url", regURL,
 			"token", regToken,
 		)
-		fmt.Printf("\n  Approve this worker at: %s\n\n", regURL)
-		logging.PrintQRCode(regURL)
+		logging.PrintRegistrationURL(regURL, false)
 	}
 
 	// Step 2: Long-poll until approved or expired.
@@ -133,9 +133,10 @@ func registerWithClient(
 				"worker_id", pollResp.Msg.GetWorkerId(),
 			)
 			return &RegistrationResult{
-				WorkerID:  pollResp.Msg.GetWorkerId(),
-				AuthToken: pollResp.Msg.GetAuthToken(),
-				OrgID:     pollResp.Msg.GetOrgId(),
+				WorkerID:     pollResp.Msg.GetWorkerId(),
+				AuthToken:    pollResp.Msg.GetAuthToken(),
+				OrgID:        pollResp.Msg.GetOrgId(),
+				RegisteredBy: pollResp.Msg.GetRegisteredBy(),
 			}, nil
 
 		case leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_EXPIRED:

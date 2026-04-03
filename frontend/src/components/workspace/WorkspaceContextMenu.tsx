@@ -7,9 +7,9 @@ import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
 import { isMoveTargetSection } from '~/components/shell/sectionUtils'
+import { menuTrigger } from '~/components/tree/sidebarActions.css'
 import { isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem } from '~/styles/shared.css'
-import * as listStyles from './workspaceList.css'
 
 interface WorkspaceContextMenuProps {
   isOwner: boolean
@@ -31,7 +31,7 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
         <IconButton
           icon={MoreHorizontal}
           size="sm"
-          class={listStyles.itemMenuTrigger}
+          class={menuTrigger}
           onClick={(e: MouseEvent) => {
             e.stopPropagation()
             triggerProps.onClick()

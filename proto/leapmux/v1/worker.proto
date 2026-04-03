@@ -54,6 +54,7 @@ message PollRegistrationResponse {
   string worker_id = 2;
   string auth_token = 3;
   string org_id = 4;
+  string registered_by = 5; // User ID who approved this worker
 }
 
 enum RegistrationStatus {
@@ -181,7 +182,17 @@ message ConnectResponse {
     ChannelCloseNotification channel_close = 6;
     // Health
     Heartbeat heartbeat = 7;
+    // Access control
+    ChannelAccessUpdate channel_access_update = 8;
   }
+}
+
+// ChannelAccessUpdate is sent by the Hub to a Worker when a new workspace
+// becomes accessible to a channel (e.g. after the user creates a workspace).
+// The Worker adds the workspace ID to the channel's accessible set.
+message ChannelAccessUpdate {
+  string channel_id = 1;
+  string workspace_id = 2;
 }
 
 // --- Notification messages (used in bidi stream) ---

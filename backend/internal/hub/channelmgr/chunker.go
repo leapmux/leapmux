@@ -6,24 +6,12 @@ import (
 )
 
 const (
-	// DefaultMaxMessageSize is the maximum reassembled message size (16 MiB).
-	DefaultMaxMessageSize = 16 * 1024 * 1024
-
-	// DefaultMaxIncompleteChunked is the maximum number of in-flight chunked
-	// sequences per channel before new ones are rejected.
-	DefaultMaxIncompleteChunked = 4
-
 	// noiseAuthTagSize is the Noise AEAD auth tag overhead per ciphertext.
 	noiseAuthTagSize = 16
 
 	// maxChunkCiphertext is the maximum ciphertext size for a single Noise
 	// transport message (65535 bytes = 65519 plaintext + 16 auth tag).
 	maxChunkCiphertext = 65535
-
-	// WSReadLimit is the WebSocket per-message read limit. It must exceed
-	// maxChunkCiphertext to accommodate the 4-byte length prefix and
-	// protobuf framing of a ChannelMessage.
-	WSReadLimit = maxChunkCiphertext + 4096
 )
 
 // chunkSequence tracks cumulative size for one in-flight chunked message.

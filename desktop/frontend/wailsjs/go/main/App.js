@@ -6,12 +6,24 @@ export function CheckFullDiskAccess() {
   return window['go']['main']['App']['CheckFullDiskAccess']();
 }
 
+export function CloseChannelRelay() {
+  return window['go']['main']['App']['CloseChannelRelay']();
+}
+
 export function ConnectDistributed(arg1) {
   return window['go']['main']['App']['ConnectDistributed'](arg1);
 }
 
 export function ConnectSolo() {
   return window['go']['main']['App']['ConnectSolo']();
+}
+
+export function CreateTunnel(arg1) {
+  return window['go']['main']['App']['CreateTunnel'](arg1);
+}
+
+export function DeleteTunnel(arg1) {
+  return window['go']['main']['App']['DeleteTunnel'](arg1);
 }
 
 export function GetBuildInfo() {
@@ -22,16 +34,40 @@ export function GetConfig() {
   return window['go']['main']['App']['GetConfig']();
 }
 
+export function GetHubURL() {
+  return window['go']['main']['App']['GetHubURL']();
+}
+
 export function GetVersion() {
   return window['go']['main']['App']['GetVersion']();
+}
+
+export function IsConnected() {
+  return window['go']['main']['App']['IsConnected']();
+}
+
+export function ListTunnels() {
+  return window['go']['main']['App']['ListTunnels']();
+}
+
+export function OpenChannelRelay(arg1) {
+  return window['go']['main']['App']['OpenChannelRelay'](arg1);
 }
 
 export function OpenFullDiskAccessSettings() {
   return window['go']['main']['App']['OpenFullDiskAccessSettings']();
 }
 
+export function ProxyHTTP(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ProxyHTTP'](arg1, arg2, arg3, arg4);
+}
+
 export function Restart() {
   return window['go']['main']['App']['Restart']();
+}
+
+export function SendChannelMessage(arg1) {
+  return window['go']['main']['App']['SendChannelMessage'](arg1);
 }
 
 export function SwitchMode() {

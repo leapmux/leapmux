@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"sync"
 	"testing"
 
@@ -425,9 +426,10 @@ func TestHandleOutput_SubagentAssistantDoesNotOverwriteContextUsage(t *testing.T
 	assert.Equal(t, int64(200), usage["outputTokens"], "subagent should not overwrite top-level outputTokens")
 }
 
-func TestHandleOutput_ResultModelUsagePicksLargestContextWindow(t *testing.T) {
+func TestHandleOutput_ResultModelUsagePicksPrimaryContextWindow(t *testing.T) {
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
+	agent.model = "opus[1m]"
 
 	// Send an assistant message so there is usage to broadcast.
 	agent.HandleOutput([]byte(`{
@@ -440,8 +442,7 @@ func TestHandleOutput_ResultModelUsagePicksLargestContextWindow(t *testing.T) {
 	}`))
 
 	// A result message with modelUsage containing two models — haiku (200k)
-	// and opus (1M). The max (opus) should be selected regardless of map
-	// iteration order.
+	// and opus[1m] (1M). The primary model (opus[1m]) should be selected.
 	agent.HandleOutput([]byte(`{
 		"type": "result",
 		"subtype": "success",
@@ -455,18 +456,144 @@ func TestHandleOutput_ResultModelUsagePicksLargestContextWindow(t *testing.T) {
 	info := sink.LastSessionInfo()
 	usage, ok := info["contextUsage"].(map[string]interface{})
 	require.True(t, ok, "expected contextUsage in session info")
-	assert.Equal(t, int64(1000000), usage["contextWindow"], "should pick largest contextWindow across models")
+	assert.Equal(t, int64(1000000), usage["contextWindow"], "should pick primary model's contextWindow")
+}
 
-	// A subsequent result with only haiku (200k) should NOT decrease the
-	// context window — the running maximum must be preserved.
+func TestHandleOutput_ResultModelUsagePicksNon1MContextWindow(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+	agent.model = "opus"
+
 	agent.HandleOutput([]byte(`{
 		"type": "assistant",
 		"message": {
 			"role": "assistant",
-			"content": [{"type": "text", "text": "world"}],
-			"usage": {"input_tokens": 200, "output_tokens": 100}
+			"content": [{"type": "text", "text": "hello"}],
+			"usage": {"input_tokens": 100, "output_tokens": 50}
 		}
 	}`))
+
+	// When primary model is "opus" (no [1m]), it should match "claude-opus-4-6"
+	// (no bracket suffix) and NOT "claude-opus-4-6[1m]".
+	agent.HandleOutput([]byte(`{
+		"type": "result",
+		"subtype": "success",
+		"modelUsage": {
+			"claude-opus-4-6": {"contextWindow": 200000},
+			"claude-opus-4-6[1m]": {"contextWindow": 1000000}
+		}
+	}`))
+
+	require.GreaterOrEqual(t, sink.SessionInfoCount(), 1)
+	info := sink.LastSessionInfo()
+	usage, ok := info["contextUsage"].(map[string]interface{})
+	require.True(t, ok, "expected contextUsage in session info")
+	assert.Equal(t, int64(200000), usage["contextWindow"], "should pick non-1M opus contextWindow")
+}
+
+func TestHandleOutput_SubagentResultDoesNotOverwriteContextWindow(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+	agent.model = "opus[1m]"
+
+	// Top-level assistant message establishes usage baseline.
+	agent.HandleOutput([]byte(`{
+		"type": "assistant",
+		"message": {
+			"role": "assistant",
+			"content": [{"type": "text", "text": "top level"}],
+			"usage": {"input_tokens": 500, "output_tokens": 200}
+		}
+	}`))
+
+	// Top-level result sets the context window to 1M.
+	agent.HandleOutput([]byte(`{
+		"type": "result",
+		"subtype": "success",
+		"modelUsage": {
+			"claude-haiku-4-5-20251001": {"contextWindow": 200000},
+			"claude-opus-4-6[1m]": {"contextWindow": 1000000}
+		}
+	}`))
+
+	require.GreaterOrEqual(t, sink.SessionInfoCount(), 1)
+	info := sink.LastSessionInfo()
+	usage, ok := info["contextUsage"].(map[string]interface{})
+	require.True(t, ok, "expected contextUsage in session info")
+	assert.Equal(t, int64(1000000), usage["contextWindow"], "top-level result should set 1M")
+
+	prevCount := sink.SessionInfoCount()
+
+	// A subagent result with parent_tool_use_id should NOT overwrite the
+	// context window even though its modelUsage only contains haiku (200k).
+	agent.HandleOutput([]byte(`{
+		"type": "result",
+		"parent_tool_use_id": "agent-tu-1",
+		"subtype": "success",
+		"modelUsage": {
+			"claude-haiku-4-5-20251001": {"contextWindow": 200000}
+		}
+	}`))
+
+	// Force a broadcast via a new top-level assistant + result cycle.
+	agent.HandleOutput([]byte(`{
+		"type": "assistant",
+		"message": {
+			"role": "assistant",
+			"content": [{"type": "text", "text": "next turn"}],
+			"usage": {"input_tokens": 600, "output_tokens": 250}
+		}
+	}`))
+	agent.HandleOutput([]byte(`{
+		"type": "result",
+		"subtype": "success"
+	}`))
+
+	require.Greater(t, sink.SessionInfoCount(), prevCount)
+	info = sink.LastSessionInfo()
+	usage, ok = info["contextUsage"].(map[string]interface{})
+	require.True(t, ok, "expected contextUsage in session info")
+	assert.Equal(t, int64(1000000), usage["contextWindow"],
+		"subagent result must not overwrite context window")
+}
+
+func TestHandleOutput_SubagentResultWithoutParentIDDoesNotOverwriteContextWindow(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+	agent.model = "opus[1m]"
+
+	// Top-level assistant message establishes usage baseline.
+	agent.HandleOutput([]byte(`{
+		"type": "assistant",
+		"message": {
+			"role": "assistant",
+			"content": [{"type": "text", "text": "top level"}],
+			"usage": {"input_tokens": 500, "output_tokens": 200}
+		}
+	}`))
+
+	// Top-level result sets the context window to 1M.
+	agent.HandleOutput([]byte(`{
+		"type": "result",
+		"subtype": "success",
+		"modelUsage": {
+			"claude-haiku-4-5-20251001": {"contextWindow": 200000},
+			"claude-opus-4-6[1m]": {"contextWindow": 1000000}
+		}
+	}`))
+
+	require.GreaterOrEqual(t, sink.SessionInfoCount(), 1)
+	info := sink.LastSessionInfo()
+	usage, ok := info["contextUsage"].(map[string]interface{})
+	require.True(t, ok, "expected contextUsage in session info")
+	assert.Equal(t, int64(1000000), usage["contextWindow"])
+
+	prevCount := sink.SessionInfoCount()
+
+	// A subagent result that is MISSING parent_tool_use_id (defense-in-depth
+	// scenario). Its modelUsage only contains haiku — the primary model
+	// (opus[1m]) is absent, so findPrimaryContextWindow returns 0 and the
+	// context window is NOT overwritten.
 	agent.HandleOutput([]byte(`{
 		"type": "result",
 		"subtype": "success",
@@ -475,8 +602,98 @@ func TestHandleOutput_ResultModelUsagePicksLargestContextWindow(t *testing.T) {
 		}
 	}`))
 
-	info2 := sink.LastSessionInfo()
-	usage2, ok := info2["contextUsage"].(map[string]interface{})
-	require.True(t, ok, "expected contextUsage in session info after second result")
-	assert.Equal(t, int64(1000000), usage2["contextWindow"], "contextWindow should not decrease when a smaller value arrives")
+	// Force a broadcast via a new assistant + result cycle.
+	agent.HandleOutput([]byte(`{
+		"type": "assistant",
+		"message": {
+			"role": "assistant",
+			"content": [{"type": "text", "text": "next turn"}],
+			"usage": {"input_tokens": 600, "output_tokens": 250}
+		}
+	}`))
+	agent.HandleOutput([]byte(`{
+		"type": "result",
+		"subtype": "success"
+	}`))
+
+	require.Greater(t, sink.SessionInfoCount(), prevCount)
+	info = sink.LastSessionInfo()
+	usage, ok = info["contextUsage"].(map[string]interface{})
+	require.True(t, ok, "expected contextUsage in session info")
+	assert.Equal(t, int64(1000000), usage["contextWindow"],
+		"subagent result without parent_tool_use_id must not overwrite context window")
+}
+
+func TestFindPrimaryContextWindow(t *testing.T) {
+	tests := []struct {
+		name     string
+		model    string
+		usage    map[string]json.RawMessage
+		expected int64
+	}{
+		{
+			name:  "opus[1m] matches claude-opus-4-6[1m]",
+			model: "opus[1m]",
+			usage: map[string]json.RawMessage{
+				"claude-haiku-4-5-20251001": json.RawMessage(`{"contextWindow": 200000}`),
+				"claude-opus-4-6[1m]":       json.RawMessage(`{"contextWindow": 1000000}`),
+			},
+			expected: 1000000,
+		},
+		{
+			name:  "opus matches claude-opus-4-6 not claude-opus-4-6[1m]",
+			model: "opus",
+			usage: map[string]json.RawMessage{
+				"claude-opus-4-6":     json.RawMessage(`{"contextWindow": 200000}`),
+				"claude-opus-4-6[1m]": json.RawMessage(`{"contextWindow": 1000000}`),
+			},
+			expected: 200000,
+		},
+		{
+			name:  "sonnet[1m] matches claude-sonnet-4-6[1m]",
+			model: "sonnet[1m]",
+			usage: map[string]json.RawMessage{
+				"claude-sonnet-4-6[1m]": json.RawMessage(`{"contextWindow": 1000000}`),
+			},
+			expected: 1000000,
+		},
+		{
+			name:  "haiku matches claude-haiku-4-5-20251001",
+			model: "haiku",
+			usage: map[string]json.RawMessage{
+				"claude-haiku-4-5-20251001": json.RawMessage(`{"contextWindow": 200000}`),
+			},
+			expected: 200000,
+		},
+		{
+			name:  "primary model not in usage returns 0",
+			model: "opus[1m]",
+			usage: map[string]json.RawMessage{
+				"claude-haiku-4-5-20251001": json.RawMessage(`{"contextWindow": 200000}`),
+			},
+			expected: 0,
+		},
+		{
+			name:  "empty model falls back to max",
+			model: "",
+			usage: map[string]json.RawMessage{
+				"claude-haiku-4-5-20251001": json.RawMessage(`{"contextWindow": 200000}`),
+				"claude-opus-4-6[1m]":       json.RawMessage(`{"contextWindow": 1000000}`),
+			},
+			expected: 1000000,
+		},
+		{
+			name:     "empty usage returns 0",
+			model:    "opus[1m]",
+			usage:    map[string]json.RawMessage{},
+			expected: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := findPrimaryContextWindow(tt.usage, tt.model)
+			assert.Equal(t, tt.expected, got)
+		})
+	}
 }

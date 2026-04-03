@@ -40,6 +40,10 @@ type Config struct {
 	DevMode bool
 	// SkipBanner suppresses the ASCII art banner and access URL.
 	SkipBanner bool
+	// NoTCP disables the TCP listener. When true, the Hub only listens on
+	// the Unix domain socket. This is used by the desktop app to avoid
+	// opening a TCP port.
+	NoTCP bool
 }
 
 // Instance represents a running solo Hub+Worker pair.
@@ -47,11 +51,17 @@ type Instance struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	addr   string
+	server *hub.Server
 }
 
 // Addr returns the listen address of the running instance.
 func (i *Instance) Addr() string {
 	return i.addr
+}
+
+// Server returns the underlying Hub server instance.
+func (i *Instance) Server() *hub.Server {
+	return i.server
 }
 
 // Stop gracefully shuts down the Hub and Worker.
@@ -114,9 +124,13 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 	}
 	logging.SetLevel(level)
 
+	if cfg.NoTCP {
+		hubCfg.Addr = ""
+	}
+
 	if !cfg.SkipBanner {
 		logging.PrintBanner(modeName, logging.VersionInfo{Version: version.Value, CommitHash: version.CommitHash, CommitTime: version.CommitTime, BuildTime: version.BuildTime})
-		logging.PrintAccessURL(modeName, hubCfg.Addr)
+		logging.PrintAccessURL(hubCfg.Addr)
 	}
 
 	// Split data dir into hub and worker subdirectories.
@@ -135,7 +149,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 
 	soloCtx, cancel := context.WithCancel(ctx)
 
-	inst := &Instance{cancel: cancel, addr: hubCfg.Addr}
+	inst := &Instance{cancel: cancel, addr: hubCfg.Addr, server: server}
 
 	// Start Hub.
 	hubErrCh := make(chan error, 1)
@@ -223,6 +237,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 			APITimeout:           hubCfg.APITimeout(),
 			EncryptionMode:       workerconfig.ParseEncryptionMode(hubCfg.Extras["encryption_mode"]),
 			UseLoginShell:        parseBool(hubCfg.Extras["use_login_shell"], true),
+			RegisteredBy:         state.RegisteredBy,
 		}); wErr != nil {
 			slog.Error("worker error", "error", wErr)
 		}
@@ -249,6 +264,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 type soloState struct {
 	WorkerID         string `json:"worker_id"`
 	AuthToken        string `json:"auth_token"`
+	RegisteredBy     string `json:"registered_by,omitempty"`
 	PublicKey        string `json:"public_key,omitempty"`
 	PrivateKey       string `json:"private_key,omitempty"`
 	MlkemPublicKey   string `json:"mlkem_public_key,omitempty"`
@@ -281,6 +297,15 @@ func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath,
 		var s soloState
 		if json.Unmarshal(data, &s) == nil && s.WorkerID != "" && s.AuthToken != "" {
 			if dbErr := server.GetWorkerByID(ctx, s.WorkerID); dbErr == nil {
+				// Backfill RegisteredBy for state files created before this field existed.
+				if s.RegisteredBy == "" {
+					if adminID, _, aErr := server.GetAdminUser(ctx); aErr == nil {
+						s.RegisteredBy = adminID
+						if updated, mErr := json.MarshalIndent(s, "", "  "); mErr == nil {
+							_ = os.WriteFile(statePath, updated, 0o600)
+						}
+					}
+				}
 				return &s, nil
 			}
 			slog.Warn("saved worker not found in DB, re-registering")
@@ -300,8 +325,9 @@ func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath,
 	}
 
 	state := &soloState{
-		WorkerID:  creds.WorkerID,
-		AuthToken: creds.AuthToken,
+		WorkerID:     creds.WorkerID,
+		AuthToken:    creds.AuthToken,
+		RegisteredBy: userID,
 	}
 
 	stateData, err := json.MarshalIndent(state, "", "  ")

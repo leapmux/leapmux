@@ -14,3 +14,13 @@ export const statusConnected = style({
 export const statusDisconnected = style({
   background: 'var(--danger)',
 })
+
+export const tunnelItem = style({
+  cursor: 'default',
+  paddingLeft: '20px',
+})
+
+export const tunnelIcon = style({
+  flexShrink: 0,
+  color: 'var(--muted-foreground)',
+})

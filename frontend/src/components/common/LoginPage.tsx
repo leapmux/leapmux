@@ -8,6 +8,7 @@ import { Icon } from '~/components/common/Icon'
 import { useAuth } from '~/context/AuthContext'
 import { isSoloMode } from '~/lib/systemInfo'
 import { spinner } from '~/styles/animations.css'
+import { cardNarrow, errorText } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
 
 export const LoginPage: Component = () => {
@@ -70,7 +71,7 @@ export const LoginPage: Component = () => {
 
   return (
     <div class={styles.container}>
-      <div class={`card ${styles.authCard}`}>
+      <div class={`card ${cardNarrow}`}>
         <h1>LeapMux</h1>
         <form class="vstack gap-4" onSubmit={handleSubmit}>
           <label>
@@ -94,7 +95,7 @@ export const LoginPage: Component = () => {
             />
           </label>
           <Show when={auth.error()}>
-            <div class={styles.errorText}>{auth.error()}</div>
+            <div class={errorText}>{auth.error()}</div>
           </Show>
           <button
             type="submit"

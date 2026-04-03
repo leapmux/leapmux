@@ -13,6 +13,7 @@ import { ShareMode } from '~/generated/leapmux/v1/common_pb'
 import { spinner } from '~/styles/animations.css'
 import { DiffStatsBadge } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
+import { sidebarActions } from '../tree/sidebarActions.css'
 import { WorkspaceContextMenu } from './WorkspaceContextMenu'
 import * as styles from './workspaceList.css'
 import { buildTree, WorkspaceTabTree } from './WorkspaceTabTree'
@@ -283,7 +284,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                       })()}
                     </Show>
 
-                    <div class={styles.itemActions}>
+                    <div class={sidebarActions}>
                       <Show
                         when={!isLoading()}
                         fallback={<Icon icon={LoaderCircle} size="xs" class={spinner} style={{ 'flex-shrink': '0' }} />}

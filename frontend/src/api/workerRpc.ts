@@ -60,6 +60,7 @@ import type {
 import type { ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '~/lib/channel'
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
 import { createClient } from '@connectrpc/connect'
+import { arrayBufferToBase64, base64ToArrayBuffer, isWailsApp } from '~/api/desktopBridge'
 import { getToken, transport } from '~/api/transport'
 import {
   CloseAgentRequestSchema,
@@ -195,20 +196,21 @@ class BrowserChannelTransport implements ChannelTransport {
   }
 
   createWebSocket(): WebSocket {
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    let wsUrl: string
-    if (isSoloMode()) {
-      // Solo mode: no session token needed; backend auto-authenticates.
-      wsUrl = `${wsProtocol}//${window.location.host}/ws/channel`
+    if (isWailsApp()) {
+      return new WailsWebSocket() as unknown as WebSocket
     }
-    else {
+
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws/channel`
+    const protocols = ['channel-relay']
+    if (!isSoloMode()) {
       const token = getToken()
       if (!token) {
         throw new Error('not authenticated')
       }
-      wsUrl = `${wsProtocol}//${window.location.host}/ws/channel?token=${encodeURIComponent(token)}`
+      protocols.push(`auth.token.${token}`)
     }
-    const ws = new WebSocket(wsUrl, ['channel-relay'])
+    const ws = new WebSocket(wsUrl, protocols)
     ws.binaryType = 'arraybuffer'
     return ws
   }
@@ -225,6 +227,108 @@ class BrowserChannelTransport implements ChannelTransport {
       throw new Error('getUserId not registered')
     }
     return getUserIdFn()
+  }
+}
+
+/**
+ * WailsWebSocket provides a WebSocket-like interface that bridges through
+ * Wails Go bindings and events. Binary data is base64-encoded at the
+ * boundary.
+ */
+type WSEventType = 'open' | 'close' | 'message' | 'error'
+interface WSListener { handler: EventListener, once: boolean }
+
+class WailsWebSocket {
+  readyState: number = WebSocket.CONNECTING
+  binaryType: BinaryType = 'arraybuffer'
+
+  onopen: ((ev: Event) => void) | null = null
+  onmessage: ((ev: MessageEvent) => void) | null = null
+  onclose: ((ev: CloseEvent) => void) | null = null
+  onerror: ((ev: Event) => void) | null = null
+
+  private listeners = new Map<WSEventType, WSListener[]>()
+  private sendQueue: Promise<void> = Promise.resolve()
+
+  constructor() {
+    const token = isSoloMode() ? '' : (getToken() ?? '')
+    window.go!.main.App.OpenChannelRelay(token).then(() => {
+      // Listen for messages from Go.
+      window.runtime?.EventsOn?.('channel:message', (...args: unknown[]) => {
+        const b64 = args[0] as string
+        const ev = { data: base64ToArrayBuffer(b64) } as MessageEvent
+        this.onmessage?.(ev)
+        this.dispatch('message', ev)
+      })
+      // Listen for relay close.
+      window.runtime?.EventsOn?.('channel:close', () => {
+        this.readyState = WebSocket.CLOSED
+        const ev = { code: 1000, reason: '', wasClean: true } as CloseEvent
+        this.onclose?.(ev)
+        this.dispatch('close', ev)
+      })
+      this.readyState = WebSocket.OPEN
+      const ev = {} as Event
+      this.onopen?.(ev)
+      this.dispatch('open', ev)
+    }).catch((err: unknown) => {
+      this.readyState = WebSocket.CLOSED
+      const ev = new ErrorEvent('error', { message: String(err) })
+      this.onerror?.(ev)
+      this.dispatch('error', ev)
+    })
+  }
+
+  addEventListener(type: string, listener: EventListener, opts?: { once?: boolean }): void {
+    const t = type as WSEventType
+    let list = this.listeners.get(t)
+    if (!list) {
+      list = []
+      this.listeners.set(t, list)
+    }
+    list.push({ handler: listener, once: opts?.once ?? false })
+  }
+
+  removeEventListener(type: string, listener: EventListener): void {
+    const list = this.listeners.get(type as WSEventType)
+    if (!list)
+      return
+    const idx = list.findIndex(l => l.handler === listener)
+    if (idx >= 0)
+      list.splice(idx, 1)
+  }
+
+  private dispatch(type: WSEventType, ev: Event): void {
+    const list = this.listeners.get(type)
+    if (!list)
+      return
+    // Iterate a copy since once-listeners mutate the array.
+    for (const entry of [...list]) {
+      entry.handler(ev)
+      if (entry.once)
+        this.removeEventListener(type, entry.handler)
+    }
+  }
+
+  send(data: ArrayBuffer | Uint8Array): void {
+    // Serialize sends through a promise chain to preserve ordering.
+    // Wails binding calls spawn concurrent Go goroutines, so without
+    // serialization, messages can arrive at the Hub out of order,
+    // which breaks the Noise protocol's sequential nonce counter.
+    const b64 = arrayBufferToBase64(data)
+    this.sendQueue = this.sendQueue.then(
+      () => window.go!.main.App.SendChannelMessage(b64),
+    ).catch((err) => { log.warn('channel relay send failed', { error: String(err) }) })
+  }
+
+  close(): void {
+    window.go!.main.App.CloseChannelRelay()
+    this.readyState = WebSocket.CLOSED
+    window.runtime?.EventsOff?.('channel:message')
+    window.runtime?.EventsOff?.('channel:close')
+    const ev = { code: 1000, reason: '', wasClean: true } as CloseEvent
+    this.onclose?.(ev)
+    this.dispatch('close', ev)
   }
 }
 

@@ -232,6 +232,70 @@ func (s *ChannelService) CloseChannel(
 	return connect.NewResponse(&leapmuxv1.CloseChannelResponse{}), nil
 }
 
+func (s *ChannelService) PrepareWorkspaceAccess(
+	ctx context.Context,
+	req *connect.Request[leapmuxv1.PrepareWorkspaceAccessRequest],
+) (*connect.Response[leapmuxv1.PrepareWorkspaceAccessResponse], error) {
+	user, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workerID := req.Msg.GetWorkerId()
+	if workerID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))
+	}
+	workspaceID := req.Msg.GetWorkspaceId()
+	if workspaceID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("workspace_id is required"))
+	}
+
+	// Verify the user has access to the workspace (owner or explicit grant).
+	hasAccess, err := s.queries.HasWorkspaceAccess(ctx, db.HasWorkspaceAccessParams{
+		WorkspaceID: workspaceID,
+		UserID:      user.ID,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("check workspace access: %w", err))
+	}
+	// Also check ownership.
+	ws, err := s.queries.GetWorkspaceByID(ctx, workspaceID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if ws.OwnerUserID != user.ID && !hasAccess {
+		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("no access to workspace"))
+	}
+
+	// Find all channels for this user on the specified worker and push the update.
+	channelIDs := s.channelMgr.GetChannelIDsForUser(user.ID)
+	conn := s.workerMgr.Get(workerID)
+	if conn == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("worker is offline"))
+	}
+
+	for _, chID := range channelIDs {
+		if s.channelMgr.GetWorkerID(chID) != workerID {
+			continue
+		}
+		if err := conn.Send(&leapmuxv1.ConnectResponse{
+			Payload: &leapmuxv1.ConnectResponse_ChannelAccessUpdate{
+				ChannelAccessUpdate: &leapmuxv1.ChannelAccessUpdate{
+					ChannelId:   chID,
+					WorkspaceId: workspaceID,
+				},
+			},
+		}); err != nil {
+			return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("failed to update worker: %w", err))
+		}
+	}
+
+	return connect.NewResponse(&leapmuxv1.PrepareWorkspaceAccessResponse{}), nil
+}
+
 // verifyWorkerAccess checks that the user is a member of the worker's org.
 // All org members may open E2EE channels to any worker in their org;
 // fine-grained workspace access is enforced by the Worker itself.

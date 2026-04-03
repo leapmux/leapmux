@@ -1,7 +1,5 @@
 import { style } from '@vanilla-extract/css'
 
-export { errorText } from '~/styles/shared.css'
-
 export const memberList = style({
   maxHeight: '200px',
   overflowY: 'auto',

@@ -1,8 +1,8 @@
 import type { Component } from 'solid-js'
 import { Show } from 'solid-js'
 import { Dialog } from '~/components/common/Dialog'
+import { labelRow } from '~/components/common/Dialog.css'
 import { formatVersionLine, getBackendBuildInfo, getFrontendBuildInfo } from '~/lib/systemInfo'
-import { labelRow } from '~/styles/shared.css'
 
 interface AboutDialogProps {
   onClose: () => void

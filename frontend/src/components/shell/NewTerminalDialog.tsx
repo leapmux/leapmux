@@ -3,7 +3,7 @@ import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createEffect, createSignal, For, on, Show } from 'solid-js'
 import { apiLoadingTimeoutMs } from '~/api/transport'
 import * as workerRpc from '~/api/workerRpc'
-import { Dialog } from '~/components/common/Dialog'
+import { Dialog, DialogColumns, DialogTopRow, DialogTopSection } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
 import { isTerminalCreateDisabled } from '~/components/shell/dialogValidation'
 import { DirectorySelector } from '~/components/shell/DirectorySelector'
@@ -12,7 +12,7 @@ import { WorkerSelector } from '~/components/shell/WorkerSelector'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
 import { spinner } from '~/styles/animations.css'
-import { dialogLeftPanel, dialogRightPanel, dialogSingleColumn, dialogTopSection, dialogTopTwoColumn, dialogTwoColumn, dialogWide, errorText } from '~/styles/shared.css'
+import { errorText } from '~/styles/shared.css'
 
 interface NewTerminalDialogProps {
   workspaceId: string
@@ -123,21 +123,20 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
   )
 
   return (
-    <Dialog title="New Terminal" tall busy={submitting.loading()} class={dialogWide} onClose={() => props.onClose()}>
+    <Dialog title="New Terminal" tall wide busy={submitting.loading()} onClose={() => props.onClose()}>
       <form onSubmit={handleSubmit}>
         <section>
           <div class="vstack gap-4">
-            <div class={state.showGitOptions() ? dialogTopSection : undefined}>
-              <div class={dialogTopTwoColumn}>
+            <DialogTopSection>
+              <DialogTopRow>
                 <WorkerSelector state={state} />
                 {shellSelector()}
-              </div>
-            </div>
-            <div class={state.showGitOptions() ? dialogTwoColumn : dialogSingleColumn}>
-              <div class={dialogLeftPanel}>
-                <DirectorySelector state={state} />
-              </div>
-              <div class={state.showGitOptions() ? dialogRightPanel : undefined}>
+              </DialogTopRow>
+            </DialogTopSection>
+            <DialogColumns
+              twoColumn={state.showGitOptions()}
+              left={<DirectorySelector state={state} />}
+              right={(
                 <Show when={state.workerId() && !state.worktreeResolving()}>
                   <GitOptions
                     workerId={state.workerId()}
@@ -148,8 +147,8 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
                     onVisibilityChange={state.setShowGitOptions}
                   />
                 </Show>
-              </div>
-            </div>
+              )}
+            />
           </div>
           <Show when={state.error()}>
             <div class={errorText}>{state.error()}</div>

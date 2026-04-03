@@ -30,11 +30,27 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
     navigate('/login', { replace: true })
   }
 
-  const handleSwitchMode = () => {
-    const fn = (window as any).__lm_switchMode
-    if (typeof fn === 'function') {
-      fn()
-    }
+  const handleSwitchMode = async () => {
+    // Fade out the page content.
+    const overlay = document.createElement('div')
+    const bg = getComputedStyle(document.documentElement).getPropertyValue('--background').trim() || '#000'
+    overlay.style.cssText = `position:fixed;inset:0;z-index:2147483647;background:${bg};opacity:0;transition:opacity .3s ease`
+    document.body.appendChild(overlay)
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => {
+        overlay.style.opacity = '1'
+      })
+      overlay.addEventListener('transitionend', () => resolve(), { once: true })
+      setTimeout(resolve, 400)
+    })
+
+    await window.go?.main?.App?.SwitchMode()
+    // Remove the overlay before switching views — the LauncherView
+    // handles its own fade-in.
+    overlay.remove()
+    // Reset SPA state in-place. Wails doesn't re-inject window.go
+    // after page reload, so we switch without reloading.
+    ;(window as any).__leapmux_disconnectDesktop?.()
   }
 
   const renderMenuItems = () => (

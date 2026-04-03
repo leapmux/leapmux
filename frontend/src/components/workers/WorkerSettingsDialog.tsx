@@ -8,6 +8,7 @@ import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { spinner } from '~/styles/animations.css'
+import { errorText } from '~/styles/shared.css'
 import * as styles from './WorkerSettingsDialog.css'
 
 interface WorkerSettingsDialogProps {
@@ -42,7 +43,7 @@ export const WorkerSettingsDialog: Component<WorkerSettingsDialogProps> = (props
         This will terminate all active workspaces and terminals on this worker. This action cannot be undone.
       </div>
       <Show when={deregisterError()}>
-        <div class={styles.errorText}>{deregisterError()}</div>
+        <div class={errorText}>{deregisterError()}</div>
       </Show>
       <footer>
         <button class="outline" disabled={submitting.loading()} onClick={() => props.onClose()} data-testid="deregister-cancel">

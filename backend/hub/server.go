@@ -135,15 +135,13 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, connectOpts)
 	mux.Handle(authPath, authHandler)
 
-	connectorSvc := service.NewWorkerConnectorService(queries, wMgr, cfg.SoloMode)
-	connectorSvc.SetShutdownCh(shutdownCh)
-	connectorSvc.SetChannelMgr(cMgr)
-	connectorSvc.SetPendingRequests(pendingReqs)
+	broadcaster := service.NewHubEventBroadcaster(cMgr)
+	notifierSvc := notifier.New(queries, wMgr, pendingReqs, cfg)
+
+	connectorSvc := service.NewWorkerConnectorService(queries, wMgr, cMgr, broadcaster, pendingReqs, notifierSvc, shutdownCh)
 	connectorPath, connectorHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(connectorSvc, connectOpts)
 	mux.Handle(connectorPath, connectorHandler)
-
-	notifierSvc := notifier.New(queries, wMgr, pendingReqs, cfg)
-	mgmtSvc := service.NewWorkerManagementService(queries, wMgr, notifierSvc, cfg.SoloMode)
+	mgmtSvc := service.NewWorkerManagementService(queries, wMgr, broadcaster, notifierSvc, cfg.SoloMode)
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(mgmtSvc, connectOpts)
 	mux.Handle(mgmtPath, mgmtHandler)
 

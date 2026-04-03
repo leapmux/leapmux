@@ -4,10 +4,11 @@ import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { generateSlug } from 'random-word-slugs'
 import { createEffect, createMemo, createSignal, Show } from 'solid-js'
-import { workspaceClient } from '~/api/clients'
+import { channelClient, workspaceClient } from '~/api/clients'
 import { agentLoadingTimeoutMs } from '~/api/transport'
 import * as workerRpc from '~/api/workerRpc'
-import { Dialog } from '~/components/common/Dialog'
+import { Dialog, DialogColumns, DialogTopRow, DialogTopSection } from '~/components/common/Dialog'
+import { labelRow } from '~/components/common/Dialog.css'
 import { Icon } from '~/components/common/Icon'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { AgentProviderSelector } from '~/components/shell/AgentProviderSelector'
@@ -22,7 +23,7 @@ import { useMruProviders } from '~/hooks/useMruProviders'
 import { getAvailableAgentProviders } from '~/lib/agentProviders'
 import { sanitizeName, validateSessionId } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
-import { dialogLeftPanel, dialogRightPanel, dialogTopSection, dialogTopTwoColumn, dialogTwoColumn, dialogWide, errorText, labelRow } from '~/styles/shared.css'
+import { errorText } from '~/styles/shared.css'
 
 interface NewWorkspaceDialogProps {
   onCreated: (workspace: Workspace, workerId: string) => void
@@ -77,6 +78,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       createdWorkspaceId = wsResp.workspace.id
 
       const wid = state.workerId()
+      await channelClient.prepareWorkspaceAccess({ workerId: wid, workspaceId: wsResp.workspace.id })
       const agentResp = await workerRpc.openAgent(wid, {
         workspaceId: wsResp.workspace.id,
         agentProvider: agentProvider(),
@@ -117,12 +119,12 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
   }
 
   return (
-    <Dialog title="New Workspace" tall busy={submitting.loading()} class={dialogWide} onClose={() => props.onClose()}>
+    <Dialog title="New Workspace" tall wide busy={submitting.loading()} onClose={() => props.onClose()}>
       <form onSubmit={handleSubmit}>
         <section>
           <div class="vstack gap-4">
-            <div class={dialogTopSection}>
-              <div class={dialogTopTwoColumn}>
+            <DialogTopSection>
+              <DialogTopRow>
                 <WorkerSelector state={state} />
                 <AgentProviderSelector
                   value={agentProvider}
@@ -130,7 +132,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
                   availableProviders={props.availableProviders}
                   onRefresh={props.onRefreshProviders}
                 />
-              </div>
+              </DialogTopRow>
               <div>
                 <div class={labelRow}>
                   Title
@@ -146,36 +148,36 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
                   <div class={errorText}>{titleError()}</div>
                 </Show>
               </div>
-            </div>
-            <div class={dialogTwoColumn}>
-              <div class={dialogLeftPanel}>
-                <DirectorySelector state={state} />
-              </div>
-              <div class={dialogRightPanel}>
-                <div>
-                  <div class={labelRow}>Resume an existing session</div>
-                  <input
-                    type="text"
-                    value={sessionId()}
-                    onInput={e => setSessionId(e.currentTarget.value)}
-                    placeholder="Session ID"
-                  />
-                  <Show when={sessionIdError()}>
-                    <span class={errorText}>{sessionIdError()}</span>
+            </DialogTopSection>
+            <DialogColumns
+              left={<DirectorySelector state={state} />}
+              right={(
+                <>
+                  <div>
+                    <div class={labelRow}>Resume an existing session</div>
+                    <input
+                      type="text"
+                      value={sessionId()}
+                      onInput={e => setSessionId(e.currentTarget.value)}
+                      placeholder="Session ID"
+                    />
+                    <Show when={sessionIdError()}>
+                      <span class={errorText}>{sessionIdError()}</span>
+                    </Show>
+                  </div>
+                  <Show when={state.workerId()}>
+                    <GitOptions
+                      workerId={state.workerId()}
+                      selectedPath={state.workingDir()}
+                      homeDir={state.workerInfoStore.getHomeDir(state.workerId())}
+                      refreshKey={state.refreshKey()}
+                      onGitModeChange={state.handleGitModeChange}
+                      onVisibilityChange={state.setShowGitOptions}
+                    />
                   </Show>
-                </div>
-                <Show when={state.workerId()}>
-                  <GitOptions
-                    workerId={state.workerId()}
-                    selectedPath={state.workingDir()}
-                    homeDir={state.workerInfoStore.getHomeDir(state.workerId())}
-                    refreshKey={state.refreshKey()}
-                    onGitModeChange={state.handleGitModeChange}
-                    onVisibilityChange={state.setShowGitOptions}
-                  />
-                </Show>
-              </div>
-            </div>
+                </>
+              )}
+            />
           </div>
           <Show when={state.error()}>
             <div class={errorText}>{state.error()}</div>

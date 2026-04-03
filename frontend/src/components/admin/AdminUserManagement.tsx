@@ -5,6 +5,7 @@ import { adminClient } from '~/api/clients'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { useAuth } from '~/context/AuthContext'
 import { sanitizeSlug } from '~/lib/validate'
+import { errorText, successText } from '~/styles/shared.css'
 import * as styles from './AdminDialog.css'
 
 export const AdminUserManagement: Component = () => {
@@ -158,12 +159,12 @@ export const AdminUserManagement: Component = () => {
         </div>
 
         <Show when={usersError()}>
-          <div role="alert" class={styles.errorText}>{usersError()}</div>
+          <div role="alert" class={errorText}>{usersError()}</div>
         </Show>
 
         <Show when={resetPasswordMessage()}>
           {msg => (
-            <div role="alert" class={msg().type === 'success' ? styles.successText : styles.errorText}>
+            <div role="alert" class={msg().type === 'success' ? successText : errorText}>
               {msg().text}
             </div>
           )}
@@ -305,7 +306,7 @@ export const AdminUserManagement: Component = () => {
 
           <Show when={createUserMessage()}>
             {msg => (
-              <div role="alert" class={msg().type === 'success' ? styles.successText : styles.errorText}>
+              <div role="alert" class={msg().type === 'success' ? successText : errorText}>
                 {msg().text}
               </div>
             )}

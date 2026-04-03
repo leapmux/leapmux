@@ -1,4 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import { menuTrigger, sidebarActions } from '~/components/tree/sidebarActions.css'
 import { iconSize } from '~/styles/tokens'
 
 export const list = style({
@@ -101,7 +102,7 @@ export const sectionItems = style({
 export const item = style({
   'display': 'flex',
   'alignItems': 'center',
-  'padding': 'var(--space-1) var(--space-3)',
+  'padding': 'var(--space-1) var(--space-2)',
   'paddingLeft': 'var(--space-1)',
   'cursor': 'pointer',
   'gap': 'var(--space-1)',
@@ -164,32 +165,13 @@ export const itemDropTarget = style({
   outlineOffset: '-2px',
 })
 
-export const itemActions = style({
-  display: 'flex',
-  alignItems: 'center',
-  flexShrink: 0,
-  marginLeft: 'auto',
-  position: 'sticky',
-  right: 'var(--space-2)',
+/** Suppress sidebarActions hover when the item is a drop target. */
+globalStyle(`${item}${itemDropTarget}:hover > ${sidebarActions}`, {
   backgroundColor: 'transparent',
 })
 
-/** Give itemActions a background on hover so it covers scrolled text underneath. */
-globalStyle(`${item}:hover:not(${itemDropTarget}) ${itemActions}`, {
-  backgroundColor: 'inherit',
-})
-
-export const itemMenuTrigger = style({
+globalStyle(`${item}${itemDropTarget}:hover > ${sidebarActions} ${menuTrigger}`, {
   opacity: 0,
-  transition: 'opacity 0.15s',
-  selectors: {
-    [`${item}:hover:not(${itemDropTarget}) &`]: {
-      opacity: 1,
-    },
-    '&[aria-expanded="true"]': {
-      opacity: 1,
-    },
-  },
 })
 
 export const sharedBadge = style({

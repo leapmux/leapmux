@@ -12,6 +12,9 @@ service ChannelService {
   rpc OpenChannel(OpenChannelRequest) returns (OpenChannelResponse);
   // Close an encrypted channel.
   rpc CloseChannel(CloseChannelRequest) returns (CloseChannelResponse);
+  // Notify the Worker that a workspace is now accessible on the user's channels.
+  // Called by the Frontend after creating a workspace and before opening an agent.
+  rpc PrepareWorkspaceAccess(PrepareWorkspaceAccessRequest) returns (PrepareWorkspaceAccessResponse);
 }
 
 // --- ChannelService RPC messages ---
@@ -59,6 +62,13 @@ message CloseChannelRequest {
 
 message CloseChannelResponse {}
 
+message PrepareWorkspaceAccessRequest {
+  string worker_id = 1;
+  string workspace_id = 2;
+}
+
+message PrepareWorkspaceAccessResponse {}
+
 // --- Channel relay messages (used between Hub and Worker via bidi stream) ---
 
 // Hub -> Worker: request to open a new channel.
@@ -96,6 +106,25 @@ message ChannelMessage {
   uint32 correlation_id = 3;        // Request-response correlation ID
   ChannelMessageFlags flags = 4;
   bytes ciphertext = 5;
+}
+
+// --- Hub control frames (sent via reserved channel ID "_hub") ---
+
+// HubControlFrame is a Hub-originated message sent to frontends over the
+// existing /ws/channel WebSocket using the reserved channel_id "_hub".
+// The serialized bytes are placed in the ChannelMessage.ciphertext field
+// (plaintext — not encrypted, since the Hub is the originator).
+// Multiple events may be batched into a single frame via debouncing.
+message HubControlFrame {
+  repeated HubControlEvent events = 1;
+}
+
+// HubControlEvent identifies a type of Hub-originated event.
+enum HubControlEvent {
+  HUB_CONTROL_EVENT_UNSPECIFIED = 0;
+  // The worker list has changed (e.g. a worker was registered or
+  // deregistered). The frontend should re-fetch via ListWorkers.
+  HUB_CONTROL_EVENT_WORKERS_CHANGED = 1;
 }
 
 // --- User ID claim (post-handshake verification) ---

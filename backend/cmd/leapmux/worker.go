@@ -82,6 +82,7 @@ func runWorker(args []string) error {
 		state.WorkerID = result.WorkerID
 		state.AuthToken = result.AuthToken
 		state.OrgID = result.OrgID
+		state.RegisteredBy = result.RegisteredBy
 
 		if err := cfg.SaveState(state); err != nil {
 			return fmt.Errorf("save state: %w", err)
@@ -145,6 +146,7 @@ func runWorker(args []string) error {
 	)
 
 	svcCtx.WorkerID = state.WorkerID
+	svcCtx.RegisteredBy = state.RegisteredBy
 	svcCtx.Name = cfg.Name
 	svcCtx.AgentStartupTimeout = cfg.AgentStartupTimeout()
 	svcCtx.APITimeout = cfg.APITimeout()

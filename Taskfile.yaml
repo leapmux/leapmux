@@ -34,7 +34,9 @@ vars:
 tasks:
   generate:
     desc: Generate all code (proto + sqlc)
-    deps: [generate-proto, generate-sqlc]
+    cmds:
+      - task: generate-proto
+      - task: generate-sqlc
 
   generate-proto:
     desc: Generate Protocol Buffer code (Go + TypeScript)
@@ -144,21 +146,31 @@ tasks:
       - rsync -a backend/internal/hub/frontend.embed backend/internal/hub/generated/frontend/embed.go
       - rsync -a --delete frontend/.output/public/ backend/internal/hub/generated/frontend/public/
 
+  embed-frontend-desktop:
+    desc: Embed frontend assets into desktop app for go:embed
+    deps: [build-frontend]
+    sources:
+      - frontend/.output/public/**/*
+    generates:
+      - desktop/spa/**/*
+    cmds:
+      - rsync -a --delete frontend/.output/public/ desktop/spa/
+
   build-backend:
     desc: Build leapmux binary
     deps: [prepare-backend, embed-frontend]
     dir: backend
     sources:
-      - backend/go.mod
-      - backend/go.sum
-      - backend/cmd/**/*
-      - backend/generated/**/*
-      - backend/hub/**/*
-      - backend/internal/**/*
-      - backend/worker/**/*
-      - "backend/**/*.go"
+      - go.mod
+      - go.sum
+      - cmd/**/*
+      - generated/**/*
+      - hub/**/*
+      - internal/**/*
+      - worker/**/*
+      - "**/*.go"
     generates:
-      - backend/build/bin/leapmux
+      - build/bin/leapmux
     cmds:
       - mkdir -p build/bin
       - go build -ldflags "{{.VERSION_LDFLAGS}}" -o ./build/bin/leapmux ./cmd/leapmux
@@ -270,11 +282,11 @@ tasks:
     deps: [prepare-backend, embed-frontend]
     dir: backend
     sources:
-      - backend/go.mod
-      - backend/go.sum
-      - "backend/**/*.go"
-      - "backend/**/migrations/*.sql"
-      - backend/.golangci.yml
+      - go.mod
+      - go.sum
+      - "**/*.go"
+      - "**/migrations/*.sql"
+      - .golangci.yml
     cmds:
       - golangci-lint run ./...
 
@@ -417,6 +429,7 @@ tasks:
     cmds:
       - task: generate
       - task: embed-frontend
+      - task: embed-frontend-desktop
       - rsync -a desktop/platform/ desktop/build/
       - task: generate-desktop-icons-non-darwin
 
@@ -425,6 +438,7 @@ tasks:
     cmds:
       - task: generate
       - task: embed-frontend
+      - task: embed-frontend-desktop
       - rsync -a desktop/platform/ desktop/build/
       - task: generate-desktop-icons-darwin
 
@@ -435,6 +449,7 @@ tasks:
       - desktop/go.sum
       - "desktop/**/*.go"
       - desktop/frontend/**/*
+      - desktop/spa/**/*
       - desktop/build/appicon.png
       - desktop/build/windows/icon.ico
       - backend/go.mod
@@ -448,16 +463,17 @@ tasks:
     dir: desktop
     deps: [prepare-desktop-darwin]
     sources:
-      - desktop/go.mod
-      - desktop/go.sum
-      - "desktop/**/*.go"
-      - desktop/frontend/**/*
-      - desktop/build/appicon.png
-      - backend/go.mod
-      - backend/go.sum
-      - "backend/**/*.go"
+      - go.mod
+      - go.sum
+      - "**/*.go"
+      - frontend/**/*
+      - spa/**/*
+      - build/appicon.png
+      - ../backend/go.mod
+      - ../backend/go.sum
+      - "../backend/**/*.go"
     generates:
-      - desktop/build/bin/LeapMux.app/Contents/MacOS/LeapMux
+      - build/bin/LeapMux.app/Contents/MacOS/LeapMux
     cmds:
       - wails build -tags devtools -platform darwin/universal -ldflags "{{.VERSION_LDFLAGS}}"
       - codesign --force --sign - --identifier dev.leapmux.desktop --options runtime build/bin/LeapMux.app
@@ -485,17 +501,18 @@ tasks:
     dir: desktop
     deps: [prepare-desktop-non-darwin]
     sources:
-      - desktop/go.mod
-      - desktop/go.sum
-      - "desktop/**/*.go"
-      - desktop/frontend/**/*
-      - desktop/build/appicon.png
-      - desktop/build/windows/icon.ico
-      - backend/go.mod
-      - backend/go.sum
-      - "backend/**/*.go"
+      - go.mod
+      - go.sum
+      - "**/*.go"
+      - frontend/**/*
+      - spa/**/*
+      - build/appicon.png
+      - build/windows/icon.ico
+      - ../backend/go.mod
+      - ../backend/go.sum
+      - "../backend/**/*.go"
     generates:
-      - desktop/build/bin/leapmux-desktop
+      - build/bin/leapmux-desktop
     cmds:
       - wails build -tags devtools -o leapmux-desktop -platform linux/amd64 -ldflags "{{.VERSION_LDFLAGS}}"
       - cp build/linux/leapmux-desktop.desktop build/bin/
@@ -507,17 +524,18 @@ tasks:
     dir: desktop
     deps: [prepare-desktop-non-darwin]
     sources:
-      - desktop/go.mod
-      - desktop/go.sum
-      - "desktop/**/*.go"
-      - desktop/frontend/**/*
-      - desktop/build/appicon.png
-      - desktop/build/windows/icon.ico
-      - backend/go.mod
-      - backend/go.sum
-      - "backend/**/*.go"
+      - go.mod
+      - go.sum
+      - "**/*.go"
+      - frontend/**/*
+      - spa/**/*
+      - build/appicon.png
+      - build/windows/icon.ico
+      - ../backend/go.mod
+      - ../backend/go.sum
+      - "../backend/**/*.go"
     generates:
-      - desktop/build/bin/leapmux-desktop
+      - build/bin/leapmux-desktop
     cmds:
       - wails build -tags devtools -o leapmux-desktop -platform linux/arm64 -ldflags "{{.VERSION_LDFLAGS}}"
       - cp build/linux/leapmux-desktop.desktop build/bin/
@@ -529,17 +547,18 @@ tasks:
     dir: desktop
     deps: [prepare-desktop-non-darwin]
     sources:
-      - desktop/go.mod
-      - desktop/go.sum
-      - "desktop/**/*.go"
-      - desktop/frontend/**/*
-      - desktop/build/appicon.png
-      - desktop/build/windows/icon.ico
-      - backend/go.mod
-      - backend/go.sum
-      - "backend/**/*.go"
+      - go.mod
+      - go.sum
+      - "**/*.go"
+      - frontend/**/*
+      - spa/**/*
+      - build/appicon.png
+      - build/windows/icon.ico
+      - ../backend/go.mod
+      - ../backend/go.sum
+      - "../backend/**/*.go"
     generates:
-      - desktop/build/bin/LeapMux.exe
+      - build/bin/LeapMux.exe
     cmds:
       - wails build -tags devtools -platform windows/amd64 -ldflags "{{.VERSION_LDFLAGS}}"
 
@@ -548,14 +567,14 @@ tasks:
     deps: [prepare-desktop-non-darwin]
     dir: desktop
     sources:
-      - desktop/go.mod
-      - desktop/go.sum
-      - "desktop/**/*.go"
-      - backend/go.mod
-      - backend/go.sum
-      - "backend/**/*.go"
-      - "backend/**/migrations/*.sql"
-      - backend/.golangci.yml
+      - go.mod
+      - go.sum
+      - "**/*.go"
+      - ../backend/go.mod
+      - ../backend/go.sum
+      - "../backend/**/*.go"
+      - "../backend/**/migrations/*.sql"
+      - ../backend/.golangci.yml
     cmds:
       - golangci-lint run ./...
 

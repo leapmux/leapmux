@@ -9,12 +9,12 @@ import (
 	"testing"
 
 	"github.com/coder/websocket"
+	"github.com/leapmux/leapmux/channelwire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 )
 
 // TestWSReadLimit_AcceptsLargeChunk verifies that a WebSocket connection with
@@ -54,9 +54,9 @@ func TestWSReadLimit_AcceptsLargeChunk(t *testing.T) {
 		}
 		defer func() { _ = ws.Close(websocket.StatusNormalClosure, "") }()
 
-		ws.SetReadLimit(channelmgr.WSReadLimit)
+		ws.SetReadLimit(channelwire.WSReadLimit)
 
-		got, rerr := readChannelMessage(r.Context(), ws)
+		got, rerr := channelwire.ReadChannelMessage(r.Context(), ws)
 		if rerr != nil {
 			readErr <- rerr
 			return
@@ -116,7 +116,7 @@ func TestWSReadLimit_DefaultRejectsLargeChunk(t *testing.T) {
 		defer func() { _ = ws.Close(websocket.StatusNormalClosure, "") }()
 
 		// No SetReadLimit — default applies.
-		_, rerr := readChannelMessage(r.Context(), ws)
+		_, rerr := channelwire.ReadChannelMessage(r.Context(), ws)
 		readErr <- rerr
 	}))
 	defer srv.Close()

@@ -392,3 +392,68 @@ func TestUnregisterByWorker_SendsCloseNotifications(t *testing.T) {
 	assert.True(t, closedIDs["ch1"])
 	assert.True(t, closedIDs["ch2"])
 }
+
+func TestSendToUser_SingleConnection(t *testing.T) {
+	m := New()
+
+	var received []*leapmuxv1.ChannelMessage
+	m.BindUser("u1", "conn1", func(msg *leapmuxv1.ChannelMessage) error {
+		received = append(received, msg)
+		return nil
+	}, nil)
+
+	msg := &leapmuxv1.ChannelMessage{ChannelId: HubControlChannelID, Ciphertext: []byte("ctrl")}
+	m.SendToUser("u1", msg)
+
+	assert.Len(t, received, 1)
+	assert.Equal(t, HubControlChannelID, received[0].GetChannelId())
+	assert.Equal(t, []byte("ctrl"), received[0].GetCiphertext())
+}
+
+func TestSendToUser_MultipleConnections(t *testing.T) {
+	m := New()
+
+	var received1, received2 []*leapmuxv1.ChannelMessage
+	m.BindUser("u1", "conn1", func(msg *leapmuxv1.ChannelMessage) error {
+		received1 = append(received1, msg)
+		return nil
+	}, nil)
+	m.BindUser("u1", "conn2", func(msg *leapmuxv1.ChannelMessage) error {
+		received2 = append(received2, msg)
+		return nil
+	}, nil)
+
+	msg := &leapmuxv1.ChannelMessage{ChannelId: HubControlChannelID, Ciphertext: []byte("ctrl")}
+	m.SendToUser("u1", msg)
+
+	// Both connections should receive the message.
+	assert.Len(t, received1, 1)
+	assert.Len(t, received2, 1)
+}
+
+func TestSendToUser_OtherUserNotAffected(t *testing.T) {
+	m := New()
+
+	var receivedU1, receivedU2 []*leapmuxv1.ChannelMessage
+	m.BindUser("u1", "conn1", func(msg *leapmuxv1.ChannelMessage) error {
+		receivedU1 = append(receivedU1, msg)
+		return nil
+	}, nil)
+	m.BindUser("u2", "conn2", func(msg *leapmuxv1.ChannelMessage) error {
+		receivedU2 = append(receivedU2, msg)
+		return nil
+	}, nil)
+
+	msg := &leapmuxv1.ChannelMessage{ChannelId: HubControlChannelID, Ciphertext: []byte("ctrl")}
+	m.SendToUser("u1", msg)
+
+	assert.Len(t, receivedU1, 1)
+	assert.Len(t, receivedU2, 0, "other user should not receive the message")
+}
+
+func TestSendToUser_UnknownUser(t *testing.T) {
+	m := New()
+	// Should not panic on unknown user.
+	msg := &leapmuxv1.ChannelMessage{ChannelId: HubControlChannelID, Ciphertext: []byte("ctrl")}
+	m.SendToUser("nonexistent", msg)
+}

@@ -218,16 +218,15 @@ func TestHandleWorkspaceTabsSync_EmptyHubState(t *testing.T) {
 
 // --- Encryption mode validation tests ---
 
-func setupEncryptionModeTest(t *testing.T, soloMode bool) (*WorkerConnectorService, *workermgr.Conn) {
+func setupEncryptionModeTest(t *testing.T) (*WorkerConnectorService, *workermgr.Conn) {
 	t.Helper()
 	svc, _ := setupSyncTest(t, []string{"w1"}, nil)
-	svc.soloMode = soloMode
 	conn := &workermgr.Conn{WorkerID: "w1", OrgID: "org-1"}
 	return svc, conn
 }
 
 func TestProcessWorkerMessage_ClassicModeAccepted(t *testing.T) {
-	svc, conn := setupEncryptionModeTest(t, false)
+	svc, conn := setupEncryptionModeTest(t)
 	ctx := context.Background()
 
 	err := svc.processWorkerMessage(ctx, conn, "w1", &leapmuxv1.ConnectRequest{
@@ -242,7 +241,7 @@ func TestProcessWorkerMessage_ClassicModeAccepted(t *testing.T) {
 }
 
 func TestProcessWorkerMessage_PostQuantumModeAccepted(t *testing.T) {
-	svc, conn := setupEncryptionModeTest(t, false)
+	svc, conn := setupEncryptionModeTest(t)
 	ctx := context.Background()
 
 	err := svc.processWorkerMessage(ctx, conn, "w1", &leapmuxv1.ConnectRequest{
@@ -257,7 +256,7 @@ func TestProcessWorkerMessage_PostQuantumModeAccepted(t *testing.T) {
 }
 
 func TestProcessWorkerMessage_PublicKeyUpdateWithNilMlkem(t *testing.T) {
-	svc, conn := setupEncryptionModeTest(t, true)
+	svc, conn := setupEncryptionModeTest(t)
 	ctx := context.Background()
 
 	// Simulate a heartbeat with X25519 public key but nil ML-KEM key,
@@ -279,7 +278,7 @@ func TestProcessWorkerMessage_PublicKeyUpdateWithNilMlkem(t *testing.T) {
 }
 
 func TestProcessWorkerMessage_UnspecifiedHeartbeatRejectedAfterModeSet(t *testing.T) {
-	svc, conn := setupEncryptionModeTest(t, true)
+	svc, conn := setupEncryptionModeTest(t)
 	ctx := context.Background()
 
 	// Initial heartbeat sets POST_QUANTUM mode.
@@ -304,7 +303,7 @@ func TestProcessWorkerMessage_UnspecifiedHeartbeatRejectedAfterModeSet(t *testin
 }
 
 func TestProcessWorkerMessage_UnspecifiedDefaultsToPostQuantum(t *testing.T) {
-	svc, conn := setupEncryptionModeTest(t, false)
+	svc, conn := setupEncryptionModeTest(t)
 	ctx := context.Background()
 
 	err := svc.processWorkerMessage(ctx, conn, "w1", &leapmuxv1.ConnectRequest{

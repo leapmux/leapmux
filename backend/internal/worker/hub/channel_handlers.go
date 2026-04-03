@@ -45,3 +45,12 @@ func (c *Client) handleChannelClose(notification *leapmuxv1.ChannelCloseNotifica
 
 	c.channelMgr.HandleClose(notification.GetChannelId())
 }
+
+func (c *Client) handleChannelAccessUpdate(update *leapmuxv1.ChannelAccessUpdate) {
+	if c.channelMgr == nil {
+		slog.Warn("channel access update received but no channel manager configured")
+		return
+	}
+
+	c.channelMgr.AddAccessibleWorkspaceID(update.GetChannelId(), update.GetWorkspaceId())
+}

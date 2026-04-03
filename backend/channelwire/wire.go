@@ -1,0 +1,81 @@
+// Package channelwire provides shared wire-format helpers and constants for
+// the E2EE channel relay protocol used between Frontend/Desktop and Hub.
+package channelwire
+
+import (
+	"context"
+	"encoding/binary"
+	"fmt"
+	"strings"
+
+	"github.com/coder/websocket"
+	"google.golang.org/protobuf/proto"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+)
+
+const (
+	// MaxPlaintextPerChunk is the maximum plaintext bytes per Noise transport
+	// message (65535 max ciphertext - 16 byte AEAD auth tag).
+	MaxPlaintextPerChunk = 65535 - 16
+
+	// DefaultMaxMessageSize is the maximum reassembled message size (16 MiB).
+	DefaultMaxMessageSize = 16 * 1024 * 1024
+
+	// DefaultMaxIncompleteChunked is the maximum number of in-flight chunked
+	// sequences per channel before new ones are rejected.
+	DefaultMaxIncompleteChunked = 4
+
+	// WSReadLimit is the WebSocket per-message read limit for channel relays.
+	// It must exceed the max ciphertext size to accommodate the 4-byte length
+	// prefix and protobuf framing of a ChannelMessage.
+	WSReadLimit = 65535 + 4096
+
+	// AuthTokenSubprotocolPrefix is the prefix for auth tokens passed via
+	// the Sec-WebSocket-Protocol header (e.g. "auth.token.<token>").
+	AuthTokenSubprotocolPrefix = "auth.token."
+)
+
+// HTTPToWS converts an http(s) URL to the corresponding ws(s) URL.
+func HTTPToWS(url string) string {
+	if strings.HasPrefix(url, "https://") {
+		return "wss://" + url[8:]
+	}
+	if strings.HasPrefix(url, "http://") {
+		return "ws://" + url[7:]
+	}
+	return url
+}
+
+// WriteChannelMessage writes a length-prefixed ChannelMessage to a WebSocket.
+// Wire format: [4 bytes big-endian length][protobuf-encoded ChannelMessage]
+func WriteChannelMessage(ctx context.Context, ws *websocket.Conn, msg *leapmuxv1.ChannelMessage) error {
+	data, err := proto.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	buf := make([]byte, 4+len(data))
+	binary.BigEndian.PutUint32(buf[:4], uint32(len(data)))
+	copy(buf[4:], data)
+	return ws.Write(ctx, websocket.MessageBinary, buf)
+}
+
+// ReadChannelMessage reads a length-prefixed ChannelMessage from a WebSocket.
+func ReadChannelMessage(ctx context.Context, ws *websocket.Conn) (*leapmuxv1.ChannelMessage, error) {
+	_, data, err := ws.Read(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) < 4 {
+		return nil, fmt.Errorf("message too short")
+	}
+	length := binary.BigEndian.Uint32(data[:4])
+	if int(length) != len(data)-4 {
+		return nil, fmt.Errorf("length mismatch: header=%d, actual=%d", length, len(data)-4)
+	}
+	msg := &leapmuxv1.ChannelMessage{}
+	if err := proto.Unmarshal(data[4:], msg); err != nil {
+		return nil, fmt.Errorf("unmarshal: %w", err)
+	}
+	return msg, nil
+}

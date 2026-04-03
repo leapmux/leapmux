@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
 import { A } from '@solidjs/router'
-import { authCardWide } from '~/styles/shared.css'
+import { cardMedium } from '~/styles/shared.css'
 import * as styles from './NotFoundPage.css'
 
 interface NotFoundPageProps {
@@ -13,7 +13,7 @@ interface NotFoundPageProps {
 export const NotFoundPage: Component<NotFoundPageProps> = (props) => {
   return (
     <div class={styles.container}>
-      <div class={`card ${authCardWide}`}>
+      <div class={`card ${cardMedium}`}>
         <h1>{props.title ?? 'Not Found'}</h1>
         <p class={styles.message}>{props.message ?? 'The page you\'re looking for doesn\'t exist.'}</p>
         <A class={styles.link} href={props.linkHref}>{props.linkText}</A>

@@ -6,16 +6,19 @@ import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createSignal, on, Show, untrack } from 'solid-js'
 import { workerClient, workspaceClient } from '~/api/clients'
-import { agentLoadingTimeoutMs } from '~/api/transport'
+import { agentLoadingTimeoutMs, getToken } from '~/api/transport'
 import { channelManager, listAgents, listTerminals, moveTabWorkspace, renameAgent, setConfirmKeyPin, setGetUserId } from '~/api/workerRpc'
 import { NotFoundPage } from '~/components/common/NotFoundPage'
 import { showWarnToast } from '~/components/common/Toast'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
+import { AddTunnelDialog } from '~/components/workers/AddTunnelDialog'
 import { WorkerSettingsDialog } from '~/components/workers/WorkerSettingsDialog'
 import { useAuth } from '~/context/AuthContext'
 import { useOrg } from '~/context/OrgContext'
 import { usePreferences } from '~/context/PreferencesContext'
+import { TunnelProvider } from '~/context/TunnelContext'
 import { useWorkspace } from '~/context/WorkspaceContext'
+import { HubControlEvent } from '~/generated/leapmux/v1/channel_pb'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
@@ -34,6 +37,7 @@ import { createLayoutStore, getAllTileIds } from '~/stores/layout.store'
 import { createSectionStore } from '~/stores/section.store'
 import { createTabStore, tabKey } from '~/stores/tab.store'
 import { createTerminalStore } from '~/stores/terminal.store'
+import { createTunnelStore } from '~/stores/tunnel.store'
 import { createWorkerChannelStatusStore } from '~/stores/workerChannelStatus.store'
 import { createWorkerInfoStore } from '~/stores/workerInfo.store'
 import { createWorkspaceStore } from '~/stores/workspace.store'
@@ -104,26 +108,39 @@ export const AppShell: ParentComponent = (props) => {
   const workerChannelStatusStore = createWorkerChannelStatusStore(channelManager)
   const [workers, setWorkers] = createSignal<Worker[]>([])
   const [deregisterTarget, setDeregisterTarget] = createSignal<Worker | null>(null)
+  const [addTunnelTarget, setAddTunnelTarget] = createSignal<Worker | null>(null)
+  const tunnelStore = createTunnelStore()
 
-  // Fetch workers when org changes
-  createEffect(() => {
+  // Fetch workers list.
+  async function fetchWorkers() {
     const orgId = org.orgId()
     if (!orgId)
       return
-    void (async () => {
-      try {
-        const resp = await workerClient.listWorkers({ orgId })
-        setWorkers(resp.workers)
-        for (const w of resp.workers) {
-          if (w.online) {
-            workerInfoStore.fetchWorkerInfo(w.id)
-          }
+    try {
+      const resp = await workerClient.listWorkers({ orgId })
+      setWorkers(resp.workers)
+      for (const w of resp.workers) {
+        if (w.online) {
+          workerInfoStore.fetchWorkerInfo(w.id)
         }
       }
-      catch {
-        // Best effort — sidebar will show empty workers list.
-      }
-    })()
+    }
+    catch {
+      // Best effort — sidebar will show empty workers list.
+    }
+  }
+
+  // Fetch workers when org changes.
+  createEffect(() => {
+    org.orgId() // track
+    void fetchWorkers()
+  })
+
+  // Re-fetch workers when the Hub sends a WorkersChanged control frame.
+  channelManager.onHubControl((frame) => {
+    if (frame.events.includes(HubControlEvent.WORKERS_CHANGED)) {
+      void fetchWorkers()
+    }
   })
 
   // Register E2EE channel callbacks (module-level singletons in workerRpc.ts).
@@ -1012,6 +1029,8 @@ export const AppShell: ParentComponent = (props) => {
     get workers() { return workers() },
     workerInfoFn: workerInfoStore.workerInfo,
     channelStatusFn: workerChannelStatusStore.getStatus,
+    currentUserId: auth.user()?.id ?? '',
+    onAddTunnel: (worker: Worker) => setAddTunnelTarget(worker),
     onDeregisterWorker: (worker: Worker) => setDeregisterTarget(worker),
     onTabClick: (type: number, id: string) => {
       const tabType = type as TabType
@@ -1058,7 +1077,7 @@ export const AppShell: ParentComponent = (props) => {
   ))
 
   return (
-    <>
+    <TunnelProvider store={tunnelStore}>
       <Show when={workspaceNotFound()}>
         <NotFoundPage
           message="The workspace you're looking for doesn't exist or you don't have access."
@@ -1192,6 +1211,19 @@ export const AppShell: ParentComponent = (props) => {
           />
         )}
       </Show>
-    </>
+
+      <Show when={addTunnelTarget()}>
+        {target => (
+          <AddTunnelDialog
+            workerId={target().id}
+            hubURL={window.location.origin}
+            token={getToken() ?? ''}
+            userId={auth.user()?.id ?? ''}
+            onClose={() => setAddTunnelTarget(null)}
+            onCreated={() => setAddTunnelTarget(null)}
+          />
+        )}
+      </Show>
+    </TunnelProvider>
   )
 }

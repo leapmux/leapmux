@@ -8,6 +8,8 @@
 /backend/leapmux
 /desktop/build/
 /desktop/leapmux-desktop
+/desktop/spa/*
+!/desktop/spa/.gitkeep
 .task/
 
 # Generated code

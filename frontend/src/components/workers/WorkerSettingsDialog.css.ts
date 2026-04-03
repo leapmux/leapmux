@@ -1,7 +1,5 @@
 import { style } from '@vanilla-extract/css'
 
-export { errorText } from '~/styles/shared.css'
-
 export const description = style({
   color: 'var(--muted-foreground)',
   lineHeight: 1.5,

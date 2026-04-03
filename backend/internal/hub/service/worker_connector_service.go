@@ -10,6 +10,7 @@ import (
 	"connectrpc.com/connect"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
@@ -20,49 +21,51 @@ import (
 
 // WorkerConnectorService implements the Hub-side service called by Worker
 // instances for registration and bidirectional streaming.
+// DefaultPollTimeout is the long-poll duration for PollRegistration.
+const DefaultPollTimeout = 30 * time.Second
+
 type WorkerConnectorService struct {
-	queries    *db.Queries
-	workerMgr  *workermgr.Manager
-	channelMgr *channelmgr.Manager
-	pending    *workermgr.PendingRequests
-	notifier   *notifier.Notifier
-	shutdownCh <-chan struct{}
-	soloMode   bool
+	queries     *db.Queries
+	workerMgr   *workermgr.Manager
+	channelMgr  *channelmgr.Manager
+	broadcaster *HubEventBroadcaster
+	pending     *workermgr.PendingRequests
+	notifier    *notifier.Notifier
+	shutdownCh  <-chan struct{}
+	pollTimeout time.Duration
 }
 
 // NewWorkerConnectorService creates a new WorkerConnectorService.
-func NewWorkerConnectorService(q *db.Queries, mgr *workermgr.Manager, soloMode bool) *WorkerConnectorService {
-	return &WorkerConnectorService{queries: q, workerMgr: mgr, soloMode: soloMode}
+func NewWorkerConnectorService(
+	q *db.Queries,
+	mgr *workermgr.Manager,
+	cMgr *channelmgr.Manager,
+	b *HubEventBroadcaster,
+	pr *workermgr.PendingRequests,
+	n *notifier.Notifier,
+	shutdownCh <-chan struct{},
+) *WorkerConnectorService {
+	return &WorkerConnectorService{
+		queries:     q,
+		workerMgr:   mgr,
+		channelMgr:  cMgr,
+		broadcaster: b,
+		pending:     pr,
+		notifier:    n,
+		shutdownCh:  shutdownCh,
+		pollTimeout: DefaultPollTimeout,
+	}
 }
 
-// SetChannelMgr sets the channel manager for routing encrypted channel traffic.
-func (s *WorkerConnectorService) SetChannelMgr(cm *channelmgr.Manager) {
-	s.channelMgr = cm
-}
-
-// SetPendingRequests sets the pending requests tracker for file operations.
-func (s *WorkerConnectorService) SetPendingRequests(pr *workermgr.PendingRequests) {
-	s.pending = pr
-}
-
-// SetNotifier sets the notifier for processing pending notifications on connect.
-func (s *WorkerConnectorService) SetNotifier(n *notifier.Notifier) {
-	s.notifier = n
-}
-
-// SetShutdownCh sets the channel used to signal hub shutdown.
-// When closed, cleanupWorker skips DB operations and broadcasts.
-func (s *WorkerConnectorService) SetShutdownCh(ch <-chan struct{}) {
-	s.shutdownCh = ch
+// SetPollTimeout overrides the long-poll timeout for PollRegistration.
+func (s *WorkerConnectorService) SetPollTimeout(d time.Duration) {
+	s.pollTimeout = d
 }
 
 func (s *WorkerConnectorService) RequestRegistration(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.RequestRegistrationRequest],
 ) (*connect.Response[leapmuxv1.RequestRegistrationResponse], error) {
-	if s.soloMode {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker registration is not available in solo mode"))
-	}
 	// Expire old pending registrations first.
 	if err := s.queries.ExpireRegistrations(ctx); err != nil {
 		slog.Debug("failed to expire registrations", "error", err)
@@ -100,10 +103,76 @@ func (s *WorkerConnectorService) RequestRegistration(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create registration: %w", err))
 	}
 
+	// Auto-approve registrations via Unix domain socket — the socket is
+	// protected by filesystem permissions (0600), so reaching it implies
+	// the caller is the same OS user.
+	if auth.IsUnixSocket(ctx) {
+		if err := s.autoApproveRegistration(ctx, regID, publicKey, mlkemPublicKey, slhdsaPublicKey); err != nil {
+			return nil, err
+		}
+	}
+
 	return connect.NewResponse(&leapmuxv1.RequestRegistrationResponse{
 		RegistrationToken: regID,
 		RegistrationUrl:   "/register/" + regID,
 	}), nil
+}
+
+// autoApproveRegistration creates a worker record and marks the registration
+// as approved. It resolves the approving user from the request context (set by
+// the auth interceptor in solo mode) or falls back to the "admin" user.
+func (s *WorkerConnectorService) autoApproveRegistration(
+	ctx context.Context, regID string,
+	publicKey, mlkemPublicKey, slhdsaPublicKey []byte,
+) error {
+	user := auth.GetUser(ctx)
+	if user == nil {
+		// Non-solo mode: look up the admin user as the approver.
+		adminUser, err := s.queries.GetUserByUsername(ctx, "admin")
+		if err != nil {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("resolve admin user for auto-approval: %w", err))
+		}
+		user = &auth.UserInfo{
+			ID:    adminUser.ID,
+			OrgID: adminUser.OrgID,
+		}
+	}
+
+	workerID := id.Generate()
+	authToken := id.Generate()
+
+	if err := s.queries.CreateWorker(ctx, db.CreateWorkerParams{
+		ID:              workerID,
+		OrgID:           user.OrgID,
+		AuthToken:       authToken,
+		RegisteredBy:    user.ID,
+		PublicKey:       publicKey,
+		MlkemPublicKey:  mlkemPublicKey,
+		SlhdsaPublicKey: slhdsaPublicKey,
+	}); err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("create worker: %w", err))
+	}
+
+	if err := s.queries.ApproveRegistration(ctx, db.ApproveRegistrationParams{
+		ID:         regID,
+		WorkerID:   sql.NullString{String: workerID, Valid: true},
+		ApprovedBy: sql.NullString{String: user.ID, Valid: true},
+	}); err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("approve registration: %w", err))
+	}
+
+	// Wake up the worker's PollRegistration long-poll.
+	s.workerMgr.NotifyRegistrationChange(regID)
+
+	slog.Info("auto-approved registration via unix socket",
+		"registration_id", regID,
+		"worker_id", workerID,
+		"approved_by", user.ID,
+	)
+
+	s.broadcaster.NotifyWorkersChanged(user.ID)
+
+	return nil
 }
 
 func (s *WorkerConnectorService) PollRegistration(
@@ -125,7 +194,7 @@ func (s *WorkerConnectorService) PollRegistration(
 
 	// Long-poll: if still pending, wait for notification or timeout.
 	if reg.Status == leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_PENDING {
-		_ = s.workerMgr.WaitForRegistrationChange(ctx, regID, 30*time.Second)
+		_ = s.workerMgr.WaitForRegistrationChange(ctx, regID, s.pollTimeout)
 
 		// Re-query after waking up.
 		reg, err = s.queries.GetRegistrationByID(ctx, regID)
@@ -150,6 +219,7 @@ func (s *WorkerConnectorService) PollRegistration(
 			if err == nil {
 				resp.AuthToken = worker.AuthToken
 				resp.OrgId = worker.OrgID
+				resp.RegisteredBy = worker.RegisteredBy
 			}
 		}
 	case leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_EXPIRED:

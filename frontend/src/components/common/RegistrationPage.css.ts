@@ -1,7 +1,5 @@
 import { style } from '@vanilla-extract/css'
 
-export { authCardXWide, errorText } from '~/styles/shared.css'
-
 export const container = style({
   display: 'flex',
   alignItems: 'center',

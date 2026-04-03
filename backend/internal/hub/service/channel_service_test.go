@@ -62,11 +62,11 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	mux.Handle(authPath, authHandler)
 
 	connPath, connHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(
-		service.NewWorkerConnectorService(q, wMgr, false), opts)
+		service.NewWorkerConnectorService(q, wMgr, nil, nil, nil, nil, nil), opts)
 	mux.Handle(connPath, connHandler)
 
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(
-		service.NewWorkerManagementService(q, wMgr, nil, false), opts)
+		service.NewWorkerManagementService(q, wMgr, nil, nil, false), opts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
 	channelSvc := service.NewChannelService(q, wMgr, cMgr, pendingReqs)
@@ -507,6 +507,280 @@ func TestOpenChannel_ClassicHandshake(t *testing.T) {
 	default:
 		t.Fatal("expected a message to be sent to worker")
 	}
+}
+
+// --- PrepareWorkspaceAccess tests ---
+
+func (e *channelTestEnv) createWorkspace(t *testing.T, ownerUserID, orgID string) string {
+	t.Helper()
+	wsID := id.Generate()
+	err := e.queries.CreateWorkspace(context.Background(), gendb.CreateWorkspaceParams{
+		ID:          wsID,
+		OrgID:       orgID,
+		OwnerUserID: ownerUserID,
+	})
+	require.NoError(t, err)
+	return wsID
+}
+
+func TestPrepareWorkspaceAccess_Success(t *testing.T) {
+	env := setupChannelTestServer(t)
+	ctx := context.Background()
+	token := env.adminToken(t)
+
+	adminUser, err := env.queries.GetUserByUsername(ctx, "admin")
+	require.NoError(t, err)
+
+	workerID := env.createWorkerWithKey(t, token, []byte("key"))
+
+	// Simulate worker online with a mock connection that captures sent messages.
+	sentMsgs := make(chan *leapmuxv1.ConnectResponse, 10)
+	conn := &workermgr.Conn{
+		WorkerID: workerID,
+		OrgID:    adminUser.OrgID,
+		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
+			sentMsgs <- msg
+			return nil
+		},
+	}
+	env.workerMgr.Register(conn)
+
+	// Register a channel for the admin user on this worker.
+	channelID := id.Generate()
+	env.channelMgr.Register(channelID, workerID, adminUser.ID, nil)
+
+	// Create a workspace owned by the admin.
+	wsID := env.createWorkspace(t, adminUser.ID, adminUser.OrgID)
+
+	// Call PrepareWorkspaceAccess.
+	_, err = env.channelClient.PrepareWorkspaceAccess(ctx, authedReq(
+		&leapmuxv1.PrepareWorkspaceAccessRequest{
+			WorkerId:    workerID,
+			WorkspaceId: wsID,
+		}, token))
+	require.NoError(t, err)
+
+	// Verify a ChannelAccessUpdate was sent to the worker.
+	select {
+	case msg := <-sentMsgs:
+		update := msg.GetChannelAccessUpdate()
+		require.NotNil(t, update)
+		assert.Equal(t, channelID, update.GetChannelId())
+		assert.Equal(t, wsID, update.GetWorkspaceId())
+	default:
+		t.Fatal("expected a ChannelAccessUpdate to be sent to worker")
+	}
+}
+
+func TestPrepareWorkspaceAccess_OnlySendsToMatchingWorker(t *testing.T) {
+	env := setupChannelTestServer(t)
+	ctx := context.Background()
+	token := env.adminToken(t)
+
+	adminUser, err := env.queries.GetUserByUsername(ctx, "admin")
+	require.NoError(t, err)
+
+	worker1ID := env.createWorkerWithKey(t, token, []byte("key1"))
+	worker2ID := env.createWorkerWithKey(t, token, []byte("key2"))
+
+	// Register both workers online.
+	sent1 := make(chan *leapmuxv1.ConnectResponse, 10)
+	conn1 := &workermgr.Conn{
+		WorkerID: worker1ID,
+		OrgID:    adminUser.OrgID,
+		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
+			sent1 <- msg
+			return nil
+		},
+	}
+	env.workerMgr.Register(conn1)
+
+	sent2 := make(chan *leapmuxv1.ConnectResponse, 10)
+	conn2 := &workermgr.Conn{
+		WorkerID: worker2ID,
+		OrgID:    adminUser.OrgID,
+		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
+			sent2 <- msg
+			return nil
+		},
+	}
+	env.workerMgr.Register(conn2)
+
+	// Register channels: one on each worker.
+	ch1ID := id.Generate()
+	env.channelMgr.Register(ch1ID, worker1ID, adminUser.ID, nil)
+	ch2ID := id.Generate()
+	env.channelMgr.Register(ch2ID, worker2ID, adminUser.ID, nil)
+
+	wsID := env.createWorkspace(t, adminUser.ID, adminUser.OrgID)
+
+	// PrepareWorkspaceAccess targeting worker1 only.
+	_, err = env.channelClient.PrepareWorkspaceAccess(ctx, authedReq(
+		&leapmuxv1.PrepareWorkspaceAccessRequest{
+			WorkerId:    worker1ID,
+			WorkspaceId: wsID,
+		}, token))
+	require.NoError(t, err)
+
+	// worker1 should have received the update.
+	select {
+	case msg := <-sent1:
+		update := msg.GetChannelAccessUpdate()
+		require.NotNil(t, update)
+		assert.Equal(t, ch1ID, update.GetChannelId())
+	default:
+		t.Fatal("expected worker1 to receive ChannelAccessUpdate")
+	}
+
+	// worker2 should NOT have received anything.
+	select {
+	case msg := <-sent2:
+		t.Fatalf("worker2 should not receive any message, got: %v", msg)
+	default:
+		// expected
+	}
+}
+
+func TestPrepareWorkspaceAccess_WorkspaceNotFound(t *testing.T) {
+	env := setupChannelTestServer(t)
+	ctx := context.Background()
+	token := env.adminToken(t)
+
+	workerID := env.createWorkerWithKey(t, token, []byte("key"))
+
+	_, err := env.channelClient.PrepareWorkspaceAccess(ctx, authedReq(
+		&leapmuxv1.PrepareWorkspaceAccessRequest{
+			WorkerId:    workerID,
+			WorkspaceId: "nonexistent",
+		}, token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
+func TestPrepareWorkspaceAccess_NoAccessToWorkspace(t *testing.T) {
+	env := setupChannelTestServer(t)
+	ctx := context.Background()
+	adminToken := env.adminToken(t)
+
+	adminUser, err := env.queries.GetUserByUsername(ctx, "admin")
+	require.NoError(t, err)
+
+	workerID := env.createWorkerWithKey(t, adminToken, []byte("key"))
+
+	// Create workspace owned by admin.
+	wsID := env.createWorkspace(t, adminUser.ID, adminUser.OrgID)
+
+	// Create a second user who doesn't have access to the workspace.
+	_, user2Token := env.createSecondUser(t)
+
+	_, err = env.channelClient.PrepareWorkspaceAccess(ctx, authedReq(
+		&leapmuxv1.PrepareWorkspaceAccessRequest{
+			WorkerId:    workerID,
+			WorkspaceId: wsID,
+		}, user2Token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+}
+
+func TestPrepareWorkspaceAccess_SharedWorkspaceAccess(t *testing.T) {
+	env := setupChannelTestServer(t)
+	ctx := context.Background()
+	adminToken := env.adminToken(t)
+
+	adminUser, err := env.queries.GetUserByUsername(ctx, "admin")
+	require.NoError(t, err)
+
+	workerID := env.createWorkerWithKey(t, adminToken, []byte("key"))
+
+	// Simulate worker online.
+	sentMsgs := make(chan *leapmuxv1.ConnectResponse, 10)
+	conn := &workermgr.Conn{
+		WorkerID: workerID,
+		OrgID:    adminUser.OrgID,
+		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
+			sentMsgs <- msg
+			return nil
+		},
+	}
+	env.workerMgr.Register(conn)
+
+	// Create workspace owned by admin.
+	wsID := env.createWorkspace(t, adminUser.ID, adminUser.OrgID)
+
+	// Create user2 and grant workspace access.
+	user2ID, user2Token := env.createSecondUser(t)
+	err = env.queries.GrantWorkspaceAccess(ctx, gendb.GrantWorkspaceAccessParams{
+		WorkspaceID: wsID,
+		UserID:      user2ID,
+	})
+	require.NoError(t, err)
+
+	// Register a channel for user2 on this worker.
+	channelID := id.Generate()
+	env.channelMgr.Register(channelID, workerID, user2ID, nil)
+
+	// user2 should succeed because they have explicit workspace access.
+	_, err = env.channelClient.PrepareWorkspaceAccess(ctx, authedReq(
+		&leapmuxv1.PrepareWorkspaceAccessRequest{
+			WorkerId:    workerID,
+			WorkspaceId: wsID,
+		}, user2Token))
+	require.NoError(t, err)
+
+	select {
+	case msg := <-sentMsgs:
+		update := msg.GetChannelAccessUpdate()
+		require.NotNil(t, update)
+		assert.Equal(t, channelID, update.GetChannelId())
+		assert.Equal(t, wsID, update.GetWorkspaceId())
+	default:
+		t.Fatal("expected a ChannelAccessUpdate for user2's channel")
+	}
+}
+
+func TestPrepareWorkspaceAccess_WorkerOffline(t *testing.T) {
+	env := setupChannelTestServer(t)
+	ctx := context.Background()
+	token := env.adminToken(t)
+
+	adminUser, err := env.queries.GetUserByUsername(ctx, "admin")
+	require.NoError(t, err)
+
+	workerID := env.createWorkerWithKey(t, token, []byte("key"))
+	wsID := env.createWorkspace(t, adminUser.ID, adminUser.OrgID)
+
+	// Worker is NOT registered as online.
+	_, err = env.channelClient.PrepareWorkspaceAccess(ctx, authedReq(
+		&leapmuxv1.PrepareWorkspaceAccessRequest{
+			WorkerId:    workerID,
+			WorkspaceId: wsID,
+		}, token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
+}
+
+func TestPrepareWorkspaceAccess_EmptyFields(t *testing.T) {
+	env := setupChannelTestServer(t)
+	ctx := context.Background()
+	token := env.adminToken(t)
+
+	// Empty worker_id.
+	_, err := env.channelClient.PrepareWorkspaceAccess(ctx, authedReq(
+		&leapmuxv1.PrepareWorkspaceAccessRequest{
+			WorkerId:    "",
+			WorkspaceId: "ws-1",
+		}, token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+
+	// Empty workspace_id.
+	_, err = env.channelClient.PrepareWorkspaceAccess(ctx, authedReq(
+		&leapmuxv1.PrepareWorkspaceAccessRequest{
+			WorkerId:    "w-1",
+			WorkspaceId: "",
+		}, token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
 func (e *channelTestEnv) createSecondUser(t *testing.T) (userID, token string) {

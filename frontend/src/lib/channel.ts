@@ -16,12 +16,13 @@
 import type { MessageInitShape, MessageShape } from '@bufbuild/protobuf'
 import type { GenMessage } from '@bufbuild/protobuf/codegenv2'
 import type { Session } from './noise'
-import type { ChannelMessage, InnerRpcResponse, InnerStreamMessage } from '~/generated/leapmux/v1/channel_pb'
+import type { ChannelMessage, HubControlFrame, InnerRpcResponse, InnerStreamMessage } from '~/generated/leapmux/v1/channel_pb'
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
 import {
   ChannelMessageFlags,
   ChannelMessageSchema,
   EncryptionMode,
+  HubControlFrameSchema,
   InnerMessageSchema,
   InnerRpcRequestSchema,
   UserIdClaimSchema,
@@ -32,6 +33,9 @@ import { initiatorHandshake1, initiatorHandshake2 } from './noise-hybrid'
 import { safeGetJson, safeRemoveItem, safeSetJson } from './safeStorage'
 
 const log = createLogger('channel')
+
+/** Reserved channel ID for Hub-originated control frames. */
+const HUB_CONTROL_CHANNEL_ID = '_hub'
 
 export type KeyPinDecision = 'accept' | 'reject'
 
@@ -153,6 +157,7 @@ export class ChannelManager {
   // Observability hooks
   private stateListeners = new Set<() => void>()
   private errorListeners = new Set<(workerId: string, error: ChannelError) => void>()
+  private hubControlListeners = new Set<(frame: HubControlFrame) => void>()
 
   constructor(transport: ChannelTransport, opts?: ChannelManagerOpts) {
     this.transport = transport
@@ -177,6 +182,14 @@ export class ChannelManager {
     this.errorListeners.add(cb)
     return () => {
       this.errorListeners.delete(cb)
+    }
+  }
+
+  /** Subscribe to Hub control frames. Returns an unsubscribe function. */
+  onHubControl(cb: (frame: HubControlFrame) => void): () => void {
+    this.hubControlListeners.add(cb)
+    return () => {
+      this.hubControlListeners.delete(cb)
     }
   }
 
@@ -702,7 +715,30 @@ export class ChannelManager {
       return
 
     const msg: ChannelMessage = fromBinary(ChannelMessageSchema, buf.slice(4))
+
+    if (msg.channelId === HUB_CONTROL_CHANNEL_ID) {
+      this.handleHubControl(msg)
+      return
+    }
+
     this.handleMessage(msg.channelId, msg)
+  }
+
+  private handleHubControl(msg: ChannelMessage): void {
+    try {
+      const frame = fromBinary(HubControlFrameSchema, msg.ciphertext)
+      for (const cb of this.hubControlListeners) {
+        try {
+          cb(frame)
+        }
+        catch (err) {
+          log.error('hub control listener error', { error: err })
+        }
+      }
+    }
+    catch (err) {
+      log.error('failed to parse hub control frame', { error: err })
+    }
   }
 
   private handleMessage(channelId: string, msg: ChannelMessage): void {
