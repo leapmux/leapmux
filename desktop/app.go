@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"runtime"
@@ -208,6 +209,12 @@ func (a *App) SwitchMode() error {
 	a.closeChannelRelay()
 	a.tunnels.CloseAll()
 	a.stopSolo()
+	// Restore the original slog handler if we were forwarding to WebView.
+	// stopSolo handles this for solo mode; this covers distributed mode.
+	if a.logHandler != nil {
+		slog.SetDefault(slog.New(a.logHandler.inner))
+		a.logHandler = nil
+	}
 	a.connected = false
 	a.proxy = nil
 	a.hubURL = ""
@@ -266,6 +273,14 @@ func (a *App) ConnectDistributed(hubURL string) error {
 	// Create proxy to remote Hub.
 	a.proxy = newHTTPProxy(hubURL)
 	a.hubURL = hubURL
+
+	// Forward Go logs to the WebView console (Web Inspector / F12).
+	a.logHandler = newWebviewHandler(
+		slog.Default().Handler(),
+		func(js string) { wailsRuntime.WindowExecJS(a.ctx, js) },
+	)
+	slog.SetDefault(slog.New(a.logHandler))
+	a.logHandler.SetReady()
 
 	a.config.Mode = "distributed"
 	a.config.HubURL = hubURL

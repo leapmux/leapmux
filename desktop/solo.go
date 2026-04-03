@@ -31,6 +31,10 @@ func (a *App) startSolo() error {
 	)
 	slog.SetDefault(slog.New(a.logHandler))
 
+	// The DOM is already ready (domReady fired during the launcher page),
+	// so mark the handler ready immediately to flush any buffered logs.
+	a.logHandler.SetReady()
+
 	return nil
 }
 
