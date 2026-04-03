@@ -491,22 +491,15 @@ func (a *ClaudeCodeAgent) extractAndBroadcastUsage(env *messageEnvelope, msgType
 	}
 
 	if msgType == "result" && env.ModelUsage != nil {
-		// Pick the largest contextWindow across all models in the usage
-		// map. A session may use multiple models (e.g. opus + haiku) and
-		// map iteration order is non-deterministic, so taking the max
-		// ensures we report the primary model's context window.
-		var maxCW int64
-		for _, raw := range env.ModelUsage {
-			var mu struct {
-				ContextWindow int64 `json:"contextWindow"`
-			}
-			if json.Unmarshal(raw, &mu) == nil && mu.ContextWindow > maxCW {
-				maxCW = mu.ContextWindow
-			}
-		}
-		if maxCW > 0 {
+		// Find the context window for the primary model in the usage map.
+		// Top-level result messages include cumulative session-level usage
+		// that always contains the primary model's entry. Subagent results
+		// (if they bypass the outer parent_tool_use_id guard) only contain
+		// the subagent's model and will not match the primary, so we skip
+		// the update to avoid overwriting with a smaller context window.
+		if cw := findPrimaryContextWindow(env.ModelUsage, a.model); cw > 0 {
 			snapshot.mu.Lock()
-			snapshot.ContextWindow = maxCW
+			snapshot.ContextWindow = cw
 			snapshot.mu.Unlock()
 		}
 	}
@@ -557,6 +550,67 @@ func modelContextWindow(models []*leapmuxv1.AvailableModel, modelID string) int6
 		}
 	}
 	return 0
+}
+
+// findPrimaryContextWindow extracts the context window for the primary model
+// from a modelUsage map. The modelUsage keys are full API model IDs (e.g.
+// "claude-opus-4-6[1m]") while shortModelID uses the short form (e.g.
+// "opus[1m]"). Returns 0 if the primary model is not found.
+func findPrimaryContextWindow(modelUsage map[string]json.RawMessage, shortModelID string) int64 {
+	if shortModelID == "" {
+		// No primary model configured — fall back to max across all models.
+		return maxContextWindow(modelUsage)
+	}
+
+	// Extract the family prefix and optional variant suffix from the short
+	// model ID (e.g. "opus[1m]" → family "opus", suffix "[1m]").
+	family := shortModelID
+	suffix := ""
+	if idx := strings.Index(shortModelID, "["); idx >= 0 {
+		family = shortModelID[:idx]
+		suffix = shortModelID[idx:]
+	}
+
+	for key, raw := range modelUsage {
+		if !strings.Contains(key, family) {
+			continue
+		}
+		// When the short ID has a variant suffix (e.g. "[1m]"), the full
+		// API ID must also contain it. When there is no suffix, reject
+		// keys that contain a bracket-variant so "opus" does not match
+		// "claude-opus-4-6[1m]".
+		if suffix != "" {
+			if !strings.Contains(key, suffix) {
+				continue
+			}
+		} else {
+			if strings.Contains(key, "[") {
+				continue
+			}
+		}
+
+		var mu struct {
+			ContextWindow int64 `json:"contextWindow"`
+		}
+		if json.Unmarshal(raw, &mu) == nil && mu.ContextWindow > 0 {
+			return mu.ContextWindow
+		}
+	}
+	return 0
+}
+
+// maxContextWindow returns the largest contextWindow across all models.
+func maxContextWindow(modelUsage map[string]json.RawMessage) int64 {
+	var maxCW int64
+	for _, raw := range modelUsage {
+		var mu struct {
+			ContextWindow int64 `json:"contextWindow"`
+		}
+		if json.Unmarshal(raw, &mu) == nil && mu.ContextWindow > maxCW {
+			maxCW = mu.ContextWindow
+		}
+	}
+	return maxCW
 }
 
 // detectPlanModeFromToolResult inspects a user message (tool_result) for
