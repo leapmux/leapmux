@@ -1,0 +1,38 @@
+syntax = "proto3";
+package leapmux.v1;
+
+// --- Tunnel inner RPC messages (E2EE channel, Desktop ↔ Worker) ---
+
+// Request to open a tunnel connection to a target.
+// Worker generates the conn_id to avoid client-side duplication.
+message OpenTunnelConnRequest {
+  string target_addr = 1; // Hostname or IP (DNS resolved at Worker)
+  uint32 target_port = 2; // Target port (1-65535)
+}
+
+message OpenTunnelConnResponse {
+  string conn_id = 1; // Worker-generated unique connection ID
+}
+
+// Send data from local client to remote target.
+message SendTunnelDataRequest {
+  string conn_id = 1;
+  bytes data = 2;
+}
+
+message SendTunnelDataResponse {}
+
+// Close a tunnel connection.
+message CloseTunnelConnRequest {
+  string conn_id = 1;
+}
+
+message CloseTunnelConnResponse {}
+
+// Streamed Worker → Desktop: data from remote target.
+message TunnelConnEvent {
+  string conn_id = 1; // Connection this event belongs to
+  bytes data = 2;     // Data from target (empty when eof/error)
+  bool eof = 3;       // Target closed connection
+  string error = 4;   // Error message (non-empty = error)
+}

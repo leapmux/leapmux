@@ -37,6 +37,7 @@ type RunConfig struct {
 	APITimeout           time.Duration               // Timeout for JSON-RPC requests (0 = 10s default)
 	EncryptionMode       leapmuxv1.EncryptionMode    // Encryption mode (classic, post-quantum)
 	UseLoginShell        bool                        // Wrap claude invocation in user's login shell
+	RegisteredBy         string                      // User ID who registered this worker (for tunnel authorization)
 }
 
 // Run starts the worker and blocks until ctx is cancelled.
@@ -91,6 +92,7 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		)
 
 		svcCtx.WorkerID = cfg.WorkerID
+		svcCtx.RegisteredBy = cfg.RegisteredBy
 		switch {
 		case cfg.Name != "":
 			svcCtx.Name = cfg.Name

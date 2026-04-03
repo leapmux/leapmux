@@ -223,6 +223,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 			APITimeout:           hubCfg.APITimeout(),
 			EncryptionMode:       workerconfig.ParseEncryptionMode(hubCfg.Extras["encryption_mode"]),
 			UseLoginShell:        parseBool(hubCfg.Extras["use_login_shell"], true),
+			RegisteredBy:         state.RegisteredBy,
 		}); wErr != nil {
 			slog.Error("worker error", "error", wErr)
 		}
@@ -249,6 +250,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 type soloState struct {
 	WorkerID         string `json:"worker_id"`
 	AuthToken        string `json:"auth_token"`
+	RegisteredBy     string `json:"registered_by,omitempty"`
 	PublicKey        string `json:"public_key,omitempty"`
 	PrivateKey       string `json:"private_key,omitempty"`
 	MlkemPublicKey   string `json:"mlkem_public_key,omitempty"`
@@ -300,8 +302,9 @@ func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath,
 	}
 
 	state := &soloState{
-		WorkerID:  creds.WorkerID,
-		AuthToken: creds.AuthToken,
+		WorkerID:     creds.WorkerID,
+		AuthToken:    creds.AuthToken,
+		RegisteredBy: userID,
 	}
 
 	stateData, err := json.MarshalIndent(state, "", "  ")

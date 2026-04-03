@@ -137,6 +137,7 @@ func TestRegistrationFlow(t *testing.T) {
 	assert.Equal(t, workerID, pollResp2.Msg.GetWorkerId())
 	assert.NotEmpty(t, pollResp2.Msg.GetAuthToken())
 	assert.NotEmpty(t, pollResp2.Msg.GetOrgId())
+	assert.NotEmpty(t, pollResp2.Msg.GetRegisteredBy(), "registered_by should be populated")
 }
 
 func TestWorkerManagement_ListAndGet(t *testing.T) {

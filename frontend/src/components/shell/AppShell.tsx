@@ -6,11 +6,12 @@ import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createSignal, on, Show, untrack } from 'solid-js'
 import { workerClient, workspaceClient } from '~/api/clients'
-import { agentLoadingTimeoutMs } from '~/api/transport'
+import { agentLoadingTimeoutMs, getToken } from '~/api/transport'
 import { channelManager, listAgents, listTerminals, moveTabWorkspace, renameAgent, setConfirmKeyPin, setGetUserId } from '~/api/workerRpc'
 import { NotFoundPage } from '~/components/common/NotFoundPage'
 import { showWarnToast } from '~/components/common/Toast'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
+import { AddTunnelDialog } from '~/components/workers/AddTunnelDialog'
 import { WorkerSettingsDialog } from '~/components/workers/WorkerSettingsDialog'
 import { useAuth } from '~/context/AuthContext'
 import { useOrg } from '~/context/OrgContext'
@@ -34,6 +35,7 @@ import { createLayoutStore, getAllTileIds } from '~/stores/layout.store'
 import { createSectionStore } from '~/stores/section.store'
 import { createTabStore, tabKey } from '~/stores/tab.store'
 import { createTerminalStore } from '~/stores/terminal.store'
+import { createTunnelStore } from '~/stores/tunnel.store'
 import { createWorkerChannelStatusStore } from '~/stores/workerChannelStatus.store'
 import { createWorkerInfoStore } from '~/stores/workerInfo.store'
 import { createWorkspaceStore } from '~/stores/workspace.store'
@@ -104,6 +106,8 @@ export const AppShell: ParentComponent = (props) => {
   const workerChannelStatusStore = createWorkerChannelStatusStore(channelManager)
   const [workers, setWorkers] = createSignal<Worker[]>([])
   const [deregisterTarget, setDeregisterTarget] = createSignal<Worker | null>(null)
+  const [addTunnelTarget, setAddTunnelTarget] = createSignal<Worker | null>(null)
+  const tunnelStore = createTunnelStore()
 
   // Fetch workers when org changes
   createEffect(() => {
@@ -1012,6 +1016,10 @@ export const AppShell: ParentComponent = (props) => {
     get workers() { return workers() },
     workerInfoFn: workerInfoStore.workerInfo,
     channelStatusFn: workerChannelStatusStore.getStatus,
+    tunnelsForWorkerFn: tunnelStore.tunnelsForWorker,
+    currentUserId: auth.user()?.id ?? '',
+    onAddTunnel: (worker: Worker) => setAddTunnelTarget(worker),
+    onDeleteTunnel: (tunnelId: string) => { tunnelStore.remove(tunnelId).catch(() => {}) },
     onDeregisterWorker: (worker: Worker) => setDeregisterTarget(worker),
     onTabClick: (type: number, id: string) => {
       const tabType = type as TabType
@@ -1189,6 +1197,20 @@ export const AppShell: ParentComponent = (props) => {
               setWorkers(prev => prev.filter(w => w.id !== target().id))
               setDeregisterTarget(null)
             }}
+          />
+        )}
+      </Show>
+
+      <Show when={addTunnelTarget()}>
+        {target => (
+          <AddTunnelDialog
+            workerId={target().id}
+            hubURL={window.location.origin}
+            token={getToken() ?? ''}
+            userId={auth.user()?.id ?? ''}
+            tunnelStore={tunnelStore}
+            onClose={() => setAddTunnelTarget(null)}
+            onCreated={() => setAddTunnelTarget(null)}
           />
         )}
       </Show>

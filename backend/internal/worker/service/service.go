@@ -45,6 +45,7 @@ type Context struct {
 	APITimeout          time.Duration             // Timeout for JSON-RPC requests (default: 10s)
 	UseLoginShell       bool                      // Wrap claude invocation in user's login shell
 	WakeLock            *wakelock.ActivityTracker // Keep-awake tracker (nil = disabled)
+	RegisteredBy        string                    // User ID who registered this worker (for tunnel authorization)
 }
 
 // agentStartupTimeout returns the configured agent startup timeout,
@@ -159,6 +160,7 @@ func RegisterAll(d *channel.Dispatcher, svc *Context) {
 	registerCleanupHandlers(d, svc)
 	registerTabMoveHandlers(d, svc)
 	registerSysInfoHandlers(d, svc)
+	registerTunnelHandlers(d, svc)
 }
 
 // modelOrDefault returns the model if non-empty, otherwise the provider's

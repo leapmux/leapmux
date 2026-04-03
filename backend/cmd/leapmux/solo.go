@@ -27,6 +27,7 @@ import (
 type soloState struct {
 	WorkerID         string `json:"worker_id"`
 	AuthToken        string `json:"auth_token"`
+	RegisteredBy     string `json:"registered_by,omitempty"`
 	PublicKey        string `json:"public_key,omitempty"`
 	PrivateKey       string `json:"private_key,omitempty"`
 	MlkemPublicKey   string `json:"mlkem_public_key,omitempty"`
@@ -181,6 +182,7 @@ func runSolo(args []string, soloMode bool) error {
 			AgentStartupTimeout:  hubCfg.AgentStartupTimeout(),
 			APITimeout:           hubCfg.APITimeout(),
 			EncryptionMode:       workerconfig.ParseEncryptionMode(hubCfg.Extras["encryption_mode"]),
+			RegisteredBy:         state.RegisteredBy,
 		}); err != nil {
 			slog.Error("worker error", "error", err)
 		}
@@ -249,8 +251,9 @@ func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath,
 	}
 
 	state := &soloState{
-		WorkerID:  creds.WorkerID,
-		AuthToken: creds.AuthToken,
+		WorkerID:     creds.WorkerID,
+		AuthToken:    creds.AuthToken,
+		RegisteredBy: userID,
 	}
 
 	stateData, err := json.MarshalIndent(state, "", "  ")

@@ -150,6 +150,7 @@ func (s *WorkerConnectorService) PollRegistration(
 			if err == nil {
 				resp.AuthToken = worker.AuthToken
 				resp.OrgId = worker.OrgID
+				resp.RegisteredBy = worker.RegisteredBy
 			}
 		}
 	case leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_EXPIRED:

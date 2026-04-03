@@ -18,9 +18,10 @@ import (
 
 // RegistrationResult contains the credentials obtained after registration approval.
 type RegistrationResult struct {
-	WorkerID  string
-	AuthToken string
-	OrgID     string
+	WorkerID     string
+	AuthToken    string
+	OrgID        string
+	RegisteredBy string
 }
 
 // Register performs the registration flow with automatic retries:
@@ -133,9 +134,10 @@ func registerWithClient(
 				"worker_id", pollResp.Msg.GetWorkerId(),
 			)
 			return &RegistrationResult{
-				WorkerID:  pollResp.Msg.GetWorkerId(),
-				AuthToken: pollResp.Msg.GetAuthToken(),
-				OrgID:     pollResp.Msg.GetOrgId(),
+				WorkerID:     pollResp.Msg.GetWorkerId(),
+				AuthToken:    pollResp.Msg.GetAuthToken(),
+				OrgID:        pollResp.Msg.GetOrgId(),
+				RegisteredBy: pollResp.Msg.GetRegisteredBy(),
 			}, nil
 
 		case leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_EXPIRED:

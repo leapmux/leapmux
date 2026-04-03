@@ -54,6 +54,7 @@ message PollRegistrationResponse {
   string worker_id = 2;
   string auth_token = 3;
   string org_id = 4;
+  string registered_by = 5; // User ID who approved this worker
 }
 
 enum RegistrationStatus {

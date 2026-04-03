@@ -2,15 +2,18 @@ import type { Component } from 'solid-js'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import MoreHorizontal from 'lucide-solid/icons/more-horizontal'
 import { Show } from 'solid-js'
+import { isTunnelAvailable } from '~/api/tunnelApi'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { IconButton } from '~/components/common/IconButton'
 import { showInfoToast } from '~/components/common/Toast'
 import * as listStyles from '~/components/workspace/workspaceList.css'
-import { isSoloMode } from '~/lib/systemInfo'
+import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem } from '~/styles/shared.css'
 
 interface WorkerContextMenuProps {
   workerInfo: WorkerInfo | null
+  isOwner: boolean
+  onAddTunnel: () => void
   onDeregister: () => void
 }
 
@@ -54,6 +57,11 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
             {text()}
           </button>
         )}
+      </Show>
+      <Show when={isDesktopApp() && isTunnelAvailable() && props.isOwner}>
+        <button role="menuitem" onClick={() => props.onAddTunnel()}>
+          Add tunnel...
+        </button>
       </Show>
       <Show when={!isSoloMode()}>
         <hr />

@@ -20,11 +20,14 @@ type App struct {
 	solo       *solo.Instance
 	logHandler *webviewHandler
 	connected  bool // true after a successful Connect call
+	tunnels    *TunnelManager
 }
 
 // NewApp creates a new App instance.
 func NewApp() *App {
-	return &App{}
+	return &App{
+		tunnels: NewTunnelManager(),
+	}
 }
 
 // startup is called when the app starts. The context is saved for runtime calls.
@@ -112,6 +115,44 @@ func (a *App) domReady(_ context.Context) {
 })();
 `, inspectorMsg))
 
+	// Inject minimal Wails method-call bridge for the navigated frontend
+	// page. Wails' C-message protocol: __lm_post('C' + JSON) triggers a
+	// Go method call, and the response arrives via window.wails.Callback.
+	wailsRuntime.WindowExecJS(a.ctx, `
+(function() {
+	window.__lm_callbacks = {};
+	window.wails = window.wails || {};
+	window.wails.Callback = function(data) {
+		var parsed = JSON.parse(data);
+		var cb = window.__lm_callbacks[parsed.callbackid];
+		if (cb) {
+			delete window.__lm_callbacks[parsed.callbackid];
+			if (parsed.error) {
+				cb.reject(new Error(typeof parsed.error === 'string'
+					? parsed.error : JSON.stringify(parsed.error)));
+			} else {
+				cb.resolve(parsed.result);
+			}
+		}
+	};
+	window.__lm_call = function(method, args) {
+		return new Promise(function(resolve, reject) {
+			var id = 'lm_' + (++window.__lm_callSeq);
+			window.__lm_callbacks[id] = { resolve: resolve, reject: reject };
+			if (window.__lm_post) {
+				window.__lm_post('C' + JSON.stringify({
+					name: method, args: args || [], callbackID: id
+				}));
+			} else {
+				delete window.__lm_callbacks[id];
+				reject(new Error('__lm_post not available'));
+			}
+		});
+	};
+	window.__lm_callSeq = 0;
+})();
+`)
+
 	// Flush buffered log records to the WebView console now that the
 	// navigated page's DOM is ready and WindowExecJS calls will land.
 	// On the initial launcher page load logHandler is nil (no-op).
@@ -143,6 +184,7 @@ func (a *App) shutdown(_ context.Context) {
 			_ = SaveConfig(a.config)
 		}
 	}
+	a.tunnels.CloseAll()
 	a.stopSolo()
 }
 
@@ -210,6 +252,7 @@ func (a *App) SwitchMode() error {
 		}
 	}
 
+	a.tunnels.CloseAll()
 	a.stopSolo()
 	a.connected = false
 	a.config.Mode = ""
@@ -263,4 +306,19 @@ func (a *App) ConnectDistributed(hubURL string) (string, error) {
 
 	a.connected = true
 	return hubURL, nil
+}
+
+// CreateTunnel creates a new TCP/IP tunnel to a worker.
+func (a *App) CreateTunnel(config TunnelConfig) (*TunnelInfo, error) {
+	return a.tunnels.CreateTunnel(a.ctx, config)
+}
+
+// DeleteTunnel stops and removes a tunnel.
+func (a *App) DeleteTunnel(tunnelID string) error {
+	return a.tunnels.DeleteTunnel(tunnelID)
+}
+
+// ListTunnels returns info about all active tunnels.
+func (a *App) ListTunnels() []TunnelInfo {
+	return a.tunnels.ListTunnels()
 }

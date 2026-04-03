@@ -14,3 +14,9 @@ export const statusConnected = style({
 export const statusDisconnected = style({
   background: 'var(--danger)',
 })
+
+export const tunnelItem = style({
+  paddingLeft: 'var(--space-5)',
+  fontSize: 'var(--text-7)',
+  color: 'var(--muted-foreground)',
+})
