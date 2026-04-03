@@ -60,6 +60,8 @@ interface ChatViewProps {
   streamingType?: string
   /** Look up a message by its spanId (for tool_use ↔ tool_result linking). */
   getMessageBySpanId?: (spanId: string) => AgentChatMessage | undefined
+  /** Look up the tool_result message by spanId (reverse of getMessageBySpanId). */
+  getToolResultBySpanId?: (spanId: string) => AgentChatMessage | undefined
   /** Look up live Codex span stream segments by span id. */
   getCommandStreamBySpanId?: (spanId: string) => CommandStreamSegment[]
 }
@@ -574,6 +576,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                         homeDir={props.homeDir}
                         onReply={props.onReply}
                         getMessageBySpanId={props.getMessageBySpanId}
+                        getToolResultBySpanId={props.getToolResultBySpanId}
                         commandStream={props.getCommandStreamBySpanId?.(msg.spanId)}
                         toolResultExpanded={isMessageExpanded(msg.id)}
                         onToggleToolResultExpanded={() => toggleMessageExpanded(msg.id)}

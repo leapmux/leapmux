@@ -118,6 +118,8 @@ interface MessageBubbleProps {
   onReply?: (quotedText: string) => void
   /** Look up a message by its spanId (for tool_use ↔ tool_result linking). */
   getMessageBySpanId?: (spanId: string) => AgentChatMessage | undefined
+  /** Look up the tool_result message by spanId (reverse of getMessageBySpanId). */
+  getToolResultBySpanId?: (spanId: string) => AgentChatMessage | undefined
   commandStream?: CommandStreamSegment[]
   /** Lifted expand/collapse state for tool results, managed by ChatView. */
   toolResultExpanded?: boolean
@@ -203,6 +205,16 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     if (!spanId || !props.getMessageBySpanId)
       return undefined
     return props.getMessageBySpanId(spanId)
+  })
+
+  // Look up the corresponding tool_result message for tool_use messages.
+  const toolResultMessage = createMemo(() => {
+    if (category().kind !== 'tool_use')
+      return undefined
+    const spanId = props.message.spanId
+    if (!spanId || !props.getToolResultBySpanId)
+      return undefined
+    return props.getToolResultBySpanId(spanId)
   })
 
   /** Extract the raw text content from a tool_result block inside a parsed message object. */
@@ -314,13 +326,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     if (toolName === 'WebSearch' && Array.isArray(toolUseResult?.results))
       return true
 
-    // Bash/Read/TaskOutput/unknown: collapsible if result text exceeds threshold lines.
-    if (toolName === 'Bash' || toolName === 'Read' || toolName === 'TaskOutput' || toolName === '') {
-      const rc = extractToolResultText(obj)
-      return rc != null && rc.split('\n').length > COLLAPSED_RESULT_ROWS
-    }
-
-    return false
+    // Fallback: collapsible if result text exceeds threshold lines.
+    const rc = extractToolResultText(obj)
+    return rc != null && rc.split('\n').length > COLLAPSED_RESULT_ROWS
   })
 
   // Determine if this tool_result has a diff (Edit/Write with structuredPatch or old/new strings).
@@ -424,6 +432,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     onCopyJson: copyJson,
     jsonCopied: jsonCopied(),
     toolUseMessage: toolUseMessage(),
+    toolResultMessage: toolResultMessage(),
     spanColor: props.message.spanColor,
     spanType: props.message.spanType,
     spanId: props.message.spanId,
