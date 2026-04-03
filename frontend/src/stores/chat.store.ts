@@ -168,22 +168,33 @@ export function createChatStore() {
 
   /** Non-reactive index of messages by spanId for tool_use ↔ tool_result lookup. */
   const spanIndex = new Map<string, Map<string, AgentChatMessage>>()
+  /** Non-reactive index: maps spanId → last (tool_result) message for reverse lookup. */
+  const spanResultIndex = new Map<string, Map<string, AgentChatMessage>>()
 
   /**
-   * Index messages by spanId. Only the first message per spanId is stored
-   * (the tool_use opener), so tool_result messages don't overwrite their
-   * corresponding tool_use.
+   * Index messages by spanId. The first message per spanId is stored in
+   * spanIndex (the tool_use opener); subsequent messages (tool_result)
+   * are stored in spanResultIndex.
    */
   function indexBySpanId(agentId: string, ...messages: AgentChatMessage[]) {
     let agentSpans = spanIndex.get(agentId)
+    let agentResults = spanResultIndex.get(agentId)
     for (const msg of messages) {
       if (msg.spanId) {
         if (!agentSpans) {
           agentSpans = new Map()
           spanIndex.set(agentId, agentSpans)
         }
-        if (!agentSpans.has(msg.spanId))
+        if (!agentSpans.has(msg.spanId)) {
           agentSpans.set(msg.spanId, msg)
+        }
+        else {
+          if (!agentResults) {
+            agentResults = new Map()
+            spanResultIndex.set(agentId, agentResults)
+          }
+          agentResults.set(msg.spanId, msg)
+        }
       }
     }
   }
@@ -193,6 +204,7 @@ export function createChatStore() {
     // Clear stale span index entries before re-indexing to prevent memory leaks
     // when the message list is fully replaced (e.g. on reconnect or agent switch).
     spanIndex.delete(agentId)
+    spanResultIndex.delete(agentId)
     // Index spans before setting messages so that reactive computations
     // triggered by the message list update can already look up tool_use
     // messages by spanId.
@@ -221,6 +233,10 @@ export function createChatStore() {
 
     getMessageBySpanId(agentId: string, spanId: string): AgentChatMessage | undefined {
       return spanIndex.get(agentId)?.get(spanId)
+    },
+
+    getToolResultBySpanId(agentId: string, spanId: string): AgentChatMessage | undefined {
+      return spanResultIndex.get(agentId)?.get(spanId)
     },
 
     setMessages(agentId: string, messages: AgentChatMessage[], hasMore = false) {

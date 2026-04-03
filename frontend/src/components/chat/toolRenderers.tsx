@@ -486,9 +486,16 @@ export const toolUseRenderer: MessageContentRenderer = {
     }
     else if (isWrite) {
       const writeInput = input as WriteInput
-      oldStr = ''
-      newStr = writeInput.content ?? ''
       filePath = writeInput.file_path ?? ''
+      // When the linked tool_result indicates this was an update (not a new file),
+      // hide the full file content — the tool_result already shows the diff.
+      const resultObj = context?.toolResultMessage
+        ? parseMessageContent(context.toolResultMessage).parentObject
+        : undefined
+      const resultToolUseResult = resultObj?.tool_use_result as Record<string, unknown> | undefined
+      const isUpdate = resultToolUseResult?.type === 'update'
+      oldStr = ''
+      newStr = isUpdate ? '' : (writeInput.content ?? '')
     }
     else {
       oldStr = ''
@@ -1180,14 +1187,14 @@ export function ToolResultMessage(props: {
   const hasDiff = () => hasPatch() || hasFallbackDiff()
   const errorText = () => extractToolUseError(props.resultContent)
 
-  // Bash/TaskOutput/Read: collapsible via expand/collapse button in MessageBubble toolbar.
+  // Collapsible via expand/collapse button in MessageBubble toolbar.
   const isRead = () => props.toolName === 'Read'
   const isBashLike = () => props.toolName === 'Bash' || props.toolName === 'TaskOutput' || props.toolName === ''
   const normalizedResultContent = () => isBashLike() ? stripLeadingBlankLines(props.resultContent) : props.resultContent
   const expanded = () => props.context?.toolResultExpanded ?? false
   const resultLines = () => normalizedResultContent().split('\n')
   const isCollapsed = () => {
-    if (!isBashLike() || expanded())
+    if (expanded())
       return false
     return resultLines().length > COLLAPSED_RESULT_ROWS
   }
@@ -1229,7 +1236,7 @@ export function ToolResultMessage(props: {
                   : <div class={`${toolResultContentPre}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>{displayContent()}</div>
                 : renderReadOrPre(props.toolName, props.resultContent, props.readFilePath, isRead() && !expanded())
               /* eslint-disable-next-line solid/no-innerhtml -- HTML from renderMarkdown, not user input */
-              : <div class={toolResultContent} innerHTML={renderMarkdown(props.resultContent)} />
+              : <div class={`${toolResultContent}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`} innerHTML={renderMarkdown(displayContent())} />
           }
         >
           <DiffView

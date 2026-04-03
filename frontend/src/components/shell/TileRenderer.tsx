@@ -266,6 +266,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                         forceScrollToBottomRef.current = fn
                     }}
                     getMessageBySpanId={spanId => chatStore.getMessageBySpanId(agentId, spanId)}
+                    getToolResultBySpanId={spanId => chatStore.getToolResultBySpanId(agentId, spanId)}
                     getCommandStreamBySpanId={spanId => chatStore.getCommandStream(agentId, spanId)}
                     onQuote={isActiveWorkspaceArchived()
                       ? undefined

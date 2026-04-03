@@ -86,6 +86,8 @@ export interface RenderContext {
   parentToolInput?: Record<string, unknown>
   /** The corresponding tool_use message (looked up by spanId for tool_result messages). */
   toolUseMessage?: AgentChatMessage
+  /** The corresponding tool_result message (looked up by spanId for tool_use messages). */
+  toolResultMessage?: AgentChatMessage
   /** Color index assigned to this message's span (−1 = no color). */
   spanColor?: number
   /** Tool name or item type from span_type column (reliable, always set for span messages). */

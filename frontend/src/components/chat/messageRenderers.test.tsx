@@ -1,7 +1,15 @@
 import type { RenderContext } from './messageRenderers'
+import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import { render } from '@solidjs/testing-library'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { ContentCompression } from '~/generated/leapmux/v1/agent_pb'
 import { renderMessageContent } from './messageRenderers'
+
+// Mock shiki worker to avoid Web Worker unavailability in test environment.
+// Vitest auto-hoists vi.mock calls above imports.
+vi.mock('~/lib/shikiWorkerClient', () => ({
+  tokenizeAsync: vi.fn().mockResolvedValue(null),
+}))
 
 /** Build a tool_use assistant message for the given tool name and input. */
 function makeToolUseMessage(name: string, input: Record<string, unknown>) {
@@ -86,5 +94,57 @@ describe('agent/task renderer', () => {
     expect(text).toBe('Search')
     expect(text).not.toContain('tokens')
     expect(text).not.toContain('tool uses')
+  })
+})
+
+/** Build a fake AgentChatMessage with JSON content (uncompressed). */
+function makeFakeMessage(content: Record<string, unknown>): AgentChatMessage {
+  return {
+    content: new TextEncoder().encode(JSON.stringify(content)),
+    contentCompression: ContentCompression.NONE,
+  } as unknown as AgentChatMessage
+}
+
+describe('write tool_use hides content when linked result is an update', () => {
+  const writeInput = { file_path: '/tmp/test.go', content: 'package main\n\nfunc main() {}\n' }
+
+  it('shows diff when no linked tool_result exists', () => {
+    const { container } = render(() =>
+      renderMessageContent(makeToolUseMessage('Write', writeInput), 2 /* ASSISTANT */),
+    )
+    // The diff view should render the new file content.
+    expect(container.textContent).toContain('package main')
+  })
+
+  it('hides diff when linked tool_result has type "update"', () => {
+    const toolResultMessage = makeFakeMessage({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', content: 'Updated successfully.' }] },
+      tool_use_result: {
+        type: 'update',
+        filePath: '/tmp/test.go',
+        structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] }],
+      },
+    })
+    const context: RenderContext = { toolResultMessage }
+    const { container } = render(() =>
+      renderMessageContent(makeToolUseMessage('Write', writeInput), 2 /* ASSISTANT */, context),
+    )
+    // The diff should be hidden — the tool_result shows the diff instead.
+    expect(container.textContent).not.toContain('package main')
+  })
+
+  it('shows diff when linked tool_result is not an update (new file)', () => {
+    const toolResultMessage = makeFakeMessage({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', content: 'File created.' }] },
+      tool_use_result: { filePath: '/tmp/test.go' },
+    })
+    const context: RenderContext = { toolResultMessage }
+    const { container } = render(() =>
+      renderMessageContent(makeToolUseMessage('Write', writeInput), 2 /* ASSISTANT */, context),
+    )
+    // New file creation: the full content should still be visible.
+    expect(container.textContent).toContain('package main')
   })
 })
