@@ -49,6 +49,7 @@ export const modeCard = style({
   'gap': '0.75rem',
   'textAlign': 'left',
   'minWidth': 0,
+  'whiteSpace': 'normal',
   ':hover': {
     borderColor: 'var(--muted-foreground)',
   },
