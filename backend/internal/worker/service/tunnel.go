@@ -7,6 +7,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -21,18 +22,17 @@ type tunnelConn struct {
 	closed atomic.Bool
 }
 
-// TunnelManager tracks active tunnel connections for a worker.
-type TunnelManager struct {
+// tunnelManager tracks active tunnel connections for a worker.
+type tunnelManager struct {
 	conns sync.Map // conn_id -> *tunnelConn
 }
 
-// NewTunnelManager creates a new TunnelManager.
-func NewTunnelManager() *TunnelManager {
-	return &TunnelManager{}
+// newTunnelManager creates a new tunnelManager.
+func newTunnelManager() *tunnelManager {
+	return &tunnelManager{}
 }
 
-// Get returns the tunnel connection for the given conn_id, or nil.
-func (m *TunnelManager) Get(connID string) *tunnelConn {
+func (m *tunnelManager) get(connID string) *tunnelConn {
 	v, ok := m.conns.Load(connID)
 	if !ok {
 		return nil
@@ -40,13 +40,11 @@ func (m *TunnelManager) Get(connID string) *tunnelConn {
 	return v.(*tunnelConn)
 }
 
-// Store adds a tunnel connection.
-func (m *TunnelManager) Store(connID string, tc *tunnelConn) {
+func (m *tunnelManager) store(connID string, tc *tunnelConn) {
 	m.conns.Store(connID, tc)
 }
 
-// Remove removes and returns a tunnel connection.
-func (m *TunnelManager) Remove(connID string) *tunnelConn {
+func (m *tunnelManager) remove(connID string) *tunnelConn {
 	v, ok := m.conns.LoadAndDelete(connID)
 	if !ok {
 		return nil
@@ -54,8 +52,7 @@ func (m *TunnelManager) Remove(connID string) *tunnelConn {
 	return v.(*tunnelConn)
 }
 
-// CloseAll closes all tunnel connections.
-func (m *TunnelManager) CloseAll() {
+func (m *tunnelManager) closeAll() {
 	m.conns.Range(func(key, value any) bool {
 		tc := value.(*tunnelConn)
 		if tc.closed.CompareAndSwap(false, true) {
@@ -66,12 +63,17 @@ func (m *TunnelManager) CloseAll() {
 	})
 }
 
-// tunnelReadBufSize is the read buffer size for reading from the target connection.
-const tunnelReadBufSize = 32 * 1024 // 32 KiB
+const (
+	// tunnelReadBufSize is the read buffer size for reading from the target connection.
+	tunnelReadBufSize = 32 * 1024 // 32 KiB
+
+	// tunnelDialTimeout bounds how long OpenTunnelConn waits for the target TCP connection.
+	tunnelDialTimeout = 30 * time.Second
+)
 
 // registerTunnelHandlers registers all tunnel-related inner RPC handlers.
 func registerTunnelHandlers(d *channel.Dispatcher, svc *Context) {
-	tunnels := NewTunnelManager()
+	tunnels := newTunnelManager()
 
 	// OpenTunnelConn dials the target address and starts streaming data back.
 	d.Register("OpenTunnelConn", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
@@ -100,7 +102,8 @@ func registerTunnelHandlers(d *channel.Dispatcher, svc *Context) {
 
 		addr := net.JoinHostPort(targetAddr, fmt.Sprintf("%d", targetPort))
 
-		conn, err := net.Dial("tcp", addr)
+		dialer := net.Dialer{Timeout: tunnelDialTimeout}
+		conn, err := dialer.Dial("tcp", addr)
 		if err != nil {
 			slog.Error("failed to dial tunnel target", "addr", addr, "error", err)
 			sendInternalError(sender, fmt.Sprintf("dial %s: %v", addr, err))
@@ -109,7 +112,7 @@ func registerTunnelHandlers(d *channel.Dispatcher, svc *Context) {
 
 		connID := id.Generate()
 		tc := &tunnelConn{conn: conn, sender: sender}
-		tunnels.Store(connID, tc)
+		tunnels.store(connID, tc)
 
 		slog.Info("tunnel connection opened", "conn_id", connID, "target", addr, "user_id", userID)
 
@@ -136,7 +139,7 @@ func registerTunnelHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		tc := tunnels.Get(connID)
+		tc := tunnels.get(connID)
 		if tc == nil {
 			sendNotFoundError(sender, "tunnel connection not found: "+connID)
 			return
@@ -173,7 +176,7 @@ func registerTunnelHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		tc := tunnels.Remove(connID)
+		tc := tunnels.remove(connID)
 		if tc == nil {
 			sendNotFoundError(sender, "tunnel connection not found: "+connID)
 			return
@@ -190,7 +193,7 @@ func registerTunnelHandlers(d *channel.Dispatcher, svc *Context) {
 
 // tunnelReadLoop reads data from the target connection and sends TunnelConnEvent
 // stream messages back to the caller.
-func tunnelReadLoop(mgr *TunnelManager, connID string, tc *tunnelConn) {
+func tunnelReadLoop(mgr *tunnelManager, connID string, tc *tunnelConn) {
 	buf := make([]byte, tunnelReadBufSize)
 	for {
 		n, err := tc.conn.Read(buf)
@@ -225,7 +228,7 @@ func tunnelReadLoop(mgr *TunnelManager, connID string, tc *tunnelConn) {
 	if tc.closed.CompareAndSwap(false, true) {
 		_ = tc.conn.Close()
 	}
-	mgr.Remove(connID)
+	mgr.remove(connID)
 	slog.Info("tunnel read loop ended", "conn_id", connID)
 }
 

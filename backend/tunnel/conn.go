@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -91,7 +92,7 @@ func DialTunnel(ch *Channel, targetAddr string, targetPort uint32) (*Conn, error
 func (tc *Conn) onStreamMessage(msg *leapmuxv1.InnerStreamMessage) {
 	if msg.GetIsError() {
 		select {
-		case tc.readErr <- fmt.Errorf("stream error: %s", msg.GetErrorMessage()):
+		case tc.readErr <- fmt.Errorf("tunnel stream: %s", msg.GetErrorMessage()):
 		default:
 		}
 		return
@@ -103,7 +104,7 @@ func (tc *Conn) onStreamMessage(msg *leapmuxv1.InnerStreamMessage) {
 	}
 	if event.GetEof() {
 		select {
-		case tc.readErr <- fmt.Errorf("EOF"):
+		case tc.readErr <- io.EOF:
 		default:
 		}
 		return

@@ -12,6 +12,11 @@ import (
 	tunnelpkg "github.com/leapmux/leapmux/tunnel"
 )
 
+const (
+	tunnelTypePortForward = "port_forward"
+	tunnelTypeSocks5      = "socks5"
+)
+
 // TunnelConfig is the configuration for creating a tunnel, received from the frontend.
 type TunnelConfig struct {
 	WorkerID   string `json:"workerId"`
@@ -63,10 +68,10 @@ func (m *TunnelManager) CreateTunnel(parentCtx context.Context, cfg TunnelConfig
 	if cfg.WorkerID == "" {
 		return nil, fmt.Errorf("workerId is required")
 	}
-	if cfg.Type != "port_forward" && cfg.Type != "socks5" {
+	if cfg.Type != tunnelTypePortForward && cfg.Type != tunnelTypeSocks5 {
 		return nil, fmt.Errorf("type must be 'port_forward' or 'socks5'")
 	}
-	if cfg.Type == "port_forward" {
+	if cfg.Type == tunnelTypePortForward {
 		if cfg.TargetAddr == "" {
 			return nil, fmt.Errorf("targetAddr is required for port_forward")
 		}
@@ -78,7 +83,7 @@ func (m *TunnelManager) CreateTunnel(parentCtx context.Context, cfg TunnelConfig
 		cfg.BindAddr = "127.0.0.1"
 	}
 	if cfg.BindPort == 0 {
-		if cfg.Type == "port_forward" {
+		if cfg.Type == tunnelTypePortForward {
 			cfg.BindPort = cfg.TargetPort
 		} else {
 			cfg.BindPort = 1080
@@ -120,7 +125,7 @@ func (m *TunnelManager) CreateTunnel(parentCtx context.Context, cfg TunnelConfig
 	m.tunnels[tunnelID] = t
 	m.mu.Unlock()
 
-	if cfg.Type == "socks5" {
+	if cfg.Type == tunnelTypeSocks5 {
 		go m.serveSocks5(ctx, t, ch)
 	} else {
 		go m.acceptPortForward(ctx, t, ch, cfg)
@@ -184,11 +189,12 @@ func (m *TunnelManager) CloseAll() {
 func (m *TunnelManager) getOrOpenChannel(ctx context.Context, cfg TunnelConfig) (*tunnelpkg.Channel, error) {
 	m.mu.Lock()
 	ch, ok := m.channels[cfg.WorkerID]
-	m.mu.Unlock()
-
 	if ok && !ch.Closed() {
+		m.mu.Unlock()
 		return ch, nil
 	}
+	// Hold the lock while opening to prevent duplicate channels for the same worker.
+	m.mu.Unlock()
 
 	ch, err := tunnelpkg.OpenChannel(ctx, cfg.HubURL, cfg.Token, cfg.UserID, cfg.WorkerID)
 	if err != nil {
@@ -196,6 +202,12 @@ func (m *TunnelManager) getOrOpenChannel(ctx context.Context, cfg TunnelConfig) 
 	}
 
 	m.mu.Lock()
+	// Check again in case another goroutine opened one while we were connecting.
+	if existing, exists := m.channels[cfg.WorkerID]; exists && !existing.Closed() {
+		m.mu.Unlock()
+		ch.Close()
+		return existing, nil
+	}
 	if old, exists := m.channels[cfg.WorkerID]; exists {
 		old.Close()
 	}

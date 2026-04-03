@@ -191,6 +191,8 @@ func (ch *Channel) Close() {
 			close(c)
 		}
 		ch.pending = make(map[uint32]chan *leapmuxv1.InnerRpcResponse)
+		ch.streamCbs = make(map[uint32]func(*leapmuxv1.InnerStreamMessage))
+		ch.reassembly = make(map[uint32]*chunkBuffer)
 		ch.mu.Unlock()
 	}
 }
