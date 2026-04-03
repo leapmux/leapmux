@@ -32,6 +32,19 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
   }
 
   const handleSwitchMode = async () => {
+    // Fade out the page content before resizing.
+    const overlay = document.createElement('div')
+    const bg = getComputedStyle(document.documentElement).getPropertyValue('--background').trim() || '#000'
+    overlay.style.cssText = `position:fixed;inset:0;z-index:2147483647;background:${bg};opacity:0;transition:opacity .3s ease`
+    document.body.appendChild(overlay)
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => {
+        overlay.style.opacity = '1'
+      })
+      overlay.addEventListener('transitionend', () => resolve(), { once: true })
+      setTimeout(resolve, 400)
+    })
+
     await window.go?.main?.App?.SwitchMode()
     await animateWindowResize(900, 680)
     window.location.reload()

@@ -115,13 +115,7 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 				"user_id", user.ID,
 			)
 			if conn := h.workerMgr.Get(cc.WorkerID); conn != nil {
-				_ = conn.Send(&leapmuxv1.ConnectResponse{
-					Payload: &leapmuxv1.ConnectResponse_ChannelClose{
-						ChannelClose: &leapmuxv1.ChannelCloseNotification{
-							ChannelId: cc.ChannelID,
-						},
-					},
-				})
+				sendChannelClose(conn, cc.ChannelID)
 			}
 		}
 
@@ -204,6 +198,25 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 	}
+}
+
+// sendChannelClose notifies a worker that a channel has been closed.
+// It recovers from panics because the worker's bidi stream handler may
+// have already finished during hub shutdown, causing a panic in the
+// HTTP/2 response writer.
+func sendChannelClose(conn *workermgr.Conn, channelID string) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Debug("recovered from panic sending channel close", "channel_id", channelID, "panic", r)
+		}
+	}()
+	_ = conn.Send(&leapmuxv1.ConnectResponse{
+		Payload: &leapmuxv1.ConnectResponse_ChannelClose{
+			ChannelClose: &leapmuxv1.ChannelCloseNotification{
+				ChannelId: channelID,
+			},
+		},
+	})
 }
 
 // authTokenSubprotocolPrefix is the prefix for auth tokens passed via
