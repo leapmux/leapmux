@@ -198,9 +198,10 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
           class={`${styles.modeCard} ${mode() === 'solo' ? styles.modeCardSelected : ''}`}
           onClick={() => selectMode('solo')}
         >
-          <div class={`${styles.radio} ${mode() === 'solo' ? styles.radioSelected : ''}`} />
-          <div class={styles.modeIcon}>&#x1F4BB;</div>
-          <h3 class={styles.modeTitle}>Solo</h3>
+          <div class={styles.modeHeader}>
+            <span class={styles.modeIcon}>&#x1F4BB;</span>
+            <h3 class={styles.modeTitle}>Solo</h3>
+          </div>
           <p class={styles.modeDescription}>
             Run LeapMux entirely on this machine. A Hub and Worker start together in
             a single process &mdash; no network setup required. Your data stays local.
@@ -212,9 +213,10 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
           class={`${styles.modeCard} ${mode() === 'distributed' ? styles.modeCardSelected : ''}`}
           onClick={() => selectMode('distributed')}
         >
-          <div class={`${styles.radio} ${mode() === 'distributed' ? styles.radioSelected : ''}`} />
-          <div class={styles.modeIcon}>&#x1F310;</div>
-          <h3 class={styles.modeTitle}>Distributed</h3>
+          <div class={styles.modeHeader}>
+            <span class={styles.modeIcon}>&#x1F310;</span>
+            <h3 class={styles.modeTitle}>Distributed</h3>
+          </div>
           <p class={styles.modeDescription}>
             Connect to a remote LeapMux Hub shared across your team. Multiple workers
             can connect to a centralized hub for collaborative workflows. Requires a

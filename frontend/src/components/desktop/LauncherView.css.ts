@@ -38,7 +38,6 @@ export const modeCards = style({
 })
 
 export const modeCard = style({
-  'position': 'relative',
   'background': 'var(--card)',
   'border': '2px solid var(--border)',
   'borderRadius': '0.75rem',
@@ -62,8 +61,14 @@ export const modeCardSelected = style({
   boxShadow: '0 0 0 1px var(--primary)',
 })
 
+export const modeHeader = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: '0.5rem',
+})
+
 export const modeIcon = style({
-  fontSize: '1.75rem',
+  fontSize: '1.5rem',
   lineHeight: 1,
 })
 
@@ -76,31 +81,6 @@ export const modeDescription = style({
   fontSize: '0.8rem',
   color: 'var(--muted-foreground)',
   lineHeight: 1.5,
-})
-
-export const radio = style({
-  position: 'absolute',
-  top: '1rem',
-  right: '1rem',
-  width: '18px',
-  height: '18px',
-  borderRadius: '50%',
-  border: '2px solid var(--border)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  transition: 'border-color 0.15s',
-})
-
-export const radioSelected = style({
-  'borderColor': 'var(--primary)',
-  '::after': {
-    content: '""',
-    width: '10px',
-    height: '10px',
-    borderRadius: '50%',
-    background: 'var(--primary)',
-  },
 })
 
 // Collapsible section — animated height via grid 0fr → 1fr
