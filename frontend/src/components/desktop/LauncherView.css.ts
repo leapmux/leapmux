@@ -48,6 +48,7 @@ export const modeCard = style({
   'flexDirection': 'column',
   'gap': '0.75rem',
   'textAlign': 'left',
+  'minWidth': 0,
   ':hover': {
     borderColor: 'var(--muted-foreground)',
   },
