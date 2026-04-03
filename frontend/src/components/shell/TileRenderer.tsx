@@ -27,6 +27,7 @@ import { TerminalView } from '~/components/terminal/TerminalView'
 import { AgentChatMessageSchema, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { uint8ArrayToBase64 } from '~/lib/base64'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
@@ -449,12 +450,14 @@ export function createTileRenderer(opts: TileRendererOpts) {
           forceScrollToBottomRef.current?.()
           const sendAgent = agentStore.state.agents.find(a => a.id === id)
 
-          // Build optimistic message JSON (attachments metadata only — no binary).
+          // Build optimistic message JSON with attachment data so retry can
+          // recover the binary content without re-uploading.
           const optimisticPayload: Record<string, unknown> = { content }
           if (fileAttachments && fileAttachments.length > 0) {
             optimisticPayload.attachments = fileAttachments.map(a => ({
               filename: a.filename,
               mime_type: a.mimeType,
+              data: uint8ArrayToBase64(a.data),
             }))
           }
 
@@ -496,6 +499,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
               fileAttachments?.map(a => ({
                 filename: a.filename,
                 mime_type: a.mimeType,
+                data: uint8ArrayToBase64(a.data),
               })),
             )
           }
