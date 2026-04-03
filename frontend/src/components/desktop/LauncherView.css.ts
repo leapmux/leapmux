@@ -64,6 +64,7 @@ export const modeCardSelected = style({
 export const modeHeader = style({
   display: 'flex',
   alignItems: 'center',
+  justifyContent: 'flex-start',
   gap: '0.5rem',
 })
 
