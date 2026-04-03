@@ -442,10 +442,10 @@ func TestWorkerService_ListWorkers_Empty(t *testing.T) {
 // control frames, and provides a ConnectRPC client connected via Unix socket.
 type unixSocketTestEnv struct {
 	workerTestEnv
-	cMgr             *channelmgr.Manager
-	unixConnClient   leapmuxv1connect.WorkerConnectorServiceClient
-	unixMgmtClient   leapmuxv1connect.WorkerManagementServiceClient
-	controlFrames    []*leapmuxv1.ChannelMessage
+	cMgr           *channelmgr.Manager
+	unixConnClient leapmuxv1connect.WorkerConnectorServiceClient
+	unixMgmtClient leapmuxv1connect.WorkerManagementServiceClient
+	controlFrames  []*leapmuxv1.ChannelMessage
 }
 
 func setupUnixSocketTestServer(t *testing.T) *unixSocketTestEnv {
@@ -555,7 +555,15 @@ func (e *unixSocketTestEnv) assertWorkersChangedReceived(t *testing.T, index int
 
 	var frame leapmuxv1.HubControlFrame
 	require.NoError(t, proto.Unmarshal(msg.GetCiphertext(), &frame))
-	assert.NotNil(t, frame.GetWorkersChanged())
+	require.NotEmpty(t, frame.GetEvents(), "expected at least one event in control frame")
+	hasWorkersChanged := false
+	for _, evt := range frame.GetEvents() {
+		if evt.GetWorkersChanged() != nil {
+			hasWorkersChanged = true
+			break
+		}
+	}
+	assert.True(t, hasWorkersChanged, "expected WorkersChanged event in control frame")
 }
 
 func TestRegistration_AutoApproveViaUnixSocket(t *testing.T) {

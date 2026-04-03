@@ -137,8 +137,11 @@ export const AppShell: ParentComponent = (props) => {
 
   // Re-fetch workers when the Hub sends a WorkersChanged control frame.
   channelManager.onHubControl((frame) => {
-    if (frame.event.case === 'workersChanged') {
-      void fetchWorkers()
+    for (const event of frame.events) {
+      if (event.kind.case === 'workersChanged') {
+        void fetchWorkers()
+        break
+      }
     }
   })
 
