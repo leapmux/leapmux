@@ -1,6 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import X from 'lucide-solid/icons/x'
-import { onCleanup, onMount, Show } from 'solid-js'
+import { onCleanup, onMount } from 'solid-js'
 import * as styles from './Dialog.css'
 import { IconButton, IconButtonState } from './IconButton'
 
@@ -78,8 +78,6 @@ export const DialogColumns: Component<{
 }> = props => (
   <div class={props.twoColumn !== false ? styles.twoColumn : styles.singleColumn}>
     <div class={styles.leftPanel}>{props.left}</div>
-    <Show when={props.twoColumn !== false}>
-      <div class={styles.rightPanel}>{props.right}</div>
-    </Show>
+    <div class={props.twoColumn !== false ? styles.rightPanel : undefined}>{props.right}</div>
   </div>
 )
