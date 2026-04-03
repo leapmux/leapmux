@@ -240,6 +240,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
           onKeyDown={(e) => {
             e.stopPropagation()
             if (e.key === 'Enter') {
+              e.preventDefault()
               commitEdit(tab)
             }
             else if (e.key === 'Escape') {

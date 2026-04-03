@@ -66,10 +66,13 @@ const TabLeaf: Component<{
             onInput={e => props.onEditInput(e.currentTarget.value)}
             onKeyDown={(e) => {
               e.stopPropagation()
-              if (e.key === 'Enter')
+              if (e.key === 'Enter') {
+                e.preventDefault()
                 props.onEditCommit()
-              else if (e.key === 'Escape')
+              }
+              else if (e.key === 'Escape') {
                 props.onEditCancel()
+              }
             }}
             onBlur={() => props.onEditCommit()}
             onClick={e => e.stopPropagation()}
