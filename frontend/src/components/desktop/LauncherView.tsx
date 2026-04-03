@@ -133,10 +133,7 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
 
     // Animate resize to launcher dimensions while still invisible
     // (opacity 0), so the user sees a smooth resize without content.
-    try {
-      await animateWindowResize(900, 680)
-    }
-    catch { /* ignore resize errors */ }
+    await animateWindowResize(900, 680)
 
     try {
       const config = await app().GetConfig()

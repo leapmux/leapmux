@@ -254,14 +254,14 @@ class WailsWebSocket {
     const token = isSoloMode() ? '' : (getToken() ?? '')
     window.go!.main.App.OpenChannelRelay(token).then(() => {
       // Listen for messages from Go.
-      window.runtime!.EventsOn('channel:message', (...args: unknown[]) => {
+      window.runtime?.EventsOn?.('channel:message', (...args: unknown[]) => {
         const b64 = args[0] as string
         const ev = { data: base64ToArrayBuffer(b64) } as MessageEvent
         this.onmessage?.(ev)
         this.dispatch('message', ev)
       })
       // Listen for relay close.
-      window.runtime!.EventsOn('channel:close', () => {
+      window.runtime?.EventsOn?.('channel:close', () => {
         this.readyState = WebSocket.CLOSED
         const ev = { code: 1000, reason: '', wasClean: true } as CloseEvent
         this.onclose?.(ev)
@@ -324,8 +324,8 @@ class WailsWebSocket {
   close(): void {
     window.go!.main.App.CloseChannelRelay()
     this.readyState = WebSocket.CLOSED
-    window.runtime!.EventsOff('channel:message')
-    window.runtime!.EventsOff('channel:close')
+    window.runtime?.EventsOff?.('channel:message')
+    window.runtime?.EventsOff?.('channel:close')
     const ev = { code: 1000, reason: '', wasClean: true } as CloseEvent
     this.onclose?.(ev)
     this.dispatch('close', ev)

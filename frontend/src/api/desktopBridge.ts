@@ -43,13 +43,13 @@ declare global {
       }
     }
     runtime?: {
-      EventsOn: (event: string, callback: (...args: unknown[]) => void) => void
-      EventsOff: (event: string) => void
-      BrowserOpenURL: (url: string) => void
-      Quit: () => void
-      WindowSetSize: (width: number, height: number) => void
-      WindowGetSize: () => Promise<{ w: number, h: number }>
-      WindowCenter: () => void
+      EventsOn?: (event: string, callback: (...args: unknown[]) => void) => void
+      EventsOff?: (event: string) => void
+      BrowserOpenURL?: (url: string) => void
+      Quit?: () => void
+      WindowSetSize?: (width: number, height: number) => void
+      WindowGetSize?: () => Promise<{ w: number, h: number }>
+      WindowCenter?: () => void
     }
   }
 }
@@ -134,12 +134,14 @@ export function animateWindowResize(targetW: number, targetH: number, durationMs
 
   // Instant snap when duration is 0.
   if (durationMs <= 0) {
-    rt.WindowSetSize(targetW, targetH)
-    rt.WindowCenter()
+    rt.WindowSetSize?.(targetW, targetH)
+    rt.WindowCenter?.()
     return Promise.resolve()
   }
 
-  return rt.WindowGetSize().then((cur: { w: number, h: number }) => {
+  // Race the animation against a timeout so a hanging WindowGetSize
+  // never blocks the caller indefinitely.
+  const animationPromise = rt.WindowGetSize().then((cur: { w: number, h: number }) => {
     if (cur.w === targetW && cur.h === targetH)
       return
 
@@ -154,8 +156,8 @@ export function animateWindowResize(targetW: number, targetH: number, durationMs
         const eased = 1 - (1 - t) ** 3
         const w = Math.round(startW + (targetW - startW) * eased)
         const h = Math.round(startH + (targetH - startH) * eased)
-        rt!.WindowSetSize(w, h)
-        rt!.WindowCenter()
+        rt!.WindowSetSize!(w, h)
+        rt!.WindowCenter?.()
 
         if (t < 1)
           requestAnimationFrame(step)
@@ -165,6 +167,27 @@ export function animateWindowResize(targetW: number, targetH: number, durationMs
 
       requestAnimationFrame(step)
     })
+  })
+
+  const timeoutPromise = new Promise<void>(resolve =>
+    setTimeout(() => {
+      // Best-effort snap to target if animation didn't complete.
+      try {
+        rt.WindowSetSize?.(targetW, targetH)
+        rt.WindowCenter?.()
+      }
+      catch { /* ignore */ }
+      resolve()
+    }, durationMs + 1000),
+  )
+
+  return Promise.race([animationPromise, timeoutPromise]).catch(() => {
+    // Swallow errors (e.g. WindowGetSize rejected).
+    try {
+      rt.WindowSetSize?.(targetW, targetH)
+      rt.WindowCenter?.()
+    }
+    catch { /* ignore */ }
   })
 }
 
