@@ -63,15 +63,14 @@ export const modeCardSelected = style({
 
 export const modeHeader = style({
   display: 'flex',
-  alignItems: 'baseline',
+  alignItems: 'center',
   justifyContent: 'flex-start',
   gap: '0.5rem',
 })
 
 export const modeIcon = style({
   fontSize: '1.25rem',
-  width: '1.5rem',
-  textAlign: 'center',
+  lineHeight: 0,
   flexShrink: 0,
 })
 
