@@ -2,6 +2,7 @@
 import type { TunnelStore } from '~/stores/tunnel.store'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { TunnelProvider } from '~/context/TunnelContext'
 import { AddTunnelDialog } from './AddTunnelDialog'
 
 beforeAll(() => {
@@ -39,15 +40,16 @@ function renderDialog(overrides?: { store?: Partial<TunnelStore>, onClose?: () =
   const onCreated = overrides?.onCreated ?? vi.fn()
 
   render(() => (
-    <AddTunnelDialog
-      workerId="w1"
-      hubURL="http://localhost:4327"
-      token="tok"
-      userId="u1"
-      tunnelStore={store}
-      onClose={onClose}
-      onCreated={onCreated}
-    />
+    <TunnelProvider store={store}>
+      <AddTunnelDialog
+        workerId="w1"
+        hubURL="http://localhost:4327"
+        token="tok"
+        userId="u1"
+        onClose={onClose}
+        onCreated={onCreated}
+      />
+    </TunnelProvider>
   ))
 
   return { store, onClose, onCreated }
@@ -179,15 +181,16 @@ describe('addTunnelDialog', () => {
     const onCreated = vi.fn()
 
     render(() => (
-      <AddTunnelDialog
-        workerId="w1"
-        hubURL="http://localhost:4327"
-        token="tok"
-        userId="u1"
-        tunnelStore={store}
-        onClose={() => {}}
-        onCreated={onCreated}
-      />
+      <TunnelProvider store={store}>
+        <AddTunnelDialog
+          workerId="w1"
+          hubURL="http://localhost:4327"
+          token="tok"
+          userId="u1"
+          onClose={() => {}}
+          onCreated={onCreated}
+        />
+      </TunnelProvider>
     ))
 
     const targetPort = screen.getByTestId('target-port')

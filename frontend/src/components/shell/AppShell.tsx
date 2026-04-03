@@ -1219,7 +1219,6 @@ export const AppShell: ParentComponent = (props) => {
             hubURL={window.location.origin}
             token={getToken() ?? ''}
             userId={auth.user()?.id ?? ''}
-            tunnelStore={tunnelStore}
             onClose={() => setAddTunnelTarget(null)}
             onCreated={() => setAddTunnelTarget(null)}
           />

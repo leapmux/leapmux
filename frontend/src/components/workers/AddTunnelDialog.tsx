@@ -1,11 +1,11 @@
 import type { Component } from 'solid-js'
 import type { TunnelInfo } from '~/api/tunnelApi'
-import type { TunnelStore } from '~/stores/tunnel.store'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createMemo, createSignal, Show } from 'solid-js'
 import { apiLoadingTimeoutMs } from '~/api/transport'
 import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
+import { useTunnel } from '~/context/TunnelContext'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { spinner } from '~/styles/animations.css'
 import { errorText } from '~/styles/shared.css'
@@ -16,7 +16,6 @@ interface AddTunnelDialogProps {
   hubURL: string
   token: string
   userId: string
-  tunnelStore: TunnelStore
   onClose: () => void
   onCreated: (tunnel: TunnelInfo) => void
 }
@@ -27,6 +26,7 @@ function isValidPort(value: string): boolean {
 }
 
 export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
+  const tunnelStore = useTunnel()
   const [tunnelType, setTunnelType] = createSignal<'port_forward' | 'socks5'>('port_forward')
   const [targetAddr, setTargetAddr] = createSignal('127.0.0.1')
   const [targetPort, setTargetPort] = createSignal('')
@@ -91,7 +91,7 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
         : Number(targetPort())
 
     try {
-      const tunnel = await props.tunnelStore.add({
+      const tunnel = await tunnelStore!.add({
         workerId: props.workerId,
         type: tunnelType(),
         targetAddr: tunnelType() === 'port_forward' ? targetAddr().trim() : '',
