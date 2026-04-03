@@ -166,6 +166,7 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			"worker_id", workerID,
 			"channel_id", channelID,
 			"correlation_id", msg.GetCorrelationId(),
+			"ciphertext_len", len(msg.GetCiphertext()),
 		)
 
 		// Validate chunked message constraints before forwarding.

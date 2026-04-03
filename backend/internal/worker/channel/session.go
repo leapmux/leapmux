@@ -192,6 +192,7 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 	if err != nil {
 		slog.Error("failed to decrypt channel message",
 			"channel_id", msg.GetChannelId(),
+			"ciphertext_len", len(msg.GetCiphertext()),
 			"error", err,
 		)
 		return

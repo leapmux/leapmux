@@ -17,7 +17,9 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
   const [error, setError] = createSignal('')
   const [version, setVersion] = createSignal('')
   const [fdaGranted, setFdaGranted] = createSignal(true)
+  const [visible, setVisible] = createSignal(false)
   let fdaPollTimer: ReturnType<typeof setInterval> | null = null
+  let containerRef: HTMLDivElement | undefined
 
   const app = () => window.go!.main.App
 
@@ -82,6 +84,17 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
     }
   }
 
+  const fadeOut = (): Promise<void> => {
+    if (!containerRef)
+      return Promise.resolve()
+    setVisible(false)
+    return new Promise((resolve) => {
+      containerRef!.addEventListener('transitionend', () => resolve(), { once: true })
+      // Fallback in case transitionend doesn't fire.
+      setTimeout(resolve, 400)
+    })
+  }
+
   const connect = async () => {
     setLoading(true)
     setError('')
@@ -92,7 +105,8 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
       else {
         await app().ConnectDistributed(hubUrl().trim())
       }
-      // Animate window to saved or default dimensions.
+      // Fade out UI, then animate window to saved or default dimensions.
+      await fadeOut()
       const config = await app().GetConfig()
       const targetW = config.window_width > 0 ? config.window_width : 1280
       const targetH = config.window_height > 0 ? config.window_height : 800
@@ -100,6 +114,7 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
       props.onConnected()
     }
     catch (err) {
+      setVisible(true)
       setError(err instanceof Error ? err.message : String(err))
       setLoading(false)
     }
@@ -131,16 +146,21 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
           await checkFDA()
           if (!fdaGranted()) {
             startFDAPoll()
+            setVisible(true)
             return
           }
         }
+        // Auto-connect silently — don't fade in unless it takes > 1s.
+        const showTimer = setTimeout(setVisible, 1000, true)
         await connect()
+        clearTimeout(showTimer)
       }
       else {
         // First launch — check FDA for default solo mode.
         await checkFDA()
         if (!fdaGranted())
           startFDAPoll()
+        setVisible(true)
       }
     }
     catch { /* ignore */ }
@@ -149,7 +169,7 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
   onCleanup(() => stopFDAPoll())
 
   return (
-    <div class={styles.container}>
+    <div ref={containerRef} class={styles.container} style={{ opacity: visible() ? 1 : 0 }}>
       <div class={styles.header}>
         <h1 class={styles.title}>LeapMux</h1>
         <p class={styles.subtitle}>Choose how you'd like to connect</p>
