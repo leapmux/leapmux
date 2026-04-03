@@ -59,7 +59,28 @@ declare global {
 
 /** Returns true when running inside the Wails desktop app. */
 export function isWailsApp(): boolean {
-  return typeof window.go?.main?.App?.ProxyHTTP === 'function'
+  // Check URL scheme first — available immediately, even before Wails
+  // injects window.go bindings (which happens asynchronously on reload).
+  return window.location.protocol === 'wails:'
+    || typeof window.go?.main?.App?.ProxyHTTP === 'function'
+}
+
+/**
+ * Returns a promise that resolves once `window.go.main.App` is available.
+ * Wails injects bindings asynchronously after page load; this polls until ready.
+ */
+export function waitForWailsBindings(): Promise<void> {
+  if (typeof window.go?.main?.App?.ProxyHTTP === 'function') {
+    return Promise.resolve()
+  }
+  return new Promise((resolve) => {
+    const check = setInterval(() => {
+      if (typeof window.go?.main?.App?.ProxyHTTP === 'function') {
+        clearInterval(check)
+        resolve()
+      }
+    }, 50)
+  })
 }
 
 // ---------------------------------------------------------------------------

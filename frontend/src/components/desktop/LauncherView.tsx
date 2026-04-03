@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import { createSignal, onCleanup, onMount, Show } from 'solid-js'
+import { waitForWailsBindings } from '~/api/desktopBridge'
 import * as styles from './LauncherView.css'
 
 const httpSchemeRegex = /^https?:\/\//i
@@ -105,6 +106,9 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
   }
 
   onMount(async () => {
+    // Wait for Wails to inject window.go bindings (async on reload).
+    await waitForWailsBindings()
+
     try {
       const ver = await app().GetVersion()
       if (ver)
