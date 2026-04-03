@@ -283,8 +283,8 @@ func (m *TunnelManager) handlePortForward(conn net.Conn, t *tunnel, ch *tunnelpk
 	}
 	defer func() { _ = target.Close() }()
 
-	// Bidirectional copy — wait for both goroutines to finish so
-	// deferred Close calls don't race with in-flight copies.
+	// Bidirectional copy — when one direction ends, close both sides so
+	// the other direction unblocks promptly.
 	done := make(chan struct{}, 2)
 	go func() {
 		defer func() { done <- struct{}{} }()
@@ -296,5 +296,8 @@ func (m *TunnelManager) handlePortForward(conn net.Conn, t *tunnel, ch *tunnelpk
 	}()
 
 	<-done
+	// One direction finished — close both to unblock the other.
+	_ = conn.Close()
+	_ = target.Close()
 	<-done
 }
