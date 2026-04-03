@@ -297,6 +297,15 @@ func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath,
 		var s soloState
 		if json.Unmarshal(data, &s) == nil && s.WorkerID != "" && s.AuthToken != "" {
 			if dbErr := server.GetWorkerByID(ctx, s.WorkerID); dbErr == nil {
+				// Backfill RegisteredBy for state files created before this field existed.
+				if s.RegisteredBy == "" {
+					if adminID, _, aErr := server.GetAdminUser(ctx); aErr == nil {
+						s.RegisteredBy = adminID
+						if updated, mErr := json.MarshalIndent(s, "", "  "); mErr == nil {
+							_ = os.WriteFile(statePath, updated, 0o600)
+						}
+					}
+				}
 				return &s, nil
 			}
 			slog.Warn("saved worker not found in DB, re-registering")
