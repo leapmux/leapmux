@@ -45,7 +45,14 @@ func main() {
 		appMenu.Append(menu.EditMenu())
 		viewMenu := appMenu.AddSubmenu("View")
 		viewMenu.AddText("Toggle Developer Tools", keys.Key("f12"), func(_ *menu.CallbackData) {
-			wailsRuntime.WindowExecJS(app.ctx, `if (window.runtime) window.runtime.openInspector();`)
+			wailsRuntime.WindowExecJS(app.ctx, `
+				(function() {
+					if (window.webkit && window.webkit.messageHandlers &&
+					    window.webkit.messageHandlers.external &&
+					    window.webkit.messageHandlers.external.postMessage)
+						window.webkit.messageHandlers.external.postMessage('wails:openInspector');
+				})();
+			`)
 		})
 		appMenu.Append(menu.WindowMenu())
 	}

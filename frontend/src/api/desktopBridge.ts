@@ -111,9 +111,10 @@ export const desktopFetch: typeof globalThis.fetch = async (input, init) => {
   const headers = Object.fromEntries(new Headers(init?.headers).entries())
   const body = init?.body ? arrayBufferToBase64(init.body as ArrayBuffer | Uint8Array | string) : ''
 
+  const parsed = new URL(url)
   const resp = await window.go!.main.App.ProxyHTTP(
     method,
-    new URL(url).pathname,
+    parsed.pathname + parsed.search,
     JSON.stringify(headers),
     body,
   )

@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"strings"
 
 	"golang.org/x/net/http2"
 )
@@ -78,7 +78,7 @@ func (a *App) ProxyHTTP(method, path, headersJSON, bodyBase64 string) (*ProxyRes
 		if err != nil {
 			return nil, fmt.Errorf("decode body: %w", err)
 		}
-		bodyReader = strings.NewReader(string(bodyBytes))
+		bodyReader = bytes.NewReader(bodyBytes)
 	}
 
 	req, err := http.NewRequest(method, url, bodyReader)

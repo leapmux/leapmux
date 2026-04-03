@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 
 	"github.com/leapmux/leapmux/solo"
@@ -48,11 +49,34 @@ func (a *App) domReady(_ context.Context) {
 	wailsRuntime.WindowCenter(a.ctx)
 	installTabKeyHandler()
 
+	// Build a native message poster for opening the WebView inspector.
+	// The Wails JS runtime does not expose an openInspector API; the
+	// native WebView message handler must be used directly.
+	// The inspector message name differs per platform:
+	//   macOS:   "wails:openInspector"
+	//   Linux:   "wails:showInspector"
+	//   Windows: handled by WebView2 natively (F12 key), no message needed
+	inspectorMsg := "wails:showInspector"
+	if runtime.GOOS == "darwin" {
+		inspectorMsg = "wails:openInspector"
+	}
+
 	// Inject minimal JS helpers for external links and keyboard shortcuts.
 	// Since the SPA is served from wails://, Go bindings (window.go.main.App.*)
 	// work natively. We only need link interception and dev tools shortcuts.
-	wailsRuntime.WindowExecJS(a.ctx, `
+	wailsRuntime.WindowExecJS(a.ctx, fmt.Sprintf(`
 (function() {
+	// Build a postMessage helper for the native WebView message handler.
+	var __post = (function() {
+		if (window.chrome && window.chrome.webview && window.chrome.webview.postMessage)
+			return function(m) { window.chrome.webview.postMessage(m); };
+		if (window.webkit && window.webkit.messageHandlers &&
+		    window.webkit.messageHandlers.external &&
+		    window.webkit.messageHandlers.external.postMessage)
+			return function(m) { window.webkit.messageHandlers.external.postMessage(m); };
+		return null;
+	})();
+
 	// Intercept clicks on external links and open them in the default browser.
 	document.addEventListener('click', function(e) {
 		var el = e.target;
@@ -64,21 +88,21 @@ func (a *App) domReady(_ context.Context) {
 		if (href && /^https?:\/\//.test(href)) {
 			e.preventDefault();
 			e.stopPropagation();
-			if (window.runtime) window.runtime.BrowserOpenURL(href);
+			if (__post) __post('BO:' + href);
 		}
 	}, true);
 
 	document.addEventListener('keydown', function(e) {
 		if (e.key === 'F12') {
-			if (window.runtime) window.runtime.WindowExecJS("wailsRuntime.openInspector()");
+			if (__post) __post('%s');
 		}
 		if (e.key === 'q' && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
-			if (window.runtime) window.runtime.Quit();
+			if (__post) __post('Q');
 		}
 	}, true);
 })();
-`)
+`, inspectorMsg))
 
 	// Flush buffered log records to the WebView console now that the
 	// navigated page's DOM is ready and WindowExecJS calls will land.
