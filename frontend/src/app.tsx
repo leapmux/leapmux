@@ -56,6 +56,29 @@ const PreferencesApplier: ParentComponent = (props) => {
   )
 }
 
+/**
+ * Wraps app content in desktop mode to prevent a brief flash of
+ * "Loading..." from AuthGuard while auth is resolving. Starts at
+ * opacity 0 and fades in after a short delay.
+ */
+const DesktopFadeIn: ParentComponent = (props) => {
+  const [opacity, setOpacity] = createSignal(isWailsApp() ? 0 : 1)
+
+  onMount(() => {
+    if (!isWailsApp())
+      return
+    // Delay slightly to let auth resolve before fading in.
+    const timer = setTimeout(setOpacity, 150, 1)
+    onCleanup(() => clearTimeout(timer))
+  })
+
+  return (
+    <div style={{ height: '100%', opacity: opacity(), transition: 'opacity 0.3s ease' }}>
+      {props.children}
+    </div>
+  )
+}
+
 export default function App() {
   const [desktopConnected, setDesktopConnected] = createSignal(!isWailsApp())
   // Expose so UserMenu's "Switch mode..." can reset without page reload.
@@ -137,15 +160,17 @@ export default function App() {
         when={desktopConnected()}
         fallback={<LauncherView onConnected={() => setDesktopConnected(true)} />}
       >
-        <AuthProvider>
-          <PreferencesProvider>
-            <PreferencesApplier>
-              <Router root={props => <Suspense>{props.children}</Suspense>}>
-                <FileRoutes />
-              </Router>
-            </PreferencesApplier>
-          </PreferencesProvider>
-        </AuthProvider>
+        <DesktopFadeIn>
+          <AuthProvider>
+            <PreferencesProvider>
+              <PreferencesApplier>
+                <Router root={props => <Suspense>{props.children}</Suspense>}>
+                  <FileRoutes />
+                </Router>
+              </PreferencesApplier>
+            </PreferencesProvider>
+          </AuthProvider>
+        </DesktopFadeIn>
       </Show>
     </div>
   )
