@@ -1,7 +1,5 @@
 import { style } from '@vanilla-extract/css'
 
-export { errorText } from '~/styles/shared.css'
-
 export const typeSelector = style({
   display: 'flex',
   gap: 'var(--space-4)',

@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/leapmux/leapmux/channelproto"
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
@@ -469,7 +469,7 @@ func TestRegistration_AutoApproveViaUnixSocket_E2E(t *testing.T) {
 	// arrives. The Hub debounces control frames (default 3s), so we wait.
 	var frame leapmuxv1.HubControlFrame
 	for {
-		msg, readErr := channelproto.ReadChannelMessage(ctx, ws)
+		msg, readErr := channelwire.ReadChannelMessage(ctx, ws)
 		require.NoError(t, readErr, "timeout waiting for control frame on WebSocket")
 
 		if msg.GetChannelId() != channelmgr.HubControlChannelID {

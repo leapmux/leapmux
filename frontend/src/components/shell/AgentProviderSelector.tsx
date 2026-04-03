@@ -4,12 +4,12 @@ import Check from 'lucide-solid/icons/check'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
 import { createMemo, For, Show } from 'solid-js'
 import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
+import { labelRow } from '~/components/common/Dialog.css'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { getAvailableAgentProviders, sortAgentProvidersByName } from '~/lib/agentProviders'
-import { labelRow } from '~/styles/shared.css'
 import * as styles from './AgentProviderSelector.css'
 
 interface AgentProviderSelectorProps {

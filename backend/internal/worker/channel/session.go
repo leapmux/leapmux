@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"google.golang.org/protobuf/proto"
@@ -55,10 +56,10 @@ func NewManager(
 	closeCallback CloseCallback,
 ) *Manager {
 	if maxMessageSize <= 0 {
-		maxMessageSize = DefaultMaxMessageSize
+		maxMessageSize = channelwire.DefaultMaxMessageSize
 	}
 	if maxIncompleteChunked <= 0 {
-		maxIncompleteChunked = DefaultMaxIncompleteChunked
+		maxIncompleteChunked = channelwire.DefaultMaxIncompleteChunked
 	}
 	return &Manager{
 		sessions:             make(map[string]*channelSession),
@@ -397,7 +398,7 @@ type channelSender struct {
 }
 
 // sendEncrypted marshals an InnerMessage envelope, encrypts, and sends.
-// If the marshaled data exceeds MaxChunkPlaintext, it is split into chunks,
+// If the marshaled data exceeds channelwire.MaxPlaintextPerChunk, it is split into chunks,
 // each encrypted separately and sent with flags=MORE except the last.
 func (s *channelSender) sendEncrypted(requestID uint32, envelope *leapmuxv1.InnerMessage) error {
 	data, err := proto.Marshal(envelope)
@@ -413,7 +414,7 @@ func (s *channelSender) sendEncrypted(requestID uint32, envelope *leapmuxv1.Inne
 	defer s.mu.Unlock()
 
 	// Fast path: single frame.
-	if len(data) <= MaxChunkPlaintext {
+	if len(data) <= channelwire.MaxPlaintextPerChunk {
 		ciphertext, encErr := s.session.Encrypt(data)
 		if encErr != nil {
 			return fmt.Errorf("encrypt inner message: %w", encErr)
@@ -436,9 +437,9 @@ func (s *channelSender) sendEncrypted(requestID uint32, envelope *leapmuxv1.Inne
 		})
 	}
 
-	// Chunked path: split data into MaxChunkPlaintext-sized chunks.
+	// Chunked path: split data into channelwire.MaxPlaintextPerChunk-sized chunks.
 	for offset := 0; offset < len(data); {
-		end := offset + MaxChunkPlaintext
+		end := offset + channelwire.MaxPlaintextPerChunk
 		if end > len(data) {
 			end = len(data)
 		}

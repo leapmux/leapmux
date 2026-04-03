@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import { createSignal, Show } from 'solid-js'
 
+import { errorText, successText } from '~/styles/shared.css'
 import * as styles from './PreferencesDialog.css'
 
 export const PasswordSettings: Component = () => {
@@ -53,7 +54,7 @@ export const PasswordSettings: Component = () => {
           <input type="password" value={confirmPassword()} onInput={e => setConfirmPassword(e.currentTarget.value)} />
         </label>
         <Show when={passwordMessage()}>
-          {msg => <div class={msg().type === 'success' ? styles.successText : styles.errorText}>{msg().text}</div>}
+          {msg => <div class={msg().type === 'success' ? successText : errorText}>{msg().text}</div>}
         </Show>
         <button onClick={handleChangePassword} disabled={passwordSaving() || !currentPassword() || !newPassword()}>
           {passwordSaving() ? 'Changing...' : 'Change Password'}

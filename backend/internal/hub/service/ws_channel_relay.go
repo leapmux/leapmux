@@ -8,7 +8,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/leapmux/leapmux/channelproto"
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
@@ -76,7 +76,7 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	wsConn.SetReadLimit(channelproto.WSReadLimit)
+	wsConn.SetReadLimit(channelwire.WSReadLimit)
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -91,7 +91,7 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			"channel_id", msg.GetChannelId(),
 			"correlation_id", msg.GetCorrelationId(),
 		)
-		return channelproto.WriteChannelMessage(ctx, wsConn, msg)
+		return channelwire.WriteChannelMessage(ctx, wsConn, msg)
 	}, cancel)
 
 	slog.Info("channel relay connected", "user_id", user.ID, "conn_id", connID)
@@ -124,7 +124,7 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 	// Read messages from frontend and route to the correct worker.
 	for {
-		msg, err := channelproto.ReadChannelMessage(ctx, wsConn)
+		msg, err := channelwire.ReadChannelMessage(ctx, wsConn)
 		if err != nil {
 			if ctx.Err() != nil {
 				return // Context cancelled.

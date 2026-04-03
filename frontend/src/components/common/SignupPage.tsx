@@ -8,6 +8,7 @@ import { Icon } from '~/components/common/Icon'
 import { useAuth } from '~/context/AuthContext'
 import { sanitizeSlug } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
+import { cardNarrow, errorText } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
 import { NotFoundPage } from './NotFoundPage'
 
@@ -84,7 +85,7 @@ export const SignupPage: Component = () => {
         )}
       >
         <div class={styles.container}>
-          <div class={`card ${styles.authCard}`}>
+          <div class={`card ${cardNarrow}`}>
             <h1>Sign Up</h1>
             <Show when={verificationSent()}>
               <div class={styles.verificationMessage}>
@@ -116,7 +117,7 @@ export const SignupPage: Component = () => {
                   <input type="password" value={confirmPassword()} onInput={e => setConfirmPassword(e.currentTarget.value)} autocomplete="new-password" />
                 </label>
                 <Show when={error()}>
-                  <div class={styles.errorText}>{error()}</div>
+                  <div class={errorText}>{error()}</div>
                 </Show>
                 <button type="submit" disabled={submitting() || !username() || !password()}>
                   <Show when={submitting()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>

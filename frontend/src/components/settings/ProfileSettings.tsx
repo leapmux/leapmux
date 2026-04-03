@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import { createSignal, onMount, Show } from 'solid-js'
 import { useAuth } from '~/context/AuthContext'
 import { sanitizeSlug } from '~/lib/validate'
+import { errorText, successText, warningText } from '~/styles/shared.css'
 import * as styles from './PreferencesDialog.css'
 
 export const ProfileSettings: Component = () => {
@@ -56,7 +57,7 @@ export const ProfileSettings: Component = () => {
           <input type="text" value={username()} onInput={e => setUsername(e.currentTarget.value)} />
         </label>
         <Show when={username() !== auth.user()?.username}>
-          <div class={styles.warningText}>Changing your username will also rename your personal organization.</div>
+          <div class={warningText}>Changing your username will also rename your personal organization.</div>
         </Show>
         <label class={styles.fieldLabel}>
           Display Name
@@ -67,7 +68,7 @@ export const ProfileSettings: Component = () => {
           <input type="email" value={email()} onInput={e => setEmail(e.currentTarget.value)} />
         </label>
         <Show when={profileMessage()}>
-          {msg => <div class={msg().type === 'success' ? styles.successText : styles.errorText}>{msg().text}</div>}
+          {msg => <div class={msg().type === 'success' ? successText : errorText}>{msg().text}</div>}
         </Show>
         <button onClick={handleSaveProfile} disabled={profileSaving()}>
           {profileSaving() ? 'Saving...' : 'Save Profile'}

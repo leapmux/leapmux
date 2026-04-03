@@ -79,7 +79,7 @@ func (m *TunnelManager) CreateTunnel(parentCtx context.Context, cfg TunnelConfig
 		return nil, fmt.Errorf("workerId is required")
 	}
 	if cfg.Type != tunnelTypePortForward && cfg.Type != tunnelTypeSocks5 {
-		return nil, fmt.Errorf("type must be 'port_forward' or 'socks5'")
+		return nil, fmt.Errorf("type must be '%s' or '%s'", tunnelTypePortForward, tunnelTypeSocks5)
 	}
 	if cfg.Type == tunnelTypePortForward {
 		if cfg.TargetAddr == "" {

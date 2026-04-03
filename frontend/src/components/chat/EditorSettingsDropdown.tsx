@@ -10,10 +10,8 @@ import { Icon } from '~/components/common/Icon'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { spinner } from '~/styles/animations.css'
 import * as styles from './ChatView.css'
-import { getProviderPlugin } from './providers'
-
-// Re-export shared settings utilities for external consumers.
-export { RadioGroup } from './settingsShared'
+import { getProviderPlugin } from './providers/registry'
+import './providers'
 
 export interface EditorSettingsDropdownProps {
   disabled?: boolean

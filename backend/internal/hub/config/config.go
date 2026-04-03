@@ -9,7 +9,7 @@ import (
 
 	"github.com/knadh/koanf/v2"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
-	hubdb "github.com/leapmux/leapmux/internal/hub/db"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
 
 const (
@@ -146,7 +146,7 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 		{"addr", "addr", "listen address", strVal(addr), nil, nil},
 		{"data-dir", "data_dir", "data directory", strVal("."), nil, nil},
 		{"dev-frontend", "dev_frontend", "Vite dev server URL for reverse proxy (dev mode only)", strVal(""), nil, nil},
-		{"db-max-conns", "db_max_conns", "maximum number of open database connections", nil, intVal(hubdb.DefaultMaxConns), nil},
+		{"db-max-conns", "db_max_conns", "maximum number of open database connections", nil, intVal(sqlitedb.DefaultMaxConns), nil},
 		{"max-message-size", "max_message_size", "maximum reassembled channel message size in bytes (default 16 MiB)", nil, intVal(0), nil},
 		{"max-incomplete-chunked", "max_incomplete_chunked", "maximum in-flight chunked sequences per channel (default 4)", nil, intVal(0), nil},
 		{"log-level", "log_level", "log level (debug, info, warn, error)", strVal(defaultLogLevel), nil, nil},

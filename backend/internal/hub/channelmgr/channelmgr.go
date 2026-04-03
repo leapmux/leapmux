@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
@@ -63,8 +64,8 @@ type config struct {
 
 func defaultConfig() *config {
 	return &config{
-		maxMessageSize:       DefaultMaxMessageSize,
-		maxIncompleteChunked: DefaultMaxIncompleteChunked,
+		maxMessageSize:       channelwire.DefaultMaxMessageSize,
+		maxIncompleteChunked: channelwire.DefaultMaxIncompleteChunked,
 	}
 }
 

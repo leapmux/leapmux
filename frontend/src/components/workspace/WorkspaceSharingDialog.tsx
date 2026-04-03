@@ -10,6 +10,7 @@ import { useOrg } from '~/context/OrgContext'
 import { ShareMode } from '~/generated/leapmux/v1/common_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { spinner } from '~/styles/animations.css'
+import { errorText } from '~/styles/shared.css'
 import * as styles from './WorkspaceSharingDialog.css'
 
 interface WorkspaceSharingDialogProps {
@@ -108,7 +109,7 @@ export const WorkspaceSharingDialog: Component<WorkspaceSharingDialogProps> = (p
               </div>
             </Show>
             <Show when={error()}>
-              <div class={styles.errorText}>{error()}</div>
+              <div class={errorText}>{error()}</div>
             </Show>
           </div>
         </section>

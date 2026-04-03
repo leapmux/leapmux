@@ -1,4 +1,4 @@
-import { globalStyle, style } from '@vanilla-extract/css'
+import { style } from '@vanilla-extract/css'
 
 export const errorText = style({
   color: 'var(--danger)',
@@ -21,21 +21,6 @@ export const emptyState = style({
   justifyContent: 'center',
   padding: 'var(--space-6)',
   color: 'var(--faint-foreground)',
-})
-
-export const backLink = style({
-  'display': 'inline-block',
-  'marginBottom': 'var(--space-4)',
-  'color': 'var(--primary)',
-  'textDecoration': 'none',
-  ':hover': {
-    color: 'var(--primary)',
-  },
-})
-
-export const monoFont = style({
-  fontFamily: 'var(--font-mono)',
-  fontVariantLigatures: 'none',
 })
 
 // Menu utilities
@@ -69,231 +54,16 @@ export const heightFull = style({
   height: '100%',
 })
 
-// Auth card sizes
+// Card width variants
 
-export const authCard = style({
+export const cardNarrow = style({
   width: '360px',
 })
 
-export const authCardWide = style({
+export const cardMedium = style({
   width: '400px',
 })
 
-export const authCardXWide = style({
+export const cardWide = style({
   width: '440px',
-})
-
-// Dialog sizes
-
-export const dialogStandard = style({
-  'position': 'relative',
-  'minWidth': '360px',
-  'maxWidth': '900px',
-  'display': 'flex',
-  'flexDirection': 'column',
-  '@media': {
-    '(max-width: 639px)': {
-      minWidth: 'unset',
-      maxWidth: '100vw',
-      width: '100vw',
-    },
-  },
-})
-
-export const dialogWide = style({
-  width: 'min(900px, 90vw)',
-})
-
-export const dialogTall = style({
-  'height': '80vh',
-  '@media': {
-    '(max-width: 479px)': {
-      height: '100vh',
-    },
-  },
-})
-
-export const dialogHeader = style({
-  display: 'flex',
-  flexDirection: 'row',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  gap: 0,
-  padding: 'var(--space-4) var(--space-6) 0',
-})
-
-export const dialogCloseButton = style({
-  position: 'absolute',
-  top: 'var(--space-6)',
-  right: 'var(--space-6)',
-})
-
-globalStyle(`${dialogHeader} > h2`, {
-  margin: 0,
-})
-
-// Dialog body wrapper provides consistent padding for all dialog content.
-export const dialogBody = style({
-  display: 'flex',
-  flexDirection: 'column',
-  flex: '1 1 auto',
-  minHeight: 0,
-  overflow: 'hidden',
-  padding: 'var(--space-6)',
-  paddingBlockStart: 'var(--space-4)',
-})
-
-// Footer inside dialog body
-globalStyle(`${dialogStandard} > .${dialogBody} > footer, ${dialogStandard} > .${dialogBody} > form > footer`, {
-  display: 'flex',
-  justifyContent: 'flex-end',
-  gap: 'var(--space-2)',
-  paddingBlockStart: 'var(--space-6)',
-})
-
-// Make dialog forms use flex layout so the tree container can fill remaining space.
-globalStyle(`${dialogStandard} > .${dialogBody} > form`, {
-  display: 'flex',
-  flexDirection: 'column',
-  overflow: 'hidden',
-  flex: 1,
-  minHeight: 0,
-})
-
-globalStyle(`${dialogStandard} > .${dialogBody} > section`, {
-  display: 'flex',
-  flexDirection: 'column',
-  flex: 1,
-  minHeight: 0,
-  overflowY: 'auto',
-})
-
-globalStyle(`${dialogStandard} > .${dialogBody} > form > section`, {
-  display: 'flex',
-  flexDirection: 'column',
-  flex: 1,
-  minHeight: 0,
-})
-
-globalStyle(`${dialogStandard} > .${dialogBody} > form > section > .vstack`, {
-  flex: 1,
-  minHeight: 0,
-})
-
-// Dialog form utilities
-
-export const labelRow = style({
-  display: 'flex',
-  alignItems: 'center',
-  gap: '6px',
-})
-
-export const treeContainer = style({
-  flex: 1,
-  minHeight: 0,
-  border: '1px solid var(--border)',
-  borderRadius: 'var(--radius-medium)',
-  overflow: 'hidden',
-})
-
-// The element wrapping the DirectoryTree needs to grow and use flex layout.
-// This targets both single-column (.vstack > div > div) and two-column (.vstack > grid > panel) layouts.
-globalStyle(`${dialogStandard} > .${dialogBody} > form > section > .vstack :has(> .${treeContainer})`, {
-  display: 'flex',
-  flexDirection: 'column',
-  flex: 1,
-  minHeight: 0,
-})
-
-// Git mode options
-
-export const checkboxRow = style({
-  display: 'flex',
-  alignItems: 'center',
-  gap: 'var(--space-2)',
-  cursor: 'pointer',
-})
-
-export const pathPreview = style({
-  fontSize: 'var(--text-8)',
-  color: 'var(--muted-foreground)',
-  wordBreak: 'break-all',
-})
-
-export const dialogTopSection = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 'var(--space-4)',
-})
-
-export const dialogTopTwoColumn = style({
-  'display': 'grid',
-  'gridTemplateColumns': '1fr 1fr',
-  'gap': 'var(--space-4)',
-  '@media': {
-    '(max-width: 639px)': {
-      gridTemplateColumns: '1fr',
-    },
-  },
-})
-
-export const dialogTwoColumn = style({
-  'display': 'grid',
-  'gridTemplateColumns': '1fr 1fr',
-  'gap': 'var(--space-4)',
-  'flex': 1,
-  'minHeight': 0,
-  '@media': {
-    '(max-width: 639px)': {
-      gridTemplateColumns: '1fr',
-    },
-  },
-})
-
-export const dialogSingleColumn = style({
-  display: 'flex',
-  flexDirection: 'column',
-  flex: 1,
-  minHeight: 0,
-})
-
-export const dialogLeftPanel = style({
-  display: 'flex',
-  flexDirection: 'column',
-  minHeight: 0,
-  overflow: 'hidden',
-  gap: 'var(--space-4)',
-})
-
-export const dialogRightPanel = style({
-  display: 'flex',
-  flexDirection: 'column',
-  minHeight: 0,
-  overflowY: 'auto',
-})
-
-// In two-column layout, the grid and its left panel must fill remaining height.
-globalStyle(`${dialogStandard} > .${dialogBody} > form > section > .vstack > .${dialogTwoColumn}`, {
-  flex: 1,
-  minHeight: 0,
-})
-
-export const radioGroup = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 'var(--space-3)',
-})
-
-export const radioRow = style({
-  display: 'flex',
-  alignItems: 'center',
-  gap: 'var(--space-2)',
-  cursor: 'pointer',
-})
-
-export const radioSubContent = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 'var(--space-2)',
-  paddingLeft: 'var(--space-6)',
 })

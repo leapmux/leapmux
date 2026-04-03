@@ -1,7 +1,5 @@
 import { style } from '@vanilla-extract/css'
 
-export { errorText, successText } from '~/styles/shared.css'
-
 export const section = style({
   marginBottom: 'var(--space-6)',
   borderBottom: '1px solid var(--border)',

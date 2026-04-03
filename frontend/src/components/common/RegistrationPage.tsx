@@ -8,6 +8,7 @@ import { orgClient, workerClient } from '~/api/clients'
 import { Icon } from '~/components/common/Icon'
 import { RegistrationStatus } from '~/generated/leapmux/v1/worker_pb'
 import { spinner } from '~/styles/animations.css'
+import { cardWide, errorText } from '~/styles/shared.css'
 import { NotFoundPage } from './NotFoundPage'
 import * as styles from './RegistrationPage.css'
 
@@ -87,7 +88,7 @@ export const RegistrationPage: Component<RegistrationPageProps> = (props) => {
       when={!loading()}
       fallback={(
         <div class={styles.container}>
-          <div class={`card ${styles.authCardXWide}`}>
+          <div class={`card ${cardWide}`}>
             <h1>Approve Worker</h1>
             <div class={styles.successText}>Loading registration...</div>
           </div>
@@ -123,7 +124,7 @@ export const RegistrationPage: Component<RegistrationPageProps> = (props) => {
         </Show>
         <Show when={registration()?.status !== RegistrationStatus.APPROVED && registration()?.status !== RegistrationStatus.EXPIRED}>
           <div class={styles.container}>
-            <div class={`card ${styles.authCardXWide}`}>
+            <div class={`card ${cardWide}`}>
               <Show
                 when={approved()}
                 fallback={(
@@ -161,7 +162,7 @@ export const RegistrationPage: Component<RegistrationPageProps> = (props) => {
                         </select>
                       </label>
                       <Show when={error()}>
-                        <div class={styles.errorText}>{error()}</div>
+                        <div class={errorText}>{error()}</div>
                       </Show>
                       <button
                         type="submit"

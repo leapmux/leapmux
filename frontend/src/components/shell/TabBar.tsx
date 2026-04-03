@@ -21,7 +21,7 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
 import { useMruProviders } from '~/hooks/useMruProviders'
 import { tabKey, TabType } from '~/stores/tab.store'
-import { menuSectionHeader, monoFont } from '~/styles/shared.css'
+import { menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
 import { TABBAR_ZONE_PREFIX, useTabDrag } from './TabDragContext'
 
@@ -310,7 +310,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
       <For each={props.availableShells ?? []}>
         {shell => (
           <button role="menuitem" onClick={() => props.onNewTerminalWithShell?.(shell)}>
-            <span class={monoFont}>{shell}</span>
+            <code>{shell}</code>
             <Show when={shell === props.defaultShell}>
               <span class={styles.shellDefault}>(default)</span>
             </Show>

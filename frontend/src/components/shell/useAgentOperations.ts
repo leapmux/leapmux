@@ -11,8 +11,8 @@ import { createEffect, createSignal, on } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { clearAttachments } from '~/components/chat/attachments'
-import { getProviderPlugin } from '~/components/chat/providers'
 import { CODEX_EXTRA_COLLABORATION_MODE, DEFAULT_CODEX_COLLABORATION_MODE } from '~/components/chat/providers/codex'
+import { getProviderPlugin } from '~/components/chat/providers/registry'
 import { optionGroupDefaultValue, optionGroupLabel } from '~/components/chat/settingsShared'
 import { showWarnToast } from '~/components/common/Toast'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
@@ -21,6 +21,7 @@ import { base64ToUint8Array } from '~/lib/base64'
 import { createLogger } from '~/lib/logger'
 import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
 import { defaultEffortForProvider, defaultModelForProvider } from '~/utils/controlResponse'
+import '~/components/chat/providers'
 
 const logger = createLogger('useAgentOperations')
 

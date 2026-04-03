@@ -3,6 +3,7 @@ package channel
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/channelwire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -56,7 +57,7 @@ func TestDispatcher_RegisterAndDispatch(t *testing.T) {
 		channelID:      "test-ch",
 		session:        workerSession,
 		sendFn:         sender.send,
-		maxMessageSize: DefaultMaxMessageSize,
+		maxMessageSize: channelwire.DefaultMaxMessageSize,
 	}
 
 	d.Dispatch("user-1", &leapmuxv1.InnerRpcRequest{
@@ -100,7 +101,7 @@ func TestDispatcher_PanicRecovery(t *testing.T) {
 		channelID:      "test-ch",
 		session:        workerSession,
 		sendFn:         sender.send,
-		maxMessageSize: DefaultMaxMessageSize,
+		maxMessageSize: channelwire.DefaultMaxMessageSize,
 	}
 
 	// Dispatch should not panic — the panic should be recovered and
@@ -142,7 +143,7 @@ func TestDispatcher_UnknownMethod(t *testing.T) {
 		channelID:      "test-ch",
 		session:        workerSession,
 		sendFn:         sender.send,
-		maxMessageSize: DefaultMaxMessageSize,
+		maxMessageSize: channelwire.DefaultMaxMessageSize,
 	}
 
 	d.Dispatch("user-1", &leapmuxv1.InnerRpcRequest{

@@ -1,6 +1,6 @@
-// Package channelproto provides shared wire-format helpers and constants for
+// Package channelwire provides shared wire-format helpers and constants for
 // the E2EE channel relay protocol used between Frontend/Desktop and Hub.
-package channelproto
+package channelwire
 
 import (
 	"context"
@@ -21,6 +21,10 @@ const (
 
 	// DefaultMaxMessageSize is the maximum reassembled message size (16 MiB).
 	DefaultMaxMessageSize = 16 * 1024 * 1024
+
+	// DefaultMaxIncompleteChunked is the maximum number of in-flight chunked
+	// sequences per channel before new ones are rejected.
+	DefaultMaxIncompleteChunked = 4
 
 	// WSReadLimit is the WebSocket per-message read limit for channel relays.
 	// It must exceed the max ciphertext size to accommodate the 4-byte length

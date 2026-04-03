@@ -8,6 +8,7 @@ import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { spinner } from '~/styles/animations.css'
+import { errorText } from '~/styles/shared.css'
 import * as styles from './AddTunnelDialog.css'
 
 interface AddTunnelDialogProps {
@@ -147,7 +148,7 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
                 data-testid="target-addr"
               />
               <Show when={targetAddrError()}>
-                <div class={styles.errorText}>{targetAddrError()}</div>
+                <div class={errorText}>{targetAddrError()}</div>
               </Show>
             </div>
             <div>
@@ -161,7 +162,7 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
                 data-testid="target-port"
               />
               <Show when={targetPortError()}>
-                <div class={styles.errorText}>{targetPortError()}</div>
+                <div class={errorText}>{targetPortError()}</div>
               </Show>
             </div>
           </div>
@@ -178,7 +179,7 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
               data-testid="bind-addr"
             />
             <Show when={bindAddrError()}>
-              <div class={styles.errorText}>{bindAddrError()}</div>
+              <div class={errorText}>{bindAddrError()}</div>
             </Show>
           </div>
           <div>
@@ -192,13 +193,13 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
               data-testid="bind-port"
             />
             <Show when={bindPortError()}>
-              <div class={styles.errorText}>{bindPortError()}</div>
+              <div class={errorText}>{bindPortError()}</div>
             </Show>
           </div>
         </div>
 
         <Show when={error()}>
-          <div class={styles.errorText}>{error()}</div>
+          <div class={errorText}>{error()}</div>
         </Show>
 
         <footer>

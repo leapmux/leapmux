@@ -3,6 +3,7 @@ import { createSignal, For, onMount, Show } from 'solid-js'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
 import { sanitizeName } from '~/lib/validate'
+import { errorText, successText } from '~/styles/shared.css'
 import * as styles from './PreferencesDialog.css'
 
 export const FontSettings: Component = () => {
@@ -297,7 +298,7 @@ export const FontSettings: Component = () => {
       </Show>
 
       <Show when={fontMessage()}>
-        {msg => <div class={msg().type === 'success' ? styles.successText : styles.errorText}>{msg().text}</div>}
+        {msg => <div class={msg().type === 'success' ? successText : errorText}>{msg().text}</div>}
       </Show>
     </div>
   )

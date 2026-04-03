@@ -1,8 +1,8 @@
 import type { Component } from 'solid-js'
 import type { WorkerDialogState } from '~/hooks/createWorkerDialogState'
 import { For, Show } from 'solid-js'
+import { labelRow } from '~/components/common/Dialog.css'
 import { RefreshButton } from '~/components/common/RefreshButton'
-import { labelRow } from '~/styles/shared.css'
 
 interface WorkerSelectorProps {
   state: WorkerDialogState

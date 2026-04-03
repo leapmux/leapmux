@@ -15,7 +15,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
-	workerdb "github.com/leapmux/leapmux/internal/worker/db"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
 
 const (
@@ -155,7 +155,7 @@ func Load(args []string) (*Config, bool, error) {
 	fs.String("hub", defaultHubURL, "Hub server URL or unix:<socket-path>")
 	fs.String("name", "", "worker display name (default: hostname)")
 	fs.String("data-dir", ".", "data directory")
-	fs.Int("db-max-conns", workerdb.DefaultMaxConns, "maximum number of open database connections")
+	fs.Int("db-max-conns", sqlitedb.DefaultMaxConns, "maximum number of open database connections")
 	fs.Int("max-message-size", 0, "maximum reassembled channel message size in bytes (default 16 MiB)")
 	fs.Int("max-incomplete-chunked", 0, "maximum in-flight chunked sequences per channel (default 4)")
 	fs.Int("agent-startup-timeout-seconds", DefaultAgentStartupTimeoutSeconds, "agent startup timeout in seconds")
@@ -192,7 +192,7 @@ func Load(args []string) (*Config, bool, error) {
 		"hub":                           defaultHubURL,
 		"name":                          "",
 		"data_dir":                      ".",
-		"db_max_conns":                  workerdb.DefaultMaxConns,
+		"db_max_conns":                  sqlitedb.DefaultMaxConns,
 		"max_message_size":              0,
 		"max_incomplete_chunked":        0,
 		"agent_startup_timeout_seconds": DefaultAgentStartupTimeoutSeconds,

@@ -38,7 +38,7 @@ import {
   systemInitRenderer,
 } from './notificationRenderers'
 import { exitPlanModeRenderer, renderExitPlanMode } from './planModeRenderers'
-import { getProviderPlugin } from './providers'
+import { getProviderPlugin } from './providers/registry'
 import {
   askUserQuestionRenderer,
   renderAskUserQuestion,
@@ -46,19 +46,20 @@ import {
   taskNotificationRenderer,
   todoWriteRenderer,
 } from './taskRenderers'
-
 import {
   agentPromptRenderer,
   ToolHeaderActions,
   toolResultRenderer,
   toolUseRenderer,
 } from './toolRenderers'
+
 import {
   toolInputText,
   toolMessage,
   toolUseHeader,
   toolUseIcon,
 } from './toolStyles.css'
+import './providers'
 
 export { ToolHeaderActions }
 

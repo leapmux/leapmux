@@ -1,12 +1,13 @@
 import type { Component, JSX } from 'solid-js'
 import X from 'lucide-solid/icons/x'
-import { onCleanup, onMount } from 'solid-js'
-import { dialogBody, dialogCloseButton, dialogHeader, dialogStandard, dialogTall } from '~/styles/shared.css'
+import { onCleanup, onMount, Show } from 'solid-js'
+import * as styles from './Dialog.css'
 import { IconButton, IconButtonState } from './IconButton'
 
 interface DialogProps {
   'title': string
   'tall'?: boolean
+  'wide'?: boolean
   'busy'?: boolean
   'class'?: string
   'data-testid'?: string
@@ -29,7 +30,7 @@ export const Dialog: Component<DialogProps> = (props) => {
   return (
     <dialog
       ref={dialogRef}
-      class={`${dialogStandard}${props.tall ? ` ${dialogTall}` : ''}${props.class ? ` ${props.class}` : ''}`}
+      class={`${styles.standard}${props.tall ? ` ${styles.tall}` : ''}${props.wide ? ` ${styles.wide}` : ''}${props.class ? ` ${props.class}` : ''}`}
       data-testid={props['data-testid']}
       aria-label={props.title}
       closedby={props.busy ? 'none' : 'any'}
@@ -38,12 +39,12 @@ export const Dialog: Component<DialogProps> = (props) => {
           props.onClose()
       }}
     >
-      <header class={dialogHeader}>
+      <header class={styles.header}>
         <h2>{props.title}</h2>
         <IconButton
           icon={X}
           size="sm"
-          class={dialogCloseButton}
+          class={styles.closeButton}
           state={props.busy ? IconButtonState.Disabled : undefined}
           onClick={() => {
             if (!props.busy)
@@ -52,9 +53,33 @@ export const Dialog: Component<DialogProps> = (props) => {
           aria-label="Close"
         />
       </header>
-      <div class={dialogBody}>
+      <div class={styles.body}>
         {props.children}
       </div>
     </dialog>
   )
 }
+
+/** Wraps the top form controls with vertical gap. */
+export const DialogTopSection: Component<{ children: JSX.Element }> = props => (
+  <div class={styles.topSection}>{props.children}</div>
+)
+
+/** Two-column responsive grid for the top row of form controls. */
+export const DialogTopRow: Component<{ children: JSX.Element }> = props => (
+  <div class={styles.topTwoColumn}>{props.children}</div>
+)
+
+/** Switchable one/two-column layout for the main dialog content area. */
+export const DialogColumns: Component<{
+  twoColumn?: boolean
+  left: JSX.Element
+  right?: JSX.Element
+}> = props => (
+  <div class={props.twoColumn !== false ? styles.twoColumn : styles.singleColumn}>
+    <div class={styles.leftPanel}>{props.left}</div>
+    <Show when={props.twoColumn !== false}>
+      <div class={styles.rightPanel}>{props.right}</div>
+    </Show>
+  </div>
+)

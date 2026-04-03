@@ -12,7 +12,8 @@ import { buildAskAnswers, trySubmitAskUserQuestion } from './controls/AskUserQue
 import { sendCodexUserInputResponse } from './controls/CodexControlRequest'
 import { getCursorQuestions, sendCursorQuestionResponse } from './controls/CursorControlRequest'
 import { sendOpenCodeQuestionResponse } from './controls/OpenCodeControlRequest'
-import { getProviderPlugin } from './providers'
+import { getProviderPlugin } from './providers/registry'
+import './providers'
 
 export interface ControlResponseHandlingProps {
   agentId: string

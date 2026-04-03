@@ -1,7 +1,8 @@
 import type { ClassificationContext, ClassificationInput } from './providers/registry'
 import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import * as chatStyles from './messageStyles.css'
-import { getProviderPlugin } from './providers'
+import { getProviderPlugin } from './providers/registry'
+import './providers'
 
 // ---------------------------------------------------------------------------
 // MessageCategory — discriminated union for single-pass message classification

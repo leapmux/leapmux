@@ -1,6 +1,14 @@
 import { style } from '@vanilla-extract/css'
 
-export { backLink, emptyState, errorText, successText } from '~/styles/shared.css'
+export const backLink = style({
+  'display': 'inline-block',
+  'marginBottom': 'var(--space-4)',
+  'color': 'var(--primary)',
+  'textDecoration': 'none',
+  ':hover': {
+    color: 'var(--primary)',
+  },
+})
 
 export const container = style({
   padding: 'var(--space-6)',

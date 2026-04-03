@@ -3,11 +3,11 @@ import type { WorkerDialogState } from '~/hooks/createWorkerDialogState'
 import Eye from 'lucide-solid/icons/eye'
 import EyeOff from 'lucide-solid/icons/eye-off'
 import { createEffect, createSignal, on, Show } from 'solid-js'
+import { labelRow, treeContainer } from '~/components/common/Dialog.css'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
 import { safeGetJson, safeSetJson } from '~/lib/safeStorage'
-import { labelRow, treeContainer } from '~/styles/shared.css'
 
 interface DirectorySelectorProps {
   state: WorkerDialogState

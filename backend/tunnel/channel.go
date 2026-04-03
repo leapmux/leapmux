@@ -15,7 +15,7 @@ import (
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/leapmux/leapmux/channelproto"
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
@@ -119,7 +119,7 @@ func OpenChannel(ctx context.Context, hubURL, token, userID, workerID string, op
 	}
 
 	// 6. Connect to Hub's WebSocket relay.
-	wsURL := channelproto.HTTPToWS(hubURL) + "/ws/channel"
+	wsURL := channelwire.HTTPToWS(hubURL) + "/ws/channel"
 
 	subprotocols := []string{"channel-relay"}
 	if token != "" {
@@ -136,7 +136,7 @@ func OpenChannel(ctx context.Context, hubURL, token, userID, workerID string, op
 	if err != nil {
 		return nil, fmt.Errorf("websocket dial: %w", err)
 	}
-	wsConn.SetReadLimit(channelproto.DefaultMaxMessageSize + 1024)
+	wsConn.SetReadLimit(channelwire.DefaultMaxMessageSize + 1024)
 
 	chCtx, chCancel := context.WithCancel(ctx)
 	ch := &Channel{
@@ -316,7 +316,7 @@ func (ch *Channel) sendInner(correlationID uint32, msg *leapmuxv1.InnerMessage) 
 	}
 
 	for offset := 0; offset < len(plaintext) || offset == 0; {
-		end := offset + channelproto.MaxPlaintextPerChunk
+		end := offset + channelwire.MaxPlaintextPerChunk
 		if end > len(plaintext) {
 			end = len(plaintext)
 		}
@@ -341,7 +341,7 @@ func (ch *Channel) sendInner(correlationID uint32, msg *leapmuxv1.InnerMessage) 
 			Ciphertext:      ciphertext,
 		}
 
-		if err := channelproto.WriteChannelMessage(ch.ctx, ch.ws, chMsg); err != nil {
+		if err := channelwire.WriteChannelMessage(ch.ctx, ch.ws, chMsg); err != nil {
 			return fmt.Errorf("write ws: %w", err)
 		}
 	}
@@ -353,7 +353,7 @@ func (ch *Channel) recvLoop() {
 	defer ch.Close()
 
 	for {
-		chMsg, err := channelproto.ReadChannelMessage(ch.ctx, ch.ws)
+		chMsg, err := channelwire.ReadChannelMessage(ch.ctx, ch.ws)
 		if err != nil {
 			if ch.closed.Load() || ch.ctx.Err() != nil {
 				return
@@ -379,7 +379,7 @@ func (ch *Channel) recvLoop() {
 			}
 			buf.parts = append(buf.parts, plaintext)
 			buf.total += len(plaintext)
-			if buf.total > channelproto.DefaultMaxMessageSize {
+			if buf.total > channelwire.DefaultMaxMessageSize {
 				delete(ch.reassembly, correlationID)
 				ch.mu.Unlock()
 				slog.Error("tunnel channel message too large", "channel_id", ch.channelID)

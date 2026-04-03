@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/channelwire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -619,7 +620,7 @@ func TestSendEncrypted_MultiChunk(t *testing.T) {
 	mgr, kp, sender := setupTestManager(t)
 
 	// Create a handler that sends a large payload.
-	largePayload := make([]byte, MaxChunkPlaintext+100)
+	largePayload := make([]byte, channelwire.MaxPlaintextPerChunk+100)
 	for i := range largePayload {
 		largePayload[i] = byte(i % 256)
 	}
@@ -703,7 +704,7 @@ func TestSendEncrypted_ExactBoundary(t *testing.T) {
 	}
 
 	// Payload that fits in exactly 1 chunk.
-	exactPayloadSize := findPayloadSize(MaxChunkPlaintext)
+	exactPayloadSize := findPayloadSize(channelwire.MaxPlaintextPerChunk)
 	require.Greater(t, exactPayloadSize, 0)
 
 	dispatcher.Register("exact", func(_ string, _ *leapmuxv1.InnerRpcRequest, s *Sender) {
@@ -758,7 +759,7 @@ func TestReassembly_E2E(t *testing.T) {
 	session := performHandshakeAndVerify(t, mgr, kp, sender, "ch-reasm", "user-1")
 
 	// Build a large InnerMessage, then chunk it manually on the initiator side.
-	largePayload := make([]byte, MaxChunkPlaintext*2+100)
+	largePayload := make([]byte, channelwire.MaxPlaintextPerChunk*2+100)
 	for i := range largePayload {
 		largePayload[i] = byte(i % 256)
 	}
@@ -773,7 +774,7 @@ func TestReassembly_E2E(t *testing.T) {
 
 	// Send chunks manually.
 	for offset := 0; offset < len(data); {
-		end := offset + MaxChunkPlaintext
+		end := offset + channelwire.MaxPlaintextPerChunk
 		if end > len(data) {
 			end = len(data)
 		}

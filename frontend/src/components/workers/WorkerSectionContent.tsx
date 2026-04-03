@@ -64,57 +64,60 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
         fallback={<div class={listStyles.emptySection}>No workers</div>}
       >
         <For each={props.workers}>
-          {worker => (
-            <>
-              <div
-                class={listStyles.item}
-                onClick={() => toggleExpanded(worker.id)}
-              >
-                <ChevronRight
-                  size={14}
-                  class={`${shared.chevron} ${isExpanded(worker.id) ? shared.chevronExpanded : ''}`}
-                />
-                <span class={listStyles.itemTitle}>
-                  {props.workerInfo(worker.id)?.name ?? '\u2014'}
-                </span>
+          {(worker) => {
+            const workerTunnels = () => tunnel?.tunnelsForWorker(worker.id) ?? []
+            return (
+              <>
                 <div
-                  class={`${styles.statusDot} ${statusClass[props.channelStatus(worker.id)]}`}
-                  data-status={props.channelStatus(worker.id)}
-                />
-                <div class={sidebarActions}>
-                  <WorkerContextMenu
-                    workerInfo={props.workerInfo(worker.id)}
-                    isOwner={worker.registeredBy === props.currentUserId}
-                    hasTunnels={!!tunnel && tunnel.tunnelsForWorker(worker.id).length > 0}
-                    onAddTunnel={() => props.onAddTunnel(worker)}
-                    onDeleteAllTunnels={() => setDeleteAllTunnelsWorkerId(worker.id)}
-                    onDeregister={() => props.onDeregister(worker)}
+                  class={listStyles.item}
+                  onClick={() => toggleExpanded(worker.id)}
+                >
+                  <ChevronRight
+                    size={14}
+                    class={`${shared.chevron} ${isExpanded(worker.id) ? shared.chevronExpanded : ''}`}
                   />
-                </div>
-              </div>
-              <Show when={tunnel}>
-                <div class={`${shared.childrenWrapper} ${isExpanded(worker.id) ? shared.childrenWrapperExpanded : ''}`}>
-                  <div class={shared.childrenInner}>
-                    <For each={tunnel!.tunnelsForWorker(worker.id)}>
-                      {t => (
-                        <div class={`${shared.node} ${styles.tunnelItem}`}>
-                          {t.type === 'socks5'
-                            ? <ChevronsLeftRightEllipsis size={14} class={styles.tunnelIcon} />
-                            : <ArrowBigRightDash size={14} class={styles.tunnelIcon} />}
-                          <span class={listStyles.itemTitle}>
-                            {tunnelLabel(t)}
-                          </span>
-                          <div class={sidebarActions}>
-                            <TunnelContextMenu onDelete={() => setDeleteTunnelTarget(t)} />
-                          </div>
-                        </div>
-                      )}
-                    </For>
+                  <span class={listStyles.itemTitle}>
+                    {props.workerInfo(worker.id)?.name ?? '\u2014'}
+                  </span>
+                  <div
+                    class={`${styles.statusDot} ${statusClass[props.channelStatus(worker.id)]}`}
+                    data-status={props.channelStatus(worker.id)}
+                  />
+                  <div class={sidebarActions}>
+                    <WorkerContextMenu
+                      workerInfo={props.workerInfo(worker.id)}
+                      isOwner={worker.registeredBy === props.currentUserId}
+                      hasTunnels={workerTunnels().length > 0}
+                      onAddTunnel={() => props.onAddTunnel(worker)}
+                      onDeleteAllTunnels={() => setDeleteAllTunnelsWorkerId(worker.id)}
+                      onDeregister={() => props.onDeregister(worker)}
+                    />
                   </div>
                 </div>
-              </Show>
-            </>
-          )}
+                <Show when={tunnel}>
+                  <div class={`${shared.childrenWrapper} ${isExpanded(worker.id) ? shared.childrenWrapperExpanded : ''}`}>
+                    <div class={shared.childrenInner}>
+                      <For each={workerTunnels()}>
+                        {t => (
+                          <div class={`${shared.node} ${styles.tunnelItem}`}>
+                            {t.type === 'socks5'
+                              ? <ChevronsLeftRightEllipsis size={14} class={styles.tunnelIcon} />
+                              : <ArrowBigRightDash size={14} class={styles.tunnelIcon} />}
+                            <span class={listStyles.itemTitle}>
+                              {tunnelLabel(t)}
+                            </span>
+                            <div class={sidebarActions}>
+                              <TunnelContextMenu onDelete={() => setDeleteTunnelTarget(t)} />
+                            </div>
+                          </div>
+                        )}
+                      </For>
+                    </div>
+                  </div>
+                </Show>
+              </>
+            )
+          }}
         </For>
       </Show>
 
