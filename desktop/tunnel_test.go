@@ -15,7 +15,7 @@ func TestTunnelManager_CreatePortForward_Validation(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("empty workerId", func(t *testing.T) {
-		_, err := m.CreateTunnel(ctx, TunnelConfig{Type: "port_forward", TargetAddr: "127.0.0.1", TargetPort: 80})
+		_, err := m.CreateTunnel(ctx, TunnelConfig{Type: tunnelTypePortForward, TargetAddr: "127.0.0.1", TargetPort: 80})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "workerId is required")
 	})
@@ -27,25 +27,25 @@ func TestTunnelManager_CreatePortForward_Validation(t *testing.T) {
 	})
 
 	t.Run("port_forward missing targetAddr", func(t *testing.T) {
-		_, err := m.CreateTunnel(ctx, TunnelConfig{WorkerID: "w1", Type: "port_forward", TargetPort: 80})
+		_, err := m.CreateTunnel(ctx, TunnelConfig{WorkerID: "w1", Type: tunnelTypePortForward, TargetPort: 80})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "targetAddr is required")
 	})
 
 	t.Run("port_forward invalid targetPort 0", func(t *testing.T) {
-		_, err := m.CreateTunnel(ctx, TunnelConfig{WorkerID: "w1", Type: "port_forward", TargetAddr: "127.0.0.1", TargetPort: 0})
+		_, err := m.CreateTunnel(ctx, TunnelConfig{WorkerID: "w1", Type: tunnelTypePortForward, TargetAddr: "127.0.0.1", TargetPort: 0})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "targetPort must be")
 	})
 
 	t.Run("port_forward invalid targetPort 70000", func(t *testing.T) {
-		_, err := m.CreateTunnel(ctx, TunnelConfig{WorkerID: "w1", Type: "port_forward", TargetAddr: "127.0.0.1", TargetPort: 70000})
+		_, err := m.CreateTunnel(ctx, TunnelConfig{WorkerID: "w1", Type: tunnelTypePortForward, TargetAddr: "127.0.0.1", TargetPort: 70000})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "targetPort must be")
 	})
 
 	t.Run("invalid bindPort", func(t *testing.T) {
-		_, err := m.CreateTunnel(ctx, TunnelConfig{WorkerID: "w1", Type: "port_forward", TargetAddr: "127.0.0.1", TargetPort: 80, BindPort: 70000})
+		_, err := m.CreateTunnel(ctx, TunnelConfig{WorkerID: "w1", Type: tunnelTypePortForward, TargetAddr: "127.0.0.1", TargetPort: 80, BindPort: 70000})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "bindPort must be")
 	})
@@ -86,7 +86,7 @@ func TestTunnelManager_ListAndDelete(t *testing.T) {
 	tunnels := m.ListTunnels()
 	require.Len(t, tunnels, 1)
 	assert.Equal(t, "test-t1", tunnels[0].ID)
-	assert.Equal(t, "port_forward", tunnels[0].Type)
+	assert.Equal(t, tunnelTypePortForward, tunnels[0].Type)
 
 	// Delete should succeed.
 	err = m.DeleteTunnel("test-t1")
@@ -117,7 +117,7 @@ func TestTunnelManager_CloseAll(t *testing.T) {
 		id := "t-" + string(rune('a'+i))
 		m.mu.Lock()
 		m.tunnels[id] = &tunnel{
-			info:     TunnelInfo{ID: id, WorkerID: "w1", Type: "port_forward"},
+			info:     TunnelInfo{ID: id, WorkerID: "w1", Type: tunnelTypePortForward},
 			listener: ln,
 			cancel:   cancel,
 		}
@@ -159,7 +159,7 @@ func TestTunnelManager_DefaultBindPort_Socks5(t *testing.T) {
 
 	cfg := TunnelConfig{
 		WorkerID: "w1",
-		Type:     "socks5",
+		Type:     tunnelTypeSocks5,
 		BindAddr: "127.0.0.1",
 		// BindPort: 0 — should default to 1080
 	}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	tunnelpkg "github.com/leapmux/leapmux/tunnel"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -53,6 +54,7 @@ type TunnelManager struct {
 	mu       sync.Mutex
 	tunnels  map[string]*tunnel
 	channels map[string]*tunnelpkg.Channel // per-worker E2EE channel
+	chanSF   singleflight.Group            // dedup concurrent channel opens per worker
 }
 
 // NewTunnelManager creates a new TunnelManager.
@@ -187,34 +189,42 @@ func (m *TunnelManager) CloseAll() {
 }
 
 func (m *TunnelManager) getOrOpenChannel(ctx context.Context, cfg TunnelConfig) (*tunnelpkg.Channel, error) {
+	// Fast path: return an existing open channel.
 	m.mu.Lock()
-	ch, ok := m.channels[cfg.WorkerID]
-	if ok && !ch.Closed() {
+	if ch, ok := m.channels[cfg.WorkerID]; ok && !ch.Closed() {
 		m.mu.Unlock()
 		return ch, nil
 	}
-	// Hold the lock while opening to prevent duplicate channels for the same worker.
 	m.mu.Unlock()
 
-	ch, err := tunnelpkg.OpenChannel(ctx, cfg.HubURL, cfg.Token, cfg.UserID, cfg.WorkerID)
+	// Deduplicate concurrent dials to the same worker.
+	v, err, _ := m.chanSF.Do(cfg.WorkerID, func() (interface{}, error) {
+		// Re-check under singleflight: another call may have just finished.
+		m.mu.Lock()
+		if ch, ok := m.channels[cfg.WorkerID]; ok && !ch.Closed() {
+			m.mu.Unlock()
+			return ch, nil
+		}
+		m.mu.Unlock()
+
+		ch, err := tunnelpkg.OpenChannel(ctx, cfg.HubURL, cfg.Token, cfg.UserID, cfg.WorkerID)
+		if err != nil {
+			return nil, err
+		}
+
+		m.mu.Lock()
+		if old, exists := m.channels[cfg.WorkerID]; exists {
+			old.Close()
+		}
+		m.channels[cfg.WorkerID] = ch
+		m.mu.Unlock()
+
+		return ch, nil
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	m.mu.Lock()
-	// Check again in case another goroutine opened one while we were connecting.
-	if existing, exists := m.channels[cfg.WorkerID]; exists && !existing.Closed() {
-		m.mu.Unlock()
-		ch.Close()
-		return existing, nil
-	}
-	if old, exists := m.channels[cfg.WorkerID]; exists {
-		old.Close()
-	}
-	m.channels[cfg.WorkerID] = ch
-	m.mu.Unlock()
-
-	return ch, nil
+	return v.(*tunnelpkg.Channel), nil
 }
 
 // serveSocks5 runs a SOCKS5 server on the tunnel's listener.

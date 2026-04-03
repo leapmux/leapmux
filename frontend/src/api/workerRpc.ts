@@ -318,7 +318,7 @@ class WailsWebSocket {
     const b64 = arrayBufferToBase64(data)
     this.sendQueue = this.sendQueue.then(
       () => window.go!.main.App.SendChannelMessage(b64),
-    ).catch(() => { /* send errors handled by channel manager */ })
+    ).catch((err) => { log.warn('channel relay send failed', { error: String(err) }) })
   }
 
   close(): void {
