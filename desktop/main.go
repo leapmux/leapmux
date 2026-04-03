@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 
+	"github.com/leapmux/leapmux/spautil"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/menu"
 	"github.com/wailsapp/wails/v2/pkg/menu/keys"
@@ -65,7 +66,7 @@ func main() {
 		MinHeight: 600,
 		Menu:      appMenu,
 		AssetServer: &assetserver.Options{
-			Handler: newSPAHandler(spaFS),
+			Handler: spautil.NewHandler(spaFS),
 		},
 		OnStartup:  app.startup,
 		OnDomReady: app.domReady,

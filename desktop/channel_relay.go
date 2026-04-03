@@ -9,6 +9,8 @@ import (
 
 	"github.com/coder/websocket"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"github.com/leapmux/leapmux/channelproto"
 )
 
 // ChannelRelay bridges WebSocket channel relay traffic between the Wails
@@ -61,7 +63,7 @@ func (a *App) OpenChannelRelay(token string) error {
 		cancel()
 		return fmt.Errorf("connect to channel relay: %w", err)
 	}
-	ws.SetReadLimit(65535 + 4096) // Same as channelproto.WSReadLimit.
+	ws.SetReadLimit(channelproto.WSReadLimit)
 	relay.ws = ws
 
 	// Start goroutine to read from WS and emit Wails events.

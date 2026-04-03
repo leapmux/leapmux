@@ -47,49 +47,41 @@ async function injectTunnelMock(page: import('@playwright/test').Page) {
   })
 }
 
+/** Open the worker context menu in the Workers sidebar section. */
+async function openWorkerMenu(page: import('@playwright/test').Page) {
+  await injectTunnelMock(page)
+
+  const workersSection = page.getByTestId('section-header-workers')
+  await expect(workersSection).toBeVisible()
+  const isOpen = await workersSection.evaluate(el => !el.hasAttribute('data-closed'))
+  if (!isOpen)
+    await workersSection.locator('> [role="button"]').click()
+
+  await expect(workersSection.getByText('Local')).toBeVisible()
+
+  const menuButton = workersSection.locator('[aria-expanded]').first()
+  await menuButton.click()
+  return workersSection
+}
+
+/** Open the "Add tunnel" dialog via the worker context menu. */
+async function openAddTunnelDialog(page: import('@playwright/test').Page) {
+  const workersSection = await openWorkerMenu(page)
+  await page.getByRole('menuitem', { name: 'Add tunnel...' }).click()
+  const dialog = page.getByTestId('add-tunnel-dialog')
+  await expect(dialog).toBeVisible()
+  return { workersSection, dialog }
+}
+
 test.describe('Tunnel UI', () => {
   test('add tunnel menu item appears when tunnel API is available', async ({ page, authenticatedWorkspace }) => {
-    await injectTunnelMock(page)
-
-    // Open the Workers section.
-    const workersSection = page.getByTestId('section-header-workers')
-    await expect(workersSection).toBeVisible()
-    const isOpen = await workersSection.evaluate(el => !el.hasAttribute('data-closed'))
-    if (!isOpen)
-      await workersSection.locator('> [role="button"]').click()
-
-    // Wait for the worker to appear.
-    await expect(workersSection.getByText('Local')).toBeVisible()
-
-    // Click the three-dot menu on the worker.
-    const menuButton = workersSection.locator('[aria-expanded]').first()
-    await menuButton.click()
-
-    // "Add tunnel..." should be visible since __lm_call is injected and
-    // in solo mode the user is the owner.
+    await openWorkerMenu(page)
     await expect(page.getByRole('menuitem', { name: 'Add tunnel...' })).toBeVisible()
   })
 
   test('add tunnel dialog opens and has correct fields', async ({ page, authenticatedWorkspace }) => {
-    await injectTunnelMock(page)
+    const { dialog } = await openAddTunnelDialog(page)
 
-    const workersSection = page.getByTestId('section-header-workers')
-    await expect(workersSection).toBeVisible()
-    const isOpen = await workersSection.evaluate(el => !el.hasAttribute('data-closed'))
-    if (!isOpen)
-      await workersSection.locator('> [role="button"]').click()
-
-    await expect(workersSection.getByText('Local')).toBeVisible()
-
-    const menuButton = workersSection.locator('[aria-expanded]').first()
-    await menuButton.click()
-    await page.getByRole('menuitem', { name: 'Add tunnel...' }).click()
-
-    // Dialog should appear.
-    const dialog = page.getByTestId('add-tunnel-dialog')
-    await expect(dialog).toBeVisible()
-
-    // Port forwarding should be selected by default.
     await expect(dialog.getByTestId('target-addr')).toBeVisible()
     await expect(dialog.getByTestId('target-port')).toBeVisible()
     await expect(dialog.getByTestId('bind-addr')).toBeVisible()
@@ -99,79 +91,28 @@ test.describe('Tunnel UI', () => {
   })
 
   test('add tunnel dialog validates required fields', async ({ page, authenticatedWorkspace }) => {
-    await injectTunnelMock(page)
+    const { dialog } = await openAddTunnelDialog(page)
 
-    const workersSection = page.getByTestId('section-header-workers')
-    await expect(workersSection).toBeVisible()
-    const isOpen = await workersSection.evaluate(el => !el.hasAttribute('data-closed'))
-    if (!isOpen)
-      await workersSection.locator('> [role="button"]').click()
-
-    await expect(workersSection.getByText('Local')).toBeVisible()
-
-    const menuButton = workersSection.locator('[aria-expanded]').first()
-    await menuButton.click()
-    await page.getByRole('menuitem', { name: 'Add tunnel...' }).click()
-
-    const dialog = page.getByTestId('add-tunnel-dialog')
-    await expect(dialog).toBeVisible()
-
-    // Create button should be disabled when target port is empty.
     await expect(dialog.getByTestId('tunnel-create')).toBeDisabled()
-
-    // Fill target port.
     await dialog.getByTestId('target-port').fill('3000')
     await expect(dialog.getByTestId('tunnel-create')).toBeEnabled()
   })
 
   test('tunnel creation adds tunnel to sidebar', async ({ page, authenticatedWorkspace }) => {
-    await injectTunnelMock(page)
+    const { workersSection, dialog } = await openAddTunnelDialog(page)
 
-    const workersSection = page.getByTestId('section-header-workers')
-    await expect(workersSection).toBeVisible()
-    const isOpen = await workersSection.evaluate(el => !el.hasAttribute('data-closed'))
-    if (!isOpen)
-      await workersSection.locator('> [role="button"]').click()
-
-    await expect(workersSection.getByText('Local')).toBeVisible()
-
-    const menuButton = workersSection.locator('[aria-expanded]').first()
-    await menuButton.click()
-    await page.getByRole('menuitem', { name: 'Add tunnel...' }).click()
-
-    const dialog = page.getByTestId('add-tunnel-dialog')
     await dialog.getByTestId('target-port').fill('3000')
     await dialog.getByTestId('tunnel-create').click()
 
-    // Dialog should close.
     await expect(dialog).not.toBeVisible()
-
-    // Tunnel should appear in the sidebar under the worker.
     await expect(workersSection.getByText(/127\.0\.0\.1:3000/)).toBeVisible()
   })
 
   test('cancel button closes dialog without creating tunnel', async ({ page, authenticatedWorkspace }) => {
-    await injectTunnelMock(page)
-
-    const workersSection = page.getByTestId('section-header-workers')
-    await expect(workersSection).toBeVisible()
-    const isOpen = await workersSection.evaluate(el => !el.hasAttribute('data-closed'))
-    if (!isOpen)
-      await workersSection.locator('> [role="button"]').click()
-
-    await expect(workersSection.getByText('Local')).toBeVisible()
-
-    const menuButton = workersSection.locator('[aria-expanded]').first()
-    await menuButton.click()
-    await page.getByRole('menuitem', { name: 'Add tunnel...' }).click()
-
-    const dialog = page.getByTestId('add-tunnel-dialog')
-    await expect(dialog).toBeVisible()
+    const { workersSection, dialog } = await openAddTunnelDialog(page)
 
     await dialog.getByTestId('tunnel-cancel').click()
     await expect(dialog).not.toBeVisible()
-
-    // No tunnel should appear.
     await expect(workersSection.getByText(/127\.0\.0\.1:\d+\s*\u2192/)).not.toBeVisible()
   })
 })

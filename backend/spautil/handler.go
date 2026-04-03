@@ -1,4 +1,6 @@
-package main
+// Package spautil provides a reusable SPA (Single-Page Application) HTTP
+// handler with pre-compression support (Brotli, gzip) and fallback routing.
+package spautil
 
 import (
 	"io"
@@ -14,17 +16,17 @@ func init() {
 	_ = mime.AddExtensionType(".map", "application/json")
 }
 
-// newSPAHandler creates an http.Handler that serves SPA assets from the
-// given fs.FS with pre-compression support and SPA fallback routing.
-func newSPAHandler(fsys fs.FS) http.Handler {
-	return &spaHandler{fs: fsys}
+// NewHandler creates an http.Handler that serves SPA assets from the given
+// fs.FS with pre-compression support and SPA fallback routing.
+func NewHandler(fsys fs.FS) http.Handler {
+	return &handler{fs: fsys}
 }
 
-type spaHandler struct {
+type handler struct {
 	fs fs.FS
 }
 
-func (h *spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	if path == "" {
 		path = "index.html"
@@ -45,7 +47,7 @@ func (h *spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.serveFile(w, r, "index.html")
 }
 
-func (h *spaHandler) serveFile(w http.ResponseWriter, r *http.Request, path string) bool {
+func (h *handler) serveFile(w http.ResponseWriter, r *http.Request, path string) bool {
 	accept := r.Header.Get("Accept-Encoding")
 
 	if strings.Contains(accept, "br") {
@@ -71,7 +73,7 @@ func (h *spaHandler) serveFile(w http.ResponseWriter, r *http.Request, path stri
 		return false
 	}
 
-	setSPACacheHeaders(w, path)
+	setCacheHeaders(w, path)
 	if ct := mime.TypeByExtension(filepath.Ext(path)); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
@@ -79,7 +81,7 @@ func (h *spaHandler) serveFile(w http.ResponseWriter, r *http.Request, path stri
 	return true
 }
 
-func (h *spaHandler) tryCompressed(w http.ResponseWriter, r *http.Request, originalPath, encoding string) bool {
+func (h *handler) tryCompressed(w http.ResponseWriter, r *http.Request, originalPath, encoding string) bool {
 	ext := ".br"
 	if encoding == "gzip" {
 		ext = ".gz"
@@ -96,7 +98,7 @@ func (h *spaHandler) tryCompressed(w http.ResponseWriter, r *http.Request, origi
 		return false
 	}
 
-	setSPACacheHeaders(w, originalPath)
+	setCacheHeaders(w, originalPath)
 	if ct := mime.TypeByExtension(filepath.Ext(originalPath)); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
@@ -106,14 +108,18 @@ func (h *spaHandler) tryCompressed(w http.ResponseWriter, r *http.Request, origi
 	return true
 }
 
-func setSPACacheHeaders(w http.ResponseWriter, path string) {
+// setCacheHeaders sets appropriate caching headers based on the file path.
+func setCacheHeaders(w http.ResponseWriter, path string) {
+	// Hashed build assets and fonts are immutable.
 	if strings.HasPrefix(path, "_build/") || strings.HasPrefix(path, "fonts/") {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		return
 	}
+	// Service worker and index.html must not be cached.
 	if strings.HasPrefix(path, "leapmux-service-worker-") || path == "index.html" {
 		w.Header().Set("Cache-Control", "no-cache")
 		return
 	}
+	// Default: short cache for other assets.
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 }

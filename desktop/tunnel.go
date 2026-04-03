@@ -128,7 +128,7 @@ func (m *TunnelManager) CreateTunnel(parentCtx context.Context, cfg TunnelConfig
 	if cfg.Type == tunnelTypeSocks5 {
 		go m.serveSocks5(ctx, t, ch)
 	} else {
-		go m.acceptPortForward(ctx, t, ch, cfg)
+		go m.acceptPortForward(ctx, t, ch)
 	}
 
 	slog.Info("tunnel created",
@@ -238,7 +238,7 @@ func (m *TunnelManager) serveSocks5(_ context.Context, t *tunnel, ch *tunnelpkg.
 }
 
 // acceptPortForward accepts TCP connections and forwards them to a fixed target.
-func (m *TunnelManager) acceptPortForward(ctx context.Context, t *tunnel, ch *tunnelpkg.Channel, cfg TunnelConfig) {
+func (m *TunnelManager) acceptPortForward(ctx context.Context, t *tunnel, ch *tunnelpkg.Channel) {
 	for {
 		conn, err := t.listener.Accept()
 		if err != nil {
@@ -248,22 +248,23 @@ func (m *TunnelManager) acceptPortForward(ctx context.Context, t *tunnel, ch *tu
 			slog.Error("tunnel accept error", "tunnel_id", t.info.ID, "error", err)
 			return
 		}
-		go m.handlePortForward(ctx, conn, t, ch, cfg)
+		go m.handlePortForward(conn, t, ch)
 	}
 }
 
 // handlePortForward handles a single port-forward TCP connection.
-func (m *TunnelManager) handlePortForward(ctx context.Context, conn net.Conn, t *tunnel, ch *tunnelpkg.Channel, cfg TunnelConfig) {
+func (m *TunnelManager) handlePortForward(conn net.Conn, t *tunnel, ch *tunnelpkg.Channel) {
 	defer func() { _ = conn.Close() }()
 
-	target, err := tunnelpkg.DialTunnel(ch, cfg.TargetAddr, uint32(cfg.TargetPort))
+	target, err := tunnelpkg.DialTunnel(ch, t.info.TargetAddr, uint32(t.info.TargetPort))
 	if err != nil {
 		slog.Error("dial tunnel failed", "tunnel_id", t.info.ID, "error", err)
 		return
 	}
 	defer func() { _ = target.Close() }()
 
-	// Bidirectional copy.
+	// Bidirectional copy — wait for both goroutines to finish so
+	// deferred Close calls don't race with in-flight copies.
 	done := make(chan struct{}, 2)
 	go func() {
 		defer func() { done <- struct{}{} }()
@@ -274,8 +275,6 @@ func (m *TunnelManager) handlePortForward(ctx context.Context, conn net.Conn, t 
 		_, _ = io.Copy(conn, target)
 	}()
 
-	select {
-	case <-done:
-	case <-ctx.Done():
-	}
+	<-done
+	<-done
 }

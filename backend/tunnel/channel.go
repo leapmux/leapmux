@@ -102,9 +102,7 @@ func OpenChannel(ctx context.Context, hubURL, token, userID, workerID string) (*
 	}
 
 	// 6. Connect to Hub's WebSocket relay.
-	wsURL := strings.Replace(hubURL, "http://", "ws://", 1)
-	wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
-	wsURL += "/ws/channel"
+	wsURL := httpToWS(hubURL) + "/ws/channel"
 
 	subprotocols := []string{"channel-relay"}
 	if token != "" {
@@ -424,6 +422,17 @@ func (ch *Channel) recvLoop() {
 			}
 		}
 	}
+}
+
+// httpToWS converts an http(s) URL prefix to ws(s).
+func httpToWS(url string) string {
+	if strings.HasPrefix(url, "https://") {
+		return "wss://" + url[8:]
+	}
+	if strings.HasPrefix(url, "http://") {
+		return "ws://" + url[7:]
+	}
+	return url
 }
 
 func withAuth(token string) connect.ClientOption {
