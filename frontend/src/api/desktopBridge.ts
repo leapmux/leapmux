@@ -66,17 +66,22 @@ export function isWailsApp(): boolean {
     || typeof window.go?.main?.App?.ProxyHTTP === 'function'
 }
 
+function wailsReady(): boolean {
+  return typeof window.go?.main?.App?.ProxyHTTP === 'function'
+    && typeof window.runtime?.WindowGetSize === 'function'
+}
+
 /**
- * Returns a promise that resolves once `window.go.main.App` is available.
- * Wails injects bindings asynchronously after page load; this polls until ready.
+ * Returns a promise that resolves once `window.go.main.App` and
+ * `window.runtime` are fully available. Wails injects both
+ * asynchronously after page load; this polls until ready.
  */
 export function waitForWailsBindings(): Promise<void> {
-  if (typeof window.go?.main?.App?.ProxyHTTP === 'function') {
+  if (wailsReady())
     return Promise.resolve()
-  }
   return new Promise((resolve) => {
     const check = setInterval(() => {
-      if (typeof window.go?.main?.App?.ProxyHTTP === 'function') {
+      if (wailsReady()) {
         clearInterval(check)
         resolve()
       }
@@ -126,39 +131,37 @@ export function base64ToArrayBuffer(b64: string): ArrayBuffer {
 /**
  * Animate the window from its current size to the target size over the given
  * duration (ms), keeping it centered. Uses an ease-out cubic curve.
+ * This function never throws — errors result in a best-effort snap.
  */
-export function animateWindowResize(targetW: number, targetH: number, durationMs = 400): Promise<void> {
-  const rt = window.runtime
-  if (!rt?.WindowGetSize || !rt?.WindowSetSize)
-    return Promise.resolve()
+export async function animateWindowResize(targetW: number, targetH: number, durationMs = 400): Promise<void> {
+  try {
+    const rt = window.runtime
+    if (!rt?.WindowGetSize || !rt?.WindowSetSize)
+      return
 
-  // Instant snap when duration is 0.
-  if (durationMs <= 0) {
-    rt.WindowSetSize?.(targetW, targetH)
-    rt.WindowCenter?.()
-    return Promise.resolve()
-  }
+    // Instant snap when duration is 0.
+    if (durationMs <= 0) {
+      rt.WindowSetSize(targetW, targetH)
+      rt.WindowCenter?.()
+      return
+    }
 
-  // Race the animation against a timeout so a hanging WindowGetSize
-  // never blocks the caller indefinitely.
-  const animationPromise = rt.WindowGetSize().then((cur: { w: number, h: number }) => {
+    const cur = await rt.WindowGetSize()
     if (cur.w === targetW && cur.h === targetH)
       return
 
-    return new Promise<void>((resolve) => {
+    await new Promise<void>((resolve) => {
       const startW = cur.w
       const startH = cur.h
       const startTime = performance.now()
 
       function step(now: number) {
         const t = Math.min((now - startTime) / durationMs, 1)
-        // Ease-out cubic: 1 - (1 - t)^3
         const eased = 1 - (1 - t) ** 3
         const w = Math.round(startW + (targetW - startW) * eased)
         const h = Math.round(startH + (targetH - startH) * eased)
         rt!.WindowSetSize!(w, h)
         rt!.WindowCenter?.()
-
         if (t < 1)
           requestAnimationFrame(step)
         else
@@ -167,28 +170,14 @@ export function animateWindowResize(targetW: number, targetH: number, durationMs
 
       requestAnimationFrame(step)
     })
-  })
-
-  const timeoutPromise = new Promise<void>(resolve =>
-    setTimeout(() => {
-      // Best-effort snap to target if animation didn't complete.
-      try {
-        rt.WindowSetSize?.(targetW, targetH)
-        rt.WindowCenter?.()
-      }
-      catch { /* ignore */ }
-      resolve()
-    }, durationMs + 1000),
-  )
-
-  return Promise.race([animationPromise, timeoutPromise]).catch(() => {
-    // Swallow errors (e.g. WindowGetSize rejected).
+  }
+  catch {
     try {
-      rt.WindowSetSize?.(targetW, targetH)
-      rt.WindowCenter?.()
+      window.runtime?.WindowSetSize?.(targetW, targetH)
+      window.runtime?.WindowCenter?.()
     }
     catch { /* ignore */ }
-  })
+  }
 }
 
 // ---------------------------------------------------------------------------
