@@ -140,6 +140,10 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
         setMode(config.mode as 'solo' | 'distributed')
       }
 
+      // Animate resize to launcher dimensions while still invisible
+      // (opacity 0), so the user sees a smooth resize without content.
+      await animateWindowResize(900, 680)
+
       // Auto-connect if user has previously connected.
       if (config.mode) {
         if (config.mode === 'solo') {
@@ -156,7 +160,7 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
         clearTimeout(showTimer)
       }
       else {
-        // First launch — check FDA for default solo mode.
+        // First launch or returning from Switch Mode — show launcher.
         await checkFDA()
         if (!fdaGranted())
           startFDAPoll()

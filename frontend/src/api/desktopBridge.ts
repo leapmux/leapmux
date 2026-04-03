@@ -132,6 +132,13 @@ export function animateWindowResize(targetW: number, targetH: number, durationMs
   if (!rt?.WindowGetSize || !rt?.WindowSetSize)
     return Promise.resolve()
 
+  // Instant snap when duration is 0.
+  if (durationMs <= 0) {
+    rt.WindowSetSize(targetW, targetH)
+    rt.WindowCenter()
+    return Promise.resolve()
+  }
+
   return rt.WindowGetSize().then((cur: { w: number, h: number }) => {
     if (cur.w === targetW && cur.h === targetH)
       return

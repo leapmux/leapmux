@@ -1,7 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import { useNavigate } from '@solidjs/router'
 import { createSignal, For, Show } from 'solid-js'
-import { animateWindowResize } from '~/api/desktopBridge'
 import { AdminDialog } from '~/components/admin/AdminDialog'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { PreferencesDialog } from '~/components/settings/PreferencesDialog'
@@ -32,7 +31,7 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
   }
 
   const handleSwitchMode = async () => {
-    // Fade out the page content before resizing.
+    // Fade out the page content before reloading.
     const overlay = document.createElement('div')
     const bg = getComputedStyle(document.documentElement).getPropertyValue('--background').trim() || '#000'
     overlay.style.cssText = `position:fixed;inset:0;z-index:2147483647;background:${bg};opacity:0;transition:opacity .3s ease`
@@ -46,7 +45,6 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
     })
 
     await window.go?.main?.App?.SwitchMode()
-    await animateWindowResize(900, 680)
     window.location.reload()
   }
 
