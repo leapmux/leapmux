@@ -17,5 +17,5 @@ export const statusDisconnected = style({
 
 export const tunnelItem = style({
   cursor: 'default',
-  paddingLeft: 'var(--space-5)',
+  paddingLeft: '20px',
 })

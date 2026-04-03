@@ -1,4 +1,4 @@
-import { style } from '@vanilla-extract/css'
+import { globalStyle, style } from '@vanilla-extract/css'
 
 /** Container for action buttons (e.g., context menu trigger) that sticks to the right edge. */
 export const sidebarActions = style({
@@ -20,4 +20,13 @@ export const menuTrigger = style({
       opacity: 1,
     },
   },
+})
+
+/** Give sidebarActions a background on hover so it covers scrolled text underneath. */
+globalStyle(`:hover > ${sidebarActions}`, {
+  backgroundColor: 'inherit',
+})
+
+globalStyle(`:hover > ${sidebarActions} ${menuTrigger}`, {
+  opacity: 1,
 })

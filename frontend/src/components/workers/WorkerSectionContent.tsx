@@ -62,13 +62,13 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                   size={14}
                   class={`${shared.chevron} ${isExpanded(worker.id) ? shared.chevronExpanded : ''}`}
                 />
+                <span class={listStyles.itemTitle}>
+                  {props.workerInfo(worker.id)?.name ?? '\u2014'}
+                </span>
                 <div
                   class={`${styles.statusDot} ${statusClass[props.channelStatus(worker.id)]}`}
                   data-status={props.channelStatus(worker.id)}
                 />
-                <span class={listStyles.itemTitle}>
-                  {props.workerInfo(worker.id)?.name ?? '\u2014'}
-                </span>
                 <div class={sidebarActions}>
                   <WorkerContextMenu
                     workerInfo={props.workerInfo(worker.id)}
@@ -83,7 +83,7 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                   <div class={shared.childrenInner}>
                     <For each={tunnel!.tunnelsForWorker(worker.id)}>
                       {t => (
-                        <div class={`${listStyles.item} ${styles.tunnelItem}`}>
+                        <div class={`${shared.node} ${styles.tunnelItem}`}>
                           <span class={listStyles.itemTitle}>
                             {t.type === 'socks5'
                               ? `SOCKS5 ${t.bindAddr}:${t.bindPort}`

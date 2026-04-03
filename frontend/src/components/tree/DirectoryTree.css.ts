@@ -1,6 +1,4 @@
-import { globalStyle, style } from '@vanilla-extract/css'
-import { node } from './sharedTree.css'
-import { menuTrigger, sidebarActions } from './sidebarActions.css'
+import { style } from '@vanilla-extract/css'
 
 export {
   chevron,
@@ -94,15 +92,6 @@ export const emptyInline = style({
   fontSize: 'var(--text-7)',
   color: 'var(--faint-foreground)',
   padding: '2px var(--space-2)',
-})
-
-/** Give sidebarActions a background on hover so it covers scrolled text underneath. */
-globalStyle(`${node}:hover ${sidebarActions}`, {
-  backgroundColor: 'inherit',
-})
-
-globalStyle(`${node}:hover ${menuTrigger}`, {
-  opacity: 1,
 })
 
 export const pathInput = style({

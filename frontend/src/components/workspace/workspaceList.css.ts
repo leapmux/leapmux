@@ -165,13 +165,13 @@ export const itemDropTarget = style({
   outlineOffset: '-2px',
 })
 
-/** Give sidebarActions a background on hover so it covers scrolled text underneath. */
-globalStyle(`${item}:hover:not(${itemDropTarget}) ${sidebarActions}`, {
-  backgroundColor: 'inherit',
+/** Suppress sidebarActions hover when the item is a drop target. */
+globalStyle(`${item}${itemDropTarget}:hover > ${sidebarActions}`, {
+  backgroundColor: 'transparent',
 })
 
-globalStyle(`${item}:hover:not(${itemDropTarget}) ${menuTrigger}`, {
-  opacity: 1,
+globalStyle(`${item}${itemDropTarget}:hover > ${sidebarActions} ${menuTrigger}`, {
+  opacity: 0,
 })
 
 export const sharedBadge = style({
