@@ -6,8 +6,8 @@ import { isTunnelAvailable } from '~/api/tunnelApi'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { IconButton } from '~/components/common/IconButton'
 import { showInfoToast } from '~/components/common/Toast'
-import * as listStyles from '~/components/workspace/workspaceList.css'
-import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
+import { menuTrigger } from '~/components/tree/sidebarActions.css'
+import { isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem } from '~/styles/shared.css'
 
 interface WorkerContextMenuProps {
@@ -31,7 +31,7 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
         <IconButton
           icon={MoreHorizontal}
           size="sm"
-          class={listStyles.itemMenuTrigger}
+          class={menuTrigger}
           onClick={(e: MouseEvent) => {
             e.stopPropagation()
             triggerProps.onClick()
@@ -58,7 +58,7 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
           </button>
         )}
       </Show>
-      <Show when={isDesktopApp() && isTunnelAvailable() && props.isOwner}>
+      <Show when={isTunnelAvailable() && props.isOwner}>
         <button role="menuitem" onClick={() => props.onAddTunnel()}>
           Add tunnel...
         </button>

@@ -2,7 +2,7 @@ import type { Component } from 'solid-js'
 import MoreHorizontal from 'lucide-solid/icons/more-horizontal'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { IconButton } from '~/components/common/IconButton'
-import * as listStyles from '~/components/workspace/workspaceList.css'
+import { menuTrigger } from '~/components/tree/sidebarActions.css'
 import { dangerMenuItem } from '~/styles/shared.css'
 
 interface TunnelContextMenuProps {
@@ -16,7 +16,7 @@ export const TunnelContextMenu: Component<TunnelContextMenuProps> = (props) => {
         <IconButton
           icon={MoreHorizontal}
           size="sm"
-          class={listStyles.itemMenuTrigger}
+          class={menuTrigger}
           onClick={(e: MouseEvent) => {
             e.stopPropagation()
             triggerProps.onClick()

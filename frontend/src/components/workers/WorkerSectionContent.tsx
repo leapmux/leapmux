@@ -3,6 +3,7 @@ import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import { For, Show } from 'solid-js'
+import { sidebarActions } from '~/components/tree/sidebarActions.css'
 import * as listStyles from '~/components/workspace/workspaceList.css'
 import { useTunnel } from '~/context/TunnelContext'
 import { TunnelContextMenu } from './TunnelContextMenu'
@@ -43,7 +44,7 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                 <span class={listStyles.itemTitle}>
                   {props.workerInfo(worker.id)?.name ?? '\u2014'}
                 </span>
-                <div class={listStyles.itemActions}>
+                <div class={sidebarActions}>
                   <WorkerContextMenu
                     workerInfo={props.workerInfo(worker.id)}
                     isOwner={worker.registeredBy === props.currentUserId}
@@ -61,7 +62,7 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                           ? `SOCKS5 ${t.bindAddr}:${t.bindPort}`
                           : `${t.bindAddr}:${t.bindPort} \u2192 ${t.targetAddr}:${t.targetPort}`}
                       </span>
-                      <div class={listStyles.itemActions}>
+                      <div class={sidebarActions}>
                         <TunnelContextMenu onDelete={() => { tunnel!.remove(t.id).catch(() => {}) }} />
                       </div>
                     </div>

@@ -1,5 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { node } from './sharedTree.css'
+import { menuTrigger, sidebarActions } from './sidebarActions.css'
 
 export {
   chevron,
@@ -95,28 +96,13 @@ export const emptyInline = style({
   padding: '2px var(--space-2)',
 })
 
-export const nodeActions = style({
-  display: 'flex',
-  alignItems: 'center',
-  marginLeft: 'auto',
-  flexShrink: 0,
-  position: 'sticky',
-  right: 'var(--space-2)',
-  backgroundColor: 'transparent',
-})
-
-/** Give nodeActions a background on hover so it covers scrolled text underneath. */
-globalStyle(`${node}:hover ${nodeActions}`, {
+/** Give sidebarActions a background on hover so it covers scrolled text underneath. */
+globalStyle(`${node}:hover ${sidebarActions}`, {
   backgroundColor: 'inherit',
 })
 
-export const nodeMenuTrigger = style({
-  opacity: 0,
-  transition: 'opacity 0.15s',
-  selectors: {
-    [`${node}:hover &`]: { opacity: 1 },
-    '&[aria-expanded="true"]': { opacity: 1 },
-  },
+globalStyle(`${node}:hover ${menuTrigger}`, {
+  opacity: 1,
 })
 
 export const pathInput = style({
