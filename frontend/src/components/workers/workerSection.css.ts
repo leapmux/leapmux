@@ -19,3 +19,8 @@ export const tunnelItem = style({
   cursor: 'default',
   paddingLeft: '20px',
 })
+
+export const tunnelIcon = style({
+  flexShrink: 0,
+  color: 'var(--muted-foreground)',
+})
