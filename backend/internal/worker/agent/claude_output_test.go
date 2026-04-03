@@ -456,4 +456,27 @@ func TestHandleOutput_ResultModelUsagePicksLargestContextWindow(t *testing.T) {
 	usage, ok := info["contextUsage"].(map[string]interface{})
 	require.True(t, ok, "expected contextUsage in session info")
 	assert.Equal(t, int64(1000000), usage["contextWindow"], "should pick largest contextWindow across models")
+
+	// A subsequent result with only haiku (200k) should NOT decrease the
+	// context window — the running maximum must be preserved.
+	agent.HandleOutput([]byte(`{
+		"type": "assistant",
+		"message": {
+			"role": "assistant",
+			"content": [{"type": "text", "text": "world"}],
+			"usage": {"input_tokens": 200, "output_tokens": 100}
+		}
+	}`))
+	agent.HandleOutput([]byte(`{
+		"type": "result",
+		"subtype": "success",
+		"modelUsage": {
+			"claude-haiku-4-5-20251001": {"contextWindow": 200000}
+		}
+	}`))
+
+	info2 := sink.LastSessionInfo()
+	usage2, ok := info2["contextUsage"].(map[string]interface{})
+	require.True(t, ok, "expected contextUsage in session info after second result")
+	assert.Equal(t, int64(1000000), usage2["contextWindow"], "contextWindow should not decrease when a smaller value arrives")
 }

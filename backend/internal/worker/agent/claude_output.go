@@ -504,11 +504,11 @@ func (a *ClaudeCodeAgent) extractAndBroadcastUsage(env *messageEnvelope, msgType
 				maxCW = mu.ContextWindow
 			}
 		}
-		if maxCW > 0 {
-			snapshot.mu.Lock()
+		snapshot.mu.Lock()
+		if maxCW > snapshot.ContextWindow {
 			snapshot.ContextWindow = maxCW
-			snapshot.mu.Unlock()
 		}
+		snapshot.mu.Unlock()
 	}
 
 	snapshot.mu.Lock()
