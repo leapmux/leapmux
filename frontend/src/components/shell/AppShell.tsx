@@ -110,25 +110,36 @@ export const AppShell: ParentComponent = (props) => {
   const [addTunnelTarget, setAddTunnelTarget] = createSignal<Worker | null>(null)
   const tunnelStore = createTunnelStore()
 
-  // Fetch workers when org changes
-  createEffect(() => {
+  // Fetch workers list.
+  async function fetchWorkers() {
     const orgId = org.orgId()
     if (!orgId)
       return
-    void (async () => {
-      try {
-        const resp = await workerClient.listWorkers({ orgId })
-        setWorkers(resp.workers)
-        for (const w of resp.workers) {
-          if (w.online) {
-            workerInfoStore.fetchWorkerInfo(w.id)
-          }
+    try {
+      const resp = await workerClient.listWorkers({ orgId })
+      setWorkers(resp.workers)
+      for (const w of resp.workers) {
+        if (w.online) {
+          workerInfoStore.fetchWorkerInfo(w.id)
         }
       }
-      catch {
-        // Best effort — sidebar will show empty workers list.
-      }
-    })()
+    }
+    catch {
+      // Best effort — sidebar will show empty workers list.
+    }
+  }
+
+  // Fetch workers when org changes.
+  createEffect(() => {
+    org.orgId() // track
+    void fetchWorkers()
+  })
+
+  // Re-fetch workers when the Hub sends a WorkersChanged control frame.
+  channelManager.onHubControl((frame) => {
+    if (frame.event.case === 'workersChanged') {
+      void fetchWorkers()
+    }
   })
 
   // Register E2EE channel callbacks (module-level singletons in workerRpc.ts).

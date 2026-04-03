@@ -9,6 +9,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
@@ -20,24 +21,22 @@ import (
 // WorkerManagementService implements the Hub-side service called by Frontend
 // to manage worker registrations and workers.
 type WorkerManagementService struct {
-	queries   *db.Queries
-	workerMgr *workermgr.Manager
-	notifier  *notifier.Notifier
-	soloMode  bool
+	queries    *db.Queries
+	workerMgr  *workermgr.Manager
+	channelMgr *channelmgr.Manager
+	notifier   *notifier.Notifier
+	soloMode   bool
 }
 
 // NewWorkerManagementService creates a new WorkerManagementService.
-func NewWorkerManagementService(q *db.Queries, mgr *workermgr.Manager, n *notifier.Notifier, soloMode bool) *WorkerManagementService {
-	return &WorkerManagementService{queries: q, workerMgr: mgr, notifier: n, soloMode: soloMode}
+func NewWorkerManagementService(q *db.Queries, mgr *workermgr.Manager, cMgr *channelmgr.Manager, n *notifier.Notifier, soloMode bool) *WorkerManagementService {
+	return &WorkerManagementService{queries: q, workerMgr: mgr, channelMgr: cMgr, notifier: n, soloMode: soloMode}
 }
 
 func (s *WorkerManagementService) ApproveRegistration(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.ApproveRegistrationRequest],
 ) (*connect.Response[leapmuxv1.ApproveRegistrationResponse], error) {
-	if s.soloMode {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker registration approval is not available in solo mode"))
-	}
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -108,6 +107,8 @@ func (s *WorkerManagementService) ApproveRegistration(
 
 	// Wake up any long-polling worker waiting on this registration.
 	s.workerMgr.NotifyRegistrationChange(regID)
+
+	notifyWorkersChanged(s.channelMgr, user.ID)
 
 	return connect.NewResponse(&leapmuxv1.ApproveRegistrationResponse{
 		WorkerId: workerID,
@@ -237,6 +238,8 @@ func (s *WorkerManagementService) DeregisterWorker(
 	if err := s.notifier.SendDeregister(ctx, req.Msg.GetWorkerId()); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("send deregister: %w", err))
 	}
+
+	notifyWorkersChanged(s.channelMgr, user.ID)
 
 	return connect.NewResponse(&leapmuxv1.DeregisterWorkerResponse{}), nil
 }

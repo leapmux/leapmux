@@ -98,6 +98,23 @@ message ChannelMessage {
   bytes ciphertext = 5;
 }
 
+// --- Hub control frames (sent via reserved channel ID "_hub") ---
+
+// HubControlFrame is a Hub-originated message sent to frontends over the
+// existing /ws/channel WebSocket using the reserved channel_id "_hub".
+// The serialized bytes are placed in the ChannelMessage.ciphertext field
+// (plaintext — not encrypted, since the Hub is the originator).
+message HubControlFrame {
+  oneof event {
+    WorkersChanged workers_changed = 1;
+  }
+}
+
+// WorkersChanged signals that the worker list has changed (e.g. a worker
+// was registered, connected, or disconnected). The frontend should
+// re-fetch the worker list via ListWorkers.
+message WorkersChanged {}
+
 // --- User ID claim (post-handshake verification) ---
 
 // Sent by Frontend as the first encrypted InnerMessage after handshake.

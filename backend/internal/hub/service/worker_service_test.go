@@ -58,11 +58,11 @@ func setupWorkerTestServer(t *testing.T) *workerTestEnv {
 	mux.Handle(authPath, authHandler)
 
 	connPath, connHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(
-		service.NewWorkerConnectorService(q, bgMgr, false), opts)
+		service.NewWorkerConnectorService(q, bgMgr), opts)
 	mux.Handle(connPath, connHandler)
 
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(
-		service.NewWorkerManagementService(q, bgMgr, notifierSvc, false), opts)
+		service.NewWorkerManagementService(q, bgMgr, nil, notifierSvc, false), opts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
 	server := httptest.NewServer(mux)

@@ -62,11 +62,11 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	mux.Handle(authPath, authHandler)
 
 	connPath, connHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(
-		service.NewWorkerConnectorService(q, wMgr, false), opts)
+		service.NewWorkerConnectorService(q, wMgr), opts)
 	mux.Handle(connPath, connHandler)
 
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(
-		service.NewWorkerManagementService(q, wMgr, nil, false), opts)
+		service.NewWorkerManagementService(q, wMgr, nil, nil, false), opts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
 	channelSvc := service.NewChannelService(q, wMgr, cMgr, pendingReqs)

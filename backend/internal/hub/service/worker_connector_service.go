@@ -10,6 +10,7 @@ import (
 	"connectrpc.com/connect"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
@@ -27,12 +28,11 @@ type WorkerConnectorService struct {
 	pending    *workermgr.PendingRequests
 	notifier   *notifier.Notifier
 	shutdownCh <-chan struct{}
-	soloMode   bool
 }
 
 // NewWorkerConnectorService creates a new WorkerConnectorService.
-func NewWorkerConnectorService(q *db.Queries, mgr *workermgr.Manager, soloMode bool) *WorkerConnectorService {
-	return &WorkerConnectorService{queries: q, workerMgr: mgr, soloMode: soloMode}
+func NewWorkerConnectorService(q *db.Queries, mgr *workermgr.Manager) *WorkerConnectorService {
+	return &WorkerConnectorService{queries: q, workerMgr: mgr}
 }
 
 // SetChannelMgr sets the channel manager for routing encrypted channel traffic.
@@ -60,9 +60,6 @@ func (s *WorkerConnectorService) RequestRegistration(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.RequestRegistrationRequest],
 ) (*connect.Response[leapmuxv1.RequestRegistrationResponse], error) {
-	if s.soloMode {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker registration is not available in solo mode"))
-	}
 	// Expire old pending registrations first.
 	if err := s.queries.ExpireRegistrations(ctx); err != nil {
 		slog.Debug("failed to expire registrations", "error", err)
@@ -100,10 +97,76 @@ func (s *WorkerConnectorService) RequestRegistration(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create registration: %w", err))
 	}
 
+	// Auto-approve registrations via Unix domain socket — the socket is
+	// protected by filesystem permissions (0600), so reaching it implies
+	// the caller is the same OS user.
+	if auth.IsUnixSocket(ctx) {
+		if err := s.autoApproveRegistration(ctx, regID, publicKey, mlkemPublicKey, slhdsaPublicKey); err != nil {
+			return nil, err
+		}
+	}
+
 	return connect.NewResponse(&leapmuxv1.RequestRegistrationResponse{
 		RegistrationToken: regID,
 		RegistrationUrl:   "/register/" + regID,
 	}), nil
+}
+
+// autoApproveRegistration creates a worker record and marks the registration
+// as approved. It resolves the approving user from the request context (set by
+// the auth interceptor in solo mode) or falls back to the "admin" user.
+func (s *WorkerConnectorService) autoApproveRegistration(
+	ctx context.Context, regID string,
+	publicKey, mlkemPublicKey, slhdsaPublicKey []byte,
+) error {
+	user := auth.GetUser(ctx)
+	if user == nil {
+		// Non-solo mode: look up the admin user as the approver.
+		adminUser, err := s.queries.GetUserByUsername(ctx, "admin")
+		if err != nil {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("resolve admin user for auto-approval: %w", err))
+		}
+		user = &auth.UserInfo{
+			ID:    adminUser.ID,
+			OrgID: adminUser.OrgID,
+		}
+	}
+
+	workerID := id.Generate()
+	authToken := id.Generate()
+
+	if err := s.queries.CreateWorker(ctx, db.CreateWorkerParams{
+		ID:              workerID,
+		OrgID:           user.OrgID,
+		AuthToken:       authToken,
+		RegisteredBy:    user.ID,
+		PublicKey:       publicKey,
+		MlkemPublicKey:  mlkemPublicKey,
+		SlhdsaPublicKey: slhdsaPublicKey,
+	}); err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("create worker: %w", err))
+	}
+
+	if err := s.queries.ApproveRegistration(ctx, db.ApproveRegistrationParams{
+		ID:         regID,
+		WorkerID:   sql.NullString{String: workerID, Valid: true},
+		ApprovedBy: sql.NullString{String: user.ID, Valid: true},
+	}); err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("approve registration: %w", err))
+	}
+
+	// Wake up the worker's PollRegistration long-poll.
+	s.workerMgr.NotifyRegistrationChange(regID)
+
+	slog.Info("auto-approved registration via unix socket",
+		"registration_id", regID,
+		"worker_id", workerID,
+		"approved_by", user.ID,
+	)
+
+	notifyWorkersChanged(s.channelMgr, user.ID)
+
+	return nil
 }
 
 func (s *WorkerConnectorService) PollRegistration(
