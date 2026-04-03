@@ -51,9 +51,9 @@ func (a *App) OpenChannelRelay(token string) error {
 		opts.Subprotocols = append(opts.Subprotocols, "auth.token."+token)
 	}
 
-	// For Unix socket connections, use a custom HTTP client.
-	if a.proxy.baseURL == "http://localhost" {
-		opts.HTTPClient = a.proxy.client
+	// Use the WebSocket-compatible HTTP client (HTTP/1.1 for upgrade).
+	if a.proxy.wsClient != nil {
+		opts.HTTPClient = a.proxy.wsClient
 	}
 
 	ws, _, err := websocket.Dial(ctx, wsURL, opts)

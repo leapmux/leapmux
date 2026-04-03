@@ -23,8 +23,9 @@ type ProxyResponse struct {
 
 // HubProxy proxies ConnectRPC requests from the frontend to the Hub.
 type HubProxy struct {
-	client  *http.Client
-	baseURL string
+	client   *http.Client // h2c client for ConnectRPC
+	wsClient *http.Client // HTTP/1.1 client for WebSocket upgrade
+	baseURL  string
 }
 
 // newUnixSocketProxy creates a proxy that connects to the Hub via Unix socket.
@@ -34,6 +35,15 @@ func newUnixSocketProxy(socketPath string) *HubProxy {
 			Transport: &http2.Transport{
 				AllowHTTP: true,
 				DialTLSContext: func(ctx context.Context, _, _ string, _ *tls.Config) (net.Conn, error) {
+					var d net.Dialer
+					return d.DialContext(ctx, "unix", socketPath)
+				},
+			},
+		},
+		// WebSocket upgrade requires HTTP/1.1, not h2c.
+		wsClient: &http.Client{
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 					var d net.Dialer
 					return d.DialContext(ctx, "unix", socketPath)
 				},
