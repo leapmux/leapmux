@@ -4,7 +4,7 @@ import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { generateSlug } from 'random-word-slugs'
 import { createEffect, createMemo, createSignal, Show } from 'solid-js'
-import { workspaceClient } from '~/api/clients'
+import { channelClient, workspaceClient } from '~/api/clients'
 import { agentLoadingTimeoutMs } from '~/api/transport'
 import * as workerRpc from '~/api/workerRpc'
 import { Dialog } from '~/components/common/Dialog'
@@ -77,6 +77,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       createdWorkspaceId = wsResp.workspace.id
 
       const wid = state.workerId()
+      await channelClient.prepareWorkspaceAccess({ workerId: wid, workspaceId: wsResp.workspace.id })
       const agentResp = await workerRpc.openAgent(wid, {
         workspaceId: wsResp.workspace.id,
         agentProvider: agentProvider(),

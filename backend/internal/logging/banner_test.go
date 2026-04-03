@@ -21,4 +21,3 @@ func TestAddrToURL(t *testing.T) {
 		})
 	}
 }
-

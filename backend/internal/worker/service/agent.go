@@ -75,10 +75,6 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		model := modelOrDefault(r.GetModel(), agentProvider)
 		extraSettings := resolveCodexExtras(mergeExtraSettings(nil, r.GetExtraSettings()), agentProvider)
 
-		// Ensure the channel knows about this workspace so that
-		// subsequent WatchEvents calls can access the agent.
-		svc.Channels.AddAccessibleWorkspaceID(sender.ChannelID(), r.GetWorkspaceId())
-
 		// Track whether this agent was created via session resume.
 		var resumed int64
 		if r.GetAgentSessionId() != "" {

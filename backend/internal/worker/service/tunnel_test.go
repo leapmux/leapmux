@@ -16,14 +16,12 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
-
 func tunnelTestSetup(t *testing.T) (*Context, *channel.Dispatcher, *testResponseWriter) {
 	t.Helper()
 	svc, d, w := setupTestService(t)
 	svc.RegisteredBy = "user-1"
 	return svc, d, w
 }
-
 
 func TestOpenTunnelConn_HappyPath(t *testing.T) {
 	echoAddr := testutil.StartEchoServer(t)

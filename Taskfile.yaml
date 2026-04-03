@@ -34,7 +34,9 @@ vars:
 tasks:
   generate:
     desc: Generate all code (proto + sqlc)
-    deps: [generate-proto, generate-sqlc]
+    cmds:
+      - task: generate-proto
+      - task: generate-sqlc
 
   generate-proto:
     desc: Generate Protocol Buffer code (Go + TypeScript)
