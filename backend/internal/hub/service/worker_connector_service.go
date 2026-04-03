@@ -28,6 +28,7 @@ type WorkerConnectorService struct {
 	queries     *db.Queries
 	workerMgr   *workermgr.Manager
 	channelMgr  *channelmgr.Manager
+	broadcaster *HubEventBroadcaster
 	pending     *workermgr.PendingRequests
 	notifier    *notifier.Notifier
 	shutdownCh  <-chan struct{}
@@ -47,6 +48,11 @@ func (s *WorkerConnectorService) SetPollTimeout(d time.Duration) {
 // SetChannelMgr sets the channel manager for routing encrypted channel traffic.
 func (s *WorkerConnectorService) SetChannelMgr(cm *channelmgr.Manager) {
 	s.channelMgr = cm
+}
+
+// SetBroadcaster sets the hub event broadcaster for debounced control frames.
+func (s *WorkerConnectorService) SetBroadcaster(b *HubEventBroadcaster) {
+	s.broadcaster = b
 }
 
 // SetPendingRequests sets the pending requests tracker for file operations.
@@ -173,7 +179,7 @@ func (s *WorkerConnectorService) autoApproveRegistration(
 		"approved_by", user.ID,
 	)
 
-	notifyWorkersChanged(s.channelMgr, user.ID)
+	s.broadcaster.NotifyWorkersChanged(user.ID)
 
 	return nil
 }

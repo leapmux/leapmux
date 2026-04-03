@@ -9,7 +9,6 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
@@ -21,16 +20,16 @@ import (
 // WorkerManagementService implements the Hub-side service called by Frontend
 // to manage worker registrations and workers.
 type WorkerManagementService struct {
-	queries    *db.Queries
-	workerMgr  *workermgr.Manager
-	channelMgr *channelmgr.Manager
-	notifier   *notifier.Notifier
-	soloMode   bool
+	queries     *db.Queries
+	workerMgr   *workermgr.Manager
+	broadcaster *HubEventBroadcaster
+	notifier    *notifier.Notifier
+	soloMode    bool
 }
 
 // NewWorkerManagementService creates a new WorkerManagementService.
-func NewWorkerManagementService(q *db.Queries, mgr *workermgr.Manager, cMgr *channelmgr.Manager, n *notifier.Notifier, soloMode bool) *WorkerManagementService {
-	return &WorkerManagementService{queries: q, workerMgr: mgr, channelMgr: cMgr, notifier: n, soloMode: soloMode}
+func NewWorkerManagementService(q *db.Queries, mgr *workermgr.Manager, b *HubEventBroadcaster, n *notifier.Notifier, soloMode bool) *WorkerManagementService {
+	return &WorkerManagementService{queries: q, workerMgr: mgr, broadcaster: b, notifier: n, soloMode: soloMode}
 }
 
 func (s *WorkerManagementService) ApproveRegistration(
@@ -108,7 +107,7 @@ func (s *WorkerManagementService) ApproveRegistration(
 	// Wake up any long-polling worker waiting on this registration.
 	s.workerMgr.NotifyRegistrationChange(regID)
 
-	notifyWorkersChanged(s.channelMgr, user.ID)
+	s.broadcaster.NotifyWorkersChanged(user.ID)
 
 	return connect.NewResponse(&leapmuxv1.ApproveRegistrationResponse{
 		WorkerId: workerID,
@@ -239,7 +238,7 @@ func (s *WorkerManagementService) DeregisterWorker(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("send deregister: %w", err))
 	}
 
-	notifyWorkersChanged(s.channelMgr, user.ID)
+	s.broadcaster.NotifyWorkersChanged(user.ID)
 
 	return connect.NewResponse(&leapmuxv1.DeregisterWorkerResponse{}), nil
 }

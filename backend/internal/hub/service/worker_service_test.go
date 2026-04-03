@@ -68,7 +68,7 @@ func setupWorkerTestServer(t *testing.T) *workerTestEnv {
 	mux.Handle(connPath, connHandler)
 
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(
-		service.NewWorkerManagementService(q, bgMgr, nil, notifierSvc, false), opts)
+		service.NewWorkerManagementService(q, bgMgr, nil, notifierSvc, false), opts) //nolint:staticcheck // nil broadcaster is fine for tests that don't check control frames
 	mux.Handle(mgmtPath, mgmtHandler)
 
 	server := httptest.NewServer(mux)
@@ -475,14 +475,18 @@ func setupUnixSocketTestServer(t *testing.T) *unixSocketTestEnv {
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(q, cfg), opts)
 	mux.Handle(authPath, authHandler)
 
+	broadcaster := service.NewHubEventBroadcaster(cMgr)
+	broadcaster.SetDebounceInterval(50 * time.Millisecond)
+
 	connSvc := service.NewWorkerConnectorService(q, bgMgr)
 	connSvc.SetChannelMgr(cMgr)
+	connSvc.SetBroadcaster(broadcaster)
 	connSvc.SetPollTimeout(3 * time.Second)
 	connPath, connHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(connSvc, opts)
 	mux.Handle(connPath, connHandler)
 
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(
-		service.NewWorkerManagementService(q, bgMgr, cMgr, notifierSvc, false), opts)
+		service.NewWorkerManagementService(q, bgMgr, broadcaster, notifierSvc, false), opts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
 	// Start a Unix socket server.
@@ -535,6 +539,11 @@ func (e *unixSocketTestEnv) bindControlFrameListener(userID string) {
 	}, nil)
 }
 
+// waitForDebounce waits long enough for the debounced control frame to fire.
+func (e *unixSocketTestEnv) waitForDebounce() {
+	time.Sleep(150 * time.Millisecond)
+}
+
 // assertWorkersChangedReceived verifies that a WorkersChanged control frame was
 // received at the given index.
 func (e *unixSocketTestEnv) assertWorkersChangedReceived(t *testing.T, index int) {
@@ -575,7 +584,8 @@ func TestRegistration_AutoApproveViaUnixSocket(t *testing.T) {
 	assert.NotEmpty(t, pollResp.Msg.GetWorkerId())
 	assert.NotEmpty(t, pollResp.Msg.GetAuthToken())
 
-	// Verify WorkersChanged control frame was sent.
+	// Verify WorkersChanged control frame was sent (after debounce).
+	env.waitForDebounce()
 	env.assertWorkersChangedReceived(t, 0)
 }
 
@@ -623,7 +633,8 @@ func TestApproveRegistration_SendsWorkersChanged(t *testing.T) {
 	_, err = env.mgmtClient.ApproveRegistration(ctx, approveReq)
 	require.NoError(t, err)
 
-	// Verify WorkersChanged control frame was sent.
+	// Verify WorkersChanged control frame was sent (after debounce).
+	env.waitForDebounce()
 	env.assertWorkersChangedReceived(t, 0)
 }
 
@@ -651,7 +662,8 @@ func TestDeregisterWorker_SendsWorkersChanged(t *testing.T) {
 	_, err = env.mgmtClient.DeregisterWorker(ctx, deregReq)
 	require.NoError(t, err)
 
-	// Verify WorkersChanged control frame was sent.
+	// Verify WorkersChanged control frame was sent (after debounce).
+	env.waitForDebounce()
 	env.assertWorkersChangedReceived(t, 0)
 }
 
@@ -664,7 +676,7 @@ func TestRegistration_MultipleAutoApproveViaUnixSocket(t *testing.T) {
 	require.NoError(t, err)
 	env.bindControlFrameListener(admin.ID)
 
-	// Auto-approve two workers via Unix socket.
+	// Auto-approve two workers via Unix socket in quick succession.
 	for i := 0; i < 2; i++ {
 		regResp, regErr := env.unixConnClient.RequestRegistration(ctx, connect.NewRequest(
 			&leapmuxv1.RequestRegistrationRequest{Version: "0.1.0"},
@@ -678,10 +690,10 @@ func TestRegistration_MultipleAutoApproveViaUnixSocket(t *testing.T) {
 		assert.Equal(t, leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_APPROVED, pollResp.Msg.GetStatus())
 	}
 
-	// Should have received two WorkersChanged control frames.
-	assert.Len(t, env.controlFrames, 2)
+	// Debouncing should consolidate the two events into a single frame.
+	env.waitForDebounce()
+	assert.Len(t, env.controlFrames, 1)
 	env.assertWorkersChangedReceived(t, 0)
-	env.assertWorkersChangedReceived(t, 1)
 
 	// Verify two distinct workers exist.
 	listReq := authedReq(&leapmuxv1.ListWorkersRequest{}, env.adminToken(t))
