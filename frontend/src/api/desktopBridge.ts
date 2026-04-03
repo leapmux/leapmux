@@ -66,22 +66,18 @@ export function isWailsApp(): boolean {
     || typeof window.go?.main?.App?.ProxyHTTP === 'function'
 }
 
-function wailsReady(): boolean {
-  return typeof window.go?.main?.App?.ProxyHTTP === 'function'
-    && typeof window.runtime?.WindowGetSize === 'function'
-}
-
 /**
- * Returns a promise that resolves once `window.go.main.App` and
- * `window.runtime` are fully available. Wails injects both
- * asynchronously after page load; this polls until ready.
+ * Returns a promise that resolves once `window.go.main.App` is available.
+ * Wails injects bindings asynchronously after page load; this polls until ready.
+ * Note: window.runtime is NOT waited for here — animateWindowResize handles
+ * its absence gracefully. Waiting for it caused hangs on page reload.
  */
 export function waitForWailsBindings(): Promise<void> {
-  if (wailsReady())
+  if (typeof window.go?.main?.App?.ProxyHTTP === 'function')
     return Promise.resolve()
   return new Promise((resolve) => {
     const check = setInterval(() => {
-      if (wailsReady()) {
+      if (typeof window.go?.main?.App?.ProxyHTTP === 'function') {
         clearInterval(check)
         resolve()
       }
