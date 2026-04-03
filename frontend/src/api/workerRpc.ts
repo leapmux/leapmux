@@ -235,6 +235,9 @@ class BrowserChannelTransport implements ChannelTransport {
  * Wails Go bindings and events. Binary data is base64-encoded at the
  * boundary.
  */
+type WSEventType = 'open' | 'close' | 'message' | 'error'
+interface WSListener { handler: EventListener, once: boolean }
+
 class WailsWebSocket {
   readyState: number = WebSocket.CONNECTING
   binaryType: BinaryType = 'arraybuffer'
@@ -244,33 +247,66 @@ class WailsWebSocket {
   onclose: ((ev: CloseEvent) => void) | null = null
   onerror: ((ev: Event) => void) | null = null
 
+  private listeners = new Map<WSEventType, WSListener[]>()
+
   constructor() {
     const token = isSoloMode() ? '' : (getToken() ?? '')
     window.go!.main.App.OpenChannelRelay(token).then(() => {
       // Listen for messages from Go.
       window.runtime!.EventsOn('channel:message', (...args: unknown[]) => {
         const b64 = args[0] as string
-        if (this.onmessage) {
-          this.onmessage({ data: base64ToArrayBuffer(b64) } as MessageEvent)
-        }
+        const ev = { data: base64ToArrayBuffer(b64) } as MessageEvent
+        this.onmessage?.(ev)
+        this.dispatch('message', ev)
       })
       // Listen for relay close.
       window.runtime!.EventsOn('channel:close', () => {
         this.readyState = WebSocket.CLOSED
-        if (this.onclose) {
-          this.onclose({ code: 1000, reason: '', wasClean: true } as CloseEvent)
-        }
+        const ev = { code: 1000, reason: '', wasClean: true } as CloseEvent
+        this.onclose?.(ev)
+        this.dispatch('close', ev)
       })
       this.readyState = WebSocket.OPEN
-      if (this.onopen) {
-        this.onopen({} as Event)
-      }
+      const ev = {} as Event
+      this.onopen?.(ev)
+      this.dispatch('open', ev)
     }).catch((err: unknown) => {
       this.readyState = WebSocket.CLOSED
-      if (this.onerror) {
-        this.onerror(new ErrorEvent('error', { message: String(err) }))
-      }
+      const ev = new ErrorEvent('error', { message: String(err) })
+      this.onerror?.(ev)
+      this.dispatch('error', ev)
     })
+  }
+
+  addEventListener(type: string, listener: EventListener, opts?: { once?: boolean }): void {
+    const t = type as WSEventType
+    let list = this.listeners.get(t)
+    if (!list) {
+      list = []
+      this.listeners.set(t, list)
+    }
+    list.push({ handler: listener, once: opts?.once ?? false })
+  }
+
+  removeEventListener(type: string, listener: EventListener): void {
+    const list = this.listeners.get(type as WSEventType)
+    if (!list)
+      return
+    const idx = list.findIndex(l => l.handler === listener)
+    if (idx >= 0)
+      list.splice(idx, 1)
+  }
+
+  private dispatch(type: WSEventType, ev: Event): void {
+    const list = this.listeners.get(type)
+    if (!list)
+      return
+    // Iterate a copy since once-listeners mutate the array.
+    for (const entry of [...list]) {
+      entry.handler(ev)
+      if (entry.once)
+        this.removeEventListener(type, entry.handler)
+    }
   }
 
   send(data: ArrayBuffer | Uint8Array): void {
@@ -282,9 +318,9 @@ class WailsWebSocket {
     this.readyState = WebSocket.CLOSED
     window.runtime!.EventsOff('channel:message')
     window.runtime!.EventsOff('channel:close')
-    if (this.onclose) {
-      this.onclose({ code: 1000, reason: '', wasClean: true } as CloseEvent)
-    }
+    const ev = { code: 1000, reason: '', wasClean: true } as CloseEvent
+    this.onclose?.(ev)
+    this.dispatch('close', ev)
   }
 }
 
