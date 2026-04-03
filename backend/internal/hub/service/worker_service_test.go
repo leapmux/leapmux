@@ -477,7 +477,7 @@ func setupUnixSocketTestServer(t *testing.T) *unixSocketTestEnv {
 
 	connSvc := service.NewWorkerConnectorService(q, bgMgr)
 	connSvc.SetChannelMgr(cMgr)
-	connSvc.SetPollTimeout(500 * time.Millisecond)
+	connSvc.SetPollTimeout(3 * time.Second)
 	connPath, connHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(connSvc, opts)
 	mux.Handle(connPath, connHandler)
 
