@@ -3,6 +3,7 @@ import { Router } from '@solidjs/router'
 import { FileRoutes } from '@solidjs/start/router'
 import { createEffect, createSignal, onCleanup, onMount, Show, Suspense } from 'solid-js'
 import { isWailsApp } from '~/api/desktopBridge'
+import { channelManager } from '~/api/workerRpc'
 import { LauncherView } from '~/components/desktop/LauncherView'
 import { AuthProvider } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
@@ -57,6 +58,15 @@ const PreferencesApplier: ParentComponent = (props) => {
 
 export default function App() {
   const [desktopConnected, setDesktopConnected] = createSignal(!isWailsApp())
+  // Expose so UserMenu's "Switch mode..." can reset without page reload.
+  // Wails doesn't re-inject window.go after reload, so we switch in-place.
+  ;(window as any).__leapmux_disconnectDesktop = () => {
+    // Close all cached channels and the WebSocket relay so the new
+    // Hub instance starts with a clean slate.
+    channelManager.closeAll()
+    setDesktopConnected(false)
+  }
+
   const [themePreference, setThemePreference] = createSignal<ThemePreference>(getStoredTheme())
   const [resolvedTheme, setResolvedTheme] = createSignal(resolveTheme(getStoredTheme()))
 
