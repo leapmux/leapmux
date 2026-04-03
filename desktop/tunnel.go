@@ -98,6 +98,7 @@ func (m *TunnelManager) CreateTunnel(parentCtx context.Context, cfg TunnelConfig
 	// Ensure we have an E2EE channel to the worker.
 	ch, err := m.getOrOpenChannel(parentCtx, cfg)
 	if err != nil {
+		slog.Error("failed to open channel to worker", "worker_id", cfg.WorkerID, "error", err)
 		return nil, fmt.Errorf("open channel to worker: %w", err)
 	}
 
@@ -105,6 +106,7 @@ func (m *TunnelManager) CreateTunnel(parentCtx context.Context, cfg TunnelConfig
 	bindAddr := net.JoinHostPort(cfg.BindAddr, fmt.Sprintf("%d", cfg.BindPort))
 	listener, err := net.Listen("tcp", bindAddr)
 	if err != nil {
+		slog.Error("failed to bind tunnel listener", "bind_addr", bindAddr, "error", err)
 		return nil, fmt.Errorf("bind %s: %w", bindAddr, err)
 	}
 

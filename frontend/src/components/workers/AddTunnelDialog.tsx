@@ -104,7 +104,7 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
       props.onCreated(tunnel)
     }
     catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create tunnel')
+      setError(err instanceof Error ? err.message : String(err))
       submitting.stop()
     }
   }

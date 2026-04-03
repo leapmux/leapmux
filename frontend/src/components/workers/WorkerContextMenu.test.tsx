@@ -5,7 +5,6 @@ import { WorkerContextMenu } from './WorkerContextMenu'
 
 // Mock the modules that affect visibility.
 vi.mock('~/lib/systemInfo', () => ({
-  isDesktopApp: vi.fn(() => false),
   isSoloMode: vi.fn(() => true),
 }))
 
@@ -45,20 +44,8 @@ describe('workerContextMenu', () => {
     vi.restoreAllMocks()
   })
 
-  it('"add tunnel..." hidden when not desktop app', async () => {
-    const { isDesktopApp } = await import('~/lib/systemInfo')
-    const { isTunnelAvailable } = await import('~/api/tunnelApi')
-    vi.mocked(isDesktopApp).mockReturnValue(false)
-    vi.mocked(isTunnelAvailable).mockReturnValue(true)
-
-    renderMenu()
-    expect(screen.queryByText('Add tunnel...')).not.toBeInTheDocument()
-  })
-
   it('"add tunnel..." hidden when tunnel not available', async () => {
-    const { isDesktopApp } = await import('~/lib/systemInfo')
     const { isTunnelAvailable } = await import('~/api/tunnelApi')
-    vi.mocked(isDesktopApp).mockReturnValue(true)
     vi.mocked(isTunnelAvailable).mockReturnValue(false)
 
     renderMenu()
@@ -66,19 +53,15 @@ describe('workerContextMenu', () => {
   })
 
   it('"add tunnel..." hidden when not owner', async () => {
-    const { isDesktopApp } = await import('~/lib/systemInfo')
     const { isTunnelAvailable } = await import('~/api/tunnelApi')
-    vi.mocked(isDesktopApp).mockReturnValue(true)
     vi.mocked(isTunnelAvailable).mockReturnValue(true)
 
     renderMenu({ isOwner: false })
     expect(screen.queryByText('Add tunnel...')).not.toBeInTheDocument()
   })
 
-  it('"add tunnel..." visible when desktop + available + owner', async () => {
-    const { isDesktopApp } = await import('~/lib/systemInfo')
+  it('"add tunnel..." visible when available + owner', async () => {
     const { isTunnelAvailable } = await import('~/api/tunnelApi')
-    vi.mocked(isDesktopApp).mockReturnValue(true)
     vi.mocked(isTunnelAvailable).mockReturnValue(true)
 
     renderMenu({ isOwner: true })
@@ -86,9 +69,7 @@ describe('workerContextMenu', () => {
   })
 
   it('clicking "add tunnel..." calls onAddTunnel', async () => {
-    const { isDesktopApp } = await import('~/lib/systemInfo')
     const { isTunnelAvailable } = await import('~/api/tunnelApi')
-    vi.mocked(isDesktopApp).mockReturnValue(true)
     vi.mocked(isTunnelAvailable).mockReturnValue(true)
 
     const { onAddTunnel } = renderMenu({ isOwner: true })

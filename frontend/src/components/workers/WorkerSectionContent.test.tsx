@@ -12,6 +12,7 @@ import { createTunnelStore } from '~/stores/tunnel.store'
 import { WorkerSectionContent } from './WorkerSectionContent'
 
 vi.mock('~/api/tunnelApi', () => ({
+  isTunnelAvailable: vi.fn(() => false),
   createTunnel: vi.fn(),
   deleteTunnel: vi.fn(),
   listTunnels: vi.fn(),

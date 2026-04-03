@@ -1,5 +1,3 @@
-import { isWailsApp } from '~/api/desktopBridge'
-
 export interface TunnelConfig {
   workerId: string
   type: 'port_forward' | 'socks5'
@@ -23,7 +21,7 @@ export interface TunnelInfo {
 }
 
 export function isTunnelAvailable(): boolean {
-  return isWailsApp()
+  return typeof window.go?.main?.App?.CreateTunnel === 'function'
 }
 
 export async function createTunnel(config: TunnelConfig): Promise<TunnelInfo> {
