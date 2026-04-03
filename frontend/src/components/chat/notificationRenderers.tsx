@@ -14,10 +14,22 @@ import { markdownContent } from './markdownContent.css'
 import {
   controlResponseMessage,
   resultDivider,
+  resultErrorDetail,
 } from './messageStyles.css'
 import { isObject } from './messageUtils'
 import { formatDuration } from './rendererUtils'
 import { PERMISSION_MODE_KEY } from './settingsShared'
+
+// ---------------------------------------------------------------------------
+// Humanize subtype strings: "error_during_execution" → "Error during execution"
+// ---------------------------------------------------------------------------
+
+const UNDERSCORE = /_/g
+const FIRST_CHAR = /^\w/
+
+function humanizeSubtype(subtype: string): string {
+  return subtype.replace(UNDERSCORE, ' ').replace(FIRST_CHAR, c => c.toUpperCase())
+}
 
 // ---------------------------------------------------------------------------
 // Display helpers for settings change notifications
@@ -369,9 +381,25 @@ export const resultRenderer: MessageContentRenderer = {
     if (parsed.is_error === true) {
       const errors = Array.isArray(parsed.errors) ? parsed.errors as string[] : []
       const resultText = typeof parsed.result === 'string' ? parsed.result : ''
-      const errorMsg = errors.length > 0 ? errors.join('; ') : resultText || 'Unknown error'
       const durationMs = typeof parsed.duration_ms === 'number' ? parsed.duration_ms : 0
       const durationSuffix = durationMs > 0 ? ` (${formatDuration(durationMs)})` : ''
+
+      // Execution errors with a descriptive subtype: show humanized subtype
+      // in the divider and the raw error details below.
+      const subtype = typeof parsed.subtype === 'string' ? parsed.subtype : ''
+      if (subtype && subtype !== 'success') {
+        const humanSubtype = humanizeSubtype(subtype)
+        const label = humanSubtype + durationSuffix
+        const errorDetail = errors.length > 0 ? errors.join('\n') : resultText || ''
+        return (
+          <>
+            <div class={resultDivider} style={{ color: 'var(--danger)' }}>{label}</div>
+            {errorDetail && <pre class={resultErrorDetail}>{errorDetail}</pre>}
+          </>
+        )
+      }
+
+      const errorMsg = errors.length > 0 ? errors.join('; ') : resultText || 'Unknown error'
       const label = cleanAPIErrorMessage(errorMsg) + durationSuffix
       return <div class={resultDivider} style={{ color: 'var(--danger)' }}>{label}</div>
     }

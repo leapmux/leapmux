@@ -17,6 +17,7 @@ import { optionGroupDefaultValue, optionGroupLabel } from '~/components/chat/set
 import { showWarnToast } from '~/components/common/Toast'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { base64ToUint8Array } from '~/lib/base64'
 import { createLogger } from '~/lib/logger'
 import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
 import { defaultEffortForProvider, defaultModelForProvider } from '~/utils/controlResponse'
@@ -311,8 +312,24 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       if (typeof content !== 'string')
         return
 
+      // Recover attachments from the failed message (base64-encoded data).
+      const rawAttachments = Array.isArray(inner?.attachments)
+        ? inner.attachments as Array<{ filename?: string, mime_type?: string, data?: string }>
+        : []
+      const attachments = rawAttachments
+        .filter(a => a.data)
+        .map(a => ({
+          filename: a.filename ?? '',
+          mimeType: a.mime_type ?? '',
+          data: base64ToUint8Array(a.data!),
+        }))
+
       props.chatStore.clearMessageError(messageId)
-      await workerRpc.sendAgentMessage(workerId, { agentId, content })
+      await workerRpc.sendAgentMessage(workerId, {
+        agentId,
+        content,
+        ...(attachments.length > 0 ? { attachments } : {}),
+      })
       // Success: delete the old failed message. The new one arrives via WatchEvents.
       if (messageId.startsWith('local-')) {
         props.chatStore.removeMessage(agentId, messageId)

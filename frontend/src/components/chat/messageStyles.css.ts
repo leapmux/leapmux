@@ -124,6 +124,18 @@ export const resultDivider = style({
   },
 })
 
+// Error detail text shown below the result divider for execution errors
+export const resultErrorDetail = style({
+  margin: 0,
+  padding: '0 var(--space-3)',
+  fontSize: 'var(--text-7)',
+  fontFamily: 'var(--font-mono)',
+  fontVariantLigatures: 'none',
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-word',
+  color: 'var(--muted-foreground)',
+})
+
 // Hidden message rendered as raw JSON (developer mode)
 export const hiddenMessageJson = style({
   margin: 0,

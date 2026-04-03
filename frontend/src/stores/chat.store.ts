@@ -14,7 +14,7 @@ interface PersistedLocalMessage {
   contentText: string
   createdAt: string
   deliveryError: string
-  attachments?: Array<{ filename?: string, mime_type?: string }>
+  attachments?: Array<{ filename?: string, mime_type?: string, data?: string }>
 }
 
 const LOCAL_MSG_KEY = 'local-messages'
@@ -90,7 +90,15 @@ function userMessageSignature(message: AgentChatMessage): string | null {
 function hydrateLocalMessage(p: PersistedLocalMessage): AgentChatMessage {
   const contentJson = JSON.stringify({
     content: p.contentText,
-    ...(p.attachments && p.attachments.length > 0 ? { attachments: p.attachments } : {}),
+    ...(p.attachments && p.attachments.length > 0
+      ? {
+          attachments: p.attachments.map(att => ({
+            ...(att.filename ? { filename: att.filename } : {}),
+            ...(att.mime_type ? { mime_type: att.mime_type } : {}),
+            ...(att.data ? { data: att.data } : {}),
+          })),
+        }
+      : {}),
   })
   return {
     $typeName: 'leapmux.v1.AgentChatMessage' as const,
@@ -413,7 +421,7 @@ export function createChatStore() {
       messageId: string,
       contentText: string,
       deliveryError: string,
-      attachments?: Array<{ filename?: string, mime_type?: string }>,
+      attachments?: Array<{ filename?: string, mime_type?: string, data?: string }>,
     ) {
       persistLocalMessage(agentId, {
         id: messageId,
