@@ -196,19 +196,16 @@ class BrowserChannelTransport implements ChannelTransport {
 
   createWebSocket(): WebSocket {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    let wsUrl: string
-    if (isSoloMode()) {
-      // Solo mode: no session token needed; backend auto-authenticates.
-      wsUrl = `${wsProtocol}//${window.location.host}/ws/channel`
-    }
-    else {
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws/channel`
+    const protocols = ['channel-relay']
+    if (!isSoloMode()) {
       const token = getToken()
       if (!token) {
         throw new Error('not authenticated')
       }
-      wsUrl = `${wsProtocol}//${window.location.host}/ws/channel?token=${encodeURIComponent(token)}`
+      protocols.push(`auth.token.${token}`)
     }
-    const ws = new WebSocket(wsUrl, ['channel-relay'])
+    const ws = new WebSocket(wsUrl, protocols)
     ws.binaryType = 'arraybuffer'
     return ws
   }

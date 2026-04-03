@@ -16,6 +16,7 @@ import { WorkerSettingsDialog } from '~/components/workers/WorkerSettingsDialog'
 import { useAuth } from '~/context/AuthContext'
 import { useOrg } from '~/context/OrgContext'
 import { usePreferences } from '~/context/PreferencesContext'
+import { TunnelProvider } from '~/context/TunnelContext'
 import { useWorkspace } from '~/context/WorkspaceContext'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
@@ -1016,10 +1017,8 @@ export const AppShell: ParentComponent = (props) => {
     get workers() { return workers() },
     workerInfoFn: workerInfoStore.workerInfo,
     channelStatusFn: workerChannelStatusStore.getStatus,
-    tunnelsForWorkerFn: tunnelStore.tunnelsForWorker,
     currentUserId: auth.user()?.id ?? '',
     onAddTunnel: (worker: Worker) => setAddTunnelTarget(worker),
-    onDeleteTunnel: (tunnelId: string) => { tunnelStore.remove(tunnelId).catch(() => {}) },
     onDeregisterWorker: (worker: Worker) => setDeregisterTarget(worker),
     onTabClick: (type: number, id: string) => {
       const tabType = type as TabType
@@ -1066,7 +1065,7 @@ export const AppShell: ParentComponent = (props) => {
   ))
 
   return (
-    <>
+    <TunnelProvider store={tunnelStore}>
       <Show when={workspaceNotFound()}>
         <NotFoundPage
           message="The workspace you're looking for doesn't exist or you don't have access."
@@ -1214,6 +1213,6 @@ export const AppShell: ParentComponent = (props) => {
           />
         )}
       </Show>
-    </>
+    </TunnelProvider>
   )
 }

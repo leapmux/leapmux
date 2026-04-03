@@ -4,7 +4,6 @@ package tunnel
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -17,16 +16,11 @@ import (
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/channelproto"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 )
-
-// maxChunkSize is the max plaintext per Noise transport message (65535 - 16 byte auth tag).
-const maxChunkSize = 65535 - 16
-
-// maxReassemblySize is the max reassembled message size (16 MiB).
-const maxReassemblySize = 16 * 1024 * 1024
 
 // Channel manages a single E2EE channel from the desktop app to a Worker
 // via the Hub's WebSocket relay.
@@ -110,19 +104,20 @@ func OpenChannel(ctx context.Context, hubURL, token, userID, workerID string) (*
 	// 6. Connect to Hub's WebSocket relay.
 	wsURL := strings.Replace(hubURL, "http://", "ws://", 1)
 	wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
+	wsURL += "/ws/channel"
+
+	subprotocols := []string{"channel-relay"}
 	if token != "" {
-		wsURL += "/ws/channel?token=" + token
-	} else {
-		wsURL += "/ws/channel"
+		subprotocols = append(subprotocols, "auth.token."+token)
 	}
 
 	wsConn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
-		Subprotocols: []string{"channel-relay"},
+		Subprotocols: subprotocols,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("websocket dial: %w", err)
 	}
-	wsConn.SetReadLimit(maxReassemblySize + 1024)
+	wsConn.SetReadLimit(channelproto.DefaultMaxMessageSize + 1024)
 
 	chCtx, chCancel := context.WithCancel(ctx)
 	ch := &Channel{
@@ -302,7 +297,7 @@ func (ch *Channel) sendInner(correlationID uint32, msg *leapmuxv1.InnerMessage) 
 	}
 
 	for offset := 0; offset < len(plaintext) || offset == 0; {
-		end := offset + maxChunkSize
+		end := offset + channelproto.MaxPlaintextPerChunk
 		if end > len(plaintext) {
 			end = len(plaintext)
 		}
@@ -327,7 +322,7 @@ func (ch *Channel) sendInner(correlationID uint32, msg *leapmuxv1.InnerMessage) 
 			Ciphertext:      ciphertext,
 		}
 
-		if err := writeWsChannelMessage(ch.ctx, ch.ws, chMsg); err != nil {
+		if err := channelproto.WriteChannelMessage(ch.ctx, ch.ws, chMsg); err != nil {
 			return fmt.Errorf("write ws: %w", err)
 		}
 	}
@@ -339,7 +334,7 @@ func (ch *Channel) recvLoop() {
 	defer ch.Close()
 
 	for {
-		chMsg, err := readWsChannelMessage(ch.ctx, ch.ws)
+		chMsg, err := channelproto.ReadChannelMessage(ch.ctx, ch.ws)
 		if err != nil {
 			if ch.closed.Load() || ch.ctx.Err() != nil {
 				return
@@ -366,7 +361,7 @@ func (ch *Channel) recvLoop() {
 			buf.parts = append(buf.parts, plaintext)
 			buf.total += len(plaintext)
 			ch.mu.Unlock()
-			if buf.total > maxReassemblySize {
+			if buf.total > channelproto.DefaultMaxMessageSize {
 				slog.Error("tunnel channel message too large", "channel_id", ch.channelID)
 				return
 			}
@@ -454,34 +449,4 @@ func (a *authInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) 
 
 func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return next
-}
-
-func writeWsChannelMessage(ctx context.Context, ws *websocket.Conn, msg *leapmuxv1.ChannelMessage) error {
-	data, err := proto.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
-	}
-	buf := make([]byte, 4+len(data))
-	binary.BigEndian.PutUint32(buf[:4], uint32(len(data)))
-	copy(buf[4:], data)
-	return ws.Write(ctx, websocket.MessageBinary, buf)
-}
-
-func readWsChannelMessage(ctx context.Context, ws *websocket.Conn) (*leapmuxv1.ChannelMessage, error) {
-	_, data, err := ws.Read(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if len(data) < 4 {
-		return nil, fmt.Errorf("message too short")
-	}
-	length := binary.BigEndian.Uint32(data[:4])
-	if int(length) != len(data)-4 {
-		return nil, fmt.Errorf("length mismatch: header=%d, actual=%d", length, len(data)-4)
-	}
-	msg := &leapmuxv1.ChannelMessage{}
-	if err := proto.Unmarshal(data[4:], msg); err != nil {
-		return nil, fmt.Errorf("unmarshal: %w", err)
-	}
-	return msg, nil
 }

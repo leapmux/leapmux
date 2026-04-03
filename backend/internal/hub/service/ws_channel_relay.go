@@ -2,14 +2,13 @@ package service
 
 import (
 	"context"
-	"encoding/binary"
-	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/coder/websocket"
-	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/channelproto"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
@@ -54,9 +53,13 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		// Solo mode: auto-authenticate as the solo user.
 		user = h.soloUser
 	} else {
-		token := r.URL.Query().Get("token")
+		// Extract auth token from subprotocol header or query param (legacy).
+		token := extractTokenFromSubprotocols(r.Header.Get("Sec-WebSocket-Protocol"))
 		if token == "" {
-			http.Error(w, "missing token parameter", http.StatusBadRequest)
+			token = r.URL.Query().Get("token")
+		}
+		if token == "" {
+			http.Error(w, "missing token", http.StatusBadRequest)
 			return
 		}
 
@@ -77,7 +80,7 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	wsConn.SetReadLimit(channelmgr.WSReadLimit)
+	wsConn.SetReadLimit(channelproto.WSReadLimit)
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -92,7 +95,7 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			"channel_id", msg.GetChannelId(),
 			"correlation_id", msg.GetCorrelationId(),
 		)
-		return writeChannelMessage(ctx, wsConn, msg)
+		return channelproto.WriteChannelMessage(ctx, wsConn, msg)
 	}, cancel)
 
 	slog.Info("channel relay connected", "user_id", user.ID, "conn_id", connID)
@@ -131,7 +134,7 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 	// Read messages from frontend and route to the correct worker.
 	for {
-		msg, err := readChannelMessage(ctx, wsConn)
+		msg, err := channelproto.ReadChannelMessage(ctx, wsConn)
 		if err != nil {
 			if ctx.Err() != nil {
 				return // Context cancelled.
@@ -206,42 +209,18 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-// Wire format for WebSocket channel messages:
-// [4 bytes big-endian length][protobuf-encoded ChannelMessage]
-// This is a simple length-prefixed binary protocol.
+// authTokenSubprotocolPrefix is the prefix for auth tokens passed via
+// the Sec-WebSocket-Protocol header (e.g. "auth.token.<token>").
+const authTokenSubprotocolPrefix = "auth.token."
 
-func writeChannelMessage(ctx context.Context, ws *websocket.Conn, msg *leapmuxv1.ChannelMessage) error {
-	data, err := proto.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
+// extractTokenFromSubprotocols parses a comma-separated Sec-WebSocket-Protocol
+// header value and returns the token from an "auth.token.<token>" entry.
+func extractTokenFromSubprotocols(header string) string {
+	for _, proto := range strings.Split(header, ",") {
+		proto = strings.TrimSpace(proto)
+		if strings.HasPrefix(proto, authTokenSubprotocolPrefix) {
+			return strings.TrimPrefix(proto, authTokenSubprotocolPrefix)
+		}
 	}
-
-	buf := make([]byte, 4+len(data))
-	binary.BigEndian.PutUint32(buf[:4], uint32(len(data)))
-	copy(buf[4:], data)
-
-	return ws.Write(ctx, websocket.MessageBinary, buf)
-}
-
-func readChannelMessage(ctx context.Context, ws *websocket.Conn) (*leapmuxv1.ChannelMessage, error) {
-	_, data, err := ws.Read(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(data) < 4 {
-		return nil, fmt.Errorf("message too short")
-	}
-
-	length := binary.BigEndian.Uint32(data[:4])
-	if int(length) != len(data)-4 {
-		return nil, fmt.Errorf("length mismatch: header=%d, actual=%d", length, len(data)-4)
-	}
-
-	msg := &leapmuxv1.ChannelMessage{}
-	if err := proto.Unmarshal(data[4:], msg); err != nil {
-		return nil, fmt.Errorf("unmarshal: %w", err)
-	}
-
-	return msg, nil
+	return ""
 }

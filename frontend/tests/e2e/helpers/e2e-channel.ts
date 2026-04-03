@@ -105,8 +105,8 @@ class FetchChannelTransport implements ChannelTransport {
   }
 
   createWebSocket(): WebSocket {
-    const wsUrl = `${this.hubUrl.replace(HTTP_TO_WS_RE, 'ws')}/ws/channel?token=${encodeURIComponent(this.token)}`
-    const ws = new WebSocket(wsUrl, ['channel-relay'])
+    const wsUrl = `${this.hubUrl.replace(HTTP_TO_WS_RE, 'ws')}/ws/channel`
+    const ws = new WebSocket(wsUrl, ['channel-relay', `auth.token.${this.token}`])
     // @ts-expect-error -- Node.js WebSocket supports binaryType
     ws.binaryType = 'arraybuffer'
     return ws

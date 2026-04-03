@@ -47,10 +47,8 @@ export interface SidebarElementsOpts {
   workers: Worker[]
   workerInfoFn: (id: string) => WorkerInfo | null
   channelStatusFn: (id: string) => ChannelStatus
-  tunnelsForWorkerFn: (workerId: string) => import('~/api/tunnelApi').TunnelInfo[]
   currentUserId: string
   onAddTunnel: (worker: Worker) => void
-  onDeleteTunnel: (tunnelId: string) => void
   onDeregisterWorker: (worker: Worker) => void
   onTabClick: (type: number, id: string) => void
   onTabRename?: (tab: Tab, title: string) => void
@@ -111,10 +109,8 @@ export function createLeftSidebarElement(opts: SidebarElementsOpts, display?: Si
       workers={opts.workers}
       workerInfoFn={opts.workerInfoFn}
       channelStatusFn={opts.channelStatusFn}
-      tunnelsForWorkerFn={opts.tunnelsForWorkerFn}
       currentUserId={opts.currentUserId}
       onAddTunnel={opts.onAddTunnel}
-      onDeleteTunnel={opts.onDeleteTunnel}
       onDeregisterWorker={opts.onDeregisterWorker}
       tabStore={opts.tabStore}
       registry={opts.registry}
@@ -174,10 +170,8 @@ export function createRightSidebarElement(opts: SidebarElementsOpts, display?: S
       workers={opts.workers}
       workerInfoFn={opts.workerInfoFn}
       channelStatusFn={opts.channelStatusFn}
-      tunnelsForWorkerFn={opts.tunnelsForWorkerFn}
       currentUserId={opts.currentUserId}
       onAddTunnel={opts.onAddTunnel}
-      onDeleteTunnel={opts.onDeleteTunnel}
       onDeregisterWorker={opts.onDeregisterWorker}
     />
   )

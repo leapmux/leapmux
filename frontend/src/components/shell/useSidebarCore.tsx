@@ -78,10 +78,8 @@ export interface SidebarCommonProps {
   workers: Worker[]
   workerInfoFn: (id: string) => WorkerInfo | null
   channelStatusFn: (id: string) => ChannelStatus
-  tunnelsForWorkerFn: (workerId: string) => import('~/api/tunnelApi').TunnelInfo[]
   currentUserId: string
   onAddTunnel: (worker: Worker) => void
-  onDeleteTunnel: (tunnelId: string) => void
   onDeregisterWorker: (worker: Worker) => void
 }
 
@@ -169,10 +167,8 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     get workers() { return props.workers },
     workerInfoFn: props.workerInfoFn,
     channelStatusFn: props.channelStatusFn,
-    tunnelsForWorkerFn: props.tunnelsForWorkerFn,
     currentUserId: props.currentUserId,
     onAddTunnel: props.onAddTunnel,
-    onDeleteTunnel: props.onDeleteTunnel,
     onDeregisterWorker: props.onDeregisterWorker,
   })
 

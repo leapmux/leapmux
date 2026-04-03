@@ -6,8 +6,16 @@ import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import { create } from '@bufbuild/protobuf'
 import { render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
+import { TunnelProvider } from '~/context/TunnelContext'
 import { WorkerSchema } from '~/generated/leapmux/v1/worker_pb'
+import { createTunnelStore } from '~/stores/tunnel.store'
 import { WorkerSectionContent } from './WorkerSectionContent'
+
+vi.mock('~/api/tunnelApi', () => ({
+  createTunnel: vi.fn(),
+  deleteTunnel: vi.fn(),
+  listTunnels: vi.fn(),
+}))
 
 function makeWorker(id: string, registeredBy = 'user-1'): Worker {
   return create(WorkerSchema, { id, registeredBy, orgId: 'org-1', online: true })
@@ -28,25 +36,36 @@ function renderSection(opts?: {
   currentUserId?: string
 }) {
   const workers = opts?.workers ?? [makeWorker('w1')]
-  const tunnels = opts?.tunnels ?? []
   const onAddTunnel = vi.fn()
-  const onDeleteTunnel = vi.fn()
   const onDeregister = vi.fn()
 
+  // Create a tunnel store and pre-populate with test tunnels via the signal directly.
+  const tunnelStore = createTunnelStore()
+  if (opts?.tunnels?.length) {
+    // Access internal signal to set test data without calling the API.
+    const tunnels = opts.tunnels
+    Object.defineProperty(tunnelStore, 'tunnels', {
+      value: () => tunnels,
+    })
+    Object.defineProperty(tunnelStore, 'tunnelsForWorker', {
+      value: (workerId: string) => tunnels.filter(t => t.workerId === workerId),
+    })
+  }
+
   render(() => (
-    <WorkerSectionContent
-      workers={workers}
-      workerInfo={() => defaultWorkerInfo}
-      channelStatus={() => 'connected' as ChannelStatus}
-      tunnelsForWorker={(workerId: string) => tunnels.filter(t => t.workerId === workerId)}
-      currentUserId={opts?.currentUserId ?? 'user-1'}
-      onAddTunnel={onAddTunnel}
-      onDeleteTunnel={onDeleteTunnel}
-      onDeregister={onDeregister}
-    />
+    <TunnelProvider store={tunnelStore}>
+      <WorkerSectionContent
+        workers={workers}
+        workerInfo={() => defaultWorkerInfo}
+        channelStatus={() => 'connected' as ChannelStatus}
+        currentUserId={opts?.currentUserId ?? 'user-1'}
+        onAddTunnel={onAddTunnel}
+        onDeregister={onDeregister}
+      />
+    </TunnelProvider>
   ))
 
-  return { onAddTunnel, onDeleteTunnel, onDeregister }
+  return { onAddTunnel, onDeregister }
 }
 
 describe('workerSectionContent', () => {
@@ -63,10 +82,7 @@ describe('workerSectionContent', () => {
       { id: 't2', workerId: 'w2', type: 'socks5', bindAddr: '127.0.0.1', bindPort: 1080, targetAddr: '', targetPort: 0 },
     ]
     renderSection({ workers, tunnels })
-
-    // Worker w1 should show port forward tunnel.
     expect(screen.getByText(/127\.0\.0\.1:3000 \u2192 10\.0\.0\.1:8080/)).toBeInTheDocument()
-    // Worker w2 should show SOCKS5 tunnel.
     expect(screen.getByText(/SOCKS5 127\.0\.0\.1:1080/)).toBeInTheDocument()
   })
 
@@ -84,7 +100,6 @@ describe('workerSectionContent', () => {
     ]
     renderSection({ tunnels })
     expect(screen.getByText(/SOCKS5 127\.0\.0\.1:1080/)).toBeInTheDocument()
-    // Should NOT show arrow for SOCKS5.
     const tunnelText = screen.getByText(/SOCKS5 127\.0\.0\.1:1080/).textContent
     expect(tunnelText).not.toContain('\u2192')
   })
@@ -95,17 +110,18 @@ describe('workerSectionContent', () => {
   })
 
   it('shows dash when workerInfo is null', () => {
+    const tunnelStore = createTunnelStore()
     render(() => (
-      <WorkerSectionContent
-        workers={[makeWorker('w1')]}
-        workerInfo={() => null}
-        channelStatus={() => 'connected' as ChannelStatus}
-        tunnelsForWorker={() => []}
-        currentUserId="user-1"
-        onAddTunnel={vi.fn()}
-        onDeleteTunnel={vi.fn()}
-        onDeregister={vi.fn()}
-      />
+      <TunnelProvider store={tunnelStore}>
+        <WorkerSectionContent
+          workers={[makeWorker('w1')]}
+          workerInfo={() => null}
+          channelStatus={() => 'connected' as ChannelStatus}
+          currentUserId="user-1"
+          onAddTunnel={vi.fn()}
+          onDeregister={vi.fn()}
+        />
+      </TunnelProvider>
     ))
     expect(screen.getByText('\u2014')).toBeInTheDocument()
   })

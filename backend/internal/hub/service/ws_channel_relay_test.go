@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/coder/websocket"
+	"github.com/leapmux/leapmux/channelproto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -56,7 +57,7 @@ func TestWSReadLimit_AcceptsLargeChunk(t *testing.T) {
 
 		ws.SetReadLimit(channelmgr.WSReadLimit)
 
-		got, rerr := readChannelMessage(r.Context(), ws)
+		got, rerr := channelproto.ReadChannelMessage(r.Context(), ws)
 		if rerr != nil {
 			readErr <- rerr
 			return
@@ -116,7 +117,7 @@ func TestWSReadLimit_DefaultRejectsLargeChunk(t *testing.T) {
 		defer func() { _ = ws.Close(websocket.StatusNormalClosure, "") }()
 
 		// No SetReadLimit — default applies.
-		_, rerr := readChannelMessage(r.Context(), ws)
+		_, rerr := channelproto.ReadChannelMessage(r.Context(), ws)
 		readErr <- rerr
 	}))
 	defer srv.Close()

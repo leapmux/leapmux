@@ -1,10 +1,10 @@
 import type { Component } from 'solid-js'
-import type { TunnelInfo } from '~/api/tunnelApi'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import { For, Show } from 'solid-js'
 import * as listStyles from '~/components/workspace/workspaceList.css'
+import { useTunnel } from '~/context/TunnelContext'
 import { TunnelContextMenu } from './TunnelContextMenu'
 import { WorkerContextMenu } from './WorkerContextMenu'
 import * as styles from './workerSection.css'
@@ -13,10 +13,8 @@ export interface WorkerSectionContentProps {
   workers: Worker[]
   workerInfo: (id: string) => WorkerInfo | null
   channelStatus: (id: string) => ChannelStatus
-  tunnelsForWorker: (workerId: string) => TunnelInfo[]
   currentUserId: string
   onAddTunnel: (worker: Worker) => void
-  onDeleteTunnel: (tunnelId: string) => void
   onDeregister: (worker: Worker) => void
 }
 
@@ -26,6 +24,8 @@ const statusClass: Record<ChannelStatus, string> = {
 }
 
 export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props) => {
+  const tunnel = useTunnel()
+
   return (
     <div class={listStyles.sectionItems}>
       <Show
@@ -52,20 +52,22 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                   />
                 </div>
               </div>
-              <For each={props.tunnelsForWorker(worker.id)}>
-                {tunnel => (
-                  <div class={`${listStyles.item} ${styles.tunnelItem}`}>
-                    <span class={listStyles.itemTitle}>
-                      {tunnel.type === 'socks5'
-                        ? `SOCKS5 ${tunnel.bindAddr}:${tunnel.bindPort}`
-                        : `${tunnel.bindAddr}:${tunnel.bindPort} \u2192 ${tunnel.targetAddr}:${tunnel.targetPort}`}
-                    </span>
-                    <div class={listStyles.itemActions}>
-                      <TunnelContextMenu onDelete={() => props.onDeleteTunnel(tunnel.id)} />
+              <Show when={tunnel}>
+                <For each={tunnel!.tunnelsForWorker(worker.id)}>
+                  {t => (
+                    <div class={`${listStyles.item} ${styles.tunnelItem}`}>
+                      <span class={listStyles.itemTitle}>
+                        {t.type === 'socks5'
+                          ? `SOCKS5 ${t.bindAddr}:${t.bindPort}`
+                          : `${t.bindAddr}:${t.bindPort} \u2192 ${t.targetAddr}:${t.targetPort}`}
+                      </span>
+                      <div class={listStyles.itemActions}>
+                        <TunnelContextMenu onDelete={() => { tunnel!.remove(t.id).catch(() => {}) }} />
+                      </div>
                     </div>
-                  </div>
-                )}
-              </For>
+                  )}
+                </For>
+              </Show>
             </>
           )}
         </For>
