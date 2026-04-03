@@ -2,19 +2,24 @@ package service_test
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
+	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
@@ -428,4 +433,257 @@ func TestWorkerService_ListWorkers_Empty(t *testing.T) {
 	listResp, err := env.mgmtClient.ListWorkers(ctx, listReq)
 	require.NoError(t, err)
 	assert.Empty(t, listResp.Msg.GetWorkers())
+}
+
+// --- Unix socket auto-approve tests ---
+
+// unixSocketTestEnv extends workerTestEnv with a channel manager to capture
+// control frames, and provides a ConnectRPC client connected via Unix socket.
+type unixSocketTestEnv struct {
+	workerTestEnv
+	cMgr             *channelmgr.Manager
+	unixConnClient   leapmuxv1connect.WorkerConnectorServiceClient
+	unixMgmtClient   leapmuxv1connect.WorkerManagementServiceClient
+	controlFrames    []*leapmuxv1.ChannelMessage
+}
+
+func setupUnixSocketTestServer(t *testing.T) *unixSocketTestEnv {
+	t.Helper()
+
+	sqlDB, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	err = db.Migrate(sqlDB)
+	require.NoError(t, err)
+
+	q := gendb.New(sqlDB)
+	err = bootstrap.Run(context.Background(), q, false)
+	require.NoError(t, err)
+
+	bgMgr := workermgr.New()
+	cMgr := channelmgr.New()
+
+	cfg := testConfig()
+	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
+	notifierSvc := notifier.New(q, bgMgr, pendingReqs, cfg)
+
+	mux := http.NewServeMux()
+	opts := connect.WithInterceptors(auth.NewInterceptor(q, false))
+
+	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(q, cfg), opts)
+	mux.Handle(authPath, authHandler)
+
+	connSvc := service.NewWorkerConnectorService(q, bgMgr)
+	connSvc.SetChannelMgr(cMgr)
+	connPath, connHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(connSvc, opts)
+	mux.Handle(connPath, connHandler)
+
+	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(
+		service.NewWorkerManagementService(q, bgMgr, cMgr, notifierSvc, false), opts)
+	mux.Handle(mgmtPath, mgmtHandler)
+
+	// Start a Unix socket server.
+	// Use a short path under /tmp to stay within the 104-byte macOS limit.
+	sockDir, err := os.MkdirTemp("", "lmtest")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	sockPath := filepath.Join(sockDir, "s.sock")
+	unixLn, err := net.Listen("unix", sockPath)
+	require.NoError(t, err)
+
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(unixLn) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	// Also start a TCP server for non-socket tests.
+	tcpServer := httptest.NewServer(mux)
+	t.Cleanup(tcpServer.Close)
+
+	// Build an HTTP client that dials the Unix socket.
+	unixClient := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", sockPath)
+			},
+		},
+	}
+
+	env := &unixSocketTestEnv{
+		workerTestEnv: workerTestEnv{
+			connectorClient: leapmuxv1connect.NewWorkerConnectorServiceClient(tcpServer.Client(), tcpServer.URL),
+			mgmtClient:      leapmuxv1connect.NewWorkerManagementServiceClient(tcpServer.Client(), tcpServer.URL),
+			authClient:      leapmuxv1connect.NewAuthServiceClient(tcpServer.Client(), tcpServer.URL),
+			queries:         q,
+		},
+		cMgr:           cMgr,
+		unixConnClient: leapmuxv1connect.NewWorkerConnectorServiceClient(unixClient, "http://localhost"),
+		unixMgmtClient: leapmuxv1connect.NewWorkerManagementServiceClient(unixClient, "http://localhost"),
+	}
+
+	return env
+}
+
+// bindControlFrameListener registers a fake WebSocket connection on the channel
+// manager for the given user and captures all received messages.
+func (e *unixSocketTestEnv) bindControlFrameListener(userID string) {
+	e.cMgr.BindUser(userID, "test-conn", func(msg *leapmuxv1.ChannelMessage) error {
+		e.controlFrames = append(e.controlFrames, msg)
+		return nil
+	}, nil)
+}
+
+// assertWorkersChangedReceived verifies that a WorkersChanged control frame was
+// received at the given index.
+func (e *unixSocketTestEnv) assertWorkersChangedReceived(t *testing.T, index int) {
+	t.Helper()
+	require.Greater(t, len(e.controlFrames), index, "expected at least %d control frame(s)", index+1)
+
+	msg := e.controlFrames[index]
+	assert.Equal(t, channelmgr.HubControlChannelID, msg.GetChannelId())
+
+	var frame leapmuxv1.HubControlFrame
+	require.NoError(t, proto.Unmarshal(msg.GetCiphertext(), &frame))
+	assert.NotNil(t, frame.GetWorkersChanged())
+}
+
+func TestRegistration_AutoApproveViaUnixSocket(t *testing.T) {
+	env := setupUnixSocketTestServer(t)
+	ctx := context.Background()
+
+	// Register the admin user as a control frame listener.
+	admin, err := env.queries.GetUserByUsername(ctx, "admin")
+	require.NoError(t, err)
+	env.bindControlFrameListener(admin.ID)
+
+	// Request registration via Unix socket — should be auto-approved.
+	regResp, err := env.unixConnClient.RequestRegistration(ctx, connect.NewRequest(
+		&leapmuxv1.RequestRegistrationRequest{Version: "0.1.0"},
+	))
+	require.NoError(t, err)
+	regToken := regResp.Msg.GetRegistrationToken()
+	assert.NotEmpty(t, regToken)
+
+	// Poll should immediately return APPROVED.
+	pollResp, err := env.unixConnClient.PollRegistration(ctx, connect.NewRequest(
+		&leapmuxv1.PollRegistrationRequest{RegistrationToken: regToken},
+	))
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_APPROVED, pollResp.Msg.GetStatus())
+	assert.NotEmpty(t, pollResp.Msg.GetWorkerId())
+	assert.NotEmpty(t, pollResp.Msg.GetAuthToken())
+
+	// Verify WorkersChanged control frame was sent.
+	env.assertWorkersChangedReceived(t, 0)
+}
+
+func TestRegistration_NotAutoApprovedViaTCP(t *testing.T) {
+	env := setupUnixSocketTestServer(t)
+	ctx := context.Background()
+
+	// Request registration via TCP — should NOT be auto-approved.
+	regResp, err := env.connectorClient.RequestRegistration(ctx, connect.NewRequest(
+		&leapmuxv1.RequestRegistrationRequest{Version: "0.1.0"},
+	))
+	require.NoError(t, err)
+	regToken := regResp.Msg.GetRegistrationToken()
+
+	// Poll should return PENDING (not auto-approved).
+	pollResp, err := env.connectorClient.PollRegistration(ctx, connect.NewRequest(
+		&leapmuxv1.PollRegistrationRequest{RegistrationToken: regToken},
+	))
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_PENDING, pollResp.Msg.GetStatus())
+}
+
+func TestApproveRegistration_SendsWorkersChanged(t *testing.T) {
+	env := setupUnixSocketTestServer(t)
+	ctx := context.Background()
+
+	// Register control frame listener for the admin.
+	admin, err := env.queries.GetUserByUsername(ctx, "admin")
+	require.NoError(t, err)
+	env.bindControlFrameListener(admin.ID)
+
+	// Register worker via TCP (not auto-approved).
+	regResp, err := env.connectorClient.RequestRegistration(ctx, connect.NewRequest(
+		&leapmuxv1.RequestRegistrationRequest{Version: "0.1.0"},
+	))
+	require.NoError(t, err)
+	regToken := regResp.Msg.GetRegistrationToken()
+
+	// Admin approves the registration.
+	token := env.adminToken(t)
+	approveReq := connect.NewRequest(&leapmuxv1.ApproveRegistrationRequest{
+		RegistrationToken: regToken,
+	})
+	approveReq.Header().Set("Authorization", "Bearer "+token)
+	_, err = env.mgmtClient.ApproveRegistration(ctx, approveReq)
+	require.NoError(t, err)
+
+	// Verify WorkersChanged control frame was sent.
+	env.assertWorkersChangedReceived(t, 0)
+}
+
+func TestDeregisterWorker_SendsWorkersChanged(t *testing.T) {
+	env := setupUnixSocketTestServer(t)
+	ctx := context.Background()
+
+	// Register control frame listener for the admin.
+	admin, err := env.queries.GetUserByUsername(ctx, "admin")
+	require.NoError(t, err)
+	env.bindControlFrameListener(admin.ID)
+
+	// Create and approve a worker via TCP.
+	token := env.adminToken(t)
+	workerID := env.createAndApproveWorker(t, token)
+
+	// Clear the WorkersChanged from approval.
+	env.controlFrames = nil
+
+	// Deregister the worker.
+	deregReq := connect.NewRequest(&leapmuxv1.DeregisterWorkerRequest{
+		WorkerId: workerID,
+	})
+	deregReq.Header().Set("Authorization", "Bearer "+token)
+	_, err = env.mgmtClient.DeregisterWorker(ctx, deregReq)
+	require.NoError(t, err)
+
+	// Verify WorkersChanged control frame was sent.
+	env.assertWorkersChangedReceived(t, 0)
+}
+
+func TestRegistration_MultipleAutoApproveViaUnixSocket(t *testing.T) {
+	env := setupUnixSocketTestServer(t)
+	ctx := context.Background()
+
+	// Register control frame listener for the admin.
+	admin, err := env.queries.GetUserByUsername(ctx, "admin")
+	require.NoError(t, err)
+	env.bindControlFrameListener(admin.ID)
+
+	// Auto-approve two workers via Unix socket.
+	for i := 0; i < 2; i++ {
+		regResp, regErr := env.unixConnClient.RequestRegistration(ctx, connect.NewRequest(
+			&leapmuxv1.RequestRegistrationRequest{Version: "0.1.0"},
+		))
+		require.NoError(t, regErr)
+
+		pollResp, pollErr := env.unixConnClient.PollRegistration(ctx, connect.NewRequest(
+			&leapmuxv1.PollRegistrationRequest{RegistrationToken: regResp.Msg.GetRegistrationToken()},
+		))
+		require.NoError(t, pollErr)
+		assert.Equal(t, leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_APPROVED, pollResp.Msg.GetStatus())
+	}
+
+	// Should have received two WorkersChanged control frames.
+	assert.Len(t, env.controlFrames, 2)
+	env.assertWorkersChangedReceived(t, 0)
+	env.assertWorkersChangedReceived(t, 1)
+
+	// Verify two distinct workers exist.
+	listReq := authedReq(&leapmuxv1.ListWorkersRequest{}, env.adminToken(t))
+	listResp, err := env.mgmtClient.ListWorkers(ctx, listReq)
+	require.NoError(t, err)
+	assert.Len(t, listResp.Msg.GetWorkers(), 2)
 }
