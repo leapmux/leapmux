@@ -1,5 +1,9 @@
 import { style } from '@vanilla-extract/css'
 
+export const workerItem = style({
+  cursor: 'default',
+})
+
 export const statusDot = style({
   width: 8,
   height: 8,
@@ -16,6 +20,7 @@ export const statusDisconnected = style({
 })
 
 export const tunnelItem = style({
+  cursor: 'default',
   paddingLeft: 'var(--space-5)',
   fontSize: 'var(--text-7)',
   color: 'var(--muted-foreground)',

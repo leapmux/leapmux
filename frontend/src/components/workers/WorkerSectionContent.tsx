@@ -36,7 +36,7 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
         <For each={props.workers}>
           {worker => (
             <>
-              <div class={listStyles.item}>
+              <div class={`${listStyles.item} ${styles.workerItem}`}>
                 <div
                   class={`${styles.statusDot} ${statusClass[props.channelStatus(worker.id)]}`}
                   data-status={props.channelStatus(worker.id)}
