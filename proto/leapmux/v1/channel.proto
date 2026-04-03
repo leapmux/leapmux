@@ -119,17 +119,13 @@ message HubControlFrame {
   repeated HubControlEvent events = 1;
 }
 
-// HubControlEvent is a single event within a HubControlFrame.
-message HubControlEvent {
-  oneof kind {
-    WorkersChanged workers_changed = 1;
-  }
+// HubControlEvent identifies a type of Hub-originated event.
+enum HubControlEvent {
+  HUB_CONTROL_EVENT_UNSPECIFIED = 0;
+  // The worker list has changed (e.g. a worker was registered or
+  // deregistered). The frontend should re-fetch via ListWorkers.
+  HUB_CONTROL_EVENT_WORKERS_CHANGED = 1;
 }
-
-// WorkersChanged signals that the worker list has changed (e.g. a worker
-// was registered, connected, or disconnected). The frontend should
-// re-fetch the worker list via ListWorkers.
-message WorkersChanged {}
 
 // --- User ID claim (post-handshake verification) ---
 

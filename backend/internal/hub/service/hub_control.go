@@ -16,14 +16,10 @@ import (
 // are batched into a single frame.
 const DefaultDebounceInterval = 3 * time.Second
 
-// hubControlEvent is a function that appends its event to the given frame,
-// returning true if the event was not already present.
-type hubControlEvent func(frame *leapmuxv1.HubControlFrame) bool
-
 // pendingFlush holds the accumulated events and timer for a single user.
 type pendingFlush struct {
 	timer  *time.Timer
-	events []hubControlEvent
+	events map[leapmuxv1.HubControlEvent]struct{}
 }
 
 // HubEventBroadcaster debounces and sends hub control frames to frontends
@@ -58,34 +54,23 @@ func (b *HubEventBroadcaster) NotifyWorkersChanged(userID string) {
 	if b == nil || b.cMgr == nil {
 		return
 	}
-	b.enqueue(userID, func(frame *leapmuxv1.HubControlFrame) bool {
-		// Deduplicate: skip if a WorkersChanged event is already pending.
-		for _, e := range frame.Events {
-			if e.GetWorkersChanged() != nil {
-				return false
-			}
-		}
-		frame.Events = append(frame.Events, &leapmuxv1.HubControlEvent{
-			Kind: &leapmuxv1.HubControlEvent_WorkersChanged{
-				WorkersChanged: &leapmuxv1.WorkersChanged{},
-			},
-		})
-		return true
-	})
+	b.enqueue(userID, leapmuxv1.HubControlEvent_HUB_CONTROL_EVENT_WORKERS_CHANGED)
 }
 
 // enqueue adds an event for the given user and resets the debounce timer.
-func (b *HubEventBroadcaster) enqueue(userID string, evt hubControlEvent) {
+func (b *HubEventBroadcaster) enqueue(userID string, evt leapmuxv1.HubControlEvent) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	p := b.pending[userID]
 	if p == nil {
-		p = &pendingFlush{}
+		p = &pendingFlush{
+			events: make(map[leapmuxv1.HubControlEvent]struct{}),
+		}
 		b.pending[userID] = p
 	}
 
-	p.events = append(p.events, evt)
+	p.events[evt] = struct{}{}
 
 	if p.timer != nil {
 		p.timer.Stop()
@@ -102,16 +87,13 @@ func (b *HubEventBroadcaster) flush(userID string) {
 	delete(b.pending, userID)
 	b.mu.Unlock()
 
-	if p == nil {
+	if p == nil || len(p.events) == 0 {
 		return
 	}
 
 	frame := &leapmuxv1.HubControlFrame{}
-	for _, evt := range p.events {
-		evt(frame)
-	}
-	if len(frame.Events) == 0 {
-		return
+	for evt := range p.events {
+		frame.Events = append(frame.Events, evt)
 	}
 
 	data, err := proto.Marshal(frame)

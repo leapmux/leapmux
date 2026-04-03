@@ -18,6 +18,7 @@ import { useOrg } from '~/context/OrgContext'
 import { usePreferences } from '~/context/PreferencesContext'
 import { TunnelProvider } from '~/context/TunnelContext'
 import { useWorkspace } from '~/context/WorkspaceContext'
+import { HubControlEvent } from '~/generated/leapmux/v1/channel_pb'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
@@ -137,11 +138,8 @@ export const AppShell: ParentComponent = (props) => {
 
   // Re-fetch workers when the Hub sends a WorkersChanged control frame.
   channelManager.onHubControl((frame) => {
-    for (const event of frame.events) {
-      if (event.kind.case === 'workersChanged') {
-        void fetchWorkers()
-        break
-      }
+    if (frame.events.includes(HubControlEvent.WORKERS_CHANGED)) {
+      void fetchWorkers()
     }
   })
 

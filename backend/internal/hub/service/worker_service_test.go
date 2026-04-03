@@ -555,15 +555,7 @@ func (e *unixSocketTestEnv) assertWorkersChangedReceived(t *testing.T, index int
 
 	var frame leapmuxv1.HubControlFrame
 	require.NoError(t, proto.Unmarshal(msg.GetCiphertext(), &frame))
-	require.NotEmpty(t, frame.GetEvents(), "expected at least one event in control frame")
-	hasWorkersChanged := false
-	for _, evt := range frame.GetEvents() {
-		if evt.GetWorkersChanged() != nil {
-			hasWorkersChanged = true
-			break
-		}
-	}
-	assert.True(t, hasWorkersChanged, "expected WorkersChanged event in control frame")
+	assert.Contains(t, frame.GetEvents(), leapmuxv1.HubControlEvent_HUB_CONTROL_EVENT_WORKERS_CHANGED)
 }
 
 func TestRegistration_AutoApproveViaUnixSocket(t *testing.T) {
