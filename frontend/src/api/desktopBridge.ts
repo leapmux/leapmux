@@ -8,6 +8,8 @@
  * or HTTPS, depending on the mode).
  */
 
+import { base64ToUint8Array, uint8ArrayToBase64 } from '~/lib/base64'
+
 // ---------------------------------------------------------------------------
 // Type declarations for Wails bindings
 // ---------------------------------------------------------------------------
@@ -93,7 +95,6 @@ export function arrayBufferToBase64(buf: ArrayBuffer | Uint8Array | string | nul
   if (!buf)
     return ''
   if (typeof buf === 'string') {
-    // Already a string (e.g. JSON body) — encode as UTF-8 bytes.
     const bytes = new TextEncoder().encode(buf)
     return uint8ArrayToBase64(bytes)
   }
@@ -101,23 +102,11 @@ export function arrayBufferToBase64(buf: ArrayBuffer | Uint8Array | string | nul
   return uint8ArrayToBase64(bytes)
 }
 
-function uint8ArrayToBase64(bytes: Uint8Array): string {
-  let binary = ''
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i])
-  }
-  return btoa(binary)
-}
-
 export function base64ToArrayBuffer(b64: string): ArrayBuffer {
   if (!b64)
     return new ArrayBuffer(0)
-  const binary = atob(b64)
-  const bytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i)
-  }
-  return bytes.buffer
+  const bytes = base64ToUint8Array(b64)
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
 }
 
 // ---------------------------------------------------------------------------

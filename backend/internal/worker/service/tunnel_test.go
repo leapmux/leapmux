@@ -2,7 +2,6 @@ package service
 
 import (
 	"fmt"
-	"io"
 	"net"
 	"sync"
 	"testing"
@@ -13,54 +12,10 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
-// startEchoServer starts a TCP server that echoes back all data received.
-func startEchoServer(t *testing.T) string {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = ln.Close() })
-
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer func() { _ = conn.Close() }()
-				_, _ = io.Copy(conn, conn)
-			}()
-		}
-	}()
-
-	return ln.Addr().String()
-}
-
-// startWriteThenCloseServer starts a TCP server that writes data then closes.
-func startWriteThenCloseServer(t *testing.T, data []byte) string {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = ln.Close() })
-
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer func() { _ = conn.Close() }()
-				_, _ = conn.Write(data)
-			}()
-		}
-	}()
-
-	return ln.Addr().String()
-}
 
 func tunnelTestSetup(t *testing.T) (*Context, *channel.Dispatcher, *testResponseWriter) {
 	t.Helper()
@@ -69,16 +24,10 @@ func tunnelTestSetup(t *testing.T) (*Context, *channel.Dispatcher, *testResponse
 	return svc, d, w
 }
 
-func parseAddr(addr string) (string, uint32) {
-	host, port, _ := net.SplitHostPort(addr)
-	var p uint32
-	_, _ = fmt.Sscanf(port, "%d", &p)
-	return host, p
-}
 
 func TestOpenTunnelConn_HappyPath(t *testing.T) {
-	echoAddr := startEchoServer(t)
-	host, port := parseAddr(echoAddr)
+	echoAddr := testutil.StartEchoServer(t)
+	host, port := testutil.ParseAddr(echoAddr)
 
 	_, d, w := tunnelTestSetup(t)
 	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
@@ -147,8 +96,8 @@ func TestOpenTunnelConn_InvalidTargetPort(t *testing.T) {
 }
 
 func TestSendTunnelData_HappyPath(t *testing.T) {
-	echoAddr := startEchoServer(t)
-	host, port := parseAddr(echoAddr)
+	echoAddr := testutil.StartEchoServer(t)
+	host, port := testutil.ParseAddr(echoAddr)
 
 	_, d, w := tunnelTestSetup(t)
 	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
@@ -183,8 +132,8 @@ func TestSendTunnelData_UnknownConnID(t *testing.T) {
 }
 
 func TestCloseTunnelConn_HappyPath(t *testing.T) {
-	echoAddr := startEchoServer(t)
-	host, port := parseAddr(echoAddr)
+	echoAddr := testutil.StartEchoServer(t)
+	host, port := testutil.ParseAddr(echoAddr)
 
 	_, d, w := tunnelTestSetup(t)
 	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
@@ -226,8 +175,8 @@ func TestCloseTunnelConn_UnknownConnID(t *testing.T) {
 
 func TestTunnelTargetEOF(t *testing.T) {
 	// Server writes "hello" then closes.
-	serverAddr := startWriteThenCloseServer(t, []byte("hello"))
-	host, port := parseAddr(serverAddr)
+	serverAddr := testutil.StartWriteThenCloseServer(t, []byte("hello"))
+	host, port := testutil.ParseAddr(serverAddr)
 
 	_, d, w := tunnelTestSetup(t)
 	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
@@ -262,8 +211,8 @@ func TestTunnelTargetEOF(t *testing.T) {
 }
 
 func TestTunnelConcurrentConnections(t *testing.T) {
-	echoAddr := startEchoServer(t)
-	host, port := parseAddr(echoAddr)
+	echoAddr := testutil.StartEchoServer(t)
+	host, port := testutil.ParseAddr(echoAddr)
 
 	_, d, _ := tunnelTestSetup(t)
 
@@ -308,8 +257,8 @@ func TestTunnelConcurrentConnections(t *testing.T) {
 }
 
 func TestTunnelEchoIntegration(t *testing.T) {
-	echoAddr := startEchoServer(t)
-	host, port := parseAddr(echoAddr)
+	echoAddr := testutil.StartEchoServer(t)
+	host, port := testutil.ParseAddr(echoAddr)
 
 	_, d, w := tunnelTestSetup(t)
 	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
@@ -352,8 +301,8 @@ func TestTunnelEchoIntegration(t *testing.T) {
 }
 
 func TestSendTunnelData_AfterClose(t *testing.T) {
-	echoAddr := startEchoServer(t)
-	host, port := parseAddr(echoAddr)
+	echoAddr := testutil.StartEchoServer(t)
+	host, port := testutil.ParseAddr(echoAddr)
 
 	_, d, w := tunnelTestSetup(t)
 	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
@@ -381,8 +330,8 @@ func TestSendTunnelData_AfterClose(t *testing.T) {
 }
 
 func TestTunnelLargeDataTransfer(t *testing.T) {
-	echoAddr := startEchoServer(t)
-	host, port := parseAddr(echoAddr)
+	echoAddr := testutil.StartEchoServer(t)
+	host, port := testutil.ParseAddr(echoAddr)
 
 	_, d, w := tunnelTestSetup(t)
 	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
@@ -430,8 +379,8 @@ func TestTunnelLargeDataTransfer(t *testing.T) {
 }
 
 func TestTunnelMultipleSequentialConnections(t *testing.T) {
-	echoAddr := startEchoServer(t)
-	host, port := parseAddr(echoAddr)
+	echoAddr := testutil.StartEchoServer(t)
+	host, port := testutil.ParseAddr(echoAddr)
 
 	_, d, _ := tunnelTestSetup(t)
 
@@ -487,7 +436,7 @@ func TestTunnelHalfClose_TargetClosesFirst(t *testing.T) {
 		}
 	}()
 
-	host, port := parseAddr(ln.Addr().String())
+	host, port := testutil.ParseAddr(ln.Addr().String())
 
 	_, d, w := tunnelTestSetup(t)
 	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{

@@ -42,7 +42,7 @@ func (a *App) OpenChannelRelay(token string) error {
 	// Build WebSocket URL and options.
 	wsURL := a.proxy.baseURL + "/ws/channel"
 	// Switch scheme for WebSocket.
-	wsURL = httpToWS(wsURL)
+	wsURL = channelproto.HTTPToWS(wsURL)
 
 	opts := &websocket.DialOptions{
 		Subprotocols: []string{"channel-relay"},
@@ -125,14 +125,4 @@ func (r *ChannelRelay) readLoop() {
 	}
 }
 
-// httpToWS converts an http(s) URL to ws(s).
-func httpToWS(url string) string {
-	if len(url) >= 8 && url[:8] == "https://" {
-		return "wss://" + url[8:]
-	}
-	if len(url) >= 7 && url[:7] == "http://" {
-		return "ws://" + url[7:]
-	}
-	return url
-}
 

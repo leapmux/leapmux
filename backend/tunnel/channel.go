@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -102,7 +101,7 @@ func OpenChannel(ctx context.Context, hubURL, token, userID, workerID string) (*
 	}
 
 	// 6. Connect to Hub's WebSocket relay.
-	wsURL := httpToWS(hubURL) + "/ws/channel"
+	wsURL := channelproto.HTTPToWS(hubURL) + "/ws/channel"
 
 	subprotocols := []string{"channel-relay"}
 	if token != "" {
@@ -358,11 +357,13 @@ func (ch *Channel) recvLoop() {
 			}
 			buf.parts = append(buf.parts, plaintext)
 			buf.total += len(plaintext)
-			ch.mu.Unlock()
 			if buf.total > channelproto.DefaultMaxMessageSize {
+				delete(ch.reassembly, correlationID)
+				ch.mu.Unlock()
 				slog.Error("tunnel channel message too large", "channel_id", ch.channelID)
 				return
 			}
+			ch.mu.Unlock()
 			continue
 		}
 
@@ -422,17 +423,6 @@ func (ch *Channel) recvLoop() {
 			}
 		}
 	}
-}
-
-// httpToWS converts an http(s) URL prefix to ws(s).
-func httpToWS(url string) string {
-	if strings.HasPrefix(url, "https://") {
-		return "wss://" + url[8:]
-	}
-	if strings.HasPrefix(url, "http://") {
-		return "ws://" + url[7:]
-	}
-	return url
 }
 
 func withAuth(token string) connect.ClientOption {

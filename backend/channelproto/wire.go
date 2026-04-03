@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"strings"
 
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/proto"
@@ -26,6 +27,17 @@ const (
 	// prefix and protobuf framing of a ChannelMessage.
 	WSReadLimit = 65535 + 4096
 )
+
+// HTTPToWS converts an http(s) URL to the corresponding ws(s) URL.
+func HTTPToWS(url string) string {
+	if strings.HasPrefix(url, "https://") {
+		return "wss://" + url[8:]
+	}
+	if strings.HasPrefix(url, "http://") {
+		return "ws://" + url[7:]
+	}
+	return url
+}
 
 // WriteChannelMessage writes a length-prefixed ChannelMessage to a WebSocket.
 // Wire format: [4 bytes big-endian length][protobuf-encoded ChannelMessage]

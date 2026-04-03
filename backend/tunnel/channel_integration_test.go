@@ -16,6 +16,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/solo"
 	"github.com/leapmux/leapmux/tunnel"
 )
@@ -101,35 +102,6 @@ func waitForHTTP(url string, timeout time.Duration) error {
 	return fmt.Errorf("server at %s not ready after %v", url, timeout)
 }
 
-// startEchoServer starts a TCP echo server for testing.
-func startEchoServer(t *testing.T) string {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = ln.Close() })
-
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer func() { _ = conn.Close() }()
-				_, _ = io.Copy(conn, conn)
-			}()
-		}
-	}()
-
-	return ln.Addr().String()
-}
-
-func parseAddr(addr string) (string, uint32) {
-	host, port, _ := net.SplitHostPort(addr)
-	var p uint32
-	_, _ = fmt.Sscanf(port, "%d", &p)
-	return host, p
-}
 
 func TestChannelOpenAndCallRPC(t *testing.T) {
 	if testing.Short() {
@@ -162,8 +134,8 @@ func TestChannelTunnelEchoFlow(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	echoAddr := startEchoServer(t)
-	echoHost, echoPort := parseAddr(echoAddr)
+	echoAddr := testutil.StartEchoServer(t)
+	echoHost, echoPort := testutil.ParseAddr(echoAddr)
 
 	hubURL, token, userID, workerID := startTestSolo(t)
 	ctx := context.Background()
@@ -250,8 +222,8 @@ func TestChannelSocks5EchoFlow(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	echoAddr := startEchoServer(t)
-	echoHost, echoPort := parseAddr(echoAddr)
+	echoAddr := testutil.StartEchoServer(t)
+	echoHost, echoPort := testutil.ParseAddr(echoAddr)
 
 	hubURL, token, userID, workerID := startTestSolo(t)
 	ctx := context.Background()
