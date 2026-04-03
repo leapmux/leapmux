@@ -263,6 +263,12 @@ export function DropdownMenu(props: DropdownMenuProps) {
             ref={popoverRefCallback /* eslint-disable-line solid/reactivity -- ref callback, not a signal */}
             class={props.class}
             data-testid={props['data-testid']}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.preventDefault()
+                popoverEl?.hidePopover()
+              }
+            }}
             onClick={(e) => {
               e.stopPropagation()
               popoverEl?.hidePopover()
@@ -278,6 +284,12 @@ export function DropdownMenu(props: DropdownMenuProps) {
           ref={popoverRefCallback /* eslint-disable-line solid/reactivity -- ref callback, not a signal */}
           class={props.class}
           data-testid={props['data-testid']}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.preventDefault()
+              popoverEl?.hidePopover()
+            }
+          }}
           onClick={(e) => {
             e.stopPropagation()
             popoverEl?.hidePopover()

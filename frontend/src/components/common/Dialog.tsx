@@ -34,6 +34,13 @@ export const Dialog: Component<DialogProps> = (props) => {
       data-testid={props['data-testid']}
       aria-label={props.title}
       closedby={props.busy ? 'none' : 'any'}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          if (!props.busy)
+            dialogRef.close()
+        }
+      }}
       onClose={() => {
         if (!unmounting && !props.busy)
           props.onClose()
