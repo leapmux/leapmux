@@ -250,8 +250,10 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                           value={props.renameValue}
                           onInput={e => props.onRenameInput(e.currentTarget.value)}
                           onKeyDown={(e) => {
-                            if (e.key === 'Enter')
+                            if (e.key === 'Enter') {
+                              e.preventDefault()
                               props.onRenameCommit()
+                            }
                             if (e.key === 'Escape')
                               props.onRenameCancel()
                           }}
