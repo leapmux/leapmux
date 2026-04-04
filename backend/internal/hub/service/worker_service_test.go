@@ -48,7 +48,7 @@ func setupWorkerTestServer(t *testing.T) *workerTestEnv {
 
 	q := gendb.New(sqlDB)
 
-	err = bootstrap.Run(context.Background(), q, false)
+	err = bootstrap.Run(context.Background(), sqlDB, q, false)
 	require.NoError(t, err)
 
 	bgMgr := workermgr.New()
@@ -58,9 +58,10 @@ func setupWorkerTestServer(t *testing.T) *workerTestEnv {
 	notifierSvc := notifier.New(q, bgMgr, pendingReqs, cfg)
 
 	mux := http.NewServeMux()
-	opts := connect.WithInterceptors(auth.NewInterceptor(q, false, false))
+	interceptor, _ := auth.NewInterceptor(q, false, false)
+	opts := connect.WithInterceptors(interceptor)
 
-	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(q, cfg), opts)
+	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(sqlDB, q, cfg, nil), opts)
 	mux.Handle(authPath, authHandler)
 
 	connPath, connHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(
@@ -459,7 +460,7 @@ func setupUnixSocketTestServer(t *testing.T) *unixSocketTestEnv {
 	require.NoError(t, err)
 
 	q := gendb.New(sqlDB)
-	err = bootstrap.Run(context.Background(), q, false)
+	err = bootstrap.Run(context.Background(), sqlDB, q, false)
 	require.NoError(t, err)
 
 	bgMgr := workermgr.New()
@@ -470,9 +471,10 @@ func setupUnixSocketTestServer(t *testing.T) *unixSocketTestEnv {
 	notifierSvc := notifier.New(q, bgMgr, pendingReqs, cfg)
 
 	mux := http.NewServeMux()
-	opts := connect.WithInterceptors(auth.NewInterceptor(q, false, false))
+	interceptor, _ := auth.NewInterceptor(q, false, false)
+	opts := connect.WithInterceptors(interceptor)
 
-	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(q, cfg), opts)
+	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(sqlDB, q, cfg, nil), opts)
 	mux.Handle(authPath, authHandler)
 
 	broadcaster := service.NewHubEventBroadcaster(cMgr)

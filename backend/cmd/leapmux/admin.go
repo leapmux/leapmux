@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"database/sql"
+	"flag"
 	"fmt"
-	"strconv"
 
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/db"
@@ -44,7 +44,13 @@ func runAdmin(args []string) error {
 // ---- Encryption key management ----
 
 func runRotateEncryptionKey(args []string) error {
-	cfg := adminConfig(extractDataDir(args))
+	fs := flag.NewFlagSet("rotate-encryption-key", flag.ContinueOnError)
+	dataDir := fs.String("data-dir", "", "data directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	cfg := adminConfig(*dataDir)
 	path := cfg.EncryptionKeyFilePath()
 
 	if _, err := keystore.LoadFromFile(path); err != nil {
@@ -62,50 +68,35 @@ func runRotateEncryptionKey(args []string) error {
 }
 
 func runRemoveEncryptionKey(args []string) error {
-	var version int
-	var dataDir string
-
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--version":
-			if i+1 >= len(args) {
-				return fmt.Errorf("--version requires a value")
-			}
-			i++
-			v, err := strconv.Atoi(args[i])
-			if err != nil || v < 1 || v > 255 {
-				return fmt.Errorf("invalid version: %s (must be 1-255)", args[i])
-			}
-			version = v
-		case "--data-dir":
-			if i+1 >= len(args) {
-				return fmt.Errorf("--data-dir requires a value")
-			}
-			i++
-			dataDir = args[i]
-		default:
-			return fmt.Errorf("unknown flag: %s", args[i])
-		}
-	}
-
-	if version == 0 {
-		return fmt.Errorf("--version is required")
-	}
-
-	path := adminConfig(dataDir).EncryptionKeyFilePath()
-	if err := keystore.RemoveKey(path, byte(version)); err != nil {
+	fs := flag.NewFlagSet("remove-encryption-key", flag.ContinueOnError)
+	dataDir := fs.String("data-dir", "", "data directory")
+	version := fs.Int("version", 0, "key version to remove (1-255)")
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	fmt.Printf("Removed encryption key version %d.\n", version)
+	if *version < 1 || *version > 255 {
+		return fmt.Errorf("--version is required (must be 1-255)")
+	}
+
+	path := adminConfig(*dataDir).EncryptionKeyFilePath()
+	if err := keystore.RemoveKey(path, byte(*version)); err != nil {
+		return err
+	}
+
+	fmt.Printf("Removed encryption key version %d.\n", *version)
 	fmt.Printf("Restart the hub to apply.\n")
 	return nil
 }
 
 func runReencryptSecrets(args []string) error {
-	dataDir := extractDataDir(args)
+	fs := flag.NewFlagSet("reencrypt-secrets", flag.ContinueOnError)
+	dataDir := fs.String("data-dir", "", "data directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
-	cfg := adminConfig(dataDir)
+	cfg := adminConfig(*dataDir)
 	ks, err := keystore.LoadFromFile(cfg.EncryptionKeyFilePath())
 	if err != nil {
 		return fmt.Errorf("load encryption key: %w", err)
@@ -204,81 +195,65 @@ func runReencryptSecrets(args []string) error {
 // ---- OAuth provider management ----
 
 func runAddOAuthProvider(args []string) error {
-	var providerType, name, clientID, clientSecret, issuerURL, scopes, dataDir string
-
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--type", "--name", "--client-id", "--client-secret", "--issuer-url", "--scopes", "--data-dir":
-			if i+1 >= len(args) {
-				return fmt.Errorf("%s requires a value", args[i])
-			}
-			i++
-			switch args[i-1] {
-			case "--type":
-				providerType = args[i]
-			case "--name":
-				name = args[i]
-			case "--client-id":
-				clientID = args[i]
-			case "--client-secret":
-				clientSecret = args[i]
-			case "--issuer-url":
-				issuerURL = args[i]
-			case "--scopes":
-				scopes = args[i]
-			case "--data-dir":
-				dataDir = args[i]
-			}
-		default:
-			return fmt.Errorf("unknown flag: %s", args[i])
-		}
+	fs := flag.NewFlagSet("add-oauth-provider", flag.ContinueOnError)
+	providerType := fs.String("type", "", "provider type (github, google, apple, oidc)")
+	name := fs.String("name", "", "display name")
+	clientID := fs.String("client-id", "", "OAuth client ID")
+	clientSecret := fs.String("client-secret", "", "OAuth client secret")
+	issuerURL := fs.String("issuer-url", "", "OIDC issuer URL")
+	scopes := fs.String("scopes", "", "space-separated scopes")
+	dataDir := fs.String("data-dir", "", "data directory")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
 
-	if providerType == "" {
+	if *providerType == "" {
 		return fmt.Errorf("--type is required (github, google, apple, oidc)")
 	}
-	if clientID == "" {
+	if *clientID == "" {
 		return fmt.Errorf("--client-id is required")
 	}
-	if clientSecret == "" {
+	if *clientSecret == "" {
 		return fmt.Errorf("--client-secret is required")
 	}
 
 	// Apply preset defaults.
-	preset, ok := oauth.Presets[providerType]
+	preset, ok := oauth.Presets[*providerType]
 	if !ok {
-		return fmt.Errorf("unknown provider type: %s (supported: github, google, apple, oidc)", providerType)
+		return fmt.Errorf("unknown provider type: %s (supported: github, google, apple, oidc)", *providerType)
 	}
 
-	if name == "" {
-		name = preset.Name
+	displayName := *name
+	if displayName == "" {
+		displayName = preset.Name
 	}
-	if name == "" {
+	if displayName == "" {
 		return fmt.Errorf("--name is required for generic OIDC providers")
 	}
 
 	storedType := preset.ProviderType
-	if issuerURL == "" {
-		issuerURL = preset.IssuerURL
+	issuer := *issuerURL
+	if issuer == "" {
+		issuer = preset.IssuerURL
 	}
-	if scopes == "" {
-		scopes = preset.Scopes
+	scopeStr := *scopes
+	if scopeStr == "" {
+		scopeStr = preset.Scopes
 	}
 
 	// Validate issuer for OIDC-based providers.
 	if storedType == oauth.ProviderTypeOIDC {
-		if issuerURL == "" {
+		if issuer == "" {
 			return fmt.Errorf("--issuer-url is required for OIDC providers")
 		}
-		fmt.Printf("Validating OIDC issuer %s ...\n", issuerURL)
-		if err := oauth.ValidateIssuer(context.Background(), issuerURL); err != nil {
+		fmt.Printf("Validating OIDC issuer %s ...\n", issuer)
+		if err := oauth.ValidateIssuer(context.Background(), issuer); err != nil {
 			return fmt.Errorf("issuer validation failed: %w", err)
 		}
 	}
 
-	cfg := adminConfig(dataDir)
+	cfg := adminConfig(*dataDir)
 
-	// Load keystore to encrypt client secret.
 	ks, err := keystore.LoadFromFile(cfg.EncryptionKeyFilePath())
 	if err != nil {
 		return fmt.Errorf("load encryption key: %w", err)
@@ -286,7 +261,7 @@ func runAddOAuthProvider(args []string) error {
 
 	providerID := id.Generate()
 	aad := keystore.ProviderAAD(providerID)
-	encryptedSecret, err := ks.Encrypt([]byte(clientSecret), aad)
+	encryptedSecret, err := ks.Encrypt([]byte(*clientSecret), aad)
 	if err != nil {
 		return fmt.Errorf("encrypt client secret: %w", err)
 	}
@@ -300,24 +275,28 @@ func runAddOAuthProvider(args []string) error {
 	if err := q.CreateOAuthProvider(context.Background(), gendb.CreateOAuthProviderParams{
 		ID:           providerID,
 		ProviderType: storedType,
-		Name:         name,
-		IssuerUrl:    issuerURL,
-		ClientID:     clientID,
+		Name:         displayName,
+		IssuerUrl:    issuer,
+		ClientID:     *clientID,
 		ClientSecret: encryptedSecret,
-		Scopes:       scopes,
+		Scopes:       scopeStr,
 		Enabled:      1,
 	}); err != nil {
 		return fmt.Errorf("create provider: %w", err)
 	}
 
-	fmt.Printf("Created OAuth provider %q (id: %s, type: %s)\n", name, providerID, storedType)
+	fmt.Printf("Created OAuth provider %q (id: %s, type: %s)\n", displayName, providerID, storedType)
 	return nil
 }
 
 func runListOAuthProviders(args []string) error {
-	dataDir := extractDataDir(args)
+	fs := flag.NewFlagSet("list-oauth-providers", flag.ContinueOnError)
+	dataDir := fs.String("data-dir", "", "data directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
-	sqlDB, q, err := openAdminDB(adminConfig(dataDir))
+	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
 	if err != nil {
 		return err
 	}
@@ -345,76 +324,49 @@ func runListOAuthProviders(args []string) error {
 }
 
 func runRemoveOAuthProvider(args []string) error {
-	var providerID, dataDir string
-
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--id", "--data-dir":
-			if i+1 >= len(args) {
-				return fmt.Errorf("%s requires a value", args[i])
-			}
-			i++
-			switch args[i-1] {
-			case "--id":
-				providerID = args[i]
-			case "--data-dir":
-				dataDir = args[i]
-			}
-		default:
-			return fmt.Errorf("unknown flag: %s", args[i])
-		}
+	fs := flag.NewFlagSet("remove-oauth-provider", flag.ContinueOnError)
+	providerID := fs.String("id", "", "provider ID")
+	dataDir := fs.String("data-dir", "", "data directory")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
 
-	if providerID == "" {
+	if *providerID == "" {
 		return fmt.Errorf("--id is required")
 	}
 
-	sqlDB, q, err := openAdminDB(adminConfig(dataDir))
+	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
 	if err != nil {
 		return err
 	}
 	defer func() { _ = sqlDB.Close() }()
 
-	// Verify provider exists.
-	provider, err := q.GetOAuthProviderByID(context.Background(), providerID)
+	provider, err := q.GetOAuthProviderByID(context.Background(), *providerID)
 	if err != nil {
-		return fmt.Errorf("provider %s not found", providerID)
+		return fmt.Errorf("provider %s not found", *providerID)
 	}
 
-	if err := q.DeleteOAuthProvider(context.Background(), providerID); err != nil {
+	if err := q.DeleteOAuthProvider(context.Background(), *providerID); err != nil {
 		return fmt.Errorf("delete provider: %w", err)
 	}
 
-	fmt.Printf("Removed OAuth provider %q (id: %s)\n", provider.Name, providerID)
+	fmt.Printf("Removed OAuth provider %q (id: %s)\n", provider.Name, *providerID)
 	return nil
 }
 
 func runSetOAuthProviderEnabled(args []string, enabled bool) error {
-	var providerID, dataDir string
-
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--id", "--data-dir":
-			if i+1 >= len(args) {
-				return fmt.Errorf("%s requires a value", args[i])
-			}
-			i++
-			switch args[i-1] {
-			case "--id":
-				providerID = args[i]
-			case "--data-dir":
-				dataDir = args[i]
-			}
-		default:
-			return fmt.Errorf("unknown flag: %s", args[i])
-		}
+	fs := flag.NewFlagSet("set-oauth-provider-enabled", flag.ContinueOnError)
+	providerID := fs.String("id", "", "provider ID")
+	dataDir := fs.String("data-dir", "", "data directory")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
 
-	if providerID == "" {
+	if *providerID == "" {
 		return fmt.Errorf("--id is required")
 	}
 
-	sqlDB, q, err := openAdminDB(adminConfig(dataDir))
+	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
 	if err != nil {
 		return err
 	}
@@ -426,7 +378,7 @@ func runSetOAuthProviderEnabled(args []string, enabled bool) error {
 	}
 	if err := q.UpdateOAuthProviderEnabled(context.Background(), gendb.UpdateOAuthProviderEnabledParams{
 		Enabled: enabledInt,
-		ID:      providerID,
+		ID:      *providerID,
 	}); err != nil {
 		return fmt.Errorf("update provider: %w", err)
 	}
@@ -435,7 +387,7 @@ func runSetOAuthProviderEnabled(args []string, enabled bool) error {
 	if enabled {
 		action = "Enabled"
 	}
-	fmt.Printf("%s OAuth provider %s\n", action, providerID)
+	fmt.Printf("%s OAuth provider %s\n", action, *providerID)
 	return nil
 }
 
@@ -466,13 +418,4 @@ func adminConfig(dataDir string) *config.Config {
 		cfg.DataDir = config.DefaultHubDataDir()
 	}
 	return cfg
-}
-
-func extractDataDir(args []string) string {
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--data-dir" && i+1 < len(args) {
-			return args[i+1]
-		}
-	}
-	return ""
 }

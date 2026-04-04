@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 
@@ -25,7 +26,7 @@ func Username(soloMode bool) string {
 
 // Run creates the personal org and admin user if no organizations
 // exist yet. This is a no-op if the database already has data.
-func Run(ctx context.Context, q *db.Queries, soloMode bool) error {
+func Run(ctx context.Context, sqlDB *sql.DB, q *db.Queries, soloMode bool) error {
 	count, err := q.CountOrgs(ctx)
 	if err != nil {
 		return fmt.Errorf("count orgs: %w", err)
@@ -36,15 +37,6 @@ func Run(ctx context.Context, q *db.Queries, soloMode bool) error {
 	}
 
 	username := Username(soloMode)
-
-	orgID := id.Generate()
-	if err := q.CreateOrg(ctx, db.CreateOrgParams{
-		ID:         orgID,
-		Name:       username,
-		IsPersonal: 1,
-	}); err != nil {
-		return fmt.Errorf("create personal org: %w", err)
-	}
 
 	var passwordHash string
 	if !soloMode {
@@ -60,8 +52,25 @@ func Run(ctx context.Context, q *db.Queries, soloMode bool) error {
 		displayName = "Solo"
 	}
 
+	tx, err := sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	txq := q.WithTx(tx)
+
+	orgID := id.Generate()
+	if err := txq.CreateOrg(ctx, db.CreateOrgParams{
+		ID:         orgID,
+		Name:       username,
+		IsPersonal: 1,
+	}); err != nil {
+		return fmt.Errorf("create personal org: %w", err)
+	}
+
 	userID := id.Generate()
-	if err := q.CreateUser(ctx, db.CreateUserParams{
+	if err := txq.CreateUser(ctx, db.CreateUserParams{
 		ID:           userID,
 		OrgID:        orgID,
 		Username:     username,
@@ -73,12 +82,16 @@ func Run(ctx context.Context, q *db.Queries, soloMode bool) error {
 		return fmt.Errorf("create admin user: %w", err)
 	}
 
-	if err := q.CreateOrgMember(ctx, db.CreateOrgMemberParams{
+	if err := txq.CreateOrgMember(ctx, db.CreateOrgMemberParams{
 		OrgID:  orgID,
 		UserID: userID,
 		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_OWNER,
 	}); err != nil {
 		return fmt.Errorf("create org member: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
 	}
 
 	slog.Info("bootstrap: created personal org and admin user",

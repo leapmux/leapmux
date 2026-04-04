@@ -114,7 +114,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	}
 	slog.Info("encryption keystore loaded", "active_version", ks.ActiveVersion(), "versions", len(ks.Versions()))
 
-	if err := bootstrap.Run(context.Background(), queries, cfg.SoloMode); err != nil {
+	if err := bootstrap.Run(context.Background(), sqlDB, queries, cfg.SoloMode); err != nil {
 		_ = sqlDB.Close()
 		closeTCP()
 		return nil, fmt.Errorf("bootstrap: %w", err)
@@ -133,16 +133,17 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	cMgr := channelmgr.New(cMgrOpts...)
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
+	authInterceptor, sessionCache := auth.NewInterceptor(queries, cfg.SoloMode, cfg.SecureCookies)
 	connectOpts := connect.WithInterceptors(
 		auth.NewShutdownInterceptor(shutdownCh),
 		metrics.NewInterceptor(),
 		auth.NewTimeoutInterceptor(cfg.APITimeout),
-		auth.NewInterceptor(queries, cfg.SoloMode, cfg.SecureCookies),
+		authInterceptor,
 	)
 
 	mux := http.NewServeMux()
 
-	authSvc := service.NewAuthService(queries, cfg)
+	authSvc := service.NewAuthService(sqlDB, queries, cfg, sessionCache)
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, connectOpts)
 	mux.Handle(authPath, authHandler)
 
@@ -177,7 +178,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	mux.Handle("/ws/channel", channelRelay)
 
 	// OAuth HTTP endpoints.
-	oauthHandler := service.NewOAuthHandler(queries, cfg, ks)
+	oauthHandler := service.NewOAuthHandler(sqlDB, queries, cfg, ks)
 	oauthHandler.RegisterRoutes(mux)
 
 	orgSvc := service.NewOrgService(queries, nil, cfg.SoloMode)
@@ -192,7 +193,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	sectionPath, sectionHandler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, connectOpts)
 	mux.Handle(sectionPath, sectionHandler)
 
-	adminSvc := service.NewAdminService(queries, cfg.SoloMode)
+	adminSvc := service.NewAdminService(sqlDB, queries, cfg.SoloMode)
 	adminPath, adminHandler := leapmuxv1connect.NewAdminServiceHandler(adminSvc, connectOpts)
 	mux.Handle(adminPath, adminHandler)
 

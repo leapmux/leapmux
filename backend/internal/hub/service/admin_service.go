@@ -18,13 +18,14 @@ import (
 
 // AdminService implements the leapmux.v1.AdminService ConnectRPC handler.
 type AdminService struct {
+	sqlDB    *sql.DB
 	queries  *db.Queries
 	soloMode bool
 }
 
 // NewAdminService creates a new AdminService.
-func NewAdminService(q *db.Queries, soloMode bool) *AdminService {
-	return &AdminService{queries: q, soloMode: soloMode}
+func NewAdminService(sqlDB *sql.DB, q *db.Queries, soloMode bool) *AdminService {
+	return &AdminService{sqlDB: sqlDB, queries: q, soloMode: soloMode}
 }
 
 func requireAdmin(ctx context.Context) (*auth.UserInfo, error) {
@@ -152,7 +153,7 @@ func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leap
 		isAdmin = 1
 	}
 
-	user, err := createUserWithOrg(ctx, s.queries, CreateUserParams{
+	user, err := createUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
 		Username:     username,
 		PasswordHash: hash,
 		DisplayName:  req.Msg.GetDisplayName(),

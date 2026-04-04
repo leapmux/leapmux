@@ -21,15 +21,15 @@ import (
 func setupShutdownTestServer(t *testing.T, shutdownCh chan struct{}) leapmuxv1connect.AuthServiceClient {
 	t.Helper()
 
-	q := setupDB(t)
-	err := bootstrap.Run(context.Background(), q, false)
+	sqlDB, q := setupDB(t)
+	err := bootstrap.Run(context.Background(), sqlDB, q, false)
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
 	interceptors := connect.WithInterceptors(
 		auth.NewShutdownInterceptor(shutdownCh),
 	)
-	authSvc := service.NewAuthService(q, &config.Config{})
+	authSvc := service.NewAuthService(sqlDB, q, &config.Config{}, nil)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 

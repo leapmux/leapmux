@@ -2,6 +2,7 @@ package bootstrap_test
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,7 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/password"
 )
 
-func setupDB(t *testing.T) *gendb.Queries {
+func setupDB(t *testing.T) (*sql.DB, *gendb.Queries) {
 	t.Helper()
 	sqlDB, err := db.Open(":memory:")
 	require.NoError(t, err)
@@ -22,14 +23,14 @@ func setupDB(t *testing.T) *gendb.Queries {
 	err = db.Migrate(sqlDB)
 	require.NoError(t, err)
 
-	return gendb.New(sqlDB)
+	return sqlDB, gendb.New(sqlDB)
 }
 
 func TestRun_CreatesOrgAndAdmin(t *testing.T) {
-	q := setupDB(t)
+	sqlDB, q := setupDB(t)
 	ctx := context.Background()
 
-	err := bootstrap.Run(ctx, q, false)
+	err := bootstrap.Run(ctx, sqlDB, q, false)
 	require.NoError(t, err)
 
 	// Verify org was created.
@@ -51,10 +52,10 @@ func TestRun_CreatesOrgAndAdmin(t *testing.T) {
 }
 
 func TestRun_SoloMode(t *testing.T) {
-	q := setupDB(t)
+	sqlDB, q := setupDB(t)
 	ctx := context.Background()
 
-	err := bootstrap.Run(ctx, q, true)
+	err := bootstrap.Run(ctx, sqlDB, q, true)
 	require.NoError(t, err)
 
 	// Verify org was created with "solo" name.
@@ -74,14 +75,14 @@ func TestRun_SoloMode(t *testing.T) {
 }
 
 func TestRun_Idempotent(t *testing.T) {
-	q := setupDB(t)
+	sqlDB, q := setupDB(t)
 	ctx := context.Background()
 
-	err := bootstrap.Run(ctx, q, false)
+	err := bootstrap.Run(ctx, sqlDB, q, false)
 	require.NoError(t, err)
 
 	// Second run should be a no-op (org already exists).
-	err = bootstrap.Run(ctx, q, false)
+	err = bootstrap.Run(ctx, sqlDB, q, false)
 	require.NoError(t, err)
 
 	// Should still have exactly one org.

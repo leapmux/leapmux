@@ -20,13 +20,15 @@ import (
 
 // AuthService implements the leapmux.v1.AuthService ConnectRPC handler.
 type AuthService struct {
-	queries *db.Queries
-	cfg     *config.Config
+	sqlDB        *sql.DB
+	queries      *db.Queries
+	cfg          *config.Config
+	sessionCache *auth.SessionCache
 }
 
 // NewAuthService creates a new AuthService.
-func NewAuthService(q *db.Queries, cfg *config.Config) *AuthService {
-	return &AuthService{queries: q, cfg: cfg}
+func NewAuthService(sqlDB *sql.DB, q *db.Queries, cfg *config.Config, sc *auth.SessionCache) *AuthService {
+	return &AuthService{sqlDB: sqlDB, queries: q, cfg: cfg, sessionCache: sc}
 }
 
 func (s *AuthService) Login(ctx context.Context, req *connect.Request[leapmuxv1.LoginRequest]) (*connect.Response[leapmuxv1.LoginResponse], error) {
@@ -51,6 +53,9 @@ func (s *AuthService) Logout(ctx context.Context, req *connect.Request[leapmuxv1
 	token := auth.SessionIDFromHeader(req.Header().Get("Cookie"), s.cfg.SecureCookies)
 	if token != "" {
 		_ = s.queries.DeleteUserSession(ctx, token)
+		if s.sessionCache != nil {
+			s.sessionCache.Evict(token)
+		}
 	}
 	resp := connect.NewResponse(&leapmuxv1.LogoutResponse{})
 	resp.Header().Set("Set-Cookie", auth.ClearSessionCookie(s.cfg.SecureCookies).String())
@@ -117,7 +122,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
 	}
 
-	user, err := createUserWithOrg(ctx, s.queries, CreateUserParams{
+	user, err := createUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
 		Username:     username,
 		PasswordHash: hash,
 		DisplayName:  req.Msg.GetDisplayName(),

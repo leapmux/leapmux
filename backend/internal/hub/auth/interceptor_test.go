@@ -25,15 +25,16 @@ import (
 func setupInterceptorTestServer(t *testing.T) leapmuxv1connect.AuthServiceClient {
 	t.Helper()
 
-	q := setupDB(t)
+	sqlDB, q := setupDB(t)
 
 	// Bootstrap creates an admin user (admin/admin).
-	err := bootstrap.Run(context.Background(), q, false)
+	err := bootstrap.Run(context.Background(), sqlDB, q, false)
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptors := connect.WithInterceptors(auth.NewInterceptor(q, false, false))
-	authSvc := service.NewAuthService(q, &config.Config{})
+	interceptor, _ := auth.NewInterceptor(q, false, false)
+	interceptors := connect.WithInterceptors(interceptor)
+	authSvc := service.NewAuthService(sqlDB, q, &config.Config{}, nil)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 
@@ -109,15 +110,16 @@ func TestInterceptor_PrivateProcedure_ValidCookie(t *testing.T) {
 }
 
 func TestInterceptor_SoloMode_AutoAuthenticated(t *testing.T) {
-	q := setupDB(t)
+	sqlDB, q := setupDB(t)
 
 	// Bootstrap in solo mode creates a user named "solo".
-	err := bootstrap.Run(context.Background(), q, true)
+	err := bootstrap.Run(context.Background(), sqlDB, q, true)
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptors := connect.WithInterceptors(auth.NewInterceptor(q, true, false))
-	authSvc := service.NewAuthService(q, &config.Config{SoloMode: true})
+	interceptor, _ := auth.NewInterceptor(q, true, false)
+	interceptors := connect.WithInterceptors(interceptor)
+	authSvc := service.NewAuthService(sqlDB, q, &config.Config{SoloMode: true}, nil)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 

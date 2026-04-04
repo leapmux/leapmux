@@ -36,11 +36,11 @@ func (c *timeoutCapture) GetSystemInfo(ctx context.Context, req *connect.Request
 func setupTimeoutTestServer(t *testing.T, timeout time.Duration) (leapmuxv1connect.AuthServiceClient, *timeoutCapture) {
 	t.Helper()
 
-	q := setupDB(t)
-	err := bootstrap.Run(context.Background(), q, false)
+	sqlDB, q := setupDB(t)
+	err := bootstrap.Run(context.Background(), sqlDB, q, false)
 	require.NoError(t, err)
 
-	capture := &timeoutCapture{inner: service.NewAuthService(q, &config.Config{})}
+	capture := &timeoutCapture{inner: service.NewAuthService(sqlDB, q, &config.Config{}, nil)}
 
 	mux := http.NewServeMux()
 	interceptors := connect.WithInterceptors(auth.NewTimeoutInterceptor(func() time.Duration { return timeout }))

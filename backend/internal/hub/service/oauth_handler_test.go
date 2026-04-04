@@ -31,7 +31,7 @@ func setupOAuthTestServer(t *testing.T) (*httptest.Server, *gendb.Queries, *keys
 	require.NoError(t, err)
 
 	q := gendb.New(sqlDB)
-	err = bootstrap.Run(context.Background(), q, false)
+	err = bootstrap.Run(context.Background(), sqlDB, q, false)
 	require.NoError(t, err)
 
 	key, err := keystore.GenerateKey()
@@ -44,7 +44,7 @@ func setupOAuthTestServer(t *testing.T) (*httptest.Server, *gendb.Queries, *keys
 		SignupEnabled: true,
 	}
 
-	oauthHandler := service.NewOAuthHandler(q, cfg, ks)
+	oauthHandler := service.NewOAuthHandler(sqlDB, q, cfg, ks)
 
 	mux := http.NewServeMux()
 	oauthHandler.RegisterRoutes(mux)

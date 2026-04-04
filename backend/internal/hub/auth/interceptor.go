@@ -38,7 +38,10 @@ type authInterceptor struct {
 // and attaches user info to the context. Public procedures (login, worker
 // registration) are exempt from auth checks. In solo mode, all requests are
 // automatically authenticated as the admin user.
-func NewInterceptor(q *db.Queries, soloMode bool, secureCookie bool) connect.Interceptor {
+//
+// The returned SessionCache can be used to evict entries from the in-memory
+// touch throttle (e.g., on logout).
+func NewInterceptor(q *db.Queries, soloMode bool, secureCookie bool) (connect.Interceptor, *SessionCache) {
 	a := &authInterceptor{queries: q, soloMode: soloMode, secureCookie: secureCookie}
 	if soloMode {
 		user, err := q.GetUserByUsername(context.Background(), bootstrap.Username(soloMode))
@@ -51,7 +54,18 @@ func NewInterceptor(q *db.Queries, soloMode bool, secureCookie bool) connect.Int
 			}
 		}
 	}
-	return a
+	return a, &SessionCache{m: &a.lastTouch}
+}
+
+// SessionCache provides eviction access to the interceptor's in-memory
+// session touch throttle.
+type SessionCache struct {
+	m *sync.Map
+}
+
+// Evict removes a session from the touch cache. Call this on logout.
+func (c *SessionCache) Evict(sessionID string) {
+	c.m.Delete(sessionID)
 }
 
 func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {

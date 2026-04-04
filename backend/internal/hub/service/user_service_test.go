@@ -43,7 +43,8 @@ func setupUserTest(t *testing.T) *userTestEnv {
 	userSvc := service.NewUserService(queries, testConfig())
 
 	mux := http.NewServeMux()
-	opts := connect.WithInterceptors(auth.NewInterceptor(queries, false, false))
+	interceptor, _ := auth.NewInterceptor(queries, false, false)
+	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(path, handler)
 

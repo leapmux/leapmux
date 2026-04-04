@@ -32,12 +32,13 @@ func setupAuthTestServer(t *testing.T, cfg *config.Config) (leapmuxv1connect.Aut
 
 	q := gendb.New(sqlDB)
 
-	err = bootstrap.Run(context.Background(), q, false)
+	err = bootstrap.Run(context.Background(), sqlDB, q, false)
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	opts := connect.WithInterceptors(auth.NewInterceptor(q, false, false))
-	authSvc := service.NewAuthService(q, cfg)
+	interceptor, _ := auth.NewInterceptor(q, false, false)
+	opts := connect.WithInterceptors(interceptor)
+	authSvc := service.NewAuthService(sqlDB, q, cfg, nil)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 
@@ -191,7 +192,8 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 
 	// Set up a UserService client using the same queries and auth interceptor.
 	mux := http.NewServeMux()
-	opts := connect.WithInterceptors(auth.NewInterceptor(q, false, false))
+	interceptor, _ := auth.NewInterceptor(q, false, false)
+	opts := connect.WithInterceptors(interceptor)
 	userSvc := service.NewUserService(q, testConfig())
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(path, handler)

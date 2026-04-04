@@ -26,14 +26,15 @@ const (
 
 // OAuthHandler handles OAuth login/callback HTTP endpoints.
 type OAuthHandler struct {
+	sqlDB    *sql.DB
 	queries  *gendb.Queries
 	cfg      *config.Config
 	keystore *keystore.Keystore
 }
 
 // NewOAuthHandler creates a new OAuth HTTP handler.
-func NewOAuthHandler(q *gendb.Queries, cfg *config.Config, ks *keystore.Keystore) *OAuthHandler {
-	return &OAuthHandler{queries: q, cfg: cfg, keystore: ks}
+func NewOAuthHandler(sqlDB *sql.DB, q *gendb.Queries, cfg *config.Config, ks *keystore.Keystore) *OAuthHandler {
+	return &OAuthHandler{sqlDB: sqlDB, queries: q, cfg: cfg, keystore: ks}
 }
 
 // RegisterRoutes registers OAuth HTTP routes on the given mux.
@@ -245,7 +246,7 @@ func (h *OAuthHandler) findOrCreateUser(ctx context.Context, providerID string, 
 		return nil, fmt.Errorf("generate random password: %w", err)
 	}
 
-	user, err := createUserWithOrg(ctx, h.queries, CreateUserParams{
+	user, err := createUserWithOrg(ctx, h.sqlDB, h.queries, CreateUserParams{
 		Username:     username,
 		PasswordHash: randomPwdHash,
 		DisplayName:  displayName,

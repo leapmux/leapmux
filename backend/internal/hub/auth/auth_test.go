@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -15,7 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
-func setupDB(t *testing.T) *gendb.Queries {
+func setupDB(t *testing.T) (*sql.DB, *gendb.Queries) {
 	t.Helper()
 	sqlDB, err := db.Open(":memory:")
 	require.NoError(t, err)
@@ -25,7 +26,7 @@ func setupDB(t *testing.T) *gendb.Queries {
 		t.Fatalf("Migrate failed: %v", err)
 	}
 
-	return gendb.New(sqlDB)
+	return sqlDB, gendb.New(sqlDB)
 }
 
 func createTestUser(t *testing.T, q *gendb.Queries) (orgID, userID string) {
@@ -56,7 +57,7 @@ func createTestUser(t *testing.T, q *gendb.Queries) (orgID, userID string) {
 }
 
 func TestLogin_Success(t *testing.T) {
-	q := setupDB(t)
+	_, q := setupDB(t)
 	orgID, userID := createTestUser(t, q)
 	ctx := context.Background()
 
@@ -68,7 +69,7 @@ func TestLogin_Success(t *testing.T) {
 }
 
 func TestLogin_InvalidPassword(t *testing.T) {
-	q := setupDB(t)
+	_, q := setupDB(t)
 	createTestUser(t, q)
 	ctx := context.Background()
 
@@ -77,7 +78,7 @@ func TestLogin_InvalidPassword(t *testing.T) {
 }
 
 func TestLogin_UnknownUser(t *testing.T) {
-	q := setupDB(t)
+	_, q := setupDB(t)
 	ctx := context.Background()
 
 	_, _, _, err := auth.Login(ctx, q, "nonexistent", "password")
@@ -85,7 +86,7 @@ func TestLogin_UnknownUser(t *testing.T) {
 }
 
 func TestLogin_HashUnchangedAfterLogin(t *testing.T) {
-	q := setupDB(t)
+	_, q := setupDB(t)
 	createTestUser(t, q)
 	ctx := context.Background()
 
@@ -102,7 +103,7 @@ func TestLogin_HashUnchangedAfterLogin(t *testing.T) {
 }
 
 func TestValidateToken_Success(t *testing.T) {
-	q := setupDB(t)
+	_, q := setupDB(t)
 	createTestUser(t, q)
 	ctx := context.Background()
 
@@ -116,7 +117,7 @@ func TestValidateToken_Success(t *testing.T) {
 }
 
 func TestValidateToken_InvalidToken(t *testing.T) {
-	q := setupDB(t)
+	_, q := setupDB(t)
 	ctx := context.Background()
 
 	_, err := auth.ValidateToken(ctx, q, "invalid-token")
@@ -143,7 +144,7 @@ func TestMustGetUser_NoUser(t *testing.T) {
 }
 
 func TestResolveOrgID_EmptyReturnsPersonalOrg(t *testing.T) {
-	q := setupDB(t)
+	_, q := setupDB(t)
 	orgID, userID := createTestUser(t, q)
 
 	user := &auth.UserInfo{ID: userID, OrgID: orgID, Username: "testuser"}
@@ -153,7 +154,7 @@ func TestResolveOrgID_EmptyReturnsPersonalOrg(t *testing.T) {
 }
 
 func TestResolveOrgID_MemberReturnsOrgID(t *testing.T) {
-	q := setupDB(t)
+	_, q := setupDB(t)
 	ctx := context.Background()
 	orgID, userID := createTestUser(t, q)
 
@@ -170,7 +171,7 @@ func TestResolveOrgID_MemberReturnsOrgID(t *testing.T) {
 }
 
 func TestResolveOrgID_NonMemberReturnsNotFound(t *testing.T) {
-	q := setupDB(t)
+	_, q := setupDB(t)
 	ctx := context.Background()
 	orgID, userID := createTestUser(t, q)
 

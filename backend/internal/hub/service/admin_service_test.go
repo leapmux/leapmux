@@ -40,13 +40,14 @@ func setupAdminTestServer(t *testing.T) *adminTestEnv {
 
 	q := gendb.New(sqlDB)
 
-	err = bootstrap.Run(context.Background(), q, false)
+	err = bootstrap.Run(context.Background(), sqlDB, q, false)
 	require.NoError(t, err)
 
-	adminSvc := service.NewAdminService(q, false)
+	adminSvc := service.NewAdminService(sqlDB, q, false)
 
 	mux := http.NewServeMux()
-	opts := connect.WithInterceptors(auth.NewInterceptor(q, false, false))
+	interceptor, _ := auth.NewInterceptor(q, false, false)
+	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewAdminServiceHandler(adminSvc, opts)
 	mux.Handle(path, handler)
 
