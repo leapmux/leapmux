@@ -21,4 +21,12 @@ describe('transport', () => {
   it('exports setOnAuthError', () => {
     expect(typeof transportModule.setOnAuthError).toBe('function')
   })
+
+  it('does not export authInterceptor', () => {
+    expect('authInterceptor' in transportModule).toBe(false)
+  })
+
+  it('does not export TOKEN_KEY', () => {
+    expect('TOKEN_KEY' in transportModule).toBe(false)
+  })
 })
