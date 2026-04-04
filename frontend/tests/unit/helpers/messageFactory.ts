@@ -1,5 +1,5 @@
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
-import { ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 
 /** Encode a JSON object as raw message content bytes (no wrapper). */
 export function rawContent(obj: unknown): Uint8Array {
@@ -40,6 +40,7 @@ export function makeMessage(overrides: Partial<{
     spanId: overrides.spanId ?? '',
     parentSpanId: overrides.parentSpanId ?? '',
     spanLines: overrides.spanLines ?? '[]',
+    agentProvider: overrides.agentProvider ?? AgentProvider.CLAUDE_CODE,
     spanColor: overrides.spanColor ?? -1,
   } as AgentChatMessage
 }

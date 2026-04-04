@@ -1,6 +1,6 @@
 /* eslint-disable solid/no-innerhtml -- HTML is produced via remark/shiki, not arbitrary user input */
 import type { JSX } from 'solid-js'
-import type { RenderContext } from './messageRenderers'
+import type { RenderContext } from '../messageRenderers'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import Check from 'lucide-solid/icons/check'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
@@ -18,15 +18,14 @@ import { todosToMarkdown } from '~/lib/messageParser'
 import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
-import { DiffView, rawDiffToHunks } from './diffUtils'
-import { markdownContent } from './markdownContent.css'
-import { ThinkingMessage, useSharedExpandedState } from './messageRenderers'
-import { resultDivider } from './messageStyles.css'
-import { isObject, relativizePath } from './messageUtils'
-import { COLLAPSED_RESULT_ROWS, EmptyTodoLayout, renderBashHighlight, stripLeadingBlankLines, ToolUseLayout } from './toolRenderers'
+import { DiffView, rawDiffToHunks } from '../diffUtils'
+import { markdownContent } from '../markdownContent.css'
+import { ThinkingMessage, useSharedExpandedState } from '../messageRenderers'
+import { resultDivider } from '../messageStyles.css'
+import { isObject } from '../messageUtils'
+import { renderReadDetail, renderSearchDetail } from '../toolDetailRenderers'
+import { COLLAPSED_RESULT_ROWS, EmptyTodoLayout, renderBashHighlight, stripLeadingBlankLines, ToolUseLayout } from '../toolRenderers'
 import {
-  toolInputCode,
-  toolInputPath,
   toolInputSummary,
   toolInputText,
   toolResultCollapsed,
@@ -35,7 +34,7 @@ import {
   toolResultPrompt,
   toolUseHeader,
   toolUseIcon,
-} from './toolStyles.css'
+} from '../toolStyles.css'
 
 /** Icon for a tool kind. */
 function kindIcon(kind: string | undefined): typeof Terminal {
@@ -100,44 +99,17 @@ function extractToolOutput(toolUse: Record<string, unknown>): { text: string, er
 // Kind-specific title builders
 // ---------------------------------------------------------------------------
 
-/** Build a rich title element for search kind (pattern in monospace). */
 function searchTitle(rawInput: Record<string, unknown> | undefined, fallbackTitle: string, context?: RenderContext): string | JSX.Element {
   const pattern = typeof rawInput?.pattern === 'string' ? rawInput.pattern as string : ''
   const path = typeof rawInput?.path === 'string' ? rawInput.path as string : ''
-  if (!pattern)
-    return fallbackTitle
-  return (
-    <>
-      <span class={toolInputCode}>{`"${pattern}"`}</span>
-      <Show when={path}>
-        <span class={toolInputText}>{` ${relativizePath(path, context?.workingDir, context?.homeDir)}`}</span>
-      </Show>
-    </>
-  )
+  return renderSearchDetail(pattern, path, context?.workingDir, context?.homeDir) || fallbackTitle
 }
 
-/** Build a rich title element for read kind (file path + line range). */
 function readTitle(rawInput: Record<string, unknown> | undefined, fallbackTitle: string, context?: RenderContext): string | JSX.Element {
   const filePath = typeof rawInput?.filePath === 'string' ? rawInput.filePath as string : ''
-  if (!filePath)
-    return fallbackTitle
   const offset = typeof rawInput?.offset === 'number' ? rawInput.offset as number : 0
   const limit = typeof rawInput?.limit === 'number' ? rawInput.limit as number : 0
-  const rangeStr = offset && limit
-    ? ` (Line ${offset}\u2013${offset + limit - 1})`
-    : limit
-      ? ` (Line 1\u2013${limit})`
-      : offset
-        ? ` (Line ${offset}\u2013)`
-        : ''
-  return (
-    <>
-      <span class={toolInputPath}>{relativizePath(filePath, context?.workingDir, context?.homeDir)}</span>
-      <Show when={rangeStr}>
-        <span class={toolInputText}>{rangeStr}</span>
-      </Show>
-    </>
-  )
+  return renderReadDetail(filePath, offset, limit, context?.workingDir, context?.homeDir) || fallbackTitle
 }
 
 /** Build a summary for search kind showing match count. */

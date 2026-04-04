@@ -16,6 +16,7 @@ import * as styles from '../ChatView.css'
 import { ClaudeCodeControlActions, ClaudeCodeControlContent } from '../controls/ClaudeCodeControlRequest'
 import { isNotificationThreadWrapper, isObject } from '../messageUtils'
 import { effortItems, hasEfforts, modelDisplayName, modelItems, ModelSelect, optionLabel, PERMISSION_MODE_KEY, permissionModeGroup, permissionModeItems, RadioGroup } from '../settingsShared'
+import { renderClaudeMessage } from './claudeRenderers'
 import { registerProvider } from './registry'
 
 function generateRandomId(): string {
@@ -290,6 +291,7 @@ const claudeCodePlugin: ProviderPlugin = {
   },
 
   classify: classifyClaudeCodeMessage,
+  renderMessage: renderClaudeMessage,
 
   isAskUserQuestion(payload) {
     const tool = getToolName(payload)

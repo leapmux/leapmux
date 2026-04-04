@@ -37,20 +37,12 @@ import {
   settingsChangedRenderer,
   systemInitRenderer,
 } from './notificationRenderers'
-import { exitPlanModeRenderer, renderExitPlanMode } from './planModeRenderers'
 import { getProviderPlugin } from './providers/registry'
 import {
-  askUserQuestionRenderer,
-  renderAskUserQuestion,
-  renderTodoWrite,
   taskNotificationRenderer,
-  todoWriteRenderer,
 } from './taskRenderers'
 import {
-  agentPromptRenderer,
   ToolHeaderActions,
-  toolResultRenderer,
-  toolUseRenderer,
 } from './toolRenderers'
 
 import {
@@ -325,36 +317,8 @@ const userContentRenderer: MessageContentRenderer = {
 // Dispatch map — O(1) renderer lookup by MessageCategory kind
 // ---------------------------------------------------------------------------
 
-/** Specialized tool renderers keyed by tool name. */
-const SPECIALIZED_TOOL_RENDERERS: Record<string, (toolUse: Record<string, unknown>, context?: RenderContext) => JSX.Element | null> = {
-  ExitPlanMode: renderExitPlanMode,
-  TodoWrite: renderTodoWrite,
-  AskUserQuestion: renderAskUserQuestion,
-}
-
-/** Dispatch rendering for a tool_use category: try specialized renderer first, then generic. */
-function dispatchToolUse(
-  category: Extract<MessageCategory, { kind: 'tool_use' }>,
-  parsed: unknown,
-  role: MessageRole,
-  context?: RenderContext,
-): JSX.Element | null {
-  const specialized = SPECIALIZED_TOOL_RENDERERS[category.toolName]
-  if (specialized) {
-    const result = specialized(category.toolUse, context)
-    if (result !== null)
-      return result
-  }
-  return toolUseRenderer.render(parsed, role, context)
-}
-
 /** Renderer functions keyed by MessageCategory kind. */
 const KIND_RENDERERS: Record<string, (parsed: unknown, role: MessageRole, context?: RenderContext) => JSX.Element | null> = {
-  // Wrap in arrow functions to avoid accessing cross-module `const` exports
-  // at module initialization time, which can hit the TDZ due to the circular
-  // dependency between messageRenderers ↔ toolRenderers.
-  tool_result: (p, r, c) => toolResultRenderer.render(p, r, c),
-  agent_prompt: (p, r, c) => agentPromptRenderer.render(p, r, c),
   assistant_text: assistantTextRenderer.render,
   assistant_thinking: assistantThinkingRenderer.render,
   user_text: userTextContentRenderer.render,
@@ -393,9 +357,6 @@ function dispatchRender(
   role: MessageRole,
   context?: RenderContext,
 ): JSX.Element | null {
-  if (category.kind === 'tool_use')
-    return dispatchToolUse(category, parsed, role, context)
-
   const renderer = KIND_RENDERERS[category.kind]
   if (renderer)
     return renderer(parsed, role, context)
@@ -416,12 +377,6 @@ let _fallbackRenderers: MessageContentRenderer[] | null = null
 function getFallbackRenderers(): MessageContentRenderer[] {
   if (!_fallbackRenderers) {
     _fallbackRenderers = [
-      exitPlanModeRenderer,
-      todoWriteRenderer,
-      askUserQuestionRenderer,
-      toolUseRenderer,
-      toolResultRenderer,
-      agentPromptRenderer,
       userTextContentRenderer,
       assistantTextRenderer,
       assistantThinkingRenderer,

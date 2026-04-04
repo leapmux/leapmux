@@ -1,8 +1,9 @@
+import type { MessageCategory } from './messageClassification'
 import type { RenderContext } from './messageRenderers'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { ContentCompression } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { renderMessageContent } from './messageRenderers'
 
 // Mock shiki worker to avoid Web Worker unavailability in test environment.
@@ -21,10 +22,17 @@ function makeToolUseMessage(name: string, input: Record<string, unknown>) {
   }
 }
 
+/** Build a tool_use category for dispatch. */
+function makeToolUseCategory(name: string, input: Record<string, unknown>): MessageCategory {
+  const toolUse = { type: 'tool_use' as const, id: 'test-id', name, input }
+  return { kind: 'tool_use', toolName: name, toolUse, content: [toolUse] }
+}
+
 /** Render a tool_use message and return the trimmed text content. */
 function renderToolUseText(name: string, input: Record<string, unknown>, context?: RenderContext): string {
   const parsed = makeToolUseMessage(name, input)
-  const result = renderMessageContent(parsed, 2 /* ASSISTANT */, context)
+  const category = makeToolUseCategory(name, input)
+  const result = renderMessageContent(parsed, MessageRole.ASSISTANT, context, category, AgentProvider.CLAUDE_CODE)
   const { container } = render(() => result)
   return container.textContent?.trim() ?? ''
 }
@@ -109,8 +117,9 @@ describe('write tool_use hides content when linked result is an update', () => {
   const writeInput = { file_path: '/tmp/test.go', content: 'package main\n\nfunc main() {}\n' }
 
   it('shows diff when no linked tool_result exists', () => {
+    const category = makeToolUseCategory('Write', writeInput)
     const { container } = render(() =>
-      renderMessageContent(makeToolUseMessage('Write', writeInput), 2 /* ASSISTANT */),
+      renderMessageContent(makeToolUseMessage('Write', writeInput), MessageRole.ASSISTANT, undefined, category, AgentProvider.CLAUDE_CODE),
     )
     // The diff view should render the new file content.
     expect(container.textContent).toContain('package main')
@@ -127,8 +136,9 @@ describe('write tool_use hides content when linked result is an update', () => {
       },
     })
     const context: RenderContext = { toolResultMessage }
+    const category = makeToolUseCategory('Write', writeInput)
     const { container } = render(() =>
-      renderMessageContent(makeToolUseMessage('Write', writeInput), 2 /* ASSISTANT */, context),
+      renderMessageContent(makeToolUseMessage('Write', writeInput), MessageRole.ASSISTANT, context, category, AgentProvider.CLAUDE_CODE),
     )
     // The diff should be hidden — the tool_result shows the diff instead.
     expect(container.textContent).not.toContain('package main')
@@ -141,8 +151,9 @@ describe('write tool_use hides content when linked result is an update', () => {
       tool_use_result: { filePath: '/tmp/test.go' },
     })
     const context: RenderContext = { toolResultMessage }
+    const category = makeToolUseCategory('Write', writeInput)
     const { container } = render(() =>
-      renderMessageContent(makeToolUseMessage('Write', writeInput), 2 /* ASSISTANT */, context),
+      renderMessageContent(makeToolUseMessage('Write', writeInput), MessageRole.ASSISTANT, context, category, AgentProvider.CLAUDE_CODE),
     )
     // New file creation: the full content should still be visible.
     expect(container.textContent).toContain('package main')
@@ -165,7 +176,8 @@ function makeReadToolResult(resultContent: string, context?: Partial<RenderConte
   return {
     parsed,
     render: () => {
-      const result = renderMessageContent(parsed, 1 /* USER */, { spanType: 'Read', ...context })
+      const category: MessageCategory = { kind: 'tool_result' }
+      const result = renderMessageContent(parsed, MessageRole.USER, { spanType: 'Read', ...context }, category, AgentProvider.CLAUDE_CODE)
       const { container } = render(() => result)
       return container
     },

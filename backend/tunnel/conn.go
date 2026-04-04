@@ -43,11 +43,10 @@ func DialTunnel(ch *Channel, targetAddr string, targetPort uint32) (*Conn, error
 	}
 
 	respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
-	reqID, err := ch.SendRPCNoWait("OpenTunnelConn", openPayload)
+	reqID, err := ch.SendRPCNoWait("OpenTunnelConn", openPayload, respCh)
 	if err != nil {
 		return nil, fmt.Errorf("send: %w", err)
 	}
-	ch.RegisterPending(reqID, respCh)
 
 	select {
 	case resp := <-respCh:

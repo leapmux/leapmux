@@ -257,8 +257,16 @@ func (ch *Channel) CallRPC(method string, payload []byte) (*leapmuxv1.InnerRpcRe
 
 // SendRPCNoWait sends an inner RPC without waiting for a response.
 // Returns the correlation ID for registering stream callbacks.
-func (ch *Channel) SendRPCNoWait(method string, payload []byte) (uint32, error) {
+// If pendingCh is non-nil, it is atomically registered before the message
+// is sent so that the response cannot be missed due to a race.
+func (ch *Channel) SendRPCNoWait(method string, payload []byte, pendingCh ...chan *leapmuxv1.InnerRpcResponse) (uint32, error) {
 	reqID := atomic.AddUint32(&ch.nextReqID, 1)
+
+	if len(pendingCh) > 0 && pendingCh[0] != nil {
+		ch.mu.Lock()
+		ch.pending[reqID] = pendingCh[0]
+		ch.mu.Unlock()
+	}
 
 	innerReq := &leapmuxv1.InnerMessage{
 		Kind: &leapmuxv1.InnerMessage_Request{
@@ -270,6 +278,11 @@ func (ch *Channel) SendRPCNoWait(method string, payload []byte) (uint32, error) 
 	}
 
 	if err := ch.sendInner(reqID, innerReq); err != nil {
+		if len(pendingCh) > 0 && pendingCh[0] != nil {
+			ch.mu.Lock()
+			delete(ch.pending, reqID)
+			ch.mu.Unlock()
+		}
 		return 0, err
 	}
 	return reqID, nil
