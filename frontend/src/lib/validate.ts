@@ -77,6 +77,31 @@ export function validateSessionId(value: string): string | null {
   return null
 }
 
+/**
+ * Validates an email address format.
+ * Returns an error message string, or null if valid.
+ * Empty strings are accepted (use a separate required check if needed).
+ */
+const EMAIL_INVALID_CHARS = /[\s<>,]/
+
+export function validateEmail(email: string): string | null {
+  if (email === '')
+    return null
+  if (email.length > 254)
+    return 'Email must be at most 254 characters'
+  // Basic structural check: local@domain.tld
+  const at = email.indexOf('@')
+  if (at < 1)
+    return 'Invalid email address'
+  const domain = email.slice(at + 1)
+  if (!domain.includes('.'))
+    return 'Invalid email address'
+  // Reject whitespace, angle brackets, commas (display-name style).
+  if (EMAIL_INVALID_CHARS.test(email))
+    return 'Invalid email address'
+  return null
+}
+
 const SLUG_PATTERN = /^[a-z0-9-]+$/
 
 /**

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { sanitizeName } from './validate'
+import { sanitizeName, validateEmail } from './validate'
 
 describe('sanitizeName', () => {
   it('returns sanitized value for valid names', () => {
@@ -70,5 +70,42 @@ describe('sanitizeName', () => {
 
   it('returns error when only forbidden characters remain', () => {
     expect(sanitizeName('"\\\t\n').error).not.toBeNull()
+  })
+})
+
+describe('validateEmail', () => {
+  it('accepts empty string', () => {
+    expect(validateEmail('')).toBeNull()
+  })
+
+  it('accepts valid emails', () => {
+    expect(validateEmail('user@example.com')).toBeNull()
+    expect(validateEmail('alice.bob@example.co.uk')).toBeNull()
+    expect(validateEmail('user+tag@domain.org')).toBeNull()
+    expect(validateEmail('a@b.co')).toBeNull()
+  })
+
+  it('rejects emails without @', () => {
+    expect(validateEmail('userexample.com')).not.toBeNull()
+  })
+
+  it('rejects emails without dot in domain', () => {
+    expect(validateEmail('user@localhost')).not.toBeNull()
+  })
+
+  it('rejects emails with spaces', () => {
+    expect(validateEmail('user @example.com')).not.toBeNull()
+  })
+
+  it('rejects emails with angle brackets', () => {
+    expect(validateEmail('<user@example.com>')).not.toBeNull()
+  })
+
+  it('rejects display name format', () => {
+    expect(validateEmail('Alice <alice@example.com>')).not.toBeNull()
+  })
+
+  it('rejects emails exceeding 254 characters', () => {
+    expect(validateEmail(`${'a'.repeat(250)}@b.co`)).not.toBeNull()
   })
 })

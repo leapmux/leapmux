@@ -2,7 +2,7 @@ import type { Component } from 'solid-js'
 import { createSignal, For, onMount, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
 import { useAuth } from '~/context/AuthContext'
-import { sanitizeSlug } from '~/lib/validate'
+import { sanitizeSlug, validateEmail } from '~/lib/validate'
 import { errorText, successText, warningText } from '~/styles/shared.css'
 import * as styles from './PreferencesDialog.css'
 
@@ -62,6 +62,11 @@ export const ProfileSettings: Component = () => {
     const email = newEmail().trim()
     if (!email) {
       setEmailMessage({ type: 'error', text: 'Email must not be empty.' })
+      return
+    }
+    const emailErr = validateEmail(email)
+    if (emailErr) {
+      setEmailMessage({ type: 'error', text: emailErr })
       return
     }
     setEmailSaving(true)

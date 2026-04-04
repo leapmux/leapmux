@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/validate"
 )
 
 const (
@@ -165,6 +166,18 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 	if err != nil {
 		slog.Error("oauth: exchange", "error", err)
 		http.Error(w, "OAuth exchange failed", http.StatusBadRequest)
+		return
+	}
+
+	// Require a valid email from the OAuth provider.
+	if claims.Email == "" {
+		slog.Error("oauth: provider did not return an email", "provider_id", providerID)
+		http.Error(w, "OAuth provider did not return an email address; ensure the 'email' scope is granted", http.StatusBadRequest)
+		return
+	}
+	if err := validate.ValidateEmail(claims.Email); err != nil {
+		slog.Error("oauth: provider returned invalid email", "email", claims.Email, "provider_id", providerID)
+		http.Error(w, "OAuth provider returned an invalid email address", http.StatusBadRequest)
 		return
 	}
 

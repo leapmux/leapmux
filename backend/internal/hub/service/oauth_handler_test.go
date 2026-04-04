@@ -424,6 +424,29 @@ func TestCompleteOAuthSignup_Success(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestCompleteOAuthSignup_UsesProviderEmail_IgnoresRequestEmail(t *testing.T) {
+	_, client, q, ks, cfg := setupOAuthTestServerWithAuthService(t)
+	cfg.OAuthTrustEmail = true
+	providerID := createTestProvider(t, q, ks)
+	signupToken := id.Generate()
+
+	// Pending signup has provider email "provider@example.com".
+	insertPendingSignup(t, q, ks, providerID, signupToken, "provider@example.com", "Provider", "sub-provider", time.Now().Add(5*time.Minute).UTC())
+
+	// Request tries to override with a different email — should be ignored.
+	resp, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+		SignupToken: signupToken,
+		Username:    "provideruser",
+		Email:       "attacker@evil.com",
+	}))
+	require.NoError(t, err)
+
+	// The user's email should be the provider's, not the attacker's.
+	user, err := q.GetUserByID(context.Background(), resp.Msg.GetUser().GetId())
+	require.NoError(t, err)
+	assert.Equal(t, "provider@example.com", user.Email, "email must come from provider, not request")
+}
+
 func TestCompleteOAuthSignup_DuplicateUsername(t *testing.T) {
 	_, client, q, ks, _ := setupOAuthTestServerWithAuthService(t)
 	providerID := createTestProvider(t, q, ks)

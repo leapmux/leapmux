@@ -114,6 +114,9 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 	if newEmail == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("email cannot be empty"))
 	}
+	if err := validate.ValidateEmail(newEmail); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 
 	user, err := s.queries.GetUserByID(ctx, userInfo.ID)
 	if err != nil {

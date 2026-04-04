@@ -122,11 +122,28 @@ describe('oAuthCompleteSignupPage', () => {
         signupToken: 'test-token',
         username: 'testuser',
         displayName: 'Test User',
-        email: 'test@example.com',
       })
     })
 
     expect(mockSetAuth).toHaveBeenCalledWith({ id: 'u1', username: 'testuser' })
+  })
+
+  it('shows email as read-only when provider supplies it', async () => {
+    mockGetPendingOAuthSignup.mockResolvedValue({
+      email: 'provider@example.com',
+      displayName: 'Test User',
+      providerName: 'GitHub',
+    })
+
+    renderPage()
+
+    await vi.waitFor(() => {
+      expect(screen.getByLabelText('Email')).toBeInTheDocument()
+    })
+
+    const emailInput = screen.getByLabelText('Email') as HTMLInputElement
+    expect(emailInput.value).toBe('provider@example.com')
+    expect(emailInput.readOnly).toBe(true)
   })
 
   it('shows error for username taken', async () => {

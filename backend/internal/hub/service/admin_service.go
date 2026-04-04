@@ -148,6 +148,9 @@ func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leap
 	}
 
 	// Admin-created users have trusted email.
+	if err := validate.ValidateEmail(req.Msg.GetEmail()); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	if err := checkEmailAvailable(ctx, s.queries, req.Msg.GetEmail(), ""); err != nil {
 		return nil, connect.NewError(connect.CodeAlreadyExists, err)
 	}
@@ -220,6 +223,9 @@ func (s *AdminService) UpdateUser(ctx context.Context, req *connect.Request[leap
 	newEmail := req.Msg.GetEmail()
 	if user.Email != "" && newEmail == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("email cannot be cleared once set"))
+	}
+	if err := validate.ValidateEmail(newEmail); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
 	// Check email uniqueness if changed.

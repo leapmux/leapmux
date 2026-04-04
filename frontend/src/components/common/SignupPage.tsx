@@ -9,7 +9,7 @@ import { Icon } from '~/components/common/Icon'
 import { OAuthProviderList } from '~/components/common/OAuthProviderList'
 import { useAuth } from '~/context/AuthContext'
 import { isSignupEnabled, loadOAuthProviders } from '~/lib/systemInfo'
-import { sanitizeSlug } from '~/lib/validate'
+import { sanitizeSlug, validateEmail } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
 import { cardNarrow, errorText } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
@@ -43,6 +43,11 @@ export const SignupPage: Component = () => {
     const [slug, slugErr] = sanitizeSlug('Username', username())
     if (slugErr) {
       setError(slugErr)
+      return
+    }
+    const emailErr = validateEmail(email())
+    if (emailErr) {
+      setError(emailErr)
       return
     }
     setSubmitting(true)

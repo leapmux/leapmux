@@ -119,6 +119,9 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 	}
 
 	email := req.Msg.GetEmail()
+	if err := validate.ValidateEmail(email); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	hash, err := pwdhash.Hash(pw)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
@@ -320,8 +323,9 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	// Determine email handling.
-	email := req.Msg.GetEmail()
+	// Use the email from the pending signup (provider-reported, already validated
+	// at callback time). The request's email field is ignored.
+	email := pending.Email
 	displayName := req.Msg.GetDisplayName()
 	if displayName == "" {
 		displayName = pending.DisplayName

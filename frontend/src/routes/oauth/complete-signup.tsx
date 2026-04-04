@@ -61,7 +61,6 @@ const OAuthCompleteSignupPage: Component = () => {
         signupToken: signupToken(),
         username: slug,
         displayName: displayName(),
-        email: email(),
       })
       auth.setAuth(resp.user!)
       navigate(`/o/${slug}`, { replace: true })
@@ -116,14 +115,16 @@ const OAuthCompleteSignupPage: Component = () => {
                 onInput={e => setDisplayName(e.currentTarget.value)}
               />
             </label>
-            <label>
-              Email
-              <input
-                type="email"
-                value={email()}
-                onInput={e => setEmail(e.currentTarget.value)}
-              />
-            </label>
+            <Show when={email()}>
+              <label>
+                Email
+                <input
+                  type="email"
+                  value={email()}
+                  readOnly
+                />
+              </label>
+            </Show>
             <Show when={error()}>
               <div class={errorText}>{error()}</div>
             </Show>
