@@ -141,7 +141,7 @@ func (a *App) ProxyHTTP(method, path, headersJSON, bodyBase64 string) (*ProxyRes
 	}, nil
 }
 
-// cookieHeader returns the Cookie header value from the jar for the hub base URL.
+// cookieHeader returns a single Cookie header from the jar for the hub base URL.
 func (p *HubProxy) cookieHeader() http.Header {
 	u, err := url.Parse(p.baseURL)
 	if err != nil {
@@ -151,9 +151,11 @@ func (p *HubProxy) cookieHeader() http.Header {
 	if len(cookies) == 0 {
 		return nil
 	}
-	h := make(http.Header)
-	for _, c := range cookies {
-		h.Add("Cookie", c.String())
+	parts := make([]string, len(cookies))
+	for i, c := range cookies {
+		parts[i] = c.String()
 	}
+	h := make(http.Header)
+	h.Set("Cookie", strings.Join(parts, "; "))
 	return h
 }

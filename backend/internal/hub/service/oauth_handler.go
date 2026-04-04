@@ -104,7 +104,7 @@ func (h *OAuthHandler) handleLogin(w http.ResponseWriter, r *http.Request, provi
 	verifier := oauth2.GenerateVerifier()
 	state := id.Generate()
 
-	redirectURI := r.URL.Query().Get("redirect")
+	redirectURI := sanitizeRedirectURI(r.URL.Query().Get("redirect"))
 
 	if err := h.queries.CreateOAuthState(ctx, gendb.CreateOAuthStateParams{
 		State:        state,
@@ -252,6 +252,19 @@ func (h *OAuthHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, us
 		redirectTo = redirectURI
 	}
 	http.Redirect(w, r, redirectTo, http.StatusFound)
+}
+
+// sanitizeRedirectURI ensures the redirect URI is a safe relative path.
+// Returns empty string for anything that could be an open redirect.
+func sanitizeRedirectURI(uri string) string {
+	if uri == "" {
+		return ""
+	}
+	// Must start with "/" and must not start with "//" (protocol-relative URL).
+	if uri[0] != '/' || (len(uri) > 1 && uri[1] == '/') {
+		return ""
+	}
+	return uri
 }
 
 func tokenExpiryTime(tokenSet *huboauth.TokenSet) time.Time {

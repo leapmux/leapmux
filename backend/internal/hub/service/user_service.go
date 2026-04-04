@@ -130,14 +130,9 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 
 	// Admin: immediate change, trusted.
 	if userInfo.IsAdmin {
-		if err := s.queries.UpdateUserEmail(ctx, db.UpdateUserEmailParams{
-			Email:         newEmail,
-			EmailVerified: 1,
-			ID:            user.ID,
-		}); err != nil {
+		if err := setEmailAndClearCompeting(ctx, s.queries, user.ID, newEmail, 1); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
-		clearCompetingPendingEmails(ctx, s.queries, newEmail, user.ID)
 		return connect.NewResponse(&leapmuxv1.RequestEmailChangeResponse{
 			VerificationRequired: false,
 		}), nil
@@ -145,14 +140,9 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 
 	// Non-admin, verification not required: immediate change, unverified.
 	if !s.cfg.EmailVerificationRequired {
-		if err := s.queries.UpdateUserEmail(ctx, db.UpdateUserEmailParams{
-			Email:         newEmail,
-			EmailVerified: 0,
-			ID:            user.ID,
-		}); err != nil {
+		if err := setEmailAndClearCompeting(ctx, s.queries, user.ID, newEmail, 0); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
-		clearCompetingPendingEmails(ctx, s.queries, newEmail, user.ID)
 		return connect.NewResponse(&leapmuxv1.RequestEmailChangeResponse{
 			VerificationRequired: false,
 		}), nil

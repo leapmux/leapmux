@@ -240,14 +240,9 @@ func (s *AdminService) UpdateUser(ctx context.Context, req *connect.Request[leap
 
 	// Update email if changed (admin email is trusted).
 	if newEmail != user.Email && newEmail != "" {
-		if err := s.queries.UpdateUserEmail(ctx, db.UpdateUserEmailParams{
-			Email:         newEmail,
-			EmailVerified: 1,
-			ID:            user.ID,
-		}); err != nil {
+		if err := setEmailAndClearCompeting(ctx, s.queries, user.ID, newEmail, 1); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update user email: %w", err))
 		}
-		clearCompetingPendingEmails(ctx, s.queries, newEmail, user.ID)
 	}
 
 	// Fetch updated user.

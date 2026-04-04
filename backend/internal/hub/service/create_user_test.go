@@ -103,3 +103,47 @@ func TestCreateUserWithOrg_ClearsCompetingPendingEmails(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, updatedA.PendingEmail)
 }
+
+func TestSetEmailAndClearCompeting(t *testing.T) {
+	sqlDB, q := setupCreateUserTestDB(t)
+	ctx := context.Background()
+
+	// User A has pending_email.
+	userA := createSimpleUser(t, sqlDB, q, "user-a", "")
+	err := q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
+		PendingEmail:      "target@example.com",
+		PendingEmailToken: id.Generate(),
+		ID:                userA.ID,
+	})
+	require.NoError(t, err)
+
+	// User B gets verified email via setEmailAndClearCompeting.
+	userB := createSimpleUser(t, sqlDB, q, "user-b", "")
+	err = setEmailAndClearCompeting(ctx, q, userB.ID, "target@example.com", 1)
+	require.NoError(t, err)
+
+	// User B has verified email.
+	updatedB, err := q.GetUserByID(ctx, userB.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "target@example.com", updatedB.Email)
+	assert.Equal(t, int64(1), updatedB.EmailVerified)
+
+	// User A's pending_email should be cleared.
+	updatedA, err := q.GetUserByID(ctx, userA.ID)
+	require.NoError(t, err)
+	assert.Empty(t, updatedA.PendingEmail)
+}
+
+func TestSetEmailAndClearCompeting_Unverified(t *testing.T) {
+	sqlDB, q := setupCreateUserTestDB(t)
+	ctx := context.Background()
+
+	user := createSimpleUser(t, sqlDB, q, "user-a", "")
+	err := setEmailAndClearCompeting(ctx, q, user.ID, "new@example.com", 0)
+	require.NoError(t, err)
+
+	updated, err := q.GetUserByID(ctx, user.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "new@example.com", updated.Email)
+	assert.Equal(t, int64(0), updated.EmailVerified)
+}

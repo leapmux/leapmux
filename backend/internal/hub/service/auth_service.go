@@ -198,7 +198,7 @@ func (s *AuthService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 
 	sessionID, sessionExpiresAt, sessionErr := auth.CreateSession(ctx, s.queries, updatedUser.ID, "", "")
 	if sessionErr != nil {
-		return nil, connect.NewError(connect.CodeInternal, sessionErr)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
 	}
 
 	org, err := s.queries.GetOrgByID(ctx, updatedUser.OrgID)
@@ -406,7 +406,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	// Create session.
 	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.queries, finalUser.ID, "", "")
 	if sessionErr != nil {
-		return nil, connect.NewError(connect.CodeInternal, sessionErr)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
 	}
 
 	org, err := s.queries.GetOrgByID(ctx, finalUser.OrgID)

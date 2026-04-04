@@ -86,6 +86,21 @@ func createUserWithOrg(ctx context.Context, sqlDB *sql.DB, q *db.Queries, p Crea
 	return &user, nil
 }
 
+// setEmailAndClearCompeting updates a user's email and clears competing
+// pending_email entries from other users. Use this instead of calling
+// UpdateUserEmail + clearCompetingPendingEmails separately.
+func setEmailAndClearCompeting(ctx context.Context, q *db.Queries, userID, email string, verified int64) error {
+	if err := q.UpdateUserEmail(ctx, db.UpdateUserEmailParams{
+		Email:         email,
+		EmailVerified: verified,
+		ID:            userID,
+	}); err != nil {
+		return err
+	}
+	clearCompetingPendingEmails(ctx, q, email, userID)
+	return nil
+}
+
 // checkEmailAvailable checks that no other user has the given email in their
 // verified email column. Empty emails are always allowed. Use excludeUserID
 // to skip the current user (for email changes).
