@@ -16,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/service"
 )
 
@@ -157,6 +158,85 @@ func TestInterceptor_BearerTokenNotAccepted(t *testing.T) {
 	req.Header().Set("Authorization", "Bearer "+token)
 
 	_, err := client.GetCurrentUser(context.Background(), req)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+// setupInterceptorTestServerWithCache is like setupInterceptorTestServer but
+// wires the SessionCache into the AuthService (so Logout evicts entries) and
+// returns the queries handle for DB inspection.
+func setupInterceptorTestServerWithCache(t *testing.T) (leapmuxv1connect.AuthServiceClient, *gendb.Queries) {
+	t.Helper()
+
+	sqlDB, q := setupDB(t)
+
+	err := bootstrap.Run(context.Background(), sqlDB, q, false)
+	require.NoError(t, err)
+
+	mux := http.NewServeMux()
+	interceptor, sc := auth.NewInterceptor(q, false, false, false)
+	t.Cleanup(sc.Stop)
+	interceptors := connect.WithInterceptors(interceptor)
+	authSvc := service.NewAuthService(sqlDB, q, &config.Config{}, sc, nil)
+	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
+	mux.Handle(path, handler)
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	return leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL), q
+}
+
+func TestTouchSession_ThrottledWithinThreshold(t *testing.T) {
+	client, q := setupInterceptorTestServerWithCache(t)
+
+	token := loginAdmin(t, client)
+
+	// First authenticated request — triggers touchSession and updates last_active_at.
+	req1 := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req1.Header().Set("Cookie", auth.CookieName+"="+token)
+	_, err := client.GetCurrentUser(context.Background(), req1)
+	require.NoError(t, err)
+
+	sess1, err := q.GetUserSessionByID(context.Background(), token)
+	require.NoError(t, err)
+	t1 := sess1.LastActiveAt
+
+	// Second authenticated request immediately — should be throttled (no DB write).
+	req2 := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req2.Header().Set("Cookie", auth.CookieName+"="+token)
+	_, err = client.GetCurrentUser(context.Background(), req2)
+	require.NoError(t, err)
+
+	sess2, err := q.GetUserSessionByID(context.Background(), token)
+	require.NoError(t, err)
+	t2 := sess2.LastActiveAt
+
+	assert.Equal(t, t1, t2, "last_active_at should not change on rapid successive requests (throttled)")
+}
+
+func TestLogout_EvictsSessionFromCache(t *testing.T) {
+	client, _ := setupInterceptorTestServerWithCache(t)
+
+	token := loginAdmin(t, client)
+
+	// Verify the session is valid.
+	req1 := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req1.Header().Set("Cookie", auth.CookieName+"="+token)
+	resp, err := client.GetCurrentUser(context.Background(), req1)
+	require.NoError(t, err)
+	assert.Equal(t, "admin", resp.Msg.GetUser().GetUsername())
+
+	// Logout — deletes session from DB and evicts from cache.
+	logoutReq := connect.NewRequest(&leapmuxv1.LogoutRequest{})
+	logoutReq.Header().Set("Cookie", auth.CookieName+"="+token)
+	_, err = client.Logout(context.Background(), logoutReq)
+	require.NoError(t, err)
+
+	// Using the same token should now fail with Unauthenticated.
+	req2 := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req2.Header().Set("Cookie", auth.CookieName+"="+token)
+	_, err = client.GetCurrentUser(context.Background(), req2)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }

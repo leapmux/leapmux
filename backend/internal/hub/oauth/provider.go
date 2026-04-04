@@ -33,7 +33,9 @@ type UserClaims struct {
 // Provider defines the interface for OAuth/OIDC identity providers.
 type Provider interface {
 	// AuthURL returns the authorization URL to redirect the user to.
-	AuthURL(state, codeChallenge string) string
+	// codeVerifier is the PKCE verifier; providers that support PKCE
+	// derive the S256 challenge from it automatically.
+	AuthURL(state, codeVerifier string) string
 
 	// Exchange trades an authorization code for tokens and user claims.
 	Exchange(ctx context.Context, code, codeVerifier string) (*TokenSet, *UserClaims, error)

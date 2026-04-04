@@ -189,13 +189,8 @@ func (s *UserService) VerifyEmailChange(ctx context.Context, req *connect.Reques
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no pending email change"))
 	}
 
-	// Check that no other user has claimed this email since the request.
-	if err := checkEmailAvailable(ctx, s.queries, user.PendingEmail, user.ID); err != nil {
+	if err := promotePendingEmail(ctx, s.queries, user.ID, user.PendingEmail); err != nil {
 		return nil, connect.NewError(connect.CodeAlreadyExists, err)
-	}
-
-	if err := s.queries.PromotePendingEmail(ctx, user.ID); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
 	updatedUser, err := s.queries.GetUserByID(ctx, user.ID)

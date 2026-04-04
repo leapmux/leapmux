@@ -58,6 +58,7 @@ type Server struct {
 	sqlDB        *sql.DB
 	tcpLn        net.Listener
 	shutdownCh   chan struct{}
+	sessionCache *auth.SessionCache
 	workerMgr    *workermgr.Manager
 }
 
@@ -238,6 +239,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		sqlDB:        sqlDB,
 		tcpLn:        tcpLn,
 		shutdownCh:   shutdownCh,
+		sessionCache: sessionCache,
 		workerMgr:    wMgr,
 	}, nil
 }
@@ -336,8 +338,9 @@ func (s *Server) Serve(ctx context.Context) error {
 		<-ctx.Done()
 		slog.Info("hub shutting down...")
 
-		// 1. Reject all new RPCs.
+		// 1. Reject all new RPCs and stop background tasks.
 		close(s.shutdownCh)
+		s.sessionCache.Stop()
 
 		// 2. Notify connected workers to delay reconnection.
 		s.workerMgr.NotifyShutdown(10)

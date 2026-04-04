@@ -43,9 +43,9 @@ func NewOIDCProvider(ctx context.Context, issuerURL, clientID, clientSecret, red
 	}, nil
 }
 
-func (p *OIDCProvider) AuthURL(state, codeChallenge string) string {
+func (p *OIDCProvider) AuthURL(state, codeVerifier string) string {
 	opts := []oauth2.AuthCodeOption{
-		oauth2.S256ChallengeOption(codeChallenge),
+		oauth2.S256ChallengeOption(codeVerifier),
 	}
 	return p.oauth2Config.AuthCodeURL(state, opts...)
 }

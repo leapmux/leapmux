@@ -66,20 +66,30 @@ func NewInterceptor(q *db.Queries, soloMode bool, secureCookie bool, emailVerifi
 			}
 		}
 	}
-	sc := &SessionCache{m: &a.lastTouch}
-	go a.sweepLastTouch()
+	sc := &SessionCache{m: &a.lastTouch, stop: make(chan struct{})}
+	go a.sweepLastTouch(sc.stop)
 	return a, sc
 }
 
 // SessionCache provides eviction access to the interceptor's in-memory
 // session touch throttle.
 type SessionCache struct {
-	m *sync.Map
+	m    *sync.Map
+	stop chan struct{}
 }
 
 // Evict removes a session from the touch cache. Call this on logout.
 func (c *SessionCache) Evict(sessionID string) {
 	c.m.Delete(sessionID)
+}
+
+// Stop terminates the background sweep goroutine. Safe to call multiple times.
+func (c *SessionCache) Stop() {
+	select {
+	case <-c.stop:
+	default:
+		close(c.stop)
+	}
 }
 
 func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
@@ -176,17 +186,23 @@ const touchSweepInterval = 10 * time.Minute
 // sweepLastTouch periodically removes stale entries from the lastTouch map.
 // Entries older than SessionDuration are removed since those sessions have
 // expired and will fail ValidateToken on the next request anyway.
-func (a *authInterceptor) sweepLastTouch() {
+// The goroutine exits when stop is closed.
+func (a *authInterceptor) sweepLastTouch(stop <-chan struct{}) {
 	ticker := time.NewTicker(touchSweepInterval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		cutoff := time.Now().Add(-SessionDuration)
-		a.lastTouch.Range(func(key, value any) bool {
-			if value.(time.Time).Before(cutoff) {
-				a.lastTouch.Delete(key)
-			}
-			return true
-		})
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			cutoff := time.Now().Add(-SessionDuration)
+			a.lastTouch.Range(func(key, value any) bool {
+				if value.(time.Time).Before(cutoff) {
+					a.lastTouch.Delete(key)
+				}
+				return true
+			})
+		}
 	}
 }

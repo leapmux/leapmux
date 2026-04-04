@@ -205,7 +205,7 @@ func (s *AuthService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 	}
 
 	if err := promotePendingEmail(ctx, s.queries, user.ID, user.PendingEmail); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeAlreadyExists, err)
 	}
 
 	updatedUser, err := s.queries.GetUserByID(ctx, user.ID)
@@ -267,23 +267,30 @@ func (s *AuthService) GetOAuthProviders(ctx context.Context, req *connect.Reques
 	}), nil
 }
 
-func (s *AuthService) GetPendingOAuthSignup(ctx context.Context, req *connect.Request[leapmuxv1.GetPendingOAuthSignupRequest]) (*connect.Response[leapmuxv1.GetPendingOAuthSignupResponse], error) {
-	token := req.Msg.GetSignupToken()
+// loadPendingOAuthSignup fetches and validates a pending OAuth signup by token.
+// It returns a connect error on missing/expired tokens.
+func loadPendingOAuthSignup(ctx context.Context, q *db.Queries, token string) (*db.PendingOauthSignup, error) {
 	if token == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("signup_token is required"))
 	}
-
-	pending, err := s.queries.GetPendingOAuthSignup(ctx, token)
+	pending, err := q.GetPendingOAuthSignup(ctx, token)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid or expired signup token"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-
 	if time.Now().UTC().After(pending.ExpiresAt) {
-		_ = s.queries.DeletePendingOAuthSignup(ctx, token)
+		_ = q.DeletePendingOAuthSignup(ctx, token)
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("signup token expired"))
+	}
+	return &pending, nil
+}
+
+func (s *AuthService) GetPendingOAuthSignup(ctx context.Context, req *connect.Request[leapmuxv1.GetPendingOAuthSignupRequest]) (*connect.Response[leapmuxv1.GetPendingOAuthSignupResponse], error) {
+	pending, err := loadPendingOAuthSignup(ctx, s.queries, req.Msg.GetSignupToken())
+	if err != nil {
+		return nil, err
 	}
 
 	// Look up provider name for display.
@@ -301,21 +308,9 @@ func (s *AuthService) GetPendingOAuthSignup(ctx context.Context, req *connect.Re
 
 func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Request[leapmuxv1.CompleteOAuthSignupRequest]) (*connect.Response[leapmuxv1.CompleteOAuthSignupResponse], error) {
 	signupToken := req.Msg.GetSignupToken()
-	if signupToken == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("signup_token is required"))
-	}
-
-	pending, err := s.queries.GetPendingOAuthSignup(ctx, signupToken)
+	pending, err := loadPendingOAuthSignup(ctx, s.queries, signupToken)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid or expired signup token"))
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
-	if time.Now().UTC().After(pending.ExpiresAt) {
-		_ = s.queries.DeletePendingOAuthSignup(ctx, signupToken)
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("signup token expired"))
+		return nil, err
 	}
 
 	// Validate username.

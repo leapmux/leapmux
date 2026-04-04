@@ -607,3 +607,73 @@ func TestOAuthCallback_NewUser_SignupDisabled(t *testing.T) {
 	// This validates the state is consumed and the provider is resolved correctly.
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
+
+func TestDeleteOAuthTokens_ScopedToProvider(t *testing.T) {
+	_, q, ks := setupOAuthTestServer(t)
+
+	// Create two OAuth providers.
+	providerA := createTestProvider(t, q, ks)
+	providerBID := id.Generate()
+	aad := []byte("oauth_provider:" + providerBID)
+	encSecret, err := ks.Encrypt([]byte("secret-b"), aad)
+	require.NoError(t, err)
+	err = q.CreateOAuthProvider(context.Background(), gendb.CreateOAuthProviderParams{
+		ID:           providerBID,
+		ProviderType: "oidc",
+		Name:         "Test OIDC",
+		ClientID:     "client-b",
+		ClientSecret: encSecret,
+		Scopes:       "openid",
+		Enabled:      1,
+	})
+	require.NoError(t, err)
+
+	// Use the bootstrap admin as the token owner.
+	admin, err := q.GetUserByUsername(context.Background(), "admin")
+	require.NoError(t, err)
+
+	// Insert tokens for both providers.
+	err = q.UpsertOAuthTokens(context.Background(), gendb.UpsertOAuthTokensParams{
+		UserID:       admin.ID,
+		ProviderID:   providerA,
+		AccessToken:  []byte("dummy"),
+		RefreshToken: []byte("dummy"),
+		TokenType:    "bearer",
+		ExpiresAt:    time.Now().Add(1 * time.Hour).UTC(),
+		KeyVersion:   int64(ks.ActiveVersion()),
+	})
+	require.NoError(t, err)
+
+	err = q.UpsertOAuthTokens(context.Background(), gendb.UpsertOAuthTokensParams{
+		UserID:       admin.ID,
+		ProviderID:   providerBID,
+		AccessToken:  []byte("dummy"),
+		RefreshToken: []byte("dummy"),
+		TokenType:    "bearer",
+		ExpiresAt:    time.Now().Add(1 * time.Hour).UTC(),
+		KeyVersion:   int64(ks.ActiveVersion()),
+	})
+	require.NoError(t, err)
+
+	// Delete tokens for provider A only.
+	err = q.DeleteOAuthTokensByUserAndProvider(context.Background(), gendb.DeleteOAuthTokensByUserAndProviderParams{
+		UserID:     admin.ID,
+		ProviderID: providerA,
+	})
+	require.NoError(t, err)
+
+	// Provider A's tokens should be gone.
+	_, err = q.GetOAuthTokens(context.Background(), gendb.GetOAuthTokensParams{
+		UserID:     admin.ID,
+		ProviderID: providerA,
+	})
+	require.Error(t, err, "provider A tokens should have been deleted")
+
+	// Provider B's tokens should still exist.
+	tok, err := q.GetOAuthTokens(context.Background(), gendb.GetOAuthTokensParams{
+		UserID:     admin.ID,
+		ProviderID: providerBID,
+	})
+	require.NoError(t, err, "provider B tokens should still exist")
+	assert.Equal(t, providerBID, tok.ProviderID)
+}

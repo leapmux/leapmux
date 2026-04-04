@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/oauth2"
+
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
@@ -82,11 +84,7 @@ func (h *OAuthHandler) handleLogin(w http.ResponseWriter, r *http.Request, provi
 		return
 	}
 
-	verifier, challenge, err := huboauth.GeneratePKCE()
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
+	verifier := oauth2.GenerateVerifier()
 	state := id.Generate()
 
 	redirectURI := r.URL.Query().Get("redirect")
@@ -103,7 +101,7 @@ func (h *OAuthHandler) handleLogin(w http.ResponseWriter, r *http.Request, provi
 		return
 	}
 
-	authURL := provider.AuthURL(state, challenge)
+	authURL := provider.AuthURL(state, verifier)
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 

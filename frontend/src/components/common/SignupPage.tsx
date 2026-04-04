@@ -3,9 +3,10 @@ import type { OAuthProviderInfo } from '~/generated/leapmux/v1/auth_pb'
 
 import { A, useNavigate } from '@solidjs/router'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
-import { createSignal, For, onMount, Show } from 'solid-js'
+import { createSignal, onMount, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { Icon } from '~/components/common/Icon'
+import { OAuthProviderList } from '~/components/common/OAuthProviderList'
 import { useAuth } from '~/context/AuthContext'
 import { isSignupEnabled, loadOAuthProviders } from '~/lib/systemInfo'
 import { sanitizeSlug } from '~/lib/validate'
@@ -94,20 +95,11 @@ export const SignupPage: Component = () => {
             </Show>
             <Show when={!verificationSent()}>
               <Show when={oauthProviders().length > 0}>
-                <div class="vstack gap-2">
-                  <For each={oauthProviders()}>
-                    {provider => (
-                      <a href={provider.loginUrl} class={styles.oauthButton}>
-                        Sign up with
-                        {' '}
-                        {provider.name}
-                      </a>
-                    )}
-                  </For>
-                </div>
-                <div class={styles.divider}>
-                  <span>or create an account with email</span>
-                </div>
+                <OAuthProviderList
+                  providers={oauthProviders()}
+                  verb="Sign up with"
+                  dividerText="or create an account with email"
+                />
               </Show>
               <form class="vstack gap-4" onSubmit={handleSubmit}>
                 <label>

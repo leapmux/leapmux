@@ -11,7 +11,6 @@ export interface BuildInfo {
 
 let soloMode = false
 let signupEnabled = false
-let oauthEnabled = false
 let loaded = false
 
 let backendBuildInfo: BuildInfo = { version: '', commitHash: '', commitTime: '', buildTime: '' }
@@ -30,7 +29,6 @@ export async function loadSystemInfo(): Promise<void> {
     const resp = await authClient.getSystemInfo({})
     soloMode = resp.soloMode
     signupEnabled = resp.signupEnabled
-    oauthEnabled = resp.oauthEnabled
     backendBuildInfo = {
       version: resp.version,
       commitHash: resp.commitHash,
@@ -50,10 +48,6 @@ export function isSoloMode(): boolean {
 
 export function isSignupEnabled(): boolean {
   return signupEnabled
-}
-
-export function isOAuthEnabled(): boolean {
-  return oauthEnabled
 }
 
 let cachedOAuthProviders: OAuthProviderInfo[] | null = null

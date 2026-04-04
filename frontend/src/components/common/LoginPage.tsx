@@ -3,8 +3,9 @@ import type { OAuthProviderInfo } from '~/generated/leapmux/v1/auth_pb'
 
 import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
-import { createSignal, For, onMount, Show } from 'solid-js'
+import { createSignal, onMount, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
+import { OAuthProviderList } from '~/components/common/OAuthProviderList'
 import { useAuth } from '~/context/AuthContext'
 import { isSignupEnabled, isSoloMode, loadOAuthProviders } from '~/lib/systemInfo'
 import { spinner } from '~/styles/animations.css'
@@ -77,23 +78,12 @@ export const LoginPage: Component = () => {
       <div class={`card ${cardNarrow}`}>
         <h1>LeapMux</h1>
         <Show when={oauthProviders().length > 0}>
-          <div class="vstack gap-2">
-            <For each={oauthProviders()}>
-              {provider => (
-                <a
-                  href={oauthLoginUrl(provider)}
-                  class={styles.oauthButton}
-                >
-                  Sign in with
-                  {' '}
-                  {provider.name}
-                </a>
-              )}
-            </For>
-          </div>
-          <div class={styles.divider}>
-            <span>or</span>
-          </div>
+          <OAuthProviderList
+            providers={oauthProviders()}
+            verb="Sign in with"
+            dividerText="or"
+            buildUrl={oauthLoginUrl}
+          />
         </Show>
         <form class="vstack gap-4" onSubmit={handleSubmit}>
           <label>
@@ -127,11 +117,9 @@ export const LoginPage: Component = () => {
             {submitting() ? 'Signing in...' : 'Sign in'}
           </button>
         </form>
-        <Show when={isSignupEnabled() || oauthProviders().length > 0}>
+        <Show when={isSignupEnabled()}>
           <div class={styles.authFooter}>
-            <Show when={isSignupEnabled()}>
-              <A href="/signup">Sign up</A>
-            </Show>
+            <A href="/signup">Sign up</A>
           </div>
         </Show>
       </div>

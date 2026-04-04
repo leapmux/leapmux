@@ -303,7 +303,6 @@ func (s *AdminService) ResetUserPassword(ctx context.Context, req *connect.Reque
 		return nil, err
 	}
 
-	// Verify the target user exists.
 	if _, err := s.queries.GetUserByID(ctx, req.Msg.GetUserId()); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("user not found"))
