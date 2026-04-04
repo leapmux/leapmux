@@ -25,6 +25,7 @@ export const ProfileSettings: Component = () => {
   const [passwordMessage, setPasswordMessage] = createSignal<{ type: 'success' | 'error', text: string } | null>(null)
 
   const [unlinkingProvider, setUnlinkingProvider] = createSignal<string | null>(null)
+  const [unlinkMessage, setUnlinkMessage] = createSignal<{ type: 'success' | 'error', text: string } | null>(null)
 
   onMount(() => {
     const user = auth.user()
@@ -113,14 +114,15 @@ export const ProfileSettings: Component = () => {
     }
   }
 
-  const handleUnlink = async (providerName: string) => {
-    setUnlinkingProvider(providerName)
+  const handleUnlink = async (providerId: string) => {
+    setUnlinkingProvider(providerId)
+    setUnlinkMessage(null)
     try {
-      await userClient.unlinkOAuthProvider({ providerName })
+      await userClient.unlinkOAuthProvider({ providerId })
       auth.refreshUser()
     }
     catch (e) {
-      setPasswordMessage({ type: 'error', text: e instanceof Error ? e.message : 'Failed to unlink provider' })
+      setUnlinkMessage({ type: 'error', text: e instanceof Error ? e.message : 'Failed to unlink provider' })
     }
     finally {
       setUnlinkingProvider(null)
@@ -235,20 +237,23 @@ export const ProfileSettings: Component = () => {
         <h2 class={styles.sectionHeading}>Linked Accounts</h2>
         <div class="vstack gap-2">
           <For each={auth.user()?.oauthProviders}>
-            {name => (
+            {provider => (
               <div class={styles.linkedAccount}>
-                <span class={styles.linkedAccountName}>{name}</span>
+                <span class={styles.linkedAccountName}>{provider.name}</span>
                 <button
                   class={styles.linkedAccountUnlink}
-                  onClick={() => handleUnlink(name)}
-                  disabled={unlinkingProvider() === name}
+                  onClick={() => handleUnlink(provider.id)}
+                  disabled={unlinkingProvider() === provider.id}
                 >
-                  {unlinkingProvider() === name ? 'Unlinking...' : 'Unlink'}
+                  {unlinkingProvider() === provider.id ? 'Unlinking...' : 'Unlink'}
                 </button>
               </div>
             )}
           </For>
         </div>
+        <Show when={unlinkMessage()}>
+          {msg => <div class={msg().type === 'success' ? successText : errorText}>{msg().text}</div>}
+        </Show>
       </Show>
     </div>
   )

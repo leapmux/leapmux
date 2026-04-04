@@ -114,6 +114,40 @@ func checkUsernameAvailable(ctx context.Context, q *db.Queries, username string)
 	return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("username already taken"))
 }
 
+// verifyPendingEmailToken validates a pending-email verification token,
+// checks expiry, and promotes the pending email. Returns the updated user.
+func verifyPendingEmailToken(ctx context.Context, q *db.Queries, token string) (*db.User, error) {
+	if token == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("verification_token is required"))
+	}
+
+	user, err := q.GetUserByPendingEmailToken(ctx, token)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid verification token"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	if user.PendingEmailExpiresAt.Valid && time.Now().UTC().After(user.PendingEmailExpiresAt.Time) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("verification token expired"))
+	}
+
+	if user.PendingEmail == "" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no pending email change"))
+	}
+
+	if err := promotePendingEmail(ctx, q, user.ID, user.PendingEmail); err != nil {
+		return nil, connect.NewError(connect.CodeAlreadyExists, err)
+	}
+
+	updatedUser, err := q.GetUserByID(ctx, user.ID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return &updatedUser, nil
+}
+
 // promotePendingEmail moves pending_email to email with email_verified=1.
 // It checks that no other user has claimed the email since the pending was set.
 func promotePendingEmail(ctx context.Context, q *db.Queries, userID, email string) error {

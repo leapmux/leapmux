@@ -76,8 +76,13 @@ message User {
   bool email_verified = 7;
   string org_name = 8;
   string pending_email = 9;
-  repeated string oauth_providers = 10;
+  repeated LinkedOAuthProvider oauth_providers = 10;
   bool password_set = 11;
+}
+
+message LinkedOAuthProvider {
+  string id = 1;
+  string name = 2;
 }
 
 message GetSystemInfoRequest {}

@@ -63,7 +63,7 @@ message ChangePasswordRequest {
 message ChangePasswordResponse {}
 
 message UnlinkOAuthProviderRequest {
-  string provider_name = 1;
+  string provider_id = 1;
 }
 
 message UnlinkOAuthProviderResponse {}

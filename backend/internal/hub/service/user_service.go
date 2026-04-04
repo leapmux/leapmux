@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"connectrpc.com/connect"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -168,34 +167,9 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 }
 
 func (s *UserService) VerifyEmailChange(ctx context.Context, req *connect.Request[leapmuxv1.VerifyEmailChangeRequest]) (*connect.Response[leapmuxv1.VerifyEmailChangeResponse], error) {
-	token := req.Msg.GetVerificationToken()
-	if token == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("verification_token is required"))
-	}
-
-	user, err := s.queries.GetUserByPendingEmailToken(ctx, token)
+	updatedUser, err := verifyPendingEmailToken(ctx, s.queries, req.Msg.GetVerificationToken())
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid verification token"))
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
-	if user.PendingEmailExpiresAt.Valid && time.Now().UTC().After(user.PendingEmailExpiresAt.Time) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("verification token expired"))
-	}
-
-	if user.PendingEmail == "" {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no pending email change"))
-	}
-
-	if err := promotePendingEmail(ctx, s.queries, user.ID, user.PendingEmail); err != nil {
-		return nil, connect.NewError(connect.CodeAlreadyExists, err)
-	}
-
-	updatedUser, err := s.queries.GetUserByID(ctx, user.ID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, err
 	}
 
 	org, err := s.queries.GetOrgByID(ctx, updatedUser.OrgID)
@@ -204,7 +178,7 @@ func (s *UserService) VerifyEmailChange(ctx context.Context, req *connect.Reques
 	}
 
 	return connect.NewResponse(&leapmuxv1.VerifyEmailChangeResponse{
-		User: userToProtoWithOrgName(&updatedUser, org.Name),
+		User: userToProtoWithOrgName(updatedUser, org.Name),
 	}), nil
 }
 
@@ -258,9 +232,9 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Requ
 		return nil, err
 	}
 
-	providerName := req.Msg.GetProviderName()
-	if providerName == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("provider_name is required"))
+	providerID := req.Msg.GetProviderId()
+	if providerID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("provider_id is required"))
 	}
 
 	user, err := s.queries.GetUserByID(ctx, userInfo.ID)
@@ -273,20 +247,16 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	// Find the link matching the provider name.
-	var targetProviderID string
+	// Verify the user actually has a link to this provider.
+	found := false
 	for _, link := range links {
-		provider, pErr := s.queries.GetOAuthProviderByID(ctx, link.ProviderID)
-		if pErr != nil {
-			continue
-		}
-		if provider.Name == providerName {
-			targetProviderID = link.ProviderID
+		if link.ProviderID == providerID {
+			found = true
 			break
 		}
 	}
-	if targetProviderID == "" {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("no linked account for provider %q", providerName))
+	if !found {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("no linked account for provider %q", providerID))
 	}
 
 	// Guard: cannot unlink the last provider if the user has no password set.
@@ -296,7 +266,7 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Requ
 
 	if err := s.queries.DeleteOAuthUserLink(ctx, db.DeleteOAuthUserLinkParams{
 		UserID:     user.ID,
-		ProviderID: targetProviderID,
+		ProviderID: providerID,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}

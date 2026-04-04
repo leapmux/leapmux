@@ -682,7 +682,7 @@ func TestUnlinkOAuthProvider_Success(t *testing.T) {
 
 	// Unlink GitHub — should succeed (Google still linked).
 	_, err = env.client.UnlinkOAuthProvider(context.Background(), authedReq(&leapmuxv1.UnlinkOAuthProviderRequest{
-		ProviderName: "GitHub",
+		ProviderId: "github-1",
 	}, env.token))
 	require.NoError(t, err)
 
@@ -709,7 +709,7 @@ func TestUnlinkOAuthProvider_LastLink_WithPassword(t *testing.T) {
 
 	// Should succeed because user has a password.
 	_, err = env.client.UnlinkOAuthProvider(context.Background(), authedReq(&leapmuxv1.UnlinkOAuthProviderRequest{
-		ProviderName: "GitHub",
+		ProviderId: "github-2",
 	}, env.token))
 	require.NoError(t, err)
 
@@ -738,7 +738,7 @@ func TestUnlinkOAuthProvider_LastLink_NoPassword_Blocked(t *testing.T) {
 
 	// Should be blocked — last link and no password.
 	_, err = env.client.UnlinkOAuthProvider(context.Background(), authedReq(&leapmuxv1.UnlinkOAuthProviderRequest{
-		ProviderName: "GitHub",
+		ProviderId: "github-3",
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
@@ -754,7 +754,7 @@ func TestUnlinkOAuthProvider_NotFound(t *testing.T) {
 	env := setupUserTest(t)
 
 	_, err := env.client.UnlinkOAuthProvider(context.Background(), authedReq(&leapmuxv1.UnlinkOAuthProviderRequest{
-		ProviderName: "NonExistent",
+		ProviderId: "nonexistent",
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))

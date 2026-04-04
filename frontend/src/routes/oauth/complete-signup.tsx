@@ -15,6 +15,7 @@ const OAuthCompleteSignupPage: Component = () => {
   const navigate = useNavigate()
   const auth = useAuth()
   const [searchParams] = useSearchParams()
+  const signupToken = () => typeof searchParams.token === 'string' ? searchParams.token : ''
 
   const [username, setUsername] = createSignal('')
   const [displayName, setDisplayName] = createSignal('')
@@ -27,14 +28,13 @@ const OAuthCompleteSignupPage: Component = () => {
 
   onMount(async () => {
     document.title = 'Complete Sign Up - LeapMux'
-    const token = typeof searchParams.token === 'string' ? searchParams.token : ''
-    if (!token) {
+    if (!signupToken()) {
       setTokenError('Missing signup token.')
       setLoading(false)
       return
     }
     try {
-      const resp = await authClient.getPendingOAuthSignup({ signupToken: token })
+      const resp = await authClient.getPendingOAuthSignup({ signupToken: signupToken() })
       setDisplayName(resp.displayName)
       setEmail(resp.email)
       setProviderName(resp.providerName)
@@ -56,10 +56,9 @@ const OAuthCompleteSignupPage: Component = () => {
     }
     setSubmitting(true)
     setError(null)
-    const token = typeof searchParams.token === 'string' ? searchParams.token : ''
     try {
       const resp = await authClient.completeOAuthSignup({
-        signupToken: token,
+        signupToken: signupToken(),
         username: slug,
         displayName: displayName(),
         email: email(),

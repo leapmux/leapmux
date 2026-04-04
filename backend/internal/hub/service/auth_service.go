@@ -81,16 +81,19 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[l
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	var oauthProviderNames []string
+	var linkedProviders []*leapmuxv1.LinkedOAuthProvider
 	links, _ := s.queries.ListOAuthUserLinksByUser(ctx, user.ID)
 	for _, link := range links {
 		if provider, err := s.queries.GetOAuthProviderByID(ctx, link.ProviderID); err == nil {
-			oauthProviderNames = append(oauthProviderNames, provider.Name)
+			linkedProviders = append(linkedProviders, &leapmuxv1.LinkedOAuthProvider{
+				Id:   provider.ID,
+				Name: provider.Name,
+			})
 		}
 	}
 
 	return connect.NewResponse(&leapmuxv1.GetCurrentUserResponse{
-		User: userToProtoWithOAuth(&user, org.Name, oauthProviderNames),
+		User: userToProtoWithOAuth(&user, org.Name, linkedProviders),
 	}), nil
 }
 
@@ -189,30 +192,9 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 }
 
 func (s *AuthService) VerifyEmail(ctx context.Context, req *connect.Request[leapmuxv1.VerifyEmailRequest]) (*connect.Response[leapmuxv1.VerifyEmailResponse], error) {
-	token := req.Msg.GetVerificationToken()
-	if token == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("verification_token is required"))
-	}
-
-	user, err := s.queries.GetUserByPendingEmailToken(ctx, token)
+	updatedUser, err := verifyPendingEmailToken(ctx, s.queries, req.Msg.GetVerificationToken())
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid verification token"))
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
-	if user.PendingEmailExpiresAt.Valid && time.Now().UTC().After(user.PendingEmailExpiresAt.Time) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("verification token expired"))
-	}
-
-	if err := promotePendingEmail(ctx, s.queries, user.ID, user.PendingEmail); err != nil {
-		return nil, connect.NewError(connect.CodeAlreadyExists, err)
-	}
-
-	updatedUser, err := s.queries.GetUserByID(ctx, user.ID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, err
 	}
 
 	sessionID, sessionExpiresAt, sessionErr := auth.CreateSession(ctx, s.queries, updatedUser.ID, "", "")
@@ -226,7 +208,7 @@ func (s *AuthService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 	}
 
 	resp := connect.NewResponse(&leapmuxv1.VerifyEmailResponse{
-		User: userToProtoWithOrgName(&updatedUser, org.Name),
+		User: userToProtoWithOrgName(updatedUser, org.Name),
 	})
 	resp.Header().Set("Set-Cookie", auth.BuildSessionCookie(sessionID, sessionExpiresAt, s.cfg.SecureCookies).String())
 	return resp, nil
@@ -487,7 +469,7 @@ func userToProtoWithOrgName(u *db.User, orgName string) *leapmuxv1.User {
 	return p
 }
 
-func userToProtoWithOAuth(u *db.User, orgName string, oauthProviders []string) *leapmuxv1.User {
+func userToProtoWithOAuth(u *db.User, orgName string, oauthProviders []*leapmuxv1.LinkedOAuthProvider) *leapmuxv1.User {
 	p := userToProtoWithOrgName(u, orgName)
 	p.OauthProviders = oauthProviders
 	return p

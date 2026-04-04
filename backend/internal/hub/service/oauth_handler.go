@@ -71,23 +71,33 @@ func (h *OAuthHandler) handleOAuth(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *OAuthHandler) handleLogin(w http.ResponseWriter, r *http.Request, providerID string) {
-	ctx := r.Context()
-
+// loadEnabledProvider fetches the provider from DB, checks it's enabled, and
+// builds the cached Provider instance. Returns an HTTP error on the
+// ResponseWriter and false if the provider cannot be loaded.
+func (h *OAuthHandler) loadEnabledProvider(w http.ResponseWriter, ctx context.Context, providerID string) (huboauth.Provider, bool) {
 	dbProvider, err := h.queries.GetOAuthProviderByID(ctx, providerID)
 	if err != nil {
 		http.Error(w, "unknown provider", http.StatusNotFound)
-		return
+		return nil, false
 	}
 	if dbProvider.Enabled != 1 {
 		http.Error(w, "provider disabled", http.StatusForbidden)
-		return
+		return nil, false
 	}
-
 	provider, err := h.buildProvider(ctx, &dbProvider)
 	if err != nil {
 		slog.Error("oauth: build provider", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
+		return nil, false
+	}
+	return provider, true
+}
+
+func (h *OAuthHandler) handleLogin(w http.ResponseWriter, r *http.Request, providerID string) {
+	ctx := r.Context()
+
+	provider, ok := h.loadEnabledProvider(w, ctx, providerID)
+	if !ok {
 		return
 	}
 
@@ -146,17 +156,8 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 		return
 	}
 
-	// Load provider.
-	dbProvider, err := h.queries.GetOAuthProviderByID(ctx, providerID)
-	if err != nil {
-		http.Error(w, "unknown provider", http.StatusNotFound)
-		return
-	}
-
-	provider, err := h.buildProvider(ctx, &dbProvider)
-	if err != nil {
-		slog.Error("oauth: build provider", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+	provider, ok := h.loadEnabledProvider(w, ctx, providerID)
+	if !ok {
 		return
 	}
 
