@@ -150,9 +150,15 @@ func OpenChannel(ctx context.Context, hubURL, token, userID, workerID string, op
 		reassembly: make(map[uint32]*chunkBuffer),
 	}
 
+	// 7. Send UserIdClaim.
+	// Register the pending response handler before starting recvLoop and
+	// sending the claim to avoid a race where the response arrives before
+	// pending[0] is registered and gets silently dropped.
+	claimRespCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
+	ch.pending[0] = claimRespCh
+
 	go ch.recvLoop()
 
-	// 7. Send UserIdClaim.
 	claim := &leapmuxv1.UserIdClaim{
 		UserId:      userID,
 		TimestampMs: time.Now().UnixMilli(),
@@ -164,12 +170,6 @@ func OpenChannel(ctx context.Context, hubURL, token, userID, workerID string, op
 		ch.Close()
 		return nil, fmt.Errorf("send user id claim: %w", err)
 	}
-
-	// Wait for UserIdClaimResponse.
-	claimRespCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
-	ch.mu.Lock()
-	ch.pending[0] = claimRespCh
-	ch.mu.Unlock()
 
 	select {
 	case <-time.After(10 * time.Second):
