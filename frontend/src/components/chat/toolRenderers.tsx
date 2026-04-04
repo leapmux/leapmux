@@ -1319,6 +1319,9 @@ export const toolResultRenderer: MessageContentRenderer = {
     // parent already shows the diff.
     const hideContent = parentShowsDiff
 
+    // Pre-parse raw Read content for the fallback branch (no structured data).
+    const parsedReadLines = toolName === 'Read' && !readFile ? parseCatNContent(resultContent) : null
+
     // Build the inner result element.
     let innerResult: JSX.Element
 
@@ -1371,6 +1374,18 @@ export const toolResultRenderer: MessageContentRenderer = {
           lines={lines}
           filePath={readFilePath!}
           totalLines={totalLines}
+          fallbackContent={resultContent}
+          context={context}
+        />
+      )
+    }
+    // Read without structured data (e.g. subagent): parse raw tab-delimited content.
+    else if (parsedReadLines) {
+      innerResult = (
+        <ReadFileResultView
+          lines={parsedReadLines}
+          filePath={readFilePath || ''}
+          totalLines={0}
           fallbackContent={resultContent}
           context={context}
         />

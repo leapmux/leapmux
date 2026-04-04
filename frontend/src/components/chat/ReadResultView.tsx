@@ -21,6 +21,9 @@ export interface ParsedCatLine {
 /** Regex to match a single Read output line: optional whitespace, digits, →, content. */
 const CAT_N_LINE_RE = /^\s*(\d+)[→\t](.*)$/
 
+/** Metadata suffix appended by Claude Code to tool results, e.g. [result-id: r7]. */
+const RESULT_ID_RE = /^\[result-id: [^\]]+\]$/
+
 /** Skip syntax highlighting for files above this many lines. */
 const HIGHLIGHT_LINE_LIMIT = 1000
 
@@ -33,8 +36,8 @@ export function parseCatNContent(content: string): ParsedCatLine[] | null {
   if (!content)
     return null
   const rawLines = content.split('\n')
-  // Tolerate trailing empty line
-  if (rawLines.length > 0 && rawLines.at(-1) === '')
+  // Strip trailing empty lines and [result-id: ...] metadata suffix.
+  while (rawLines.length > 0 && (rawLines.at(-1) === '' || RESULT_ID_RE.test(rawLines.at(-1)!)))
     rawLines.pop()
   if (rawLines.length === 0)
     return null

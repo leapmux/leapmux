@@ -148,3 +148,53 @@ describe('write tool_use hides content when linked result is an update', () => {
     expect(container.textContent).toContain('package main')
   })
 })
+
+/** Build a Read tool_result message without structured tool_use_result. */
+function makeReadToolResult(resultContent: string, context?: Partial<RenderContext>) {
+  const parsed = {
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [{
+        tool_use_id: 'test-read',
+        type: 'tool_result',
+        content: resultContent,
+      }],
+    },
+  }
+  return {
+    parsed,
+    render: () => {
+      const result = renderMessageContent(parsed, 1 /* USER */, { spanType: 'Read', ...context })
+      const { container } = render(() => result)
+      return container
+    },
+  }
+}
+
+describe('read tool_result without structured data renders as ReadResultView', () => {
+  it('renders tab-delimited content with line numbers', () => {
+    const container = makeReadToolResult('1\tfoo\n2\tbar\n3\tbaz').render()
+    // ReadFileResultView renders line numbers as distinct elements.
+    expect(container.textContent).toContain('1')
+    expect(container.textContent).toContain('foo')
+    expect(container.textContent).toContain('bar')
+    expect(container.textContent).toContain('baz')
+    // Should use codeViewContainer (ReadResultView), not toolResultContentPre.
+    expect(container.querySelector('[class*="codeView"]')).not.toBeNull()
+  })
+
+  it('strips [result-id: ...] suffix and still renders as ReadResultView', () => {
+    const container = makeReadToolResult('1\tfoo\n2\tbar\n\n[result-id: r7]').render()
+    expect(container.querySelector('[class*="codeView"]')).not.toBeNull()
+    expect(container.textContent).toContain('foo')
+    expect(container.textContent).not.toContain('result-id')
+  })
+
+  it('falls back to preformatted text for non-parseable content', () => {
+    const container = makeReadToolResult('this is not cat-n output').render()
+    // Should render as ToolResultMessage (pre text), not ReadResultView.
+    expect(container.querySelector('[class*="codeView"]')).toBeNull()
+    expect(container.textContent).toContain('this is not cat-n output')
+  })
+})
