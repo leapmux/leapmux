@@ -32,9 +32,9 @@ func setupInterceptorTestServer(t *testing.T) leapmuxv1connect.AuthServiceClient
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(q, false, false)
+	interceptor, _ := auth.NewInterceptor(q, false, false, false)
 	interceptors := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(sqlDB, q, &config.Config{}, nil)
+	authSvc := service.NewAuthService(sqlDB, q, &config.Config{}, nil, nil)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 
@@ -117,9 +117,9 @@ func TestInterceptor_SoloMode_AutoAuthenticated(t *testing.T) {
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(q, true, false)
+	interceptor, _ := auth.NewInterceptor(q, true, false, false)
 	interceptors := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(sqlDB, q, &config.Config{SoloMode: true}, nil)
+	authSvc := service.NewAuthService(sqlDB, q, &config.Config{SoloMode: true}, nil, nil)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 

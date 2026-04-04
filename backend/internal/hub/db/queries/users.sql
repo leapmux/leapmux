@@ -30,7 +30,11 @@ UPDATE users SET password_hash = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 
 WHERE id = ?;
 
 -- name: UpdateUserProfile :exec
-UPDATE users SET username = ?, display_name = ?, email = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+UPDATE users SET username = ?, display_name = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = ?;
+
+-- name: UpdateUserEmail :exec
+UPDATE users SET email = ?, email_verified = ?, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ?;
 
 -- name: UpdateUserEmailVerified :exec
@@ -53,3 +57,18 @@ WHERE id = ?;
 
 -- name: CountUsers :one
 SELECT count(*) FROM users;
+
+-- name: SetPendingEmail :exec
+UPDATE users SET pending_email = ?, pending_email_token = ?, pending_email_expires_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = ?;
+
+-- name: ClearPendingEmail :exec
+UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = ?;
+
+-- name: PromotePendingEmail :exec
+UPDATE users SET email = pending_email, email_verified = 1, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = ? AND pending_email != '';
+
+-- name: GetUserByPendingEmailToken :one
+SELECT * FROM users WHERE pending_email_token = ? AND pending_email_token != '';

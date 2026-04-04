@@ -142,7 +142,11 @@ func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leap
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	// Hash password.
+	// Admin-created users have trusted email.
+	if err := checkEmailUniqueness(ctx, s.queries, req.Msg.GetEmail(), ""); err != nil {
+		return nil, connect.NewError(connect.CodeAlreadyExists, err)
+	}
+
 	hash, err := password.Hash(req.Msg.GetPassword())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
@@ -206,14 +210,37 @@ func (s *AdminService) UpdateUser(ctx context.Context, req *connect.Request[leap
 		}
 	}
 
+	// Prevent clearing email once set.
+	newEmail := req.Msg.GetEmail()
+	if user.Email != "" && newEmail == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("email cannot be cleared once set"))
+	}
+
+	// Check email uniqueness if changed.
+	if newEmail != user.Email {
+		if err := checkEmailUniqueness(ctx, s.queries, newEmail, user.ID); err != nil {
+			return nil, connect.NewError(connect.CodeAlreadyExists, err)
+		}
+	}
+
 	// Update profile fields (keep existing username).
 	if err := s.queries.UpdateUserProfile(ctx, db.UpdateUserProfileParams{
 		Username:    user.Username,
 		DisplayName: req.Msg.GetDisplayName(),
-		Email:       req.Msg.GetEmail(),
 		ID:          user.ID,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update user profile: %w", err))
+	}
+
+	// Update email if changed (admin email is trusted).
+	if newEmail != user.Email && newEmail != "" {
+		if err := s.queries.UpdateUserEmail(ctx, db.UpdateUserEmailParams{
+			Email:         newEmail,
+			EmailVerified: 1,
+			ID:            user.ID,
+		}); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update user email: %w", err))
+		}
 	}
 
 	// Fetch updated user.

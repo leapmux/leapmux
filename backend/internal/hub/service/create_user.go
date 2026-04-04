@@ -71,3 +71,42 @@ func createUserWithOrg(ctx context.Context, sqlDB *sql.DB, q *db.Queries, p Crea
 	}
 	return &user, nil
 }
+
+// checkEmailUniqueness checks that no other user has the given email in their
+// email column. Empty emails are always allowed.
+func checkEmailUniqueness(ctx context.Context, q *db.Queries, email, excludeUserID string) error {
+	if email == "" {
+		return nil
+	}
+	existing, err := q.GetUserByEmail(ctx, email)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("check email: %w", err)
+	}
+	if excludeUserID != "" && existing.ID == excludeUserID {
+		return nil
+	}
+	return fmt.Errorf("email address is already in use")
+}
+
+// checkPendingEmailAllowed checks that a user can set the given email as their
+// pending_email. The email must not be in any other user's email column.
+// Multiple users may have the same pending_email (first to verify wins).
+func checkPendingEmailAllowed(ctx context.Context, q *db.Queries, email, excludeUserID string) error {
+	if email == "" {
+		return nil
+	}
+	existing, err := q.GetUserByEmail(ctx, email)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("check email: %w", err)
+	}
+	if excludeUserID != "" && existing.ID == excludeUserID {
+		return nil
+	}
+	return fmt.Errorf("email address is already in use")
+}

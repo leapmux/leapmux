@@ -43,7 +43,7 @@ func setupUserTest(t *testing.T) *userTestEnv {
 	userSvc := service.NewUserService(queries, testConfig())
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(queries, false, false)
+	interceptor, _ := auth.NewInterceptor(queries, false, false, false)
 	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(path, handler)
@@ -91,13 +91,11 @@ func TestUserService_UpdateProfile(t *testing.T) {
 	resp, err := env.client.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
 		Username:    "newname",
 		DisplayName: "New Display",
-		Email:       "new@example.com",
 	}, env.token))
 	require.NoError(t, err)
 
 	assert.Equal(t, "newname", resp.Msg.GetUsername())
 	assert.Equal(t, "New Display", resp.Msg.GetDisplayName())
-	assert.Equal(t, "new@example.com", resp.Msg.GetEmail())
 	assert.Equal(t, "newname", resp.Msg.GetOrgName(), "should rename personal org")
 
 	// Verify the database was actually updated.
@@ -112,7 +110,6 @@ func TestUserService_UpdateProfile_SameUsername(t *testing.T) {
 	resp, err := env.client.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
 		Username:    "testuser",
 		DisplayName: "Updated Display",
-		Email:       "",
 	}, env.token))
 	require.NoError(t, err)
 

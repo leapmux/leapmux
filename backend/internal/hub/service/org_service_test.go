@@ -53,14 +53,14 @@ func setupOrgTestServer(t *testing.T) *orgTestEnv {
 	notifierSvc := notifier.New(q, bgMgr, pendingReqs, cfg)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(q, false, false)
+	interceptor, _ := auth.NewInterceptor(q, false, false, false)
 	opts := connect.WithInterceptors(interceptor)
 
 	orgSvc := service.NewOrgService(q, notifierSvc, false)
 	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, opts)
 	mux.Handle(orgPath, orgHandler)
 
-	authSvc := service.NewAuthService(sqlDB, q, cfg, nil)
+	authSvc := service.NewAuthService(sqlDB, q, cfg, nil, nil)
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(authPath, authHandler)
 

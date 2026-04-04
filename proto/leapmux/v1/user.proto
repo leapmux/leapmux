@@ -1,11 +1,17 @@
 syntax = "proto3";
 package leapmux.v1;
 
+import "leapmux/v1/auth.proto";
+
 // UserService manages user profile and preferences.
 // Called by Frontend on Hub via ConnectRPC.
 service UserService {
-  // Update the current user's profile.
+  // Update the current user's profile (username and display name only).
   rpc UpdateProfile(UpdateProfileRequest) returns (UpdateProfileResponse);
+  // Request an email address change. May require verification.
+  rpc RequestEmailChange(RequestEmailChangeRequest) returns (RequestEmailChangeResponse);
+  // Verify a pending email change with a verification token.
+  rpc VerifyEmailChange(VerifyEmailChangeRequest) returns (VerifyEmailChangeResponse);
   // Change the current user's password.
   rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
   // Get the current user's preferences.
@@ -19,7 +25,7 @@ service UserService {
 message UpdateProfileRequest {
   string username = 1;
   string display_name = 2;
-  string email = 3;
+  reserved 3; // was: email (use RequestEmailChange instead)
 }
 
 message UpdateProfileResponse {
@@ -27,6 +33,23 @@ message UpdateProfileResponse {
   string display_name = 2;
   string email = 3;
   string org_name = 4; // Updated personal org name (if username changed)
+  string pending_email = 5;
+}
+
+message RequestEmailChangeRequest {
+  string new_email = 1;
+}
+
+message RequestEmailChangeResponse {
+  bool verification_required = 1;
+}
+
+message VerifyEmailChangeRequest {
+  string verification_token = 1;
+}
+
+message VerifyEmailChangeResponse {
+  User user = 1;
 }
 
 message ChangePasswordRequest {

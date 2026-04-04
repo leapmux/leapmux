@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"connectrpc.com/connect"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -12,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/password"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/validate"
 )
@@ -75,16 +77,16 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 	if err := s.queries.UpdateUserProfile(ctx, db.UpdateUserProfileParams{
 		Username:    newUsername,
 		DisplayName: req.Msg.GetDisplayName(),
-		Email:       req.Msg.GetEmail(),
 		ID:          user.ID,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
 	resp := &leapmuxv1.UpdateProfileResponse{
-		Username:    newUsername,
-		DisplayName: req.Msg.GetDisplayName(),
-		Email:       req.Msg.GetEmail(),
+		Username:     newUsername,
+		DisplayName:  req.Msg.GetDisplayName(),
+		Email:        user.Email,
+		PendingEmail: user.PendingEmail,
 	}
 
 	// Rename the personal org to match the new username.
@@ -99,6 +101,128 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 	}
 
 	return connect.NewResponse(resp), nil
+}
+
+func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Request[leapmuxv1.RequestEmailChangeRequest]) (*connect.Response[leapmuxv1.RequestEmailChangeResponse], error) {
+	if s.cfg.SoloMode {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("email changes are not available in solo mode"))
+	}
+	userInfo, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	newEmail := req.Msg.GetNewEmail()
+	if newEmail == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("email cannot be empty"))
+	}
+
+	user, err := s.queries.GetUserByID(ctx, userInfo.ID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if newEmail == user.Email {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("email is unchanged"))
+	}
+
+	// Check that no other user has this email.
+	if err := checkPendingEmailAllowed(ctx, s.queries, newEmail, user.ID); err != nil {
+		return nil, connect.NewError(connect.CodeAlreadyExists, err)
+	}
+
+	// Admin: immediate change, trusted.
+	if userInfo.IsAdmin {
+		if err := s.queries.UpdateUserEmail(ctx, db.UpdateUserEmailParams{
+			Email:         newEmail,
+			EmailVerified: 1,
+			ID:            user.ID,
+		}); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		return connect.NewResponse(&leapmuxv1.RequestEmailChangeResponse{
+			VerificationRequired: false,
+		}), nil
+	}
+
+	// Non-admin, verification not required: immediate change, unverified.
+	if !s.cfg.EmailVerificationRequired {
+		if err := s.queries.UpdateUserEmail(ctx, db.UpdateUserEmailParams{
+			Email:         newEmail,
+			EmailVerified: 0,
+			ID:            user.ID,
+		}); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		return connect.NewResponse(&leapmuxv1.RequestEmailChangeResponse{
+			VerificationRequired: false,
+		}), nil
+	}
+
+	// Non-admin, verification required: set pending email.
+	token := id.Generate()
+	if err := s.queries.SetPendingEmail(ctx, db.SetPendingEmailParams{
+		PendingEmail:          newEmail,
+		PendingEmailToken:     token,
+		PendingEmailExpiresAt: sql.NullTime{Time: time.Now().Add(pendingEmailExpiry).UTC(), Valid: true},
+		ID:                    user.ID,
+	}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	// Stub: auto-verify immediately (real email sending TBD).
+	if err := checkEmailUniqueness(ctx, s.queries, newEmail, user.ID); err == nil {
+		_ = s.queries.PromotePendingEmail(ctx, user.ID)
+	}
+
+	return connect.NewResponse(&leapmuxv1.RequestEmailChangeResponse{
+		VerificationRequired: true,
+	}), nil
+}
+
+func (s *UserService) VerifyEmailChange(ctx context.Context, req *connect.Request[leapmuxv1.VerifyEmailChangeRequest]) (*connect.Response[leapmuxv1.VerifyEmailChangeResponse], error) {
+	token := req.Msg.GetVerificationToken()
+	if token == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("verification_token is required"))
+	}
+
+	user, err := s.queries.GetUserByPendingEmailToken(ctx, token)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid verification token"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	if user.PendingEmailExpiresAt.Valid && time.Now().UTC().After(user.PendingEmailExpiresAt.Time) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("verification token expired"))
+	}
+
+	if user.PendingEmail == "" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no pending email change"))
+	}
+
+	// Check that no other user has claimed this email since the request.
+	if err := checkEmailUniqueness(ctx, s.queries, user.PendingEmail, user.ID); err != nil {
+		return nil, connect.NewError(connect.CodeAlreadyExists, err)
+	}
+
+	if err := s.queries.PromotePendingEmail(ctx, user.ID); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	updatedUser, err := s.queries.GetUserByID(ctx, user.ID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	org, err := s.queries.GetOrgByID(ctx, updatedUser.OrgID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	return connect.NewResponse(&leapmuxv1.VerifyEmailChangeResponse{
+		User: userToProtoWithOrgName(&updatedUser, org.Name),
+	}), nil
 }
 
 func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[leapmuxv1.ChangePasswordRequest]) (*connect.Response[leapmuxv1.ChangePasswordResponse], error) {

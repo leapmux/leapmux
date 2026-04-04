@@ -14,14 +14,13 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
-	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 const (
-	oauthStateExpiry   = 5 * time.Minute
-	defaultTokenExpiry = 1 * time.Hour
-	maxUsernameRetries = 10
+	oauthStateExpiry         = 5 * time.Minute
+	pendingOAuthSignupExpiry = 5 * time.Minute
+	defaultTokenExpiry       = 1 * time.Hour
 )
 
 // OAuthHandler handles OAuth login/callback HTTP endpoints.
@@ -43,7 +42,6 @@ func (h *OAuthHandler) RegisterRoutes(mux *http.ServeMux) {
 }
 
 func (h *OAuthHandler) handleOAuth(w http.ResponseWriter, r *http.Request) {
-	// Parse path: /auth/oauth/{provider_id}/{action}
 	path := strings.TrimPrefix(r.URL.Path, "/auth/oauth/")
 	parts := strings.SplitN(path, "/", 2)
 	if len(parts) != 2 {
@@ -84,7 +82,6 @@ func (h *OAuthHandler) handleLogin(w http.ResponseWriter, r *http.Request, provi
 		return
 	}
 
-	// Generate PKCE and state.
 	verifier, challenge, err := huboauth.GeneratePKCE()
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -92,10 +89,8 @@ func (h *OAuthHandler) handleLogin(w http.ResponseWriter, r *http.Request, provi
 	}
 	state := id.Generate()
 
-	// Save redirect URI from query param.
 	redirectURI := r.URL.Query().Get("redirect")
 
-	// Store state in DB (5-minute expiry).
 	if err := h.queries.CreateOAuthState(ctx, gendb.CreateOAuthStateParams{
 		State:        state,
 		ProviderID:   providerID,
@@ -168,70 +163,77 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 		return
 	}
 
-	// Find or create user.
-	user, err := h.findOrCreateUser(ctx, providerID, claims)
-	if err != nil {
-		slog.Error("oauth: find/create user", "error", err)
-		http.Error(w, err.Error(), http.StatusForbidden)
-		return
-	}
-
-	// Store encrypted tokens.
-	if err := h.storeTokens(ctx, user.ID, providerID, tokenSet); err != nil {
-		slog.Error("oauth: store tokens", "error", err)
-		// Continue — login still works, tokens just won't be persisted for refresh.
-	}
-
-	// Create session.
-	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, h.queries, user.ID, r.UserAgent(), r.RemoteAddr)
-	if sessionErr != nil {
-		slog.Error("oauth: create session", "error", sessionErr)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	// Set session cookie.
-	cookie := auth.BuildSessionCookie(sessionID, expiresAt, h.cfg.SecureCookies)
-	http.SetCookie(w, cookie)
-
-	// Redirect to frontend.
-	redirectTo := "/"
-	if oauthState.RedirectUri != "" {
-		redirectTo = oauthState.RedirectUri
-	}
-	http.Redirect(w, r, redirectTo, http.StatusFound)
-}
-
-func (h *OAuthHandler) findOrCreateUser(ctx context.Context, providerID string, claims *huboauth.UserClaims) (*gendb.User, error) {
-	// Check if there's an existing link.
+	// Check if this OAuth identity is already linked to a user.
 	link, err := h.queries.GetOAuthUserLink(ctx, gendb.GetOAuthUserLinkParams{
 		ProviderID:      providerID,
 		ProviderSubject: claims.Subject,
 	})
 	if err == nil {
-		// Existing link — return the linked user.
-		user, err := h.queries.GetUserByID(ctx, link.UserID)
-		if err != nil {
-			return nil, fmt.Errorf("linked user not found")
+		// Existing user — direct login.
+		user, userErr := h.queries.GetUserByID(ctx, link.UserID)
+		if userErr != nil {
+			http.Error(w, "linked user not found", http.StatusInternalServerError)
+			return
 		}
-		return &user, nil
+
+		if err := h.storeTokens(ctx, user.ID, providerID, tokenSet); err != nil {
+			slog.Error("oauth: store tokens", "error", err)
+		}
+
+		sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, h.queries, user.ID, r.UserAgent(), r.RemoteAddr)
+		if sessionErr != nil {
+			slog.Error("oauth: create session", "error", sessionErr)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+
+		http.SetCookie(w, auth.BuildSessionCookie(sessionID, expiresAt, h.cfg.SecureCookies))
+
+		redirectTo := "/"
+		if oauthState.RedirectUri != "" {
+			redirectTo = oauthState.RedirectUri
+		}
+		http.Redirect(w, r, redirectTo, http.StatusFound)
+		return
 	}
 	if err != sql.ErrNoRows {
-		return nil, fmt.Errorf("query user link: %w", err)
+		slog.Error("oauth: query user link", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
 	}
 
-	// No existing link — create new user if signup is allowed.
+	// New user — store pending signup for username selection.
 	if !h.cfg.SignupEnabled {
-		return nil, fmt.Errorf("sign-up is disabled; no existing account linked to this identity")
+		http.Error(w, "sign-up is disabled; no existing account linked to this identity", http.StatusForbidden)
+		return
 	}
 
-	// Derive username from claims.
-	username := deriveUsername(claims)
-
-	// Ensure uniqueness.
-	username, err = ensureUniqueUsername(ctx, h.queries, username)
+	signupToken, err := h.storePendingSignup(ctx, providerID, claims, tokenSet, oauthState.RedirectUri)
 	if err != nil {
-		return nil, err
+		slog.Error("oauth: store pending signup", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/oauth/complete-signup?token="+signupToken, http.StatusFound)
+}
+
+func (h *OAuthHandler) storePendingSignup(ctx context.Context, providerID string, claims *huboauth.UserClaims, tokenSet *huboauth.TokenSet, redirectURI string) (string, error) {
+	token := id.Generate()
+
+	// Use a temporary user/provider ID for AAD since the user doesn't exist yet.
+	encAccessToken, err := h.keystore.Encrypt([]byte(tokenSet.AccessToken), keystore.AccessTokenAAD(token, providerID))
+	if err != nil {
+		return "", fmt.Errorf("encrypt access token: %w", err)
+	}
+	encRefreshToken, err := h.keystore.Encrypt([]byte(tokenSet.RefreshToken), keystore.RefreshTokenAAD(token, providerID))
+	if err != nil {
+		return "", fmt.Errorf("encrypt refresh token: %w", err)
+	}
+
+	tokenExpiresAt := time.Now().Add(time.Duration(tokenSet.ExpiresIn) * time.Second).UTC()
+	if tokenSet.ExpiresIn <= 0 {
+		tokenExpiresAt = time.Now().Add(defaultTokenExpiry).UTC()
 	}
 
 	displayName := claims.DisplayName
@@ -239,34 +241,24 @@ func (h *OAuthHandler) findOrCreateUser(ctx context.Context, providerID string, 
 		displayName = claims.Name
 	}
 
-	// Generate a random password hash for the password_hash NOT NULL constraint.
-	// This password is unusable (random, never revealed).
-	randomPwdHash, err := password.Hash(id.Generate())
-	if err != nil {
-		return nil, fmt.Errorf("generate random password: %w", err)
-	}
-
-	user, err := createUserWithOrg(ctx, h.sqlDB, h.queries, CreateUserParams{
-		Username:     username,
-		PasswordHash: randomPwdHash,
-		DisplayName:  displayName,
-		Email:        claims.Email,
-		IsAdmin:      0,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// Create OAuth user link.
-	if err := h.queries.CreateOAuthUserLink(ctx, gendb.CreateOAuthUserLinkParams{
-		UserID:          user.ID,
+	if err := h.queries.CreatePendingOAuthSignup(ctx, gendb.CreatePendingOAuthSignupParams{
+		Token:           token,
 		ProviderID:      providerID,
 		ProviderSubject: claims.Subject,
+		Email:           claims.Email,
+		DisplayName:     displayName,
+		AccessToken:     encAccessToken,
+		RefreshToken:    encRefreshToken,
+		TokenType:       tokenSet.TokenType,
+		TokenExpiresAt:  tokenExpiresAt,
+		KeyVersion:      int64(h.keystore.ActiveVersion()),
+		RedirectUri:     redirectURI,
+		ExpiresAt:       time.Now().Add(pendingOAuthSignupExpiry).UTC(),
 	}); err != nil {
-		return nil, fmt.Errorf("create user link: %w", err)
+		return "", fmt.Errorf("create pending signup: %w", err)
 	}
 
-	return user, nil
+	return token, nil
 }
 
 func (h *OAuthHandler) storeTokens(ctx context.Context, userID, providerID string, tokenSet *huboauth.TokenSet) error {
@@ -314,50 +306,4 @@ func (h *OAuthHandler) buildProvider(ctx context.Context, dbProvider *gendb.Oaut
 	default:
 		return nil, fmt.Errorf("unknown provider type: %s", dbProvider.ProviderType)
 	}
-}
-
-func deriveUsername(claims *huboauth.UserClaims) string {
-	if claims.Name != "" {
-		return sanitizeUsername(claims.Name)
-	}
-	if claims.Email != "" {
-		parts := strings.SplitN(claims.Email, "@", 2)
-		return sanitizeUsername(parts[0])
-	}
-	return "user-" + id.Generate()[:8]
-}
-
-func sanitizeUsername(s string) string {
-	s = strings.ToLower(s)
-	var b strings.Builder
-	for _, c := range s {
-		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' {
-			b.WriteRune(c)
-		}
-	}
-	result := b.String()
-	if result == "" {
-		return "user-" + id.Generate()[:8]
-	}
-	return result
-}
-
-func ensureUniqueUsername(ctx context.Context, q *gendb.Queries, username string) (string, error) {
-	_, err := q.GetUserByUsername(ctx, username)
-	if err == sql.ErrNoRows {
-		return username, nil // available
-	}
-	if err != nil {
-		return "", fmt.Errorf("check username: %w", err)
-	}
-
-	// Username taken — append random suffix.
-	for i := 0; i < maxUsernameRetries; i++ {
-		candidate := username + "-" + id.Generate()[:6]
-		_, err := q.GetUserByUsername(ctx, candidate)
-		if err == sql.ErrNoRows {
-			return candidate, nil
-		}
-	}
-	return "", fmt.Errorf("could not find unique username")
 }

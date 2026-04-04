@@ -48,7 +48,7 @@ func setupWorkspaceTest(t *testing.T) *workspaceTestEnv {
 	workspaceSvc := service.NewWorkspaceService(sqlDB, queries, false)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(queries, false, false)
+	interceptor, _ := auth.NewInterceptor(queries, false, false, false)
 	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, opts)
 	mux.Handle(path, handler)

@@ -22,10 +22,11 @@ const userKey contextKey = iota
 
 // UserInfo contains the authenticated user's information.
 type UserInfo struct {
-	ID       string
-	OrgID    string
-	Username string
-	IsAdmin  bool
+	ID            string
+	OrgID         string
+	Username      string
+	IsAdmin       bool
+	EmailVerified bool
 }
 
 // WithUser stores a UserInfo in the context.
@@ -111,10 +112,11 @@ func ValidateToken(ctx context.Context, q *db.Queries, token string) (*UserInfo,
 	}
 
 	return &UserInfo{
-		ID:       user.ID,
-		OrgID:    user.OrgID,
-		Username: user.Username,
-		IsAdmin:  user.IsAdmin == 1,
+		ID:            user.ID,
+		OrgID:         user.OrgID,
+		Username:      user.Username,
+		IsAdmin:       user.IsAdmin == 1,
+		EmailVerified: user.EmailVerified == 1,
 	}, nil
 }
 

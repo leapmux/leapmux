@@ -58,10 +58,10 @@ func setupWorkerTestServer(t *testing.T) *workerTestEnv {
 	notifierSvc := notifier.New(q, bgMgr, pendingReqs, cfg)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(q, false, false)
+	interceptor, _ := auth.NewInterceptor(q, false, false, false)
 	opts := connect.WithInterceptors(interceptor)
 
-	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(sqlDB, q, cfg, nil), opts)
+	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(sqlDB, q, cfg, nil, nil), opts)
 	mux.Handle(authPath, authHandler)
 
 	connPath, connHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(
@@ -471,10 +471,10 @@ func setupUnixSocketTestServer(t *testing.T) *unixSocketTestEnv {
 	notifierSvc := notifier.New(q, bgMgr, pendingReqs, cfg)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(q, false, false)
+	interceptor, _ := auth.NewInterceptor(q, false, false, false)
 	opts := connect.WithInterceptors(interceptor)
 
-	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(sqlDB, q, cfg, nil), opts)
+	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(sqlDB, q, cfg, nil, nil), opts)
 	mux.Handle(authPath, authHandler)
 
 	broadcaster := service.NewHubEventBroadcaster(cMgr)

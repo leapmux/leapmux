@@ -22,16 +22,28 @@ var publicProcedures = map[string]bool{
 	"/leapmux.v1.WorkerConnectorService/PollRegistration":    true,
 	"/leapmux.v1.WorkerConnectorService/Connect":             true,
 	"/leapmux.v1.AuthService/GetOAuthProviders":              true,
+	"/leapmux.v1.AuthService/GetPendingOAuthSignup":          true,
+	"/leapmux.v1.AuthService/CompleteOAuthSignup":            true,
+}
+
+// unverifiedAllowedProcedures lists RPC procedures that unverified users may call.
+var unverifiedAllowedProcedures = map[string]bool{
+	"/leapmux.v1.AuthService/VerifyEmail":        true,
+	"/leapmux.v1.AuthService/GetCurrentUser":     true,
+	"/leapmux.v1.AuthService/Logout":             true,
+	"/leapmux.v1.UserService/RequestEmailChange": true,
+	"/leapmux.v1.UserService/VerifyEmailChange":  true,
 }
 
 // authInterceptor implements connect.Interceptor to validate session cookies
 // on both unary and streaming RPCs.
 type authInterceptor struct {
-	queries      *db.Queries
-	soloMode     bool
-	secureCookie bool
-	soloUser     *UserInfo
-	lastTouch    sync.Map // sessionID → time.Time of last DB touch
+	queries                   *db.Queries
+	soloMode                  bool
+	secureCookie              bool
+	emailVerificationRequired bool
+	soloUser                  *UserInfo
+	lastTouch                 sync.Map // sessionID → time.Time of last DB touch
 }
 
 // NewInterceptor creates a ConnectRPC interceptor that validates session cookies
@@ -41,8 +53,8 @@ type authInterceptor struct {
 //
 // The returned SessionCache can be used to evict entries from the in-memory
 // touch throttle (e.g., on logout).
-func NewInterceptor(q *db.Queries, soloMode bool, secureCookie bool) (connect.Interceptor, *SessionCache) {
-	a := &authInterceptor{queries: q, soloMode: soloMode, secureCookie: secureCookie}
+func NewInterceptor(q *db.Queries, soloMode bool, secureCookie bool, emailVerificationRequired bool) (connect.Interceptor, *SessionCache) {
+	a := &authInterceptor{queries: q, soloMode: soloMode, secureCookie: secureCookie, emailVerificationRequired: emailVerificationRequired}
 	if soloMode {
 		user, err := q.GetUserByUsername(context.Background(), bootstrap.Username(soloMode))
 		if err == nil {
@@ -99,6 +111,13 @@ func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		a.touchSession(ctx, token)
 
 		ctx = WithUser(ctx, userInfo)
+
+		if a.emailVerificationRequired && !userInfo.IsAdmin && !userInfo.EmailVerified {
+			if !publicProcedures[req.Spec().Procedure] && !unverifiedAllowedProcedures[req.Spec().Procedure] {
+				return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("email verification required"))
+			}
+		}
+
 		return next(ctx, req)
 	}
 }
@@ -137,6 +156,13 @@ func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 		a.touchSession(ctx, token)
 
 		ctx = WithUser(ctx, userInfo)
+
+		if a.emailVerificationRequired && !userInfo.IsAdmin && !userInfo.EmailVerified {
+			if !publicProcedures[conn.Spec().Procedure] && !unverifiedAllowedProcedures[conn.Spec().Procedure] {
+				return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("email verification required"))
+			}
+		}
+
 		return next(ctx, conn)
 	}
 }

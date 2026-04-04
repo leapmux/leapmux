@@ -46,7 +46,7 @@ func setupAdminTestServer(t *testing.T) *adminTestEnv {
 	adminSvc := service.NewAdminService(sqlDB, q, false)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(q, false, false)
+	interceptor, _ := auth.NewInterceptor(q, false, false, false)
 	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewAdminServiceHandler(adminSvc, opts)
 	mux.Handle(path, handler)

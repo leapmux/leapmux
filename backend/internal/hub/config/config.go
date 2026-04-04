@@ -38,6 +38,7 @@ type Config struct {
 	LogLevel                     string `koanf:"log_level"`
 	SignupEnabled                bool   `koanf:"signup_enabled"`
 	EmailVerificationRequired    bool   `koanf:"email_verification_required"`
+	OAuthTrustEmail              bool   `koanf:"oauth_trust_email"`
 	SmtpHost                     string `koanf:"smtp_host"`
 	SmtpPort                     int    `koanf:"smtp_port"`
 	SmtpUsername                 string `koanf:"smtp_username"`
@@ -155,6 +156,7 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 		{"log-level", "log_level", "log level (debug, info, warn, error)", strVal(defaultLogLevel), nil, nil},
 		{"signup-enabled", "signup_enabled", "enable user sign-up", nil, nil, boolVal(false)},
 		{"email-verification-required", "email_verification_required", "require email verification on sign-up", nil, nil, boolVal(false)},
+		{"oauth-trust-email", "oauth_trust_email", "trust email from OAuth providers without verification", nil, nil, boolVal(true)},
 		{"smtp-host", "smtp_host", "SMTP server host", strVal(""), nil, nil},
 		{"smtp-port", "smtp_port", "SMTP server port", nil, intVal(587), nil},
 		{"smtp-username", "smtp_username", "SMTP username", strVal(""), nil, nil},

@@ -133,7 +133,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	cMgr := channelmgr.New(cMgrOpts...)
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
-	authInterceptor, sessionCache := auth.NewInterceptor(queries, cfg.SoloMode, cfg.SecureCookies)
+	authInterceptor, sessionCache := auth.NewInterceptor(queries, cfg.SoloMode, cfg.SecureCookies, cfg.EmailVerificationRequired)
 	connectOpts := connect.WithInterceptors(
 		auth.NewShutdownInterceptor(shutdownCh),
 		metrics.NewInterceptor(),
@@ -143,7 +143,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 
 	mux := http.NewServeMux()
 
-	authSvc := service.NewAuthService(sqlDB, queries, cfg, sessionCache)
+	authSvc := service.NewAuthService(sqlDB, queries, cfg, sessionCache, ks)
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, connectOpts)
 	mux.Handle(authPath, authHandler)
 

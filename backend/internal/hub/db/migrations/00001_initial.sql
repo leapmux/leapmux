@@ -15,14 +15,18 @@ CREATE TABLE users (
     username       TEXT NOT NULL UNIQUE,
     password_hash  TEXT NOT NULL,
     display_name   TEXT NOT NULL DEFAULT '',
-    email          TEXT NOT NULL DEFAULT '',
-    email_verified INTEGER NOT NULL DEFAULT 0,
-    is_admin       INTEGER NOT NULL DEFAULT 0,
+    email                    TEXT NOT NULL DEFAULT '',
+    email_verified           INTEGER NOT NULL DEFAULT 0,
+    pending_email            TEXT NOT NULL DEFAULT '',
+    pending_email_token      TEXT NOT NULL DEFAULT '',
+    pending_email_expires_at DATETIME,
+    is_admin                 INTEGER NOT NULL DEFAULT 0,
     prefs          TEXT NOT NULL DEFAULT '{}',
     created_at     DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at     DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX idx_users_org_id ON users(org_id);
+CREATE UNIQUE INDEX idx_users_email ON users(email) WHERE email != '';
 
 -- Multi-org membership (M:N junction)
 CREATE TABLE org_members (
@@ -91,15 +95,6 @@ CREATE TABLE worker_registrations (
 );
 CREATE INDEX idx_worker_registrations_status ON worker_registrations(status);
 
--- Email verification tokens
-CREATE TABLE email_verifications (
-    id         TEXT PRIMARY KEY,
-    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    token      TEXT NOT NULL UNIQUE,
-    expires_at DATETIME NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-);
-CREATE INDEX idx_email_verifications_token ON email_verifications(token);
 
 -- Sidebar sections (per-user organization of sidebar panels)
 CREATE TABLE workspace_sections (
@@ -216,7 +211,25 @@ CREATE TABLE oauth_states (
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+-- Pending OAuth signups (new users choosing their username)
+CREATE TABLE pending_oauth_signups (
+    token            TEXT PRIMARY KEY,
+    provider_id      TEXT NOT NULL REFERENCES oauth_providers(id),
+    provider_subject TEXT NOT NULL,
+    email            TEXT NOT NULL DEFAULT '',
+    display_name     TEXT NOT NULL DEFAULT '',
+    access_token     BLOB NOT NULL,
+    refresh_token    BLOB NOT NULL,
+    token_type       TEXT NOT NULL DEFAULT 'Bearer',
+    token_expires_at DATETIME NOT NULL,
+    key_version      INTEGER NOT NULL DEFAULT 1,
+    redirect_uri     TEXT NOT NULL DEFAULT '',
+    expires_at       DATETIME NOT NULL,
+    created_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
 -- +goose Down
+DROP TABLE IF EXISTS pending_oauth_signups;
 DROP TABLE IF EXISTS oauth_states;
 DROP TABLE IF EXISTS oauth_tokens;
 DROP TABLE IF EXISTS oauth_user_links;
@@ -225,7 +238,6 @@ DROP TABLE IF EXISTS workspace_layouts;
 DROP TABLE IF EXISTS workspace_tabs;
 DROP TABLE IF EXISTS workspace_access;
 DROP TABLE IF EXISTS worker_access_grants;
-DROP TABLE IF EXISTS email_verifications;
 DROP TABLE IF EXISTS workspace_section_items;
 DROP TABLE IF EXISTS workspace_sections;
 DROP TABLE IF EXISTS workspaces;

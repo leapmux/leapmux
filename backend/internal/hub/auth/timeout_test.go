@@ -40,7 +40,7 @@ func setupTimeoutTestServer(t *testing.T, timeout time.Duration) (leapmuxv1conne
 	err := bootstrap.Run(context.Background(), sqlDB, q, false)
 	require.NoError(t, err)
 
-	capture := &timeoutCapture{inner: service.NewAuthService(sqlDB, q, &config.Config{}, nil)}
+	capture := &timeoutCapture{inner: service.NewAuthService(sqlDB, q, &config.Config{}, nil, nil)}
 
 	mux := http.NewServeMux()
 	interceptors := connect.WithInterceptors(auth.NewTimeoutInterceptor(func() time.Duration { return timeout }))

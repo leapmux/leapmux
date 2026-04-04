@@ -18,6 +18,10 @@ service AuthService {
   rpc GetSystemInfo(GetSystemInfoRequest) returns (GetSystemInfoResponse);
   // List enabled OAuth providers (no auth required).
   rpc GetOAuthProviders(GetOAuthProvidersRequest) returns (GetOAuthProvidersResponse);
+  // Get pre-filled data for a pending OAuth signup (no auth required).
+  rpc GetPendingOAuthSignup(GetPendingOAuthSignupRequest) returns (GetPendingOAuthSignupResponse);
+  // Complete OAuth signup by choosing a username (no auth required).
+  rpc CompleteOAuthSignup(CompleteOAuthSignupRequest) returns (CompleteOAuthSignupResponse);
 }
 
 message LoginRequest {
@@ -72,6 +76,7 @@ message User {
   bool email_verified = 7;
   string org_name = 8;
   string oauth_provider = 9; // OAuth provider name if authenticated via OAuth
+  string pending_email = 10; // email awaiting verification
 }
 
 message GetSystemInfoRequest {}
@@ -97,4 +102,25 @@ message OAuthProviderInfo {
   string name = 2;
   string provider_type = 3; // "oidc" or "github"
   string login_url = 4;     // full URL to /auth/oauth/{id}/login
+}
+
+message GetPendingOAuthSignupRequest {
+  string signup_token = 1;
+}
+
+message GetPendingOAuthSignupResponse {
+  string email = 1;
+  string display_name = 2;
+  string provider_name = 3;
+}
+
+message CompleteOAuthSignupRequest {
+  string signup_token = 1;
+  string username = 2;
+  string display_name = 3;
+  string email = 4;
+}
+
+message CompleteOAuthSignupResponse {
+  User user = 1;
 }
