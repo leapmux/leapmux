@@ -5,10 +5,9 @@ import type { StructuredPatchHunk } from '../diffUtils'
 import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
 import type { ParsedCatLine } from '../ReadResultView'
-import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { AgentChatMessage, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { TodoItem } from '~/stores/chat.store'
-import type { BashInput, EditInput, GrepInput, WriteInput } from '~/types/toolMessages'
+import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, TaskStopInput, ToolSearchInput, WebFetchInput, WebSearchInput, WriteInput } from '~/types/toolMessages'
 import { diffLines } from 'diff'
 import Bot from 'lucide-solid/icons/bot'
 import Check from 'lucide-solid/icons/check'
@@ -53,6 +52,7 @@ import {
   renderBashHighlight,
   ToolResultMessage,
   ToolUseLayout,
+  useDiffViewToggle,
 } from '../toolRenderers'
 import {
   toolInputCode,
@@ -79,12 +79,10 @@ import {
 
 const MCP_PREFIX = 'mcp__'
 
-/** Check if a tool name is a Claude Code MCP tool (starts with "mcp__"). */
 function isMcpTool(name: string): boolean {
   return name.startsWith(MCP_PREFIX)
 }
 
-/** Parse "mcp__serverName__toolName" into components. */
 function parseMcpToolName(name: string): { serverName: string, toolName: string } | null {
   const parts = name.split('__')
   const [mcpPart, serverName, ...toolNameParts] = parts
@@ -96,7 +94,6 @@ function parseMcpToolName(name: string): { serverName: string, toolName: string 
   return { serverName, toolName }
 }
 
-/** Format MCP display name: humanize server name + tool name. */
 function formatMcpDisplayName(serverName: string, toolName: string): string {
   const humanServer = serverName
     .split('_')
@@ -109,7 +106,6 @@ function formatMcpDisplayName(serverName: string, toolName: string): string {
 // toolIconFor
 // ---------------------------------------------------------------------------
 
-/** Map tool name to its Lucide icon component. */
 function toolIconFor(name: string): LucideIcon {
   switch (name) {
     case 'Bash': return Terminal
@@ -140,7 +136,23 @@ function toolIconFor(name: string): LucideIcon {
 
 const TRAILING_NEWLINE_RE = /\n$/
 
-/** Render per-tool compact display for a tool_use block (Claude Code tools + MCP). Exported for reuse by other providers. */
+/** Prefer common parameter names for the hint, then fall back to first short string. */
+const HINT_KEYS = ['query', 'input', 'prompt', 'text', 'command', 'description', 'url']
+
+function extractInputHint(input: Record<string, unknown>): string {
+  for (const key of HINT_KEYS) {
+    const val = input[key]
+    if (typeof val === 'string' && val.length > 0 && val.length <= 120)
+      return val.length > 80 ? `${val.slice(0, 80)}…` : val
+  }
+  for (const val of Object.values(input)) {
+    if (typeof val === 'string' && val.length > 0 && val.length <= 120)
+      return val.length > 80 ? `${val.slice(0, 80)}…` : val
+  }
+  return ''
+}
+
+/** Exported for reuse by other providers. */
 export function renderToolDetail(toolName: string, input: Record<string, unknown>, context?: RenderContext): JSX.Element | null {
   const cwd = context?.workingDir
   const homeDir = context?.homeDir
@@ -154,7 +166,7 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
       return <span class={toolInputText}>{descText || 'Run command'}</span>
     }
     case 'Read': {
-      const { file_path: path, offset, limit } = input as { file_path?: string, offset?: number, limit?: number }
+      const { file_path: path, offset, limit } = input as ReadInput
       if (!path)
         return null
       const rangeStr = offset && limit
@@ -172,7 +184,7 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
       )
     }
     case 'Write': {
-      const { file_path: path, content } = input as { file_path?: string, content?: string }
+      const { file_path: path, content } = input as WriteInput
       if (!path)
         return null
       const lineCount = content ? content.split('\n').length : 0
@@ -214,7 +226,7 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
         : null
     }
     case 'Glob': {
-      const { pattern, path } = input as { pattern?: string, path?: string }
+      const { pattern, path } = input as GlobInput
       // Relativize pattern if it's an absolute path without glob wildcards
       const displayPattern = pattern && pattern.startsWith('/') && !pattern.includes('*')
         ? relativizePath(pattern, cwd, homeDir)
@@ -227,7 +239,7 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
       )
     }
     case 'WebFetch': {
-      const { url } = input as { url?: string }
+      const { url } = input as WebFetchInput
       if (!url)
         return null
       return url.startsWith('https://')
@@ -235,7 +247,7 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
         : <span class={toolInputText}>{url}</span>
     }
     case 'WebSearch': {
-      const { query } = input as { query?: string }
+      const { query } = input as WebSearchInput
       return query ? <span class={toolInputText}>{query}</span> : null
     }
     case 'TaskOutput': {
@@ -251,13 +263,13 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
       return <span class={toolInputText}>{`Waiting for output${meta}`}</span>
     }
     case 'ToolSearch': {
-      const { query } = input as { query?: string }
+      const { query } = input as ToolSearchInput
       return query
         ? <span class={toolInputCode}>{`"${query}"`}</span>
         : null
     }
     case 'TaskStop': {
-      const { task_id: taskId } = input as { task_id?: string }
+      const { task_id: taskId } = input as TaskStopInput
       return taskId
         ? <span class={toolInputText}>{`Stop task ${taskId}`}</span>
         : <span class={toolInputText}>Stop task</span>
@@ -290,23 +302,21 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
       return <span class={toolInputText}>{title}</span>
     }
     default: {
+      const hint = extractInputHint(input)
       const mcpInfo = parseMcpToolName(toolName)
-      if (!mcpInfo)
-        return null
-      const displayName = formatMcpDisplayName(mcpInfo.serverName, mcpInfo.toolName)
-      let hint = ''
-      for (const val of Object.values(input)) {
-        if (typeof val === 'string' && val.length > 0 && val.length <= 120) {
-          hint = val.length > 80 ? `${val.slice(0, 80)}…` : val
-          break
-        }
+      if (mcpInfo) {
+        const displayName = formatMcpDisplayName(mcpInfo.serverName, mcpInfo.toolName)
+        return (
+          <>
+            <span class={toolInputText}>{displayName}</span>
+            {hint ? <span class={toolInputCode}>{` "${hint}"`}</span> : null}
+          </>
+        )
       }
-      return (
-        <>
-          <span class={toolInputText}>{displayName}</span>
-          {hint ? <span class={toolInputCode}>{` "${hint}"`}</span> : null}
-        </>
-      )
+      // Unknown non-MCP tool — show tool name with hint if available.
+      return hint
+        ? <span class={toolInputText}>{`${toolName}: ${hint}`}</span>
+        : <span class={toolInputText}>{toolName}</span>
     }
   }
 }
@@ -315,17 +325,10 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
 // ToolUseMessage (inner component for tool_use)
 // ---------------------------------------------------------------------------
 
-/** Local diff-view preference state, shared by ToolUseMessage and ToolResultMessage. */
-function useDiffViewToggle(contextDiffView: () => DiffViewPreference | undefined) {
-  const [localDiffView, setLocalDiffView] = createSignal<DiffViewPreference | null>(null)
-  const diffView = () => localDiffView() ?? contextDiffView() ?? 'unified'
-  const toggleDiffView = () => setLocalDiffView(diffView() === 'unified' ? 'split' : 'unified')
-  return { diffView, toggleDiffView }
-}
-
 /** Inner component for tool_use messages — owns local diff view state. */
 function ToolUseMessage(props: {
   toolName: string
+  icon: LucideIcon
   detail: JSX.Element | null
   /** Summary shown below header inside the bordered area (e.g. Bash command, Grep result count). */
   summary?: JSX.Element | null
@@ -357,7 +360,7 @@ function ToolUseMessage(props: {
 
   return (
     <ToolUseLayout
-      icon={toolIconFor(props.toolName)}
+      icon={props.icon}
       toolName={props.toolName}
       title={title()}
       summary={isMultiLineCommand() && expanded() ? undefined : props.summary}
@@ -721,7 +724,6 @@ function AskUserQuestionResultView(props: {
 
 const WWW_PREFIX_RE = /^www\./
 
-/** Extract domain from a URL for display. */
 function extractDomain(url: string): string {
   try {
     return new URL(url).hostname.replace(WWW_PREFIX_RE, '')
@@ -802,7 +804,6 @@ function WebSearchResultView(props: {
   )
 }
 
-/** Format byte count as a human-readable string. */
 function formatBytes(bytes: number): string {
   if (bytes < 1024)
     return `${bytes} B`
@@ -1220,6 +1221,7 @@ function renderClaudeToolUse(
   return (
     <ToolUseMessage
       toolName={toolName}
+      icon={toolIconFor(toolName)}
       detail={detail}
       summary={summary}
       fullCommand={fullCommand}

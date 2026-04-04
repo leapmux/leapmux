@@ -1,7 +1,7 @@
 import type { MessageCategory } from '../messageClassification'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 
 // Mock renderMarkdown to avoid shiki initialization in tests.
 vi.mock('~/lib/renderMarkdown', () => ({
@@ -70,7 +70,7 @@ describe('mcp tool_use rendering', () => {
     })
 
     const { container } = render(() =>
-      renderMessageContent(parsed, 0 /* assistant */, { spanType: 'mcp__claude_ai_Tavily__tavily_research' }, toolUseCategory, AgentProvider.CLAUDE_CODE),
+      renderMessageContent(parsed, MessageRole.ASSISTANT, { spanType: 'mcp__claude_ai_Tavily__tavily_research' }, toolUseCategory, AgentProvider.CLAUDE_CODE),
     )
 
     const text = container.textContent || ''
@@ -94,13 +94,58 @@ describe('mcp tool_use rendering', () => {
     }
 
     const { container } = render(() =>
-      renderMessageContent(parsed, 0, { spanType: 'mcp__github__search__repos' }, category, AgentProvider.CLAUDE_CODE),
+      renderMessageContent(parsed, MessageRole.ASSISTANT, { spanType: 'mcp__github__search__repos' }, category, AgentProvider.CLAUDE_CODE),
     )
 
     const text = container.textContent || ''
     // Server is "github", tool is "search__repos" (preserves __ in tool name)
     expect(text).toContain('Github')
     expect(text).toContain('search__repos')
+  })
+
+  it('should prefer common param names for hint over iteration order', () => {
+    // "model" comes first in insertion order, but "input" is a preferred hint key
+    const parsed = makeMcpToolUse('mcp__claude_ai_Tavily__tavily_research', {
+      model: 'pro',
+      input: 'Go OIDC libraries comparison',
+    })
+
+    const category: MessageCategory = {
+      kind: 'tool_use',
+      toolName: 'mcp__claude_ai_Tavily__tavily_research',
+      toolUse: { name: 'mcp__claude_ai_Tavily__tavily_research', input: { model: 'pro', input: 'Go OIDC libraries comparison' } },
+      content: [],
+    }
+
+    const { container } = render(() =>
+      renderMessageContent(parsed, MessageRole.ASSISTANT, { spanType: 'mcp__claude_ai_Tavily__tavily_research' }, category, AgentProvider.CLAUDE_CODE),
+    )
+
+    const text = container.textContent || ''
+    // Should show "input" value, not "model" value
+    expect(text).toContain('Go OIDC libraries comparison')
+    expect(text).not.toContain('"pro"')
+  })
+
+  it('should render unknown non-MCP tools with tool name', () => {
+    const parsed = makeMcpToolUse('SomeNewTool', {
+      description: 'Do something',
+    })
+
+    const category: MessageCategory = {
+      kind: 'tool_use',
+      toolName: 'SomeNewTool',
+      toolUse: { name: 'SomeNewTool', input: { description: 'Do something' } },
+      content: [],
+    }
+
+    const { container } = render(() =>
+      renderMessageContent(parsed, MessageRole.ASSISTANT, { spanType: 'SomeNewTool' }, category, AgentProvider.CLAUDE_CODE),
+    )
+
+    const text = container.textContent || ''
+    expect(text).toContain('SomeNewTool')
+    expect(text).toContain('Do something')
   })
 
   it('should render regular tools normally (not as MCP)', () => {
@@ -117,7 +162,7 @@ describe('mcp tool_use rendering', () => {
     }
 
     const { container } = render(() =>
-      renderMessageContent(parsed, 0, { spanType: 'Bash' }, category, AgentProvider.CLAUDE_CODE),
+      renderMessageContent(parsed, MessageRole.ASSISTANT, { spanType: 'Bash' }, category, AgentProvider.CLAUDE_CODE),
     )
 
     const text = container.textContent || ''
@@ -132,7 +177,7 @@ describe('mcp tool_result rendering', () => {
     const parsed = makeMcpToolResult('# Research Report\n\nThis is a comparison of Go OIDC libraries.')
 
     const { container } = render(() =>
-      renderMessageContent(parsed, 1 /* user */, { spanType: 'mcp__claude_ai_Tavily__tavily_research' }, toolResultCategory, AgentProvider.CLAUDE_CODE),
+      renderMessageContent(parsed, MessageRole.USER, { spanType: 'mcp__claude_ai_Tavily__tavily_research' }, toolResultCategory, AgentProvider.CLAUDE_CODE),
     )
 
     const text = container.textContent || ''
