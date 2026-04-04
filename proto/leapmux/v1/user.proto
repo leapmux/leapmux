@@ -12,8 +12,11 @@ service UserService {
   rpc RequestEmailChange(RequestEmailChangeRequest) returns (RequestEmailChangeResponse);
   // Verify a pending email change with a verification token.
   rpc VerifyEmailChange(VerifyEmailChangeRequest) returns (VerifyEmailChangeResponse);
-  // Change the current user's password.
+  // Change the current user's password. When password_set is false (OAuth-only
+  // users), current_password may be empty.
   rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
+  // Unlink an OAuth provider from the current user's account.
+  rpc UnlinkOAuthProvider(UnlinkOAuthProviderRequest) returns (UnlinkOAuthProviderResponse);
   // Get the current user's preferences.
   rpc GetPreferences(GetPreferencesRequest) returns (GetPreferencesResponse);
   // Update the current user's preferences.
@@ -58,6 +61,12 @@ message ChangePasswordRequest {
 }
 
 message ChangePasswordResponse {}
+
+message UnlinkOAuthProviderRequest {
+  string provider_name = 1;
+}
+
+message UnlinkOAuthProviderResponse {}
 
 message GetPreferencesRequest {}
 

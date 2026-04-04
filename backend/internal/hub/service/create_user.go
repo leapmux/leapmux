@@ -19,11 +19,13 @@ const pendingEmailExpiry = 24 * time.Hour
 // CreateUserParams holds the parameters for creating a new user with a
 // personal org and org membership.
 type CreateUserParams struct {
-	Username     string
-	PasswordHash string
-	DisplayName  string
-	Email        string
-	IsAdmin      int64
+	Username      string
+	PasswordHash  string
+	DisplayName   string
+	Email         string
+	EmailVerified int64
+	PasswordSet   int64
+	IsAdmin       int64
 }
 
 // createUserWithOrg creates a personal org, a user, and an org membership
@@ -48,13 +50,15 @@ func createUserWithOrg(ctx context.Context, sqlDB *sql.DB, q *db.Queries, p Crea
 
 	userID := id.Generate()
 	if err := txq.CreateUser(ctx, db.CreateUserParams{
-		ID:           userID,
-		OrgID:        orgID,
-		Username:     p.Username,
-		PasswordHash: p.PasswordHash,
-		DisplayName:  p.DisplayName,
-		Email:        p.Email,
-		IsAdmin:      p.IsAdmin,
+		ID:            userID,
+		OrgID:         orgID,
+		Username:      p.Username,
+		PasswordHash:  p.PasswordHash,
+		DisplayName:   p.DisplayName,
+		Email:         p.Email,
+		EmailVerified: p.EmailVerified,
+		PasswordSet:   p.PasswordSet,
+		IsAdmin:       p.IsAdmin,
 	}); err != nil {
 		return nil, fmt.Errorf("create user: %w", err)
 	}

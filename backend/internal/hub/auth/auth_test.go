@@ -48,6 +48,7 @@ func createTestUser(t *testing.T, q *gendb.Queries) (orgID, userID string) {
 		Username:     "testuser",
 		PasswordHash: hash,
 		DisplayName:  "Test User",
+		PasswordSet:  1,
 		IsAdmin:      1,
 	}); err != nil {
 		t.Fatalf("CreateUser: %v", err)

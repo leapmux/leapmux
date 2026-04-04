@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"testing"
@@ -188,7 +189,7 @@ func TestCLI_RotateEncryptionKey(t *testing.T) {
 
 	ks, err := keystore.LoadFromFile(keyPath)
 	require.NoError(t, err)
-	assert.Equal(t, byte(2), ks.ActiveVersion())
+	assert.Equal(t, uint32(2), ks.ActiveVersion())
 	assert.Len(t, ks.Versions(), 2)
 }
 
@@ -200,7 +201,7 @@ func TestCLI_RotateEncryptionKey_TwiceIncrementsVersion(t *testing.T) {
 
 	ks, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))
 	require.NoError(t, err)
-	assert.Equal(t, byte(3), ks.ActiveVersion())
+	assert.Equal(t, uint32(3), ks.ActiveVersion())
 	assert.Len(t, ks.Versions(), 3)
 }
 
@@ -222,7 +223,7 @@ func TestCLI_RemoveEncryptionKey_OldVersion(t *testing.T) {
 	ks, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))
 	require.NoError(t, err)
 	assert.Len(t, ks.Versions(), 1)
-	assert.Equal(t, byte(2), ks.ActiveVersion())
+	assert.Equal(t, uint32(2), ks.ActiveVersion())
 }
 
 func TestCLI_ReencryptSecrets(t *testing.T) {
@@ -253,7 +254,7 @@ func TestCLI_ReencryptSecrets(t *testing.T) {
 	_ = sqlDB.Close()
 
 	// The ciphertext should now be version 2.
-	assert.Equal(t, byte(2), full.ClientSecret[0], "re-encrypted secret should be version 2")
+	assert.Equal(t, uint32(2), binary.BigEndian.Uint32(full.ClientSecret[:4]), "re-encrypted secret should be version 2")
 
 	// Decrypting should return the original plaintext.
 	aad := []byte("oauth_provider:" + providers[0].ID)

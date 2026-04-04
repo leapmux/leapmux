@@ -232,6 +232,7 @@ func TestSignUp_DuplicateEmail_Rejected(t *testing.T) {
 		PasswordHash: hash,
 		DisplayName:  "Email User",
 		Email:        "taken@example.com",
+		PasswordSet:  1,
 		IsAdmin:      0,
 	})
 	require.NoError(t, err)
@@ -332,6 +333,7 @@ func TestVerificationGating_UnverifiedBlocked(t *testing.T) {
 		PasswordHash: hash,
 		DisplayName:  "Unverified User",
 		Email:        "unverified@example.com",
+		PasswordSet:  1,
 		IsAdmin:      0,
 	})
 	// email_verified defaults to 0 in the DB.
@@ -379,6 +381,7 @@ func TestVerificationGating_ConfigOff_NotBlocked(t *testing.T) {
 		PasswordHash: hash,
 		DisplayName:  "No Gate User",
 		Email:        "nogate@example.com",
+		PasswordSet:  1,
 		IsAdmin:      0,
 	})
 	// email_verified defaults to 0 — but gating is OFF.
@@ -470,6 +473,7 @@ func createTestUserWithPendingEmail(t *testing.T, q *gendb.Queries, username, pe
 		PasswordHash: hash,
 		DisplayName:  username,
 		Email:        "",
+		PasswordSet:  1,
 		IsAdmin:      0,
 	})
 	require.NoError(t, err)
@@ -559,6 +563,7 @@ func TestVerificationGating_LogoutAllowed(t *testing.T) {
 		PasswordHash: hash,
 		DisplayName:  "Logout Gating",
 		Email:        "logoutgating@example.com",
+		PasswordSet:  1,
 		IsAdmin:      0,
 	})
 	// email_verified defaults to 0.
@@ -590,6 +595,7 @@ func TestVerificationGating_RequestEmailChangeAllowed(t *testing.T) {
 		PasswordHash: hash,
 		DisplayName:  "Email Change Gating",
 		Email:        "emailchangegate@example.com",
+		PasswordSet:  1,
 		IsAdmin:      0,
 	})
 	// email_verified defaults to 0.

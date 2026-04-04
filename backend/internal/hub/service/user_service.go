@@ -222,12 +222,16 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	match, err := password.Verify(user.PasswordHash, req.Msg.GetCurrentPassword())
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("verify password: %w", err))
-	}
-	if !match {
-		return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("current password is incorrect"))
+	// OAuth-only users (password_set == 0) can set a password without providing
+	// the current one. Users with a password must verify it first.
+	if user.PasswordSet == 1 {
+		match, err := password.Verify(user.PasswordHash, req.Msg.GetCurrentPassword())
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("verify password: %w", err))
+		}
+		if !match {
+			return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("current password is incorrect"))
+		}
 	}
 
 	hashed, err := password.Hash(req.Msg.GetNewPassword())
@@ -243,6 +247,61 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 	}
 
 	return connect.NewResponse(&leapmuxv1.ChangePasswordResponse{}), nil
+}
+
+func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Request[leapmuxv1.UnlinkOAuthProviderRequest]) (*connect.Response[leapmuxv1.UnlinkOAuthProviderResponse], error) {
+	if s.cfg.SoloMode {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("not available in solo mode"))
+	}
+	userInfo, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	providerName := req.Msg.GetProviderName()
+	if providerName == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("provider_name is required"))
+	}
+
+	user, err := s.queries.GetUserByID(ctx, userInfo.ID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	links, err := s.queries.ListOAuthUserLinksByUser(ctx, user.ID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	// Find the link matching the provider name.
+	var targetProviderID string
+	for _, link := range links {
+		provider, pErr := s.queries.GetOAuthProviderByID(ctx, link.ProviderID)
+		if pErr != nil {
+			continue
+		}
+		if provider.Name == providerName {
+			targetProviderID = link.ProviderID
+			break
+		}
+	}
+	if targetProviderID == "" {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("no linked account for provider %q", providerName))
+	}
+
+	// Guard: cannot unlink the last provider if the user has no password set.
+	if len(links) <= 1 && user.PasswordSet == 0 {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("cannot unlink your only login method; set a password first"))
+	}
+
+	if err := s.queries.DeleteOAuthUserLink(ctx, db.DeleteOAuthUserLinkParams{
+		UserID:     user.ID,
+		ProviderID: targetProviderID,
+	}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	return connect.NewResponse(&leapmuxv1.UnlinkOAuthProviderResponse{}), nil
 }
 
 func (s *UserService) GetPreferences(ctx context.Context, req *connect.Request[leapmuxv1.GetPreferencesRequest]) (*connect.Response[leapmuxv1.GetPreferencesResponse], error) {

@@ -25,6 +25,7 @@ import (
 
 type userTestEnv struct {
 	client  leapmuxv1connect.UserServiceClient
+	sqlDB   *sql.DB
 	queries *gendb.Queries
 	token   string
 	orgID   string
@@ -73,6 +74,7 @@ func setupUserTest(t *testing.T) *userTestEnv {
 		Username:     "testuser",
 		PasswordHash: hash,
 		DisplayName:  "Test User",
+		PasswordSet:  1,
 		IsAdmin:      1,
 	})
 
@@ -81,6 +83,7 @@ func setupUserTest(t *testing.T) *userTestEnv {
 
 	return &userTestEnv{
 		client:  client,
+		sqlDB:   sqlDB,
 		queries: queries,
 		token:   token,
 		orgID:   orgID,
@@ -132,6 +135,7 @@ func TestUserService_UpdateProfile_DuplicateUsername(t *testing.T) {
 		Username:     "user2",
 		PasswordHash: hash,
 		DisplayName:  "User 2",
+		PasswordSet:  1,
 		IsAdmin:      0,
 	})
 
@@ -366,6 +370,7 @@ func TestRequestEmailChange_DuplicateEmail_Rejected(t *testing.T) {
 		Username:     "user2",
 		PasswordHash: hash,
 		DisplayName:  "User 2",
+		PasswordSet:  1,
 		IsAdmin:      0,
 	})
 	err := env.queries.UpdateUserEmail(context.Background(), gendb.UpdateUserEmailParams{
@@ -441,6 +446,7 @@ func TestRequestEmailChange_ConfigOn_PendingEmail(t *testing.T) {
 		Username:     "verifyuser",
 		PasswordHash: hash,
 		DisplayName:  "Verify User",
+		PasswordSet:  1,
 		IsAdmin:      0,
 	})
 	require.NoError(t, err)
@@ -582,6 +588,7 @@ func TestVerifyEmailChange_EmailTakenSinceRequest(t *testing.T) {
 		Username:     "claimer",
 		PasswordHash: hash,
 		DisplayName:  "Claimer",
+		PasswordSet:  1,
 		IsAdmin:      0,
 	})
 	err = env.queries.UpdateUserEmail(context.Background(), gendb.UpdateUserEmailParams{
@@ -597,4 +604,158 @@ func TestVerifyEmailChange_EmailTakenSinceRequest(t *testing.T) {
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
+}
+
+// --- ChangePassword tests for OAuth users ---
+
+func TestChangePassword_OAuthUser_CanSetWithoutCurrentPassword(t *testing.T) {
+	env := setupUserTest(t)
+
+	// Simulate an OAuth-only user: set password_set = 0.
+	_, err := env.sqlDB.ExecContext(context.Background(),
+		"UPDATE users SET password_set = 0 WHERE id = ?", env.userID)
+	require.NoError(t, err)
+
+	// Should succeed with empty current password.
+	_, err = env.client.ChangePassword(context.Background(), authedReq(&leapmuxv1.ChangePasswordRequest{
+		CurrentPassword: "",
+		NewPassword:     "newpass123",
+	}, env.token))
+	require.NoError(t, err)
+
+	// Verify password_set is now 1.
+	user, err := env.queries.GetUserByID(context.Background(), env.userID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), user.PasswordSet)
+
+	// Verify the new password works via login.
+	_, _, _, err = auth.Login(context.Background(), env.queries, "testuser", "newpass123")
+	require.NoError(t, err)
+}
+
+func TestChangePassword_PasswordUser_RequiresCurrentPassword(t *testing.T) {
+	env := setupUserTest(t)
+
+	// Attempt with empty current password — should fail.
+	_, err := env.client.ChangePassword(context.Background(), authedReq(&leapmuxv1.ChangePasswordRequest{
+		CurrentPassword: "",
+		NewPassword:     "newpass123",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+
+	// Attempt with wrong current password — should fail.
+	_, err = env.client.ChangePassword(context.Background(), authedReq(&leapmuxv1.ChangePasswordRequest{
+		CurrentPassword: "wrongpass",
+		NewPassword:     "newpass123",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+// --- UnlinkOAuthProvider tests ---
+
+func TestUnlinkOAuthProvider_Success(t *testing.T) {
+	env := setupUserTest(t)
+
+	// Create two OAuth providers.
+	err := env.queries.CreateOAuthProvider(context.Background(), gendb.CreateOAuthProviderParams{
+		ID: "github-1", ProviderType: "github", Name: "GitHub",
+		ClientID: "c1", ClientSecret: []byte("s1"), Scopes: "read:user", Enabled: 1,
+	})
+	require.NoError(t, err)
+	err = env.queries.CreateOAuthProvider(context.Background(), gendb.CreateOAuthProviderParams{
+		ID: "google-1", ProviderType: "oidc", Name: "Google",
+		ClientID: "c2", ClientSecret: []byte("s2"), Scopes: "openid", Enabled: 1,
+	})
+	require.NoError(t, err)
+
+	// Link both to the user.
+	err = env.queries.CreateOAuthUserLink(context.Background(), gendb.CreateOAuthUserLinkParams{
+		UserID: env.userID, ProviderID: "github-1", ProviderSubject: "gh-sub",
+	})
+	require.NoError(t, err)
+	err = env.queries.CreateOAuthUserLink(context.Background(), gendb.CreateOAuthUserLinkParams{
+		UserID: env.userID, ProviderID: "google-1", ProviderSubject: "g-sub",
+	})
+	require.NoError(t, err)
+
+	// Unlink GitHub — should succeed (Google still linked).
+	_, err = env.client.UnlinkOAuthProvider(context.Background(), authedReq(&leapmuxv1.UnlinkOAuthProviderRequest{
+		ProviderName: "GitHub",
+	}, env.token))
+	require.NoError(t, err)
+
+	// Verify only Google link remains.
+	links, err := env.queries.ListOAuthUserLinksByUser(context.Background(), env.userID)
+	require.NoError(t, err)
+	assert.Len(t, links, 1)
+	assert.Equal(t, "google-1", links[0].ProviderID)
+}
+
+func TestUnlinkOAuthProvider_LastLink_WithPassword(t *testing.T) {
+	env := setupUserTest(t)
+
+	// User has password_set = 1 (default from setupUserTest).
+	err := env.queries.CreateOAuthProvider(context.Background(), gendb.CreateOAuthProviderParams{
+		ID: "github-2", ProviderType: "github", Name: "GitHub",
+		ClientID: "c1", ClientSecret: []byte("s1"), Scopes: "read:user", Enabled: 1,
+	})
+	require.NoError(t, err)
+	err = env.queries.CreateOAuthUserLink(context.Background(), gendb.CreateOAuthUserLinkParams{
+		UserID: env.userID, ProviderID: "github-2", ProviderSubject: "gh-sub",
+	})
+	require.NoError(t, err)
+
+	// Should succeed because user has a password.
+	_, err = env.client.UnlinkOAuthProvider(context.Background(), authedReq(&leapmuxv1.UnlinkOAuthProviderRequest{
+		ProviderName: "GitHub",
+	}, env.token))
+	require.NoError(t, err)
+
+	links, err := env.queries.ListOAuthUserLinksByUser(context.Background(), env.userID)
+	require.NoError(t, err)
+	assert.Empty(t, links)
+}
+
+func TestUnlinkOAuthProvider_LastLink_NoPassword_Blocked(t *testing.T) {
+	env := setupUserTest(t)
+
+	// Simulate OAuth-only user.
+	_, err := env.sqlDB.ExecContext(context.Background(),
+		"UPDATE users SET password_set = 0 WHERE id = ?", env.userID)
+	require.NoError(t, err)
+
+	err = env.queries.CreateOAuthProvider(context.Background(), gendb.CreateOAuthProviderParams{
+		ID: "github-3", ProviderType: "github", Name: "GitHub",
+		ClientID: "c1", ClientSecret: []byte("s1"), Scopes: "read:user", Enabled: 1,
+	})
+	require.NoError(t, err)
+	err = env.queries.CreateOAuthUserLink(context.Background(), gendb.CreateOAuthUserLinkParams{
+		UserID: env.userID, ProviderID: "github-3", ProviderSubject: "gh-sub",
+	})
+	require.NoError(t, err)
+
+	// Should be blocked — last link and no password.
+	_, err = env.client.UnlinkOAuthProvider(context.Background(), authedReq(&leapmuxv1.UnlinkOAuthProviderRequest{
+		ProviderName: "GitHub",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "set a password first")
+
+	// Link should still exist.
+	links, err := env.queries.ListOAuthUserLinksByUser(context.Background(), env.userID)
+	require.NoError(t, err)
+	assert.Len(t, links, 1)
+}
+
+func TestUnlinkOAuthProvider_NotFound(t *testing.T) {
+	env := setupUserTest(t)
+
+	_, err := env.client.UnlinkOAuthProvider(context.Background(), authedReq(&leapmuxv1.UnlinkOAuthProviderRequest{
+		ProviderName: "NonExistent",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }

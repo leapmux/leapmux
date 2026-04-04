@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,8 +21,8 @@ const (
 	nonceSize = chacha20poly1305.NonceSizeX
 	// keySize is the encryption key size (32 bytes).
 	keySize = chacha20poly1305.KeySize
-	// versionSize is the key version prefix size (1 byte).
-	versionSize = 1
+	// versionSize is the key version prefix size (4 bytes, big-endian uint32).
+	versionSize = 4
 	// overhead is the minimum ciphertext overhead: version + nonce + Poly1305 tag.
 	overhead = versionSize + nonceSize + chacha20poly1305.Overhead
 )
@@ -46,20 +47,20 @@ func RefreshTokenAAD(userID, providerID string) []byte {
 
 // Keystore manages a versioned key ring for XChaCha20-Poly1305 envelope encryption.
 type Keystore struct {
-	keys          map[byte][keySize]byte
-	aeads         map[byte]cipher.AEAD
-	activeVersion byte
+	keys          map[uint32][keySize]byte
+	aeads         map[uint32]cipher.AEAD
+	activeVersion uint32
 }
 
 // New creates a Keystore from a key ring map. The highest version becomes the
 // active key used for new encryptions. AEAD ciphers are pre-computed for each
 // key version to avoid repeated key schedule expansion on every call.
-func New(keys map[byte][keySize]byte) (*Keystore, error) {
+func New(keys map[uint32][keySize]byte) (*Keystore, error) {
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("keystore: key ring is empty")
 	}
-	aeads := make(map[byte]cipher.AEAD, len(keys))
-	var maxVer byte
+	aeads := make(map[uint32]cipher.AEAD, len(keys))
+	var maxVer uint32
 	for v, key := range keys {
 		aead, err := chacha20poly1305.NewX(key[:])
 		if err != nil {
@@ -74,11 +75,11 @@ func New(keys map[byte][keySize]byte) (*Keystore, error) {
 }
 
 // ActiveVersion returns the active (highest) key version.
-func (ks *Keystore) ActiveVersion() byte { return ks.activeVersion }
+func (ks *Keystore) ActiveVersion() uint32 { return ks.activeVersion }
 
 // Versions returns all key versions in the ring, sorted ascending.
-func (ks *Keystore) Versions() []byte {
-	vers := make([]byte, 0, len(ks.keys))
+func (ks *Keystore) Versions() []uint32 {
+	vers := make([]uint32, 0, len(ks.keys))
 	for v := range ks.keys {
 		vers = append(vers, v)
 	}
@@ -88,7 +89,7 @@ func (ks *Keystore) Versions() []byte {
 
 // Encrypt encrypts plaintext with the active key version using XChaCha20-Poly1305.
 // The AAD (additional authenticated data) is bound to the ciphertext but not stored in it.
-// Returns: [1-byte version][24-byte nonce][ciphertext + Poly1305 tag].
+// Returns: [4-byte big-endian version][24-byte nonce][ciphertext + Poly1305 tag].
 func (ks *Keystore) Encrypt(plaintext, aad []byte) ([]byte, error) {
 	aead := ks.aeads[ks.activeVersion]
 
@@ -99,7 +100,7 @@ func (ks *Keystore) Encrypt(plaintext, aad []byte) ([]byte, error) {
 
 	// Allocate output: version + nonce + ciphertext.
 	out := make([]byte, versionSize+nonceSize, versionSize+nonceSize+len(plaintext)+chacha20poly1305.Overhead)
-	out[0] = ks.activeVersion
+	binary.BigEndian.PutUint32(out[:versionSize], ks.activeVersion)
 	copy(out[versionSize:], nonce)
 	out = aead.Seal(out, nonce, plaintext, aad)
 	return out, nil
@@ -112,7 +113,7 @@ func (ks *Keystore) Decrypt(ciphertext, aad []byte) ([]byte, error) {
 		return nil, fmt.Errorf("keystore: ciphertext too short")
 	}
 
-	version := ciphertext[0]
+	version := binary.BigEndian.Uint32(ciphertext[:versionSize])
 	aead, ok := ks.aeads[version]
 	if !ok {
 		return nil, fmt.Errorf("keystore: unknown key version %d", version)
@@ -165,7 +166,7 @@ func LoadFromFile(path string) (*Keystore, error) {
 	}
 	defer func() { _ = f.Close() }()
 
-	keys := make(map[byte][keySize]byte)
+	keys := make(map[uint32][keySize]byte)
 	scanner := bufio.NewScanner(f)
 	lineNum := 0
 	for scanner.Scan() {
@@ -180,11 +181,11 @@ func LoadFromFile(path string) (*Keystore, error) {
 			return nil, fmt.Errorf("keystore: %s:%d: expected version:base64key", path, lineNum)
 		}
 
-		ver, err := strconv.ParseUint(parts[0], 10, 8)
+		ver, err := strconv.ParseUint(parts[0], 10, 32)
 		if err != nil || ver == 0 {
-			return nil, fmt.Errorf("keystore: %s:%d: invalid version %q (must be 1-255)", path, lineNum, parts[0])
+			return nil, fmt.Errorf("keystore: %s:%d: invalid version %q (must be 1-%d)", path, lineNum, parts[0], ^uint32(0))
 		}
-		version := byte(ver)
+		version := uint32(ver)
 
 		if _, exists := keys[version]; exists {
 			return nil, fmt.Errorf("keystore: %s:%d: duplicate version %d", path, lineNum, version)
@@ -219,7 +220,7 @@ func GenerateKey() ([keySize]byte, error) {
 }
 
 // RotateKey adds a new key to the ring file at path. Returns the new version number.
-func RotateKey(path string) (byte, error) {
+func RotateKey(path string) (uint32, error) {
 	ks, err := LoadFromFile(path)
 	if err != nil {
 		return 0, err
@@ -227,7 +228,7 @@ func RotateKey(path string) (byte, error) {
 
 	newVersion := ks.activeVersion + 1
 	if newVersion == 0 {
-		return 0, fmt.Errorf("keystore: maximum key version (255) reached")
+		return 0, fmt.Errorf("keystore: maximum key version (%d) reached", ^uint32(0))
 	}
 
 	newKey, err := GenerateKey()
@@ -245,7 +246,7 @@ func RotateKey(path string) (byte, error) {
 }
 
 // RemoveKey removes a key version from the ring file at path.
-func RemoveKey(path string, version byte) error {
+func RemoveKey(path string, version uint32) error {
 	ks, err := LoadFromFile(path)
 	if err != nil {
 		return err
@@ -264,13 +265,13 @@ func RemoveKey(path string, version byte) error {
 }
 
 // writeKeyRingFile writes the key ring to a file with mode 0600.
-func writeKeyRingFile(path string, keys map[byte][keySize]byte) error {
+func writeKeyRingFile(path string, keys map[uint32][keySize]byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("keystore: create directory: %w", err)
 	}
 
 	// Sort versions for deterministic output.
-	versions := make([]byte, 0, len(keys))
+	versions := make([]uint32, 0, len(keys))
 	for v := range keys {
 		versions = append(versions, v)
 	}
@@ -279,7 +280,7 @@ func writeKeyRingFile(path string, keys map[byte][keySize]byte) error {
 	var sb strings.Builder
 	for _, v := range versions {
 		key := keys[v]
-		sb.WriteString(strconv.Itoa(int(v)))
+		sb.WriteString(strconv.FormatUint(uint64(v), 10))
 		sb.WriteByte(':')
 		sb.WriteString(base64.StdEncoding.EncodeToString(key[:]))
 		sb.WriteByte('\n')

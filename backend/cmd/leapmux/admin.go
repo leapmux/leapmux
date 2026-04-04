@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"flag"
 	"fmt"
 
@@ -70,17 +71,17 @@ func runRotateEncryptionKey(args []string) error {
 func runRemoveEncryptionKey(args []string) error {
 	fs := flag.NewFlagSet("remove-encryption-key", flag.ContinueOnError)
 	dataDir := fs.String("data-dir", "", "data directory")
-	version := fs.Int("version", 0, "key version to remove (1-255)")
+	version := fs.Uint("version", 0, "key version to remove")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	if *version < 1 || *version > 255 {
-		return fmt.Errorf("--version is required (must be 1-255)")
+	if *version < 1 {
+		return fmt.Errorf("--version is required (must be >= 1)")
 	}
 
 	path := adminConfig(*dataDir).EncryptionKeyFilePath()
-	if err := keystore.RemoveKey(path, byte(*version)); err != nil {
+	if err := keystore.RemoveKey(path, uint32(*version)); err != nil {
 		return err
 	}
 
@@ -122,7 +123,7 @@ func runReencryptSecrets(args []string) error {
 		if getErr != nil {
 			return fmt.Errorf("get provider %s: %w", p.ID, getErr)
 		}
-		if len(full.ClientSecret) > 0 && full.ClientSecret[0] == activeVer {
+		if len(full.ClientSecret) >= 4 && binary.BigEndian.Uint32(full.ClientSecret[:4]) == activeVer {
 			continue // already at active version
 		}
 		aad := keystore.ProviderAAD(p.ID)

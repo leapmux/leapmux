@@ -69,6 +69,7 @@ func setupSectionTest(t *testing.T) *sectionTestEnv {
 		Username:     "testuser",
 		PasswordHash: hash,
 		DisplayName:  "Test",
+		PasswordSet:  1,
 		IsAdmin:      1,
 	})
 

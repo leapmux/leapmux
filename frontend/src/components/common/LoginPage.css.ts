@@ -41,6 +41,18 @@ export const oauthButton = style({
   },
 })
 
+export const loadingCenter = style({
+  display: 'flex',
+  justifyContent: 'center',
+  padding: 'var(--space-6) 0',
+})
+
+export const providerHint = style({
+  fontSize: 'var(--text-7)',
+  color: 'var(--muted-foreground)',
+  margin: '0 0 var(--space-4)',
+})
+
 export const divider = style({
   'display': 'flex',
   'alignItems': 'center',

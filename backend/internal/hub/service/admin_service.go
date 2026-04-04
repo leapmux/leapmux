@@ -167,6 +167,7 @@ func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leap
 		PasswordHash: hash,
 		DisplayName:  req.Msg.GetDisplayName(),
 		Email:        req.Msg.GetEmail(),
+		PasswordSet:  1,
 		IsAdmin:      isAdmin,
 	})
 	if err != nil {

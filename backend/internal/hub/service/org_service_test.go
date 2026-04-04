@@ -94,6 +94,7 @@ func (e *orgTestEnv) createSecondUser(t *testing.T) (userID, token string) {
 		Username:     "user2",
 		PasswordHash: hash,
 		DisplayName:  "User 2",
+		PasswordSet:  1,
 		IsAdmin:      0,
 	})
 	// Add as org member with MEMBER role in the admin's personal org.
@@ -437,6 +438,7 @@ func TestOrgService_InviteOrgMember_NotOwnerOrAdmin(t *testing.T) {
 		Username:     "user3",
 		PasswordHash: hash,
 		DisplayName:  "User 3",
+		PasswordSet:  1,
 		IsAdmin:      0,
 	})
 

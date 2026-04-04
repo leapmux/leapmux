@@ -14,6 +14,7 @@ interface AuthState {
   login: (username: string, password: string) => Promise<void>
   logout: () => Promise<void>
   setAuth: (user: User) => void
+  refreshUser: () => Promise<void>
   isAuthenticated: () => boolean
 }
 
@@ -84,6 +85,16 @@ export const AuthProvider: ParentComponent = (props) => {
     setLoading(false)
   }
 
+  const refreshUser = async () => {
+    try {
+      const resp = await authClient.getCurrentUser({})
+      setUser(resp.user ?? null)
+    }
+    catch {
+      // Ignore — user state unchanged.
+    }
+  }
+
   const state: AuthState = {
     user,
     loading,
@@ -91,6 +102,7 @@ export const AuthProvider: ParentComponent = (props) => {
     login,
     logout,
     setAuth,
+    refreshUser,
     isAuthenticated: () => user() !== null,
   }
 

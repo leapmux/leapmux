@@ -75,8 +75,9 @@ message User {
   string email = 6;
   bool email_verified = 7;
   string org_name = 8;
-  string oauth_provider = 9; // OAuth provider name if authenticated via OAuth
-  string pending_email = 10; // email awaiting verification
+  string pending_email = 9;
+  repeated string oauth_providers = 10;
+  bool password_set = 11;
 }
 
 message GetSystemInfoRequest {}

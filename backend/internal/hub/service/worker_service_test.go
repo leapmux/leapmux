@@ -383,6 +383,7 @@ func (e *workerTestEnv) createSecondUser(t *testing.T) (userID, token string) {
 		Username:     "user2",
 		PasswordHash: hash,
 		DisplayName:  "User 2",
+		PasswordSet:  1,
 		IsAdmin:      0,
 	})
 	// Add as org member.

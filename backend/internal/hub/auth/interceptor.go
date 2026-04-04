@@ -149,7 +149,7 @@ func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHea
 	ctx = WithUser(ctx, userInfo)
 
 	if a.emailVerificationRequired && !userInfo.IsAdmin && !userInfo.EmailVerified {
-		if !publicProcedures[procedure] && !unverifiedAllowedProcedures[procedure] {
+		if !unverifiedAllowedProcedures[procedure] {
 			return ctx, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("email verification required"))
 		}
 	}

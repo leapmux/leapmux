@@ -70,7 +70,7 @@ describe('authContext', () => {
     // Simulate: user just returned from OAuth callback with a valid session cookie.
     // AuthContext.onMount calls getCurrentUser, which succeeds because the cookie is set.
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'u2', username: 'oauth-user', orgId: 'o2', isAdmin: false, oauthProvider: 'Google' },
+      user: { id: 'u2', username: 'oauth-user', orgId: 'o2', isAdmin: false, oauthProviders: ['Google'] },
     })
 
     renderWithAuth()

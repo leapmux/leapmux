@@ -75,6 +75,7 @@ func setupWorkspaceTest(t *testing.T) *workspaceTestEnv {
 		Username:     "testuser",
 		PasswordHash: hash,
 		DisplayName:  "Test",
+		PasswordSet:  1,
 		IsAdmin:      1,
 	})
 
@@ -206,6 +207,7 @@ func TestSaveMultiLayout_NotOwnedWorkspaceRejected(t *testing.T) {
 		Username:     "other",
 		PasswordHash: hash,
 		DisplayName:  "Other",
+		PasswordSet:  1,
 		IsAdmin:      0,
 	})
 	otherWsID := id.Generate()

@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"encoding/binary"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/hub/keystore"
@@ -12,7 +13,7 @@ func newTestKeystore(t *testing.T) *keystore.Keystore {
 	t.Helper()
 	key, err := keystore.GenerateKey()
 	require.NoError(t, err)
-	ks, err := keystore.New(map[byte][32]byte{1: key})
+	ks, err := keystore.New(map[uint32][32]byte{1: key})
 	require.NoError(t, err)
 	return ks
 }
@@ -80,7 +81,7 @@ func TestTokenStore_KeyVersionMatchesActive(t *testing.T) {
 	ct, err := ks.Encrypt([]byte("test"), nil)
 	require.NoError(t, err)
 
-	assert.Equal(t, ks.ActiveVersion(), ct[0], "ciphertext version byte must match active key version")
+	assert.Equal(t, ks.ActiveVersion(), binary.BigEndian.Uint32(ct[:4]), "ciphertext version must match active key version")
 }
 
 func TestTokenStore_CrossRecordAADPreventsSwap(t *testing.T) {

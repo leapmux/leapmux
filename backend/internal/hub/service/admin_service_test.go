@@ -82,6 +82,7 @@ func (e *adminTestEnv) createNonAdminUser(t *testing.T) (userID, token string) {
 		Username:     "regularuser",
 		PasswordHash: hash,
 		DisplayName:  "Regular User",
+		PasswordSet:  1,
 		IsAdmin:      0,
 	})
 	_ = e.queries.CreateOrgMember(ctx, gendb.CreateOrgMemberParams{

@@ -80,7 +80,7 @@ const OAuthCompleteSignupPage: Component = () => {
       <div class={`card ${cardNarrow}`}>
         <h1>Complete Sign Up</h1>
         <Show when={loading()}>
-          <div style={{ 'display': 'flex', 'justify-content': 'center', 'padding': 'var(--space-6) 0' }}>
+          <div class={styles.loadingCenter}>
             <Icon icon={LoaderCircle} size="md" class={spinner} />
           </div>
         </Show>
@@ -92,7 +92,7 @@ const OAuthCompleteSignupPage: Component = () => {
         </Show>
         <Show when={!loading() && !tokenError()}>
           <Show when={providerName()}>
-            <p style={{ 'font-size': 'var(--text-7)', 'color': 'var(--muted-foreground)', 'margin': '0 0 var(--space-4)' }}>
+            <p class={styles.providerHint}>
               Signed in via
               {' '}
               {providerName()}

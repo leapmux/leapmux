@@ -1,6 +1,7 @@
 package keystore
 
 import (
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"testing"
@@ -53,7 +54,7 @@ func TestCiphertextStartsWithKeyVersion(t *testing.T) {
 
 	ct, err := ks.Encrypt([]byte("test"), nil)
 	require.NoError(t, err)
-	assert.Equal(t, byte(1), ct[0], "ciphertext should start with key version 1")
+	assert.Equal(t, uint32(1), binary.BigEndian.Uint32(ct[:4]), "ciphertext should start with key version 1")
 }
 
 func TestDecryptWrongKeyFails(t *testing.T) {
@@ -103,7 +104,7 @@ func TestDecryptUnknownVersionFails(t *testing.T) {
 	require.NoError(t, err)
 
 	// Change version to unknown.
-	ct[0] = 99
+	binary.BigEndian.PutUint32(ct[:4], 99)
 
 	_, err = ks.Decrypt(ct, nil)
 	assert.Error(t, err)
@@ -116,17 +117,17 @@ func TestMultiVersionKeyRing(t *testing.T) {
 	key2, err := GenerateKey()
 	require.NoError(t, err)
 
-	ks, err := New(map[byte][keySize]byte{1: key1, 2: key2})
+	ks, err := New(map[uint32][keySize]byte{1: key1, 2: key2})
 	require.NoError(t, err)
-	assert.Equal(t, byte(2), ks.ActiveVersion())
+	assert.Equal(t, uint32(2), ks.ActiveVersion())
 
 	// Encrypt produces version 2.
 	ct, err := ks.Encrypt([]byte("new data"), nil)
 	require.NoError(t, err)
-	assert.Equal(t, byte(2), ct[0])
+	assert.Equal(t, uint32(2), binary.BigEndian.Uint32(ct[:4]))
 
 	// Old version 1 data still decrypts.
-	ksOld, err := New(map[byte][keySize]byte{1: key1})
+	ksOld, err := New(map[uint32][keySize]byte{1: key1})
 	require.NoError(t, err)
 	ctOld, err := ksOld.Encrypt([]byte("old data"), nil)
 	require.NoError(t, err)
@@ -142,7 +143,7 @@ func TestAutoGenerateKeyFile(t *testing.T) {
 
 	ks, err := LoadOrGenerate(path)
 	require.NoError(t, err)
-	assert.Equal(t, byte(1), ks.ActiveVersion())
+	assert.Equal(t, uint32(1), ks.ActiveVersion())
 
 	// Verify file permissions.
 	info, err := os.Stat(path)
@@ -160,7 +161,7 @@ func TestLoadFromBase64File(t *testing.T) {
 
 	ks, err := LoadFromFile(path)
 	require.NoError(t, err)
-	assert.Equal(t, byte(1), ks.ActiveVersion())
+	assert.Equal(t, uint32(1), ks.ActiveVersion())
 	assert.Len(t, ks.Versions(), 1)
 }
 
@@ -177,7 +178,7 @@ func TestKeyRingFileParsing(t *testing.T) {
 
 	ks, err := LoadFromFile(path)
 	require.NoError(t, err)
-	assert.Equal(t, byte(2), ks.ActiveVersion())
+	assert.Equal(t, uint32(2), ks.ActiveVersion())
 	assert.Len(t, ks.Versions(), 2)
 }
 
@@ -186,7 +187,7 @@ func TestDuplicateVersionFails(t *testing.T) {
 	path := filepath.Join(dir, "encryption.key")
 
 	key, _ := GenerateKey()
-	_ = writeKeyRingFile(path, map[byte][keySize]byte{1: key})
+	_ = writeKeyRingFile(path, map[uint32][keySize]byte{1: key})
 
 	// Manually append a duplicate version 1 line.
 	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
@@ -227,11 +228,11 @@ func TestRotateKey(t *testing.T) {
 
 	v1, err := RotateKey(path)
 	require.NoError(t, err)
-	assert.Equal(t, byte(2), v1)
+	assert.Equal(t, uint32(2), v1)
 
 	v2, err := RotateKey(path)
 	require.NoError(t, err)
-	assert.Equal(t, byte(3), v2)
+	assert.Equal(t, uint32(3), v2)
 
 	ks, err := LoadFromFile(path)
 	require.NoError(t, err)
@@ -252,7 +253,7 @@ func TestRemoveKey(t *testing.T) {
 	ks, err := LoadFromFile(path)
 	require.NoError(t, err)
 	assert.Len(t, ks.Versions(), 1)
-	assert.Equal(t, byte(2), ks.ActiveVersion())
+	assert.Equal(t, uint32(2), ks.ActiveVersion())
 }
 
 func TestRemoveActiveVersionFails(t *testing.T) {
@@ -281,7 +282,7 @@ func newTestKeystore(t *testing.T) *Keystore {
 	t.Helper()
 	key, err := GenerateKey()
 	require.NoError(t, err)
-	ks, err := New(map[byte][keySize]byte{1: key})
+	ks, err := New(map[uint32][keySize]byte{1: key})
 	require.NoError(t, err)
 	return ks
 }

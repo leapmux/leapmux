@@ -72,6 +72,7 @@ func TestUsers_CRUD(t *testing.T) {
 		Username:     "alice",
 		PasswordHash: "hash123",
 		DisplayName:  "Alice",
+		PasswordSet:  1,
 		IsAdmin:      0,
 	})
 	require.NoError(t, err)
@@ -114,7 +115,7 @@ func TestWorkers_CRUD(t *testing.T) {
 	userID := makeID()
 	_ = q.CreateUser(ctx, gendb.CreateUserParams{
 		ID: userID, OrgID: orgID, Username: "admin",
-		PasswordHash: "h", DisplayName: "Admin", IsAdmin: 1,
+		PasswordHash: "h", DisplayName: "Admin", PasswordSet: 1, IsAdmin: 1,
 	})
 
 	workerID := makeID()
@@ -175,7 +176,7 @@ func TestRegistrations(t *testing.T) {
 	userID := makeID()
 	_ = q.CreateUser(ctx, gendb.CreateUserParams{
 		ID: userID, OrgID: orgID, Username: "admin",
-		PasswordHash: "h", DisplayName: "Admin", IsAdmin: 1,
+		PasswordHash: "h", DisplayName: "Admin", PasswordSet: 1, IsAdmin: 1,
 	})
 	workerID := makeID()
 	_ = q.CreateWorker(ctx, gendb.CreateWorkerParams{
@@ -247,7 +248,7 @@ func TestUserSessions(t *testing.T) {
 	userID := makeID()
 	_ = q.CreateUser(ctx, gendb.CreateUserParams{
 		ID: userID, OrgID: orgID, Username: "u",
-		PasswordHash: "h", DisplayName: "U", IsAdmin: 0,
+		PasswordHash: "h", DisplayName: "U", PasswordSet: 1, IsAdmin: 0,
 	})
 
 	// Create a valid session.
@@ -282,7 +283,7 @@ func TestUserSessions_Expired(t *testing.T) {
 	userID := makeID()
 	_ = q.CreateUser(ctx, gendb.CreateUserParams{
 		ID: userID, OrgID: orgID, Username: "u",
-		PasswordHash: "h", DisplayName: "U", IsAdmin: 0,
+		PasswordHash: "h", DisplayName: "U", PasswordSet: 1, IsAdmin: 0,
 	})
 
 	// Create an expired session.

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -31,11 +32,17 @@ type OAuthHandler struct {
 	queries  *gendb.Queries
 	cfg      *config.Config
 	keystore *keystore.Keystore
+
+	// providers caches built Provider instances by provider ID.
+	// Provider config (issuer, client_id, scopes) is immutable after creation,
+	// so entries stay valid for the lifetime of the process.
+	providers   map[string]huboauth.Provider
+	providersMu sync.RWMutex
 }
 
 // NewOAuthHandler creates a new OAuth HTTP handler.
 func NewOAuthHandler(sqlDB *sql.DB, q *gendb.Queries, cfg *config.Config, ks *keystore.Keystore) *OAuthHandler {
-	return &OAuthHandler{sqlDB: sqlDB, queries: q, cfg: cfg, keystore: ks}
+	return &OAuthHandler{sqlDB: sqlDB, queries: q, cfg: cfg, keystore: ks, providers: make(map[string]huboauth.Provider)}
 }
 
 // RegisterRoutes registers OAuth HTTP routes on the given mux.
@@ -167,37 +174,43 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 		ProviderSubject: claims.Subject,
 	})
 	if err == nil {
-		// Existing user — direct login.
+		// Existing link — direct login.
 		user, userErr := h.queries.GetUserByID(ctx, link.UserID)
 		if userErr != nil {
 			http.Error(w, "linked user not found", http.StatusInternalServerError)
 			return
 		}
 
-		if err := h.storeTokens(ctx, user.ID, providerID, tokenSet); err != nil {
-			slog.Error("oauth: store tokens", "error", err)
-		}
-
-		sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, h.queries, user.ID, r.UserAgent(), r.RemoteAddr)
-		if sessionErr != nil {
-			slog.Error("oauth: create session", "error", sessionErr)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-
-		http.SetCookie(w, auth.BuildSessionCookie(sessionID, expiresAt, h.cfg.SecureCookies))
-
-		redirectTo := "/"
-		if oauthState.RedirectUri != "" {
-			redirectTo = oauthState.RedirectUri
-		}
-		http.Redirect(w, r, redirectTo, http.StatusFound)
+		h.loginOAuthUser(w, r, user.ID, providerID, tokenSet, oauthState.RedirectUri)
 		return
 	}
 	if err != sql.ErrNoRows {
 		slog.Error("oauth: query user link", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
+	}
+
+	// Auto-link by verified email: if the OAuth provider is trusted and returns
+	// an email that matches an existing user with a verified email, link the
+	// new provider identity to that account and log in directly.
+	if h.cfg.OAuthTrustEmail && claims.Email != "" {
+		existingUser, emailErr := h.queries.GetUserByEmail(ctx, claims.Email)
+		if emailErr == nil && existingUser.EmailVerified == 1 {
+			if err := h.queries.CreateOAuthUserLink(ctx, gendb.CreateOAuthUserLinkParams{
+				UserID:          existingUser.ID,
+				ProviderID:      providerID,
+				ProviderSubject: claims.Subject,
+			}); err != nil {
+				slog.Error("oauth: create user link for auto-link", "error", err)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+
+			slog.Info("oauth: auto-linked provider to existing account by verified email",
+				"user_id", existingUser.ID, "provider_id", providerID, "email", claims.Email)
+			h.loginOAuthUser(w, r, existingUser.ID, providerID, tokenSet, oauthState.RedirectUri)
+			return
+		}
 	}
 
 	// New user — store pending signup for username selection.
@@ -214,6 +227,31 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 	}
 
 	http.Redirect(w, r, "/oauth/complete-signup?token="+signupToken, http.StatusFound)
+}
+
+// loginOAuthUser stores tokens, creates a session, and redirects the user.
+// Used by both the existing-link and auto-link-by-email paths.
+func (h *OAuthHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, userID, providerID string, tokenSet *huboauth.TokenSet, redirectURI string) {
+	ctx := r.Context()
+
+	if err := h.storeTokens(ctx, userID, providerID, tokenSet); err != nil {
+		slog.Error("oauth: store tokens", "error", err)
+	}
+
+	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, h.queries, userID, r.UserAgent(), r.RemoteAddr)
+	if sessionErr != nil {
+		slog.Error("oauth: create session", "error", sessionErr)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	http.SetCookie(w, auth.BuildSessionCookie(sessionID, expiresAt, h.cfg.SecureCookies))
+
+	redirectTo := "/"
+	if redirectURI != "" {
+		redirectTo = redirectURI
+	}
+	http.Redirect(w, r, redirectTo, http.StatusFound)
 }
 
 func tokenExpiryTime(tokenSet *huboauth.TokenSet) time.Time {
@@ -288,6 +326,14 @@ func (h *OAuthHandler) storeTokens(ctx context.Context, userID, providerID strin
 }
 
 func (h *OAuthHandler) buildProvider(ctx context.Context, dbProvider *gendb.OauthProvider) (huboauth.Provider, error) {
+	// Check cache first (provider config is immutable after creation).
+	h.providersMu.RLock()
+	cached, ok := h.providers[dbProvider.ID]
+	h.providersMu.RUnlock()
+	if ok {
+		return cached, nil
+	}
+
 	clientSecret, err := h.keystore.Decrypt(dbProvider.ClientSecret, keystore.ProviderAAD(dbProvider.ID))
 	if err != nil {
 		return nil, fmt.Errorf("decrypt client secret: %w", err)
@@ -295,14 +341,24 @@ func (h *OAuthHandler) buildProvider(ctx context.Context, dbProvider *gendb.Oaut
 
 	redirectURL := fmt.Sprintf("%s/auth/oauth/%s/callback", h.cfg.BaseURL(), dbProvider.ID)
 
-	scopes := strings.Split(dbProvider.Scopes, " ")
+	scopes := strings.Fields(dbProvider.Scopes)
 
+	var provider huboauth.Provider
 	switch dbProvider.ProviderType {
 	case huboauth.ProviderTypeOIDC:
-		return huboauth.NewOIDCProvider(ctx, dbProvider.IssuerUrl, dbProvider.ClientID, string(clientSecret), redirectURL, scopes)
+		provider, err = huboauth.NewOIDCProvider(ctx, dbProvider.IssuerUrl, dbProvider.ClientID, string(clientSecret), redirectURL, scopes)
+		if err != nil {
+			return nil, err
+		}
 	case huboauth.ProviderTypeGitHub:
-		return huboauth.NewGitHubProvider(dbProvider.ClientID, string(clientSecret), redirectURL, scopes), nil
+		provider = huboauth.NewGitHubProvider(dbProvider.ClientID, string(clientSecret), redirectURL, scopes)
 	default:
 		return nil, fmt.Errorf("unknown provider type: %s", dbProvider.ProviderType)
 	}
+
+	h.providersMu.Lock()
+	h.providers[dbProvider.ID] = provider
+	h.providersMu.Unlock()
+
+	return provider, nil
 }

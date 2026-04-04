@@ -77,6 +77,7 @@ func Run(ctx context.Context, sqlDB *sql.DB, q *db.Queries, soloMode bool) error
 		PasswordHash: passwordHash,
 		DisplayName:  displayName,
 		Email:        "",
+		PasswordSet:  1,
 		IsAdmin:      1,
 	}); err != nil {
 		return fmt.Errorf("create admin user: %w", err)

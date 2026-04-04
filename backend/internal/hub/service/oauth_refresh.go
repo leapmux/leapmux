@@ -7,7 +7,6 @@ import (
 
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
-	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
 )
 
 const tokenRefreshInterval = 1 * time.Minute
@@ -37,27 +36,34 @@ func (h *OAuthHandler) refreshExpiringTokens(ctx context.Context) {
 		return
 	}
 
-	// Cache providers to avoid repeated DB lookups and OIDC discovery per token.
-	type cachedProvider struct {
-		provider huboauth.Provider
-		err      error
+	// Cache DB lookups within this tick to avoid repeated GetOAuthProviderByID
+	// calls. The built Provider itself is cached on OAuthHandler.
+	type dbLookup struct {
+		dbProvider *gendb.OauthProvider
+		err        error
 	}
-	providerCache := make(map[string]*cachedProvider)
+	dbCache := make(map[string]*dbLookup)
 
 	for _, tok := range tokens {
-		cached, ok := providerCache[tok.ProviderID]
+		lookup, ok := dbCache[tok.ProviderID]
 		if !ok {
-			cached = &cachedProvider{}
+			lookup = &dbLookup{}
 			dbProvider, getErr := h.queries.GetOAuthProviderByID(ctx, tok.ProviderID)
 			if getErr != nil {
-				cached.err = getErr
+				lookup.err = getErr
 			} else {
-				cached.provider, cached.err = h.buildProvider(ctx, &dbProvider)
+				lookup.dbProvider = &dbProvider
 			}
-			providerCache[tok.ProviderID] = cached
+			dbCache[tok.ProviderID] = lookup
 		}
-		if cached.err != nil {
-			slog.Error("oauth refresh: build provider", "provider_id", tok.ProviderID, "error", cached.err)
+		if lookup.err != nil {
+			slog.Error("oauth refresh: get provider", "provider_id", tok.ProviderID, "error", lookup.err)
+			continue
+		}
+
+		provider, buildErr := h.buildProvider(ctx, lookup.dbProvider)
+		if buildErr != nil {
+			slog.Error("oauth refresh: build provider", "provider_id", tok.ProviderID, "error", buildErr)
 			continue
 		}
 
@@ -68,7 +74,7 @@ func (h *OAuthHandler) refreshExpiringTokens(ctx context.Context) {
 			continue
 		}
 
-		newTokens, err := cached.provider.Refresh(ctx, string(refreshTokenPlain))
+		newTokens, err := provider.Refresh(ctx, string(refreshTokenPlain))
 		if err != nil {
 			slog.Warn("oauth refresh: refresh failed, deleting tokens", "user_id", tok.UserID, "provider_id", tok.ProviderID, "error", err)
 			_ = h.queries.DeleteOAuthTokensByUserAndProvider(ctx, gendb.DeleteOAuthTokensByUserAndProviderParams{

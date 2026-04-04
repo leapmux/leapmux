@@ -1,6 +1,7 @@
 package keystore
 
 import (
+	"encoding/binary"
 	"path/filepath"
 	"testing"
 
@@ -17,7 +18,7 @@ func TestFullKeyRotationLifecycle(t *testing.T) {
 	// 1. Auto-generate initial key ring (version 1).
 	ks1, err := LoadOrGenerate(path)
 	require.NoError(t, err)
-	assert.Equal(t, byte(1), ks1.ActiveVersion())
+	assert.Equal(t, uint32(1), ks1.ActiveVersion())
 	assert.Len(t, ks1.Versions(), 1)
 
 	// 2. Encrypt data with version 1.
@@ -28,8 +29,8 @@ func TestFullKeyRotationLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	ct2, err := ks1.Encrypt(plaintext2, aad)
 	require.NoError(t, err)
-	assert.Equal(t, byte(1), ct1[0], "ciphertext should be version 1")
-	assert.Equal(t, byte(1), ct2[0])
+	assert.Equal(t, uint32(1), binary.BigEndian.Uint32(ct1[:4]), "ciphertext should be version 1")
+	assert.Equal(t, uint32(1), binary.BigEndian.Uint32(ct2[:4]))
 
 	// Save original ciphertexts for later verification.
 	origCt1 := make([]byte, len(ct1))
@@ -38,12 +39,12 @@ func TestFullKeyRotationLifecycle(t *testing.T) {
 	// 3. Rotate key — adds version 2.
 	newVer, err := RotateKey(path)
 	require.NoError(t, err)
-	assert.Equal(t, byte(2), newVer)
+	assert.Equal(t, uint32(2), newVer)
 
 	// 4. Reload keystore from file.
 	ks2, err := LoadFromFile(path)
 	require.NoError(t, err)
-	assert.Equal(t, byte(2), ks2.ActiveVersion())
+	assert.Equal(t, uint32(2), ks2.ActiveVersion())
 	assert.Len(t, ks2.Versions(), 2)
 
 	// 5. Old ciphertext (version 1) still decrypts with new keystore.
@@ -58,12 +59,12 @@ func TestFullKeyRotationLifecycle(t *testing.T) {
 	// 6. New encryption uses version 2.
 	ct3, err := ks2.Encrypt([]byte("new-data"), aad)
 	require.NoError(t, err)
-	assert.Equal(t, byte(2), ct3[0], "new ciphertext should be version 2")
+	assert.Equal(t, uint32(2), binary.BigEndian.Uint32(ct3[:4]), "new ciphertext should be version 2")
 
 	// 7. Re-encrypt old data with new key (simulating reencrypt-secrets).
 	reencrypted1, err := ks2.Encrypt(plaintext1, aad)
 	require.NoError(t, err)
-	assert.Equal(t, byte(2), reencrypted1[0], "re-encrypted data should be version 2")
+	assert.Equal(t, uint32(2), binary.BigEndian.Uint32(reencrypted1[:4]), "re-encrypted data should be version 2")
 	assert.NotEqual(t, ct1, reencrypted1, "re-encrypted ciphertext should differ")
 
 	// Verify re-encrypted data decrypts correctly.
@@ -78,7 +79,7 @@ func TestFullKeyRotationLifecycle(t *testing.T) {
 	// 9. Reload — only version 2 remains.
 	ks3, err := LoadFromFile(path)
 	require.NoError(t, err)
-	assert.Equal(t, byte(2), ks3.ActiveVersion())
+	assert.Equal(t, uint32(2), ks3.ActiveVersion())
 	assert.Len(t, ks3.Versions(), 1)
 
 	// 10. Old version-1 ciphertext can no longer be decrypted.

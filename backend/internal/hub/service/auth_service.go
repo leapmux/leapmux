@@ -81,16 +81,16 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[l
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	var oauthProviderName string
+	var oauthProviderNames []string
 	links, _ := s.queries.ListOAuthUserLinksByUser(ctx, user.ID)
-	if len(links) > 0 {
-		if provider, err := s.queries.GetOAuthProviderByID(ctx, links[0].ProviderID); err == nil {
-			oauthProviderName = provider.Name
+	for _, link := range links {
+		if provider, err := s.queries.GetOAuthProviderByID(ctx, link.ProviderID); err == nil {
+			oauthProviderNames = append(oauthProviderNames, provider.Name)
 		}
 	}
 
 	return connect.NewResponse(&leapmuxv1.GetCurrentUserResponse{
-		User: userToProtoWithOAuth(&user, org.Name, oauthProviderName),
+		User: userToProtoWithOAuth(&user, org.Name, oauthProviderNames),
 	}), nil
 }
 
@@ -133,6 +133,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 			PasswordHash: hash,
 			DisplayName:  req.Msg.GetDisplayName(),
 			Email:        "", // email goes to pending_email
+			PasswordSet:  1,
 			IsAdmin:      0,
 		})
 		if err != nil {
@@ -168,6 +169,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		PasswordHash: hash,
 		DisplayName:  req.Msg.GetDisplayName(),
 		Email:        email,
+		PasswordSet:  1,
 		IsAdmin:      0,
 	})
 	if err != nil {
@@ -348,53 +350,46 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	var emailVerified bool
 	var pendingEmail string
 
-	if email != "" && s.cfg.OAuthTrustEmail {
-		// Trusted OAuth email — goes directly to email column.
+	if email != "" {
 		if err := checkEmailAvailable(ctx, s.queries, email, ""); err != nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists, err)
 		}
-		userEmail = email
-		emailVerified = true
-	} else if email != "" && !s.cfg.OAuthTrustEmail && s.cfg.EmailVerificationRequired {
-		// Untrusted + verification required — goes to pending_email.
-		if err := checkEmailAvailable(ctx, s.queries, email, ""); err != nil {
-			return nil, connect.NewError(connect.CodeAlreadyExists, err)
+
+		if s.cfg.OAuthTrustEmail {
+			// Trusted OAuth email — goes directly to email column as verified.
+			userEmail = email
+			emailVerified = true
+		} else if s.cfg.EmailVerificationRequired {
+			// Untrusted + verification required — goes to pending_email.
+			pendingEmail = email
+		} else {
+			// Untrusted + verification not required — goes to email column unverified.
+			userEmail = email
 		}
-		pendingEmail = email
-	} else if email != "" {
-		// Untrusted + verification not required — goes to email column unverified.
-		if err := checkEmailAvailable(ctx, s.queries, email, ""); err != nil {
-			return nil, connect.NewError(connect.CodeAlreadyExists, err)
-		}
-		userEmail = email
 	}
 
-	// Generate random password hash for NOT NULL constraint.
+	// OAuth users have no password; random hash satisfies the NOT NULL constraint.
 	randomPwdHash, err := pwdhash.Hash(id.Generate())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("generate random password: %w", err))
 	}
 
+	var ev int64
+	if emailVerified {
+		ev = 1
+	}
+
 	user, err := createUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
-		Username:     username,
-		PasswordHash: randomPwdHash,
-		DisplayName:  displayName,
-		Email:        userEmail,
-		IsAdmin:      0,
+		Username:      username,
+		PasswordHash:  randomPwdHash,
+		DisplayName:   displayName,
+		Email:         userEmail,
+		EmailVerified: ev,
+		PasswordSet:   0, // OAuth users don't have a real password
+		IsAdmin:       0,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
-	// Set email_verified if trusted OAuth.
-	if emailVerified {
-		var ev int64 = 1
-		if err := s.queries.UpdateUserEmailVerified(ctx, db.UpdateUserEmailVerifiedParams{
-			EmailVerified: ev,
-			ID:            user.ID,
-		}); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
-		}
 	}
 
 	// Handle pending email if needed.
@@ -482,6 +477,7 @@ func userToProto(u *db.User) *leapmuxv1.User {
 		Email:         u.Email,
 		EmailVerified: u.EmailVerified == 1,
 		PendingEmail:  u.PendingEmail,
+		PasswordSet:   u.PasswordSet == 1,
 	}
 }
 
@@ -491,8 +487,8 @@ func userToProtoWithOrgName(u *db.User, orgName string) *leapmuxv1.User {
 	return p
 }
 
-func userToProtoWithOAuth(u *db.User, orgName, oauthProvider string) *leapmuxv1.User {
+func userToProtoWithOAuth(u *db.User, orgName string, oauthProviders []string) *leapmuxv1.User {
 	p := userToProtoWithOrgName(u, orgName)
-	p.OauthProvider = oauthProvider
+	p.OauthProviders = oauthProviders
 	return p
 }

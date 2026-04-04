@@ -1,6 +1,6 @@
 -- name: CreateUser :exec
-INSERT INTO users (id, org_id, username, password_hash, display_name, email, is_admin)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+INSERT INTO users (id, org_id, username, password_hash, display_name, email, email_verified, password_set, is_admin)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetUserByID :one
 SELECT * FROM users WHERE id = ?;
@@ -26,7 +26,7 @@ ORDER BY created_at DESC
 LIMIT sqlc.arg(limit) OFFSET sqlc.arg(offset);
 
 -- name: UpdateUserPassword :exec
-UPDATE users SET password_hash = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+UPDATE users SET password_hash = ?, password_set = 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ?;
 
 -- name: UpdateUserProfile :exec

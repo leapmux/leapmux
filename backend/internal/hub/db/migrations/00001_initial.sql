@@ -20,6 +20,7 @@ CREATE TABLE users (
     pending_email            TEXT NOT NULL DEFAULT '',
     pending_email_token      TEXT NOT NULL DEFAULT '',
     pending_email_expires_at DATETIME,
+    password_set             INTEGER NOT NULL DEFAULT 1,
     is_admin                 INTEGER NOT NULL DEFAULT 0,
     prefs          TEXT NOT NULL DEFAULT '{}',
     created_at     DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
