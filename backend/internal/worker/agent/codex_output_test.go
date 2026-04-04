@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 // controlRequestRecord captures a single PersistControlRequest / BroadcastControlRequest call.
@@ -19,6 +21,16 @@ type controlTestSink struct {
 	crMu              sync.Mutex
 	persistedControls []controlRequestRecord
 	broadcastControls []controlRequestRecord
+}
+
+type startupStatusGuardSink struct {
+	testSink
+	t *testing.T
+}
+
+func (s *startupStatusGuardSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, span SpanInfo) error {
+	s.t.Fatalf("startup status notification must not be persisted as a regular message: role=%v content=%s", role, string(content))
+	return nil
 }
 
 func (s *controlTestSink) PersistControlRequest(requestID string, payload []byte) {
@@ -227,6 +239,24 @@ func TestHandleCodexOutput_ContextCompactionStartPersistsCompactingNotification(
 	}
 	if sink.MessageCount() != 0 {
 		t.Fatalf("expected 0 assistant messages, got %d", sink.MessageCount())
+	}
+}
+
+func TestHandleCodexOutput_McpStartupStatusPersistsNotification(t *testing.T) {
+	sink := &startupStatusGuardSink{t: t}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"mcpServer/startupStatus/updated","params":{"name":"codex_apps","status":"ready"}}`
+	handleCodexOutput(agent, parseLine([]byte(input)))
+
+	if sink.NotificationCount() != 1 {
+		t.Fatalf("expected 1 notification, got %d", sink.NotificationCount())
+	}
+	if sink.MessageCount() != 0 {
+		t.Fatalf("expected 0 persisted messages, got %d", sink.MessageCount())
+	}
+	if string(sink.LastNotification().Content) != input {
+		t.Fatalf("expected raw startup status notification to be preserved, got %s", string(sink.LastNotification().Content))
 	}
 }
 

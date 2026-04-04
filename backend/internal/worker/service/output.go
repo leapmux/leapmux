@@ -428,19 +428,21 @@ func (h *OutputHandler) spanTracker(agentID string) *SpanTracker {
 // NewSink creates a per-agent OutputSink backed by this OutputHandler.
 func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentProvider) agent.OutputSink {
 	return &agentOutputSink{
-		h:             h,
-		agentID:       agentID,
-		agentProvider: agentProvider,
-		tracker:       h.spanTracker(agentID),
+		h:                        h,
+		agentID:                  agentID,
+		agentProvider:            agentProvider,
+		notificationConsolidator: agent.NotificationConsolidatorForProvider(agentProvider),
+		tracker:                  h.spanTracker(agentID),
 	}
 }
 
 // agentOutputSink implements agent.OutputSink for a single agent.
 type agentOutputSink struct {
-	h             *OutputHandler
-	agentID       string
-	agentProvider leapmuxv1.AgentProvider
-	tracker       *SpanTracker
+	h                        *OutputHandler
+	agentID                  string
+	agentProvider            leapmuxv1.AgentProvider
+	notificationConsolidator agent.NotificationConsolidator
+	tracker                  *SpanTracker
 }
 
 // --- OutputSink interface implementation ---
@@ -450,7 +452,7 @@ func (s *agentOutputSink) PersistMessage(role leapmuxv1.MessageRole, content []b
 }
 
 func (s *agentOutputSink) PersistNotification(role leapmuxv1.MessageRole, content []byte) error {
-	return s.h.persistNotificationThreaded(s.agentID, s.agentProvider, role, content)
+	return s.h.persistNotificationThreaded(s.agentID, s.agentProvider, s.notificationConsolidator, role, content)
 }
 
 func (s *agentOutputSink) OpenSpan(spanID, parentSpanID string) {
@@ -760,7 +762,7 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 
 // persistNotificationThreaded persists a notification message, appending it
 // to the current notification thread if one exists.
-func (h *OutputHandler) persistNotificationThreaded(agentID string, agentProvider leapmuxv1.AgentProvider, role leapmuxv1.MessageRole, contentJSON []byte) error {
+func (h *OutputHandler) persistNotificationThreaded(agentID string, agentProvider leapmuxv1.AgentProvider, consolidator agent.NotificationConsolidator, role leapmuxv1.MessageRole, contentJSON []byte) error {
 	if h.wakeLock != nil {
 		h.wakeLock.RecordActivity()
 	}
@@ -770,7 +772,7 @@ func (h *OutputHandler) persistNotificationThreaded(agentID string, agentProvide
 
 	if ref, ok := h.lastNotifThread.Load(agentID); ok {
 		threadRef := ref.(*notifThreadRef)
-		if err := h.appendToNotificationThread(agentID, agentProvider, threadRef, role, contentJSON); err == nil {
+		if err := h.appendToNotificationThread(agentID, agentProvider, consolidator, threadRef, role, contentJSON); err == nil {
 			return nil
 		}
 	}
@@ -779,7 +781,7 @@ func (h *OutputHandler) persistNotificationThreaded(agentID string, agentProvide
 }
 
 // appendToNotificationThread appends a message to an existing notification thread.
-func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider leapmuxv1.AgentProvider, threadRef *notifThreadRef, role leapmuxv1.MessageRole, contentJSON []byte) error {
+func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider leapmuxv1.AgentProvider, consolidator agent.NotificationConsolidator, threadRef *notifThreadRef, role leapmuxv1.MessageRole, contentJSON []byte) error {
 	parentRow, err := h.queries.GetMessageByAgentAndID(bgCtx(), db.GetMessageByAgentAndIDParams{
 		ID:      threadRef.msgID,
 		AgentID: agentID,
@@ -803,7 +805,7 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 		wrapper.OldSeqs = wrapper.OldSeqs[len(wrapper.OldSeqs)-16:]
 	}
 	wrapper.Messages = append(wrapper.Messages, contentJSON)
-	wrapper.Messages = consolidateNotificationThread(wrapper.Messages)
+	wrapper.Messages = consolidateNotificationThread(wrapper.Messages, consolidator)
 
 	merged, err := json.Marshal(wrapper)
 	if err != nil {
@@ -917,7 +919,7 @@ func (h *OutputHandler) BroadcastNotification(agentID string, agentProvider leap
 		slog.Warn("marshal notification content", "agent_id", agentID, "error", err)
 		return
 	}
-	if err := h.persistNotificationThreaded(agentID, agentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, contentJSON); err != nil {
+	if err := h.persistNotificationThreaded(agentID, agentProvider, agent.NotificationConsolidatorForProvider(agentProvider), leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, contentJSON); err != nil {
 		slog.Warn("failed to persist notification", "agent_id", agentID, "error", err)
 	}
 }
@@ -970,31 +972,28 @@ func (h *OutputHandler) updatePlan(agentID, filePath string, compressed []byte, 
 }
 
 // consolidateNotificationThread consolidates a notification thread's messages.
-// Each message type appears at most once in the output (except compaction
-// boundaries and unknown types, which are always kept). When duplicates exist,
-// the last occurrence's data wins. Output is ordered by the position of each
-// type's last occurrence in the input.
-func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage {
+// Service-owned LeapMux notification types are merged centrally, while
+// provider-owned raw payloads are classified through the injected consolidator.
+// Ordering is preserved by the last occurrence index of each retained entry.
+func consolidateNotificationThread(messages []json.RawMessage, providerConsolidator agent.NotificationConsolidator) []json.RawMessage {
+	if providerConsolidator == nil {
+		providerConsolidator = agent.NotificationConsolidatorForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED)
+	}
+
 	type settingsChange struct {
 		Old string `json:"old"`
 		New string `json:"new"`
 	}
 
-	// Unified envelope — decoded once per message.
 	type envelope struct {
 		Type    string                    `json:"type"`
 		Subtype string                    `json:"subtype"`
-		Method  string                    `json:"method"`
 		Changes map[string]settingsChange `json:"changes,omitempty"`
-		Params  *struct {
-			Name string `json:"name,omitempty"`
-		} `json:"params,omitempty"`
-		RLInfo *struct {
+		RLInfo  *struct {
 			RateLimitType string `json:"rateLimitType"`
 		} `json:"rate_limit_info,omitempty"`
 	}
 
-	// Deduplication state — track the last-seen index for ordering.
 	mergedChanges := map[string]settingsChange{}
 	settingsLastIdx := -1
 
@@ -1007,37 +1006,33 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 	planExecRaw := json.RawMessage(nil)
 	planExecLastIdx := -1
 
-	rateLimitByType := map[string]json.RawMessage{}
-	rateLimitLastIdx := -1
+	type indexedRaw struct {
+		idx  int
+		raw  json.RawMessage
+		kind agent.NotificationKind
+	}
 
-	var codexRateLimitRaw json.RawMessage
-	codexRateLimitLastIdx := -1
+	rateLimitByType := map[string]indexedRaw{}
+	providerEntries := map[string]indexedRaw{}
 
-	var latestStatusRaw json.RawMessage
+	var latestStatus indexedRaw
 	statusLastIdx := -1
 
-	var latestApiRetryRaw json.RawMessage
+	var latestAPIRetry indexedRaw
 	apiRetryLastIdx := -1
 
-	// Compaction boundaries and unknown types: always kept, in order.
-	type indexedRaw struct {
-		idx int
-		raw json.RawMessage
-	}
 	var keepAll []indexedRaw
-
-	startupStatusByServer := map[string]indexedRaw{}
 
 	for i, raw := range messages {
 		var env envelope
 		if err := json.Unmarshal(raw, &env); err != nil {
 			slog.Warn("consolidate notification unmarshal failed", "error", err)
-			keepAll = append(keepAll, indexedRaw{i, raw})
+			keepAll = append(keepAll, indexedRaw{idx: i, raw: raw})
 			continue
 		}
 
-		switch {
-		case env.Type == "settings_changed":
+		switch env.Type {
+		case "settings_changed":
 			for key, val := range env.Changes {
 				if existing, ok := mergedChanges[key]; ok {
 					mergedChanges[key] = settingsChange{Old: existing.Old, New: val.New}
@@ -1047,79 +1042,68 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 			}
 			settingsLastIdx = i
 
-		case env.Type == "context_cleared":
+		case "context_cleared":
 			contextClearedRaw = raw
 			contextClearedLastIdx = i
-			// context_cleared supersedes any earlier compaction boundaries.
 			keepAll = slices.DeleteFunc(keepAll, func(ir indexedRaw) bool {
-				var e envelope
-				if err := json.Unmarshal(ir.raw, &e); err != nil {
-					slog.Warn("consolidate context_cleared filter unmarshal failed", "error", err)
-					return false
-				}
-				return e.Type == "system" && (e.Subtype == "compact_boundary" || e.Subtype == "microcompact_boundary")
+				return ir.kind == agent.NotificationKindCompactionBoundary
 			})
 
-		case env.Type == "plan_execution":
+		case "plan_execution":
 			planExecRaw = raw
 			planExecLastIdx = i
 
-		case env.Type == "interrupted":
+		case "interrupted":
 			interruptedRaw = raw
 			interruptedLastIdx = i
 
-		case env.Type == "rate_limit":
+		case "rate_limit":
 			key := "unknown"
 			if env.RLInfo != nil && env.RLInfo.RateLimitType != "" {
 				key = env.RLInfo.RateLimitType
 			}
-			rateLimitByType[key] = raw
-			rateLimitLastIdx = i
-
-		case env.Method == "account/rateLimits/updated":
-			// Codex native rate limit notification: deduplicate, keep last.
-			codexRateLimitRaw = raw
-			codexRateLimitLastIdx = i
-
-		case env.Method == "mcpServer/startupStatus/updated":
-			key := "unknown"
-			if env.Params != nil && env.Params.Name != "" {
-				key = env.Params.Name
-			}
-			startupStatusByServer[key] = indexedRaw{idx: i, raw: raw}
-
-		case env.Type == "compacting":
-			latestStatusRaw = raw
+			rateLimitByType[key] = indexedRaw{idx: i, raw: raw}
+		case "compacting":
+			latestStatus = indexedRaw{idx: i, raw: raw, kind: agent.NotificationKindStatus}
 			statusLastIdx = i
-
-		case env.Type == "system" && env.Subtype == "status":
-			latestStatusRaw = raw
-			statusLastIdx = i
-
-		case env.Type == "system" && env.Subtype == "api_retry":
-			latestApiRetryRaw = raw
-			apiRetryLastIdx = i
-
-		case env.Type == "system" && (env.Subtype == "compact_boundary" || env.Subtype == "microcompact_boundary"):
-			// Compaction result supersedes any earlier compacting status.
-			latestStatusRaw = nil
-			statusLastIdx = -1
-			// Compaction supersedes any earlier context_cleared.
-			if contextClearedLastIdx >= 0 && i > contextClearedLastIdx {
-				contextClearedRaw = nil
-				contextClearedLastIdx = -1
-			}
-			keepAll = append(keepAll, indexedRaw{i, raw})
 
 		default:
-			keepAll = append(keepAll, indexedRaw{i, raw})
+			class := providerConsolidator.Classify(raw)
+			switch class.Kind {
+			case agent.NotificationKindStatus:
+				latestStatus = indexedRaw{idx: i, raw: raw, kind: class.Kind}
+				statusLastIdx = i
+			case agent.NotificationKindAPIRetry:
+				latestAPIRetry = indexedRaw{idx: i, raw: raw, kind: class.Kind}
+				apiRetryLastIdx = i
+			case agent.NotificationKindCompactionBoundary:
+				statusLastIdx = -1
+				latestStatus = indexedRaw{}
+				if contextClearedLastIdx >= 0 && i > contextClearedLastIdx {
+					contextClearedRaw = nil
+					contextClearedLastIdx = -1
+				}
+				keepAll = append(keepAll, indexedRaw{idx: i, raw: raw, kind: class.Kind})
+			case agent.NotificationKindProviderScoped:
+				prev, ok := providerEntries[class.Key]
+				if ok {
+					merged, err := providerConsolidator.Merge(class, prev.raw, raw)
+					if err != nil {
+						slog.Warn("consolidate provider notification merge failed", "key", class.Key, "error", err)
+						merged = raw
+					}
+					providerEntries[class.Key] = indexedRaw{idx: i, raw: merged, kind: class.Kind}
+				} else {
+					providerEntries[class.Key] = indexedRaw{idx: i, raw: raw, kind: class.Kind}
+				}
+			default:
+				keepAll = append(keepAll, indexedRaw{idx: i, raw: raw})
+			}
 		}
 	}
 
-	// Build deduped entries with their ordering index.
 	var entries []indexedRaw
 
-	// settings_changed: merge all changes, drop if old==new for all keys.
 	if settingsLastIdx >= 0 {
 		effective := map[string]settingsChange{}
 		for key, val := range mergedChanges {
@@ -1133,47 +1117,41 @@ func consolidateNotificationThread(messages []json.RawMessage) []json.RawMessage
 				"changes": effective,
 			}
 			if data, err := json.Marshal(entry); err == nil {
-				entries = append(entries, indexedRaw{settingsLastIdx, data})
+				entries = append(entries, indexedRaw{idx: settingsLastIdx, raw: data})
 			}
 		}
 	}
 
 	if contextClearedLastIdx >= 0 {
-		entries = append(entries, indexedRaw{contextClearedLastIdx, contextClearedRaw})
+		entries = append(entries, indexedRaw{idx: contextClearedLastIdx, raw: contextClearedRaw})
 	}
 
 	if planExecLastIdx >= 0 {
-		entries = append(entries, indexedRaw{planExecLastIdx, planExecRaw})
+		entries = append(entries, indexedRaw{idx: planExecLastIdx, raw: planExecRaw})
 	}
 
 	if interruptedLastIdx >= 0 {
-		entries = append(entries, indexedRaw{interruptedLastIdx, interruptedRaw})
+		entries = append(entries, indexedRaw{idx: interruptedLastIdx, raw: interruptedRaw})
 	}
 
-	for _, raw := range rateLimitByType {
-		entries = append(entries, indexedRaw{rateLimitLastIdx, raw})
+	for _, rateLimit := range rateLimitByType {
+		entries = append(entries, rateLimit)
 	}
 
-	if codexRateLimitLastIdx >= 0 {
-		entries = append(entries, indexedRaw{codexRateLimitLastIdx, codexRateLimitRaw})
-	}
-
-	for _, startupRaw := range startupStatusByServer {
-		entries = append(entries, startupRaw)
+	for _, providerEntry := range providerEntries {
+		entries = append(entries, providerEntry)
 	}
 
 	if statusLastIdx >= 0 {
-		entries = append(entries, indexedRaw{statusLastIdx, latestStatusRaw})
+		entries = append(entries, latestStatus)
 	}
 
 	if apiRetryLastIdx >= 0 {
-		entries = append(entries, indexedRaw{apiRetryLastIdx, latestApiRetryRaw})
+		entries = append(entries, latestAPIRetry)
 	}
 
-	// Merge keepAll entries.
 	entries = append(entries, keepAll...)
 
-	// Sort by input index (ascending) to preserve chronological order.
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].idx < entries[j].idx
 	})
