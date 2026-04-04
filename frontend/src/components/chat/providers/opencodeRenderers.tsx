@@ -1,6 +1,6 @@
 /* eslint-disable solid/no-innerhtml -- HTML is produced via remark/shiki, not arbitrary user input */
 import type { JSX } from 'solid-js'
-import type { RenderContext } from './messageRenderers'
+import type { RenderContext } from '../messageRenderers'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import Check from 'lucide-solid/icons/check'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
@@ -18,12 +18,12 @@ import { todosToMarkdown } from '~/lib/messageParser'
 import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
-import { DiffView, rawDiffToHunks } from './diffUtils'
-import { markdownContent } from './markdownContent.css'
-import { ThinkingMessage, useSharedExpandedState } from './messageRenderers'
-import { resultDivider } from './messageStyles.css'
-import { isObject, relativizePath } from './messageUtils'
-import { COLLAPSED_RESULT_ROWS, EmptyTodoLayout, renderBashHighlight, stripLeadingBlankLines, ToolUseLayout } from './toolRenderers'
+import { DiffView, rawDiffToHunks } from '../diffUtils'
+import { markdownContent } from '../markdownContent.css'
+import { ThinkingMessage, useSharedExpandedState } from '../messageRenderers'
+import { resultDivider } from '../messageStyles.css'
+import { isObject, relativizePath } from '../messageUtils'
+import { COLLAPSED_RESULT_ROWS, EmptyTodoLayout, renderBashHighlight, stripLeadingBlankLines, ToolUseLayout } from '../toolRenderers'
 import {
   toolInputCode,
   toolInputPath,
@@ -35,7 +35,7 @@ import {
   toolResultPrompt,
   toolUseHeader,
   toolUseIcon,
-} from './toolStyles.css'
+} from '../toolStyles.css'
 
 /** Icon for a tool kind. */
 function kindIcon(kind: string | undefined): typeof Terminal {

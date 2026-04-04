@@ -1,7 +1,7 @@
 /* eslint-disable solid/no-innerhtml -- HTML is produced via remark, not arbitrary user input */
 import type { JSX } from 'solid-js'
-import type { StructuredPatchHunk } from './diffUtils'
-import type { RenderContext } from './messageRenderers'
+import type { StructuredPatchHunk } from '../diffUtils'
+import type { RenderContext } from '../messageRenderers'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { CommandStreamSegment } from '~/stores/chat.store'
 import Bot from 'lucide-solid/icons/bot'
@@ -24,20 +24,19 @@ import { codexPlanToTodos, todosToMarkdown } from '~/lib/messageParser'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { inlineFlex } from '~/styles/shared.css'
-import { DiffView, rawDiffToHunks } from './diffUtils'
-import { markdownContent } from './markdownContent.css'
-import { useSharedExpandedState } from './messageRenderers'
+import { DiffView, rawDiffToHunks } from '../diffUtils'
+import { markdownContent } from '../markdownContent.css'
+import { useSharedExpandedState } from '../messageRenderers'
 import {
   resultDivider,
   thinkingChevron,
   thinkingChevronExpanded,
   thinkingContent,
   thinkingHeader,
-} from './messageStyles.css'
-import { isObject, relativizePath } from './messageUtils'
-import { formatDuration } from './rendererUtils'
-import { renderToolDetail } from './toolDetailRenderers'
-import { EmptyTodoLayout, renderBashHighlight, ToolResultMessage, ToolUseLayout } from './toolRenderers'
+} from '../messageStyles.css'
+import { isObject, relativizePath } from '../messageUtils'
+import { formatDuration } from '../rendererUtils'
+import { EmptyTodoLayout, renderBashHighlight, ToolResultMessage, ToolUseLayout } from '../toolRenderers'
 import {
   commandStreamContainer,
   commandStreamInteraction,
@@ -52,7 +51,8 @@ import {
   toolResultError,
   toolResultPrompt,
   toolUseIcon,
-} from './toolStyles.css'
+} from '../toolStyles.css'
+import { renderToolDetail } from './claudeRenderers'
 
 /** Regex to strip shell wrappers like `/bin/zsh -lc '...'` from commands. */
 const SHELL_WRAPPER_RE = /^\/bin\/(?:ba|z)?sh\s+-lc\s+'(.+)'$/

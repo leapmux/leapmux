@@ -1,5 +1,7 @@
+import type { MessageCategory } from '../messageClassification'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 
 // eslint-disable-next-line no-control-regex -- ANSI escape detection requires matching control characters
 const ANSI_ESCAPE_RE = /\x1B\[[\d;]*m/
@@ -15,9 +17,9 @@ vi.mock('~/lib/renderMarkdown', () => ({
   renderMarkdown: (text: string) => text,
 }))
 
-const { formatGlobSummary } = await import('./rendererUtils')
-const { renderMessageContent } = await import('./messageRenderers')
-type RenderContext = import('./messageRenderers').RenderContext
+const { formatGlobSummary } = await import('../rendererUtils')
+const { renderMessageContent } = await import('../messageRenderers')
+type RenderContext = import('../messageRenderers').RenderContext
 
 /** Construct a Glob tool_use assistant message. */
 function makeGlobToolUse(input: Record<string, unknown> = {}) {
@@ -56,7 +58,9 @@ function makeGlobToolResult(
 /** Render a Glob tool_use message and return its text content. */
 function renderToolUseText(context?: RenderContext): string {
   const msg = makeGlobToolUse()
-  const result = renderMessageContent(msg, 2 /* ASSISTANT */, context)
+  const toolUse = (msg.message.content as Array<Record<string, unknown>>)[0]
+  const category: MessageCategory = { kind: 'tool_use', toolName: 'Glob', toolUse, content: msg.message.content as Array<Record<string, unknown>> }
+  const result = renderMessageContent(msg, 2 /* ASSISTANT */, context, category, AgentProvider.CLAUDE_CODE)
   const { container } = render(() => result)
   return container.textContent?.trim() ?? ''
 }
@@ -68,7 +72,8 @@ function renderToolResultContainer(
   context?: RenderContext,
 ): HTMLElement {
   const msg = makeGlobToolResult(resultContent, toolUseResult)
-  const result = renderMessageContent(msg, 1 /* USER */, context)
+  const category: MessageCategory = { kind: 'tool_result' }
+  const result = renderMessageContent(msg, 1 /* USER */, context, category, AgentProvider.CLAUDE_CODE)
   const { container } = render(() => result)
   return container
 }

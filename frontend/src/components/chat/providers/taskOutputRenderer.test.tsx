@@ -1,5 +1,7 @@
+import type { MessageCategory } from '../messageClassification'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 
 // eslint-disable-next-line no-control-regex -- ANSI escape detection requires matching control characters
 const ANSI_ESCAPE_RE = /\x1B\[[\d;]*m/
@@ -15,9 +17,9 @@ vi.mock('~/lib/renderMarkdown', () => ({
   renderMarkdown: (text: string) => text,
 }))
 
-const { renderMessageContent } = await import('./messageRenderers')
-const { formatTaskStatus, firstNonEmptyLine } = await import('./rendererUtils')
-type RenderContext = import('./messageRenderers').RenderContext
+const { renderMessageContent } = await import('../messageRenderers')
+const { formatTaskStatus, firstNonEmptyLine } = await import('../rendererUtils')
+type RenderContext = import('../messageRenderers').RenderContext
 
 /** Construct a TaskOutput tool_use assistant message object. */
 function makeTaskOutputMessage() {
@@ -37,7 +39,9 @@ function makeTaskOutputMessage() {
 /** Render a TaskOutput message with the given context and return the text content. */
 function renderText(context?: RenderContext): string {
   const msg = makeTaskOutputMessage()
-  const result = renderMessageContent(msg, 2 /* ASSISTANT */, context)
+  const toolUse = (msg.message.content as Array<Record<string, unknown>>)[0]
+  const category: MessageCategory = { kind: 'tool_use', toolName: 'TaskOutput', toolUse, content: msg.message.content as Array<Record<string, unknown>> }
+  const result = renderMessageContent(msg, 2 /* ASSISTANT */, context, category, AgentProvider.CLAUDE_CODE)
   const { container } = render(() => result)
   return container.textContent?.trim() ?? ''
 }
