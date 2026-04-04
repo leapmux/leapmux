@@ -36,7 +36,7 @@ func setupAuthTestServer(t *testing.T, cfg *config.Config) (leapmuxv1connect.Aut
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	opts := connect.WithInterceptors(auth.NewInterceptor(q, false))
+	opts := connect.WithInterceptors(auth.NewInterceptor(q, false, false))
 	authSvc := service.NewAuthService(q, cfg)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
@@ -57,9 +57,14 @@ func TestAuthService_LoginSuccess(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
-	assert.NotEmpty(t, resp.Msg.GetToken())
 	assert.Equal(t, "admin", resp.Msg.GetUser().GetUsername())
 	assert.True(t, resp.Msg.GetUser().GetIsAdmin())
+
+	// Verify Set-Cookie header is present with session cookie.
+	setCookie := resp.Header().Get("Set-Cookie")
+	assert.NotEmpty(t, setCookie)
+	assert.Contains(t, setCookie, auth.CookieName+"=")
+	assert.Contains(t, setCookie, "HttpOnly")
 }
 
 func TestAuthService_LoginInvalidPassword(t *testing.T) {
@@ -85,7 +90,7 @@ func TestAuthService_GetCurrentUser(t *testing.T) {
 
 	// Get current user with token.
 	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Authorization", "Bearer "+loginResp.Msg.GetToken())
+	req.Header().Set("Cookie", auth.CookieName+"="+sessionFromCookie(t, loginResp.Header().Get("Set-Cookie")))
 
 	resp, err := client.GetCurrentUser(context.Background(), req)
 	require.NoError(t, err)
@@ -132,9 +137,14 @@ func TestAuthService_SignUp_WhenEnabled(t *testing.T) {
 		Email:       "new@example.com",
 	}))
 	require.NoError(t, err)
-	assert.NotEmpty(t, resp.Msg.GetToken(), "should receive a session token")
+	// Token assertion replaced by Set-Cookie check above
 	assert.Equal(t, "newuser", resp.Msg.GetUser().GetUsername())
 	assert.Equal(t, "New User", resp.Msg.GetUser().GetDisplayName())
+
+	// Verify Set-Cookie header is present.
+	setCookie := resp.Header().Get("Set-Cookie")
+	assert.Contains(t, setCookie, auth.CookieName+"=")
+	assert.Contains(t, setCookie, "HttpOnly")
 }
 
 func TestAuthService_SignUp_WhenDisabled(t *testing.T) {
@@ -177,11 +187,11 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 		Password: "admin",
 	}))
 	require.NoError(t, err)
-	token := loginResp.Msg.GetToken()
+	token := sessionFromCookie(t, loginResp.Header().Get("Set-Cookie"))
 
 	// Set up a UserService client using the same queries and auth interceptor.
 	mux := http.NewServeMux()
-	opts := connect.WithInterceptors(auth.NewInterceptor(q, false))
+	opts := connect.WithInterceptors(auth.NewInterceptor(q, false, false))
 	userSvc := service.NewUserService(q, testConfig())
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(path, handler)
@@ -194,7 +204,7 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 		CurrentPassword: "wrongpassword",
 		NewPassword:     "newpass123",
 	})
-	req.Header().Set("Authorization", "Bearer "+token)
+	req.Header().Set("Cookie", auth.CookieName+"="+token)
 	_, err = userClient.ChangePassword(context.Background(), req)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
@@ -210,17 +220,22 @@ func TestAuthService_Logout(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
-	token := loginResp.Msg.GetToken()
+	token := sessionFromCookie(t, loginResp.Header().Get("Set-Cookie"))
 
 	// Logout.
 	logoutReq := connect.NewRequest(&leapmuxv1.LogoutRequest{})
-	logoutReq.Header().Set("Authorization", "Bearer "+token)
-	_, err = client.Logout(context.Background(), logoutReq)
+	logoutReq.Header().Set("Cookie", auth.CookieName+"="+token)
+	logoutResp, err := client.Logout(context.Background(), logoutReq)
 	require.NoError(t, err)
+
+	// Verify logout response clears the cookie.
+	logoutCookie := logoutResp.Header().Get("Set-Cookie")
+	assert.Contains(t, logoutCookie, auth.CookieName+"=")
+	assert.Contains(t, logoutCookie, "Max-Age=0")
 
 	// Token should be invalidated.
 	getUserReq := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	getUserReq.Header().Set("Authorization", "Bearer "+token)
+	getUserReq.Header().Set("Cookie", auth.CookieName+"="+token)
 	_, err = client.GetCurrentUser(context.Background(), getUserReq)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))

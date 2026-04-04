@@ -27,7 +27,7 @@ import (
 
 // startTestSolo starts a solo Hub+Worker instance for integration testing.
 // Returns the hub URL, socket path, admin token, admin user ID, and worker ID.
-func startTestSolo(t *testing.T) (hubURL, socketPath, token, userID, workerID string) {
+func startTestSolo(t *testing.T) (hubURL, socketPath, userID, workerID string) {
 	t.Helper()
 
 	// Use a short path under /tmp to stay within the 104-byte macOS Unix
@@ -62,7 +62,6 @@ func startTestSolo(t *testing.T) (hubURL, socketPath, token, userID, workerID st
 
 	// Solo mode auto-authenticates all requests — no login needed.
 	// Token is empty; the auth interceptor auto-attaches the solo user.
-	token = ""
 
 	// Get user ID via auto-authenticated request.
 	httpClient := &http.Client{Timeout: 10 * time.Second}
@@ -95,7 +94,7 @@ func startTestSolo(t *testing.T) (hubURL, socketPath, token, userID, workerID st
 	}
 	require.NotEmpty(t, wID, "worker did not come online in time")
 
-	return hubURL, socketPath, token, userID, wID
+	return hubURL, socketPath, userID, wID
 }
 
 func waitForHTTP(url string, timeout time.Duration) error {
@@ -117,11 +116,11 @@ func TestChannelOpenAndCallRPC(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	hubURL, _, token, userID, workerID := startTestSolo(t)
+	hubURL, _, userID, workerID := startTestSolo(t)
 	ctx := context.Background()
 
 	// Open an E2EE channel.
-	ch, err := tunnel.OpenChannel(ctx, hubURL, token, userID, workerID, nil)
+	ch, err := tunnel.OpenChannel(ctx, hubURL, userID, workerID, nil)
 	require.NoError(t, err)
 	t.Cleanup(ch.Close)
 
@@ -146,10 +145,10 @@ func TestChannelTunnelEchoFlow(t *testing.T) {
 	echoAddr := testutil.StartEchoServer(t)
 	echoHost, echoPort := testutil.ParseAddr(echoAddr)
 
-	hubURL, _, token, userID, workerID := startTestSolo(t)
+	hubURL, _, userID, workerID := startTestSolo(t)
 	ctx := context.Background()
 
-	ch, err := tunnel.OpenChannel(ctx, hubURL, token, userID, workerID, nil)
+	ch, err := tunnel.OpenChannel(ctx, hubURL, userID, workerID, nil)
 	require.NoError(t, err)
 	t.Cleanup(ch.Close)
 
@@ -234,10 +233,10 @@ func TestChannelSocks5EchoFlow(t *testing.T) {
 	echoAddr := testutil.StartEchoServer(t)
 	echoHost, echoPort := testutil.ParseAddr(echoAddr)
 
-	hubURL, _, token, userID, workerID := startTestSolo(t)
+	hubURL, _, userID, workerID := startTestSolo(t)
 	ctx := context.Background()
 
-	ch, err := tunnel.OpenChannel(ctx, hubURL, token, userID, workerID, nil)
+	ch, err := tunnel.OpenChannel(ctx, hubURL, userID, workerID, nil)
 	require.NoError(t, err)
 	t.Cleanup(ch.Close)
 
@@ -433,7 +432,7 @@ func TestRegistration_AutoApproveViaUnixSocket_E2E(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	hubURL, socketPath, _, _, _ := startTestSolo(t)
+	hubURL, socketPath, _, _ := startTestSolo(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -498,10 +497,10 @@ func TestChannelMultipleRPCs(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	hubURL, _, token, userID, workerID := startTestSolo(t)
+	hubURL, _, userID, workerID := startTestSolo(t)
 	ctx := context.Background()
 
-	ch, err := tunnel.OpenChannel(ctx, hubURL, token, userID, workerID, nil)
+	ch, err := tunnel.OpenChannel(ctx, hubURL, userID, workerID, nil)
 	require.NoError(t, err)
 	t.Cleanup(ch.Close)
 

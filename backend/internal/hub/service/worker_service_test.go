@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -58,7 +58,7 @@ func setupWorkerTestServer(t *testing.T) *workerTestEnv {
 	notifierSvc := notifier.New(q, bgMgr, pendingReqs, cfg)
 
 	mux := http.NewServeMux()
-	opts := connect.WithInterceptors(auth.NewInterceptor(q, false))
+	opts := connect.WithInterceptors(auth.NewInterceptor(q, false, false))
 
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(q, cfg), opts)
 	mux.Handle(authPath, authHandler)
@@ -89,7 +89,7 @@ func (e *workerTestEnv) adminToken(t *testing.T) string {
 		Password: "admin",
 	}))
 	require.NoError(t, err)
-	return resp.Msg.GetToken()
+	return sessionFromCookie(t, resp.Header().Get("Set-Cookie"))
 }
 
 func TestRegistrationFlow(t *testing.T) {
@@ -119,7 +119,7 @@ func TestRegistrationFlow(t *testing.T) {
 	getRegReq := connect.NewRequest(&leapmuxv1.GetRegistrationRequest{
 		RegistrationToken: regToken,
 	})
-	getRegReq.Header().Set("Authorization", "Bearer "+token)
+	getRegReq.Header().Set("Cookie", auth.CookieName+"="+token)
 	getRegResp, err := env.mgmtClient.GetRegistration(ctx, getRegReq)
 	require.NoError(t, err)
 	assert.Equal(t, "0.1.0", getRegResp.Msg.GetVersion())
@@ -128,7 +128,7 @@ func TestRegistrationFlow(t *testing.T) {
 	approveReq := connect.NewRequest(&leapmuxv1.ApproveRegistrationRequest{
 		RegistrationToken: regToken,
 	})
-	approveReq.Header().Set("Authorization", "Bearer "+token)
+	approveReq.Header().Set("Cookie", auth.CookieName+"="+token)
 	approveResp, err := env.mgmtClient.ApproveRegistration(ctx, approveReq)
 	require.NoError(t, err)
 	workerID := approveResp.Msg.GetWorkerId()
@@ -158,13 +158,13 @@ func TestWorkerManagement_ListAndGet(t *testing.T) {
 	approveReq := connect.NewRequest(&leapmuxv1.ApproveRegistrationRequest{
 		RegistrationToken: regResp.Msg.GetRegistrationToken(),
 	})
-	approveReq.Header().Set("Authorization", "Bearer "+token)
+	approveReq.Header().Set("Cookie", auth.CookieName+"="+token)
 	approveResp, _ := env.mgmtClient.ApproveRegistration(ctx, approveReq)
 	workerID := approveResp.Msg.GetWorkerId()
 
 	// List workers.
 	listReq := connect.NewRequest(&leapmuxv1.ListWorkersRequest{})
-	listReq.Header().Set("Authorization", "Bearer "+token)
+	listReq.Header().Set("Cookie", auth.CookieName+"="+token)
 	listResp, err := env.mgmtClient.ListWorkers(ctx, listReq)
 	require.NoError(t, err)
 	require.Len(t, listResp.Msg.GetWorkers(), 1)
@@ -173,7 +173,7 @@ func TestWorkerManagement_ListAndGet(t *testing.T) {
 
 	// Get single worker.
 	getReq := connect.NewRequest(&leapmuxv1.GetWorkerRequest{WorkerId: workerID})
-	getReq.Header().Set("Authorization", "Bearer "+token)
+	getReq.Header().Set("Cookie", auth.CookieName+"="+token)
 	getResp, err := env.mgmtClient.GetWorker(ctx, getReq)
 	require.NoError(t, err)
 	assert.Equal(t, workerID, getResp.Msg.GetWorker().GetId())
@@ -284,7 +284,7 @@ func TestApproveRegistration_AlreadyApproved(t *testing.T) {
 	approveReq := connect.NewRequest(&leapmuxv1.ApproveRegistrationRequest{
 		RegistrationToken: regToken,
 	})
-	approveReq.Header().Set("Authorization", "Bearer "+token)
+	approveReq.Header().Set("Cookie", auth.CookieName+"="+token)
 	_, err := env.mgmtClient.ApproveRegistration(ctx, approveReq)
 	require.NoError(t, err)
 
@@ -292,7 +292,7 @@ func TestApproveRegistration_AlreadyApproved(t *testing.T) {
 	approveReq2 := connect.NewRequest(&leapmuxv1.ApproveRegistrationRequest{
 		RegistrationToken: regToken,
 	})
-	approveReq2.Header().Set("Authorization", "Bearer "+token)
+	approveReq2.Header().Set("Cookie", auth.CookieName+"="+token)
 	_, err = env.mgmtClient.ApproveRegistration(ctx, approveReq2)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
@@ -306,7 +306,7 @@ func TestApproveRegistration_EmptyToken(t *testing.T) {
 	approveReq := connect.NewRequest(&leapmuxv1.ApproveRegistrationRequest{
 		RegistrationToken: "",
 	})
-	approveReq.Header().Set("Authorization", "Bearer "+token)
+	approveReq.Header().Set("Cookie", auth.CookieName+"="+token)
 	_, err := env.mgmtClient.ApproveRegistration(ctx, approveReq)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
@@ -320,7 +320,7 @@ func TestApproveRegistration_UnknownToken(t *testing.T) {
 	approveReq := connect.NewRequest(&leapmuxv1.ApproveRegistrationRequest{
 		RegistrationToken: "nonexistent-reg-token",
 	})
-	approveReq.Header().Set("Authorization", "Bearer "+token)
+	approveReq.Header().Set("Cookie", auth.CookieName+"="+token)
 	_, err := env.mgmtClient.ApproveRegistration(ctx, approveReq)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
@@ -334,7 +334,7 @@ func TestGetRegistration_UnknownToken(t *testing.T) {
 	req := connect.NewRequest(&leapmuxv1.GetRegistrationRequest{
 		RegistrationToken: "nonexistent-reg-token",
 	})
-	req.Header().Set("Authorization", "Bearer "+token)
+	req.Header().Set("Cookie", auth.CookieName+"="+token)
 	_, err := env.mgmtClient.GetRegistration(ctx, req)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
@@ -348,7 +348,7 @@ func TestGetRegistration_EmptyToken(t *testing.T) {
 	req := connect.NewRequest(&leapmuxv1.GetRegistrationRequest{
 		RegistrationToken: "",
 	})
-	req.Header().Set("Authorization", "Bearer "+token)
+	req.Header().Set("Cookie", auth.CookieName+"="+token)
 	_, err := env.mgmtClient.GetRegistration(ctx, req)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
@@ -360,7 +360,7 @@ func TestGetWorker_NotFound(t *testing.T) {
 	token := env.adminToken(t)
 
 	req := connect.NewRequest(&leapmuxv1.GetWorkerRequest{WorkerId: "nonexistent-worker-id"})
-	req.Header().Set("Authorization", "Bearer "+token)
+	req.Header().Set("Cookie", auth.CookieName+"="+token)
 	_, err := env.mgmtClient.GetWorker(ctx, req)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
@@ -375,12 +375,12 @@ func (e *workerTestEnv) createSecondUser(t *testing.T) (userID, token string) {
 	require.NoError(t, err)
 
 	userID = id.Generate()
-	hash, _ := bcrypt.GenerateFromPassword([]byte("pass2"), bcrypt.MinCost)
+	hash, _ := password.Hash("pass2")
 	_ = e.queries.CreateUser(ctx, gendb.CreateUserParams{
 		ID:           userID,
 		OrgID:        adminUser.OrgID,
 		Username:     "user2",
-		PasswordHash: string(hash),
+		PasswordHash: hash,
 		DisplayName:  "User 2",
 		IsAdmin:      0,
 	})
@@ -390,7 +390,7 @@ func (e *workerTestEnv) createSecondUser(t *testing.T) (userID, token string) {
 		UserID: userID,
 		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER,
 	})
-	token, _, loginErr := auth.Login(ctx, e.queries, "user2", "pass2")
+	token, _, _, loginErr := auth.Login(ctx, e.queries, "user2", "pass2")
 	require.NoError(t, loginErr)
 	return
 }
@@ -406,7 +406,7 @@ func (e *workerTestEnv) createAndApproveWorker(t *testing.T, token string) strin
 	approveReq := connect.NewRequest(&leapmuxv1.ApproveRegistrationRequest{
 		RegistrationToken: regResp.Msg.GetRegistrationToken(),
 	})
-	approveReq.Header().Set("Authorization", "Bearer "+token)
+	approveReq.Header().Set("Cookie", auth.CookieName+"="+token)
 	approveResp, err := e.mgmtClient.ApproveRegistration(ctx, approveReq)
 	require.NoError(t, err)
 	return approveResp.Msg.GetWorkerId()
@@ -470,7 +470,7 @@ func setupUnixSocketTestServer(t *testing.T) *unixSocketTestEnv {
 	notifierSvc := notifier.New(q, bgMgr, pendingReqs, cfg)
 
 	mux := http.NewServeMux()
-	opts := connect.WithInterceptors(auth.NewInterceptor(q, false))
+	opts := connect.WithInterceptors(auth.NewInterceptor(q, false, false))
 
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(q, cfg), opts)
 	mux.Handle(authPath, authHandler)
@@ -596,7 +596,7 @@ func TestApproveRegistration_SendsWorkersChanged(t *testing.T) {
 	approveReq := connect.NewRequest(&leapmuxv1.ApproveRegistrationRequest{
 		RegistrationToken: regToken,
 	})
-	approveReq.Header().Set("Authorization", "Bearer "+token)
+	approveReq.Header().Set("Cookie", auth.CookieName+"="+token)
 	_, err = env.mgmtClient.ApproveRegistration(ctx, approveReq)
 	require.NoError(t, err)
 
@@ -625,7 +625,7 @@ func TestDeregisterWorker_SendsWorkersChanged(t *testing.T) {
 	deregReq := connect.NewRequest(&leapmuxv1.DeregisterWorkerRequest{
 		WorkerId: workerID,
 	})
-	deregReq.Header().Set("Authorization", "Bearer "+token)
+	deregReq.Header().Set("Cookie", auth.CookieName+"="+token)
 	_, err = env.mgmtClient.DeregisterWorker(ctx, deregReq)
 	require.NoError(t, err)
 

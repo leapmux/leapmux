@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/crypto/bcrypt"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -43,7 +43,7 @@ func setupUserTest(t *testing.T) *userTestEnv {
 	userSvc := service.NewUserService(queries, testConfig())
 
 	mux := http.NewServeMux()
-	opts := connect.WithInterceptors(auth.NewInterceptor(queries, false))
+	opts := connect.WithInterceptors(auth.NewInterceptor(queries, false, false))
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(path, handler)
 
@@ -60,19 +60,19 @@ func setupUserTest(t *testing.T) *userTestEnv {
 
 	orgID := id.Generate()
 	userID := id.Generate()
-	hash, _ := bcrypt.GenerateFromPassword([]byte("pass"), bcrypt.MinCost)
+	hash, _ := password.Hash("pass")
 
 	_ = queries.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "testuser"})
 	_ = queries.CreateUser(context.Background(), gendb.CreateUserParams{
 		ID:           userID,
 		OrgID:        orgID,
 		Username:     "testuser",
-		PasswordHash: string(hash),
+		PasswordHash: hash,
 		DisplayName:  "Test User",
 		IsAdmin:      1,
 	})
 
-	token, _, err := auth.Login(context.Background(), queries, "testuser", "pass")
+	token, _, _, err := auth.Login(context.Background(), queries, "testuser", "pass")
 	require.NoError(t, err)
 
 	return &userTestEnv{
@@ -124,12 +124,12 @@ func TestUserService_UpdateProfile_DuplicateUsername(t *testing.T) {
 
 	// Create a second user.
 	user2ID := id.Generate()
-	hash, _ := bcrypt.GenerateFromPassword([]byte("pass2"), bcrypt.MinCost)
+	hash, _ := password.Hash("pass2")
 	_ = env.queries.CreateUser(context.Background(), gendb.CreateUserParams{
 		ID:           user2ID,
 		OrgID:        env.orgID,
 		Username:     "user2",
-		PasswordHash: string(hash),
+		PasswordHash: hash,
 		DisplayName:  "User 2",
 		IsAdmin:      0,
 	})
@@ -153,11 +153,11 @@ func TestUserService_ChangePassword(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify login works with new password.
-	_, _, err = auth.Login(context.Background(), env.queries, "testuser", "newpass123")
+	_, _, _, err = auth.Login(context.Background(), env.queries, "testuser", "newpass123")
 	assert.NoError(t, err)
 
 	// Verify login with old password fails.
-	_, _, err = auth.Login(context.Background(), env.queries, "testuser", "pass")
+	_, _, _, err = auth.Login(context.Background(), env.queries, "testuser", "pass")
 	require.Error(t, err)
 }
 

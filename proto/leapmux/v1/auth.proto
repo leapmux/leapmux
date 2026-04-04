@@ -24,7 +24,7 @@ message LoginRequest {
 }
 
 message LoginResponse {
-  string token = 1;
+  reserved 1; // was: token (now delivered via Set-Cookie)
   User user = 2;
 }
 
@@ -46,7 +46,7 @@ message SignUpRequest {
 }
 
 message SignUpResponse {
-  string token = 1;             // Empty if verification required
+  reserved 1; // was: token (now delivered via Set-Cookie)
   User user = 2;
   bool verification_required = 3;
 }
@@ -56,7 +56,7 @@ message VerifyEmailRequest {
 }
 
 message VerifyEmailResponse {
-  string token = 1;
+  reserved 1; // was: token (now delivered via Set-Cookie)
   User user = 2;
 }
 

@@ -6,7 +6,6 @@ export interface TunnelConfig {
   bindAddr: string
   bindPort: number
   hubURL: string
-  token: string
   userId: string
 }
 

@@ -3,7 +3,7 @@ import type { User } from '~/generated/leapmux/v1/auth_pb'
 import { create } from '@bufbuild/protobuf'
 import { createContext, createSignal, onMount, useContext } from 'solid-js'
 import { authClient } from '~/api/clients'
-import { clearToken, getToken, loadTimeouts, setOnAuthError, setToken } from '~/api/transport'
+import { loadTimeouts, setOnAuthError } from '~/api/transport'
 import { LoginRequestSchema } from '~/generated/leapmux/v1/auth_pb'
 import { isSoloMode, loadSystemInfo } from '~/lib/systemInfo'
 
@@ -13,7 +13,7 @@ interface AuthState {
   error: () => string | null
   login: (username: string, password: string) => Promise<void>
   logout: () => Promise<void>
-  setAuth: (token: string, user: User) => void
+  setAuth: (user: User) => void
   isAuthenticated: () => boolean
 }
 
@@ -34,29 +34,14 @@ export const AuthProvider: ParentComponent = (props) => {
   onMount(async () => {
     await loadSystemInfo()
 
-    if (isSoloMode()) {
-      try {
-        const resp = await authClient.getCurrentUser({})
-        setUser(resp.user ?? null)
-        loadTimeouts().catch(() => {})
-      }
-      catch {
-        // Solo mode should always work; ignore errors.
-      }
-      setLoading(false)
-      return
+    // Try to restore session from cookie (both solo and multi-user modes).
+    try {
+      const resp = await authClient.getCurrentUser({})
+      setUser(resp.user ?? null)
+      loadTimeouts().catch(() => {})
     }
-
-    const token = getToken()
-    if (token) {
-      try {
-        const resp = await authClient.getCurrentUser({})
-        setUser(resp.user ?? null)
-        loadTimeouts().catch(() => {})
-      }
-      catch {
-        clearToken()
-      }
+    catch {
+      // No valid session — user needs to log in.
     }
     setLoading(false)
   })
@@ -67,7 +52,6 @@ export const AuthProvider: ParentComponent = (props) => {
     try {
       const req = create(LoginRequestSchema, { username, password })
       const resp = await authClient.login(req)
-      setToken(resp.token)
       setUser(resp.user ?? null)
       loadTimeouts().catch(() => {})
     }
@@ -91,13 +75,11 @@ export const AuthProvider: ParentComponent = (props) => {
       // Ignore logout errors.
     }
     finally {
-      clearToken()
       setUser(null)
     }
   }
 
-  const setAuth = (token: string, u: User) => {
-    setToken(token)
+  const setAuth = (u: User) => {
     setUser(u)
     setLoading(false)
   }

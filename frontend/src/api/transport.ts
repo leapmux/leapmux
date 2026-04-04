@@ -4,20 +4,6 @@ import { createConnectTransport } from '@connectrpc/connect-web'
 import { desktopFetch, isWailsApp } from '~/api/desktopBridge'
 import { UserService } from '~/generated/leapmux/v1/user_pb'
 
-const TOKEN_KEY = 'leapmux_token'
-
-export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY)
-}
-
-export function setToken(token: string): void {
-  localStorage.setItem(TOKEN_KEY, token)
-}
-
-export function clearToken(): void {
-  localStorage.removeItem(TOKEN_KEY)
-}
-
 // Callbacks for auth state changes (set by AuthContext)
 let onAuthError: (() => void) | null = null
 
@@ -25,29 +11,28 @@ export function setOnAuthError(callback: () => void): void {
   onAuthError = callback
 }
 
-const authInterceptor: Interceptor = next => async (req) => {
-  const token = getToken()
-  if (token) {
-    req.header.set('Authorization', `Bearer ${token}`)
-  }
-
+const errorInterceptor: Interceptor = next => async (req) => {
   try {
     return await next(req)
   }
   catch (err) {
-    // Auto-logout on unauthenticated errors (expired/invalid token)
+    // Auto-logout on unauthenticated errors (expired/invalid session)
     if (err instanceof ConnectError && err.code === Code.Unauthenticated) {
-      clearToken()
       onAuthError?.()
     }
     throw err
   }
 }
 
+// Wrap native fetch to always include credentials (cookies).
+const credentialFetch: typeof globalThis.fetch = (input, init) => {
+  return globalThis.fetch(input, { ...init, credentials: 'include' })
+}
+
 export const transport = createConnectTransport({
   baseUrl: isWailsApp() ? 'http://localhost' : window.location.origin,
-  fetch: isWailsApp() ? desktopFetch : undefined,
-  interceptors: [authInterceptor],
+  fetch: isWailsApp() ? desktopFetch : credentialFetch,
+  interceptors: [errorInterceptor],
   defaultTimeoutMs: 30_000,
 })
 

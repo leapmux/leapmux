@@ -6,11 +6,11 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/password"
 )
 
 func setupDB(t *testing.T) *gendb.Queries {
@@ -44,9 +44,10 @@ func TestRun_CreatesOrgAndAdmin(t *testing.T) {
 	assert.Equal(t, org.ID, user.OrgID)
 	assert.Equal(t, int64(1), user.IsAdmin)
 
-	// Verify password hash is valid.
-	err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte("admin"))
+	// Verify password hash is valid Argon2id.
+	match, err := password.Verify(user.PasswordHash, "admin")
 	assert.NoError(t, err)
+	assert.True(t, match)
 }
 
 func TestRun_SoloMode(t *testing.T) {

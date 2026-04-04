@@ -59,7 +59,7 @@ export const SignupPage: Component = () => {
         setVerificationSent(true)
       }
       else {
-        auth.setAuth(resp.token, resp.user!)
+        auth.setAuth(resp.user!)
         navigate(`/o/${slug}`, { replace: true })
       }
     }

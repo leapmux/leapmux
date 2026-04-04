@@ -27,7 +27,6 @@ type TunnelConfig struct {
 	BindAddr   string `json:"bindAddr"`
 	BindPort   int    `json:"bindPort"`
 	HubURL     string `json:"hubURL"`
-	Token      string `json:"token"` // session token for Hub auth
 	UserID     string `json:"userId"`
 }
 
@@ -217,7 +216,7 @@ func (m *TunnelManager) getOrOpenChannel(ctx context.Context, cfg TunnelConfig) 
 		}
 		m.mu.Unlock()
 
-		ch, err := tunnelpkg.OpenChannel(ctx, cfg.HubURL, cfg.Token, cfg.UserID, cfg.WorkerID, m.chanOpts)
+		ch, err := tunnelpkg.OpenChannel(ctx, cfg.HubURL, cfg.UserID, cfg.WorkerID, m.chanOpts)
 		if err != nil {
 			return nil, err
 		}

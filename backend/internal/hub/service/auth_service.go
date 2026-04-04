@@ -7,12 +7,12 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"golang.org/x/crypto/bcrypt"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
+	pwdhash "github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/validate"
 	"github.com/leapmux/leapmux/util/version"
@@ -30,7 +30,7 @@ func NewAuthService(q *db.Queries, cfg *config.Config) *AuthService {
 }
 
 func (s *AuthService) Login(ctx context.Context, req *connect.Request[leapmuxv1.LoginRequest]) (*connect.Response[leapmuxv1.LoginResponse], error) {
-	token, user, err := auth.Login(ctx, s.queries, req.Msg.GetUsername(), req.Msg.GetPassword())
+	token, user, expiresAt, err := auth.Login(ctx, s.queries, req.Msg.GetUsername(), req.Msg.GetPassword())
 	if err != nil {
 		return nil, err
 	}
@@ -40,18 +40,21 @@ func (s *AuthService) Login(ctx context.Context, req *connect.Request[leapmuxv1.
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	return connect.NewResponse(&leapmuxv1.LoginResponse{
-		Token: token,
-		User:  userToProtoWithOrgName(user, org.Name),
-	}), nil
+	resp := connect.NewResponse(&leapmuxv1.LoginResponse{
+		User: userToProtoWithOrgName(user, org.Name),
+	})
+	resp.Header().Set("Set-Cookie", auth.BuildSessionCookie(token, expiresAt, s.cfg.SecureCookies).String())
+	return resp, nil
 }
 
 func (s *AuthService) Logout(ctx context.Context, req *connect.Request[leapmuxv1.LogoutRequest]) (*connect.Response[leapmuxv1.LogoutResponse], error) {
-	token := auth.TokenFromHeader(req.Header().Get("Authorization"))
+	token := auth.SessionIDFromHeader(req.Header().Get("Cookie"), s.cfg.SecureCookies)
 	if token != "" {
 		_ = s.queries.DeleteUserSession(ctx, token)
 	}
-	return connect.NewResponse(&leapmuxv1.LogoutResponse{}), nil
+	resp := connect.NewResponse(&leapmuxv1.LogoutResponse{})
+	resp.Header().Set("Set-Cookie", auth.ClearSessionCookie(s.cfg.SecureCookies).String())
+	return resp, nil
 }
 
 func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[leapmuxv1.GetCurrentUserRequest]) (*connect.Response[leapmuxv1.GetCurrentUserResponse], error) {
@@ -101,7 +104,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := pwdhash.Hash(password)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
 	}
@@ -122,7 +125,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		ID:           userID,
 		OrgID:        orgID,
 		Username:     username,
-		PasswordHash: string(hash),
+		PasswordHash: hash,
 		DisplayName:  req.Msg.GetDisplayName(),
 		Email:        req.Msg.GetEmail(),
 		IsAdmin:      0,
@@ -173,15 +176,16 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 	}
 
 	// No verification required — create session immediately.
-	token, _, err := auth.Login(ctx, s.queries, username, password)
+	token, _, expiresAt, err := auth.Login(ctx, s.queries, username, password)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("auto-login: %w", err))
 	}
 
-	return connect.NewResponse(&leapmuxv1.SignUpResponse{
-		Token: token,
-		User:  userToProtoWithOrgName(&user, username),
-	}), nil
+	resp := connect.NewResponse(&leapmuxv1.SignUpResponse{
+		User: userToProtoWithOrgName(&user, username),
+	})
+	resp.Header().Set("Set-Cookie", auth.BuildSessionCookie(token, expiresAt, s.cfg.SecureCookies).String())
+	return resp, nil
 }
 
 func (s *AuthService) VerifyEmail(ctx context.Context, req *connect.Request[leapmuxv1.VerifyEmailRequest]) (*connect.Response[leapmuxv1.VerifyEmailResponse], error) {
@@ -233,10 +237,11 @@ func (s *AuthService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	return connect.NewResponse(&leapmuxv1.VerifyEmailResponse{
-		Token: sessionID,
-		User:  userToProtoWithOrgName(&user, org.Name),
-	}), nil
+	resp := connect.NewResponse(&leapmuxv1.VerifyEmailResponse{
+		User: userToProtoWithOrgName(&user, org.Name),
+	})
+	resp.Header().Set("Set-Cookie", auth.BuildSessionCookie(sessionID, sessionExpiresAt, s.cfg.SecureCookies).String())
+	return resp, nil
 }
 
 func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[leapmuxv1.GetSystemInfoRequest]) (*connect.Response[leapmuxv1.GetSystemInfoResponse], error) {

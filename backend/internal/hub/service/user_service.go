@@ -11,9 +11,9 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/validate"
-	"golang.org/x/crypto/bcrypt"
 )
 
 // storedPreferences maps to the JSON blob stored in user_preferences.prefs.
@@ -115,17 +115,21 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Msg.GetCurrentPassword())); err != nil {
+	match, err := password.Verify(user.PasswordHash, req.Msg.GetCurrentPassword())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("verify password: %w", err))
+	}
+	if !match {
 		return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("current password is incorrect"))
 	}
 
-	hashed, err := bcrypt.GenerateFromPassword([]byte(req.Msg.GetNewPassword()), bcrypt.DefaultCost)
+	hashed, err := password.Hash(req.Msg.GetNewPassword())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
 	}
 
 	if err := s.queries.UpdateUserPassword(ctx, db.UpdateUserPasswordParams{
-		PasswordHash: string(hashed),
+		PasswordHash: hashed,
 		ID:           user.ID,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)

@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/crypto/bcrypt"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -46,7 +46,7 @@ func setupAdminTestServer(t *testing.T) *adminTestEnv {
 	adminSvc := service.NewAdminService(q, false)
 
 	mux := http.NewServeMux()
-	opts := connect.WithInterceptors(auth.NewInterceptor(q, false))
+	opts := connect.WithInterceptors(auth.NewInterceptor(q, false, false))
 	path, handler := leapmuxv1connect.NewAdminServiceHandler(adminSvc, opts)
 	mux.Handle(path, handler)
 
@@ -55,7 +55,7 @@ func setupAdminTestServer(t *testing.T) *adminTestEnv {
 
 	client := leapmuxv1connect.NewAdminServiceClient(server.Client(), server.URL)
 
-	token, user, err := auth.Login(context.Background(), q, "admin", "admin")
+	token, user, _, err := auth.Login(context.Background(), q, "admin", "admin")
 	require.NoError(t, err)
 
 	return &adminTestEnv{
@@ -74,12 +74,12 @@ func (e *adminTestEnv) createNonAdminUser(t *testing.T) (userID, token string) {
 	require.NoError(t, err)
 
 	userID = id.Generate()
-	hash, _ := bcrypt.GenerateFromPassword([]byte("userpass"), bcrypt.MinCost)
+	hash, _ := password.Hash("userpass")
 	_ = e.queries.CreateUser(ctx, gendb.CreateUserParams{
 		ID:           userID,
 		OrgID:        adminUser.OrgID,
 		Username:     "regularuser",
-		PasswordHash: string(hash),
+		PasswordHash: hash,
 		DisplayName:  "Regular User",
 		IsAdmin:      0,
 	})
@@ -88,7 +88,7 @@ func (e *adminTestEnv) createNonAdminUser(t *testing.T) (userID, token string) {
 		UserID: userID,
 		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER,
 	})
-	token, _, loginErr := auth.Login(ctx, e.queries, "regularuser", "userpass")
+	token, _, _, loginErr := auth.Login(ctx, e.queries, "regularuser", "userpass")
 	require.NoError(t, loginErr)
 	return
 }
@@ -194,7 +194,7 @@ func TestAdminService_CreateUser(t *testing.T) {
 	assert.NotEmpty(t, user.GetCreatedAt())
 
 	// Verify the user can log in.
-	_, _, loginErr := auth.Login(context.Background(), env.queries, "newuser", "newpass123")
+	_, _, _, loginErr := auth.Login(context.Background(), env.queries, "newuser", "newpass123")
 	assert.NoError(t, loginErr)
 }
 
@@ -327,7 +327,7 @@ func TestAdminService_ResetUserPassword(t *testing.T) {
 	targetID := createResp.Msg.GetUser().GetId()
 
 	// Verify old password works.
-	_, _, err = auth.Login(context.Background(), env.queries, "resetme", "oldpass")
+	_, _, _, err = auth.Login(context.Background(), env.queries, "resetme", "oldpass")
 	require.NoError(t, err)
 
 	// Reset the password.
@@ -338,11 +338,11 @@ func TestAdminService_ResetUserPassword(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify old password no longer works.
-	_, _, err = auth.Login(context.Background(), env.queries, "resetme", "oldpass")
+	_, _, _, err = auth.Login(context.Background(), env.queries, "resetme", "oldpass")
 	require.Error(t, err)
 
 	// Verify new password works.
-	_, _, err = auth.Login(context.Background(), env.queries, "resetme", "newpass456")
+	_, _, _, err = auth.Login(context.Background(), env.queries, "resetme", "newpass456")
 	assert.NoError(t, err)
 }
 

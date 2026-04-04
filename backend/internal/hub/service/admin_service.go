@@ -7,11 +7,11 @@ import (
 	"strconv"
 
 	"connectrpc.com/connect"
-	"golang.org/x/crypto/bcrypt"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/util/validate"
@@ -153,7 +153,7 @@ func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leap
 	}
 
 	// Hash password.
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Msg.GetPassword()), bcrypt.DefaultCost)
+	hash, err := password.Hash(req.Msg.GetPassword())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
 	}
@@ -168,7 +168,7 @@ func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leap
 		ID:           userID,
 		OrgID:        orgID,
 		Username:     username,
-		PasswordHash: string(hash),
+		PasswordHash: hash,
 		DisplayName:  req.Msg.GetDisplayName(),
 		Email:        req.Msg.GetEmail(),
 		IsAdmin:      isAdmin,
@@ -305,13 +305,13 @@ func (s *AdminService) ResetUserPassword(ctx context.Context, req *connect.Reque
 		return nil, err
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Msg.GetNewPassword()), bcrypt.DefaultCost)
+	hash, err := password.Hash(req.Msg.GetNewPassword())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
 	}
 
 	if err := s.queries.UpdateUserPassword(ctx, db.UpdateUserPasswordParams{
-		PasswordHash: string(hash),
+		PasswordHash: hash,
 		ID:           req.Msg.GetUserId(),
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update password: %w", err))

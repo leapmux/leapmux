@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"golang.org/x/crypto/bcrypt"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
@@ -49,11 +48,11 @@ func Run(ctx context.Context, q *db.Queries, soloMode bool) error {
 
 	var passwordHash string
 	if !soloMode {
-		hash, err := bcrypt.GenerateFromPassword([]byte(defaultPassword), bcrypt.DefaultCost)
+		hash, err := password.Hash(defaultPassword)
 		if err != nil {
 			return fmt.Errorf("hash password: %w", err)
 		}
-		passwordHash = string(hash)
+		passwordHash = hash
 	}
 
 	displayName := "Admin"

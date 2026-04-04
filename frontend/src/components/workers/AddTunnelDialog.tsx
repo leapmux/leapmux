@@ -14,7 +14,6 @@ import * as styles from './AddTunnelDialog.css'
 interface AddTunnelDialogProps {
   workerId: string
   hubURL: string
-  token: string
   userId: string
   onClose: () => void
   onCreated: (tunnel: TunnelInfo) => void
@@ -99,7 +98,6 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
         bindAddr: bindAddr().trim(),
         bindPort: effectiveBindPort,
         hubURL: props.hubURL,
-        token: props.token,
         userId: props.userId,
       })
       props.onCreated(tunnel)

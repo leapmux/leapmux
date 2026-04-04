@@ -4,13 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"time"
 
 	"connectrpc.com/connect"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
+	pwdhash "github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
@@ -48,17 +47,23 @@ func MustGetUser(ctx context.Context) (*UserInfo, error) {
 }
 
 // Login validates credentials and creates a new session token.
-func Login(ctx context.Context, q *db.Queries, username, password string) (string, *db.User, error) {
+// Returns the session ID, user, session expiry time, and any error.
+func Login(ctx context.Context, q *db.Queries, username, password string) (string, *db.User, time.Time, error) {
+	var zero time.Time
 	user, err := q.GetUserByUsername(ctx, username)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return "", nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+			return "", nil, zero, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
 		}
-		return "", nil, connect.NewError(connect.CodeInternal, fmt.Errorf("query user: %w", err))
+		return "", nil, zero, connect.NewError(connect.CodeInternal, fmt.Errorf("query user: %w", err))
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
-		return "", nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+	match, err := pwdhash.Verify(user.PasswordHash, password)
+	if err != nil {
+		return "", nil, zero, connect.NewError(connect.CodeInternal, fmt.Errorf("verify password: %w", err))
+	}
+	if !match {
+		return "", nil, zero, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
 	}
 
 	sessionID := id.Generate()
@@ -68,10 +73,10 @@ func Login(ctx context.Context, q *db.Queries, username, password string) (strin
 		UserID:    user.ID,
 		ExpiresAt: expiresAt,
 	}); err != nil {
-		return "", nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
+		return "", nil, zero, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
 
-	return sessionID, &user, nil
+	return sessionID, &user, expiresAt, nil
 }
 
 // ValidateToken resolves a session token to a UserInfo. Returns an error if
@@ -118,13 +123,4 @@ func ResolveOrgID(ctx context.Context, q *db.Queries, user *UserInfo, requestedO
 	}
 
 	return requestedOrgID, nil
-}
-
-// TokenFromHeader extracts a Bearer token from an Authorization header value.
-func TokenFromHeader(authHeader string) string {
-	const prefix = "Bearer "
-	if strings.HasPrefix(authHeader, prefix) {
-		return strings.TrimPrefix(authHeader, prefix)
-	}
-	return ""
 }

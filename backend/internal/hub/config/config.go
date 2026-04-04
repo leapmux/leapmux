@@ -46,6 +46,8 @@ type Config struct {
 	APITimeoutSeconds            int    `koanf:"api_timeout_seconds"`
 	AgentStartupTimeoutSeconds   int    `koanf:"agent_startup_timeout_seconds"`
 	WorktreeCreateTimeoutSeconds int    `koanf:"worktree_create_timeout_seconds"`
+	SecureCookies                bool   `koanf:"secure_cookies"`
+	EncryptionKeyPath            string `koanf:"encryption_key_path"`
 	SoloMode                     bool
 	Extras                       map[string]string // Extra flag values not in the hub Config struct
 }
@@ -260,6 +262,14 @@ func (c *Config) Validate() error {
 // DBPath returns the path to the SQLite database file.
 func (c *Config) DBPath() string {
 	return filepath.Join(c.DataDir, "hub.db")
+}
+
+// EncryptionKeyFilePath returns the path to the encryption key ring file.
+func (c *Config) EncryptionKeyFilePath() string {
+	if c.EncryptionKeyPath != "" {
+		return c.EncryptionKeyPath
+	}
+	return filepath.Join(c.DataDir, "encryption.key")
 }
 
 // SocketPath returns the path to the Unix domain socket.

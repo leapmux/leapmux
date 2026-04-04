@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/crypto/bcrypt"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -53,7 +53,7 @@ func setupOrgTestServer(t *testing.T) *orgTestEnv {
 	notifierSvc := notifier.New(q, bgMgr, pendingReqs, cfg)
 
 	mux := http.NewServeMux()
-	opts := connect.WithInterceptors(auth.NewInterceptor(q, false))
+	opts := connect.WithInterceptors(auth.NewInterceptor(q, false, false))
 
 	orgSvc := service.NewOrgService(q, notifierSvc, false)
 	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, opts)
@@ -69,7 +69,7 @@ func setupOrgTestServer(t *testing.T) *orgTestEnv {
 	client := leapmuxv1connect.NewOrgServiceClient(server.Client(), server.URL)
 
 	// Login as the bootstrapped admin user.
-	token, user, err := auth.Login(context.Background(), q, "admin", "admin")
+	token, user, _, err := auth.Login(context.Background(), q, "admin", "admin")
 	require.NoError(t, err)
 
 	return &orgTestEnv{
@@ -86,12 +86,12 @@ func (e *orgTestEnv) createSecondUser(t *testing.T) (userID, token string) {
 	ctx := context.Background()
 
 	userID = id.Generate()
-	hash, _ := bcrypt.GenerateFromPassword([]byte("pass2"), bcrypt.MinCost)
+	hash, _ := password.Hash("pass2")
 	_ = e.queries.CreateUser(ctx, gendb.CreateUserParams{
 		ID:           userID,
 		OrgID:        e.orgID,
 		Username:     "user2",
-		PasswordHash: string(hash),
+		PasswordHash: hash,
 		DisplayName:  "User 2",
 		IsAdmin:      0,
 	})
@@ -101,7 +101,7 @@ func (e *orgTestEnv) createSecondUser(t *testing.T) (userID, token string) {
 		UserID: userID,
 		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER,
 	})
-	token, _, err := auth.Login(ctx, e.queries, "user2", "pass2")
+	token, _, _, err := auth.Login(ctx, e.queries, "user2", "pass2")
 	require.NoError(t, err)
 	return
 }
@@ -429,12 +429,12 @@ func TestOrgService_InviteOrgMember_NotOwnerOrAdmin(t *testing.T) {
 
 	// Create a third user for user2 to attempt to invite.
 	user3ID := id.Generate()
-	hash, _ := bcrypt.GenerateFromPassword([]byte("pass3"), bcrypt.MinCost)
+	hash, _ := password.Hash("pass3")
 	_ = env.queries.CreateUser(context.Background(), gendb.CreateUserParams{
 		ID:           user3ID,
 		OrgID:        env.orgID,
 		Username:     "user3",
-		PasswordHash: string(hash),
+		PasswordHash: hash,
 		DisplayName:  "User 3",
 		IsAdmin:      0,
 	})

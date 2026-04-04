@@ -22,8 +22,8 @@ describe('tunnel store', () => {
     vi.mocked(createTunnel).mockResolvedValueOnce(mockTunnel1)
     vi.mocked(createTunnel).mockResolvedValueOnce(mockTunnel2)
 
-    await store.add({ workerId: 'w1', type: 'port_forward', targetAddr: '127.0.0.1', targetPort: 3000, bindAddr: '127.0.0.1', bindPort: 3000, hubURL: '', token: '', userId: '' })
-    await store.add({ workerId: 'w2', type: 'socks5', targetAddr: '', targetPort: 0, bindAddr: '127.0.0.1', bindPort: 1080, hubURL: '', token: '', userId: '' })
+    await store.add({ workerId: 'w1', type: 'port_forward', targetAddr: '127.0.0.1', targetPort: 3000, bindAddr: '127.0.0.1', bindPort: 3000, hubURL: '', userId: '' })
+    await store.add({ workerId: 'w2', type: 'socks5', targetAddr: '', targetPort: 0, bindAddr: '127.0.0.1', bindPort: 1080, hubURL: '', userId: '' })
 
     expect(store.tunnelsForWorker('w1')).toEqual([mockTunnel1])
     expect(store.tunnelsForWorker('w2')).toEqual([mockTunnel2])
@@ -35,7 +35,7 @@ describe('tunnel store', () => {
     vi.mocked(createTunnel).mockResolvedValueOnce(mockTunnel1)
 
     const store = createTunnelStore()
-    const result = await store.add({ workerId: 'w1', type: 'port_forward', targetAddr: '127.0.0.1', targetPort: 3000, bindAddr: '127.0.0.1', bindPort: 3000, hubURL: '', token: '', userId: '' })
+    const result = await store.add({ workerId: 'w1', type: 'port_forward', targetAddr: '127.0.0.1', targetPort: 3000, bindAddr: '127.0.0.1', bindPort: 3000, hubURL: '', userId: '' })
 
     expect(result).toEqual(mockTunnel1)
     expect(store.tunnels()).toEqual([mockTunnel1])
@@ -48,8 +48,8 @@ describe('tunnel store', () => {
     vi.mocked(deleteTunnel).mockResolvedValueOnce(undefined)
 
     const store = createTunnelStore()
-    await store.add({ workerId: 'w1', type: 'port_forward', targetAddr: '127.0.0.1', targetPort: 3000, bindAddr: '127.0.0.1', bindPort: 3000, hubURL: '', token: '', userId: '' })
-    await store.add({ workerId: 'w2', type: 'socks5', targetAddr: '', targetPort: 0, bindAddr: '127.0.0.1', bindPort: 1080, hubURL: '', token: '', userId: '' })
+    await store.add({ workerId: 'w1', type: 'port_forward', targetAddr: '127.0.0.1', targetPort: 3000, bindAddr: '127.0.0.1', bindPort: 3000, hubURL: '', userId: '' })
+    await store.add({ workerId: 'w2', type: 'socks5', targetAddr: '', targetPort: 0, bindAddr: '127.0.0.1', bindPort: 1080, hubURL: '', userId: '' })
 
     await store.remove('t1')
     expect(store.tunnels()).toEqual([mockTunnel2])
@@ -60,7 +60,7 @@ describe('tunnel store', () => {
     vi.mocked(createTunnel).mockRejectedValueOnce(new Error('bind failed'))
 
     const store = createTunnelStore()
-    await expect(store.add({ workerId: 'w1', type: 'port_forward', targetAddr: '127.0.0.1', targetPort: 3000, bindAddr: '127.0.0.1', bindPort: 3000, hubURL: '', token: '', userId: '' }))
+    await expect(store.add({ workerId: 'w1', type: 'port_forward', targetAddr: '127.0.0.1', targetPort: 3000, bindAddr: '127.0.0.1', bindPort: 3000, hubURL: '', userId: '' }))
       .rejects
       .toThrow('bind failed')
     expect(store.tunnels()).toEqual([])
@@ -72,7 +72,7 @@ describe('tunnel store', () => {
     vi.mocked(deleteTunnel).mockRejectedValueOnce(new Error('not found'))
 
     const store = createTunnelStore()
-    await store.add({ workerId: 'w1', type: 'port_forward', targetAddr: '127.0.0.1', targetPort: 3000, bindAddr: '127.0.0.1', bindPort: 3000, hubURL: '', token: '', userId: '' })
+    await store.add({ workerId: 'w1', type: 'port_forward', targetAddr: '127.0.0.1', targetPort: 3000, bindAddr: '127.0.0.1', bindPort: 3000, hubURL: '', userId: '' })
 
     await expect(store.remove('t1')).rejects.toThrow('not found')
     expect(store.tunnels()).toEqual([mockTunnel1])

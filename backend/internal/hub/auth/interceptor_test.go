@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -31,7 +32,7 @@ func setupInterceptorTestServer(t *testing.T) leapmuxv1connect.AuthServiceClient
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptors := connect.WithInterceptors(auth.NewInterceptor(q, false))
+	interceptors := connect.WithInterceptors(auth.NewInterceptor(q, false, false))
 	authSvc := service.NewAuthService(q, &config.Config{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
@@ -43,7 +44,7 @@ func setupInterceptorTestServer(t *testing.T) leapmuxv1connect.AuthServiceClient
 }
 
 // loginAdmin logs in with the bootstrapped admin credentials and returns the
-// session token.
+// session token extracted from the Set-Cookie response header.
 func loginAdmin(t *testing.T, client leapmuxv1connect.AuthServiceClient) string {
 	t.Helper()
 
@@ -52,36 +53,51 @@ func loginAdmin(t *testing.T, client leapmuxv1connect.AuthServiceClient) string 
 		Password: "admin",
 	}))
 	require.NoError(t, err)
-	return resp.Msg.GetToken()
+	return extractSessionFromCookie(t, resp.Header().Get("Set-Cookie"))
+}
+
+// extractSessionFromCookie parses the session ID from a Set-Cookie header value.
+func extractSessionFromCookie(t *testing.T, setCookie string) string {
+	t.Helper()
+	require.NotEmpty(t, setCookie, "Set-Cookie header must be present")
+	// Parse "leapmux-session=<value>; ..." format.
+	for _, part := range strings.Split(setCookie, ";") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, auth.CookieName+"=") {
+			return strings.TrimPrefix(part, auth.CookieName+"=")
+		}
+	}
+	t.Fatalf("session cookie %q not found in Set-Cookie header: %s", auth.CookieName, setCookie)
+	return ""
 }
 
 func TestInterceptor_PublicProcedure_NoTokenRequired(t *testing.T) {
 	client := setupInterceptorTestServer(t)
 
-	// GetSystemInfo is a public procedure -- it should succeed without a token.
+	// GetSystemInfo is a public procedure -- it should succeed without a cookie.
 	resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
 	require.NoError(t, err)
 	assert.NotNil(t, resp.Msg)
 }
 
-func TestInterceptor_PrivateProcedure_NoToken(t *testing.T) {
+func TestInterceptor_PrivateProcedure_NoCookie(t *testing.T) {
 	client := setupInterceptorTestServer(t)
 
-	// GetCurrentUser is a private procedure. Calling it without a Bearer token
+	// GetCurrentUser is a private procedure. Calling it without a session cookie
 	// should produce an Unauthenticated error.
 	_, err := client.GetCurrentUser(context.Background(), connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
-func TestInterceptor_PrivateProcedure_ValidToken(t *testing.T) {
+func TestInterceptor_PrivateProcedure_ValidCookie(t *testing.T) {
 	client := setupInterceptorTestServer(t)
 
 	token := loginAdmin(t, client)
 
-	// Use the valid token to call a private endpoint.
+	// Use the valid session ID in a cookie to call a private endpoint.
 	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Authorization", "Bearer "+token)
+	req.Header().Set("Cookie", auth.CookieName+"="+token)
 
 	resp, err := client.GetCurrentUser(context.Background(), req)
 	require.NoError(t, err)
@@ -100,7 +116,7 @@ func TestInterceptor_SoloMode_AutoAuthenticated(t *testing.T) {
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptors := connect.WithInterceptors(auth.NewInterceptor(q, true))
+	interceptors := connect.WithInterceptors(auth.NewInterceptor(q, true, false))
 	authSvc := service.NewAuthService(q, &config.Config{SoloMode: true})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
@@ -110,19 +126,33 @@ func TestInterceptor_SoloMode_AutoAuthenticated(t *testing.T) {
 
 	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
 
-	// In solo mode, private endpoints should work without any token.
+	// In solo mode, private endpoints should work without any cookie.
 	resp, err := client.GetCurrentUser(context.Background(), connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
 	require.NoError(t, err)
 	assert.Equal(t, "solo", resp.Msg.GetUser().GetUsername())
 	assert.True(t, resp.Msg.GetUser().GetIsAdmin())
 }
 
-func TestInterceptor_PrivateProcedure_InvalidToken(t *testing.T) {
+func TestInterceptor_PrivateProcedure_InvalidCookie(t *testing.T) {
 	client := setupInterceptorTestServer(t)
 
-	// Use a garbage token on a private endpoint.
+	// Use a garbage session ID in a cookie on a private endpoint.
 	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Authorization", "Bearer totally-invalid-token")
+	req.Header().Set("Cookie", auth.CookieName+"=totally-invalid-token")
+
+	_, err := client.GetCurrentUser(context.Background(), req)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+func TestInterceptor_BearerTokenNotAccepted(t *testing.T) {
+	client := setupInterceptorTestServer(t)
+
+	token := loginAdmin(t, client)
+
+	// Try using Bearer token in Authorization header — should NOT be accepted.
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Authorization", "Bearer "+token)
 
 	_, err := client.GetCurrentUser(context.Background(), req)
 	require.Error(t, err)

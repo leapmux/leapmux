@@ -21,20 +21,21 @@ var publicProcedures = map[string]bool{
 	"/leapmux.v1.WorkerConnectorService/Connect":             true,
 }
 
-// authInterceptor implements connect.Interceptor to validate Bearer tokens
+// authInterceptor implements connect.Interceptor to validate session cookies
 // on both unary and streaming RPCs.
 type authInterceptor struct {
-	queries  *db.Queries
-	soloMode bool
-	soloUser *UserInfo
+	queries      *db.Queries
+	soloMode     bool
+	secureCookie bool
+	soloUser     *UserInfo
 }
 
-// NewInterceptor creates a ConnectRPC interceptor that validates Bearer tokens
+// NewInterceptor creates a ConnectRPC interceptor that validates session cookies
 // and attaches user info to the context. Public procedures (login, worker
 // registration) are exempt from auth checks. In solo mode, all requests are
 // automatically authenticated as the admin user.
-func NewInterceptor(q *db.Queries, soloMode bool) connect.Interceptor {
-	a := &authInterceptor{queries: q, soloMode: soloMode}
+func NewInterceptor(q *db.Queries, soloMode bool, secureCookie bool) connect.Interceptor {
+	a := &authInterceptor{queries: q, soloMode: soloMode, secureCookie: secureCookie}
 	if soloMode {
 		user, err := q.GetUserByUsername(context.Background(), bootstrap.Username(soloMode))
 		if err == nil {
@@ -66,7 +67,7 @@ func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			return next(ctx, req)
 		}
 
-		token := TokenFromHeader(req.Header().Get("Authorization"))
+		token := SessionIDFromHeader(req.Header().Get("Cookie"), a.secureCookie)
 		if token == "" {
 			return nil, connect.NewError(connect.CodeUnauthenticated, nil)
 		}
@@ -102,7 +103,7 @@ func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 			return next(ctx, conn)
 		}
 
-		token := TokenFromHeader(conn.RequestHeader().Get("Authorization"))
+		token := SessionIDFromHeader(conn.RequestHeader().Get("Cookie"), a.secureCookie)
 		if token == "" {
 			return connect.NewError(connect.CodeUnauthenticated, nil)
 		}

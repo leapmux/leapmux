@@ -24,8 +24,9 @@ type ChannelRelay struct {
 }
 
 // OpenChannelRelay connects to the Hub's /ws/channel endpoint and starts
-// relaying messages to the frontend via Wails events.
-func (a *App) OpenChannelRelay(token string) error {
+// relaying messages to the frontend via Wails events. Authentication is
+// handled via cookies managed by the shared cookie jar in HubProxy.
+func (a *App) OpenChannelRelay() error {
 	if a.proxy == nil {
 		return fmt.Errorf("not connected")
 	}
@@ -48,10 +49,8 @@ func (a *App) OpenChannelRelay(token string) error {
 		Subprotocols: []string{"channel-relay"},
 	}
 
-	// Add auth token for distributed mode.
-	if token != "" {
-		opts.Subprotocols = append(opts.Subprotocols, "auth.token."+token)
-	}
+	// Attach cookies from the shared jar for session authentication.
+	opts.HTTPHeader = a.proxy.cookieHeader()
 
 	// Use the WebSocket-compatible HTTP client (HTTP/1.1 for upgrade).
 	if a.proxy.wsClient != nil {
@@ -124,5 +123,3 @@ func (r *ChannelRelay) readLoop() {
 		wailsRuntime.EventsEmit(r.wailsCtx, "channel:message", b64)
 	}
 }
-
-

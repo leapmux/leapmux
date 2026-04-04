@@ -44,7 +44,6 @@ function renderDialog(overrides?: { store?: Partial<TunnelStore>, onClose?: () =
       <AddTunnelDialog
         workerId="w1"
         hubURL="http://localhost:4327"
-        token="tok"
         userId="u1"
         onClose={onClose}
         onCreated={onCreated}
@@ -168,7 +167,6 @@ describe('addTunnelDialog', () => {
         targetPort: 3000,
         bindAddr: '127.0.0.1',
         hubURL: 'http://localhost:4327',
-        token: 'tok',
         userId: 'u1',
       }))
     })
@@ -185,7 +183,6 @@ describe('addTunnelDialog', () => {
         <AddTunnelDialog
           workerId="w1"
           hubURL="http://localhost:4327"
-          token="tok"
           userId="u1"
           onClose={() => {}}
           onCreated={onCreated}

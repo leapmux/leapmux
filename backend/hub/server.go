@@ -22,6 +22,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/db"
 	"github.com/leapmux/leapmux/internal/hub/frontend"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
@@ -51,6 +52,7 @@ func WithFrontendHandler(h http.Handler) ServerOption {
 type Server struct {
 	cfg        *config.Config
 	queries    *gendb.Queries
+	keystore   *keystore.Keystore
 	server     *http.Server
 	sqlDB      *sql.DB
 	tcpLn      net.Listener
@@ -103,6 +105,14 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 
 	queries := gendb.New(sqlDB)
 
+	ks, err := keystore.LoadOrGenerate(cfg.EncryptionKeyFilePath())
+	if err != nil {
+		_ = sqlDB.Close()
+		closeTCP()
+		return nil, fmt.Errorf("load encryption keystore: %w", err)
+	}
+	slog.Info("encryption keystore loaded", "active_version", ks.ActiveVersion(), "versions", len(ks.Versions()))
+
 	if err := bootstrap.Run(context.Background(), queries, cfg.SoloMode); err != nil {
 		_ = sqlDB.Close()
 		closeTCP()
@@ -126,7 +136,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		auth.NewShutdownInterceptor(shutdownCh),
 		metrics.NewInterceptor(),
 		auth.NewTimeoutInterceptor(cfg.APITimeout),
-		auth.NewInterceptor(queries, cfg.SoloMode),
+		auth.NewInterceptor(queries, cfg.SoloMode, cfg.SecureCookies),
 	)
 
 	mux := http.NewServeMux()
@@ -162,7 +172,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 			}
 		}
 	}
-	channelRelay := service.NewChannelRelayHandler(queries, wMgr, cMgr, soloUser)
+	channelRelay := service.NewChannelRelayHandler(queries, wMgr, cMgr, soloUser, cfg.SecureCookies)
 	mux.Handle("/ws/channel", channelRelay)
 
 	orgSvc := service.NewOrgService(queries, nil, cfg.SoloMode)
@@ -216,6 +226,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	return &Server{
 		cfg:        cfg,
 		queries:    queries,
+		keystore:   ks,
 		server:     server,
 		sqlDB:      sqlDB,
 		tcpLn:      tcpLn,
