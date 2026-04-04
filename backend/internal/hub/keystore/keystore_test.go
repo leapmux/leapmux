@@ -79,6 +79,40 @@ func TestDecryptWrongAADFails(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestCiphertextVersion(t *testing.T) {
+	ks := newTestKeystore(t)
+
+	ct, err := ks.Encrypt([]byte("test"), nil)
+	require.NoError(t, err)
+
+	ver, err := CiphertextVersion(ct)
+	require.NoError(t, err)
+	assert.Equal(t, uint32(1), ver)
+}
+
+func TestCiphertextVersion_MultiVersion(t *testing.T) {
+	key1, err := GenerateKey()
+	require.NoError(t, err)
+	key2, err := GenerateKey()
+	require.NoError(t, err)
+
+	ks, err := New(map[uint32][keySize]byte{1: key1, 5: key2})
+	require.NoError(t, err)
+
+	ct, err := ks.Encrypt([]byte("test"), nil)
+	require.NoError(t, err)
+
+	ver, err := CiphertextVersion(ct)
+	require.NoError(t, err)
+	assert.Equal(t, uint32(5), ver)
+}
+
+func TestCiphertextVersion_TooShort(t *testing.T) {
+	_, err := CiphertextVersion([]byte{1, 2})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "too short")
+}
+
 func TestDecryptTruncatedCiphertextFails(t *testing.T) {
 	ks := newTestKeystore(t)
 	_, err := ks.Decrypt([]byte{1, 2, 3}, nil)

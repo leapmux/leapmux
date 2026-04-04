@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/binary"
 	"flag"
 	"fmt"
 
@@ -123,7 +122,7 @@ func runReencryptSecrets(args []string) error {
 		if getErr != nil {
 			return fmt.Errorf("get provider %s: %w", p.ID, getErr)
 		}
-		if len(full.ClientSecret) >= 4 && binary.BigEndian.Uint32(full.ClientSecret[:4]) == activeVer {
+		if ver, err := keystore.CiphertextVersion(full.ClientSecret); err == nil && ver == activeVer {
 			continue // already at active version
 		}
 		aad := keystore.ProviderAAD(p.ID)

@@ -106,6 +106,14 @@ func (ks *Keystore) Encrypt(plaintext, aad []byte) ([]byte, error) {
 	return out, nil
 }
 
+// CiphertextVersion extracts the key version from a ciphertext blob without decrypting it.
+func CiphertextVersion(ciphertext []byte) (uint32, error) {
+	if len(ciphertext) < versionSize {
+		return 0, fmt.Errorf("keystore: ciphertext too short")
+	}
+	return binary.BigEndian.Uint32(ciphertext[:versionSize]), nil
+}
+
 // Decrypt decrypts a ciphertext blob produced by Encrypt. The same AAD used
 // during encryption must be provided.
 func (ks *Keystore) Decrypt(ciphertext, aad []byte) ([]byte, error) {

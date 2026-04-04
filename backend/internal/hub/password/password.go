@@ -19,6 +19,11 @@ const (
 	argon2SaltLen     = 16
 )
 
+// PlaceholderHash is a sentinel value for users that have no password (e.g.,
+// OAuth-only accounts). It satisfies the NOT NULL constraint on password_hash
+// and is never accepted by Verify because its prefix doesn't match "$argon2id$".
+const PlaceholderHash = "$not-set$"
+
 // Hash hashes a password using Argon2id with OWASP-recommended parameters.
 // Returns a PHC-formatted string.
 func Hash(password string) (string, error) {

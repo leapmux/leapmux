@@ -51,3 +51,8 @@ func TestVerifyTruncatedArgon2idReturnsError(t *testing.T) {
 	_, err := Verify("$argon2id$broken", "password")
 	assert.Error(t, err)
 }
+
+func TestPlaceholderHashRejectedByVerify(t *testing.T) {
+	_, err := Verify(PlaceholderHash, "any-password")
+	assert.Error(t, err, "PlaceholderHash must not be accepted by Verify")
+}

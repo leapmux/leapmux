@@ -47,10 +47,10 @@ func (p *GitHubProvider) AuthURL(state, codeChallenge string) string {
 }
 
 func (p *GitHubProvider) Exchange(ctx context.Context, code, _ string) (*TokenSet, *UserClaims, error) {
-	return p.exchangeWithUserURL(ctx, code, "", p.userURL)
+	return p.exchangeWithUserURL(ctx, code, p.userURL)
 }
 
-func (p *GitHubProvider) exchangeWithUserURL(ctx context.Context, code, _ string, userURL string) (*TokenSet, *UserClaims, error) {
+func (p *GitHubProvider) exchangeWithUserURL(ctx context.Context, code string, userURL string) (*TokenSet, *UserClaims, error) {
 	token, err := p.oauth2Config.Exchange(ctx, code)
 	if err != nil {
 		return nil, nil, fmt.Errorf("github exchange: %w", err)

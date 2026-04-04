@@ -173,12 +173,13 @@ func (a *authInterceptor) touchSession(ctx context.Context, sessionID string) {
 
 	newExpiry := now.Add(SessionDuration).UTC()
 	threshold := now.Add(-sessionTouchThreshold).UTC()
-	_ = a.queries.TouchUserSession(ctx, db.TouchUserSessionParams{
+	if err := a.queries.TouchUserSession(ctx, db.TouchUserSessionParams{
 		ExpiresAt:    newExpiry,
 		ID:           sessionID,
 		LastActiveAt: threshold,
-	})
-	a.lastTouch.Store(sessionID, now)
+	}); err == nil {
+		a.lastTouch.Store(sessionID, now)
+	}
 }
 
 const touchSweepInterval = 10 * time.Minute

@@ -265,14 +265,10 @@ func tokenExpiryTime(tokenSet *huboauth.TokenSet) time.Time {
 func (h *OAuthHandler) storePendingSignup(ctx context.Context, providerID string, claims *huboauth.UserClaims, tokenSet *huboauth.TokenSet, redirectURI string) (string, error) {
 	token := id.Generate()
 
-	// Use a temporary user/provider ID for AAD since the user doesn't exist yet.
-	encAccessToken, err := h.keystore.Encrypt([]byte(tokenSet.AccessToken), keystore.AccessTokenAAD(token, providerID))
+	// Use the signup token as entity ID for AAD since the user doesn't exist yet.
+	encAccessToken, encRefreshToken, err := encryptTokenPair(h.keystore, tokenSet.AccessToken, tokenSet.RefreshToken, token, providerID)
 	if err != nil {
-		return "", fmt.Errorf("encrypt access token: %w", err)
-	}
-	encRefreshToken, err := h.keystore.Encrypt([]byte(tokenSet.RefreshToken), keystore.RefreshTokenAAD(token, providerID))
-	if err != nil {
-		return "", fmt.Errorf("encrypt refresh token: %w", err)
+		return "", err
 	}
 
 	tokenExpiresAt := tokenExpiryTime(tokenSet)
@@ -302,15 +298,24 @@ func (h *OAuthHandler) storePendingSignup(ctx context.Context, providerID string
 	return token, nil
 }
 
-func (h *OAuthHandler) storeTokens(ctx context.Context, userID, providerID string, tokenSet *huboauth.TokenSet) error {
-	encAccessToken, err := h.keystore.Encrypt([]byte(tokenSet.AccessToken), keystore.AccessTokenAAD(userID, providerID))
+// encryptTokenPair encrypts an access/refresh token pair. The entityID is used
+// as part of the AAD and is typically a user ID or a pending-signup token.
+func encryptTokenPair(ks *keystore.Keystore, accessToken, refreshToken string, entityID, providerID string) (encAccess, encRefresh []byte, err error) {
+	encAccess, err = ks.Encrypt([]byte(accessToken), keystore.AccessTokenAAD(entityID, providerID))
 	if err != nil {
-		return fmt.Errorf("encrypt access token: %w", err)
+		return nil, nil, fmt.Errorf("encrypt access token: %w", err)
 	}
-
-	encRefreshToken, err := h.keystore.Encrypt([]byte(tokenSet.RefreshToken), keystore.RefreshTokenAAD(userID, providerID))
+	encRefresh, err = ks.Encrypt([]byte(refreshToken), keystore.RefreshTokenAAD(entityID, providerID))
 	if err != nil {
-		return fmt.Errorf("encrypt refresh token: %w", err)
+		return nil, nil, fmt.Errorf("encrypt refresh token: %w", err)
+	}
+	return encAccess, encRefresh, nil
+}
+
+func (h *OAuthHandler) storeTokens(ctx context.Context, userID, providerID string, tokenSet *huboauth.TokenSet) error {
+	encAccess, encRefresh, err := encryptTokenPair(h.keystore, tokenSet.AccessToken, tokenSet.RefreshToken, userID, providerID)
+	if err != nil {
+		return err
 	}
 
 	expiresAt := tokenExpiryTime(tokenSet)
@@ -318,8 +323,8 @@ func (h *OAuthHandler) storeTokens(ctx context.Context, userID, providerID strin
 	return h.queries.UpsertOAuthTokens(ctx, gendb.UpsertOAuthTokensParams{
 		UserID:       userID,
 		ProviderID:   providerID,
-		AccessToken:  encAccessToken,
-		RefreshToken: encRefreshToken,
+		AccessToken:  encAccess,
+		RefreshToken: encRefresh,
 		TokenType:    tokenSet.TokenType,
 		ExpiresAt:    expiresAt,
 		KeyVersion:   int64(h.keystore.ActiveVersion()),

@@ -62,7 +62,7 @@ func TestGitHub_Exchange_Success(t *testing.T) {
 	origExchange := p.oauth2Config.Endpoint.TokenURL
 	_ = origExchange
 
-	tokenSet, claims, err := p.exchangeWithUserURL(context.Background(), "valid-code", "", userSrv.URL+"/user")
+	tokenSet, claims, err := p.exchangeWithUserURL(context.Background(), "valid-code", userSrv.URL+"/user")
 	require.NoError(t, err)
 
 	assert.Equal(t, "gh-access-token", tokenSet.AccessToken)

@@ -547,6 +547,45 @@ func TestCompleteOAuthSignup_TokenConsumedOnSuccess(t *testing.T) {
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
 
+func TestCompleteOAuthSignup_ReencryptsTokensWithActiveKeyVersion(t *testing.T) {
+	_, client, q, ks, _ := setupOAuthTestServerWithAuthService(t)
+	providerID := createTestProvider(t, q, ks)
+	signupToken := id.Generate()
+
+	insertPendingSignup(t, q, ks, providerID, signupToken, "keyver@example.com", "KeyVer", "sub-keyver", time.Now().Add(5*time.Minute).UTC())
+
+	resp, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+		SignupToken: signupToken,
+		Username:    "keyveruser",
+	}))
+	require.NoError(t, err)
+
+	userID := resp.Msg.GetUser().GetId()
+
+	// Verify stored tokens use the active key version and can be decrypted
+	// with the user ID as AAD (not the signup token).
+	tok, err := q.GetOAuthTokens(context.Background(), gendb.GetOAuthTokensParams{
+		UserID:     userID,
+		ProviderID: providerID,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(ks.ActiveVersion()), tok.KeyVersion)
+
+	ver, err := keystore.CiphertextVersion(tok.AccessToken)
+	require.NoError(t, err)
+	assert.Equal(t, ks.ActiveVersion(), ver, "access token ciphertext should use active key version")
+
+	// Decrypt with user ID AAD should succeed.
+	plainAccess, err := ks.Decrypt(tok.AccessToken, keystore.AccessTokenAAD(userID, providerID))
+	require.NoError(t, err)
+	assert.Equal(t, "mock-access-token", string(plainAccess))
+
+	plainRefresh, err := ks.Decrypt(tok.RefreshToken, keystore.RefreshTokenAAD(userID, providerID))
+	require.NoError(t, err)
+	assert.Equal(t, "mock-refresh-token", string(plainRefresh))
+}
+
 // --- Callback behavior tests (signup disabled) ---
 
 func TestOAuthCallback_NewUser_SignupDisabled(t *testing.T) {

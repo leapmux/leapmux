@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/binary"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -277,6 +276,3 @@ func TestCLI_ReencryptSecrets_Idempotent(t *testing.T) {
 	err := runReencryptSecrets([]string{"--data-dir", dir})
 	require.NoError(t, err)
 }
-
-// Ensure unused import doesn't cause issues.
-var _ = os.Getenv

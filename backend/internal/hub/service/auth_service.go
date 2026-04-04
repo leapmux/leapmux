@@ -15,7 +15,6 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	pwdhash "github.com/leapmux/leapmux/internal/hub/password"
-	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/validate"
 	"github.com/leapmux/leapmux/util/version"
 )
@@ -350,12 +349,6 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		}
 	}
 
-	// OAuth users have no password; random hash satisfies the NOT NULL constraint.
-	randomPwdHash, err := pwdhash.Hash(id.Generate())
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("generate random password: %w", err))
-	}
-
 	var ev int64
 	if emailVerified {
 		ev = 1
@@ -363,7 +356,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 
 	user, err := createUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
 		Username:      username,
-		PasswordHash:  randomPwdHash,
+		PasswordHash:  pwdhash.PlaceholderHash,
 		DisplayName:   displayName,
 		Email:         userEmail,
 		EmailVerified: ev,
@@ -392,43 +385,22 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 
 	// Decrypt and re-store OAuth tokens with the real user ID as AAD.
 	if s.keystore != nil {
-		accessTokenPlain, err := s.keystore.Decrypt(pending.AccessToken, keystore.AccessTokenAAD(signupToken, pending.ProviderID))
-		if err != nil {
-			slog.Error("oauth: decrypt access token for re-encryption", "error", err, "user_id", user.ID)
-		} else {
-			refreshTokenPlain, err := s.keystore.Decrypt(pending.RefreshToken, keystore.RefreshTokenAAD(signupToken, pending.ProviderID))
-			if err != nil {
-				slog.Error("oauth: decrypt refresh token for re-encryption", "error", err, "user_id", user.ID)
-			} else {
-				// Re-encrypt with user ID AAD.
-				encAccess, errA := s.keystore.Encrypt(accessTokenPlain, keystore.AccessTokenAAD(user.ID, pending.ProviderID))
-				encRefresh, errR := s.keystore.Encrypt(refreshTokenPlain, keystore.RefreshTokenAAD(user.ID, pending.ProviderID))
-				if errA != nil {
-					slog.Error("oauth: encrypt access token", "error", errA, "user_id", user.ID)
-				} else if errR != nil {
-					slog.Error("oauth: encrypt refresh token", "error", errR, "user_id", user.ID)
-				} else if err := s.queries.UpsertOAuthTokens(ctx, db.UpsertOAuthTokensParams{
-					UserID:       user.ID,
-					ProviderID:   pending.ProviderID,
-					AccessToken:  encAccess,
-					RefreshToken: encRefresh,
-					TokenType:    pending.TokenType,
-					ExpiresAt:    pending.TokenExpiresAt,
-					KeyVersion:   pending.KeyVersion,
-				}); err != nil {
-					slog.Error("oauth: upsert re-encrypted tokens", "error", err, "user_id", user.ID)
-				}
-			}
+		if err := reencryptPendingTokens(ctx, s.keystore, s.queries, pending, signupToken, user.ID); err != nil {
+			slog.Error("oauth: re-encrypt tokens for new user", "error", err, "user_id", user.ID)
 		}
 	}
 
 	// Consume the pending signup.
 	_ = s.queries.DeletePendingOAuthSignup(ctx, signupToken)
 
-	// Re-fetch user to get final state.
-	finalUser, err := s.queries.GetUserByID(ctx, user.ID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+	// Re-fetch user only when pending email modified the user row.
+	finalUser := user
+	if pendingEmail != "" {
+		refetched, refetchErr := s.queries.GetUserByID(ctx, user.ID)
+		if refetchErr != nil {
+			return nil, connect.NewError(connect.CodeInternal, refetchErr)
+		}
+		finalUser = &refetched
 	}
 
 	// Create session.
@@ -443,10 +415,38 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	}
 
 	resp := connect.NewResponse(&leapmuxv1.CompleteOAuthSignupResponse{
-		User: userToProtoWithOrgName(&finalUser, org.Name),
+		User: userToProtoWithOrgName(finalUser, org.Name),
 	})
 	resp.Header().Set("Set-Cookie", auth.BuildSessionCookie(sessionID, expiresAt, s.cfg.SecureCookies).String())
 	return resp, nil
+}
+
+// reencryptPendingTokens decrypts tokens from a pending signup (keyed by signupToken)
+// and re-encrypts them with the real userID as AAD.
+func reencryptPendingTokens(ctx context.Context, ks *keystore.Keystore, q *db.Queries, pending *db.PendingOauthSignup, signupToken, userID string) error {
+	accessPlain, err := ks.Decrypt(pending.AccessToken, keystore.AccessTokenAAD(signupToken, pending.ProviderID))
+	if err != nil {
+		return fmt.Errorf("decrypt access token: %w", err)
+	}
+	refreshPlain, err := ks.Decrypt(pending.RefreshToken, keystore.RefreshTokenAAD(signupToken, pending.ProviderID))
+	if err != nil {
+		return fmt.Errorf("decrypt refresh token: %w", err)
+	}
+
+	encAccess, encRefresh, err := encryptTokenPair(ks, string(accessPlain), string(refreshPlain), userID, pending.ProviderID)
+	if err != nil {
+		return err
+	}
+
+	return q.UpsertOAuthTokens(ctx, db.UpsertOAuthTokensParams{
+		UserID:       userID,
+		ProviderID:   pending.ProviderID,
+		AccessToken:  encAccess,
+		RefreshToken: encRefresh,
+		TokenType:    pending.TokenType,
+		ExpiresAt:    pending.TokenExpiresAt,
+		KeyVersion:   int64(ks.ActiveVersion()),
+	})
 }
 
 func userToProto(u *db.User) *leapmuxv1.User {
