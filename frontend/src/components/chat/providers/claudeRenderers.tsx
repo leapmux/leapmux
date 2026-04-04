@@ -49,10 +49,10 @@ import {
   renderBashDetail,
   renderEditDetail,
   renderGlobDetail,
-  renderGrepDetail,
+  renderQueryDetail,
   renderReadDetail,
-  renderWebFetchDetail,
-  renderWebSearchDetail,
+  renderSearchDetail,
+  renderUrlDetail,
   renderWriteDetail,
 } from '../toolDetailRenderers'
 import {
@@ -164,16 +164,16 @@ function renderClaudeToolDetail(toolName: string, input: Record<string, unknown>
 
   switch (toolName) {
     // Shared tool detail primitives
-    case 'Bash': return renderBashDetail(input as BashInput)
-    case 'Read': return renderReadDetail(input as ReadInput, cwd, homeDir)
-    case 'Write': return renderWriteDetail(input as WriteInput, cwd, homeDir)
-    case 'Edit': return renderEditDetail(input as EditInput, cwd, homeDir)
-    case 'Grep': return renderGrepDetail(input as GrepInput)
-    case 'Glob': return renderGlobDetail(input as GlobInput, cwd, homeDir)
-    case 'WebFetch': return renderWebFetchDetail(input as WebFetchInput)
-    case 'WebSearch': return renderWebSearchDetail(input as WebSearchInput)
+    case 'Bash': return renderBashDetail((input as BashInput).description, (input as BashInput).command)
+    case 'Read': return renderReadDetail((input as ReadInput).file_path, (input as ReadInput).offset, (input as ReadInput).limit, cwd, homeDir)
+    case 'Write': return renderWriteDetail((input as WriteInput).file_path, (input as WriteInput).content, cwd, homeDir)
+    case 'Edit': return renderEditDetail((input as EditInput).file_path, (input as EditInput).old_string, (input as EditInput).new_string, cwd, homeDir)
+    case 'Grep': return renderSearchDetail((input as GrepInput).pattern, (input as GrepInput).path, cwd, homeDir)
+    case 'Glob': return renderGlobDetail((input as GlobInput).pattern, (input as GlobInput).path, cwd, homeDir)
+    case 'WebFetch': return renderUrlDetail((input as WebFetchInput).url)
+    case 'WebSearch': return renderQueryDetail((input as WebSearchInput).query)
     case 'Agent':
-    case 'Task': return renderAgentDetail(input, toolName)
+    case 'Task': return renderAgentDetail(String(input.description || toolName), input.subagent_type ? String(input.subagent_type) : undefined)
 
     // Claude-only tool details
     case 'TaskOutput': {

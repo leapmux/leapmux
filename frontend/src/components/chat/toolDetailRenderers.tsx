@@ -1,5 +1,4 @@
 import type { JSX } from 'solid-js'
-import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, WebFetchInput, WebSearchInput, WriteInput } from '~/types/toolMessages'
 import { diffLines } from 'diff'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { relativizePath } from './messageUtils'
@@ -11,16 +10,14 @@ import {
 
 const TRAILING_NEWLINE_RE = /\n$/
 
-export function renderBashDetail(input: BashInput): JSX.Element | null {
-  const { description: desc, command: cmd } = input
-  if (!desc && !cmd)
+export function renderBashDetail(description?: string, _command?: string): JSX.Element | null {
+  if (!description && !_command)
     return null
-  const descText = desc ? (desc.length > 100 ? `${desc.slice(0, 100)}…` : desc) : ''
+  const descText = description ? (description.length > 100 ? `${description.slice(0, 100)}…` : description) : ''
   return <span class={toolInputText}>{descText || 'Run command'}</span>
 }
 
-export function renderReadDetail(input: ReadInput, cwd?: string, homeDir?: string): JSX.Element | null {
-  const { file_path: path, offset, limit } = input
+export function renderReadDetail(path?: string, offset?: number, limit?: number, cwd?: string, homeDir?: string): JSX.Element | null {
   if (!path)
     return null
   const rangeStr = offset && limit
@@ -38,8 +35,7 @@ export function renderReadDetail(input: ReadInput, cwd?: string, homeDir?: strin
   )
 }
 
-export function renderWriteDetail(input: WriteInput, cwd?: string, homeDir?: string): JSX.Element | null {
-  const { file_path: path, content } = input
+export function renderWriteDetail(path?: string, content?: string, cwd?: string, homeDir?: string): JSX.Element | null {
   if (!path)
     return null
   const lineCount = content ? content.split('\n').length : 0
@@ -52,8 +48,7 @@ export function renderWriteDetail(input: WriteInput, cwd?: string, homeDir?: str
   )
 }
 
-export function renderEditDetail(input: EditInput, cwd?: string, homeDir?: string): JSX.Element | null {
-  const { file_path: path, old_string: oldStr, new_string: newStr } = input
+export function renderEditDetail(path?: string, oldStr?: string, newStr?: string, cwd?: string, homeDir?: string): JSX.Element | null {
   if (!path)
     return null
   let added = 0
@@ -76,15 +71,18 @@ export function renderEditDetail(input: EditInput, cwd?: string, homeDir?: strin
   )
 }
 
-export function renderGrepDetail(input: GrepInput): JSX.Element | null {
-  const { pattern } = input
-  return pattern
-    ? <span class={toolInputCode}>{`"${pattern}"`}</span>
-    : null
+export function renderSearchDetail(pattern?: string, path?: string, cwd?: string, homeDir?: string): JSX.Element | null {
+  if (!pattern)
+    return null
+  return (
+    <>
+      <span class={toolInputCode}>{`"${pattern}"`}</span>
+      {path ? <span class={toolInputText}>{` ${relativizePath(path, cwd, homeDir)}`}</span> : null}
+    </>
+  )
 }
 
-export function renderGlobDetail(input: GlobInput, cwd?: string, homeDir?: string): JSX.Element | null {
-  const { pattern, path } = input
+export function renderGlobDetail(pattern?: string, path?: string, cwd?: string, homeDir?: string): JSX.Element | null {
   const displayPattern = pattern && pattern.startsWith('/') && !pattern.includes('*')
     ? relativizePath(pattern, cwd, homeDir)
     : (pattern || '')
@@ -96,8 +94,7 @@ export function renderGlobDetail(input: GlobInput, cwd?: string, homeDir?: strin
   )
 }
 
-export function renderWebFetchDetail(input: WebFetchInput): JSX.Element | null {
-  const { url } = input
+export function renderUrlDetail(url?: string): JSX.Element | null {
   if (!url)
     return null
   return url.startsWith('https://')
@@ -105,15 +102,11 @@ export function renderWebFetchDetail(input: WebFetchInput): JSX.Element | null {
     : <span class={toolInputText}>{url}</span>
 }
 
-export function renderWebSearchDetail(input: WebSearchInput): JSX.Element | null {
-  const { query } = input
+export function renderQueryDetail(query?: string): JSX.Element | null {
   return query ? <span class={toolInputText}>{query}</span> : null
 }
 
-export function renderAgentDetail(input: Record<string, unknown>, toolName: string): JSX.Element | null {
-  const description = String(input.description || toolName)
-  const subagentType = input.subagent_type ? String(input.subagent_type) : null
-
+export function renderAgentDetail(description: string, subagentType?: string): JSX.Element | null {
   // If description starts with subagent name, use "SubAgent: rest" format;
   // also suppress the trailing "(SubAgent)" suffix since it's already in the title.
   let titleDesc = description
