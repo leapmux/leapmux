@@ -6,6 +6,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
 // helper: build a json.RawMessage from an arbitrary value.
@@ -66,13 +69,17 @@ func codexStartupStatus(name, status string, errorText interface{}) map[string]i
 	}
 }
 
+func consolidateForProvider(provider leapmuxv1.AgentProvider, msgs []json.RawMessage) []json.RawMessage {
+	return consolidateNotificationThread(msgs, agent.NotificationConsolidatorForProvider(provider))
+}
+
 func TestConsolidateNotificationThread_OrderPreserved(t *testing.T) {
 	t.Run("context_cleared then settings_changed", func(t *testing.T) {
 		msgs := []json.RawMessage{
 			raw(t, map[string]interface{}{"type": "context_cleared"}),
 			raw(t, settingsChanged("A", "B")),
 		}
-		result := consolidateNotificationThread(msgs)
+		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 		assert.Equal(t, []string{"context_cleared", "settings_changed"}, types(t, result))
 	})
 
@@ -81,7 +88,7 @@ func TestConsolidateNotificationThread_OrderPreserved(t *testing.T) {
 			raw(t, settingsChanged("A", "B")),
 			raw(t, map[string]interface{}{"type": "context_cleared"}),
 		}
-		result := consolidateNotificationThread(msgs)
+		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 		assert.Equal(t, []string{"settings_changed", "context_cleared"}, types(t, result))
 	})
 
@@ -90,7 +97,7 @@ func TestConsolidateNotificationThread_OrderPreserved(t *testing.T) {
 			raw(t, map[string]interface{}{"type": "system", "subtype": "api_retry", "attempt": 1, "max_retries": 3}),
 			raw(t, map[string]interface{}{"type": "context_cleared"}),
 		}
-		result := consolidateNotificationThread(msgs)
+		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 		require.Len(t, result, 2)
 		first := parseRaw(t, result[0])
 		second := parseRaw(t, result[1])
@@ -107,7 +114,7 @@ func TestConsolidateNotificationThread_Dedup(t *testing.T) {
 			raw(t, settingsChanged("A", "B")),
 			raw(t, map[string]interface{}{"type": "context_cleared"}),
 		}
-		result := consolidateNotificationThread(msgs)
+		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 		assert.Equal(t, []string{"settings_changed", "context_cleared"}, types(t, result))
 	})
 
@@ -117,7 +124,7 @@ func TestConsolidateNotificationThread_Dedup(t *testing.T) {
 			raw(t, map[string]interface{}{"type": "context_cleared"}),
 			raw(t, settingsChanged("B", "C")),
 		}
-		result := consolidateNotificationThread(msgs)
+		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 		assert.Equal(t, []string{"context_cleared", "settings_changed"}, types(t, result))
 		// Verify merged: old=A, new=C
 		changes := parseRaw(t, result[1])["changes"].(map[string]interface{})
@@ -132,7 +139,7 @@ func TestConsolidateNotificationThread_Dedup(t *testing.T) {
 			raw(t, map[string]interface{}{"type": "context_cleared"}),
 			raw(t, map[string]interface{}{"type": "system", "subtype": "api_retry", "attempt": 2, "max_retries": 3}),
 		}
-		result := consolidateNotificationThread(msgs)
+		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 		require.Len(t, result, 2)
 		first := parseRaw(t, result[0])
 		second := parseRaw(t, result[1])
@@ -150,7 +157,7 @@ func TestConsolidateNotificationThread_ChangesCancelOut(t *testing.T) {
 			raw(t, map[string]interface{}{"type": "context_cleared"}),
 			raw(t, settingsChanged("B", "A")),
 		}
-		result := consolidateNotificationThread(msgs)
+		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 		// settings_changed drops because old==new; only context_cleared remains.
 		assert.Equal(t, []string{"context_cleared"}, types(t, result))
 	})
@@ -160,7 +167,7 @@ func TestConsolidateNotificationThread_ChangesCancelOut(t *testing.T) {
 			raw(t, settingsChanged("A", "B")),
 			raw(t, settingsChanged("B", "A")),
 		}
-		result := consolidateNotificationThread(msgs)
+		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 		assert.Equal(t, []json.RawMessage{}, result)
 	})
 }
@@ -170,7 +177,7 @@ func TestConsolidateNotificationThread_SettingsMerged(t *testing.T) {
 		raw(t, settingsChanged("A", "B")),
 		raw(t, settingsChanged("B", "C")),
 	}
-	result := consolidateNotificationThread(msgs)
+	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 	require.Len(t, result, 1)
 	assert.Equal(t, "settings_changed", msgType(t, result[0]))
 	changes := parseRaw(t, result[0])["changes"].(map[string]interface{})
@@ -184,7 +191,7 @@ func TestConsolidateNotificationThread_PlanExecution(t *testing.T) {
 		raw(t, map[string]interface{}{"type": "plan_execution", "plan_file_path": "/p.md"}),
 		raw(t, map[string]interface{}{"type": "context_cleared"}),
 	}
-	result := consolidateNotificationThread(msgs)
+	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 	assert.Equal(t, []string{"plan_execution", "context_cleared"}, types(t, result))
 }
 
@@ -197,7 +204,7 @@ func TestConsolidateNotificationThread_NoContextClearedOnSettingsChanged(t *test
 			"contextCleared": true,
 		}),
 	}
-	result := consolidateNotificationThread(msgs)
+	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 	require.Len(t, result, 1)
 	m := parseRaw(t, result[0])
 	assert.Nil(t, m["contextCleared"], "contextCleared should not appear in output")
@@ -208,7 +215,7 @@ func TestConsolidateNotificationThread_CompactionBoundariesKept(t *testing.T) {
 		raw(t, map[string]interface{}{"type": "system", "subtype": "compact_boundary"}),
 		raw(t, map[string]interface{}{"type": "system", "subtype": "microcompact_boundary"}),
 	}
-	result := consolidateNotificationThread(msgs)
+	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 	assert.Len(t, result, 2)
 }
 
@@ -217,7 +224,7 @@ func TestConsolidateNotificationThread_Interrupted(t *testing.T) {
 		raw(t, settingsChanged("A", "B")),
 		raw(t, map[string]interface{}{"type": "interrupted"}),
 	}
-	result := consolidateNotificationThread(msgs)
+	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 	assert.Equal(t, []string{"settings_changed", "interrupted"}, types(t, result))
 }
 
@@ -232,7 +239,7 @@ func TestConsolidateNotificationThread_RateLimit(t *testing.T) {
 			"rate_limit_info": map[string]interface{}{"rateLimitType": "five_hour", "status": "allowed"},
 		}),
 	}
-	result := consolidateNotificationThread(msgs)
+	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 	require.Len(t, result, 1)
 	m := parseRaw(t, result[0])
 	info := m["rate_limit_info"].(map[string]interface{})
@@ -244,7 +251,7 @@ func TestConsolidateNotificationThread_SystemStatus(t *testing.T) {
 		raw(t, map[string]interface{}{"type": "system", "subtype": "status", "status": "compacting"}),
 		raw(t, map[string]interface{}{"type": "system", "subtype": "status", "status": "idle"}),
 	}
-	result := consolidateNotificationThread(msgs)
+	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 	require.Len(t, result, 1)
 	m := parseRaw(t, result[0])
 	assert.Equal(t, "idle", m["status"])
@@ -256,7 +263,7 @@ func TestConsolidateNotificationThread_CompactionSupersedes_ContextCleared(t *te
 			raw(t, map[string]interface{}{"type": "context_cleared"}),
 			raw(t, map[string]interface{}{"type": "system", "subtype": "compact_boundary"}),
 		}
-		result := consolidateNotificationThread(msgs)
+		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 		assert.Equal(t, []string{"system"}, types(t, result))
 	})
 
@@ -265,7 +272,7 @@ func TestConsolidateNotificationThread_CompactionSupersedes_ContextCleared(t *te
 			raw(t, map[string]interface{}{"type": "context_cleared"}),
 			raw(t, map[string]interface{}{"type": "system", "subtype": "microcompact_boundary"}),
 		}
-		result := consolidateNotificationThread(msgs)
+		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 		assert.Equal(t, []string{"system"}, types(t, result))
 	})
 
@@ -274,7 +281,7 @@ func TestConsolidateNotificationThread_CompactionSupersedes_ContextCleared(t *te
 			raw(t, map[string]interface{}{"type": "system", "subtype": "compact_boundary"}),
 			raw(t, map[string]interface{}{"type": "context_cleared"}),
 		}
-		result := consolidateNotificationThread(msgs)
+		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 		assert.Equal(t, []string{"context_cleared"}, types(t, result))
 	})
 
@@ -283,7 +290,7 @@ func TestConsolidateNotificationThread_CompactionSupersedes_ContextCleared(t *te
 			raw(t, map[string]interface{}{"type": "system", "subtype": "microcompact_boundary"}),
 			raw(t, map[string]interface{}{"type": "context_cleared"}),
 		}
-		result := consolidateNotificationThread(msgs)
+		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 		assert.Equal(t, []string{"context_cleared"}, types(t, result))
 	})
 
@@ -293,7 +300,7 @@ func TestConsolidateNotificationThread_CompactionSupersedes_ContextCleared(t *te
 			raw(t, map[string]interface{}{"type": "context_cleared"}),
 			raw(t, map[string]interface{}{"type": "system", "subtype": "compact_boundary"}),
 		}
-		result := consolidateNotificationThread(msgs)
+		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 		assert.Equal(t, []string{"settings_changed", "system"}, types(t, result))
 	})
 }
@@ -304,7 +311,7 @@ func TestConsolidateNotificationThread_CompactingDroppedByBoundary(t *testing.T)
 			raw(t, map[string]interface{}{"type": "compacting"}),
 			raw(t, map[string]interface{}{"type": "system", "subtype": "compact_boundary"}),
 		}
-		result := consolidateNotificationThread(msgs)
+		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 		require.Len(t, result, 1)
 		m := parseRaw(t, result[0])
 		assert.Equal(t, "system", m["type"])
@@ -316,7 +323,7 @@ func TestConsolidateNotificationThread_CompactingDroppedByBoundary(t *testing.T)
 			raw(t, map[string]interface{}{"type": "compacting"}),
 			raw(t, map[string]interface{}{"type": "system", "subtype": "microcompact_boundary"}),
 		}
-		result := consolidateNotificationThread(msgs)
+		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 		require.Len(t, result, 1)
 		m := parseRaw(t, result[0])
 		assert.Equal(t, "system", m["type"])
@@ -327,7 +334,7 @@ func TestConsolidateNotificationThread_CompactingDroppedByBoundary(t *testing.T)
 		msgs := []json.RawMessage{
 			raw(t, map[string]interface{}{"type": "compacting"}),
 		}
-		result := consolidateNotificationThread(msgs)
+		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 		assert.Equal(t, []string{"compacting"}, types(t, result))
 	})
 
@@ -337,7 +344,7 @@ func TestConsolidateNotificationThread_CompactingDroppedByBoundary(t *testing.T)
 			raw(t, map[string]interface{}{"type": "compacting"}),
 			raw(t, map[string]interface{}{"type": "system", "subtype": "compact_boundary"}),
 		}
-		result := consolidateNotificationThread(msgs)
+		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 		require.Len(t, result, 2)
 		assert.Equal(t, "settings_changed", msgType(t, result[0]))
 		m := parseRaw(t, result[1])
@@ -347,7 +354,7 @@ func TestConsolidateNotificationThread_CompactingDroppedByBoundary(t *testing.T)
 }
 
 func TestConsolidateNotificationThread_Empty(t *testing.T) {
-	result := consolidateNotificationThread(nil)
+	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, nil)
 	assert.Equal(t, []json.RawMessage{}, result)
 }
 
@@ -357,7 +364,7 @@ func TestConsolidateNotificationThread_CodexMcpStartupStatus(t *testing.T) {
 			raw(t, codexStartupStatus("codex_apps", "starting", nil)),
 			raw(t, codexStartupStatus("codex_apps", "ready", nil)),
 		}
-		result := consolidateNotificationThread(msgs)
+		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, msgs)
 		require.Len(t, result, 1)
 		m := parseRaw(t, result[0])
 		assert.Equal(t, "mcpServer/startupStatus/updated", m["method"])
@@ -371,7 +378,7 @@ func TestConsolidateNotificationThread_CodexMcpStartupStatus(t *testing.T) {
 			raw(t, codexStartupStatus("codex_apps", "starting", nil)),
 			raw(t, codexStartupStatus("codex_apps", "failed", "boom")),
 		}
-		result := consolidateNotificationThread(msgs)
+		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, msgs)
 		require.Len(t, result, 1)
 		params := parseRaw(t, result[0])["params"].(map[string]interface{})
 		assert.Equal(t, "failed", params["status"])
@@ -383,7 +390,7 @@ func TestConsolidateNotificationThread_CodexMcpStartupStatus(t *testing.T) {
 			raw(t, codexStartupStatus("codex_apps", "starting", nil)),
 			raw(t, codexStartupStatus("codex_apps", "cancelled", nil)),
 		}
-		result := consolidateNotificationThread(msgs)
+		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, msgs)
 		require.Len(t, result, 1)
 		params := parseRaw(t, result[0])["params"].(map[string]interface{})
 		assert.Equal(t, "cancelled", params["status"])
@@ -397,7 +404,7 @@ func TestConsolidateNotificationThread_CodexMcpStartupStatus(t *testing.T) {
 			raw(t, codexStartupStatus("codex_apps", "ready", nil)),
 			raw(t, codexStartupStatus("other", "failed", "boom")),
 		}
-		result := consolidateNotificationThread(msgs)
+		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, msgs)
 		assert.Equal(t, []string{"context_cleared", "mcpServer/startupStatus/updated", "mcpServer/startupStatus/updated"}, types(t, result))
 
 		firstParams := parseRaw(t, result[1])["params"].(map[string]interface{})
@@ -408,4 +415,15 @@ func TestConsolidateNotificationThread_CodexMcpStartupStatus(t *testing.T) {
 		assert.Equal(t, "failed", secondParams["status"])
 		assert.Equal(t, "boom", secondParams["error"])
 	})
+}
+
+func TestConsolidateNotificationThread_DefaultProviderKeepsUnknownProviderNotifications(t *testing.T) {
+	msgs := []json.RawMessage{
+		raw(t, codexStartupStatus("codex_apps", "starting", nil)),
+		raw(t, codexStartupStatus("codex_apps", "ready", nil)),
+	}
+
+	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, msgs)
+	require.Len(t, result, 2)
+	assert.Equal(t, []string{"mcpServer/startupStatus/updated", "mcpServer/startupStatus/updated"}, types(t, result))
 }

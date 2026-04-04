@@ -685,13 +685,6 @@ func extractToolUseResultMessage(raw json.RawMessage) string {
 
 // --- Notification threading helpers ---
 
-var notificationThreadableSubtypes = map[string]bool{
-	"status":                true,
-	"compact_boundary":      true,
-	"microcompact_boundary": true,
-	"api_retry":             true,
-}
-
 func isNotificationThreadable(content []byte, role leapmuxv1.MessageRole) bool {
 	switch role {
 	case leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX:
@@ -704,14 +697,7 @@ func isNotificationThreadable(content []byte, role leapmuxv1.MessageRole) bool {
 		}
 		return msg.Type == "settings_changed" || msg.Type == "context_cleared" || msg.Type == "interrupted" || msg.Type == "rate_limit" || msg.Type == "agent_error" || msg.Type == "compacting"
 	case leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM:
-		var msg struct {
-			Subtype string `json:"subtype"`
-		}
-		if err := json.Unmarshal(content, &msg); err != nil {
-			slog.Warn("notification threadable unmarshal failed", "role", "system", "error", err)
-			return false
-		}
-		return notificationThreadableSubtypes[msg.Subtype]
+		return NotificationConsolidatorForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE).Classify(content).Consolidatable()
 	default:
 		return false
 	}
