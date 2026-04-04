@@ -83,6 +83,7 @@ message GetSystemInfoResponse {
   string commit_hash = 4;
   string commit_time = 5;
   string build_time = 6;
+  bool oauth_enabled = 7; // true if at least one OAuth provider is configured and enabled
 }
 
 message GetOAuthProvidersRequest {}

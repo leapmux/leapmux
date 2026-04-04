@@ -74,8 +74,17 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[l
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
+	// Check if user authenticated via OAuth.
+	var oauthProviderName string
+	links, _ := s.queries.ListOAuthUserLinksByUser(ctx, user.ID)
+	if len(links) > 0 {
+		if provider, err := s.queries.GetOAuthProviderByID(ctx, links[0].ProviderID); err == nil {
+			oauthProviderName = provider.Name
+		}
+	}
+
 	return connect.NewResponse(&leapmuxv1.GetCurrentUserResponse{
-		User: userToProtoWithOrgName(&user, org.Name),
+		User: userToProtoWithOAuth(&user, org.Name, oauthProviderName),
 	}), nil
 }
 
@@ -246,6 +255,9 @@ func (s *AuthService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 }
 
 func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[leapmuxv1.GetSystemInfoRequest]) (*connect.Response[leapmuxv1.GetSystemInfoResponse], error) {
+	// Check if any OAuth providers are configured.
+	providers, _ := s.queries.ListEnabledOAuthProviders(ctx)
+
 	return connect.NewResponse(&leapmuxv1.GetSystemInfoResponse{
 		SignupEnabled: s.cfg.SignupEnabled,
 		SoloMode:      s.cfg.SoloMode,
@@ -253,6 +265,7 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 		CommitHash:    version.CommitHash,
 		CommitTime:    version.CommitTime,
 		BuildTime:     version.BuildTime,
+		OauthEnabled:  len(providers) > 0,
 	}), nil
 }
 
@@ -302,5 +315,11 @@ func userToProto(u *db.User) *leapmuxv1.User {
 func userToProtoWithOrgName(u *db.User, orgName string) *leapmuxv1.User {
 	p := userToProto(u)
 	p.OrgName = orgName
+	return p
+}
+
+func userToProtoWithOAuth(u *db.User, orgName, oauthProvider string) *leapmuxv1.User {
+	p := userToProtoWithOrgName(u, orgName)
+	p.OauthProvider = oauthProvider
 	return p
 }
