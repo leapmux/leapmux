@@ -50,14 +50,15 @@ func WithFrontendHandler(h http.Handler) ServerOption {
 
 // Server is a reusable Hub server instance.
 type Server struct {
-	cfg        *config.Config
-	queries    *gendb.Queries
-	keystore   *keystore.Keystore
-	server     *http.Server
-	sqlDB      *sql.DB
-	tcpLn      net.Listener
-	shutdownCh chan struct{}
-	workerMgr  *workermgr.Manager
+	cfg          *config.Config
+	queries      *gendb.Queries
+	keystore     *keystore.Keystore
+	oauthHandler *service.OAuthHandler
+	server       *http.Server
+	sqlDB        *sql.DB
+	tcpLn        net.Listener
+	shutdownCh   chan struct{}
+	workerMgr    *workermgr.Manager
 }
 
 // NewServer creates a new Hub server. It binds the TCP port (to fail
@@ -228,14 +229,15 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	}
 
 	return &Server{
-		cfg:        cfg,
-		queries:    queries,
-		keystore:   ks,
-		server:     server,
-		sqlDB:      sqlDB,
-		tcpLn:      tcpLn,
-		shutdownCh: shutdownCh,
-		workerMgr:  wMgr,
+		cfg:          cfg,
+		queries:      queries,
+		keystore:     ks,
+		oauthHandler: oauthHandler,
+		server:       server,
+		sqlDB:        sqlDB,
+		tcpLn:        tcpLn,
+		shutdownCh:   shutdownCh,
+		workerMgr:    wMgr,
 	}, nil
 }
 
@@ -324,6 +326,9 @@ func (s *Server) Serve(ctx context.Context) error {
 		_ = s.sqlDB.Close()
 		return fmt.Errorf("chmod socket: %w", err)
 	}
+
+	// Start background OAuth token refresh.
+	s.oauthHandler.StartTokenRefresh(ctx)
 
 	shutdownDone := make(chan struct{})
 	go func() {
