@@ -12,9 +12,12 @@ import (
 	"golang.org/x/oauth2/github"
 )
 
+const defaultGitHubUserURL = "https://api.github.com/user"
+
 // GitHubProvider implements the Provider interface for GitHub OAuth.
 type GitHubProvider struct {
 	oauth2Config *oauth2.Config
+	userURL      string // overridable for testing; defaults to GitHub API
 }
 
 // NewGitHubProvider creates a GitHub OAuth provider.
@@ -24,6 +27,7 @@ func NewGitHubProvider(clientID, clientSecret, redirectURL string, scopes []stri
 	}
 
 	return &GitHubProvider{
+		userURL: defaultGitHubUserURL,
 		oauth2Config: &oauth2.Config{
 			ClientID:     clientID,
 			ClientSecret: clientSecret,
@@ -40,13 +44,16 @@ func (p *GitHubProvider) AuthURL(state, codeChallenge string) string {
 }
 
 func (p *GitHubProvider) Exchange(ctx context.Context, code, _ string) (*TokenSet, *UserClaims, error) {
+	return p.exchangeWithUserURL(ctx, code, "", p.userURL)
+}
+
+func (p *GitHubProvider) exchangeWithUserURL(ctx context.Context, code, _ string, userURL string) (*TokenSet, *UserClaims, error) {
 	token, err := p.oauth2Config.Exchange(ctx, code)
 	if err != nil {
 		return nil, nil, fmt.Errorf("github exchange: %w", err)
 	}
 
-	// Fetch user info from GitHub API.
-	claims, err := fetchGitHubUser(ctx, token.AccessToken)
+	claims, err := fetchGitHubUser(ctx, token.AccessToken, userURL)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -74,9 +81,9 @@ func (p *GitHubProvider) Refresh(ctx context.Context, refreshToken string) (*Tok
 	}, nil
 }
 
-// fetchGitHubUser retrieves user info from the GitHub API.
-func fetchGitHubUser(ctx context.Context, accessToken string) (*UserClaims, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user", nil)
+// fetchGitHubUser retrieves user info from the GitHub API (or a custom URL for testing).
+func fetchGitHubUser(ctx context.Context, accessToken string, userURL string) (*UserClaims, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, userURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("github user request: %w", err)
 	}
