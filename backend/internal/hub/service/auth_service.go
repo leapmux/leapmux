@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -252,6 +253,37 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 		CommitHash:    version.CommitHash,
 		CommitTime:    version.CommitTime,
 		BuildTime:     version.BuildTime,
+	}), nil
+}
+
+func (s *AuthService) GetOAuthProviders(ctx context.Context, req *connect.Request[leapmuxv1.GetOAuthProvidersRequest]) (*connect.Response[leapmuxv1.GetOAuthProvidersResponse], error) {
+	providers, err := s.queries.ListEnabledOAuthProviders(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	// Build login URL base.
+	scheme := "http"
+	if s.cfg.SecureCookies {
+		scheme = "https"
+	}
+	host := s.cfg.Addr
+	if strings.HasPrefix(host, ":") {
+		host = "localhost" + host
+	}
+
+	var pbProviders []*leapmuxv1.OAuthProviderInfo
+	for _, p := range providers {
+		pbProviders = append(pbProviders, &leapmuxv1.OAuthProviderInfo{
+			Id:           p.ID,
+			Name:         p.Name,
+			ProviderType: p.ProviderType,
+			LoginUrl:     fmt.Sprintf("%s://%s/auth/oauth/%s/login", scheme, host, p.ID),
+		})
+	}
+
+	return connect.NewResponse(&leapmuxv1.GetOAuthProvidersResponse{
+		Providers: pbProviders,
 	}), nil
 }
 

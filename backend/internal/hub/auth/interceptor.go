@@ -19,6 +19,7 @@ var publicProcedures = map[string]bool{
 	"/leapmux.v1.WorkerConnectorService/RequestRegistration": true,
 	"/leapmux.v1.WorkerConnectorService/PollRegistration":    true,
 	"/leapmux.v1.WorkerConnectorService/Connect":             true,
+	"/leapmux.v1.AuthService/GetOAuthProviders":              true,
 }
 
 // authInterceptor implements connect.Interceptor to validate session cookies

@@ -174,7 +174,56 @@ CREATE TABLE workspace_layouts (
     PRIMARY KEY (workspace_id)
 );
 
+-- OAuth identity providers (admin-configured)
+CREATE TABLE oauth_providers (
+    id              TEXT PRIMARY KEY,
+    provider_type   TEXT NOT NULL,  -- 'oidc' or 'github'
+    name            TEXT NOT NULL,  -- display name
+    issuer_url      TEXT NOT NULL DEFAULT '',  -- OIDC issuer (empty for GitHub)
+    client_id       TEXT NOT NULL,
+    client_secret   BLOB NOT NULL,  -- encrypted with encryption key, AAD: 'oauth_provider:' || id
+    scopes          TEXT NOT NULL DEFAULT 'openid profile email',
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+-- Links between local users and OAuth provider identities
+CREATE TABLE oauth_user_links (
+    user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider_id      TEXT NOT NULL REFERENCES oauth_providers(id) ON DELETE CASCADE,
+    provider_subject TEXT NOT NULL,  -- sub claim (OIDC) or user ID (GitHub)
+    created_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (user_id, provider_id)
+);
+
+-- Encrypted OAuth tokens per user per provider
+CREATE TABLE oauth_tokens (
+    user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider_id     TEXT NOT NULL REFERENCES oauth_providers(id) ON DELETE CASCADE,
+    access_token    BLOB NOT NULL,   -- encrypted, AAD: 'access_token:' || user_id || ':' || provider_id
+    refresh_token   BLOB NOT NULL,   -- encrypted, AAD: 'refresh_token:' || user_id || ':' || provider_id
+    token_type      TEXT NOT NULL DEFAULT 'Bearer',
+    expires_at      DATETIME NOT NULL,
+    key_version     INTEGER NOT NULL DEFAULT 1,
+    updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (user_id, provider_id)
+);
+
+-- Short-lived OAuth state for CSRF + PKCE during auth flow
+CREATE TABLE oauth_states (
+    state           TEXT PRIMARY KEY,
+    provider_id     TEXT NOT NULL REFERENCES oauth_providers(id),
+    pkce_verifier   TEXT NOT NULL,
+    redirect_uri    TEXT NOT NULL DEFAULT '',
+    expires_at      DATETIME NOT NULL,
+    created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
 -- +goose Down
+DROP TABLE IF EXISTS oauth_states;
+DROP TABLE IF EXISTS oauth_tokens;
+DROP TABLE IF EXISTS oauth_user_links;
+DROP TABLE IF EXISTS oauth_providers;
 DROP TABLE IF EXISTS workspace_layouts;
 DROP TABLE IF EXISTS workspace_tabs;
 DROP TABLE IF EXISTS workspace_access;

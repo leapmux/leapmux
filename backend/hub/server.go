@@ -175,6 +175,10 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	channelRelay := service.NewChannelRelayHandler(queries, wMgr, cMgr, soloUser, cfg.SecureCookies)
 	mux.Handle("/ws/channel", channelRelay)
 
+	// OAuth HTTP endpoints.
+	oauthHandler := service.NewOAuthHandler(queries, cfg, ks)
+	oauthHandler.RegisterRoutes(mux)
+
 	orgSvc := service.NewOrgService(queries, nil, cfg.SoloMode)
 	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, connectOpts)
 	mux.Handle(orgPath, orgHandler)
