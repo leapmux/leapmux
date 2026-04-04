@@ -12,7 +12,6 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/password"
-	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/util/validate"
 )
@@ -142,16 +141,6 @@ func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leap
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	// Create personal org.
-	orgID := id.Generate()
-	if err := s.queries.CreateOrg(ctx, db.CreateOrgParams{
-		ID:         orgID,
-		Name:       username,
-		IsPersonal: 1,
-	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create org: %w", err))
-	}
-
 	// Hash password.
 	hash, err := password.Hash(req.Msg.GetPassword())
 	if err != nil {
@@ -163,36 +152,19 @@ func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leap
 		isAdmin = 1
 	}
 
-	userID := id.Generate()
-	if err := s.queries.CreateUser(ctx, db.CreateUserParams{
-		ID:           userID,
-		OrgID:        orgID,
+	user, err := createUserWithOrg(ctx, s.queries, CreateUserParams{
 		Username:     username,
 		PasswordHash: hash,
 		DisplayName:  req.Msg.GetDisplayName(),
 		Email:        req.Msg.GetEmail(),
 		IsAdmin:      isAdmin,
-	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create user: %w", err))
-	}
-
-	// Create org membership.
-	if err := s.queries.CreateOrgMember(ctx, db.CreateOrgMemberParams{
-		OrgID:  orgID,
-		UserID: userID,
-		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_OWNER,
-	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create org member: %w", err))
-	}
-
-	// Fetch the created user to get timestamps.
-	user, err := s.queries.GetUserByID(ctx, userID)
+	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get created user: %w", err))
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
 	return connect.NewResponse(&leapmuxv1.CreateUserResponse{
-		User: adminUserToProto(&user, username),
+		User: adminUserToProto(user, username),
 	}), nil
 }
 

@@ -5,12 +5,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { SignupPage } from './SignupPage'
 
-const mockGetSystemInfo = vi.fn()
-const mockGetOAuthProviders = vi.fn()
 vi.mock('~/api/clients', () => ({
   authClient: {
-    getSystemInfo: (...args: unknown[]) => mockGetSystemInfo(...args),
-    getOAuthProviders: (...args: unknown[]) => mockGetOAuthProviders(...args),
     signUp: vi.fn(),
     login: vi.fn(),
     logout: vi.fn(),
@@ -18,9 +14,13 @@ vi.mock('~/api/clients', () => ({
   },
 }))
 
+const mockIsSignupEnabled = vi.fn<() => boolean>(() => true)
+const mockLoadOAuthProviders = vi.fn(() => Promise.resolve([] as Record<string, unknown>[]))
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => false,
   loadSystemInfo: () => Promise.resolve(),
+  isSignupEnabled: () => mockIsSignupEnabled(),
+  loadOAuthProviders: () => mockLoadOAuthProviders(),
 }))
 
 vi.mock('~/context/AuthContext', () => ({
@@ -33,7 +33,7 @@ vi.mock('~/context/AuthContext', () => ({
     setAuth: vi.fn(),
     isAuthenticated: () => false,
   }),
-  AuthProvider: (props: { children: unknown }) => props.children,
+  AuthProvider: (props: { children: unknown }) => <>{props.children}</>,
 }))
 
 function renderSignupPage() {
@@ -47,8 +47,8 @@ function renderSignupPage() {
 describe('signupPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockGetSystemInfo.mockResolvedValue({ signupEnabled: true, soloMode: false })
-    mockGetOAuthProviders.mockResolvedValue({ providers: [] })
+    mockIsSignupEnabled.mockReturnValue(true)
+    mockLoadOAuthProviders.mockResolvedValue([])
   })
 
   it('renders password form when signup enabled and no oauth providers', async () => {
@@ -63,11 +63,9 @@ describe('signupPage', () => {
   })
 
   it('renders oauth buttons with password form when providers configured', async () => {
-    mockGetOAuthProviders.mockResolvedValue({
-      providers: [
-        { id: 'p1', name: 'Google', providerType: 'oidc', loginUrl: '/auth/oauth/p1/login' },
-      ],
-    })
+    mockLoadOAuthProviders.mockResolvedValue([
+      { id: 'p1', name: 'Google', providerType: 'oidc', loginUrl: '/auth/oauth/p1/login' },
+    ])
 
     renderSignupPage()
 
@@ -79,7 +77,7 @@ describe('signupPage', () => {
   })
 
   it('shows disabled message when signup disabled and no oauth', async () => {
-    mockGetSystemInfo.mockResolvedValue({ signupEnabled: false, soloMode: false })
+    mockIsSignupEnabled.mockReturnValue(false)
 
     renderSignupPage()
 

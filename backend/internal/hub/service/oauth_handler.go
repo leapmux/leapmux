@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
@@ -228,18 +227,6 @@ func (h *OAuthHandler) findOrCreateUser(ctx context.Context, providerID string, 
 		return nil, err
 	}
 
-	// Create personal org.
-	orgID := id.Generate()
-	if err := h.queries.CreateOrg(ctx, gendb.CreateOrgParams{
-		ID:         orgID,
-		Name:       username,
-		IsPersonal: 1,
-	}); err != nil {
-		return nil, fmt.Errorf("create org: %w", err)
-	}
-
-	// Create user (no password — OAuth-only account).
-	userID := id.Generate()
 	displayName := claims.DisplayName
 	if displayName == "" {
 		displayName = claims.Name
@@ -252,48 +239,27 @@ func (h *OAuthHandler) findOrCreateUser(ctx context.Context, providerID string, 
 		return nil, fmt.Errorf("generate random password: %w", err)
 	}
 
-	if err := h.queries.CreateUser(ctx, gendb.CreateUserParams{
-		ID:           userID,
-		OrgID:        orgID,
+	user, err := createUserWithOrg(ctx, h.queries, CreateUserParams{
 		Username:     username,
 		PasswordHash: randomPwdHash,
 		DisplayName:  displayName,
 		Email:        claims.Email,
 		IsAdmin:      0,
-	}); err != nil {
-		return nil, fmt.Errorf("create user: %w", err)
-	}
-
-	// Add to org_members.
-	if err := h.queries.CreateOrgMember(ctx, gendb.CreateOrgMemberParams{
-		OrgID:  orgID,
-		UserID: userID,
-		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_OWNER,
-	}); err != nil {
-		return nil, fmt.Errorf("create org member: %w", err)
-	}
-
-	// Create default preferences.
-	if err := h.queries.UpsertUserPreferences(ctx, gendb.UpsertUserPreferencesParams{
-		UserID: userID,
-	}); err != nil {
-		return nil, fmt.Errorf("create preferences: %w", err)
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	// Create OAuth user link.
 	if err := h.queries.CreateOAuthUserLink(ctx, gendb.CreateOAuthUserLinkParams{
-		UserID:          userID,
+		UserID:          user.ID,
 		ProviderID:      providerID,
 		ProviderSubject: claims.Subject,
 	}); err != nil {
 		return nil, fmt.Errorf("create user link: %w", err)
 	}
 
-	user, err := h.queries.GetUserByID(ctx, userID)
-	if err != nil {
-		return nil, fmt.Errorf("get created user: %w", err)
-	}
-	return &user, nil
+	return user, nil
 }
 
 func (h *OAuthHandler) storeTokens(ctx context.Context, userID, providerID string, tokenSet *huboauth.TokenSet) error {

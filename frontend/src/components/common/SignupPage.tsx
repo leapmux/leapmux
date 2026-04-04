@@ -7,6 +7,7 @@ import { createSignal, For, onMount, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { Icon } from '~/components/common/Icon'
 import { useAuth } from '~/context/AuthContext'
+import { isSignupEnabled, loadOAuthProviders } from '~/lib/systemInfo'
 import { sanitizeSlug } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
 import { cardNarrow, errorText } from '~/styles/shared.css'
@@ -24,25 +25,12 @@ export const SignupPage: Component = () => {
   const [submitting, setSubmitting] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
   const [verificationSent, setVerificationSent] = createSignal(false)
-  const [signupEnabled, setSignupEnabled] = createSignal<boolean | null>(null)
+  const [ready, setReady] = createSignal(false)
   const [oauthProviders, setOAuthProviders] = createSignal<OAuthProviderInfo[]>([])
 
   onMount(async () => {
-    try {
-      const resp = await authClient.getSystemInfo({})
-      setSignupEnabled(resp.signupEnabled)
-    }
-    catch {
-      setSignupEnabled(false)
-    }
-
-    try {
-      const resp = await authClient.getOAuthProviders({})
-      setOAuthProviders(resp.providers)
-    }
-    catch {
-      // Ignore
-    }
+    setOAuthProviders(await loadOAuthProviders())
+    setReady(true)
   })
 
   const handleSubmit = async (e: Event) => {
@@ -82,9 +70,9 @@ export const SignupPage: Component = () => {
   }
 
   return (
-    <Show when={signupEnabled() !== null} fallback={null}>
+    <Show when={ready()} fallback={null}>
       <Show
-        when={signupEnabled()}
+        when={isSignupEnabled()}
         fallback={(
           <NotFoundPage
             title="Sign Up Disabled"

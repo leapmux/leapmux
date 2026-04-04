@@ -260,6 +260,11 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// DefaultHubDataDir returns the default hub data directory with ~ expanded.
+func DefaultHubDataDir() string {
+	return internalconfig.ExpandHome(defaultConfigDir)
+}
+
 // DBPath returns the path to the SQLite database file.
 func (c *Config) DBPath() string {
 	return filepath.Join(c.DataDir, "hub.db")

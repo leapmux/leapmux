@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -30,6 +31,7 @@ type authInterceptor struct {
 	soloMode     bool
 	secureCookie bool
 	soloUser     *UserInfo
+	lastTouch    sync.Map // sessionID → time.Time of last DB touch
 }
 
 // NewInterceptor creates a ConnectRPC interceptor that validates session cookies
@@ -127,15 +129,24 @@ func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 
 const sessionTouchThreshold = 5 * time.Minute
 
-// touchSession extends the session expiry by 24 hours if the last activity
-// was more than 5 minutes ago. This provides a sliding window without
-// updating the DB on every single request.
+// touchSession extends the session expiry by SessionDuration if the last
+// touch was more than sessionTouchThreshold ago. An in-memory map gates the
+// check so that most requests skip the DB call entirely — only the first
+// request after the threshold elapses hits SQLite.
 func (a *authInterceptor) touchSession(ctx context.Context, sessionID string) {
-	threshold := time.Now().Add(-sessionTouchThreshold).UTC()
-	newExpiry := time.Now().Add(SessionDuration).UTC()
+	now := time.Now()
+	if v, ok := a.lastTouch.Load(sessionID); ok {
+		if now.Sub(v.(time.Time)) < sessionTouchThreshold {
+			return
+		}
+	}
+
+	newExpiry := now.Add(SessionDuration).UTC()
+	threshold := now.Add(-sessionTouchThreshold).UTC()
 	_ = a.queries.TouchUserSession(ctx, db.TouchUserSessionParams{
 		ExpiresAt:    newExpiry,
 		ID:           sessionID,
 		LastActiveAt: threshold,
 	})
+	a.lastTouch.Store(sessionID, now)
 }

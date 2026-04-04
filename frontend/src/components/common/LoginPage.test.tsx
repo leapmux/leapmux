@@ -5,22 +5,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { LoginPage } from './LoginPage'
 
-// Mock the auth client before importing the component.
-const mockGetSystemInfo = vi.fn()
-const mockGetOAuthProviders = vi.fn()
 vi.mock('~/api/clients', () => ({
   authClient: {
-    getSystemInfo: (...args: unknown[]) => mockGetSystemInfo(...args),
-    getOAuthProviders: (...args: unknown[]) => mockGetOAuthProviders(...args),
     login: vi.fn(),
     logout: vi.fn(),
     getCurrentUser: vi.fn(),
   },
 }))
 
+const mockIsSignupEnabled = vi.fn<() => boolean>(() => false)
+const mockLoadOAuthProviders = vi.fn(() => Promise.resolve([] as Record<string, unknown>[]))
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => false,
   loadSystemInfo: () => Promise.resolve(),
+  isSignupEnabled: () => mockIsSignupEnabled(),
+  loadOAuthProviders: () => mockLoadOAuthProviders(),
 }))
 
 const mockLogin = vi.fn()
@@ -34,7 +33,7 @@ vi.mock('~/context/AuthContext', () => ({
     setAuth: vi.fn(),
     isAuthenticated: () => false,
   }),
-  AuthProvider: (props: { children: unknown }) => props.children,
+  AuthProvider: (props: { children: unknown }) => <>{props.children}</>,
 }))
 
 function renderLoginPage() {
@@ -48,8 +47,8 @@ function renderLoginPage() {
 describe('loginPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockGetSystemInfo.mockResolvedValue({ signupEnabled: false, soloMode: false })
-    mockGetOAuthProviders.mockResolvedValue({ providers: [] })
+    mockIsSignupEnabled.mockReturnValue(false)
+    mockLoadOAuthProviders.mockResolvedValue([])
   })
 
   it('renders email/password form when no oauth providers', async () => {
@@ -64,12 +63,10 @@ describe('loginPage', () => {
   })
 
   it('renders oauth buttons when providers are configured', async () => {
-    mockGetOAuthProviders.mockResolvedValue({
-      providers: [
-        { id: 'p1', name: 'Google', providerType: 'oidc', loginUrl: '/auth/oauth/p1/login' },
-        { id: 'p2', name: 'GitHub', providerType: 'github', loginUrl: '/auth/oauth/p2/login' },
-      ],
-    })
+    mockLoadOAuthProviders.mockResolvedValue([
+      { id: 'p1', name: 'Google', providerType: 'oidc', loginUrl: '/auth/oauth/p1/login' },
+      { id: 'p2', name: 'GitHub', providerType: 'github', loginUrl: '/auth/oauth/p2/login' },
+    ])
 
     renderLoginPage()
 
@@ -82,11 +79,9 @@ describe('loginPage', () => {
   })
 
   it('oauth button links to correct login url', async () => {
-    mockGetOAuthProviders.mockResolvedValue({
-      providers: [
-        { id: 'p1', name: 'TestProvider', providerType: 'oidc', loginUrl: '/auth/oauth/p1/login' },
-      ],
-    })
+    mockLoadOAuthProviders.mockResolvedValue([
+      { id: 'p1', name: 'TestProvider', providerType: 'oidc', loginUrl: '/auth/oauth/p1/login' },
+    ])
 
     renderLoginPage()
 
@@ -99,7 +94,7 @@ describe('loginPage', () => {
   })
 
   it('shows signup link when signup is enabled', async () => {
-    mockGetSystemInfo.mockResolvedValue({ signupEnabled: true, soloMode: false })
+    mockIsSignupEnabled.mockReturnValue(true)
 
     renderLoginPage()
 
@@ -109,11 +104,9 @@ describe('loginPage', () => {
   })
 
   it('renders provider with long name correctly', async () => {
-    mockGetOAuthProviders.mockResolvedValue({
-      providers: [
-        { id: 'p1', name: 'Corporate Azure Active Directory', providerType: 'oidc', loginUrl: '/auth/oauth/p1/login' },
-      ],
-    })
+    mockLoadOAuthProviders.mockResolvedValue([
+      { id: 'p1', name: 'Corporate Azure Active Directory', providerType: 'oidc', loginUrl: '/auth/oauth/p1/login' },
+    ])
 
     renderLoginPage()
 

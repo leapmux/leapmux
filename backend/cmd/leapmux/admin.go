@@ -4,9 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
 	"strconv"
 
+	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
@@ -44,9 +44,10 @@ func runAdmin(args []string) error {
 // ---- Encryption key management ----
 
 func runRotateEncryptionKey(args []string) error {
-	path := encryptionKeyPath(args)
+	cfg := adminConfig(extractDataDir(args))
+	path := cfg.EncryptionKeyFilePath()
 
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	if _, err := keystore.LoadFromFile(path); err != nil {
 		return fmt.Errorf("encryption key file not found at %s\nRun the hub once to auto-generate it, or specify --data-dir", path)
 	}
 
@@ -62,7 +63,7 @@ func runRotateEncryptionKey(args []string) error {
 
 func runRemoveEncryptionKey(args []string) error {
 	var version int
-	path := defaultEncryptionKeyPath()
+	var dataDir string
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -81,7 +82,7 @@ func runRemoveEncryptionKey(args []string) error {
 				return fmt.Errorf("--data-dir requires a value")
 			}
 			i++
-			path = args[i] + "/encryption.key"
+			dataDir = args[i]
 		default:
 			return fmt.Errorf("unknown flag: %s", args[i])
 		}
@@ -91,9 +92,7 @@ func runRemoveEncryptionKey(args []string) error {
 		return fmt.Errorf("--version is required")
 	}
 
-	// TODO: Check DB for rows referencing this version before removing.
-	// This will be implemented when reencrypt-secrets is fully functional.
-
+	path := adminConfig(dataDir).EncryptionKeyFilePath()
 	if err := keystore.RemoveKey(path, byte(version)); err != nil {
 		return err
 	}
@@ -106,13 +105,13 @@ func runRemoveEncryptionKey(args []string) error {
 func runReencryptSecrets(args []string) error {
 	dataDir := extractDataDir(args)
 
-	ksPath := resolveEncryptionKeyPath(dataDir)
-	ks, err := keystore.LoadFromFile(ksPath)
+	cfg := adminConfig(dataDir)
+	ks, err := keystore.LoadFromFile(cfg.EncryptionKeyFilePath())
 	if err != nil {
 		return fmt.Errorf("load encryption key: %w", err)
 	}
 
-	sqlDB, q, err := openAdminDB(dataDir)
+	sqlDB, q, err := openAdminDB(cfg)
 	if err != nil {
 		return err
 	}
@@ -278,7 +277,7 @@ func runAddOAuthProvider(args []string) error {
 	}
 
 	// Load keystore to encrypt client secret.
-	ksPath := resolveEncryptionKeyPath(dataDir)
+	ksPath := adminConfig(dataDir).EncryptionKeyFilePath()
 	ks, err := keystore.LoadFromFile(ksPath)
 	if err != nil {
 		return fmt.Errorf("load encryption key: %w", err)
@@ -292,7 +291,7 @@ func runAddOAuthProvider(args []string) error {
 	}
 
 	// Open database and insert.
-	sqlDB, q, err := openAdminDB(dataDir)
+	sqlDB, q, err := openAdminDB(adminConfig(dataDir))
 	if err != nil {
 		return err
 	}
@@ -318,7 +317,7 @@ func runAddOAuthProvider(args []string) error {
 func runListOAuthProviders(args []string) error {
 	dataDir := extractDataDir(args)
 
-	sqlDB, q, err := openAdminDB(dataDir)
+	sqlDB, q, err := openAdminDB(adminConfig(dataDir))
 	if err != nil {
 		return err
 	}
@@ -370,7 +369,7 @@ func runRemoveOAuthProvider(args []string) error {
 		return fmt.Errorf("--id is required")
 	}
 
-	sqlDB, q, err := openAdminDB(dataDir)
+	sqlDB, q, err := openAdminDB(adminConfig(dataDir))
 	if err != nil {
 		return err
 	}
@@ -415,7 +414,7 @@ func runSetOAuthProviderEnabled(args []string, enabled bool) error {
 		return fmt.Errorf("--id is required")
 	}
 
-	sqlDB, q, err := openAdminDB(dataDir)
+	sqlDB, q, err := openAdminDB(adminConfig(dataDir))
 	if err != nil {
 		return err
 	}
@@ -444,8 +443,8 @@ func runSetOAuthProviderEnabled(args []string, enabled bool) error {
 
 // openAdminDB opens the database, runs migrations, and returns the connection
 // and queries handle. The caller must close the returned *sql.DB.
-func openAdminDB(dataDir string) (*sql.DB, *gendb.Queries, error) {
-	dbPath := resolveDBPath(dataDir)
+func openAdminDB(cfg *config.Config) (*sql.DB, *gendb.Queries, error) {
+	dbPath := cfg.DBPath()
 	sqlDB, err := db.Open(dbPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open database: %w", err)
@@ -457,23 +456,16 @@ func openAdminDB(dataDir string) (*sql.DB, *gendb.Queries, error) {
 	return sqlDB, gendb.New(sqlDB), nil
 }
 
-// ---- Path helpers ----
-
-func encryptionKeyPath(args []string) string {
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--data-dir" && i+1 < len(args) {
-			return args[i+1] + "/encryption.key"
-		}
+// adminConfig returns a minimal Config with DataDir set. When dataDir is
+// empty it uses the default hub data directory.
+func adminConfig(dataDir string) *config.Config {
+	cfg := &config.Config{}
+	if dataDir != "" {
+		cfg.DataDir = dataDir
+	} else {
+		cfg.DataDir = config.DefaultHubDataDir()
 	}
-	return defaultEncryptionKeyPath()
-}
-
-func defaultEncryptionKeyPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "encryption.key"
-	}
-	return home + "/.config/leapmux/hub/encryption.key"
+	return cfg
 }
 
 func extractDataDir(args []string) string {
@@ -483,22 +475,4 @@ func extractDataDir(args []string) string {
 		}
 	}
 	return ""
-}
-
-func resolveEncryptionKeyPath(dataDir string) string {
-	if dataDir != "" {
-		return dataDir + "/encryption.key"
-	}
-	return defaultEncryptionKeyPath()
-}
-
-func resolveDBPath(dataDir string) string {
-	if dataDir != "" {
-		return dataDir + "/hub.db"
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "hub.db"
-	}
-	return home + "/.config/leapmux/hub/hub.db"
 }

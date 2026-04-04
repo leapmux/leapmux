@@ -4,10 +4,9 @@ import type { OAuthProviderInfo } from '~/generated/leapmux/v1/auth_pb'
 import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createSignal, For, onMount, Show } from 'solid-js'
-import { authClient } from '~/api/clients'
 import { Icon } from '~/components/common/Icon'
 import { useAuth } from '~/context/AuthContext'
-import { isSoloMode } from '~/lib/systemInfo'
+import { isSignupEnabled, isSoloMode, loadOAuthProviders } from '~/lib/systemInfo'
 import { spinner } from '~/styles/animations.css'
 import { cardNarrow, errorText } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
@@ -19,7 +18,6 @@ export const LoginPage: Component = () => {
   const [username, setUsername] = createSignal('')
   const [password, setPassword] = createSignal('')
   const [submitting, setSubmitting] = createSignal(false)
-  const [signupEnabled, setSignupEnabled] = createSignal(false)
   const [oauthProviders, setOAuthProviders] = createSignal<OAuthProviderInfo[]>([])
   let usernameRef!: HTMLInputElement
   let passwordRef!: HTMLInputElement
@@ -38,22 +36,7 @@ export const LoginPage: Component = () => {
       passwordRef.focus()
     }
 
-    try {
-      const resp = await authClient.getSystemInfo({})
-      setSignupEnabled(resp.signupEnabled)
-    }
-    catch {
-      // Ignore - signup link stays hidden
-    }
-
-    // Fetch enabled OAuth providers.
-    try {
-      const resp = await authClient.getOAuthProviders({})
-      setOAuthProviders(resp.providers)
-    }
-    catch {
-      // Ignore - OAuth buttons stay hidden
-    }
+    setOAuthProviders(await loadOAuthProviders())
   })
 
   const handleSubmit = async (e: Event) => {
@@ -144,9 +127,9 @@ export const LoginPage: Component = () => {
             {submitting() ? 'Signing in...' : 'Sign in'}
           </button>
         </form>
-        <Show when={signupEnabled() || oauthProviders().length > 0}>
+        <Show when={isSignupEnabled() || oauthProviders().length > 0}>
           <div class={styles.authFooter}>
-            <Show when={signupEnabled()}>
+            <Show when={isSignupEnabled()}>
               <A href="/signup">Sign up</A>
             </Show>
           </div>

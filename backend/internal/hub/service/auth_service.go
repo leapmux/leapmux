@@ -117,40 +117,13 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
 	}
 
-	// Create personal org.
-	orgID := id.Generate()
-	if err := s.queries.CreateOrg(ctx, db.CreateOrgParams{
-		ID:         orgID,
-		Name:       username,
-		IsPersonal: 1,
-	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create personal org: %w", err))
-	}
-
-	// Create user.
-	userID := id.Generate()
-	if err := s.queries.CreateUser(ctx, db.CreateUserParams{
-		ID:           userID,
-		OrgID:        orgID,
+	user, err := createUserWithOrg(ctx, s.queries, CreateUserParams{
 		Username:     username,
 		PasswordHash: hash,
 		DisplayName:  req.Msg.GetDisplayName(),
 		Email:        req.Msg.GetEmail(),
 		IsAdmin:      0,
-	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create user: %w", err))
-	}
-
-	// Add to org_members.
-	if err := s.queries.CreateOrgMember(ctx, db.CreateOrgMemberParams{
-		OrgID:  orgID,
-		UserID: userID,
-		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_OWNER,
-	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create org member: %w", err))
-	}
-
-	user, err := s.queries.GetUserByID(ctx, userID)
+	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -163,7 +136,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 
 		if err := s.queries.CreateEmailVerification(ctx, db.CreateEmailVerificationParams{
 			ID:        verificationID,
-			UserID:    userID,
+			UserID:    user.ID,
 			Token:     verificationToken,
 			ExpiresAt: expiresAt,
 		}); err != nil {
@@ -171,19 +144,19 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		}
 
 		return connect.NewResponse(&leapmuxv1.SignUpResponse{
-			User:                 userToProtoWithOrgName(&user, username),
+			User:                 userToProtoWithOrgName(user, username),
 			VerificationRequired: true,
 		}), nil
 	}
 
 	// No verification required — create session immediately.
-	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.queries, userID, "", "")
+	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.queries, user.ID, "", "")
 	if sessionErr != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
 	}
 
 	resp := connect.NewResponse(&leapmuxv1.SignUpResponse{
-		User: userToProtoWithOrgName(&user, username),
+		User: userToProtoWithOrgName(user, username),
 	})
 	resp.Header().Set("Set-Cookie", auth.BuildSessionCookie(sessionID, expiresAt, s.cfg.SecureCookies).String())
 	return resp, nil

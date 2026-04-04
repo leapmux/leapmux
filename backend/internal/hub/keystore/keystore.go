@@ -2,6 +2,7 @@ package keystore
 
 import (
 	"bufio"
+	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
@@ -46,22 +47,30 @@ func RefreshTokenAAD(userID, providerID string) []byte {
 // Keystore manages a versioned key ring for XChaCha20-Poly1305 envelope encryption.
 type Keystore struct {
 	keys          map[byte][keySize]byte
+	aeads         map[byte]cipher.AEAD
 	activeVersion byte
 }
 
 // New creates a Keystore from a key ring map. The highest version becomes the
-// active key used for new encryptions.
+// active key used for new encryptions. AEAD ciphers are pre-computed for each
+// key version to avoid repeated key schedule expansion on every call.
 func New(keys map[byte][keySize]byte) (*Keystore, error) {
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("keystore: key ring is empty")
 	}
+	aeads := make(map[byte]cipher.AEAD, len(keys))
 	var maxVer byte
-	for v := range keys {
+	for v, key := range keys {
+		aead, err := chacha20poly1305.NewX(key[:])
+		if err != nil {
+			return nil, fmt.Errorf("keystore: create AEAD for version %d: %w", v, err)
+		}
+		aeads[v] = aead
 		if v > maxVer {
 			maxVer = v
 		}
 	}
-	return &Keystore{keys: keys, activeVersion: maxVer}, nil
+	return &Keystore{keys: keys, aeads: aeads, activeVersion: maxVer}, nil
 }
 
 // ActiveVersion returns the active (highest) key version.
@@ -81,11 +90,7 @@ func (ks *Keystore) Versions() []byte {
 // The AAD (additional authenticated data) is bound to the ciphertext but not stored in it.
 // Returns: [1-byte version][24-byte nonce][ciphertext + Poly1305 tag].
 func (ks *Keystore) Encrypt(plaintext, aad []byte) ([]byte, error) {
-	key := ks.keys[ks.activeVersion]
-	aead, err := chacha20poly1305.NewX(key[:])
-	if err != nil {
-		return nil, fmt.Errorf("keystore: create AEAD: %w", err)
-	}
+	aead := ks.aeads[ks.activeVersion]
 
 	nonce := make([]byte, nonceSize)
 	if _, err := rand.Read(nonce); err != nil {
@@ -108,14 +113,9 @@ func (ks *Keystore) Decrypt(ciphertext, aad []byte) ([]byte, error) {
 	}
 
 	version := ciphertext[0]
-	key, ok := ks.keys[version]
+	aead, ok := ks.aeads[version]
 	if !ok {
 		return nil, fmt.Errorf("keystore: unknown key version %d", version)
-	}
-
-	aead, err := chacha20poly1305.NewX(key[:])
-	if err != nil {
-		return nil, fmt.Errorf("keystore: create AEAD: %w", err)
 	}
 
 	nonce := ciphertext[versionSize : versionSize+nonceSize]
