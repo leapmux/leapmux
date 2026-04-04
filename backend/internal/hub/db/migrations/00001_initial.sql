@@ -35,10 +35,13 @@ CREATE INDEX idx_org_members_user_id ON org_members(user_id);
 
 -- Auth sessions
 CREATE TABLE user_sessions (
-    id         TEXT PRIMARY KEY,
-    user_id    TEXT NOT NULL REFERENCES users(id),
-    expires_at DATETIME NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    id              TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL REFERENCES users(id),
+    expires_at      DATETIME NOT NULL,
+    created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    last_active_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    user_agent      TEXT NOT NULL DEFAULT '',
+    ip_address      TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX idx_user_sessions_user_id ON user_sessions(user_id);
 CREATE INDEX idx_user_sessions_expires_at ON user_sessions(expires_at);

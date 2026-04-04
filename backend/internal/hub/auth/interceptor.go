@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
@@ -78,6 +79,9 @@ func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			return nil, err
 		}
 
+		// Sliding window: extend session expiry, throttled to once per 5 minutes.
+		a.touchSession(ctx, token)
+
 		ctx = WithUser(ctx, userInfo)
 		return next(ctx, req)
 	}
@@ -114,7 +118,24 @@ func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 			return err
 		}
 
+		a.touchSession(ctx, token)
+
 		ctx = WithUser(ctx, userInfo)
 		return next(ctx, conn)
 	}
+}
+
+const sessionTouchThreshold = 5 * time.Minute
+
+// touchSession extends the session expiry by 24 hours if the last activity
+// was more than 5 minutes ago. This provides a sliding window without
+// updating the DB on every single request.
+func (a *authInterceptor) touchSession(ctx context.Context, sessionID string) {
+	threshold := time.Now().Add(-sessionTouchThreshold).UTC()
+	newExpiry := time.Now().Add(24 * time.Hour).UTC()
+	_ = a.queries.TouchUserSession(ctx, db.TouchUserSessionParams{
+		ExpiresAt:    newExpiry,
+		ID:           sessionID,
+		LastActiveAt: threshold,
+	})
 }

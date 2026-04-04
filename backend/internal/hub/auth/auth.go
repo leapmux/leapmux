@@ -72,6 +72,8 @@ func Login(ctx context.Context, q *db.Queries, username, password string) (strin
 		ID:        sessionID,
 		UserID:    user.ID,
 		ExpiresAt: expiresAt,
+		UserAgent: "",
+		IpAddress: "",
 	}); err != nil {
 		return "", nil, zero, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}

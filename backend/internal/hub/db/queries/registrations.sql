@@ -16,10 +16,16 @@ SET status = 4
 WHERE status = 1 AND expires_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
 
 -- name: CreateUserSession :exec
-INSERT INTO user_sessions (id, user_id, expires_at) VALUES (?, ?, ?);
+INSERT INTO user_sessions (id, user_id, expires_at, user_agent, ip_address) VALUES (?, ?, ?, ?, ?);
 
 -- name: GetUserSessionByID :one
 SELECT * FROM user_sessions WHERE id = ? AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+
+-- name: TouchUserSession :exec
+UPDATE user_sessions
+SET last_active_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+    expires_at = ?
+WHERE id = ? AND last_active_at < ?;
 
 -- name: DeleteUserSession :exec
 DELETE FROM user_sessions WHERE id = ?;

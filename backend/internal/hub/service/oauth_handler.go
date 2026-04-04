@@ -183,6 +183,8 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 		ID:        sessionID,
 		UserID:    user.ID,
 		ExpiresAt: expiresAt,
+		UserAgent: r.UserAgent(),
+		IpAddress: r.RemoteAddr,
 	}); err != nil {
 		slog.Error("oauth: create session", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)

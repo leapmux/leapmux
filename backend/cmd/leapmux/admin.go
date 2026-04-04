@@ -103,9 +103,105 @@ func runRemoveEncryptionKey(args []string) error {
 	return nil
 }
 
-func runReencryptSecrets(_ []string) error {
-	// TODO: Implement when OAuth tables have encrypted data.
-	fmt.Println("No encrypted secrets to re-encrypt yet.")
+func runReencryptSecrets(args []string) error {
+	dataDir := extractDataDir(args)
+
+	ksPath := resolveEncryptionKeyPath(dataDir)
+	ks, err := keystore.LoadFromFile(ksPath)
+	if err != nil {
+		return fmt.Errorf("load encryption key: %w", err)
+	}
+
+	dbPath := resolveDBPath(dataDir)
+	sqlDB, err := db.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer func() { _ = sqlDB.Close() }()
+
+	if err := db.Migrate(sqlDB); err != nil {
+		return fmt.Errorf("migrate database: %w", err)
+	}
+
+	q := gendb.New(sqlDB)
+	ctx := context.Background()
+	activeVer := ks.ActiveVersion()
+	count := 0
+
+	// Re-encrypt oauth_providers.client_secret.
+	providers, err := q.ListAllOAuthProviders(ctx)
+	if err != nil {
+		return fmt.Errorf("list providers: %w", err)
+	}
+	for _, p := range providers {
+		full, getErr := q.GetOAuthProviderByID(ctx, p.ID)
+		if getErr != nil {
+			return fmt.Errorf("get provider %s: %w", p.ID, getErr)
+		}
+		if len(full.ClientSecret) > 0 && full.ClientSecret[0] == activeVer {
+			continue // already at active version
+		}
+		aad := []byte("oauth_provider:" + p.ID)
+		plain, decErr := ks.Decrypt(full.ClientSecret, aad)
+		if decErr != nil {
+			return fmt.Errorf("decrypt provider %s client_secret: %w", p.ID, decErr)
+		}
+		newCt, encErr := ks.Encrypt(plain, aad)
+		if encErr != nil {
+			return fmt.Errorf("re-encrypt provider %s: %w", p.ID, encErr)
+		}
+		// Update via raw SQL since sqlc doesn't have an update for client_secret.
+		if _, execErr := sqlDB.ExecContext(ctx, "UPDATE oauth_providers SET client_secret = ? WHERE id = ?", newCt, p.ID); execErr != nil {
+			return fmt.Errorf("update provider %s: %w", p.ID, execErr)
+		}
+		count++
+	}
+
+	// Re-encrypt oauth_tokens.
+	for ver := byte(1); ver < activeVer; ver++ {
+		tokens, listErr := q.ListOAuthTokensByKeyVersion(ctx, int64(ver))
+		if listErr != nil {
+			continue
+		}
+		for _, tok := range tokens {
+			accessAAD := []byte("access_token:" + tok.UserID + ":" + tok.ProviderID)
+			refreshAAD := []byte("refresh_token:" + tok.UserID + ":" + tok.ProviderID)
+
+			plainAccess, err := ks.Decrypt(tok.AccessToken, accessAAD)
+			if err != nil {
+				return fmt.Errorf("decrypt access_token for user %s: %w", tok.UserID, err)
+			}
+			plainRefresh, err := ks.Decrypt(tok.RefreshToken, refreshAAD)
+			if err != nil {
+				return fmt.Errorf("decrypt refresh_token for user %s: %w", tok.UserID, err)
+			}
+
+			newAccess, err := ks.Encrypt(plainAccess, accessAAD)
+			if err != nil {
+				return fmt.Errorf("re-encrypt access_token: %w", err)
+			}
+			newRefresh, err := ks.Encrypt(plainRefresh, refreshAAD)
+			if err != nil {
+				return fmt.Errorf("re-encrypt refresh_token: %w", err)
+			}
+
+			err = q.UpsertOAuthTokens(ctx, gendb.UpsertOAuthTokensParams{
+				UserID:       tok.UserID,
+				ProviderID:   tok.ProviderID,
+				AccessToken:  newAccess,
+				RefreshToken: newRefresh,
+				TokenType:    tok.TokenType,
+				ExpiresAt:    tok.ExpiresAt,
+				KeyVersion:   int64(activeVer),
+			})
+			if err != nil {
+				return fmt.Errorf("update tokens for user %s: %w", tok.UserID, err)
+			}
+			count++
+		}
+	}
+
+	fmt.Printf("Re-encrypted %d secrets to key version %d.\n", count, activeVer)
 	return nil
 }
 

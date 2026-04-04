@@ -10,6 +10,12 @@ type TokenSet struct {
 	ExpiresIn    int // seconds until access token expires
 }
 
+// String returns a redacted representation to prevent token leakage in logs.
+func (t TokenSet) String() string { return "[REDACTED TokenSet]" }
+
+// GoString returns a redacted representation for %#v formatting.
+func (t TokenSet) GoString() string { return "[REDACTED TokenSet]" }
+
 // UserClaims holds the user identity claims from an OAuth provider.
 type UserClaims struct {
 	Subject     string // unique identifier (sub claim for OIDC, user ID for GitHub)

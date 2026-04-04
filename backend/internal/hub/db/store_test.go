@@ -254,7 +254,7 @@ func TestUserSessions(t *testing.T) {
 	sessID := makeID()
 	expires := time.Now().Add(24 * time.Hour).UTC()
 	err := q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
-		ID: sessID, UserID: userID, ExpiresAt: expires,
+		ID: sessID, UserID: userID, ExpiresAt: expires, UserAgent: "", IpAddress: "",
 	})
 	require.NoError(t, err)
 
@@ -289,7 +289,7 @@ func TestUserSessions_Expired(t *testing.T) {
 	sessID := makeID()
 	expires := time.Now().Add(-1 * time.Hour).UTC()
 	_ = q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
-		ID: sessID, UserID: userID, ExpiresAt: expires,
+		ID: sessID, UserID: userID, ExpiresAt: expires, UserAgent: "", IpAddress: "",
 	})
 
 	// Should not be found (expired).

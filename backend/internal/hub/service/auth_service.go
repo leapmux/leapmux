@@ -238,6 +238,8 @@ func (s *AuthService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 		ID:        sessionID,
 		UserID:    user.ID,
 		ExpiresAt: sessionExpiresAt,
+		UserAgent: "",
+		IpAddress: "",
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
