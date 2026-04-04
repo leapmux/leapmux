@@ -1,8 +1,9 @@
 import type { Component } from 'solid-js'
+import type { OAuthProviderInfo } from '~/generated/leapmux/v1/auth_pb'
 
 import { A, useNavigate } from '@solidjs/router'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
-import { createSignal, onMount, Show } from 'solid-js'
+import { createSignal, For, onMount, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { Icon } from '~/components/common/Icon'
 import { useAuth } from '~/context/AuthContext'
@@ -24,6 +25,7 @@ export const SignupPage: Component = () => {
   const [error, setError] = createSignal<string | null>(null)
   const [verificationSent, setVerificationSent] = createSignal(false)
   const [signupEnabled, setSignupEnabled] = createSignal<boolean | null>(null)
+  const [oauthProviders, setOAuthProviders] = createSignal<OAuthProviderInfo[]>([])
 
   onMount(async () => {
     try {
@@ -32,6 +34,14 @@ export const SignupPage: Component = () => {
     }
     catch {
       setSignupEnabled(false)
+    }
+
+    try {
+      const resp = await authClient.getOAuthProviders({})
+      setOAuthProviders(resp.providers)
+    }
+    catch {
+      // Ignore
     }
   })
 
@@ -95,6 +105,22 @@ export const SignupPage: Component = () => {
               </div>
             </Show>
             <Show when={!verificationSent()}>
+              <Show when={oauthProviders().length > 0}>
+                <div class="vstack gap-2">
+                  <For each={oauthProviders()}>
+                    {provider => (
+                      <a href={provider.loginUrl} class={styles.oauthButton}>
+                        Sign up with
+                        {' '}
+                        {provider.name}
+                      </a>
+                    )}
+                  </For>
+                </div>
+                <div class={styles.divider}>
+                  <span>or create an account with email</span>
+                </div>
+              </Show>
               <form class="vstack gap-4" onSubmit={handleSubmit}>
                 <label>
                   Username

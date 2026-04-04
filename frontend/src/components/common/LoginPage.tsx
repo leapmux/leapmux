@@ -1,8 +1,9 @@
 import type { Component } from 'solid-js'
+import type { OAuthProviderInfo } from '~/generated/leapmux/v1/auth_pb'
 
 import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
-import { createSignal, onMount, Show } from 'solid-js'
+import { createSignal, For, onMount, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { Icon } from '~/components/common/Icon'
 import { useAuth } from '~/context/AuthContext'
@@ -19,6 +20,7 @@ export const LoginPage: Component = () => {
   const [password, setPassword] = createSignal('')
   const [submitting, setSubmitting] = createSignal(false)
   const [signupEnabled, setSignupEnabled] = createSignal(false)
+  const [oauthProviders, setOAuthProviders] = createSignal<OAuthProviderInfo[]>([])
   let usernameRef!: HTMLInputElement
   let passwordRef!: HTMLInputElement
 
@@ -42,6 +44,15 @@ export const LoginPage: Component = () => {
     }
     catch {
       // Ignore - signup link stays hidden
+    }
+
+    // Fetch enabled OAuth providers.
+    try {
+      const resp = await authClient.getOAuthProviders({})
+      setOAuthProviders(resp.providers)
+    }
+    catch {
+      // Ignore - OAuth buttons stay hidden
     }
   })
 
@@ -69,10 +80,38 @@ export const LoginPage: Component = () => {
     }
   }
 
+  const oauthLoginUrl = (provider: OAuthProviderInfo) => {
+    const redirect = typeof searchParams.redirect === 'string' ? searchParams.redirect : ''
+    const url = provider.loginUrl
+    if (redirect) {
+      return `${url}?redirect=${encodeURIComponent(redirect)}`
+    }
+    return url
+  }
+
   return (
     <div class={styles.container}>
       <div class={`card ${cardNarrow}`}>
         <h1>LeapMux</h1>
+        <Show when={oauthProviders().length > 0}>
+          <div class="vstack gap-2">
+            <For each={oauthProviders()}>
+              {provider => (
+                <a
+                  href={oauthLoginUrl(provider)}
+                  class={styles.oauthButton}
+                >
+                  Sign in with
+                  {' '}
+                  {provider.name}
+                </a>
+              )}
+            </For>
+          </div>
+          <div class={styles.divider}>
+            <span>or</span>
+          </div>
+        </Show>
         <form class="vstack gap-4" onSubmit={handleSubmit}>
           <label>
             Username
@@ -105,9 +144,11 @@ export const LoginPage: Component = () => {
             {submitting() ? 'Signing in...' : 'Sign in'}
           </button>
         </form>
-        <Show when={signupEnabled()}>
+        <Show when={signupEnabled() || oauthProviders().length > 0}>
           <div class={styles.authFooter}>
-            <A href="/signup">Sign up</A>
+            <Show when={signupEnabled()}>
+              <A href="/signup">Sign up</A>
+            </Show>
           </div>
         </Show>
       </div>
