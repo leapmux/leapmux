@@ -142,6 +142,15 @@ func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leap
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	// Check username uniqueness.
+	_, err = s.queries.GetUserByUsername(ctx, username)
+	if err == nil {
+		return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("username already taken"))
+	}
+	if err != sql.ErrNoRows {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
 	// Admin-created users have trusted email.
 	if err := checkEmailUniqueness(ctx, s.queries, req.Msg.GetEmail(), ""); err != nil {
 		return nil, connect.NewError(connect.CodeAlreadyExists, err)
@@ -296,6 +305,14 @@ func (s *AdminService) ResetUserPassword(ctx context.Context, req *connect.Reque
 	}
 	if _, err := requireAdmin(ctx); err != nil {
 		return nil, err
+	}
+
+	// Verify the target user exists.
+	if _, err := s.queries.GetUserByID(ctx, req.Msg.GetUserId()); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("user not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get user: %w", err))
 	}
 
 	hash, err := password.Hash(req.Msg.GetNewPassword())

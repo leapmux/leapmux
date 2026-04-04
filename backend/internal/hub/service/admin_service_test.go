@@ -430,3 +430,114 @@ func TestAdminUpdateUser_EmailCannotBeCleared(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
+
+func TestAdminCreateUser_DuplicateUsername_Rejected(t *testing.T) {
+	env := setupAdminTestServer(t)
+
+	// Create first user.
+	_, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "dupuser",
+		Password:    "pass123",
+		DisplayName: "User 1",
+	}, env.token))
+	require.NoError(t, err)
+
+	// Try to create second user with the same username.
+	_, err = env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "dupuser",
+		Password:    "pass456",
+		DisplayName: "User 2",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
+}
+
+func TestAdminCreateUser_EmptyEmail_AllowedMultiple(t *testing.T) {
+	env := setupAdminTestServer(t)
+
+	// Create first user with empty email.
+	resp1, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "noemail1",
+		Password:    "pass123",
+		DisplayName: "No Email 1",
+		Email:       "",
+	}, env.token))
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp1.Msg.GetUser().GetId())
+
+	// Create second user with empty email.
+	resp2, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "noemail2",
+		Password:    "pass456",
+		DisplayName: "No Email 2",
+		Email:       "",
+	}, env.token))
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp2.Msg.GetUser().GetId())
+}
+
+func TestAdminUpdateUser_DuplicateEmail_Rejected(t *testing.T) {
+	env := setupAdminTestServer(t)
+
+	// Create user A with an email.
+	_, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "usera",
+		Password:    "pass123",
+		DisplayName: "User A",
+		Email:       "taken@example.com",
+	}, env.token))
+	require.NoError(t, err)
+
+	// Create user B without an email.
+	respB, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "userb",
+		Password:    "pass456",
+		DisplayName: "User B",
+	}, env.token))
+	require.NoError(t, err)
+	userBID := respB.Msg.GetUser().GetId()
+
+	// Try to set user B's email to user A's email.
+	_, err = env.client.UpdateUser(context.Background(), authedReq(&leapmuxv1.UpdateUserRequest{
+		UserId:      userBID,
+		DisplayName: "User B",
+		Email:       "taken@example.com",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
+}
+
+func TestAdminUpdateUser_SameEmail_Allowed(t *testing.T) {
+	env := setupAdminTestServer(t)
+
+	// Create a user with an email.
+	createResp, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "sameemail",
+		Password:    "pass123",
+		DisplayName: "Same Email User",
+		Email:       "keep@example.com",
+	}, env.token))
+	require.NoError(t, err)
+	targetID := createResp.Msg.GetUser().GetId()
+
+	// Update the user, keeping the same email.
+	resp, err := env.client.UpdateUser(context.Background(), authedReq(&leapmuxv1.UpdateUserRequest{
+		UserId:      targetID,
+		DisplayName: "Updated Name",
+		Email:       "keep@example.com",
+	}, env.token))
+	require.NoError(t, err)
+	assert.Equal(t, "keep@example.com", resp.Msg.GetUser().GetEmail())
+	assert.Equal(t, "Updated Name", resp.Msg.GetUser().GetDisplayName())
+}
+
+func TestAdminResetPassword_NonexistentUser_Rejected(t *testing.T) {
+	env := setupAdminTestServer(t)
+
+	_, err := env.client.ResetUserPassword(context.Background(), authedReq(&leapmuxv1.ResetUserPasswordRequest{
+		UserId:      "nonexistent-user-id",
+		NewPassword: "newpass",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}

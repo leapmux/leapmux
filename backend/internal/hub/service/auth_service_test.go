@@ -2,11 +2,11 @@ package service_test
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"database/sql"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
@@ -392,6 +392,222 @@ func TestVerificationGating_ConfigOff_NotBlocked(t *testing.T) {
 		DisplayName: "Updated",
 	}, token))
 	require.NoError(t, err)
+}
+
+// --- SignUp with EmailVerificationRequired ---
+
+func TestSignUp_VerificationRequired_EmailInPendingColumn(t *testing.T) {
+	cfg := testConfigWithSignup()
+	cfg.EmailVerificationRequired = true
+
+	client, q := setupAuthTestServer(t, cfg)
+
+	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    "verifyuser",
+		Password:    "password123",
+		DisplayName: "Verify User",
+		Email:       "verify@example.com",
+	}))
+	require.NoError(t, err)
+
+	// The response should indicate verification was required.
+	assert.True(t, resp.Msg.GetVerificationRequired())
+	assert.Equal(t, "verifyuser", resp.Msg.GetUser().GetUsername())
+
+	// Because the stub auto-promotes pending_email, the email should end up
+	// in the email column with email_verified=1.
+	user, err := q.GetUserByUsername(context.Background(), "verifyuser")
+	require.NoError(t, err)
+	assert.Equal(t, "verify@example.com", user.Email)
+	assert.Equal(t, int64(1), user.EmailVerified)
+	// pending_email should be cleared after promotion.
+	assert.Empty(t, user.PendingEmail)
+}
+
+// --- VerifyEmail tests ---
+
+func setupAuthTestServerWithKeystore(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, *gendb.Queries, *sql.DB) {
+	t.Helper()
+
+	sqlDB, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	err = db.Migrate(sqlDB)
+	require.NoError(t, err)
+
+	q := gendb.New(sqlDB)
+	err = bootstrap.Run(context.Background(), sqlDB, q, false)
+	require.NoError(t, err)
+
+	mux := http.NewServeMux()
+	interceptor, _ := auth.NewInterceptor(q, false, false, false)
+	opts := connect.WithInterceptors(interceptor)
+	authSvc := service.NewAuthService(sqlDB, q, cfg, nil, nil)
+	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
+	mux.Handle(path, handler)
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+	return client, q, sqlDB
+}
+
+func createTestUserWithPendingEmail(t *testing.T, q *gendb.Queries, username, pendingEmail, token string, expiresAt sql.NullTime) string {
+	t.Helper()
+	orgID := id.Generate()
+	userID := id.Generate()
+	hash, err := password.Hash("pass")
+	require.NoError(t, err)
+
+	err = q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: username})
+	require.NoError(t, err)
+	err = q.CreateUser(context.Background(), gendb.CreateUserParams{
+		ID:           userID,
+		OrgID:        orgID,
+		Username:     username,
+		PasswordHash: hash,
+		DisplayName:  username,
+		Email:        "",
+		IsAdmin:      0,
+	})
+	require.NoError(t, err)
+
+	// Set pending email directly.
+	err = q.SetPendingEmail(context.Background(), gendb.SetPendingEmailParams{
+		PendingEmail:          pendingEmail,
+		PendingEmailToken:     token,
+		PendingEmailExpiresAt: expiresAt,
+		ID:                    userID,
+	})
+	require.NoError(t, err)
+
+	return userID
+}
+
+func TestVerifyEmail_PromotesPendingEmail(t *testing.T) {
+	cfg := testConfig()
+	cfg.EmailVerificationRequired = true
+	client, q, _ := setupAuthTestServerWithKeystore(t, cfg)
+
+	verifyToken := id.Generate()
+	userID := createTestUserWithPendingEmail(t, q, "pendinguser", "pending@example.com", verifyToken,
+		sql.NullTime{Time: time.Now().Add(24 * time.Hour).UTC(), Valid: true})
+
+	resp, err := client.VerifyEmail(context.Background(), connect.NewRequest(&leapmuxv1.VerifyEmailRequest{
+		VerificationToken: verifyToken,
+	}))
+	require.NoError(t, err)
+
+	// Email should be promoted.
+	assert.Equal(t, "pending@example.com", resp.Msg.GetUser().GetEmail())
+	assert.True(t, resp.Msg.GetUser().GetEmailVerified())
+
+	// Session cookie should be set.
+	setCookie := resp.Header().Get("Set-Cookie")
+	assert.Contains(t, setCookie, auth.CookieName+"=")
+
+	// Verify in DB.
+	user, err := q.GetUserByID(context.Background(), userID)
+	require.NoError(t, err)
+	assert.Equal(t, "pending@example.com", user.Email)
+	assert.Equal(t, int64(1), user.EmailVerified)
+	assert.Empty(t, user.PendingEmail)
+	assert.Empty(t, user.PendingEmailToken)
+}
+
+func TestVerifyEmail_InvalidToken(t *testing.T) {
+	client, _, _ := setupAuthTestServerWithKeystore(t, testConfig())
+
+	_, err := client.VerifyEmail(context.Background(), connect.NewRequest(&leapmuxv1.VerifyEmailRequest{
+		VerificationToken: "nonexistent-token",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
+func TestVerifyEmail_ExpiredToken(t *testing.T) {
+	cfg := testConfig()
+	client, q, _ := setupAuthTestServerWithKeystore(t, cfg)
+
+	verifyToken := id.Generate()
+	_ = createTestUserWithPendingEmail(t, q, "expiredverify", "expired@example.com", verifyToken,
+		sql.NullTime{Time: time.Now().Add(-1 * time.Hour).UTC(), Valid: true})
+
+	_, err := client.VerifyEmail(context.Background(), connect.NewRequest(&leapmuxv1.VerifyEmailRequest{
+		VerificationToken: verifyToken,
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+}
+
+// --- Verification gating: allowed methods ---
+
+func TestVerificationGating_LogoutAllowed(t *testing.T) {
+	_, authClient, q, _ := setupVerificationGatingTestServer(t, true)
+
+	// Create an unverified user.
+	orgID := id.Generate()
+	userID := id.Generate()
+	hash, _ := password.Hash("pass")
+	_ = q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "logoutgating"})
+	_ = q.CreateUser(context.Background(), gendb.CreateUserParams{
+		ID:           userID,
+		OrgID:        orgID,
+		Username:     "logoutgating",
+		PasswordHash: hash,
+		DisplayName:  "Logout Gating",
+		Email:        "logoutgating@example.com",
+		IsAdmin:      0,
+	})
+	// email_verified defaults to 0.
+
+	token, _, _, err := auth.Login(context.Background(), q, "logoutgating", "pass")
+	require.NoError(t, err)
+
+	// Logout should be allowed for unverified users.
+	logoutResp, err := authClient.Logout(context.Background(), authedReq(&leapmuxv1.LogoutRequest{}, token))
+	require.NoError(t, err)
+
+	// Verify the cookie is cleared.
+	logoutCookie := logoutResp.Header().Get("Set-Cookie")
+	assert.Contains(t, logoutCookie, "Max-Age=0")
+}
+
+func TestVerificationGating_RequestEmailChangeAllowed(t *testing.T) {
+	userClient, _, q, _ := setupVerificationGatingTestServer(t, true)
+
+	// Create an unverified user.
+	orgID := id.Generate()
+	userID := id.Generate()
+	hash, _ := password.Hash("pass")
+	_ = q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "emailchangegate"})
+	_ = q.CreateUser(context.Background(), gendb.CreateUserParams{
+		ID:           userID,
+		OrgID:        orgID,
+		Username:     "emailchangegate",
+		PasswordHash: hash,
+		DisplayName:  "Email Change Gating",
+		Email:        "emailchangegate@example.com",
+		IsAdmin:      0,
+	})
+	// email_verified defaults to 0.
+
+	token, _, _, err := auth.Login(context.Background(), q, "emailchangegate", "pass")
+	require.NoError(t, err)
+
+	// RequestEmailChange should be allowed for unverified users
+	// (it should not return PermissionDenied from the gating interceptor).
+	_, err = userClient.RequestEmailChange(context.Background(), authedReq(&leapmuxv1.RequestEmailChangeRequest{
+		NewEmail: "newemail@example.com",
+	}, token))
+	// The RPC may succeed or fail for business logic reasons, but should NOT
+	// be blocked by the verification gating interceptor (no PermissionDenied).
+	if err != nil {
+		assert.NotEqual(t, connect.CodePermissionDenied, connect.CodeOf(err),
+			"RequestEmailChange should not be blocked by verification gating")
+	}
 }
 
 func TestAuthService_Logout(t *testing.T) {
