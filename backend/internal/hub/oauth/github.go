@@ -84,7 +84,7 @@ func fetchGitHubUser(ctx context.Context, accessToken string, userURL string) (*
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("github user API returned %d: %s", resp.StatusCode, string(body))
 	}
 

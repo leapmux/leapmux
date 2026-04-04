@@ -30,5 +30,11 @@ WHERE id = ? AND last_active_at < ?;
 -- name: DeleteUserSession :exec
 DELETE FROM user_sessions WHERE id = ?;
 
+-- name: ValidateSessionWithUser :one
+SELECT u.id, u.org_id, u.username, u.is_admin, u.email_verified
+FROM user_sessions s
+JOIN users u ON s.user_id = u.id
+WHERE s.id = ? AND s.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+
 -- name: DeleteExpiredUserSessions :exec
 DELETE FROM user_sessions WHERE expires_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now');

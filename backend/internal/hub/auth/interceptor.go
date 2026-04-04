@@ -35,6 +35,17 @@ var unverifiedAllowedProcedures = map[string]bool{
 	"/leapmux.v1.UserService/VerifyEmailChange":  true,
 }
 
+// sessionCacheTTL controls how long a validated session is cached in memory.
+// During this window, repeated requests skip the DB query entirely. Session
+// revocation (logout) evicts the entry immediately via SessionCache.Evict.
+const sessionCacheTTL = 30 * time.Second
+
+// cachedSession holds a validated UserInfo with the time it was cached.
+type cachedSession struct {
+	user     *UserInfo
+	cachedAt time.Time
+}
+
 // authInterceptor implements connect.Interceptor to validate session cookies
 // on both unary and streaming RPCs.
 type authInterceptor struct {
@@ -44,6 +55,7 @@ type authInterceptor struct {
 	emailVerificationRequired bool
 	soloUser                  *UserInfo
 	lastTouch                 sync.Map // sessionID → time.Time of last DB touch
+	sessionCache              sync.Map // sessionID → cachedSession
 }
 
 // NewInterceptor creates a ConnectRPC interceptor that validates session cookies
@@ -66,21 +78,23 @@ func NewInterceptor(q *db.Queries, soloMode bool, secureCookie bool, emailVerifi
 			}
 		}
 	}
-	sc := &SessionCache{m: &a.lastTouch, stop: make(chan struct{})}
-	go a.sweepLastTouch(sc.stop)
+	sc := &SessionCache{touch: &a.lastTouch, sessions: &a.sessionCache, stop: make(chan struct{})}
+	go a.sweepCaches(sc.stop)
 	return a, sc
 }
 
 // SessionCache provides eviction access to the interceptor's in-memory
-// session touch throttle.
+// session caches.
 type SessionCache struct {
-	m    *sync.Map
-	stop chan struct{}
+	touch    *sync.Map
+	sessions *sync.Map
+	stop     chan struct{}
 }
 
-// Evict removes a session from the touch cache. Call this on logout.
+// Evict removes a session from all in-memory caches. Call this on logout.
 func (c *SessionCache) Evict(sessionID string) {
-	c.m.Delete(sessionID)
+	c.touch.Delete(sessionID)
+	c.sessions.Delete(sessionID)
 }
 
 // Stop terminates the background sweep goroutine. Safe to call multiple times.
@@ -139,7 +153,7 @@ func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHea
 		return ctx, connect.NewError(connect.CodeUnauthenticated, nil)
 	}
 
-	userInfo, err := ValidateToken(ctx, a.queries, token)
+	userInfo, err := a.validateTokenCached(ctx, token)
 	if err != nil {
 		return ctx, err
 	}
@@ -155,6 +169,26 @@ func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHea
 	}
 
 	return ctx, nil
+}
+
+// validateTokenCached returns cached UserInfo if the session was validated
+// within sessionCacheTTL, otherwise queries the DB and caches the result.
+func (a *authInterceptor) validateTokenCached(ctx context.Context, token string) (*UserInfo, error) {
+	if v, ok := a.sessionCache.Load(token); ok {
+		cached := v.(cachedSession)
+		if time.Since(cached.cachedAt) < sessionCacheTTL {
+			return cached.user, nil
+		}
+		a.sessionCache.Delete(token)
+	}
+
+	userInfo, err := ValidateToken(ctx, a.queries, token)
+	if err != nil {
+		return nil, err
+	}
+
+	a.sessionCache.Store(token, cachedSession{user: userInfo, cachedAt: time.Now()})
+	return userInfo, nil
 }
 
 const sessionTouchThreshold = 5 * time.Minute
@@ -184,11 +218,12 @@ func (a *authInterceptor) touchSession(ctx context.Context, sessionID string) {
 
 const touchSweepInterval = 10 * time.Minute
 
-// sweepLastTouch periodically removes stale entries from the lastTouch map.
-// Entries older than SessionDuration are removed since those sessions have
-// expired and will fail ValidateToken on the next request anyway.
+// sweepCaches periodically removes stale entries from the lastTouch and
+// sessionCache maps. Touch entries older than SessionDuration are removed
+// since those sessions have expired. Session cache entries older than
+// sessionCacheTTL are removed to avoid unbounded growth.
 // The goroutine exits when stop is closed.
-func (a *authInterceptor) sweepLastTouch(stop <-chan struct{}) {
+func (a *authInterceptor) sweepCaches(stop <-chan struct{}) {
 	ticker := time.NewTicker(touchSweepInterval)
 	defer ticker.Stop()
 
@@ -197,10 +232,17 @@ func (a *authInterceptor) sweepLastTouch(stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-ticker.C:
-			cutoff := time.Now().Add(-SessionDuration)
+			now := time.Now()
+			touchCutoff := now.Add(-SessionDuration)
 			a.lastTouch.Range(func(key, value any) bool {
-				if value.(time.Time).Before(cutoff) {
+				if value.(time.Time).Before(touchCutoff) {
 					a.lastTouch.Delete(key)
+				}
+				return true
+			})
+			a.sessionCache.Range(func(key, value any) bool {
+				if now.Sub(value.(cachedSession).cachedAt) > sessionCacheTTL {
+					a.sessionCache.Delete(key)
 				}
 				return true
 			})

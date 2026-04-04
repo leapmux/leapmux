@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -11,7 +12,7 @@ func TestTokenSet_StringRedacted(t *testing.T) {
 		AccessToken:  "super-secret-access",
 		RefreshToken: "super-secret-refresh",
 		TokenType:    "Bearer",
-		ExpiresIn:    3600,
+		ExpiresAt:    time.Now().Add(1 * time.Hour).UTC(),
 	}
 
 	assert.Equal(t, "[REDACTED TokenSet]", ts.String())

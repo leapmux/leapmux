@@ -240,3 +240,46 @@ func TestLogout_EvictsSessionFromCache(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
+
+func TestSessionCache_RapidRequestsSucceed(t *testing.T) {
+	client, _ := setupInterceptorTestServerWithCache(t)
+
+	token := loginAdmin(t, client)
+
+	// Issue multiple rapid requests — the session cache should serve
+	// the cached UserInfo without repeated DB queries.
+	for i := 0; i < 5; i++ {
+		req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+		req.Header().Set("Cookie", auth.CookieName+"="+token)
+		resp, err := client.GetCurrentUser(context.Background(), req)
+		require.NoError(t, err)
+		assert.Equal(t, "admin", resp.Msg.GetUser().GetUsername())
+	}
+}
+
+func TestSessionCache_EvictInvalidatesCache(t *testing.T) {
+	// This test verifies that logging out (which evicts from cache) immediately
+	// invalidates the session, even if it was recently cached.
+	client, _ := setupInterceptorTestServerWithCache(t)
+
+	token := loginAdmin(t, client)
+
+	// Warm the session cache.
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Cookie", auth.CookieName+"="+token)
+	_, err := client.GetCurrentUser(context.Background(), req)
+	require.NoError(t, err)
+
+	// Logout evicts from cache.
+	logoutReq := connect.NewRequest(&leapmuxv1.LogoutRequest{})
+	logoutReq.Header().Set("Cookie", auth.CookieName+"="+token)
+	_, err = client.Logout(context.Background(), logoutReq)
+	require.NoError(t, err)
+
+	// The cached session must be gone — request should fail immediately.
+	req2 := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req2.Header().Set("Cookie", auth.CookieName+"="+token)
+	_, err = client.GetCurrentUser(context.Background(), req2)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}

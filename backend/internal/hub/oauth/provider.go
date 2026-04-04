@@ -13,7 +13,7 @@ type TokenSet struct {
 	AccessToken  string
 	RefreshToken string
 	TokenType    string
-	ExpiresIn    int // seconds until access token expires
+	ExpiresAt    time.Time // absolute expiry time for the access token
 }
 
 // String returns a redacted representation to prevent token leakage in logs.
@@ -68,9 +68,7 @@ func TokenSetFromOAuth2Token(token *oauth2.Token) *TokenSet {
 		AccessToken:  token.AccessToken,
 		RefreshToken: token.RefreshToken,
 		TokenType:    token.TokenType,
-	}
-	if !token.Expiry.IsZero() {
-		ts.ExpiresIn = int(time.Until(token.Expiry).Seconds())
+		ExpiresAt:    token.Expiry.UTC(),
 	}
 	return ts
 }

@@ -139,7 +139,6 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 		return
 	}
 
-	// Validate and consume state.
 	oauthState, err := h.queries.GetOAuthState(ctx, state)
 	if err != nil {
 		http.Error(w, "invalid or expired state", http.StatusBadRequest)
@@ -256,8 +255,8 @@ func (h *OAuthHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, us
 }
 
 func tokenExpiryTime(tokenSet *huboauth.TokenSet) time.Time {
-	if tokenSet.ExpiresIn > 0 {
-		return time.Now().Add(time.Duration(tokenSet.ExpiresIn) * time.Second).UTC()
+	if !tokenSet.ExpiresAt.IsZero() {
+		return tokenSet.ExpiresAt
 	}
 	return time.Now().Add(defaultTokenExpiry).UTC()
 }

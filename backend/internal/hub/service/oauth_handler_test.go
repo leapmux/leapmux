@@ -2,7 +2,6 @@ package service_test
 
 import (
 	"context"
-	"encoding/binary"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -63,7 +62,7 @@ func setupOAuthTestServer(t *testing.T) (*httptest.Server, *gendb.Queries, *keys
 func createTestProvider(t *testing.T, q *gendb.Queries, ks *keystore.Keystore) string {
 	t.Helper()
 	providerID := id.Generate()
-	aad := []byte("oauth_provider:" + providerID)
+	aad := keystore.ProviderAAD(providerID)
 	encSecret, err := ks.Encrypt([]byte("test-client-secret"), aad)
 	require.NoError(t, err)
 
@@ -205,7 +204,7 @@ func TestGetOAuthProviders_ReturnsEnabledOnly(t *testing.T) {
 	// Create two providers, one enabled and one disabled.
 	enabledID := createTestProvider(t, q, ks)
 	disabledID := id.Generate()
-	aad := []byte("oauth_provider:" + disabledID)
+	aad := keystore.ProviderAAD(disabledID)
 	encSecret, _ := ks.Encrypt([]byte("secret"), aad)
 	_ = q.CreateOAuthProvider(context.Background(), gendb.CreateOAuthProviderParams{
 		ID:           disabledID,
@@ -233,8 +232,8 @@ func TestOAuthTokenStorage_EncryptedInDB(t *testing.T) {
 	userID := "test-user"
 	providerID := "test-provider"
 
-	accessAAD := []byte("access_token:" + userID + ":" + providerID)
-	refreshAAD := []byte("refresh_token:" + userID + ":" + providerID)
+	accessAAD := keystore.AccessTokenAAD(userID, providerID)
+	refreshAAD := keystore.RefreshTokenAAD(userID, providerID)
 
 	encAccess, err := ks.Encrypt([]byte(plainAccess), accessAAD)
 	require.NoError(t, err)
@@ -265,8 +264,9 @@ func TestOAuthTokenStorage_KeyVersionMatches(t *testing.T) {
 	ct, err := ks.Encrypt([]byte("test"), nil)
 	require.NoError(t, err)
 
-	// First 4 bytes are the key version (big-endian uint32).
-	assert.Equal(t, ks.ActiveVersion(), binary.BigEndian.Uint32(ct[:4]))
+	ver, err := keystore.CiphertextVersion(ct)
+	require.NoError(t, err)
+	assert.Equal(t, ks.ActiveVersion(), ver)
 }
 
 // setupOAuthTestServerWithAuthService sets up both OAuthHandler (HTTP routes) and
@@ -688,7 +688,7 @@ func TestAutoLinkByVerifiedEmail(t *testing.T) {
 
 	// Create a second provider (simulating Google OIDC).
 	googleProviderID := id.Generate()
-	aad := []byte("oauth_provider:" + googleProviderID)
+	aad := keystore.ProviderAAD(googleProviderID)
 	encSecret, err := ks.Encrypt([]byte("google-secret"), aad)
 	require.NoError(t, err)
 	err = q.CreateOAuthProvider(context.Background(), gendb.CreateOAuthProviderParams{
@@ -790,7 +790,7 @@ func TestDeleteOAuthTokens_ScopedToProvider(t *testing.T) {
 	// Create two OAuth providers.
 	providerA := createTestProvider(t, q, ks)
 	providerBID := id.Generate()
-	aad := []byte("oauth_provider:" + providerBID)
+	aad := keystore.ProviderAAD(providerBID)
 	encSecret, err := ks.Encrypt([]byte("secret-b"), aad)
 	require.NoError(t, err)
 	err = q.CreateOAuthProvider(context.Background(), gendb.CreateOAuthProviderParams{

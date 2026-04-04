@@ -72,3 +72,7 @@ WHERE id = ? AND pending_email != '';
 
 -- name: GetUserByPendingEmailToken :one
 SELECT * FROM users WHERE pending_email_token = ? AND pending_email_token != '';
+
+-- name: ClearCompetingPendingEmails :exec
+UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE pending_email = ? AND id != ?;

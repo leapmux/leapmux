@@ -137,6 +137,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 		}); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
+		clearCompetingPendingEmails(ctx, s.queries, newEmail, user.ID)
 		return connect.NewResponse(&leapmuxv1.RequestEmailChangeResponse{
 			VerificationRequired: false,
 		}), nil
@@ -151,6 +152,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 		}); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
+		clearCompetingPendingEmails(ctx, s.queries, newEmail, user.ID)
 		return connect.NewResponse(&leapmuxv1.RequestEmailChangeResponse{
 			VerificationRequired: false,
 		}), nil

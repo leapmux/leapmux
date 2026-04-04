@@ -40,9 +40,10 @@ func setupAuthTestServer(t *testing.T, cfg *config.Config) (leapmuxv1connect.Aut
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(q, false, false, false)
+	interceptor, sc := auth.NewInterceptor(q, false, false, false)
+	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(sqlDB, q, cfg, nil, nil)
+	authSvc := service.NewAuthService(sqlDB, q, cfg, sc, nil)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 
@@ -246,6 +247,120 @@ func TestSignUp_DuplicateEmail_Rejected(t *testing.T) {
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
+}
+
+func TestPromotePendingEmail_ClearsCompetingPendingEmails(t *testing.T) {
+	_, q := setupAuthTestServer(t, testConfigWithSignup())
+	ctx := context.Background()
+
+	// Create two users, both with pending_email = "shared@example.com".
+	for _, username := range []string{"user-a", "user-b"} {
+		orgID := id.Generate()
+		err := q.CreateOrg(ctx, gendb.CreateOrgParams{ID: orgID, Name: username + "-org"})
+		require.NoError(t, err)
+		hash, err := password.Hash("pass")
+		require.NoError(t, err)
+		userID := id.Generate()
+		err = q.CreateUser(ctx, gendb.CreateUserParams{
+			ID:           userID,
+			OrgID:        orgID,
+			Username:     username,
+			PasswordHash: hash,
+			DisplayName:  username,
+			Email:        "",
+			PasswordSet:  1,
+			IsAdmin:      0,
+		})
+		require.NoError(t, err)
+		err = q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
+			PendingEmail:      "shared@example.com",
+			PendingEmailToken: id.Generate(),
+			PendingEmailExpiresAt: sql.NullTime{
+				Time:  time.Now().Add(24 * time.Hour).UTC(),
+				Valid: true,
+			},
+			ID: userID,
+		})
+		require.NoError(t, err)
+	}
+
+	// Verify both have pending_email set.
+	userA, err := q.GetUserByUsername(ctx, "user-a")
+	require.NoError(t, err)
+	assert.Equal(t, "shared@example.com", userA.PendingEmail)
+	userB, err := q.GetUserByUsername(ctx, "user-b")
+	require.NoError(t, err)
+	assert.Equal(t, "shared@example.com", userB.PendingEmail)
+
+	// User A promotes — this should also clear user B's pending_email.
+	err = q.PromotePendingEmail(ctx, userA.ID)
+	require.NoError(t, err)
+	err = q.ClearCompetingPendingEmails(ctx, gendb.ClearCompetingPendingEmailsParams{
+		PendingEmail: "shared@example.com",
+		ID:           userA.ID,
+	})
+	require.NoError(t, err)
+
+	// User A now has verified email.
+	userA, err = q.GetUserByUsername(ctx, "user-a")
+	require.NoError(t, err)
+	assert.Equal(t, "shared@example.com", userA.Email)
+	assert.Equal(t, int64(1), userA.EmailVerified)
+	assert.Empty(t, userA.PendingEmail)
+
+	// User B's pending_email should be cleared.
+	userB, err = q.GetUserByUsername(ctx, "user-b")
+	require.NoError(t, err)
+	assert.Empty(t, userB.PendingEmail)
+	assert.Empty(t, userB.Email)
+}
+
+func TestSignUp_DirectEmail_ClearsCompetingPendingEmails(t *testing.T) {
+	client, q := setupAuthTestServer(t, testConfigWithSignup())
+	ctx := context.Background()
+
+	// User A sets pending_email = "race@example.com" (unverified).
+	orgID := id.Generate()
+	err := q.CreateOrg(ctx, gendb.CreateOrgParams{ID: orgID, Name: "racer-org"})
+	require.NoError(t, err)
+	hash, err := password.Hash("pass")
+	require.NoError(t, err)
+	userAID := id.Generate()
+	err = q.CreateUser(ctx, gendb.CreateUserParams{
+		ID:           userAID,
+		OrgID:        orgID,
+		Username:     "racer",
+		PasswordHash: hash,
+		DisplayName:  "Racer",
+		Email:        "",
+		PasswordSet:  1,
+		IsAdmin:      0,
+	})
+	require.NoError(t, err)
+	err = q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
+		PendingEmail:      "race@example.com",
+		PendingEmailToken: id.Generate(),
+		PendingEmailExpiresAt: sql.NullTime{
+			Time:  time.Now().Add(24 * time.Hour).UTC(),
+			Valid: true,
+		},
+		ID: userAID,
+	})
+	require.NoError(t, err)
+
+	// User B signs up with email = "race@example.com" directly (verification off).
+	_, err = client.SignUp(ctx, connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    "winner",
+		Password:    "pass123",
+		DisplayName: "Winner",
+		Email:       "race@example.com",
+	}))
+	require.NoError(t, err)
+
+	// User A's pending_email should be cleared.
+	userA, err := q.GetUserByUsername(ctx, "racer")
+	require.NoError(t, err)
+	assert.Empty(t, userA.PendingEmail, "competing pending_email should be cleared when another user claims the email directly")
 }
 
 func TestSignUp_EmptyEmail_AllowedMultiple(t *testing.T) {

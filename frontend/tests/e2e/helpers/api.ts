@@ -57,7 +57,7 @@ function extractSessionCookie(setCookieHeader: string | null): string {
 /**
  * Build authed fetch headers with the session cookie.
  */
-function authedHeaders(cookie: string): Record<string, string> {
+export function authedHeaders(cookie: string): Record<string, string> {
   return {
     'Content-Type': 'application/json',
     'Cookie': cookie,

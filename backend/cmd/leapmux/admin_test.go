@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
 	"path/filepath"
 	"testing"
 
@@ -253,10 +252,12 @@ func TestCLI_ReencryptSecrets(t *testing.T) {
 	_ = sqlDB.Close()
 
 	// The ciphertext should now be version 2.
-	assert.Equal(t, uint32(2), binary.BigEndian.Uint32(full.ClientSecret[:4]), "re-encrypted secret should be version 2")
+	ver, err := keystore.CiphertextVersion(full.ClientSecret)
+	require.NoError(t, err)
+	assert.Equal(t, uint32(2), ver, "re-encrypted secret should be version 2")
 
 	// Decrypting should return the original plaintext.
-	aad := []byte("oauth_provider:" + providers[0].ID)
+	aad := keystore.ProviderAAD(providers[0].ID)
 	plain, err := ks.Decrypt(full.ClientSecret, aad)
 	require.NoError(t, err)
 	assert.Equal(t, "original-secret", string(plain))

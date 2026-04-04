@@ -96,27 +96,23 @@ func CreateSession(ctx context.Context, q *db.Queries, userID, userAgent, ipAddr
 }
 
 // ValidateToken resolves a session token to a UserInfo. Returns an error if
-// the token is invalid or expired.
+// the token is invalid or expired. Uses a single joined query to avoid two
+// sequential DB round-trips.
 func ValidateToken(ctx context.Context, q *db.Queries, token string) (*UserInfo, error) {
-	sess, err := q.GetUserSessionByID(ctx, token)
+	row, err := q.ValidateSessionWithUser(ctx, token)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid or expired token"))
 		}
-		return nil, fmt.Errorf("query session: %w", err)
-	}
-
-	user, err := q.GetUserByID(ctx, sess.UserID)
-	if err != nil {
-		return nil, fmt.Errorf("query user: %w", err)
+		return nil, fmt.Errorf("validate session: %w", err)
 	}
 
 	return &UserInfo{
-		ID:            user.ID,
-		OrgID:         user.OrgID,
-		Username:      user.Username,
-		IsAdmin:       user.IsAdmin == 1,
-		EmailVerified: user.EmailVerified == 1,
+		ID:            row.ID,
+		OrgID:         row.OrgID,
+		Username:      row.Username,
+		IsAdmin:       row.IsAdmin == 1,
+		EmailVerified: row.EmailVerified == 1,
 	}, nil
 }
 

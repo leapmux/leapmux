@@ -247,6 +247,7 @@ func (s *AdminService) UpdateUser(ctx context.Context, req *connect.Request[leap
 		}); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update user email: %w", err))
 		}
+		clearCompetingPendingEmails(ctx, s.queries, newEmail, user.ID)
 	}
 
 	// Fetch updated user.

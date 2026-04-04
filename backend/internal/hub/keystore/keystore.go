@@ -79,8 +79,13 @@ func (ks *Keystore) ActiveVersion() uint32 { return ks.activeVersion }
 
 // Versions returns all key versions in the ring, sorted ascending.
 func (ks *Keystore) Versions() []uint32 {
-	vers := make([]uint32, 0, len(ks.keys))
-	for v := range ks.keys {
+	return sortedVersions(ks.keys)
+}
+
+// sortedVersions returns the map keys sorted ascending.
+func sortedVersions(keys map[uint32][keySize]byte) []uint32 {
+	vers := make([]uint32, 0, len(keys))
+	for v := range keys {
 		vers = append(vers, v)
 	}
 	sort.Slice(vers, func(i, j int) bool { return vers[i] < vers[j] })
@@ -278,12 +283,7 @@ func writeKeyRingFile(path string, keys map[uint32][keySize]byte) error {
 		return fmt.Errorf("keystore: create directory: %w", err)
 	}
 
-	// Sort versions for deterministic output.
-	versions := make([]uint32, 0, len(keys))
-	for v := range keys {
-		versions = append(versions, v)
-	}
-	sort.Slice(versions, func(i, j int) bool { return versions[i] < versions[j] })
+	versions := sortedVersions(keys)
 
 	var sb strings.Builder
 	for _, v := range versions {
