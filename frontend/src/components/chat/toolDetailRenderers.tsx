@@ -10,8 +10,8 @@ import {
 
 const TRAILING_NEWLINE_RE = /\n$/
 
-export function renderBashDetail(description?: string, _command?: string): JSX.Element | null {
-  if (!description && !_command)
+export function renderBashDetail(description?: string, command?: string): JSX.Element | null {
+  if (!description && !command)
     return null
   const descText = description ? (description.length > 100 ? `${description.slice(0, 100)}…` : description) : ''
   return <span class={toolInputText}>{descText || 'Run command'}</span>
@@ -83,6 +83,8 @@ export function renderSearchDetail(pattern?: string, path?: string, cwd?: string
 }
 
 export function renderGlobDetail(pattern?: string, path?: string, cwd?: string, homeDir?: string): JSX.Element | null {
+  if (!pattern && !path)
+    return null
   const displayPattern = pattern && pattern.startsWith('/') && !pattern.includes('*')
     ? relativizePath(pattern, cwd, homeDir)
     : (pattern || '')

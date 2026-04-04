@@ -1235,11 +1235,11 @@ function renderClaudeToolResult(
     }
     else {
       // Subagent: parse raw resultContent to extract summary and file list.
-      const parsed = parseRawGrepGlobResult(resultContent, 'Grep')
-      numFiles = parsed.numFiles
-      numLines = parsed.numLines
-      filenames = parsed.filenames
-      grepContent = parsed.content
+      const rawResult = parseRawGrepGlobResult(resultContent, 'Grep')
+      numFiles = rawResult.numFiles
+      numLines = rawResult.numLines
+      filenames = rawResult.filenames
+      grepContent = rawResult.content
     }
     innerResult = (
       <GrepResultView
