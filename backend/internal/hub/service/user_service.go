@@ -13,7 +13,6 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/password"
-	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/validate"
 )
@@ -126,7 +125,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 	}
 
 	// Check that no other user has this email.
-	if err := checkPendingEmailAllowed(ctx, s.queries, newEmail, user.ID); err != nil {
+	if err := checkEmailAvailable(ctx, s.queries, newEmail, user.ID); err != nil {
 		return nil, connect.NewError(connect.CodeAlreadyExists, err)
 	}
 
@@ -158,20 +157,9 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 		}), nil
 	}
 
-	// Non-admin, verification required: set pending email.
-	token := id.Generate()
-	if err := s.queries.SetPendingEmail(ctx, db.SetPendingEmailParams{
-		PendingEmail:          newEmail,
-		PendingEmailToken:     token,
-		PendingEmailExpiresAt: sql.NullTime{Time: time.Now().Add(pendingEmailExpiry).UTC(), Valid: true},
-		ID:                    user.ID,
-	}); err != nil {
+	// Non-admin, verification required: set pending email (stub: auto-verifies).
+	if err := setPendingEmailWithToken(ctx, s.queries, user.ID, newEmail); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
-	// Stub: auto-verify immediately (real email sending TBD).
-	if err := checkEmailUniqueness(ctx, s.queries, newEmail, user.ID); err == nil {
-		_ = s.queries.PromotePendingEmail(ctx, user.ID)
 	}
 
 	return connect.NewResponse(&leapmuxv1.RequestEmailChangeResponse{
@@ -202,7 +190,7 @@ func (s *UserService) VerifyEmailChange(ctx context.Context, req *connect.Reques
 	}
 
 	// Check that no other user has claimed this email since the request.
-	if err := checkEmailUniqueness(ctx, s.queries, user.PendingEmail, user.ID); err != nil {
+	if err := checkEmailAvailable(ctx, s.queries, user.PendingEmail, user.ID); err != nil {
 		return nil, connect.NewError(connect.CodeAlreadyExists, err)
 	}
 

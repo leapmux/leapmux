@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
@@ -18,8 +19,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/validate"
 	"github.com/leapmux/leapmux/util/version"
 )
-
-const pendingEmailExpiry = 24 * time.Hour
 
 // AuthService implements the leapmux.v1.AuthService ConnectRPC handler.
 type AuthService struct {
@@ -113,12 +112,8 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 	}
 
 	// Check username uniqueness.
-	_, err = s.queries.GetUserByUsername(ctx, username)
-	if err == nil {
-		return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("username already taken"))
-	}
-	if err != sql.ErrNoRows {
-		return nil, connect.NewError(connect.CodeInternal, err)
+	if err := checkUsernameAvailable(ctx, s.queries, username); err != nil {
+		return nil, err
 	}
 
 	email := req.Msg.GetEmail()
@@ -129,7 +124,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 
 	if s.cfg.EmailVerificationRequired && email != "" {
 		// Email goes to pending_email; email column stays empty until verified.
-		if err := checkPendingEmailAllowed(ctx, s.queries, email, ""); err != nil {
+		if err := checkEmailAvailable(ctx, s.queries, email, ""); err != nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists, err)
 		}
 
@@ -144,19 +139,8 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
 
-		// Set pending email with verification token.
-		verificationToken := id.Generate()
-		if err := s.queries.SetPendingEmail(ctx, db.SetPendingEmailParams{
-			PendingEmail:          email,
-			PendingEmailToken:     verificationToken,
-			PendingEmailExpiresAt: sql.NullTime{Time: time.Now().Add(pendingEmailExpiry).UTC(), Valid: true},
-			ID:                    user.ID,
-		}); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("set pending email: %w", err))
-		}
-
-		// Stub: auto-verify immediately (real email sending TBD).
-		if err := s.promotePendingEmail(ctx, user.ID, email); err != nil {
+		// Set pending email with verification token (stub: auto-verifies).
+		if err := setPendingEmailWithToken(ctx, s.queries, user.ID, email); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
 
@@ -174,7 +158,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 
 	// No verification required — email goes directly to email column.
 	if email != "" {
-		if err := checkEmailUniqueness(ctx, s.queries, email, ""); err != nil {
+		if err := checkEmailAvailable(ctx, s.queries, email, ""); err != nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists, err)
 		}
 	}
@@ -220,7 +204,7 @@ func (s *AuthService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("verification token expired"))
 	}
 
-	if err := s.promotePendingEmail(ctx, user.ID, user.PendingEmail); err != nil {
+	if err := promotePendingEmail(ctx, s.queries, user.ID, user.PendingEmail); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
@@ -341,12 +325,8 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	}
 
 	// Check username uniqueness.
-	_, err = s.queries.GetUserByUsername(ctx, username)
-	if err == nil {
-		return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("username already taken"))
-	}
-	if err != sql.ErrNoRows {
-		return nil, connect.NewError(connect.CodeInternal, err)
+	if err := checkUsernameAvailable(ctx, s.queries, username); err != nil {
+		return nil, err
 	}
 
 	// Check that the OAuth link doesn't already exist (race protection).
@@ -370,25 +350,25 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	}
 
 	var userEmail string
-	var emailVerified int64
+	var emailVerified bool
 	var pendingEmail string
 
 	if email != "" && s.cfg.OAuthTrustEmail {
 		// Trusted OAuth email — goes directly to email column.
-		if err := checkEmailUniqueness(ctx, s.queries, email, ""); err != nil {
+		if err := checkEmailAvailable(ctx, s.queries, email, ""); err != nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists, err)
 		}
 		userEmail = email
-		emailVerified = 1
+		emailVerified = true
 	} else if email != "" && !s.cfg.OAuthTrustEmail && s.cfg.EmailVerificationRequired {
 		// Untrusted + verification required — goes to pending_email.
-		if err := checkPendingEmailAllowed(ctx, s.queries, email, ""); err != nil {
+		if err := checkEmailAvailable(ctx, s.queries, email, ""); err != nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists, err)
 		}
 		pendingEmail = email
 	} else if email != "" {
 		// Untrusted + verification not required — goes to email column unverified.
-		if err := checkEmailUniqueness(ctx, s.queries, email, ""); err != nil {
+		if err := checkEmailAvailable(ctx, s.queries, email, ""); err != nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists, err)
 		}
 		userEmail = email
@@ -412,9 +392,10 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	}
 
 	// Set email_verified if trusted OAuth.
-	if emailVerified == 1 {
+	if emailVerified {
+		var ev int64 = 1
 		if err := s.queries.UpdateUserEmailVerified(ctx, db.UpdateUserEmailVerifiedParams{
-			EmailVerified: 1,
+			EmailVerified: ev,
 			ID:            user.ID,
 		}); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
@@ -423,18 +404,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 
 	// Handle pending email if needed.
 	if pendingEmail != "" {
-		verificationToken := id.Generate()
-		if err := s.queries.SetPendingEmail(ctx, db.SetPendingEmailParams{
-			PendingEmail:          pendingEmail,
-			PendingEmailToken:     verificationToken,
-			PendingEmailExpiresAt: sql.NullTime{Time: time.Now().Add(pendingEmailExpiry).UTC(), Valid: true},
-			ID:                    user.ID,
-		}); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
-		}
-
-		// Stub: auto-verify immediately.
-		if err := s.promotePendingEmail(ctx, user.ID, pendingEmail); err != nil {
+		if err := setPendingEmailWithToken(ctx, s.queries, user.ID, pendingEmail); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
 	}
@@ -451,22 +421,30 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	// Decrypt and re-store OAuth tokens with the real user ID as AAD.
 	if s.keystore != nil {
 		accessTokenPlain, err := s.keystore.Decrypt(pending.AccessToken, keystore.AccessTokenAAD(signupToken, pending.ProviderID))
-		if err == nil {
+		if err != nil {
+			slog.Error("oauth: decrypt access token for re-encryption", "error", err, "user_id", user.ID)
+		} else {
 			refreshTokenPlain, err := s.keystore.Decrypt(pending.RefreshToken, keystore.RefreshTokenAAD(signupToken, pending.ProviderID))
-			if err == nil {
+			if err != nil {
+				slog.Error("oauth: decrypt refresh token for re-encryption", "error", err, "user_id", user.ID)
+			} else {
 				// Re-encrypt with user ID AAD.
-				encAccess, _ := s.keystore.Encrypt(accessTokenPlain, keystore.AccessTokenAAD(user.ID, pending.ProviderID))
-				encRefresh, _ := s.keystore.Encrypt(refreshTokenPlain, keystore.RefreshTokenAAD(user.ID, pending.ProviderID))
-				if encAccess != nil && encRefresh != nil {
-					_ = s.queries.UpsertOAuthTokens(ctx, db.UpsertOAuthTokensParams{
-						UserID:       user.ID,
-						ProviderID:   pending.ProviderID,
-						AccessToken:  encAccess,
-						RefreshToken: encRefresh,
-						TokenType:    pending.TokenType,
-						ExpiresAt:    pending.TokenExpiresAt,
-						KeyVersion:   pending.KeyVersion,
-					})
+				encAccess, errA := s.keystore.Encrypt(accessTokenPlain, keystore.AccessTokenAAD(user.ID, pending.ProviderID))
+				encRefresh, errR := s.keystore.Encrypt(refreshTokenPlain, keystore.RefreshTokenAAD(user.ID, pending.ProviderID))
+				if errA != nil {
+					slog.Error("oauth: encrypt access token", "error", errA, "user_id", user.ID)
+				} else if errR != nil {
+					slog.Error("oauth: encrypt refresh token", "error", errR, "user_id", user.ID)
+				} else if err := s.queries.UpsertOAuthTokens(ctx, db.UpsertOAuthTokensParams{
+					UserID:       user.ID,
+					ProviderID:   pending.ProviderID,
+					AccessToken:  encAccess,
+					RefreshToken: encRefresh,
+					TokenType:    pending.TokenType,
+					ExpiresAt:    pending.TokenExpiresAt,
+					KeyVersion:   pending.KeyVersion,
+				}); err != nil {
+					slog.Error("oauth: upsert re-encrypted tokens", "error", err, "user_id", user.ID)
 				}
 			}
 		}
@@ -497,15 +475,6 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	})
 	resp.Header().Set("Set-Cookie", auth.BuildSessionCookie(sessionID, expiresAt, s.cfg.SecureCookies).String())
 	return resp, nil
-}
-
-// promotePendingEmail moves pending_email to email with email_verified=1.
-// It checks that no other user has claimed the email since the pending was set.
-func (s *AuthService) promotePendingEmail(ctx context.Context, userID, email string) error {
-	if err := checkEmailUniqueness(ctx, s.queries, email, userID); err != nil {
-		return fmt.Errorf("email was claimed by another user: %w", err)
-	}
-	return s.queries.PromotePendingEmail(ctx, userID)
 }
 
 func userToProto(u *db.User) *leapmuxv1.User {

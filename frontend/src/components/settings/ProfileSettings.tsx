@@ -104,9 +104,14 @@ export const ProfileSettings: Component = () => {
           Current Email
           <div style={{ 'font-size': 'var(--text-6)', 'color': 'var(--foreground)' }}>
             {auth.user()?.email || 'Not set'}
-            <Show when={auth.user()?.email}>
+            <Show when={auth.user()?.email && auth.user()?.emailVerified}>
               <span style={{ 'margin-left': 'var(--space-2)', 'font-size': 'var(--text-8)', 'color': 'var(--success)' }}>
                 (verified)
+              </span>
+            </Show>
+            <Show when={auth.user()?.email && !auth.user()?.emailVerified}>
+              <span style={{ 'margin-left': 'var(--space-2)', 'font-size': 'var(--text-8)', 'color': 'var(--warning)' }}>
+                (unverified)
               </span>
             </Show>
           </div>

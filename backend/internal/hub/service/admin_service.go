@@ -143,16 +143,12 @@ func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leap
 	}
 
 	// Check username uniqueness.
-	_, err = s.queries.GetUserByUsername(ctx, username)
-	if err == nil {
-		return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("username already taken"))
-	}
-	if err != sql.ErrNoRows {
-		return nil, connect.NewError(connect.CodeInternal, err)
+	if err := checkUsernameAvailable(ctx, s.queries, username); err != nil {
+		return nil, err
 	}
 
 	// Admin-created users have trusted email.
-	if err := checkEmailUniqueness(ctx, s.queries, req.Msg.GetEmail(), ""); err != nil {
+	if err := checkEmailAvailable(ctx, s.queries, req.Msg.GetEmail(), ""); err != nil {
 		return nil, connect.NewError(connect.CodeAlreadyExists, err)
 	}
 
@@ -227,7 +223,7 @@ func (s *AdminService) UpdateUser(ctx context.Context, req *connect.Request[leap
 
 	// Check email uniqueness if changed.
 	if newEmail != user.Email {
-		if err := checkEmailUniqueness(ctx, s.queries, newEmail, user.ID); err != nil {
+		if err := checkEmailAvailable(ctx, s.queries, newEmail, user.ID); err != nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists, err)
 		}
 	}

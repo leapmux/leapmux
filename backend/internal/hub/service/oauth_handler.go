@@ -218,6 +218,13 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 	http.Redirect(w, r, "/oauth/complete-signup?token="+signupToken, http.StatusFound)
 }
 
+func tokenExpiryTime(tokenSet *huboauth.TokenSet) time.Time {
+	if tokenSet.ExpiresIn > 0 {
+		return time.Now().Add(time.Duration(tokenSet.ExpiresIn) * time.Second).UTC()
+	}
+	return time.Now().Add(defaultTokenExpiry).UTC()
+}
+
 func (h *OAuthHandler) storePendingSignup(ctx context.Context, providerID string, claims *huboauth.UserClaims, tokenSet *huboauth.TokenSet, redirectURI string) (string, error) {
 	token := id.Generate()
 
@@ -231,10 +238,7 @@ func (h *OAuthHandler) storePendingSignup(ctx context.Context, providerID string
 		return "", fmt.Errorf("encrypt refresh token: %w", err)
 	}
 
-	tokenExpiresAt := time.Now().Add(time.Duration(tokenSet.ExpiresIn) * time.Second).UTC()
-	if tokenSet.ExpiresIn <= 0 {
-		tokenExpiresAt = time.Now().Add(defaultTokenExpiry).UTC()
-	}
+	tokenExpiresAt := tokenExpiryTime(tokenSet)
 
 	displayName := claims.DisplayName
 	if displayName == "" {
@@ -272,10 +276,7 @@ func (h *OAuthHandler) storeTokens(ctx context.Context, userID, providerID strin
 		return fmt.Errorf("encrypt refresh token: %w", err)
 	}
 
-	expiresAt := time.Now().Add(time.Duration(tokenSet.ExpiresIn) * time.Second).UTC()
-	if tokenSet.ExpiresIn <= 0 {
-		expiresAt = time.Now().Add(defaultTokenExpiry).UTC()
-	}
+	expiresAt := tokenExpiryTime(tokenSet)
 
 	return h.queries.UpsertOAuthTokens(ctx, gendb.UpsertOAuthTokensParams{
 		UserID:       userID,

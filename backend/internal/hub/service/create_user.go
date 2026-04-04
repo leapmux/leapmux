@@ -4,11 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
+	"time"
+
+	"connectrpc.com/connect"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
+
+const pendingEmailExpiry = 24 * time.Hour
 
 // CreateUserParams holds the parameters for creating a new user with a
 // personal org and org membership.
@@ -72,9 +78,10 @@ func createUserWithOrg(ctx context.Context, sqlDB *sql.DB, q *db.Queries, p Crea
 	return &user, nil
 }
 
-// checkEmailUniqueness checks that no other user has the given email in their
-// email column. Empty emails are always allowed.
-func checkEmailUniqueness(ctx context.Context, q *db.Queries, email, excludeUserID string) error {
+// checkEmailAvailable checks that no other user has the given email in their
+// email column. Empty emails are always allowed. Use excludeUserID to skip the
+// current user (for email changes).
+func checkEmailAvailable(ctx context.Context, q *db.Queries, email, excludeUserID string) error {
 	if email == "" {
 		return nil
 	}
@@ -91,22 +98,46 @@ func checkEmailUniqueness(ctx context.Context, q *db.Queries, email, excludeUser
 	return fmt.Errorf("email address is already in use")
 }
 
-// checkPendingEmailAllowed checks that a user can set the given email as their
-// pending_email. The email must not be in any other user's email column.
-// Multiple users may have the same pending_email (first to verify wins).
-func checkPendingEmailAllowed(ctx context.Context, q *db.Queries, email, excludeUserID string) error {
-	if email == "" {
-		return nil
-	}
-	existing, err := q.GetUserByEmail(ctx, email)
+// checkUsernameAvailable checks that no other user has the given username.
+func checkUsernameAvailable(ctx context.Context, q *db.Queries, username string) error {
+	_, err := q.GetUserByUsername(ctx, username)
 	if err == sql.ErrNoRows {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("check email: %w", err)
+		return connect.NewError(connect.CodeInternal, err)
 	}
-	if excludeUserID != "" && existing.ID == excludeUserID {
-		return nil
+	return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("username already taken"))
+}
+
+// promotePendingEmail moves pending_email to email with email_verified=1.
+// It checks that no other user has claimed the email since the pending was set.
+func promotePendingEmail(ctx context.Context, q *db.Queries, userID, email string) error {
+	if err := checkEmailAvailable(ctx, q, email, userID); err != nil {
+		return fmt.Errorf("email was claimed by another user: %w", err)
 	}
-	return fmt.Errorf("email address is already in use")
+	if err := q.PromotePendingEmail(ctx, userID); err != nil {
+		return fmt.Errorf("promote pending email: %w", err)
+	}
+	return nil
+}
+
+// setPendingEmailWithToken sets pending_email with a verification token.
+// Stub: auto-verifies immediately (real email sending TBD).
+func setPendingEmailWithToken(ctx context.Context, q *db.Queries, userID, email string) error {
+	token := id.Generate()
+	if err := q.SetPendingEmail(ctx, db.SetPendingEmailParams{
+		PendingEmail:          email,
+		PendingEmailToken:     token,
+		PendingEmailExpiresAt: sql.NullTime{Time: time.Now().Add(pendingEmailExpiry).UTC(), Valid: true},
+		ID:                    userID,
+	}); err != nil {
+		return fmt.Errorf("set pending email: %w", err)
+	}
+
+	// Stub: auto-verify immediately.
+	if err := promotePendingEmail(ctx, q, userID, email); err != nil {
+		slog.Warn("stub auto-verify failed", "user_id", userID, "error", err)
+	}
+	return nil
 }

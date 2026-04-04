@@ -82,89 +82,67 @@ func (c *SessionCache) Evict(sessionID string) {
 
 func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		if publicProcedures[req.Spec().Procedure] {
-			if a.soloMode && a.soloUser != nil {
-				ctx = WithUser(ctx, a.soloUser)
-			}
-			return next(ctx, req)
-		}
-
-		if a.soloMode {
-			if a.soloUser == nil {
-				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("solo mode admin user not found"))
-			}
-			ctx = WithUser(ctx, a.soloUser)
-			return next(ctx, req)
-		}
-
-		token := SessionIDFromHeader(req.Header().Get("Cookie"), a.secureCookie)
-		if token == "" {
-			return nil, connect.NewError(connect.CodeUnauthenticated, nil)
-		}
-
-		userInfo, err := ValidateToken(ctx, a.queries, token)
+		ctx, err := a.authenticate(ctx, req.Spec().Procedure, req.Header().Get("Cookie"))
 		if err != nil {
 			return nil, err
 		}
-
-		// Sliding window: extend session expiry, throttled to once per 5 minutes.
-		a.touchSession(ctx, token)
-
-		ctx = WithUser(ctx, userInfo)
-
-		if a.emailVerificationRequired && !userInfo.IsAdmin && !userInfo.EmailVerified {
-			if !publicProcedures[req.Spec().Procedure] && !unverifiedAllowedProcedures[req.Spec().Procedure] {
-				return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("email verification required"))
-			}
-		}
-
 		return next(ctx, req)
 	}
 }
 
 func (a *authInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return next // Client-side streaming is not intercepted on the server.
+	return next
 }
 
 func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		if publicProcedures[conn.Spec().Procedure] {
-			if a.soloMode && a.soloUser != nil {
-				ctx = WithUser(ctx, a.soloUser)
-			}
-			return next(ctx, conn)
-		}
-
-		if a.soloMode {
-			if a.soloUser == nil {
-				return connect.NewError(connect.CodeInternal, fmt.Errorf("solo mode admin user not found"))
-			}
-			ctx = WithUser(ctx, a.soloUser)
-			return next(ctx, conn)
-		}
-
-		token := SessionIDFromHeader(conn.RequestHeader().Get("Cookie"), a.secureCookie)
-		if token == "" {
-			return connect.NewError(connect.CodeUnauthenticated, nil)
-		}
-
-		userInfo, err := ValidateToken(ctx, a.queries, token)
+		ctx, err := a.authenticate(ctx, conn.Spec().Procedure, conn.RequestHeader().Get("Cookie"))
 		if err != nil {
 			return err
 		}
-
-		a.touchSession(ctx, token)
-
-		ctx = WithUser(ctx, userInfo)
-
-		if a.emailVerificationRequired && !userInfo.IsAdmin && !userInfo.EmailVerified {
-			if !publicProcedures[conn.Spec().Procedure] && !unverifiedAllowedProcedures[conn.Spec().Procedure] {
-				return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("email verification required"))
-			}
-		}
-
 		return next(ctx, conn)
 	}
+}
+
+// authenticate validates the session and attaches user info to the context.
+// Public procedures pass through with optional solo-mode user. Authenticated
+// requests are checked for email verification when required.
+func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHeader string) (context.Context, error) {
+	if publicProcedures[procedure] {
+		if a.soloMode && a.soloUser != nil {
+			ctx = WithUser(ctx, a.soloUser)
+		}
+		return ctx, nil
+	}
+
+	if a.soloMode {
+		if a.soloUser == nil {
+			return ctx, connect.NewError(connect.CodeInternal, fmt.Errorf("solo mode admin user not found"))
+		}
+		return WithUser(ctx, a.soloUser), nil
+	}
+
+	token := SessionIDFromHeader(cookieHeader, a.secureCookie)
+	if token == "" {
+		return ctx, connect.NewError(connect.CodeUnauthenticated, nil)
+	}
+
+	userInfo, err := ValidateToken(ctx, a.queries, token)
+	if err != nil {
+		return ctx, err
+	}
+
+	a.touchSession(ctx, token)
+
+	ctx = WithUser(ctx, userInfo)
+
+	if a.emailVerificationRequired && !userInfo.IsAdmin && !userInfo.EmailVerified {
+		if !publicProcedures[procedure] && !unverifiedAllowedProcedures[procedure] {
+			return ctx, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("email verification required"))
+		}
+	}
+
+	return ctx, nil
 }
 
 const sessionTouchThreshold = 5 * time.Minute
