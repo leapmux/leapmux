@@ -25,6 +25,24 @@ const (
 	overhead = versionSize + nonceSize + chacha20poly1305.Overhead
 )
 
+// AAD helper functions for building additional authenticated data.
+// Using consistent AAD is critical — a mismatch causes decryption failure.
+
+// ProviderAAD returns the AAD for an OAuth provider's client secret.
+func ProviderAAD(providerID string) []byte {
+	return []byte("oauth_provider:" + providerID)
+}
+
+// AccessTokenAAD returns the AAD for a user's OAuth access token.
+func AccessTokenAAD(userID, providerID string) []byte {
+	return []byte("access_token:" + userID + ":" + providerID)
+}
+
+// RefreshTokenAAD returns the AAD for a user's OAuth refresh token.
+func RefreshTokenAAD(userID, providerID string) []byte {
+	return []byte("refresh_token:" + userID + ":" + providerID)
+}
+
 // Keystore manages a versioned key ring for XChaCha20-Poly1305 envelope encryption.
 type Keystore struct {
 	keys          map[byte][keySize]byte
@@ -113,14 +131,28 @@ func (ks *Keystore) Decrypt(ciphertext, aad []byte) ([]byte, error) {
 // key ring with a single version-1 key if the file does not exist. The file
 // is created with mode 0600.
 func LoadOrGenerate(path string) (*Keystore, error) {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		key, err := GenerateKey()
-		if err != nil {
-			return nil, err
+	// Try to open exclusively to avoid TOCTOU race between Stat and WriteFile.
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return nil, fmt.Errorf("keystore: create directory: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err == nil {
+		// File didn't exist — generate a new key ring.
+		key, genErr := GenerateKey()
+		if genErr != nil {
+			_ = f.Close()
+			_ = os.Remove(path)
+			return nil, genErr
 		}
-		if err := writeKeyRingFile(path, map[byte][keySize]byte{1: key}); err != nil {
-			return nil, err
+		encoded := "1:" + base64.StdEncoding.EncodeToString(key[:]) + "\n"
+		if _, writeErr := f.WriteString(encoded); writeErr != nil {
+			_ = f.Close()
+			_ = os.Remove(path)
+			return nil, fmt.Errorf("keystore: write %s: %w", path, writeErr)
 		}
+		_ = f.Close()
+	} else if !os.IsExist(err) {
+		return nil, fmt.Errorf("keystore: create %s: %w", path, err)
 	}
 	return LoadFromFile(path)
 }

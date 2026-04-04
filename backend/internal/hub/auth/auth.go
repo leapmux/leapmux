@@ -13,6 +13,9 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
+// SessionDuration is the lifetime of a user session.
+const SessionDuration = 24 * time.Hour
+
 type contextKey int
 
 const userKey contextKey = iota
@@ -66,19 +69,29 @@ func Login(ctx context.Context, q *db.Queries, username, password string) (strin
 		return "", nil, zero, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
 	}
 
-	sessionID := id.Generate()
-	expiresAt := time.Now().Add(24 * time.Hour).UTC()
-	if err := q.CreateUserSession(ctx, db.CreateUserSessionParams{
-		ID:        sessionID,
-		UserID:    user.ID,
-		ExpiresAt: expiresAt,
-		UserAgent: "",
-		IpAddress: "",
-	}); err != nil {
-		return "", nil, zero, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
+	sessionID, expiresAt, sessionErr := CreateSession(ctx, q, user.ID, "", "")
+	if sessionErr != nil {
+		return "", nil, zero, connect.NewError(connect.CodeInternal, sessionErr)
 	}
 
 	return sessionID, &user, expiresAt, nil
+}
+
+// CreateSession creates a new user session and returns the session ID and
+// expiry time.
+func CreateSession(ctx context.Context, q *db.Queries, userID, userAgent, ipAddress string) (string, time.Time, error) {
+	sessionID := id.Generate()
+	expiresAt := time.Now().Add(SessionDuration).UTC()
+	if err := q.CreateUserSession(ctx, db.CreateUserSessionParams{
+		ID:        sessionID,
+		UserID:    userID,
+		ExpiresAt: expiresAt,
+		UserAgent: userAgent,
+		IpAddress: ipAddress,
+	}); err != nil {
+		return "", time.Time{}, fmt.Errorf("create session: %w", err)
+	}
+	return sessionID, expiresAt, nil
 }
 
 // ValidateToken resolves a session token to a UserInfo. Returns an error if

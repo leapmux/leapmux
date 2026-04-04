@@ -2,6 +2,7 @@ package auth
 
 import (
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -62,7 +63,27 @@ func SessionIDFromHeader(cookieHeader string, secure bool) string {
 	if cookieHeader == "" {
 		return ""
 	}
-	// Parse using a temporary request.
-	r := &http.Request{Header: http.Header{"Cookie": {cookieHeader}}}
-	return SessionIDFromRequest(r, secure)
+	name := cookieName(secure) + "="
+	for cookieHeader != "" {
+		// Trim leading whitespace/semicolons.
+		for len(cookieHeader) > 0 && (cookieHeader[0] == ' ' || cookieHeader[0] == ';') {
+			cookieHeader = cookieHeader[1:]
+		}
+		if cookieHeader == "" {
+			break
+		}
+		// Find the end of this cookie pair.
+		end := strings.IndexByte(cookieHeader, ';')
+		pair := cookieHeader
+		if end >= 0 {
+			pair = cookieHeader[:end]
+			cookieHeader = cookieHeader[end+1:]
+		} else {
+			cookieHeader = ""
+		}
+		if strings.HasPrefix(pair, name) {
+			return pair[len(name):]
+		}
+	}
+	return ""
 }

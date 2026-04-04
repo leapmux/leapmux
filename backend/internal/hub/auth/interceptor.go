@@ -132,7 +132,7 @@ const sessionTouchThreshold = 5 * time.Minute
 // updating the DB on every single request.
 func (a *authInterceptor) touchSession(ctx context.Context, sessionID string) {
 	threshold := time.Now().Add(-sessionTouchThreshold).UTC()
-	newExpiry := time.Now().Add(24 * time.Hour).UTC()
+	newExpiry := time.Now().Add(SessionDuration).UTC()
 	_ = a.queries.TouchUserSession(ctx, db.TouchUserSessionParams{
 		ExpiresAt:    newExpiry,
 		ID:           sessionID,

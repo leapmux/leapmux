@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"time"
 
+	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
 )
 
@@ -33,40 +35,48 @@ func (h *OAuthHandler) refreshExpiringTokens(ctx context.Context) {
 		return
 	}
 
-	for _, tok := range tokens {
-		provider, err := h.queries.GetOAuthProviderByID(ctx, tok.ProviderID)
-		if err != nil {
-			slog.Error("oauth refresh: get provider", "provider_id", tok.ProviderID, "error", err)
-			continue
-		}
+	// Cache providers to avoid repeated DB lookups and OIDC discovery per token.
+	type cachedProvider struct {
+		provider huboauth.Provider
+		err      error
+	}
+	providerCache := make(map[string]*cachedProvider)
 
-		p, err := h.buildProvider(ctx, &provider)
-		if err != nil {
-			slog.Error("oauth refresh: build provider", "provider_id", tok.ProviderID, "error", err)
+	for _, tok := range tokens {
+		cached, ok := providerCache[tok.ProviderID]
+		if !ok {
+			cached = &cachedProvider{}
+			dbProvider, getErr := h.queries.GetOAuthProviderByID(ctx, tok.ProviderID)
+			if getErr != nil {
+				cached.err = getErr
+			} else {
+				cached.provider, cached.err = h.buildProvider(ctx, &dbProvider)
+			}
+			providerCache[tok.ProviderID] = cached
+		}
+		if cached.err != nil {
+			slog.Error("oauth refresh: build provider", "provider_id", tok.ProviderID, "error", cached.err)
 			continue
 		}
 
 		// Decrypt the refresh token.
-		refreshTokenAAD := []byte("refresh_token:" + tok.UserID + ":" + tok.ProviderID)
-		refreshTokenPlain, err := h.keystore.Decrypt(tok.RefreshToken, refreshTokenAAD)
+		refreshTokenPlain, err := h.keystore.Decrypt(tok.RefreshToken, keystore.RefreshTokenAAD(tok.UserID, tok.ProviderID))
 		if err != nil {
 			slog.Error("oauth refresh: decrypt refresh token", "user_id", tok.UserID, "error", err)
 			continue
 		}
 
-		newTokens, err := p.Refresh(ctx, string(refreshTokenPlain))
+		newTokens, err := cached.provider.Refresh(ctx, string(refreshTokenPlain))
 		if err != nil {
 			slog.Warn("oauth refresh: refresh failed, deleting tokens", "user_id", tok.UserID, "provider_id", tok.ProviderID, "error", err)
-			_ = h.queries.DeleteOAuthTokensByUser(ctx, tok.UserID)
+			_ = h.queries.DeleteOAuthTokensByUserAndProvider(ctx, gendb.DeleteOAuthTokensByUserAndProviderParams{
+				UserID:     tok.UserID,
+				ProviderID: tok.ProviderID,
+			})
 			continue
 		}
 
-		if err := h.storeTokens(ctx, tok.UserID, tok.ProviderID, &huboauth.TokenSet{
-			AccessToken:  newTokens.AccessToken,
-			RefreshToken: newTokens.RefreshToken,
-			TokenType:    newTokens.TokenType,
-			ExpiresIn:    newTokens.ExpiresIn,
-		}); err != nil {
+		if err := h.storeTokens(ctx, tok.UserID, tok.ProviderID, newTokens); err != nil {
 			slog.Error("oauth refresh: store tokens", "user_id", tok.UserID, "error", err)
 		}
 	}

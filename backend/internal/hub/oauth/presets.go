@@ -12,25 +12,25 @@ type Preset struct {
 var Presets = map[string]Preset{
 	"github": {
 		Name:         "GitHub",
-		ProviderType: "github",
+		ProviderType: ProviderTypeGitHub,
 		IssuerURL:    "",
 		Scopes:       "read:user user:email",
 	},
 	"google": {
 		Name:         "Google",
-		ProviderType: "oidc",
+		ProviderType: ProviderTypeOIDC,
 		IssuerURL:    "https://accounts.google.com",
 		Scopes:       "openid profile email",
 	},
 	"apple": {
 		Name:         "Apple",
-		ProviderType: "oidc",
+		ProviderType: ProviderTypeOIDC,
 		IssuerURL:    "https://appleid.apple.com",
 		Scopes:       "openid name email",
 	},
 	"oidc": {
 		Name:         "",
-		ProviderType: "oidc",
+		ProviderType: ProviderTypeOIDC,
 		IssuerURL:    "",
 		Scopes:       "openid profile email",
 	},

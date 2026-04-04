@@ -177,16 +177,9 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 	}
 
 	// Create session.
-	sessionID := id.Generate()
-	expiresAt := time.Now().Add(24 * time.Hour).UTC()
-	if err := h.queries.CreateUserSession(ctx, gendb.CreateUserSessionParams{
-		ID:        sessionID,
-		UserID:    user.ID,
-		ExpiresAt: expiresAt,
-		UserAgent: r.UserAgent(),
-		IpAddress: r.RemoteAddr,
-	}); err != nil {
-		slog.Error("oauth: create session", "error", err)
+	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, h.queries, user.ID, r.UserAgent(), r.RemoteAddr)
+	if sessionErr != nil {
+		slog.Error("oauth: create session", "error", sessionErr)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -304,15 +297,12 @@ func (h *OAuthHandler) findOrCreateUser(ctx context.Context, providerID string, 
 }
 
 func (h *OAuthHandler) storeTokens(ctx context.Context, userID, providerID string, tokenSet *huboauth.TokenSet) error {
-	accessTokenAAD := []byte("access_token:" + userID + ":" + providerID)
-	refreshTokenAAD := []byte("refresh_token:" + userID + ":" + providerID)
-
-	encAccessToken, err := h.keystore.Encrypt([]byte(tokenSet.AccessToken), accessTokenAAD)
+	encAccessToken, err := h.keystore.Encrypt([]byte(tokenSet.AccessToken), keystore.AccessTokenAAD(userID, providerID))
 	if err != nil {
 		return fmt.Errorf("encrypt access token: %w", err)
 	}
 
-	encRefreshToken, err := h.keystore.Encrypt([]byte(tokenSet.RefreshToken), refreshTokenAAD)
+	encRefreshToken, err := h.keystore.Encrypt([]byte(tokenSet.RefreshToken), keystore.RefreshTokenAAD(userID, providerID))
 	if err != nil {
 		return fmt.Errorf("encrypt refresh token: %w", err)
 	}
@@ -335,31 +325,20 @@ func (h *OAuthHandler) storeTokens(ctx context.Context, userID, providerID strin
 
 func (h *OAuthHandler) buildProvider(ctx context.Context, dbProvider *gendb.OauthProvider) (huboauth.Provider, error) {
 	// Decrypt client secret.
-	aad := []byte("oauth_provider:" + dbProvider.ID)
-	clientSecret, err := h.keystore.Decrypt(dbProvider.ClientSecret, aad)
+	clientSecret, err := h.keystore.Decrypt(dbProvider.ClientSecret, keystore.ProviderAAD(dbProvider.ID))
 	if err != nil {
 		return nil, fmt.Errorf("decrypt client secret: %w", err)
 	}
 
 	// Build redirect URL.
-	// Use the hub's listen address to construct the callback URL.
-	scheme := "http"
-	if h.cfg.SecureCookies {
-		scheme = "https"
-	}
-	// For the redirect URL, we use the configured address.
-	host := h.cfg.Addr
-	if strings.HasPrefix(host, ":") {
-		host = "localhost" + host
-	}
-	redirectURL := fmt.Sprintf("%s://%s/auth/oauth/%s/callback", scheme, host, dbProvider.ID)
+	redirectURL := fmt.Sprintf("%s/auth/oauth/%s/callback", h.cfg.BaseURL(), dbProvider.ID)
 
 	scopes := strings.Split(dbProvider.Scopes, " ")
 
 	switch dbProvider.ProviderType {
-	case "oidc":
+	case huboauth.ProviderTypeOIDC:
 		return huboauth.NewOIDCProvider(ctx, dbProvider.IssuerUrl, dbProvider.ClientID, string(clientSecret), redirectURL, scopes)
-	case "github":
+	case huboauth.ProviderTypeGitHub:
 		return huboauth.NewGitHubProvider(dbProvider.ClientID, string(clientSecret), redirectURL, scopes), nil
 	default:
 		return nil, fmt.Errorf("unknown provider type: %s", dbProvider.ProviderType)

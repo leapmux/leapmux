@@ -23,6 +23,9 @@ DELETE FROM oauth_tokens WHERE provider_id = ?;
 -- name: DeleteOAuthTokensByUser :exec
 DELETE FROM oauth_tokens WHERE user_id = ?;
 
+-- name: DeleteOAuthTokensByUserAndProvider :exec
+DELETE FROM oauth_tokens WHERE user_id = ? AND provider_id = ?;
+
 -- name: ListOAuthTokensByKeyVersion :many
 SELECT * FROM oauth_tokens WHERE key_version = ?;
 

@@ -2,6 +2,7 @@ package password
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"strings"
@@ -70,13 +71,5 @@ func Verify(storedHash, password string) (bool, error) {
 
 	computedHash := argon2.IDKey([]byte(password), salt, iterations, memory, parallelism, uint32(len(expectedHash)))
 
-	// Constant-time comparison.
-	if len(computedHash) != len(expectedHash) {
-		return false, nil
-	}
-	var diff byte
-	for i := range computedHash {
-		diff |= computedHash[i] ^ expectedHash[i]
-	}
-	return diff == 0, nil
+	return subtle.ConstantTimeCompare(computedHash, expectedHash) == 1, nil
 }

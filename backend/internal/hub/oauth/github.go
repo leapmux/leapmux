@@ -58,27 +58,11 @@ func (p *GitHubProvider) exchangeWithUserURL(ctx context.Context, code, _ string
 		return nil, nil, err
 	}
 
-	tokenSet := &TokenSet{
-		AccessToken:  token.AccessToken,
-		RefreshToken: token.RefreshToken,
-		TokenType:    token.TokenType,
-	}
-
-	return tokenSet, claims, nil
+	return TokenSetFromOAuth2Token(token), claims, nil
 }
 
 func (p *GitHubProvider) Refresh(ctx context.Context, refreshToken string) (*TokenSet, error) {
-	tokenSource := p.oauth2Config.TokenSource(ctx, &oauth2.Token{RefreshToken: refreshToken})
-	token, err := tokenSource.Token()
-	if err != nil {
-		return nil, fmt.Errorf("github refresh: %w", err)
-	}
-
-	return &TokenSet{
-		AccessToken:  token.AccessToken,
-		RefreshToken: token.RefreshToken,
-		TokenType:    token.TokenType,
-	}, nil
+	return refreshWithConfig(ctx, p.oauth2Config, refreshToken, "github")
 }
 
 // fetchGitHubUser retrieves user info from the GitHub API (or a custom URL for testing).

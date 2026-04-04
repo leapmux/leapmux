@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
 
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
@@ -112,18 +112,12 @@ func runReencryptSecrets(args []string) error {
 		return fmt.Errorf("load encryption key: %w", err)
 	}
 
-	dbPath := resolveDBPath(dataDir)
-	sqlDB, err := db.Open(dbPath)
+	sqlDB, q, err := openAdminDB(dataDir)
 	if err != nil {
-		return fmt.Errorf("open database: %w", err)
+		return err
 	}
 	defer func() { _ = sqlDB.Close() }()
 
-	if err := db.Migrate(sqlDB); err != nil {
-		return fmt.Errorf("migrate database: %w", err)
-	}
-
-	q := gendb.New(sqlDB)
 	ctx := context.Background()
 	activeVer := ks.ActiveVersion()
 	count := 0
@@ -141,7 +135,7 @@ func runReencryptSecrets(args []string) error {
 		if len(full.ClientSecret) > 0 && full.ClientSecret[0] == activeVer {
 			continue // already at active version
 		}
-		aad := []byte("oauth_provider:" + p.ID)
+		aad := keystore.ProviderAAD(p.ID)
 		plain, decErr := ks.Decrypt(full.ClientSecret, aad)
 		if decErr != nil {
 			return fmt.Errorf("decrypt provider %s client_secret: %w", p.ID, decErr)
@@ -158,14 +152,17 @@ func runReencryptSecrets(args []string) error {
 	}
 
 	// Re-encrypt oauth_tokens.
-	for ver := byte(1); ver < activeVer; ver++ {
+	for _, ver := range ks.Versions() {
+		if ver == activeVer {
+			continue
+		}
 		tokens, listErr := q.ListOAuthTokensByKeyVersion(ctx, int64(ver))
 		if listErr != nil {
 			continue
 		}
 		for _, tok := range tokens {
-			accessAAD := []byte("access_token:" + tok.UserID + ":" + tok.ProviderID)
-			refreshAAD := []byte("refresh_token:" + tok.UserID + ":" + tok.ProviderID)
+			accessAAD := keystore.AccessTokenAAD(tok.UserID, tok.ProviderID)
+			refreshAAD := keystore.RefreshTokenAAD(tok.UserID, tok.ProviderID)
 
 			plainAccess, err := ks.Decrypt(tok.AccessToken, accessAAD)
 			if err != nil {
@@ -212,27 +209,27 @@ func runAddOAuthProvider(args []string) error {
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--type":
+		case "--type", "--name", "--client-id", "--client-secret", "--issuer-url", "--scopes", "--data-dir":
+			if i+1 >= len(args) {
+				return fmt.Errorf("%s requires a value", args[i])
+			}
 			i++
-			providerType = args[i]
-		case "--name":
-			i++
-			name = args[i]
-		case "--client-id":
-			i++
-			clientID = args[i]
-		case "--client-secret":
-			i++
-			clientSecret = args[i]
-		case "--issuer-url":
-			i++
-			issuerURL = args[i]
-		case "--scopes":
-			i++
-			scopes = args[i]
-		case "--data-dir":
-			i++
-			dataDir = args[i]
+			switch args[i-1] {
+			case "--type":
+				providerType = args[i]
+			case "--name":
+				name = args[i]
+			case "--client-id":
+				clientID = args[i]
+			case "--client-secret":
+				clientSecret = args[i]
+			case "--issuer-url":
+				issuerURL = args[i]
+			case "--scopes":
+				scopes = args[i]
+			case "--data-dir":
+				dataDir = args[i]
+			}
 		default:
 			return fmt.Errorf("unknown flag: %s", args[i])
 		}
@@ -270,7 +267,7 @@ func runAddOAuthProvider(args []string) error {
 	}
 
 	// Validate issuer for OIDC-based providers.
-	if storedType == "oidc" {
+	if storedType == oauth.ProviderTypeOIDC {
 		if issuerURL == "" {
 			return fmt.Errorf("--issuer-url is required for OIDC providers")
 		}
@@ -288,25 +285,19 @@ func runAddOAuthProvider(args []string) error {
 	}
 
 	providerID := id.Generate()
-	aad := []byte("oauth_provider:" + providerID)
+	aad := keystore.ProviderAAD(providerID)
 	encryptedSecret, err := ks.Encrypt([]byte(clientSecret), aad)
 	if err != nil {
 		return fmt.Errorf("encrypt client secret: %w", err)
 	}
 
 	// Open database and insert.
-	dbPath := resolveDBPath(dataDir)
-	sqlDB, err := db.Open(dbPath)
+	sqlDB, q, err := openAdminDB(dataDir)
 	if err != nil {
-		return fmt.Errorf("open database: %w", err)
+		return err
 	}
 	defer func() { _ = sqlDB.Close() }()
 
-	if err := db.Migrate(sqlDB); err != nil {
-		return fmt.Errorf("migrate database: %w", err)
-	}
-
-	q := gendb.New(sqlDB)
 	if err := q.CreateOAuthProvider(context.Background(), gendb.CreateOAuthProviderParams{
 		ID:           providerID,
 		ProviderType: storedType,
@@ -327,18 +318,12 @@ func runAddOAuthProvider(args []string) error {
 func runListOAuthProviders(args []string) error {
 	dataDir := extractDataDir(args)
 
-	dbPath := resolveDBPath(dataDir)
-	sqlDB, err := db.Open(dbPath)
+	sqlDB, q, err := openAdminDB(dataDir)
 	if err != nil {
-		return fmt.Errorf("open database: %w", err)
+		return err
 	}
 	defer func() { _ = sqlDB.Close() }()
 
-	if err := db.Migrate(sqlDB); err != nil {
-		return fmt.Errorf("migrate database: %w", err)
-	}
-
-	q := gendb.New(sqlDB)
 	providers, err := q.ListAllOAuthProviders(context.Background())
 	if err != nil {
 		return fmt.Errorf("list providers: %w", err)
@@ -365,12 +350,17 @@ func runRemoveOAuthProvider(args []string) error {
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--id":
+		case "--id", "--data-dir":
+			if i+1 >= len(args) {
+				return fmt.Errorf("%s requires a value", args[i])
+			}
 			i++
-			providerID = args[i]
-		case "--data-dir":
-			i++
-			dataDir = args[i]
+			switch args[i-1] {
+			case "--id":
+				providerID = args[i]
+			case "--data-dir":
+				dataDir = args[i]
+			}
 		default:
 			return fmt.Errorf("unknown flag: %s", args[i])
 		}
@@ -380,18 +370,11 @@ func runRemoveOAuthProvider(args []string) error {
 		return fmt.Errorf("--id is required")
 	}
 
-	dbPath := resolveDBPath(dataDir)
-	sqlDB, err := db.Open(dbPath)
+	sqlDB, q, err := openAdminDB(dataDir)
 	if err != nil {
-		return fmt.Errorf("open database: %w", err)
+		return err
 	}
 	defer func() { _ = sqlDB.Close() }()
-
-	if err := db.Migrate(sqlDB); err != nil {
-		return fmt.Errorf("migrate database: %w", err)
-	}
-
-	q := gendb.New(sqlDB)
 
 	// Verify provider exists.
 	provider, err := q.GetOAuthProviderByID(context.Background(), providerID)
@@ -399,7 +382,6 @@ func runRemoveOAuthProvider(args []string) error {
 		return fmt.Errorf("provider %s not found", providerID)
 	}
 
-	// Cascade delete: tokens and user links are CASCADE'd in the schema.
 	if err := q.DeleteOAuthProvider(context.Background(), providerID); err != nil {
 		return fmt.Errorf("delete provider: %w", err)
 	}
@@ -413,12 +395,17 @@ func runSetOAuthProviderEnabled(args []string, enabled bool) error {
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--id":
+		case "--id", "--data-dir":
+			if i+1 >= len(args) {
+				return fmt.Errorf("%s requires a value", args[i])
+			}
 			i++
-			providerID = args[i]
-		case "--data-dir":
-			i++
-			dataDir = args[i]
+			switch args[i-1] {
+			case "--id":
+				providerID = args[i]
+			case "--data-dir":
+				dataDir = args[i]
+			}
 		default:
 			return fmt.Errorf("unknown flag: %s", args[i])
 		}
@@ -428,18 +415,11 @@ func runSetOAuthProviderEnabled(args []string, enabled bool) error {
 		return fmt.Errorf("--id is required")
 	}
 
-	dbPath := resolveDBPath(dataDir)
-	sqlDB, err := db.Open(dbPath)
+	sqlDB, q, err := openAdminDB(dataDir)
 	if err != nil {
-		return fmt.Errorf("open database: %w", err)
+		return err
 	}
 	defer func() { _ = sqlDB.Close() }()
-
-	if err := db.Migrate(sqlDB); err != nil {
-		return fmt.Errorf("migrate database: %w", err)
-	}
-
-	q := gendb.New(sqlDB)
 
 	var enabledInt int64
 	if enabled {
@@ -458,6 +438,23 @@ func runSetOAuthProviderEnabled(args []string, enabled bool) error {
 	}
 	fmt.Printf("%s OAuth provider %s\n", action, providerID)
 	return nil
+}
+
+// ---- Helpers ----
+
+// openAdminDB opens the database, runs migrations, and returns the connection
+// and queries handle. The caller must close the returned *sql.DB.
+func openAdminDB(dataDir string) (*sql.DB, *gendb.Queries, error) {
+	dbPath := resolveDBPath(dataDir)
+	sqlDB, err := db.Open(dbPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open database: %w", err)
+	}
+	if err := db.Migrate(sqlDB); err != nil {
+		_ = sqlDB.Close()
+		return nil, nil, fmt.Errorf("migrate database: %w", err)
+	}
+	return sqlDB, gendb.New(sqlDB), nil
 }
 
 // ---- Path helpers ----
@@ -505,6 +502,3 @@ func resolveDBPath(dataDir string) string {
 	}
 	return home + "/.config/leapmux/hub/hub.db"
 }
-
-// Ensure unused imports don't cause errors.
-var _ = strings.Split

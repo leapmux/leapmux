@@ -3,7 +3,6 @@ package oauth
 import (
 	"context"
 	"fmt"
-	"time"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -78,36 +77,17 @@ func (p *OIDCProvider) Exchange(ctx context.Context, code, codeVerifier string) 
 		return nil, nil, fmt.Errorf("oidc parse claims: %w", err)
 	}
 
-	tokenSet := &TokenSet{
-		AccessToken:  token.AccessToken,
-		RefreshToken: token.RefreshToken,
-		TokenType:    token.TokenType,
-	}
-	if !token.Expiry.IsZero() {
-		tokenSet.ExpiresIn = int(time.Until(token.Expiry).Seconds())
-	}
-
 	userClaims := &UserClaims{
 		Subject: idToken.Subject,
 		Email:   claims.Email,
 		Name:    claims.Name,
 	}
 
-	return tokenSet, userClaims, nil
+	return TokenSetFromOAuth2Token(token), userClaims, nil
 }
 
 func (p *OIDCProvider) Refresh(ctx context.Context, refreshToken string) (*TokenSet, error) {
-	tokenSource := p.oauth2Config.TokenSource(ctx, &oauth2.Token{RefreshToken: refreshToken})
-	token, err := tokenSource.Token()
-	if err != nil {
-		return nil, fmt.Errorf("oidc refresh: %w", err)
-	}
-
-	return &TokenSet{
-		AccessToken:  token.AccessToken,
-		RefreshToken: token.RefreshToken,
-		TokenType:    token.TokenType,
-	}, nil
+	return refreshWithConfig(ctx, p.oauth2Config, refreshToken, "oidc")
 }
 
 // ValidateIssuer checks that the OIDC issuer URL is reachable and returns a valid discovery document.

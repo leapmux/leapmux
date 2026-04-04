@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -74,7 +73,6 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[l
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	// Check if user authenticated via OAuth.
 	var oauthProviderName string
 	links, _ := s.queries.ListOAuthUserLinksByUser(ctx, user.ID)
 	if len(links) > 0 {
@@ -186,15 +184,15 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 	}
 
 	// No verification required — create session immediately.
-	token, _, expiresAt, err := auth.Login(ctx, s.queries, username, password)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("auto-login: %w", err))
+	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.queries, userID, "", "")
+	if sessionErr != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
 	}
 
 	resp := connect.NewResponse(&leapmuxv1.SignUpResponse{
 		User: userToProtoWithOrgName(&user, username),
 	})
-	resp.Header().Set("Set-Cookie", auth.BuildSessionCookie(token, expiresAt, s.cfg.SecureCookies).String())
+	resp.Header().Set("Set-Cookie", auth.BuildSessionCookie(sessionID, expiresAt, s.cfg.SecureCookies).String())
 	return resp, nil
 }
 
@@ -232,16 +230,9 @@ func (s *AuthService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	sessionID := id.Generate()
-	sessionExpiresAt := time.Now().Add(24 * time.Hour).UTC()
-	if err := s.queries.CreateUserSession(ctx, db.CreateUserSessionParams{
-		ID:        sessionID,
-		UserID:    user.ID,
-		ExpiresAt: sessionExpiresAt,
-		UserAgent: "",
-		IpAddress: "",
-	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+	sessionID, sessionExpiresAt, sessionErr := auth.CreateSession(ctx, s.queries, user.ID, "", "")
+	if sessionErr != nil {
+		return nil, connect.NewError(connect.CodeInternal, sessionErr)
 	}
 
 	org, err := s.queries.GetOrgByID(ctx, user.OrgID)
@@ -277,15 +268,7 @@ func (s *AuthService) GetOAuthProviders(ctx context.Context, req *connect.Reques
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	// Build login URL base.
-	scheme := "http"
-	if s.cfg.SecureCookies {
-		scheme = "https"
-	}
-	host := s.cfg.Addr
-	if strings.HasPrefix(host, ":") {
-		host = "localhost" + host
-	}
+	baseURL := s.cfg.BaseURL()
 
 	var pbProviders []*leapmuxv1.OAuthProviderInfo
 	for _, p := range providers {
@@ -293,7 +276,7 @@ func (s *AuthService) GetOAuthProviders(ctx context.Context, req *connect.Reques
 			Id:           p.ID,
 			Name:         p.Name,
 			ProviderType: p.ProviderType,
-			LoginUrl:     fmt.Sprintf("%s://%s/auth/oauth/%s/login", scheme, host, p.ID),
+			LoginUrl:     fmt.Sprintf("%s/auth/oauth/%s/login", baseURL, p.ID),
 		})
 	}
 

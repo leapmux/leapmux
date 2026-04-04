@@ -1,6 +1,12 @@
 package oauth
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"golang.org/x/oauth2"
+)
 
 // TokenSet holds the tokens returned by an OAuth provider after exchange or refresh.
 type TokenSet struct {
@@ -34,4 +40,43 @@ type Provider interface {
 
 	// Refresh exchanges a refresh token for new tokens.
 	Refresh(ctx context.Context, refreshToken string) (*TokenSet, error)
+}
+
+// Provider type constants.
+const (
+	ProviderTypeGitHub = "github"
+	ProviderTypeOIDC   = "oidc"
+)
+
+// refreshWithConfig is a shared implementation of Refresh for providers backed
+// by an oauth2.Config.
+func refreshWithConfig(ctx context.Context, cfg *oauth2.Config, refreshToken, label string) (*TokenSet, error) {
+	tokenSource := cfg.TokenSource(ctx, &oauth2.Token{RefreshToken: refreshToken})
+	token, err := tokenSource.Token()
+	if err != nil {
+		return nil, fmt.Errorf("%s refresh: %w", label, err)
+	}
+
+	ts := &TokenSet{
+		AccessToken:  token.AccessToken,
+		RefreshToken: token.RefreshToken,
+		TokenType:    token.TokenType,
+	}
+	if !token.Expiry.IsZero() {
+		ts.ExpiresIn = int(time.Until(token.Expiry).Seconds())
+	}
+	return ts, nil
+}
+
+// TokenSetFromOAuth2Token converts an oauth2.Token to a TokenSet.
+func TokenSetFromOAuth2Token(token *oauth2.Token) *TokenSet {
+	ts := &TokenSet{
+		AccessToken:  token.AccessToken,
+		RefreshToken: token.RefreshToken,
+		TokenType:    token.TokenType,
+	}
+	if !token.Expiry.IsZero() {
+		ts.ExpiresIn = int(time.Until(token.Expiry).Seconds())
+	}
+	return ts
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/knadh/koanf/v2"
@@ -270,6 +271,20 @@ func (c *Config) EncryptionKeyFilePath() string {
 		return c.EncryptionKeyPath
 	}
 	return filepath.Join(c.DataDir, "encryption.key")
+}
+
+// BaseURL returns the scheme+host base URL derived from Addr and SecureCookies.
+// A bare ":port" address is resolved to "localhost:port".
+func (c *Config) BaseURL() string {
+	scheme := "http"
+	if c.SecureCookies {
+		scheme = "https"
+	}
+	host := c.Addr
+	if strings.HasPrefix(host, ":") {
+		host = "localhost" + host
+	}
+	return scheme + "://" + host
 }
 
 // SocketPath returns the path to the Unix domain socket.
