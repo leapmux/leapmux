@@ -1046,7 +1046,7 @@ function renderExitPlanMode(toolUse: Record<string, unknown>, context?: RenderCo
 export function renderClaudeMessage(
   category: MessageCategory,
   parsed: unknown,
-  role: MessageRole,
+  _role: MessageRole,
   context?: RenderContext,
 ): JSX.Element | null {
   switch (category.kind) {

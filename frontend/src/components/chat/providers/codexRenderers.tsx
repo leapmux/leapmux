@@ -281,7 +281,7 @@ function codexWebSearchActionDetail(action: Record<string, unknown> | null, quer
   return query
 }
 
-function renderCodexWebSearchTitle(action: Record<string, unknown> | null, detail: string, _context?: RenderContext): JSX.Element | string {
+function renderCodexWebSearchTitle(action: Record<string, unknown> | null, detail: string): JSX.Element | string {
   const actionType = codexWebSearchActionType(action)
   if (actionType === 'openPage') {
     return renderWebFetchDetail({ url: detail }) || detail || 'Open page'
@@ -418,7 +418,7 @@ export function codexWebSearchRenderer(parsed: unknown, _role: MessageRole, cont
     <ToolUseLayout
       icon={Globe}
       toolName={actionType === 'openPage' ? 'WebFetch' : 'WebSearch'}
-      title={renderCodexWebSearchTitle(action, detail, context)}
+      title={renderCodexWebSearchTitle(action, detail)}
       context={context}
       expanded={expanded()}
       onToggleExpand={queries.length > 1 ? () => setExpanded(v => !v) : undefined}
