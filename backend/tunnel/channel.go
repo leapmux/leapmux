@@ -172,7 +172,7 @@ func OpenChannel(ctx context.Context, hubURL, token, userID, workerID string, op
 	ch.mu.Unlock()
 
 	select {
-	case <-time.After(10 * time.Second):
+	case <-time.After(30 * time.Second):
 		ch.Close()
 		return nil, fmt.Errorf("user id claim timeout")
 	case <-chCtx.Done():
