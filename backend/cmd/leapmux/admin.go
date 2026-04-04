@@ -149,7 +149,7 @@ func runReencryptSecrets(args []string) error {
 		}
 		tokens, listErr := q.ListOAuthTokensByKeyVersion(ctx, int64(ver))
 		if listErr != nil {
-			continue
+			return fmt.Errorf("list tokens for key version %d: %w", ver, listErr)
 		}
 		for _, tok := range tokens {
 			accessAAD := keystore.AccessTokenAAD(tok.UserID, tok.ProviderID)
@@ -344,7 +344,7 @@ func runRemoveOAuthProvider(args []string) error {
 
 	provider, err := q.GetOAuthProviderByID(context.Background(), *providerID)
 	if err != nil {
-		return fmt.Errorf("provider %s not found", *providerID)
+		return fmt.Errorf("get provider %s: %w", *providerID, err)
 	}
 
 	if err := q.DeleteOAuthProvider(context.Background(), *providerID); err != nil {
