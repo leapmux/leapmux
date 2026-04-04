@@ -3,7 +3,7 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider, AvailableModelSchema, AvailableOptionGroupSchema, AvailableOptionSchema, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { sendOpenCodePermissionResponse, sendOpenCodeQuestionResponse } from '../controls/OpenCodeControlRequest'
-import { opencodeResultDividerRenderer } from '../opencodeRenderers'
+import { opencodeResultDividerRenderer } from './opencodeRenderers'
 import { getProviderPlugin } from './registry'
 import { input } from './testUtils'
 

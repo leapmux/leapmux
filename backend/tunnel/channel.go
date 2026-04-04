@@ -146,9 +146,15 @@ func OpenChannel(ctx context.Context, hubURL, userID, workerID string, opts *Ope
 		reassembly: make(map[uint32]*chunkBuffer),
 	}
 
+	// 7. Send UserIdClaim.
+	// Register the pending response handler before starting recvLoop and
+	// sending the claim to avoid a race where the response arrives before
+	// pending[0] is registered and gets silently dropped.
+	claimRespCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
+	ch.pending[0] = claimRespCh
+
 	go ch.recvLoop()
 
-	// 7. Send UserIdClaim.
 	claim := &leapmuxv1.UserIdClaim{
 		UserId:      userID,
 		TimestampMs: time.Now().UnixMilli(),
@@ -160,12 +166,6 @@ func OpenChannel(ctx context.Context, hubURL, userID, workerID string, opts *Ope
 		ch.Close()
 		return nil, fmt.Errorf("send user id claim: %w", err)
 	}
-
-	// Wait for UserIdClaimResponse.
-	claimRespCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
-	ch.mu.Lock()
-	ch.pending[0] = claimRespCh
-	ch.mu.Unlock()
 
 	select {
 	case <-time.After(10 * time.Second):
@@ -253,8 +253,16 @@ func (ch *Channel) CallRPC(method string, payload []byte) (*leapmuxv1.InnerRpcRe
 
 // SendRPCNoWait sends an inner RPC without waiting for a response.
 // Returns the correlation ID for registering stream callbacks.
-func (ch *Channel) SendRPCNoWait(method string, payload []byte) (uint32, error) {
+// If pendingCh is non-nil, it is atomically registered before the message
+// is sent so that the response cannot be missed due to a race.
+func (ch *Channel) SendRPCNoWait(method string, payload []byte, pendingCh ...chan *leapmuxv1.InnerRpcResponse) (uint32, error) {
 	reqID := atomic.AddUint32(&ch.nextReqID, 1)
+
+	if len(pendingCh) > 0 && pendingCh[0] != nil {
+		ch.mu.Lock()
+		ch.pending[reqID] = pendingCh[0]
+		ch.mu.Unlock()
+	}
 
 	innerReq := &leapmuxv1.InnerMessage{
 		Kind: &leapmuxv1.InnerMessage_Request{
@@ -266,6 +274,11 @@ func (ch *Channel) SendRPCNoWait(method string, payload []byte) (uint32, error) 
 	}
 
 	if err := ch.sendInner(reqID, innerReq); err != nil {
+		if len(pendingCh) > 0 && pendingCh[0] != nil {
+			ch.mu.Lock()
+			delete(ch.pending, reqID)
+			ch.mu.Unlock()
+		}
 		return 0, err
 	}
 	return reqID, nil

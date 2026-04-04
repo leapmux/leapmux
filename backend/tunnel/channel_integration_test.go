@@ -159,11 +159,11 @@ func TestChannelTunnelEchoFlow(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Use SendRPCNoWait + RegisterPending so we can also register for stream events.
+	// Use SendRPCNoWait with pendingCh to atomically register before sending,
+	// avoiding a race where the response arrives before RegisterPending.
 	respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
-	reqID, err := ch.SendRPCNoWait("OpenTunnelConn", openPayload)
+	reqID, err := ch.SendRPCNoWait("OpenTunnelConn", openPayload, respCh)
 	require.NoError(t, err)
-	ch.RegisterPending(reqID, respCh)
 
 	// Wait for the unary response.
 	select {
@@ -307,12 +307,11 @@ func TestChannelSocks5EchoFlow(t *testing.T) {
 		})
 
 		respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
-		reqID, sendErr := ch.SendRPCNoWait("OpenTunnelConn", openPayload)
+		reqID, sendErr := ch.SendRPCNoWait("OpenTunnelConn", openPayload, respCh)
 		if sendErr != nil {
 			proxyDone <- sendErr
 			return
 		}
-		ch.RegisterPending(reqID, respCh)
 
 		resp := <-respCh
 		ch.UnregisterPending(reqID)

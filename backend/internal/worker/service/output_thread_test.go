@@ -104,3 +104,57 @@ func TestNotificationThreading_NonNotificationBreaksAdjacency(t *testing.T) {
 	assert.Equal(t, "context_cleared", msgType(t, firstWrapper.Messages[0]))
 	assert.Equal(t, "interrupted", msgType(t, secondWrapper.Messages[0]))
 }
+
+func TestNotificationThreading_CodexStartupStatusConsolidatesInWrapper(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t, "ws-1")
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+
+	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	starting, err := json.Marshal(map[string]any{
+		"method": "mcpServer/startupStatus/updated",
+		"params": map[string]any{"name": "codex_apps", "status": "starting", "error": nil},
+	})
+	require.NoError(t, err)
+	ready, err := json.Marshal(map[string]any{
+		"method": "mcpServer/startupStatus/updated",
+		"params": map[string]any{"name": "codex_apps", "status": "ready", "error": nil},
+	})
+	require.NoError(t, err)
+	settingsChanged, err := json.Marshal(map[string]any{
+		"type": "settings_changed",
+		"changes": map[string]any{
+			"permissionMode": map[string]any{"old": "on-request", "new": "never"},
+		},
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, starting))
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, ready))
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, settingsChanged))
+
+	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
+		AgentID: "agent-1",
+		Seq:     0,
+		Limit:   20,
+	})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+
+	wrapper := decodeNotifWrapper(t, rows[0].Content, rows[0].ContentCompression)
+	require.Len(t, wrapper.Messages, 2)
+	assert.Equal(t, []string{"mcpServer/startupStatus/updated", "settings_changed"}, types(t, wrapper.Messages))
+
+	startup := parseRaw(t, wrapper.Messages[0])
+	params := startup["params"].(map[string]interface{})
+	assert.Equal(t, "codex_apps", params["name"])
+	assert.Equal(t, "ready", params["status"])
+}

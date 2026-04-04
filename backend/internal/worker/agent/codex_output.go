@@ -75,6 +75,11 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 	case "account/rateLimits/updated":
 		a.handleRateLimitsUpdated(line.Raw, line.Params)
 
+	case "mcpServer/startupStatus/updated":
+		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, line.Raw); err != nil {
+			slog.Error("codex persist startup status notification", "agent_id", a.agentID, "error", err)
+		}
+
 	case "error":
 		a.handleErrorNotification(line.Params)
 

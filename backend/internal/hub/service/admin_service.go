@@ -185,13 +185,6 @@ func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leap
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create org member: %w", err))
 	}
 
-	// Create default user preferences.
-	if err := s.queries.UpsertUserPreferences(ctx, db.UpsertUserPreferencesParams{
-		UserID: userID,
-	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create user preferences: %w", err))
-	}
-
 	// Fetch the created user to get timestamps.
 	user, err := s.queries.GetUserByID(ctx, userID)
 	if err != nil {

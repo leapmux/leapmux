@@ -150,13 +150,6 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create org member: %w", err))
 	}
 
-	// Create default preferences.
-	if err := s.queries.UpsertUserPreferences(ctx, db.UpsertUserPreferencesParams{
-		UserID: userID,
-	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create preferences: %w", err))
-	}
-
 	user, err := s.queries.GetUserByID(ctx, userID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)

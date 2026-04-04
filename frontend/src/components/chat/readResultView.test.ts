@@ -52,4 +52,19 @@ describe('parseCatNContent', () => {
       { num: 1, text: 'foo\tbar' },
     ])
   })
+
+  it('strips trailing [result-id: ...] metadata', () => {
+    const result = parseCatNContent('1\tfoo\n2\tbar\n\n[result-id: r7]')
+    expect(result).toEqual([
+      { num: 1, text: 'foo' },
+      { num: 2, text: 'bar' },
+    ])
+  })
+
+  it('strips [result-id: ...] with only trailing newline', () => {
+    const result = parseCatNContent('1\tfoo\n[result-id: abc123]\n')
+    expect(result).toEqual([
+      { num: 1, text: 'foo' },
+    ])
+  })
 })

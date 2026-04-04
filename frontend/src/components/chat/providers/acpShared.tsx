@@ -8,14 +8,6 @@ import * as workerRpc from '~/api/workerRpc'
 import * as styles from '../ChatView.css'
 import { isNotificationThreadWrapper } from '../messageUtils'
 import {
-  opencodeAgentMessageRenderer,
-  opencodePlanRenderer,
-  opencodeResultDividerRenderer,
-  opencodeThoughtRenderer,
-  opencodeToolCallRenderer,
-  opencodeToolCallUpdateRenderer,
-} from '../opencodeRenderers'
-import {
   defaultModelId,
   modelDisplayName,
   modelItems,
@@ -28,6 +20,14 @@ import {
   permissionModeItems,
   RadioGroup,
 } from '../settingsShared'
+import {
+  opencodeAgentMessageRenderer,
+  opencodePlanRenderer,
+  opencodeResultDividerRenderer,
+  opencodeThoughtRenderer,
+  opencodeToolCallRenderer,
+  opencodeToolCallUpdateRenderer,
+} from './opencodeRenderers'
 
 // --- Shared ACP message rendering ---
 
