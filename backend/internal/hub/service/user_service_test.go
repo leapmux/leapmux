@@ -249,3 +249,57 @@ func TestUserService_Unauthenticated(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
+
+func TestRequestEmailChange_Success(t *testing.T) {
+	env := setupUserTest(t)
+
+	// Set an initial email on the user.
+	err := env.queries.UpdateUserEmail(context.Background(), gendb.UpdateUserEmailParams{
+		Email:         "old@example.com",
+		EmailVerified: 1,
+		ID:            env.userID,
+	})
+	require.NoError(t, err)
+
+	// Request an email change.
+	resp, err := env.client.RequestEmailChange(context.Background(), authedReq(&leapmuxv1.RequestEmailChangeRequest{
+		NewEmail: "new@example.com",
+	}, env.token))
+	require.NoError(t, err)
+	// Admin users get immediate change (no verification required).
+	assert.False(t, resp.Msg.GetVerificationRequired())
+
+	// Verify the email was updated in the DB.
+	user, err := env.queries.GetUserByID(context.Background(), env.userID)
+	require.NoError(t, err)
+	assert.Equal(t, "new@example.com", user.Email)
+}
+
+func TestRequestEmailChange_EmptyEmail_Rejected(t *testing.T) {
+	env := setupUserTest(t)
+
+	_, err := env.client.RequestEmailChange(context.Background(), authedReq(&leapmuxv1.RequestEmailChangeRequest{
+		NewEmail: "",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+func TestRequestEmailChange_SameEmail_Rejected(t *testing.T) {
+	env := setupUserTest(t)
+
+	// Set an email on the user.
+	err := env.queries.UpdateUserEmail(context.Background(), gendb.UpdateUserEmailParams{
+		Email:         "same@example.com",
+		EmailVerified: 1,
+		ID:            env.userID,
+	})
+	require.NoError(t, err)
+
+	// Try to change to the same email.
+	_, err = env.client.RequestEmailChange(context.Background(), authedReq(&leapmuxv1.RequestEmailChangeRequest{
+		NewEmail: "same@example.com",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}

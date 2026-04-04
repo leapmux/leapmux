@@ -383,3 +383,50 @@ func TestAdminService_NonAdmin_AllEndpoints(t *testing.T) {
 		})
 	}
 }
+
+func TestAdminCreateUser_DuplicateEmail_Rejected(t *testing.T) {
+	env := setupAdminTestServer(t)
+
+	// Create first user with an email.
+	_, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "user1",
+		Password:    "pass123",
+		DisplayName: "User 1",
+		Email:       "shared@example.com",
+	}, env.token))
+	require.NoError(t, err)
+
+	// Try to create second user with the same email.
+	_, err = env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "user2",
+		Password:    "pass456",
+		DisplayName: "User 2",
+		Email:       "shared@example.com",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
+}
+
+func TestAdminUpdateUser_EmailCannotBeCleared(t *testing.T) {
+	env := setupAdminTestServer(t)
+
+	// Create a user with an email.
+	createResp, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "emailuser",
+		Password:    "pass123",
+		DisplayName: "Email User",
+		Email:       "has@example.com",
+	}, env.token))
+	require.NoError(t, err)
+	targetID := createResp.Msg.GetUser().GetId()
+
+	// Try to clear the email by setting it to empty.
+	_, err = env.client.UpdateUser(context.Background(), authedReq(&leapmuxv1.UpdateUserRequest{
+		UserId:      targetID,
+		DisplayName: "Email User",
+		Email:       "",
+		IsAdmin:     false,
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}

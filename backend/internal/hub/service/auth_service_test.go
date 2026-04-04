@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"database/sql"
+
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,7 +19,9 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 func setupAuthTestServer(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, *gendb.Queries) {
@@ -210,6 +214,184 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 	_, err = userClient.ChangePassword(context.Background(), req)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+func TestSignUp_DuplicateEmail_Rejected(t *testing.T) {
+	client, q := setupAuthTestServer(t, testConfigWithSignup())
+
+	// Create a user with that email directly in the DB.
+	orgID := id.Generate()
+	err := q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "emailuser"})
+	require.NoError(t, err)
+	hash, err := password.Hash("pass")
+	require.NoError(t, err)
+	err = q.CreateUser(context.Background(), gendb.CreateUserParams{
+		ID:           id.Generate(),
+		OrgID:        orgID,
+		Username:     "emailuser",
+		PasswordHash: hash,
+		DisplayName:  "Email User",
+		Email:        "taken@example.com",
+		IsAdmin:      0,
+	})
+	require.NoError(t, err)
+
+	// Try to sign up with the same email.
+	_, err = client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    "newuser",
+		Password:    "newpass123",
+		DisplayName: "New User",
+		Email:       "taken@example.com",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
+}
+
+func TestSignUp_EmptyEmail_AllowedMultiple(t *testing.T) {
+	client, _ := setupAuthTestServer(t, testConfigWithSignup())
+
+	// First signup with empty email should succeed.
+	resp1, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    "emptyemail1",
+		Password:    "pass123",
+		DisplayName: "User 1",
+		Email:       "",
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "emptyemail1", resp1.Msg.GetUser().GetUsername())
+
+	// Second signup with empty email should also succeed.
+	resp2, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    "emptyemail2",
+		Password:    "pass456",
+		DisplayName: "User 2",
+		Email:       "",
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "emptyemail2", resp2.Msg.GetUser().GetUsername())
+}
+
+// setupVerificationGatingTestServer creates a test server with both
+// UserService and AuthService, with emailVerificationRequired set as specified.
+func setupVerificationGatingTestServer(t *testing.T, emailVerificationRequired bool) (
+	leapmuxv1connect.UserServiceClient,
+	leapmuxv1connect.AuthServiceClient,
+	*gendb.Queries,
+	*sql.DB,
+) {
+	t.Helper()
+
+	sqlDB, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	err = db.Migrate(sqlDB)
+	require.NoError(t, err)
+
+	q := gendb.New(sqlDB)
+
+	err = bootstrap.Run(context.Background(), sqlDB, q, false)
+	require.NoError(t, err)
+
+	mux := http.NewServeMux()
+	interceptor, _ := auth.NewInterceptor(q, false, false, emailVerificationRequired)
+	opts := connect.WithInterceptors(interceptor)
+
+	cfg := testConfig()
+	cfg.SignupEnabled = true
+	cfg.EmailVerificationRequired = emailVerificationRequired
+
+	userSvc := service.NewUserService(q, cfg)
+	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
+	mux.Handle(userPath, userHandler)
+
+	authSvc := service.NewAuthService(sqlDB, q, cfg, nil, nil)
+	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
+	mux.Handle(authPath, authHandler)
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	userClient := leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL)
+	authClient := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+	return userClient, authClient, q, sqlDB
+}
+
+func TestVerificationGating_UnverifiedBlocked(t *testing.T) {
+	userClient, _, q, _ := setupVerificationGatingTestServer(t, true)
+
+	// Create a user with email_verified=0 directly via DB.
+	orgID := id.Generate()
+	userID := id.Generate()
+	hash, _ := password.Hash("pass")
+	_ = q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "unverified"})
+	_ = q.CreateUser(context.Background(), gendb.CreateUserParams{
+		ID:           userID,
+		OrgID:        orgID,
+		Username:     "unverified",
+		PasswordHash: hash,
+		DisplayName:  "Unverified User",
+		Email:        "unverified@example.com",
+		IsAdmin:      0,
+	})
+	// email_verified defaults to 0 in the DB.
+
+	token, _, _, err := auth.Login(context.Background(), q, "unverified", "pass")
+	require.NoError(t, err)
+
+	// Try UpdateProfile — should be blocked by verification gating.
+	_, err = userClient.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
+		Username:    "unverified",
+		DisplayName: "Updated",
+	}, token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+}
+
+func TestVerificationGating_AdminExempt(t *testing.T) {
+	userClient, _, q, _ := setupVerificationGatingTestServer(t, true)
+
+	// The bootstrap admin has email_verified=0 by default (no email set).
+	// Verify the admin can still call protected RPCs.
+	adminToken, _, _, err := auth.Login(context.Background(), q, "admin", "admin")
+	require.NoError(t, err)
+
+	// Admin should be able to call UpdateProfile even with email_verified=0.
+	_, err = userClient.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
+		Username:    "admin",
+		DisplayName: "Admin Updated",
+	}, adminToken))
+	require.NoError(t, err)
+}
+
+func TestVerificationGating_ConfigOff_NotBlocked(t *testing.T) {
+	userClient, _, q, _ := setupVerificationGatingTestServer(t, false)
+
+	// Create an unverified user.
+	orgID := id.Generate()
+	userID := id.Generate()
+	hash, _ := password.Hash("pass")
+	_ = q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "nogate"})
+	_ = q.CreateUser(context.Background(), gendb.CreateUserParams{
+		ID:           userID,
+		OrgID:        orgID,
+		Username:     "nogate",
+		PasswordHash: hash,
+		DisplayName:  "No Gate User",
+		Email:        "nogate@example.com",
+		IsAdmin:      0,
+	})
+	// email_verified defaults to 0 — but gating is OFF.
+
+	token, _, _, err := auth.Login(context.Background(), q, "nogate", "pass")
+	require.NoError(t, err)
+
+	// Unverified user should be able to call UpdateProfile when gating is off.
+	_, err = userClient.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
+		Username:    "nogate",
+		DisplayName: "Updated",
+	}, token))
+	require.NoError(t, err)
 }
 
 func TestAuthService_Logout(t *testing.T) {
