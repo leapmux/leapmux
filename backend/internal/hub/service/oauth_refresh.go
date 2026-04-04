@@ -10,11 +10,13 @@ import (
 	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
 )
 
+const tokenRefreshInterval = 1 * time.Minute
+
 // StartTokenRefresh starts a background goroutine that periodically refreshes
 // OAuth tokens that are about to expire. It stops when ctx is cancelled.
 func (h *OAuthHandler) StartTokenRefresh(ctx context.Context) {
 	go func() {
-		ticker := time.NewTicker(1 * time.Minute)
+		ticker := time.NewTicker(tokenRefreshInterval)
 		defer ticker.Stop()
 
 		for {

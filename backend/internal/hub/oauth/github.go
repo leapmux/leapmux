@@ -7,10 +7,13 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/github"
 )
+
+var githubHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 const defaultGitHubUserURL = "https://api.github.com/user"
 
@@ -74,7 +77,7 @@ func fetchGitHubUser(ctx context.Context, accessToken string, userURL string) (*
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := githubHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("github user fetch: %w", err)
 	}

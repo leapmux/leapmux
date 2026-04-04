@@ -57,15 +57,7 @@ func refreshWithConfig(ctx context.Context, cfg *oauth2.Config, refreshToken, la
 		return nil, fmt.Errorf("%s refresh: %w", label, err)
 	}
 
-	ts := &TokenSet{
-		AccessToken:  token.AccessToken,
-		RefreshToken: token.RefreshToken,
-		TokenType:    token.TokenType,
-	}
-	if !token.Expiry.IsZero() {
-		ts.ExpiresIn = int(time.Until(token.Expiry).Seconds())
-	}
-	return ts, nil
+	return TokenSetFromOAuth2Token(token), nil
 }
 
 // TokenSetFromOAuth2Token converts an oauth2.Token to a TokenSet.

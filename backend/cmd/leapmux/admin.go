@@ -276,9 +276,10 @@ func runAddOAuthProvider(args []string) error {
 		}
 	}
 
+	cfg := adminConfig(dataDir)
+
 	// Load keystore to encrypt client secret.
-	ksPath := adminConfig(dataDir).EncryptionKeyFilePath()
-	ks, err := keystore.LoadFromFile(ksPath)
+	ks, err := keystore.LoadFromFile(cfg.EncryptionKeyFilePath())
 	if err != nil {
 		return fmt.Errorf("load encryption key: %w", err)
 	}
@@ -290,8 +291,7 @@ func runAddOAuthProvider(args []string) error {
 		return fmt.Errorf("encrypt client secret: %w", err)
 	}
 
-	// Open database and insert.
-	sqlDB, q, err := openAdminDB(adminConfig(dataDir))
+	sqlDB, q, err := openAdminDB(cfg)
 	if err != nil {
 		return err
 	}

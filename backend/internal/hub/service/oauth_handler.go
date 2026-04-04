@@ -18,6 +18,12 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
+const (
+	oauthStateExpiry   = 5 * time.Minute
+	defaultTokenExpiry = 1 * time.Hour
+	maxUsernameRetries = 10
+)
+
 // OAuthHandler handles OAuth login/callback HTTP endpoints.
 type OAuthHandler struct {
 	queries  *gendb.Queries
@@ -94,7 +100,7 @@ func (h *OAuthHandler) handleLogin(w http.ResponseWriter, r *http.Request, provi
 		ProviderID:   providerID,
 		PkceVerifier: verifier,
 		RedirectUri:  redirectURI,
-		ExpiresAt:    time.Now().Add(5 * time.Minute).UTC(),
+		ExpiresAt:    time.Now().Add(oauthStateExpiry).UTC(),
 	}); err != nil {
 		slog.Error("oauth: create state", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -275,7 +281,7 @@ func (h *OAuthHandler) storeTokens(ctx context.Context, userID, providerID strin
 
 	expiresAt := time.Now().Add(time.Duration(tokenSet.ExpiresIn) * time.Second).UTC()
 	if tokenSet.ExpiresIn <= 0 {
-		expiresAt = time.Now().Add(1 * time.Hour).UTC() // default 1 hour
+		expiresAt = time.Now().Add(defaultTokenExpiry).UTC()
 	}
 
 	return h.queries.UpsertOAuthTokens(ctx, gendb.UpsertOAuthTokensParams{
@@ -290,13 +296,11 @@ func (h *OAuthHandler) storeTokens(ctx context.Context, userID, providerID strin
 }
 
 func (h *OAuthHandler) buildProvider(ctx context.Context, dbProvider *gendb.OauthProvider) (huboauth.Provider, error) {
-	// Decrypt client secret.
 	clientSecret, err := h.keystore.Decrypt(dbProvider.ClientSecret, keystore.ProviderAAD(dbProvider.ID))
 	if err != nil {
 		return nil, fmt.Errorf("decrypt client secret: %w", err)
 	}
 
-	// Build redirect URL.
 	redirectURL := fmt.Sprintf("%s/auth/oauth/%s/callback", h.cfg.BaseURL(), dbProvider.ID)
 
 	scopes := strings.Split(dbProvider.Scopes, " ")
@@ -347,7 +351,7 @@ func ensureUniqueUsername(ctx context.Context, q *gendb.Queries, username string
 	}
 
 	// Username taken — append random suffix.
-	for i := 0; i < 10; i++ {
+	for i := 0; i < maxUsernameRetries; i++ {
 		candidate := username + "-" + id.Generate()[:6]
 		_, err := q.GetUserByUsername(ctx, candidate)
 		if err == sql.ErrNoRows {

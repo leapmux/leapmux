@@ -65,11 +65,11 @@ export async function loadOAuthProviders(): Promise<OAuthProviderInfo[]> {
   try {
     const resp = await authClient.getOAuthProviders({})
     cachedOAuthProviders = resp.providers
+    return cachedOAuthProviders
   }
   catch {
-    cachedOAuthProviders = []
+    return []
   }
-  return cachedOAuthProviders
 }
 
 export function isDesktopApp(): boolean {
