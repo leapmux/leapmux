@@ -18,6 +18,7 @@ CREATE TABLE users (
     email          TEXT NOT NULL DEFAULT '',
     email_verified INTEGER NOT NULL DEFAULT 0,
     is_admin       INTEGER NOT NULL DEFAULT 0,
+    prefs          TEXT NOT NULL DEFAULT '{}',
     created_at     DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at     DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -119,13 +120,6 @@ CREATE TABLE workspace_section_items (
 );
 CREATE INDEX idx_workspace_section_items_section ON workspace_section_items(section_id);
 
--- User preferences
-CREATE TABLE user_preferences (
-    user_id    TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    prefs      TEXT NOT NULL DEFAULT '{}',
-    updated_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-);
-
 -- Cross-user Worker access grants (for workspace sharing)
 CREATE TABLE worker_access_grants (
     worker_id  TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
@@ -179,7 +173,6 @@ DROP TABLE IF EXISTS workspace_layouts;
 DROP TABLE IF EXISTS workspace_tabs;
 DROP TABLE IF EXISTS workspace_access;
 DROP TABLE IF EXISTS worker_access_grants;
-DROP TABLE IF EXISTS user_preferences;
 DROP TABLE IF EXISTS email_verifications;
 DROP TABLE IF EXISTS workspace_section_items;
 DROP TABLE IF EXISTS workspace_sections;

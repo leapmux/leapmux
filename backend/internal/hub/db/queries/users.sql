@@ -44,5 +44,12 @@ WHERE id = ?;
 -- name: DeleteUser :exec
 DELETE FROM users WHERE id = ?;
 
+-- name: GetUserPrefs :one
+SELECT prefs FROM users WHERE id = ?;
+
+-- name: UpdateUserPrefs :exec
+UPDATE users SET prefs = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = ?;
+
 -- name: CountUsers :one
 SELECT count(*) FROM users;

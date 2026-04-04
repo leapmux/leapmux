@@ -82,12 +82,6 @@ func Run(ctx context.Context, q *db.Queries, soloMode bool) error {
 		return fmt.Errorf("create org member: %w", err)
 	}
 
-	if err := q.UpsertUserPreferences(ctx, db.UpsertUserPreferencesParams{
-		UserID: userID,
-	}); err != nil {
-		return fmt.Errorf("create user preferences: %w", err)
-	}
-
 	slog.Info("bootstrap: created personal org and admin user",
 		"org_id", orgID,
 		"user_id", userID,

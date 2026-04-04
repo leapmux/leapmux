@@ -140,18 +140,13 @@ func (s *UserService) GetPreferences(ctx context.Context, req *connect.Request[l
 		return nil, err
 	}
 
-	row, err := s.queries.GetUserPreferences(ctx, userInfo.ID)
+	prefs, err := s.queries.GetUserPrefs(ctx, userInfo.ID)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return connect.NewResponse(&leapmuxv1.GetPreferencesResponse{
-				Preferences: &leapmuxv1.UserPreferences{},
-			}), nil
-		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
 	var sp storedPreferences
-	if err := json.Unmarshal([]byte(row.Prefs), &sp); err != nil {
+	if err := json.Unmarshal([]byte(prefs), &sp); err != nil {
 		sp = storedPreferences{}
 	}
 
@@ -225,9 +220,9 @@ func (s *UserService) UpdatePreferences(ctx context.Context, req *connect.Reques
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("marshal prefs: %w", err))
 	}
 
-	if err := s.queries.UpsertUserPreferences(ctx, db.UpsertUserPreferencesParams{
-		UserID: userInfo.ID,
-		Prefs:  string(prefsJSON),
+	if err := s.queries.UpdateUserPrefs(ctx, db.UpdateUserPrefsParams{
+		Prefs: string(prefsJSON),
+		ID:    userInfo.ID,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
