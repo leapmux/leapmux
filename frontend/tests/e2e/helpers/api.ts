@@ -269,6 +269,19 @@ export async function openAgentViaAPI(
     }),
   })
 
+  // Notify the worker that the test channel now has access to this workspace.
+  // OpenChannel only includes workspaces that existed at handshake time; any
+  // workspace created after that is invisible to ListAgents until the worker
+  // receives a PrepareWorkspaceAccess (ChannelAccessUpdate) notification.
+  await fetch(`${hubUrl}/leapmux.v1.ChannelService/PrepareWorkspaceAccess`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({ workerId, workspaceId }),
+  })
+
   return resp.agent.id
 }
 

@@ -43,6 +43,15 @@ if (typeof window !== 'undefined') {
     }
     return ''
   }
+  ;(window as any).__getActiveTerminalRows = () => {
+    for (const [id, instance] of instances) {
+      const container = document.querySelector(`[data-terminal-id="${id}"]`) as HTMLElement | null
+      if (container && container.style.display !== 'none') {
+        return instance.terminal.rows
+      }
+    }
+    return 0
+  }
 }
 
 /** Per-terminal container that calls terminal.open() exactly once. */

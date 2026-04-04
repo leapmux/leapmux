@@ -1,7 +1,7 @@
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
 import { getRecordedToasts } from './helpers/toast'
-import { loginViaToken, openWorkspaceContextMenu, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
 const WORKSPACE_URL_RE = /\/workspace\//
 
@@ -163,7 +163,9 @@ test.describe('Workspace UX Enhancements', () => {
       await expect(page.locator('[data-testid^="workspace-item-"]').filter({ hasText: 'Next WS' })).toBeVisible()
 
       // Delete the active workspace
-      await openWorkspaceContextMenu(page, 'Delete Target WS')
+      const deleteTarget = page.locator(`[data-testid="workspace-item-${workspaceId1}"]`)
+      await deleteTarget.hover()
+      await deleteTarget.locator('button').first().click()
       await page.getByRole('menuitem', { name: 'Delete' }).click()
 
       // Confirm the delete via ConfirmDialog (danger mode: arm then confirm)

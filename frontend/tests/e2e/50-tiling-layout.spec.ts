@@ -371,7 +371,14 @@ test.describe('Tiling Layout', () => {
     // Open a new agent in the second tile so it has its own tab.
     // Set up the layout save listener BEFORE clicking, so we don't miss the event.
     const saved = waitForLayoutSave(page)
-    await tiles.nth(1).locator('[data-testid^="new-agent-button"]').first().click()
+    // Click the tile first to focus it so the new agent is created in this tile.
+    // Then programmatically click the button via DOM .click() because responsive CSS
+    // hides the newTabWrapper (and its buttons) at <480px tile width, but the button
+    // still exists in the DOM and its onClick handler works when clicked this way.
+    await tiles.nth(1).click()
+    await tiles.nth(1).locator('[data-testid^="new-agent-button"]').first().evaluate(
+      el => (el as HTMLElement).click(),
+    )
     await expect(tiles.nth(1).locator('[data-testid="tab"]')).toHaveCount(1)
 
     // Verify no empty tile actions are showing

@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
-import { openWorkspaceContextMenu, waitForWorkspaceReady } from './helpers/ui'
+import { waitForWorkspaceReady } from './helpers/ui'
 
 const ITEM_ACTIVE_RE = /itemActive/
 
@@ -8,8 +8,8 @@ test.describe('Workspace Context Menu', () => {
   test('should show context menu options for owned workspace', async ({ page, authenticatedWorkspace }) => {
     // Open context menu on the workspace item
     const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
-    const workspaceName = await workspaceItem.textContent()
-    await openWorkspaceContextMenu(page, workspaceName!.trim())
+    await workspaceItem.hover()
+    await workspaceItem.locator('button').first().click()
 
     // Should show all options for owner
     await expect(page.getByRole('menuitem', { name: 'Rename' })).toBeVisible()
@@ -23,8 +23,8 @@ test.describe('Workspace Context Menu', () => {
   test('should rename workspace via context menu', async ({ page, authenticatedWorkspace }) => {
     // Open context menu and click Rename
     const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
-    const workspaceName = await workspaceItem.textContent()
-    await openWorkspaceContextMenu(page, workspaceName!.trim())
+    await workspaceItem.hover()
+    await workspaceItem.locator('button').first().click()
     await page.getByRole('menuitem', { name: 'Rename' }).click()
 
     // An inline text input should appear (hasText doesn't match input values, so find input directly)
@@ -60,8 +60,8 @@ test.describe('Workspace Context Menu', () => {
   test('should cancel rename on Escape', async ({ page, authenticatedWorkspace }) => {
     // Open context menu and click Rename
     const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
-    const workspaceName = await workspaceItem.textContent()
-    await openWorkspaceContextMenu(page, workspaceName!.trim())
+    await workspaceItem.hover()
+    await workspaceItem.locator('button').first().click()
     await page.getByRole('menuitem', { name: 'Rename' }).click()
 
     // Type new name but press Escape (hasText doesn't match input values, so find input directly)
@@ -93,8 +93,8 @@ test.describe('Workspace Context Menu', () => {
       const urlBefore = page.url()
 
       // Open context menu on the first (non-active) workspace
-      const firstName = await firstWorkspaceItem.textContent()
-      await openWorkspaceContextMenu(page, firstName!.trim())
+      await firstWorkspaceItem.hover()
+      await firstWorkspaceItem.locator('button').first().click()
 
       // Menu should appear
       await expect(page.getByRole('menuitem', { name: 'Rename' })).toBeVisible()
@@ -130,8 +130,8 @@ test.describe('Workspace Context Menu', () => {
       const urlBefore = page.url()
 
       // Open context menu and click Archive on the non-active workspace
-      const firstName = await firstWorkspaceItem.textContent()
-      await openWorkspaceContextMenu(page, firstName!.trim())
+      await firstWorkspaceItem.hover()
+      await firstWorkspaceItem.locator('button').first().click()
       await page.getByRole('menuitem', { name: 'Archive' }).click()
 
       // Archive confirmation dialog should appear
@@ -153,16 +153,16 @@ test.describe('Workspace Context Menu', () => {
   })
 
   test('should delete workspace via context menu', async ({ page, authenticatedWorkspace }) => {
-    // Get the workspace name from the sidebar
+    // Get the workspace item from the sidebar
     const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
-    const workspaceName = await workspaceItem.textContent()
 
     // Navigate away from the workspace so we're on the dashboard
     await page.goto('/o/admin')
-    await expect(page.getByText(workspaceName!.trim())).toBeVisible()
+    await expect(workspaceItem).toBeVisible()
 
     // Open context menu and click Delete
-    await openWorkspaceContextMenu(page, workspaceName!.trim())
+    await workspaceItem.hover()
+    await workspaceItem.locator('button').first().click()
     await page.getByRole('menuitem', { name: 'Delete' }).click()
 
     // ConfirmDialog should appear
@@ -173,6 +173,6 @@ test.describe('Workspace Context Menu', () => {
     await dialog.getByRole('button', { name: 'Confirm?' }).click()
 
     // Workspace should be gone
-    await expect(page.getByText(workspaceName!.trim())).not.toBeVisible()
+    await expect(workspaceItem).not.toBeVisible()
   })
 })

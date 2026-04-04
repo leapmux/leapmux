@@ -738,19 +738,27 @@ test.describe('Undo/Redo', () => {
     await expect(editor).toBeVisible()
     await editor.click()
 
-    // Type text
-    await page.keyboard.type('hello world', { delay: 100 })
-    await expect(editor).toContainText('hello world')
+    // Type two separate words as distinct undo steps
+    await page.keyboard.type('aaa')
+    await expect(editor).toContainText('aaa')
 
-    // Undo
-    await page.keyboard.press('Meta+z')
-    // Text should be partially or fully removed
-    const textAfterUndo = await editor.textContent()
-    expect(textAfterUndo?.trim()).not.toBe('hello world')
+    // Small pause to create a separate undo group
+    await page.waitForTimeout(500)
 
-    // Redo
-    await page.keyboard.press('Meta+Shift+z')
-    await expect(editor).toContainText('hello world')
+    await page.keyboard.type(' bbb')
+    await expect(editor).toContainText('aaa bbb')
+
+    // Undo the second word using toolbar or keyboard
+    await page.keyboard.down('Meta')
+    await page.keyboard.press('z')
+    await page.keyboard.up('Meta')
+    // Text should lose the second word
+    await expect(editor).not.toContainText('bbb')
+
+    // Redo: ProseMirror maps Mod to Meta on macOS, but Playwright Chromium
+    // needs Control+Shift+z for redo to work correctly
+    await page.keyboard.press('Control+Shift+z')
+    await expect(editor).toContainText('aaa bbb')
   })
 })
 

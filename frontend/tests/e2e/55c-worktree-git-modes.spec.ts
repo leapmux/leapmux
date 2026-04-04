@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process'
 import { existsSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { TabType } from '../../src/generated/leapmux/v1/workspace_pb'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
@@ -9,9 +10,11 @@ import {
   closeAgentViaAPI,
   createGitRepo,
   createWorkspaceWithWorktreeViaAPI,
-  listAgentsViaAPI,
+  inspectLastTabCloseViaAPI,
   openNewWorkspaceDialog,
+  scheduleWorktreeDeletionViaAPI,
   setWorkingDir,
+  waitForAgentsViaAPI,
   waitForOrgPageReady,
   waitForPathDeleted,
   waitForWorker,
@@ -262,8 +265,7 @@ test.describe('Worktree Git Modes', () => {
     })
 
     // Verify the agent's working dir is the worktree path.
-    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
-    expect(agents.length).toBeGreaterThan(0)
+    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
     expect(agents[0].workingDir).toBe(worktreeDir)
   })
 
@@ -293,14 +295,16 @@ test.describe('Worktree Git Modes', () => {
     })
 
     // Close the first agent — worktree should persist because second agent still references it.
-    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
+    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
     const firstAgent = agents.find(a => a.id !== secondAgentId)!
     expect(firstAgent).toBeTruthy()
     const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, firstAgent.id)
     expect(resp.worktreeCleanupPending).toBeFalsy()
     expect(existsSync(worktreeDir)).toBe(true)
 
-    // Close the second agent — last tab, clean worktree → auto-delete.
+    // Schedule deletion for the last tab, then close the second agent — worktree should be deleted.
+    const inspect2 = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, secondAgentId)
+    await scheduleWorktreeDeletionViaAPI(hubUrl, adminToken, workerId, inspect2.worktreeId)
     const resp2 = await closeAgentViaAPI(hubUrl, adminToken, workerId, secondAgentId)
     expect(resp2.worktreeCleanupPending).toBeFalsy()
     await waitForPathDeleted(worktreeDir)
@@ -325,8 +329,7 @@ test.describe('Worktree Git Modes', () => {
     })
 
     // Close the agent.
-    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
-    expect(agents.length).toBeGreaterThan(0)
+    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
     const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
     // Unmanaged worktree should NOT be cleaned up.
@@ -405,14 +408,16 @@ test.describe('Worktree Git Modes', () => {
     const secondAgentId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, worktreeDir)
 
     // Close the first agent — worktree should persist because second agent registered.
-    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
+    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
     const firstAgent = agents.find(a => a.id !== secondAgentId)!
     expect(firstAgent).toBeTruthy()
     const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, firstAgent.id)
     expect(resp.worktreeCleanupPending).toBeFalsy()
     expect(existsSync(worktreeDir)).toBe(true)
 
-    // Close the second agent — last tab, clean worktree → auto-delete.
+    // Schedule deletion for the last tab, then close the second agent — worktree should be deleted.
+    const inspect2 = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, secondAgentId)
+    await scheduleWorktreeDeletionViaAPI(hubUrl, adminToken, workerId, inspect2.worktreeId)
     const resp2 = await closeAgentViaAPI(hubUrl, adminToken, workerId, secondAgentId)
     expect(resp2.worktreeCleanupPending).toBeFalsy()
     await waitForPathDeleted(worktreeDir)
@@ -435,8 +440,7 @@ test.describe('Worktree Git Modes', () => {
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, worktreeDir)
 
     // Close the agent.
-    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
-    expect(agents.length).toBeGreaterThan(0)
+    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
     const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
     // No cleanup — unmanaged worktree should still exist.

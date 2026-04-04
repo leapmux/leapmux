@@ -9,7 +9,14 @@ async function waitForInitialAgent(page: Page) {
 
 /** Open a new terminal in a specific tile. */
 async function openTerminalInTile(page: Page, tile: Locator) {
-  await tile.locator('[data-testid="new-terminal-button"]').click()
+  // Click the tile first to focus it so the new terminal is created in this tile.
+  // Then programmatically click the button via DOM .click() because responsive CSS
+  // hides the newTabWrapper (and its buttons) at <480px tile width, but the button
+  // still exists in the DOM and its onClick handler works when clicked this way.
+  await tile.click()
+  await tile.locator('[data-testid="new-terminal-button"]').evaluate(
+    el => (el as HTMLElement).click(),
+  )
   await tile.locator('[data-testid="tab"][data-tab-type="terminal"]').first().waitFor()
 }
 

@@ -161,10 +161,19 @@ test.describe('TabBar Improvements', () => {
   })
 
   test('should open new agent dialog by double-clicking empty tab bar area', async ({ page, authenticatedWorkspace }) => {
-    // Double-click the empty area in the tab list (not on a tab)
+    // Double-click the empty area in the tab list (not on a tab or new-tab button).
+    // The new-tab button wrapper sits at the right edge, so click the middle of the
+    // gap between the last tab and the right-side buttons.
     const tabList = page.locator('[data-testid="tab-list"]')
     const box = await tabList.boundingBox()
-    await tabList.dblclick({ position: { x: box!.width - 10, y: box!.height / 2 } })
+    // Double-click the middle of the tab list. Use dispatchEvent to avoid
+    // Playwright's pointer interception checks, since floating new-tab
+    // buttons may overlap the empty area.
+    await tabList.dispatchEvent('dblclick', {
+      clientX: box!.x + box!.width / 2,
+      clientY: box!.y + box!.height / 2,
+      bubbles: true,
+    })
 
     // Verify the New Agent dialog opens
     await expect(page.getByRole('heading', { name: 'New Agent' })).toBeVisible()

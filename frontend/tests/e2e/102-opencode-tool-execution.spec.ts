@@ -1,5 +1,7 @@
 import { sendMessage, waitForAgentIdle } from './helpers/ui'
-import { expect, opencodeTest } from './opencode-fixtures'
+import { expect, OPENCODE_E2E_SKIP_REASON, opencodeTest } from './opencode-fixtures'
+
+opencodeTest.skip(!!OPENCODE_E2E_SKIP_REASON, OPENCODE_E2E_SKIP_REASON || '')
 
 opencodeTest.describe('OpenCode Tool Execution', () => {
   opencodeTest('tool call renders with span', async ({ authenticatedOpencodeWorkspace, page }) => {

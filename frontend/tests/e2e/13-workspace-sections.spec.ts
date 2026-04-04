@@ -1,5 +1,4 @@
 import { expect, test } from './fixtures'
-import { openWorkspaceContextMenu } from './helpers/ui'
 
 test.describe('Workspace Sections', () => {
   test('should show default sections on first load', async ({ page, authenticatedWorkspace }) => {
@@ -31,10 +30,10 @@ test.describe('Workspace Sections', () => {
   })
 
   test('should move workspace to archived section via context menu', async ({ page, authenticatedWorkspace }) => {
-    // Open context menu on our workspace (find it by the specific workspace-item testid)
+    // Open context menu on our workspace
     const wsItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
-    const workspaceName = await wsItem.textContent()
-    await openWorkspaceContextMenu(page, workspaceName!.trim())
+    await wsItem.hover()
+    await wsItem.locator('button').first().click()
 
     // Click "Archive" (top-level menu item)
     await page.getByRole('menuitem', { name: 'Archive' }).click()

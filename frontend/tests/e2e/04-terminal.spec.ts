@@ -197,15 +197,17 @@ test.describe('Terminal', () => {
     await openTerminalViaUI(page)
     await expect(page.locator('.xterm')).toBeVisible()
 
-    // Wait for initial fit to complete
-    await page.waitForTimeout(1000)
-
-    // Read initial terminal row count
-    const initialRows = await page.evaluate(() => {
-      const rows = document.querySelector('.xterm-rows')
-      return rows ? rows.children.length : 0
-    })
-    expect(initialRows).toBeGreaterThan(0)
+    // Wait for xterm to initialize with rows
+    let initialRows = 0
+    await expect(async () => {
+      initialRows = await page.evaluate(() => {
+        if (typeof (window as any).__getActiveTerminalRows === 'function') {
+          return (window as any).__getActiveTerminalRows() as number
+        }
+        return 0
+      })
+      expect(initialRows).toBeGreaterThan(0)
+    }).toPass()
 
     // Resize viewport much larger
     await page.setViewportSize({ width: 1600, height: 1000 })
@@ -213,8 +215,10 @@ test.describe('Terminal', () => {
     // Poll until row count increases (ResizeObserver + fit needs time)
     await expect(async () => {
       const newRows = await page.evaluate(() => {
-        const rows = document.querySelector('.xterm-rows')
-        return rows ? rows.children.length : 0
+        if (typeof (window as any).__getActiveTerminalRows === 'function') {
+          return (window as any).__getActiveTerminalRows() as number
+        }
+        return 0
       })
       expect(newRows).toBeGreaterThan(initialRows)
     }).toPass()

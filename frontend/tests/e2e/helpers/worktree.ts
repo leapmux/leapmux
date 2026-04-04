@@ -173,6 +173,34 @@ export async function closeAgentViaAPI(
 }
 
 /**
+ * Poll `listAgentsViaAPI` until at least one agent is returned or the
+ * timeout elapses.  Call this instead of `listAgentsViaAPI` directly when
+ * the agent was just created via the UI or an API call that may not have
+ * been persisted by the backend yet.
+ */
+export async function waitForAgentsViaAPI(
+  hubUrl: string,
+  token: string,
+  workerId: string,
+  workspaceId: string,
+  orgId: string,
+  timeoutMs = 15_000,
+  intervalMs = 200,
+): Promise<Array<{ id: string, workingDir: string }>> {
+  const deadline = Date.now() + timeoutMs
+  while (true) {
+    const agents = await listAgentsViaAPI(hubUrl, token, workerId, workspaceId, orgId)
+    if (agents.length > 0) {
+      return agents
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`No agents appeared for workspace ${workspaceId} within ${timeoutMs}ms`)
+    }
+    await new Promise(r => setTimeout(r, intervalMs))
+  }
+}
+
+/**
  * List agents for a workspace via hub ListTabs + worker ListAgents.
  * The ListAgents RPC now accepts tab_ids instead of workspace_id,
  * so we first fetch the tab list from the hub and then request agents by ID.
@@ -206,13 +234,20 @@ export async function listAgentsViaAPI(
   }
 
   const channel = await getTestChannel(hubUrl, token)
-  const resp = await channel.callWorker(
-    workerId,
-    'ListAgents',
-    ListAgentsRequestSchema,
-    ListAgentsResponseSchema,
-    { tabIds: agentTabIds },
-  )
+  let resp: Awaited<ReturnType<typeof channel.callWorker<typeof ListAgentsRequestSchema, typeof ListAgentsResponseSchema>>>
+  try {
+    resp = await channel.callWorker(
+      workerId,
+      'ListAgents',
+      ListAgentsRequestSchema,
+      ListAgentsResponseSchema,
+      { tabIds: agentTabIds },
+    )
+  }
+  catch {
+    // Treat as transient; caller retries via waitForAgentsViaAPI.
+    return []
+  }
   return (resp.agents ?? []).map(a => ({ id: a.id, workingDir: a.workingDir }))
 }
 

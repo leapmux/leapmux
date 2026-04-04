@@ -1,5 +1,7 @@
 import { sendMessage } from './helpers/ui'
-import { expect, opencodeTest } from './opencode-fixtures'
+import { expect, OPENCODE_E2E_SKIP_REASON, opencodeTest } from './opencode-fixtures'
+
+opencodeTest.skip(!!OPENCODE_E2E_SKIP_REASON, OPENCODE_E2E_SKIP_REASON || '')
 
 opencodeTest.describe('OpenCode Interrupt', () => {
   opencodeTest('interrupt button appears during processing', async ({ authenticatedOpencodeWorkspace, page }) => {

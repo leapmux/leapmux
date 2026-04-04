@@ -2,41 +2,38 @@ import { expect, test } from './fixtures'
 import { deleteAllWorkspacesViaAPI } from './helpers/api'
 import { loginViaToken } from './helpers/ui'
 
-const OPEN_AGENT_TAB_RE = /Open a new agent tab/
-const OPEN_TERMINAL_TAB_RE = /Open a new terminal tab/
+const OPEN_AGENT_TAB_RE = /agent tab/i
+const OPEN_TERMINAL_TAB_RE = /terminal tab/i
 const CREATE_WORKSPACE_RE = /Create a new workspace/
 
-/** Close all tabs in the workspace by clicking close buttons. */
-async function closeAllTabs(page: import('@playwright/test').Page) {
-  const tabs = page.locator('[data-testid="tab"]')
-  const count = await tabs.count()
-  for (let i = count - 1; i >= 0; i--) {
-    const closeBtn = tabs.nth(i).locator('[data-testid="tab-close"]')
-    if (await closeBtn.isVisible()) {
-      await closeBtn.click()
-      await page.waitForTimeout(500)
-    }
-  }
-  await expect(page.locator('[data-testid="tab"]')).toHaveCount(0)
+/** Split the view to create an empty second tile, focus it, and return it. */
+async function createEmptyTile(page: import('@playwright/test').Page) {
+  await page.locator('[data-testid="tab"]').first().waitFor()
+  await page.locator('[data-testid="split-horizontal"]').first().click()
+  await expect(page.locator('[data-testid="tile"]')).toHaveCount(2)
+  const tile2 = page.locator('[data-testid="tile"]').nth(1)
+  await tile2.click()
+  await page.waitForTimeout(300)
+  return tile2
 }
 
 test.describe('Empty State Buttons', () => {
   test('empty tile shows agent and terminal buttons', async ({ page, authenticatedWorkspace }) => {
-    await closeAllTabs(page)
+    const tile = await createEmptyTile(page)
 
-    const actions = page.locator('[data-testid="empty-tile-actions"]')
+    const actions = tile.locator('[data-testid="empty-tile-actions"]')
     await expect(actions).toBeVisible()
-    await expect(page.locator('[data-testid="empty-tile-open-agent"]')).toBeVisible()
-    await expect(page.locator('[data-testid="empty-tile-open-terminal"]')).toBeVisible()
-    await expect(page.locator('[data-testid="empty-tile-open-agent"]')).toHaveText(OPEN_AGENT_TAB_RE)
-    await expect(page.locator('[data-testid="empty-tile-open-terminal"]')).toHaveText(OPEN_TERMINAL_TAB_RE)
+    await expect(tile.locator('[data-testid="empty-tile-open-agent"]')).toBeVisible()
+    await expect(tile.locator('[data-testid="empty-tile-open-terminal"]')).toBeVisible()
+    await expect(tile.locator('[data-testid="empty-tile-open-agent"]')).toHaveText(OPEN_AGENT_TAB_RE)
+    await expect(tile.locator('[data-testid="empty-tile-open-terminal"]')).toHaveText(OPEN_TERMINAL_TAB_RE)
   })
 
   test('clicking agent button opens agent or dialog', async ({ page, authenticatedWorkspace }) => {
-    await closeAllTabs(page)
-    await expect(page.locator('[data-testid="empty-tile-actions"]')).toBeVisible()
+    const tile = await createEmptyTile(page)
+    await expect(tile.locator('[data-testid="empty-tile-actions"]')).toBeVisible()
 
-    await page.locator('[data-testid="empty-tile-open-agent"]').click()
+    await tile.locator('[data-testid="empty-tile-open-agent"]').click()
 
     // Should open either a new agent tab or the new agent dialog
     await expect(
@@ -46,10 +43,10 @@ test.describe('Empty State Buttons', () => {
   })
 
   test('clicking terminal button opens terminal or dialog', async ({ page, authenticatedWorkspace }) => {
-    await closeAllTabs(page)
-    await expect(page.locator('[data-testid="empty-tile-actions"]')).toBeVisible()
+    const tile = await createEmptyTile(page)
+    await expect(tile.locator('[data-testid="empty-tile-actions"]')).toBeVisible()
 
-    await page.locator('[data-testid="empty-tile-open-terminal"]').click()
+    await tile.locator('[data-testid="empty-tile-open-terminal"]').click()
 
     // Should open either a new terminal tab or the new terminal dialog
     await expect(

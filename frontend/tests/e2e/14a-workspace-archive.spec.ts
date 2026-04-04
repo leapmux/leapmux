@@ -1,17 +1,22 @@
 import path from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, openWorkspaceContextMenu, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
+
+/** Open the context menu for a workspace item that's already located by testid. */
+async function openContextMenu(item: ReturnType<import('@playwright/test').Page['locator']>) {
+  await item.hover()
+  await item.locator('button').first().click()
+}
 
 test.describe('Workspace Archive', () => {
   test('should archive workspace via context menu with confirmation dialog', async ({ page, authenticatedWorkspace }) => {
     const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
-    const workspaceName = await workspaceItem.textContent()
 
     // Open context menu and click Archive (top-level menu item)
-    await openWorkspaceContextMenu(page, workspaceName!.trim())
+    await openContextMenu(workspaceItem)
     await page.getByRole('menuitem', { name: 'Archive' }).click()
 
     // Confirmation dialog should appear
@@ -33,10 +38,9 @@ test.describe('Workspace Archive', () => {
 
   test('should cancel archive via confirmation dialog', async ({ page, authenticatedWorkspace }) => {
     const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
-    const workspaceName = await workspaceItem.textContent()
 
     // Open context menu and click Archive (top-level menu item)
-    await openWorkspaceContextMenu(page, workspaceName!.trim())
+    await openContextMenu(workspaceItem)
     await page.getByRole('menuitem', { name: 'Archive' }).click()
 
     // Confirmation dialog should appear
@@ -55,8 +59,7 @@ test.describe('Workspace Archive', () => {
     const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
 
     // Archive the workspace first: open context menu using the workspace item directly
-    await workspaceItem.hover()
-    await workspaceItem.locator('button').first().click()
+    await openContextMenu(workspaceItem)
     await page.getByRole('menuitem', { name: 'Archive' }).click()
     await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
 
@@ -65,8 +68,7 @@ test.describe('Workspace Archive', () => {
     await expect(workspaceItem).toBeVisible()
 
     // Now unarchive it: open context menu using the workspace item directly
-    await workspaceItem.hover()
-    await workspaceItem.locator('button').first().click()
+    await openContextMenu(workspaceItem)
     await page.getByRole('menuitem', { name: 'Unarchive' }).click()
 
     // Workspace is active again — add-tab buttons should be visible
@@ -75,11 +77,10 @@ test.describe('Workspace Archive', () => {
 
   test('should not show Move-to when workspace is in the only target section', async ({ page, authenticatedWorkspace }) => {
     const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
-    const workspaceName = await workspaceItem.textContent()
 
     // Open context menu — with only one workspace section (In Progress),
     // "Move to" should not appear since there are no other target sections
-    await openWorkspaceContextMenu(page, workspaceName!.trim())
+    await openContextMenu(workspaceItem)
 
     // "Move to" should not be visible (no other non-archived, non-shared sections to move to)
     await expect(page.getByRole('menuitem', { name: 'Move to' })).not.toBeVisible()
@@ -91,10 +92,9 @@ test.describe('Workspace Archive', () => {
 
   test('should only show valid workspace sections in Move-to menu', async ({ page, authenticatedWorkspace }) => {
     const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
-    const workspaceName = await workspaceItem.textContent()
 
     // Open context menu
-    await openWorkspaceContextMenu(page, workspaceName!.trim())
+    await openContextMenu(workspaceItem)
 
     // Shared, Files, To-dos should NOT appear as menu items for move targets
     const menuItems = page.getByRole('menuitem')
@@ -106,10 +106,9 @@ test.describe('Workspace Archive', () => {
 
   test('should auto-expand archived section after archiving', async ({ page, authenticatedWorkspace }) => {
     const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
-    const workspaceName = await workspaceItem.textContent()
 
     // Archive the workspace
-    await openWorkspaceContextMenu(page, workspaceName!.trim())
+    await openContextMenu(workspaceItem)
     await page.getByRole('menuitem', { name: 'Archive' }).click()
     await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
 
@@ -129,10 +128,9 @@ test.describe('Workspace Archive', () => {
     await expect(agentTab).toBeVisible()
 
     const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
-    const workspaceName = await workspaceItem.textContent()
 
     // Archive the workspace
-    await openWorkspaceContextMenu(page, workspaceName!.trim())
+    await openContextMenu(workspaceItem)
     await page.getByRole('menuitem', { name: 'Archive' }).click()
     await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
 
@@ -165,7 +163,8 @@ test.describe('Workspace Archive', () => {
       await expect(fileTab).toBeVisible({ timeout: 10_000 })
 
       // Archive the workspace
-      await openWorkspaceContextMenu(page, 'File Tab Close')
+      const wsItem = page.locator(`[data-testid="workspace-item-${workspaceId}"]`)
+      await openContextMenu(wsItem)
       await page.getByRole('menuitem', { name: 'Archive' }).click()
       await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
 
@@ -220,7 +219,8 @@ test.describe('Workspace Archive', () => {
       await page.mouse.move(0, 0)
 
       // Archive the workspace
-      await openWorkspaceContextMenu(page, 'No Mention')
+      const wsItem = page.locator(`[data-testid="workspace-item-${workspaceId}"]`)
+      await openContextMenu(wsItem)
       await page.getByRole('menuitem', { name: 'Archive' }).click()
       await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
 
@@ -257,7 +257,8 @@ test.describe('Workspace Archive', () => {
       await expect(fileMentionButton).toBeVisible({ timeout: 5_000 })
 
       // Archive the workspace
-      await openWorkspaceContextMenu(page, 'No File Mention')
+      const wsItem = page.locator(`[data-testid="workspace-item-${workspaceId}"]`)
+      await openContextMenu(wsItem)
       await page.getByRole('menuitem', { name: 'Archive' }).click()
       await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
 
@@ -277,14 +278,13 @@ test.describe('Workspace Archive', () => {
 
   test('should delete workspace using ConfirmDialog instead of native confirm', async ({ page, authenticatedWorkspace }) => {
     const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
-    const workspaceName = await workspaceItem.textContent()
 
     // Navigate away so we can see delete result
     await page.goto('/o/admin')
-    await expect(page.getByText(workspaceName!.trim())).toBeVisible()
+    await expect(workspaceItem).toBeVisible()
 
     // Open context menu and click Delete
-    await openWorkspaceContextMenu(page, workspaceName!.trim())
+    await openContextMenu(workspaceItem)
     await page.getByRole('menuitem', { name: 'Delete' }).click()
 
     // ConfirmDialog should appear (not native dialog)
@@ -297,6 +297,6 @@ test.describe('Workspace Archive', () => {
     await dialog.getByRole('button', { name: 'Confirm?' }).click() // confirms
 
     // Workspace should be gone
-    await expect(page.getByText(workspaceName!.trim())).not.toBeVisible()
+    await expect(workspaceItem).not.toBeVisible()
   })
 })

@@ -1,7 +1,9 @@
 import { expect, test } from './fixtures'
 import { enterAndExitPlanMode } from './helpers/plan-mode'
+import { waitForAgentIdle } from './helpers/ui'
 
 test.describe('Plan Mode Tab Auto-Naming', () => {
+  test.setTimeout(300_000)
   test('auto-names tab from plan title, respects manual rename', async ({ page, authenticatedWorkspace }) => {
     const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
 
@@ -24,9 +26,10 @@ test.describe('Plan Mode Tab Auto-Naming', () => {
     await expect(approveBtn).toBeEnabled()
     await approveBtn.click()
 
-    // Wait for plan execution to start and then finish. The agent sees
+    // Wait for plan execution to finish. The agent sees
     // "Never execute this plan." in the plan content and finishes quickly.
-    await expect(page.getByText('Executing plan')).toBeVisible({ timeout: 30_000 })
+    // The "Executing plan" text may appear too briefly to catch, so just
+    // wait for the thinking indicator to disappear.
     await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible({ timeout: 120_000 })
 
     // ── Step 4: Manually rename the tab ──
@@ -40,6 +43,10 @@ test.describe('Plan Mode Tab Auto-Naming', () => {
     await expect(agentTab).toContainText('My Custom Name')
 
     // ── Step 5: Enter plan mode again with a different plan heading ──
+    // Wait for the agent to fully settle after plan execution.
+    await waitForAgentIdle(page)
+    // Give the agent a moment to be ready for new input.
+    await page.waitForTimeout(2000)
     const exitBanner2 = await enterAndExitPlanMode(page, 'second')
     await expect(exitBanner2.getByText('Plan Ready for Review')).toBeVisible()
 

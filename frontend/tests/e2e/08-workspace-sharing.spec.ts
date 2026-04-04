@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, getUserId, inviteToOrgViaAPI, shareWorkspaceViaAPI } from './helpers/api'
-import { loginViaToken, loginViaUI, openWorkspaceContextMenu, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, loginViaUI, waitForWorkspaceReady } from './helpers/ui'
 
 const ORG_ADMIN_URL_RE = /\/o\/admin/
 
@@ -25,7 +25,9 @@ test.describe('Workspace Sharing', () => {
       await waitForWorkspaceReady(page)
 
       // Open context menu on the workspace item
-      await openWorkspaceContextMenu(page, 'Share Test Workspace')
+      const wsItem = page.locator(`[data-testid="workspace-item-${workspaceId}"]`)
+      await wsItem.hover()
+      await wsItem.locator('button').first().click()
 
       // Share option should be visible in the context menu
       await expect(page.getByRole('menuitem', { name: 'Share' })).toBeVisible()
@@ -44,7 +46,9 @@ test.describe('Workspace Sharing', () => {
       await waitForWorkspaceReady(page)
 
       // Open context menu and click Share
-      await openWorkspaceContextMenu(page, 'Share Dialog Test')
+      const wsItem = page.locator(`[data-testid="workspace-item-${workspaceId}"]`)
+      await wsItem.hover()
+      await wsItem.locator('button').first().click()
       await page.getByRole('menuitem', { name: 'Share' }).click()
 
       // Dialog should appear
