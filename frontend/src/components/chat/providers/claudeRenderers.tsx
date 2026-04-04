@@ -8,7 +8,6 @@ import type { ParsedCatLine } from '../ReadResultView'
 import type { AgentChatMessage, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { TodoItem } from '~/stores/chat.store'
 import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, TaskStopInput, ToolSearchInput, WebFetchInput, WebSearchInput, WriteInput } from '~/types/toolMessages'
-import { diffLines } from 'diff'
 import Bot from 'lucide-solid/icons/bot'
 import Check from 'lucide-solid/icons/check'
 import ChevronsRight from 'lucide-solid/icons/chevrons-right'
@@ -34,7 +33,6 @@ import Wrench from 'lucide-solid/icons/wrench'
 import { createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { TodoList } from '~/components/todo/TodoList'
-import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { parseMessageContent, todosToMarkdown } from '~/lib/messageParser'
 import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
@@ -47,6 +45,17 @@ import { getAssistantContent, isObject, relativizePath } from '../messageUtils'
 import { parseCatNContent, ReadResultView } from '../ReadResultView'
 import { formatDuration, formatTaskStatus, formatToolInput } from '../rendererUtils'
 import {
+  renderAgentDetail,
+  renderBashDetail,
+  renderEditDetail,
+  renderGlobDetail,
+  renderGrepDetail,
+  renderReadDetail,
+  renderWebFetchDetail,
+  renderWebSearchDetail,
+  renderWriteDetail,
+} from '../toolDetailRenderers'
+import {
   COLLAPSED_RESULT_ROWS,
   EmptyTodoLayout,
   renderBashHighlight,
@@ -56,7 +65,6 @@ import {
 } from '../toolRenderers'
 import {
   toolInputCode,
-  toolInputPath,
   toolInputSummary,
   toolInputText,
   toolMessage,
@@ -131,10 +139,8 @@ function toolIconFor(name: string): LucideIcon {
 }
 
 // ---------------------------------------------------------------------------
-// renderToolDetail (moved from toolDetailRenderers.tsx with MCP support)
+// renderClaudeToolDetail
 // ---------------------------------------------------------------------------
-
-const TRAILING_NEWLINE_RE = /\n$/
 
 /** Prefer common parameter names for the hint, then fall back to first short string. */
 const HINT_KEYS = ['query', 'input', 'prompt', 'text', 'command', 'description', 'url']
@@ -152,104 +158,24 @@ function extractInputHint(input: Record<string, unknown>): string {
   return ''
 }
 
-/** Exported for reuse by other providers. */
-export function renderToolDetail(toolName: string, input: Record<string, unknown>, context?: RenderContext): JSX.Element | null {
+function renderClaudeToolDetail(toolName: string, input: Record<string, unknown>, context?: RenderContext): JSX.Element | null {
   const cwd = context?.workingDir
   const homeDir = context?.homeDir
 
   switch (toolName) {
-    case 'Bash': {
-      const { description: desc, command: cmd } = input as BashInput
-      if (!desc && !cmd)
-        return null
-      const descText = desc ? (desc.length > 100 ? `${desc.slice(0, 100)}…` : desc) : ''
-      return <span class={toolInputText}>{descText || 'Run command'}</span>
-    }
-    case 'Read': {
-      const { file_path: path, offset, limit } = input as ReadInput
-      if (!path)
-        return null
-      const rangeStr = offset && limit
-        ? ` (Line ${offset}–${offset + limit - 1})`
-        : limit
-          ? ` (Line 1–${limit})`
-          : offset
-            ? ` (Line ${offset}–)`
-            : ''
-      return (
-        <>
-          <span class={toolInputPath}>{relativizePath(path, cwd, homeDir)}</span>
-          <span class={toolInputText}>{rangeStr}</span>
-        </>
-      )
-    }
-    case 'Write': {
-      const { file_path: path, content } = input as WriteInput
-      if (!path)
-        return null
-      const lineCount = content ? content.split('\n').length : 0
-      const lineStr = lineCount > 0 ? ` (${lineCount} ${lineCount === 1 ? 'line' : 'lines'})` : ''
-      return (
-        <>
-          <span class={toolInputPath}>{relativizePath(path, cwd, homeDir)}</span>
-          <span class={toolInputText}>{lineStr}</span>
-        </>
-      )
-    }
-    case 'Edit': {
-      const { file_path: path, old_string: oldStr, new_string: newStr } = input as EditInput
-      if (!path)
-        return null
-      let added = 0
-      let removed = 0
-      if (oldStr && newStr && oldStr !== newStr) {
-        const changes = diffLines(oldStr, newStr)
-        for (const c of changes) {
-          const count = c.value.replace(TRAILING_NEWLINE_RE, '').split('\n').length
-          if (c.added)
-            added += count
-          else if (c.removed)
-            removed += count
-        }
-      }
-      return (
-        <>
-          <span class={toolInputPath}>{relativizePath(path, cwd, homeDir)}</span>
-          <DiffStatsBadge added={added} deleted={removed} class={toolInputText} />
-        </>
-      )
-    }
-    case 'Grep': {
-      const { pattern } = input as GrepInput
-      return pattern
-        ? <span class={toolInputCode}>{`"${pattern}"`}</span>
-        : null
-    }
-    case 'Glob': {
-      const { pattern, path } = input as GlobInput
-      // Relativize pattern if it's an absolute path without glob wildcards
-      const displayPattern = pattern && pattern.startsWith('/') && !pattern.includes('*')
-        ? relativizePath(pattern, cwd, homeDir)
-        : (pattern || '')
-      return (
-        <span class={toolInputCode}>
-          {displayPattern}
-          {path ? ` ${relativizePath(path, cwd, homeDir)}` : ''}
-        </span>
-      )
-    }
-    case 'WebFetch': {
-      const { url } = input as WebFetchInput
-      if (!url)
-        return null
-      return url.startsWith('https://')
-        ? <span class={toolInputText}><a href={url} target="_blank" rel="noopener noreferrer nofollow">{url}</a></span>
-        : <span class={toolInputText}>{url}</span>
-    }
-    case 'WebSearch': {
-      const { query } = input as WebSearchInput
-      return query ? <span class={toolInputText}>{query}</span> : null
-    }
+    // Shared tool detail primitives
+    case 'Bash': return renderBashDetail(input as BashInput)
+    case 'Read': return renderReadDetail(input as ReadInput, cwd, homeDir)
+    case 'Write': return renderWriteDetail(input as WriteInput, cwd, homeDir)
+    case 'Edit': return renderEditDetail(input as EditInput, cwd, homeDir)
+    case 'Grep': return renderGrepDetail(input as GrepInput)
+    case 'Glob': return renderGlobDetail(input as GlobInput, cwd, homeDir)
+    case 'WebFetch': return renderWebFetchDetail(input as WebFetchInput)
+    case 'WebSearch': return renderWebSearchDetail(input as WebSearchInput)
+    case 'Agent':
+    case 'Task': return renderAgentDetail(input, toolName)
+
+    // Claude-only tool details
     case 'TaskOutput': {
       const { task_id, block, timeout } = input as { task_id?: string, block?: boolean, timeout?: number }
       const parts: string[] = []
@@ -279,27 +205,6 @@ export function renderToolDetail(toolName: string, input: Record<string, unknown
     case 'Skill': {
       const skillName = String(input.skill || '')
       return <span class={toolInputText}>{`Skill: /${skillName}`}</span>
-    }
-    case 'Agent':
-    case 'Task': {
-      const description = String(input.description || toolName)
-      const subagentType = input.subagent_type ? String(input.subagent_type) : null
-
-      // If description starts with subagent name, use "SubAgent: rest" format;
-      // also suppress the trailing "(SubAgent)" suffix since it's already in the title.
-      let titleDesc = description
-      let showSuffix = true
-      if (subagentType) {
-        const prefix = subagentType.toLowerCase()
-        const descLower = description.toLowerCase()
-        if (descLower.startsWith(`${prefix} `)) {
-          titleDesc = `${subagentType}: ${description.slice(subagentType.length + 1)}`
-          showSuffix = false
-        }
-      }
-
-      const title = `${titleDesc}${showSuffix && subagentType ? ` (${subagentType})` : ''}`
-      return <span class={toolInputText}>{title}</span>
     }
     default: {
       const hint = extractInputHint(input)
@@ -1015,7 +920,7 @@ function ExitPlanModeResultView(props: {
 }
 
 // ---------------------------------------------------------------------------
-// renderTodoWrite (from taskRenderers.tsx)
+// renderTodoWrite
 // ---------------------------------------------------------------------------
 
 /** Render TodoWrite tool_use with a visual todo list. Returns null if input is invalid. */
@@ -1057,7 +962,7 @@ function renderTodoWrite(toolUse: Record<string, unknown>, context?: RenderConte
 }
 
 // ---------------------------------------------------------------------------
-// renderAskUserQuestion (from taskRenderers.tsx)
+// renderAskUserQuestion
 // ---------------------------------------------------------------------------
 
 /** Render AskUserQuestion tool_use with questions and options. Returns null if input is invalid. */
@@ -1103,7 +1008,7 @@ function renderAskUserQuestion(toolUse: Record<string, unknown>, context?: Rende
 }
 
 // ---------------------------------------------------------------------------
-// renderExitPlanMode (from planModeRenderers.tsx)
+// renderExitPlanMode
 // ---------------------------------------------------------------------------
 
 /** Render ExitPlanMode tool_use with the plan from input.plan as a markdown document. */
@@ -1178,7 +1083,7 @@ function renderClaudeToolUse(
 
   // Generic tool_use rendering
   const input = isObject(toolUse.input) ? toolUse.input as Record<string, unknown> : {}
-  const detail = renderToolDetail(toolName, input, context)
+  const detail = renderClaudeToolDetail(toolName, input, context)
   const summary = deriveToolSummary(toolName, input, context)
   const fallbackDisplay = detail ? null : formatToolInput(toolUse.input)
 

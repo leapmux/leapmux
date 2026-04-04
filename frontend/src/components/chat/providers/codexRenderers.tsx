@@ -36,6 +36,7 @@ import {
 } from '../messageStyles.css'
 import { isObject, relativizePath } from '../messageUtils'
 import { formatDuration } from '../rendererUtils'
+import { renderAgentDetail, renderBashDetail, renderEditDetail, renderWebFetchDetail, renderWebSearchDetail, renderWriteDetail } from '../toolDetailRenderers'
 import { EmptyTodoLayout, renderBashHighlight, ToolResultMessage, ToolUseLayout } from '../toolRenderers'
 import {
   commandStreamContainer,
@@ -52,7 +53,6 @@ import {
   toolResultPrompt,
   toolUseIcon,
 } from '../toolStyles.css'
-import { renderToolDetail } from './claudeRenderers'
 
 /** Regex to strip shell wrappers like `/bin/zsh -lc '...'` from commands. */
 const SHELL_WRAPPER_RE = /^\/bin\/(?:ba|z)?sh\s+-lc\s+'(.+)'$/
@@ -281,13 +281,13 @@ function codexWebSearchActionDetail(action: Record<string, unknown> | null, quer
   return query
 }
 
-function renderCodexWebSearchTitle(action: Record<string, unknown> | null, detail: string, context?: RenderContext): JSX.Element | string {
+function renderCodexWebSearchTitle(action: Record<string, unknown> | null, detail: string, _context?: RenderContext): JSX.Element | string {
   const actionType = codexWebSearchActionType(action)
   if (actionType === 'openPage') {
-    return renderToolDetail('WebFetch', { url: detail }, context) || detail || 'Open page'
+    return renderWebFetchDetail({ url: detail }) || detail || 'Open page'
   }
   if (actionType === 'search') {
-    return renderToolDetail('WebSearch', { query: detail }, context) || detail || 'Web search'
+    return renderWebSearchDetail({ query: detail }) || detail || 'Web search'
   }
   if (actionType === 'findInPage') {
     const url = typeof action?.url === 'string' ? action.url : ''
@@ -297,14 +297,14 @@ function renderCodexWebSearchTitle(action: Record<string, unknown> | null, detai
         <>
           <span class={toolInputCode}>{`"${pattern}"`}</span>
           <span class={toolInputText}>{' in '}</span>
-          {renderToolDetail('WebFetch', { url }, context) || <span class={toolInputText}>{url}</span>}
+          {renderWebFetchDetail({ url }) || <span class={toolInputText}>{url}</span>}
         </>
       )
     }
     if (pattern)
       return <span class={toolInputCode}>{`"${pattern}"`}</span>
     if (url)
-      return renderToolDetail('WebFetch', { url }, context) || url
+      return renderWebFetchDetail({ url }) || url
   }
   return detail || 'Searching the web'
 }
@@ -428,7 +428,7 @@ export function codexWebSearchRenderer(parsed: unknown, _role: MessageRole, cont
         <For each={queries.slice(1)}>
           {extraQuery => (
             <div class={toolInputSummary}>
-              {renderToolDetail('WebSearch', { query: extraQuery }, context) || extraQuery}
+              {renderWebSearchDetail({ query: extraQuery }) || extraQuery}
             </div>
           )}
         </For>
@@ -461,7 +461,7 @@ export function codexCommandExecutionRenderer(parsed: unknown, _role: MessageRol
       setExpanded(true)
   })
   const displayCommand = firstCommandLine(command)
-  const title = renderToolDetail('Bash', { description: 'Run command', command }, context) || 'Run command'
+  const title = renderBashDetail({ description: 'Run command', command }) || 'Run command'
 
   const statusParts = (): string => {
     const parts: string[] = []
@@ -610,10 +610,12 @@ export function codexFileChangeRenderer(parsed: unknown, _role: MessageRole, con
 
   const simpleEdit = changes.length === 1 && isSimpleEditChange(changes[0]) ? changes[0] : null
   const parsedDiff = simpleEdit ? parseCodexUnifiedDiff(simpleEdit.diff as string) : null
+  const cwd = context?.workingDir
+  const homeDir = context?.homeDir
   const inProgressDetail = simpleAdd
-    ? { icon: FilePlus, title: renderToolDetail('Write', { file_path: simpleAddPath, content: simpleAddContent }, context), path: simpleAddPath }
+    ? { icon: FilePlus, title: renderWriteDetail({ file_path: simpleAddPath, content: simpleAddContent }, cwd, homeDir), path: simpleAddPath }
     : simpleEdit && parsedDiff
-      ? { icon: FileEdit, title: renderToolDetail('Edit', { file_path: (simpleEdit.path as string) || '', old_string: parsedDiff.oldText, new_string: parsedDiff.newText }, context), path: (simpleEdit.path as string) || '' }
+      ? { icon: FileEdit, title: renderEditDetail({ file_path: (simpleEdit.path as string) || '', old_string: parsedDiff.oldText, new_string: parsedDiff.newText }, cwd, homeDir), path: (simpleEdit.path as string) || '' }
       : null
 
   if (inProgressDetail) {
@@ -857,7 +859,7 @@ export function codexCollabAgentToolCallRenderer(parsed: unknown, _role: Message
       ? 'Waiting for subagent'
       : isSpawnAgent
         ? (spawnAgentDetails ? `Subagent (${spawnAgentDetails})` : 'Subagent')
-        : renderToolDetail('Agent', { description: displayName }, context) || codexStatusTitle(displayName, status)
+        : renderAgentDetail({ description: displayName }, 'Agent') || codexStatusTitle(displayName, status)
   const summary = hasCollapsiblePrompt
     ? (
         <div
