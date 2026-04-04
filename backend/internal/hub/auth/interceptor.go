@@ -66,7 +66,9 @@ func NewInterceptor(q *db.Queries, soloMode bool, secureCookie bool, emailVerifi
 			}
 		}
 	}
-	return a, &SessionCache{m: &a.lastTouch}
+	sc := &SessionCache{m: &a.lastTouch}
+	go a.sweepLastTouch()
+	return a, sc
 }
 
 // SessionCache provides eviction access to the interceptor's in-memory
@@ -167,4 +169,24 @@ func (a *authInterceptor) touchSession(ctx context.Context, sessionID string) {
 		LastActiveAt: threshold,
 	})
 	a.lastTouch.Store(sessionID, now)
+}
+
+const touchSweepInterval = 10 * time.Minute
+
+// sweepLastTouch periodically removes stale entries from the lastTouch map.
+// Entries older than SessionDuration are removed since those sessions have
+// expired and will fail ValidateToken on the next request anyway.
+func (a *authInterceptor) sweepLastTouch() {
+	ticker := time.NewTicker(touchSweepInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		cutoff := time.Now().Add(-SessionDuration)
+		a.lastTouch.Range(func(key, value any) bool {
+			if value.(time.Time).Before(cutoff) {
+				a.lastTouch.Delete(key)
+			}
+			return true
+		})
+	}
 }
