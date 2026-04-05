@@ -73,31 +73,31 @@ func (h *OAuthHandler) handleOAuth(w http.ResponseWriter, r *http.Request) {
 }
 
 // loadEnabledProvider fetches the provider from DB, checks it's enabled, and
-// builds the cached Provider instance. Returns an HTTP error on the
-// ResponseWriter and false if the provider cannot be loaded.
-func (h *OAuthHandler) loadEnabledProvider(w http.ResponseWriter, ctx context.Context, providerID string) (huboauth.Provider, bool) {
+// builds the cached Provider instance. Returns the provider, its trust_email
+// setting, and whether the load succeeded. Writes an HTTP error on failure.
+func (h *OAuthHandler) loadEnabledProvider(w http.ResponseWriter, ctx context.Context, providerID string) (huboauth.Provider, bool, bool) {
 	dbProvider, err := h.queries.GetOAuthProviderByID(ctx, providerID)
 	if err != nil {
 		http.Error(w, "unknown provider", http.StatusNotFound)
-		return nil, false
+		return nil, false, false
 	}
 	if dbProvider.Enabled != 1 {
 		http.Error(w, "provider disabled", http.StatusForbidden)
-		return nil, false
+		return nil, false, false
 	}
 	provider, err := h.buildProvider(ctx, &dbProvider)
 	if err != nil {
 		slog.Error("oauth: build provider", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
-		return nil, false
+		return nil, false, false
 	}
-	return provider, true
+	return provider, dbProvider.TrustEmail == 1, true
 }
 
 func (h *OAuthHandler) handleLogin(w http.ResponseWriter, r *http.Request, providerID string) {
 	ctx := r.Context()
 
-	provider, ok := h.loadEnabledProvider(w, ctx, providerID)
+	provider, _, ok := h.loadEnabledProvider(w, ctx, providerID)
 	if !ok {
 		return
 	}
@@ -156,7 +156,7 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 		return
 	}
 
-	provider, ok := h.loadEnabledProvider(w, ctx, providerID)
+	provider, trustEmail, ok := h.loadEnabledProvider(w, ctx, providerID)
 	if !ok {
 		return
 	}
@@ -203,10 +203,9 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 		return
 	}
 
-	// Auto-link by verified email: if the OAuth provider is trusted and returns
-	// an email that matches an existing user with a verified email, link the
-	// new provider identity to that account and log in directly.
-	if h.cfg.OAuthTrustEmail && claims.Email != "" {
+	// Auto-link by verified email: if the OAuth provider is trusted, look for
+	// an existing user with the same verified email and link automatically.
+	if trustEmail {
 		existingUser, emailErr := h.queries.GetUserByEmail(ctx, claims.Email)
 		if emailErr == nil && existingUser.EmailVerified == 1 {
 			if err := h.queries.CreateOAuthUserLink(ctx, gendb.CreateOAuthUserLinkParams{

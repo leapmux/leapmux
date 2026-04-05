@@ -60,6 +60,20 @@ func TestCLI_AddOAuthProvider_GitHub(t *testing.T) {
 	assert.NotEqual(t, []byte("test-gh-secret"), full.ClientSecret, "client_secret must be encrypted")
 }
 
+func TestCLI_AddOAuthProvider_OIDC_MissingTrustEmail(t *testing.T) {
+	dir := setupTestDataDir(t)
+
+	err := runAddOAuthProvider([]string{
+		"--type", "oidc",
+		"--name", "My OIDC",
+		"--client-id", "test-client",
+		"--client-secret", "test-secret",
+		"--data-dir", dir,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--trust-email is required")
+}
+
 func TestCLI_AddOAuthProvider_OIDC_MissingIssuerURL(t *testing.T) {
 	dir := setupTestDataDir(t)
 
@@ -68,6 +82,7 @@ func TestCLI_AddOAuthProvider_OIDC_MissingIssuerURL(t *testing.T) {
 		"--name", "My OIDC",
 		"--client-id", "test-client",
 		"--client-secret", "test-secret",
+		"--trust-email=true",
 		"--data-dir", dir,
 	})
 	require.Error(t, err)

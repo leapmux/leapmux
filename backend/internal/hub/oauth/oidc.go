@@ -78,7 +78,12 @@ func (p *OIDCProvider) Exchange(ctx context.Context, code, codeVerifier string) 
 		return nil, nil, fmt.Errorf("oidc parse claims: %w", err)
 	}
 
-	// Only populate Email when the provider confirms it is verified.
+	// INVARIANT: Only emails confirmed as verified by the provider are included
+	// in UserClaims.Email. This check ensures email_verified is explicitly true;
+	// missing or false values result in an empty email. The per-provider
+	// trust_email setting controls whether the hub treats such verified emails
+	// as pre-verified for account linking and signup — it does NOT bypass this
+	// provider-level check. See also fetchGitHubVerifiedEmail in github.go.
 	email := ""
 	if claims.EmailVerified != nil && *claims.EmailVerified {
 		email = claims.Email

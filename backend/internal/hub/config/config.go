@@ -10,6 +10,7 @@ import (
 
 	"github.com/knadh/koanf/v2"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
 
@@ -38,7 +39,6 @@ type Config struct {
 	LogLevel                     string `koanf:"log_level"`
 	SignupEnabled                bool   `koanf:"signup_enabled"`
 	EmailVerificationRequired    bool   `koanf:"email_verification_required"`
-	OAuthTrustEmail              bool   `koanf:"oauth_trust_email"`
 	SmtpHost                     string `koanf:"smtp_host"`
 	SmtpPort                     int    `koanf:"smtp_port"`
 	SmtpUsername                 string `koanf:"smtp_username"`
@@ -142,30 +142,25 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 		boolDefault *bool
 	}
 
-	strVal := func(s string) *string { return &s }
-	intVal := func(i int) *int { return &i }
-	boolVal := func(b bool) *bool { return &b }
-
 	allFlags := []flagDef{
-		{"addr", "addr", "listen address", strVal(addr), nil, nil},
-		{"data-dir", "data_dir", "data directory", strVal("."), nil, nil},
-		{"dev-frontend", "dev_frontend", "Vite dev server URL for reverse proxy (dev mode only)", strVal(""), nil, nil},
-		{"db-max-conns", "db_max_conns", "maximum number of open database connections", nil, intVal(sqlitedb.DefaultMaxConns), nil},
-		{"max-message-size", "max_message_size", "maximum reassembled channel message size in bytes (default 16 MiB)", nil, intVal(0), nil},
-		{"max-incomplete-chunked", "max_incomplete_chunked", "maximum in-flight chunked sequences per channel (default 4)", nil, intVal(0), nil},
-		{"log-level", "log_level", "log level (debug, info, warn, error)", strVal(defaultLogLevel), nil, nil},
-		{"signup-enabled", "signup_enabled", "enable user sign-up", nil, nil, boolVal(false)},
-		{"email-verification-required", "email_verification_required", "require email verification on sign-up", nil, nil, boolVal(false)},
-		{"oauth-trust-email", "oauth_trust_email", "trust email from OAuth providers without verification", nil, nil, boolVal(true)},
-		{"smtp-host", "smtp_host", "SMTP server host", strVal(""), nil, nil},
-		{"smtp-port", "smtp_port", "SMTP server port", nil, intVal(587), nil},
-		{"smtp-username", "smtp_username", "SMTP username", strVal(""), nil, nil},
-		{"smtp-password", "smtp_password", "SMTP password", strVal(""), nil, nil},
-		{"smtp-from-address", "smtp_from_address", "SMTP from address", strVal(""), nil, nil},
-		{"smtp-use-tls", "smtp_use_tls", "use TLS for SMTP", nil, nil, boolVal(true)},
-		{"api-timeout-seconds", "api_timeout_seconds", "general API timeout in seconds", nil, intVal(DefaultAPITimeoutSeconds), nil},
-		{"agent-startup-timeout-seconds", "agent_startup_timeout_seconds", "agent startup timeout in seconds", nil, intVal(DefaultAgentStartupTimeoutSeconds), nil},
-		{"worktree-create-timeout-seconds", "worktree_create_timeout_seconds", "worktree creation timeout in seconds", nil, intVal(DefaultWorktreeCreateTimeoutSeconds), nil},
+		{"addr", "addr", "listen address", ptrconv.Ptr(addr), nil, nil},
+		{"data-dir", "data_dir", "data directory", ptrconv.Ptr("."), nil, nil},
+		{"dev-frontend", "dev_frontend", "Vite dev server URL for reverse proxy (dev mode only)", ptrconv.Ptr(""), nil, nil},
+		{"db-max-conns", "db_max_conns", "maximum number of open database connections", nil, ptrconv.Ptr(sqlitedb.DefaultMaxConns), nil},
+		{"max-message-size", "max_message_size", "maximum reassembled channel message size in bytes (default 16 MiB)", nil, ptrconv.Ptr(0), nil},
+		{"max-incomplete-chunked", "max_incomplete_chunked", "maximum in-flight chunked sequences per channel (default 4)", nil, ptrconv.Ptr(0), nil},
+		{"log-level", "log_level", "log level (debug, info, warn, error)", ptrconv.Ptr(defaultLogLevel), nil, nil},
+		{"signup-enabled", "signup_enabled", "enable user sign-up", nil, nil, ptrconv.Ptr(false)},
+		{"email-verification-required", "email_verification_required", "require email verification on sign-up", nil, nil, ptrconv.Ptr(false)},
+		{"smtp-host", "smtp_host", "SMTP server host", ptrconv.Ptr(""), nil, nil},
+		{"smtp-port", "smtp_port", "SMTP server port", nil, ptrconv.Ptr(587), nil},
+		{"smtp-username", "smtp_username", "SMTP username", ptrconv.Ptr(""), nil, nil},
+		{"smtp-password", "smtp_password", "SMTP password", ptrconv.Ptr(""), nil, nil},
+		{"smtp-from-address", "smtp_from_address", "SMTP from address", ptrconv.Ptr(""), nil, nil},
+		{"smtp-use-tls", "smtp_use_tls", "use TLS for SMTP", nil, nil, ptrconv.Ptr(true)},
+		{"api-timeout-seconds", "api_timeout_seconds", "general API timeout in seconds", nil, ptrconv.Ptr(DefaultAPITimeoutSeconds), nil},
+		{"agent-startup-timeout-seconds", "agent_startup_timeout_seconds", "agent startup timeout in seconds", nil, ptrconv.Ptr(DefaultAgentStartupTimeoutSeconds), nil},
+		{"worktree-create-timeout-seconds", "worktree_create_timeout_seconds", "worktree creation timeout in seconds", nil, ptrconv.Ptr(DefaultWorktreeCreateTimeoutSeconds), nil},
 	}
 
 	// Build the set of allowed CLI flags.

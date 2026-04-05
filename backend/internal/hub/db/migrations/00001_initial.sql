@@ -176,6 +176,7 @@ CREATE TABLE oauth_providers (
     client_id       TEXT NOT NULL,
     client_secret   BLOB NOT NULL,  -- encrypted with encryption key, AAD: 'oauth_provider:' || id
     scopes          TEXT NOT NULL DEFAULT 'openid profile email',
+    trust_email     INTEGER NOT NULL DEFAULT 1,  -- trust provider-reported email as verified
     enabled         INTEGER NOT NULL DEFAULT 1,
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );

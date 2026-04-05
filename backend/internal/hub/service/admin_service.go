@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/password"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/util/validate"
 )
@@ -164,18 +165,13 @@ func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leap
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
 	}
 
-	var isAdmin int64
-	if req.Msg.GetIsAdmin() {
-		isAdmin = 1
-	}
-
 	user, err := createUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
 		Username:     username,
 		PasswordHash: hash,
 		DisplayName:  req.Msg.GetDisplayName(),
 		Email:        req.Msg.GetEmail(),
 		PasswordSet:  1,
-		IsAdmin:      isAdmin,
+		IsAdmin:      ptrconv.BoolToInt64(req.Msg.GetIsAdmin()),
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -211,12 +207,8 @@ func (s *AdminService) UpdateUser(ctx context.Context, req *connect.Request[leap
 	// Update admin status if changed.
 	currentIsAdmin := user.IsAdmin == 1
 	if req.Msg.GetIsAdmin() != currentIsAdmin {
-		var isAdmin int64
-		if req.Msg.GetIsAdmin() {
-			isAdmin = 1
-		}
 		if err := s.queries.UpdateUserAdmin(ctx, db.UpdateUserAdminParams{
-			IsAdmin: isAdmin,
+			IsAdmin: ptrconv.BoolToInt64(req.Msg.GetIsAdmin()),
 			ID:      user.ID,
 		}); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update user admin: %w", err))

@@ -80,7 +80,9 @@ func fetchGitHubUser(ctx context.Context, accessToken string, baseURL string) (*
 		return nil, err
 	}
 
-	// Fetch the verified primary email from /user/emails.
+	// INVARIANT: Only the verified primary email is included in UserClaims.Email.
+	// See the comment in oidc.go Exchange for the relationship between provider-level
+	// email verification and the per-provider trust_email setting.
 	email := fetchGitHubVerifiedEmail(ctx, accessToken, baseURL)
 
 	return &UserClaims{

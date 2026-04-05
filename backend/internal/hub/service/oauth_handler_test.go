@@ -60,6 +60,10 @@ func setupOAuthTestServer(t *testing.T) (*httptest.Server, *gendb.Queries, *keys
 }
 
 func createTestProvider(t *testing.T, q *gendb.Queries, ks *keystore.Keystore) string {
+	return createTestProviderWithTrustEmail(t, q, ks, 1)
+}
+
+func createTestProviderWithTrustEmail(t *testing.T, q *gendb.Queries, ks *keystore.Keystore, trustEmail int64) string {
 	t.Helper()
 	providerID := id.Generate()
 	aad := keystore.ProviderAAD(providerID)
@@ -73,6 +77,7 @@ func createTestProvider(t *testing.T, q *gendb.Queries, ks *keystore.Keystore) s
 		ClientID:     "test-client-id",
 		ClientSecret: encSecret,
 		Scopes:       "read:user user:email",
+		TrustEmail:   trustEmail,
 		Enabled:      1,
 	})
 	require.NoError(t, err)
@@ -425,9 +430,8 @@ func TestCompleteOAuthSignup_Success(t *testing.T) {
 }
 
 func TestCompleteOAuthSignup_UsesProviderEmail_IgnoresRequestEmail(t *testing.T) {
-	_, client, q, ks, cfg := setupOAuthTestServerWithAuthService(t)
-	cfg.OAuthTrustEmail = true
-	providerID := createTestProvider(t, q, ks)
+	_, client, q, ks, _ := setupOAuthTestServerWithAuthService(t)
+	providerID := createTestProvider(t, q, ks) // trust_email=1 by default
 	signupToken := id.Generate()
 
 	// Pending signup has provider email "provider@example.com".
@@ -486,7 +490,7 @@ func TestCompleteOAuthSignup_DuplicateUsername(t *testing.T) {
 
 func TestCompleteOAuthSignup_DuplicateEmail(t *testing.T) {
 	_, client, q, ks, _ := setupOAuthTestServerWithAuthService(t)
-	providerID := createTestProvider(t, q, ks)
+	providerID := createTestProviderWithTrustEmail(t, q, ks, 0) // untrusted provider
 	signupToken := id.Generate()
 
 	insertPendingSignup(t, q, ks, providerID, signupToken, "taken@example.com", "New", "sub-new", time.Now().Add(5*time.Minute).UTC())
@@ -509,8 +513,7 @@ func TestCompleteOAuthSignup_DuplicateEmail(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// CompleteOAuthSignup with email that conflicts requires OAuthTrustEmail or no verification.
-	// By default cfg.OAuthTrustEmail is false and cfg.EmailVerificationRequired is false,
+	// Provider has trust_email=0 and cfg.EmailVerificationRequired is false,
 	// so email goes directly to the email column unverified. Duplicate check should fire.
 	_, err = client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,

@@ -15,6 +15,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/util/validate"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -76,10 +77,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		extraSettings := resolveCodexExtras(mergeExtraSettings(nil, r.GetExtraSettings()), agentProvider)
 
 		// Track whether this agent was created via session resume.
-		var resumed int64
-		if r.GetAgentSessionId() != "" {
-			resumed = 1
-		}
+		resumed := ptrconv.BoolToInt64(r.GetAgentSessionId() != "")
 
 		// Create the agent record in the database.
 		if err := svc.Queries.CreateAgent(bgCtx(), db.CreateAgentParams{

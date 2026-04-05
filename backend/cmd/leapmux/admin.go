@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
+	"strconv"
 
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/db"
@@ -12,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/oauth"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
 func runAdmin(args []string) error {
@@ -198,6 +200,15 @@ func runAddOAuthProvider(args []string) error {
 	clientSecret := fs.String("client-secret", "", "OAuth client secret")
 	issuerURL := fs.String("issuer-url", "", "OIDC issuer URL")
 	scopes := fs.String("scopes", "", "space-separated scopes")
+	var trustEmailFlag *bool
+	fs.Func("trust-email", "trust email from this provider as verified (true/false)", func(s string) error {
+		b, err := strconv.ParseBool(s)
+		if err != nil {
+			return fmt.Errorf("must be 'true' or 'false'")
+		}
+		trustEmailFlag = &b
+		return nil
+	})
 	dataDir := fs.String("data-dir", "", "data directory")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -236,6 +247,16 @@ func runAddOAuthProvider(args []string) error {
 	if scopeStr == "" {
 		scopeStr = preset.Scopes
 	}
+
+	// Resolve trust_email: explicit flag > preset default > error.
+	trustEmailVal := trustEmailFlag
+	if trustEmailVal == nil {
+		trustEmailVal = preset.TrustEmail
+	}
+	if trustEmailVal == nil {
+		return fmt.Errorf("--trust-email is required for generic OIDC providers (use --trust-email=true or --trust-email=false)")
+	}
+	trustEmail := ptrconv.BoolToInt64(*trustEmailVal)
 
 	// Validate issuer for OIDC-based providers.
 	if storedType == oauth.ProviderTypeOIDC {
@@ -276,6 +297,7 @@ func runAddOAuthProvider(args []string) error {
 		ClientID:     *clientID,
 		ClientSecret: encryptedSecret,
 		Scopes:       scopeStr,
+		TrustEmail:   trustEmail,
 		Enabled:      1,
 	}); err != nil {
 		return fmt.Errorf("create provider: %w", err)
@@ -308,13 +330,17 @@ func runListOAuthProviders(args []string) error {
 		return nil
 	}
 
-	fmt.Printf("%-48s %-8s %-20s %s\n", "ID", "TYPE", "NAME", "ENABLED")
+	fmt.Printf("%-48s %-8s %-20s %-14s %s\n", "ID", "TYPE", "NAME", "TRUST_EMAIL", "ENABLED")
 	for _, p := range providers {
+		trustEmail := "yes"
+		if p.TrustEmail != 1 {
+			trustEmail = "no"
+		}
 		enabled := "yes"
 		if p.Enabled != 1 {
 			enabled = "no"
 		}
-		fmt.Printf("%-48s %-8s %-20s %s\n", p.ID, p.ProviderType, p.Name, enabled)
+		fmt.Printf("%-48s %-8s %-20s %-14s %s\n", p.ID, p.ProviderType, p.Name, trustEmail, enabled)
 	}
 	return nil
 }
@@ -368,12 +394,8 @@ func runSetOAuthProviderEnabled(args []string, enabled bool) error {
 	}
 	defer func() { _ = sqlDB.Close() }()
 
-	var enabledInt int64
-	if enabled {
-		enabledInt = 1
-	}
 	if err := q.UpdateOAuthProviderEnabled(context.Background(), gendb.UpdateOAuthProviderEnabledParams{
-		Enabled: enabledInt,
+		Enabled: ptrconv.BoolToInt64(enabled),
 		ID:      *providerID,
 	}); err != nil {
 		return fmt.Errorf("update provider: %w", err)

@@ -1,16 +1,16 @@
 -- name: CreateOAuthProvider :exec
-INSERT INTO oauth_providers (id, provider_type, name, issuer_url, client_id, client_secret, scopes, enabled)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO oauth_providers (id, provider_type, name, issuer_url, client_id, client_secret, scopes, trust_email, enabled)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetOAuthProviderByID :one
 SELECT * FROM oauth_providers WHERE id = ?;
 
 -- name: ListEnabledOAuthProviders :many
-SELECT id, provider_type, name, issuer_url, client_id, scopes, enabled, created_at
+SELECT id, provider_type, name, issuer_url, client_id, scopes, trust_email, enabled, created_at
 FROM oauth_providers WHERE enabled = 1 ORDER BY created_at;
 
 -- name: ListAllOAuthProviders :many
-SELECT id, provider_type, name, issuer_url, client_id, scopes, enabled, created_at
+SELECT id, provider_type, name, issuer_url, client_id, scopes, trust_email, enabled, created_at
 FROM oauth_providers ORDER BY created_at;
 
 -- name: UpdateOAuthProviderEnabled :exec

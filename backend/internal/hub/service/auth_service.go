@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	pwdhash "github.com/leapmux/leapmux/internal/hub/password"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/validate"
 	"github.com/leapmux/leapmux/util/version"
 )
@@ -331,6 +332,13 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		displayName = pending.DisplayName
 	}
 
+	// Look up the provider's trust_email setting.
+	oauthProvider, provErr := s.queries.GetOAuthProviderByID(ctx, pending.ProviderID)
+	if provErr != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("lookup provider: %w", provErr))
+	}
+	trustEmail := oauthProvider.TrustEmail == 1
+
 	var userEmail string
 	var emailVerified bool
 	var pendingEmail string
@@ -340,7 +348,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 			return nil, connect.NewError(connect.CodeAlreadyExists, err)
 		}
 
-		if s.cfg.OAuthTrustEmail {
+		if trustEmail {
 			// Trusted OAuth email — goes directly to email column as verified.
 			userEmail = email
 			emailVerified = true
@@ -353,17 +361,12 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		}
 	}
 
-	var ev int64
-	if emailVerified {
-		ev = 1
-	}
-
 	user, err := createUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
 		Username:      username,
 		PasswordHash:  pwdhash.PlaceholderHash,
 		DisplayName:   displayName,
 		Email:         userEmail,
-		EmailVerified: ev,
+		EmailVerified: ptrconv.BoolToInt64(emailVerified),
 		PasswordSet:   0, // OAuth users don't have a real password
 		IsAdmin:       0,
 	})

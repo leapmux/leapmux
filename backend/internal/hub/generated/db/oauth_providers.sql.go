@@ -11,8 +11,8 @@ import (
 )
 
 const createOAuthProvider = `-- name: CreateOAuthProvider :exec
-INSERT INTO oauth_providers (id, provider_type, name, issuer_url, client_id, client_secret, scopes, enabled)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO oauth_providers (id, provider_type, name, issuer_url, client_id, client_secret, scopes, trust_email, enabled)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateOAuthProviderParams struct {
@@ -23,6 +23,7 @@ type CreateOAuthProviderParams struct {
 	ClientID     string `json:"client_id"`
 	ClientSecret []byte `json:"client_secret"`
 	Scopes       string `json:"scopes"`
+	TrustEmail   int64  `json:"trust_email"`
 	Enabled      int64  `json:"enabled"`
 }
 
@@ -35,6 +36,7 @@ func (q *Queries) CreateOAuthProvider(ctx context.Context, arg CreateOAuthProvid
 		arg.ClientID,
 		arg.ClientSecret,
 		arg.Scopes,
+		arg.TrustEmail,
 		arg.Enabled,
 	)
 	return err
@@ -50,7 +52,7 @@ func (q *Queries) DeleteOAuthProvider(ctx context.Context, id string) error {
 }
 
 const getOAuthProviderByID = `-- name: GetOAuthProviderByID :one
-SELECT id, provider_type, name, issuer_url, client_id, client_secret, scopes, enabled, created_at FROM oauth_providers WHERE id = ?
+SELECT id, provider_type, name, issuer_url, client_id, client_secret, scopes, trust_email, enabled, created_at FROM oauth_providers WHERE id = ?
 `
 
 func (q *Queries) GetOAuthProviderByID(ctx context.Context, id string) (OauthProvider, error) {
@@ -64,6 +66,7 @@ func (q *Queries) GetOAuthProviderByID(ctx context.Context, id string) (OauthPro
 		&i.ClientID,
 		&i.ClientSecret,
 		&i.Scopes,
+		&i.TrustEmail,
 		&i.Enabled,
 		&i.CreatedAt,
 	)
@@ -71,7 +74,7 @@ func (q *Queries) GetOAuthProviderByID(ctx context.Context, id string) (OauthPro
 }
 
 const listAllOAuthProviders = `-- name: ListAllOAuthProviders :many
-SELECT id, provider_type, name, issuer_url, client_id, scopes, enabled, created_at
+SELECT id, provider_type, name, issuer_url, client_id, scopes, trust_email, enabled, created_at
 FROM oauth_providers ORDER BY created_at
 `
 
@@ -82,6 +85,7 @@ type ListAllOAuthProvidersRow struct {
 	IssuerUrl    string    `json:"issuer_url"`
 	ClientID     string    `json:"client_id"`
 	Scopes       string    `json:"scopes"`
+	TrustEmail   int64     `json:"trust_email"`
 	Enabled      int64     `json:"enabled"`
 	CreatedAt    time.Time `json:"created_at"`
 }
@@ -102,6 +106,7 @@ func (q *Queries) ListAllOAuthProviders(ctx context.Context) ([]ListAllOAuthProv
 			&i.IssuerUrl,
 			&i.ClientID,
 			&i.Scopes,
+			&i.TrustEmail,
 			&i.Enabled,
 			&i.CreatedAt,
 		); err != nil {
@@ -119,7 +124,7 @@ func (q *Queries) ListAllOAuthProviders(ctx context.Context) ([]ListAllOAuthProv
 }
 
 const listAllOAuthProvidersWithSecrets = `-- name: ListAllOAuthProvidersWithSecrets :many
-SELECT id, provider_type, name, issuer_url, client_id, client_secret, scopes, enabled, created_at FROM oauth_providers ORDER BY created_at
+SELECT id, provider_type, name, issuer_url, client_id, client_secret, scopes, trust_email, enabled, created_at FROM oauth_providers ORDER BY created_at
 `
 
 func (q *Queries) ListAllOAuthProvidersWithSecrets(ctx context.Context) ([]OauthProvider, error) {
@@ -139,6 +144,7 @@ func (q *Queries) ListAllOAuthProvidersWithSecrets(ctx context.Context) ([]Oauth
 			&i.ClientID,
 			&i.ClientSecret,
 			&i.Scopes,
+			&i.TrustEmail,
 			&i.Enabled,
 			&i.CreatedAt,
 		); err != nil {
@@ -156,7 +162,7 @@ func (q *Queries) ListAllOAuthProvidersWithSecrets(ctx context.Context) ([]Oauth
 }
 
 const listEnabledOAuthProviders = `-- name: ListEnabledOAuthProviders :many
-SELECT id, provider_type, name, issuer_url, client_id, scopes, enabled, created_at
+SELECT id, provider_type, name, issuer_url, client_id, scopes, trust_email, enabled, created_at
 FROM oauth_providers WHERE enabled = 1 ORDER BY created_at
 `
 
@@ -167,6 +173,7 @@ type ListEnabledOAuthProvidersRow struct {
 	IssuerUrl    string    `json:"issuer_url"`
 	ClientID     string    `json:"client_id"`
 	Scopes       string    `json:"scopes"`
+	TrustEmail   int64     `json:"trust_email"`
 	Enabled      int64     `json:"enabled"`
 	CreatedAt    time.Time `json:"created_at"`
 }
@@ -187,6 +194,7 @@ func (q *Queries) ListEnabledOAuthProviders(ctx context.Context) ([]ListEnabledO
 			&i.IssuerUrl,
 			&i.ClientID,
 			&i.Scopes,
+			&i.TrustEmail,
 			&i.Enabled,
 			&i.CreatedAt,
 		); err != nil {
