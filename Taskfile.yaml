@@ -65,6 +65,7 @@ tasks:
     generates:
       - backend/internal/hub/generated/db/**/*
     cmds:
+      - rm -rf backend/internal/hub/generated/db/
       - cd backend/internal/hub && sqlc generate
 
   generate-sqlc-worker:
@@ -77,6 +78,7 @@ tasks:
     generates:
       - backend/internal/worker/generated/db/**/*
     cmds:
+      - rm -rf backend/internal/worker/generated/db/
       - cd backend/internal/worker && sqlc generate
 
   # --- Preparation ---
