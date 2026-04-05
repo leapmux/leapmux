@@ -25,7 +25,7 @@ func setupCreateUserTestDB(t *testing.T) (*sql.DB, *gendb.Queries) {
 
 func createSimpleUser(t *testing.T, sqlDB *sql.DB, q *gendb.Queries, username, email string) *gendb.User {
 	t.Helper()
-	hash, err := password.Hash("pass")
+	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	user, err := createUserWithOrg(context.Background(), sqlDB, q, CreateUserParams{
 		Username:     username,
@@ -88,7 +88,7 @@ func TestCreateUserWithOrg_ClearsCompetingPendingEmails(t *testing.T) {
 	require.NoError(t, err)
 
 	// User B signs up with that email directly.
-	hash, _ := password.Hash("pass")
+	hash, _ := password.Hash("testpass")
 	_, err = createUserWithOrg(ctx, sqlDB, q, CreateUserParams{
 		Username:     "user-b",
 		PasswordHash: hash,

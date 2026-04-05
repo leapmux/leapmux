@@ -102,6 +102,21 @@ export function validateEmail(email: string): string | null {
   return null
 }
 
+const MIN_PASSWORD_LENGTH = 8
+const MAX_PASSWORD_LENGTH = 128
+
+/**
+ * Validates a password against the length policy.
+ * Returns an error message string, or null if valid.
+ */
+export function validatePassword(password: string): string | null {
+  if (password.length < MIN_PASSWORD_LENGTH)
+    return `Password must be at least ${MIN_PASSWORD_LENGTH} characters`
+  if (password.length > MAX_PASSWORD_LENGTH)
+    return `Password must be at most ${MAX_PASSWORD_LENGTH} characters`
+  return null
+}
+
 const SLUG_PATTERN = /^[a-z0-9-]+$/
 
 /**

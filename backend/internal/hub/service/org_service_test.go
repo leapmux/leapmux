@@ -70,7 +70,7 @@ func setupOrgTestServer(t *testing.T) *orgTestEnv {
 	client := leapmuxv1connect.NewOrgServiceClient(server.Client(), server.URL)
 
 	// Login as the bootstrapped admin user.
-	token, user, _, err := auth.Login(context.Background(), q, "admin", "admin")
+	token, user, _, err := auth.Login(context.Background(), q, "admin", "admin123")
 	require.NoError(t, err)
 
 	return &orgTestEnv{
@@ -87,7 +87,7 @@ func (e *orgTestEnv) createSecondUser(t *testing.T) (userID, token string) {
 	ctx := context.Background()
 
 	userID = id.Generate()
-	hash, _ := password.Hash("pass2")
+	hash, _ := password.Hash("testpass2")
 	_ = e.queries.CreateUser(ctx, gendb.CreateUserParams{
 		ID:           userID,
 		OrgID:        e.orgID,
@@ -103,7 +103,7 @@ func (e *orgTestEnv) createSecondUser(t *testing.T) (userID, token string) {
 		UserID: userID,
 		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER,
 	})
-	token, _, _, err := auth.Login(ctx, e.queries, "user2", "pass2")
+	token, _, _, err := auth.Login(ctx, e.queries, "user2", "testpass2")
 	require.NoError(t, err)
 	return
 }

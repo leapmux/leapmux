@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -60,13 +61,14 @@ func mockOIDCServer(t *testing.T) (*httptest.Server, *rsa.PrivateKey) {
 		// Build a signed ID token.
 		signer, _ := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: privKey}, (&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "test-key"))
 		allClaims := map[string]interface{}{
-			"iss":   serverURL,
-			"sub":   "oidc-user-123",
-			"aud":   "test-client",
-			"exp":   time.Now().Add(1 * time.Hour).Unix(),
-			"iat":   time.Now().Unix(),
-			"email": "user@example.com",
-			"name":  "Test User",
+			"iss":            serverURL,
+			"sub":            "oidc-user-123",
+			"aud":            "test-client",
+			"exp":            time.Now().Add(1 * time.Hour).Unix(),
+			"iat":            time.Now().Unix(),
+			"email":          "user@example.com",
+			"email_verified": true,
+			"name":           "Test User",
 		}
 		rawToken, _ := jwt.Signed(signer).Claims(allClaims).Serialize()
 
@@ -117,6 +119,117 @@ func TestOIDC_Exchange_Success(t *testing.T) {
 	assert.Equal(t, "oidc-user-123", claims.Subject)
 	assert.Equal(t, "user@example.com", claims.Email)
 	assert.Equal(t, "Test User", claims.Name)
+}
+
+func TestOIDC_Exchange_UnverifiedEmail(t *testing.T) {
+	// Create a server that returns email_verified=false.
+	srv, privKey := mockOIDCServer(t)
+
+	// Override the token endpoint to return unverified email.
+	unverifiedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/token") {
+			signer, _ := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: privKey}, (&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "test-key"))
+			allClaims := map[string]interface{}{
+				"iss":            srv.URL,
+				"sub":            "oidc-user-456",
+				"aud":            "test-client",
+				"exp":            time.Now().Add(1 * time.Hour).Unix(),
+				"iat":            time.Now().Unix(),
+				"email":          "unverified@example.com",
+				"email_verified": false,
+				"name":           "Unverified User",
+			}
+			rawToken, _ := jwt.Signed(signer).Claims(allClaims).Serialize()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"access_token":  "mock-access-token",
+				"refresh_token": "mock-refresh-token",
+				"token_type":    "Bearer",
+				"expires_in":    3600,
+				"id_token":      rawToken,
+			})
+			return
+		}
+		// Proxy other requests to the real mock server.
+		resp, err := http.Get(srv.URL + r.URL.Path)
+		if err != nil {
+			w.WriteHeader(500)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+		w.WriteHeader(resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(unverifiedSrv.Close)
+
+	// Use unverifiedSrv for exchange but real srv for discovery/JWKS.
+	// We need to create the provider from srv (discovery), then exchange via unverifiedSrv.
+	// Since we can't split discovery from exchange easily, we test at the provider level
+	// by creating a provider that points to srv for discovery, then calling Exchange
+	// with the unverifiedSrv's token endpoint.
+	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", nil)
+	require.NoError(t, err)
+
+	// Override the token endpoint to point to our unverified server.
+	p.oauth2Config.Endpoint.TokenURL = unverifiedSrv.URL + "/token"
+
+	_, claims, err := p.Exchange(context.Background(), "valid-code", "test-verifier")
+	require.NoError(t, err)
+
+	assert.Empty(t, claims.Email, "unverified email must not be returned")
+	assert.Equal(t, "Unverified User", claims.Name)
+}
+
+func TestOIDC_Exchange_MissingEmailVerified(t *testing.T) {
+	// Create a server that omits email_verified entirely.
+	srv, privKey := mockOIDCServer(t)
+
+	noVerifiedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/token") {
+			signer, _ := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: privKey}, (&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "test-key"))
+			allClaims := map[string]interface{}{
+				"iss":   srv.URL,
+				"sub":   "oidc-user-789",
+				"aud":   "test-client",
+				"exp":   time.Now().Add(1 * time.Hour).Unix(),
+				"iat":   time.Now().Unix(),
+				"email": "nofield@example.com",
+				"name":  "No Field User",
+			}
+			rawToken, _ := jwt.Signed(signer).Claims(allClaims).Serialize()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"access_token":  "mock-access-token",
+				"refresh_token": "mock-refresh-token",
+				"token_type":    "Bearer",
+				"expires_in":    3600,
+				"id_token":      rawToken,
+			})
+			return
+		}
+		resp, err := http.Get(srv.URL + r.URL.Path)
+		if err != nil {
+			w.WriteHeader(500)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+		w.WriteHeader(resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(noVerifiedSrv.Close)
+
+	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", nil)
+	require.NoError(t, err)
+	p.oauth2Config.Endpoint.TokenURL = noVerifiedSrv.URL + "/token"
+
+	_, claims, err := p.Exchange(context.Background(), "valid-code", "test-verifier")
+	require.NoError(t, err)
+
+	assert.Empty(t, claims.Email, "email must not be returned when email_verified is missing")
 }
 
 func TestOIDC_Exchange_InvalidCode(t *testing.T) {

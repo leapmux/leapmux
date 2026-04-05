@@ -22,7 +22,7 @@ import (
 
 // setupInterceptorTestServer creates an httptest server with the AuthService
 // registered behind the auth interceptor. It returns a ConnectRPC client and
-// the bootstrapped admin credentials (username "admin", password "admin").
+// the bootstrapped admin credentials (username "admin", password "admin123").
 func setupInterceptorTestServer(t *testing.T) leapmuxv1connect.AuthServiceClient {
 	t.Helper()
 
@@ -52,7 +52,7 @@ func loginAdmin(t *testing.T, client leapmuxv1connect.AuthServiceClient) string 
 
 	resp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username: "admin",
-		Password: "admin",
+		Password: "admin123",
 	}))
 	require.NoError(t, err)
 	return extractSessionFromCookie(t, resp.Header().Get("Set-Cookie"))

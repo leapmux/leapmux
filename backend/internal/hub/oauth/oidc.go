@@ -70,16 +70,23 @@ func (p *OIDCProvider) Exchange(ctx context.Context, code, codeVerifier string) 
 	}
 
 	var claims struct {
-		Email string `json:"email"`
-		Name  string `json:"name"`
+		Email         string `json:"email"`
+		EmailVerified *bool  `json:"email_verified,omitempty"`
+		Name          string `json:"name"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
 		return nil, nil, fmt.Errorf("oidc parse claims: %w", err)
 	}
 
+	// Only populate Email when the provider confirms it is verified.
+	email := ""
+	if claims.EmailVerified != nil && *claims.EmailVerified {
+		email = claims.Email
+	}
+
 	userClaims := &UserClaims{
 		Subject: idToken.Subject,
-		Email:   claims.Email,
+		Email:   email,
 		Name:    claims.Name,
 	}
 

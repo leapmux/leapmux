@@ -2,7 +2,7 @@ import type { Component } from 'solid-js'
 import { createSignal, For, onMount, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
 import { useAuth } from '~/context/AuthContext'
-import { sanitizeSlug, validateEmail } from '~/lib/validate'
+import { sanitizeSlug, validateEmail, validatePassword } from '~/lib/validate'
 import { errorText, successText, warningText } from '~/styles/shared.css'
 import * as styles from './PreferencesDialog.css'
 
@@ -94,8 +94,9 @@ export const ProfileSettings: Component = () => {
       setPasswordMessage({ type: 'error', text: 'Passwords do not match.' })
       return
     }
-    if (!newPassword()) {
-      setPasswordMessage({ type: 'error', text: 'New password is required.' })
+    const pwErr = validatePassword(newPassword())
+    if (pwErr) {
+      setPasswordMessage({ type: 'error', text: pwErr })
       return
     }
     setPasswordSaving(true)

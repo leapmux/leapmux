@@ -191,6 +191,10 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
+	if err := validate.ValidatePassword(req.Msg.GetNewPassword()); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	// OAuth-only users (password_set == 0) can set a password without providing
 	// the current one. Users with a password must verify it first.
 	if user.PasswordSet == 1 {

@@ -109,8 +109,8 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	pw := req.Msg.GetPassword()
-	if pw == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("password is required"))
+	if err := validate.ValidatePassword(pw); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
 	// Check username uniqueness.

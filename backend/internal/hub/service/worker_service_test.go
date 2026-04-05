@@ -87,7 +87,7 @@ func (e *workerTestEnv) adminToken(t *testing.T) string {
 	t.Helper()
 	resp, err := e.authClient.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username: "admin",
-		Password: "admin",
+		Password: "admin123",
 	}))
 	require.NoError(t, err)
 	return sessionFromCookie(t, resp.Header().Get("Set-Cookie"))
@@ -376,7 +376,7 @@ func (e *workerTestEnv) createSecondUser(t *testing.T) (userID, token string) {
 	require.NoError(t, err)
 
 	userID = id.Generate()
-	hash, _ := password.Hash("pass2")
+	hash, _ := password.Hash("testpass2")
 	_ = e.queries.CreateUser(ctx, gendb.CreateUserParams{
 		ID:           userID,
 		OrgID:        adminUser.OrgID,
@@ -392,7 +392,7 @@ func (e *workerTestEnv) createSecondUser(t *testing.T) (userID, token string) {
 		UserID: userID,
 		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER,
 	})
-	token, _, _, loginErr := auth.Login(ctx, e.queries, "user2", "pass2")
+	token, _, _, loginErr := auth.Login(ctx, e.queries, "user2", "testpass2")
 	require.NoError(t, loginErr)
 	return
 }

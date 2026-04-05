@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { sanitizeName, validateEmail } from './validate'
+import { sanitizeName, validateEmail, validatePassword } from './validate'
 
 describe('sanitizeName', () => {
   it('returns sanitized value for valid names', () => {
@@ -107,5 +107,31 @@ describe('validateEmail', () => {
 
   it('rejects emails exceeding 254 characters', () => {
     expect(validateEmail(`${'a'.repeat(250)}@b.co`)).not.toBeNull()
+  })
+})
+
+describe('validatePassword', () => {
+  it('rejects empty password', () => {
+    expect(validatePassword('')).not.toBeNull()
+  })
+
+  it('rejects password shorter than 8 characters', () => {
+    expect(validatePassword('1234567')).not.toBeNull()
+  })
+
+  it('accepts password at minimum length (8 chars)', () => {
+    expect(validatePassword('12345678')).toBeNull()
+  })
+
+  it('accepts typical password', () => {
+    expect(validatePassword('my-secure-password')).toBeNull()
+  })
+
+  it('accepts password at maximum length (128 chars)', () => {
+    expect(validatePassword('a'.repeat(128))).toBeNull()
+  })
+
+  it('rejects password exceeding 128 characters', () => {
+    expect(validatePassword('a'.repeat(129))).not.toBeNull()
   })
 })

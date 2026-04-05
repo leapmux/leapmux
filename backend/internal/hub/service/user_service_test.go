@@ -65,7 +65,7 @@ func setupUserTest(t *testing.T) *userTestEnv {
 
 	orgID := id.Generate()
 	userID := id.Generate()
-	hash, _ := password.Hash("pass")
+	hash, _ := password.Hash("testpass")
 
 	_ = queries.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "testuser"})
 	_ = queries.CreateUser(context.Background(), gendb.CreateUserParams{
@@ -78,7 +78,7 @@ func setupUserTest(t *testing.T) *userTestEnv {
 		IsAdmin:      1,
 	})
 
-	token, _, _, err := auth.Login(context.Background(), queries, "testuser", "pass")
+	token, _, _, err := auth.Login(context.Background(), queries, "testuser", "testpass")
 	require.NoError(t, err)
 
 	return &userTestEnv{
@@ -128,7 +128,7 @@ func TestUserService_UpdateProfile_DuplicateUsername(t *testing.T) {
 
 	// Create a second user.
 	user2ID := id.Generate()
-	hash, _ := password.Hash("pass2")
+	hash, _ := password.Hash("testpass2")
 	_ = env.queries.CreateUser(context.Background(), gendb.CreateUserParams{
 		ID:           user2ID,
 		OrgID:        env.orgID,
@@ -152,7 +152,7 @@ func TestUserService_ChangePassword(t *testing.T) {
 	env := setupUserTest(t)
 
 	_, err := env.client.ChangePassword(context.Background(), authedReq(&leapmuxv1.ChangePasswordRequest{
-		CurrentPassword: "pass",
+		CurrentPassword: "testpass",
 		NewPassword:     "newpass123",
 	}, env.token))
 	require.NoError(t, err)
@@ -162,7 +162,7 @@ func TestUserService_ChangePassword(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Verify login with old password fails.
-	_, _, _, err = auth.Login(context.Background(), env.queries, "testuser", "pass")
+	_, _, _, err = auth.Login(context.Background(), env.queries, "testuser", "testpass")
 	require.Error(t, err)
 }
 
@@ -363,7 +363,7 @@ func TestRequestEmailChange_DuplicateEmail_Rejected(t *testing.T) {
 
 	// Create a second user with an email.
 	user2ID := id.Generate()
-	hash, _ := password.Hash("pass2")
+	hash, _ := password.Hash("testpass2")
 	_ = env.queries.CreateUser(context.Background(), gendb.CreateUserParams{
 		ID:           user2ID,
 		OrgID:        env.orgID,
@@ -425,7 +425,7 @@ func setupVerificationUserTestServer(t *testing.T) (leapmuxv1connect.UserService
 	client := leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL)
 
 	// Log in as admin (bootstrap user).
-	token, _, _, err := auth.Login(context.Background(), q, "admin", "admin")
+	token, _, _, err := auth.Login(context.Background(), q, "admin", "admin123")
 	require.NoError(t, err)
 
 	return client, q, token
@@ -581,7 +581,7 @@ func TestVerifyEmailChange_EmailTakenSinceRequest(t *testing.T) {
 
 	// Create another user who claims that email in the email column.
 	user2ID := id.Generate()
-	hash, _ := password.Hash("pass2")
+	hash, _ := password.Hash("testpass2")
 	_ = env.queries.CreateUser(context.Background(), gendb.CreateUserParams{
 		ID:           user2ID,
 		OrgID:        env.orgID,

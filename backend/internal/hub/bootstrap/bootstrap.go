@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	defaultPassword = "admin"
+	defaultPassword = "admin123"
 )
 
 // Username returns the default admin username for the given mode.

@@ -46,7 +46,7 @@ func TestRun_CreatesOrgAndAdmin(t *testing.T) {
 	assert.Equal(t, int64(1), user.IsAdmin)
 
 	// Verify password hash is valid Argon2id.
-	match, err := password.Verify(user.PasswordHash, "admin")
+	match, err := password.Verify(user.PasswordHash, "admin123")
 	assert.NoError(t, err)
 	assert.True(t, match)
 }

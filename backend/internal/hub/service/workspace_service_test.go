@@ -66,7 +66,7 @@ func setupWorkspaceTest(t *testing.T) *workspaceTestEnv {
 
 	orgID := id.Generate()
 	userID := id.Generate()
-	hash, _ := password.Hash("pass")
+	hash, _ := password.Hash("testpass")
 
 	_ = queries.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "test-org"})
 	_ = queries.CreateUser(context.Background(), gendb.CreateUserParams{
@@ -89,7 +89,7 @@ func setupWorkspaceTest(t *testing.T) *workspaceTestEnv {
 		SlhdsaPublicKey: []byte{},
 	})
 
-	token, _, _, err := auth.Login(context.Background(), queries, "testuser", "pass")
+	token, _, _, err := auth.Login(context.Background(), queries, "testuser", "testpass")
 	require.NoError(t, err)
 
 	return &workspaceTestEnv{
@@ -200,7 +200,7 @@ func TestSaveMultiLayout_NotOwnedWorkspaceRejected(t *testing.T) {
 
 	// Create a workspace owned by another user.
 	otherUserID := id.Generate()
-	hash, _ := password.Hash("pass")
+	hash, _ := password.Hash("testpass")
 	_ = env.queries.CreateUser(context.Background(), gendb.CreateUserParams{
 		ID:           otherUserID,
 		OrgID:        env.orgID,

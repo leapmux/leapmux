@@ -78,7 +78,7 @@ export async function openAdminDialog(page: Page) {
  * Login via the UI form. Navigates to /login, fills credentials,
  * and waits for redirect to the personal org page.
  */
-export async function loginViaUI(page: Page, username = 'admin', password = 'admin') {
+export async function loginViaUI(page: Page, username = 'admin', password = 'admin123') {
   await page.goto('/login')
   await page.getByLabel('Username').fill(username)
   await page.getByLabel('Password').fill(password)

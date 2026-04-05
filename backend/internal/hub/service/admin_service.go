@@ -155,6 +155,9 @@ func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leap
 		return nil, connect.NewError(connect.CodeAlreadyExists, err)
 	}
 
+	if err := validate.ValidatePassword(req.Msg.GetPassword()); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	hash, err := password.Hash(req.Msg.GetPassword())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
@@ -313,6 +316,9 @@ func (s *AdminService) ResetUserPassword(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get user: %w", err))
 	}
 
+	if err := validate.ValidatePassword(req.Msg.GetNewPassword()); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	hash, err := password.Hash(req.Msg.GetNewPassword())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))

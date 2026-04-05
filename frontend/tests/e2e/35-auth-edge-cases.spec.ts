@@ -9,7 +9,7 @@ test.describe('Auth Edge Cases', () => {
   test('should disable sign in button with empty username', async ({ page }) => {
     await page.goto('/login')
     // Only fill in the password field, leave username empty
-    await page.getByLabel('Password').fill('admin')
+    await page.getByLabel('Password').fill('admin123')
 
     // The Sign in button should be disabled when username is empty
     await expect(page.getByRole('button', { name: 'Sign in' })).toBeDisabled()

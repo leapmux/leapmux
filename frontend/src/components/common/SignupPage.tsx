@@ -9,7 +9,7 @@ import { Icon } from '~/components/common/Icon'
 import { OAuthProviderList } from '~/components/common/OAuthProviderList'
 import { useAuth } from '~/context/AuthContext'
 import { isSignupEnabled, loadOAuthProviders } from '~/lib/systemInfo'
-import { sanitizeSlug, validateEmail } from '~/lib/validate'
+import { sanitizeSlug, validateEmail, validatePassword } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
 import { cardNarrow, errorText } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
@@ -38,6 +38,11 @@ export const SignupPage: Component = () => {
     e.preventDefault()
     if (password() !== confirmPassword()) {
       setError('Passwords do not match.')
+      return
+    }
+    const pwErr = validatePassword(password())
+    if (pwErr) {
+      setError(pwErr)
       return
     }
     const [slug, slugErr] = sanitizeSlug('Username', username())

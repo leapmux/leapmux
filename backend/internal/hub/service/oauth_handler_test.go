@@ -458,7 +458,7 @@ func TestCompleteOAuthSignup_DuplicateUsername(t *testing.T) {
 	orgID := id.Generate()
 	err := q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "existing-org"})
 	require.NoError(t, err)
-	hash, err := password.Hash("pass")
+	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	err = q.CreateUser(context.Background(), gendb.CreateUserParams{
 		ID:           id.Generate(),
@@ -495,7 +495,7 @@ func TestCompleteOAuthSignup_DuplicateEmail(t *testing.T) {
 	orgID := id.Generate()
 	err := q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "emaildup-org"})
 	require.NoError(t, err)
-	hash, err := password.Hash("pass")
+	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	err = q.CreateUser(context.Background(), gendb.CreateUserParams{
 		ID:           id.Generate(),
@@ -685,7 +685,7 @@ func TestAutoLinkByVerifiedEmail(t *testing.T) {
 	orgID := id.Generate()
 	err := q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "alice-org", IsPersonal: 1})
 	require.NoError(t, err)
-	hash, err := password.Hash("pass")
+	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	userID := id.Generate()
 	err = q.CreateUser(context.Background(), gendb.CreateUserParams{
@@ -784,7 +784,7 @@ func TestAutoLinkByEmail_SkippedWhenUnverified(t *testing.T) {
 	orgID := id.Generate()
 	err := q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "bob-org", IsPersonal: 1})
 	require.NoError(t, err)
-	hash, err := password.Hash("pass")
+	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	err = q.CreateUser(context.Background(), gendb.CreateUserParams{
 		ID:            id.Generate(),

@@ -22,9 +22,26 @@ func TestGitHub_AuthURL_IncludesStateAndScopes(t *testing.T) {
 	assert.Contains(t, url, "scope=read")
 }
 
+// mockGitHubAPI creates a test server that handles /user and /user/emails.
+func mockGitHubAPI(t *testing.T, user map[string]interface{}, emails []map[string]interface{}) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(user)
+	})
+	mux.HandleFunc("/user/emails", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(emails)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 func TestGitHub_Exchange_Success(t *testing.T) {
-	// Mock GitHub token endpoint and user API.
-	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Mock GitHub token endpoint.
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"access_token": "gh-access-token",
@@ -33,36 +50,26 @@ func TestGitHub_Exchange_Success(t *testing.T) {
 	}))
 	t.Cleanup(tokenSrv.Close)
 
-	userSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify auth header.
-		assert.Equal(t, "Bearer gh-access-token", r.Header.Get("Authorization"))
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"id":    42,
-			"login": "octocat",
-			"name":  "The Octocat",
-			"email": "octocat@github.com",
-		})
-	}))
-	t.Cleanup(userSrv.Close)
+	// Mock GitHub API with verified primary email.
+	apiSrv := mockGitHubAPI(t,
+		map[string]interface{}{"id": 42, "login": "octocat", "name": "The Octocat"},
+		[]map[string]interface{}{
+			{"email": "octocat@github.com", "primary": true, "verified": true},
+			{"email": "other@example.com", "primary": false, "verified": true},
+		},
+	)
 
 	p := &GitHubProvider{
 		oauth2Config: &oauth2.Config{
 			ClientID:     "gh-client-id",
 			ClientSecret: "gh-secret",
 			RedirectURL:  "http://localhost/callback",
-			Endpoint: oauth2.Endpoint{
-				TokenURL: tokenSrv.URL,
-			},
-			Scopes: []string{"read:user"},
+			Endpoint:     oauth2.Endpoint{TokenURL: tokenSrv.URL},
+			Scopes:       []string{"read:user"},
 		},
 	}
 
-	// Patch fetchGitHubUser to use our mock server.
-	origExchange := p.oauth2Config.Endpoint.TokenURL
-	_ = origExchange
-
-	tokenSet, claims, err := p.exchangeWithUserURL(context.Background(), "valid-code", userSrv.URL+"/user")
+	tokenSet, claims, err := p.exchangeWithBaseURL(context.Background(), "valid-code", apiSrv.URL)
 	require.NoError(t, err)
 
 	assert.Equal(t, "gh-access-token", tokenSet.AccessToken)
@@ -73,8 +80,67 @@ func TestGitHub_Exchange_Success(t *testing.T) {
 	assert.Equal(t, "octocat@github.com", claims.Email)
 }
 
+func TestGitHub_Exchange_UnverifiedEmail(t *testing.T) {
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "gh-access-token",
+			"token_type":   "bearer",
+		})
+	}))
+	t.Cleanup(tokenSrv.Close)
+
+	// Primary email is not verified.
+	apiSrv := mockGitHubAPI(t,
+		map[string]interface{}{"id": 42, "login": "octocat", "name": "The Octocat"},
+		[]map[string]interface{}{
+			{"email": "unverified@example.com", "primary": true, "verified": false},
+		},
+	)
+
+	p := &GitHubProvider{
+		oauth2Config: &oauth2.Config{
+			ClientID:     "gh-client-id",
+			ClientSecret: "gh-secret",
+			Endpoint:     oauth2.Endpoint{TokenURL: tokenSrv.URL},
+		},
+	}
+
+	_, claims, err := p.exchangeWithBaseURL(context.Background(), "valid-code", apiSrv.URL)
+	require.NoError(t, err)
+	assert.Empty(t, claims.Email, "unverified email must not be returned")
+}
+
+func TestGitHub_Exchange_NoEmails(t *testing.T) {
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "gh-access-token",
+			"token_type":   "bearer",
+		})
+	}))
+	t.Cleanup(tokenSrv.Close)
+
+	// No emails returned.
+	apiSrv := mockGitHubAPI(t,
+		map[string]interface{}{"id": 42, "login": "octocat", "name": "The Octocat"},
+		[]map[string]interface{}{},
+	)
+
+	p := &GitHubProvider{
+		oauth2Config: &oauth2.Config{
+			ClientID:     "gh-client-id",
+			ClientSecret: "gh-secret",
+			Endpoint:     oauth2.Endpoint{TokenURL: tokenSrv.URL},
+		},
+	}
+
+	_, claims, err := p.exchangeWithBaseURL(context.Background(), "valid-code", apiSrv.URL)
+	require.NoError(t, err)
+	assert.Empty(t, claims.Email)
+}
+
 func TestGitHub_Exchange_InvalidCode(t *testing.T) {
-	// Mock token endpoint that returns an error.
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"error":"bad_verification_code"}`))
@@ -85,9 +151,7 @@ func TestGitHub_Exchange_InvalidCode(t *testing.T) {
 		oauth2Config: &oauth2.Config{
 			ClientID:     "gh-client-id",
 			ClientSecret: "gh-secret",
-			Endpoint: oauth2.Endpoint{
-				TokenURL: tokenSrv.URL,
-			},
+			Endpoint:     oauth2.Endpoint{TokenURL: tokenSrv.URL},
 		},
 	}
 

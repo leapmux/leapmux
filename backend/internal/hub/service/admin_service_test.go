@@ -56,7 +56,7 @@ func setupAdminTestServer(t *testing.T) *adminTestEnv {
 
 	client := leapmuxv1connect.NewAdminServiceClient(server.Client(), server.URL)
 
-	token, user, _, err := auth.Login(context.Background(), q, "admin", "admin")
+	token, user, _, err := auth.Login(context.Background(), q, "admin", "admin123")
 	require.NoError(t, err)
 
 	return &adminTestEnv{
@@ -122,7 +122,7 @@ func TestAdminService_ListUsers_WithQuery(t *testing.T) {
 	// Create an additional user via the admin RPC.
 	_, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
 		Username:    "searchable",
-		Password:    "pass123",
+		Password:    "pass1234",
 		DisplayName: "Searchable User",
 		Email:       "search@example.com",
 	}, env.token))
@@ -229,7 +229,7 @@ func TestAdminService_UpdateUser(t *testing.T) {
 	// Create a user to update.
 	createResp, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
 		Username:    "toupdate",
-		Password:    "pass",
+		Password:    "testpass",
 		DisplayName: "Original Name",
 		Email:       "orig@example.com",
 	}, env.token))
@@ -274,7 +274,7 @@ func TestAdminService_DeleteUser(t *testing.T) {
 	// Create a user to delete.
 	createResp, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
 		Username:    "todelete",
-		Password:    "pass",
+		Password:    "testpass",
 		DisplayName: "Delete Me",
 	}, env.token))
 	require.NoError(t, err)
@@ -322,14 +322,14 @@ func TestAdminService_ResetUserPassword(t *testing.T) {
 	// Create a user whose password we will reset.
 	createResp, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
 		Username:    "resetme",
-		Password:    "oldpass",
+		Password:    "oldpass1",
 		DisplayName: "Reset Me",
 	}, env.token))
 	require.NoError(t, err)
 	targetID := createResp.Msg.GetUser().GetId()
 
 	// Verify old password works.
-	_, _, _, err = auth.Login(context.Background(), env.queries, "resetme", "oldpass")
+	_, _, _, err = auth.Login(context.Background(), env.queries, "resetme", "oldpass1")
 	require.NoError(t, err)
 
 	// Reset the password.
@@ -340,7 +340,7 @@ func TestAdminService_ResetUserPassword(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify old password no longer works.
-	_, _, _, err = auth.Login(context.Background(), env.queries, "resetme", "oldpass")
+	_, _, _, err = auth.Login(context.Background(), env.queries, "resetme", "oldpass1")
 	require.Error(t, err)
 
 	// Verify new password works.
@@ -366,7 +366,7 @@ func TestAdminService_NonAdmin_AllEndpoints(t *testing.T) {
 		}},
 		{"CreateUser", func() error {
 			_, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
-				Username: "blocked", Password: "pass", DisplayName: "Blocked",
+				Username: "blocked", Password: "testpass", DisplayName: "Blocked",
 			}, nonAdminToken))
 			return err
 		}},
@@ -391,7 +391,7 @@ func TestAdminCreateUser_DuplicateEmail_Rejected(t *testing.T) {
 	// Create first user with an email.
 	_, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
 		Username:    "user1",
-		Password:    "pass123",
+		Password:    "pass1234",
 		DisplayName: "User 1",
 		Email:       "shared@example.com",
 	}, env.token))
@@ -400,7 +400,7 @@ func TestAdminCreateUser_DuplicateEmail_Rejected(t *testing.T) {
 	// Try to create second user with the same email.
 	_, err = env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
 		Username:    "user2",
-		Password:    "pass456",
+		Password:    "pass4567",
 		DisplayName: "User 2",
 		Email:       "shared@example.com",
 	}, env.token))
@@ -414,7 +414,7 @@ func TestAdminUpdateUser_EmailCannotBeCleared(t *testing.T) {
 	// Create a user with an email.
 	createResp, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
 		Username:    "emailuser",
-		Password:    "pass123",
+		Password:    "pass1234",
 		DisplayName: "Email User",
 		Email:       "has@example.com",
 	}, env.token))
@@ -438,7 +438,7 @@ func TestAdminCreateUser_DuplicateUsername_Rejected(t *testing.T) {
 	// Create first user.
 	_, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
 		Username:    "dupuser",
-		Password:    "pass123",
+		Password:    "pass1234",
 		DisplayName: "User 1",
 	}, env.token))
 	require.NoError(t, err)
@@ -446,7 +446,7 @@ func TestAdminCreateUser_DuplicateUsername_Rejected(t *testing.T) {
 	// Try to create second user with the same username.
 	_, err = env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
 		Username:    "dupuser",
-		Password:    "pass456",
+		Password:    "pass4567",
 		DisplayName: "User 2",
 	}, env.token))
 	require.Error(t, err)
@@ -459,7 +459,7 @@ func TestAdminCreateUser_EmptyEmail_AllowedMultiple(t *testing.T) {
 	// Create first user with empty email.
 	resp1, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
 		Username:    "noemail1",
-		Password:    "pass123",
+		Password:    "pass1234",
 		DisplayName: "No Email 1",
 		Email:       "",
 	}, env.token))
@@ -469,7 +469,7 @@ func TestAdminCreateUser_EmptyEmail_AllowedMultiple(t *testing.T) {
 	// Create second user with empty email.
 	resp2, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
 		Username:    "noemail2",
-		Password:    "pass456",
+		Password:    "pass4567",
 		DisplayName: "No Email 2",
 		Email:       "",
 	}, env.token))
@@ -483,7 +483,7 @@ func TestAdminUpdateUser_DuplicateEmail_Rejected(t *testing.T) {
 	// Create user A with an email.
 	_, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
 		Username:    "usera",
-		Password:    "pass123",
+		Password:    "pass1234",
 		DisplayName: "User A",
 		Email:       "taken@example.com",
 	}, env.token))
@@ -492,7 +492,7 @@ func TestAdminUpdateUser_DuplicateEmail_Rejected(t *testing.T) {
 	// Create user B without an email.
 	respB, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
 		Username:    "userb",
-		Password:    "pass456",
+		Password:    "pass4567",
 		DisplayName: "User B",
 	}, env.token))
 	require.NoError(t, err)
@@ -514,7 +514,7 @@ func TestAdminUpdateUser_SameEmail_Allowed(t *testing.T) {
 	// Create a user with an email.
 	createResp, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
 		Username:    "sameemail",
-		Password:    "pass123",
+		Password:    "pass1234",
 		DisplayName: "Same Email User",
 		Email:       "keep@example.com",
 	}, env.token))
@@ -537,7 +537,7 @@ func TestAdminResetPassword_NonexistentUser_Rejected(t *testing.T) {
 
 	_, err := env.client.ResetUserPassword(context.Background(), authedReq(&leapmuxv1.ResetUserPasswordRequest{
 		UserId:      "nonexistent-user-id",
-		NewPassword: "newpass",
+		NewPassword: "newpass1",
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))

@@ -23,9 +23,10 @@ func (t TokenSet) String() string { return "[REDACTED TokenSet]" }
 func (t TokenSet) GoString() string { return "[REDACTED TokenSet]" }
 
 // UserClaims holds the user identity claims from an OAuth provider.
+// Email is only populated when the provider has verified it.
 type UserClaims struct {
 	Subject     string // unique identifier (sub claim for OIDC, user ID for GitHub)
-	Email       string
+	Email       string // set only when the provider confirms it is verified
 	Name        string
 	DisplayName string
 }

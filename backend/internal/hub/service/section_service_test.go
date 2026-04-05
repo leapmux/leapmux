@@ -60,7 +60,7 @@ func setupSectionTest(t *testing.T) *sectionTestEnv {
 
 	orgID := id.Generate()
 	userID := id.Generate()
-	hash, _ := password.Hash("pass")
+	hash, _ := password.Hash("testpass")
 
 	_ = queries.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "test-org"})
 	_ = queries.CreateUser(context.Background(), gendb.CreateUserParams{
@@ -73,7 +73,7 @@ func setupSectionTest(t *testing.T) *sectionTestEnv {
 		IsAdmin:      1,
 	})
 
-	token, _, _, err := auth.Login(context.Background(), queries, "testuser", "pass")
+	token, _, _, err := auth.Login(context.Background(), queries, "testuser", "testpass")
 	require.NoError(t, err)
 
 	return &sectionTestEnv{

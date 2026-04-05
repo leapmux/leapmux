@@ -59,7 +59,7 @@ func TestAuthService_LoginSuccess(t *testing.T) {
 
 	resp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username: "admin",
-		Password: "admin",
+		Password: "admin123",
 	}))
 	require.NoError(t, err)
 
@@ -78,7 +78,7 @@ func TestAuthService_LoginInvalidPassword(t *testing.T) {
 
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username: "admin",
-		Password: "wrong",
+		Password: "wrongpwd",
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
@@ -90,7 +90,7 @@ func TestAuthService_GetCurrentUser(t *testing.T) {
 	// Login first.
 	loginResp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username: "admin",
-		Password: "admin",
+		Password: "admin123",
 	}))
 	require.NoError(t, err)
 
@@ -116,7 +116,7 @@ func TestAuthService_Login_EmptyUsername(t *testing.T) {
 
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username: "",
-		Password: "admin",
+		Password: "admin123",
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
@@ -171,14 +171,14 @@ func TestAuthService_SignUp_DuplicateUsername(t *testing.T) {
 	// First signup should succeed.
 	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username: "dupuser",
-		Password: "pass123",
+		Password: "pass1234",
 	}))
 	require.NoError(t, err)
 
 	// Second signup with the same username should fail.
 	_, err = client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username: "dupuser",
-		Password: "pass456",
+		Password: "pass4567",
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
@@ -190,7 +190,7 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 	// Login to get a token.
 	loginResp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username: "admin",
-		Password: "admin",
+		Password: "admin123",
 	}))
 	require.NoError(t, err)
 	token := sessionFromCookie(t, loginResp.Header().Get("Set-Cookie"))
@@ -224,7 +224,7 @@ func TestSignUp_DuplicateEmail_Rejected(t *testing.T) {
 	orgID := id.Generate()
 	err := q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "emailuser"})
 	require.NoError(t, err)
-	hash, err := password.Hash("pass")
+	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	err = q.CreateUser(context.Background(), gendb.CreateUserParams{
 		ID:           id.Generate(),
@@ -258,7 +258,7 @@ func TestPromotePendingEmail_ClearsCompetingPendingEmails(t *testing.T) {
 		orgID := id.Generate()
 		err := q.CreateOrg(ctx, gendb.CreateOrgParams{ID: orgID, Name: username + "-org"})
 		require.NoError(t, err)
-		hash, err := password.Hash("pass")
+		hash, err := password.Hash("testpass")
 		require.NoError(t, err)
 		userID := id.Generate()
 		err = q.CreateUser(ctx, gendb.CreateUserParams{
@@ -323,7 +323,7 @@ func TestSignUp_DirectEmail_ClearsCompetingPendingEmails(t *testing.T) {
 	orgID := id.Generate()
 	err := q.CreateOrg(ctx, gendb.CreateOrgParams{ID: orgID, Name: "racer-org"})
 	require.NoError(t, err)
-	hash, err := password.Hash("pass")
+	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	userAID := id.Generate()
 	err = q.CreateUser(ctx, gendb.CreateUserParams{
@@ -351,7 +351,7 @@ func TestSignUp_DirectEmail_ClearsCompetingPendingEmails(t *testing.T) {
 	// User B signs up with email = "race@example.com" directly (verification off).
 	_, err = client.SignUp(ctx, connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username:    "winner",
-		Password:    "pass123",
+		Password:    "pass1234",
 		DisplayName: "Winner",
 		Email:       "race@example.com",
 	}))
@@ -369,7 +369,7 @@ func TestSignUp_EmptyEmail_AllowedMultiple(t *testing.T) {
 	// First signup with empty email should succeed.
 	resp1, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username:    "emptyemail1",
-		Password:    "pass123",
+		Password:    "pass1234",
 		DisplayName: "User 1",
 		Email:       "",
 	}))
@@ -379,7 +379,7 @@ func TestSignUp_EmptyEmail_AllowedMultiple(t *testing.T) {
 	// Second signup with empty email should also succeed.
 	resp2, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username:    "emptyemail2",
-		Password:    "pass456",
+		Password:    "pass4567",
 		DisplayName: "User 2",
 		Email:       "",
 	}))
@@ -439,7 +439,7 @@ func TestVerificationGating_UnverifiedBlocked(t *testing.T) {
 	// Create a user with email_verified=0 directly via DB.
 	orgID := id.Generate()
 	userID := id.Generate()
-	hash, _ := password.Hash("pass")
+	hash, _ := password.Hash("testpass")
 	_ = q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "unverified"})
 	_ = q.CreateUser(context.Background(), gendb.CreateUserParams{
 		ID:           userID,
@@ -453,7 +453,7 @@ func TestVerificationGating_UnverifiedBlocked(t *testing.T) {
 	})
 	// email_verified defaults to 0 in the DB.
 
-	token, _, _, err := auth.Login(context.Background(), q, "unverified", "pass")
+	token, _, _, err := auth.Login(context.Background(), q, "unverified", "testpass")
 	require.NoError(t, err)
 
 	// Try UpdateProfile — should be blocked by verification gating.
@@ -470,7 +470,7 @@ func TestVerificationGating_AdminExempt(t *testing.T) {
 
 	// The bootstrap admin has email_verified=0 by default (no email set).
 	// Verify the admin can still call protected RPCs.
-	adminToken, _, _, err := auth.Login(context.Background(), q, "admin", "admin")
+	adminToken, _, _, err := auth.Login(context.Background(), q, "admin", "admin123")
 	require.NoError(t, err)
 
 	// Admin should be able to call UpdateProfile even with email_verified=0.
@@ -487,7 +487,7 @@ func TestVerificationGating_ConfigOff_NotBlocked(t *testing.T) {
 	// Create an unverified user.
 	orgID := id.Generate()
 	userID := id.Generate()
-	hash, _ := password.Hash("pass")
+	hash, _ := password.Hash("testpass")
 	_ = q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "nogate"})
 	_ = q.CreateUser(context.Background(), gendb.CreateUserParams{
 		ID:           userID,
@@ -501,7 +501,7 @@ func TestVerificationGating_ConfigOff_NotBlocked(t *testing.T) {
 	})
 	// email_verified defaults to 0 — but gating is OFF.
 
-	token, _, _, err := auth.Login(context.Background(), q, "nogate", "pass")
+	token, _, _, err := auth.Login(context.Background(), q, "nogate", "testpass")
 	require.NoError(t, err)
 
 	// Unverified user should be able to call UpdateProfile when gating is off.
@@ -576,7 +576,7 @@ func createTestUserWithPendingEmail(t *testing.T, q *gendb.Queries, username, pe
 	t.Helper()
 	orgID := id.Generate()
 	userID := id.Generate()
-	hash, err := password.Hash("pass")
+	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 
 	err = q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: username})
@@ -669,7 +669,7 @@ func TestVerificationGating_LogoutAllowed(t *testing.T) {
 	// Create an unverified user.
 	orgID := id.Generate()
 	userID := id.Generate()
-	hash, _ := password.Hash("pass")
+	hash, _ := password.Hash("testpass")
 	_ = q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "logoutgating"})
 	_ = q.CreateUser(context.Background(), gendb.CreateUserParams{
 		ID:           userID,
@@ -683,7 +683,7 @@ func TestVerificationGating_LogoutAllowed(t *testing.T) {
 	})
 	// email_verified defaults to 0.
 
-	token, _, _, err := auth.Login(context.Background(), q, "logoutgating", "pass")
+	token, _, _, err := auth.Login(context.Background(), q, "logoutgating", "testpass")
 	require.NoError(t, err)
 
 	// Logout should be allowed for unverified users.
@@ -701,7 +701,7 @@ func TestVerificationGating_RequestEmailChangeAllowed(t *testing.T) {
 	// Create an unverified user.
 	orgID := id.Generate()
 	userID := id.Generate()
-	hash, _ := password.Hash("pass")
+	hash, _ := password.Hash("testpass")
 	_ = q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "emailchangegate"})
 	_ = q.CreateUser(context.Background(), gendb.CreateUserParams{
 		ID:           userID,
@@ -715,7 +715,7 @@ func TestVerificationGating_RequestEmailChangeAllowed(t *testing.T) {
 	})
 	// email_verified defaults to 0.
 
-	token, _, _, err := auth.Login(context.Background(), q, "emailchangegate", "pass")
+	token, _, _, err := auth.Login(context.Background(), q, "emailchangegate", "testpass")
 	require.NoError(t, err)
 
 	// RequestEmailChange should be allowed for unverified users
@@ -737,7 +737,7 @@ func TestAuthService_Logout(t *testing.T) {
 	// Login.
 	loginResp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username: "admin",
-		Password: "admin",
+		Password: "admin123",
 	}))
 	require.NoError(t, err)
 
