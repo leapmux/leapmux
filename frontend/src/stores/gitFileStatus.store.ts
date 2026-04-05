@@ -95,7 +95,11 @@ export function createGitFileStatusStore() {
     let deleted = 0
     let untracked = 0
     for (const f of state.files) {
-      if (isRoot || f.path.startsWith(`${relDir}/`) || f.path === relDir) {
+      // Also match when f.path is an ancestor directory of relDir.
+      // Git reports untracked directories as "dir/" entries, and the tree may
+      // merge single-child dirs (e.g. node "build/bin" for git entry "build/").
+      const isAncestorDir = f.path.endsWith('/') && `${relDir}/`.startsWith(f.path)
+      if (isRoot || f.path.startsWith(`${relDir}/`) || f.path === relDir || isAncestorDir) {
         if (f.unstagedStatus === GitFileStatusCode.UNTRACKED) {
           untracked++
         }
@@ -113,7 +117,9 @@ export function createGitFileStatusStore() {
     if (!root)
       return false
     const relDir = dirPath.startsWith(`${root}/`) ? dirPath.slice(root.length + 1) : dirPath
-    return state.files.some(f => f.path.startsWith(`${relDir}/`) || f.path === relDir)
+    return state.files.some(f =>
+      f.path.startsWith(`${relDir}/`) || f.path === relDir
+      || (f.path.endsWith('/') && `${relDir}/`.startsWith(f.path)))
   }
 
   return {

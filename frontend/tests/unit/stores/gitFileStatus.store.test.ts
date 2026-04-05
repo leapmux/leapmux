@@ -116,6 +116,108 @@ describe('gitFileStatusStore', () => {
         dispose()
       })
     })
+
+    it('matches untracked directory entry for merged single-child dir', async () => {
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          files: [
+            makeEntry({
+              path: 'build/',
+              unstagedStatus: GitFileStatusCode.UNTRACKED,
+            }),
+          ],
+        })
+
+        await store.refresh('worker1', '/repo')
+
+        // Merged node "build/bin" should pick up stats from ancestor "build/"
+        const stats = store.getDirDiffStats('/repo/build/bin')
+        expect(stats.untracked).toBe(1)
+
+        // Deeply merged node should also match
+        const deepStats = store.getDirDiffStats('/repo/build/bin/sub')
+        expect(deepStats.untracked).toBe(1)
+
+        dispose()
+      })
+    })
+
+    it('does not false-match unrelated directory entries', async () => {
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          files: [
+            makeEntry({
+              path: 'other/',
+              unstagedStatus: GitFileStatusCode.UNTRACKED,
+            }),
+          ],
+        })
+
+        await store.refresh('worker1', '/repo')
+
+        const stats = store.getDirDiffStats('/repo/build/bin')
+        expect(stats.untracked).toBe(0)
+
+        dispose()
+      })
+    })
+
+    it('does not ancestor-match file entries without trailing slash', async () => {
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          files: [
+            makeEntry({
+              path: 'build',
+              unstagedStatus: GitFileStatusCode.UNTRACKED,
+            }),
+          ],
+        })
+
+        await store.refresh('worker1', '/repo')
+
+        // "build" (no trailing slash) is a file, not a directory —
+        // should not match "build/bin" via ancestor check.
+        const stats = store.getDirDiffStats('/repo/build/bin')
+        expect(stats.untracked).toBe(0)
+
+        dispose()
+      })
+    })
+  })
+
+  describe('hasChanges with merged directories', () => {
+    it('returns true for merged child of untracked directory', async () => {
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          files: [
+            makeEntry({
+              path: 'build/',
+              unstagedStatus: GitFileStatusCode.UNTRACKED,
+            }),
+          ],
+        })
+
+        await store.refresh('worker1', '/repo')
+
+        expect(store.hasChanges('/repo/build/bin')).toBe(true)
+        expect(store.hasChanges('/repo/build/bin/sub')).toBe(true)
+        expect(store.hasChanges('/repo/other')).toBe(false)
+
+        dispose()
+      })
+    })
   })
 
   describe('originUrl and currentBranch', () => {
