@@ -25,12 +25,12 @@ export const SetupPage: Component = () => {
     <Show when={ready()} fallback={null}>
       <div class={styles.container}>
         <div class={`card ${cardNarrow}`}>
-          <h1>Create Administrator Account</h1>
+          <h1>Welcome to LeapMux</h1>
           <SignupForm
             submitLabel="Create account"
             submittingLabel="Creating account..."
             errorPrefix="Setup failed"
-            header={<p>Welcome to LeapMux. Create the first administrator account to get started.</p>}
+            header={<p>Create the first administrator account to get started.</p>}
             onSuccess={(resp, slug) => {
               loadSystemInfo(true)
               auth.setAuth(resp.user!)
