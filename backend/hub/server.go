@@ -22,6 +22,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/db"
 	"github.com/leapmux/leapmux/internal/hub/frontend"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
@@ -49,13 +50,16 @@ func WithFrontendHandler(h http.Handler) ServerOption {
 
 // Server is a reusable Hub server instance.
 type Server struct {
-	cfg        *config.Config
-	queries    *gendb.Queries
-	server     *http.Server
-	sqlDB      *sql.DB
-	tcpLn      net.Listener
-	shutdownCh chan struct{}
-	workerMgr  *workermgr.Manager
+	cfg          *config.Config
+	queries      *gendb.Queries
+	keystore     *keystore.Keystore
+	oauthHandler *service.OAuthHandler
+	server       *http.Server
+	sqlDB        *sql.DB
+	tcpLn        net.Listener
+	shutdownCh   chan struct{}
+	sessionCache *auth.SessionCache
+	workerMgr    *workermgr.Manager
 }
 
 // NewServer creates a new Hub server. It binds the TCP port (to fail
@@ -103,7 +107,15 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 
 	queries := gendb.New(sqlDB)
 
-	if err := bootstrap.Run(context.Background(), queries, cfg.SoloMode); err != nil {
+	ks, err := keystore.LoadOrGenerate(cfg.EncryptionKeyFilePath())
+	if err != nil {
+		_ = sqlDB.Close()
+		closeTCP()
+		return nil, fmt.Errorf("load encryption keystore: %w", err)
+	}
+	slog.Info("encryption keystore loaded", "active_version", ks.ActiveVersion(), "versions", len(ks.Versions()))
+
+	if err := bootstrap.Run(context.Background(), sqlDB, queries, cfg.SoloMode, cfg.DevMode); err != nil {
 		_ = sqlDB.Close()
 		closeTCP()
 		return nil, fmt.Errorf("bootstrap: %w", err)
@@ -122,16 +134,17 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	cMgr := channelmgr.New(cMgrOpts...)
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
+	authInterceptor, sessionCache := auth.NewInterceptor(queries, cfg.SoloMode, cfg.SecureCookies, cfg.EmailVerificationRequired)
 	connectOpts := connect.WithInterceptors(
 		auth.NewShutdownInterceptor(shutdownCh),
 		metrics.NewInterceptor(),
 		auth.NewTimeoutInterceptor(cfg.APITimeout),
-		auth.NewInterceptor(queries, cfg.SoloMode),
+		authInterceptor,
 	)
 
 	mux := http.NewServeMux()
 
-	authSvc := service.NewAuthService(queries, cfg)
+	authSvc := service.NewAuthService(sqlDB, queries, cfg, sessionCache, ks)
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, connectOpts)
 	mux.Handle(authPath, authHandler)
 
@@ -162,14 +175,18 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 			}
 		}
 	}
-	channelRelay := service.NewChannelRelayHandler(queries, wMgr, cMgr, soloUser)
+	channelRelay := service.NewChannelRelayHandler(queries, wMgr, cMgr, soloUser, cfg.SecureCookies)
 	mux.Handle("/ws/channel", channelRelay)
+
+	// OAuth HTTP endpoints.
+	oauthHandler := service.NewOAuthHandler(sqlDB, queries, cfg, ks)
+	oauthHandler.RegisterRoutes(mux)
 
 	orgSvc := service.NewOrgService(queries, nil, cfg.SoloMode)
 	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, connectOpts)
 	mux.Handle(orgPath, orgHandler)
 
-	userSvc := service.NewUserService(queries, cfg)
+	userSvc := service.NewUserService(queries, cfg, sessionCache)
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, connectOpts)
 	mux.Handle(userPath, userHandler)
 
@@ -177,7 +194,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	sectionPath, sectionHandler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, connectOpts)
 	mux.Handle(sectionPath, sectionHandler)
 
-	adminSvc := service.NewAdminService(queries, cfg.SoloMode)
+	adminSvc := service.NewAdminService(sqlDB, queries, cfg.SoloMode, sessionCache)
 	adminPath, adminHandler := leapmuxv1connect.NewAdminServiceHandler(adminSvc, connectOpts)
 	mux.Handle(adminPath, adminHandler)
 
@@ -214,13 +231,16 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	}
 
 	return &Server{
-		cfg:        cfg,
-		queries:    queries,
-		server:     server,
-		sqlDB:      sqlDB,
-		tcpLn:      tcpLn,
-		shutdownCh: shutdownCh,
-		workerMgr:  wMgr,
+		cfg:          cfg,
+		queries:      queries,
+		keystore:     ks,
+		oauthHandler: oauthHandler,
+		server:       server,
+		sqlDB:        sqlDB,
+		tcpLn:        tcpLn,
+		shutdownCh:   shutdownCh,
+		sessionCache: sessionCache,
+		workerMgr:    wMgr,
 	}, nil
 }
 
@@ -310,13 +330,17 @@ func (s *Server) Serve(ctx context.Context) error {
 		return fmt.Errorf("chmod socket: %w", err)
 	}
 
+	// Start background OAuth token refresh.
+	s.oauthHandler.StartTokenRefresh(ctx)
+
 	shutdownDone := make(chan struct{})
 	go func() {
 		<-ctx.Done()
 		slog.Info("hub shutting down...")
 
-		// 1. Reject all new RPCs.
+		// 1. Reject all new RPCs and stop background tasks.
 		close(s.shutdownCh)
+		s.sessionCache.Stop()
 
 		// 2. Notify connected workers to delay reconnection.
 		s.workerMgr.NotifyShutdown(10)

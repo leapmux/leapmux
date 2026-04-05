@@ -13,23 +13,22 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 )
 
 func setupShutdownTestServer(t *testing.T, shutdownCh chan struct{}) leapmuxv1connect.AuthServiceClient {
 	t.Helper()
 
-	q := setupDB(t)
-	err := bootstrap.Run(context.Background(), q, false)
-	require.NoError(t, err)
+	sqlDB, q := setupDB(t)
+	hubtestutil.CreateTestAdmin(t, sqlDB, q)
 
 	mux := http.NewServeMux()
 	interceptors := connect.WithInterceptors(
 		auth.NewShutdownInterceptor(shutdownCh),
 	)
-	authSvc := service.NewAuthService(q, &config.Config{})
+	authSvc := service.NewAuthService(sqlDB, q, &config.Config{}, nil, nil)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 

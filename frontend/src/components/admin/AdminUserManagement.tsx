@@ -4,7 +4,7 @@ import { createSignal, For, onMount, Show } from 'solid-js'
 import { adminClient } from '~/api/clients'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { useAuth } from '~/context/AuthContext'
-import { sanitizeSlug } from '~/lib/validate'
+import { sanitizeSlug, validateEmail } from '~/lib/validate'
 import { errorText, successText } from '~/styles/shared.css'
 import * as styles from './AdminDialog.css'
 
@@ -103,6 +103,11 @@ export const AdminUserManagement: Component = () => {
     const [slug, slugErr] = sanitizeSlug('Username', newUsername())
     if (slugErr) {
       setCreateUserMessage({ type: 'error', text: slugErr })
+      return
+    }
+    const emailErr = validateEmail(newEmail())
+    if (emailErr) {
+      setCreateUserMessage({ type: 'error', text: emailErr })
       return
     }
     setCreateUserSaving(true)

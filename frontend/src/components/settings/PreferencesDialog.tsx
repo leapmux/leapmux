@@ -4,8 +4,6 @@ import { Dialog } from '~/components/common/Dialog'
 import { isSoloMode } from '~/lib/systemInfo'
 import { AccountAppearanceSettings, BrowserAppearanceSettings } from './AppearanceSettings'
 import { FontSettings } from './FontSettings'
-import { PasswordSettings } from './PasswordSettings'
-import { ProfileSettings } from './ProfileSettings'
 
 interface PreferencesDialogProps {
   onClose: () => void
@@ -39,8 +37,6 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
             <div role="tabpanel">
               <AccountAppearanceSettings />
               <FontSettings />
-              <ProfileSettings />
-              <PasswordSettings />
             </div>
           </ot-tabs>
         </Show>

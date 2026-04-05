@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import type { FileInfo } from '~/generated/leapmux/v1/file_pb'
 import { For, Show } from 'solid-js'
+import { emptyState } from '~/styles/shared.css'
 import * as styles from './FileBrowser.css'
 
 interface FileBrowserProps {
@@ -89,7 +90,7 @@ export const FileBrowser: Component<FileBrowserProps> = (props) => {
       <Show when={!props.loading && !props.error}>
         <Show
           when={props.entries.length > 0}
-          fallback={<div class={styles.emptyState}>Empty directory</div>}
+          fallback={<div class={emptyState}>Empty directory</div>}
         >
           <div class={styles.fileList}>
             <Show when={props.currentPath !== '.'}>

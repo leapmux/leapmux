@@ -42,6 +42,11 @@ func main() {
 			slog.Error("fatal", "error", err)
 			os.Exit(1)
 		}
+	case "admin":
+		if err := runAdmin(os.Args[2:]); err != nil {
+			slog.Error("fatal", "error", err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Println(version.Value)
 	default:

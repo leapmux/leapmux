@@ -5,6 +5,7 @@ import { createEffect, createSignal, onCleanup, onMount, Show, Suspense } from '
 import { isWailsApp } from '~/api/desktopBridge'
 import { channelManager } from '~/api/workerRpc'
 import { LauncherView } from '~/components/desktop/LauncherView'
+import { UserMenuDialogs } from '~/components/shell/UserMenu'
 import { AuthProvider } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { disableTextSubstitutions } from '~/lib/textInputBehavior'
@@ -169,6 +170,7 @@ export default function App() {
                 </Router>
               </PreferencesApplier>
             </PreferencesProvider>
+            <UserMenuDialogs />
           </AuthProvider>
         </DesktopFadeIn>
       </Show>

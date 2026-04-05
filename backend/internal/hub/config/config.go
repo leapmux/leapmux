@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/knadh/koanf/v2"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
 
@@ -46,7 +48,10 @@ type Config struct {
 	APITimeoutSeconds            int    `koanf:"api_timeout_seconds"`
 	AgentStartupTimeoutSeconds   int    `koanf:"agent_startup_timeout_seconds"`
 	WorktreeCreateTimeoutSeconds int    `koanf:"worktree_create_timeout_seconds"`
+	SecureCookies                bool   `koanf:"secure_cookies"`
+	EncryptionKeyPath            string `koanf:"encryption_key_path"`
 	SoloMode                     bool
+	DevMode                      bool              // Dev mode: non-solo but with auto-bootstrapped admin
 	Extras                       map[string]string // Extra flag values not in the hub Config struct
 }
 
@@ -138,29 +143,25 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 		boolDefault *bool
 	}
 
-	strVal := func(s string) *string { return &s }
-	intVal := func(i int) *int { return &i }
-	boolVal := func(b bool) *bool { return &b }
-
 	allFlags := []flagDef{
-		{"addr", "addr", "listen address", strVal(addr), nil, nil},
-		{"data-dir", "data_dir", "data directory", strVal("."), nil, nil},
-		{"dev-frontend", "dev_frontend", "Vite dev server URL for reverse proxy (dev mode only)", strVal(""), nil, nil},
-		{"db-max-conns", "db_max_conns", "maximum number of open database connections", nil, intVal(sqlitedb.DefaultMaxConns), nil},
-		{"max-message-size", "max_message_size", "maximum reassembled channel message size in bytes (default 16 MiB)", nil, intVal(0), nil},
-		{"max-incomplete-chunked", "max_incomplete_chunked", "maximum in-flight chunked sequences per channel (default 4)", nil, intVal(0), nil},
-		{"log-level", "log_level", "log level (debug, info, warn, error)", strVal(defaultLogLevel), nil, nil},
-		{"signup-enabled", "signup_enabled", "enable user sign-up", nil, nil, boolVal(false)},
-		{"email-verification-required", "email_verification_required", "require email verification on sign-up", nil, nil, boolVal(false)},
-		{"smtp-host", "smtp_host", "SMTP server host", strVal(""), nil, nil},
-		{"smtp-port", "smtp_port", "SMTP server port", nil, intVal(587), nil},
-		{"smtp-username", "smtp_username", "SMTP username", strVal(""), nil, nil},
-		{"smtp-password", "smtp_password", "SMTP password", strVal(""), nil, nil},
-		{"smtp-from-address", "smtp_from_address", "SMTP from address", strVal(""), nil, nil},
-		{"smtp-use-tls", "smtp_use_tls", "use TLS for SMTP", nil, nil, boolVal(true)},
-		{"api-timeout-seconds", "api_timeout_seconds", "general API timeout in seconds", nil, intVal(DefaultAPITimeoutSeconds), nil},
-		{"agent-startup-timeout-seconds", "agent_startup_timeout_seconds", "agent startup timeout in seconds", nil, intVal(DefaultAgentStartupTimeoutSeconds), nil},
-		{"worktree-create-timeout-seconds", "worktree_create_timeout_seconds", "worktree creation timeout in seconds", nil, intVal(DefaultWorktreeCreateTimeoutSeconds), nil},
+		{"addr", "addr", "listen address", ptrconv.Ptr(addr), nil, nil},
+		{"data-dir", "data_dir", "data directory", ptrconv.Ptr("."), nil, nil},
+		{"dev-frontend", "dev_frontend", "Vite dev server URL for reverse proxy (dev mode only)", ptrconv.Ptr(""), nil, nil},
+		{"db-max-conns", "db_max_conns", "maximum number of open database connections", nil, ptrconv.Ptr(sqlitedb.DefaultMaxConns), nil},
+		{"max-message-size", "max_message_size", "maximum reassembled channel message size in bytes (default 16 MiB)", nil, ptrconv.Ptr(0), nil},
+		{"max-incomplete-chunked", "max_incomplete_chunked", "maximum in-flight chunked sequences per channel (default 4)", nil, ptrconv.Ptr(0), nil},
+		{"log-level", "log_level", "log level (debug, info, warn, error)", ptrconv.Ptr(defaultLogLevel), nil, nil},
+		{"signup-enabled", "signup_enabled", "enable user sign-up", nil, nil, ptrconv.Ptr(false)},
+		{"email-verification-required", "email_verification_required", "require email verification on sign-up", nil, nil, ptrconv.Ptr(false)},
+		{"smtp-host", "smtp_host", "SMTP server host", ptrconv.Ptr(""), nil, nil},
+		{"smtp-port", "smtp_port", "SMTP server port", nil, ptrconv.Ptr(587), nil},
+		{"smtp-username", "smtp_username", "SMTP username", ptrconv.Ptr(""), nil, nil},
+		{"smtp-password", "smtp_password", "SMTP password", ptrconv.Ptr(""), nil, nil},
+		{"smtp-from-address", "smtp_from_address", "SMTP from address", ptrconv.Ptr(""), nil, nil},
+		{"smtp-use-tls", "smtp_use_tls", "use TLS for SMTP", nil, nil, ptrconv.Ptr(true)},
+		{"api-timeout-seconds", "api_timeout_seconds", "general API timeout in seconds", nil, ptrconv.Ptr(DefaultAPITimeoutSeconds), nil},
+		{"agent-startup-timeout-seconds", "agent_startup_timeout_seconds", "agent startup timeout in seconds", nil, ptrconv.Ptr(DefaultAgentStartupTimeoutSeconds), nil},
+		{"worktree-create-timeout-seconds", "worktree_create_timeout_seconds", "worktree creation timeout in seconds", nil, ptrconv.Ptr(DefaultWorktreeCreateTimeoutSeconds), nil},
 	}
 
 	// Build the set of allowed CLI flags.
@@ -257,9 +258,36 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// DefaultHubDataDir returns the default hub data directory with ~ expanded.
+func DefaultHubDataDir() string {
+	return internalconfig.ExpandHome(defaultConfigDir)
+}
+
 // DBPath returns the path to the SQLite database file.
 func (c *Config) DBPath() string {
 	return filepath.Join(c.DataDir, "hub.db")
+}
+
+// EncryptionKeyFilePath returns the path to the encryption key ring file.
+func (c *Config) EncryptionKeyFilePath() string {
+	if c.EncryptionKeyPath != "" {
+		return c.EncryptionKeyPath
+	}
+	return filepath.Join(c.DataDir, "encryption.key")
+}
+
+// BaseURL returns the scheme+host base URL derived from Addr and SecureCookies.
+// A bare ":port" address is resolved to "localhost:port".
+func (c *Config) BaseURL() string {
+	scheme := "http"
+	if c.SecureCookies {
+		scheme = "https"
+	}
+	host := c.Addr
+	if strings.HasPrefix(host, ":") {
+		host = "localhost" + host
+	}
+	return scheme + "://" + host
 }
 
 // SocketPath returns the path to the Unix domain socket.

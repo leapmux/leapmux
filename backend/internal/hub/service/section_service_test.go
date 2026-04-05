@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/crypto/bcrypt"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -42,7 +42,8 @@ func setupSectionTest(t *testing.T) *sectionTestEnv {
 	sectionSvc := service.NewSectionService(queries)
 
 	mux := http.NewServeMux()
-	opts := connect.WithInterceptors(auth.NewInterceptor(queries, false))
+	interceptor, _ := auth.NewInterceptor(queries, false, false, false)
+	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, opts)
 	mux.Handle(path, handler)
 
@@ -59,19 +60,20 @@ func setupSectionTest(t *testing.T) *sectionTestEnv {
 
 	orgID := id.Generate()
 	userID := id.Generate()
-	hash, _ := bcrypt.GenerateFromPassword([]byte("pass"), bcrypt.MinCost)
+	hash, _ := password.Hash("testpass")
 
 	_ = queries.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "test-org"})
 	_ = queries.CreateUser(context.Background(), gendb.CreateUserParams{
 		ID:           userID,
 		OrgID:        orgID,
 		Username:     "testuser",
-		PasswordHash: string(hash),
+		PasswordHash: hash,
 		DisplayName:  "Test",
+		PasswordSet:  1,
 		IsAdmin:      1,
 	})
 
-	token, _, err := auth.Login(context.Background(), queries, "testuser", "pass")
+	token, _, _, err := auth.Login(context.Background(), queries, "testuser", "testpass")
 	require.NoError(t, err)
 
 	return &sectionTestEnv{

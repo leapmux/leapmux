@@ -4,6 +4,7 @@ import { createSignal, For, Show } from 'solid-js'
 import { AdminDialog } from '~/components/admin/AdminDialog'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { PreferencesDialog } from '~/components/settings/PreferencesDialog'
+import { ProfileDialog } from '~/components/settings/ProfileDialog'
 import { useAuth } from '~/context/AuthContext'
 import { useOrg } from '~/context/OrgContext'
 import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
@@ -16,14 +17,38 @@ interface UserMenuProps {
   trigger?: JSX.Element
 }
 
+/**
+ * Dialog signals live outside UserMenu so they survive component recreation.
+ * UserMenu instances may be destroyed and recreated when the sidebar
+ * re-renders (e.g. after auth.refreshUser()), but open dialogs must persist.
+ */
+const [showProfileDialog, setShowProfileDialog] = createSignal(false)
+const [showPreferencesDialog, setShowPreferencesDialog] = createSignal(false)
+const [showAdminDialog, setShowAdminDialog] = createSignal(false)
+const [showAboutDialog, setShowAboutDialog] = createSignal(false)
+
+/** Renders dialogs triggered by UserMenu. Mount once in a stable parent. */
+export const UserMenuDialogs: Component = () => (
+  <>
+    <Show when={showProfileDialog()}>
+      <ProfileDialog onClose={() => setShowProfileDialog(false)} />
+    </Show>
+    <Show when={showPreferencesDialog()}>
+      <PreferencesDialog onClose={() => setShowPreferencesDialog(false)} />
+    </Show>
+    <Show when={showAdminDialog()}>
+      <AdminDialog onClose={() => setShowAdminDialog(false)} />
+    </Show>
+    <Show when={showAboutDialog()}>
+      <AboutDialog onClose={() => setShowAboutDialog(false)} />
+    </Show>
+  </>
+)
+
 export const UserMenu: Component<UserMenuProps> = (props) => {
   const auth = useAuth()
   const org = useOrg()
   const navigate = useNavigate()
-
-  const [showPreferencesDialog, setShowPreferencesDialog] = createSignal(false)
-  const [showAdminDialog, setShowAdminDialog] = createSignal(false)
-  const [showAboutDialog, setShowAboutDialog] = createSignal(false)
 
   const handleLogout = async () => {
     await auth.logout()
@@ -55,6 +80,11 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
 
   const renderMenuItems = () => (
     <>
+      <Show when={!isSoloMode()}>
+        <button role="menuitem" onClick={() => setShowProfileDialog(true)}>
+          Profile...
+        </button>
+      </Show>
       <button role="menuitem" onClick={() => setShowPreferencesDialog(true)}>
         Preferences...
       </button>
@@ -120,15 +150,6 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
         <DropdownMenu trigger={props.trigger}>
           {renderMenuItems()}
         </DropdownMenu>
-      </Show>
-      <Show when={showPreferencesDialog()}>
-        <PreferencesDialog onClose={() => setShowPreferencesDialog(false)} />
-      </Show>
-      <Show when={showAdminDialog()}>
-        <AdminDialog onClose={() => setShowAdminDialog(false)} />
-      </Show>
-      <Show when={showAboutDialog()}>
-        <AboutDialog onClose={() => setShowAboutDialog(false)} />
       </Show>
     </>
   )

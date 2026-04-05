@@ -9,7 +9,7 @@ test.describe('Auth Edge Cases', () => {
   test('should disable sign in button with empty username', async ({ page }) => {
     await page.goto('/login')
     // Only fill in the password field, leave username empty
-    await page.getByLabel('Password').fill('admin')
+    await page.getByLabel('Password').fill('admin123')
 
     // The Sign in button should be disabled when username is empty
     await expect(page.getByRole('button', { name: 'Sign in' })).toBeDisabled()
@@ -53,5 +53,26 @@ test.describe('Auth Edge Cases', () => {
 
     // Should stay on the login page
     await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
+  })
+
+  test('should not store token in localStorage after login', async ({ page }) => {
+    await loginViaUI(page)
+
+    // Verify no leapmux_token in localStorage.
+    const token = await page.evaluate(() => localStorage.getItem('leapmux_token'))
+    expect(token).toBeNull()
+  })
+
+  test('should use cookie-based auth (session survives without localStorage)', async ({ page }) => {
+    await loginViaUI(page)
+    await expect(page).toHaveURL(ORG_ADMIN_URL_RE)
+
+    // Clear localStorage entirely to prove auth doesn't depend on it.
+    await page.evaluate(() => localStorage.clear())
+
+    // Reload — session should survive because it uses an HttpOnly cookie.
+    await page.reload()
+    await expect(page).toHaveURL(ORG_ADMIN_URL_RE)
+    await expect(page).not.toHaveURL(LOGIN_URL_RE)
   })
 })

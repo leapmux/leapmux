@@ -7,25 +7,27 @@ import (
 	"strconv"
 
 	"connectrpc.com/connect"
-	"golang.org/x/crypto/bcrypt"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
-	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/hub/password"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/util/validate"
 )
 
 // AdminService implements the leapmux.v1.AdminService ConnectRPC handler.
 type AdminService struct {
-	queries  *db.Queries
-	soloMode bool
+	sqlDB        *sql.DB
+	queries      *db.Queries
+	soloMode     bool
+	sessionCache *auth.SessionCache
 }
 
 // NewAdminService creates a new AdminService.
-func NewAdminService(q *db.Queries, soloMode bool) *AdminService {
-	return &AdminService{queries: q, soloMode: soloMode}
+func NewAdminService(sqlDB *sql.DB, q *db.Queries, soloMode bool, sc *auth.SessionCache) *AdminService {
+	return &AdminService{sqlDB: sqlDB, queries: q, soloMode: soloMode, sessionCache: sc}
 }
 
 func requireAdmin(ctx context.Context) (*auth.UserInfo, error) {
@@ -141,58 +143,49 @@ func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leap
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-
-	// Create personal org.
-	orgID := id.Generate()
-	if err := s.queries.CreateOrg(ctx, db.CreateOrgParams{
-		ID:         orgID,
-		Name:       username,
-		IsPersonal: 1,
-	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create org: %w", err))
+	displayName, err := validate.SanitizeDisplayName(req.Msg.GetDisplayName(), username)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
 	}
 
-	// Hash password.
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Msg.GetPassword()), bcrypt.DefaultCost)
+	// Check username uniqueness.
+	if err := checkUsernameAvailable(ctx, s.queries, username); err != nil {
+		return nil, err
+	}
+
+	// Admin-created users have trusted email.
+	if err := validate.ValidateEmail(req.Msg.GetEmail()); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if err := checkEmailAvailable(ctx, s.queries, req.Msg.GetEmail(), ""); err != nil {
+		return nil, connect.NewError(connect.CodeAlreadyExists, err)
+	}
+
+	if err := validate.ValidatePassword(req.Msg.GetPassword()); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	hash, err := password.Hash(req.Msg.GetPassword())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
 	}
 
-	var isAdmin int64
-	if req.Msg.GetIsAdmin() {
-		isAdmin = 1
-	}
+	email := req.Msg.GetEmail()
 
-	userID := id.Generate()
-	if err := s.queries.CreateUser(ctx, db.CreateUserParams{
-		ID:           userID,
-		OrgID:        orgID,
-		Username:     username,
-		PasswordHash: string(hash),
-		DisplayName:  req.Msg.GetDisplayName(),
-		Email:        req.Msg.GetEmail(),
-		IsAdmin:      isAdmin,
-	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create user: %w", err))
-	}
-
-	// Create org membership.
-	if err := s.queries.CreateOrgMember(ctx, db.CreateOrgMemberParams{
-		OrgID:  orgID,
-		UserID: userID,
-		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_OWNER,
-	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create org member: %w", err))
-	}
-
-	// Fetch the created user to get timestamps.
-	user, err := s.queries.GetUserByID(ctx, userID)
+	user, err := createUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
+		Username:      username,
+		PasswordHash:  hash,
+		DisplayName:   displayName,
+		Email:         email,
+		EmailVerified: ptrconv.BoolToInt64(email != ""),
+		PasswordSet:   1,
+		IsAdmin:       ptrconv.BoolToInt64(req.Msg.GetIsAdmin()),
+	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get created user: %w", err))
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
 	return connect.NewResponse(&leapmuxv1.CreateUserResponse{
-		User: adminUserToProto(&user, username),
+		User: adminUserToProto(user, username),
 	}), nil
 }
 
@@ -221,26 +214,49 @@ func (s *AdminService) UpdateUser(ctx context.Context, req *connect.Request[leap
 	// Update admin status if changed.
 	currentIsAdmin := user.IsAdmin == 1
 	if req.Msg.GetIsAdmin() != currentIsAdmin {
-		var isAdmin int64
-		if req.Msg.GetIsAdmin() {
-			isAdmin = 1
-		}
 		if err := s.queries.UpdateUserAdmin(ctx, db.UpdateUserAdminParams{
-			IsAdmin: isAdmin,
+			IsAdmin: ptrconv.BoolToInt64(req.Msg.GetIsAdmin()),
 			ID:      user.ID,
 		}); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update user admin: %w", err))
 		}
 	}
 
+	newDisplayName, err := validate.SanitizeDisplayName(req.Msg.GetDisplayName(), user.Username)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
+	}
+
+	// Prevent clearing email once set.
+	newEmail := req.Msg.GetEmail()
+	if user.Email != "" && newEmail == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("email cannot be cleared once set"))
+	}
+	if err := validate.ValidateEmail(newEmail); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// Check email uniqueness if changed.
+	if newEmail != user.Email {
+		if err := checkEmailAvailable(ctx, s.queries, newEmail, user.ID); err != nil {
+			return nil, connect.NewError(connect.CodeAlreadyExists, err)
+		}
+	}
+
 	// Update profile fields (keep existing username).
 	if err := s.queries.UpdateUserProfile(ctx, db.UpdateUserProfileParams{
 		Username:    user.Username,
-		DisplayName: req.Msg.GetDisplayName(),
-		Email:       req.Msg.GetEmail(),
+		DisplayName: newDisplayName,
 		ID:          user.ID,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update user profile: %w", err))
+	}
+
+	// Update email if changed (admin email is trusted).
+	if newEmail != user.Email && newEmail != "" {
+		if err := setEmailAndClearCompeting(ctx, s.queries, user.ID, newEmail, 1); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update user email: %w", err))
+		}
 	}
 
 	// Fetch updated user.
@@ -298,17 +314,33 @@ func (s *AdminService) ResetUserPassword(ctx context.Context, req *connect.Reque
 		return nil, err
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Msg.GetNewPassword()), bcrypt.DefaultCost)
+	if _, err := s.queries.GetUserByID(ctx, req.Msg.GetUserId()); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("user not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get user: %w", err))
+	}
+
+	if err := validate.ValidatePassword(req.Msg.GetNewPassword()); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	hash, err := password.Hash(req.Msg.GetNewPassword())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
 	}
 
 	if err := s.queries.UpdateUserPassword(ctx, db.UpdateUserPasswordParams{
-		PasswordHash: string(hash),
+		PasswordHash: hash,
 		ID:           req.Msg.GetUserId(),
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update password: %w", err))
 	}
+
+	// Invalidate all sessions for the target user so compromised sessions
+	// cannot survive a password reset.
+	_ = s.queries.DeleteUserSessionsByUser(ctx, req.Msg.GetUserId())
+
+	s.sessionCache.EvictByUserID(req.Msg.GetUserId())
 
 	return connect.NewResponse(&leapmuxv1.ResetUserPasswordResponse{}), nil
 }

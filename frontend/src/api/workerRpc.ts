@@ -61,7 +61,7 @@ import type { ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '~/lib/ch
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
 import { createClient } from '@connectrpc/connect'
 import { arrayBufferToBase64, base64ToArrayBuffer, isWailsApp } from '~/api/desktopBridge'
-import { getToken, transport } from '~/api/transport'
+import { transport } from '~/api/transport'
 import {
   CloseAgentRequestSchema,
   CloseAgentResponseSchema,
@@ -149,7 +149,6 @@ import {
 } from '~/generated/leapmux/v1/workspace_pb'
 import { ChannelManager } from '~/lib/channel'
 import { createLogger } from '~/lib/logger'
-import { isSoloMode } from '~/lib/systemInfo'
 
 const log = createLogger('workerRpc')
 
@@ -202,15 +201,7 @@ class BrowserChannelTransport implements ChannelTransport {
 
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsUrl = `${wsProtocol}//${window.location.host}/ws/channel`
-    const protocols = ['channel-relay']
-    if (!isSoloMode()) {
-      const token = getToken()
-      if (!token) {
-        throw new Error('not authenticated')
-      }
-      protocols.push(`auth.token.${token}`)
-    }
-    const ws = new WebSocket(wsUrl, protocols)
+    const ws = new WebSocket(wsUrl, ['channel-relay'])
     ws.binaryType = 'arraybuffer'
     return ws
   }
@@ -251,8 +242,7 @@ class WailsWebSocket {
   private sendQueue: Promise<void> = Promise.resolve()
 
   constructor() {
-    const token = isSoloMode() ? '' : (getToken() ?? '')
-    window.go!.main.App.OpenChannelRelay(token).then(() => {
+    window.go!.main.App.OpenChannelRelay().then(() => {
       // Listen for messages from Go.
       window.runtime?.EventsOn?.('channel:message', (...args: unknown[]) => {
         const b64 = args[0] as string

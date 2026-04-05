@@ -60,7 +60,6 @@ export namespace main {
 	    bindAddr: string;
 	    bindPort: number;
 	    hubURL: string;
-	    token: string;
 	    userId: string;
 	
 	    static createFrom(source: any = {}) {
@@ -76,7 +75,6 @@ export namespace main {
 	        this.bindAddr = source["bindAddr"];
 	        this.bindPort = source["bindPort"];
 	        this.hubURL = source["hubURL"];
-	        this.token = source["token"];
 	        this.userId = source["userId"];
 	    }
 	}

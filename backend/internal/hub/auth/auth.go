@@ -4,15 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"time"
 
 	"connectrpc.com/connect"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
+	pwdhash "github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
+
+// SessionDuration is the lifetime of a user session.
+const SessionDuration = 24 * time.Hour
 
 type contextKey int
 
@@ -20,10 +22,12 @@ const userKey contextKey = iota
 
 // UserInfo contains the authenticated user's information.
 type UserInfo struct {
-	ID       string
-	OrgID    string
-	Username string
-	IsAdmin  bool
+	ID            string
+	SessionID     string // session that authenticated this request
+	OrgID         string
+	Username      string
+	IsAdmin       bool
+	EmailVerified bool
 }
 
 // WithUser stores a UserInfo in the context.
@@ -48,53 +52,77 @@ func MustGetUser(ctx context.Context) (*UserInfo, error) {
 }
 
 // Login validates credentials and creates a new session token.
-func Login(ctx context.Context, q *db.Queries, username, password string) (string, *db.User, error) {
+// Returns the session ID, user, session expiry time, and any error.
+func Login(ctx context.Context, q *db.Queries, username, password string) (string, *db.User, time.Time, error) {
+	var zero time.Time
 	user, err := q.GetUserByUsername(ctx, username)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return "", nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+			return "", nil, zero, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
 		}
-		return "", nil, connect.NewError(connect.CodeInternal, fmt.Errorf("query user: %w", err))
+		return "", nil, zero, connect.NewError(connect.CodeInternal, fmt.Errorf("query user: %w", err))
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
-		return "", nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+	match, err := pwdhash.Verify(user.PasswordHash, password)
+	if err != nil {
+		return "", nil, zero, connect.NewError(connect.CodeInternal, fmt.Errorf("verify password: %w", err))
+	}
+	if !match {
+		return "", nil, zero, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
 	}
 
+	sessionID, expiresAt, sessionErr := CreateSession(ctx, q, user.ID)
+	if sessionErr != nil {
+		return "", nil, zero, connect.NewError(connect.CodeInternal, sessionErr)
+	}
+
+	return sessionID, &user, expiresAt, nil
+}
+
+// SessionMeta holds optional metadata for session creation.
+type SessionMeta struct {
+	UserAgent string
+	IPAddress string
+}
+
+// CreateSession creates a new user session and returns the session ID and
+// expiry time.
+func CreateSession(ctx context.Context, q *db.Queries, userID string, meta ...SessionMeta) (string, time.Time, error) {
 	sessionID := id.Generate()
-	expiresAt := time.Now().Add(24 * time.Hour).UTC()
-	if err := q.CreateUserSession(ctx, db.CreateUserSessionParams{
+	expiresAt := time.Now().Add(SessionDuration).UTC()
+	params := db.CreateUserSessionParams{
 		ID:        sessionID,
-		UserID:    user.ID,
+		UserID:    userID,
 		ExpiresAt: expiresAt,
-	}); err != nil {
-		return "", nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
-
-	return sessionID, &user, nil
+	if len(meta) > 0 {
+		params.UserAgent = meta[0].UserAgent
+		params.IpAddress = meta[0].IPAddress
+	}
+	if err := q.CreateUserSession(ctx, params); err != nil {
+		return "", time.Time{}, fmt.Errorf("create session: %w", err)
+	}
+	return sessionID, expiresAt, nil
 }
 
 // ValidateToken resolves a session token to a UserInfo. Returns an error if
-// the token is invalid or expired.
+// the token is invalid or expired. Uses a single joined query to avoid two
+// sequential DB round-trips.
 func ValidateToken(ctx context.Context, q *db.Queries, token string) (*UserInfo, error) {
-	sess, err := q.GetUserSessionByID(ctx, token)
+	row, err := q.ValidateSessionWithUser(ctx, token)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid or expired token"))
 		}
-		return nil, fmt.Errorf("query session: %w", err)
-	}
-
-	user, err := q.GetUserByID(ctx, sess.UserID)
-	if err != nil {
-		return nil, fmt.Errorf("query user: %w", err)
+		return nil, fmt.Errorf("validate session: %w", err)
 	}
 
 	return &UserInfo{
-		ID:       user.ID,
-		OrgID:    user.OrgID,
-		Username: user.Username,
-		IsAdmin:  user.IsAdmin == 1,
+		ID:            row.ID,
+		OrgID:         row.OrgID,
+		Username:      row.Username,
+		IsAdmin:       row.IsAdmin == 1,
+		EmailVerified: row.EmailVerified == 1,
 	}, nil
 }
 
@@ -118,13 +146,4 @@ func ResolveOrgID(ctx context.Context, q *db.Queries, user *UserInfo, requestedO
 	}
 
 	return requestedOrgID, nil
-}
-
-// TokenFromHeader extracts a Bearer token from an Authorization header value.
-func TokenFromHeader(authHeader string) string {
-	const prefix = "Bearer "
-	if strings.HasPrefix(authHeader, prefix) {
-		return strings.TrimPrefix(authHeader, prefix)
-	}
-	return ""
 }

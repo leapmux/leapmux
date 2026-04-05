@@ -55,7 +55,8 @@ type OpenChannelOptions struct {
 }
 
 // OpenChannel opens a new E2EE channel to the specified worker via Hub.
-func OpenChannel(ctx context.Context, hubURL, token, userID, workerID string, opts *OpenChannelOptions) (*Channel, error) {
+// Authentication is handled via cookies in the HTTP client's cookie jar.
+func OpenChannel(ctx context.Context, hubURL, userID, workerID string, opts *OpenChannelOptions) (*Channel, error) {
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 	var wsHTTPClient *http.Client
 	if opts != nil {
@@ -64,7 +65,7 @@ func OpenChannel(ctx context.Context, hubURL, token, userID, workerID string, op
 		}
 		wsHTTPClient = opts.WebSocketHTTPClient
 	}
-	channelClient := leapmuxv1connect.NewChannelServiceClient(httpClient, hubURL, withAuth(token))
+	channelClient := leapmuxv1connect.NewChannelServiceClient(httpClient, hubURL)
 
 	// 1. Get Worker's public key.
 	pubKeyResp, err := channelClient.GetWorkerPublicKey(ctx, connect.NewRequest(
@@ -121,13 +122,8 @@ func OpenChannel(ctx context.Context, hubURL, token, userID, workerID string, op
 	// 6. Connect to Hub's WebSocket relay.
 	wsURL := channelwire.HTTPToWS(hubURL) + "/ws/channel"
 
-	subprotocols := []string{"channel-relay"}
-	if token != "" {
-		subprotocols = append(subprotocols, channelwire.AuthTokenSubprotocolPrefix+token)
-	}
-
 	wsDialOpts := &websocket.DialOptions{
-		Subprotocols: subprotocols,
+		Subprotocols: []string{"channel-relay"},
 	}
 	if wsHTTPClient != nil {
 		wsDialOpts.HTTPClient = wsHTTPClient
@@ -458,29 +454,4 @@ func (ch *Channel) recvLoop() {
 			}
 		}
 	}
-}
-
-func withAuth(token string) connect.ClientOption {
-	return connect.WithInterceptors(&authInterceptor{token: token})
-}
-
-type authInterceptor struct {
-	token string
-}
-
-func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		if a.token != "" {
-			req.Header().Set("Authorization", "Bearer "+a.token)
-		}
-		return next(ctx, req)
-	}
-}
-
-func (a *authInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return next
-}
-
-func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return next
 }

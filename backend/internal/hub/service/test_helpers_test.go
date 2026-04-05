@@ -1,14 +1,23 @@
 package service_test
 
 import (
+	"testing"
+
 	"connectrpc.com/connect"
+
+	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 )
 
 func authedReq[T any](msg *T, token string) *connect.Request[T] {
 	req := connect.NewRequest(msg)
-	req.Header().Set("Authorization", "Bearer "+token)
+	req.Header().Set("Cookie", auth.CookieName+"="+token)
 	return req
+}
+
+func sessionFromCookie(t *testing.T, setCookie string) string {
+	return hubtestutil.SessionFromCookie(t, setCookie)
 }
 
 func testConfig() *config.Config {

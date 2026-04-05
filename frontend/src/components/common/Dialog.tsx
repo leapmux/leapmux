@@ -33,12 +33,21 @@ export const Dialog: Component<DialogProps> = (props) => {
       class={`${styles.standard}${props.tall ? ` ${styles.tall}` : ''}${props.wide ? ` ${styles.wide}` : ''}${props.class ? ` ${props.class}` : ''}`}
       data-testid={props['data-testid']}
       aria-label={props.title}
-      closedby={props.busy ? 'none' : 'any'}
       onKeyDown={(e) => {
         if (e.key === 'Escape') {
           e.preventDefault()
           if (!props.busy)
             dialogRef.close()
+        }
+      }}
+      onClick={(e) => {
+        // Close on backdrop click: check if the click landed outside
+        // the dialog's bounding rect (i.e. on the ::backdrop).
+        if (e.target === dialogRef && !props.busy) {
+          const rect = dialogRef.getBoundingClientRect()
+          if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) {
+            dialogRef.close()
+          }
         }
       }}
       onClose={() => {

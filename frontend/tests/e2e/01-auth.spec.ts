@@ -48,7 +48,7 @@ test.describe('Authentication', () => {
 
     // Login
     await page.getByLabel('Username').fill('admin')
-    await page.getByLabel('Password').fill('admin')
+    await page.getByLabel('Password').fill('admin123')
     await page.getByRole('button', { name: 'Sign in' }).click()
 
     // Should redirect back to the original page

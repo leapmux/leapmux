@@ -16,6 +16,12 @@ service AuthService {
   rpc VerifyEmail(VerifyEmailRequest) returns (VerifyEmailResponse);
   // Get public system information (no auth required).
   rpc GetSystemInfo(GetSystemInfoRequest) returns (GetSystemInfoResponse);
+  // List enabled OAuth providers (no auth required).
+  rpc GetOAuthProviders(GetOAuthProvidersRequest) returns (GetOAuthProvidersResponse);
+  // Get pre-filled data for a pending OAuth signup (no auth required).
+  rpc GetPendingOAuthSignup(GetPendingOAuthSignupRequest) returns (GetPendingOAuthSignupResponse);
+  // Complete OAuth signup by choosing a username (no auth required).
+  rpc CompleteOAuthSignup(CompleteOAuthSignupRequest) returns (CompleteOAuthSignupResponse);
 }
 
 message LoginRequest {
@@ -24,7 +30,7 @@ message LoginRequest {
 }
 
 message LoginResponse {
-  string token = 1;
+  reserved 1; // was: token (now delivered via Set-Cookie)
   User user = 2;
 }
 
@@ -46,7 +52,7 @@ message SignUpRequest {
 }
 
 message SignUpResponse {
-  string token = 1;             // Empty if verification required
+  reserved 1; // was: token (now delivered via Set-Cookie)
   User user = 2;
   bool verification_required = 3;
 }
@@ -56,7 +62,7 @@ message VerifyEmailRequest {
 }
 
 message VerifyEmailResponse {
-  string token = 1;
+  reserved 1; // was: token (now delivered via Set-Cookie)
   User user = 2;
 }
 
@@ -69,6 +75,14 @@ message User {
   string email = 6;
   bool email_verified = 7;
   string org_name = 8;
+  string pending_email = 9;
+  repeated LinkedOAuthProvider oauth_providers = 10;
+  bool password_set = 11;
+}
+
+message LinkedOAuthProvider {
+  string id = 1;
+  string name = 2;
 }
 
 message GetSystemInfoRequest {}
@@ -80,4 +94,40 @@ message GetSystemInfoResponse {
   string commit_hash = 4;
   string commit_time = 5;
   string build_time = 6;
+  bool oauth_enabled = 7; // true if at least one OAuth provider is configured and enabled
+  bool setup_required = 8; // true when no users exist (first-time setup needed)
+}
+
+message GetOAuthProvidersRequest {}
+
+message GetOAuthProvidersResponse {
+  repeated OAuthProviderInfo providers = 1;
+}
+
+message OAuthProviderInfo {
+  string id = 1;
+  string name = 2;
+  string provider_type = 3; // "oidc" or "github"
+  string login_url = 4;     // full URL to /auth/oauth/{id}/login
+}
+
+message GetPendingOAuthSignupRequest {
+  string signup_token = 1;
+}
+
+message GetPendingOAuthSignupResponse {
+  string email = 1;
+  string display_name = 2;
+  string provider_name = 3;
+}
+
+message CompleteOAuthSignupRequest {
+  string signup_token = 1;
+  string username = 2;
+  string display_name = 3;
+  string email = 4;
+}
+
+message CompleteOAuthSignupResponse {
+  User user = 1;
 }

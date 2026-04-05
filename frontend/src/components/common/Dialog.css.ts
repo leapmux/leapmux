@@ -151,6 +151,7 @@ export const rightPanel = style({
   flexDirection: 'column',
   minHeight: 0,
   overflowY: 'auto',
+  gap: 'var(--space-4)',
 })
 
 // In two-column layout, the grid and its left panel must fill remaining height.

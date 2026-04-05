@@ -117,6 +117,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load hub config: %w", err)
 	}
+	hubCfg.DevMode = cfg.DevMode
 
 	level, err := logging.ParseLevel(hubCfg.LogLevel)
 	if err != nil {

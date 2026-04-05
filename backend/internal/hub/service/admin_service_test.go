@@ -7,17 +7,17 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/crypto/bcrypt"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
@@ -40,13 +40,13 @@ func setupAdminTestServer(t *testing.T) *adminTestEnv {
 
 	q := gendb.New(sqlDB)
 
-	err = bootstrap.Run(context.Background(), q, false)
-	require.NoError(t, err)
+	hubtestutil.CreateTestAdmin(t, sqlDB, q)
 
-	adminSvc := service.NewAdminService(q, false)
+	adminSvc := service.NewAdminService(sqlDB, q, false, nil)
 
 	mux := http.NewServeMux()
-	opts := connect.WithInterceptors(auth.NewInterceptor(q, false))
+	interceptor, _ := auth.NewInterceptor(q, false, false, false)
+	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewAdminServiceHandler(adminSvc, opts)
 	mux.Handle(path, handler)
 
@@ -55,7 +55,7 @@ func setupAdminTestServer(t *testing.T) *adminTestEnv {
 
 	client := leapmuxv1connect.NewAdminServiceClient(server.Client(), server.URL)
 
-	token, user, err := auth.Login(context.Background(), q, "admin", "admin")
+	token, user, _, err := auth.Login(context.Background(), q, "admin", "admin123")
 	require.NoError(t, err)
 
 	return &adminTestEnv{
@@ -74,13 +74,14 @@ func (e *adminTestEnv) createNonAdminUser(t *testing.T) (userID, token string) {
 	require.NoError(t, err)
 
 	userID = id.Generate()
-	hash, _ := bcrypt.GenerateFromPassword([]byte("userpass"), bcrypt.MinCost)
+	hash, _ := password.Hash("userpass")
 	_ = e.queries.CreateUser(ctx, gendb.CreateUserParams{
 		ID:           userID,
 		OrgID:        adminUser.OrgID,
 		Username:     "regularuser",
-		PasswordHash: string(hash),
+		PasswordHash: hash,
 		DisplayName:  "Regular User",
+		PasswordSet:  1,
 		IsAdmin:      0,
 	})
 	_ = e.queries.CreateOrgMember(ctx, gendb.CreateOrgMemberParams{
@@ -88,7 +89,7 @@ func (e *adminTestEnv) createNonAdminUser(t *testing.T) (userID, token string) {
 		UserID: userID,
 		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER,
 	})
-	token, _, loginErr := auth.Login(ctx, e.queries, "regularuser", "userpass")
+	token, _, _, loginErr := auth.Login(ctx, e.queries, "regularuser", "userpass")
 	require.NoError(t, loginErr)
 	return
 }
@@ -120,7 +121,7 @@ func TestAdminService_ListUsers_WithQuery(t *testing.T) {
 	// Create an additional user via the admin RPC.
 	_, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
 		Username:    "searchable",
-		Password:    "pass123",
+		Password:    "pass1234",
 		DisplayName: "Searchable User",
 		Email:       "search@example.com",
 	}, env.token))
@@ -194,7 +195,7 @@ func TestAdminService_CreateUser(t *testing.T) {
 	assert.NotEmpty(t, user.GetCreatedAt())
 
 	// Verify the user can log in.
-	_, _, loginErr := auth.Login(context.Background(), env.queries, "newuser", "newpass123")
+	_, _, _, loginErr := auth.Login(context.Background(), env.queries, "newuser", "newpass123")
 	assert.NoError(t, loginErr)
 }
 
@@ -227,7 +228,7 @@ func TestAdminService_UpdateUser(t *testing.T) {
 	// Create a user to update.
 	createResp, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
 		Username:    "toupdate",
-		Password:    "pass",
+		Password:    "testpass",
 		DisplayName: "Original Name",
 		Email:       "orig@example.com",
 	}, env.token))
@@ -272,7 +273,7 @@ func TestAdminService_DeleteUser(t *testing.T) {
 	// Create a user to delete.
 	createResp, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
 		Username:    "todelete",
-		Password:    "pass",
+		Password:    "testpass",
 		DisplayName: "Delete Me",
 	}, env.token))
 	require.NoError(t, err)
@@ -320,14 +321,14 @@ func TestAdminService_ResetUserPassword(t *testing.T) {
 	// Create a user whose password we will reset.
 	createResp, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
 		Username:    "resetme",
-		Password:    "oldpass",
+		Password:    "oldpass1",
 		DisplayName: "Reset Me",
 	}, env.token))
 	require.NoError(t, err)
 	targetID := createResp.Msg.GetUser().GetId()
 
 	// Verify old password works.
-	_, _, err = auth.Login(context.Background(), env.queries, "resetme", "oldpass")
+	_, _, _, err = auth.Login(context.Background(), env.queries, "resetme", "oldpass1")
 	require.NoError(t, err)
 
 	// Reset the password.
@@ -338,12 +339,44 @@ func TestAdminService_ResetUserPassword(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify old password no longer works.
-	_, _, err = auth.Login(context.Background(), env.queries, "resetme", "oldpass")
+	_, _, _, err = auth.Login(context.Background(), env.queries, "resetme", "oldpass1")
 	require.Error(t, err)
 
 	// Verify new password works.
-	_, _, err = auth.Login(context.Background(), env.queries, "resetme", "newpass456")
+	_, _, _, err = auth.Login(context.Background(), env.queries, "resetme", "newpass456")
 	assert.NoError(t, err)
+}
+
+func TestAdminService_ResetUserPassword_InvalidatesSessions(t *testing.T) {
+	env := setupAdminTestServer(t)
+
+	// Create a target user.
+	createResp, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "victim",
+		Password:    "oldpass1",
+		DisplayName: "Victim",
+	}, env.token))
+	require.NoError(t, err)
+	targetID := createResp.Msg.GetUser().GetId()
+
+	// Log in as the target user to create a session.
+	victimToken, _, _, err := auth.Login(context.Background(), env.queries, "victim", "oldpass1")
+	require.NoError(t, err)
+
+	// Verify victim's session is valid.
+	_, err = auth.ValidateToken(context.Background(), env.queries, victimToken)
+	require.NoError(t, err)
+
+	// Admin resets the password.
+	_, err = env.client.ResetUserPassword(context.Background(), authedReq(&leapmuxv1.ResetUserPasswordRequest{
+		UserId:      targetID,
+		NewPassword: "newpass456",
+	}, env.token))
+	require.NoError(t, err)
+
+	// Victim's session should be invalidated.
+	_, err = auth.ValidateToken(context.Background(), env.queries, victimToken)
+	assert.Error(t, err, "victim sessions should be invalidated after admin password reset")
 }
 
 func TestAdminService_NonAdmin_AllEndpoints(t *testing.T) {
@@ -364,7 +397,7 @@ func TestAdminService_NonAdmin_AllEndpoints(t *testing.T) {
 		}},
 		{"CreateUser", func() error {
 			_, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
-				Username: "blocked", Password: "pass", DisplayName: "Blocked",
+				Username: "blocked", Password: "testpass", DisplayName: "Blocked",
 			}, nonAdminToken))
 			return err
 		}},
@@ -381,4 +414,198 @@ func TestAdminService_NonAdmin_AllEndpoints(t *testing.T) {
 			assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), "non-admin should get NotFound, not PermissionDenied")
 		})
 	}
+}
+
+func TestAdminCreateUser_DuplicateEmail_Rejected(t *testing.T) {
+	env := setupAdminTestServer(t)
+
+	// Create first user with an email.
+	_, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "user1",
+		Password:    "pass1234",
+		DisplayName: "User 1",
+		Email:       "shared@example.com",
+	}, env.token))
+	require.NoError(t, err)
+
+	// Try to create second user with the same email.
+	_, err = env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "user2",
+		Password:    "pass4567",
+		DisplayName: "User 2",
+		Email:       "shared@example.com",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
+}
+
+func TestAdminUpdateUser_EmailCannotBeCleared(t *testing.T) {
+	env := setupAdminTestServer(t)
+
+	// Create a user with an email.
+	createResp, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "emailuser",
+		Password:    "pass1234",
+		DisplayName: "Email User",
+		Email:       "has@example.com",
+	}, env.token))
+	require.NoError(t, err)
+	targetID := createResp.Msg.GetUser().GetId()
+
+	// Try to clear the email by setting it to empty.
+	_, err = env.client.UpdateUser(context.Background(), authedReq(&leapmuxv1.UpdateUserRequest{
+		UserId:      targetID,
+		DisplayName: "Email User",
+		Email:       "",
+		IsAdmin:     false,
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+func TestAdminCreateUser_DuplicateUsername_Rejected(t *testing.T) {
+	env := setupAdminTestServer(t)
+
+	// Create first user.
+	_, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "dupuser",
+		Password:    "pass1234",
+		DisplayName: "User 1",
+	}, env.token))
+	require.NoError(t, err)
+
+	// Try to create second user with the same username.
+	_, err = env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "dupuser",
+		Password:    "pass4567",
+		DisplayName: "User 2",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
+}
+
+func TestAdminCreateUser_EmptyEmail_AllowedMultiple(t *testing.T) {
+	env := setupAdminTestServer(t)
+
+	// Create first user with empty email.
+	resp1, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "noemail1",
+		Password:    "pass1234",
+		DisplayName: "No Email 1",
+		Email:       "",
+	}, env.token))
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp1.Msg.GetUser().GetId())
+
+	// Create second user with empty email.
+	resp2, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "noemail2",
+		Password:    "pass4567",
+		DisplayName: "No Email 2",
+		Email:       "",
+	}, env.token))
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp2.Msg.GetUser().GetId())
+}
+
+func TestAdminUpdateUser_DuplicateEmail_Rejected(t *testing.T) {
+	env := setupAdminTestServer(t)
+
+	// Create user A with an email.
+	_, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "usera",
+		Password:    "pass1234",
+		DisplayName: "User A",
+		Email:       "taken@example.com",
+	}, env.token))
+	require.NoError(t, err)
+
+	// Create user B without an email.
+	respB, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "userb",
+		Password:    "pass4567",
+		DisplayName: "User B",
+	}, env.token))
+	require.NoError(t, err)
+	userBID := respB.Msg.GetUser().GetId()
+
+	// Try to set user B's email to user A's email.
+	_, err = env.client.UpdateUser(context.Background(), authedReq(&leapmuxv1.UpdateUserRequest{
+		UserId:      userBID,
+		DisplayName: "User B",
+		Email:       "taken@example.com",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
+}
+
+func TestAdminUpdateUser_SameEmail_Allowed(t *testing.T) {
+	env := setupAdminTestServer(t)
+
+	// Create a user with an email.
+	createResp, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "sameemail",
+		Password:    "pass1234",
+		DisplayName: "Same Email User",
+		Email:       "keep@example.com",
+	}, env.token))
+	require.NoError(t, err)
+	targetID := createResp.Msg.GetUser().GetId()
+
+	// Update the user, keeping the same email.
+	resp, err := env.client.UpdateUser(context.Background(), authedReq(&leapmuxv1.UpdateUserRequest{
+		UserId:      targetID,
+		DisplayName: "Updated Name",
+		Email:       "keep@example.com",
+	}, env.token))
+	require.NoError(t, err)
+	assert.Equal(t, "keep@example.com", resp.Msg.GetUser().GetEmail())
+	assert.Equal(t, "Updated Name", resp.Msg.GetUser().GetDisplayName())
+}
+
+func TestAdminResetPassword_NonexistentUser_Rejected(t *testing.T) {
+	env := setupAdminTestServer(t)
+
+	_, err := env.client.ResetUserPassword(context.Background(), authedReq(&leapmuxv1.ResetUserPasswordRequest{
+		UserId:      "nonexistent-user-id",
+		NewPassword: "newpass1",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
+func TestAdminCreateUser_EmailVerified(t *testing.T) {
+	env := setupAdminTestServer(t)
+
+	// Create a user with email — should be auto-verified.
+	resp, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "verified",
+		Password:    "pass1234",
+		DisplayName: "Verified User",
+		Email:       "verified@example.com",
+	}, env.token))
+	require.NoError(t, err)
+	assert.True(t, resp.Msg.GetUser().GetEmailVerified())
+
+	dbUser, err := env.queries.GetUserByID(context.Background(), resp.Msg.GetUser().GetId())
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), dbUser.EmailVerified)
+	assert.Equal(t, "verified@example.com", dbUser.Email)
+}
+
+func TestAdminCreateUser_NoEmail_NotVerified(t *testing.T) {
+	env := setupAdminTestServer(t)
+
+	// Create a user without email — email_verified should be 0.
+	resp, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "noemail",
+		Password:    "pass1234",
+		DisplayName: "No Email User",
+	}, env.token))
+	require.NoError(t, err)
+	assert.False(t, resp.Msg.GetUser().GetEmailVerified())
+
+	dbUser, err := env.queries.GetUserByID(context.Background(), resp.Msg.GetUser().GetId())
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), dbUser.EmailVerified)
 }

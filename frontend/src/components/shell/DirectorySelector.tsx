@@ -8,6 +8,7 @@ import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
 import { safeGetJson, safeSetJson } from '~/lib/safeStorage'
+import { emptyState } from '~/styles/shared.css'
 
 interface DirectorySelectorProps {
   state: WorkerDialogState
@@ -37,7 +38,14 @@ export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
         />
         <RefreshButton onClick={() => props.state.refreshTree()} title="Refresh directory tree" />
       </div>
-      <Show when={props.state.workerId()}>
+      <Show
+        when={props.state.workerId()}
+        fallback={(
+          <div class={treeContainer}>
+            <div class={emptyState}>No workers online. Connect a worker to browse directories.</div>
+          </div>
+        )}
+      >
         <div class={treeContainer}>
           <DirectoryTree
             workerId={props.state.workerId()}

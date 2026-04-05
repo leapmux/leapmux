@@ -19,6 +19,7 @@ import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
+import { emptyState } from '~/styles/shared.css'
 import * as styles from './DirectoryTree.css'
 import { DiffStatsBadge, getGitFileIconClass } from './gitStatusUtils'
 import { menuTrigger, sidebarActions } from './sidebarActions.css'
@@ -121,6 +122,30 @@ function deserializeState(raw: string): { expandedPaths: Record<string, boolean>
   }
   catch {
     return null
+  }
+}
+
+// -------------------------------------------------------------------------
+// Visibility helpers
+// -------------------------------------------------------------------------
+
+/**
+ * Check if a path is visible either directly or via an ancestor directory
+ * entry in the visible set. Git reports untracked directories with a trailing
+ * slash (e.g. "build/"), so when the tree merges single-child directories
+ * (e.g. "build/bin"), walking up from the merged path finds the ancestor.
+ */
+function isPathVisible(path: string, visible: Set<string>): boolean {
+  if (visible.has(path))
+    return true
+  let dir = path
+  while (true) {
+    const lastSlash = dir.lastIndexOf('/')
+    if (lastSlash <= 0)
+      return false
+    dir = dir.substring(0, lastSlash)
+    if (visible.has(`${dir}/`))
+      return true
   }
 }
 
@@ -292,7 +317,7 @@ const TreeNode: Component<{
       return all
     return all.filter(c =>
       (showHidden || !c.hidden)
-      && (!visible || visible.has(c.path)),
+      && (!visible || isPathVisible(c.path, visible)),
     )
   }
   const loaded = () => tree.getChildren(props.node.path) !== undefined
@@ -650,7 +675,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
       return all
     return all.filter(c =>
       (sh || !c.hidden)
-      && (!visible || visible.has(c.path)),
+      && (!visible || isPathVisible(c.path, visible)),
     )
   }
 
@@ -809,7 +834,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
                   <div class={styles.childrenInner}>
                     <Show
                       when={rootChildren()!.length > 0}
-                      fallback={<div class={styles.emptyState}>{props.visiblePaths ? 'No changes' : 'Empty directory'}</div>}
+                      fallback={<div class={emptyState}>{props.visiblePaths ? 'No changes' : 'Empty directory'}</div>}
                     >
                       <For each={rootChildren()}>
                         {node => (

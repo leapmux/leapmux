@@ -6,14 +6,14 @@ import type { ChannelManager } from '../../../src/lib/channel'
 import { createTestChannelManager } from './e2e-channel'
 
 // ---- E2EE channel cache ----
-// Keeps a ChannelManager per hubUrl+token pair to avoid re-handshaking
+// Keeps a ChannelManager per hubUrl+cookie pair to avoid re-handshaking
 // on every test API call.
 
 const channelManagerCache = new Map<string, ChannelManager>()
 const channelManagerPending = new Map<string, Promise<ChannelManager>>()
 
-async function getTestChannel(hubUrl: string, token: string): Promise<ChannelManager> {
-  const key = `${hubUrl}|${token}`
+async function getTestChannel(hubUrl: string, cookie: string): Promise<ChannelManager> {
+  const key = `${hubUrl}|${cookie}`
   const cached = channelManagerCache.get(key)
   if (cached) {
     return cached
@@ -21,7 +21,7 @@ async function getTestChannel(hubUrl: string, token: string): Promise<ChannelMan
   // Deduplicate concurrent initialization for the same key.
   let pending = channelManagerPending.get(key)
   if (!pending) {
-    pending = createTestChannelManager(hubUrl, token).then((mgr) => {
+    pending = createTestChannelManager(hubUrl, cookie).then((mgr) => {
       channelManagerCache.set(key, mgr)
       channelManagerPending.delete(key)
       return mgr
@@ -33,34 +33,63 @@ async function getTestChannel(hubUrl: string, token: string): Promise<ChannelMan
 
 export { getTestChannel }
 
+// ---- Cookie helpers ----
+
+const SESSION_COOKIE_NAME = 'leapmux-session'
+
+/**
+ * Extract the session cookie value from a Set-Cookie header.
+ */
+function extractSessionCookie(setCookieHeader: string | null): string {
+  if (!setCookieHeader) {
+    throw new Error('No Set-Cookie header in response')
+  }
+  // Set-Cookie: leapmux-session=<value>; Path=/; HttpOnly; ...
+  for (const part of setCookieHeader.split(';')) {
+    const trimmed = part.trim()
+    if (trimmed.startsWith(`${SESSION_COOKIE_NAME}=`)) {
+      return trimmed
+    }
+  }
+  throw new Error(`Session cookie ${SESSION_COOKIE_NAME} not found in Set-Cookie: ${setCookieHeader}`)
+}
+
+/**
+ * Build authed fetch headers with the session cookie.
+ */
+export function authedHeaders(cookie: string): Record<string, string> {
+  return {
+    'Content-Type': 'application/json',
+    'Cookie': cookie,
+  }
+}
+
 // ---- Hub API helpers (Auth, Org, Admin, Worker management) ----
 
 /**
- * Login via the Connect API. Returns the auth token.
+ * Login via the Connect API. Returns the session cookie string
+ * (e.g. "leapmux-session=abc123") for use in subsequent requests.
  */
 export async function loginViaAPI(hubUrl: string, username: string, password: string): Promise<string> {
   const res = await fetch(`${hubUrl}/leapmux.v1.AuthService/Login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
+    redirect: 'manual',
   })
   if (!res.ok) {
     throw new Error(`loginViaAPI failed: ${res.status}`)
   }
-  const data = await res.json() as { token: string }
-  return data.token
+  return extractSessionCookie(res.headers.get('set-cookie'))
 }
 
 /**
  * Get the current user's ID via the Connect API.
  */
-export async function getUserId(hubUrl: string, token: string): Promise<string> {
+export async function getUserId(hubUrl: string, cookie: string): Promise<string> {
   const res = await fetch(`${hubUrl}/leapmux.v1.AuthService/GetCurrentUser`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
+    headers: authedHeaders(cookie),
     body: JSON.stringify({}),
   })
   if (!res.ok) {
@@ -71,7 +100,7 @@ export async function getUserId(hubUrl: string, token: string): Promise<string> 
 }
 
 /**
- * Sign up a new user via the Connect API. Returns the auth token.
+ * Sign up a new user via the Connect API. Returns the session cookie string.
  */
 export async function signUpViaAPI(
   hubUrl: string,
@@ -84,24 +113,21 @@ export async function signUpViaAPI(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password, displayName, email }),
+    redirect: 'manual',
   })
   if (!res.ok) {
     throw new Error(`signUpViaAPI failed: ${res.status}`)
   }
-  const data = await res.json() as { token: string }
-  return data.token
+  return extractSessionCookie(res.headers.get('set-cookie'))
 }
 
 /**
  * Get the admin user's personal org ID via the Connect API.
  */
-export async function getAdminOrgId(hubUrl: string, token: string): Promise<string> {
+export async function getAdminOrgId(hubUrl: string, cookie: string): Promise<string> {
   const res = await fetch(`${hubUrl}/leapmux.v1.OrgService/ListMyOrgs`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
+    headers: authedHeaders(cookie),
     body: JSON.stringify({}),
   })
   if (!res.ok) {
@@ -118,15 +144,12 @@ export async function getAdminOrgId(hubUrl: string, token: string): Promise<stri
 /**
  * Get the first worker ID from the ListWorkers API.
  */
-export async function getWorkerId(hubUrl: string, token: string): Promise<string> {
+export async function getWorkerId(hubUrl: string, cookie: string): Promise<string> {
   const deadline = Date.now() + 30_000
   while (true) {
     const res = await fetch(`${hubUrl}/leapmux.v1.WorkerManagementService/ListWorkers`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
+      headers: authedHeaders(cookie),
       body: JSON.stringify({}),
     })
     if (!res.ok) {
@@ -149,16 +172,13 @@ export async function getWorkerId(hubUrl: string, token: string): Promise<string
  */
 export async function inviteToOrgViaAPI(
   hubUrl: string,
-  token: string,
+  cookie: string,
   orgId: string,
   username: string,
 ): Promise<void> {
   const res = await fetch(`${hubUrl}/leapmux.v1.OrgService/InviteOrgMember`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
+    headers: authedHeaders(cookie),
     body: JSON.stringify({ orgId, username, role: 'ORG_MEMBER_ROLE_MEMBER' }),
   })
   if (!res.ok) {
@@ -171,15 +191,12 @@ export async function inviteToOrgViaAPI(
  */
 export async function deregisterWorkerViaAPI(
   hubUrl: string,
-  token: string,
+  cookie: string,
   workerId: string,
 ): Promise<void> {
   const res = await fetch(`${hubUrl}/leapmux.v1.WorkerManagementService/DeregisterWorker`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
+    headers: authedHeaders(cookie),
     body: JSON.stringify({ workerId }),
   })
   if (!res.ok) {
@@ -192,16 +209,13 @@ export async function deregisterWorkerViaAPI(
  */
 export async function approveRegistrationViaAPI(
   hubUrl: string,
-  token: string,
+  cookie: string,
   registrationToken: string,
   orgId: string,
 ): Promise<string> {
   const res = await fetch(`${hubUrl}/leapmux.v1.WorkerManagementService/ApproveRegistration`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
+    headers: authedHeaders(cookie),
     body: JSON.stringify({ registrationToken, orgId }),
   })
   if (!res.ok) {
@@ -219,7 +233,7 @@ export async function approveRegistrationViaAPI(
  */
 export async function openAgentViaAPI(
   hubUrl: string,
-  token: string,
+  cookie: string,
   workerId: string,
   workspaceId: string,
   workingDir?: string,
@@ -234,7 +248,7 @@ export async function openAgentViaAPI(
   },
 ): Promise<string> {
   const { OpenAgentRequestSchema, OpenAgentResponseSchema } = await import('../../../src/generated/leapmux/v1/agent_pb')
-  const channel = await getTestChannel(hubUrl, token)
+  const channel = await getTestChannel(hubUrl, cookie)
   const resp = await channel.callWorker(
     workerId,
     'OpenAgent',
@@ -259,10 +273,7 @@ export async function openAgentViaAPI(
   // Register the tab on the hub so the frontend can discover it.
   await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/AddTab`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
+    headers: authedHeaders(cookie),
     body: JSON.stringify({
       workspaceId,
       tab: { tabType: 'TAB_TYPE_AGENT', tabId: resp.agent.id, workerId },
@@ -275,10 +286,7 @@ export async function openAgentViaAPI(
   // receives a PrepareWorkspaceAccess (ChannelAccessUpdate) notification.
   await fetch(`${hubUrl}/leapmux.v1.ChannelService/PrepareWorkspaceAccess`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
+    headers: authedHeaders(cookie),
     body: JSON.stringify({ workerId, workspaceId }),
   })
 
@@ -293,16 +301,13 @@ export async function openAgentViaAPI(
  */
 export async function createWorkspaceViaAPI(
   hubUrl: string,
-  token: string,
+  cookie: string,
   title: string,
   orgId: string,
 ): Promise<string> {
   const res = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/CreateWorkspace`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
+    headers: authedHeaders(cookie),
     body: JSON.stringify({ title, orgId }),
   })
   if (!res.ok) {
@@ -320,17 +325,14 @@ export async function createWorkspaceViaAPI(
  */
 export async function shareWorkspaceViaAPI(
   hubUrl: string,
-  token: string,
+  cookie: string,
   workspaceId: string,
   shareMode: 'SHARE_MODE_PRIVATE' | 'SHARE_MODE_ORG' | 'SHARE_MODE_MEMBERS',
   userIds?: string[],
 ): Promise<void> {
   const res = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/UpdateWorkspaceSharing`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
+    headers: authedHeaders(cookie),
     body: JSON.stringify({ workspaceId, shareMode, userIds }),
   })
   if (!res.ok) {
@@ -343,15 +345,12 @@ export async function shareWorkspaceViaAPI(
  */
 export async function deleteWorkspaceViaAPI(
   hubUrl: string,
-  token: string,
+  cookie: string,
   workspaceId: string,
 ): Promise<void> {
   const res = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/DeleteWorkspace`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
+    headers: authedHeaders(cookie),
     body: JSON.stringify({ workspaceId }),
   })
   if (!res.ok) {
@@ -364,15 +363,12 @@ export async function deleteWorkspaceViaAPI(
  */
 export async function listWorkspacesViaAPI(
   hubUrl: string,
-  token: string,
+  cookie: string,
   orgId: string,
 ): Promise<{ id: string }[]> {
   const res = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/ListWorkspaces`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
+    headers: authedHeaders(cookie),
     body: JSON.stringify({ orgId }),
   })
   if (!res.ok) {
@@ -387,11 +383,11 @@ export async function listWorkspacesViaAPI(
  */
 export async function deleteAllWorkspacesViaAPI(
   hubUrl: string,
-  token: string,
+  cookie: string,
   orgId: string,
 ): Promise<void> {
-  const workspaces = await listWorkspacesViaAPI(hubUrl, token, orgId)
+  const workspaces = await listWorkspacesViaAPI(hubUrl, cookie, orgId)
   for (const ws of workspaces) {
-    await deleteWorkspaceViaAPI(hubUrl, token, ws.id).catch(() => {})
+    await deleteWorkspaceViaAPI(hubUrl, cookie, ws.id).catch(() => {})
   }
 }

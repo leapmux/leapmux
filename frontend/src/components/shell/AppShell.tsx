@@ -6,7 +6,7 @@ import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createSignal, on, Show, untrack } from 'solid-js'
 import { workerClient, workspaceClient } from '~/api/clients'
-import { agentLoadingTimeoutMs, getToken } from '~/api/transport'
+import { agentLoadingTimeoutMs } from '~/api/transport'
 import { channelManager, listAgents, listTerminals, moveTabWorkspace, renameAgent, setConfirmKeyPin, setGetUserId } from '~/api/workerRpc'
 import { NotFoundPage } from '~/components/common/NotFoundPage'
 import { showWarnToast } from '~/components/common/Toast'
@@ -1217,7 +1217,6 @@ export const AppShell: ParentComponent = (props) => {
           <AddTunnelDialog
             workerId={target().id}
             hubURL={window.location.origin}
-            token={getToken() ?? ''}
             userId={auth.user()?.id ?? ''}
             onClose={() => setAddTunnelTarget(null)}
             onCreated={() => setAddTunnelTarget(null)}

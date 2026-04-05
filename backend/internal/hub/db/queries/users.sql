@@ -1,6 +1,6 @@
 -- name: CreateUser :exec
-INSERT INTO users (id, org_id, username, password_hash, display_name, email, is_admin)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+INSERT INTO users (id, org_id, username, password_hash, display_name, email, email_verified, password_set, is_admin)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetUserByID :one
 SELECT * FROM users WHERE id = ?;
@@ -26,11 +26,15 @@ ORDER BY created_at DESC
 LIMIT sqlc.arg(limit) OFFSET sqlc.arg(offset);
 
 -- name: UpdateUserPassword :exec
-UPDATE users SET password_hash = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+UPDATE users SET password_hash = ?, password_set = 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ?;
 
 -- name: UpdateUserProfile :exec
-UPDATE users SET username = ?, display_name = ?, email = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+UPDATE users SET username = ?, display_name = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = ?;
+
+-- name: UpdateUserEmail :exec
+UPDATE users SET email = ?, email_verified = ?, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ?;
 
 -- name: UpdateUserEmailVerified :exec
@@ -53,3 +57,25 @@ WHERE id = ?;
 
 -- name: CountUsers :one
 SELECT count(*) FROM users;
+
+-- name: HasAnyUser :one
+SELECT EXISTS(SELECT 1 FROM users LIMIT 1);
+
+-- name: SetPendingEmail :exec
+UPDATE users SET pending_email = ?, pending_email_token = ?, pending_email_expires_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = ?;
+
+-- name: ClearPendingEmail :exec
+UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = ?;
+
+-- name: PromotePendingEmail :exec
+UPDATE users SET email = pending_email, email_verified = 1, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = ? AND pending_email != '';
+
+-- name: GetUserByPendingEmailToken :one
+SELECT * FROM users WHERE pending_email_token = ? AND pending_email_token != '';
+
+-- name: ClearCompetingPendingEmails :exec
+UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE pending_email = ? AND id != ?;

@@ -86,6 +86,28 @@ func TestWSReadLimit_AcceptsLargeChunk(t *testing.T) {
 	}
 }
 
+func TestChannelRelay_NoCookie_Returns401(t *testing.T) {
+	handler := NewChannelRelayHandler(nil, nil, nil, nil, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/ws/channel", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestChannelRelay_SubprotocolToken_NotAccepted(t *testing.T) {
+	handler := NewChannelRelayHandler(nil, nil, nil, nil, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/ws/channel", nil)
+	req.Header.Set("Sec-WebSocket-Protocol", "channel-relay, auth.token.some-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	// Should still fail — subprotocol auth is no longer accepted.
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
 // TestWSReadLimit_DefaultRejectsLargeChunk verifies that without SetReadLimit,
 // the default 32KB limit causes a read failure for large messages. This
 // confirms the fix is actually necessary.

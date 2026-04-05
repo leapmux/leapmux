@@ -24,7 +24,7 @@ declare global {
             headers: Record<string, string>
             body: string
           }>
-          OpenChannelRelay: (token: string) => Promise<void>
+          OpenChannelRelay: () => Promise<void>
           SendChannelMessage: (b64Data: string) => Promise<void>
           CloseChannelRelay: () => Promise<void>
           ConnectSolo: () => Promise<void>

@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/validate"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -74,12 +75,17 @@ func (s *WorkspaceService) CreateWorkspace(
 		return nil, err
 	}
 
+	title, err := validate.SanitizeName(req.Msg.GetTitle())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("title: %w", err))
+	}
+
 	wsID := id.Generate()
 	if err := s.queries.CreateWorkspace(ctx, db.CreateWorkspaceParams{
 		ID:          wsID,
 		OrgID:       req.Msg.GetOrgId(),
 		OwnerUserID: user.ID,
-		Title:       req.Msg.GetTitle(),
+		Title:       title,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create workspace: %w", err))
 	}
@@ -171,8 +177,13 @@ func (s *WorkspaceService) RenameWorkspace(
 		return nil, err
 	}
 
+	title, err := validate.SanitizeName(req.Msg.GetTitle())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("title: %w", err))
+	}
+
 	result, err := s.queries.RenameWorkspace(ctx, db.RenameWorkspaceParams{
-		Title:       req.Msg.GetTitle(),
+		Title:       title,
 		ID:          req.Msg.GetWorkspaceId(),
 		OwnerUserID: user.ID,
 	})

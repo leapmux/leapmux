@@ -13,14 +13,14 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
-	"golang.org/x/crypto/bcrypt"
+	"github.com/leapmux/leapmux/internal/hub/password"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
@@ -47,8 +47,7 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 
 	q := gendb.New(sqlDB)
 
-	err = bootstrap.Run(context.Background(), q, false)
-	require.NoError(t, err)
+	hubtestutil.CreateTestAdmin(t, sqlDB, q)
 
 	cfg := testConfig()
 	wMgr := workermgr.New()
@@ -56,9 +55,10 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
 	mux := http.NewServeMux()
-	opts := connect.WithInterceptors(auth.NewInterceptor(q, false))
+	interceptor, _ := auth.NewInterceptor(q, false, false, false)
+	opts := connect.WithInterceptors(interceptor)
 
-	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(q, cfg), opts)
+	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(sqlDB, q, cfg, nil, nil), opts)
 	mux.Handle(authPath, authHandler)
 
 	connPath, connHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(
@@ -91,10 +91,10 @@ func (e *channelTestEnv) adminToken(t *testing.T) string {
 	t.Helper()
 	resp, err := e.authClient.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username: "admin",
-		Password: "admin",
+		Password: "admin123",
 	}))
 	require.NoError(t, err)
-	return resp.Msg.GetToken()
+	return sessionFromCookie(t, resp.Header().Get("Set-Cookie"))
 }
 
 func (e *channelTestEnv) createWorkerWithKey(t *testing.T, token string, publicKey []byte) string {
@@ -791,13 +791,14 @@ func (e *channelTestEnv) createSecondUser(t *testing.T) (userID, token string) {
 	require.NoError(t, err)
 
 	userID = id.Generate()
-	hash, _ := bcrypt.GenerateFromPassword([]byte("pass2"), bcrypt.MinCost)
+	hash, _ := password.Hash("testpass2")
 	_ = e.queries.CreateUser(ctx, gendb.CreateUserParams{
 		ID:           userID,
 		OrgID:        adminUser.OrgID,
 		Username:     "user2",
-		PasswordHash: string(hash),
+		PasswordHash: hash,
 		DisplayName:  "User 2",
+		PasswordSet:  1,
 		IsAdmin:      0,
 	})
 	_ = e.queries.CreateOrgMember(ctx, gendb.CreateOrgMemberParams{
@@ -805,7 +806,7 @@ func (e *channelTestEnv) createSecondUser(t *testing.T) (userID, token string) {
 		UserID: userID,
 		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER,
 	})
-	token, _, loginErr := auth.Login(ctx, e.queries, "user2", "pass2")
+	token, _, _, loginErr := auth.Login(ctx, e.queries, "user2", "testpass2")
 	require.NoError(t, loginErr)
 	return
 }

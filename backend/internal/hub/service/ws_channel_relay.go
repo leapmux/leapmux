@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/coder/websocket"
 
@@ -23,10 +22,11 @@ import (
 //
 // URL: /ws/channel?token={session_token}
 type ChannelRelayHandler struct {
-	queries    *db.Queries
-	workerMgr  *workermgr.Manager
-	channelMgr *channelmgr.Manager
-	soloUser   *auth.UserInfo
+	queries      *db.Queries
+	workerMgr    *workermgr.Manager
+	channelMgr   *channelmgr.Manager
+	soloUser     *auth.UserInfo
+	secureCookie bool
 }
 
 // NewChannelRelayHandler creates a new WebSocket relay handler.
@@ -35,12 +35,14 @@ func NewChannelRelayHandler(
 	wMgr *workermgr.Manager,
 	cMgr *channelmgr.Manager,
 	soloUser *auth.UserInfo,
+	secureCookie bool,
 ) *ChannelRelayHandler {
 	return &ChannelRelayHandler{
-		queries:    q,
-		workerMgr:  wMgr,
-		channelMgr: cMgr,
-		soloUser:   soloUser,
+		queries:      q,
+		workerMgr:    wMgr,
+		channelMgr:   cMgr,
+		soloUser:     soloUser,
+		secureCookie: secureCookie,
 	}
 }
 
@@ -53,9 +55,9 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		// Solo mode: auto-authenticate as the solo user.
 		user = h.soloUser
 	} else {
-		token := extractTokenFromSubprotocols(r.Header.Get("Sec-WebSocket-Protocol"))
+		token := auth.SessionIDFromRequest(r, h.secureCookie)
 		if token == "" {
-			http.Error(w, "missing auth token in subprotocol header", http.StatusBadRequest)
+			http.Error(w, "missing session cookie", http.StatusUnauthorized)
 			return
 		}
 
@@ -217,16 +219,4 @@ func sendChannelClose(conn *workermgr.Conn, channelID string) {
 			},
 		},
 	})
-}
-
-// extractTokenFromSubprotocols parses a comma-separated Sec-WebSocket-Protocol
-// header value and returns the token from an "auth.token.<token>" entry.
-func extractTokenFromSubprotocols(header string) string {
-	for _, proto := range strings.Split(header, ",") {
-		proto = strings.TrimSpace(proto)
-		if strings.HasPrefix(proto, channelwire.AuthTokenSubprotocolPrefix) {
-			return strings.TrimPrefix(proto, channelwire.AuthTokenSubprotocolPrefix)
-		}
-	}
-	return ""
 }

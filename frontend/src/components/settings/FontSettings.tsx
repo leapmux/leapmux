@@ -277,7 +277,7 @@ export const FontSettings: Component = () => {
 
   return (
     <div class={styles.section}>
-      <h2>Fonts</h2>
+      <h3>Fonts</h3>
       <div class="vstack gap-4">
         <label class={styles.toggleLabel}>
           Custom UI fonts

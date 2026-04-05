@@ -1,3 +1,4 @@
+import type { OAuthProviderInfo } from '~/generated/leapmux/v1/auth_pb'
 import { authClient } from '~/api/clients'
 import { isWailsApp } from '~/api/desktopBridge'
 
@@ -9,6 +10,8 @@ export interface BuildInfo {
 }
 
 let soloMode = false
+let signupEnabled = false
+let setupRequired = false
 let loaded = false
 
 let backendBuildInfo: BuildInfo = { version: '', commitHash: '', commitTime: '', buildTime: '' }
@@ -20,12 +23,14 @@ const frontendBuildInfo: BuildInfo = {
   buildTime: import.meta.env.LEAPMUX_BUILD_TIME || '',
 }
 
-export async function loadSystemInfo(): Promise<void> {
-  if (loaded)
+export async function loadSystemInfo(force = false): Promise<void> {
+  if (loaded && !force)
     return
   try {
     const resp = await authClient.getSystemInfo({})
     soloMode = resp.soloMode
+    signupEnabled = resp.signupEnabled
+    setupRequired = resp.setupRequired
     backendBuildInfo = {
       version: resp.version,
       commitHash: resp.commitHash,
@@ -41,6 +46,30 @@ export async function loadSystemInfo(): Promise<void> {
 
 export function isSoloMode(): boolean {
   return soloMode
+}
+
+export function isSignupEnabled(): boolean {
+  return signupEnabled
+}
+
+export function isSetupRequired(): boolean {
+  return setupRequired
+}
+
+let cachedOAuthProviders: OAuthProviderInfo[] | null = null
+
+export async function loadOAuthProviders(): Promise<OAuthProviderInfo[]> {
+  if (cachedOAuthProviders !== null) {
+    return cachedOAuthProviders
+  }
+  try {
+    const resp = await authClient.getOAuthProviders({})
+    cachedOAuthProviders = resp.providers
+    return cachedOAuthProviders
+  }
+  catch {
+    return []
+  }
 }
 
 export function isDesktopApp(): boolean {

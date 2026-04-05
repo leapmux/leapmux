@@ -50,8 +50,8 @@ export function ListTunnels() {
   return window['go']['main']['App']['ListTunnels']();
 }
 
-export function OpenChannelRelay(arg1) {
-  return window['go']['main']['App']['OpenChannelRelay'](arg1);
+export function OpenChannelRelay() {
+  return window['go']['main']['App']['OpenChannelRelay']();
 }
 
 export function OpenFullDiskAccessSettings() {

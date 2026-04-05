@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/lexorank"
+	"github.com/leapmux/leapmux/internal/util/validate"
 )
 
 // SectionService implements the SectionServiceHandler interface.
@@ -108,9 +109,9 @@ func (s *SectionService) CreateSection(
 		return nil, err
 	}
 
-	name := req.Msg.GetName()
-	if name == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("name is required"))
+	name, err := validate.SanitizeName(req.Msg.GetName())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("name: %w", err))
 	}
 
 	// Find the position between the last custom section and "Archived".
@@ -173,9 +174,9 @@ func (s *SectionService) RenameSection(
 		return nil, err
 	}
 
-	name := req.Msg.GetName()
-	if name == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("name is required"))
+	name, err := validate.SanitizeName(req.Msg.GetName())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("name: %w", err))
 	}
 
 	result, err := s.queries.RenameWorkspaceSection(ctx, db.RenameWorkspaceSectionParams{

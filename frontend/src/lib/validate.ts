@@ -18,6 +18,13 @@ export function sanitizeName(name: string): { value: string, error: string | nul
   return { value, error }
 }
 
+/**
+ * Sanitizes a display name, falling back to the given fallback when empty.
+ */
+export function sanitizeDisplayName(displayName: string, fallback: string): { value: string, error: string | null } {
+  return sanitizeName(displayName || fallback)
+}
+
 // Characters forbidden in git branch names: space ~ ^ : ? * [ ] \ $ %
 // Also control characters (0x00-0x1F, 0x7F).
 // eslint-disable-next-line no-control-regex
@@ -74,6 +81,46 @@ export function validateSessionId(value: string): string | null {
     return error
   if (sanitized !== value)
     return 'Session ID contains invalid characters.'
+  return null
+}
+
+/**
+ * Validates an email address format.
+ * Returns an error message string, or null if valid.
+ * Empty strings are accepted (use a separate required check if needed).
+ */
+const EMAIL_INVALID_CHARS = /[\s<>,]/
+
+export function validateEmail(email: string): string | null {
+  if (email === '')
+    return null
+  if (email.length > 254)
+    return 'Email must be at most 254 characters'
+  // Basic structural check: local@domain.tld
+  const at = email.indexOf('@')
+  if (at < 1)
+    return 'Invalid email address'
+  const domain = email.slice(at + 1)
+  if (!domain.includes('.'))
+    return 'Invalid email address'
+  // Reject whitespace, angle brackets, commas (display-name style).
+  if (EMAIL_INVALID_CHARS.test(email))
+    return 'Invalid email address'
+  return null
+}
+
+const MIN_PASSWORD_LENGTH = 8
+const MAX_PASSWORD_LENGTH = 128
+
+/**
+ * Validates a password against the length policy.
+ * Returns an error message string, or null if valid.
+ */
+export function validatePassword(password: string): string | null {
+  if (password.length < MIN_PASSWORD_LENGTH)
+    return `Password must be at least ${MIN_PASSWORD_LENGTH} characters`
+  if (password.length > MAX_PASSWORD_LENGTH)
+    return `Password must be at most ${MAX_PASSWORD_LENGTH} characters`
   return null
 }
 

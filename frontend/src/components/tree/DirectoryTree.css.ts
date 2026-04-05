@@ -79,15 +79,6 @@ export const errorState = style({
   fontSize: 'var(--text-7)',
 })
 
-export const emptyState = style({
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  padding: 'var(--space-6)',
-  color: 'var(--faint-foreground)',
-  fontSize: 'var(--text-7)',
-})
-
 export const emptyInline = style({
   fontSize: 'var(--text-7)',
   color: 'var(--faint-foreground)',
