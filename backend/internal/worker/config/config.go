@@ -87,7 +87,6 @@ func (c *Config) APITimeout() time.Duration {
 type State struct {
 	WorkerID         string `json:"worker_id"`
 	AuthToken        string `json:"auth_token"`
-	OrgID            string `json:"org_id"`
 	RegisteredBy     string `json:"registered_by,omitempty"`
 	PublicKey        string `json:"public_key,omitempty"`         // Base64-encoded X25519 public key
 	PrivateKey       string `json:"private_key,omitempty"`        // Base64-encoded X25519 private key

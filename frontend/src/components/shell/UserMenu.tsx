@@ -1,7 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import { useNavigate } from '@solidjs/router'
 import { createSignal, For, Show } from 'solid-js'
-import { AdminDialog } from '~/components/admin/AdminDialog'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { PreferencesDialog } from '~/components/settings/PreferencesDialog'
 import { ProfileDialog } from '~/components/settings/ProfileDialog'
@@ -24,7 +23,6 @@ interface UserMenuProps {
  */
 const [showProfileDialog, setShowProfileDialog] = createSignal(false)
 const [showPreferencesDialog, setShowPreferencesDialog] = createSignal(false)
-const [showAdminDialog, setShowAdminDialog] = createSignal(false)
 const [showAboutDialog, setShowAboutDialog] = createSignal(false)
 
 /** Renders dialogs triggered by UserMenu. Mount once in a stable parent. */
@@ -35,9 +33,6 @@ export const UserMenuDialogs: Component = () => (
     </Show>
     <Show when={showPreferencesDialog()}>
       <PreferencesDialog onClose={() => setShowPreferencesDialog(false)} />
-    </Show>
-    <Show when={showAdminDialog()}>
-      <AdminDialog onClose={() => setShowAdminDialog(false)} />
     </Show>
     <Show when={showAboutDialog()}>
       <AboutDialog onClose={() => setShowAboutDialog(false)} />
@@ -111,11 +106,6 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
           </For>
         </div>
         <hr />
-        <Show when={auth.user()?.isAdmin}>
-          <button role="menuitem" onClick={() => setShowAdminDialog(true)}>
-            Administration
-          </button>
-        </Show>
         <button role="menuitem" class={dangerMenuItem} onClick={() => handleLogout()}>
           Log out
         </button>

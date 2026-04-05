@@ -10,7 +10,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/util/validate"
@@ -19,13 +18,12 @@ import (
 // OrgService implements the leapmux.v1.OrgService ConnectRPC handler.
 type OrgService struct {
 	queries  *db.Queries
-	notifier *notifier.Notifier
 	soloMode bool
 }
 
 // NewOrgService creates a new OrgService.
-func NewOrgService(q *db.Queries, n *notifier.Notifier, soloMode bool) *OrgService {
-	return &OrgService{queries: q, notifier: n, soloMode: soloMode}
+func NewOrgService(q *db.Queries, soloMode bool) *OrgService {
+	return &OrgService{queries: q, soloMode: soloMode}
 }
 
 func (s *OrgService) CreateOrg(
@@ -435,13 +433,6 @@ func (s *OrgService) RemoveOrgMember(
 		UserID: targetUserID,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("remove org member: %w", err))
-	}
-
-	// Enforce: deregister all the removed user's workers in this org.
-	if s.notifier != nil {
-		if err := s.notifier.EnforceOrgMemberRemoval(ctx, orgID, targetUserID); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("enforce org member removal: %w", err))
-		}
 	}
 
 	return connect.NewResponse(&leapmuxv1.RemoveOrgMemberResponse{}), nil

@@ -122,7 +122,6 @@ func TestWorkers_CRUD(t *testing.T) {
 	token := makeID()
 	err := q.CreateWorker(ctx, gendb.CreateWorkerParams{
 		ID:              workerID,
-		OrgID:           orgID,
 		AuthToken:       token,
 		RegisteredBy:    userID,
 		PublicKey:       []byte{},
@@ -131,7 +130,7 @@ func TestWorkers_CRUD(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	b, err := q.GetWorkerByID(ctx, gendb.GetWorkerByIDParams{ID: workerID, OrgID: orgID})
+	b, err := q.GetWorkerByID(ctx, workerID)
 	require.NoError(t, err)
 	if b.ID != workerID {
 		t.Errorf("ID = %q, want %q", b.ID, workerID)
@@ -143,8 +142,8 @@ func TestWorkers_CRUD(t *testing.T) {
 		t.Errorf("ID = %q, want %q", b2.ID, workerID)
 	}
 
-	workers, err := q.ListWorkersByOrgID(ctx, gendb.ListWorkersByOrgIDParams{
-		OrgID: orgID, Limit: 10, Offset: 0,
+	workers, err := q.ListWorkersByUserID(ctx, gendb.ListWorkersByUserIDParams{
+		RegisteredBy: userID, Limit: 10, Offset: 0,
 	})
 	require.NoError(t, err)
 	if len(workers) != 1 {
@@ -156,9 +155,9 @@ func TestWorkers_CRUD(t *testing.T) {
 
 	err = q.MarkWorkerDeleted(ctx, workerID)
 	require.NoError(t, err)
-	// Worker still exists but with status='deleted', not visible in org list.
-	workers, err = q.ListWorkersByOrgID(ctx, gendb.ListWorkersByOrgIDParams{
-		OrgID: orgID, Limit: 10, Offset: 0,
+	// Worker still exists but with status='deleted', not visible in user list.
+	workers, err = q.ListWorkersByUserID(ctx, gendb.ListWorkersByUserIDParams{
+		RegisteredBy: userID, Limit: 10, Offset: 0,
 	})
 	require.NoError(t, err)
 	if len(workers) != 0 {
@@ -180,9 +179,12 @@ func TestRegistrations(t *testing.T) {
 	})
 	workerID := makeID()
 	_ = q.CreateWorker(ctx, gendb.CreateWorkerParams{
-		ID: workerID, OrgID: orgID,
-		AuthToken: makeID(), RegisteredBy: userID,
-		PublicKey: []byte{}, MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
+		ID:              workerID,
+		AuthToken:       makeID(),
+		RegisteredBy:    userID,
+		PublicKey:       []byte{},
+		MlkemPublicKey:  []byte{},
+		SlhdsaPublicKey: []byte{},
 	})
 
 	regID := makeID()
@@ -300,6 +302,6 @@ func TestUserSessions_Expired(t *testing.T) {
 	}
 
 	// Cleanup should remove it.
-	err = q.DeleteExpiredUserSessions(ctx)
+	_, err = q.DeleteExpiredUserSessions(ctx)
 	require.NoError(t, err)
 }

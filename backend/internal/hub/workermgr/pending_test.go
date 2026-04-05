@@ -59,7 +59,7 @@ func TestPendingRequests_SendAndWait_ContextCancel(t *testing.T) {
 	p := NewPendingRequests(func() time.Duration { return 30 * time.Second })
 
 	// Create a conn with nil stream — Send will fail.
-	conn := &Conn{WorkerID: "b1", OrgID: "o1"}
+	conn := &Conn{WorkerID: "b1"}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -75,7 +75,6 @@ func TestPendingRequests_OutOfOrder(t *testing.T) {
 	sentMsgs := make(chan *leapmuxv1.ConnectResponse, 2)
 	conn := &Conn{
 		WorkerID: "b1",
-		OrgID:    "o1",
 		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
 			sentMsgs <- msg
 			return nil

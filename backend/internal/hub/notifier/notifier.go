@@ -121,34 +121,6 @@ func (n *Notifier) SendDeregister(ctx context.Context, workerID string) error {
 	return n.SendOrQueue(ctx, workerID, leapmuxv1.NotificationType_NOTIFICATION_TYPE_DEREGISTER, "{}", msg)
 }
 
-// EnforceOrgMemberRemoval deregisters all workers owned by the removed user
-// in the org.
-func (n *Notifier) EnforceOrgMemberRemoval(ctx context.Context, orgID, removedUserID string) error {
-	workerIDs, err := n.queries.ListWorkersByOrgAndRegisteredBy(ctx, db.ListWorkersByOrgAndRegisteredByParams{
-		OrgID:        orgID,
-		RegisteredBy: removedUserID,
-	})
-	if err != nil {
-		return fmt.Errorf("list workers by org and user: %w", err)
-	}
-
-	for _, workerID := range workerIDs {
-		result, err := n.queries.ForceDeregisterWorker(ctx, workerID)
-		if err != nil {
-			slog.Error("failed to force deregister worker", "worker_id", workerID, "error", err)
-			continue
-		}
-		rows, _ := result.RowsAffected()
-		if rows > 0 {
-			if err := n.SendDeregister(ctx, workerID); err != nil {
-				slog.Error("failed to send deregister notification", "worker_id", workerID, "error", err)
-			}
-		}
-	}
-
-	return nil
-}
-
 // buildNotificationMessage converts a persisted notification into a ConnectResponse.
 func (n *Notifier) buildNotificationMessage(notif db.WorkerNotification) (*leapmuxv1.ConnectResponse, error) {
 	switch notif.Type {

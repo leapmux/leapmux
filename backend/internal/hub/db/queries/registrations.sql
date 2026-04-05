@@ -36,7 +36,7 @@ FROM user_sessions s
 JOIN users u ON s.user_id = u.id
 WHERE s.id = ? AND s.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
 
--- name: DeleteExpiredUserSessions :exec
+-- name: DeleteExpiredUserSessions :execresult
 DELETE FROM user_sessions WHERE expires_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
 
 -- name: DeleteUserSessionsByUser :exec
@@ -44,3 +44,19 @@ DELETE FROM user_sessions WHERE user_id = ?;
 
 -- name: DeleteOtherUserSessions :exec
 DELETE FROM user_sessions WHERE user_id = ? AND id != ?;
+
+-- name: ListUserSessionsByUserID :many
+SELECT * FROM user_sessions
+WHERE user_id = ? AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ORDER BY last_active_at DESC;
+
+-- name: ListAllActiveSessions :many
+SELECT s.id, s.user_id, u.username, s.created_at, s.last_active_at, s.expires_at, s.ip_address, s.user_agent
+FROM user_sessions s
+JOIN users u ON s.user_id = u.id
+WHERE s.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ORDER BY s.last_active_at DESC
+LIMIT ? OFFSET ?;
+
+-- name: CountUserSessionsByUserID :one
+SELECT count(*) FROM user_sessions WHERE user_id = ?;

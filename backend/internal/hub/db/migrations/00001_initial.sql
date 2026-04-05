@@ -55,7 +55,6 @@ CREATE INDEX idx_user_sessions_expires_at ON user_sessions(expires_at);
 -- Registered workers
 CREATE TABLE workers (
     id            TEXT PRIMARY KEY,
-    org_id        TEXT NOT NULL REFERENCES orgs(id),
     auth_token    TEXT NOT NULL UNIQUE,
     registered_by TEXT NOT NULL REFERENCES users(id),
     status        INTEGER NOT NULL DEFAULT 1,
@@ -65,7 +64,6 @@ CREATE TABLE workers (
     mlkem_public_key  BLOB NOT NULL DEFAULT '',
     slhdsa_public_key BLOB NOT NULL DEFAULT ''
 );
-CREATE INDEX idx_workers_org_id ON workers(org_id);
 
 -- Worker notifications (persistent queue for reliable delivery)
 CREATE TABLE worker_notifications (

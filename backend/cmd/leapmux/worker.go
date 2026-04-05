@@ -81,7 +81,6 @@ func runWorker(args []string) error {
 
 		state.WorkerID = result.WorkerID
 		state.AuthToken = result.AuthToken
-		state.OrgID = result.OrgID
 		state.RegisteredBy = result.RegisteredBy
 
 		if err := cfg.SaveState(state); err != nil {

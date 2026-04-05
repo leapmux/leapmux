@@ -38,7 +38,7 @@ func seedParents(t *testing.T, sqlDB *sql.DB, workerIDs []string, workspaceIDs [
 	_, err = sqlDB.Exec(`INSERT INTO users (id, org_id, username, password_hash) VALUES ('user-1', 'org-1', 'testuser', 'hash')`)
 	require.NoError(t, err)
 	for _, wid := range workerIDs {
-		_, err = sqlDB.Exec(`INSERT INTO workers (id, org_id, auth_token, registered_by) VALUES (?, 'org-1', ?, 'user-1')`, wid, "token-"+wid)
+		_, err = sqlDB.Exec(`INSERT INTO workers (id, auth_token, registered_by) VALUES (?, ?, 'user-1')`, wid, "token-"+wid)
 		require.NoError(t, err)
 	}
 	for _, wsid := range workspaceIDs {
@@ -221,7 +221,7 @@ func TestHandleWorkspaceTabsSync_EmptyHubState(t *testing.T) {
 func setupEncryptionModeTest(t *testing.T) (*WorkerConnectorService, *workermgr.Conn) {
 	t.Helper()
 	svc, _ := setupSyncTest(t, []string{"w1"}, nil)
-	conn := &workermgr.Conn{WorkerID: "w1", OrgID: "org-1"}
+	conn := &workermgr.Conn{WorkerID: "w1"}
 	return svc, conn
 }
 

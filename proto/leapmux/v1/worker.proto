@@ -53,7 +53,7 @@ message PollRegistrationResponse {
   RegistrationStatus status = 1;
   string worker_id = 2;
   string auth_token = 3;
-  string org_id = 4;
+  // Field 4 was removed (org_id).
   string registered_by = 5; // User ID who approved this worker
 }
 
@@ -89,7 +89,7 @@ enum NotificationStatus {
 
 message ApproveRegistrationRequest {
   string registration_token = 1;
-  string org_id = 2;
+  // Field 2 was removed (org_id).
 }
 
 message ApproveRegistrationResponse {
@@ -98,7 +98,7 @@ message ApproveRegistrationResponse {
 
 message ListWorkersRequest {
   PageRequest page = 1;
-  string org_id = 2;
+  // Field 2 was removed (org_id).
 }
 
 message ListWorkersResponse {
@@ -133,7 +133,7 @@ message GetRegistrationResponse {
 
 message Worker {
   string id = 1;
-  string org_id = 2;
+  // Field 2 was removed (org_id).
   bool online = 3;
   string created_at = 4;
   string last_seen_at = 5;

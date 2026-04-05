@@ -16,10 +16,8 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
-	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
@@ -45,17 +43,13 @@ func setupOrgTestServer(t *testing.T) *orgTestEnv {
 
 	hubtestutil.CreateTestAdmin(t, sqlDB, q)
 
-	bgMgr := workermgr.New()
-
 	cfg := testConfig()
-	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
-	notifierSvc := notifier.New(q, bgMgr, pendingReqs, cfg)
 
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(q, false, false, false)
 	opts := connect.WithInterceptors(interceptor)
 
-	orgSvc := service.NewOrgService(q, notifierSvc, false)
+	orgSvc := service.NewOrgService(q, false)
 	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, opts)
 	mux.Handle(orgPath, orgHandler)
 
