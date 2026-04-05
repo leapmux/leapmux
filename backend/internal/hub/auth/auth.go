@@ -23,6 +23,7 @@ const userKey contextKey = iota
 // UserInfo contains the authenticated user's information.
 type UserInfo struct {
 	ID            string
+	SessionID     string // session that authenticated this request
 	OrgID         string
 	Username      string
 	IsAdmin       bool

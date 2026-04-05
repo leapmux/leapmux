@@ -38,3 +38,9 @@ WHERE s.id = ? AND s.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
 
 -- name: DeleteExpiredUserSessions :exec
 DELETE FROM user_sessions WHERE expires_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+
+-- name: DeleteUserSessionsByUser :exec
+DELETE FROM user_sessions WHERE user_id = ?;
+
+-- name: DeleteOtherUserSessions :exec
+DELETE FROM user_sessions WHERE user_id = ? AND id != ?;

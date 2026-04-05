@@ -606,6 +606,71 @@ func TestVerifyEmailChange_EmailTakenSinceRequest(t *testing.T) {
 	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
 }
 
+func TestVerifyEmailChange_CrossUser_Rejected(t *testing.T) {
+	env := setupUserTest(t)
+
+	// Set pending_email on the test user.
+	verifyToken := id.Generate()
+	err := env.queries.SetPendingEmail(context.Background(), gendb.SetPendingEmailParams{
+		PendingEmail:          "stolen@example.com",
+		PendingEmailToken:     verifyToken,
+		PendingEmailExpiresAt: sql.NullTime{Time: time.Now().Add(1 * time.Hour).UTC(), Valid: true},
+		ID:                    env.userID,
+	})
+	require.NoError(t, err)
+
+	// Create a different user and log in as them.
+	attackerID := id.Generate()
+	attackerHash, _ := password.Hash("testpass2")
+	_ = env.queries.CreateUser(context.Background(), gendb.CreateUserParams{
+		ID:           attackerID,
+		OrgID:        env.orgID,
+		Username:     "attacker",
+		PasswordHash: attackerHash,
+		DisplayName:  "Attacker",
+		PasswordSet:  1,
+		IsAdmin:      0,
+	})
+	attackerToken, _, _, err := auth.Login(context.Background(), env.queries, "attacker", "testpass2")
+	require.NoError(t, err)
+
+	// Attacker tries to verify the first user's email change token.
+	_, err = env.client.VerifyEmailChange(context.Background(), authedReq(&leapmuxv1.VerifyEmailChangeRequest{
+		VerificationToken: verifyToken,
+	}, attackerToken))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+}
+
+func TestChangePassword_InvalidatesOtherSessions(t *testing.T) {
+	env := setupUserTest(t)
+
+	// Create a second session for the same user (simulates another device).
+	otherSession, _, err := auth.CreateSession(context.Background(), env.queries, env.userID)
+	require.NoError(t, err)
+
+	// Verify both sessions are valid.
+	_, err = auth.ValidateToken(context.Background(), env.queries, env.token)
+	require.NoError(t, err)
+	_, err = auth.ValidateToken(context.Background(), env.queries, otherSession)
+	require.NoError(t, err)
+
+	// Change password using the original session.
+	_, err = env.client.ChangePassword(context.Background(), authedReq(&leapmuxv1.ChangePasswordRequest{
+		CurrentPassword: "testpass",
+		NewPassword:     "newpass123",
+	}, env.token))
+	require.NoError(t, err)
+
+	// Original session should still be valid (it's the current session).
+	_, err = auth.ValidateToken(context.Background(), env.queries, env.token)
+	assert.NoError(t, err)
+
+	// The other session should be invalidated.
+	_, err = auth.ValidateToken(context.Background(), env.queries, otherSession)
+	assert.Error(t, err, "other sessions should be invalidated after password change")
+}
+
 // --- ChangePassword tests for OAuth users ---
 
 func TestChangePassword_OAuthUser_CanSetWithoutCurrentPassword(t *testing.T) {

@@ -157,6 +157,7 @@ func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHea
 	if err != nil {
 		return ctx, err
 	}
+	userInfo.SessionID = token
 
 	a.touchSession(ctx, token)
 

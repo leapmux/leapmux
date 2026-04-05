@@ -331,6 +331,10 @@ func (s *AdminService) ResetUserPassword(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update password: %w", err))
 	}
 
+	// Invalidate all sessions for the target user so compromised sessions
+	// cannot survive a password reset.
+	_ = s.queries.DeleteUserSessionsByUser(ctx, req.Msg.GetUserId())
+
 	return connect.NewResponse(&leapmuxv1.ResetUserPasswordResponse{}), nil
 }
 

@@ -162,9 +162,18 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 }
 
 func (s *UserService) VerifyEmailChange(ctx context.Context, req *connect.Request[leapmuxv1.VerifyEmailChangeRequest]) (*connect.Response[leapmuxv1.VerifyEmailChangeResponse], error) {
+	userInfo, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	updatedUser, err := verifyPendingEmailToken(ctx, s.queries, req.Msg.GetVerificationToken())
 	if err != nil {
 		return nil, err
+	}
+
+	if updatedUser.ID != userInfo.ID {
+		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("token does not belong to this user"))
 	}
 
 	org, err := s.queries.GetOrgByID(ctx, updatedUser.OrgID)
@@ -218,6 +227,13 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+
+	// Invalidate all other sessions so stolen sessions can't survive a
+	// password change. Keep the current session alive.
+	_ = s.queries.DeleteOtherUserSessions(ctx, db.DeleteOtherUserSessionsParams{
+		UserID: user.ID,
+		ID:     userInfo.SessionID,
+	})
 
 	return connect.NewResponse(&leapmuxv1.ChangePasswordResponse{}), nil
 }

@@ -348,6 +348,38 @@ func TestAdminService_ResetUserPassword(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestAdminService_ResetUserPassword_InvalidatesSessions(t *testing.T) {
+	env := setupAdminTestServer(t)
+
+	// Create a target user.
+	createResp, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "victim",
+		Password:    "oldpass1",
+		DisplayName: "Victim",
+	}, env.token))
+	require.NoError(t, err)
+	targetID := createResp.Msg.GetUser().GetId()
+
+	// Log in as the target user to create a session.
+	victimToken, _, _, err := auth.Login(context.Background(), env.queries, "victim", "oldpass1")
+	require.NoError(t, err)
+
+	// Verify victim's session is valid.
+	_, err = auth.ValidateToken(context.Background(), env.queries, victimToken)
+	require.NoError(t, err)
+
+	// Admin resets the password.
+	_, err = env.client.ResetUserPassword(context.Background(), authedReq(&leapmuxv1.ResetUserPasswordRequest{
+		UserId:      targetID,
+		NewPassword: "newpass456",
+	}, env.token))
+	require.NoError(t, err)
+
+	// Victim's session should be invalidated.
+	_, err = auth.ValidateToken(context.Background(), env.queries, victimToken)
+	assert.Error(t, err, "victim sessions should be invalidated after admin password reset")
+}
+
 func TestAdminService_NonAdmin_AllEndpoints(t *testing.T) {
 	env := setupAdminTestServer(t)
 	_, nonAdminToken := env.createNonAdminUser(t)
