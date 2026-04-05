@@ -19,6 +19,7 @@ import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
+import { emptyState } from '~/styles/shared.css'
 import * as styles from './DirectoryTree.css'
 import { DiffStatsBadge, getGitFileIconClass } from './gitStatusUtils'
 import { menuTrigger, sidebarActions } from './sidebarActions.css'
@@ -833,7 +834,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
                   <div class={styles.childrenInner}>
                     <Show
                       when={rootChildren()!.length > 0}
-                      fallback={<div class={styles.emptyState}>{props.visiblePaths ? 'No changes' : 'Empty directory'}</div>}
+                      fallback={<div class={emptyState}>{props.visiblePaths ? 'No changes' : 'Empty directory'}</div>}
                     >
                       <For each={rootChildren()}>
                         {node => (

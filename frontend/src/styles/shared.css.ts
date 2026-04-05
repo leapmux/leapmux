@@ -21,6 +21,8 @@ export const emptyState = style({
   justifyContent: 'center',
   padding: 'var(--space-6)',
   color: 'var(--faint-foreground)',
+  fontSize: 'var(--text-7)',
+  fontStyle: 'italic',
 })
 
 // Menu utilities
