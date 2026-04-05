@@ -596,4 +596,4 @@ tasks:
       - rm -rf frontend/src/spinners/
       - rm -rf desktop/build/ desktop/leapmux-desktop
       - rm -rf .task/
-
+      - rm -rf *.log */*.log
