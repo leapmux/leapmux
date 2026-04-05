@@ -15,13 +15,14 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 )
 
 func setupShutdownTestServer(t *testing.T, shutdownCh chan struct{}) leapmuxv1connect.AuthServiceClient {
 	t.Helper()
 
 	sqlDB, q := setupDB(t)
-	createInterceptorTestAdmin(t, q)
+	hubtestutil.CreateTestAdmin(t, q)
 
 	mux := http.NewServeMux()
 	interceptors := connect.WithInterceptors(

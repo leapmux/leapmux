@@ -24,6 +24,7 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
@@ -47,7 +48,7 @@ func setupWorkerTestServer(t *testing.T) *workerTestEnv {
 
 	q := gendb.New(sqlDB)
 
-	createTestAdmin(t, sqlDB, q)
+	hubtestutil.CreateTestAdmin(t, q)
 
 	bgMgr := workermgr.New()
 
@@ -459,7 +460,7 @@ func setupUnixSocketTestServer(t *testing.T) *unixSocketTestEnv {
 	require.NoError(t, err)
 
 	q := gendb.New(sqlDB)
-	createTestAdmin(t, sqlDB, q)
+	hubtestutil.CreateTestAdmin(t, q)
 
 	bgMgr := workermgr.New()
 	cMgr := channelmgr.New()

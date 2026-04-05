@@ -19,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
@@ -404,7 +405,7 @@ func setupVerificationUserTestServer(t *testing.T) (leapmuxv1connect.UserService
 
 	q := gendb.New(sqlDB)
 
-	createTestAdmin(t, sqlDB, q)
+	hubtestutil.CreateTestAdmin(t, q)
 
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(q, false, false, true)

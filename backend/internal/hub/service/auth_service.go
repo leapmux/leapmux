@@ -199,16 +199,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.queries, user.ID)
-	if sessionErr != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
-	}
-
-	resp := connect.NewResponse(&leapmuxv1.SignUpResponse{
-		User: userToProtoWithOrgName(user, username),
-	})
-	resp.Header().Set("Set-Cookie", auth.BuildSessionCookie(sessionID, expiresAt, s.cfg.SecureCookies).String())
-	return resp, nil
+	return s.signUpResponse(ctx, user, username)
 }
 
 // signUpSetupMode handles the initial admin account creation when no users
@@ -248,13 +239,18 @@ func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.queries, user.ID)
-	if sessionErr != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
+	return s.signUpResponse(ctx, user, username)
+}
+
+// signUpResponse creates a session, sets the cookie, and returns the SignUpResponse.
+func (s *AuthService) signUpResponse(ctx context.Context, user *db.User, orgName string) (*connect.Response[leapmuxv1.SignUpResponse], error) {
+	sessionID, expiresAt, err := auth.CreateSession(ctx, s.queries, user.ID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
 
 	resp := connect.NewResponse(&leapmuxv1.SignUpResponse{
-		User: userToProtoWithOrgName(user, username),
+		User: userToProtoWithOrgName(user, orgName),
 	})
 	resp.Header().Set("Set-Cookie", auth.BuildSessionCookie(sessionID, expiresAt, s.cfg.SecureCookies).String())
 	return resp, nil

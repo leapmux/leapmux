@@ -18,6 +18,7 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
@@ -42,7 +43,7 @@ func setupOrgTestServer(t *testing.T) *orgTestEnv {
 
 	q := gendb.New(sqlDB)
 
-	createTestAdmin(t, sqlDB, q)
+	hubtestutil.CreateTestAdmin(t, q)
 
 	bgMgr := workermgr.New()
 

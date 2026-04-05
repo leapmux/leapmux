@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -17,34 +16,9 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
-	"github.com/leapmux/leapmux/internal/util/id"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 )
-
-// createInterceptorTestAdmin creates the admin user directly in the DB for
-// interceptor tests (mirrors the old bootstrap behavior for non-solo mode).
-func createInterceptorTestAdmin(t *testing.T, q *gendb.Queries) {
-	t.Helper()
-	ctx := context.Background()
-	orgID := id.Generate()
-	err := q.CreateOrg(ctx, gendb.CreateOrgParams{ID: orgID, Name: "admin", IsPersonal: 1})
-	require.NoError(t, err)
-	hash, err := password.Hash("admin123")
-	require.NoError(t, err)
-	userID := id.Generate()
-	err = q.CreateUser(ctx, gendb.CreateUserParams{
-		ID: userID, OrgID: orgID, Username: "admin",
-		PasswordHash: hash, DisplayName: "Admin",
-		PasswordSet: 1, IsAdmin: 1,
-	})
-	require.NoError(t, err)
-	err = q.CreateOrgMember(ctx, gendb.CreateOrgMemberParams{
-		OrgID: orgID, UserID: userID,
-		Role: leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_OWNER,
-	})
-	require.NoError(t, err)
-}
 
 // setupInterceptorTestServer creates an httptest server with the AuthService
 // registered behind the auth interceptor. It returns a ConnectRPC client and
@@ -54,7 +28,7 @@ func setupInterceptorTestServer(t *testing.T) leapmuxv1connect.AuthServiceClient
 
 	sqlDB, q := setupDB(t)
 
-	createInterceptorTestAdmin(t, q)
+	hubtestutil.CreateTestAdmin(t, q)
 
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(q, false, false, false)
@@ -79,22 +53,7 @@ func loginAdmin(t *testing.T, client leapmuxv1connect.AuthServiceClient) string 
 		Password: "admin123",
 	}))
 	require.NoError(t, err)
-	return extractSessionFromCookie(t, resp.Header().Get("Set-Cookie"))
-}
-
-// extractSessionFromCookie parses the session ID from a Set-Cookie header value.
-func extractSessionFromCookie(t *testing.T, setCookie string) string {
-	t.Helper()
-	require.NotEmpty(t, setCookie, "Set-Cookie header must be present")
-	// Parse "leapmux-session=<value>; ..." format.
-	for _, part := range strings.Split(setCookie, ";") {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, auth.CookieName+"=") {
-			return strings.TrimPrefix(part, auth.CookieName+"=")
-		}
-	}
-	t.Fatalf("session cookie %q not found in Set-Cookie header: %s", auth.CookieName, setCookie)
-	return ""
+	return hubtestutil.SessionFromCookie(t, resp.Header().Get("Set-Cookie"))
 }
 
 func TestInterceptor_PublicProcedure_NoTokenRequired(t *testing.T) {
@@ -194,7 +153,7 @@ func setupInterceptorTestServerWithCache(t *testing.T) (leapmuxv1connect.AuthSer
 
 	sqlDB, q := setupDB(t)
 
-	createInterceptorTestAdmin(t, q)
+	hubtestutil.CreateTestAdmin(t, q)
 
 	mux := http.NewServeMux()
 	interceptor, sc := auth.NewInterceptor(q, false, false, false)

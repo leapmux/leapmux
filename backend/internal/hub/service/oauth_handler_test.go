@@ -20,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
@@ -34,7 +35,7 @@ func setupOAuthTestServer(t *testing.T) (*httptest.Server, *gendb.Queries, *keys
 	require.NoError(t, err)
 
 	q := gendb.New(sqlDB)
-	createTestAdmin(t, sqlDB, q)
+	hubtestutil.CreateTestAdmin(t, q)
 
 	key, err := keystore.GenerateKey()
 	require.NoError(t, err)
@@ -292,7 +293,7 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 	require.NoError(t, err)
 
 	q := gendb.New(sqlDB)
-	createTestAdmin(t, sqlDB, q)
+	hubtestutil.CreateTestAdmin(t, q)
 
 	key, err := keystore.GenerateKey()
 	require.NoError(t, err)
@@ -621,7 +622,7 @@ func TestOAuthCallback_NewUser_SignupDisabled(t *testing.T) {
 	require.NoError(t, err)
 
 	q := gendb.New(sqlDB)
-	createTestAdmin(t, sqlDB, q)
+	hubtestutil.CreateTestAdmin(t, q)
 
 	key, err := keystore.GenerateKey()
 	require.NoError(t, err)

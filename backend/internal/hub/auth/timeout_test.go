@@ -16,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 )
 
 // timeoutCapture is a wrapper around AuthService that captures the context
@@ -36,7 +37,7 @@ func setupTimeoutTestServer(t *testing.T, timeout time.Duration) (leapmuxv1conne
 	t.Helper()
 
 	sqlDB, q := setupDB(t)
-	createInterceptorTestAdmin(t, q)
+	hubtestutil.CreateTestAdmin(t, q)
 
 	capture := &timeoutCapture{inner: service.NewAuthService(sqlDB, q, &config.Config{}, nil, nil)}
 

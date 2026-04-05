@@ -23,8 +23,8 @@ const frontendBuildInfo: BuildInfo = {
   buildTime: import.meta.env.LEAPMUX_BUILD_TIME || '',
 }
 
-export async function loadSystemInfo(): Promise<void> {
-  if (loaded)
+export async function loadSystemInfo(force = false): Promise<void> {
+  if (loaded && !force)
     return
   try {
     const resp = await authClient.getSystemInfo({})
@@ -54,10 +54,6 @@ export function isSignupEnabled(): boolean {
 
 export function isSetupRequired(): boolean {
   return setupRequired
-}
-
-export function clearSetupRequired(): void {
-  setupRequired = false
 }
 
 let cachedOAuthProviders: OAuthProviderInfo[] | null = null

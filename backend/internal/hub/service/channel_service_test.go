@@ -20,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
@@ -46,7 +47,7 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 
 	q := gendb.New(sqlDB)
 
-	createTestAdmin(t, sqlDB, q)
+	hubtestutil.CreateTestAdmin(t, q)
 
 	cfg := testConfig()
 	wMgr := workermgr.New()
