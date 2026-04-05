@@ -32,13 +32,14 @@ type storedPreferences struct {
 
 // UserService implements the leapmux.v1.UserService ConnectRPC handler.
 type UserService struct {
-	queries *db.Queries
-	cfg     *config.Config
+	queries      *db.Queries
+	cfg          *config.Config
+	sessionCache *auth.SessionCache
 }
 
 // NewUserService creates a new UserService.
-func NewUserService(q *db.Queries, cfg *config.Config) *UserService {
-	return &UserService{queries: q, cfg: cfg}
+func NewUserService(q *db.Queries, cfg *config.Config, sc *auth.SessionCache) *UserService {
+	return &UserService{queries: q, cfg: cfg, sessionCache: sc}
 }
 
 func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[leapmuxv1.UpdateProfileRequest]) (*connect.Response[leapmuxv1.UpdateProfileResponse], error) {
@@ -176,6 +177,12 @@ func (s *UserService) VerifyEmailChange(ctx context.Context, req *connect.Reques
 		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("token does not belong to this user"))
 	}
 
+	// Evict the current session from cache so the next request picks up
+	// the updated EmailVerified status from the DB.
+	if s.sessionCache != nil {
+		s.sessionCache.Evict(userInfo.SessionID)
+	}
+
 	org, err := s.queries.GetOrgByID(ctx, updatedUser.OrgID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -234,6 +241,13 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 		UserID: user.ID,
 		ID:     userInfo.SessionID,
 	})
+
+	// Evict all cached sessions for this user so that deleted sessions
+	// cannot be served from the in-memory cache. The caller's session
+	// will be re-validated and re-cached on the next request.
+	if s.sessionCache != nil {
+		s.sessionCache.EvictByUserID(user.ID)
+	}
 
 	return connect.NewResponse(&leapmuxv1.ChangePasswordResponse{}), nil
 }

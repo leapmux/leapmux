@@ -43,7 +43,7 @@ func setupAdminTestServer(t *testing.T) *adminTestEnv {
 	err = bootstrap.Run(context.Background(), sqlDB, q, false)
 	require.NoError(t, err)
 
-	adminSvc := service.NewAdminService(sqlDB, q, false)
+	adminSvc := service.NewAdminService(sqlDB, q, false, nil)
 
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(q, false, false, false)

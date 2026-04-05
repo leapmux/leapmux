@@ -199,7 +199,7 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(q, false, false, false)
 	opts := connect.WithInterceptors(interceptor)
-	userSvc := service.NewUserService(q, testConfig())
+	userSvc := service.NewUserService(q, testConfig(), nil)
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(path, handler)
 	server := httptest.NewServer(mux)
@@ -417,7 +417,7 @@ func setupVerificationGatingTestServer(t *testing.T, emailVerificationRequired b
 	cfg.SignupEnabled = true
 	cfg.EmailVerificationRequired = emailVerificationRequired
 
-	userSvc := service.NewUserService(q, cfg)
+	userSvc := service.NewUserService(q, cfg, nil)
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(userPath, userHandler)
 

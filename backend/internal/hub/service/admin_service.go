@@ -18,14 +18,15 @@ import (
 
 // AdminService implements the leapmux.v1.AdminService ConnectRPC handler.
 type AdminService struct {
-	sqlDB    *sql.DB
-	queries  *db.Queries
-	soloMode bool
+	sqlDB        *sql.DB
+	queries      *db.Queries
+	soloMode     bool
+	sessionCache *auth.SessionCache
 }
 
 // NewAdminService creates a new AdminService.
-func NewAdminService(sqlDB *sql.DB, q *db.Queries, soloMode bool) *AdminService {
-	return &AdminService{sqlDB: sqlDB, queries: q, soloMode: soloMode}
+func NewAdminService(sqlDB *sql.DB, q *db.Queries, soloMode bool, sc *auth.SessionCache) *AdminService {
+	return &AdminService{sqlDB: sqlDB, queries: q, soloMode: soloMode, sessionCache: sc}
 }
 
 func requireAdmin(ctx context.Context) (*auth.UserInfo, error) {
@@ -334,6 +335,12 @@ func (s *AdminService) ResetUserPassword(ctx context.Context, req *connect.Reque
 	// Invalidate all sessions for the target user so compromised sessions
 	// cannot survive a password reset.
 	_ = s.queries.DeleteUserSessionsByUser(ctx, req.Msg.GetUserId())
+
+	// Evict all cached sessions for the target user so that deleted sessions
+	// cannot be served from the in-memory cache.
+	if s.sessionCache != nil {
+		s.sessionCache.EvictByUserID(req.Msg.GetUserId())
+	}
 
 	return connect.NewResponse(&leapmuxv1.ResetUserPasswordResponse{}), nil
 }

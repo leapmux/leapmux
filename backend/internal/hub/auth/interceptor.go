@@ -56,6 +56,7 @@ type authInterceptor struct {
 	soloUser                  *UserInfo
 	lastTouch                 sync.Map // sessionID → time.Time of last DB touch
 	sessionCache              sync.Map // sessionID → cachedSession
+	userSessions              sync.Map // userID → *sync.Map (sessionID → struct{})
 }
 
 // NewInterceptor creates a ConnectRPC interceptor that validates session cookies
@@ -78,7 +79,7 @@ func NewInterceptor(q *db.Queries, soloMode bool, secureCookie bool, emailVerifi
 			}
 		}
 	}
-	sc := &SessionCache{touch: &a.lastTouch, sessions: &a.sessionCache, stop: make(chan struct{})}
+	sc := &SessionCache{touch: &a.lastTouch, sessions: &a.sessionCache, userSessions: &a.userSessions, stop: make(chan struct{})}
 	go a.sweepCaches(sc.stop)
 	return a, sc
 }
@@ -86,15 +87,39 @@ func NewInterceptor(q *db.Queries, soloMode bool, secureCookie bool, emailVerifi
 // SessionCache provides eviction access to the interceptor's in-memory
 // session caches.
 type SessionCache struct {
-	touch    *sync.Map
-	sessions *sync.Map
-	stop     chan struct{}
+	touch        *sync.Map
+	sessions     *sync.Map
+	userSessions *sync.Map // userID → *sync.Map (sessionID → struct{})
+	stop         chan struct{}
 }
 
-// Evict removes a session from all in-memory caches. Call this on logout.
+// Evict removes a session from all in-memory caches. Call this on logout
+// or when cached user state becomes stale (e.g., after email verification).
 func (c *SessionCache) Evict(sessionID string) {
+	if v, ok := c.sessions.Load(sessionID); ok {
+		cached := v.(cachedSession)
+		if idx, ok := c.userSessions.Load(cached.user.ID); ok {
+			idx.(*sync.Map).Delete(sessionID)
+		}
+	}
 	c.touch.Delete(sessionID)
 	c.sessions.Delete(sessionID)
+}
+
+// EvictByUserID removes all cached sessions for a user. Call this after
+// password changes or admin password resets to ensure invalidated sessions
+// cannot be served from the cache.
+func (c *SessionCache) EvictByUserID(userID string) {
+	v, ok := c.userSessions.LoadAndDelete(userID)
+	if !ok {
+		return
+	}
+	v.(*sync.Map).Range(func(key, _ any) bool {
+		sessionID := key.(string)
+		c.touch.Delete(sessionID)
+		c.sessions.Delete(sessionID)
+		return true
+	})
 }
 
 // Stop terminates the background sweep goroutine. Safe to call multiple times.
@@ -189,6 +214,11 @@ func (a *authInterceptor) validateTokenCached(ctx context.Context, token string)
 	}
 
 	a.sessionCache.Store(token, cachedSession{user: userInfo, cachedAt: time.Now()})
+
+	// Register in user → sessions index for efficient EvictByUserID.
+	idx, _ := a.userSessions.LoadOrStore(userInfo.ID, &sync.Map{})
+	idx.(*sync.Map).Store(token, struct{}{})
+
 	return userInfo, nil
 }
 
@@ -242,8 +272,12 @@ func (a *authInterceptor) sweepCaches(stop <-chan struct{}) {
 				return true
 			})
 			a.sessionCache.Range(func(key, value any) bool {
-				if now.Sub(value.(cachedSession).cachedAt) > sessionCacheTTL {
+				cached := value.(cachedSession)
+				if now.Sub(cached.cachedAt) > sessionCacheTTL {
 					a.sessionCache.Delete(key)
+					if idx, ok := a.userSessions.Load(cached.user.ID); ok {
+						idx.(*sync.Map).Delete(key)
+					}
 				}
 				return true
 			})

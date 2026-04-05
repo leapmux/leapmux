@@ -44,7 +44,7 @@ func setupUserTest(t *testing.T) *userTestEnv {
 
 	queries := gendb.New(sqlDB)
 
-	userSvc := service.NewUserService(queries, testConfig())
+	userSvc := service.NewUserService(queries, testConfig(), nil)
 
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(queries, false, false, false)
@@ -415,7 +415,7 @@ func setupVerificationUserTestServer(t *testing.T) (leapmuxv1connect.UserService
 	cfg := testConfig()
 	cfg.EmailVerificationRequired = true
 
-	userSvc := service.NewUserService(q, cfg)
+	userSvc := service.NewUserService(q, cfg, nil)
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(userPath, userHandler)
 

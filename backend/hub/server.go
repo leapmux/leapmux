@@ -186,7 +186,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, connectOpts)
 	mux.Handle(orgPath, orgHandler)
 
-	userSvc := service.NewUserService(queries, cfg)
+	userSvc := service.NewUserService(queries, cfg, sessionCache)
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, connectOpts)
 	mux.Handle(userPath, userHandler)
 
@@ -194,7 +194,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	sectionPath, sectionHandler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, connectOpts)
 	mux.Handle(sectionPath, sectionHandler)
 
-	adminSvc := service.NewAdminService(sqlDB, queries, cfg.SoloMode)
+	adminSvc := service.NewAdminService(sqlDB, queries, cfg.SoloMode, sessionCache)
 	adminPath, adminHandler := leapmuxv1connect.NewAdminServiceHandler(adminSvc, connectOpts)
 	mux.Handle(adminPath, adminHandler)
 
