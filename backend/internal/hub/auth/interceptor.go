@@ -95,7 +95,11 @@ type SessionCache struct {
 
 // Evict removes a session from all in-memory caches. Call this on logout
 // or when cached user state becomes stale (e.g., after email verification).
+// Safe to call on a nil receiver.
 func (c *SessionCache) Evict(sessionID string) {
+	if c == nil {
+		return
+	}
 	if v, ok := c.sessions.Load(sessionID); ok {
 		cached := v.(cachedSession)
 		if idx, ok := c.userSessions.Load(cached.user.ID); ok {
@@ -108,8 +112,11 @@ func (c *SessionCache) Evict(sessionID string) {
 
 // EvictByUserID removes all cached sessions for a user. Call this after
 // password changes or admin password resets to ensure invalidated sessions
-// cannot be served from the cache.
+// cannot be served from the cache. Safe to call on a nil receiver.
 func (c *SessionCache) EvictByUserID(userID string) {
+	if c == nil {
+		return
+	}
 	v, ok := c.userSessions.LoadAndDelete(userID)
 	if !ok {
 		return
@@ -276,7 +283,14 @@ func (a *authInterceptor) sweepCaches(stop <-chan struct{}) {
 				if now.Sub(cached.cachedAt) > sessionCacheTTL {
 					a.sessionCache.Delete(key)
 					if idx, ok := a.userSessions.Load(cached.user.ID); ok {
-						idx.(*sync.Map).Delete(key)
+						inner := idx.(*sync.Map)
+						inner.Delete(key)
+						// Remove the outer entry if the inner map is now empty.
+						empty := true
+						inner.Range(func(_, _ any) bool { empty = false; return false })
+						if empty {
+							a.userSessions.Delete(cached.user.ID)
+						}
 					}
 				}
 				return true

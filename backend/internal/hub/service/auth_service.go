@@ -76,9 +76,7 @@ func (s *AuthService) Logout(ctx context.Context, req *connect.Request[leapmuxv1
 	token := auth.SessionIDFromHeader(req.Header().Get("Cookie"), s.cfg.SecureCookies)
 	if token != "" {
 		_ = s.queries.DeleteUserSession(ctx, token)
-		if s.sessionCache != nil {
-			s.sessionCache.Evict(token)
-		}
+		s.sessionCache.Evict(token)
 	}
 	resp := connect.NewResponse(&leapmuxv1.LogoutResponse{})
 	resp.Header().Set("Set-Cookie", auth.ClearSessionCookie(s.cfg.SecureCookies).String())
@@ -239,17 +237,12 @@ func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName
 		}
 	}
 
-	var emailVerified int64
-	if email != "" {
-		emailVerified = 1
-	}
-
 	user, err := createUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
 		Username:      username,
 		PasswordHash:  passwordHash,
 		DisplayName:   displayName,
 		Email:         email,
-		EmailVerified: emailVerified,
+		EmailVerified: ptrconv.BoolToInt64(email != ""),
 		PasswordSet:   1,
 		IsAdmin:       1,
 	})

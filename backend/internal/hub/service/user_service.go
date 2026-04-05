@@ -183,11 +183,8 @@ func (s *UserService) VerifyEmailChange(ctx context.Context, req *connect.Reques
 		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("token does not belong to this user"))
 	}
 
-	// Evict the current session from cache so the next request picks up
-	// the updated EmailVerified status from the DB.
-	if s.sessionCache != nil {
-		s.sessionCache.Evict(userInfo.SessionID)
-	}
+	// Evict so the next request picks up the updated EmailVerified status.
+	s.sessionCache.Evict(userInfo.SessionID)
 
 	org, err := s.queries.GetOrgByID(ctx, updatedUser.OrgID)
 	if err != nil {
@@ -249,11 +246,7 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 	})
 
 	// Evict all cached sessions for this user so that deleted sessions
-	// cannot be served from the in-memory cache. The caller's session
-	// will be re-validated and re-cached on the next request.
-	if s.sessionCache != nil {
-		s.sessionCache.EvictByUserID(user.ID)
-	}
+	s.sessionCache.EvictByUserID(user.ID)
 
 	return connect.NewResponse(&leapmuxv1.ChangePasswordResponse{}), nil
 }
