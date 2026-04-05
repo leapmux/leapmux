@@ -28,9 +28,9 @@ type CreateUserParams struct {
 	IsAdmin       int64
 }
 
-// createUserWithOrg creates a personal org, a user, and an org membership
+// CreateUserWithOrg creates a personal org, a user, and an org membership
 // atomically within a transaction. It returns the created user row.
-func createUserWithOrg(ctx context.Context, sqlDB *sql.DB, q *db.Queries, p CreateUserParams) (*db.User, error) {
+func CreateUserWithOrg(ctx context.Context, sqlDB *sql.DB, q *db.Queries, p CreateUserParams) (*db.User, error) {
 	tx, err := sqlDB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin transaction: %w", err)

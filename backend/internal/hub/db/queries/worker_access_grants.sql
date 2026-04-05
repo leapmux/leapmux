@@ -14,3 +14,6 @@ SELECT * FROM worker_access_grants WHERE worker_id = ? ORDER BY created_at;
 
 -- name: DeleteWorkerAccessGrantsByWorker :exec
 DELETE FROM worker_access_grants WHERE worker_id = ?;
+
+-- name: DeleteWorkerAccessGrantsByUser :exec
+DELETE FROM worker_access_grants WHERE user_id = ?;

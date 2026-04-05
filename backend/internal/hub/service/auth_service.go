@@ -167,7 +167,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 			return nil, connect.NewError(connect.CodeAlreadyExists, err)
 		}
 
-		user, err := createUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
+		user, err := CreateUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
 			Username:     username,
 			PasswordHash: hash,
 			DisplayName:  displayName,
@@ -203,7 +203,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		}
 	}
 
-	user, err := createUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
+	user, err := CreateUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
 		Username:     username,
 		PasswordHash: hash,
 		DisplayName:  displayName,
@@ -237,7 +237,7 @@ func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName
 		}
 	}
 
-	user, err := createUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
+	user, err := CreateUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
 		Username:      username,
 		PasswordHash:  passwordHash,
 		DisplayName:   displayName,
@@ -447,7 +447,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		}
 	}
 
-	user, err := createUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
+	user, err := CreateUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
 		Username:      username,
 		PasswordHash:  pwdhash.PlaceholderHash,
 		DisplayName:   displayName,

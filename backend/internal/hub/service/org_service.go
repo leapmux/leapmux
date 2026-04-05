@@ -435,6 +435,11 @@ func (s *OrgService) RemoveOrgMember(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("remove org member: %w", err))
 	}
 
+	// Revoke any worker access grants the removed user had.
+	if err := s.queries.DeleteWorkerAccessGrantsByUser(ctx, targetUserID); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("revoke worker access grants: %w", err))
+	}
+
 	return connect.NewResponse(&leapmuxv1.RemoveOrgMemberResponse{}), nil
 }
 

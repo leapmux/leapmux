@@ -17,6 +17,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/oauth"
 	"github.com/leapmux/leapmux/internal/hub/password"
+	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
@@ -78,416 +79,346 @@ func runAdminUser(args []string) error {
 }
 
 func runUserList(args []string) error {
-	fs := flag.NewFlagSet("user list", flag.ContinueOnError)
-	query := fs.String("query", "", "search query (matches username, display name, email)")
-	limit := fs.Int64("limit", 50, "maximum number of results")
-	offset := fs.Int64("offset", 0, "offset for pagination")
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	var query *string
+	var limit *int64
+	var offset *int64
+	return withAdminDB("user list", args, func(fs *flag.FlagSet) {
+		query = fs.String("query", "", "search query (matches username, display name, email)")
+		limit = fs.Int64("limit", 50, "maximum number of results")
+		offset = fs.Int64("offset", 0, "offset for pagination")
+	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+		var users []gendb.User
+		var err error
 
-	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sqlDB.Close() }()
-
-	ctx := context.Background()
-	var users []gendb.User
-
-	if *query != "" {
-		users, err = q.SearchUsers(ctx, gendb.SearchUsersParams{
-			Query:  sql.NullString{String: *query, Valid: true},
-			Limit:  *limit,
-			Offset: *offset,
-		})
-	} else {
-		users, err = q.ListAllUsers(ctx, gendb.ListAllUsersParams{
-			Limit:  *limit,
-			Offset: *offset,
-		})
-	}
-	if err != nil {
-		return fmt.Errorf("list users: %w", err)
-	}
-
-	if len(users) == 0 {
-		fmt.Println("No users found.")
-		return nil
-	}
-
-	fmt.Printf("%-48s %-20s %-24s %-30s %-8s %-8s\n", "ID", "USERNAME", "DISPLAY_NAME", "EMAIL", "ADMIN", "CREATED")
-	for _, u := range users {
-		admin := "no"
-		if u.IsAdmin == 1 {
-			admin = "yes"
+		if *query != "" {
+			users, err = q.SearchUsers(ctx, gendb.SearchUsersParams{
+				Query:  sql.NullString{String: *query, Valid: true},
+				Limit:  *limit,
+				Offset: *offset,
+			})
+		} else {
+			users, err = q.ListAllUsers(ctx, gendb.ListAllUsersParams{
+				Limit:  *limit,
+				Offset: *offset,
+			})
 		}
-		fmt.Printf("%-48s %-20s %-24s %-30s %-8s %-8s\n",
-			u.ID, u.Username, u.DisplayName, u.Email, admin, timefmt.Format(u.CreatedAt))
-	}
-	return nil
+		if err != nil {
+			return fmt.Errorf("list users: %w", err)
+		}
+
+		if len(users) == 0 {
+			fmt.Println("No users found.")
+			return nil
+		}
+
+		fmt.Printf("%-48s %-20s %-24s %-30s %-8s %-8s\n", "ID", "USERNAME", "DISPLAY_NAME", "EMAIL", "ADMIN", "CREATED")
+		for _, u := range users {
+			admin := "no"
+			if u.IsAdmin == 1 {
+				admin = "yes"
+			}
+			fmt.Printf("%-48s %-20s %-24s %-30s %-8s %-8s\n",
+				u.ID, u.Username, u.DisplayName, u.Email, admin, timefmt.Format(u.CreatedAt))
+		}
+		return nil
+	})
 }
 
 func runUserGet(args []string) error {
-	fs := flag.NewFlagSet("user get", flag.ContinueOnError)
-	userID := fs.String("id", "", "user ID")
-	username := fs.String("username", "", "username")
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	var userID *string
+	var username *string
+	return withAdminDB("user get", args, func(fs *flag.FlagSet) {
+		userID = fs.String("id", "", "user ID")
+		username = fs.String("username", "", "username")
+	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+		user, err := resolveUser(ctx, q, *userID, *username)
+		if err != nil {
+			return err
+		}
 
-	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sqlDB.Close() }()
+		emailVerified := "no"
+		if user.EmailVerified == 1 {
+			emailVerified = "yes"
+		}
+		admin := "no"
+		if user.IsAdmin == 1 {
+			admin = "yes"
+		}
+		passwordSet := "no"
+		if user.PasswordSet == 1 {
+			passwordSet = "yes"
+		}
 
-	user, err := resolveUser(context.Background(), q, *userID, *username)
-	if err != nil {
-		return err
-	}
-
-	emailVerified := "no"
-	if user.EmailVerified == 1 {
-		emailVerified = "yes"
-	}
-	admin := "no"
-	if user.IsAdmin == 1 {
-		admin = "yes"
-	}
-	passwordSet := "no"
-	if user.PasswordSet == 1 {
-		passwordSet = "yes"
-	}
-
-	fmt.Printf("ID:              %s\n", user.ID)
-	fmt.Printf("Org ID:          %s\n", user.OrgID)
-	fmt.Printf("Username:        %s\n", user.Username)
-	fmt.Printf("Display name:    %s\n", user.DisplayName)
-	fmt.Printf("Email:           %s\n", user.Email)
-	fmt.Printf("Email verified:  %s\n", emailVerified)
-	fmt.Printf("Password set:    %s\n", passwordSet)
-	fmt.Printf("Admin:           %s\n", admin)
-	fmt.Printf("Created at:      %s\n", timefmt.Format(user.CreatedAt))
-	fmt.Printf("Updated at:      %s\n", timefmt.Format(user.UpdatedAt))
-	return nil
+		fmt.Printf("ID:              %s\n", user.ID)
+		fmt.Printf("Org ID:          %s\n", user.OrgID)
+		fmt.Printf("Username:        %s\n", user.Username)
+		fmt.Printf("Display name:    %s\n", user.DisplayName)
+		fmt.Printf("Email:           %s\n", user.Email)
+		fmt.Printf("Email verified:  %s\n", emailVerified)
+		fmt.Printf("Password set:    %s\n", passwordSet)
+		fmt.Printf("Admin:           %s\n", admin)
+		fmt.Printf("Created at:      %s\n", timefmt.Format(user.CreatedAt))
+		fmt.Printf("Updated at:      %s\n", timefmt.Format(user.UpdatedAt))
+		return nil
+	})
 }
 
 func runUserCreate(args []string) error {
-	fs := flag.NewFlagSet("user create", flag.ContinueOnError)
-	username := fs.String("username", "", "username (required)")
-	pw := fs.String("password", "", "password (required)")
-	displayName := fs.String("display-name", "", "display name")
-	email := fs.String("email", "", "email address")
-	emailVerified := fs.Bool("email-verified", false, "mark email as verified")
-	admin := fs.Bool("admin", false, "grant admin privileges")
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	var username *string
+	var pw *string
+	var displayName *string
+	var email *string
+	var emailVerified *bool
+	var admin *bool
+	return withAdminDB("user create", args, func(fs *flag.FlagSet) {
+		username = fs.String("username", "", "username (required)")
+		pw = fs.String("password", "", "password (required)")
+		displayName = fs.String("display-name", "", "display name")
+		email = fs.String("email", "", "email address")
+		emailVerified = fs.Bool("email-verified", false, "mark email as verified")
+		admin = fs.Bool("admin", false, "grant admin privileges")
+	}, func(ctx context.Context, sqlDB *sql.DB, q *gendb.Queries) error {
+		if *username == "" {
+			return fmt.Errorf("--username is required")
+		}
+		if *pw == "" {
+			return fmt.Errorf("--password is required")
+		}
 
-	if *username == "" {
-		return fmt.Errorf("--username is required")
-	}
-	if *pw == "" {
-		return fmt.Errorf("--password is required")
-	}
-
-	slug, err := validate.SanitizeSlug("username", *username)
-	if err != nil {
-		return err
-	}
-
-	if err := validate.ValidatePassword(*pw); err != nil {
-		return err
-	}
-
-	if *email != "" {
-		if err := validate.ValidateEmail(*email); err != nil {
+		slug, err := validate.SanitizeSlug("username", *username)
+		if err != nil {
 			return err
 		}
-	}
 
-	dispName, err := validate.SanitizeDisplayName(*displayName, slug)
-	if err != nil {
-		return fmt.Errorf("display name: %w", err)
-	}
-
-	hash, err := password.Hash(*pw)
-	if err != nil {
-		return fmt.Errorf("hash password: %w", err)
-	}
-
-	cfg := adminConfig(*dataDir)
-	sqlDB, q, err := openAdminDB(cfg)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sqlDB.Close() }()
-
-	ctx := context.Background()
-
-	if _, lookupErr := q.GetUserByUsername(ctx, slug); lookupErr == nil {
-		return fmt.Errorf("username %q is already taken", slug)
-	} else if lookupErr != sql.ErrNoRows {
-		return fmt.Errorf("check username: %w", lookupErr)
-	}
-
-	if *email != "" {
-		if _, lookupErr := q.GetUserByEmail(ctx, *email); lookupErr == nil {
-			return fmt.Errorf("email %q is already in use", *email)
-		} else if lookupErr != sql.ErrNoRows {
-			return fmt.Errorf("check email: %w", lookupErr)
+		if err := validate.ValidatePassword(*pw); err != nil {
+			return err
 		}
-	}
 
-	tx, err := sqlDB.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	txq := q.WithTx(tx)
-
-	orgID := id.Generate()
-	if err := txq.CreateOrg(ctx, gendb.CreateOrgParams{
-		ID:         orgID,
-		Name:       slug,
-		IsPersonal: 1,
-	}); err != nil {
-		return fmt.Errorf("create org: %w", err)
-	}
-
-	userID := id.Generate()
-	if err := txq.CreateUser(ctx, gendb.CreateUserParams{
-		ID:            userID,
-		OrgID:         orgID,
-		Username:      slug,
-		PasswordHash:  hash,
-		DisplayName:   dispName,
-		Email:         *email,
-		EmailVerified: ptrconv.BoolToInt64(*emailVerified),
-		PasswordSet:   1,
-		IsAdmin:       ptrconv.BoolToInt64(*admin),
-	}); err != nil {
-		return fmt.Errorf("create user: %w", err)
-	}
-
-	if err := txq.CreateOrgMember(ctx, gendb.CreateOrgMemberParams{
-		OrgID:  orgID,
-		UserID: userID,
-		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_OWNER,
-	}); err != nil {
-		return fmt.Errorf("create org member: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
-
-	fmt.Printf("Created user %q (id: %s)\n", slug, userID)
-	return nil
-}
-
-func runUserUpdate(args []string) error {
-	fs := flag.NewFlagSet("user update", flag.ContinueOnError)
-	userID := fs.String("id", "", "user ID")
-	username := fs.String("username", "", "username (for lookup)")
-	displayName := fs.String("display-name", "", "new display name")
-	email := fs.String("email", "", "new email address")
-	var emailVerifiedFlag *bool
-	fs.Func("email-verified", "mark email as verified (true/false)", func(s string) error {
-		b, err := strconv.ParseBool(s)
-		if err != nil {
-			return fmt.Errorf("must be 'true' or 'false'")
-		}
-		emailVerifiedFlag = &b
-		return nil
-	})
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sqlDB.Close() }()
-
-	ctx := context.Background()
-	user, err := resolveUser(ctx, q, *userID, *username)
-	if err != nil {
-		return err
-	}
-
-	setFlags := map[string]bool{}
-	fs.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
-
-	updated := false
-
-	if setFlags["display-name"] {
-		dn, err := validate.SanitizeDisplayName(*displayName, user.Username)
-		if err != nil {
-			return fmt.Errorf("display name: %w", err)
-		}
-		if err := q.UpdateUserProfile(ctx, gendb.UpdateUserProfileParams{
-			Username:    user.Username,
-			DisplayName: dn,
-			ID:          user.ID,
-		}); err != nil {
-			return fmt.Errorf("update display name: %w", err)
-		}
-		updated = true
-	}
-
-	if setFlags["email"] {
 		if *email != "" {
 			if err := validate.ValidateEmail(*email); err != nil {
 				return err
 			}
-			if *email != user.Email {
-				if existing, lookupErr := q.GetUserByEmail(ctx, *email); lookupErr == nil && existing.ID != user.ID {
-					return fmt.Errorf("email %q is already in use", *email)
-				}
+		}
+
+		dispName, err := validate.SanitizeDisplayName(*displayName, slug)
+		if err != nil {
+			return fmt.Errorf("display name: %w", err)
+		}
+
+		hash, err := password.Hash(*pw)
+		if err != nil {
+			return fmt.Errorf("hash password: %w", err)
+		}
+
+		if _, lookupErr := q.GetUserByUsername(ctx, slug); lookupErr == nil {
+			return fmt.Errorf("username %q is already taken", slug)
+		} else if lookupErr != sql.ErrNoRows {
+			return fmt.Errorf("check username: %w", lookupErr)
+		}
+		if *email != "" {
+			if _, lookupErr := q.GetUserByEmail(ctx, *email); lookupErr == nil {
+				return fmt.Errorf("email %q is already in use", *email)
+			} else if lookupErr != sql.ErrNoRows {
+				return fmt.Errorf("check email: %w", lookupErr)
 			}
 		}
-		verified := user.EmailVerified
-		if emailVerifiedFlag != nil {
-			verified = ptrconv.BoolToInt64(*emailVerifiedFlag)
-		}
-		if err := q.UpdateUserEmail(ctx, gendb.UpdateUserEmailParams{
+
+		user, err := service.CreateUserWithOrg(ctx, sqlDB, q, service.CreateUserParams{
+			Username:      slug,
+			PasswordHash:  hash,
+			DisplayName:   dispName,
 			Email:         *email,
-			EmailVerified: verified,
-			ID:            user.ID,
-		}); err != nil {
-			return fmt.Errorf("update email: %w", err)
+			EmailVerified: ptrconv.BoolToInt64(*emailVerified),
+			PasswordSet:   1,
+			IsAdmin:       ptrconv.BoolToInt64(*admin),
+		})
+		if err != nil {
+			return fmt.Errorf("create user: %w", err)
 		}
-		updated = true
-	} else if emailVerifiedFlag != nil {
-		if err := q.UpdateUserEmailVerified(ctx, gendb.UpdateUserEmailVerifiedParams{
-			EmailVerified: ptrconv.BoolToInt64(*emailVerifiedFlag),
-			ID:            user.ID,
-		}); err != nil {
-			return fmt.Errorf("update email verified: %w", err)
+
+		fmt.Printf("Created user %q (id: %s)\n", slug, user.ID)
+		return nil
+	})
+}
+
+func runUserUpdate(args []string) error {
+	var flagSet *flag.FlagSet
+	var userID *string
+	var username *string
+	var displayName *string
+	var email *string
+	var emailVerifiedFlag *bool
+	return withAdminDB("user update", args, func(fs *flag.FlagSet) {
+		flagSet = fs
+		userID = fs.String("id", "", "user ID")
+		username = fs.String("username", "", "username (for lookup)")
+		displayName = fs.String("display-name", "", "new display name")
+		email = fs.String("email", "", "new email address")
+		fs.Func("email-verified", "mark email as verified (true/false)", func(s string) error {
+			b, err := strconv.ParseBool(s)
+			if err != nil {
+				return fmt.Errorf("must be 'true' or 'false'")
+			}
+			emailVerifiedFlag = &b
+			return nil
+		})
+	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+		user, err := resolveUser(ctx, q, *userID, *username)
+		if err != nil {
+			return err
 		}
-		updated = true
-	}
 
-	if !updated {
-		return fmt.Errorf("no fields to update (use --display-name, --email, or --email-verified)")
-	}
+		setFlags := map[string]bool{}
+		flagSet.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
 
-	fmt.Printf("Updated user %q (id: %s)\n", user.Username, user.ID)
-	return nil
+		updated := false
+
+		if setFlags["display-name"] {
+			dn, err := validate.SanitizeDisplayName(*displayName, user.Username)
+			if err != nil {
+				return fmt.Errorf("display name: %w", err)
+			}
+			if err := q.UpdateUserProfile(ctx, gendb.UpdateUserProfileParams{
+				Username:    user.Username,
+				DisplayName: dn,
+				ID:          user.ID,
+			}); err != nil {
+				return fmt.Errorf("update display name: %w", err)
+			}
+			updated = true
+		}
+
+		if setFlags["email"] {
+			if *email != "" {
+				if err := validate.ValidateEmail(*email); err != nil {
+					return err
+				}
+				if *email != user.Email {
+					if existing, lookupErr := q.GetUserByEmail(ctx, *email); lookupErr == nil && existing.ID != user.ID {
+						return fmt.Errorf("email %q is already in use", *email)
+					}
+				}
+			}
+			verified := user.EmailVerified
+			if emailVerifiedFlag != nil {
+				verified = ptrconv.BoolToInt64(*emailVerifiedFlag)
+			}
+			if err := q.UpdateUserEmail(ctx, gendb.UpdateUserEmailParams{
+				Email:         *email,
+				EmailVerified: verified,
+				ID:            user.ID,
+			}); err != nil {
+				return fmt.Errorf("update email: %w", err)
+			}
+			updated = true
+		} else if emailVerifiedFlag != nil {
+			if err := q.UpdateUserEmailVerified(ctx, gendb.UpdateUserEmailVerifiedParams{
+				EmailVerified: ptrconv.BoolToInt64(*emailVerifiedFlag),
+				ID:            user.ID,
+			}); err != nil {
+				return fmt.Errorf("update email verified: %w", err)
+			}
+			updated = true
+		}
+
+		if !updated {
+			return fmt.Errorf("no fields to update (use --display-name, --email, or --email-verified)")
+		}
+
+		fmt.Printf("Updated user %q (id: %s)\n", user.Username, user.ID)
+		return nil
+	})
 }
 
 func runUserDelete(args []string) error {
-	fs := flag.NewFlagSet("user delete", flag.ContinueOnError)
-	userID := fs.String("id", "", "user ID")
-	username := fs.String("username", "", "username")
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	var userID *string
+	var username *string
+	return withAdminDB("user delete", args, func(fs *flag.FlagSet) {
+		userID = fs.String("id", "", "user ID")
+		username = fs.String("username", "", "username")
+	}, func(ctx context.Context, sqlDB *sql.DB, q *gendb.Queries) error {
+		user, err := resolveUser(ctx, q, *userID, *username)
+		if err != nil {
+			return err
+		}
 
-	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sqlDB.Close() }()
+		tx, err := sqlDB.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin transaction: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
 
-	ctx := context.Background()
-	user, err := resolveUser(ctx, q, *userID, *username)
-	if err != nil {
-		return err
-	}
+		txq := q.WithTx(tx)
 
-	tx, err := sqlDB.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
+		if err := txq.DeleteUserSessionsByUser(ctx, user.ID); err != nil {
+			return fmt.Errorf("delete sessions: %w", err)
+		}
 
-	txq := q.WithTx(tx)
+		if err := txq.DeleteOrgMember(ctx, gendb.DeleteOrgMemberParams{
+			OrgID:  user.OrgID,
+			UserID: user.ID,
+		}); err != nil {
+			return fmt.Errorf("delete org member: %w", err)
+		}
 
-	if err := txq.DeleteUserSessionsByUser(ctx, user.ID); err != nil {
-		return fmt.Errorf("delete sessions: %w", err)
-	}
+		if err := txq.DeleteUser(ctx, user.ID); err != nil {
+			return fmt.Errorf("delete user: %w", err)
+		}
 
-	if err := txq.DeleteOrgMember(ctx, gendb.DeleteOrgMemberParams{
-		OrgID:  user.OrgID,
-		UserID: user.ID,
-	}); err != nil {
-		return fmt.Errorf("delete org member: %w", err)
-	}
+		if err := txq.ForceDeleteOrg(ctx, user.OrgID); err != nil {
+			return fmt.Errorf("delete personal org: %w", err)
+		}
 
-	if err := txq.DeleteUser(ctx, user.ID); err != nil {
-		return fmt.Errorf("delete user: %w", err)
-	}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit transaction: %w", err)
+		}
 
-	if err := txq.ForceDeleteOrg(ctx, user.OrgID); err != nil {
-		return fmt.Errorf("delete personal org: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
-
-	fmt.Printf("Deleted user %q (id: %s) and personal org %s\n", user.Username, user.ID, user.OrgID)
-	return nil
+		fmt.Printf("Deleted user %q (id: %s) and personal org %s\n", user.Username, user.ID, user.OrgID)
+		return nil
+	})
 }
 
 func runUserResetPassword(args []string) error {
-	fs := flag.NewFlagSet("user reset-password", flag.ContinueOnError)
-	userID := fs.String("id", "", "user ID")
-	username := fs.String("username", "", "username")
-	pw := fs.String("password", "", "new password (required)")
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	var userID *string
+	var username *string
+	var pw *string
+	return withAdminDB("user reset-password", args, func(fs *flag.FlagSet) {
+		userID = fs.String("id", "", "user ID")
+		username = fs.String("username", "", "username")
+		pw = fs.String("password", "", "new password (required)")
+	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+		if *pw == "" {
+			return fmt.Errorf("--password is required")
+		}
 
-	if *pw == "" {
-		return fmt.Errorf("--password is required")
-	}
+		if err := validate.ValidatePassword(*pw); err != nil {
+			return err
+		}
 
-	if err := validate.ValidatePassword(*pw); err != nil {
-		return err
-	}
+		hash, err := password.Hash(*pw)
+		if err != nil {
+			return fmt.Errorf("hash password: %w", err)
+		}
 
-	hash, err := password.Hash(*pw)
-	if err != nil {
-		return fmt.Errorf("hash password: %w", err)
-	}
+		user, err := resolveUser(ctx, q, *userID, *username)
+		if err != nil {
+			return err
+		}
 
-	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sqlDB.Close() }()
+		if err := q.UpdateUserPassword(ctx, gendb.UpdateUserPasswordParams{
+			PasswordHash: hash,
+			ID:           user.ID,
+		}); err != nil {
+			return fmt.Errorf("update password: %w", err)
+		}
 
-	ctx := context.Background()
-	user, err := resolveUser(ctx, q, *userID, *username)
-	if err != nil {
-		return err
-	}
+		if err := q.DeleteUserSessionsByUser(ctx, user.ID); err != nil {
+			return fmt.Errorf("delete sessions: %w", err)
+		}
 
-	if err := q.UpdateUserPassword(ctx, gendb.UpdateUserPasswordParams{
-		PasswordHash: hash,
-		ID:           user.ID,
-	}); err != nil {
-		return fmt.Errorf("update password: %w", err)
-	}
-
-	if err := q.DeleteUserSessionsByUser(ctx, user.ID); err != nil {
-		return fmt.Errorf("delete sessions: %w", err)
-	}
-
-	fmt.Printf("Password reset for user %q (id: %s). All sessions revoked.\n", user.Username, user.ID)
-	return nil
+		fmt.Printf("Password reset for user %q (id: %s). All sessions revoked.\n", user.Username, user.ID)
+		return nil
+	})
 }
 
 func runUserGrantAdmin(args []string) error {
@@ -503,79 +434,63 @@ func runUserSetAdmin(args []string, admin bool) error {
 	if !admin {
 		verb = "revoke-admin"
 	}
-	fs := flag.NewFlagSet("user "+verb, flag.ContinueOnError)
-	userID := fs.String("id", "", "user ID")
-	username := fs.String("username", "", "username")
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	var userID *string
+	var username *string
+	return withAdminDB("user "+verb, args, func(fs *flag.FlagSet) {
+		userID = fs.String("id", "", "user ID")
+		username = fs.String("username", "", "username")
+	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+		user, err := resolveUser(ctx, q, *userID, *username)
+		if err != nil {
+			return err
+		}
 
-	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sqlDB.Close() }()
+		if err := q.UpdateUserAdmin(ctx, gendb.UpdateUserAdminParams{
+			IsAdmin: ptrconv.BoolToInt64(admin),
+			ID:      user.ID,
+		}); err != nil {
+			return fmt.Errorf("update admin: %w", err)
+		}
 
-	ctx := context.Background()
-	user, err := resolveUser(ctx, q, *userID, *username)
-	if err != nil {
-		return err
-	}
-
-	if err := q.UpdateUserAdmin(ctx, gendb.UpdateUserAdminParams{
-		IsAdmin: ptrconv.BoolToInt64(admin),
-		ID:      user.ID,
-	}); err != nil {
-		return fmt.Errorf("update admin: %w", err)
-	}
-
-	action := "Granted"
-	if !admin {
-		action = "Revoked"
-	}
-	fmt.Printf("%s admin privileges for user %q (id: %s)\n", action, user.Username, user.ID)
-	return nil
+		action := "Granted"
+		if !admin {
+			action = "Revoked"
+		}
+		fmt.Printf("%s admin privileges for user %q (id: %s)\n", action, user.Username, user.ID)
+		return nil
+	})
 }
 
 func runUserListSessions(args []string) error {
-	fs := flag.NewFlagSet("user list-sessions", flag.ContinueOnError)
-	userID := fs.String("id", "", "user ID")
-	username := fs.String("username", "", "username")
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	var userID *string
+	var username *string
+	return withAdminDB("user list-sessions", args, func(fs *flag.FlagSet) {
+		userID = fs.String("id", "", "user ID")
+		username = fs.String("username", "", "username")
+	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+		user, err := resolveUser(ctx, q, *userID, *username)
+		if err != nil {
+			return err
+		}
 
-	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sqlDB.Close() }()
+		sessions, err := q.ListUserSessionsByUserID(ctx, user.ID)
+		if err != nil {
+			return fmt.Errorf("list sessions: %w", err)
+		}
 
-	ctx := context.Background()
-	user, err := resolveUser(ctx, q, *userID, *username)
-	if err != nil {
-		return err
-	}
+		if len(sessions) == 0 {
+			fmt.Printf("No active sessions for user %q.\n", user.Username)
+			return nil
+		}
 
-	sessions, err := q.ListUserSessionsByUserID(ctx, user.ID)
-	if err != nil {
-		return fmt.Errorf("list sessions: %w", err)
-	}
-
-	if len(sessions) == 0 {
-		fmt.Printf("No active sessions for user %q.\n", user.Username)
+		fmt.Printf("%-48s %-24s %-24s %-24s %-16s %s\n", "ID", "CREATED", "LAST_ACTIVE", "EXPIRES", "IP", "USER_AGENT")
+		for _, s := range sessions {
+			fmt.Printf("%-48s %-24s %-24s %-24s %-16s %s\n",
+				s.ID, timefmt.Format(s.CreatedAt), timefmt.Format(s.LastActiveAt),
+				timefmt.Format(s.ExpiresAt), s.IpAddress, truncate(s.UserAgent, 60))
+		}
 		return nil
-	}
-
-	fmt.Printf("%-48s %-24s %-24s %-24s %-16s %s\n", "ID", "CREATED", "LAST_ACTIVE", "EXPIRES", "IP", "USER_AGENT")
-	for _, s := range sessions {
-		fmt.Printf("%-48s %-24s %-24s %-24s %-16s %s\n",
-			s.ID, timefmt.Format(s.CreatedAt), timefmt.Format(s.LastActiveAt),
-			timefmt.Format(s.ExpiresAt), s.IpAddress, truncate(s.UserAgent, 60))
-	}
-	return nil
+	})
 }
 
 // ---- Session group ----
@@ -600,119 +515,86 @@ func runAdminSession(args []string) error {
 }
 
 func runSessionList(args []string) error {
-	fs := flag.NewFlagSet("session list", flag.ContinueOnError)
-	limit := fs.Int64("limit", 50, "maximum number of results")
-	offset := fs.Int64("offset", 0, "offset for pagination")
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	var limit *int64
+	var offset *int64
+	return withAdminDB("session list", args, func(fs *flag.FlagSet) {
+		limit = fs.Int64("limit", 50, "maximum number of results")
+		offset = fs.Int64("offset", 0, "offset for pagination")
+	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+		sessions, err := q.ListAllActiveSessions(ctx, gendb.ListAllActiveSessionsParams{
+			Limit:  *limit,
+			Offset: *offset,
+		})
+		if err != nil {
+			return fmt.Errorf("list sessions: %w", err)
+		}
 
-	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sqlDB.Close() }()
+		if len(sessions) == 0 {
+			fmt.Println("No active sessions.")
+			return nil
+		}
 
-	sessions, err := q.ListAllActiveSessions(context.Background(), gendb.ListAllActiveSessionsParams{
-		Limit:  *limit,
-		Offset: *offset,
-	})
-	if err != nil {
-		return fmt.Errorf("list sessions: %w", err)
-	}
-
-	if len(sessions) == 0 {
-		fmt.Println("No active sessions.")
+		fmt.Printf("%-48s %-48s %-20s %-24s %-24s %-16s %s\n", "ID", "USER_ID", "USERNAME", "LAST_ACTIVE", "EXPIRES", "IP", "USER_AGENT")
+		for _, s := range sessions {
+			fmt.Printf("%-48s %-48s %-20s %-24s %-24s %-16s %s\n",
+				s.ID, s.UserID, s.Username,
+				timefmt.Format(s.LastActiveAt), timefmt.Format(s.ExpiresAt),
+				s.IpAddress, truncate(s.UserAgent, 60))
+		}
 		return nil
-	}
-
-	fmt.Printf("%-48s %-48s %-20s %-24s %-24s %-16s %s\n", "ID", "USER_ID", "USERNAME", "LAST_ACTIVE", "EXPIRES", "IP", "USER_AGENT")
-	for _, s := range sessions {
-		fmt.Printf("%-48s %-48s %-20s %-24s %-24s %-16s %s\n",
-			s.ID, s.UserID, s.Username,
-			timefmt.Format(s.LastActiveAt), timefmt.Format(s.ExpiresAt),
-			s.IpAddress, truncate(s.UserAgent, 60))
-	}
-	return nil
+	})
 }
 
 func runSessionRevoke(args []string) error {
-	fs := flag.NewFlagSet("session revoke", flag.ContinueOnError)
-	sessionID := fs.String("id", "", "session ID (required)")
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	var sessionID *string
+	return withAdminDB("session revoke", args, func(fs *flag.FlagSet) {
+		sessionID = fs.String("id", "", "session ID (required)")
+	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+		if *sessionID == "" {
+			return fmt.Errorf("--id is required")
+		}
 
-	if *sessionID == "" {
-		return fmt.Errorf("--id is required")
-	}
+		if err := q.DeleteUserSession(ctx, *sessionID); err != nil {
+			return fmt.Errorf("delete session: %w", err)
+		}
 
-	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sqlDB.Close() }()
-
-	if err := q.DeleteUserSession(context.Background(), *sessionID); err != nil {
-		return fmt.Errorf("delete session: %w", err)
-	}
-
-	fmt.Printf("Revoked session %s\n", *sessionID)
-	return nil
+		fmt.Printf("Revoked session %s\n", *sessionID)
+		return nil
+	})
 }
 
 func runSessionRevokeUser(args []string) error {
-	fs := flag.NewFlagSet("session revoke-user", flag.ContinueOnError)
-	userID := fs.String("user-id", "", "user ID")
-	username := fs.String("username", "", "username")
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	var userID *string
+	var username *string
+	return withAdminDB("session revoke-user", args, func(fs *flag.FlagSet) {
+		userID = fs.String("user-id", "", "user ID")
+		username = fs.String("username", "", "username")
+	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+		user, err := resolveUser(ctx, q, *userID, *username)
+		if err != nil {
+			return err
+		}
 
-	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sqlDB.Close() }()
+		if err := q.DeleteUserSessionsByUser(ctx, user.ID); err != nil {
+			return fmt.Errorf("delete sessions: %w", err)
+		}
 
-	ctx := context.Background()
-	user, err := resolveUser(ctx, q, *userID, *username)
-	if err != nil {
-		return err
-	}
-
-	if err := q.DeleteUserSessionsByUser(ctx, user.ID); err != nil {
-		return fmt.Errorf("delete sessions: %w", err)
-	}
-
-	fmt.Printf("Revoked all sessions for user %q (id: %s)\n", user.Username, user.ID)
-	return nil
+		fmt.Printf("Revoked all sessions for user %q (id: %s)\n", user.Username, user.ID)
+		return nil
+	})
 }
 
 func runSessionPurgeExpired(args []string) error {
-	fs := flag.NewFlagSet("session purge-expired", flag.ContinueOnError)
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	return withAdminDB("session purge-expired", args, nil, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+		result, err := q.DeleteExpiredUserSessions(ctx)
+		if err != nil {
+			return fmt.Errorf("purge expired sessions: %w", err)
+		}
 
-	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sqlDB.Close() }()
-
-	result, err := q.DeleteExpiredUserSessions(context.Background())
-	if err != nil {
-		return fmt.Errorf("purge expired sessions: %w", err)
-	}
-
-	n, _ := result.RowsAffected()
-	fmt.Printf("Purged %d expired sessions.\n", n)
-	return nil
+		n, _ := result.RowsAffected()
+		fmt.Printf("Purged %d expired sessions.\n", n)
+		return nil
+	})
 }
 
 // ---- Worker group ----
@@ -735,207 +617,185 @@ func runAdminWorker(args []string) error {
 }
 
 func runWorkerList(args []string) error {
-	fs := flag.NewFlagSet("worker list", flag.ContinueOnError)
-	userID := fs.String("user-id", "", "filter by user ID")
-	username := fs.String("username", "", "filter by username")
-	status := fs.String("status", "active", "filter by status (active, deregistering, deleted, all)")
-	limit := fs.Int64("limit", 50, "maximum number of results")
-	offset := fs.Int64("offset", 0, "offset for pagination")
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sqlDB.Close() }()
-
-	ctx := context.Background()
-
-	resolvedUserID := *userID
-	if *username != "" && resolvedUserID == "" {
-		user, err := q.GetUserByUsername(ctx, *username)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return fmt.Errorf("user not found: %s", *username)
+	var userID *string
+	var username *string
+	var status *string
+	var limit *int64
+	var offset *int64
+	return withAdminDB("worker list", args, func(fs *flag.FlagSet) {
+		userID = fs.String("user-id", "", "filter by user ID")
+		username = fs.String("username", "", "filter by username")
+		status = fs.String("status", "active", "filter by status (active, deregistering, deleted, all)")
+		limit = fs.Int64("limit", 50, "maximum number of results")
+		offset = fs.Int64("offset", 0, "offset for pagination")
+	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+		resolvedUserID := *userID
+		if *username != "" && resolvedUserID == "" {
+			user, err := q.GetUserByUsername(ctx, *username)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					return fmt.Errorf("user not found: %s", *username)
+				}
+				return fmt.Errorf("get user: %w", err)
 			}
-			return fmt.Errorf("get user: %w", err)
+			resolvedUserID = user.ID
 		}
-		resolvedUserID = user.ID
-	}
 
-	allStatuses := *status == "all"
-	var statusVal leapmuxv1.WorkerStatus
-	if !allStatuses {
-		statusVal, err = parseWorkerStatus(*status)
-		if err != nil {
-			return err
+		allStatuses := *status == "all"
+		var statusVal leapmuxv1.WorkerStatus
+		if !allStatuses {
+			var err error
+			statusVal, err = parseWorkerStatus(*status)
+			if err != nil {
+				return err
+			}
 		}
-	}
 
-	type workerRow struct {
-		ID            string
-		OwnerUsername string
-		Status        leapmuxv1.WorkerStatus
-		CreatedAt     time.Time
-		LastSeenAt    sql.NullTime
-	}
+		type workerRow struct {
+			ID            string
+			OwnerUsername string
+			Status        leapmuxv1.WorkerStatus
+			CreatedAt     time.Time
+			LastSeenAt    sql.NullTime
+		}
 
-	toRow := func(id, owner string, st leapmuxv1.WorkerStatus, created time.Time, lastSeen sql.NullTime) workerRow {
-		return workerRow{id, owner, st, created, lastSeen}
-	}
+		toRow := func(id, owner string, st leapmuxv1.WorkerStatus, created time.Time, lastSeen sql.NullTime) workerRow {
+			return workerRow{id, owner, st, created, lastSeen}
+		}
 
-	var rows []workerRow
+		var rows []workerRow
 
-	switch {
-	case resolvedUserID != "" && allStatuses:
-		list, qErr := q.ListAllWorkersByUserAnyStatus(ctx, gendb.ListAllWorkersByUserAnyStatusParams{
-			UserID: resolvedUserID, Offset: *offset, Limit: *limit,
-		})
-		if qErr != nil {
-			return fmt.Errorf("list workers: %w", qErr)
+		switch {
+		case resolvedUserID != "" && allStatuses:
+			list, qErr := q.ListAllWorkersByUserAnyStatus(ctx, gendb.ListAllWorkersByUserAnyStatusParams{
+				UserID: resolvedUserID, Offset: *offset, Limit: *limit,
+			})
+			if qErr != nil {
+				return fmt.Errorf("list workers: %w", qErr)
+			}
+			for _, w := range list {
+				rows = append(rows, toRow(w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt))
+			}
+		case resolvedUserID != "":
+			list, qErr := q.ListAllWorkersByUser(ctx, gendb.ListAllWorkersByUserParams{
+				UserID: resolvedUserID, Status: statusVal, Offset: *offset, Limit: *limit,
+			})
+			if qErr != nil {
+				return fmt.Errorf("list workers: %w", qErr)
+			}
+			for _, w := range list {
+				rows = append(rows, toRow(w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt))
+			}
+		case allStatuses:
+			list, qErr := q.ListAllWorkersAnyStatus(ctx, gendb.ListAllWorkersAnyStatusParams{
+				Offset: *offset, Limit: *limit,
+			})
+			if qErr != nil {
+				return fmt.Errorf("list workers: %w", qErr)
+			}
+			for _, w := range list {
+				rows = append(rows, toRow(w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt))
+			}
+		default:
+			list, qErr := q.ListAllWorkers(ctx, gendb.ListAllWorkersParams{
+				Status: statusVal, Offset: *offset, Limit: *limit,
+			})
+			if qErr != nil {
+				return fmt.Errorf("list workers: %w", qErr)
+			}
+			for _, w := range list {
+				rows = append(rows, toRow(w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt))
+			}
 		}
-		for _, w := range list {
-			rows = append(rows, toRow(w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt))
-		}
-	case resolvedUserID != "":
-		list, qErr := q.ListAllWorkersByUser(ctx, gendb.ListAllWorkersByUserParams{
-			UserID: resolvedUserID, Status: statusVal, Offset: *offset, Limit: *limit,
-		})
-		if qErr != nil {
-			return fmt.Errorf("list workers: %w", qErr)
-		}
-		for _, w := range list {
-			rows = append(rows, toRow(w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt))
-		}
-	case allStatuses:
-		list, qErr := q.ListAllWorkersAnyStatus(ctx, gendb.ListAllWorkersAnyStatusParams{
-			Offset: *offset, Limit: *limit,
-		})
-		if qErr != nil {
-			return fmt.Errorf("list workers: %w", qErr)
-		}
-		for _, w := range list {
-			rows = append(rows, toRow(w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt))
-		}
-	default:
-		list, qErr := q.ListAllWorkers(ctx, gendb.ListAllWorkersParams{
-			Status: statusVal, Offset: *offset, Limit: *limit,
-		})
-		if qErr != nil {
-			return fmt.Errorf("list workers: %w", qErr)
-		}
-		for _, w := range list {
-			rows = append(rows, toRow(w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt))
-		}
-	}
 
-	if len(rows) == 0 {
-		fmt.Println("No workers found.")
+		if len(rows) == 0 {
+			fmt.Println("No workers found.")
+			return nil
+		}
+
+		fmt.Printf("%-48s %-20s %-16s %-24s %-24s\n", "ID", "OWNER", "STATUS", "CREATED", "LAST_SEEN")
+		for _, w := range rows {
+			lastSeen := "-"
+			if w.LastSeenAt.Valid {
+				lastSeen = timefmt.Format(w.LastSeenAt.Time)
+			}
+			fmt.Printf("%-48s %-20s %-16s %-24s %-24s\n",
+				w.ID, w.OwnerUsername, workerStatusString(w.Status), timefmt.Format(w.CreatedAt), lastSeen)
+		}
 		return nil
-	}
-
-	fmt.Printf("%-48s %-20s %-16s %-24s %-24s\n", "ID", "OWNER", "STATUS", "CREATED", "LAST_SEEN")
-	for _, w := range rows {
-		lastSeen := "-"
-		if w.LastSeenAt.Valid {
-			lastSeen = timefmt.Format(w.LastSeenAt.Time)
-		}
-		fmt.Printf("%-48s %-20s %-16s %-24s %-24s\n",
-			w.ID, w.OwnerUsername, workerStatusString(w.Status), timefmt.Format(w.CreatedAt), lastSeen)
-	}
-	return nil
+	})
 }
 
 func runWorkerGet(args []string) error {
-	fs := flag.NewFlagSet("worker get", flag.ContinueOnError)
-	workerID := fs.String("id", "", "worker ID (required)")
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	if *workerID == "" {
-		return fmt.Errorf("--id is required")
-	}
-
-	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sqlDB.Close() }()
-
-	ctx := context.Background()
-	worker, err := q.GetWorkerByID(ctx, *workerID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return fmt.Errorf("worker not found: %s", *workerID)
+	var workerID *string
+	return withAdminDB("worker get", args, func(fs *flag.FlagSet) {
+		workerID = fs.String("id", "", "worker ID (required)")
+	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+		if *workerID == "" {
+			return fmt.Errorf("--id is required")
 		}
-		return fmt.Errorf("get worker: %w", err)
-	}
 
-	lastSeen := "-"
-	if worker.LastSeenAt.Valid {
-		lastSeen = timefmt.Format(worker.LastSeenAt.Time)
-	}
-
-	fmt.Printf("ID:              %s\n", worker.ID)
-	fmt.Printf("Registered by:   %s\n", worker.RegisteredBy)
-	fmt.Printf("Status:          %s\n", workerStatusString(worker.Status))
-	fmt.Printf("Created at:      %s\n", timefmt.Format(worker.CreatedAt))
-	fmt.Printf("Last seen at:    %s\n", lastSeen)
-
-	// Show access grants.
-	grants, err := q.ListWorkerAccessGrants(ctx, *workerID)
-	if err != nil {
-		return fmt.Errorf("list access grants: %w", err)
-	}
-
-	if len(grants) > 0 {
-		fmt.Println("\nAccess grants:")
-		fmt.Printf("  %-48s %-48s %-24s\n", "USER_ID", "GRANTED_BY", "CREATED")
-		for _, g := range grants {
-			fmt.Printf("  %-48s %-48s %-24s\n", g.UserID, g.GrantedBy, timefmt.Format(g.CreatedAt))
+		worker, err := q.GetWorkerByID(ctx, *workerID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("worker not found: %s", *workerID)
+			}
+			return fmt.Errorf("get worker: %w", err)
 		}
-	} else {
-		fmt.Println("\nNo access grants.")
-	}
 
-	return nil
+		lastSeen := "-"
+		if worker.LastSeenAt.Valid {
+			lastSeen = timefmt.Format(worker.LastSeenAt.Time)
+		}
+
+		fmt.Printf("ID:              %s\n", worker.ID)
+		fmt.Printf("Registered by:   %s\n", worker.RegisteredBy)
+		fmt.Printf("Status:          %s\n", workerStatusString(worker.Status))
+		fmt.Printf("Created at:      %s\n", timefmt.Format(worker.CreatedAt))
+		fmt.Printf("Last seen at:    %s\n", lastSeen)
+
+		// Show access grants.
+		grants, err := q.ListWorkerAccessGrants(ctx, *workerID)
+		if err != nil {
+			return fmt.Errorf("list access grants: %w", err)
+		}
+
+		if len(grants) > 0 {
+			fmt.Println("\nAccess grants:")
+			fmt.Printf("  %-48s %-48s %-24s\n", "USER_ID", "GRANTED_BY", "CREATED")
+			for _, g := range grants {
+				fmt.Printf("  %-48s %-48s %-24s\n", g.UserID, g.GrantedBy, timefmt.Format(g.CreatedAt))
+			}
+		} else {
+			fmt.Println("\nNo access grants.")
+		}
+
+		return nil
+	})
 }
 
 func runWorkerDeregister(args []string) error {
-	fs := flag.NewFlagSet("worker deregister", flag.ContinueOnError)
-	workerID := fs.String("id", "", "worker ID (required)")
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	var workerID *string
+	return withAdminDB("worker deregister", args, func(fs *flag.FlagSet) {
+		workerID = fs.String("id", "", "worker ID (required)")
+	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+		if *workerID == "" {
+			return fmt.Errorf("--id is required")
+		}
 
-	if *workerID == "" {
-		return fmt.Errorf("--id is required")
-	}
+		result, err := q.ForceDeregisterWorker(ctx, *workerID)
+		if err != nil {
+			return fmt.Errorf("deregister worker: %w", err)
+		}
 
-	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sqlDB.Close() }()
+		n, _ := result.RowsAffected()
+		if n == 0 {
+			return fmt.Errorf("worker %s not found or not active", *workerID)
+		}
 
-	result, err := q.ForceDeregisterWorker(context.Background(), *workerID)
-	if err != nil {
-		return fmt.Errorf("deregister worker: %w", err)
-	}
-
-	n, _ := result.RowsAffected()
-	if n == 0 {
-		return fmt.Errorf("worker %s not found or not active", *workerID)
-	}
-
-	fmt.Printf("Deregistered worker %s\n", *workerID)
-	return nil
+		fmt.Printf("Deregistered worker %s\n", *workerID)
+		return nil
+	})
 }
 
 // ---- OAuth provider group ----
@@ -962,220 +822,193 @@ func runAdminOAuthProvider(args []string) error {
 }
 
 func runAddOAuthProvider(args []string) error {
-	fs := flag.NewFlagSet("oauth-provider add", flag.ContinueOnError)
-	providerType := fs.String("type", "", "provider type (github, google, apple, oidc)")
-	name := fs.String("name", "", "display name")
-	clientID := fs.String("client-id", "", "OAuth client ID")
-	clientSecret := fs.String("client-secret", "", "OAuth client secret")
-	issuerURL := fs.String("issuer-url", "", "OIDC issuer URL")
-	scopes := fs.String("scopes", "", "space-separated scopes")
+	var flagSet *flag.FlagSet
+	var providerType *string
+	var name *string
+	var clientID *string
+	var clientSecret *string
+	var issuerURL *string
+	var scopes *string
 	var trustEmailFlag *bool
-	fs.Func("trust-email", "trust email from this provider as verified (true/false)", func(s string) error {
-		b, err := strconv.ParseBool(s)
-		if err != nil {
-			return fmt.Errorf("must be 'true' or 'false'")
+	return withAdminDB("oauth-provider add", args, func(fs *flag.FlagSet) {
+		flagSet = fs
+		providerType = fs.String("type", "", "provider type (github, google, apple, oidc)")
+		name = fs.String("name", "", "display name")
+		clientID = fs.String("client-id", "", "OAuth client ID")
+		clientSecret = fs.String("client-secret", "", "OAuth client secret")
+		issuerURL = fs.String("issuer-url", "", "OIDC issuer URL")
+		scopes = fs.String("scopes", "", "space-separated scopes")
+		fs.Func("trust-email", "trust email from this provider as verified (true/false)", func(s string) error {
+			b, err := strconv.ParseBool(s)
+			if err != nil {
+				return fmt.Errorf("must be 'true' or 'false'")
+			}
+			trustEmailFlag = &b
+			return nil
+		})
+	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+		if *providerType == "" {
+			return fmt.Errorf("--type is required (github, google, apple, oidc)")
 		}
-		trustEmailFlag = &b
+		if *clientID == "" {
+			return fmt.Errorf("--client-id is required")
+		}
+		if *clientSecret == "" {
+			return fmt.Errorf("--client-secret is required")
+		}
+
+		// Apply preset defaults.
+		preset, ok := oauth.Presets[*providerType]
+		if !ok {
+			return fmt.Errorf("unknown provider type: %s (supported: github, google, apple, oidc)", *providerType)
+		}
+
+		displayName := *name
+		if displayName == "" {
+			displayName = preset.Name
+		}
+		if displayName == "" {
+			return fmt.Errorf("--name is required for generic OIDC providers")
+		}
+
+		storedType := preset.ProviderType
+		issuer := *issuerURL
+		if issuer == "" {
+			issuer = preset.IssuerURL
+		}
+		scopeStr := *scopes
+		if scopeStr == "" {
+			scopeStr = preset.Scopes
+		}
+
+		// Resolve trust_email: explicit flag > preset default > error.
+		trustEmailVal := trustEmailFlag
+		if trustEmailVal == nil {
+			trustEmailVal = preset.TrustEmail
+		}
+		if trustEmailVal == nil {
+			return fmt.Errorf("--trust-email is required for generic OIDC providers (use --trust-email=true or --trust-email=false)")
+		}
+		trustEmail := ptrconv.BoolToInt64(*trustEmailVal)
+
+		// Validate issuer for OIDC-based providers.
+		if storedType == oauth.ProviderTypeOIDC {
+			if issuer == "" {
+				return fmt.Errorf("--issuer-url is required for OIDC providers")
+			}
+			fmt.Printf("Validating OIDC issuer %s ...\n", issuer)
+			if err := oauth.ValidateIssuer(ctx, issuer); err != nil {
+				return fmt.Errorf("issuer validation failed: %w", err)
+			}
+		}
+
+		cfg := adminConfig(flagSet.Lookup("data-dir").Value.String())
+
+		ks, err := keystore.LoadFromFile(cfg.EncryptionKeyFilePath())
+		if err != nil {
+			return fmt.Errorf("load encryption key: %w", err)
+		}
+
+		providerID := id.Generate()
+		aad := keystore.ProviderAAD(providerID)
+		encryptedSecret, err := ks.Encrypt([]byte(*clientSecret), aad)
+		if err != nil {
+			return fmt.Errorf("encrypt client secret: %w", err)
+		}
+
+		if err := q.CreateOAuthProvider(ctx, gendb.CreateOAuthProviderParams{
+			ID:           providerID,
+			ProviderType: storedType,
+			Name:         displayName,
+			IssuerUrl:    issuer,
+			ClientID:     *clientID,
+			ClientSecret: encryptedSecret,
+			Scopes:       scopeStr,
+			TrustEmail:   trustEmail,
+			Enabled:      1,
+		}); err != nil {
+			return fmt.Errorf("create provider: %w", err)
+		}
+
+		fmt.Printf("Created OAuth provider %q (id: %s, type: %s)\n", displayName, providerID, storedType)
 		return nil
 	})
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	if *providerType == "" {
-		return fmt.Errorf("--type is required (github, google, apple, oidc)")
-	}
-	if *clientID == "" {
-		return fmt.Errorf("--client-id is required")
-	}
-	if *clientSecret == "" {
-		return fmt.Errorf("--client-secret is required")
-	}
-
-	// Apply preset defaults.
-	preset, ok := oauth.Presets[*providerType]
-	if !ok {
-		return fmt.Errorf("unknown provider type: %s (supported: github, google, apple, oidc)", *providerType)
-	}
-
-	displayName := *name
-	if displayName == "" {
-		displayName = preset.Name
-	}
-	if displayName == "" {
-		return fmt.Errorf("--name is required for generic OIDC providers")
-	}
-
-	storedType := preset.ProviderType
-	issuer := *issuerURL
-	if issuer == "" {
-		issuer = preset.IssuerURL
-	}
-	scopeStr := *scopes
-	if scopeStr == "" {
-		scopeStr = preset.Scopes
-	}
-
-	// Resolve trust_email: explicit flag > preset default > error.
-	trustEmailVal := trustEmailFlag
-	if trustEmailVal == nil {
-		trustEmailVal = preset.TrustEmail
-	}
-	if trustEmailVal == nil {
-		return fmt.Errorf("--trust-email is required for generic OIDC providers (use --trust-email=true or --trust-email=false)")
-	}
-	trustEmail := ptrconv.BoolToInt64(*trustEmailVal)
-
-	// Validate issuer for OIDC-based providers.
-	if storedType == oauth.ProviderTypeOIDC {
-		if issuer == "" {
-			return fmt.Errorf("--issuer-url is required for OIDC providers")
-		}
-		fmt.Printf("Validating OIDC issuer %s ...\n", issuer)
-		if err := oauth.ValidateIssuer(context.Background(), issuer); err != nil {
-			return fmt.Errorf("issuer validation failed: %w", err)
-		}
-	}
-
-	cfg := adminConfig(*dataDir)
-
-	ks, err := keystore.LoadFromFile(cfg.EncryptionKeyFilePath())
-	if err != nil {
-		return fmt.Errorf("load encryption key: %w", err)
-	}
-
-	providerID := id.Generate()
-	aad := keystore.ProviderAAD(providerID)
-	encryptedSecret, err := ks.Encrypt([]byte(*clientSecret), aad)
-	if err != nil {
-		return fmt.Errorf("encrypt client secret: %w", err)
-	}
-
-	sqlDB, q, err := openAdminDB(cfg)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sqlDB.Close() }()
-
-	if err := q.CreateOAuthProvider(context.Background(), gendb.CreateOAuthProviderParams{
-		ID:           providerID,
-		ProviderType: storedType,
-		Name:         displayName,
-		IssuerUrl:    issuer,
-		ClientID:     *clientID,
-		ClientSecret: encryptedSecret,
-		Scopes:       scopeStr,
-		TrustEmail:   trustEmail,
-		Enabled:      1,
-	}); err != nil {
-		return fmt.Errorf("create provider: %w", err)
-	}
-
-	fmt.Printf("Created OAuth provider %q (id: %s, type: %s)\n", displayName, providerID, storedType)
-	return nil
 }
 
 func runListOAuthProviders(args []string) error {
-	fs := flag.NewFlagSet("oauth-provider list", flag.ContinueOnError)
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	return withAdminDB("oauth-provider list", args, nil, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+		providers, err := q.ListAllOAuthProviders(ctx)
+		if err != nil {
+			return fmt.Errorf("list providers: %w", err)
+		}
 
-	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sqlDB.Close() }()
+		if len(providers) == 0 {
+			fmt.Println("No OAuth providers configured.")
+			return nil
+		}
 
-	providers, err := q.ListAllOAuthProviders(context.Background())
-	if err != nil {
-		return fmt.Errorf("list providers: %w", err)
-	}
-
-	if len(providers) == 0 {
-		fmt.Println("No OAuth providers configured.")
+		fmt.Printf("%-48s %-8s %-20s %-14s %s\n", "ID", "TYPE", "NAME", "TRUST_EMAIL", "ENABLED")
+		for _, p := range providers {
+			trustEmail := "yes"
+			if p.TrustEmail != 1 {
+				trustEmail = "no"
+			}
+			enabled := "yes"
+			if p.Enabled != 1 {
+				enabled = "no"
+			}
+			fmt.Printf("%-48s %-8s %-20s %-14s %s\n", p.ID, p.ProviderType, p.Name, trustEmail, enabled)
+		}
 		return nil
-	}
-
-	fmt.Printf("%-48s %-8s %-20s %-14s %s\n", "ID", "TYPE", "NAME", "TRUST_EMAIL", "ENABLED")
-	for _, p := range providers {
-		trustEmail := "yes"
-		if p.TrustEmail != 1 {
-			trustEmail = "no"
-		}
-		enabled := "yes"
-		if p.Enabled != 1 {
-			enabled = "no"
-		}
-		fmt.Printf("%-48s %-8s %-20s %-14s %s\n", p.ID, p.ProviderType, p.Name, trustEmail, enabled)
-	}
-	return nil
+	})
 }
 
 func runRemoveOAuthProvider(args []string) error {
-	fs := flag.NewFlagSet("oauth-provider remove", flag.ContinueOnError)
-	providerID := fs.String("id", "", "provider ID")
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	var providerID *string
+	return withAdminDB("oauth-provider remove", args, func(fs *flag.FlagSet) {
+		providerID = fs.String("id", "", "provider ID")
+	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+		if *providerID == "" {
+			return fmt.Errorf("--id is required")
+		}
 
-	if *providerID == "" {
-		return fmt.Errorf("--id is required")
-	}
+		provider, err := q.GetOAuthProviderByID(ctx, *providerID)
+		if err != nil {
+			return fmt.Errorf("get provider %s: %w", *providerID, err)
+		}
 
-	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sqlDB.Close() }()
+		if err := q.DeleteOAuthProvider(ctx, *providerID); err != nil {
+			return fmt.Errorf("delete provider: %w", err)
+		}
 
-	provider, err := q.GetOAuthProviderByID(context.Background(), *providerID)
-	if err != nil {
-		return fmt.Errorf("get provider %s: %w", *providerID, err)
-	}
-
-	if err := q.DeleteOAuthProvider(context.Background(), *providerID); err != nil {
-		return fmt.Errorf("delete provider: %w", err)
-	}
-
-	fmt.Printf("Removed OAuth provider %q (id: %s)\n", provider.Name, *providerID)
-	return nil
+		fmt.Printf("Removed OAuth provider %q (id: %s)\n", provider.Name, *providerID)
+		return nil
+	})
 }
 
 func runSetOAuthProviderEnabled(args []string, enabled bool) error {
-	fs := flag.NewFlagSet("oauth-provider enable/disable", flag.ContinueOnError)
-	providerID := fs.String("id", "", "provider ID")
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	var providerID *string
+	return withAdminDB("oauth-provider enable/disable", args, func(fs *flag.FlagSet) {
+		providerID = fs.String("id", "", "provider ID")
+	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+		if *providerID == "" {
+			return fmt.Errorf("--id is required")
+		}
 
-	if *providerID == "" {
-		return fmt.Errorf("--id is required")
-	}
+		if err := q.UpdateOAuthProviderEnabled(ctx, gendb.UpdateOAuthProviderEnabledParams{
+			Enabled: ptrconv.BoolToInt64(enabled),
+			ID:      *providerID,
+		}); err != nil {
+			return fmt.Errorf("update provider: %w", err)
+		}
 
-	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sqlDB.Close() }()
-
-	if err := q.UpdateOAuthProviderEnabled(context.Background(), gendb.UpdateOAuthProviderEnabledParams{
-		Enabled: ptrconv.BoolToInt64(enabled),
-		ID:      *providerID,
-	}); err != nil {
-		return fmt.Errorf("update provider: %w", err)
-	}
-
-	action := "Disabled"
-	if enabled {
-		action = "Enabled"
-	}
-	fmt.Printf("%s OAuth provider %s\n", action, *providerID)
-	return nil
+		action := "Disabled"
+		if enabled {
+			action = "Enabled"
+		}
+		fmt.Printf("%s OAuth provider %s\n", action, *providerID)
+		return nil
+	})
 }
 
 // ---- Encryption key group ----
@@ -1244,102 +1077,94 @@ func runRemoveEncryptionKey(args []string) error {
 }
 
 func runReencryptSecrets(args []string) error {
-	fs := flag.NewFlagSet("encryption-key reencrypt", flag.ContinueOnError)
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	cfg := adminConfig(*dataDir)
-	ks, err := keystore.LoadFromFile(cfg.EncryptionKeyFilePath())
-	if err != nil {
-		return fmt.Errorf("load encryption key: %w", err)
-	}
-
-	sqlDB, q, err := openAdminDB(cfg)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sqlDB.Close() }()
-
-	ctx := context.Background()
-	activeVer := ks.ActiveVersion()
-	count := 0
-
-	// Re-encrypt oauth_providers.client_secret.
-	providers, err := q.ListAllOAuthProvidersWithSecrets(ctx)
-	if err != nil {
-		return fmt.Errorf("list providers: %w", err)
-	}
-	for _, p := range providers {
-		if ver, err := keystore.CiphertextVersion(p.ClientSecret); err == nil && ver == activeVer {
-			continue // already at active version
+	var flagSet *flag.FlagSet
+	return withAdminDB("encryption-key reencrypt", args, func(fs *flag.FlagSet) {
+		flagSet = fs
+	}, func(ctx context.Context, sqlDB *sql.DB, q *gendb.Queries) error {
+		cfg := adminConfig(flagSet.Lookup("data-dir").Value.String())
+		ks, err := keystore.LoadFromFile(cfg.EncryptionKeyFilePath())
+		if err != nil {
+			return fmt.Errorf("load encryption key: %w", err)
 		}
-		aad := keystore.ProviderAAD(p.ID)
-		plain, decErr := ks.Decrypt(p.ClientSecret, aad)
-		if decErr != nil {
-			return fmt.Errorf("decrypt provider %s client_secret: %w", p.ID, decErr)
-		}
-		newCt, encErr := ks.Encrypt(plain, aad)
-		if encErr != nil {
-			return fmt.Errorf("re-encrypt provider %s: %w", p.ID, encErr)
-		}
-		// Update via raw SQL since sqlc doesn't have an update for client_secret.
-		if _, execErr := sqlDB.ExecContext(ctx, "UPDATE oauth_providers SET client_secret = ? WHERE id = ?", newCt, p.ID); execErr != nil {
-			return fmt.Errorf("update provider %s: %w", p.ID, execErr)
-		}
-		count++
-	}
 
-	// Re-encrypt oauth_tokens.
-	for _, ver := range ks.Versions() {
-		if ver == activeVer {
-			continue
-		}
-		tokens, listErr := q.ListOAuthTokensByKeyVersion(ctx, int64(ver))
-		if listErr != nil {
-			return fmt.Errorf("list tokens for key version %d: %w", ver, listErr)
-		}
-		for _, tok := range tokens {
-			accessAAD := keystore.AccessTokenAAD(tok.UserID, tok.ProviderID)
-			refreshAAD := keystore.RefreshTokenAAD(tok.UserID, tok.ProviderID)
+		activeVer := ks.ActiveVersion()
+		count := 0
 
-			plainAccess, err := ks.Decrypt(tok.AccessToken, accessAAD)
-			if err != nil {
-				return fmt.Errorf("decrypt access_token for user %s: %w", tok.UserID, err)
+		// Re-encrypt oauth_providers.client_secret.
+		providers, err := q.ListAllOAuthProvidersWithSecrets(ctx)
+		if err != nil {
+			return fmt.Errorf("list providers: %w", err)
+		}
+		for _, p := range providers {
+			if ver, err := keystore.CiphertextVersion(p.ClientSecret); err == nil && ver == activeVer {
+				continue // already at active version
 			}
-			plainRefresh, err := ks.Decrypt(tok.RefreshToken, refreshAAD)
-			if err != nil {
-				return fmt.Errorf("decrypt refresh_token for user %s: %w", tok.UserID, err)
+			aad := keystore.ProviderAAD(p.ID)
+			plain, decErr := ks.Decrypt(p.ClientSecret, aad)
+			if decErr != nil {
+				return fmt.Errorf("decrypt provider %s client_secret: %w", p.ID, decErr)
 			}
-
-			newAccess, err := ks.Encrypt(plainAccess, accessAAD)
-			if err != nil {
-				return fmt.Errorf("re-encrypt access_token: %w", err)
+			newCt, encErr := ks.Encrypt(plain, aad)
+			if encErr != nil {
+				return fmt.Errorf("re-encrypt provider %s: %w", p.ID, encErr)
 			}
-			newRefresh, err := ks.Encrypt(plainRefresh, refreshAAD)
-			if err != nil {
-				return fmt.Errorf("re-encrypt refresh_token: %w", err)
-			}
-
-			err = q.UpsertOAuthTokens(ctx, gendb.UpsertOAuthTokensParams{
-				UserID:       tok.UserID,
-				ProviderID:   tok.ProviderID,
-				AccessToken:  newAccess,
-				RefreshToken: newRefresh,
-				TokenType:    tok.TokenType,
-				ExpiresAt:    tok.ExpiresAt,
-				KeyVersion:   int64(activeVer),
-			})
-			if err != nil {
-				return fmt.Errorf("update tokens for user %s: %w", tok.UserID, err)
+			// Update via raw SQL since sqlc doesn't have an update for client_secret.
+			if _, execErr := sqlDB.ExecContext(ctx, "UPDATE oauth_providers SET client_secret = ? WHERE id = ?", newCt, p.ID); execErr != nil {
+				return fmt.Errorf("update provider %s: %w", p.ID, execErr)
 			}
 			count++
 		}
-	}
 
-	fmt.Printf("Re-encrypted %d secrets to key version %d.\n", count, activeVer)
-	return nil
+		// Re-encrypt oauth_tokens.
+		for _, ver := range ks.Versions() {
+			if ver == activeVer {
+				continue
+			}
+			tokens, listErr := q.ListOAuthTokensByKeyVersion(ctx, int64(ver))
+			if listErr != nil {
+				return fmt.Errorf("list tokens for key version %d: %w", ver, listErr)
+			}
+			for _, tok := range tokens {
+				accessAAD := keystore.AccessTokenAAD(tok.UserID, tok.ProviderID)
+				refreshAAD := keystore.RefreshTokenAAD(tok.UserID, tok.ProviderID)
+
+				plainAccess, err := ks.Decrypt(tok.AccessToken, accessAAD)
+				if err != nil {
+					return fmt.Errorf("decrypt access_token for user %s: %w", tok.UserID, err)
+				}
+				plainRefresh, err := ks.Decrypt(tok.RefreshToken, refreshAAD)
+				if err != nil {
+					return fmt.Errorf("decrypt refresh_token for user %s: %w", tok.UserID, err)
+				}
+
+				newAccess, err := ks.Encrypt(plainAccess, accessAAD)
+				if err != nil {
+					return fmt.Errorf("re-encrypt access_token: %w", err)
+				}
+				newRefresh, err := ks.Encrypt(plainRefresh, refreshAAD)
+				if err != nil {
+					return fmt.Errorf("re-encrypt refresh_token: %w", err)
+				}
+
+				err = q.UpsertOAuthTokens(ctx, gendb.UpsertOAuthTokensParams{
+					UserID:       tok.UserID,
+					ProviderID:   tok.ProviderID,
+					AccessToken:  newAccess,
+					RefreshToken: newRefresh,
+					TokenType:    tok.TokenType,
+					ExpiresAt:    tok.ExpiresAt,
+					KeyVersion:   int64(activeVer),
+				})
+				if err != nil {
+					return fmt.Errorf("update tokens for user %s: %w", tok.UserID, err)
+				}
+				count++
+			}
+		}
+
+		fmt.Printf("Re-encrypted %d secrets to key version %d.\n", count, activeVer)
+		return nil
+	})
 }
 
 // ---- DB group ----
@@ -1371,39 +1196,51 @@ func runDBPath(args []string) error {
 }
 
 func runDBBackup(args []string) error {
-	fs := flag.NewFlagSet("db backup", flag.ContinueOnError)
-	output := fs.String("output", "", "output file path (required)")
+	var output *string
+	return withAdminDB("db backup", args, func(fs *flag.FlagSet) {
+		output = fs.String("output", "", "output file path (required)")
+	}, func(ctx context.Context, sqlDB *sql.DB, _ *gendb.Queries) error {
+		if *output == "" {
+			return fmt.Errorf("--output is required")
+		}
+
+		// Check that the output path doesn't already exist.
+		if _, err := os.Stat(*output); err == nil {
+			return fmt.Errorf("output file already exists: %s", *output)
+		}
+
+		_, err := sqlDB.ExecContext(ctx, "VACUUM INTO ?", *output)
+		if err != nil {
+			return fmt.Errorf("backup database: %w", err)
+		}
+
+		fmt.Printf("Database backed up to %s\n", *output)
+		return nil
+	})
+}
+
+// ---- Helpers ----
+
+// withAdminDB creates a flag set with --data-dir, parses args, opens the
+// database, and calls fn. The database is closed after fn returns.
+func withAdminDB(name string, args []string, setup func(fs *flag.FlagSet), fn func(ctx context.Context, sqlDB *sql.DB, q *gendb.Queries) error) error {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	dataDir := fs.String("data-dir", "", "data directory")
+	if setup != nil {
+		setup(fs)
+	}
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	if *output == "" {
-		return fmt.Errorf("--output is required")
-	}
-
-	cfg := adminConfig(*dataDir)
-	sqlDB, _, err := openAdminDB(cfg)
+	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
 	if err != nil {
 		return err
 	}
 	defer func() { _ = sqlDB.Close() }()
 
-	// Check that the output path doesn't already exist.
-	if _, err := os.Stat(*output); err == nil {
-		return fmt.Errorf("output file already exists: %s", *output)
-	}
-
-	_, err = sqlDB.ExecContext(context.Background(), "VACUUM INTO ?", *output)
-	if err != nil {
-		return fmt.Errorf("backup database: %w", err)
-	}
-
-	fmt.Printf("Database backed up to %s\n", *output)
-	return nil
+	return fn(context.Background(), sqlDB, q)
 }
-
-// ---- Helpers ----
 
 // openAdminDB opens the database, runs migrations, and returns the connection
 // and queries handle. The caller must close the returned *sql.DB.
