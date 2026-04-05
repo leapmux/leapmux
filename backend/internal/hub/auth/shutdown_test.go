@@ -22,7 +22,7 @@ func setupShutdownTestServer(t *testing.T, shutdownCh chan struct{}) leapmuxv1co
 	t.Helper()
 
 	sqlDB, q := setupDB(t)
-	hubtestutil.CreateTestAdmin(t, q)
+	hubtestutil.CreateTestAdmin(t, sqlDB, q)
 
 	mux := http.NewServeMux()
 	interceptors := connect.WithInterceptors(

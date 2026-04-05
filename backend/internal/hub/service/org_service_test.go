@@ -43,7 +43,7 @@ func setupOrgTestServer(t *testing.T) *orgTestEnv {
 
 	q := gendb.New(sqlDB)
 
-	hubtestutil.CreateTestAdmin(t, q)
+	hubtestutil.CreateTestAdmin(t, sqlDB, q)
 
 	bgMgr := workermgr.New()
 

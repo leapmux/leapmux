@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"connectrpc.com/connect"
@@ -27,11 +28,30 @@ type AuthService struct {
 	cfg          *config.Config
 	sessionCache *auth.SessionCache
 	keystore     *keystore.Keystore
+	hasAnyUser   atomic.Bool // one-way latch: once true, never re-queried
 }
 
 // NewAuthService creates a new AuthService.
 func NewAuthService(sqlDB *sql.DB, q *db.Queries, cfg *config.Config, sc *auth.SessionCache, ks *keystore.Keystore) *AuthService {
 	return &AuthService{sqlDB: sqlDB, queries: q, cfg: cfg, sessionCache: sc, keystore: ks}
+}
+
+// checkHasAnyUser returns true if at least one user exists. The result is
+// cached with a one-way latch: once true, the DB is never queried again
+// (users cannot be un-created).
+func (s *AuthService) checkHasAnyUser(ctx context.Context) (bool, error) {
+	if s.hasAnyUser.Load() {
+		return true, nil
+	}
+	v, err := s.queries.HasAnyUser(ctx)
+	if err != nil {
+		return false, err
+	}
+	if v != 0 {
+		s.hasAnyUser.Store(true)
+		return true, nil
+	}
+	return false, nil
 }
 
 func (s *AuthService) Login(ctx context.Context, req *connect.Request[leapmuxv1.LoginRequest]) (*connect.Response[leapmuxv1.LoginResponse], error) {
@@ -102,14 +122,13 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("sign-up is not available in solo mode"))
 	}
 
-	// Check if this is initial setup (no users exist yet).
 	// The first user is always created as an admin, regardless of whether
 	// signup is enabled globally.
-	hasUser, err := s.queries.HasAnyUser(ctx)
+	hasUser, err := s.checkHasAnyUser(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
 	}
-	isSetupMode := hasUser == 0
+	isSetupMode := !hasUser
 	if !isSetupMode && !s.cfg.SignupEnabled {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("sign-up is disabled"))
 	}
@@ -127,7 +146,6 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	// Check username uniqueness.
 	if err := checkUsernameAvailable(ctx, s.queries, username); err != nil {
 		return nil, err
 	}
@@ -239,6 +257,7 @@ func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
+	s.hasAnyUser.Store(true)
 	return s.signUpResponse(ctx, user, username)
 }
 
@@ -284,11 +303,11 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 
 	var setupRequired bool
 	if !s.cfg.SoloMode && !s.cfg.DevMode {
-		hasUser, err := s.queries.HasAnyUser(ctx)
+		hasUser, err := s.checkHasAnyUser(ctx)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
 		}
-		setupRequired = hasUser == 0
+		setupRequired = !hasUser
 	}
 
 	return connect.NewResponse(&leapmuxv1.GetSystemInfoResponse{
@@ -372,13 +391,11 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		return nil, err
 	}
 
-	// Validate username.
 	username, err := validate.SanitizeSlug("username", req.Msg.GetUsername())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	// Check username uniqueness.
 	if err := checkUsernameAvailable(ctx, s.queries, username); err != nil {
 		return nil, err
 	}
@@ -457,7 +474,6 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		}
 	}
 
-	// Create OAuth user link.
 	if err := s.queries.CreateOAuthUserLink(ctx, db.CreateOAuthUserLinkParams{
 		UserID:          user.ID,
 		ProviderID:      pending.ProviderID,
@@ -473,7 +489,6 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		}
 	}
 
-	// Consume the pending signup.
 	_ = s.queries.DeletePendingOAuthSignup(ctx, signupToken)
 
 	// Re-fetch user only when pending email modified the user row.
@@ -486,7 +501,6 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		finalUser = &refetched
 	}
 
-	// Create session.
 	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.queries, finalUser.ID)
 	if sessionErr != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))

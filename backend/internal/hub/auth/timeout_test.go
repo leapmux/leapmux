@@ -37,7 +37,7 @@ func setupTimeoutTestServer(t *testing.T, timeout time.Duration) (leapmuxv1conne
 	t.Helper()
 
 	sqlDB, q := setupDB(t)
-	hubtestutil.CreateTestAdmin(t, q)
+	hubtestutil.CreateTestAdmin(t, sqlDB, q)
 
 	capture := &timeoutCapture{inner: service.NewAuthService(sqlDB, q, &config.Config{}, nil, nil)}
 

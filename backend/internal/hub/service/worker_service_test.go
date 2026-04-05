@@ -48,7 +48,7 @@ func setupWorkerTestServer(t *testing.T) *workerTestEnv {
 
 	q := gendb.New(sqlDB)
 
-	hubtestutil.CreateTestAdmin(t, q)
+	hubtestutil.CreateTestAdmin(t, sqlDB, q)
 
 	bgMgr := workermgr.New()
 
@@ -460,7 +460,7 @@ func setupUnixSocketTestServer(t *testing.T) *unixSocketTestEnv {
 	require.NoError(t, err)
 
 	q := gendb.New(sqlDB)
-	hubtestutil.CreateTestAdmin(t, q)
+	hubtestutil.CreateTestAdmin(t, sqlDB, q)
 
 	bgMgr := workermgr.New()
 	cMgr := channelmgr.New()

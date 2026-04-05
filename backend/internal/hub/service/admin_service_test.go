@@ -40,7 +40,7 @@ func setupAdminTestServer(t *testing.T) *adminTestEnv {
 
 	q := gendb.New(sqlDB)
 
-	hubtestutil.CreateTestAdmin(t, q)
+	hubtestutil.CreateTestAdmin(t, sqlDB, q)
 
 	adminSvc := service.NewAdminService(sqlDB, q, false, nil)
 

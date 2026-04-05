@@ -47,7 +47,7 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 
 	q := gendb.New(sqlDB)
 
-	hubtestutil.CreateTestAdmin(t, q)
+	hubtestutil.CreateTestAdmin(t, sqlDB, q)
 
 	cfg := testConfig()
 	wMgr := workermgr.New()

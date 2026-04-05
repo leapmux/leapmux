@@ -35,7 +35,7 @@ func setupOAuthTestServer(t *testing.T) (*httptest.Server, *gendb.Queries, *keys
 	require.NoError(t, err)
 
 	q := gendb.New(sqlDB)
-	hubtestutil.CreateTestAdmin(t, q)
+	hubtestutil.CreateTestAdmin(t, sqlDB, q)
 
 	key, err := keystore.GenerateKey()
 	require.NoError(t, err)
@@ -293,7 +293,7 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 	require.NoError(t, err)
 
 	q := gendb.New(sqlDB)
-	hubtestutil.CreateTestAdmin(t, q)
+	hubtestutil.CreateTestAdmin(t, sqlDB, q)
 
 	key, err := keystore.GenerateKey()
 	require.NoError(t, err)
@@ -622,7 +622,7 @@ func TestOAuthCallback_NewUser_SignupDisabled(t *testing.T) {
 	require.NoError(t, err)
 
 	q := gendb.New(sqlDB)
-	hubtestutil.CreateTestAdmin(t, q)
+	hubtestutil.CreateTestAdmin(t, sqlDB, q)
 
 	key, err := keystore.GenerateKey()
 	require.NoError(t, err)

@@ -405,7 +405,7 @@ func setupVerificationUserTestServer(t *testing.T) (leapmuxv1connect.UserService
 
 	q := gendb.New(sqlDB)
 
-	hubtestutil.CreateTestAdmin(t, q)
+	hubtestutil.CreateTestAdmin(t, sqlDB, q)
 
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(q, false, false, true)

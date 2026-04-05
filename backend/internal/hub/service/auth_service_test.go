@@ -24,7 +24,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
-func setupAuthTestServerBase(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, *gendb.Queries) {
+func setupAuthTestServerBase(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, *gendb.Queries, *sql.DB) {
 	t.Helper()
 
 	sqlDB, err := db.Open(":memory:")
@@ -48,18 +48,19 @@ func setupAuthTestServerBase(t *testing.T, cfg *config.Config) (leapmuxv1connect
 	t.Cleanup(server.Close)
 
 	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
-	return client, q
+	return client, q, sqlDB
 }
 
 // setupEmptyAuthTestServer creates a test auth server with an empty database
 // (no users). Used for testing the initial setup flow.
 func setupEmptyAuthTestServer(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, *gendb.Queries) {
-	return setupAuthTestServerBase(t, cfg)
+	client, q, _ := setupAuthTestServerBase(t, cfg)
+	return client, q
 }
 
 func setupAuthTestServer(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, *gendb.Queries) {
-	client, q := setupAuthTestServerBase(t, cfg)
-	hubtestutil.CreateTestAdmin(t, q)
+	client, q, sqlDB := setupAuthTestServerBase(t, cfg)
+	hubtestutil.CreateTestAdmin(t, sqlDB, q)
 	return client, q
 }
 
@@ -415,7 +416,7 @@ func setupVerificationGatingTestServer(t *testing.T, emailVerificationRequired b
 
 	q := gendb.New(sqlDB)
 
-	hubtestutil.CreateTestAdmin(t, q)
+	hubtestutil.CreateTestAdmin(t, sqlDB, q)
 
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(q, false, false, emailVerificationRequired)
@@ -563,7 +564,7 @@ func setupAuthTestServerWithKeystore(t *testing.T, cfg *config.Config) (leapmuxv
 	require.NoError(t, err)
 
 	q := gendb.New(sqlDB)
-	hubtestutil.CreateTestAdmin(t, q)
+	hubtestutil.CreateTestAdmin(t, sqlDB, q)
 
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(q, false, false, false)
