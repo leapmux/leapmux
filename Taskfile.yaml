@@ -489,7 +489,7 @@ tasks:
     generates:
       - desktop/build/bin/LeapMux-{{.VERSION}}.dmg
     cmds:
-      - cd frontend && npm rebuild macos-alias 2>/dev/null || true
+      - cd frontend/node_modules/macos-alias && npx node-gyp rebuild 2>/dev/null || true
       - >-
         desktop/scripts/create-dmg.sh
         "{{.VERSION}}"
