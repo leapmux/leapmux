@@ -16,7 +16,7 @@ const (
 	defaultPassword = "admin123"
 )
 
-// Username returns the default admin username for the given mode.
+// Username returns the default username for solo mode.
 func Username(soloMode bool) string {
 	if soloMode {
 		return "solo"
@@ -24,9 +24,16 @@ func Username(soloMode bool) string {
 	return "admin"
 }
 
-// Run creates the personal org and admin user if no organizations
-// exist yet. This is a no-op if the database already has data.
-func Run(ctx context.Context, sqlDB *sql.DB, q *db.Queries, soloMode bool) error {
+// Run creates the personal org and default admin user when the database
+// is empty. In hub mode (soloMode=false, devMode=false) this is a no-op
+// because the first admin user is created interactively via the /setup page.
+// In solo or dev mode, it bootstraps a default user for convenience.
+func Run(ctx context.Context, sqlDB *sql.DB, q *db.Queries, soloMode, devMode bool) error {
+	if !soloMode && !devMode {
+		slog.Info("bootstrap: skipped (hub mode uses interactive setup)")
+		return nil
+	}
+
 	count, err := q.CountOrgs(ctx)
 	if err != nil {
 		return fmt.Errorf("count orgs: %w", err)
@@ -39,17 +46,15 @@ func Run(ctx context.Context, sqlDB *sql.DB, q *db.Queries, soloMode bool) error
 	username := Username(soloMode)
 
 	var passwordHash string
-	if !soloMode {
+	displayName := "Admin"
+	if soloMode {
+		displayName = "Solo"
+	} else {
 		hash, err := password.Hash(defaultPassword)
 		if err != nil {
 			return fmt.Errorf("hash password: %w", err)
 		}
 		passwordHash = hash
-	}
-
-	displayName := "Admin"
-	if soloMode {
-		displayName = "Solo"
 	}
 
 	tx, err := sqlDB.BeginTx(ctx, nil)
@@ -80,7 +85,7 @@ func Run(ctx context.Context, sqlDB *sql.DB, q *db.Queries, soloMode bool) error
 		PasswordSet:  1,
 		IsAdmin:      1,
 	}); err != nil {
-		return fmt.Errorf("create admin user: %w", err)
+		return fmt.Errorf("create user: %w", err)
 	}
 
 	if err := txq.CreateOrgMember(ctx, db.CreateOrgMemberParams{
@@ -95,7 +100,7 @@ func Run(ctx context.Context, sqlDB *sql.DB, q *db.Queries, soloMode bool) error
 		return fmt.Errorf("commit transaction: %w", err)
 	}
 
-	slog.Info("bootstrap: created personal org and admin user",
+	slog.Info("bootstrap: created personal org and user",
 		"org_id", orgID,
 		"user_id", userID,
 		"username", username,

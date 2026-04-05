@@ -17,6 +17,7 @@ const mockIsSignupEnabled = vi.fn<() => boolean>(() => false)
 const mockLoadOAuthProviders = vi.fn(() => Promise.resolve([] as Record<string, unknown>[]))
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => false,
+  isSetupRequired: () => false,
   loadSystemInfo: () => Promise.resolve(),
   isSignupEnabled: () => mockIsSignupEnabled(),
   loadOAuthProviders: () => mockLoadOAuthProviders(),

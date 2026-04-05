@@ -115,7 +115,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	}
 	slog.Info("encryption keystore loaded", "active_version", ks.ActiveVersion(), "versions", len(ks.Versions()))
 
-	if err := bootstrap.Run(context.Background(), sqlDB, queries, cfg.SoloMode); err != nil {
+	if err := bootstrap.Run(context.Background(), sqlDB, queries, cfg.SoloMode, cfg.DevMode); err != nil {
 		_ = sqlDB.Close()
 		closeTCP()
 		return nil, fmt.Errorf("bootstrap: %w", err)

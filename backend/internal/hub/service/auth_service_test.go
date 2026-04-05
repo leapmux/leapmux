@@ -15,7 +15,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
@@ -24,7 +23,9 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
-func setupAuthTestServer(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, *gendb.Queries) {
+// setupEmptyAuthTestServer creates a test auth server with an empty database
+// (no users). Used for testing the initial setup flow.
+func setupEmptyAuthTestServer(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, *gendb.Queries) {
 	t.Helper()
 
 	sqlDB, err := db.Open(":memory:")
@@ -35,9 +36,6 @@ func setupAuthTestServer(t *testing.T, cfg *config.Config) (leapmuxv1connect.Aut
 	require.NoError(t, err)
 
 	q := gendb.New(sqlDB)
-
-	err = bootstrap.Run(context.Background(), sqlDB, q, false)
-	require.NoError(t, err)
 
 	mux := http.NewServeMux()
 	interceptor, sc := auth.NewInterceptor(q, false, false, false)
@@ -54,8 +52,37 @@ func setupAuthTestServer(t *testing.T, cfg *config.Config) (leapmuxv1connect.Aut
 	return client, q
 }
 
+func setupAuthTestServer(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, *gendb.Queries, *sql.DB) {
+	t.Helper()
+
+	sqlDB, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	err = db.Migrate(sqlDB)
+	require.NoError(t, err)
+
+	q := gendb.New(sqlDB)
+
+	createTestAdmin(t, sqlDB, q)
+
+	mux := http.NewServeMux()
+	interceptor, sc := auth.NewInterceptor(q, false, false, false)
+	t.Cleanup(sc.Stop)
+	opts := connect.WithInterceptors(interceptor)
+	authSvc := service.NewAuthService(sqlDB, q, cfg, sc, nil)
+	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
+	mux.Handle(path, handler)
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+	return client, q, sqlDB
+}
+
 func TestAuthService_LoginSuccess(t *testing.T) {
-	client, _ := setupAuthTestServer(t, testConfig())
+	client, _, _ := setupAuthTestServer(t, testConfig())
 
 	resp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username: "admin",
@@ -74,7 +101,7 @@ func TestAuthService_LoginSuccess(t *testing.T) {
 }
 
 func TestAuthService_LoginInvalidPassword(t *testing.T) {
-	client, _ := setupAuthTestServer(t, testConfig())
+	client, _, _ := setupAuthTestServer(t, testConfig())
 
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username: "admin",
@@ -85,7 +112,7 @@ func TestAuthService_LoginInvalidPassword(t *testing.T) {
 }
 
 func TestAuthService_GetCurrentUser(t *testing.T) {
-	client, _ := setupAuthTestServer(t, testConfig())
+	client, _, _ := setupAuthTestServer(t, testConfig())
 
 	// Login first.
 	loginResp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
@@ -104,7 +131,7 @@ func TestAuthService_GetCurrentUser(t *testing.T) {
 }
 
 func TestAuthService_GetCurrentUser_NoToken(t *testing.T) {
-	client, _ := setupAuthTestServer(t, testConfig())
+	client, _, _ := setupAuthTestServer(t, testConfig())
 
 	_, err := client.GetCurrentUser(context.Background(), connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
 	require.Error(t, err)
@@ -112,7 +139,7 @@ func TestAuthService_GetCurrentUser_NoToken(t *testing.T) {
 }
 
 func TestAuthService_Login_EmptyUsername(t *testing.T) {
-	client, _ := setupAuthTestServer(t, testConfig())
+	client, _, _ := setupAuthTestServer(t, testConfig())
 
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username: "",
@@ -123,7 +150,7 @@ func TestAuthService_Login_EmptyUsername(t *testing.T) {
 }
 
 func TestAuthService_Login_EmptyPassword(t *testing.T) {
-	client, _ := setupAuthTestServer(t, testConfig())
+	client, _, _ := setupAuthTestServer(t, testConfig())
 
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username: "admin",
@@ -134,7 +161,7 @@ func TestAuthService_Login_EmptyPassword(t *testing.T) {
 }
 
 func TestAuthService_SignUp_WhenEnabled(t *testing.T) {
-	client, _ := setupAuthTestServer(t, testConfigWithSignup())
+	client, _, _ := setupAuthTestServer(t, testConfigWithSignup())
 
 	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username:    "newuser",
@@ -154,7 +181,7 @@ func TestAuthService_SignUp_WhenEnabled(t *testing.T) {
 }
 
 func TestAuthService_SignUp_WhenDisabled(t *testing.T) {
-	client, _ := setupAuthTestServer(t, testConfig())
+	client, _, _ := setupAuthTestServer(t, testConfig())
 
 	// Signup is disabled by default.
 	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
@@ -166,7 +193,7 @@ func TestAuthService_SignUp_WhenDisabled(t *testing.T) {
 }
 
 func TestAuthService_SignUp_DuplicateUsername(t *testing.T) {
-	client, _ := setupAuthTestServer(t, testConfigWithSignup())
+	client, _, _ := setupAuthTestServer(t, testConfigWithSignup())
 
 	// First signup should succeed.
 	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
@@ -185,7 +212,7 @@ func TestAuthService_SignUp_DuplicateUsername(t *testing.T) {
 }
 
 func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
-	client, q := setupAuthTestServer(t, testConfig())
+	client, q, _ := setupAuthTestServer(t, testConfig())
 
 	// Login to get a token.
 	loginResp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
@@ -218,7 +245,7 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 }
 
 func TestSignUp_DuplicateEmail_Rejected(t *testing.T) {
-	client, q := setupAuthTestServer(t, testConfigWithSignup())
+	client, q, _ := setupAuthTestServer(t, testConfigWithSignup())
 
 	// Create a user with that email directly in the DB.
 	orgID := id.Generate()
@@ -250,7 +277,7 @@ func TestSignUp_DuplicateEmail_Rejected(t *testing.T) {
 }
 
 func TestPromotePendingEmail_ClearsCompetingPendingEmails(t *testing.T) {
-	_, q := setupAuthTestServer(t, testConfigWithSignup())
+	_, q, _ := setupAuthTestServer(t, testConfigWithSignup())
 	ctx := context.Background()
 
 	// Create two users, both with pending_email = "shared@example.com".
@@ -316,7 +343,7 @@ func TestPromotePendingEmail_ClearsCompetingPendingEmails(t *testing.T) {
 }
 
 func TestSignUp_DirectEmail_ClearsCompetingPendingEmails(t *testing.T) {
-	client, q := setupAuthTestServer(t, testConfigWithSignup())
+	client, q, _ := setupAuthTestServer(t, testConfigWithSignup())
 	ctx := context.Background()
 
 	// User A sets pending_email = "race@example.com" (unverified).
@@ -364,7 +391,7 @@ func TestSignUp_DirectEmail_ClearsCompetingPendingEmails(t *testing.T) {
 }
 
 func TestSignUp_EmptyEmail_AllowedMultiple(t *testing.T) {
-	client, _ := setupAuthTestServer(t, testConfigWithSignup())
+	client, _, _ := setupAuthTestServer(t, testConfigWithSignup())
 
 	// First signup with empty email should succeed.
 	resp1, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
@@ -406,8 +433,7 @@ func setupVerificationGatingTestServer(t *testing.T, emailVerificationRequired b
 
 	q := gendb.New(sqlDB)
 
-	err = bootstrap.Run(context.Background(), sqlDB, q, false)
-	require.NoError(t, err)
+	createTestAdmin(t, sqlDB, q)
 
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(q, false, false, emailVerificationRequired)
@@ -518,7 +544,7 @@ func TestSignUp_VerificationRequired_EmailInPendingColumn(t *testing.T) {
 	cfg := testConfigWithSignup()
 	cfg.EmailVerificationRequired = true
 
-	client, q := setupAuthTestServer(t, cfg)
+	client, q, _ := setupAuthTestServer(t, cfg)
 
 	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username:    "verifyuser",
@@ -555,8 +581,7 @@ func setupAuthTestServerWithKeystore(t *testing.T, cfg *config.Config) (leapmuxv
 	require.NoError(t, err)
 
 	q := gendb.New(sqlDB)
-	err = bootstrap.Run(context.Background(), sqlDB, q, false)
-	require.NoError(t, err)
+	createTestAdmin(t, sqlDB, q)
 
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(q, false, false, false)
@@ -732,7 +757,7 @@ func TestVerificationGating_RequestEmailChangeAllowed(t *testing.T) {
 }
 
 func TestAuthService_Logout(t *testing.T) {
-	client, _ := setupAuthTestServer(t, testConfig())
+	client, _, _ := setupAuthTestServer(t, testConfig())
 
 	// Login.
 	loginResp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
@@ -760,4 +785,219 @@ func TestAuthService_Logout(t *testing.T) {
 	_, err = client.GetCurrentUser(context.Background(), getUserReq)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+// --- Setup mode tests ---
+
+func TestSetupSignUp_CreatesAdminWithVerifiedEmail(t *testing.T) {
+	// Signup disabled, but no users exist — setup mode should kick in.
+	client, q := setupEmptyAuthTestServer(t, testConfig())
+
+	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    "myadmin",
+		Password:    "strongpass1",
+		DisplayName: "My Admin",
+		Email:       "admin@example.com",
+	}))
+	require.NoError(t, err)
+
+	user := resp.Msg.GetUser()
+	assert.Equal(t, "myadmin", user.GetUsername())
+	assert.True(t, user.GetIsAdmin())
+	assert.Equal(t, "admin@example.com", user.GetEmail())
+	assert.True(t, user.GetEmailVerified())
+
+	// Session cookie should be set.
+	setCookie := resp.Header().Get("Set-Cookie")
+	assert.Contains(t, setCookie, auth.CookieName+"=")
+
+	// Verify in DB.
+	dbUser, err := q.GetUserByUsername(context.Background(), "myadmin")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), dbUser.IsAdmin)
+	assert.Equal(t, "admin@example.com", dbUser.Email)
+	assert.Equal(t, int64(1), dbUser.EmailVerified)
+}
+
+func TestSetupSignUp_EmptyEmail(t *testing.T) {
+	client, q := setupEmptyAuthTestServer(t, testConfig())
+
+	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    "myadmin",
+		Password:    "strongpass1",
+		DisplayName: "My Admin",
+		Email:       "",
+	}))
+	require.NoError(t, err)
+
+	user := resp.Msg.GetUser()
+	assert.True(t, user.GetIsAdmin())
+	assert.Empty(t, user.GetEmail())
+	assert.False(t, user.GetEmailVerified())
+
+	// Verify in DB.
+	dbUser, err := q.GetUserByUsername(context.Background(), "myadmin")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), dbUser.IsAdmin)
+	assert.Equal(t, int64(0), dbUser.EmailVerified)
+}
+
+func TestSetupSignUp_GetSystemInfoReturnsSetupRequired(t *testing.T) {
+	client, _ := setupEmptyAuthTestServer(t, testConfig())
+
+	// Before setup: setup_required should be true.
+	infoResp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	require.NoError(t, err)
+	assert.True(t, infoResp.Msg.GetSetupRequired())
+
+	// Perform setup.
+	_, err = client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    "myadmin",
+		Password:    "strongpass1",
+		DisplayName: "My Admin",
+	}))
+	require.NoError(t, err)
+
+	// After setup: setup_required should be false.
+	infoResp, err = client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	require.NoError(t, err)
+	assert.False(t, infoResp.Msg.GetSetupRequired())
+}
+
+func TestSetupSignUp_RejectedWhenUsersExist(t *testing.T) {
+	// Signup disabled, admin user already exists.
+	client, _, _ := setupAuthTestServer(t, testConfig())
+
+	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    "newuser",
+		Password:    "strongpass1",
+		DisplayName: "New User",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+}
+
+func TestSetupSignUp_RejectedInSoloMode(t *testing.T) {
+	cfg := testConfig()
+	cfg.SoloMode = true
+
+	sqlDB, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	err = db.Migrate(sqlDB)
+	require.NoError(t, err)
+
+	q := gendb.New(sqlDB)
+
+	mux := http.NewServeMux()
+	interceptor, sc := auth.NewInterceptor(q, true, false, false)
+	t.Cleanup(sc.Stop)
+	opts := connect.WithInterceptors(interceptor)
+	authSvc := service.NewAuthService(sqlDB, q, cfg, sc, nil)
+	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
+	mux.Handle(path, handler)
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+
+	_, err = client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    "myadmin",
+		Password:    "strongpass1",
+		DisplayName: "My Admin",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+}
+
+func TestSetupSignUp_NormalSignupStillCreatesNonAdmin(t *testing.T) {
+	// Signup enabled + users already exist = normal non-admin signup.
+	client, q, _ := setupAuthTestServer(t, testConfigWithSignup())
+
+	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    "regularuser",
+		Password:    "strongpass1",
+		DisplayName: "Regular User",
+		Email:       "regular@example.com",
+	}))
+	require.NoError(t, err)
+
+	user := resp.Msg.GetUser()
+	assert.False(t, user.GetIsAdmin())
+
+	dbUser, err := q.GetUserByUsername(context.Background(), "regularuser")
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), dbUser.IsAdmin)
+}
+
+func TestSetupSignUp_WithSignupEnabled(t *testing.T) {
+	// Signup enabled + no users = setup mode should still create admin.
+	client, q := setupEmptyAuthTestServer(t, testConfigWithSignup())
+
+	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    "myadmin",
+		Password:    "strongpass1",
+		DisplayName: "My Admin",
+		Email:       "admin@example.com",
+	}))
+	require.NoError(t, err)
+
+	user := resp.Msg.GetUser()
+	assert.True(t, user.GetIsAdmin(), "first user should be admin even when signup is enabled")
+	assert.True(t, user.GetEmailVerified())
+
+	dbUser, err := q.GetUserByUsername(context.Background(), "myadmin")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), dbUser.IsAdmin)
+}
+
+func TestSetupSignUp_RaceCondition(t *testing.T) {
+	// Two setup signups — only the first should succeed.
+	client, _ := setupEmptyAuthTestServer(t, testConfig())
+
+	// First signup should succeed.
+	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    "admin1",
+		Password:    "strongpass1",
+		DisplayName: "Admin 1",
+	}))
+	require.NoError(t, err)
+
+	// Second signup should fail (users now exist, signup disabled).
+	_, err = client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    "admin2",
+		Password:    "strongpass2",
+		DisplayName: "Admin 2",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+}
+
+func TestSetupSignUp_ValidatesInputs(t *testing.T) {
+	client, _ := setupEmptyAuthTestServer(t, testConfig())
+
+	tests := []struct {
+		name     string
+		username string
+		password string
+		email    string
+	}{
+		{"empty username", "", "strongpass1", ""},
+		{"weak password", "myadmin", "short", ""},
+		{"invalid email", "myadmin", "strongpass1", "not-an-email"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+				Username: tt.username,
+				Password: tt.password,
+				Email:    tt.email,
+			}))
+			require.Error(t, err)
+			assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+		})
+	}
 }

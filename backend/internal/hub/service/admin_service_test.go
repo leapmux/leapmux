@@ -14,7 +14,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/service"
@@ -40,8 +39,7 @@ func setupAdminTestServer(t *testing.T) *adminTestEnv {
 
 	q := gendb.New(sqlDB)
 
-	err = bootstrap.Run(context.Background(), sqlDB, q, false)
-	require.NoError(t, err)
+	createTestAdmin(t, sqlDB, q)
 
 	adminSvc := service.NewAdminService(sqlDB, q, false, nil)
 
@@ -573,4 +571,40 @@ func TestAdminResetPassword_NonexistentUser_Rejected(t *testing.T) {
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
+func TestAdminCreateUser_EmailVerified(t *testing.T) {
+	env := setupAdminTestServer(t)
+
+	// Create a user with email — should be auto-verified.
+	resp, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "verified",
+		Password:    "pass1234",
+		DisplayName: "Verified User",
+		Email:       "verified@example.com",
+	}, env.token))
+	require.NoError(t, err)
+	assert.True(t, resp.Msg.GetUser().GetEmailVerified())
+
+	dbUser, err := env.queries.GetUserByID(context.Background(), resp.Msg.GetUser().GetId())
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), dbUser.EmailVerified)
+	assert.Equal(t, "verified@example.com", dbUser.Email)
+}
+
+func TestAdminCreateUser_NoEmail_NotVerified(t *testing.T) {
+	env := setupAdminTestServer(t)
+
+	// Create a user without email — email_verified should be 0.
+	resp, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username:    "noemail",
+		Password:    "pass1234",
+		DisplayName: "No Email User",
+	}, env.token))
+	require.NoError(t, err)
+	assert.False(t, resp.Msg.GetUser().GetEmailVerified())
+
+	dbUser, err := env.queries.GetUserByID(context.Background(), resp.Msg.GetUser().GetId())
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), dbUser.EmailVerified)
 }

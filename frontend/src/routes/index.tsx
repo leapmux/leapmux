@@ -1,7 +1,7 @@
 import { useNavigate } from '@solidjs/router'
 import { createEffect } from 'solid-js'
 import { useAuth } from '~/context/AuthContext'
-import { isSoloMode } from '~/lib/systemInfo'
+import { isSetupRequired, isSoloMode } from '~/lib/systemInfo'
 
 export default function IndexRoute() {
   const auth = useAuth()
@@ -14,6 +14,9 @@ export default function IndexRoute() {
     const user = auth.user()
     if (user) {
       navigate(`/o/${user.username}`, { replace: true })
+    }
+    else if (isSetupRequired()) {
+      navigate('/setup', { replace: true })
     }
     else if (!isSoloMode()) {
       navigate('/login', { replace: true })

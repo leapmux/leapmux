@@ -64,6 +64,7 @@ func runSolo(args []string, soloMode bool) error {
 	if err != nil {
 		return err
 	}
+	hubCfg.DevMode = !soloMode
 
 	if showVersion {
 		fmt.Println(version.Value)

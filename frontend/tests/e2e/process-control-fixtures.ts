@@ -219,7 +219,7 @@ export async function restartHub(serverInfo: SeparateServerInfo) {
   // Verify the hub is fully operational by testing login
   for (let i = 0; i < 10; i++) {
     try {
-      await loginViaAPI(serverInfo.hubUrl, 'admin', 'admin')
+      await loginViaAPI(serverInfo.hubUrl, 'admin', 'admin123')
       break
     }
     catch {
@@ -279,8 +279,8 @@ export const processTest = base.extend<
     await waitForServer(hubUrl)
     console.log(`[e2e] Hub ready on port ${hubPort}`)
 
-    // Login as admin and setup
-    const adminToken = await loginViaAPI(hubUrl, 'admin', 'admin')
+    // Create admin via setup mode (first signup becomes admin)
+    const adminToken = await signUpViaAPI(hubUrl, 'admin', 'admin123', 'Admin')
     const adminOrgId = await getAdminOrgId(hubUrl, adminToken)
 
     // Start worker in its own process group so stray signals from the test

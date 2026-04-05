@@ -14,7 +14,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
@@ -43,8 +42,7 @@ func setupOrgTestServer(t *testing.T) *orgTestEnv {
 
 	q := gendb.New(sqlDB)
 
-	err = bootstrap.Run(context.Background(), sqlDB, q, false)
-	require.NoError(t, err)
+	createTestAdmin(t, sqlDB, q)
 
 	bgMgr := workermgr.New()
 

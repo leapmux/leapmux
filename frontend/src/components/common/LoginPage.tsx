@@ -7,7 +7,7 @@ import { createSignal, onMount, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { OAuthProviderList } from '~/components/common/OAuthProviderList'
 import { useAuth } from '~/context/AuthContext'
-import { isSignupEnabled, isSoloMode, loadOAuthProviders } from '~/lib/systemInfo'
+import { isSetupRequired, isSignupEnabled, isSoloMode, loadOAuthProviders } from '~/lib/systemInfo'
 import { spinner } from '~/styles/animations.css'
 import { cardNarrow, errorText } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
@@ -26,6 +26,10 @@ export const LoginPage: Component = () => {
   onMount(async () => {
     if (isSoloMode()) {
       navigate('/o/admin', { replace: true })
+      return
+    }
+    if (isSetupRequired()) {
+      navigate('/setup', { replace: true })
       return
     }
 

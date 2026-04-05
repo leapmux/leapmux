@@ -101,7 +101,16 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 	if s.cfg.SoloMode {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("sign-up is not available in solo mode"))
 	}
-	if !s.cfg.SignupEnabled {
+
+	// Check if this is initial setup (no users exist yet).
+	// The first user is always created as an admin, regardless of whether
+	// signup is enabled globally.
+	hasUser, err := s.queries.HasAnyUser(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
+	}
+	isSetupMode := hasUser == 0
+	if !isSetupMode && !s.cfg.SignupEnabled {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("sign-up is disabled"))
 	}
 
@@ -130,6 +139,10 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 	hash, err := pwdhash.Hash(pw)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
+	}
+
+	if isSetupMode {
+		return s.signUpSetupMode(ctx, username, displayName, email, hash)
 	}
 
 	if s.cfg.EmailVerificationRequired && email != "" {
@@ -198,6 +211,55 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 	return resp, nil
 }
 
+// signUpSetupMode handles the initial admin account creation when no users
+// exist yet. The first user is always an admin with a verified email.
+func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName, email, passwordHash string) (*connect.Response[leapmuxv1.SignUpResponse], error) {
+	// Re-check to handle race condition where another request created a user
+	// between the initial check and now.
+	hasUser, err := s.queries.HasAnyUser(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
+	}
+	if hasUser != 0 {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("sign-up is disabled"))
+	}
+
+	if email != "" {
+		if err := checkEmailAvailable(ctx, s.queries, email, ""); err != nil {
+			return nil, connect.NewError(connect.CodeAlreadyExists, err)
+		}
+	}
+
+	var emailVerified int64
+	if email != "" {
+		emailVerified = 1
+	}
+
+	user, err := createUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
+		Username:      username,
+		PasswordHash:  passwordHash,
+		DisplayName:   displayName,
+		Email:         email,
+		EmailVerified: emailVerified,
+		PasswordSet:   1,
+		IsAdmin:       1,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.queries, user.ID)
+	if sessionErr != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
+	}
+
+	resp := connect.NewResponse(&leapmuxv1.SignUpResponse{
+		User: userToProtoWithOrgName(user, username),
+	})
+	resp.Header().Set("Set-Cookie", auth.BuildSessionCookie(sessionID, expiresAt, s.cfg.SecureCookies).String())
+	return resp, nil
+}
+
 func (s *AuthService) VerifyEmail(ctx context.Context, req *connect.Request[leapmuxv1.VerifyEmailRequest]) (*connect.Response[leapmuxv1.VerifyEmailResponse], error) {
 	updatedUser, err := verifyPendingEmailToken(ctx, s.queries, req.Msg.GetVerificationToken())
 	if err != nil {
@@ -224,9 +286,19 @@ func (s *AuthService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[leapmuxv1.GetSystemInfoRequest]) (*connect.Response[leapmuxv1.GetSystemInfoResponse], error) {
 	providers, _ := s.queries.ListEnabledOAuthProviders(ctx)
 
+	var setupRequired bool
+	if !s.cfg.SoloMode && !s.cfg.DevMode {
+		hasUser, err := s.queries.HasAnyUser(ctx)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
+		}
+		setupRequired = hasUser == 0
+	}
+
 	return connect.NewResponse(&leapmuxv1.GetSystemInfoResponse{
 		SignupEnabled: s.cfg.SignupEnabled,
 		SoloMode:      s.cfg.SoloMode,
+		SetupRequired: setupRequired,
 		Version:       version.Value,
 		CommitHash:    version.CommitHash,
 		CommitTime:    version.CommitTime,

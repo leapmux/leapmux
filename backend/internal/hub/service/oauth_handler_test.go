@@ -14,7 +14,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
@@ -35,8 +34,7 @@ func setupOAuthTestServer(t *testing.T) (*httptest.Server, *gendb.Queries, *keys
 	require.NoError(t, err)
 
 	q := gendb.New(sqlDB)
-	err = bootstrap.Run(context.Background(), sqlDB, q, false)
-	require.NoError(t, err)
+	createTestAdmin(t, sqlDB, q)
 
 	key, err := keystore.GenerateKey()
 	require.NoError(t, err)
@@ -294,8 +292,7 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 	require.NoError(t, err)
 
 	q := gendb.New(sqlDB)
-	err = bootstrap.Run(context.Background(), sqlDB, q, false)
-	require.NoError(t, err)
+	createTestAdmin(t, sqlDB, q)
 
 	key, err := keystore.GenerateKey()
 	require.NoError(t, err)
@@ -624,8 +621,7 @@ func TestOAuthCallback_NewUser_SignupDisabled(t *testing.T) {
 	require.NoError(t, err)
 
 	q := gendb.New(sqlDB)
-	err = bootstrap.Run(context.Background(), sqlDB, q, false)
-	require.NoError(t, err)
+	createTestAdmin(t, sqlDB, q)
 
 	key, err := keystore.GenerateKey()
 	require.NoError(t, err)

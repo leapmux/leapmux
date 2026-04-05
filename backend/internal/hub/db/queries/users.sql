@@ -58,6 +58,9 @@ WHERE id = ?;
 -- name: CountUsers :one
 SELECT count(*) FROM users;
 
+-- name: HasAnyUser :one
+SELECT EXISTS(SELECT 1 FROM users LIMIT 1);
+
 -- name: SetPendingEmail :exec
 UPDATE users SET pending_email = ?, pending_email_token = ?, pending_email_expires_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ?;

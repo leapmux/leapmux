@@ -17,20 +17,44 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/util/id"
 )
+
+// createInterceptorTestAdmin creates the admin user directly in the DB for
+// interceptor tests (mirrors the old bootstrap behavior for non-solo mode).
+func createInterceptorTestAdmin(t *testing.T, q *gendb.Queries) {
+	t.Helper()
+	ctx := context.Background()
+	orgID := id.Generate()
+	err := q.CreateOrg(ctx, gendb.CreateOrgParams{ID: orgID, Name: "admin", IsPersonal: 1})
+	require.NoError(t, err)
+	hash, err := password.Hash("admin123")
+	require.NoError(t, err)
+	userID := id.Generate()
+	err = q.CreateUser(ctx, gendb.CreateUserParams{
+		ID: userID, OrgID: orgID, Username: "admin",
+		PasswordHash: hash, DisplayName: "Admin",
+		PasswordSet: 1, IsAdmin: 1,
+	})
+	require.NoError(t, err)
+	err = q.CreateOrgMember(ctx, gendb.CreateOrgMemberParams{
+		OrgID: orgID, UserID: userID,
+		Role: leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_OWNER,
+	})
+	require.NoError(t, err)
+}
 
 // setupInterceptorTestServer creates an httptest server with the AuthService
 // registered behind the auth interceptor. It returns a ConnectRPC client and
-// the bootstrapped admin credentials (username "admin", password "admin123").
+// the admin credentials (username "admin", password "admin123").
 func setupInterceptorTestServer(t *testing.T) leapmuxv1connect.AuthServiceClient {
 	t.Helper()
 
 	sqlDB, q := setupDB(t)
 
-	// Bootstrap creates an admin user (admin/admin).
-	err := bootstrap.Run(context.Background(), sqlDB, q, false)
-	require.NoError(t, err)
+	createInterceptorTestAdmin(t, q)
 
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(q, false, false, false)
@@ -114,7 +138,7 @@ func TestInterceptor_SoloMode_AutoAuthenticated(t *testing.T) {
 	sqlDB, q := setupDB(t)
 
 	// Bootstrap in solo mode creates a user named "solo".
-	err := bootstrap.Run(context.Background(), sqlDB, q, true)
+	err := bootstrap.Run(context.Background(), sqlDB, q, true, false)
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
@@ -170,8 +194,7 @@ func setupInterceptorTestServerWithCache(t *testing.T) (leapmuxv1connect.AuthSer
 
 	sqlDB, q := setupDB(t)
 
-	err := bootstrap.Run(context.Background(), sqlDB, q, false)
-	require.NoError(t, err)
+	createInterceptorTestAdmin(t, q)
 
 	mux := http.NewServeMux()
 	interceptor, sc := auth.NewInterceptor(q, false, false, false)

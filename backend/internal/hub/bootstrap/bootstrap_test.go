@@ -26,66 +26,75 @@ func setupDB(t *testing.T) (*sql.DB, *gendb.Queries) {
 	return sqlDB, gendb.New(sqlDB)
 }
 
-func TestRun_CreatesOrgAndAdmin(t *testing.T) {
+func TestRun_SkipsHubMode(t *testing.T) {
 	sqlDB, q := setupDB(t)
 	ctx := context.Background()
 
-	err := bootstrap.Run(ctx, sqlDB, q, false)
+	// Hub mode (soloMode=false, devMode=false) should not create any orgs or users.
+	err := bootstrap.Run(ctx, sqlDB, q, false, false)
 	require.NoError(t, err)
 
-	// Verify org was created.
-	org, err := q.GetOrgByName(ctx, "admin")
+	orgCount, err := q.CountOrgs(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, "admin", org.Name)
+	assert.Equal(t, int64(0), orgCount)
 
-	// Verify admin user was created.
-	user, err := q.GetUserByUsername(ctx, "admin")
+	userCount, err := q.CountUsers(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, "admin", user.Username)
-	assert.Equal(t, org.ID, user.OrgID)
-	assert.Equal(t, int64(1), user.IsAdmin)
-
-	// Verify password hash is valid Argon2id.
-	match, err := password.Verify(user.PasswordHash, "admin123")
-	assert.NoError(t, err)
-	assert.True(t, match)
+	assert.Equal(t, int64(0), userCount)
 }
 
 func TestRun_SoloMode(t *testing.T) {
 	sqlDB, q := setupDB(t)
 	ctx := context.Background()
 
-	err := bootstrap.Run(ctx, sqlDB, q, true)
+	err := bootstrap.Run(ctx, sqlDB, q, true, false)
 	require.NoError(t, err)
 
-	// Verify org was created with "solo" name.
 	org, err := q.GetOrgByName(ctx, "solo")
 	require.NoError(t, err)
 	assert.Equal(t, "solo", org.Name)
 
-	// Verify user was created with "solo" username.
 	user, err := q.GetUserByUsername(ctx, "solo")
 	require.NoError(t, err)
 	assert.Equal(t, "solo", user.Username)
 	assert.Equal(t, org.ID, user.OrgID)
 	assert.Equal(t, int64(1), user.IsAdmin)
-
-	// Verify password hash is empty in solo mode.
 	assert.Empty(t, user.PasswordHash)
+}
+
+func TestRun_DevMode(t *testing.T) {
+	sqlDB, q := setupDB(t)
+	ctx := context.Background()
+
+	err := bootstrap.Run(ctx, sqlDB, q, false, true)
+	require.NoError(t, err)
+
+	org, err := q.GetOrgByName(ctx, "admin")
+	require.NoError(t, err)
+	assert.Equal(t, "admin", org.Name)
+
+	user, err := q.GetUserByUsername(ctx, "admin")
+	require.NoError(t, err)
+	assert.Equal(t, "admin", user.Username)
+	assert.Equal(t, org.ID, user.OrgID)
+	assert.Equal(t, int64(1), user.IsAdmin)
+
+	// Dev mode should have a valid password hash.
+	match, err := password.Verify(user.PasswordHash, "admin123")
+	assert.NoError(t, err)
+	assert.True(t, match)
 }
 
 func TestRun_Idempotent(t *testing.T) {
 	sqlDB, q := setupDB(t)
 	ctx := context.Background()
 
-	err := bootstrap.Run(ctx, sqlDB, q, false)
+	err := bootstrap.Run(ctx, sqlDB, q, true, false)
 	require.NoError(t, err)
 
-	// Second run should be a no-op (org already exists).
-	err = bootstrap.Run(ctx, sqlDB, q, false)
+	err = bootstrap.Run(ctx, sqlDB, q, true, false)
 	require.NoError(t, err)
 
-	// Should still have exactly one org.
 	count, err := q.CountOrgs(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), count)

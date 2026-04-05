@@ -51,6 +51,7 @@ type Config struct {
 	SecureCookies                bool   `koanf:"secure_cookies"`
 	EncryptionKeyPath            string `koanf:"encryption_key_path"`
 	SoloMode                     bool
+	DevMode                      bool              // Dev mode: non-solo but with auto-bootstrapped admin
 	Extras                       map[string]string // Extra flag values not in the hub Config struct
 }
 

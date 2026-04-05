@@ -72,8 +72,8 @@ export const test = base.extend<
     await waitForServer(hubUrl)
     console.log(`[e2e] Dev instance ready on port ${port}`)
 
-    // Login as admin (bootstrap creates admin/admin)
-    const adminToken = await loginViaAPI(hubUrl, 'admin', 'admin')
+    // Login as admin (bootstrap creates admin/admin123 in dev mode)
+    const adminToken = await loginViaAPI(hubUrl, 'admin', 'admin123')
     const adminOrgId = await getAdminOrgId(hubUrl, adminToken)
     const workerId = await getWorkerId(hubUrl, adminToken)
 

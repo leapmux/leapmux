@@ -13,7 +13,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/service"
 )
@@ -22,8 +21,7 @@ func setupShutdownTestServer(t *testing.T, shutdownCh chan struct{}) leapmuxv1co
 	t.Helper()
 
 	sqlDB, q := setupDB(t)
-	err := bootstrap.Run(context.Background(), sqlDB, q, false)
-	require.NoError(t, err)
+	createInterceptorTestAdmin(t, q)
 
 	mux := http.NewServeMux()
 	interceptors := connect.WithInterceptors(

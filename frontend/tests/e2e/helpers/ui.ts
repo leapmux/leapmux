@@ -212,7 +212,7 @@ export async function signUpViaUI(page: Page, username: string, password: string
   if (email) {
     await page.getByLabel('Email').fill(email)
   }
-  await page.getByLabel('Password', { exact: true }).fill(password)
+  await page.getByLabel('New Password').fill(password)
   await page.getByLabel('Confirm Password').fill(password)
   await page.getByRole('button', { name: 'Sign up' }).click()
 }

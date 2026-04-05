@@ -169,13 +169,20 @@ func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leap
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
 	}
 
+	email := req.Msg.GetEmail()
+	var emailVerified int64
+	if email != "" {
+		emailVerified = 1
+	}
+
 	user, err := createUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
-		Username:     username,
-		PasswordHash: hash,
-		DisplayName:  displayName,
-		Email:        req.Msg.GetEmail(),
-		PasswordSet:  1,
-		IsAdmin:      ptrconv.BoolToInt64(req.Msg.GetIsAdmin()),
+		Username:      username,
+		PasswordHash:  hash,
+		DisplayName:   displayName,
+		Email:         email,
+		EmailVerified: emailVerified,
+		PasswordSet:   1,
+		IsAdmin:       ptrconv.BoolToInt64(req.Msg.GetIsAdmin()),
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)

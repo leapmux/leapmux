@@ -94,6 +94,23 @@ func startTestSolo(t *testing.T) (hubURL, socketPath, userID, workerID string) {
 	}
 	require.NotEmpty(t, wID, "worker did not come online in time")
 
+	// Wait for the worker to upload its public key. The key is sent over
+	// the bidi stream shortly after connect, so there is a brief window
+	// where the worker is online but has no public key yet.
+	channelClient := leapmuxv1connect.NewChannelServiceClient(httpClient, hubURL)
+	for i := 0; i < 60; i++ {
+		resp, keyErr := channelClient.GetWorkerPublicKey(ctx, connect.NewRequest(
+			&leapmuxv1.GetWorkerPublicKeyRequest{WorkerId: wID},
+		))
+		if keyErr == nil && len(resp.Msg.GetPublicKey()) > 0 {
+			break
+		}
+		if i == 59 {
+			require.NoError(t, keyErr, "worker public key not available in time")
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
 	return hubURL, socketPath, userID, wID
 }
 
