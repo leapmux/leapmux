@@ -1,13 +1,15 @@
 import type { ParentComponent } from 'solid-js'
 import { Router } from '@solidjs/router'
 import { FileRoutes } from '@solidjs/start/router'
-import { createEffect, createSignal, onCleanup, onMount, Show, Suspense } from 'solid-js'
+import { createEffect, createResource, createSignal, ErrorBoundary, onCleanup, onMount, Show, Suspense } from 'solid-js'
 import { isWailsApp } from '~/api/desktopBridge'
 import { channelManager } from '~/api/workerRpc'
+import { showInfoToast } from '~/components/common/Toast'
 import { LauncherView } from '~/components/desktop/LauncherView'
 import { UserMenuDialogs } from '~/components/shell/UserMenu'
 import { AuthProvider } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
+import { resolveStack } from '~/lib/resolveStack'
 import { disableTextSubstitutions } from '~/lib/textInputBehavior'
 import { heightFull } from '~/styles/shared.css'
 import '~/lib/oat'
@@ -76,6 +78,30 @@ const DesktopFadeIn: ParentComponent = (props) => {
   return (
     <div style={{ height: '100%', opacity: opacity(), transition: 'opacity 0.3s ease' }}>
       {props.children}
+    </div>
+  )
+}
+
+function AppErrorFallback(error: Error) {
+  const rawStack = () => error?.stack || ''
+  const [resolved] = createResource(rawStack, resolveStack)
+  const message = () => error?.message || String(error)
+  const displayText = () => `${message()}\n\n${resolved() ?? rawStack()}`
+
+  const handleClick = async () => {
+    await navigator.clipboard.writeText(displayText())
+    showInfoToast('Stack trace copied to clipboard')
+  }
+
+  return (
+    <div class="flex flex-col items-center justify-center p-4" style={{ position: 'fixed', inset: '0' }}>
+      <h1>Uncaught Error</h1>
+      <pre
+        style={{ 'max-width': '80vw', 'max-height': '50vh', 'cursor': 'pointer' }}
+        onClick={handleClick}
+      >
+        {displayText()}
+      </pre>
     </div>
   )
 }
@@ -156,24 +182,26 @@ export default function App() {
   })
 
   return (
-    <div class={heightFull}>
-      <Show
-        when={desktopConnected()}
-        fallback={<LauncherView onConnected={() => setDesktopConnected(true)} />}
-      >
-        <DesktopFadeIn>
-          <AuthProvider>
-            <PreferencesProvider>
-              <PreferencesApplier>
-                <Router root={props => <Suspense>{props.children}</Suspense>}>
-                  <FileRoutes />
-                </Router>
-              </PreferencesApplier>
-            </PreferencesProvider>
-            <UserMenuDialogs />
-          </AuthProvider>
-        </DesktopFadeIn>
-      </Show>
-    </div>
+    <ErrorBoundary fallback={AppErrorFallback}>
+      <div class={heightFull}>
+        <Show
+          when={desktopConnected()}
+          fallback={<LauncherView onConnected={() => setDesktopConnected(true)} />}
+        >
+          <DesktopFadeIn>
+            <AuthProvider>
+              <PreferencesProvider>
+                <PreferencesApplier>
+                  <Router root={props => <Suspense>{props.children}</Suspense>}>
+                    <FileRoutes />
+                  </Router>
+                </PreferencesApplier>
+                <UserMenuDialogs />
+              </PreferencesProvider>
+            </AuthProvider>
+          </DesktopFadeIn>
+        </Show>
+      </div>
+    </ErrorBoundary>
   )
 }

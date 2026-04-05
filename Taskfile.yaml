@@ -450,17 +450,6 @@ tasks:
 
   build-desktop:
     desc: Build LeapMux desktop app for current platform
-    sources:
-      - desktop/go.mod
-      - desktop/go.sum
-      - "desktop/**/*.go"
-      - desktop/frontend/**/*
-      - desktop/spa/**/*
-      - desktop/build/appicon.png
-      - desktop/build/windows/icon.ico
-      - backend/go.mod
-      - backend/go.sum
-      - "backend/**/*.go"
     cmds:
       - task: build-desktop-{{if eq OS "darwin"}}darwin{{else if eq OS "windows"}}windows{{else}}{{OS}}-{{ARCH}}{{end}}
 

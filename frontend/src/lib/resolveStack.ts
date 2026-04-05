@@ -7,7 +7,7 @@ import { SourceMapConsumer } from 'source-map-js'
 const consumerCache = new Map<string, Promise<SourceMapConsumer | null>>()
 
 /** Regex to parse stack frames like "name@url:line:col" or "at name (url:line:col)". */
-const FRAME_RE = /(?:@| +at (?:.+? \()?)(https?:\/\/.+):(\d+):(\d+)\)?$/
+const FRAME_RE = /(?:@| +at (?:.+? \()?)(\w+:\/\/.+):(\d+):(\d+)\)?$/
 
 /** Matches everything up to and including the last slash (for extracting filename). */
 const LAST_SLASH_RE = /.*\//
