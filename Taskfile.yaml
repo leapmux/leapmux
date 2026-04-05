@@ -353,6 +353,12 @@ tasks:
       - task: build-backend
       - mprocs --config mprocs-solo.yaml
 
+  dev-desktop:
+    desc: Build and launch the desktop app
+    cmds:
+      - task: build-desktop
+      - '{{if eq OS "darwin"}}desktop/build/bin/LeapMux.app/Contents/MacOS/LeapMux{{else if eq OS "windows"}}desktop/build/bin/LeapMux.exe{{else}}desktop/build/bin/leapmux-desktop{{end}}'
+
   # --- Docker ---
 
   docker-build:
