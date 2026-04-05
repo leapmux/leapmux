@@ -26,7 +26,7 @@ export function IsConnected():Promise<boolean>;
 
 export function ListTunnels():Promise<Array<main.TunnelInfo>>;
 
-export function OpenChannelRelay(arg1:string):Promise<void>;
+export function OpenChannelRelay():Promise<void>;
 
 export function OpenFullDiskAccessSettings():Promise<void>;
 

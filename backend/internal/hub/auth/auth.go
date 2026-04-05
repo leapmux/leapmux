@@ -70,7 +70,7 @@ func Login(ctx context.Context, q *db.Queries, username, password string) (strin
 		return "", nil, zero, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
 	}
 
-	sessionID, expiresAt, sessionErr := CreateSession(ctx, q, user.ID, "", "")
+	sessionID, expiresAt, sessionErr := CreateSession(ctx, q, user.ID)
 	if sessionErr != nil {
 		return "", nil, zero, connect.NewError(connect.CodeInternal, sessionErr)
 	}
@@ -78,18 +78,27 @@ func Login(ctx context.Context, q *db.Queries, username, password string) (strin
 	return sessionID, &user, expiresAt, nil
 }
 
+// SessionMeta holds optional metadata for session creation.
+type SessionMeta struct {
+	UserAgent string
+	IPAddress string
+}
+
 // CreateSession creates a new user session and returns the session ID and
 // expiry time.
-func CreateSession(ctx context.Context, q *db.Queries, userID, userAgent, ipAddress string) (string, time.Time, error) {
+func CreateSession(ctx context.Context, q *db.Queries, userID string, meta ...SessionMeta) (string, time.Time, error) {
 	sessionID := id.Generate()
 	expiresAt := time.Now().Add(SessionDuration).UTC()
-	if err := q.CreateUserSession(ctx, db.CreateUserSessionParams{
+	params := db.CreateUserSessionParams{
 		ID:        sessionID,
 		UserID:    userID,
 		ExpiresAt: expiresAt,
-		UserAgent: userAgent,
-		IpAddress: ipAddress,
-	}); err != nil {
+	}
+	if len(meta) > 0 {
+		params.UserAgent = meta[0].UserAgent
+		params.IpAddress = meta[0].IPAddress
+	}
+	if err := q.CreateUserSession(ctx, params); err != nil {
 		return "", time.Time{}, fmt.Errorf("create session: %w", err)
 	}
 	return sessionID, expiresAt, nil

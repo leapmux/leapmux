@@ -251,7 +251,10 @@ func (h *OAuthHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, us
 		slog.Error("oauth: store tokens", "error", err)
 	}
 
-	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, h.queries, userID, r.UserAgent(), r.RemoteAddr)
+	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, h.queries, userID, auth.SessionMeta{
+		UserAgent: r.UserAgent(),
+		IPAddress: r.RemoteAddr,
+	})
 	if sessionErr != nil {
 		slog.Error("oauth: create session", "error", sessionErr)
 		http.Error(w, "internal error", http.StatusInternalServerError)

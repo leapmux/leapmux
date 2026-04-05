@@ -181,7 +181,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.queries, user.ID, "", "")
+	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.queries, user.ID)
 	if sessionErr != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
 	}
@@ -199,7 +199,7 @@ func (s *AuthService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 		return nil, err
 	}
 
-	sessionID, sessionExpiresAt, sessionErr := auth.CreateSession(ctx, s.queries, updatedUser.ID, "", "")
+	sessionID, sessionExpiresAt, sessionErr := auth.CreateSession(ctx, s.queries, updatedUser.ID)
 	if sessionErr != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
 	}
@@ -408,7 +408,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	}
 
 	// Create session.
-	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.queries, finalUser.ID, "", "")
+	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.queries, finalUser.ID)
 	if sessionErr != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
 	}

@@ -23,7 +23,7 @@ func TestCookieHeader_SingleHeader(t *testing.T) {
 		{Name: "csrf", Value: "xyz789"},
 	})
 
-	proxy := &HubProxy{jar: jar, baseURL: baseURL}
+	proxy := &HubProxy{client: &http.Client{Jar: jar}, baseURL: baseURL}
 	h := proxy.cookieHeader()
 	require.NotNil(t, h)
 
@@ -39,14 +39,14 @@ func TestCookieHeader_NoCookies(t *testing.T) {
 	jar, err := cookiejar.New(nil)
 	require.NoError(t, err)
 
-	proxy := &HubProxy{jar: jar, baseURL: "http://localhost"}
+	proxy := &HubProxy{client: &http.Client{Jar: jar}, baseURL: "http://localhost"}
 	h := proxy.cookieHeader()
 	assert.Nil(t, h)
 }
 
 func TestCookieHeader_InvalidURL(t *testing.T) {
 	jar, _ := cookiejar.New(nil)
-	proxy := &HubProxy{jar: jar, baseURL: "://invalid"}
+	proxy := &HubProxy{client: &http.Client{Jar: jar}, baseURL: "://invalid"}
 	h := proxy.cookieHeader()
 	assert.Nil(t, h)
 }

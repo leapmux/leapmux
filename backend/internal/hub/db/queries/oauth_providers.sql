@@ -16,5 +16,8 @@ FROM oauth_providers ORDER BY created_at;
 -- name: UpdateOAuthProviderEnabled :exec
 UPDATE oauth_providers SET enabled = ? WHERE id = ?;
 
+-- name: ListAllOAuthProvidersWithSecrets :many
+SELECT * FROM oauth_providers ORDER BY created_at;
+
 -- name: DeleteOAuthProvider :exec
 DELETE FROM oauth_providers WHERE id = ?;

@@ -28,7 +28,6 @@ type ProxyResponse struct {
 type HubProxy struct {
 	client   *http.Client // h2c client for ConnectRPC (with cookie jar)
 	wsClient *http.Client // HTTP/1.1 client for WebSocket upgrade
-	jar      http.CookieJar
 	baseURL  string
 }
 
@@ -57,7 +56,6 @@ func newUnixSocketProxy(socketPath string) *HubProxy {
 				},
 			},
 		},
-		jar:     jar,
 		baseURL: "http://localhost",
 	}
 }
@@ -70,7 +68,6 @@ func newHTTPProxy(hubURL string) *HubProxy {
 		client: &http.Client{
 			Jar: jar,
 		},
-		jar:     jar,
 		baseURL: hubURL,
 	}
 }
@@ -147,7 +144,7 @@ func (p *HubProxy) cookieHeader() http.Header {
 	if err != nil {
 		return nil
 	}
-	cookies := p.jar.Cookies(u)
+	cookies := p.client.Jar.Cookies(u)
 	if len(cookies) == 0 {
 		return nil
 	}

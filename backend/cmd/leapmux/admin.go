@@ -113,20 +113,16 @@ func runReencryptSecrets(args []string) error {
 	count := 0
 
 	// Re-encrypt oauth_providers.client_secret.
-	providers, err := q.ListAllOAuthProviders(ctx)
+	providers, err := q.ListAllOAuthProvidersWithSecrets(ctx)
 	if err != nil {
 		return fmt.Errorf("list providers: %w", err)
 	}
 	for _, p := range providers {
-		full, getErr := q.GetOAuthProviderByID(ctx, p.ID)
-		if getErr != nil {
-			return fmt.Errorf("get provider %s: %w", p.ID, getErr)
-		}
-		if ver, err := keystore.CiphertextVersion(full.ClientSecret); err == nil && ver == activeVer {
+		if ver, err := keystore.CiphertextVersion(p.ClientSecret); err == nil && ver == activeVer {
 			continue // already at active version
 		}
 		aad := keystore.ProviderAAD(p.ID)
-		plain, decErr := ks.Decrypt(full.ClientSecret, aad)
+		plain, decErr := ks.Decrypt(p.ClientSecret, aad)
 		if decErr != nil {
 			return fmt.Errorf("decrypt provider %s client_secret: %w", p.ID, decErr)
 		}
