@@ -48,7 +48,8 @@ DELETE FROM user_sessions WHERE user_id = ? AND id != ?;
 -- name: ListUserSessionsByUserID :many
 SELECT * FROM user_sessions
 WHERE user_id = ? AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-ORDER BY last_active_at DESC;
+ORDER BY last_active_at DESC
+LIMIT 1000;
 
 -- name: ListAllActiveSessions :many
 SELECT s.id, s.user_id, u.username, s.created_at, s.last_active_at, s.expires_at, s.ip_address, s.user_agent

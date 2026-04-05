@@ -15,3 +15,6 @@ UPDATE orgs SET name = ? WHERE id = ? AND is_personal = 0;
 
 -- name: DeleteOrg :exec
 DELETE FROM orgs WHERE id = ? AND is_personal = 0;
+
+-- name: ForceDeleteOrg :exec
+DELETE FROM orgs WHERE id = ?;

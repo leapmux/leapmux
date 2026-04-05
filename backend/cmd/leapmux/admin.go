@@ -229,14 +229,12 @@ func runUserCreate(args []string) error {
 
 	ctx := context.Background()
 
-	// Check username availability.
 	if _, lookupErr := q.GetUserByUsername(ctx, slug); lookupErr == nil {
 		return fmt.Errorf("username %q is already taken", slug)
 	} else if lookupErr != sql.ErrNoRows {
 		return fmt.Errorf("check username: %w", lookupErr)
 	}
 
-	// Check email availability.
 	if *email != "" {
 		if _, lookupErr := q.GetUserByEmail(ctx, *email); lookupErr == nil {
 			return fmt.Errorf("email %q is already in use", *email)
@@ -245,7 +243,6 @@ func runUserCreate(args []string) error {
 		}
 	}
 
-	// Create personal org + user + membership in a transaction.
 	tx, err := sqlDB.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -326,7 +323,6 @@ func runUserUpdate(args []string) error {
 		return err
 	}
 
-	// Track which fields were explicitly set.
 	setFlags := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
 
@@ -351,6 +347,11 @@ func runUserUpdate(args []string) error {
 		if *email != "" {
 			if err := validate.ValidateEmail(*email); err != nil {
 				return err
+			}
+			if *email != user.Email {
+				if existing, lookupErr := q.GetUserByEmail(ctx, *email); lookupErr == nil && existing.ID != user.ID {
+					return fmt.Errorf("email %q is already in use", *email)
+				}
 			}
 		}
 		verified := user.EmailVerified
@@ -404,7 +405,6 @@ func runUserDelete(args []string) error {
 		return err
 	}
 
-	// Delete user, personal org, sessions, and org membership in a transaction.
 	tx, err := sqlDB.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -428,8 +428,7 @@ func runUserDelete(args []string) error {
 		return fmt.Errorf("delete user: %w", err)
 	}
 
-	// DeleteOrg only deletes non-personal orgs; use raw SQL for personal org.
-	if _, err := tx.ExecContext(ctx, "DELETE FROM orgs WHERE id = ?", user.OrgID); err != nil {
+	if err := txq.ForceDeleteOrg(ctx, user.OrgID); err != nil {
 		return fmt.Errorf("delete personal org: %w", err)
 	}
 
@@ -518,12 +517,13 @@ func runUserSetAdmin(args []string, admin bool) error {
 	}
 	defer func() { _ = sqlDB.Close() }()
 
-	user, err := resolveUser(context.Background(), q, *userID, *username)
+	ctx := context.Background()
+	user, err := resolveUser(ctx, q, *userID, *username)
 	if err != nil {
 		return err
 	}
 
-	if err := q.UpdateUserAdmin(context.Background(), gendb.UpdateUserAdminParams{
+	if err := q.UpdateUserAdmin(ctx, gendb.UpdateUserAdminParams{
 		IsAdmin: ptrconv.BoolToInt64(admin),
 		ID:      user.ID,
 	}); err != nil {
@@ -678,12 +678,13 @@ func runSessionRevokeUser(args []string) error {
 	}
 	defer func() { _ = sqlDB.Close() }()
 
-	user, err := resolveUser(context.Background(), q, *userID, *username)
+	ctx := context.Background()
+	user, err := resolveUser(ctx, q, *userID, *username)
 	if err != nil {
 		return err
 	}
 
-	if err := q.DeleteUserSessionsByUser(context.Background(), user.ID); err != nil {
+	if err := q.DeleteUserSessionsByUser(ctx, user.ID); err != nil {
 		return fmt.Errorf("delete sessions: %w", err)
 	}
 
@@ -753,7 +754,6 @@ func runWorkerList(args []string) error {
 
 	ctx := context.Background()
 
-	// Resolve user if filtering by username.
 	resolvedUserID := *userID
 	if *username != "" && resolvedUserID == "" {
 		user, err := q.GetUserByUsername(ctx, *username)
@@ -766,69 +766,69 @@ func runWorkerList(args []string) error {
 		resolvedUserID = user.ID
 	}
 
-	statusVal, err := parseWorkerStatus(*status)
-	if err != nil {
-		return err
+	allStatuses := *status == "all"
+	var statusVal leapmuxv1.WorkerStatus
+	if !allStatuses {
+		statusVal, err = parseWorkerStatus(*status)
+		if err != nil {
+			return err
+		}
 	}
 
 	type workerRow struct {
 		ID            string
-		RegisteredBy  string
 		OwnerUsername string
 		Status        leapmuxv1.WorkerStatus
 		CreatedAt     time.Time
 		LastSeenAt    sql.NullTime
 	}
 
+	toRow := func(id, owner string, st leapmuxv1.WorkerStatus, created time.Time, lastSeen sql.NullTime) workerRow {
+		return workerRow{id, owner, st, created, lastSeen}
+	}
+
 	var rows []workerRow
 
-	if resolvedUserID != "" && *status == "all" {
-		list, err := q.ListAllWorkersByUserAnyStatus(ctx, gendb.ListAllWorkersByUserAnyStatusParams{
-			UserID: resolvedUserID,
-			Offset: *offset,
-			Limit:  *limit,
+	switch {
+	case resolvedUserID != "" && allStatuses:
+		list, qErr := q.ListAllWorkersByUserAnyStatus(ctx, gendb.ListAllWorkersByUserAnyStatusParams{
+			UserID: resolvedUserID, Offset: *offset, Limit: *limit,
 		})
-		if err != nil {
-			return fmt.Errorf("list workers: %w", err)
+		if qErr != nil {
+			return fmt.Errorf("list workers: %w", qErr)
 		}
 		for _, w := range list {
-			rows = append(rows, workerRow{w.ID, w.RegisteredBy, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt})
+			rows = append(rows, toRow(w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt))
 		}
-	} else if resolvedUserID != "" {
-		list, err := q.ListAllWorkersByUser(ctx, gendb.ListAllWorkersByUserParams{
-			UserID: resolvedUserID,
-			Status: statusVal,
-			Offset: *offset,
-			Limit:  *limit,
+	case resolvedUserID != "":
+		list, qErr := q.ListAllWorkersByUser(ctx, gendb.ListAllWorkersByUserParams{
+			UserID: resolvedUserID, Status: statusVal, Offset: *offset, Limit: *limit,
 		})
-		if err != nil {
-			return fmt.Errorf("list workers: %w", err)
+		if qErr != nil {
+			return fmt.Errorf("list workers: %w", qErr)
 		}
 		for _, w := range list {
-			rows = append(rows, workerRow{w.ID, w.RegisteredBy, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt})
+			rows = append(rows, toRow(w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt))
 		}
-	} else if *status == "all" {
-		list, err := q.ListAllWorkersAnyStatus(ctx, gendb.ListAllWorkersAnyStatusParams{
-			Offset: *offset,
-			Limit:  *limit,
+	case allStatuses:
+		list, qErr := q.ListAllWorkersAnyStatus(ctx, gendb.ListAllWorkersAnyStatusParams{
+			Offset: *offset, Limit: *limit,
 		})
-		if err != nil {
-			return fmt.Errorf("list workers: %w", err)
+		if qErr != nil {
+			return fmt.Errorf("list workers: %w", qErr)
 		}
 		for _, w := range list {
-			rows = append(rows, workerRow{w.ID, w.RegisteredBy, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt})
+			rows = append(rows, toRow(w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt))
 		}
-	} else {
-		list, err := q.ListAllWorkers(ctx, gendb.ListAllWorkersParams{
-			Status: statusVal,
-			Offset: *offset,
-			Limit:  *limit,
+	default:
+		list, qErr := q.ListAllWorkers(ctx, gendb.ListAllWorkersParams{
+			Status: statusVal, Offset: *offset, Limit: *limit,
 		})
-		if err != nil {
-			return fmt.Errorf("list workers: %w", err)
+		if qErr != nil {
+			return fmt.Errorf("list workers: %w", qErr)
 		}
 		for _, w := range list {
-			rows = append(rows, workerRow{w.ID, w.RegisteredBy, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt})
+			rows = append(rows, toRow(w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt))
 		}
 	}
 
@@ -1463,8 +1463,6 @@ func resolveUser(ctx context.Context, q *gendb.Queries, userID, username string)
 	return &user, nil
 }
 
-// parseWorkerStatus converts a status string to the protobuf enum value.
-// Returns an error for unknown values. "all" is handled by callers.
 func parseWorkerStatus(s string) (leapmuxv1.WorkerStatus, error) {
 	switch strings.ToLower(s) {
 	case "active":
@@ -1473,9 +1471,6 @@ func parseWorkerStatus(s string) (leapmuxv1.WorkerStatus, error) {
 		return leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, nil
 	case "deleted":
 		return leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, nil
-	case "all":
-		// Caller handles "all" specially; return active as a placeholder.
-		return leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE, nil
 	default:
 		return 0, fmt.Errorf("unknown worker status: %s (use: active, deregistering, deleted, all)", s)
 	}

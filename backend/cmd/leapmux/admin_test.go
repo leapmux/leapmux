@@ -1023,7 +1023,7 @@ func TestCLI_SessionPurgeExpired(t *testing.T) {
 	user := createTestUser(t, dir, "alice")
 
 	// Create one expired and one active session.
-	createTestSession(t, dir, user.ID, time.Now().Add(-1*time.Hour))            // expired
+	createTestSession(t, dir, user.ID, time.Now().UTC().Add(-1*time.Hour))      // expired
 	activeID := createTestSession(t, dir, user.ID, time.Now().Add(1*time.Hour)) // active
 
 	err := runSessionPurgeExpired([]string{"--data-dir", dir})
