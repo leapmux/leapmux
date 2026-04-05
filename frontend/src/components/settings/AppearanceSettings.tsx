@@ -55,7 +55,7 @@ export const BrowserAppearanceSettings: Component = () => {
   return (
     <>
       <div class={styles.section}>
-        <h2>Theme</h2>
+        <h3>Theme</h3>
         <div class={styles.pillGroup}>
           <button
             class={prefs.browserTheme() === null ? styles.pillOptionActive : styles.pillOption}
@@ -77,7 +77,7 @@ export const BrowserAppearanceSettings: Component = () => {
       </div>
 
       <div class={styles.section}>
-        <h2>Terminal Theme</h2>
+        <h3>Terminal Theme</h3>
         <div class={styles.pillGroup}>
           <button
             class={prefs.browserTerminalTheme() === null ? styles.pillOptionActive : styles.pillOption}
@@ -99,7 +99,7 @@ export const BrowserAppearanceSettings: Component = () => {
       </div>
 
       <div class={styles.section}>
-        <h2>Diff View</h2>
+        <h3>Diff View</h3>
         <div class={styles.pillGroup}>
           <button
             class={prefs.browserDiffView() === null ? styles.pillOptionActive : styles.pillOption}
@@ -121,7 +121,7 @@ export const BrowserAppearanceSettings: Component = () => {
       </div>
 
       <div class={styles.section}>
-        <h2>Turn End Sound</h2>
+        <h3>Turn End Sound</h3>
         <div class={styles.pillGroup}>
           <button
             class={prefs.browserTurnEndSound() === null ? styles.pillOptionActive : styles.pillOption}
@@ -176,7 +176,7 @@ export const BrowserAppearanceSettings: Component = () => {
       </div>
 
       <div class={styles.section}>
-        <h2>Debug Logging</h2>
+        <h3>Debug Logging</h3>
         <div class={styles.pillGroup}>
           <button
             class={prefs.browserDebugLogging() === null ? styles.pillOptionActive : styles.pillOption}
@@ -267,7 +267,7 @@ export const AccountAppearanceSettings: Component = () => {
   return (
     <>
       <div class={styles.section}>
-        <h2>Theme</h2>
+        <h3>Theme</h3>
         {renderThemeButtons(
           () => prefs.accountTheme(),
           v => handleAccountThemeChange(v as ThemePreference),
@@ -276,7 +276,7 @@ export const AccountAppearanceSettings: Component = () => {
       </div>
 
       <div class={styles.section}>
-        <h2>Terminal Theme</h2>
+        <h3>Terminal Theme</h3>
         {renderThemeButtons(
           () => prefs.accountTerminalTheme(),
           v => handleAccountTerminalThemeChange(v as TerminalThemePreference),
@@ -285,7 +285,7 @@ export const AccountAppearanceSettings: Component = () => {
       </div>
 
       <div class={styles.section}>
-        <h2>Diff View</h2>
+        <h3>Diff View</h3>
         {renderThemeButtons(
           () => prefs.accountDiffView(),
           v => handleAccountDiffViewChange(v as DiffViewPreference),
@@ -294,7 +294,7 @@ export const AccountAppearanceSettings: Component = () => {
       </div>
 
       <div class={styles.section}>
-        <h2>Turn End Sound</h2>
+        <h3>Turn End Sound</h3>
         {renderThemeButtons(
           () => prefs.accountTurnEndSound(),
           v => handleAccountTurnEndSoundChange(v as TurnEndSoundPreference),
@@ -315,7 +315,7 @@ export const AccountAppearanceSettings: Component = () => {
       </div>
 
       <div class={styles.section}>
-        <h2>Debug Logging</h2>
+        <h3>Debug Logging</h3>
         {renderThemeButtons(
           () => prefs.accountDebugLogging() ? 'on' : 'off',
           v => handleAccountDebugLoggingChange(v === 'on'),

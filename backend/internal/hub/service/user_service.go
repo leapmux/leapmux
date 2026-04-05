@@ -60,6 +60,12 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+
+	displayName, err := validate.SanitizeDisplayName(req.Msg.GetDisplayName(), newUsername)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
+	}
+
 	usernameChanged := newUsername != user.Username
 
 	// If the username is changing, check that the new one is not already taken.
@@ -75,7 +81,7 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 
 	if err := s.queries.UpdateUserProfile(ctx, db.UpdateUserProfileParams{
 		Username:    newUsername,
-		DisplayName: req.Msg.GetDisplayName(),
+		DisplayName: displayName,
 		ID:          user.ID,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -83,7 +89,7 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 
 	resp := &leapmuxv1.UpdateProfileResponse{
 		Username:     newUsername,
-		DisplayName:  req.Msg.GetDisplayName(),
+		DisplayName:  displayName,
 		Email:        user.Email,
 		PendingEmail: user.PendingEmail,
 	}
@@ -371,9 +377,24 @@ func (s *UserService) UpdatePreferences(ctx context.Context, req *connect.Reques
 		monoFonts[i] = sanitized
 	}
 
+	theme := req.Msg.GetTheme()
+	if theme != "" {
+		theme, err = validate.SanitizeSlug("theme", theme)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+	}
+	terminalTheme := req.Msg.GetTerminalTheme()
+	if terminalTheme != "" {
+		terminalTheme, err = validate.SanitizeSlug("terminal theme", terminalTheme)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+	}
+
 	sp := storedPreferences{
-		Theme:                 req.Msg.GetTheme(),
-		TerminalTheme:         req.Msg.GetTerminalTheme(),
+		Theme:                 theme,
+		TerminalTheme:         terminalTheme,
 		UIFontCustomEnabled:   req.Msg.GetUiFontCustomEnabled(),
 		MonoFontCustomEnabled: req.Msg.GetMonoFontCustomEnabled(),
 		UIFonts:               uiFonts,

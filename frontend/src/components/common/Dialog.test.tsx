@@ -56,26 +56,33 @@ describe('dialog', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
-  it('sets closedby to "none" when busy', () => {
+  it('closes on backdrop click when not busy', () => {
+    const onClose = vi.fn()
     const { container } = render(() => (
-      <Dialog title="Test" busy onClose={() => {}}>
+      <Dialog title="Test" onClose={onClose}>
         <p>Content</p>
       </Dialog>
     ))
 
     const dialog = container.querySelector('dialog')!
-    expect(dialog.getAttribute('closedby')).toBe('none')
+    // Mock bounding rect so the click coordinates fall outside.
+    dialog.getBoundingClientRect = () => ({ top: 100, left: 100, right: 500, bottom: 500, width: 400, height: 400, x: 100, y: 100, toJSON: () => {} })
+    // Simulate a click on the backdrop (target is dialog, coordinates outside content).
+    dialog.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 10, clientY: 10 }))
+    expect(onClose).toHaveBeenCalled()
   })
 
-  it('sets closedby to "any" when not busy', () => {
+  it('does not close on backdrop click when busy', () => {
+    const onClose = vi.fn()
     const { container } = render(() => (
-      <Dialog title="Test" onClose={() => {}}>
+      <Dialog title="Test" busy onClose={onClose}>
         <p>Content</p>
       </Dialog>
     ))
 
     const dialog = container.querySelector('dialog')!
-    expect(dialog.getAttribute('closedby')).toBe('any')
+    dialog.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(onClose).not.toHaveBeenCalled()
   })
 
   it('does not call onClose when native close event fires while busy', () => {

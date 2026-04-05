@@ -7,9 +7,11 @@ import { createSignal, onMount, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { Icon } from '~/components/common/Icon'
 import { OAuthProviderList } from '~/components/common/OAuthProviderList'
+import { passwordCanSubmit, PasswordFields } from '~/components/common/PasswordFields'
+import { UsernameField } from '~/components/common/UsernameField'
 import { useAuth } from '~/context/AuthContext'
 import { isSignupEnabled, loadOAuthProviders } from '~/lib/systemInfo'
-import { sanitizeSlug, validateEmail, validatePassword } from '~/lib/validate'
+import { sanitizeDisplayName, sanitizeSlug, validateEmail } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
 import { cardNarrow, errorText } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
@@ -34,20 +36,20 @@ export const SignupPage: Component = () => {
     setReady(true)
   })
 
+  const pwProps = { password, confirmPassword }
+
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
-    if (password() !== confirmPassword()) {
-      setError('Passwords do not match.')
+    if (!passwordCanSubmit(pwProps))
       return
-    }
-    const pwErr = validatePassword(password())
-    if (pwErr) {
-      setError(pwErr)
-      return
-    }
     const [slug, slugErr] = sanitizeSlug('Username', username())
     if (slugErr) {
       setError(slugErr)
+      return
+    }
+    const { value: sanitizedDisplayName, error: dnErr } = sanitizeDisplayName(displayName(), slug)
+    if (dnErr) {
+      setError(dnErr)
       return
     }
     const emailErr = validateEmail(email())
@@ -61,7 +63,7 @@ export const SignupPage: Component = () => {
       const resp = await authClient.signUp({
         username: slug,
         password: password(),
-        displayName: displayName(),
+        displayName: sanitizedDisplayName,
         email: email(),
       })
       if (resp.verificationRequired) {
@@ -112,10 +114,7 @@ export const SignupPage: Component = () => {
                 />
               </Show>
               <form class="vstack gap-4" onSubmit={handleSubmit}>
-                <label>
-                  Username
-                  <input type="text" value={username()} onInput={e => setUsername(e.currentTarget.value)} autocomplete="username" />
-                </label>
+                <UsernameField value={username} onInput={setUsername} />
                 <label>
                   Display Name
                   <input type="text" value={displayName()} onInput={e => setDisplayName(e.currentTarget.value)} />
@@ -124,18 +123,16 @@ export const SignupPage: Component = () => {
                   Email
                   <input type="email" value={email()} onInput={e => setEmail(e.currentTarget.value)} />
                 </label>
-                <label>
-                  Password
-                  <input type="password" value={password()} onInput={e => setPassword(e.currentTarget.value)} autocomplete="new-password" />
-                </label>
-                <label>
-                  Confirm Password
-                  <input type="password" value={confirmPassword()} onInput={e => setConfirmPassword(e.currentTarget.value)} autocomplete="new-password" />
-                </label>
+                <PasswordFields
+                  password={password}
+                  setPassword={setPassword}
+                  confirmPassword={confirmPassword}
+                  setConfirmPassword={setConfirmPassword}
+                />
                 <Show when={error()}>
                   <div class={errorText}>{error()}</div>
                 </Show>
-                <button type="submit" disabled={submitting() || !username() || !password()}>
+                <button type="submit" disabled={submitting() || !username() || !passwordCanSubmit(pwProps)}>
                   <Show when={submitting()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
                   {submitting() ? 'Signing up...' : 'Sign up'}
                 </button>

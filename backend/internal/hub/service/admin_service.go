@@ -143,6 +143,10 @@ func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leap
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	displayName, err := validate.SanitizeDisplayName(req.Msg.GetDisplayName(), username)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
+	}
 
 	// Check username uniqueness.
 	if err := checkUsernameAvailable(ctx, s.queries, username); err != nil {
@@ -168,7 +172,7 @@ func (s *AdminService) CreateUser(ctx context.Context, req *connect.Request[leap
 	user, err := createUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
 		Username:     username,
 		PasswordHash: hash,
-		DisplayName:  req.Msg.GetDisplayName(),
+		DisplayName:  displayName,
 		Email:        req.Msg.GetEmail(),
 		PasswordSet:  1,
 		IsAdmin:      ptrconv.BoolToInt64(req.Msg.GetIsAdmin()),
@@ -215,6 +219,11 @@ func (s *AdminService) UpdateUser(ctx context.Context, req *connect.Request[leap
 		}
 	}
 
+	newDisplayName, err := validate.SanitizeDisplayName(req.Msg.GetDisplayName(), user.Username)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
+	}
+
 	// Prevent clearing email once set.
 	newEmail := req.Msg.GetEmail()
 	if user.Email != "" && newEmail == "" {
@@ -234,7 +243,7 @@ func (s *AdminService) UpdateUser(ctx context.Context, req *connect.Request[leap
 	// Update profile fields (keep existing username).
 	if err := s.queries.UpdateUserProfile(ctx, db.UpdateUserProfileParams{
 		Username:    user.Username,
-		DisplayName: req.Msg.GetDisplayName(),
+		DisplayName: newDisplayName,
 		ID:          user.ID,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update user profile: %w", err))

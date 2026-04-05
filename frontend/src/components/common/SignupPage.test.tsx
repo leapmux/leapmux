@@ -57,7 +57,7 @@ describe('signupPage', () => {
     await vi.waitFor(() => {
       expect(screen.getByLabelText('Username')).toBeInTheDocument()
     })
-    expect(screen.getByLabelText('Password')).toBeInTheDocument()
+    expect(screen.getByLabelText('New Password')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Sign up' })).toBeInTheDocument()
     expect(screen.queryByText(/Sign up with/)).not.toBeInTheDocument()
   })

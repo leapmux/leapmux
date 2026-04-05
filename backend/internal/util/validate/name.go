@@ -25,6 +25,15 @@ func SanitizeName(name string) (string, error) {
 	return sanitized, nil
 }
 
+// SanitizeDisplayName sanitizes a display name, falling back to the given
+// fallback value when the name is empty.
+func SanitizeDisplayName(displayName, fallback string) (string, error) {
+	if displayName == "" {
+		displayName = fallback
+	}
+	return SanitizeName(displayName)
+}
+
 // ValidateSessionID validates a session ID for resuming an agent session.
 // Empty values are accepted (no resume). Non-empty values are checked via
 // SanitizeName; any character that SanitizeName would strip is rejected.

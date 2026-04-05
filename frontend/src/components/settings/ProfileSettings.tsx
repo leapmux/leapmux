@@ -1,8 +1,10 @@
 import type { Component } from 'solid-js'
-import { createSignal, For, onMount, Show } from 'solid-js'
+import { createMemo, createSignal, For, onMount, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
+import { passwordCanSubmit, PasswordFields } from '~/components/common/PasswordFields'
+import { UsernameField } from '~/components/common/UsernameField'
 import { useAuth } from '~/context/AuthContext'
-import { sanitizeSlug, validateEmail, validatePassword } from '~/lib/validate'
+import { sanitizeDisplayName, sanitizeName, sanitizeSlug, validateEmail } from '~/lib/validate'
 import { errorText, successText, warningText } from '~/styles/shared.css'
 import * as styles from './PreferencesDialog.css'
 
@@ -27,6 +29,32 @@ export const ProfileSettings: Component = () => {
   const [unlinkingProvider, setUnlinkingProvider] = createSignal<string | null>(null)
   const [unlinkMessage, setUnlinkMessage] = createSignal<{ type: 'success' | 'error', text: string } | null>(null)
 
+  const profileDirty = createMemo(() => {
+    const user = auth.user()
+    if (!user)
+      return false
+    return username() !== user.username || displayName() !== user.displayName
+  })
+
+  const displayNameError = createMemo(() => {
+    const dn = displayName()
+    if (!dn)
+      return null // empty is allowed (falls back to username)
+    return sanitizeName(dn).error
+  })
+
+  const emailSameAsCurrent = createMemo(() => {
+    const trimmed = newEmail().trim().toLowerCase()
+    return trimmed !== '' && trimmed === (auth.user()?.email ?? '').toLowerCase()
+  })
+
+  const pwProps = {
+    password: newPassword,
+    confirmPassword,
+    currentPassword,
+    get showCurrentPassword() { return !!auth.user()?.passwordSet },
+  }
+
   onMount(() => {
     const user = auth.user()
     if (user) {
@@ -41,13 +69,21 @@ export const ProfileSettings: Component = () => {
       setProfileMessage({ type: 'error', text: slugErr })
       return
     }
+    const { value: sanitizedDisplayName, error: dnErr } = sanitizeDisplayName(displayName(), slug)
+    if (dnErr) {
+      setProfileMessage({ type: 'error', text: dnErr })
+      return
+    }
     setProfileSaving(true)
     setProfileMessage(null)
     try {
       await userClient.updateProfile({
         username: slug,
-        displayName: displayName(),
+        displayName: sanitizedDisplayName,
       })
+      await auth.refreshUser()
+      setDisplayName(auth.user()?.displayName ?? '')
+      setUsername(auth.user()?.username ?? '')
       setProfileMessage({ type: 'success', text: 'Profile updated.' })
     }
     catch (e) {
@@ -80,6 +116,7 @@ export const ProfileSettings: Component = () => {
         setEmailMessage({ type: 'success', text: 'Email updated.' })
       }
       setNewEmail('')
+      auth.refreshUser()
     }
     catch (e) {
       setEmailMessage({ type: 'error', text: e instanceof Error ? e.message : 'Failed to request email change' })
@@ -90,15 +127,8 @@ export const ProfileSettings: Component = () => {
   }
 
   const handleChangePassword = async () => {
-    if (newPassword() !== confirmPassword()) {
-      setPasswordMessage({ type: 'error', text: 'Passwords do not match.' })
+    if (!passwordCanSubmit(pwProps))
       return
-    }
-    const pwErr = validatePassword(newPassword())
-    if (pwErr) {
-      setPasswordMessage({ type: 'error', text: pwErr })
-      return
-    }
     setPasswordSaving(true)
     setPasswordMessage(null)
     try {
@@ -137,12 +167,8 @@ export const ProfileSettings: Component = () => {
 
   return (
     <div class={styles.section}>
-      <h2>Profile</h2>
       <div class="vstack gap-4">
-        <label class={styles.fieldLabel}>
-          Username
-          <input type="text" value={username()} onInput={e => setUsername(e.currentTarget.value)} />
-        </label>
+        <UsernameField value={username} onInput={setUsername} labelClass={styles.fieldLabel} />
         <Show when={username() !== auth.user()?.username}>
           <div class={warningText}>Changing your username will also rename your personal organization.</div>
         </Show>
@@ -150,15 +176,18 @@ export const ProfileSettings: Component = () => {
           Display Name
           <input type="text" value={displayName()} onInput={e => setDisplayName(e.currentTarget.value)} />
         </label>
+        <Show when={displayNameError()}>
+          {err => <div class={errorText}>{err()}</div>}
+        </Show>
         <Show when={profileMessage()}>
           {msg => <div class={msg().type === 'success' ? successText : errorText}>{msg().text}</div>}
         </Show>
-        <button onClick={handleSaveProfile} disabled={profileSaving()}>
+        <button type="button" onClick={handleSaveProfile} disabled={profileSaving() || !profileDirty() || !!displayNameError()}>
           {profileSaving() ? 'Saving...' : 'Save Profile'}
         </button>
       </div>
 
-      <h2 class={styles.sectionHeading}>Email</h2>
+      <h3>Email</h3>
       <div class="vstack gap-4">
         <label class={styles.fieldLabel}>
           Current Email
@@ -193,46 +222,30 @@ export const ProfileSettings: Component = () => {
         <Show when={emailMessage()}>
           {msg => <div class={msg().type === 'success' ? successText : errorText}>{msg().text}</div>}
         </Show>
-        <button onClick={handleRequestEmailChange} disabled={emailSaving() || !newEmail().trim()}>
+        <Show when={emailSameAsCurrent()}>
+          <div class={errorText}>This is already your current email.</div>
+        </Show>
+        <button type="button" onClick={handleRequestEmailChange} disabled={emailSaving() || !newEmail().trim() || emailSameAsCurrent()}>
           {emailSaving() ? 'Requesting...' : 'Change Email'}
         </button>
       </div>
 
-      <h2 class={styles.sectionHeading}>Password</h2>
+      <h3 class={styles.sectionHeading}>Password</h3>
       <div class="vstack gap-4">
-        <Show when={auth.user()?.passwordSet}>
-          <label class={styles.fieldLabel}>
-            Current Password
-            <input
-              type="password"
-              value={currentPassword()}
-              onInput={e => setCurrentPassword(e.currentTarget.value)}
-              autocomplete="current-password"
-            />
-          </label>
-        </Show>
-        <label class={styles.fieldLabel}>
-          New Password
-          <input
-            type="password"
-            value={newPassword()}
-            onInput={e => setNewPassword(e.currentTarget.value)}
-            autocomplete="new-password"
-          />
-        </label>
-        <label class={styles.fieldLabel}>
-          Confirm New Password
-          <input
-            type="password"
-            value={confirmPassword()}
-            onInput={e => setConfirmPassword(e.currentTarget.value)}
-            autocomplete="new-password"
-          />
-        </label>
+        <PasswordFields
+          password={newPassword}
+          setPassword={setNewPassword}
+          confirmPassword={confirmPassword}
+          setConfirmPassword={setConfirmPassword}
+          showCurrentPassword={!!auth.user()?.passwordSet}
+          currentPassword={currentPassword}
+          setCurrentPassword={setCurrentPassword}
+          labelClass={styles.fieldLabel}
+        />
         <Show when={passwordMessage()}>
           {msg => <div class={msg().type === 'success' ? successText : errorText}>{msg().text}</div>}
         </Show>
-        <button onClick={handleChangePassword} disabled={passwordSaving() || !newPassword()}>
+        <button type="button" onClick={handleChangePassword} disabled={passwordSaving() || !passwordCanSubmit(pwProps)}>
           {passwordSaving()
             ? (auth.user()?.passwordSet ? 'Changing...' : 'Setting...')
             : (auth.user()?.passwordSet ? 'Change Password' : 'Set Password')}
@@ -240,13 +253,14 @@ export const ProfileSettings: Component = () => {
       </div>
 
       <Show when={auth.user()?.oauthProviders && auth.user()!.oauthProviders.length > 0}>
-        <h2 class={styles.sectionHeading}>Linked Accounts</h2>
+        <h3 class={styles.sectionHeading}>Linked Accounts</h3>
         <div class="vstack gap-2">
           <For each={auth.user()?.oauthProviders}>
             {provider => (
               <div class={styles.linkedAccount}>
                 <span class={styles.linkedAccountName}>{provider.name}</span>
                 <button
+                  type="button"
                   class={styles.linkedAccountUnlink}
                   onClick={() => handleUnlink(provider.id)}
                   disabled={unlinkingProvider() === provider.id}

@@ -6,8 +6,9 @@ import { createSignal, onMount, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { Icon } from '~/components/common/Icon'
 import * as styles from '~/components/common/LoginPage.css'
+import { UsernameField } from '~/components/common/UsernameField'
 import { useAuth } from '~/context/AuthContext'
-import { sanitizeSlug } from '~/lib/validate'
+import { sanitizeDisplayName, sanitizeSlug } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
 import { cardNarrow, errorText } from '~/styles/shared.css'
 
@@ -54,13 +55,18 @@ const OAuthCompleteSignupPage: Component = () => {
       setError(slugErr)
       return
     }
+    const { value: sanitizedDisplayName, error: dnErr } = sanitizeDisplayName(displayName(), slug)
+    if (dnErr) {
+      setError(dnErr)
+      return
+    }
     setSubmitting(true)
     setError(null)
     try {
       const resp = await authClient.completeOAuthSignup({
         signupToken: signupToken(),
         username: slug,
-        displayName: displayName(),
+        displayName: sanitizedDisplayName,
       })
       auth.setAuth(resp.user!)
       navigate(`/o/${slug}`, { replace: true })
@@ -98,15 +104,7 @@ const OAuthCompleteSignupPage: Component = () => {
             </p>
           </Show>
           <form class="vstack gap-4" onSubmit={handleSubmit}>
-            <label>
-              Username
-              <input
-                type="text"
-                value={username()}
-                onInput={e => setUsername(e.currentTarget.value)}
-                autocomplete="username"
-              />
-            </label>
+            <UsernameField value={username} onInput={setUsername} />
             <label>
               Display Name
               <input

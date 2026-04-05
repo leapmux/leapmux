@@ -18,6 +18,13 @@ export function sanitizeName(name: string): { value: string, error: string | nul
   return { value, error }
 }
 
+/**
+ * Sanitizes a display name, falling back to the given fallback when empty.
+ */
+export function sanitizeDisplayName(displayName: string, fallback: string): { value: string, error: string | null } {
+  return sanitizeName(displayName || fallback)
+}
+
 // Characters forbidden in git branch names: space ~ ^ : ? * [ ] \ $ %
 // Also control characters (0x00-0x1F, 0x7F).
 // eslint-disable-next-line no-control-regex

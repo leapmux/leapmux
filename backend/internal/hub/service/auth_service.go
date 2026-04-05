@@ -109,6 +109,10 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	displayName, err := validate.SanitizeDisplayName(req.Msg.GetDisplayName(), username)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
+	}
 	pw := req.Msg.GetPassword()
 	if err := validate.ValidatePassword(pw); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
@@ -137,7 +141,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		user, err := createUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
 			Username:     username,
 			PasswordHash: hash,
-			DisplayName:  req.Msg.GetDisplayName(),
+			DisplayName:  displayName,
 			Email:        "", // email goes to pending_email
 			PasswordSet:  1,
 			IsAdmin:      0,
@@ -173,7 +177,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 	user, err := createUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
 		Username:     username,
 		PasswordHash: hash,
-		DisplayName:  req.Msg.GetDisplayName(),
+		DisplayName:  displayName,
 		Email:        email,
 		PasswordSet:  1,
 		IsAdmin:      0,
@@ -327,9 +331,13 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	// Use the email from the pending signup (provider-reported, already validated
 	// at callback time). The request's email field is ignored.
 	email := pending.Email
-	displayName := req.Msg.GetDisplayName()
-	if displayName == "" {
-		displayName = pending.DisplayName
+	rawDisplayName := req.Msg.GetDisplayName()
+	if rawDisplayName == "" {
+		rawDisplayName = pending.DisplayName
+	}
+	displayName, err := validate.SanitizeDisplayName(rawDisplayName, username)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
 	}
 
 	// Look up the provider's trust_email setting.
