@@ -62,8 +62,6 @@ export const LoginPage: Component = () => {
     }
     catch {
       // Error is captured by auth context.
-    }
-    finally {
       setSubmitting(false)
     }
   }

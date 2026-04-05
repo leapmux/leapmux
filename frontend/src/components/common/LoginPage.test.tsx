@@ -1,6 +1,6 @@
 import { MemoryRouter, Route } from '@solidjs/router'
 /// <reference types="vitest/globals" />
-import { render, screen } from '@solidjs/testing-library'
+import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { LoginPage } from './LoginPage'
@@ -24,9 +24,10 @@ vi.mock('~/lib/systemInfo', () => ({
 }))
 
 const mockLogin = vi.fn()
+const mockUser = vi.fn<() => { username: string } | null>(() => null)
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
-    user: () => null,
+    user: () => mockUser(),
     loading: () => false,
     error: () => null,
     login: mockLogin,
@@ -114,5 +115,35 @@ describe('loginPage', () => {
     await vi.waitFor(() => {
       expect(screen.getByText(/Sign in with Corporate Azure Active Directory/)).toBeInTheDocument()
     })
+  })
+
+  it('keeps button disabled after successful login', async () => {
+    mockLogin.mockImplementation(() => {
+      mockUser.mockReturnValue({ username: 'alice' })
+      return Promise.resolve()
+    })
+
+    renderLoginPage()
+
+    await vi.waitFor(() => {
+      expect(screen.getByLabelText('Username')).toBeInTheDocument()
+    })
+
+    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
+    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+
+    const button = screen.getByRole('button', { name: 'Sign in' })
+    fireEvent.click(button)
+
+    // Wait for login to complete.
+    await vi.waitFor(() => {
+      expect(mockLogin).toHaveBeenCalledOnce()
+    })
+
+    // Flush microtasks so the async handler finishes.
+    await new Promise(r => setTimeout(r, 0))
+
+    // The button should never revert to 'Sign in' after a successful login.
+    expect(screen.queryByRole('button', { name: 'Sign in' })).not.toBeInTheDocument()
   })
 })

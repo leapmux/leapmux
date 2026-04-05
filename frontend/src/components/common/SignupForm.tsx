@@ -62,8 +62,6 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
     }
     catch (e) {
       setError(e instanceof Error ? e.message : (props.errorPrefix ?? 'Sign up failed'))
-    }
-    finally {
       setSubmitting(false)
     }
   }

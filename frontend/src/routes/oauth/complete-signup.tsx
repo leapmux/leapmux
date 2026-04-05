@@ -73,8 +73,6 @@ const OAuthCompleteSignupPage: Component = () => {
     }
     catch (e) {
       setError(e instanceof Error ? e.message : 'Sign up failed')
-    }
-    finally {
       setSubmitting(false)
     }
   }
