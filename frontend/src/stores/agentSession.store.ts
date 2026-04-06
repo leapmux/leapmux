@@ -29,14 +29,12 @@ export interface AgentSessionInfo {
   streamingType?: string // "plan" when streaming plan text, "" otherwise
 }
 
-const STORAGE_KEY_PREFIX = PREFIX_AGENT_SESSION
-
 function loadFromStorage(agentId: string): AgentSessionInfo {
-  return safeGetJson<AgentSessionInfo>(`${STORAGE_KEY_PREFIX}${agentId}`) ?? {}
+  return safeGetJson<AgentSessionInfo>(`${PREFIX_AGENT_SESSION}${agentId}`) ?? {}
 }
 
 function saveToStorage(agentId: string, info: AgentSessionInfo) {
-  safeSetJson(`${STORAGE_KEY_PREFIX}${agentId}`, info)
+  safeSetJson(`${PREFIX_AGENT_SESSION}${agentId}`, info)
 }
 
 interface AgentSessionStoreState {

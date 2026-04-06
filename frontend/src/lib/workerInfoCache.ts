@@ -15,16 +15,14 @@ export interface WorkerInfo {
   updatedAt: number // Date.now()
 }
 
-const KEY_PREFIX = PREFIX_WORKER_INFO
-
 export function getWorkerInfo(workerId: string): WorkerInfo | null {
-  return safeGetJson<WorkerInfo>(KEY_PREFIX + workerId) ?? null
+  return safeGetJson<WorkerInfo>(PREFIX_WORKER_INFO + workerId) ?? null
 }
 
 export function setWorkerInfo(workerId: string, info: WorkerInfo): void {
-  safeSetJson(KEY_PREFIX + workerId, info)
+  safeSetJson(PREFIX_WORKER_INFO + workerId, info)
 }
 
 export function clearWorkerInfo(workerId: string): void {
-  safeRemoveItem(KEY_PREFIX + workerId)
+  safeRemoveItem(PREFIX_WORKER_INFO + workerId)
 }

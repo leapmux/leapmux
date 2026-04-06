@@ -1,15 +1,13 @@
 import { safeGetJson, safeGetString, safeRemoveItem, safeSetJson } from '~/lib/safeStorage'
 import { PREFIX_EDITOR_DRAFT } from '~/lib/storageCleanup'
 
-export const DRAFT_KEY_PREFIX = PREFIX_EDITOR_DRAFT
-
 export interface Draft {
   content: string
   cursor: number
 }
 
 export function loadDraft(agentId: string): Draft {
-  const key = `${DRAFT_KEY_PREFIX}${agentId}`
+  const key = `${PREFIX_EDITOR_DRAFT}${agentId}`
   // Try JSON format first (new), fall back to plain string (legacy)
   const parsed = safeGetJson<{ content?: string, cursor?: number }>(key)
   if (parsed) {
@@ -24,13 +22,13 @@ export function loadDraft(agentId: string): Draft {
 
 export function saveDraft(agentId: string, content: string, cursor: number): void {
   if (content) {
-    safeSetJson(`${DRAFT_KEY_PREFIX}${agentId}`, { content, cursor })
+    safeSetJson(`${PREFIX_EDITOR_DRAFT}${agentId}`, { content, cursor })
   }
   else {
-    safeRemoveItem(`${DRAFT_KEY_PREFIX}${agentId}`)
+    safeRemoveItem(`${PREFIX_EDITOR_DRAFT}${agentId}`)
   }
 }
 
 export function clearDraft(agentId: string): void {
-  safeRemoveItem(`${DRAFT_KEY_PREFIX}${agentId}`)
+  safeRemoveItem(`${PREFIX_EDITOR_DRAFT}${agentId}`)
 }

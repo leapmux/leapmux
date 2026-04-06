@@ -80,6 +80,9 @@ export interface ChannelTransport {
   getUserId: () => string
 }
 
+interface KeyPin { publicKeyHex: string, firstSeen: number }
+type KeyPinMap = Record<string, KeyPin>
+
 interface PendingRequest {
   resolve: (resp: InnerRpcResponse) => void
   reject: (err: Error) => void
@@ -223,7 +226,7 @@ export class ChannelManager {
     // 2. Key pinning (TOFU model) — pin composite key.
     const compositeKeyBytes = concatBytes(keyBundle.x25519PublicKey, keyBundle.mlkemPublicKey, keyBundle.slhdsaPublicKey)
     const publicKeyHex = bytesToHex(compositeKeyBytes)
-    const allPins = safeGetJson<Record<string, { publicKeyHex: string, firstSeen: number }>>('leapmux:key-pins') ?? {}
+    const allPins = safeGetJson<KeyPinMap>('leapmux:key-pins') ?? {}
     const pinned = allPins[workerId] ?? null
 
     if (pinned && pinned.publicKeyHex !== publicKeyHex) {
@@ -528,7 +531,7 @@ export class ChannelManager {
 
   /** Remove a pinned key for a worker. */
   static clearKeyPin(workerId: string): void {
-    const allPins = safeGetJson<Record<string, { publicKeyHex: string, firstSeen: number }>>('leapmux:key-pins') ?? {}
+    const allPins = safeGetJson<KeyPinMap>('leapmux:key-pins') ?? {}
     delete allPins[workerId]
     safeSetJson('leapmux:key-pins', allPins)
   }

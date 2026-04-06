@@ -18,16 +18,14 @@ interface PersistedLocalMessage {
   attachments?: Array<{ filename?: string, mime_type?: string, data?: string }>
 }
 
-const LOCAL_MSG_KEY_PREFIX = PREFIX_LOCAL_MESSAGES
-
 function getPersistedLocalMessages(agentId: string): PersistedLocalMessage[] {
-  return safeGetJson<PersistedLocalMessage[]>(`${LOCAL_MSG_KEY_PREFIX}${agentId}`) ?? []
+  return safeGetJson<PersistedLocalMessage[]>(`${PREFIX_LOCAL_MESSAGES}${agentId}`) ?? []
 }
 
 function persistLocalMessage(agentId: string, msg: PersistedLocalMessage) {
   const list = getPersistedLocalMessages(agentId)
   list.push(msg)
-  safeSetJson(`${LOCAL_MSG_KEY_PREFIX}${agentId}`, list)
+  safeSetJson(`${PREFIX_LOCAL_MESSAGES}${agentId}`, list)
 }
 
 function removePersistedLocalMessage(agentId: string, messageId: string) {
@@ -36,10 +34,10 @@ function removePersistedLocalMessage(agentId: string, messageId: string) {
     return
   const filtered = list.filter(m => m.id !== messageId)
   if (filtered.length === 0) {
-    safeRemoveItem(`${LOCAL_MSG_KEY_PREFIX}${agentId}`)
+    safeRemoveItem(`${PREFIX_LOCAL_MESSAGES}${agentId}`)
   }
   else {
-    safeSetJson(`${LOCAL_MSG_KEY_PREFIX}${agentId}`, filtered)
+    safeSetJson(`${PREFIX_LOCAL_MESSAGES}${agentId}`, filtered)
   }
 }
 

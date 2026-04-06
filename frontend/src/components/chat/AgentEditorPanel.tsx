@@ -74,10 +74,8 @@ export interface AgentEditorPanelProps {
 
 // Per-agent editor height state
 const EDITOR_MIN_HEIGHT = 38 // px - minimum height of the markdown editor wrapper
-const EDITOR_MIN_HEIGHT_KEY_PREFIX = PREFIX_EDITOR_MIN_HEIGHT
-
 function editorMinHeightKey(agentId: string): string {
-  return `${EDITOR_MIN_HEIGHT_KEY_PREFIX}${agentId}`
+  return `${PREFIX_EDITOR_MIN_HEIGHT}${agentId}`
 }
 
 function getStoredEditorMinHeight(agentId: string): number | undefined {

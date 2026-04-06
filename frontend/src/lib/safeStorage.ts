@@ -8,7 +8,7 @@
  * Unrecognized keys will throw an error.
  */
 
-import { getTtlForKey, isKnownKey, isWrappedValue, shouldRefreshExpiration } from './storageCleanup'
+import { getTtlForKey, isWrappedValue, shouldRefreshExpiration, STATIC_KEYS } from './storageCleanup'
 
 /**
  * Validate the key and return its TTL. Throws if the key is not registered.
@@ -16,13 +16,15 @@ import { getTtlForKey, isKnownKey, isWrappedValue, shouldRefreshExpiration } fro
  */
 function requireKnownKey(key: string): number | null {
   const ttl = getTtlForKey(key)
-  if (ttl === null && !isKnownKey(key)) {
+  if (ttl !== null)
+    return ttl
+  if (!STATIC_KEYS.has(key)) {
     throw new Error(
       `Unknown localStorage key: "${key}". Register it in storageCleanup.ts `
       + `(STATIC_KEYS or DYNAMIC_KEY_TTLS).`,
     )
   }
-  return ttl
+  return null
 }
 
 /**

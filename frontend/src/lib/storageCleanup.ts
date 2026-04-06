@@ -52,13 +52,6 @@ export function getTtlForKey(key: string): number | null {
   return null
 }
 
-/** Returns true if the key is a known leapmux key (static or dynamic). */
-export function isKnownKey(key: string): boolean {
-  if (STATIC_KEYS.has(key))
-    return true
-  return getTtlForKey(key) !== null
-}
-
 /** Type guard: checks if a parsed value has the wrapped format { v, e }. */
 export function isWrappedValue(raw: unknown): raw is { v: unknown, e: number } {
   return (
@@ -84,6 +77,7 @@ export function shouldRefreshExpiration(e: number, ttlMs: number): boolean {
  * NOT a known static key AND NOT a valid non-expired wrapped dynamic key.
  */
 export function runCleanup(): void {
+  const now = Date.now()
   const keysToDelete: string[] = []
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i)
@@ -103,15 +97,13 @@ export function runCleanup(): void {
         const raw = localStorage.getItem(key)
         if (raw !== null) {
           const parsed = JSON.parse(raw)
-          if (isWrappedValue(parsed) && parsed.e > Date.now()) {
-            continue // Valid and not expired — keep it.
-          }
+          if (isWrappedValue(parsed) && parsed.e > now)
+            continue
         }
       }
       catch { /* parse error → treat as stale */ }
     }
 
-    // Not a static key, not a valid wrapped dynamic key → delete.
     keysToDelete.push(key)
   }
 
