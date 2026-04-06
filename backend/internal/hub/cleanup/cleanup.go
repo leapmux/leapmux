@@ -3,6 +3,7 @@ package cleanup
 import (
 	"context"
 	"database/sql"
+	"math/rand/v2"
 	"time"
 
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
@@ -12,14 +13,16 @@ import (
 const (
 	cleanupInterval  = 1 * time.Hour
 	cleanupRetention = 7 * 24 * time.Hour
+	cleanupJitter    = 5 * time.Minute
 )
 
 // StartLoop starts a background goroutine that periodically hard-deletes
 // soft-deleted records that have been deleted for longer than the
-// retention period.
+// retention period. A random jitter of up to 5 minutes is added before
+// each run to avoid contention if multiple instances start simultaneously.
 func StartLoop(ctx context.Context, q *gendb.Queries) {
 	go func() {
-		run(ctx, q)
+		jitteredRun(ctx, q)
 
 		ticker := time.NewTicker(cleanupInterval)
 		defer ticker.Stop()
@@ -29,10 +32,20 @@ func StartLoop(ctx context.Context, q *gendb.Queries) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				run(ctx, q)
+				jitteredRun(ctx, q)
 			}
 		}
 	}()
+}
+
+func jitteredRun(ctx context.Context, q *gendb.Queries) {
+	jitter := time.Duration(rand.Int64N(int64(cleanupJitter)))
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(jitter):
+	}
+	run(ctx, q)
 }
 
 func run(ctx context.Context, q *gendb.Queries) {

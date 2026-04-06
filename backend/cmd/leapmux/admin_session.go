@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/config"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
@@ -32,14 +33,23 @@ func runAdminSession(args []string) error {
 
 func runSessionList(args []string) error {
 	var limit *int64
-	var offset *int64
+	var cursor *string
 	return withAdminDB("session list", args, func(fs *flag.FlagSet) {
 		limit = fs.Int64("limit", 50, "maximum number of results")
-		offset = fs.Int64("offset", 0, "offset for pagination")
+		cursor = fs.String("cursor", "", "pagination cursor (last_active_at from previous page)")
 	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
+		var cursorTime any
+		if *cursor != "" {
+			t, err := time.Parse(time.RFC3339Nano, *cursor)
+			if err != nil {
+				return fmt.Errorf("invalid --cursor value (expected RFC3339 timestamp): %w", err)
+			}
+			cursorTime = t
+		}
+
 		sessions, err := q.ListAllActiveSessions(ctx, gendb.ListAllActiveSessionsParams{
+			Cursor: cursorTime,
 			Limit:  *limit,
-			Offset: *offset,
 		})
 		if err != nil {
 			return fmt.Errorf("list sessions: %w", err)
@@ -56,6 +66,12 @@ func runSessionList(args []string) error {
 				s.ID, s.UserID, s.Username,
 				timefmt.Format(s.LastActiveAt), timefmt.Format(s.ExpiresAt),
 				s.IpAddress, truncate(s.UserAgent, 60))
+		}
+
+		// Print next-page cursor hint.
+		last := sessions[len(sessions)-1]
+		if int64(len(sessions)) == *limit {
+			fmt.Printf("\nNext page: --cursor %s\n", last.LastActiveAt.Format(time.RFC3339Nano))
 		}
 		return nil
 	})

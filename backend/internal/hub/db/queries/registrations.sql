@@ -59,7 +59,8 @@ SELECT s.id, s.user_id, u.username, s.created_at, s.last_active_at, s.expires_at
 FROM user_sessions s
 JOIN users u ON s.user_id = u.id
 WHERE s.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  AND (sqlc.narg(cursor) IS NULL OR s.last_active_at < sqlc.narg(cursor))
 ORDER BY s.last_active_at DESC
-LIMIT ? OFFSET ?;
+LIMIT sqlc.arg(limit);
 
 
