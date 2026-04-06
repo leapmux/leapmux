@@ -84,13 +84,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read tool versions
+      - name: Read tool versions and git metadata
         run: |
           echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
           echo "SQLC_VERSION=$(yq '.sqlc-version' versions.yaml)" >> $GITHUB_ENV
           echo "TASK_VERSION=$(yq '.task-version' versions.yaml)" >> $GITHUB_ENV
           echo "S6_OVERLAY_VERSION=$(yq '.s6-overlay-version' versions.yaml)" >> $GITHUB_ENV
           echo "ALPINE_IMAGE=$(yq '.alpine-image' versions.yaml)" >> $GITHUB_ENV
+          echo "COMMIT_HASH=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+          echo "COMMIT_TIME=$(git log -1 --format=%cI)" >> $GITHUB_ENV
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -109,5 +111,7 @@ jobs:
             TASK_VERSION=${{ env.TASK_VERSION }}
             S6_OVERLAY_VERSION=${{ env.S6_OVERLAY_VERSION }}
             VERSION=ci
+            COMMIT_HASH=${{ env.COMMIT_HASH }}
+            COMMIT_TIME=${{ env.COMMIT_TIME }}
           cache-from: type=gha,scope=alpine
           cache-to: type=gha,mode=max,scope=ci-docker
