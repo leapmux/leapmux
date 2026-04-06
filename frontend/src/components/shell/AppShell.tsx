@@ -988,8 +988,6 @@ export const AppShell: ParentComponent = (props) => {
     onDetachTab: handleDetachTab,
   })
 
-  // Auto-focus the chat editor when the user types a printable character
-  // and the focus is not on a meaningful interactive element.
   useChatAutoFocus(() => tileRenderer.focusedAgentId())
 
   // Sidebar element factories

@@ -3,24 +3,16 @@ import { getEditorRef } from '~/stores/editorRef.store'
 
 export function useChatAutoFocus(getFocusedAgentId: () => string | null): void {
   function handleKeyDown(e: KeyboardEvent) {
-    // Skip modifier combos (shortcuts like Ctrl+C, Cmd+V, Alt+p)
     if (e.ctrlKey || e.metaKey || e.altKey)
       return
-
-    // Only handle single printable characters (filters out Escape, Tab,
-    // Enter, Backspace, Delete, ArrowUp, F1, Shift, Control, Alt, etc.)
     if (e.key.length !== 1)
       return
-
-    // Skip space to avoid hijacking scroll-with-space behavior
+    // Preserve scroll-with-space behavior
     if (e.key === ' ')
       return
-
-    // Don't steal focus from meaningful interactive elements
     if (isMeaningfulElement(document.activeElement))
       return
 
-    // Only auto-focus when an agent tab is active
     const agentId = getFocusedAgentId()
     if (!agentId)
       return
@@ -29,7 +21,6 @@ export function useChatAutoFocus(getFocusedAgentId: () => string | null): void {
     if (!ref)
       return
 
-    ref.focus()
     ref.insert(e.key)
     e.preventDefault()
   }

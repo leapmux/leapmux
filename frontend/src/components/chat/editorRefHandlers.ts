@@ -87,8 +87,8 @@ export function setupEditorRefHandlers(opts: EditorRefHandlersOptions): void {
     try {
       editor.action((ctx: Ctx) => {
         const view = ctx.get(editorViewCtx)
-        const tr = view.state.tr.insertText(text)
-        view.dispatch(tr)
+        view.focus()
+        view.dispatch(view.state.tr.insertText(text))
       })
     }
     catch { /* editor may not be ready */ }
