@@ -19,6 +19,8 @@ const (
 // than the retention period.
 func StartCleanupLoop(ctx context.Context, queries *db.Queries) {
 	go func() {
+		runCleanup(ctx, queries)
+
 		ticker := time.NewTicker(cleanupInterval)
 		defer ticker.Stop()
 

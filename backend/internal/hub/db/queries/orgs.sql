@@ -16,7 +16,7 @@ SELECT count(*) FROM orgs WHERE deleted_at IS NULL;
 -- name: UpdateOrgName :exec
 UPDATE orgs SET name = ? WHERE id = ? AND is_personal = 0;
 
--- name: DeleteOrg :exec
+-- name: SoftDeleteNonPersonalOrg :exec
 UPDATE orgs SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND is_personal = 0;
 
 -- name: SoftDeleteOrg :exec

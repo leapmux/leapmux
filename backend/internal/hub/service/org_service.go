@@ -194,8 +194,7 @@ func (s *OrgService) DeleteOrg(
 		}
 	}
 
-	// DeleteOrg already rejects personal orgs (WHERE is_personal = 0).
-	if err := s.queries.DeleteOrg(ctx, orgID); err != nil {
+	if err := s.queries.SoftDeleteNonPersonalOrg(ctx, orgID); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete org: %w", err))
 	}
 

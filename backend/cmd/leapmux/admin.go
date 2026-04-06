@@ -99,6 +99,9 @@ func resolveUser(ctx context.Context, q *gendb.Queries, userID, username string)
 	if userID == "" && username == "" {
 		return nil, fmt.Errorf("--id or --username is required")
 	}
+	if userID != "" && username != "" {
+		return nil, fmt.Errorf("--id and --username are mutually exclusive")
+	}
 
 	var user gendb.User
 	var err error

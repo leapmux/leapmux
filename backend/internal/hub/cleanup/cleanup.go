@@ -19,6 +19,8 @@ const (
 // retention period.
 func StartLoop(ctx context.Context, q *gendb.Queries) {
 	go func() {
+		run(ctx, q)
+
 		ticker := time.NewTicker(cleanupInterval)
 		defer ticker.Stop()
 
