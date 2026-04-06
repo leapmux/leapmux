@@ -9,6 +9,8 @@ ARG BASE_IMAGE
 FROM golang:1.26-alpine AS builder
 
 ARG VERSION=dev
+ARG COMMIT_HASH
+ARG COMMIT_TIME
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 ARG BUF_VERSION
@@ -52,7 +54,8 @@ RUN mkdir -p frontend/src/spinners
 # NITRO_PRESET=node-server avoids bun preset auto-detection which hangs in buildkit.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    NITRO_PRESET=node-server task build-backend-docker GOOS=${TARGETOS} GOARCH=${TARGETARCH} VERSION=${VERSION}
+    NITRO_PRESET=node-server VERSION=${VERSION} COMMIT_HASH=${COMMIT_HASH} COMMIT_TIME=${COMMIT_TIME} \
+    task build-backend-docker GOOS=${TARGETOS} GOARCH=${TARGETARCH}
 
 # ------------------------------------------------------------------
 # Stage 2: Runtime image with s6-overlay
