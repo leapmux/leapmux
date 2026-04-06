@@ -93,6 +93,21 @@ func adminConfig(dataDir string) *config.Config {
 	return cfg
 }
 
+// withAdminConfig creates a flag set with --data-dir, parses args, and
+// calls fn with the resolved config. Use this for commands that need
+// the config but not a database connection.
+func withAdminConfig(name string, args []string, setup func(fs *flag.FlagSet), fn func(cfg *config.Config) error) error {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	dataDir := fs.String("data-dir", "", "data directory")
+	if setup != nil {
+		setup(fs)
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	return fn(adminConfig(*dataDir))
+}
+
 // resolveUser looks up a user by ID or username. Exactly one of userID or
 // username must be non-empty.
 func resolveUser(ctx context.Context, q *gendb.Queries, userID, username string) (*gendb.User, error) {

@@ -27,14 +27,10 @@ func runAdminDB(args []string) error {
 }
 
 func runDBPath(args []string) error {
-	fs := flag.NewFlagSet("db path", flag.ContinueOnError)
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	fmt.Println(adminConfig(*dataDir).DBPath())
-	return nil
+	return withAdminConfig("db path", args, nil, func(cfg *config.Config) error {
+		fmt.Println(cfg.DBPath())
+		return nil
+	})
 }
 
 func runDBBackup(args []string) error {

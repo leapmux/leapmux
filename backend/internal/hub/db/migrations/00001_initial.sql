@@ -9,6 +9,7 @@ CREATE TABLE orgs (
     deleted_at  DATETIME
 );
 CREATE UNIQUE INDEX idx_orgs_name ON orgs(name) WHERE deleted_at IS NULL;
+CREATE INDEX idx_orgs_deleted_at ON orgs(deleted_at) WHERE deleted_at IS NOT NULL;
 
 -- Users
 CREATE TABLE users (
@@ -32,6 +33,8 @@ CREATE TABLE users (
 CREATE INDEX idx_users_org_id ON users(org_id);
 CREATE UNIQUE INDEX idx_users_username ON users(username) WHERE deleted_at IS NULL;
 CREATE UNIQUE INDEX idx_users_email ON users(email) WHERE email != '' AND deleted_at IS NULL;
+CREATE INDEX idx_users_deleted_at ON users(deleted_at) WHERE deleted_at IS NOT NULL;
+CREATE INDEX idx_users_pending_email_token ON users(pending_email_token) WHERE pending_email_token != '' AND deleted_at IS NULL;
 
 -- Multi-org membership (M:N junction)
 CREATE TABLE org_members (
@@ -70,6 +73,7 @@ CREATE TABLE workers (
     deleted_at    DATETIME
 );
 CREATE INDEX idx_workers_registered_by ON workers(registered_by);
+CREATE INDEX idx_workers_deleted_at ON workers(deleted_at) WHERE deleted_at IS NOT NULL;
 
 -- Worker notifications (persistent queue for reliable delivery)
 CREATE TABLE worker_notifications (
@@ -143,6 +147,9 @@ CREATE TABLE workspaces (
     created_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     deleted_at    DATETIME
 );
+CREATE INDEX idx_workspaces_org_owner ON workspaces(org_id, owner_user_id) WHERE is_deleted = 0;
+CREATE INDEX idx_workspaces_owner_user_id ON workspaces(owner_user_id);
+CREATE INDEX idx_workspaces_deleted_at ON workspaces(deleted_at) WHERE deleted_at IS NOT NULL;
 
 -- Workspace read-only sharing ACL
 CREATE TABLE workspace_access (
@@ -195,6 +202,7 @@ CREATE TABLE oauth_user_links (
     created_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (user_id, provider_id)
 );
+CREATE UNIQUE INDEX idx_oauth_user_links_provider_subject ON oauth_user_links(provider_id, provider_subject);
 
 -- Encrypted OAuth tokens per user per provider
 CREATE TABLE oauth_tokens (
@@ -208,6 +216,9 @@ CREATE TABLE oauth_tokens (
     updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (user_id, provider_id)
 );
+CREATE INDEX idx_oauth_tokens_provider_id ON oauth_tokens(provider_id);
+CREATE INDEX idx_oauth_tokens_expires_at ON oauth_tokens(expires_at);
+CREATE INDEX idx_oauth_tokens_key_version ON oauth_tokens(key_version);
 
 -- Short-lived OAuth state for CSRF + PKCE during auth flow
 CREATE TABLE oauth_states (

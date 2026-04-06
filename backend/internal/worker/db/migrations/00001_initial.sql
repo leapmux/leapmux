@@ -26,6 +26,7 @@ CREATE TABLE agents (
     closed_at        DATETIME
 );
 CREATE INDEX idx_agents_workspace_id ON agents(workspace_id);
+CREATE INDEX idx_agents_closed_at ON agents(closed_at) WHERE closed_at IS NOT NULL;
 
 -- Messages (verbatim storage, per agent)
 CREATE TABLE messages (
@@ -46,7 +47,6 @@ CREATE TABLE messages (
     created_at          DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE(agent_id, seq)
 );
-CREATE INDEX idx_messages_agent_id_seq ON messages(agent_id, seq);
 
 -- Pending control requests
 CREATE TABLE control_requests (
@@ -66,7 +66,8 @@ CREATE TABLE worktrees (
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     deleted_at      DATETIME
 );
-CREATE UNIQUE INDEX idx_worktrees_path ON worktrees(worktree_path);
+CREATE UNIQUE INDEX idx_worktrees_path ON worktrees(worktree_path) WHERE deleted_at IS NULL;
+CREATE INDEX idx_worktrees_deleted_at ON worktrees(deleted_at) WHERE deleted_at IS NOT NULL;
 
 -- Terminals (1:N per workspace; workspace_id is a hub-owned ID, no local FK)
 CREATE TABLE terminals (
@@ -84,6 +85,7 @@ CREATE TABLE terminals (
     closed_at     DATETIME
 );
 CREATE INDEX idx_terminals_workspace_id ON terminals(workspace_id);
+CREATE INDEX idx_terminals_closed_at ON terminals(closed_at) WHERE closed_at IS NOT NULL;
 
 -- Junction: which tabs use which LeapMux-created worktree
 CREATE TABLE worktree_tabs (

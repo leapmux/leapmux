@@ -3,10 +3,10 @@ package cleanup
 import (
 	"context"
 	"database/sql"
-	"log/slog"
 	"time"
 
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/util/dbcleanup"
 )
 
 const (
@@ -41,29 +41,10 @@ func run(ctx context.Context, q *gendb.Queries) {
 		Valid: true,
 	}
 
-	step("users", func() (sql.Result, error) { return q.HardDeleteUsersBefore(ctx, cutoff) })
-	step("orgs", func() (sql.Result, error) { return q.HardDeleteOrgsBefore(ctx, cutoff) })
-	step("workspaces", func() (sql.Result, error) { return q.HardDeleteWorkspacesBefore(ctx, cutoff) })
-	step("workers", func() (sql.Result, error) { return q.HardDeleteWorkersBefore(ctx, cutoff) })
-	step("expired registrations", func() (sql.Result, error) { return q.HardDeleteExpiredRegistrationsBefore(ctx, cutoff.Time) })
-	step("expired sessions", func() (sql.Result, error) { return q.DeleteExpiredUserSessions(ctx) })
-}
-
-func step(name string, fn func() (sql.Result, error)) {
-	var total int64
-	for {
-		res, err := fn()
-		if err != nil {
-			slog.Error("cleanup: "+name, "error", err)
-			return
-		}
-		n, _ := res.RowsAffected()
-		if n == 0 {
-			break
-		}
-		total += n
-	}
-	if total > 0 {
-		slog.Info("cleanup: "+name, "count", total)
-	}
+	dbcleanup.Step("users", func() (sql.Result, error) { return q.HardDeleteUsersBefore(ctx, cutoff) })
+	dbcleanup.Step("orgs", func() (sql.Result, error) { return q.HardDeleteOrgsBefore(ctx, cutoff) })
+	dbcleanup.Step("workspaces", func() (sql.Result, error) { return q.HardDeleteWorkspacesBefore(ctx, cutoff) })
+	dbcleanup.Step("workers", func() (sql.Result, error) { return q.HardDeleteWorkersBefore(ctx, cutoff) })
+	dbcleanup.Step("expired registrations", func() (sql.Result, error) { return q.HardDeleteExpiredRegistrationsBefore(ctx, cutoff.Time) })
+	dbcleanup.Step("expired sessions", func() (sql.Result, error) { return q.DeleteExpiredUserSessions(ctx) })
 }
