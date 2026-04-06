@@ -835,7 +835,7 @@ func TestCLI_UserCreate_MissingPassword(t *testing.T) {
 		"--data-dir", dir,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--password is required")
+	assert.Contains(t, err.Error(), "not a terminal")
 }
 
 func TestCLI_UserCreate_DuplicateUsername(t *testing.T) {
@@ -940,7 +940,7 @@ func TestCLI_UserResetPassword_MissingPassword(t *testing.T) {
 
 	err := runUserResetPassword([]string{"--id", user.ID, "--data-dir", dir})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--password is required")
+	assert.Contains(t, err.Error(), "not a terminal")
 }
 
 func TestCLI_UserResetPassword_NotFound(t *testing.T) {

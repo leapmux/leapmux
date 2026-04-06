@@ -9,6 +9,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mattn/go-isatty"
+	"golang.org/x/term"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/db"
@@ -154,7 +157,7 @@ func runUserCreate(args []string) error {
 	var admin *bool
 	return withAdminDB("user create", args, func(fs *flag.FlagSet) {
 		username = fs.String("username", "", "username (required)")
-		pw = fs.String("password", "", "password (required)")
+		pw = fs.String("password", "", "password (prompted if omitted)")
 		displayName = fs.String("display-name", "", "display name")
 		email = fs.String("email", "", "email address")
 		emailVerified = fs.Bool("email-verified", false, "mark email as verified")
@@ -163,8 +166,10 @@ func runUserCreate(args []string) error {
 		if *username == "" {
 			return fmt.Errorf("--username is required")
 		}
-		if *pw == "" {
-			return fmt.Errorf("--password is required")
+
+		pwValue, err := requirePassword(*pw, "Password: ")
+		if err != nil {
+			return err
 		}
 
 		slug, err := validate.SanitizeSlug("username", *username)
@@ -172,7 +177,7 @@ func runUserCreate(args []string) error {
 			return err
 		}
 
-		if err := validate.ValidatePassword(*pw); err != nil {
+		if err := validate.ValidatePassword(pwValue); err != nil {
 			return err
 		}
 
@@ -187,7 +192,7 @@ func runUserCreate(args []string) error {
 			return fmt.Errorf("display name: %w", err)
 		}
 
-		hash, err := password.Hash(*pw)
+		hash, err := password.Hash(pwValue)
 		if err != nil {
 			return fmt.Errorf("hash password: %w", err)
 		}
@@ -374,17 +379,18 @@ func runUserResetPassword(args []string) error {
 	return withAdminDB("user reset-password", args, func(fs *flag.FlagSet) {
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username")
-		pw = fs.String("password", "", "new password (required)")
+		pw = fs.String("password", "", "new password (prompted if omitted)")
 	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
-		if *pw == "" {
-			return fmt.Errorf("--password is required")
-		}
-
-		if err := validate.ValidatePassword(*pw); err != nil {
+		pwValue, err := requirePassword(*pw, "New password: ")
+		if err != nil {
 			return err
 		}
 
-		hash, err := password.Hash(*pw)
+		if err := validate.ValidatePassword(pwValue); err != nil {
+			return err
+		}
+
+		hash, err := password.Hash(pwValue)
 		if err != nil {
 			return fmt.Errorf("hash password: %w", err)
 		}
@@ -1239,6 +1245,35 @@ func friendlyConstraintError(err error, username, email string) error {
 		return fmt.Errorf("email %q is already in use", email)
 	}
 	return err
+}
+
+// promptPassword reads a password from the terminal without echoing.
+// It emits OSC 133;P to signal password input to terminals that support
+// it (e.g. Ghostty), enabling credential detection features.
+func promptPassword(prompt string) (string, error) {
+	fd := int(os.Stdin.Fd())
+	if !isatty.IsTerminal(uintptr(fd)) && !isatty.IsCygwinTerminal(uintptr(fd)) {
+		return "", fmt.Errorf("--password is required (stdin is not a terminal)")
+	}
+
+	// OSC 133;P signals the start of password input to supporting terminals.
+	fmt.Fprint(os.Stderr, "\x1b]133;P\x07")
+	fmt.Fprint(os.Stderr, prompt)
+	pw, err := term.ReadPassword(fd)
+	fmt.Fprintln(os.Stderr) // newline after hidden input
+	if err != nil {
+		return "", fmt.Errorf("read password: %w", err)
+	}
+	return string(pw), nil
+}
+
+// requirePassword returns the password from the flag if set, otherwise
+// prompts interactively.
+func requirePassword(pw string, prompt string) (string, error) {
+	if pw != "" {
+		return pw, nil
+	}
+	return promptPassword(prompt)
 }
 
 func parseWorkerStatus(s string) (leapmuxv1.WorkerStatus, error) {
