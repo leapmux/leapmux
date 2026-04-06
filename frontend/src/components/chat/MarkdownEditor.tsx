@@ -1,15 +1,16 @@
 import type { Editor } from '@milkdown/core'
 import type { Ctx } from '@milkdown/ctx'
 import type { Component, JSX } from 'solid-js'
-import type { EnterKeyMode } from './draftManagement'
+import type { EnterKeyMode } from '~/lib/browserStorage'
 import { editorViewCtx, serializerCtx } from '@milkdown/core'
 import { createCodeBlockCommand, toggleInlineCodeCommand } from '@milkdown/preset-commonmark'
 import { TextSelection } from '@milkdown/prose/state'
 import { callCommand, replaceAll } from '@milkdown/utils'
 import { createEffect, createSignal, on, onCleanup, onMount } from 'solid-js'
+import { usePreferences } from '~/context/PreferencesContext'
 import { loadDraft } from '~/lib/editor/draftPersistence'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
-import { clearDraft, getEnterKeyMode, restoreCursor, saveDraftFromEditor, setEnterKeyMode } from './draftManagement'
+import { clearDraft, restoreCursor, saveDraftFromEditor } from './draftManagement'
 import { setupEditorRefHandlers } from './editorRefHandlers'
 import { buildEditor } from './editorSetup'
 import { EditorToolbar } from './EditorToolbar'
@@ -54,7 +55,8 @@ interface MarkdownEditorProps {
 export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   let editorRef: HTMLDivElement | undefined
   let editorInstance: Editor | undefined
-  const [enterMode, setEnterMode] = createSignal<EnterKeyMode>(getEnterKeyMode())
+  const preferences = usePreferences()
+  const enterMode = preferences.enterKeyMode
   const [_markdown, setMarkdown] = createSignal('')
   const [contentHeight, setContentHeight] = createSignal(0)
 
@@ -91,11 +93,9 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   const [codeLangAnchorEl, setCodeLangAnchorEl] = createSignal<HTMLElement | undefined>(undefined)
   const [codeLangFilter, setCodeLangFilter] = createSignal('')
 
-  // Persist enter key mode
   const toggleEnterMode = () => {
     const next = enterMode() === 'enter-sends' ? 'cmd-enter-sends' : 'enter-sends'
-    setEnterMode(next)
-    setEnterKeyMode(next)
+    preferences.setEnterKeyMode(next)
   }
 
   const focusEditor = () => {

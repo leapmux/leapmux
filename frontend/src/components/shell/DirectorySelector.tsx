@@ -7,7 +7,7 @@ import { labelRow, treeContainer } from '~/components/common/Dialog.css'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
-import { safeGetJson, safeSetJson } from '~/lib/safeStorage'
+import { safeGetJson, safeSetJson } from '~/lib/browserStorage'
 import { emptyState } from '~/styles/shared.css'
 
 interface DirectorySelectorProps {

@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 
-const EDITOR_HEIGHT_KEY_PREFIX = 'leapmux-editor-min-height-'
+const EDITOR_HEIGHT_KEY_PREFIX = 'leapmux:editor-min-height:'
 
 /**
  * Simulate a drag gesture on the resize handle by dispatching native MouseEvents
@@ -33,8 +33,20 @@ async function getStoredEditorHeight(page: Page): Promise<string | null> {
   return page.evaluate((prefix) => {
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i)
-      if (key?.startsWith(prefix))
-        return localStorage.getItem(key)
+      if (key?.startsWith(prefix)) {
+        const raw = localStorage.getItem(key)
+        if (!raw)
+          return null
+        try {
+          const parsed = JSON.parse(raw)
+          // Dynamic keys are wrapped as { v, e }
+          if (parsed && typeof parsed === 'object' && 'v' in parsed) {
+            return String(parsed.v)
+          }
+        }
+        catch { /* not JSON */ }
+        return raw
+      }
     }
     return null
   }, EDITOR_HEIGHT_KEY_PREFIX)

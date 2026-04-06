@@ -61,10 +61,11 @@ describe('createAgentSessionStore', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       store.updateInfo('agent-1', { totalCostUsd: 1.5 })
-      const raw = localStorage.getItem('leapmux-agent-session-agent-1')
+      const raw = localStorage.getItem('leapmux:agent-session:agent-1')
       expect(raw).not.toBeNull()
-      const parsed = JSON.parse(raw!)
-      expect(parsed.totalCostUsd).toBe(1.5)
+      const wrapped = JSON.parse(raw!)
+      expect(wrapped.v.totalCostUsd).toBe(1.5)
+      expect(typeof wrapped.e).toBe('number')
       dispose()
     })
   })
@@ -86,18 +87,18 @@ describe('createAgentSessionStore', () => {
       expect(info.contextUsage).toBeUndefined()
       expect(info.totalCostUsd).toBeUndefined()
       // localStorage should also not contain contextUsage or totalCostUsd
-      const raw = localStorage.getItem('leapmux-agent-session-agent-1')
-      const parsed = JSON.parse(raw!)
-      expect(parsed.contextUsage).toBeUndefined()
-      expect(parsed.totalCostUsd).toBeUndefined()
+      const raw = localStorage.getItem('leapmux:agent-session:agent-1')
+      const wrapped = JSON.parse(raw!)
+      expect(wrapped.v.contextUsage).toBeUndefined()
+      expect(wrapped.v.totalCostUsd).toBeUndefined()
       dispose()
     })
   })
 
   it('should load from localStorage on first getInfo call', () => {
-    // Pre-seed localStorage before creating the store
+    // Pre-seed localStorage with wrapped format before creating the store
     const preseeded = { totalCostUsd: 3.0 }
-    localStorage.setItem('leapmux-agent-session-agent-1', JSON.stringify(preseeded))
+    localStorage.setItem('leapmux:agent-session:agent-1', JSON.stringify({ v: preseeded, e: Date.now() + 7 * 24 * 60 * 60 * 1000 }))
 
     createRoot((dispose) => {
       const store = createAgentSessionStore()

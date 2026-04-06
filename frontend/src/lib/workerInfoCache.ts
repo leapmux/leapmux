@@ -3,6 +3,8 @@
  * Persists across page reloads so offline workers still show last-known info.
  */
 
+import { PREFIX_WORKER_INFO, safeGetJson, safeRemoveItem, safeSetJson } from './browserStorage'
+
 export interface WorkerInfo {
   name: string
   os: string
@@ -12,29 +14,14 @@ export interface WorkerInfo {
   updatedAt: number // Date.now()
 }
 
-const KEY_PREFIX = 'leapmux:worker-info:'
-
 export function getWorkerInfo(workerId: string): WorkerInfo | null {
-  try {
-    const raw = localStorage.getItem(KEY_PREFIX + workerId)
-    if (!raw)
-      return null
-    return JSON.parse(raw) as WorkerInfo
-  }
-  catch {
-    return null
-  }
+  return safeGetJson<WorkerInfo>(PREFIX_WORKER_INFO + workerId) ?? null
 }
 
 export function setWorkerInfo(workerId: string, info: WorkerInfo): void {
-  try {
-    localStorage.setItem(KEY_PREFIX + workerId, JSON.stringify(info))
-  }
-  catch {
-    // localStorage full or unavailable — silently ignore.
-  }
+  safeSetJson(PREFIX_WORKER_INFO + workerId, info)
 }
 
 export function clearWorkerInfo(workerId: string): void {
-  localStorage.removeItem(KEY_PREFIX + workerId)
+  safeRemoveItem(PREFIX_WORKER_INFO + workerId)
 }

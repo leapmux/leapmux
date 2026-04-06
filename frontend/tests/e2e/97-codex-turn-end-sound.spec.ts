@@ -1,5 +1,5 @@
 import { codexTest, expect } from './codex-fixtures'
-import { sendMessage, waitForAgentIdle } from './helpers/ui'
+import { sendMessage, setInitialBrowserPref, waitForAgentIdle } from './helpers/ui'
 
 codexTest.describe('Codex Turn End Sound', () => {
   codexTest('should play ding-dong sound when Codex turn ends with tool use', async ({ page, authenticatedCodexWorkspace }) => {
@@ -13,9 +13,7 @@ codexTest.describe('Codex Turn End Sound', () => {
         return Promise.resolve()
       }
     })
-    await page.addInitScript(() => {
-      localStorage.setItem('leapmux-turn-end-sound', 'ding-dong')
-    })
+    await setInitialBrowserPref(page, 'turnEndSound', 'ding-dong')
 
     // Reload so the init scripts take effect
     await page.reload()
@@ -44,9 +42,7 @@ codexTest.describe('Codex Turn End Sound', () => {
         return Promise.resolve()
       }
     })
-    await page.addInitScript(() => {
-      localStorage.setItem('leapmux-turn-end-sound', 'ding-dong')
-    })
+    await setInitialBrowserPref(page, 'turnEndSound', 'ding-dong')
 
     // Reload so the init scripts take effect
     await page.reload()

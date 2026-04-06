@@ -2,6 +2,7 @@ import type { ITheme } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
+import { loadBrowserPrefs } from './browserStorage'
 
 const DEFAULT_MONO_FONT_FAMILY = '"Hack NF", Hack, "SF Mono", Consolas, monospace'
 
@@ -76,7 +77,7 @@ export const lightTerminalTheme: ITheme = {
 
 /** Get the stored terminal theme preference from localStorage. */
 export function getTerminalThemePreference(): TerminalThemePreference {
-  const stored = localStorage.getItem('leapmux-terminal-theme')
+  const stored = loadBrowserPrefs().terminalTheme
   if (stored === 'light' || stored === 'dark' || stored === 'match-ui')
     return stored
   return 'match-ui'
@@ -89,9 +90,7 @@ export function resolveTerminalThemeMode(pref: TerminalThemePreference): 'dark' 
   if (pref === 'dark')
     return 'dark'
   // match-ui: check the current UI theme
-  // The sentinel 'account-default' means "use the account default" which defaults to 'system'.
-  const raw = localStorage.getItem('leapmux-theme')
-  const uiTheme = (!raw || raw === 'account-default') ? 'system' : raw
+  const uiTheme = loadBrowserPrefs().theme || 'system'
   if (uiTheme === 'light')
     return 'light'
   if (uiTheme === 'system') {

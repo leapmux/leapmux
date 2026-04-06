@@ -1,5 +1,19 @@
+import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+
+const KEY_PINS_STORAGE_KEY = 'leapmux:key-pins'
+
+/** Read a worker's key pin from the consolidated key-pins map. */
+async function getKeyPin(page: Page, workerId: string) {
+  return page.evaluate(([key, wid]) => {
+    const raw = localStorage.getItem(key)
+    if (!raw)
+      return null
+    const pins = JSON.parse(raw)
+    return pins[wid] ?? null
+  }, [KEY_PINS_STORAGE_KEY, workerId] as const)
+}
 
 test.describe('Key Pinning', () => {
   test('first connection pins the worker public key in localStorage', async ({
@@ -13,12 +27,8 @@ test.describe('Key Pinning', () => {
     await page.goto(workspace.workspaceUrl)
     await waitForWorkspaceReady(page)
 
-    // Verify the key was pinned in localStorage.
-    const pinKey = `leapmux:key-pin:${workerId}`
-    const pin = await page.evaluate((key) => {
-      const raw = localStorage.getItem(key)
-      return raw ? JSON.parse(raw) : null
-    }, pinKey)
+    // Verify the key was pinned in the consolidated leapmux:key-pins map.
+    const pin = await getKeyPin(page, workerId)
 
     expect(pin).not.toBeNull()
     expect(pin.publicKeyHex).toBeTruthy()
@@ -40,21 +50,19 @@ test.describe('Key Pinning', () => {
     await waitForWorkspaceReady(page)
 
     // Verify key is pinned.
-    const pinKey = `leapmux:key-pin:${workerId}`
-    const pin = await page.evaluate((key) => {
-      const raw = localStorage.getItem(key)
-      return raw ? JSON.parse(raw) : null
-    }, pinKey)
+    const pin = await getKeyPin(page, workerId)
     expect(pin).not.toBeNull()
 
     // Tamper with the pinned key to trigger a mismatch on next channel open.
-    await page.evaluate((key) => {
-      const fakePin = JSON.stringify({
+    await page.evaluate(([key, wid]) => {
+      const raw = localStorage.getItem(key)
+      const pins = raw ? JSON.parse(raw) : {}
+      pins[wid] = {
         publicKeyHex: 'aa'.repeat(32), // 64 hex chars of 'aa'
         firstSeen: Date.now() - 86400000,
-      })
-      localStorage.setItem(key, fakePin)
-    }, pinKey)
+      }
+      localStorage.setItem(key, JSON.stringify(pins))
+    }, [KEY_PINS_STORAGE_KEY, workerId] as const)
 
     // Reload the page to destroy the in-memory ChannelManager and force a new channel open.
     await page.reload()
@@ -82,10 +90,7 @@ test.describe('Key Pinning', () => {
     await waitForWorkspaceReady(page)
 
     // Verify the pin was updated to the real key (not the fake 'aa' key).
-    const updatedPin = await page.evaluate((key) => {
-      const raw = localStorage.getItem(key)
-      return raw ? JSON.parse(raw) : null
-    }, pinKey)
+    const updatedPin = await getKeyPin(page, workerId)
     expect(updatedPin).not.toBeNull()
     expect(updatedPin.publicKeyHex).not.toBe('aa'.repeat(32))
     // Composite key: X25519 (32) + ML-KEM-1024 (1568) + SLH-DSA (64) = 1664 bytes = 3328 hex chars
@@ -104,14 +109,15 @@ test.describe('Key Pinning', () => {
     await waitForWorkspaceReady(page)
 
     // Tamper with the pinned key to trigger a mismatch on next channel open.
-    const pinKey = `leapmux:key-pin:${workerId}`
-    await page.evaluate((key) => {
-      const fakePin = JSON.stringify({
+    await page.evaluate(([key, wid]) => {
+      const raw = localStorage.getItem(key)
+      const pins = raw ? JSON.parse(raw) : {}
+      pins[wid] = {
         publicKeyHex: 'bb'.repeat(32),
         firstSeen: Date.now() - 86400000,
-      })
-      localStorage.setItem(key, fakePin)
-    }, pinKey)
+      }
+      localStorage.setItem(key, JSON.stringify(pins))
+    }, [KEY_PINS_STORAGE_KEY, workerId] as const)
 
     // Reload to trigger new channel open.
     await page.reload()
@@ -127,10 +133,7 @@ test.describe('Key Pinning', () => {
     await expect(dialog).not.toBeVisible()
 
     // The pin should NOT be updated (still the fake key).
-    const unchangedPin = await page.evaluate((key) => {
-      const raw = localStorage.getItem(key)
-      return raw ? JSON.parse(raw) : null
-    }, pinKey)
+    const unchangedPin = await getKeyPin(page, workerId)
     expect(unchangedPin).not.toBeNull()
     expect(unchangedPin.publicKeyHex).toBe('bb'.repeat(32))
   })

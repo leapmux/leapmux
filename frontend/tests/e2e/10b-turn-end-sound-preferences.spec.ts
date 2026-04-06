@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { loginViaToken, openAgentViaUI, openPreferencesDialog, waitForWorkspaceReady } from './helpers/ui'
+import { getBrowserPref, loginViaToken, openAgentViaUI, openPreferencesDialog, setInitialBrowserPref, waitForWorkspaceReady } from './helpers/ui'
 
 test.describe('Turn End Sound Preferences', () => {
   test('should show Turn End Sound section in This Browser tab', async ({ page, leapmuxServer }) => {
@@ -19,20 +19,20 @@ test.describe('Turn End Sound Preferences', () => {
 
     // Click "Ding Dong"
     await page.getByRole('button', { name: 'Ding Dong' }).first().click()
-    let value = await page.evaluate(() => localStorage.getItem('leapmux-turn-end-sound'))
+    let value = await getBrowserPref(page, 'turnEndSound')
     expect(value).toBe('ding-dong')
 
     // Click "None"
     await page.getByRole('button', { name: 'None' }).first().click()
-    value = await page.evaluate(() => localStorage.getItem('leapmux-turn-end-sound'))
+    value = await getBrowserPref(page, 'turnEndSound')
     expect(value).toBe('none')
 
     // Click "Use account default" within the Turn End Sound section.
     // In the browser tab, "Use account default" buttons appear for: Theme, Terminal Theme,
     // Diff View, Turn End Sound. The Turn End Sound one is the 4th (0-indexed: 3).
     await page.getByRole('button', { name: 'Use account default' }).nth(3).click()
-    value = await page.evaluate(() => localStorage.getItem('leapmux-turn-end-sound'))
-    expect(value).toBe('account-default')
+    value = await getBrowserPref(page, 'turnEndSound')
+    expect(value).toBeNull()
   })
 
   test('should show Turn End Sound section in Account Defaults tab', async ({ page, leapmuxServer }) => {
@@ -77,9 +77,7 @@ test.describe('Turn End Sound Preferences', () => {
         return Promise.resolve()
       }
     })
-    await page.addInitScript(() => {
-      localStorage.setItem('leapmux-turn-end-sound', 'ding-dong')
-    })
+    await setInitialBrowserPref(page, 'turnEndSound', 'ding-dong')
 
     // Reload so the init scripts take effect
     await page.reload()
@@ -121,9 +119,7 @@ test.describe('Turn End Sound Preferences', () => {
         return Promise.resolve()
       }
     })
-    await page.addInitScript(() => {
-      localStorage.setItem('leapmux-turn-end-sound', 'none')
-    })
+    await setInitialBrowserPref(page, 'turnEndSound', 'none')
 
     // Reload so the init scripts take effect
     await page.reload()
@@ -161,9 +157,7 @@ test.describe('Turn End Sound Preferences', () => {
         return Promise.resolve()
       }
     })
-    await page.addInitScript(() => {
-      localStorage.setItem('leapmux-turn-end-sound', 'ding-dong')
-    })
+    await setInitialBrowserPref(page, 'turnEndSound', 'ding-dong')
 
     // Reload so the init scripts take effect
     await page.reload()
@@ -210,9 +204,7 @@ test.describe('Turn End Sound Preferences', () => {
         return Promise.resolve()
       }
     })
-    await page.addInitScript(() => {
-      localStorage.setItem('leapmux-turn-end-sound', 'ding-dong')
-    })
+    await setInitialBrowserPref(page, 'turnEndSound', 'ding-dong')
 
     // Reload so the init scripts take effect
     await page.reload()
@@ -264,9 +256,7 @@ test.describe('Turn End Sound Preferences', () => {
         return Promise.resolve()
       }
     })
-    await page.addInitScript(() => {
-      localStorage.setItem('leapmux-turn-end-sound', 'ding-dong')
-    })
+    await setInitialBrowserPref(page, 'turnEndSound', 'ding-dong')
 
     // Reload so the init scripts take effect
     await page.reload()
@@ -309,9 +299,7 @@ test.describe('Turn End Sound Preferences', () => {
         return Promise.resolve()
       }
     })
-    await page.addInitScript(() => {
-      localStorage.setItem('leapmux-turn-end-sound', 'ding-dong')
-    })
+    await setInitialBrowserPref(page, 'turnEndSound', 'ding-dong')
 
     // Reload so the init scripts take effect
     await page.reload()

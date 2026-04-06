@@ -1,21 +1,17 @@
 import type { ParentComponent } from 'solid-js'
 import type { ThemePreference } from '~/app'
+import type { BrowserPreferences, EnterKeyMode } from '~/lib/browserStorage'
 import type { TerminalThemePreference } from '~/lib/terminal'
 import { createContext, createEffect, createSignal, onMount, useContext } from 'solid-js'
 import { userClient } from '~/api/clients'
 import { DiffView, TurnEndSound } from '~/generated/leapmux/v1/user_pb'
+import { KEY_BROWSER_PREFS, loadBrowserPrefs, safeSetJson } from '~/lib/browserStorage'
 import { setDebugEnabled } from '~/lib/logger'
 
 const DEFAULT_MONO_FONT_FAMILY = '"Hack NF", Hack, "SF Mono", Consolas, monospace'
 
 export type DiffViewPreference = 'unified' | 'split'
 export type TurnEndSoundPreference = 'none' | 'ding-dong'
-
-/**
- * Sentinel value stored in localStorage to indicate
- * "use the account default" for this browser setting.
- */
-const ACCOUNT_DEFAULT = 'account-default'
 
 interface PreferencesState {
   /** Resolved theme preference (localStorage override → account default → hardcoded default). */
@@ -45,6 +41,9 @@ interface PreferencesState {
   /** Whether hidden messages are shown in the chat view (developer feature). */
   showHiddenMessages: () => boolean
   setShowHiddenMessages: (value: boolean) => void
+  /** Resolved enter key mode. */
+  enterKeyMode: () => EnterKeyMode
+  setEnterKeyMode: (value: EnterKeyMode) => void
 
   // --- Browser-level overrides (localStorage) ---
   /** Raw browser-level theme override. null means "use account default". */
@@ -111,20 +110,16 @@ function turnEndSoundToProto(tes: TurnEndSoundPreference): TurnEndSound {
   return tes === 'ding-dong' ? TurnEndSound.DING_DONG : TurnEndSound.NONE
 }
 
-function readLocalStorage(key: string): string | null {
-  const v = localStorage.getItem(key)
-  if (v === ACCOUNT_DEFAULT || v === null || v === '')
-    return null
-  return v
-}
-
-function writeLocalStorage(key: string, value: string | null) {
-  if (value === null) {
-    localStorage.setItem(key, ACCOUNT_DEFAULT)
+/** Update a single field in the consolidated browser preferences. */
+function updateBrowserPref(key: keyof BrowserPreferences, value: BrowserPreferences[keyof BrowserPreferences] | undefined): void {
+  const prefs = loadBrowserPrefs()
+  if (value === undefined) {
+    delete prefs[key]
   }
   else {
-    localStorage.setItem(key, value)
+    (prefs as Record<string, unknown>)[key] = value
   }
+  safeSetJson(KEY_BROWSER_PREFS, prefs)
 }
 
 export const PreferencesProvider: ParentComponent = (props) => {
@@ -140,17 +135,19 @@ export const PreferencesProvider: ParentComponent = (props) => {
   const [accountTurnEndSoundVolume, setAccountTurnEndSoundVolume] = createSignal<number>(100)
   const [accountDebugLogging, setAccountDebugLogging] = createSignal(false)
 
-  // --- Browser-level (localStorage) ---
+  // --- Browser-level (localStorage) --- load once from consolidated key
+  const initialPrefs = loadBrowserPrefs()
+
   const [browserTheme, setBrowserThemeSignal] = createSignal<ThemePreference | null>(
-    readLocalStorage('leapmux-theme') as ThemePreference | null,
+    (initialPrefs.theme as ThemePreference) ?? null,
   )
   const [browserTerminalTheme, setBrowserTerminalThemeSignal] = createSignal<TerminalThemePreference | null>(
-    readLocalStorage('leapmux-terminal-theme') as TerminalThemePreference | null,
+    (initialPrefs.terminalTheme as TerminalThemePreference) ?? null,
   )
 
   const setBrowserTheme = (value: ThemePreference | null) => {
     setBrowserThemeSignal(value)
-    writeLocalStorage('leapmux-theme', value)
+    updateBrowserPref('theme', value ?? undefined)
     // Notify app.tsx for instant reactivity
     const setter = (window as any).__leapmux_setTheme
     if (setter) {
@@ -160,60 +157,60 @@ export const PreferencesProvider: ParentComponent = (props) => {
 
   const setBrowserTerminalTheme = (value: TerminalThemePreference | null) => {
     setBrowserTerminalThemeSignal(value)
-    writeLocalStorage('leapmux-terminal-theme', value)
+    updateBrowserPref('terminalTheme', value ?? undefined)
   }
 
   const [browserDiffView, setBrowserDiffViewSignal] = createSignal<DiffViewPreference | null>(
-    readLocalStorage('leapmux-diff-view') as DiffViewPreference | null,
+    (initialPrefs.diffView as DiffViewPreference) ?? null,
   )
 
   const setBrowserDiffView = (value: DiffViewPreference | null) => {
     setBrowserDiffViewSignal(value)
-    writeLocalStorage('leapmux-diff-view', value)
+    updateBrowserPref('diffView', value ?? undefined)
   }
 
   const [browserTurnEndSound, setBrowserTurnEndSoundSignal] = createSignal<TurnEndSoundPreference | null>(
-    readLocalStorage('leapmux-turn-end-sound') as TurnEndSoundPreference | null,
+    (initialPrefs.turnEndSound as TurnEndSoundPreference) ?? null,
   )
 
   const setBrowserTurnEndSound = (value: TurnEndSoundPreference | null) => {
     setBrowserTurnEndSoundSignal(value)
-    writeLocalStorage('leapmux-turn-end-sound', value)
+    updateBrowserPref('turnEndSound', value ?? undefined)
   }
 
   const [browserTurnEndSoundVolume, setBrowserTurnEndSoundVolumeSignal] = createSignal<number | null>(
-    (() => {
-      const v = readLocalStorage('leapmux-turn-end-sound-volume')
-      return v !== null ? Number(v) : null
-    })(),
+    initialPrefs.turnEndSoundVolume ?? null,
   )
 
   const setBrowserTurnEndSoundVolume = (value: number | null) => {
     setBrowserTurnEndSoundVolumeSignal(value)
-    writeLocalStorage('leapmux-turn-end-sound-volume', value !== null ? String(value) : null)
+    updateBrowserPref('turnEndSoundVolume', value ?? undefined)
   }
 
   const [browserDebugLogging, setBrowserDebugLoggingSignal] = createSignal<boolean | null>(
-    (() => {
-      const v = readLocalStorage('leapmux-debug-logging')
-      if (v === null)
-        return null
-      return v === 'true'
-    })(),
+    initialPrefs.debugLogging ?? null,
   )
 
   const setBrowserDebugLogging = (value: boolean | null) => {
     setBrowserDebugLoggingSignal(value)
-    writeLocalStorage('leapmux-debug-logging', value !== null ? String(value) : null)
+    updateBrowserPref('debugLogging', value ?? undefined)
   }
 
-  // --- Browser-only developer preferences ---
+  // --- Browser-only preferences ---
   const [showHiddenMessages, setShowHiddenMessagesSignal] = createSignal(
-    readLocalStorage('leapmux-show-hidden-messages') === 'true',
+    initialPrefs.showHiddenMessages === true,
   )
   const setShowHiddenMessages = (value: boolean) => {
     setShowHiddenMessagesSignal(value)
-    writeLocalStorage('leapmux-show-hidden-messages', value ? 'true' : null)
+    updateBrowserPref('showHiddenMessages', value || undefined)
+  }
+
+  const [enterKeyMode, setEnterKeyModeSignal] = createSignal<EnterKeyMode>(
+    initialPrefs.enterKeyMode ?? 'cmd-enter-sends',
+  )
+  const setEnterKeyMode = (value: EnterKeyMode) => {
+    setEnterKeyModeSignal(value)
+    updateBrowserPref('enterKeyMode', value)
   }
 
   // --- Resolved values (browser override → account default → hardcoded) ---
@@ -292,6 +289,8 @@ export const PreferencesProvider: ParentComponent = (props) => {
       debugLogging,
       showHiddenMessages,
       setShowHiddenMessages,
+      enterKeyMode,
+      setEnterKeyMode,
       uiFontCustomEnabled,
       monoFontCustomEnabled,
       uiFonts,

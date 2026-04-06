@@ -9,6 +9,7 @@ import { LauncherView } from '~/components/desktop/LauncherView'
 import { UserMenuDialogs } from '~/components/shell/UserMenu'
 import { AuthProvider } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
+import { initStorageCleanup, KEY_BROWSER_PREFS, loadBrowserPrefs } from '~/lib/browserStorage'
 import { resolveStack } from '~/lib/resolveStack'
 import { disableTextSubstitutions } from '~/lib/textInputBehavior'
 import { heightFull } from '~/styles/shared.css'
@@ -22,10 +23,10 @@ export type ThemePreference = 'light' | 'dark' | 'system'
 
 /** Read the saved theme preference from localStorage (instant, no flash). */
 function getStoredTheme(): ThemePreference {
-  const stored = localStorage.getItem('leapmux-theme')
+  const stored = loadBrowserPrefs().theme
   if (stored === 'light' || stored === 'dark' || stored === 'system')
     return stored
-  return 'system' // 'account-default' or missing → default until account loads
+  return 'system' // missing → default until account loads
 }
 
 /** Resolve the effective theme based on preference + system setting. */
@@ -107,6 +108,9 @@ function AppErrorFallback(error: Error) {
 }
 
 export default function App() {
+  const disposeStorageCleanup = initStorageCleanup()
+  onCleanup(disposeStorageCleanup)
+
   const [desktopConnected, setDesktopConnected] = createSignal(!isWailsApp())
   // Expose so UserMenu's "Switch mode..." can reset without page reload.
   // Wails doesn't re-inject window.go after reload, so we switch in-place.
@@ -151,12 +155,16 @@ export default function App() {
 
   // Listen for localStorage changes from other tabs.
   const handleStorage = (e: StorageEvent) => {
-    if (e.key === 'leapmux-theme') {
-      const val = e.newValue
-      if (val === 'light' || val === 'dark' || val === 'system')
-        setThemePreference(val)
-      else
-        setThemePreference('system') // 'account-default' or null
+    if (e.key === KEY_BROWSER_PREFS) {
+      const oldPrefs = e.oldValue ? JSON.parse(e.oldValue) : {}
+      const newPrefs = e.newValue ? JSON.parse(e.newValue) : {}
+      if (oldPrefs.theme !== newPrefs.theme) {
+        const val = newPrefs.theme
+        if (val === 'light' || val === 'dark' || val === 'system')
+          setThemePreference(val)
+        else
+          setThemePreference('system')
+      }
     }
   }
   window.addEventListener('storage', handleStorage)

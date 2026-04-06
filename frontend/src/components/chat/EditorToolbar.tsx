@@ -1,6 +1,7 @@
 import type { Editor } from '@milkdown/core'
 import type { Ctx } from '@milkdown/ctx'
 import type { Accessor, Component } from 'solid-js'
+import type { EnterKeyMode } from '~/lib/browserStorage'
 import { editorViewCtx } from '@milkdown/core'
 import { insertHrCommand, toggleEmphasisCommand, toggleStrongCommand, wrapInBlockquoteCommand, wrapInBulletListCommand, wrapInHeadingCommand, wrapInOrderedListCommand } from '@milkdown/preset-commonmark'
 import { toggleStrikethroughCommand } from '@milkdown/preset-gfm'
@@ -34,8 +35,6 @@ import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
 import { positionPopoverAbove } from '~/lib/popoverPosition'
 import * as styles from './MarkdownEditor.css'
-
-type EnterKeyMode = 'enter-sends' | 'cmd-enter-sends'
 
 const isMac = typeof navigator !== 'undefined'
   && /Mac|iPhone|iPad|iPod/.test(navigator.platform)
