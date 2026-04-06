@@ -54,10 +54,10 @@ test.describe('Diff Stat Isolation', () => {
       // Wait for workspace B's diff stats badge to appear on the workspace item.
       // The git status refresh is triggered when the active tab context is set.
       // First wait for the agent tab to be visible (confirms restore is done).
-      await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().waitFor({ timeout: 10_000 })
+      await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().waitFor()
 
       // Wait for any git-diff-stats badge on the page (workspace item or tab tree).
-      await expect(page.locator('[data-testid="git-diff-stats"]').first()).toBeVisible({ timeout: 15_000 })
+      await expect(page.locator('[data-testid="git-diff-stats"]').first()).toBeVisible()
 
       // Now switch to workspace A.
       await wsAItem.click()
@@ -72,7 +72,7 @@ test.describe('Diff Stat Isolation', () => {
       // Switch back to workspace B — diff stats should reappear.
       await wsBItem.click()
       await waitForWorkspaceReady(page)
-      await expect(page.locator('[data-testid="git-diff-stats"]').first()).toBeVisible({ timeout: 15_000 })
+      await expect(page.locator('[data-testid="git-diff-stats"]').first()).toBeVisible()
 
       // Switch to workspace A one more time — still no diff stats.
       await wsAItem.click()

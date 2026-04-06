@@ -21,7 +21,7 @@ async function sendMessage(page: Page, text: string) {
 async function allowToolExecutionIfNeeded(page: Page) {
   const allowBtn = page.locator('[data-testid="control-allow-btn"]')
   try {
-    await expect(allowBtn).toBeVisible({ timeout: 10_000 })
+    await expect(allowBtn).toBeVisible()
     await allowBtn.click()
   }
   catch {

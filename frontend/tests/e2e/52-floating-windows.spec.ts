@@ -306,7 +306,7 @@ test.describe('Floating Windows', () => {
 
     await waitForLayoutSave(page)
     await page.reload()
-    await page.locator('[data-testid="tile"]').first().waitFor({ timeout: 10_000 })
+    await page.locator('[data-testid="tile"]').first().waitFor()
 
     // Floating window should be restored
     await expect(floatingWindows(page)).toHaveCount(1)
@@ -336,7 +336,7 @@ test.describe('Floating Windows', () => {
 
     await waitForLayoutSave(page)
     await page.reload()
-    await page.locator('[data-testid="tile"]').first().waitFor({ timeout: 10_000 })
+    await page.locator('[data-testid="tile"]').first().waitFor()
     await expect(floatingWindows(page)).toHaveCount(1)
 
     const geoAfterReload = await getFloatingWindowGeometry(page)
@@ -365,7 +365,7 @@ test.describe('Floating Windows', () => {
 
     await waitForLayoutSave(page)
     await page.reload()
-    await page.locator('[data-testid="tile"]').first().waitFor({ timeout: 10_000 })
+    await page.locator('[data-testid="tile"]').first().waitFor()
     await expect(floatingWindows(page)).toHaveCount(1)
 
     const geoAfterReload = await getFloatingWindowGeometry(page)

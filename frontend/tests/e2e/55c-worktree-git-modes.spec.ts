@@ -105,7 +105,7 @@ test.describe('Worktree Git Modes', () => {
     const pathInput = dialog.getByPlaceholder('Enter path...')
 
     // The path should resolve to the original repo root, not the worktree path.
-    await expect(pathInput).toHaveValue(realRepoDir, { timeout: 10000 })
+    await expect(pathInput).toHaveValue(realRepoDir)
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })
@@ -144,7 +144,7 @@ test.describe('Worktree Git Modes', () => {
     const pathInput = dialog.getByPlaceholder('Enter path...')
 
     // The path should resolve to the original repo root, not the worktree path.
-    await expect(pathInput).toHaveValue(realRepoDir, { timeout: 10000 })
+    await expect(pathInput).toHaveValue(realRepoDir)
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })
@@ -174,12 +174,12 @@ test.describe('Worktree Git Modes', () => {
     await setWorkingDir(page, repoDir)
 
     // Wait for git options and select "Switch to branch"
-    await expect(page.getByText('Switch to branch')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Switch to branch')).toBeVisible()
     await page.getByText('Switch to branch').click()
 
     // Branch dropdown should load with local branches
     const branchSelect = dialog.locator('select').last()
-    await expect(branchSelect).toBeEnabled({ timeout: 10000 })
+    await expect(branchSelect).toBeEnabled()
     await branchSelect.selectOption('feature-switch')
 
     // Submit
@@ -235,7 +235,7 @@ test.describe('Worktree Git Modes', () => {
 
     await setWorkingDir(page, repoDir)
 
-    await expect(page.getByText('Switch to branch')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Switch to branch')).toBeVisible()
     await page.getByText('Switch to branch').click()
 
     // Warning about uncommitted changes should appear
@@ -361,12 +361,12 @@ test.describe('Worktree Git Modes', () => {
     await setWorkingDir(page, repoDir)
 
     // Wait for git options and select "Use existing worktree"
-    await expect(page.getByText('Use existing worktree')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Use existing worktree')).toBeVisible()
     await page.getByText('Use existing worktree').click()
 
     // Worktree dropdown should load
     const wtSelect = dialog.locator('select').last()
-    await expect(wtSelect).toBeEnabled({ timeout: 10000 })
+    await expect(wtSelect).toBeEnabled()
 
     // Select the worktree entry (format: "branch — path")
     const options = await wtSelect.locator('option').allTextContents()
@@ -520,16 +520,16 @@ test.describe('Worktree Git Modes', () => {
     await setWorkingDir(page, repoDir)
 
     // Wait for git options, select "Create new worktree"
-    await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Create new worktree')).toBeVisible()
     await page.getByText('Create new worktree').click()
 
     // Base Branch label and selector should be visible
-    await expect(dialog.getByText('Base Branch')).toBeVisible({ timeout: 10000 })
+    await expect(dialog.getByText('Base Branch')).toBeVisible()
 
     // The base branch selector should default to "main" (current)
     // and include "feature-ui-base"
     const baseBranchSelect = dialog.locator('select').last()
-    await expect(baseBranchSelect).toBeEnabled({ timeout: 10000 })
+    await expect(baseBranchSelect).toBeEnabled()
     const options = await baseBranchSelect.locator('option').allTextContents()
     expect(options.some(o => o.includes('feature-ui-base'))).toBe(true)
 

@@ -76,7 +76,7 @@ test.describe('Key Pinning', () => {
     await acceptBtn.click() // Second click: confirms
 
     // Dialog should dismiss.
-    await expect(dialog).not.toBeVisible({ timeout: 5_000 })
+    await expect(dialog).not.toBeVisible()
 
     // Workspace should load normally.
     await waitForWorkspaceReady(page)
@@ -124,7 +124,7 @@ test.describe('Key Pinning', () => {
     await page.locator('[data-testid="key-pin-reject"]').click()
 
     // Dialog should dismiss.
-    await expect(dialog).not.toBeVisible({ timeout: 5_000 })
+    await expect(dialog).not.toBeVisible()
 
     // The pin should NOT be updated (still the fake key).
     const unchangedPin = await page.evaluate((key) => {

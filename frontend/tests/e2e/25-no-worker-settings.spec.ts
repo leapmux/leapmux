@@ -76,7 +76,7 @@ test.describe('Settings and /clear after Worker restart', () => {
             await trigger.click()
           }
           await expect(menu).toBeVisible()
-        }).toPass({ timeout: 5000 })
+        }).toPass()
       }
 
       // Step 3: Change permission mode (Default → Plan Mode)

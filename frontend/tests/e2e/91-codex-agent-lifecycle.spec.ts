@@ -1,5 +1,5 @@
 import { codexTest, expect } from './codex-fixtures'
-import { sendMessage, waitForAgentIdle } from './helpers/ui'
+import { isMaybeVisible, sendMessage, waitForAgentIdle } from './helpers/ui'
 
 codexTest.describe('Codex Agent Lifecycle', () => {
   codexTest('Codex agent tab is visible after creation', async ({ authenticatedCodexWorkspace, page }) => {
@@ -14,7 +14,7 @@ codexTest.describe('Codex Agent Lifecycle', () => {
 
     // Click the new agent button to create another agent.
     const newAgentBtn = page.locator('[data-testid^="new-agent-button"]').first()
-    if (await newAgentBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
+    if (await isMaybeVisible(newAgentBtn)) {
       await newAgentBtn.click()
       // Wait for the new tab to appear.
       await page.waitForTimeout(5000)
@@ -34,7 +34,7 @@ codexTest.describe('Codex Agent Lifecycle', () => {
       await closeBtn.click()
       // Confirm if a dialog appears.
       const confirmBtn = page.locator('button:has-text("Close")')
-      if (await confirmBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      if (await isMaybeVisible(confirmBtn, 2000)) {
         await confirmBtn.click()
       }
     }

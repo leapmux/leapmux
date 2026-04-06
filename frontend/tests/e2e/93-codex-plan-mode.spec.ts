@@ -54,7 +54,7 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     await expect(revisedBanner.getByText('Implement the proposed plan?')).toBeVisible()
 
     await page.getByTestId('control-allow-btn').click()
-    await expect(trigger).toContainText('Suggest & Approve', { timeout: 20_000 })
-    await expect(page.getByText('Implement the plan.')).toBeVisible({ timeout: 20_000 })
+    await expect(trigger).toContainText('Suggest & Approve')
+    await expect(page.getByText('Implement the plan.')).toBeVisible()
   })
 })

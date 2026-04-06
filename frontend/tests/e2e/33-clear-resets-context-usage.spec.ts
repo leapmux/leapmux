@@ -64,6 +64,6 @@ test.describe('Clear Command – Context Usage Reset', () => {
       if (pct === null)
         return // No percentage — clear worked
       expect(pct).toBeLessThan(percentBefore!)
-    }).toPass({ timeout: 15_000 })
+    }).toPass()
   })
 })

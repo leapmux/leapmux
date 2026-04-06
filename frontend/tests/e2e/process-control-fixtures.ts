@@ -9,6 +9,7 @@ import process from 'node:process'
 import { test as base, expect } from '@playwright/test'
 import {
   approveRegistrationViaAPI,
+  authedHeaders,
   createWorkspaceViaAPI,
   deleteWorkspaceViaAPI,
   getAdminOrgId,
@@ -82,10 +83,7 @@ export async function waitForWorkerOffline(hubUrl: string, adminToken: string, t
     try {
       const res = await fetch(`${hubUrl}/leapmux.v1.WorkerManagementService/ListWorkers`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${adminToken}`,
-        },
+        headers: authedHeaders(adminToken),
         body: JSON.stringify({}),
       })
       if (res.ok) {
@@ -111,10 +109,7 @@ export async function ensureWorkerOnline(serverInfo: SeparateServerInfo) {
   try {
     const res = await fetch(`${serverInfo.hubUrl}/leapmux.v1.WorkerManagementService/ListWorkers`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${serverInfo.adminToken}`,
-      },
+      headers: authedHeaders(serverInfo.adminToken),
       body: JSON.stringify({}),
     })
     if (res.ok) {
@@ -334,10 +329,7 @@ export const processTest = base.extend<
     while (Date.now() - start < 30_000) {
       const res = await fetch(`${hubUrl}/leapmux.v1.WorkerManagementService/ListWorkers`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${adminToken}`,
-        },
+        headers: authedHeaders(adminToken),
         body: JSON.stringify({}),
       })
       if (res.ok) {

@@ -39,7 +39,7 @@ test.describe('Empty State Buttons', () => {
     await expect(
       page.locator('[data-testid="tab"][data-tab-type="agent"]')
         .or(page.getByRole('heading', { name: 'New Agent' })),
-    ).toBeVisible({ timeout: 10_000 })
+    ).toBeVisible()
   })
 
   test('clicking terminal button opens terminal or dialog', async ({ page, authenticatedWorkspace }) => {
@@ -52,7 +52,7 @@ test.describe('Empty State Buttons', () => {
     await expect(
       page.locator('[data-testid="tab"][data-tab-type="terminal"]')
         .or(page.getByRole('heading', { name: 'New Terminal' })),
-    ).toBeVisible({ timeout: 10_000 })
+    ).toBeVisible()
   })
 
   test('multi-tile: unfocused empty tile shows hint, focused shows buttons', async ({ page, authenticatedWorkspace }) => {

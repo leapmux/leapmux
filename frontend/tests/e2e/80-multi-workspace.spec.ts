@@ -5,7 +5,7 @@ import { loginViaToken, waitForLayoutSave, waitForWorkspaceReady } from './helpe
 
 /** Wait for the workspace to be fully loaded with its initial agent tab. */
 async function waitForInitialAgent(page: Page) {
-  await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().waitFor({ timeout: 10000 })
+  await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().waitFor()
 }
 
 /** Simulate a drag-and-drop from one element to another using mouse events. */
@@ -95,7 +95,7 @@ test.describe('Multi-Workspace', () => {
       await ws2Item.locator('svg').first().click()
 
       // ws2's tab tree should appear — count should be 2 (ws1 active + ws2 expanded)
-      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(2, { timeout: 5000 })
+      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(2)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, ws1).catch(() => {})
@@ -176,7 +176,7 @@ test.describe('Multi-Workspace', () => {
       await ws2Item.locator('svg').first().click()
 
       // Wait for ws2's tab tree leaves to appear (ws1 has 1 leaf + ws2 should have 2)
-      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(3, { timeout: 5000 })
+      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(3)
 
       // ws1 starts with 1 agent tab in the tabbar
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
@@ -282,7 +282,7 @@ test.describe('Multi-Workspace', () => {
       // Expand ws2 in the sidebar
       const ws2Item = page.locator(`[data-testid="workspace-item-${ws2}"]`)
       await ws2Item.locator('svg').first().click()
-      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(2, { timeout: 5000 })
+      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(2)
 
       // Reload the page
       await page.reload()
@@ -290,7 +290,7 @@ test.describe('Multi-Workspace', () => {
       await waitForInitialAgent(page)
 
       // ws2 should still be expanded after reload
-      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(2, { timeout: 5000 })
+      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(2)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, ws1).catch(() => {})
@@ -314,7 +314,7 @@ test.describe('Multi-Workspace', () => {
       // Expand ws2 in the sidebar
       const ws2Item = page.locator(`[data-testid="workspace-item-${ws2}"]`)
       await ws2Item.locator('svg').first().click()
-      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(2, { timeout: 5000 })
+      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(2)
 
       // Click ws2's tab leaf in the sidebar — should switch to ws2.
       // Find the leaf that belongs to ws2 by locating it within ws2's
@@ -336,7 +336,7 @@ test.describe('Multi-Workspace', () => {
       // Should navigate to ws2 — verify by checking the URL and that its agent tab is visible
       await waitForWorkspaceReady(page)
       await waitForInitialAgent(page)
-      await expect(page).toHaveURL(new RegExp(`/workspace/${ws2}`), { timeout: 5000 })
+      await expect(page).toHaveURL(new RegExp(`/workspace/${ws2}`))
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
     }
     finally {
@@ -384,7 +384,7 @@ test.describe('Multi-Workspace', () => {
       await ws2Item.locator('svg').first().click()
 
       // ws2 should now have 2 leaves (original + moved tab); ws1 has 1 leaf
-      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(3, { timeout: 5000 })
+      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(3)
 
       // Click the moved tab in ws2's sidebar tree
       await page.evaluate((wsId) => {
@@ -403,7 +403,7 @@ test.describe('Multi-Workspace', () => {
       // Should navigate to ws2 and show the moved tab as active
       await waitForWorkspaceReady(page)
       await waitForInitialAgent(page)
-      await expect(page).toHaveURL(new RegExp(`/workspace/${ws2}`), { timeout: 5000 })
+      await expect(page).toHaveURL(new RegExp(`/workspace/${ws2}`))
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(2)
     }
     finally {
@@ -452,7 +452,7 @@ test.describe('Multi-Workspace', () => {
       // Expand ws2's tab tree — should show 2 leaves (tab 1 moved + tab 2 existing)
       const ws2Item = page.locator(`[data-testid="workspace-item-${ws2}"]`)
       await ws2Item.locator('svg').first().click()
-      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(2, { timeout: 5000 })
+      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(2)
 
       // Click the first leaf in ws2's sidebar tree immediately.
       await page.evaluate((wsId) => {
@@ -471,8 +471,8 @@ test.describe('Multi-Workspace', () => {
       // Should navigate to ws2 and show BOTH tabs in the tabbar
       await waitForWorkspaceReady(page)
       await waitForInitialAgent(page)
-      await expect(page).toHaveURL(new RegExp(`/workspace/${ws2}`), { timeout: 5000 })
-      await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(2, { timeout: 5000 })
+      await expect(page).toHaveURL(new RegExp(`/workspace/${ws2}`))
+      await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(2)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, ws1).catch(() => {})
@@ -637,7 +637,7 @@ test.describe('Multi-Workspace', () => {
         if (!childrenWrapper)
           return false
         return childrenWrapper.querySelectorAll('[data-testid="tab-tree-leaf"]').length === 2
-      }, ws2, { timeout: 5000 })
+      }, ws2)
 
       // Get the tab ID of the SECOND leaf and click it
       const secondLeafTabId = await page.evaluate((wsId) => {
@@ -653,7 +653,7 @@ test.describe('Multi-Workspace', () => {
 
       // Should switch to ws2
       await waitForWorkspaceReady(page)
-      await expect(page).toHaveURL(new RegExp(`/workspace/${ws2}`), { timeout: 5000 })
+      await expect(page).toHaveURL(new RegExp(`/workspace/${ws2}`))
 
       // The clicked tab should be the active (aria-selected) tab in the tab bar
       const activeTab = page.locator('[data-testid="tab"][aria-selected="true"]')

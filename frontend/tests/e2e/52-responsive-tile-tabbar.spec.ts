@@ -1,4 +1,5 @@
 import { expect, test } from './fixtures'
+import { isMaybeVisible } from './helpers/ui'
 
 /** Open a new agent via the tab bar add menu. */
 async function openAgentViaUI(page: import('@playwright/test').Page) {
@@ -77,8 +78,8 @@ test.describe('Responsive Tile TabBar', () => {
         // The collapsed new-tab button should be visible (or overflow)
         const collapsedBtn = tiles.nth(i).locator('[data-testid="collapsed-new-tab-button"]')
         const overflowBtn = tiles.nth(i).locator('[data-testid="collapsed-overflow-button"]')
-        const isCollapsedVisible = await collapsedBtn.isVisible().catch(() => false)
-        const isOverflowVisible = await overflowBtn.isVisible().catch(() => false)
+        const isCollapsedVisible = await isMaybeVisible(collapsedBtn)
+        const isOverflowVisible = await isMaybeVisible(overflowBtn)
         expect(isCollapsedVisible || isOverflowVisible).toBe(true)
         break
       }
@@ -152,36 +153,36 @@ test.describe('Responsive Tile TabBar', () => {
 
     // Hover to trigger portal-based tooltip and verify text contains provider name
     await agentBtn.hover()
-    await expect(page.getByRole('tooltip')).toContainText('agent', { timeout: 5000 })
+    await expect(page.getByRole('tooltip')).toContainText('agent')
     await page.mouse.move(0, 0)
     await page.waitForTimeout(200)
 
     await terminalBtn.hover()
-    await expect(page.getByRole('tooltip')).toContainText('terminal', { timeout: 5000 })
+    await expect(page.getByRole('tooltip')).toContainText('terminal')
     await page.mouse.move(0, 0)
     await page.waitForTimeout(200)
 
     // Close all tabs to remove active tab context
     while (await page.locator('[data-testid="tab-close"]').count() > 0) {
       const countBefore = await page.locator('[data-testid="tab-close"]').count()
-      await page.locator('[data-testid="tab-close"]').first().click({ timeout: 5000 })
+      await page.locator('[data-testid="tab-close"]').first().click()
       // Handle last-tab-close confirmation dialog if it appears
       const confirmBtn = page.locator('[data-testid="confirm-dialog-confirm"]')
-      if (await confirmBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+      if (await isMaybeVisible(confirmBtn, 1000)) {
         await confirmBtn.click()
       }
       // Wait for the tab to actually be removed
-      await expect(page.locator('[data-testid="tab-close"]')).toHaveCount(countBefore - 1, { timeout: 5000 }).catch(() => {})
+      await expect(page.locator('[data-testid="tab-close"]')).toHaveCount(countBefore - 1).catch(() => {})
     }
 
     // Now tooltips should show the "..." variant
     await agentBtn.hover()
-    await expect(page.getByRole('tooltip')).toContainText('agent', { timeout: 5000 })
+    await expect(page.getByRole('tooltip')).toContainText('agent')
     await page.mouse.move(0, 0)
     await page.waitForTimeout(200)
 
     await terminalBtn.hover()
-    await expect(page.getByRole('tooltip')).toContainText('terminal', { timeout: 5000 })
+    await expect(page.getByRole('tooltip')).toContainText('terminal')
   })
 
   test('short height: tab bar height reduced when tile is short', async ({ page, authenticatedWorkspace }) => {

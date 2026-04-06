@@ -1,9 +1,14 @@
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 
 import { expect } from '@playwright/test'
+
+/** Check if a locator is visible, returning false on timeout or error. */
+export async function isMaybeVisible(locator: Locator, timeout?: number): Promise<boolean> {
+  return locator.isVisible(timeout != null ? { timeout } : undefined).catch(() => false)
+}
 
 const NEW_WORKSPACE_RE = /New workspace/
 const WORKSPACE_URL_RE = /\/workspace\//
@@ -89,7 +94,7 @@ export async function loginViaUI(page: Page, username = 'admin', password = 'adm
   // Each attempt waits 10s, for a total of 30s matching the original timeout.
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      await expect(page).toHaveURL(new RegExp(`/o/${username}`), { timeout: 10_000 })
+      await expect(page).toHaveURL(new RegExp(`/o/${username}`))
       return // success
     }
     catch {
@@ -277,36 +282,62 @@ export async function setInitialTheme(page: Page, theme: 'light' | 'dark' | 'sys
 }
 
 /**
- * Inject auth token into localStorage before navigation.
- * Uses addInitScript so the token is set before any page scripts run.
+ * Set the session cookie in the browser context so subsequent navigations
+ * are authenticated. The token is a cookie string like "leapmux-session=<value>".
  * Must be called **before** any page.goto() calls.
  */
 export async function loginViaToken(page: Page, token: string) {
-  await page.addInitScript((t) => {
-    localStorage.setItem('leapmux_token', t)
-  }, token)
+  const [name, ...rest] = token.split('=')
+  const value = rest.join('=')
+  await page.context().addCookies([{
+    name,
+    value,
+    domain: 'localhost',
+    path: '/',
+    httpOnly: true,
+  }])
 }
 
 /**
- * Wait for the debounced layout save API call to complete.
- * Returns a promise that resolves once the SaveLayout response arrives.
- * Must be called **before** the action that triggers the save, then awaited
- * after the action completes.
+ * Wait for the next layout save event. Uses a generation counter so the
+ * event can fire before the returned promise is awaited without being lost.
  *
  * Usage:
  *   const saved = waitForLayoutSave(page)
  *   await doSomethingThatTriggersLayoutSave()
  *   await saved
- *   await page.reload()
  */
-export function waitForLayoutSave(page: Page) {
-  return page.evaluate(() => new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('layout save timeout')), 10_000)
-    window.addEventListener('leapmux:layout-saved', () => {
-      clearTimeout(timer)
-      resolve()
-    }, { once: true })
-  }))
+export function waitForLayoutSave(page: Page): Promise<void> {
+  // Capture the current generation and install a one-shot listener that
+  // resolves a promise on the next event. The generation counter guards
+  // against the event firing between the evaluate call and the listener
+  // being attached (the counter is incremented by a persistent listener
+  // installed once per page).
+  return page.evaluate(() => {
+    const w = window as any
+    if (w.__layoutSaveGenInstalled == null) {
+      w.__layoutSaveGen = 0
+      window.addEventListener('leapmux:layout-saved', () => {
+        w.__layoutSaveGen++
+      })
+      w.__layoutSaveGenInstalled = true
+    }
+    const genBefore = w.__layoutSaveGen as number
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('layout save timeout')), 30_000)
+      const check = () => {
+        if ((w.__layoutSaveGen as number) > genBefore) {
+          clearTimeout(timer)
+          resolve()
+        }
+      }
+      window.addEventListener('leapmux:layout-saved', () => {
+        check()
+      }, { once: true })
+      // Also check immediately in case it fired between genBefore read and listener attach.
+      check()
+    })
+  })
 }
 
 /** Open the settings menu, retrying if it was caught mid-close animation. */
@@ -319,7 +350,7 @@ export async function openSettingsMenu(page: Page) {
       await trigger.click()
     }
     await expect(menu).toBeVisible()
-  }).toPass({ timeout: 5000 })
+  }).toPass()
 }
 
 /** Wait for the settings loading spinner to disappear. */
@@ -336,5 +367,5 @@ export async function waitForWorkspaceReady(page: Page) {
     .or(page.locator('[data-testid="empty-tile-actions"]'))
     .or(page.locator('[data-testid="empty-tile-hint"]'))
     .first()
-    .waitFor({ timeout: 15_000 })
+    .waitFor()
 }

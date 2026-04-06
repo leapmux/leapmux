@@ -154,7 +154,7 @@ test.describe('Full Hub+Worker Restart', () => {
     await page.keyboard.type('printf "\\e]0;My Custom Title\\a"\n', { delay: 30 })
 
     // Wait for the title to update in the tab
-    await expect(terminalTab).toContainText('My Custom Title', { timeout: 10_000 })
+    await expect(terminalTab).toContainText('My Custom Title')
 
     // Wait for the UpdateTerminalTitle RPC to reach the backend
     await page.waitForTimeout(2000)

@@ -92,7 +92,7 @@ test.describe('Worktree Detection', () => {
     await setWorkingDir(page, repoDir)
 
     // All five radio options should appear
-    await expect(page.getByText('Use current state')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Use current state')).toBeVisible()
     await expect(page.getByText('Switch to branch')).toBeVisible()
     await expect(page.getByText('Create new branch')).toBeVisible()
     await expect(page.getByText('Create new worktree')).toBeVisible()
@@ -136,7 +136,7 @@ test.describe('Worktree Detection', () => {
 
     await setWorkingDir(page, repoDir)
 
-    await expect(page.getByText('Use current state')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Use current state')).toBeVisible()
     await expect(page.getByText('Create new branch')).toBeVisible()
     await expect(page.getByText('Create new worktree')).toBeVisible()
 
@@ -167,7 +167,7 @@ test.describe('Worktree Detection', () => {
 
     await setWorkingDir(page, repoDir)
 
-    await expect(page.getByText('Use current state')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Use current state')).toBeVisible()
     await expect(page.getByText('Create new branch')).toBeVisible()
     await expect(page.getByText('Create new worktree')).toBeVisible()
 
@@ -201,7 +201,7 @@ test.describe('Worktree Detection', () => {
     await setWorkingDir(page, worktreeDir)
 
     // Git mode radio options should appear for an existing worktree root
-    await expect(page.getByText('Use current state')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Use current state')).toBeVisible()
     await expect(page.getByText('Create new worktree')).toBeVisible()
 
     await page.getByRole('button', { name: 'Cancel' }).click()
@@ -228,7 +228,7 @@ test.describe('Worktree Detection', () => {
     await setWorkingDir(page, repoDir)
 
     // Wait for git options to load, then select "Create new worktree"
-    await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Create new worktree')).toBeVisible()
     await page.getByText('Create new worktree').click()
 
     // Warning about uncommitted changes should be visible

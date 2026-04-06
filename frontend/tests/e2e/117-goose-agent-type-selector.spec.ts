@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { isMaybeVisible, loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
 test.describe('goose agent type selector', () => {
   test('Goose CLI appears in the provider selector', async ({ page, leapmuxServer }) => {
@@ -15,14 +15,14 @@ test.describe('goose agent type selector', () => {
       await waitForWorkspaceReady(page)
 
       const newAgentBtn = page.locator('[data-testid="new-agent-btn"]')
-      if (await newAgentBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
+      if (await isMaybeVisible(newAgentBtn)) {
         await newAgentBtn.click()
 
         const dialog = page.locator('[role="dialog"]')
-        await expect(dialog).toBeVisible({ timeout: 5000 })
+        await expect(dialog).toBeVisible()
 
         const trigger = dialog.getByTestId('agent-provider-selector-trigger')
-        if (await trigger.isVisible({ timeout: 3000 }).catch(() => false)) {
+        if (await isMaybeVisible(trigger, 3000)) {
           await trigger.click()
           await expect(dialog.getByTestId('agent-provider-option-8')).toContainText('Goose')
         }

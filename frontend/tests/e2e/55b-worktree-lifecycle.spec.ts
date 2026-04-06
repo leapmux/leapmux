@@ -48,7 +48,7 @@ test.describe('Worktree Lifecycle', () => {
     await setWorkingDir(page, repoDir)
 
     // Wait for git options to load, then select "Create new worktree"
-    await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Create new worktree')).toBeVisible()
     await page.getByText('Create new worktree').click()
 
     const branchInput = dialog.locator('input[type="text"][placeholder="feature-branch"]')
@@ -377,7 +377,7 @@ test.describe('Worktree Lifecycle', () => {
     await agentCloseBtn.dispatchEvent('click')
 
     // Confirmation dialog should appear BEFORE the tab is closed
-    await expect(closeDialog).toBeVisible({ timeout: 10000 })
+    await expect(closeDialog).toBeVisible()
 
     // Dialog should show the branch name
     await expect(closeDialog.getByText('cancel-branch', { exact: true })).toBeVisible()
@@ -434,7 +434,7 @@ test.describe('Worktree Lifecycle', () => {
     await agentTab.locator('[data-testid="tab-close"]').dispatchEvent('click')
 
     // Dialog appears BEFORE tab closes
-    await expect(page.getByRole('heading', { name: 'Close Last Tab' })).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole('heading', { name: 'Close Last Tab' })).toBeVisible()
     await expect(page.getByRole('dialog').getByText('test-repo-dialog-worktrees/dialog-branch')).toBeVisible()
 
     // Dialog should show the branch name
@@ -449,14 +449,14 @@ test.describe('Worktree Lifecycle', () => {
 
     // Dialog closes and tab is removed
     await expect(page.getByRole('heading', { name: 'Close Last Tab' })).not.toBeVisible()
-    await expect(agentTab).not.toBeVisible({ timeout: 5000 })
+    await expect(agentTab).not.toBeVisible()
 
     // Worktree directory and branch are deleted in the background by
     // the worker after ForceRemoveWorktree returns, so poll for completion.
     await expect(async () => {
       expect(existsSync(worktreeDir)).toBe(false)
       expect(branchExists(repoDir, 'dialog-branch')).toBe(false)
-    }).toPass({ timeout: 10_000 })
+    }).toPass()
   })
 
   test('dirty worktree confirmation dialog: close anyway closes tab but preserves worktree', async ({
@@ -490,7 +490,7 @@ test.describe('Worktree Lifecycle', () => {
     await agentTab.locator('[data-testid="tab-close"]').dispatchEvent('click')
 
     // Dialog appears
-    await expect(page.getByRole('heading', { name: 'Close Last Tab' })).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole('heading', { name: 'Close Last Tab' })).toBeVisible()
 
     // Dialog should show the branch name
     await expect(page.getByRole('dialog').getByText('keep-branch', { exact: true })).toBeVisible()
@@ -502,7 +502,7 @@ test.describe('Worktree Lifecycle', () => {
 
     // Dialog closes and tab is removed
     await expect(page.getByRole('heading', { name: 'Close Last Tab' })).not.toBeVisible()
-    await expect(agentTab).not.toBeVisible({ timeout: 5000 })
+    await expect(agentTab).not.toBeVisible()
 
     // Worktree should still exist
     expect(existsSync(worktreeDir)).toBe(true)

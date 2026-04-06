@@ -112,7 +112,7 @@ test.describe('Tiling Layout', () => {
     await page.reload()
 
     // Wait for workspace to load
-    await page.locator('[data-testid="tile"]').first().waitFor({ timeout: 10000 })
+    await page.locator('[data-testid="tile"]').first().waitFor()
 
     // Should still have 2 tiles after reload
     await expect(page.locator('[data-testid="tile"]')).toHaveCount(2)
@@ -387,7 +387,7 @@ test.describe('Tiling Layout', () => {
     // Wait for the layout save triggered by the new agent creation
     await saved
     await page.reload()
-    await page.locator('[data-testid="tile"]').first().waitFor({ timeout: 10_000 })
+    await page.locator('[data-testid="tile"]').first().waitFor()
 
     // After reload, both tiles should still have active tabs (no empty-tile pages)
     await expect(page.locator('[data-testid="tile"]')).toHaveCount(2)

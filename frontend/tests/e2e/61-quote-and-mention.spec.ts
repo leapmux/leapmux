@@ -85,7 +85,7 @@ test.describe('Quote and Mention', () => {
 
     // The copy button should appear
     const copyButton = page.locator('[data-testid="copy-selection-button"]')
-    await expect(copyButton).toBeVisible({ timeout: 5_000 })
+    await expect(copyButton).toBeVisible()
 
     // Click the copy button
     await copyButton.click()
@@ -115,7 +115,7 @@ test.describe('Quote and Mention', () => {
 
     // The quote popover should appear
     const quoteButton = page.locator('[data-testid="quote-selection-button"]')
-    await expect(quoteButton).toBeVisible({ timeout: 5_000 })
+    await expect(quoteButton).toBeVisible()
 
     // Click the quote button
     await quoteButton.click()
@@ -138,7 +138,7 @@ test.describe('Quote and Mention', () => {
       await expect(editor).toBeVisible()
 
       // Wait for the file tree to load — package.json should be visible
-      await expect(page.getByText('package.json')).toBeVisible({ timeout: 15_000 })
+      await expect(page.getByText('package.json')).toBeVisible()
 
       // Find the tree node row containing package.json and hover it
       const packageJsonNode = page.getByText('package.json')
@@ -181,28 +181,28 @@ test.describe('Quote and Mention', () => {
       await expect(editor).toBeVisible()
 
       // Wait for the file tree to load
-      await expect(page.getByText('package.json')).toBeVisible({ timeout: 15_000 })
+      await expect(page.getByText('package.json')).toBeVisible()
 
       // Click on package.json to open it as a file tab
       await page.getByText('package.json').click()
 
       // Wait for the file tab to appear and become active
       const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
-      await expect(fileTab).toBeVisible({ timeout: 10_000 })
+      await expect(fileTab).toBeVisible()
 
       // Wait for file content to load
       await page.waitForTimeout(1000)
 
       // Find the mention button in the floating toolbar
       const mentionButton = page.locator('[data-testid="file-mention-button"]')
-      await expect(mentionButton).toBeVisible({ timeout: 5_000 })
+      await expect(mentionButton).toBeVisible()
 
       // Click the mention button
       await mentionButton.click()
 
       // Wait for the agent tab to become active (tab switch + component mount)
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"][aria-selected="true"]'))
-        .toBeVisible({ timeout: 5_000 })
+        .toBeVisible()
 
       // Verify the editor contains @package.json
       await expect(editor).toContainText('@package.json')
@@ -234,23 +234,23 @@ test.describe('Quote and Mention', () => {
       await editor.pressSequentially('my draft text')
 
       // Wait for the file tree to load
-      await expect(page.getByText('package.json')).toBeVisible({ timeout: 15_000 })
+      await expect(page.getByText('package.json')).toBeVisible()
 
       // Click on package.json to open it as a file tab
       await page.getByText('package.json').click()
 
       const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
-      await expect(fileTab).toBeVisible({ timeout: 10_000 })
+      await expect(fileTab).toBeVisible()
       await page.waitForTimeout(1000)
 
       // Click the mention button in the file view toolbar
       const mentionButton = page.locator('[data-testid="file-mention-button"]')
-      await expect(mentionButton).toBeVisible({ timeout: 5_000 })
+      await expect(mentionButton).toBeVisible()
       await mentionButton.click()
 
       // Wait for the agent tab to become active
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"][aria-selected="true"]'))
-        .toBeVisible({ timeout: 5_000 })
+        .toBeVisible()
 
       // Verify the editor still contains the draft text AND the mention
       await expect(editor).toContainText('my draft text')
@@ -275,7 +275,7 @@ test.describe('Quote and Mention', () => {
       await expect(editor).toBeVisible()
 
       // Wait for the file tree to load — package.json should be visible
-      await expect(page.getByText('package.json')).toBeVisible({ timeout: 15_000 })
+      await expect(page.getByText('package.json')).toBeVisible()
 
       // First mention: hover, open context menu, and click mention for package.json
       const packageJsonNode = page.getByText('package.json')
@@ -329,18 +329,18 @@ test.describe('Quote and Mention', () => {
       await expect(editor).toBeVisible()
 
       // Wait for the file tree to load
-      await expect(page.getByText('package.json')).toBeVisible({ timeout: 15_000 })
+      await expect(page.getByText('package.json')).toBeVisible()
 
       // Click on package.json to open it as a file tab
       await page.getByText('package.json').click()
 
       // Wait for the file tab and content to load
       const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
-      await expect(fileTab).toBeVisible({ timeout: 10_000 })
+      await expect(fileTab).toBeVisible()
 
       // Wait for line-numbered content to appear (data-line-num attributes)
       const lineElements = page.locator('[data-line-num]')
-      await expect(lineElements.first()).toBeVisible({ timeout: 10_000 })
+      await expect(lineElements.first()).toBeVisible()
 
       // Triple-click on a line to select text within the file view.
       // Use nth(2) to avoid the floating DiffModeToolbar at the top.
@@ -350,14 +350,14 @@ test.describe('Quote and Mention', () => {
       await page.waitForTimeout(500)
 
       const quoteButton = page.locator('[data-testid="quote-selection-button"]')
-      await expect(quoteButton).toBeVisible({ timeout: 5_000 })
+      await expect(quoteButton).toBeVisible()
 
       // Click the quote button
       await quoteButton.click()
 
       // Wait for the agent tab to become active (tab switch + component mount)
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"][aria-selected="true"]'))
-        .toBeVisible({ timeout: 5_000 })
+        .toBeVisible()
 
       // Verify the editor contains the expected format with "From @" and the path
       await expect(editor).toContainText('From')

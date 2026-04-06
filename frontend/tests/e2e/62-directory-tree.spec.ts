@@ -20,10 +20,10 @@ test.describe('DirectoryTree', () => {
 
       // The root node should be visible
       const rootNode = page.locator('[data-testid="tree-root-node"]')
-      await expect(rootNode).toBeVisible({ timeout: 15_000 })
+      await expect(rootNode).toBeVisible()
 
       // Children should be visible (root is always expanded)
-      await expect(page.getByText('package.json')).toBeVisible({ timeout: 15_000 })
+      await expect(page.getByText('package.json')).toBeVisible()
 
       // Clicking root should NOT collapse it (root is uncollapsible)
       await rootNode.click()
@@ -45,7 +45,7 @@ test.describe('DirectoryTree', () => {
 
       // Wait for root node to appear
       const rootNode = page.locator('[data-testid="tree-root-node"]')
-      await expect(rootNode).toBeVisible({ timeout: 15_000 })
+      await expect(rootNode).toBeVisible()
 
       // Hover the root node and open context menu
       await rootNode.hover()
@@ -74,7 +74,7 @@ test.describe('DirectoryTree', () => {
       await waitForWorkspaceReady(page)
 
       // Wait for the file tree to load
-      await expect(page.getByText('package.json')).toBeVisible({ timeout: 15_000 })
+      await expect(page.getByText('package.json')).toBeVisible()
 
       // Hover on package.json file and open context menu
       const fileNode = page.getByText('package.json')
@@ -106,7 +106,7 @@ test.describe('DirectoryTree', () => {
 
       // Wait for root node
       const rootNode = page.locator('[data-testid="tree-root-node"]')
-      await expect(rootNode).toBeVisible({ timeout: 15_000 })
+      await expect(rootNode).toBeVisible()
 
       // Hover and open context menu on the root directory
       await rootNode.hover()
@@ -121,7 +121,7 @@ test.describe('DirectoryTree', () => {
 
       // A terminal tab should appear
       const terminalTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
-      await expect(terminalTab).toBeVisible({ timeout: 10_000 })
+      await expect(terminalTab).toBeVisible()
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
@@ -139,7 +139,7 @@ test.describe('DirectoryTree', () => {
       await waitForWorkspaceReady(page)
 
       // Wait for file tree
-      await expect(page.getByText('package.json')).toBeVisible({ timeout: 15_000 })
+      await expect(page.getByText('package.json')).toBeVisible()
 
       // Open context menu on package.json
       const fileNode = page.getByText('package.json')
@@ -175,12 +175,12 @@ test.describe('DirectoryTree', () => {
 
       // Wait for tree to load
       const rootNode = page.locator('[data-testid="tree-root-node"]')
-      await expect(rootNode).toBeVisible({ timeout: 15_000 })
-      await expect(page.getByText('package.json')).toBeVisible({ timeout: 15_000 })
+      await expect(rootNode).toBeVisible()
+      await expect(page.getByText('package.json')).toBeVisible()
 
       // Expand "src" to add more items to the tree
       const srcNode = page.locator('span:text-is("src")').first()
-      await expect(srcNode).toBeVisible({ timeout: 5_000 })
+      await expect(srcNode).toBeVisible()
       await srcNode.click()
       await page.waitForTimeout(500)
 
@@ -267,18 +267,18 @@ test.describe('DirectoryTree', () => {
 
       // Wait for tree to load — root is expanded by default
       const rootNode = page.locator('[data-testid="tree-root-node"]')
-      await expect(rootNode).toBeVisible({ timeout: 15_000 })
-      await expect(page.getByText('package.json')).toBeVisible({ timeout: 15_000 })
+      await expect(rootNode).toBeVisible()
+      await expect(page.getByText('package.json')).toBeVisible()
 
       // Expand "src" directory (child of root = frontend/)
       const srcNode = page.locator('span:text-is("src")').first()
-      await expect(srcNode).toBeVisible({ timeout: 5_000 })
+      await expect(srcNode).toBeVisible()
       await srcNode.click()
       await page.waitForTimeout(500)
 
       // "components" should now be visible (child of src)
       const componentsNode = page.locator('span:text-is("components")').first()
-      await expect(componentsNode).toBeVisible({ timeout: 5_000 })
+      await expect(componentsNode).toBeVisible()
 
       // Click collapse all button
       await page.locator('[data-testid="files-collapse-all"]').click()
@@ -316,11 +316,11 @@ test.describe('DirectoryTree', () => {
 
       // The root node should be visible
       const rootNode = page.locator('[data-testid="tree-root-node"]')
-      await expect(rootNode).toBeVisible({ timeout: 15_000 })
+      await expect(rootNode).toBeVisible()
 
       // The truncation indicator should appear
       const truncationIndicator = page.getByText('entries, listing truncated')
-      await expect(truncationIndicator).toBeVisible({ timeout: 10_000 })
+      await expect(truncationIndicator).toBeVisible()
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
@@ -339,18 +339,18 @@ test.describe('DirectoryTree', () => {
 
       // Wait for tree to load
       const rootNode = page.locator('[data-testid="tree-root-node"]')
-      await expect(rootNode).toBeVisible({ timeout: 15_000 })
-      await expect(page.getByText('package.json')).toBeVisible({ timeout: 15_000 })
+      await expect(rootNode).toBeVisible()
+      await expect(page.getByText('package.json')).toBeVisible()
 
       // Expand "src" directory
       const srcNode = page.locator('span:text-is("src")').first()
-      await expect(srcNode).toBeVisible({ timeout: 5_000 })
+      await expect(srcNode).toBeVisible()
       await srcNode.click()
       await page.waitForTimeout(500)
 
       // "components" should now be visible (child of src)
       const componentsNode = page.locator('span:text-is("components")').first()
-      await expect(componentsNode).toBeVisible({ timeout: 5_000 })
+      await expect(componentsNode).toBeVisible()
 
       // Collapse "src"
       await srcNode.click()

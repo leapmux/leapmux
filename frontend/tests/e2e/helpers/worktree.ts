@@ -25,7 +25,7 @@ import {
   CloseTerminalResponseSchema,
 } from '../../../src/generated/leapmux/v1/terminal_pb'
 import { expect } from '../fixtures'
-import { createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './api'
+import { authedHeaders, createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './api'
 
 export const WORKSPACE_URL_RE = /\/workspace\//
 
@@ -69,7 +69,7 @@ export async function waitForPathDeleted(path: string, timeoutMs = 10_000, inter
  * Unlike waitForWorkspaceReady, this works on non-workspace routes like /o/admin.
  */
 export async function waitForOrgPageReady(page: Page) {
-  await expect(page.locator('[data-testid="section-header-workspaces_in_progress"]')).toBeVisible({ timeout: 15_000 })
+  await expect(page.locator('[data-testid="section-header-workspaces_in_progress"]')).toBeVisible()
 }
 
 /**
@@ -215,10 +215,7 @@ export async function listAgentsViaAPI(
   // Get tab IDs from the hub's ListTabs endpoint.
   const tabsRes = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/ListTabs`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
+    headers: authedHeaders(token),
     body: JSON.stringify({ orgId, workspaceId }),
   })
   if (!tabsRes.ok) {
@@ -376,7 +373,7 @@ export async function waitForWorker(page: Page) {
   const refreshBtn = dialog.getByLabel('Refresh workers')
   for (let attempt = 0; attempt < 6; attempt++) {
     try {
-      await expect(workerSelect).toContainText('Local', { timeout: 5000 })
+      await expect(workerSelect).toContainText('Local')
       break
     }
     catch {

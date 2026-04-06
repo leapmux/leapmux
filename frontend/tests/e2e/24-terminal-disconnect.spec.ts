@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
+import { authedHeaders, createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 import { ensureWorkerOnline, expect, stopWorker, processTest as test } from './process-control-fixtures'
 
@@ -47,11 +47,10 @@ test.describe('Terminal Disconnection', () => {
       await stopWorker()
 
       // Verify the Hub reports the worker as offline via API
-      const token = await page.evaluate(() => localStorage.getItem('leapmux_token'))
       await expect(async () => {
         const res = await fetch(`${hubUrl}/leapmux.v1.WorkerManagementService/ListWorkers`, {
           method: 'POST',
-          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          headers: authedHeaders(adminToken),
           body: '{}',
         })
         const data = await res.json() as { workers: Array<{ online: boolean }> }
