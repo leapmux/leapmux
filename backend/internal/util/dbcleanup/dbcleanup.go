@@ -30,10 +30,12 @@ loop:
 			break
 		}
 		total += n
+		timer := time.NewTimer(BatchDelay)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			break loop
-		case <-time.After(BatchDelay):
+		case <-timer.C:
 		}
 	}
 	if total > 0 {

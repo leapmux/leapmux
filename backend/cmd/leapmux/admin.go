@@ -173,7 +173,6 @@ func promptPassword(prompt string) (string, error) {
 		return "", fmt.Errorf("--password is required (stdin is not a terminal)")
 	}
 
-	// OSC 133;P signals the start of password input to supporting terminals.
 	fmt.Fprint(os.Stderr, "\x1b]133;P\x07")
 	fmt.Fprint(os.Stderr, prompt)
 	pw, err := term.ReadPassword(fd)

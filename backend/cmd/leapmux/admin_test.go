@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
@@ -970,7 +971,7 @@ func TestCLI_UserDelete_WorkersMarkedDeleted(t *testing.T) {
 
 	worker, err := q.GetWorkerByID(context.Background(), workerID)
 	require.NoError(t, err)
-	assert.Equal(t, int32(3), int32(worker.Status), "worker status should be 3 (deleted)")
+	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, worker.Status)
 	assert.True(t, worker.DeletedAt.Valid, "worker should have non-null deleted_at")
 }
 
@@ -1256,7 +1257,7 @@ func TestCLI_WorkerDeregister(t *testing.T) {
 
 	worker, err := q.GetWorkerByID(context.Background(), workerID)
 	require.NoError(t, err)
-	assert.Equal(t, int32(2), int32(worker.Status), "status should be WORKER_STATUS_DEREGISTERING (2)")
+	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, worker.Status)
 }
 
 // ---- Worker subcommand tests: edge cases ----
