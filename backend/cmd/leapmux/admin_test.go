@@ -908,6 +908,32 @@ func TestCLI_UserDelete_NotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found")
 }
 
+func TestCLI_UserDelete_AdminRequiresForce(t *testing.T) {
+	dir := setupTestDataDir(t)
+
+	err := runUserCreate([]string{
+		"--username", "adminuser",
+		"--password", "TestPassword1!",
+		"--admin",
+		"--data-dir", dir,
+	})
+	require.NoError(t, err)
+
+	// Without --force, deleting an admin user should fail.
+	err = runUserDelete([]string{"--username", "adminuser", "--data-dir", dir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--force")
+
+	// With --force, it should succeed.
+	err = runUserDelete([]string{"--username", "adminuser", "--force", "--data-dir", dir})
+	require.NoError(t, err)
+
+	sqlDB, q := openTestDB(t, dir)
+	defer func() { _ = sqlDB.Close() }()
+	_, err = q.GetUserByUsername(context.Background(), "adminuser")
+	assert.ErrorIs(t, err, sql.ErrNoRows)
+}
+
 func TestCLI_UserResetPassword_MissingPassword(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")

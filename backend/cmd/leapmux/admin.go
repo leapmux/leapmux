@@ -192,19 +192,6 @@ func runUserCreate(args []string) error {
 			return fmt.Errorf("hash password: %w", err)
 		}
 
-		if _, lookupErr := q.GetUserByUsername(ctx, slug); lookupErr == nil {
-			return fmt.Errorf("username %q is already taken", slug)
-		} else if lookupErr != sql.ErrNoRows {
-			return fmt.Errorf("check username: %w", lookupErr)
-		}
-		if *email != "" {
-			if _, lookupErr := q.GetUserByEmail(ctx, *email); lookupErr == nil {
-				return fmt.Errorf("email %q is already in use", *email)
-			} else if lookupErr != sql.ErrNoRows {
-				return fmt.Errorf("check email: %w", lookupErr)
-			}
-		}
-
 		user, err := service.CreateUserWithOrg(ctx, sqlDB, q, service.CreateUserParams{
 			Username:      slug,
 			PasswordHash:  hash,
@@ -215,7 +202,7 @@ func runUserCreate(args []string) error {
 			IsAdmin:       ptrconv.BoolToInt64(*admin),
 		})
 		if err != nil {
-			return fmt.Errorf("create user: %w", err)
+			return friendlyConstraintError(err, slug, *email)
 		}
 
 		fmt.Printf("Created user %q (id: %s)\n", slug, user.ID)
@@ -329,13 +316,19 @@ func runUserUpdate(args []string) error {
 func runUserDelete(args []string) error {
 	var userID *string
 	var username *string
+	var force *bool
 	return withAdminDB("user delete", args, func(fs *flag.FlagSet) {
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username")
+		force = fs.Bool("force", false, "required to delete an admin user")
 	}, func(ctx context.Context, _ *config.Config, sqlDB *sql.DB, q *gendb.Queries) error {
 		user, err := resolveUser(ctx, q, *userID, *username)
 		if err != nil {
 			return err
+		}
+
+		if user.IsAdmin == 1 && !*force {
+			return fmt.Errorf("user %q is an admin; pass --force to confirm deletion", user.Username)
 		}
 
 		tx, err := sqlDB.BeginTx(ctx, nil)
@@ -1233,6 +1226,19 @@ func resolveUser(ctx context.Context, q *gendb.Queries, userID, username string)
 	}
 
 	return &user, nil
+}
+
+// friendlyConstraintError translates SQLite UNIQUE constraint violations
+// into user-friendly messages.
+func friendlyConstraintError(err error, username, email string) error {
+	msg := err.Error()
+	if strings.Contains(msg, "orgs.name") || strings.Contains(msg, "users.username") {
+		return fmt.Errorf("username %q is already taken", username)
+	}
+	if strings.Contains(msg, "users.email") {
+		return fmt.Errorf("email %q is already in use", email)
+	}
+	return err
 }
 
 func parseWorkerStatus(s string) (leapmuxv1.WorkerStatus, error) {
