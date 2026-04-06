@@ -2,15 +2,17 @@ import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
-/** Read a worker's key pin from the consolidated leapmux:key-pins map. */
+const KEY_PINS_STORAGE_KEY = 'leapmux:key-pins'
+
+/** Read a worker's key pin from the consolidated key-pins map. */
 async function getKeyPin(page: Page, workerId: string) {
-  return page.evaluate((wid) => {
-    const raw = localStorage.getItem('leapmux:key-pins')
+  return page.evaluate(([key, wid]) => {
+    const raw = localStorage.getItem(key)
     if (!raw)
       return null
     const pins = JSON.parse(raw)
     return pins[wid] ?? null
-  }, workerId)
+  }, [KEY_PINS_STORAGE_KEY, workerId] as const)
 }
 
 test.describe('Key Pinning', () => {
@@ -52,15 +54,15 @@ test.describe('Key Pinning', () => {
     expect(pin).not.toBeNull()
 
     // Tamper with the pinned key to trigger a mismatch on next channel open.
-    await page.evaluate((wid) => {
-      const raw = localStorage.getItem('leapmux:key-pins')
+    await page.evaluate(([key, wid]) => {
+      const raw = localStorage.getItem(key)
       const pins = raw ? JSON.parse(raw) : {}
       pins[wid] = {
         publicKeyHex: 'aa'.repeat(32), // 64 hex chars of 'aa'
         firstSeen: Date.now() - 86400000,
       }
-      localStorage.setItem('leapmux:key-pins', JSON.stringify(pins))
-    }, workerId)
+      localStorage.setItem(key, JSON.stringify(pins))
+    }, [KEY_PINS_STORAGE_KEY, workerId] as const)
 
     // Reload the page to destroy the in-memory ChannelManager and force a new channel open.
     await page.reload()
@@ -107,15 +109,15 @@ test.describe('Key Pinning', () => {
     await waitForWorkspaceReady(page)
 
     // Tamper with the pinned key to trigger a mismatch on next channel open.
-    await page.evaluate((wid) => {
-      const raw = localStorage.getItem('leapmux:key-pins')
+    await page.evaluate(([key, wid]) => {
+      const raw = localStorage.getItem(key)
       const pins = raw ? JSON.parse(raw) : {}
       pins[wid] = {
         publicKeyHex: 'bb'.repeat(32),
         firstSeen: Date.now() - 86400000,
       }
-      localStorage.setItem('leapmux:key-pins', JSON.stringify(pins))
-    }, workerId)
+      localStorage.setItem(key, JSON.stringify(pins))
+    }, [KEY_PINS_STORAGE_KEY, workerId] as const)
 
     // Reload to trigger new channel open.
     await page.reload()

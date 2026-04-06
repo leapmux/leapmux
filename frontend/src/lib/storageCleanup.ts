@@ -78,7 +78,8 @@ export function isWrappedValue(raw: unknown): raw is { v: unknown, e: number } {
 
 /**
  * Check if a wrapped value's expiration should be refreshed on read.
- * Returns true if 3+ hours have passed since the expiration was last set.
+ * Returns true if the expiration was last refreshed more than 3 hours ago
+ * (i.e. the remaining lifetime is shorter than TTL minus 3 hours).
  */
 export function shouldRefreshExpiration(e: number, ttlMs: number): boolean {
   return e < Date.now() + ttlMs - REFRESH_THRESHOLD_MS
