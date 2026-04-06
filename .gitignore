@@ -4,6 +4,7 @@
 *~
 
 # Build output
+/NOTICE.html
 /backend/build/
 /backend/leapmux
 /desktop/build/
@@ -27,6 +28,7 @@ frontend/dist/
 frontend/public/leapmux-icon-corners.ico
 frontend/public/leapmux-icon-corners.svg
 frontend/public/icons/
+frontend/public/NOTICE.html
 frontend/public/leapmux-service-worker-*
 frontend/app.config.timestamp_*
 frontend/src/spinners/

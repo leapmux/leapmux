@@ -54,8 +54,8 @@ export const AboutDialog: Component<AboutDialogProps> = (props) => {
           </div>
           <div>
             <div class={labelRow}>Third-party licenses</div>
-            <a href="https://github.com/leapmux/leapmux/blob/main/NOTICE.md" target="_blank" rel="noopener noreferrer">
-              NOTICE.md
+            <a href="/NOTICE.html" target="_blank" rel="noopener noreferrer">
+              NOTICE.html
             </a>
           </div>
           <div>{`Copyright \u00A9 ${buildYear} Event Loop, Inc.`}</div>

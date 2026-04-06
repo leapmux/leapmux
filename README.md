@@ -339,6 +339,15 @@ task prepare-frontend   # Install frontend dependencies (bun install)
 
 Note: Build targets automatically run their required preparation steps, so `task build` works without running `task prepare` first.
 
+### Third-Party License Notice
+
+Generate `NOTICE.md` and `NOTICE.html` with all third-party dependency licenses:
+```bash
+task generate-notice
+```
+
+The build pipeline runs this automatically before building the frontend. The task fails if any dependency is missing a license file or if a vendored override's license identifier no longer matches the upstream package.
+
 ### Cleaning
 
 Remove all build artifacts and generated code:
@@ -379,10 +388,12 @@ docker run -p 4327:4327 -e LEAPMUX_MODE=dev -v leapmux-data:/data leapmux:latest
 
 Pre-built images are published to GHCR in two variants:
 
-| Variant          | Tag pattern         | Example                             |
-|------------------|---------------------|-------------------------------------|
-| Alpine (default) | `:<version>`        | `ghcr.io/org/leapmux:1.0.0`        |
-| Ubuntu           | `:<version>-ubuntu` | `ghcr.io/org/leapmux:1.0.0-ubuntu` |
+| Variant          | Tags                                     | Example                             |
+|------------------|------------------------------------------|-------------------------------------|
+| Alpine (default) | `:<version>`, `:<major>`, `:latest`, `:dev` | `ghcr.io/leapmux/leapmux:1.0.0` |
+| Ubuntu           | `:<version>-ubuntu`, `:<major>-ubuntu`, `:latest-ubuntu`, `:dev-ubuntu` | `ghcr.io/leapmux/leapmux:1.0.0-ubuntu` |
+
+Release tags (`:latest`, `:<version>`, `:<major>`) are published by the release workflow. The `:dev` tag is updated on every push to `main`.
 
 Tool and base image versions are centralized in the `versions.yaml` file at the repository root.
 
@@ -517,16 +528,20 @@ leapmux/
 │   └── tests/               # Unit tests (Vitest) and E2E tests (Playwright)
 │
 ├── icons/                   # SVG icons (app logo and agent provider icons)
-├── scripts/                 # Utility scripts
 │
 ├── proto/                   # Protocol Buffer definitions
 │   └── leapmux/v1/          # Service and message definitions
+│
+├── scripts/                 # Utility scripts
+│   ├── license-overrides/   # Vendored licenses for packages missing them
+│   └── generate-notice.mjs  # License collection and NOTICE.md/HTML generation
 │
 ├── buf.gen.yaml             # Protocol Buffer code generation targets
 ├── buf.yaml                 # Protocol Buffer linting configuration
 ├── go.work                  # Go workspace (backend + desktop modules)
 ├── mprocs.yaml              # Dev mode process configuration (task dev)
 ├── mprocs-solo.yaml         # Solo mode process configuration (task dev-solo)
+├── NOTICE.md                # Third-party dependency licenses (generated)
 ├── README.md                # This file
 ├── Taskfile.yaml            # Build orchestration (go-task.dev)
 └── versions.yaml            # Version string and tool/image versions

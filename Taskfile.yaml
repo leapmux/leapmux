@@ -4,13 +4,13 @@ run: once
 
 vars:
   VERSION:
-    sh: yq '.version' versions.yaml
+    sh: echo "${VERSION:-$(yq '.version' versions.yaml)}"
   COMMIT_HASH:
-    sh: git rev-parse --short HEAD 2>/dev/null || echo ""
+    sh: echo "${COMMIT_HASH:-$(git rev-parse --short HEAD 2>/dev/null)}"
   COMMIT_TIME:
-    sh: git log -1 --format=%cI 2>/dev/null || echo ""
+    sh: echo "${COMMIT_TIME:-$(git log -1 --format=%cI 2>/dev/null)}"
   BUILD_TIME:
-    sh: date -u '+%Y-%m-%dT%H:%M:%SZ'
+    sh: echo "${BUILD_TIME:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
   VERSION_LDFLAGS: >-
     -X github.com/leapmux/leapmux/util/version.Value={{.VERSION}}
     -X github.com/leapmux/leapmux/util/version.CommitHash={{.COMMIT_HASH}}
@@ -119,6 +119,36 @@ tasks:
     cmds:
       - cd frontend && bun install
 
+  # --- Notice ---
+
+  generate-notice:
+    desc: Generate NOTICE.md with third-party licenses
+    deps: [prepare]
+    sources:
+      - scripts/generate-notice.mjs
+      - scripts/license-overrides/**/*
+      - backend/go.mod
+      - backend/go.sum
+      - desktop/go.mod
+      - desktop/go.sum
+      - frontend/package.json
+      - frontend/bun.lock
+    generates:
+      - NOTICE.md
+      - NOTICE.html
+    cmds:
+      - bun scripts/generate-notice.mjs
+
+  copy-notice:
+    desc: Copy NOTICE.html to frontend public dir for static serving
+    deps: [generate-notice]
+    sources:
+      - NOTICE.html
+    generates:
+      - frontend/public/NOTICE.html
+    cmds:
+      - cp NOTICE.html frontend/public/NOTICE.html
+
   # --- Build ---
 
   build:
@@ -206,7 +236,7 @@ tasks:
 
   build-frontend:
     desc: Build frontend assets
-    deps: [prepare-frontend, generate-web-icons]
+    deps: [prepare-frontend, generate-web-icons, copy-notice]
     sources:
       - frontend/package.json
       - frontend/bun.lock
@@ -382,6 +412,8 @@ tasks:
         --build-arg TASK_VERSION={{.TASK_VERSION}}
         --build-arg S6_OVERLAY_VERSION={{.S6_OVERLAY_VERSION}}
         --build-arg VERSION={{.VERSION}}
+        --build-arg COMMIT_HASH={{.COMMIT_HASH}}
+        --build-arg COMMIT_TIME={{.COMMIT_TIME}}
         -f docker/Dockerfile
         -t {{.TAG}}
         .
@@ -401,6 +433,8 @@ tasks:
         --build-arg TASK_VERSION={{.TASK_VERSION}}
         --build-arg S6_OVERLAY_VERSION={{.S6_OVERLAY_VERSION}}
         --build-arg VERSION={{.VERSION}}
+        --build-arg COMMIT_HASH={{.COMMIT_HASH}}
+        --build-arg COMMIT_TIME={{.COMMIT_TIME}}
         -f docker/Dockerfile
         -t {{.TAG}}
         .
