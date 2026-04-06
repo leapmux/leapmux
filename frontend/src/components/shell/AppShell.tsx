@@ -23,6 +23,7 @@ import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
+import { useChatAutoFocus } from '~/hooks/useChatAutoFocus'
 import { useIsMobile } from '~/hooks/useIsMobile'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { createLogger } from '~/lib/logger'
@@ -985,6 +986,8 @@ export const AppShell: ParentComponent = (props) => {
     isFloatingWindowTile: (tileId: string) => !!floatingWindowStore.getWindowForTile(tileId),
     onDetachTab: handleDetachTab,
   })
+
+  useChatAutoFocus(() => tileRenderer.focusedAgentId())
 
   // Sidebar element factories
   // Use getters for reactive values so that LeftSidebar/RightSidebar props

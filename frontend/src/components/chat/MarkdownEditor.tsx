@@ -35,6 +35,7 @@ interface MarkdownEditorProps {
   banner?: JSX.Element
   footer?: JSX.Element
   contentRef?: (get: () => string, set: (text: string) => void) => void
+  insertRef?: (insert: (text: string) => void) => void
   /** Called once the editor is fully initialized with draft content. */
   onReady?: () => void
   placeholder?: string
@@ -306,6 +307,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       sendRef: props.sendRef,
       focusRef: props.focusRef,
       contentRef: props.contentRef,
+      insertRef: props.insertRef,
       handleSend,
     })
 
