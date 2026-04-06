@@ -1,5 +1,5 @@
 import { createRoot } from 'solid-js'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useTabOperations } from '~/components/shell/useTabOperations'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createAgentStore } from '~/stores/agent.store'
@@ -77,70 +77,46 @@ function setup() {
 }
 
 describe('useTabOperations', () => {
-  it('marks an agent tab as closing while persisted close is in flight', async () => {
-    await createRoot(async (dispose) => {
-      try {
-        const { tabStore, ops, handleCloseAgent } = setup()
-        const agentTab = tabStore.state.tabs.find(t => t.id === 'agent-a')!
-        let resolveInspect!: (value: { shouldPrompt: boolean }) => void
-        let resolveClose!: () => void
-        mockInspectLastTabClose.mockImplementationOnce(() => new Promise((resolve) => {
-          resolveInspect = resolve as typeof resolveInspect
-        }))
-        handleCloseAgent.mockImplementationOnce(() => new Promise<void>((resolve) => {
-          resolveClose = resolve
-        }))
-
-        const closePromise = ops.handleTabClose(agentTab)
-        expect(ops.closingTabKeys().has(`${TabType.AGENT}:agent-a`)).toBe(true)
-
-        resolveInspect({ shouldPrompt: false })
-        await Promise.resolve()
-        expect(ops.closingTabKeys().has(`${TabType.AGENT}:agent-a`)).toBe(true)
-
-        resolveClose()
-        await closePromise
-        expect(ops.closingTabKeys().has(`${TabType.AGENT}:agent-a`)).toBe(false)
-      }
-      finally {
-        mockInspectLastTabClose.mockReset()
-        mockScheduleWorktreeDeletion.mockReset()
-        mockShowWarnToast.mockReset()
-        dispose()
-      }
-    })
+  afterEach(() => {
+    mockInspectLastTabClose.mockReset()
+    mockScheduleWorktreeDeletion.mockReset()
+    mockShowWarnToast.mockReset()
   })
 
-  it('marks a terminal tab as closing while persisted close is in flight', async () => {
+  it.each([
+    { tabType: TabType.AGENT, tabId: 'agent-a', label: 'agent', handlerKey: 'handleCloseAgent' as const },
+    { tabType: TabType.TERMINAL, tabId: 'term-a', label: 'terminal', handlerKey: 'handleTerminalClose' as const },
+  ])('marks a $label tab as closing while persisted close is in flight', async ({ tabType, tabId, handlerKey }) => {
     await createRoot(async (dispose) => {
       try {
-        const { tabStore, ops, handleTerminalClose } = setup()
-        tabStore.addTab({ type: TabType.TERMINAL, id: 'term-a', tileId: 'tile-1', workerId: 'w-1' }, { activate: false })
-        const terminalTab = tabStore.state.tabs.find(t => t.id === 'term-a')!
+        const result = setup()
+        const { tabStore, ops } = result
+        if (tabType === TabType.TERMINAL) {
+          tabStore.addTab({ type: TabType.TERMINAL, id: tabId, tileId: 'tile-1', workerId: 'w-1' }, { activate: false })
+        }
+        const tab = tabStore.state.tabs.find(t => t.id === tabId)!
+        const key = `${tabType}:${tabId}`
         let resolveInspect!: (value: { shouldPrompt: boolean }) => void
         let resolveClose!: () => void
         mockInspectLastTabClose.mockImplementationOnce(() => new Promise((resolve) => {
           resolveInspect = resolve as typeof resolveInspect
         }))
-        handleTerminalClose.mockImplementationOnce(() => new Promise<void>((resolve) => {
+        result[handlerKey].mockImplementationOnce(() => new Promise<void>((resolve) => {
           resolveClose = resolve
         }))
 
-        const closePromise = ops.handleTabClose(terminalTab)
-        expect(ops.closingTabKeys().has(`${TabType.TERMINAL}:term-a`)).toBe(true)
+        const closePromise = ops.handleTabClose(tab)
+        expect(ops.closingTabKeys().has(key)).toBe(true)
 
         resolveInspect({ shouldPrompt: false })
         await Promise.resolve()
-        expect(ops.closingTabKeys().has(`${TabType.TERMINAL}:term-a`)).toBe(true)
+        expect(ops.closingTabKeys().has(key)).toBe(true)
 
         resolveClose()
         await closePromise
-        expect(ops.closingTabKeys().has(`${TabType.TERMINAL}:term-a`)).toBe(false)
+        expect(ops.closingTabKeys().has(key)).toBe(false)
       }
       finally {
-        mockInspectLastTabClose.mockReset()
-        mockScheduleWorktreeDeletion.mockReset()
-        mockShowWarnToast.mockReset()
         dispose()
       }
     })
@@ -160,9 +136,6 @@ describe('useTabOperations', () => {
         expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to prepare tab close', err)
       }
       finally {
-        mockInspectLastTabClose.mockReset()
-        mockScheduleWorktreeDeletion.mockReset()
-        mockShowWarnToast.mockReset()
         dispose()
       }
     })
