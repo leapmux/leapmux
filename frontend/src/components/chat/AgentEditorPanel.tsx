@@ -213,6 +213,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // Editor content ref for programmatic get/set of editor markdown.
   let editorContentRef: EditorContentRef | undefined
   let editorFocusFn: (() => void) | undefined
+  let editorInsertFn: ((text: string) => void) | undefined
   // Whether the MarkdownEditor has fully initialized (draft loaded, cursor restored).
   let editorReady = false
 
@@ -225,7 +226,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   /** Register the editor ref if the editor is ready and both refs are available. */
   const tryRegisterEditorRef = (agentId: string) => {
     if (editorReady && editorContentRef && editorFocusFn) {
-      registerEditorRef(agentId, { get: editorContentRef.get, set: editorContentRef.set, focus: editorFocusFn })
+      registerEditorRef(agentId, { get: editorContentRef.get, set: editorContentRef.set, focus: editorFocusFn, insert: text => editorInsertFn?.(text) })
       registeredAgentId = agentId
     }
   }
@@ -426,6 +427,9 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           }}
           contentRef={(get, set) => {
             editorContentRef = { get, set }
+          }}
+          insertRef={(fn) => {
+            editorInsertFn = fn
           }}
           onReady={() => {
             editorReady = true

@@ -5,6 +5,7 @@ export interface EditorRef {
   get: () => string
   set: (value: string) => void
   focus: () => void
+  insert: (text: string) => void
 }
 
 const registry = new Map<string, EditorRef>()

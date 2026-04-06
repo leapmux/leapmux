@@ -13,6 +13,7 @@ export interface EditorRefHandlersOptions {
   sendRef?: (send: () => void) => void
   focusRef?: (focus: () => void) => void
   contentRef?: (get: () => string, set: (text: string) => void) => void
+  insertRef?: (insert: (text: string) => void) => void
   handleSend: () => void
 }
 
@@ -77,6 +78,18 @@ export function setupEditorRefHandlers(opts: EditorRefHandlersOptions): void {
     try {
       editor.action((ctx: Ctx) => {
         ctx.get(editorViewCtx).focus()
+      })
+    }
+    catch { /* editor may not be ready */ }
+  })
+
+  // Expose insert-at-cursor function (e.g. for auto-focus keystroke forwarding)
+  opts.insertRef?.((text: string) => {
+    try {
+      editor.action((ctx: Ctx) => {
+        const view = ctx.get(editorViewCtx)
+        const tr = view.state.tr.insertText(text)
+        view.dispatch(tr)
       })
     }
     catch { /* editor may not be ready */ }
