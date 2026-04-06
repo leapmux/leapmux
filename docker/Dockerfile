@@ -27,9 +27,11 @@ RUN apk add --no-cache bash curl libgcc libstdc++ nodejs rsync yq && \
 RUN wget -qO- https://bun.sh/install | BUN_INSTALL=/usr bash
 
 # Download Go dependencies (cache layer)
+COPY go.work .
 COPY backend/go.mod backend/go.sum backend/
+COPY desktop/go.mod desktop/go.sum desktop/
 RUN --mount=type=cache,target=/go/pkg/mod \
-    cd backend && go mod download
+    go mod download
 
 # Install frontend dependencies (cache layer)
 # scripts/only-bun.mjs is needed by the preinstall hook in package.json.
