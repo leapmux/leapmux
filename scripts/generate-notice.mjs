@@ -50,9 +50,9 @@ function findLicenseFile(dir, stopAt) {
   return null
 }
 
-/** Strip leading and trailing blank (empty or whitespace-only) lines. */
+/** Strip \r, then remove leading and trailing blank (empty or whitespace-only) lines. */
 function trimBlankLines(text) {
-  const lines = text.split('\n')
+  const lines = text.replace(/\r/g, '').split('\n')
   let start = 0
   while (start < lines.length && lines[start].trim() === '') start++
   let end = lines.length - 1
