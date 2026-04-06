@@ -133,18 +133,19 @@ tasks:
       - frontend/bun.lock
     generates:
       - NOTICE.md
+      - NOTICE.html
     cmds:
       - bun scripts/generate-notice.mjs
 
   copy-notice:
-    desc: Copy NOTICE.md to frontend public dir for static serving
+    desc: Copy NOTICE.html to frontend public dir for static serving
     deps: [generate-notice]
     sources:
-      - NOTICE.md
+      - NOTICE.html
     generates:
-      - frontend/public/NOTICE.md
+      - frontend/public/NOTICE.html
     cmds:
-      - cp NOTICE.md frontend/public/NOTICE.md
+      - cp NOTICE.html frontend/public/NOTICE.html
 
   # --- Build ---
 

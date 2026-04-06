@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
-// generate-notice.mjs — Generate NOTICE.md with third-party license texts.
+// generate-notice.mjs — Generate NOTICE.md and NOTICE.html with third-party
+// license texts.
 //
 // Usage: bun scripts/generate-notice.mjs
 //
@@ -10,7 +11,7 @@
 import { execSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { writeFileSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const FRONTEND = join(ROOT, 'frontend')
@@ -198,17 +199,7 @@ function collectJsDeps() {
 // Generate NOTICE.md
 // ---------------------------------------------------------------------------
 
-function generateNotice() {
-  const go = collectGoDeps()
-  const js = collectJsDeps()
-  const allWarnings = [...go.warnings, ...js.warnings]
-
-  if (allWarnings.length > 0) {
-    console.warn('\nWarnings:')
-    for (const w of allWarnings) console.warn(`  ⚠ ${w}`)
-    console.warn()
-  }
-
+function buildMarkdown(goDeps, jsDeps) {
   const lines = []
 
   lines.push('# Third-Party Licenses')
@@ -219,19 +210,19 @@ function generateNotice() {
   // Table of contents
   lines.push('## Table of Contents')
   lines.push('')
-  if (go.deps.length > 0) {
+  if (goDeps.length > 0) {
     lines.push('### Go Dependencies')
     lines.push('')
-    for (const dep of go.deps) {
+    for (const dep of goDeps) {
       const heading = `${dep.name} ${dep.version}`
       lines.push(`- [${heading}](#${toAnchor(heading)})`)
     }
     lines.push('')
   }
-  if (js.deps.length > 0) {
+  if (jsDeps.length > 0) {
     lines.push('### JavaScript Dependencies')
     lines.push('')
-    for (const dep of js.deps) {
+    for (const dep of jsDeps) {
       const heading = `${dep.name} ${dep.version}`
       lines.push(`- [${heading}](#${toAnchor(heading)})`)
     }
@@ -239,12 +230,12 @@ function generateNotice() {
   }
 
   // Go dependencies
-  if (go.deps.length > 0) {
+  if (goDeps.length > 0) {
     lines.push('---')
     lines.push('')
     lines.push('## Go Dependencies')
     lines.push('')
-    for (const dep of go.deps) {
+    for (const dep of goDeps) {
       lines.push(`### ${dep.name} ${dep.version}`)
       lines.push('')
       lines.push('```')
@@ -255,12 +246,12 @@ function generateNotice() {
   }
 
   // JavaScript dependencies
-  if (js.deps.length > 0) {
+  if (jsDeps.length > 0) {
     lines.push('---')
     lines.push('')
     lines.push('## JavaScript Dependencies')
     lines.push('')
-    for (const dep of js.deps) {
+    for (const dep of jsDeps) {
       lines.push(`### ${dep.name} ${dep.version}`)
       lines.push('')
       lines.push('```')
@@ -270,10 +261,141 @@ function generateNotice() {
     }
   }
 
-  const content = lines.join('\n')
-  const outPath = join(ROOT, 'NOTICE.md')
-  writeFileSync(outPath, content, 'utf-8')
-  console.log(`✓ Written ${outPath} (${go.deps.length} Go + ${js.deps.length} JS dependencies)`)
+  return lines.join('\n')
 }
 
-generateNotice()
+// ---------------------------------------------------------------------------
+// Generate NOTICE.html — standalone page with Oat CSS + LeapMux themes
+// ---------------------------------------------------------------------------
+
+async function buildHtml(markdown) {
+  // Use remark/rehype from frontend/node_modules to render markdown to HTML.
+  const { unified } = await import(join(FRONTEND, 'node_modules/unified/index.js'))
+  const { default: remarkParse } = await import(join(FRONTEND, 'node_modules/remark-parse/index.js'))
+  const { default: remarkGfm } = await import(join(FRONTEND, 'node_modules/remark-gfm/index.js'))
+  const { default: remarkRehype } = await import(join(FRONTEND, 'node_modules/remark-rehype/index.js'))
+  const { default: rehypeStringify } = await import(join(FRONTEND, 'node_modules/rehype-stringify/index.js'))
+
+  const bodyHtml = String(
+    await unified()
+      .use(remarkParse)
+      .use(remarkGfm)
+      .use(remarkRehype)
+      .use(rehypeStringify)
+      .process(markdown),
+  )
+
+  // Read Oat CSS to inline.
+  const oatCss = readFileSync(join(FRONTEND, 'node_modules/@knadh/oat/oat.min.css'), 'utf-8')
+
+  // LeapMux theme overrides (extracted from frontend/src/styles/global.css.ts).
+  const themeCss = `
+/* LeapMux light theme */
+:root {
+  --background: rgb(253 252 250);
+  --foreground: rgb(34 32 30);
+  --card: rgb(247 245 242);
+  --card-foreground: rgb(34 32 30);
+  --primary: rgb(13 148 136);
+  --primary-foreground: rgb(255 255 255);
+  --secondary: rgb(232 230 225);
+  --secondary-foreground: rgb(46 43 40);
+  --muted: rgb(237 235 231);
+  --muted-foreground: rgb(120 117 111);
+  --faint: rgb(242 240 236);
+  --faint-foreground: rgb(160 157 151);
+  --accent: rgb(222 235 225);
+  --accent-foreground: rgb(34 32 30);
+  --border: rgb(221 217 211);
+  --input: rgb(213 209 203);
+  --ring: rgb(13 148 136);
+  --font-sans: system-ui, sans-serif;
+  --font-mono: "SF Mono", Consolas, monospace;
+}
+
+/* LeapMux dark theme */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: rgb(26 25 23);
+    --foreground: rgb(232 230 225);
+    --card: rgb(42 40 38);
+    --card-foreground: rgb(232 230 225);
+    --primary: rgb(20 184 166);
+    --primary-foreground: rgb(12 12 11);
+    --secondary: rgb(51 48 45);
+    --secondary-foreground: rgb(224 221 216);
+    --muted: rgb(46 43 40);
+    --muted-foreground: rgb(138 134 128);
+    --faint: rgb(36 34 32);
+    --faint-foreground: rgb(107 104 98);
+    --accent: rgb(45 62 50);
+    --accent-foreground: rgb(232 230 225);
+    --border: rgb(61 58 54);
+    --input: rgb(61 58 54);
+    --ring: rgb(20 184 166);
+    color-scheme: dark;
+  }
+}
+
+code, pre {
+  background-color: rgb(from var(--foreground) r g b / 0.075);
+}
+pre code, pre pre, code pre, code code {
+  background-color: transparent;
+}
+body {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: var(--space-6);
+}
+`
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Third-Party Licenses — LeapMux</title>
+<style>${oatCss}</style>
+<style>${themeCss}</style>
+</head>
+<body>
+${bodyHtml}
+</body>
+</html>
+`
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+async function generateNotice() {
+  const go = collectGoDeps()
+  const js = collectJsDeps()
+  const allWarnings = [...go.warnings, ...js.warnings]
+
+  if (allWarnings.length > 0) {
+    console.warn('\nWarnings:')
+    for (const w of allWarnings) console.warn(`  ⚠ ${w}`)
+    console.warn()
+  }
+
+  const markdown = buildMarkdown(go.deps, js.deps)
+
+  // Write NOTICE.md
+  const mdPath = join(ROOT, 'NOTICE.md')
+  writeFileSync(mdPath, markdown, 'utf-8')
+  console.log(`✓ Written ${mdPath}`)
+
+  // Write NOTICE.html
+  console.log('Rendering HTML …')
+  const html = await buildHtml(markdown)
+  const htmlPath = join(ROOT, 'NOTICE.html')
+  writeFileSync(htmlPath, html, 'utf-8')
+  console.log(`✓ Written ${htmlPath}`)
+
+  console.log(`  (${go.deps.length} Go + ${js.deps.length} JS dependencies)`)
+}
+
+await generateNotice()

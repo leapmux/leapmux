@@ -9,7 +9,6 @@ import { useOrg } from '~/context/OrgContext'
 import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem, menuSectionHeader } from '~/styles/shared.css'
 import { AboutDialog } from './AboutDialog'
-import { NoticeDialog } from './NoticeDialog'
 import * as styles from './UserMenu.css'
 
 interface UserMenuProps {
@@ -25,7 +24,6 @@ interface UserMenuProps {
 const [showProfileDialog, setShowProfileDialog] = createSignal(false)
 const [showPreferencesDialog, setShowPreferencesDialog] = createSignal(false)
 const [showAboutDialog, setShowAboutDialog] = createSignal(false)
-const [showNoticeDialog, setShowNoticeDialog] = createSignal(false)
 
 /** Renders dialogs triggered by UserMenu. Mount once in a stable parent. */
 export const UserMenuDialogs: Component = () => (
@@ -37,10 +35,7 @@ export const UserMenuDialogs: Component = () => (
       <PreferencesDialog onClose={() => setShowPreferencesDialog(false)} />
     </Show>
     <Show when={showAboutDialog()}>
-      <AboutDialog onClose={() => setShowAboutDialog(false)} onShowNotice={() => setShowNoticeDialog(true)} />
-    </Show>
-    <Show when={showNoticeDialog()}>
-      <NoticeDialog onClose={() => setShowNoticeDialog(false)} />
+      <AboutDialog onClose={() => setShowAboutDialog(false)} />
     </Show>
   </>
 )
