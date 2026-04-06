@@ -4,18 +4,17 @@ import { editorViewCtx, serializerCtx } from '@milkdown/core'
 import { TextSelection } from '@milkdown/prose/state'
 import { clearDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { safeGetString, safeSetString } from '~/lib/safeStorage'
+import { KEY_ENTER_KEY_MODE } from '~/lib/storageCleanup'
 
 export type EnterKeyMode = 'enter-sends' | 'cmd-enter-sends'
 
-export const ENTER_KEY_MODE_KEY = 'leapmux:enter-key-mode'
-
 export function getEnterKeyMode(): EnterKeyMode {
-  const stored = safeGetString(ENTER_KEY_MODE_KEY)
+  const stored = safeGetString(KEY_ENTER_KEY_MODE)
   return stored === 'enter-sends' ? 'enter-sends' : 'cmd-enter-sends'
 }
 
 export function setEnterKeyMode(mode: EnterKeyMode): void {
-  safeSetString(ENTER_KEY_MODE_KEY, mode)
+  safeSetString(KEY_ENTER_KEY_MODE, mode)
 }
 
 /**

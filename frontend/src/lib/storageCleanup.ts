@@ -6,18 +6,30 @@
  * stored raw and never expire.
  */
 
+/** Static key constants — single source of truth for all consumers. */
+export const KEY_THEME = 'leapmux:theme'
+export const KEY_TERMINAL_THEME = 'leapmux:terminal-theme'
+export const KEY_DIFF_VIEW = 'leapmux:diff-view'
+export const KEY_TURN_END_SOUND = 'leapmux:turn-end-sound'
+export const KEY_TURN_END_SOUND_VOLUME = 'leapmux:turn-end-sound-volume'
+export const KEY_DEBUG_LOGGING = 'leapmux:debug-logging'
+export const KEY_SHOW_HIDDEN_MESSAGES = 'leapmux:show-hidden-messages'
+export const KEY_ENTER_KEY_MODE = 'leapmux:enter-key-mode'
+export const KEY_MRU_AGENT_PROVIDERS = 'leapmux:mru-agent-providers'
+export const KEY_KEY_PINS = 'leapmux:key-pins'
+
 /** Keys that are never cleaned up and stored without wrapping. */
 export const STATIC_KEYS = new Set([
-  'leapmux:theme',
-  'leapmux:terminal-theme',
-  'leapmux:diff-view',
-  'leapmux:turn-end-sound',
-  'leapmux:turn-end-sound-volume',
-  'leapmux:debug-logging',
-  'leapmux:show-hidden-messages',
-  'leapmux:enter-key-mode',
-  'leapmux:mru-agent-providers',
-  'leapmux:key-pins',
+  KEY_THEME,
+  KEY_TERMINAL_THEME,
+  KEY_DIFF_VIEW,
+  KEY_TURN_END_SOUND,
+  KEY_TURN_END_SOUND_VOLUME,
+  KEY_DEBUG_LOGGING,
+  KEY_SHOW_HIDDEN_MESSAGES,
+  KEY_ENTER_KEY_MODE,
+  KEY_MRU_AGENT_PROVIDERS,
+  KEY_KEY_PINS,
 ])
 
 const DAY_MS = 24 * 60 * 60 * 1000

@@ -11,7 +11,7 @@ import { AuthProvider } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { resolveStack } from '~/lib/resolveStack'
 import { safeGetString } from '~/lib/safeStorage'
-import { initStorageCleanup } from '~/lib/storageCleanup'
+import { initStorageCleanup, KEY_THEME } from '~/lib/storageCleanup'
 import { disableTextSubstitutions } from '~/lib/textInputBehavior'
 import { heightFull } from '~/styles/shared.css'
 import '~/lib/oat'
@@ -24,7 +24,7 @@ export type ThemePreference = 'light' | 'dark' | 'system'
 
 /** Read the saved theme preference from localStorage (instant, no flash). */
 function getStoredTheme(): ThemePreference {
-  const stored = safeGetString('leapmux:theme')
+  const stored = safeGetString(KEY_THEME)
   if (stored === 'light' || stored === 'dark' || stored === 'system')
     return stored
   return 'system' // 'account-default' or missing → default until account loads
@@ -156,7 +156,7 @@ export default function App() {
 
   // Listen for localStorage changes from other tabs.
   const handleStorage = (e: StorageEvent) => {
-    if (e.key === 'leapmux:theme') {
+    if (e.key === KEY_THEME) {
       const val = e.newValue
       if (val === 'light' || val === 'dark' || val === 'system')
         setThemePreference(val)

@@ -31,6 +31,7 @@ import { createLogger } from './logger'
 import { initiatorHandshake1 as classicHandshake1, initiatorHandshake2 as classicHandshake2, concatBytes } from './noise'
 import { initiatorHandshake1, initiatorHandshake2 } from './noise-hybrid'
 import { safeGetJson, safeRemoveItem, safeSetJson } from './safeStorage'
+import { KEY_KEY_PINS } from './storageCleanup'
 
 const log = createLogger('channel')
 
@@ -226,7 +227,7 @@ export class ChannelManager {
     // 2. Key pinning (TOFU model) — pin composite key.
     const compositeKeyBytes = concatBytes(keyBundle.x25519PublicKey, keyBundle.mlkemPublicKey, keyBundle.slhdsaPublicKey)
     const publicKeyHex = bytesToHex(compositeKeyBytes)
-    const allPins = safeGetJson<KeyPinMap>('leapmux:key-pins') ?? {}
+    const allPins = safeGetJson<KeyPinMap>(KEY_KEY_PINS) ?? {}
     const pinned = allPins[workerId] ?? null
 
     if (pinned && pinned.publicKeyHex !== publicKeyHex) {
@@ -248,7 +249,7 @@ export class ChannelManager {
       }
       // User accepted the new key.
       allPins[workerId] = { publicKeyHex, firstSeen: Date.now() }
-      safeSetJson('leapmux:key-pins', allPins)
+      safeSetJson(KEY_KEY_PINS, allPins)
     }
 
     // 3. Perform handshake based on encryption mode.
@@ -288,7 +289,7 @@ export class ChannelManager {
     // 5. Pin key on first use (TOFU).
     if (!pinned) {
       allPins[workerId] = { publicKeyHex, firstSeen: Date.now() }
-      safeSetJson('leapmux:key-pins', allPins)
+      safeSetJson(KEY_KEY_PINS, allPins)
     }
 
     // 6. Send UserIdClaim as first encrypted message.
@@ -531,14 +532,14 @@ export class ChannelManager {
 
   /** Remove a pinned key for a worker. */
   static clearKeyPin(workerId: string): void {
-    const allPins = safeGetJson<KeyPinMap>('leapmux:key-pins') ?? {}
+    const allPins = safeGetJson<KeyPinMap>(KEY_KEY_PINS) ?? {}
     delete allPins[workerId]
-    safeSetJson('leapmux:key-pins', allPins)
+    safeSetJson(KEY_KEY_PINS, allPins)
   }
 
   /** Remove all pinned keys. */
   static clearAllKeyPins(): void {
-    safeRemoveItem('leapmux:key-pins')
+    safeRemoveItem(KEY_KEY_PINS)
   }
 
   // ---- Private methods ----
