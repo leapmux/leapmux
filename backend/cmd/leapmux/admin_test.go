@@ -937,6 +937,76 @@ func TestCLI_UserDelete_AdminRequiresForce(t *testing.T) {
 	assert.ErrorIs(t, err, sql.ErrNoRows)
 }
 
+func TestCLI_UserDelete_InvisibleToLookup(t *testing.T) {
+	dir := setupTestDataDir(t)
+	user := createTestUser(t, dir, "alice")
+
+	err := runUserDelete([]string{"--id", user.ID, "--data-dir", dir})
+	require.NoError(t, err)
+
+	sqlDB, q := openTestDB(t, dir)
+	defer func() { _ = sqlDB.Close() }()
+
+	// GetUserByUsername filters out soft-deleted users, so it should return ErrNoRows.
+	_, err = q.GetUserByUsername(context.Background(), "alice")
+	assert.ErrorIs(t, err, sql.ErrNoRows)
+
+	// GetUserByID does NOT filter soft-deleted users, so we can still see the row.
+	deletedUser, err := q.GetUserByID(context.Background(), user.ID)
+	require.NoError(t, err)
+	assert.True(t, deletedUser.DeletedAt.Valid, "user should have non-null deleted_at")
+}
+
+func TestCLI_UserDelete_WorkersMarkedDeleted(t *testing.T) {
+	dir := setupTestDataDir(t)
+	user := createTestUser(t, dir, "alice")
+	workerID := createTestWorker(t, dir, user.ID)
+
+	err := runUserDelete([]string{"--id", user.ID, "--data-dir", dir})
+	require.NoError(t, err)
+
+	sqlDB, q := openTestDB(t, dir)
+	defer func() { _ = sqlDB.Close() }()
+
+	worker, err := q.GetWorkerByID(context.Background(), workerID)
+	require.NoError(t, err)
+	assert.Equal(t, int32(3), int32(worker.Status), "worker status should be 3 (deleted)")
+	assert.True(t, worker.DeletedAt.Valid, "worker should have non-null deleted_at")
+}
+
+func TestCLI_UserDelete_WorkspaceSoftDeleted(t *testing.T) {
+	dir := setupTestDataDir(t)
+	user := createTestUser(t, dir, "alice")
+
+	// Create a workspace directly via the DB queries.
+	sqlDB, q := openTestDB(t, dir)
+	wsID := id.Generate()
+	err := q.CreateWorkspace(context.Background(), gendb.CreateWorkspaceParams{
+		ID:          wsID,
+		OrgID:       user.OrgID,
+		OwnerUserID: user.ID,
+		Title:       "test workspace",
+	})
+	require.NoError(t, err)
+	_ = sqlDB.Close()
+
+	err = runUserDelete([]string{"--id", user.ID, "--data-dir", dir})
+	require.NoError(t, err)
+
+	// Read the workspace row directly via raw SQL since GetWorkspaceByID filters deleted ones.
+	sqlDB, _ = openTestDB(t, dir)
+	defer func() { _ = sqlDB.Close() }()
+
+	var isDeleted int64
+	var deletedAt sql.NullTime
+	err = sqlDB.QueryRowContext(context.Background(),
+		"SELECT is_deleted, deleted_at FROM workspaces WHERE id = ?", wsID,
+	).Scan(&isDeleted, &deletedAt)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), isDeleted, "workspace should have is_deleted = 1")
+	assert.True(t, deletedAt.Valid, "workspace should have non-null deleted_at")
+}
+
 func TestCLI_UserResetPassword_MissingPassword(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")

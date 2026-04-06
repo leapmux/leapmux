@@ -16,6 +16,12 @@ import (
 
 func newTestQueries(t *testing.T) *gendb.Queries {
 	t.Helper()
+	_, q := newTestDB(t)
+	return q
+}
+
+func newTestDB(t *testing.T) (*sql.DB, *gendb.Queries) {
+	t.Helper()
 	sqlDB, err := db.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
@@ -24,7 +30,7 @@ func newTestQueries(t *testing.T) *gendb.Queries {
 		t.Fatalf("Migrate failed: %v", err)
 	}
 
-	return gendb.New(sqlDB)
+	return sqlDB, gendb.New(sqlDB)
 }
 
 func makeID() string {
@@ -304,4 +310,203 @@ func TestUserSessions_Expired(t *testing.T) {
 	// Cleanup should remove it.
 	_, err = q.DeleteExpiredUserSessions(ctx)
 	require.NoError(t, err)
+}
+
+// ---- Hard-delete cleanup tests ----
+
+func TestHardDeleteUsersBefore(t *testing.T) {
+	sqlDB, q := newTestDB(t)
+	ctx := context.Background()
+
+	orgID := makeID()
+	_ = q.CreateOrg(ctx, gendb.CreateOrgParams{ID: orgID, Name: "org"})
+
+	userID := makeID()
+	_ = q.CreateUser(ctx, gendb.CreateUserParams{
+		ID: userID, OrgID: orgID, Username: "alice",
+		PasswordHash: "h", DisplayName: "Alice", PasswordSet: 1, IsAdmin: 0,
+	})
+
+	// Soft-delete the user with deleted_at 8 days ago.
+	eightDaysAgo := time.Now().UTC().Add(-8 * 24 * time.Hour)
+	_, err := sqlDB.ExecContext(ctx, "UPDATE users SET deleted_at = ? WHERE id = ?", eightDaysAgo, userID)
+	require.NoError(t, err)
+
+	// Hard-delete users soft-deleted before 7 days ago.
+	cutoff := time.Now().UTC().Add(-7 * 24 * time.Hour)
+	result, err := q.HardDeleteUsersBefore(ctx, sql.NullTime{Time: cutoff, Valid: true})
+	require.NoError(t, err)
+
+	affected, _ := result.RowsAffected()
+	require.Equal(t, int64(1), affected)
+
+	// The user should be completely gone.
+	_, err = q.GetUserByID(ctx, userID)
+	require.ErrorIs(t, err, sql.ErrNoRows)
+}
+
+func TestHardDeleteUsersBefore_RetainsRecent(t *testing.T) {
+	sqlDB, q := newTestDB(t)
+	ctx := context.Background()
+
+	orgID := makeID()
+	_ = q.CreateOrg(ctx, gendb.CreateOrgParams{ID: orgID, Name: "org"})
+
+	userID := makeID()
+	_ = q.CreateUser(ctx, gendb.CreateUserParams{
+		ID: userID, OrgID: orgID, Username: "alice",
+		PasswordHash: "h", DisplayName: "Alice", PasswordSet: 1, IsAdmin: 0,
+	})
+
+	// Soft-delete the user with deleted_at 1 day ago.
+	oneDayAgo := time.Now().UTC().Add(-1 * 24 * time.Hour)
+	_, err := sqlDB.ExecContext(ctx, "UPDATE users SET deleted_at = ? WHERE id = ?", oneDayAgo, userID)
+	require.NoError(t, err)
+
+	// Hard-delete users soft-deleted before 7 days ago.
+	cutoff := time.Now().UTC().Add(-7 * 24 * time.Hour)
+	result, err := q.HardDeleteUsersBefore(ctx, sql.NullTime{Time: cutoff, Valid: true})
+	require.NoError(t, err)
+
+	affected, _ := result.RowsAffected()
+	require.Equal(t, int64(0), affected)
+
+	// The user should still exist.
+	user, err := q.GetUserByID(ctx, userID)
+	require.NoError(t, err)
+	require.True(t, user.DeletedAt.Valid, "user should still be soft-deleted")
+}
+
+func TestHardDeleteOrgsBefore(t *testing.T) {
+	sqlDB, q := newTestDB(t)
+	ctx := context.Background()
+
+	orgID := makeID()
+	_ = q.CreateOrg(ctx, gendb.CreateOrgParams{ID: orgID, Name: "org"})
+
+	// Soft-delete the org with deleted_at 8 days ago.
+	eightDaysAgo := time.Now().UTC().Add(-8 * 24 * time.Hour)
+	_, err := sqlDB.ExecContext(ctx, "UPDATE orgs SET deleted_at = ? WHERE id = ?", eightDaysAgo, orgID)
+	require.NoError(t, err)
+
+	cutoff := time.Now().UTC().Add(-7 * 24 * time.Hour)
+	result, err := q.HardDeleteOrgsBefore(ctx, sql.NullTime{Time: cutoff, Valid: true})
+	require.NoError(t, err)
+
+	affected, _ := result.RowsAffected()
+	require.Equal(t, int64(1), affected)
+
+	// The org should be completely gone.
+	_, err = q.GetOrgByID(ctx, orgID)
+	require.ErrorIs(t, err, sql.ErrNoRows)
+}
+
+func TestHardDeleteWorkspacesBefore(t *testing.T) {
+	sqlDB, q := newTestDB(t)
+	ctx := context.Background()
+
+	orgID := makeID()
+	_ = q.CreateOrg(ctx, gendb.CreateOrgParams{ID: orgID, Name: "org"})
+	userID := makeID()
+	_ = q.CreateUser(ctx, gendb.CreateUserParams{
+		ID: userID, OrgID: orgID, Username: "alice",
+		PasswordHash: "h", DisplayName: "Alice", PasswordSet: 1, IsAdmin: 0,
+	})
+
+	wsID := makeID()
+	_ = q.CreateWorkspace(ctx, gendb.CreateWorkspaceParams{
+		ID: wsID, OrgID: orgID, OwnerUserID: userID, Title: "ws",
+	})
+
+	// Soft-delete with deleted_at 8 days ago.
+	eightDaysAgo := time.Now().UTC().Add(-8 * 24 * time.Hour)
+	_, err := sqlDB.ExecContext(ctx,
+		"UPDATE workspaces SET is_deleted = 1, deleted_at = ? WHERE id = ?", eightDaysAgo, wsID)
+	require.NoError(t, err)
+
+	cutoff := time.Now().UTC().Add(-7 * 24 * time.Hour)
+	result, err := q.HardDeleteWorkspacesBefore(ctx, sql.NullTime{Time: cutoff, Valid: true})
+	require.NoError(t, err)
+
+	affected, _ := result.RowsAffected()
+	require.Equal(t, int64(1), affected)
+
+	// The workspace should be completely gone (even raw SQL).
+	var count int
+	err = sqlDB.QueryRowContext(ctx, "SELECT count(*) FROM workspaces WHERE id = ?", wsID).Scan(&count)
+	require.NoError(t, err)
+	require.Equal(t, 0, count)
+}
+
+func TestHardDeleteWorkersBefore(t *testing.T) {
+	sqlDB, q := newTestDB(t)
+	ctx := context.Background()
+
+	orgID := makeID()
+	_ = q.CreateOrg(ctx, gendb.CreateOrgParams{ID: orgID, Name: "org"})
+	userID := makeID()
+	_ = q.CreateUser(ctx, gendb.CreateUserParams{
+		ID: userID, OrgID: orgID, Username: "admin",
+		PasswordHash: "h", DisplayName: "Admin", PasswordSet: 1, IsAdmin: 1,
+	})
+
+	workerID := makeID()
+	_ = q.CreateWorker(ctx, gendb.CreateWorkerParams{
+		ID:              workerID,
+		AuthToken:       makeID(),
+		RegisteredBy:    userID,
+		PublicKey:       []byte{},
+		MlkemPublicKey:  []byte{},
+		SlhdsaPublicKey: []byte{},
+	})
+
+	// Mark deleted and backdate deleted_at to 8 days ago.
+	_ = q.MarkWorkerDeleted(ctx, workerID)
+	eightDaysAgo := time.Now().UTC().Add(-8 * 24 * time.Hour)
+	_, err := sqlDB.ExecContext(ctx, "UPDATE workers SET deleted_at = ? WHERE id = ?", eightDaysAgo, workerID)
+	require.NoError(t, err)
+
+	cutoff := time.Now().UTC().Add(-7 * 24 * time.Hour)
+	result, err := q.HardDeleteWorkersBefore(ctx, sql.NullTime{Time: cutoff, Valid: true})
+	require.NoError(t, err)
+
+	affected, _ := result.RowsAffected()
+	require.Equal(t, int64(1), affected)
+
+	// The worker should be completely gone.
+	_, err = q.GetWorkerByID(ctx, workerID)
+	require.ErrorIs(t, err, sql.ErrNoRows)
+}
+
+func TestHardDeleteExpiredRegistrationsBefore(t *testing.T) {
+	sqlDB, q := newTestDB(t)
+	ctx := context.Background()
+
+	regID := makeID()
+	// Create a registration that will expire immediately.
+	expires := time.Now().Add(-1 * time.Minute).UTC()
+	_ = q.CreateRegistration(ctx, gendb.CreateRegistrationParams{
+		ID: regID, Version: "v",
+		PublicKey: []byte("k"), MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
+		ExpiresAt: expires,
+	})
+
+	// Expire it so its status becomes 4 (expired).
+	_ = q.ExpireRegistrations(ctx)
+
+	// Backdate created_at to 8 days ago.
+	eightDaysAgo := time.Now().UTC().Add(-8 * 24 * time.Hour)
+	_, err := sqlDB.ExecContext(ctx, "UPDATE worker_registrations SET created_at = ? WHERE id = ?", eightDaysAgo, regID)
+	require.NoError(t, err)
+
+	cutoff := time.Now().UTC().Add(-7 * 24 * time.Hour)
+	result, err := q.HardDeleteExpiredRegistrationsBefore(ctx, cutoff)
+	require.NoError(t, err)
+
+	affected, _ := result.RowsAffected()
+	require.Equal(t, int64(1), affected)
+
+	// The registration should be completely gone.
+	_, err = q.GetRegistrationByID(ctx, regID)
+	require.ErrorIs(t, err, sql.ErrNoRows)
 }
