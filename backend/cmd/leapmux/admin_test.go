@@ -63,6 +63,8 @@ func createTestUser(t *testing.T, dir, username string) gendb.User {
 }
 
 // createTestSession creates a session for the given user and returns its ID.
+// The expiresAt time is truncated to millisecond precision to match SQLite's
+// strftime('%Y-%m-%dT%H:%M:%fZ', 'now') format which uses 3 decimal places.
 func createTestSession(t *testing.T, dir, userID string, expiresAt time.Time) string {
 	t.Helper()
 	sqlDB, q := openTestDB(t, dir)
@@ -72,7 +74,7 @@ func createTestSession(t *testing.T, dir, userID string, expiresAt time.Time) st
 	err := q.CreateUserSession(context.Background(), gendb.CreateUserSessionParams{
 		ID:        sessionID,
 		UserID:    userID,
-		ExpiresAt: expiresAt,
+		ExpiresAt: expiresAt.Truncate(time.Millisecond),
 		UserAgent: "test",
 		IpAddress: "127.0.0.1",
 	})
@@ -663,7 +665,7 @@ func TestCLI_UserResetPassword(t *testing.T) {
 	_ = sqlDB.Close()
 
 	// Create a session that should be deleted after reset.
-	createTestSession(t, dir, user.ID, time.Now().Add(1*time.Hour))
+	createTestSession(t, dir, user.ID, time.Now().UTC().Add(24*time.Hour))
 
 	err = runUserResetPassword([]string{
 		"--id", user.ID,
@@ -692,8 +694,8 @@ func TestCLI_UserResetPassword_PreservesOtherUserSessions(t *testing.T) {
 	bob := createTestUser(t, dir, "bob")
 
 	// Create sessions for both users.
-	createTestSession(t, dir, alice.ID, time.Now().Add(1*time.Hour))
-	bobSessionID := createTestSession(t, dir, bob.ID, time.Now().Add(1*time.Hour))
+	createTestSession(t, dir, alice.ID, time.Now().UTC().Add(24*time.Hour))
+	bobSessionID := createTestSession(t, dir, bob.ID, time.Now().UTC().Add(24*time.Hour))
 
 	// Reset alice's password.
 	err := runUserResetPassword([]string{
@@ -805,8 +807,8 @@ func TestCLI_UserListSessions(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
 
-	createTestSession(t, dir, user.ID, time.Now().Add(1*time.Hour))
-	createTestSession(t, dir, user.ID, time.Now().Add(2*time.Hour))
+	createTestSession(t, dir, user.ID, time.Now().UTC().Add(24*time.Hour))
+	createTestSession(t, dir, user.ID, time.Now().UTC().Add(48*time.Hour))
 
 	err := runUserListSessions([]string{"--id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
@@ -934,8 +936,8 @@ func TestCLI_SessionList(t *testing.T) {
 	alice := createTestUser(t, dir, "alice")
 	bob := createTestUser(t, dir, "bob")
 
-	createTestSession(t, dir, alice.ID, time.Now().Add(1*time.Hour))
-	createTestSession(t, dir, bob.ID, time.Now().Add(1*time.Hour))
+	createTestSession(t, dir, alice.ID, time.Now().UTC().Add(24*time.Hour))
+	createTestSession(t, dir, bob.ID, time.Now().UTC().Add(24*time.Hour))
 
 	err := runSessionList([]string{"--data-dir", dir})
 	require.NoError(t, err)
@@ -944,7 +946,7 @@ func TestCLI_SessionList(t *testing.T) {
 func TestCLI_SessionRevoke(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
-	sessionID := createTestSession(t, dir, user.ID, time.Now().Add(1*time.Hour))
+	sessionID := createTestSession(t, dir, user.ID, time.Now().UTC().Add(24*time.Hour))
 
 	err := runSessionRevoke([]string{"--id", sessionID, "--data-dir", dir})
 	require.NoError(t, err)
@@ -961,8 +963,8 @@ func TestCLI_SessionRevoke(t *testing.T) {
 func TestCLI_SessionRevokeUser_ByID(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
-	createTestSession(t, dir, user.ID, time.Now().Add(1*time.Hour))
-	createTestSession(t, dir, user.ID, time.Now().Add(2*time.Hour))
+	createTestSession(t, dir, user.ID, time.Now().UTC().Add(24*time.Hour))
+	createTestSession(t, dir, user.ID, time.Now().UTC().Add(48*time.Hour))
 
 	err := runSessionRevokeUser([]string{"--user-id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
@@ -978,7 +980,7 @@ func TestCLI_SessionRevokeUser_ByID(t *testing.T) {
 func TestCLI_SessionRevokeUser_ByUsername(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
-	createTestSession(t, dir, user.ID, time.Now().Add(1*time.Hour))
+	createTestSession(t, dir, user.ID, time.Now().UTC().Add(24*time.Hour))
 
 	err := runSessionRevokeUser([]string{"--username", "alice", "--data-dir", dir})
 	require.NoError(t, err)
@@ -996,8 +998,8 @@ func TestCLI_SessionRevokeUser_PreservesOtherUsers(t *testing.T) {
 	alice := createTestUser(t, dir, "alice")
 	bob := createTestUser(t, dir, "bob")
 
-	createTestSession(t, dir, alice.ID, time.Now().Add(1*time.Hour))
-	bobSessionID := createTestSession(t, dir, bob.ID, time.Now().Add(1*time.Hour))
+	createTestSession(t, dir, alice.ID, time.Now().UTC().Add(24*time.Hour))
+	bobSessionID := createTestSession(t, dir, bob.ID, time.Now().UTC().Add(24*time.Hour))
 
 	// Revoke alice's sessions.
 	err := runSessionRevokeUser([]string{"--user-id", alice.ID, "--data-dir", dir})
@@ -1023,8 +1025,8 @@ func TestCLI_SessionPurgeExpired(t *testing.T) {
 	user := createTestUser(t, dir, "alice")
 
 	// Create one expired and one active session.
-	createTestSession(t, dir, user.ID, time.Now().UTC().Add(-1*time.Hour))      // expired
-	activeID := createTestSession(t, dir, user.ID, time.Now().Add(1*time.Hour)) // active
+	createTestSession(t, dir, user.ID, time.Now().UTC().Add(-24*time.Hour))            // expired
+	activeID := createTestSession(t, dir, user.ID, time.Now().UTC().Add(24*time.Hour)) // active
 
 	err := runSessionPurgeExpired([]string{"--data-dir", dir})
 	require.NoError(t, err)
@@ -1062,7 +1064,7 @@ func TestCLI_SessionPurgeExpired_NoneExpired(t *testing.T) {
 	user := createTestUser(t, dir, "alice")
 
 	// Create only active sessions.
-	createTestSession(t, dir, user.ID, time.Now().Add(1*time.Hour))
+	createTestSession(t, dir, user.ID, time.Now().UTC().Add(24*time.Hour))
 
 	err := runSessionPurgeExpired([]string{"--data-dir", dir})
 	require.NoError(t, err)

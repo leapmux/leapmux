@@ -117,9 +117,9 @@ func TestSetEmailAndClearCompeting(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// User B gets verified email via setEmailAndClearCompeting.
+	// User B gets verified email via SetEmailAndClearCompeting.
 	userB := createSimpleUser(t, sqlDB, q, "user-b", "")
-	err = setEmailAndClearCompeting(ctx, q, userB.ID, "target@example.com", 1)
+	err = SetEmailAndClearCompeting(ctx, q, userB.ID, "target@example.com", 1)
 	require.NoError(t, err)
 
 	// User B has verified email.
@@ -139,7 +139,7 @@ func TestSetEmailAndClearCompeting_Unverified(t *testing.T) {
 	ctx := context.Background()
 
 	user := createSimpleUser(t, sqlDB, q, "user-a", "")
-	err := setEmailAndClearCompeting(ctx, q, user.ID, "new@example.com", 0)
+	err := SetEmailAndClearCompeting(ctx, q, user.ID, "new@example.com", 0)
 	require.NoError(t, err)
 
 	updated, err := q.GetUserByID(ctx, user.ID)

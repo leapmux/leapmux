@@ -163,7 +163,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 
 	if s.cfg.EmailVerificationRequired && email != "" {
 		// Email goes to pending_email; email column stays empty until verified.
-		if err := checkEmailAvailable(ctx, s.queries, email, ""); err != nil {
+		if err := CheckEmailAvailable(ctx, s.queries, email, ""); err != nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists, err)
 		}
 
@@ -198,7 +198,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 
 	// No verification required — email goes directly to email column.
 	if email != "" {
-		if err := checkEmailAvailable(ctx, s.queries, email, ""); err != nil {
+		if err := CheckEmailAvailable(ctx, s.queries, email, ""); err != nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists, err)
 		}
 	}
@@ -232,7 +232,7 @@ func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName
 	}
 
 	if email != "" {
-		if err := checkEmailAvailable(ctx, s.queries, email, ""); err != nil {
+		if err := CheckEmailAvailable(ctx, s.queries, email, ""); err != nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists, err)
 		}
 	}
@@ -430,7 +430,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	var pendingEmail string
 
 	if email != "" {
-		if err := checkEmailAvailable(ctx, s.queries, email, ""); err != nil {
+		if err := CheckEmailAvailable(ctx, s.queries, email, ""); err != nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists, err)
 		}
 

@@ -8,7 +8,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/config"
@@ -86,7 +85,7 @@ func runUserList(args []string) error {
 		query = fs.String("query", "", "search query (matches username, display name, email)")
 		limit = fs.Int64("limit", 50, "maximum number of results")
 		offset = fs.Int64("offset", 0, "offset for pagination")
-	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
 		var users []gendb.User
 		var err error
 
@@ -113,12 +112,8 @@ func runUserList(args []string) error {
 
 		fmt.Printf("%-48s %-20s %-24s %-30s %-8s %-8s\n", "ID", "USERNAME", "DISPLAY_NAME", "EMAIL", "ADMIN", "CREATED")
 		for _, u := range users {
-			admin := "no"
-			if u.IsAdmin == 1 {
-				admin = "yes"
-			}
 			fmt.Printf("%-48s %-20s %-24s %-30s %-8s %-8s\n",
-				u.ID, u.Username, u.DisplayName, u.Email, admin, timefmt.Format(u.CreatedAt))
+				u.ID, u.Username, u.DisplayName, u.Email, yesNo(u.IsAdmin), timefmt.Format(u.CreatedAt))
 		}
 		return nil
 	})
@@ -130,23 +125,10 @@ func runUserGet(args []string) error {
 	return withAdminDB("user get", args, func(fs *flag.FlagSet) {
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username")
-	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
 		user, err := resolveUser(ctx, q, *userID, *username)
 		if err != nil {
 			return err
-		}
-
-		emailVerified := "no"
-		if user.EmailVerified == 1 {
-			emailVerified = "yes"
-		}
-		admin := "no"
-		if user.IsAdmin == 1 {
-			admin = "yes"
-		}
-		passwordSet := "no"
-		if user.PasswordSet == 1 {
-			passwordSet = "yes"
 		}
 
 		fmt.Printf("ID:              %s\n", user.ID)
@@ -154,9 +136,9 @@ func runUserGet(args []string) error {
 		fmt.Printf("Username:        %s\n", user.Username)
 		fmt.Printf("Display name:    %s\n", user.DisplayName)
 		fmt.Printf("Email:           %s\n", user.Email)
-		fmt.Printf("Email verified:  %s\n", emailVerified)
-		fmt.Printf("Password set:    %s\n", passwordSet)
-		fmt.Printf("Admin:           %s\n", admin)
+		fmt.Printf("Email verified:  %s\n", yesNo(user.EmailVerified))
+		fmt.Printf("Password set:    %s\n", yesNo(user.PasswordSet))
+		fmt.Printf("Admin:           %s\n", yesNo(user.IsAdmin))
 		fmt.Printf("Created at:      %s\n", timefmt.Format(user.CreatedAt))
 		fmt.Printf("Updated at:      %s\n", timefmt.Format(user.UpdatedAt))
 		return nil
@@ -177,7 +159,7 @@ func runUserCreate(args []string) error {
 		email = fs.String("email", "", "email address")
 		emailVerified = fs.Bool("email-verified", false, "mark email as verified")
 		admin = fs.Bool("admin", false, "grant admin privileges")
-	}, func(ctx context.Context, sqlDB *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, sqlDB *sql.DB, q *gendb.Queries) error {
 		if *username == "" {
 			return fmt.Errorf("--username is required")
 		}
@@ -262,7 +244,7 @@ func runUserUpdate(args []string) error {
 			emailVerifiedFlag = &b
 			return nil
 		})
-	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, sqlDB *sql.DB, q *gendb.Queries) error {
 		user, err := resolveUser(ctx, q, *userID, *username)
 		if err != nil {
 			return err
@@ -271,58 +253,72 @@ func runUserUpdate(args []string) error {
 		setFlags := map[string]bool{}
 		flagSet.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
 
-		updated := false
+		updateDisplayName := setFlags["display-name"]
+		updateEmail := setFlags["email"]
+		updateEmailVerified := emailVerifiedFlag != nil
 
-		if setFlags["display-name"] {
-			dn, err := validate.SanitizeDisplayName(*displayName, user.Username)
+		if !updateDisplayName && !updateEmail && !updateEmailVerified {
+			return fmt.Errorf("no fields to update (use --display-name, --email, or --email-verified)")
+		}
+
+		// Validate inputs before starting the transaction.
+		var sanitizedDisplayName string
+		if updateDisplayName {
+			sanitizedDisplayName, err = validate.SanitizeDisplayName(*displayName, user.Username)
 			if err != nil {
 				return fmt.Errorf("display name: %w", err)
 			}
-			if err := q.UpdateUserProfile(ctx, gendb.UpdateUserProfileParams{
+		}
+
+		if updateEmail && *email != "" {
+			if err := validate.ValidateEmail(*email); err != nil {
+				return err
+			}
+			if *email != user.Email {
+				if err := service.CheckEmailAvailable(ctx, q, *email, user.ID); err != nil {
+					return err
+				}
+			}
+		}
+
+		// Wrap all updates in a transaction for atomicity.
+		tx, err := sqlDB.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin transaction: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		txq := q.WithTx(tx)
+
+		if updateDisplayName {
+			if err := txq.UpdateUserProfile(ctx, gendb.UpdateUserProfileParams{
 				Username:    user.Username,
-				DisplayName: dn,
+				DisplayName: sanitizedDisplayName,
 				ID:          user.ID,
 			}); err != nil {
 				return fmt.Errorf("update display name: %w", err)
 			}
-			updated = true
 		}
 
-		if setFlags["email"] {
-			if *email != "" {
-				if err := validate.ValidateEmail(*email); err != nil {
-					return err
-				}
-				if *email != user.Email {
-					if existing, lookupErr := q.GetUserByEmail(ctx, *email); lookupErr == nil && existing.ID != user.ID {
-						return fmt.Errorf("email %q is already in use", *email)
-					}
-				}
-			}
+		if updateEmail {
 			verified := user.EmailVerified
 			if emailVerifiedFlag != nil {
 				verified = ptrconv.BoolToInt64(*emailVerifiedFlag)
 			}
-			if err := q.UpdateUserEmail(ctx, gendb.UpdateUserEmailParams{
-				Email:         *email,
-				EmailVerified: verified,
-				ID:            user.ID,
-			}); err != nil {
+			if err := service.SetEmailAndClearCompeting(ctx, txq, user.ID, *email, verified); err != nil {
 				return fmt.Errorf("update email: %w", err)
 			}
-			updated = true
-		} else if emailVerifiedFlag != nil {
-			if err := q.UpdateUserEmailVerified(ctx, gendb.UpdateUserEmailVerifiedParams{
+		} else if updateEmailVerified {
+			if err := txq.UpdateUserEmailVerified(ctx, gendb.UpdateUserEmailVerifiedParams{
 				EmailVerified: ptrconv.BoolToInt64(*emailVerifiedFlag),
 				ID:            user.ID,
 			}); err != nil {
 				return fmt.Errorf("update email verified: %w", err)
 			}
-			updated = true
 		}
 
-		if !updated {
-			return fmt.Errorf("no fields to update (use --display-name, --email, or --email-verified)")
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit transaction: %w", err)
 		}
 
 		fmt.Printf("Updated user %q (id: %s)\n", user.Username, user.ID)
@@ -336,7 +332,7 @@ func runUserDelete(args []string) error {
 	return withAdminDB("user delete", args, func(fs *flag.FlagSet) {
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username")
-	}, func(ctx context.Context, sqlDB *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, sqlDB *sql.DB, q *gendb.Queries) error {
 		user, err := resolveUser(ctx, q, *userID, *username)
 		if err != nil {
 			return err
@@ -386,7 +382,7 @@ func runUserResetPassword(args []string) error {
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username")
 		pw = fs.String("password", "", "new password (required)")
-	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
 		if *pw == "" {
 			return fmt.Errorf("--password is required")
 		}
@@ -439,7 +435,7 @@ func runUserSetAdmin(args []string, admin bool) error {
 	return withAdminDB("user "+verb, args, func(fs *flag.FlagSet) {
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username")
-	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
 		user, err := resolveUser(ctx, q, *userID, *username)
 		if err != nil {
 			return err
@@ -467,7 +463,7 @@ func runUserListSessions(args []string) error {
 	return withAdminDB("user list-sessions", args, func(fs *flag.FlagSet) {
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username")
-	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
 		user, err := resolveUser(ctx, q, *userID, *username)
 		if err != nil {
 			return err
@@ -520,7 +516,7 @@ func runSessionList(args []string) error {
 	return withAdminDB("session list", args, func(fs *flag.FlagSet) {
 		limit = fs.Int64("limit", 50, "maximum number of results")
 		offset = fs.Int64("offset", 0, "offset for pagination")
-	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
 		sessions, err := q.ListAllActiveSessions(ctx, gendb.ListAllActiveSessionsParams{
 			Limit:  *limit,
 			Offset: *offset,
@@ -549,7 +545,7 @@ func runSessionRevoke(args []string) error {
 	var sessionID *string
 	return withAdminDB("session revoke", args, func(fs *flag.FlagSet) {
 		sessionID = fs.String("id", "", "session ID (required)")
-	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
 		if *sessionID == "" {
 			return fmt.Errorf("--id is required")
 		}
@@ -569,7 +565,7 @@ func runSessionRevokeUser(args []string) error {
 	return withAdminDB("session revoke-user", args, func(fs *flag.FlagSet) {
 		userID = fs.String("user-id", "", "user ID")
 		username = fs.String("username", "", "username")
-	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
 		user, err := resolveUser(ctx, q, *userID, *username)
 		if err != nil {
 			return err
@@ -585,7 +581,7 @@ func runSessionRevokeUser(args []string) error {
 }
 
 func runSessionPurgeExpired(args []string) error {
-	return withAdminDB("session purge-expired", args, nil, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+	return withAdminDB("session purge-expired", args, nil, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
 		result, err := q.DeleteExpiredUserSessions(ctx)
 		if err != nil {
 			return fmt.Errorf("purge expired sessions: %w", err)
@@ -628,9 +624,11 @@ func runWorkerList(args []string) error {
 		status = fs.String("status", "active", "filter by status (active, deregistering, deleted, all)")
 		limit = fs.Int64("limit", 50, "maximum number of results")
 		offset = fs.Int64("offset", 0, "offset for pagination")
-	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
-		resolvedUserID := *userID
-		if *username != "" && resolvedUserID == "" {
+	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
+		var resolvedUserID interface{}
+		if *userID != "" {
+			resolvedUserID = *userID
+		} else if *username != "" {
 			user, err := q.GetUserByUsername(ctx, *username)
 			if err != nil {
 				if err == sql.ErrNoRows {
@@ -641,80 +639,32 @@ func runWorkerList(args []string) error {
 			resolvedUserID = user.ID
 		}
 
-		allStatuses := *status == "all"
-		var statusVal leapmuxv1.WorkerStatus
-		if !allStatuses {
-			var err error
-			statusVal, err = parseWorkerStatus(*status)
+		var statusFilter interface{}
+		if *status != "all" {
+			statusVal, err := parseWorkerStatus(*status)
 			if err != nil {
 				return err
 			}
+			statusFilter = statusVal
 		}
 
-		type workerRow struct {
-			ID            string
-			OwnerUsername string
-			Status        leapmuxv1.WorkerStatus
-			CreatedAt     time.Time
-			LastSeenAt    sql.NullTime
+		list, err := q.ListAllWorkersAdmin(ctx, gendb.ListAllWorkersAdminParams{
+			UserID: resolvedUserID,
+			Status: statusFilter,
+			Offset: *offset,
+			Limit:  *limit,
+		})
+		if err != nil {
+			return fmt.Errorf("list workers: %w", err)
 		}
 
-		toRow := func(id, owner string, st leapmuxv1.WorkerStatus, created time.Time, lastSeen sql.NullTime) workerRow {
-			return workerRow{id, owner, st, created, lastSeen}
-		}
-
-		var rows []workerRow
-
-		switch {
-		case resolvedUserID != "" && allStatuses:
-			list, qErr := q.ListAllWorkersByUserAnyStatus(ctx, gendb.ListAllWorkersByUserAnyStatusParams{
-				UserID: resolvedUserID, Offset: *offset, Limit: *limit,
-			})
-			if qErr != nil {
-				return fmt.Errorf("list workers: %w", qErr)
-			}
-			for _, w := range list {
-				rows = append(rows, toRow(w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt))
-			}
-		case resolvedUserID != "":
-			list, qErr := q.ListAllWorkersByUser(ctx, gendb.ListAllWorkersByUserParams{
-				UserID: resolvedUserID, Status: statusVal, Offset: *offset, Limit: *limit,
-			})
-			if qErr != nil {
-				return fmt.Errorf("list workers: %w", qErr)
-			}
-			for _, w := range list {
-				rows = append(rows, toRow(w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt))
-			}
-		case allStatuses:
-			list, qErr := q.ListAllWorkersAnyStatus(ctx, gendb.ListAllWorkersAnyStatusParams{
-				Offset: *offset, Limit: *limit,
-			})
-			if qErr != nil {
-				return fmt.Errorf("list workers: %w", qErr)
-			}
-			for _, w := range list {
-				rows = append(rows, toRow(w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt))
-			}
-		default:
-			list, qErr := q.ListAllWorkers(ctx, gendb.ListAllWorkersParams{
-				Status: statusVal, Offset: *offset, Limit: *limit,
-			})
-			if qErr != nil {
-				return fmt.Errorf("list workers: %w", qErr)
-			}
-			for _, w := range list {
-				rows = append(rows, toRow(w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt))
-			}
-		}
-
-		if len(rows) == 0 {
+		if len(list) == 0 {
 			fmt.Println("No workers found.")
 			return nil
 		}
 
 		fmt.Printf("%-48s %-20s %-16s %-24s %-24s\n", "ID", "OWNER", "STATUS", "CREATED", "LAST_SEEN")
-		for _, w := range rows {
+		for _, w := range list {
 			lastSeen := "-"
 			if w.LastSeenAt.Valid {
 				lastSeen = timefmt.Format(w.LastSeenAt.Time)
@@ -730,7 +680,7 @@ func runWorkerGet(args []string) error {
 	var workerID *string
 	return withAdminDB("worker get", args, func(fs *flag.FlagSet) {
 		workerID = fs.String("id", "", "worker ID (required)")
-	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
 		if *workerID == "" {
 			return fmt.Errorf("--id is required")
 		}
@@ -778,7 +728,7 @@ func runWorkerDeregister(args []string) error {
 	var workerID *string
 	return withAdminDB("worker deregister", args, func(fs *flag.FlagSet) {
 		workerID = fs.String("id", "", "worker ID (required)")
-	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
 		if *workerID == "" {
 			return fmt.Errorf("--id is required")
 		}
@@ -822,7 +772,6 @@ func runAdminOAuthProvider(args []string) error {
 }
 
 func runAddOAuthProvider(args []string) error {
-	var flagSet *flag.FlagSet
 	var providerType *string
 	var name *string
 	var clientID *string
@@ -831,7 +780,6 @@ func runAddOAuthProvider(args []string) error {
 	var scopes *string
 	var trustEmailFlag *bool
 	return withAdminDB("oauth-provider add", args, func(fs *flag.FlagSet) {
-		flagSet = fs
 		providerType = fs.String("type", "", "provider type (github, google, apple, oidc)")
 		name = fs.String("name", "", "display name")
 		clientID = fs.String("client-id", "", "OAuth client ID")
@@ -846,7 +794,7 @@ func runAddOAuthProvider(args []string) error {
 			trustEmailFlag = &b
 			return nil
 		})
-	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, cfg *config.Config, _ *sql.DB, q *gendb.Queries) error {
 		if *providerType == "" {
 			return fmt.Errorf("--type is required (github, google, apple, oidc)")
 		}
@@ -902,8 +850,6 @@ func runAddOAuthProvider(args []string) error {
 			}
 		}
 
-		cfg := adminConfig(flagSet.Lookup("data-dir").Value.String())
-
 		ks, err := keystore.LoadFromFile(cfg.EncryptionKeyFilePath())
 		if err != nil {
 			return fmt.Errorf("load encryption key: %w", err)
@@ -936,7 +882,7 @@ func runAddOAuthProvider(args []string) error {
 }
 
 func runListOAuthProviders(args []string) error {
-	return withAdminDB("oauth-provider list", args, nil, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+	return withAdminDB("oauth-provider list", args, nil, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
 		providers, err := q.ListAllOAuthProviders(ctx)
 		if err != nil {
 			return fmt.Errorf("list providers: %w", err)
@@ -949,15 +895,7 @@ func runListOAuthProviders(args []string) error {
 
 		fmt.Printf("%-48s %-8s %-20s %-14s %s\n", "ID", "TYPE", "NAME", "TRUST_EMAIL", "ENABLED")
 		for _, p := range providers {
-			trustEmail := "yes"
-			if p.TrustEmail != 1 {
-				trustEmail = "no"
-			}
-			enabled := "yes"
-			if p.Enabled != 1 {
-				enabled = "no"
-			}
-			fmt.Printf("%-48s %-8s %-20s %-14s %s\n", p.ID, p.ProviderType, p.Name, trustEmail, enabled)
+			fmt.Printf("%-48s %-8s %-20s %-14s %s\n", p.ID, p.ProviderType, p.Name, yesNo(p.TrustEmail), yesNo(p.Enabled))
 		}
 		return nil
 	})
@@ -967,7 +905,7 @@ func runRemoveOAuthProvider(args []string) error {
 	var providerID *string
 	return withAdminDB("oauth-provider remove", args, func(fs *flag.FlagSet) {
 		providerID = fs.String("id", "", "provider ID")
-	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
 		if *providerID == "" {
 			return fmt.Errorf("--id is required")
 		}
@@ -990,7 +928,7 @@ func runSetOAuthProviderEnabled(args []string, enabled bool) error {
 	var providerID *string
 	return withAdminDB("oauth-provider enable/disable", args, func(fs *flag.FlagSet) {
 		providerID = fs.String("id", "", "provider ID")
-	}, func(ctx context.Context, _ *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
 		if *providerID == "" {
 			return fmt.Errorf("--id is required")
 		}
@@ -1077,11 +1015,7 @@ func runRemoveEncryptionKey(args []string) error {
 }
 
 func runReencryptSecrets(args []string) error {
-	var flagSet *flag.FlagSet
-	return withAdminDB("encryption-key reencrypt", args, func(fs *flag.FlagSet) {
-		flagSet = fs
-	}, func(ctx context.Context, sqlDB *sql.DB, q *gendb.Queries) error {
-		cfg := adminConfig(flagSet.Lookup("data-dir").Value.String())
+	return withAdminDB("encryption-key reencrypt", args, nil, func(ctx context.Context, cfg *config.Config, sqlDB *sql.DB, q *gendb.Queries) error {
 		ks, err := keystore.LoadFromFile(cfg.EncryptionKeyFilePath())
 		if err != nil {
 			return fmt.Errorf("load encryption key: %w", err)
@@ -1199,7 +1133,7 @@ func runDBBackup(args []string) error {
 	var output *string
 	return withAdminDB("db backup", args, func(fs *flag.FlagSet) {
 		output = fs.String("output", "", "output file path (required)")
-	}, func(ctx context.Context, sqlDB *sql.DB, _ *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, sqlDB *sql.DB, _ *gendb.Queries) error {
 		if *output == "" {
 			return fmt.Errorf("--output is required")
 		}
@@ -1223,7 +1157,7 @@ func runDBBackup(args []string) error {
 
 // withAdminDB creates a flag set with --data-dir, parses args, opens the
 // database, and calls fn. The database is closed after fn returns.
-func withAdminDB(name string, args []string, setup func(fs *flag.FlagSet), fn func(ctx context.Context, sqlDB *sql.DB, q *gendb.Queries) error) error {
+func withAdminDB(name string, args []string, setup func(fs *flag.FlagSet), fn func(ctx context.Context, cfg *config.Config, sqlDB *sql.DB, q *gendb.Queries) error) error {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	dataDir := fs.String("data-dir", "", "data directory")
 	if setup != nil {
@@ -1233,13 +1167,14 @@ func withAdminDB(name string, args []string, setup func(fs *flag.FlagSet), fn fu
 		return err
 	}
 
-	sqlDB, q, err := openAdminDB(adminConfig(*dataDir))
+	cfg := adminConfig(*dataDir)
+	sqlDB, q, err := openAdminDB(cfg)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = sqlDB.Close() }()
 
-	return fn(context.Background(), sqlDB, q)
+	return fn(context.Background(), cfg, sqlDB, q)
 }
 
 // openAdminDB opens the database, runs migrations, and returns the connection
@@ -1313,7 +1248,6 @@ func parseWorkerStatus(s string) (leapmuxv1.WorkerStatus, error) {
 	}
 }
 
-// workerStatusString converts a worker status to a human-readable string.
 func workerStatusString(s leapmuxv1.WorkerStatus) string {
 	switch s {
 	case leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE:
@@ -1325,6 +1259,13 @@ func workerStatusString(s leapmuxv1.WorkerStatus) string {
 	default:
 		return "unknown"
 	}
+}
+
+func yesNo(v int64) string {
+	if v == 1 {
+		return "yes"
+	}
+	return "no"
 }
 
 // truncate shortens a string to maxLen characters, appending "..." if truncated.
