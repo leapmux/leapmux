@@ -526,19 +526,20 @@ leapmux/
 │   └── tests/               # Unit tests (Vitest) and E2E tests (Playwright)
 │
 ├── icons/                   # SVG icons (app logo and agent provider icons)
-├── NOTICE.md                # Third-party dependency licenses (generated)
-├── scripts/                 # Utility scripts
-│   ├── generate-notice.mjs  # License collection and NOTICE.md/HTML generation
-│   └── license-overrides/   # Vendored licenses for packages missing them
 │
 ├── proto/                   # Protocol Buffer definitions
 │   └── leapmux/v1/          # Service and message definitions
+│
+├── scripts/                 # Utility scripts
+│   ├── license-overrides/   # Vendored licenses for packages missing them
+│   └── generate-notice.mjs  # License collection and NOTICE.md/HTML generation
 │
 ├── buf.gen.yaml             # Protocol Buffer code generation targets
 ├── buf.yaml                 # Protocol Buffer linting configuration
 ├── go.work                  # Go workspace (backend + desktop modules)
 ├── mprocs.yaml              # Dev mode process configuration (task dev)
 ├── mprocs-solo.yaml         # Solo mode process configuration (task dev-solo)
+├── NOTICE.md                # Third-party dependency licenses (generated)
 ├── README.md                # This file
 ├── Taskfile.yaml            # Build orchestration (go-task.dev)
 └── versions.yaml            # Version string and tool/image versions
