@@ -8,6 +8,7 @@
 //   - Go modules (via go.work workspace: backend + desktop)
 //   - JavaScript runtime dependencies (frontend/node_modules)
 
+import process from 'node:process'
 import { execSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { writeFileSync } from 'node:fs'
@@ -15,6 +16,7 @@ import { dirname, join, resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const FRONTEND = join(ROOT, 'frontend')
+const LICENSE_OVERRIDES = join(ROOT, 'scripts/license-overrides')
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -88,6 +90,7 @@ function collectGoDeps() {
   /** @type {Map<string, {name: string, version: string, licenseText: string}>} */
   const deps = new Map()
   const warnings = []
+  const errors = []
 
   // Determine Go module cache root for walking up parent dirs.
   const goModCache = execSync('go env GOMODCACHE', { cwd: ROOT, encoding: 'utf-8' }).trim()
@@ -109,8 +112,7 @@ function collectGoDeps() {
 
     const licFile = findLicenseFile(dir, goModCache)
     if (!licFile) {
-      warnings.push(`Go: ${key} — no license file found in ${dir}`)
-      deps.set(key, { name: mod.Path, version: mod.Version, licenseText: '*License file not found.*' })
+      errors.push(`Go: ${key} — no license file found in ${dir}`)
       continue
     }
 
@@ -121,7 +123,7 @@ function collectGoDeps() {
     })
   }
 
-  return { deps: [...deps.values()].sort((a, b) => a.name.localeCompare(b.name)), warnings }
+  return { deps: [...deps.values()].sort((a, b) => a.name.localeCompare(b.name)), warnings, errors }
 }
 
 // ---------------------------------------------------------------------------
@@ -136,11 +138,12 @@ function collectJsDeps() {
   /** @type {Array<{name: string, version: string, licenseText: string}>} */
   const deps = []
   const warnings = []
+  const errors = []
 
   const nodeModules = join(FRONTEND, 'node_modules')
   if (!existsSync(nodeModules)) {
     warnings.push('JS: node_modules not found — run `bun install` first')
-    return { deps, warnings }
+    return { deps, warnings, errors }
   }
 
   // Collect package directories (flat + scoped).
@@ -177,10 +180,31 @@ function collectJsDeps() {
     }
 
     const version = meta.version ?? 'unknown'
-    const licFile = findLicenseFile(pkgDir, nodeModules)
+    const licenseField = meta.license ?? 'unknown'
+    let licFile = findLicenseFile(pkgDir, nodeModules)
+
+    if (licFile) {
+      // Upstream ships a license file. Warn if we still have an override for it.
+      const overrideDir = join(LICENSE_OVERRIDES, pkgName)
+      if (existsSync(join(overrideDir, 'expected.json'))) {
+        warnings.push(`JS: ${pkgName}@${version} — upstream now ships a LICENSE file; override in scripts/license-overrides/${pkgName}/ can be removed`)
+      }
+    } else {
+      // No license file — check overrides.
+      const overrideDir = join(LICENSE_OVERRIDES, pkgName)
+      const expectedPath = join(overrideDir, 'expected.json')
+      if (existsSync(expectedPath)) {
+        const expected = JSON.parse(readFileSync(expectedPath, 'utf-8'))
+        if (expected.license !== licenseField) {
+          errors.push(`JS: ${pkgName}@${version} — license field changed from "${expected.license}" to "${licenseField}"; review and update the override in scripts/license-overrides/${pkgName}/`)
+          continue
+        }
+        licFile = findLicenseFile(overrideDir, overrideDir)
+      }
+    }
+
     if (!licFile) {
-      warnings.push(`JS: ${pkgName}@${version} — no license file found`)
-      deps.push({ name: pkgName, version, licenseText: `License: ${meta.license ?? 'unknown'}\n\n*License file not found.*` })
+      errors.push(`JS: ${pkgName}@${version} — no license file found; add an override in scripts/license-overrides/${pkgName}/`)
       continue
     }
 
@@ -192,7 +216,7 @@ function collectJsDeps() {
   }
 
   deps.sort((a, b) => a.name.localeCompare(b.name))
-  return { deps, warnings }
+  return { deps, warnings, errors }
 }
 
 // ---------------------------------------------------------------------------
@@ -374,11 +398,19 @@ async function generateNotice() {
   const go = collectGoDeps()
   const js = collectJsDeps()
   const allWarnings = [...go.warnings, ...js.warnings]
+  const allErrors = [...go.errors, ...js.errors]
 
   if (allWarnings.length > 0) {
     console.warn('\nWarnings:')
     for (const w of allWarnings) console.warn(`  ⚠ ${w}`)
     console.warn()
+  }
+
+  if (allErrors.length > 0) {
+    console.error('\nErrors:')
+    for (const e of allErrors) console.error(`  ✗ ${e}`)
+    console.error()
+    process.exit(1)
   }
 
   const markdown = buildMarkdown(go.deps, js.deps)
