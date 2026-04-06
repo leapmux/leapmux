@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -344,21 +345,27 @@ func runUserDelete(args []string) error {
 
 		txq := q.WithTx(tx)
 
+		if err := txq.MarkAllWorkersDeletedByUser(ctx, user.ID); err != nil {
+			return fmt.Errorf("mark workers deleted: %w", err)
+		}
+		if err := txq.DeleteWorkerAccessGrantsByUser(ctx, user.ID); err != nil {
+			return fmt.Errorf("delete worker access grants: %w", err)
+		}
+		if err := txq.SoftDeleteAllWorkspacesByUser(ctx, user.ID); err != nil {
+			return fmt.Errorf("soft-delete workspaces: %w", err)
+		}
 		if err := txq.DeleteUserSessionsByUser(ctx, user.ID); err != nil {
 			return fmt.Errorf("delete sessions: %w", err)
 		}
-
 		if err := txq.DeleteOrgMember(ctx, gendb.DeleteOrgMemberParams{
 			OrgID:  user.OrgID,
 			UserID: user.ID,
 		}); err != nil {
 			return fmt.Errorf("delete org member: %w", err)
 		}
-
 		if err := txq.DeleteUser(ctx, user.ID); err != nil {
 			return fmt.Errorf("delete user: %w", err)
 		}
-
 		if err := txq.ForceDeleteOrg(ctx, user.OrgID); err != nil {
 			return fmt.Errorf("delete personal org: %w", err)
 		}
@@ -380,7 +387,12 @@ func runUserResetPassword(args []string) error {
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username")
 		pw = fs.String("password", "", "new password (prompted if omitted)")
-	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, sqlDB *sql.DB, q *gendb.Queries) error {
+		user, err := resolveUser(ctx, q, *userID, *username)
+		if err != nil {
+			return err
+		}
+
 		pwValue, err := requirePassword(*pw, "New password: ")
 		if err != nil {
 			return err
@@ -395,20 +407,26 @@ func runUserResetPassword(args []string) error {
 			return fmt.Errorf("hash password: %w", err)
 		}
 
-		user, err := resolveUser(ctx, q, *userID, *username)
+		tx, err := sqlDB.BeginTx(ctx, nil)
 		if err != nil {
-			return err
+			return fmt.Errorf("begin transaction: %w", err)
 		}
+		defer func() { _ = tx.Rollback() }()
+		txq := q.WithTx(tx)
 
-		if err := q.UpdateUserPassword(ctx, gendb.UpdateUserPasswordParams{
+		if err := txq.UpdateUserPassword(ctx, gendb.UpdateUserPasswordParams{
 			PasswordHash: hash,
 			ID:           user.ID,
 		}); err != nil {
 			return fmt.Errorf("update password: %w", err)
 		}
 
-		if err := q.DeleteUserSessionsByUser(ctx, user.ID); err != nil {
+		if err := txq.DeleteUserSessionsByUser(ctx, user.ID); err != nil {
 			return fmt.Errorf("delete sessions: %w", err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit transaction: %w", err)
 		}
 
 		fmt.Printf("Password reset for user %q (id: %s). All sessions revoked.\n", user.Username, user.ID)
@@ -630,7 +648,7 @@ func runWorkerList(args []string) error {
 		} else if *username != "" {
 			user, err := q.GetUserByUsername(ctx, *username)
 			if err != nil {
-				if err == sql.ErrNoRows {
+				if errors.Is(err, sql.ErrNoRows) {
 					return fmt.Errorf("user not found: %s", *username)
 				}
 				return fmt.Errorf("get user: %w", err)
@@ -686,7 +704,7 @@ func runWorkerGet(args []string) error {
 
 		worker, err := q.GetWorkerByID(ctx, *workerID)
 		if err != nil {
-			if err == sql.ErrNoRows {
+			if errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("worker not found: %s", *workerID)
 			}
 			return fmt.Errorf("get worker: %w", err)
@@ -1216,7 +1234,7 @@ func resolveUser(ctx context.Context, q *gendb.Queries, userID, username string)
 	if userID != "" {
 		user, err = q.GetUserByID(ctx, userID)
 		if err != nil {
-			if err == sql.ErrNoRows {
+			if errors.Is(err, sql.ErrNoRows) {
 				return nil, fmt.Errorf("user not found: %s", userID)
 			}
 			return nil, fmt.Errorf("get user by ID: %w", err)
@@ -1224,7 +1242,7 @@ func resolveUser(ctx context.Context, q *gendb.Queries, userID, username string)
 	} else {
 		user, err = q.GetUserByUsername(ctx, username)
 		if err != nil {
-			if err == sql.ErrNoRows {
+			if errors.Is(err, sql.ErrNoRows) {
 				return nil, fmt.Errorf("user not found: %s", username)
 			}
 			return nil, fmt.Errorf("get user by username: %w", err)

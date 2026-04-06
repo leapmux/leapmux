@@ -125,6 +125,7 @@ CREATE TABLE worker_access_grants (
     created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (worker_id, user_id)
 );
+CREATE INDEX idx_worker_access_grants_user_id ON worker_access_grants(user_id);
 
 -- Workspaces (hub-owned registry)
 CREATE TABLE workspaces (

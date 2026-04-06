@@ -18,3 +18,6 @@ UPDATE workspaces SET title = ? WHERE id = ? AND owner_user_id = ?;
 
 -- name: SoftDeleteWorkspace :execresult
 UPDATE workspaces SET is_deleted = 1 WHERE id = ? AND owner_user_id = ?;
+
+-- name: SoftDeleteAllWorkspacesByUser :exec
+UPDATE workspaces SET is_deleted = 1 WHERE owner_user_id = ?;
