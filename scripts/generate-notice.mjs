@@ -239,6 +239,8 @@ function buildMarkdown(goDeps, jsDeps) {
   lines.push('')
   lines.push('This file lists the licenses of third-party dependencies used by LeapMux.')
   lines.push('')
+  lines.push('For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/leapmux/blob/main/NOTICE.md).')
+  lines.push('')
 
   // Table of contents
   lines.push('## Table of Contents')

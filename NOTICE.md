@@ -2,6 +2,8 @@
 
 This file lists the licenses of third-party dependencies used by LeapMux.
 
+For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/leapmux/blob/main/NOTICE.md).
+
 ## Table of Contents
 
 ### Go Dependencies
