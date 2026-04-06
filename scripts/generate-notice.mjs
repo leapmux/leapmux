@@ -10,8 +10,7 @@
 
 import process from 'node:process'
 import { execSync } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..')
@@ -31,18 +30,13 @@ const LICENSE_NAMES_RE = /^(licen[cs]e|copying|notice)(\..+)?$/i
  */
 function findLicenseFile(dir, stopAt) {
   let current = dir
-  while (current && current.length >= (stopAt ?? '').length) {
+  while (current.startsWith(stopAt)) {
     try {
-      const entries = readdirSync(current)
-      for (const entry of entries) {
-        if (LICENSE_NAMES_RE.test(entry)) {
-          const full = join(current, entry)
-          if (statSync(full).isFile()) return full
-        }
+      for (const entry of readdirSync(current, { withFileTypes: true })) {
+        if (LICENSE_NAMES_RE.test(entry.name) && entry.isFile())
+          return join(current, entry.name)
       }
-    } catch {
-      // directory may not exist or be readable
-    }
+    } catch { /* directory may not exist or be readable */ }
     const parent = dirname(current)
     if (parent === current) break
     current = parent
@@ -50,14 +44,16 @@ function findLicenseFile(dir, stopAt) {
   return null
 }
 
-/** Strip \r, then remove leading and trailing blank (empty or whitespace-only) lines. */
-function trimBlankLines(text) {
+/** Normalize license text: strip \r, trim blank lines, remove triple+ backticks. */
+function normalizeLicenseText(text) {
   const lines = text.replace(/\r/g, '').split('\n')
   let start = 0
   while (start < lines.length && lines[start].trim() === '') start++
   let end = lines.length - 1
   while (end >= start && lines[end].trim() === '') end--
-  return lines.slice(start, end + 1).join('\n')
+  return lines.slice(start, end + 1)
+    .map(line => line.replace(/`{3,}/g, ''))
+    .join('\n')
 }
 
 /** Format a JS dependency heading with license name. */
@@ -134,7 +130,7 @@ function collectGoDeps() {
     deps.set(key, {
       name: mod.Path,
       version: mod.Version,
-      licenseText: trimBlankLines(readFileSync(licFile, 'utf-8')),
+      licenseText: normalizeLicenseText(readFileSync(licFile, 'utf-8')),
     })
   }
 
@@ -184,12 +180,9 @@ function collectJsDeps() {
   for (const { pkgDir, pkgName } of packages) {
     if (!runtimeDeps.has(pkgName)) continue
 
-    const childPkgJson = join(pkgDir, 'package.json')
-    if (!existsSync(childPkgJson)) continue
-
     let meta
     try {
-      meta = JSON.parse(readFileSync(childPkgJson, 'utf-8'))
+      meta = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf-8'))
     } catch {
       continue
     }
@@ -227,7 +220,7 @@ function collectJsDeps() {
       name: pkgName,
       version,
       license: licenseField,
-      licenseText: trimBlankLines(readFileSync(licFile, 'utf-8')),
+      licenseText: normalizeLicenseText(readFileSync(licFile, 'utf-8')),
     })
   }
 
@@ -431,12 +424,10 @@ async function generateNotice() {
 
   const markdown = buildMarkdown(go.deps, js.deps)
 
-  // Write NOTICE.md
   const mdPath = join(ROOT, 'NOTICE.md')
   writeFileSync(mdPath, markdown, 'utf-8')
   console.log(`✓ Written ${mdPath}`)
 
-  // Write NOTICE.html
   console.log('Rendering HTML …')
   const html = await buildHtml(markdown)
   const htmlPath = join(ROOT, 'NOTICE.html')

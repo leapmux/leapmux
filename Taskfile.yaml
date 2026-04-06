@@ -125,6 +125,8 @@ tasks:
     desc: Generate NOTICE.md with third-party licenses
     deps: [prepare]
     sources:
+      - scripts/generate-notice.mjs
+      - scripts/license-overrides/**/*
       - backend/go.mod
       - backend/go.sum
       - desktop/go.mod
