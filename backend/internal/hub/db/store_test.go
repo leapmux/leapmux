@@ -274,7 +274,7 @@ func TestUserSessions(t *testing.T) {
 	}
 
 	// Delete session.
-	err = q.DeleteUserSession(ctx, sessID)
+	_, err = q.DeleteUserSession(ctx, sessID)
 	require.NoError(t, err)
 	_, err = q.GetUserSessionByID(ctx, sessID)
 	if err != sql.ErrNoRows {

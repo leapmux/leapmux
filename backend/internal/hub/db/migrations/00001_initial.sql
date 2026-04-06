@@ -49,7 +49,7 @@ CREATE INDEX idx_org_members_user_id ON org_members(user_id);
 -- Auth sessions
 CREATE TABLE user_sessions (
     id              TEXT PRIMARY KEY,
-    user_id         TEXT NOT NULL REFERENCES users(id),
+    user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     expires_at      DATETIME NOT NULL,
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     last_active_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -78,7 +78,7 @@ CREATE INDEX idx_workers_deleted_at ON workers(deleted_at) WHERE deleted_at IS N
 -- Worker notifications (persistent queue for reliable delivery)
 CREATE TABLE worker_notifications (
     id           TEXT PRIMARY KEY,
-    worker_id    TEXT NOT NULL REFERENCES workers(id),
+    worker_id    TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
     type         INTEGER NOT NULL,
     payload      TEXT NOT NULL DEFAULT '{}',
     status       INTEGER NOT NULL DEFAULT 1,
@@ -98,7 +98,7 @@ CREATE TABLE worker_registrations (
     slhdsa_public_key BLOB NOT NULL DEFAULT '',
     status      INTEGER NOT NULL DEFAULT 1,
     worker_id   TEXT REFERENCES workers(id) ON DELETE SET NULL,
-    approved_by TEXT REFERENCES users(id),
+    approved_by TEXT REFERENCES users(id) ON DELETE SET NULL,
     expires_at  DATETIME NOT NULL,
     created_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -131,7 +131,7 @@ CREATE INDEX idx_workspace_section_items_section ON workspace_section_items(sect
 CREATE TABLE worker_access_grants (
     worker_id  TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
     user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    granted_by TEXT NOT NULL REFERENCES users(id),
+    granted_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (worker_id, user_id)
 );
@@ -154,7 +154,7 @@ CREATE INDEX idx_workspaces_deleted_at ON workspaces(deleted_at) WHERE deleted_a
 -- Workspace read-only sharing ACL
 CREATE TABLE workspace_access (
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    user_id      TEXT NOT NULL REFERENCES users(id),
+    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     created_at   DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY (workspace_id, user_id)
 );

@@ -86,8 +86,12 @@ func runSessionRevoke(args []string) error {
 			return fmt.Errorf("--id is required")
 		}
 
-		if err := q.DeleteUserSession(ctx, *sessionID); err != nil {
+		result, err := q.DeleteUserSession(ctx, *sessionID)
+		if err != nil {
 			return fmt.Errorf("delete session: %w", err)
+		}
+		if n, _ := result.RowsAffected(); n == 0 {
+			return fmt.Errorf("session not found: %s", *sessionID)
 		}
 
 		fmt.Printf("Revoked session %s\n", *sessionID)

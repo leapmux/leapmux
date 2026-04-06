@@ -30,7 +30,7 @@ SET last_active_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
     expires_at = ?
 WHERE id = ? AND last_active_at < ?;
 
--- name: DeleteUserSession :exec
+-- name: DeleteUserSession :execresult
 DELETE FROM user_sessions WHERE id = ?;
 
 -- name: ValidateSessionWithUser :one

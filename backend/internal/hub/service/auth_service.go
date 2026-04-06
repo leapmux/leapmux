@@ -75,7 +75,7 @@ func (s *AuthService) Login(ctx context.Context, req *connect.Request[leapmuxv1.
 func (s *AuthService) Logout(ctx context.Context, req *connect.Request[leapmuxv1.LogoutRequest]) (*connect.Response[leapmuxv1.LogoutResponse], error) {
 	token := auth.SessionIDFromHeader(req.Header().Get("Cookie"), s.cfg.SecureCookies)
 	if token != "" {
-		_ = s.queries.DeleteUserSession(ctx, token)
+		_, _ = s.queries.DeleteUserSession(ctx, token)
 		s.sessionCache.Evict(token)
 	}
 	resp := connect.NewResponse(&leapmuxv1.LogoutResponse{})

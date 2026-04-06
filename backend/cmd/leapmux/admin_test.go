@@ -37,10 +37,12 @@ func setupTestDataDir(t *testing.T) string {
 }
 
 // openTestDB opens the test database and returns the connection and queries handle.
+// The database is automatically closed when the test completes.
 func openTestDB(t *testing.T, dir string) (*sql.DB, *gendb.Queries) {
 	t.Helper()
 	sqlDB, err := db.Open(filepath.Join(dir, "hub.db"))
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
 	return sqlDB, gendb.New(sqlDB)
 }
 
@@ -55,8 +57,7 @@ func createTestUser(t *testing.T, dir, username string) gendb.User {
 	})
 	require.NoError(t, err)
 
-	sqlDB, q := openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q := openTestDB(t, dir)
 
 	user, err := q.GetUserByUsername(context.Background(), username)
 	require.NoError(t, err)
@@ -112,8 +113,7 @@ func TestCLI_AddOAuthProvider_GitHub(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify provider was created in DB.
-	sqlDB, q := openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q := openTestDB(t, dir)
 
 	providers, err := q.ListAllOAuthProviders(context.Background())
 	require.NoError(t, err)
@@ -170,8 +170,7 @@ func TestCLI_AddOAuthProvider_PresetOverride(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	sqlDB, q := openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q := openTestDB(t, dir)
 
 	providers, _ := q.ListAllOAuthProviders(context.Background())
 	require.Len(t, providers, 1)
@@ -206,18 +205,16 @@ func TestCLI_RemoveOAuthProvider(t *testing.T) {
 	})
 
 	// Get the provider ID.
-	sqlDB, q := openTestDB(t, dir)
+	_, q := openTestDB(t, dir)
 	providers, _ := q.ListAllOAuthProviders(context.Background())
-	_ = sqlDB.Close()
 	require.Len(t, providers, 1)
 
 	err := runRemoveOAuthProvider([]string{"--id", providers[0].ID, "--data-dir", dir})
 	require.NoError(t, err)
 
 	// Verify deleted.
-	sqlDB, q = openTestDB(t, dir)
+	_, q = openTestDB(t, dir)
 	providers, _ = q.ListAllOAuthProviders(context.Background())
-	_ = sqlDB.Close()
 	assert.Empty(t, providers)
 }
 
@@ -231,27 +228,24 @@ func TestCLI_EnableDisableOAuthProvider(t *testing.T) {
 		"--data-dir", dir,
 	})
 
-	sqlDB, q := openTestDB(t, dir)
+	_, q := openTestDB(t, dir)
 	providers, _ := q.ListAllOAuthProviders(context.Background())
-	_ = sqlDB.Close()
 	providerID := providers[0].ID
 
 	// Disable.
 	err := runSetOAuthProviderEnabled([]string{"--id", providerID, "--data-dir", dir}, false)
 	require.NoError(t, err)
 
-	sqlDB, q = openTestDB(t, dir)
+	_, q = openTestDB(t, dir)
 	enabled, _ := q.ListEnabledOAuthProviders(context.Background())
-	_ = sqlDB.Close()
 	assert.Empty(t, enabled, "no providers should be enabled")
 
 	// Re-enable.
 	err = runSetOAuthProviderEnabled([]string{"--id", providerID, "--data-dir", dir}, true)
 	require.NoError(t, err)
 
-	sqlDB, q = openTestDB(t, dir)
+	_, q = openTestDB(t, dir)
 	enabled, _ = q.ListEnabledOAuthProviders(context.Background())
-	_ = sqlDB.Close()
 	assert.Len(t, enabled, 1)
 }
 
@@ -324,10 +318,9 @@ func TestCLI_ReencryptSecrets(t *testing.T) {
 
 	// Verify the encrypted secret can be decrypted with the new key only.
 	ks, _ := keystore.LoadFromFile(keyPath)
-	sqlDB, q := openTestDB(t, dir)
+	_, q := openTestDB(t, dir)
 	providers, _ := q.ListAllOAuthProviders(context.Background())
 	full, _ := q.GetOAuthProviderByID(context.Background(), providers[0].ID)
-	_ = sqlDB.Close()
 
 	// The ciphertext should now be version 2.
 	ver, err := keystore.CiphertextVersion(full.ClientSecret)
@@ -371,8 +364,7 @@ func TestCLI_UserCreate(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	sqlDB, q := openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q := openTestDB(t, dir)
 
 	user, err := q.GetUserByUsername(context.Background(), "alice")
 	require.NoError(t, err)
@@ -396,8 +388,7 @@ func TestCLI_UserCreate_MinimalFlags(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	sqlDB, q := openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q := openTestDB(t, dir)
 
 	user, err := q.GetUserByUsername(context.Background(), "bob")
 	require.NoError(t, err)
@@ -421,8 +412,7 @@ func TestCLI_UserCreate_WithEmailVerified(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	sqlDB, q := openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q := openTestDB(t, dir)
 
 	user, err := q.GetUserByUsername(context.Background(), "carol")
 	require.NoError(t, err)
@@ -441,8 +431,7 @@ func TestCLI_UserCreate_EmailWithoutVerified(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	sqlDB, q := openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q := openTestDB(t, dir)
 
 	user, err := q.GetUserByUsername(context.Background(), "dave")
 	require.NoError(t, err)
@@ -469,8 +458,7 @@ func TestCLI_UserList_WithQuery(t *testing.T) {
 	createTestUser(t, dir, "alicia")
 
 	// Search for "ali" should match alice and alicia.
-	sqlDB, q := openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q := openTestDB(t, dir)
 
 	users, err := q.SearchUsers(context.Background(), gendb.SearchUsersParams{
 		Query:  sql.NullString{String: "ali", Valid: true},
@@ -493,8 +481,7 @@ func TestCLI_UserList_WithLimitOffset(t *testing.T) {
 	}
 
 	// Verify limit works.
-	sqlDB, q := openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q := openTestDB(t, dir)
 
 	users, err := q.ListAllUsers(context.Background(), gendb.ListAllUsersParams{
 		Limit:  2,
@@ -550,8 +537,7 @@ func TestCLI_UserUpdate_DisplayName(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	sqlDB, q := openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q := openTestDB(t, dir)
 
 	updated, err := q.GetUserByID(context.Background(), user.ID)
 	require.NoError(t, err)
@@ -569,8 +555,7 @@ func TestCLI_UserUpdate_Email(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	sqlDB, q := openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q := openTestDB(t, dir)
 
 	updated, err := q.GetUserByID(context.Background(), user.ID)
 	require.NoError(t, err)
@@ -590,8 +575,7 @@ func TestCLI_UserUpdate_EmailVerified(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	sqlDB, q := openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q := openTestDB(t, dir)
 
 	updated, err := q.GetUserByID(context.Background(), user.ID)
 	require.NoError(t, err)
@@ -610,8 +594,7 @@ func TestCLI_UserUpdate_ByUsername(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	sqlDB, q := openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q := openTestDB(t, dir)
 
 	updated, err := q.GetUserByUsername(context.Background(), "alice")
 	require.NoError(t, err)
@@ -626,8 +609,7 @@ func TestCLI_UserDelete_ByID(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify user is soft-deleted.
-	sqlDB, q := openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q := openTestDB(t, dir)
 
 	deletedUser, err := q.GetUserByIDIncludeDeleted(context.Background(), user.ID)
 	require.NoError(t, err)
@@ -646,8 +628,7 @@ func TestCLI_UserDelete_ByUsername(t *testing.T) {
 	err := runUserDelete([]string{"--username", "alice", "--data-dir", dir})
 	require.NoError(t, err)
 
-	sqlDB, q := openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q := openTestDB(t, dir)
 
 	deletedUser, err := q.GetUserByIDIncludeDeleted(context.Background(), user.ID)
 	require.NoError(t, err)
@@ -659,11 +640,10 @@ func TestCLI_UserResetPassword(t *testing.T) {
 	user := createTestUser(t, dir, "alice")
 
 	// Record original hash and create a session that should be deleted after reset.
-	sqlDB, q := openTestDB(t, dir)
+	_, q := openTestDB(t, dir)
 	original, err := q.GetUserByID(context.Background(), user.ID)
 	require.NoError(t, err)
 	createTestSession(t, q, user.ID, time.Now().UTC().Add(24*time.Hour))
-	_ = sqlDB.Close()
 
 	err = runUserResetPassword([]string{
 		"--id", user.ID,
@@ -673,8 +653,7 @@ func TestCLI_UserResetPassword(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify hash changed.
-	sqlDB, q = openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q = openTestDB(t, dir)
 
 	updated, err := q.GetUserByID(context.Background(), user.ID)
 	require.NoError(t, err)
@@ -692,10 +671,9 @@ func TestCLI_UserResetPassword_PreservesOtherUserSessions(t *testing.T) {
 	bob := createTestUser(t, dir, "bob")
 
 	// Create sessions for both users.
-	sqlDB, q := openTestDB(t, dir)
+	_, q := openTestDB(t, dir)
 	createTestSession(t, q, alice.ID, time.Now().UTC().Add(24*time.Hour))
 	bobSessionID := createTestSession(t, q, bob.ID, time.Now().UTC().Add(24*time.Hour))
-	_ = sqlDB.Close()
 
 	// Reset alice's password.
 	err := runUserResetPassword([]string{
@@ -706,8 +684,7 @@ func TestCLI_UserResetPassword_PreservesOtherUserSessions(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify bob's session is still there.
-	sqlDB, q = openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q = openTestDB(t, dir)
 
 	sessions, err := q.ListUserSessionsByUserID(context.Background(), bob.ID)
 	require.NoError(t, err)
@@ -722,8 +699,7 @@ func TestCLI_UserGrantAdmin(t *testing.T) {
 	err := runUserGrantAdmin([]string{"--id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
 
-	sqlDB, q := openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q := openTestDB(t, dir)
 
 	updated, err := q.GetUserByID(context.Background(), user.ID)
 	require.NoError(t, err)
@@ -742,17 +718,15 @@ func TestCLI_UserGrantAdmin_AlreadyAdmin(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	sqlDB, q := openTestDB(t, dir)
+	_, q := openTestDB(t, dir)
 	user, err := q.GetUserByUsername(context.Background(), "alice")
 	require.NoError(t, err)
-	_ = sqlDB.Close()
 
 	// Grant admin again -- should not error.
 	err = runUserGrantAdmin([]string{"--id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
 
-	sqlDB, q = openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q = openTestDB(t, dir)
 
 	updated, err := q.GetUserByID(context.Background(), user.ID)
 	require.NoError(t, err)
@@ -771,16 +745,14 @@ func TestCLI_UserRevokeAdmin(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	sqlDB, q := openTestDB(t, dir)
+	_, q := openTestDB(t, dir)
 	user, err := q.GetUserByUsername(context.Background(), "alice")
 	require.NoError(t, err)
-	_ = sqlDB.Close()
 
 	err = runUserRevokeAdmin([]string{"--id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
 
-	sqlDB, q = openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q = openTestDB(t, dir)
 
 	updated, err := q.GetUserByID(context.Background(), user.ID)
 	require.NoError(t, err)
@@ -795,8 +767,7 @@ func TestCLI_UserRevokeAdmin_AlreadyNonAdmin(t *testing.T) {
 	err := runUserRevokeAdmin([]string{"--id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
 
-	sqlDB, q := openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q := openTestDB(t, dir)
 
 	updated, err := q.GetUserByID(context.Background(), user.ID)
 	require.NoError(t, err)
@@ -807,10 +778,9 @@ func TestCLI_UserListSessions(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
 
-	sqlDB, q := openTestDB(t, dir)
+	_, q := openTestDB(t, dir)
 	createTestSession(t, q, user.ID, time.Now().UTC().Add(24*time.Hour))
 	createTestSession(t, q, user.ID, time.Now().UTC().Add(48*time.Hour))
-	_ = sqlDB.Close()
 
 	err := runUserListSessions([]string{"--id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
@@ -930,8 +900,7 @@ func TestCLI_UserDelete_AdminRequiresForce(t *testing.T) {
 	err = runUserDelete([]string{"--username", "adminuser", "--force", "--data-dir", dir})
 	require.NoError(t, err)
 
-	sqlDB, q := openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q := openTestDB(t, dir)
 	_, err = q.GetUserByUsername(context.Background(), "adminuser")
 	assert.ErrorIs(t, err, sql.ErrNoRows)
 }
@@ -943,8 +912,7 @@ func TestCLI_UserDelete_InvisibleToLookup(t *testing.T) {
 	err := runUserDelete([]string{"--id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
 
-	sqlDB, q := openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q := openTestDB(t, dir)
 
 	// GetUserByUsername filters out soft-deleted users, so it should return ErrNoRows.
 	_, err = q.GetUserByUsername(context.Background(), "alice")
@@ -959,15 +927,13 @@ func TestCLI_UserDelete_InvisibleToLookup(t *testing.T) {
 func TestCLI_UserDelete_WorkersMarkedDeleted(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
-	sqlDB, q := openTestDB(t, dir)
+	_, q := openTestDB(t, dir)
 	workerID := createTestWorker(t, q, user.ID)
-	_ = sqlDB.Close()
 
 	err := runUserDelete([]string{"--id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
 
-	sqlDB, q = openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q = openTestDB(t, dir)
 
 	worker, err := q.GetWorkerByID(context.Background(), workerID)
 	require.NoError(t, err)
@@ -980,7 +946,7 @@ func TestCLI_UserDelete_WorkspaceSoftDeleted(t *testing.T) {
 	user := createTestUser(t, dir, "alice")
 
 	// Create a workspace directly via the DB queries.
-	sqlDB, q := openTestDB(t, dir)
+	_, q := openTestDB(t, dir)
 	wsID := id.Generate()
 	err := q.CreateWorkspace(context.Background(), gendb.CreateWorkspaceParams{
 		ID:          wsID,
@@ -989,14 +955,12 @@ func TestCLI_UserDelete_WorkspaceSoftDeleted(t *testing.T) {
 		Title:       "test workspace",
 	})
 	require.NoError(t, err)
-	_ = sqlDB.Close()
 
 	err = runUserDelete([]string{"--id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
 
 	// Read the workspace row directly via raw SQL since GetWorkspaceByID filters deleted ones.
-	sqlDB, _ = openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	sqlDB, _ := openTestDB(t, dir)
 
 	var isDeleted int64
 	var deletedAt sql.NullTime
@@ -1036,10 +1000,9 @@ func TestCLI_SessionList(t *testing.T) {
 	alice := createTestUser(t, dir, "alice")
 	bob := createTestUser(t, dir, "bob")
 
-	sqlDB, q := openTestDB(t, dir)
+	_, q := openTestDB(t, dir)
 	createTestSession(t, q, alice.ID, time.Now().UTC().Add(24*time.Hour))
 	createTestSession(t, q, bob.ID, time.Now().UTC().Add(24*time.Hour))
-	_ = sqlDB.Close()
 
 	err := runSessionList([]string{"--data-dir", dir})
 	require.NoError(t, err)
@@ -1048,16 +1011,14 @@ func TestCLI_SessionList(t *testing.T) {
 func TestCLI_SessionRevoke(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
-	sqlDB, q := openTestDB(t, dir)
+	_, q := openTestDB(t, dir)
 	sessionID := createTestSession(t, q, user.ID, time.Now().UTC().Add(24*time.Hour))
-	_ = sqlDB.Close()
 
 	err := runSessionRevoke([]string{"--id", sessionID, "--data-dir", dir})
 	require.NoError(t, err)
 
 	// Verify session is gone.
-	sqlDB, q = openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q = openTestDB(t, dir)
 
 	sessions, err := q.ListUserSessionsByUserID(context.Background(), user.ID)
 	require.NoError(t, err)
@@ -1067,16 +1028,14 @@ func TestCLI_SessionRevoke(t *testing.T) {
 func TestCLI_SessionRevokeUser_ByID(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
-	sqlDB, q := openTestDB(t, dir)
+	_, q := openTestDB(t, dir)
 	createTestSession(t, q, user.ID, time.Now().UTC().Add(24*time.Hour))
 	createTestSession(t, q, user.ID, time.Now().UTC().Add(48*time.Hour))
-	_ = sqlDB.Close()
 
 	err := runSessionRevokeUser([]string{"--user-id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
 
-	sqlDB, q = openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q = openTestDB(t, dir)
 
 	sessions, err := q.ListUserSessionsByUserID(context.Background(), user.ID)
 	require.NoError(t, err)
@@ -1086,15 +1045,13 @@ func TestCLI_SessionRevokeUser_ByID(t *testing.T) {
 func TestCLI_SessionRevokeUser_ByUsername(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
-	sqlDB, q := openTestDB(t, dir)
+	_, q := openTestDB(t, dir)
 	createTestSession(t, q, user.ID, time.Now().UTC().Add(24*time.Hour))
-	_ = sqlDB.Close()
 
 	err := runSessionRevokeUser([]string{"--username", "alice", "--data-dir", dir})
 	require.NoError(t, err)
 
-	sqlDB, q = openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q = openTestDB(t, dir)
 
 	sessions, err := q.ListUserSessionsByUserID(context.Background(), user.ID)
 	require.NoError(t, err)
@@ -1106,17 +1063,15 @@ func TestCLI_SessionRevokeUser_PreservesOtherUsers(t *testing.T) {
 	alice := createTestUser(t, dir, "alice")
 	bob := createTestUser(t, dir, "bob")
 
-	sqlDB, q := openTestDB(t, dir)
+	_, q := openTestDB(t, dir)
 	createTestSession(t, q, alice.ID, time.Now().UTC().Add(24*time.Hour))
 	bobSessionID := createTestSession(t, q, bob.ID, time.Now().UTC().Add(24*time.Hour))
-	_ = sqlDB.Close()
 
 	// Revoke alice's sessions.
 	err := runSessionRevokeUser([]string{"--user-id", alice.ID, "--data-dir", dir})
 	require.NoError(t, err)
 
-	sqlDB, q = openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q = openTestDB(t, dir)
 
 	// Alice's sessions should be gone.
 	aliceSessions, err := q.ListUserSessionsByUserID(context.Background(), alice.ID)
@@ -1135,17 +1090,15 @@ func TestCLI_SessionPurgeExpired(t *testing.T) {
 	user := createTestUser(t, dir, "alice")
 
 	// Create one expired and one active session.
-	sqlDB, q := openTestDB(t, dir)
+	_, q := openTestDB(t, dir)
 	createTestSession(t, q, user.ID, time.Now().UTC().Add(-24*time.Hour))            // expired
 	activeID := createTestSession(t, q, user.ID, time.Now().UTC().Add(24*time.Hour)) // active
-	_ = sqlDB.Close()
 
 	err := runSessionPurgeExpired([]string{"--data-dir", dir})
 	require.NoError(t, err)
 
 	// Only the active session should remain.
-	sqlDB, q = openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q = openTestDB(t, dir)
 
 	sessions, err := q.ListUserSessionsByUserID(context.Background(), user.ID)
 	require.NoError(t, err)
@@ -1176,16 +1129,14 @@ func TestCLI_SessionPurgeExpired_NoneExpired(t *testing.T) {
 	user := createTestUser(t, dir, "alice")
 
 	// Create only active sessions.
-	sqlDB, q := openTestDB(t, dir)
+	_, q := openTestDB(t, dir)
 	createTestSession(t, q, user.ID, time.Now().UTC().Add(24*time.Hour))
-	_ = sqlDB.Close()
 
 	err := runSessionPurgeExpired([]string{"--data-dir", dir})
 	require.NoError(t, err)
 
 	// Session should still be there.
-	sqlDB, q = openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q = openTestDB(t, dir)
 
 	sessions, err := q.ListUserSessionsByUserID(context.Background(), user.ID)
 	require.NoError(t, err)
@@ -1197,10 +1148,9 @@ func TestCLI_SessionPurgeExpired_NoneExpired(t *testing.T) {
 func TestCLI_WorkerList(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
-	sqlDB, q := openTestDB(t, dir)
+	_, q := openTestDB(t, dir)
 	createTestWorker(t, q, user.ID)
 	createTestWorker(t, q, user.ID)
-	_ = sqlDB.Close()
 
 	err := runWorkerList([]string{"--data-dir", dir})
 	require.NoError(t, err)
@@ -1209,10 +1159,9 @@ func TestCLI_WorkerList(t *testing.T) {
 func TestCLI_WorkerList_AllStatuses(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
-	sqlDB, q := openTestDB(t, dir)
+	_, q := openTestDB(t, dir)
 	w1 := createTestWorker(t, q, user.ID)
 	createTestWorker(t, q, user.ID)
-	_ = sqlDB.Close()
 
 	// Deregister one worker so we have mixed statuses.
 	err := runWorkerDeregister([]string{"--id", w1, "--data-dir", dir})
@@ -1233,9 +1182,8 @@ func TestCLI_WorkerList_Empty(t *testing.T) {
 func TestCLI_WorkerGet(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
-	sqlDB, q := openTestDB(t, dir)
+	_, q := openTestDB(t, dir)
 	workerID := createTestWorker(t, q, user.ID)
-	_ = sqlDB.Close()
 
 	err := runWorkerGet([]string{"--id", workerID, "--data-dir", dir})
 	require.NoError(t, err)
@@ -1244,16 +1192,14 @@ func TestCLI_WorkerGet(t *testing.T) {
 func TestCLI_WorkerDeregister(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
-	sqlDB, q := openTestDB(t, dir)
+	_, q := openTestDB(t, dir)
 	workerID := createTestWorker(t, q, user.ID)
-	_ = sqlDB.Close()
 
 	err := runWorkerDeregister([]string{"--id", workerID, "--data-dir", dir})
 	require.NoError(t, err)
 
 	// Verify worker status changed.
-	sqlDB, q = openTestDB(t, dir)
-	defer func() { _ = sqlDB.Close() }()
+	_, q = openTestDB(t, dir)
 
 	worker, err := q.GetWorkerByID(context.Background(), workerID)
 	require.NoError(t, err)
