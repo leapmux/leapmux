@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"strings"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/config"
@@ -44,7 +45,7 @@ func runWorkerList(args []string) error {
 		limit = fs.Int64("limit", 50, "maximum number of results")
 		offset = fs.Int64("offset", 0, "offset for pagination")
 	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
-		var resolvedUserID any
+		var resolvedUserID string
 		if *userID != "" {
 			resolvedUserID = *userID
 		} else if *username != "" {
@@ -58,32 +59,75 @@ func runWorkerList(args []string) error {
 			resolvedUserID = user.ID
 		}
 
-		var statusFilter any
-		if *status != "all" {
-			statusVal, err := parseWorkerStatus(*status)
-			if err != nil {
-				return err
+		allStatuses := *status == "all"
+		var statusVal leapmuxv1.WorkerStatus
+		if !allStatuses {
+			var parseErr error
+			statusVal, parseErr = parseWorkerStatus(*status)
+			if parseErr != nil {
+				return parseErr
 			}
-			statusFilter = statusVal
 		}
 
-		list, err := q.ListAllWorkersAdmin(ctx, gendb.ListAllWorkersAdminParams{
-			UserID: resolvedUserID,
-			Status: statusFilter,
-			Offset: *offset,
-			Limit:  *limit,
-		})
-		if err != nil {
-			return fmt.Errorf("list workers: %w", err)
+		type workerRow struct {
+			ID            string
+			OwnerUsername string
+			Status        leapmuxv1.WorkerStatus
+			CreatedAt     time.Time
+			LastSeenAt    sql.NullTime
+		}
+		var rows []workerRow
+
+		switch {
+		case resolvedUserID != "" && !allStatuses:
+			list, qErr := q.ListWorkersAdminByUserAndStatus(ctx, gendb.ListWorkersAdminByUserAndStatusParams{
+				UserID: resolvedUserID, Status: statusVal, Offset: *offset, Limit: *limit,
+			})
+			if qErr != nil {
+				return fmt.Errorf("list workers: %w", qErr)
+			}
+			for _, w := range list {
+				rows = append(rows, workerRow{w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt})
+			}
+		case resolvedUserID != "":
+			list, qErr := q.ListWorkersAdminByUser(ctx, gendb.ListWorkersAdminByUserParams{
+				UserID: resolvedUserID, Offset: *offset, Limit: *limit,
+			})
+			if qErr != nil {
+				return fmt.Errorf("list workers: %w", qErr)
+			}
+			for _, w := range list {
+				rows = append(rows, workerRow{w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt})
+			}
+		case !allStatuses:
+			list, qErr := q.ListWorkersAdminByStatus(ctx, gendb.ListWorkersAdminByStatusParams{
+				Status: statusVal, Offset: *offset, Limit: *limit,
+			})
+			if qErr != nil {
+				return fmt.Errorf("list workers: %w", qErr)
+			}
+			for _, w := range list {
+				rows = append(rows, workerRow{w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt})
+			}
+		default:
+			list, qErr := q.ListWorkersAdminAll(ctx, gendb.ListWorkersAdminAllParams{
+				Offset: *offset, Limit: *limit,
+			})
+			if qErr != nil {
+				return fmt.Errorf("list workers: %w", qErr)
+			}
+			for _, w := range list {
+				rows = append(rows, workerRow{w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt})
+			}
 		}
 
-		if len(list) == 0 {
+		if len(rows) == 0 {
 			fmt.Println("No workers found.")
 			return nil
 		}
 
 		fmt.Printf("%-48s %-20s %-16s %-24s %-24s\n", "ID", "OWNER", "STATUS", "CREATED", "LAST_SEEN")
-		for _, w := range list {
+		for _, w := range rows {
 			lastSeen := "-"
 			if w.LastSeenAt.Valid {
 				lastSeen = timefmt.Format(w.LastSeenAt.Time)

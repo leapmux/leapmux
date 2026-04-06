@@ -48,12 +48,34 @@ UPDATE workers SET public_key = ?, mlkem_public_key = ?, slhdsa_public_key = ? W
 -- name: GetWorkerPublicKey :one
 SELECT public_key, mlkem_public_key, slhdsa_public_key FROM workers WHERE id = ?;
 
--- name: ListAllWorkersAdmin :many
+-- name: ListWorkersAdminAll :many
 SELECT w.*, u.username AS owner_username
 FROM workers w
 JOIN users u ON w.registered_by = u.id
-WHERE (sqlc.narg(user_id) IS NULL OR w.registered_by = sqlc.narg(user_id))
-  AND (sqlc.narg(status) IS NULL OR w.status = sqlc.narg(status))
+ORDER BY w.created_at DESC
+LIMIT sqlc.arg(limit) OFFSET sqlc.arg(offset);
+
+-- name: ListWorkersAdminByStatus :many
+SELECT w.*, u.username AS owner_username
+FROM workers w
+JOIN users u ON w.registered_by = u.id
+WHERE w.status = sqlc.arg(status)
+ORDER BY w.created_at DESC
+LIMIT sqlc.arg(limit) OFFSET sqlc.arg(offset);
+
+-- name: ListWorkersAdminByUser :many
+SELECT w.*, u.username AS owner_username
+FROM workers w
+JOIN users u ON w.registered_by = u.id
+WHERE w.registered_by = sqlc.arg(user_id)
+ORDER BY w.created_at DESC
+LIMIT sqlc.arg(limit) OFFSET sqlc.arg(offset);
+
+-- name: ListWorkersAdminByUserAndStatus :many
+SELECT w.*, u.username AS owner_username
+FROM workers w
+JOIN users u ON w.registered_by = u.id
+WHERE w.registered_by = sqlc.arg(user_id) AND w.status = sqlc.arg(status)
 ORDER BY w.created_at DESC
 LIMIT sqlc.arg(limit) OFFSET sqlc.arg(offset);
 

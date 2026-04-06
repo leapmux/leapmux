@@ -57,7 +57,7 @@ CREATE TABLE user_sessions (
     ip_address      TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX idx_user_sessions_user_id ON user_sessions(user_id);
-CREATE INDEX idx_user_sessions_expires_at ON user_sessions(expires_at);
+CREATE INDEX idx_user_sessions_expires_at_last_active ON user_sessions(expires_at, last_active_at);
 
 -- Registered workers
 CREATE TABLE workers (
