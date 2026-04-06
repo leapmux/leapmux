@@ -177,11 +177,11 @@ jobs:
           path: ${{ runner.temp }}/digests/${{ matrix.variant }}
           merge-multiple: true
 
-      - name: Derive major.minor tag
+      - name: Derive major version tag
         id: tags
         run: |
-          IFS='.' read -r major minor _patch <<< "${{ inputs.version }}"
-          echo "major_minor=${major}.${minor}" >> "$GITHUB_OUTPUT"
+          IFS='.' read -r major _minor _patch <<< "${{ inputs.version }}"
+          echo "major=${major}" >> "$GITHUB_OUTPUT"
 
       - name: Create multi-arch manifests
         run: |
@@ -193,6 +193,6 @@ jobs:
           SUFFIX="${{ matrix.suffix }}"
           docker buildx imagetools create \
             -t "${IMAGE}:${{ inputs.version }}${SUFFIX}" \
-            -t "${IMAGE}:${{ steps.tags.outputs.major_minor }}${SUFFIX}" \
+            -t "${IMAGE}:${{ steps.tags.outputs.major }}${SUFFIX}" \
             -t "${IMAGE}:latest${SUFFIX}" \
             $DIGESTS
