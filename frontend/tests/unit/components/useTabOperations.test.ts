@@ -1,5 +1,5 @@
 import { createRoot } from 'solid-js'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useTabOperations } from '~/components/shell/useTabOperations'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createAgentStore } from '~/stores/agent.store'
@@ -7,6 +7,24 @@ import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.sto
 import { createLayoutStore } from '~/stores/layout.store'
 import { createTabStore } from '~/stores/tab.store'
 import { createTerminalStore } from '~/stores/terminal.store'
+
+const mockInspectLastTabClose = vi.fn()
+const mockScheduleWorktreeDeletion = vi.fn()
+const mockShowWarnToast = vi.fn()
+
+vi.mock('~/api/workerRpc', () => ({
+  inspectLastTabClose: (...args: unknown[]) => mockInspectLastTabClose(...args),
+  scheduleWorktreeDeletion: (...args: unknown[]) => mockScheduleWorktreeDeletion(...args),
+}))
+
+vi.mock('~/components/common/Toast', () => ({
+  showInfoToast: vi.fn(),
+  showWarnToast: (...args: unknown[]) => mockShowWarnToast(...args),
+}))
+
+vi.mock('~/components/terminal/TerminalView', () => ({
+  getTerminalInstance: vi.fn(() => undefined),
+}))
 
 function makeUserMessage(id: string, seq: bigint) {
   return {
@@ -33,6 +51,9 @@ function setup() {
   tabStore.setActiveTabForTile(tileId, TabType.AGENT, 'agent-a')
   agentStore.setActiveAgent('agent-a')
 
+  const handleCloseAgent = vi.fn()
+  const handleTerminalClose = vi.fn()
+
   const ops = useTabOperations({
     tabStore,
     agentStore,
@@ -40,10 +61,10 @@ function setup() {
     chatStore,
     layoutStore,
     agentOps: {
-      handleCloseAgent: vi.fn(),
+      handleCloseAgent,
     } as never,
     termOps: {
-      handleTerminalClose: vi.fn(),
+      handleTerminalClose,
     } as never,
     activeTab: () => tabStore.activeTab() ?? undefined,
     getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test' }),
@@ -52,10 +73,74 @@ function setup() {
     setFileTreePath: vi.fn(),
   })
 
-  return { tabStore, agentStore, chatStore, ops, tileId }
+  return { tabStore, agentStore, chatStore, ops, tileId, handleCloseAgent, handleTerminalClose }
 }
 
 describe('useTabOperations', () => {
+  afterEach(() => {
+    mockInspectLastTabClose.mockReset()
+    mockScheduleWorktreeDeletion.mockReset()
+    mockShowWarnToast.mockReset()
+  })
+
+  it.each([
+    { tabType: TabType.AGENT, tabId: 'agent-a', label: 'agent', handlerKey: 'handleCloseAgent' as const },
+    { tabType: TabType.TERMINAL, tabId: 'term-a', label: 'terminal', handlerKey: 'handleTerminalClose' as const },
+  ])('marks a $label tab as closing while persisted close is in flight', async ({ tabType, tabId, handlerKey }) => {
+    await createRoot(async (dispose) => {
+      try {
+        const result = setup()
+        const { tabStore, ops } = result
+        if (tabType === TabType.TERMINAL) {
+          tabStore.addTab({ type: TabType.TERMINAL, id: tabId, tileId: 'tile-1', workerId: 'w-1' }, { activate: false })
+        }
+        const tab = tabStore.state.tabs.find(t => t.id === tabId)!
+        const key = `${tabType}:${tabId}`
+        let resolveInspect!: (value: { shouldPrompt: boolean }) => void
+        let resolveClose!: () => void
+        mockInspectLastTabClose.mockImplementationOnce(() => new Promise((resolve) => {
+          resolveInspect = resolve as typeof resolveInspect
+        }))
+        result[handlerKey].mockImplementationOnce(() => new Promise<void>((resolve) => {
+          resolveClose = resolve
+        }))
+
+        const closePromise = ops.handleTabClose(tab)
+        expect(ops.closingTabKeys().has(key)).toBe(true)
+
+        resolveInspect({ shouldPrompt: false })
+        await Promise.resolve()
+        expect(ops.closingTabKeys().has(key)).toBe(true)
+
+        resolveClose()
+        await closePromise
+        expect(ops.closingTabKeys().has(key)).toBe(false)
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
+  it('clears the closing state if preparing the persisted close fails', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const { tabStore, ops } = setup()
+        const agentTab = tabStore.state.tabs.find(t => t.id === 'agent-a')!
+        const err = new Error('boom')
+        mockInspectLastTabClose.mockRejectedValueOnce(err)
+
+        await ops.handleTabClose(agentTab)
+
+        expect(ops.closingTabKeys().has(`${TabType.AGENT}:agent-a`)).toBe(false)
+        expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to prepare tab close', err)
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
   it('trims the previous agent when switching to another tab in the same tile', () => {
     createRoot((dispose) => {
       const { tabStore, chatStore, ops, tileId } = setup()

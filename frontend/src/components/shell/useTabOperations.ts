@@ -157,6 +157,11 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       return
     }
 
+    const key = tabKey(tab)
+    if (closingTabKeys().has(key))
+      return
+    addClosingTabKey(key)
+
     try {
       const tabType = tab.type === TabType.AGENT ? TabType.AGENT : TabType.TERMINAL
       const workerId = tab.workerId ?? ''
@@ -171,15 +176,6 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
           showInfoToast('Worktree deletion scheduled')
         }
       }
-    }
-    catch (err) {
-      showWarnToast('Failed to prepare tab close', err)
-      return
-    }
-
-    const key = tabKey(tab)
-    addClosingTabKey(key)
-    try {
       if (tab.type === TabType.AGENT) {
         await agentOps.handleCloseAgent(tab.id)
       }
@@ -191,6 +187,9 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
         await termOps.handleTerminalClose(tab.id)
       }
       removeEmptyFloatingWindow(tab.tileId)
+    }
+    catch (err) {
+      showWarnToast('Failed to prepare tab close', err)
     }
     finally {
       removeClosingTabKey(key)

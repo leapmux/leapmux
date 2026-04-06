@@ -97,6 +97,23 @@ describe('tabBar readOnly prop', () => {
     expect(closeButtons).toHaveLength(3)
   })
 
+  it('disables the close button while a persisted tab is closing', () => {
+    const tabs = [
+      makeTab(TabType.AGENT, 'a1', 'Agent 1'),
+    ]
+    render(() => (
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          tabs={tabs}
+          closingTabKeys={new Set([`${TabType.AGENT}:a1`])}
+          readOnly={false}
+        />
+      </PreferencesProvider>
+    ))
+    expect(screen.getByTestId('tab-close')).toBeDisabled()
+  })
+
   it('hides close button for agent and terminal tabs when readOnly is true', () => {
     const tabs = [
       makeTab(TabType.AGENT, 'a1', 'Agent 1'),
