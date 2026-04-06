@@ -388,10 +388,12 @@ docker run -p 4327:4327 -e LEAPMUX_MODE=dev -v leapmux-data:/data leapmux:latest
 
 Pre-built images are published to GHCR in two variants:
 
-| Variant          | Tag pattern         | Example                             |
-|------------------|---------------------|-------------------------------------|
-| Alpine (default) | `:<version>`        | `ghcr.io/org/leapmux:1.0.0`        |
-| Ubuntu           | `:<version>-ubuntu` | `ghcr.io/org/leapmux:1.0.0-ubuntu` |
+| Variant          | Tags                                     | Example                             |
+|------------------|------------------------------------------|-------------------------------------|
+| Alpine (default) | `:<version>`, `:<major>.<minor>`, `:latest`, `:dev` | `ghcr.io/leapmux/leapmux:1.0.0` |
+| Ubuntu           | `:<version>-ubuntu`, `:<major>.<minor>-ubuntu`, `:latest-ubuntu`, `:dev-ubuntu` | `ghcr.io/leapmux/leapmux:1.0.0-ubuntu` |
+
+Release tags (`:latest`, `:<version>`, `:<major>.<minor>`) are published by the release workflow. The `:dev` tag is updated on every push to `main`.
 
 Tool and base image versions are centralized in the `versions.yaml` file at the repository root.
 
