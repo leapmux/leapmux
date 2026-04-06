@@ -83,7 +83,6 @@ export function setupEditorRefHandlers(opts: EditorRefHandlersOptions): void {
     catch { /* editor may not be ready */ }
   })
 
-  // Expose insert-at-cursor function (e.g. for auto-focus keystroke forwarding)
   opts.insertRef?.((text: string) => {
     try {
       editor.action((ctx: Ctx) => {

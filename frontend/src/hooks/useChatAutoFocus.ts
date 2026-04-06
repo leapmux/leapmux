@@ -1,17 +1,10 @@
 import { onCleanup, onMount } from 'solid-js'
 import { getEditorRef } from '~/stores/editorRef.store'
 
-/**
- * Auto-focus the active agent tab's chat editor when the user types a printable
- * character and the focus is not on a meaningful interactive element.
- *
- * Trigger: any single printable character key (letters, numbers, symbols),
- * excluding modifier combos (Ctrl/Cmd+*), space, and non-printable keys.
- */
 export function useChatAutoFocus(getFocusedAgentId: () => string | null): void {
   function handleKeyDown(e: KeyboardEvent) {
-    // Skip modifier combos (shortcuts like Ctrl+C, Cmd+V)
-    if (e.ctrlKey || e.metaKey)
+    // Skip modifier combos (shortcuts like Ctrl+C, Cmd+V, Alt+p)
+    if (e.ctrlKey || e.metaKey || e.altKey)
       return
 
     // Only handle single printable characters (filters out Escape, Tab,
@@ -59,13 +52,7 @@ function isMeaningfulElement(el: Element | null): boolean {
   if (el.getAttribute('contenteditable') === 'true')
     return true
 
-  if (el.closest('dialog[open]'))
-    return true
-
-  if (el.closest('[popover]:popover-open'))
-    return true
-
-  if (el.closest('[role="menu"], [role="listbox"], [role="dialog"]'))
+  if (el.closest('dialog[open], [popover]:popover-open, [role="menu"], [role="listbox"], [role="dialog"]'))
     return true
 
   return false
