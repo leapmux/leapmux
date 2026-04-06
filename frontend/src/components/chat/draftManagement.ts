@@ -3,19 +3,6 @@ import type { Ctx } from '@milkdown/ctx'
 import { editorViewCtx, serializerCtx } from '@milkdown/core'
 import { TextSelection } from '@milkdown/prose/state'
 import { clearDraft, saveDraft } from '~/lib/editor/draftPersistence'
-import { safeGetString, safeSetString } from '~/lib/safeStorage'
-import { KEY_ENTER_KEY_MODE } from '~/lib/storageCleanup'
-
-export type EnterKeyMode = 'enter-sends' | 'cmd-enter-sends'
-
-export function getEnterKeyMode(): EnterKeyMode {
-  const stored = safeGetString(KEY_ENTER_KEY_MODE)
-  return stored === 'enter-sends' ? 'enter-sends' : 'cmd-enter-sends'
-}
-
-export function setEnterKeyMode(mode: EnterKeyMode): void {
-  safeSetString(KEY_ENTER_KEY_MODE, mode)
-}
 
 /**
  * Restore a saved cursor position in a ProseMirror editor view.  If the saved

@@ -27,11 +27,10 @@ import {
   InnerRpcRequestSchema,
   UserIdClaimSchema,
 } from '~/generated/leapmux/v1/channel_pb'
+import { KEY_KEY_PINS, safeGetJson, safeRemoveItem, safeSetJson } from './browserStorage'
 import { createLogger } from './logger'
 import { initiatorHandshake1 as classicHandshake1, initiatorHandshake2 as classicHandshake2, concatBytes } from './noise'
 import { initiatorHandshake1, initiatorHandshake2 } from './noise-hybrid'
-import { safeGetJson, safeRemoveItem, safeSetJson } from './safeStorage'
-import { KEY_KEY_PINS } from './storageCleanup'
 
 const log = createLogger('channel')
 

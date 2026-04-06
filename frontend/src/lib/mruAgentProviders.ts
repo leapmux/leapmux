@@ -1,6 +1,5 @@
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { safeGetJson, safeSetJson } from '~/lib/safeStorage'
-import { KEY_MRU_AGENT_PROVIDERS } from '~/lib/storageCleanup'
+import { KEY_MRU_AGENT_PROVIDERS, safeGetJson, safeSetJson } from '~/lib/browserStorage'
 
 /** Read the ordered MRU provider list from localStorage. */
 export function getMruProviders(): AgentProvider[] {

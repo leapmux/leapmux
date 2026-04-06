@@ -2,9 +2,8 @@ import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import { createStore } from 'solid-js/store'
 import * as workerRpc from '~/api/workerRpc'
 import { ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { PREFIX_LOCAL_MESSAGES, safeGetJson, safeRemoveItem, safeSetJson } from '~/lib/browserStorage'
 import { extractTodos, findLatestTodos, parseMessageContent } from '~/lib/messageParser'
-import { safeGetJson, safeRemoveItem, safeSetJson } from '~/lib/safeStorage'
-import { PREFIX_LOCAL_MESSAGES } from '~/lib/storageCleanup'
 
 // ---------------------------------------------------------------------------
 // Local (optimistic) message persistence via localStorage

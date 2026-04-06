@@ -1,5 +1,4 @@
-import { safeGetJson, safeGetString, safeRemoveItem, safeSetJson } from '~/lib/safeStorage'
-import { PREFIX_EDITOR_DRAFT } from '~/lib/storageCleanup'
+import { PREFIX_EDITOR_DRAFT, safeGetJson, safeGetString, safeRemoveItem, safeSetJson } from '~/lib/browserStorage'
 
 export interface Draft {
   content: string

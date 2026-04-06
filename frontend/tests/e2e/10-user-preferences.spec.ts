@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { loginViaUI, openPreferencesDialog } from './helpers/ui'
+import { getBrowserPref, loginViaUI, openPreferencesDialog } from './helpers/ui'
 
 test.describe('User Preferences', () => {
   test('should open preferences dialog', async ({ page }) => {
@@ -37,7 +37,7 @@ test.describe('User Preferences', () => {
     await page.getByRole('button', { name: 'Dark' }).first().click()
 
     // Verify localStorage was updated
-    const themeValue = await page.evaluate(() => localStorage.getItem('leapmux:theme'))
+    const themeValue = await getBrowserPref(page, 'theme')
     expect(themeValue).toBe('dark')
 
     // Reload the page and re-open dialog
@@ -46,7 +46,7 @@ test.describe('User Preferences', () => {
     await expect(page.getByRole('heading', { name: 'Theme', exact: true })).toBeVisible()
 
     // After reload, verify the theme persisted via localStorage
-    const themeAfterReload = await page.evaluate(() => localStorage.getItem('leapmux:theme'))
+    const themeAfterReload = await getBrowserPref(page, 'theme')
     expect(themeAfterReload).toBe('dark')
 
     // Restore to account default to avoid affecting other tests

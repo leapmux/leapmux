@@ -275,10 +275,31 @@ export async function screenshotIfEnabled(page: Page, name: string) {
  * Set the initial UI theme in localStorage before navigation.
  * Must be called before any page.goto() calls.
  */
+const BROWSER_PREFS_KEY = 'leapmux:browser-prefs'
+
+/** Read a single field from the consolidated browser preferences in localStorage. */
+export async function getBrowserPref(page: Page, field: string): Promise<string | null> {
+  return page.evaluate(([key, f]) => {
+    const raw = localStorage.getItem(key)
+    if (!raw)
+      return null
+    const prefs = JSON.parse(raw)
+    return prefs[f] !== undefined ? String(prefs[f]) : null
+  }, [BROWSER_PREFS_KEY, field] as const)
+}
+
+/** Set a single field in the consolidated browser preferences via addInitScript. */
+export async function setInitialBrowserPref(page: Page, field: string, value: string) {
+  await page.addInitScript(([key, f, v]) => {
+    const raw = localStorage.getItem(key)
+    const prefs = raw ? JSON.parse(raw) : {}
+    prefs[f] = v
+    localStorage.setItem(key, JSON.stringify(prefs))
+  }, [BROWSER_PREFS_KEY, field, value] as const)
+}
+
 export async function setInitialTheme(page: Page, theme: 'light' | 'dark' | 'system') {
-  await page.addInitScript((t) => {
-    localStorage.setItem('leapmux:theme', t)
-  }, theme)
+  await setInitialBrowserPref(page, 'theme', theme)
 }
 
 /**

@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { safeGetJson, safeGetString, safeRemoveItem, safeSetJson, safeSetString } from '~/lib/safeStorage'
-import { DYNAMIC_KEY_TTLS } from '~/lib/storageCleanup'
+import { DYNAMIC_KEY_TTLS, safeGetJson, safeGetString, safeRemoveItem, safeSetJson, safeSetString } from '~/lib/browserStorage'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const HOUR_MS = 60 * 60 * 1000
@@ -159,8 +158,8 @@ describe('safeStorage', () => {
 
     describe('static keys', () => {
       it('stores raw string via localStorage.setItem', () => {
-        safeSetString('leapmux:theme', 'dark')
-        expect(localStorage.getItem('leapmux:theme')).toBe('dark')
+        safeSetString('leapmux:key-pins', 'test-value')
+        expect(localStorage.getItem('leapmux:key-pins')).toBe('test-value')
       })
     })
 
@@ -201,20 +200,20 @@ describe('safeStorage', () => {
 
     describe('static keys', () => {
       it('returns raw localStorage.getItem result', () => {
-        safeSetString('leapmux:theme', 'dark')
-        expect(safeGetString('leapmux:theme')).toBe('dark')
+        safeSetString('leapmux:key-pins', 'test-value')
+        expect(safeGetString('leapmux:key-pins')).toBe('test-value')
       })
 
       it('returns null for missing key', () => {
-        expect(safeGetString('leapmux:theme')).toBeNull()
+        expect(safeGetString('leapmux:key-pins')).toBeNull()
       })
 
       it('does NOT refresh expiration (static keys have no TTL)', () => {
-        safeSetString('leapmux:theme', 'dark')
+        safeSetString('leapmux:key-pins', 'test-value')
         vi.advanceTimersByTime(4 * HOUR_MS)
         // Static key — stored as raw string, no wrapping, no refresh
-        expect(localStorage.getItem('leapmux:theme')).toBe('dark')
-        expect(safeGetString('leapmux:theme')).toBe('dark')
+        expect(localStorage.getItem('leapmux:key-pins')).toBe('test-value')
+        expect(safeGetString('leapmux:key-pins')).toBe('test-value')
       })
     })
 
@@ -227,9 +226,9 @@ describe('safeStorage', () => {
 
   describe('safeRemoveItem', () => {
     it('removes the key without validation', () => {
-      localStorage.setItem('leapmux:theme', 'dark')
-      safeRemoveItem('leapmux:theme')
-      expect(localStorage.getItem('leapmux:theme')).toBeNull()
+      localStorage.setItem('leapmux:key-pins', 'test-value')
+      safeRemoveItem('leapmux:key-pins')
+      expect(localStorage.getItem('leapmux:key-pins')).toBeNull()
     })
 
     it('does not throw for non-existent keys', () => {

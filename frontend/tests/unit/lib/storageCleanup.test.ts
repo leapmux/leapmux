@@ -6,7 +6,7 @@ import {
   isWrappedValue,
   runCleanup,
   STATIC_KEYS,
-} from '~/lib/storageCleanup'
+} from '~/lib/browserStorage'
 
 describe('storageCleanup', () => {
   beforeEach(() => {

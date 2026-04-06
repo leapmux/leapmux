@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { loginViaUI, openPreferencesDialog, setInitialTheme } from './helpers/ui'
+import { getBrowserPref, loginViaUI, openPreferencesDialog, setInitialTheme } from './helpers/ui'
 
 test.describe('Theme Switching', () => {
   test('should show theme options in preferences dialog', async ({ page }) => {
@@ -24,7 +24,7 @@ test.describe('Theme Switching', () => {
     await page.getByRole('button', { name: 'Dark' }).first().click()
 
     // Theme should be stored in localStorage
-    const theme = await page.evaluate(() => localStorage.getItem('leapmux:theme'))
+    const theme = await getBrowserPref(page, 'theme')
     expect(theme).toBe('dark')
   })
 
@@ -37,7 +37,7 @@ test.describe('Theme Switching', () => {
     await page.getByRole('button', { name: 'Light' }).first().click()
 
     // Theme should be stored in localStorage
-    const theme = await page.evaluate(() => localStorage.getItem('leapmux:theme'))
+    const theme = await getBrowserPref(page, 'theme')
     expect(theme).toBe('light')
   })
 
@@ -56,7 +56,7 @@ test.describe('Theme Switching', () => {
     await expect(page.getByRole('heading', { name: 'Theme', exact: true })).toBeVisible()
 
     // Theme should still be dark (check localStorage)
-    const theme = await page.evaluate(() => localStorage.getItem('leapmux:theme'))
+    const theme = await getBrowserPref(page, 'theme')
     expect(theme).toBe('dark')
   })
 
@@ -67,7 +67,7 @@ test.describe('Theme Switching', () => {
     await loginViaUI(page)
 
     // Check that the theme was applied
-    const theme = await page.evaluate(() => localStorage.getItem('leapmux:theme'))
+    const theme = await getBrowserPref(page, 'theme')
     expect(theme).toBe('dark')
   })
 })

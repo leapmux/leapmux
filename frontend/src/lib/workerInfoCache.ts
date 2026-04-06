@@ -3,8 +3,7 @@
  * Persists across page reloads so offline workers still show last-known info.
  */
 
-import { safeGetJson, safeRemoveItem, safeSetJson } from './safeStorage'
-import { PREFIX_WORKER_INFO } from './storageCleanup'
+import { PREFIX_WORKER_INFO, safeGetJson, safeRemoveItem, safeSetJson } from './browserStorage'
 
 export interface WorkerInfo {
   name: string

@@ -1,6 +1,5 @@
 import { createStore } from 'solid-js/store'
-import { safeGetJson, safeSetJson } from '~/lib/safeStorage'
-import { PREFIX_AGENT_SESSION } from '~/lib/storageCleanup'
+import { PREFIX_AGENT_SESSION, safeGetJson, safeSetJson } from '~/lib/browserStorage'
 
 export interface ContextUsageInfo {
   inputTokens: number
