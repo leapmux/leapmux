@@ -41,7 +41,7 @@ func runCleanup(ctx context.Context, queries *db.Queries) {
 		Valid: true,
 	}
 
-	dbcleanup.Step("agents", func() (sql.Result, error) { return queries.DeleteClosedAgentsBefore(ctx, cutoff) })
-	dbcleanup.Step("terminals", func() (sql.Result, error) { return queries.DeleteClosedTerminalsBefore(ctx, cutoff) })
-	dbcleanup.Step("worktrees", func() (sql.Result, error) { return queries.HardDeleteWorktreesBefore(ctx, cutoff) })
+	dbcleanup.Step(ctx, "agents", func() (sql.Result, error) { return queries.DeleteClosedAgentsBefore(ctx, cutoff) })
+	dbcleanup.Step(ctx, "terminals", func() (sql.Result, error) { return queries.DeleteClosedTerminalsBefore(ctx, cutoff) })
+	dbcleanup.Step(ctx, "worktrees", func() (sql.Result, error) { return queries.HardDeleteWorktreesBefore(ctx, cutoff) })
 }

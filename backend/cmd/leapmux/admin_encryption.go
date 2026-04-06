@@ -29,49 +29,42 @@ func runAdminEncryptionKey(args []string) error {
 }
 
 func runRotateEncryptionKey(args []string) error {
-	fs := flag.NewFlagSet("encryption-key rotate", flag.ContinueOnError)
-	dataDir := fs.String("data-dir", "", "data directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	return withAdminConfig("encryption-key rotate", args, nil, func(cfg *config.Config) error {
+		path := cfg.EncryptionKeyFilePath()
 
-	cfg := adminConfig(*dataDir)
-	path := cfg.EncryptionKeyFilePath()
+		if _, err := keystore.LoadFromFile(path); err != nil {
+			return fmt.Errorf("encryption key file not found at %s\nRun the hub once to auto-generate it, or specify --data-dir", path)
+		}
 
-	if _, err := keystore.LoadFromFile(path); err != nil {
-		return fmt.Errorf("encryption key file not found at %s\nRun the hub once to auto-generate it, or specify --data-dir", path)
-	}
+		newVersion, err := keystore.RotateKey(path)
+		if err != nil {
+			return err
+		}
 
-	newVersion, err := keystore.RotateKey(path)
-	if err != nil {
-		return err
-	}
-
-	fmt.Printf("Added encryption key version %d.\n", newVersion)
-	fmt.Printf("Restart the hub, then run: leapmux admin encryption-key reencrypt\n")
-	return nil
+		fmt.Printf("Added encryption key version %d.\n", newVersion)
+		fmt.Printf("Restart the hub, then run: leapmux admin encryption-key reencrypt\n")
+		return nil
+	})
 }
 
 func runRemoveEncryptionKey(args []string) error {
-	fs := flag.NewFlagSet("encryption-key remove", flag.ContinueOnError)
-	dataDir := fs.String("data-dir", "", "data directory")
-	version := fs.Uint("version", 0, "key version to remove")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	var version *uint
+	return withAdminConfig("encryption-key remove", args, func(fs *flag.FlagSet) {
+		version = fs.Uint("version", 0, "key version to remove")
+	}, func(cfg *config.Config) error {
+		if *version < 1 {
+			return fmt.Errorf("--version is required (must be >= 1)")
+		}
 
-	if *version < 1 {
-		return fmt.Errorf("--version is required (must be >= 1)")
-	}
+		path := cfg.EncryptionKeyFilePath()
+		if err := keystore.RemoveKey(path, uint32(*version)); err != nil {
+			return err
+		}
 
-	path := adminConfig(*dataDir).EncryptionKeyFilePath()
-	if err := keystore.RemoveKey(path, uint32(*version)); err != nil {
-		return err
-	}
-
-	fmt.Printf("Removed encryption key version %d.\n", *version)
-	fmt.Printf("Restart the hub to apply.\n")
-	return nil
+		fmt.Printf("Removed encryption key version %d.\n", *version)
+		fmt.Printf("Restart the hub to apply.\n")
+		return nil
+	})
 }
 
 func runReencryptSecrets(args []string) error {

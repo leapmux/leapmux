@@ -62,5 +62,4 @@ WHERE s.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 ORDER BY s.last_active_at DESC
 LIMIT ? OFFSET ?;
 
--- name: CountUserSessionsByUserID :one
-SELECT count(*) FROM user_sessions WHERE user_id = ?;
+

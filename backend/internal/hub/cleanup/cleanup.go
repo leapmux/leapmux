@@ -41,10 +41,10 @@ func run(ctx context.Context, q *gendb.Queries) {
 		Valid: true,
 	}
 
-	dbcleanup.Step("users", func() (sql.Result, error) { return q.HardDeleteUsersBefore(ctx, cutoff) })
-	dbcleanup.Step("orgs", func() (sql.Result, error) { return q.HardDeleteOrgsBefore(ctx, cutoff) })
-	dbcleanup.Step("workspaces", func() (sql.Result, error) { return q.HardDeleteWorkspacesBefore(ctx, cutoff) })
-	dbcleanup.Step("workers", func() (sql.Result, error) { return q.HardDeleteWorkersBefore(ctx, cutoff) })
-	dbcleanup.Step("expired registrations", func() (sql.Result, error) { return q.HardDeleteExpiredRegistrationsBefore(ctx, cutoff.Time) })
-	dbcleanup.Step("expired sessions", func() (sql.Result, error) { return q.DeleteExpiredUserSessions(ctx) })
+	dbcleanup.Step(ctx, "users", func() (sql.Result, error) { return q.HardDeleteUsersBefore(ctx, cutoff) })
+	dbcleanup.Step(ctx, "orgs", func() (sql.Result, error) { return q.HardDeleteOrgsBefore(ctx, cutoff) })
+	dbcleanup.Step(ctx, "workspaces", func() (sql.Result, error) { return q.HardDeleteWorkspacesBefore(ctx, cutoff) })
+	dbcleanup.Step(ctx, "workers", func() (sql.Result, error) { return q.HardDeleteWorkersBefore(ctx, cutoff) })
+	dbcleanup.Step(ctx, "expired registrations", func() (sql.Result, error) { return q.HardDeleteExpiredRegistrationsBefore(ctx, cutoff.Time) })
+	dbcleanup.Step(ctx, "expired sessions", func() (sql.Result, error) { return q.DeleteExpiredUserSessions(ctx) })
 }
