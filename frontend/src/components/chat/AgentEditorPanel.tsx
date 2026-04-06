@@ -73,7 +73,7 @@ export interface AgentEditorPanelProps {
 
 // Per-agent editor height state
 const EDITOR_MIN_HEIGHT = 38 // px - minimum height of the markdown editor wrapper
-const EDITOR_MIN_HEIGHT_KEY_PREFIX = 'leapmux-editor-min-height-'
+const EDITOR_MIN_HEIGHT_KEY_PREFIX = 'leapmux:editor-min-height:'
 
 function editorMinHeightKey(agentId: string): string {
   return `${EDITOR_MIN_HEIGHT_KEY_PREFIX}${agentId}`

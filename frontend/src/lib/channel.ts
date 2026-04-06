@@ -223,8 +223,8 @@ export class ChannelManager {
     // 2. Key pinning (TOFU model) — pin composite key.
     const compositeKeyBytes = concatBytes(keyBundle.x25519PublicKey, keyBundle.mlkemPublicKey, keyBundle.slhdsaPublicKey)
     const publicKeyHex = bytesToHex(compositeKeyBytes)
-    const pinKey = `leapmux:key-pin:${workerId}`
-    const pinned = safeGetJson<{ publicKeyHex: string, firstSeen: number }>(pinKey) ?? null
+    const allPins = safeGetJson<Record<string, { publicKeyHex: string, firstSeen: number }>>('leapmux:key-pins') ?? {}
+    const pinned = allPins[workerId] ?? null
 
     if (pinned && pinned.publicKeyHex !== publicKeyHex) {
       // Auto-reject if the user already rejected this worker in this session.
@@ -244,7 +244,8 @@ export class ChannelManager {
         throw new ChannelError('client', 'Worker public key rejected by user')
       }
       // User accepted the new key.
-      safeSetJson(pinKey, { publicKeyHex, firstSeen: Date.now() })
+      allPins[workerId] = { publicKeyHex, firstSeen: Date.now() }
+      safeSetJson('leapmux:key-pins', allPins)
     }
 
     // 3. Perform handshake based on encryption mode.
@@ -283,7 +284,8 @@ export class ChannelManager {
 
     // 5. Pin key on first use (TOFU).
     if (!pinned) {
-      safeSetJson(pinKey, { publicKeyHex, firstSeen: Date.now() })
+      allPins[workerId] = { publicKeyHex, firstSeen: Date.now() }
+      safeSetJson('leapmux:key-pins', allPins)
     }
 
     // 6. Send UserIdClaim as first encrypted message.
@@ -526,21 +528,19 @@ export class ChannelManager {
 
   /** Remove a pinned key for a worker. */
   static clearKeyPin(workerId: string): void {
-    safeRemoveItem(`leapmux:key-pin:${workerId}`)
+    const allPins = safeGetJson<Record<string, { publicKeyHex: string, firstSeen: number }>>('leapmux:key-pins') ?? {}
+    delete allPins[workerId]
+    if (Object.keys(allPins).length > 0) {
+      safeSetJson('leapmux:key-pins', allPins)
+    }
+    else {
+      safeRemoveItem('leapmux:key-pins')
+    }
   }
 
   /** Remove all pinned keys. */
   static clearAllKeyPins(): void {
-    const keysToRemove: string[] = []
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i)
-      if (key?.startsWith('leapmux:key-pin:')) {
-        keysToRemove.push(key)
-      }
-    }
-    for (const key of keysToRemove) {
-      safeRemoveItem(key)
-    }
+    safeRemoveItem('leapmux:key-pins')
   }
 
   // ---- Private methods ----

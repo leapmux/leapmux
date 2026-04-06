@@ -7,7 +7,7 @@ import { safeGetString, safeSetString } from '~/lib/safeStorage'
 
 export type EnterKeyMode = 'enter-sends' | 'cmd-enter-sends'
 
-export const ENTER_KEY_MODE_KEY = 'leapmux-enter-key-mode'
+export const ENTER_KEY_MODE_KEY = 'leapmux:enter-key-mode'
 
 export function getEnterKeyMode(): EnterKeyMode {
   const stored = safeGetString(ENTER_KEY_MODE_KEY)

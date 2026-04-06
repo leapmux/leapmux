@@ -277,7 +277,7 @@ export async function screenshotIfEnabled(page: Page, name: string) {
  */
 export async function setInitialTheme(page: Page, theme: 'light' | 'dark' | 'system') {
   await page.addInitScript((t) => {
-    localStorage.setItem('leapmux-theme', t)
+    localStorage.setItem('leapmux:theme', t)
   }, theme)
 }
 

@@ -17,25 +17,25 @@ test.describe('Diff View Preferences', () => {
 
     // Click "Unified" in browser tab (first occurrence)
     await page.getByRole('button', { name: 'Unified' }).first().click()
-    let value = await page.evaluate(() => localStorage.getItem('leapmux-diff-view'))
+    let value = await page.evaluate(() => localStorage.getItem('leapmux:diff-view'))
     expect(value).toBe('unified')
 
     // Click "Side-by-Side" in browser tab (first occurrence)
     await page.getByRole('button', { name: 'Side-by-Side' }).first().click()
-    value = await page.evaluate(() => localStorage.getItem('leapmux-diff-view'))
+    value = await page.evaluate(() => localStorage.getItem('leapmux:diff-view'))
     expect(value).toBe('split')
 
     // Click "Use account default" within the Diff View section.
     // In the browser tab, "Use account default" buttons appear for: Theme, Terminal Theme,
     // Diff View, Turn End Sound. The Diff View one is the 3rd (0-indexed: 2).
     await page.getByRole('button', { name: 'Use account default' }).nth(2).click()
-    value = await page.evaluate(() => localStorage.getItem('leapmux-diff-view'))
+    value = await page.evaluate(() => localStorage.getItem('leapmux:diff-view'))
     expect(value).toBe('account-default')
 
     // Reload and verify persistence
     await page.reload()
     await openPreferencesDialog(page)
-    const valueAfterReload = await page.evaluate(() => localStorage.getItem('leapmux-diff-view'))
+    const valueAfterReload = await page.evaluate(() => localStorage.getItem('leapmux:diff-view'))
     expect(valueAfterReload).toBe('account-default')
   })
 

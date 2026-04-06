@@ -1,6 +1,6 @@
 import { safeGetJson, safeGetString, safeRemoveItem, safeSetJson } from '~/lib/safeStorage'
 
-export const DRAFT_KEY_PREFIX = 'leapmux-editor-draft-'
+export const DRAFT_KEY_PREFIX = 'leapmux:editor-draft:'
 
 export interface Draft {
   content: string

@@ -10,6 +10,8 @@ import { UserMenuDialogs } from '~/components/shell/UserMenu'
 import { AuthProvider } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { resolveStack } from '~/lib/resolveStack'
+import { safeGetString } from '~/lib/safeStorage'
+import { initStorageCleanup } from '~/lib/storageCleanup'
 import { disableTextSubstitutions } from '~/lib/textInputBehavior'
 import { heightFull } from '~/styles/shared.css'
 import '~/lib/oat'
@@ -22,7 +24,7 @@ export type ThemePreference = 'light' | 'dark' | 'system'
 
 /** Read the saved theme preference from localStorage (instant, no flash). */
 function getStoredTheme(): ThemePreference {
-  const stored = localStorage.getItem('leapmux-theme')
+  const stored = safeGetString('leapmux:theme')
   if (stored === 'light' || stored === 'dark' || stored === 'system')
     return stored
   return 'system' // 'account-default' or missing → default until account loads
@@ -107,6 +109,9 @@ function AppErrorFallback(error: Error) {
 }
 
 export default function App() {
+  const disposeStorageCleanup = initStorageCleanup()
+  onCleanup(disposeStorageCleanup)
+
   const [desktopConnected, setDesktopConnected] = createSignal(!isWailsApp())
   // Expose so UserMenu's "Switch mode..." can reset without page reload.
   // Wails doesn't re-inject window.go after reload, so we switch in-place.
@@ -151,7 +156,7 @@ export default function App() {
 
   // Listen for localStorage changes from other tabs.
   const handleStorage = (e: StorageEvent) => {
-    if (e.key === 'leapmux-theme') {
+    if (e.key === 'leapmux:theme') {
       const val = e.newValue
       if (val === 'light' || val === 'dark' || val === 'system')
         setThemePreference(val)

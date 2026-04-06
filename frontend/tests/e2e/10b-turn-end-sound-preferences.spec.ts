@@ -19,19 +19,19 @@ test.describe('Turn End Sound Preferences', () => {
 
     // Click "Ding Dong"
     await page.getByRole('button', { name: 'Ding Dong' }).first().click()
-    let value = await page.evaluate(() => localStorage.getItem('leapmux-turn-end-sound'))
+    let value = await page.evaluate(() => localStorage.getItem('leapmux:turn-end-sound'))
     expect(value).toBe('ding-dong')
 
     // Click "None"
     await page.getByRole('button', { name: 'None' }).first().click()
-    value = await page.evaluate(() => localStorage.getItem('leapmux-turn-end-sound'))
+    value = await page.evaluate(() => localStorage.getItem('leapmux:turn-end-sound'))
     expect(value).toBe('none')
 
     // Click "Use account default" within the Turn End Sound section.
     // In the browser tab, "Use account default" buttons appear for: Theme, Terminal Theme,
     // Diff View, Turn End Sound. The Turn End Sound one is the 4th (0-indexed: 3).
     await page.getByRole('button', { name: 'Use account default' }).nth(3).click()
-    value = await page.evaluate(() => localStorage.getItem('leapmux-turn-end-sound'))
+    value = await page.evaluate(() => localStorage.getItem('leapmux:turn-end-sound'))
     expect(value).toBe('account-default')
   })
 
@@ -78,7 +78,7 @@ test.describe('Turn End Sound Preferences', () => {
       }
     })
     await page.addInitScript(() => {
-      localStorage.setItem('leapmux-turn-end-sound', 'ding-dong')
+      localStorage.setItem('leapmux:turn-end-sound', 'ding-dong')
     })
 
     // Reload so the init scripts take effect
@@ -122,7 +122,7 @@ test.describe('Turn End Sound Preferences', () => {
       }
     })
     await page.addInitScript(() => {
-      localStorage.setItem('leapmux-turn-end-sound', 'none')
+      localStorage.setItem('leapmux:turn-end-sound', 'none')
     })
 
     // Reload so the init scripts take effect
@@ -162,7 +162,7 @@ test.describe('Turn End Sound Preferences', () => {
       }
     })
     await page.addInitScript(() => {
-      localStorage.setItem('leapmux-turn-end-sound', 'ding-dong')
+      localStorage.setItem('leapmux:turn-end-sound', 'ding-dong')
     })
 
     // Reload so the init scripts take effect
@@ -211,7 +211,7 @@ test.describe('Turn End Sound Preferences', () => {
       }
     })
     await page.addInitScript(() => {
-      localStorage.setItem('leapmux-turn-end-sound', 'ding-dong')
+      localStorage.setItem('leapmux:turn-end-sound', 'ding-dong')
     })
 
     // Reload so the init scripts take effect
@@ -265,7 +265,7 @@ test.describe('Turn End Sound Preferences', () => {
       }
     })
     await page.addInitScript(() => {
-      localStorage.setItem('leapmux-turn-end-sound', 'ding-dong')
+      localStorage.setItem('leapmux:turn-end-sound', 'ding-dong')
     })
 
     // Reload so the init scripts take effect
@@ -310,7 +310,7 @@ test.describe('Turn End Sound Preferences', () => {
       }
     })
     await page.addInitScript(() => {
-      localStorage.setItem('leapmux-turn-end-sound', 'ding-dong')
+      localStorage.setItem('leapmux:turn-end-sound', 'ding-dong')
     })
 
     // Reload so the init scripts take effect

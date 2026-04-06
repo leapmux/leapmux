@@ -28,7 +28,7 @@ export interface AgentSessionInfo {
   streamingType?: string // "plan" when streaming plan text, "" otherwise
 }
 
-const STORAGE_KEY_PREFIX = 'leapmux-agent-session-'
+const STORAGE_KEY_PREFIX = 'leapmux:agent-session:'
 
 function loadFromStorage(agentId: string): AgentSessionInfo {
   return safeGetJson<AgentSessionInfo>(`${STORAGE_KEY_PREFIX}${agentId}`) ?? {}

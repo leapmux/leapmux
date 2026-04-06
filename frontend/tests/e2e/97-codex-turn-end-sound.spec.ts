@@ -14,7 +14,7 @@ codexTest.describe('Codex Turn End Sound', () => {
       }
     })
     await page.addInitScript(() => {
-      localStorage.setItem('leapmux-turn-end-sound', 'ding-dong')
+      localStorage.setItem('leapmux:turn-end-sound', 'ding-dong')
     })
 
     // Reload so the init scripts take effect
@@ -45,7 +45,7 @@ codexTest.describe('Codex Turn End Sound', () => {
       }
     })
     await page.addInitScript(() => {
-      localStorage.setItem('leapmux-turn-end-sound', 'ding-dong')
+      localStorage.setItem('leapmux:turn-end-sound', 'ding-dong')
     })
 
     // Reload so the init scripts take effect

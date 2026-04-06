@@ -113,7 +113,7 @@ export function useControlResponseHandling(
     activeRequestId,
     (requestId) => {
       if (requestId && props.agentId) {
-        const key = `leapmux-ask-state-${props.agentId}-${requestId}`
+        const key = `leapmux:ask-state:${props.agentId}:${requestId}`
         const saved = safeGetJson<{ selections?: Record<number, string[]>, customTexts?: Record<number, string>, currentPage?: number }>(key)
         if (saved) {
           askState.setSelections(saved.selections ?? {})
@@ -133,7 +133,7 @@ export function useControlResponseHandling(
     const req = activeControlRequest()
     if (!req || !props.agentId || !isAskUserQuestion())
       return
-    const key = `leapmux-ask-state-${props.agentId}-${req.requestId}`
+    const key = `leapmux:ask-state:${props.agentId}:${req.requestId}`
     safeSetJson(key, {
       selections: askState.selections(),
       customTexts: askState.customTexts(),
@@ -155,7 +155,7 @@ export function useControlResponseHandling(
     for (let page = 0; page < 20; page++) {
       clearDraft(`${props.agentId}-ctrl-${requestId}-q-${page}`)
     }
-    safeRemoveItem(`leapmux-ask-state-${props.agentId}-${requestId}`)
+    safeRemoveItem(`leapmux:ask-state:${props.agentId}:${requestId}`)
   }
 
   const handleControlSend = (content: string): boolean | void => {

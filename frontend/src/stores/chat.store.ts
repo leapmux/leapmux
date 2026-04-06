@@ -3,7 +3,7 @@ import { createStore } from 'solid-js/store'
 import * as workerRpc from '~/api/workerRpc'
 import { ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { extractTodos, findLatestTodos, parseMessageContent } from '~/lib/messageParser'
-import { safeGetJson, safeSetJson } from '~/lib/safeStorage'
+import { safeGetJson, safeRemoveItem, safeSetJson } from '~/lib/safeStorage'
 
 // ---------------------------------------------------------------------------
 // Local (optimistic) message persistence via localStorage
@@ -17,29 +17,29 @@ interface PersistedLocalMessage {
   attachments?: Array<{ filename?: string, mime_type?: string, data?: string }>
 }
 
-const LOCAL_MSG_KEY = 'local-messages'
+const LOCAL_MSG_KEY_PREFIX = 'leapmux:local-messages:'
 
-function getPersistedLocalMessages(): Record<string, PersistedLocalMessage[]> {
-  return safeGetJson<Record<string, PersistedLocalMessage[]>>(LOCAL_MSG_KEY) ?? {}
+function getPersistedLocalMessages(agentId: string): PersistedLocalMessage[] {
+  return safeGetJson<PersistedLocalMessage[]>(`${LOCAL_MSG_KEY_PREFIX}${agentId}`) ?? []
 }
 
 function persistLocalMessage(agentId: string, msg: PersistedLocalMessage) {
-  const all = getPersistedLocalMessages()
-  const list = all[agentId] ?? []
+  const list = getPersistedLocalMessages(agentId)
   list.push(msg)
-  all[agentId] = list
-  safeSetJson(LOCAL_MSG_KEY, all)
+  safeSetJson(`${LOCAL_MSG_KEY_PREFIX}${agentId}`, list)
 }
 
 function removePersistedLocalMessage(agentId: string, messageId: string) {
-  const all = getPersistedLocalMessages()
-  const list = all[agentId]
-  if (!list)
+  const list = getPersistedLocalMessages(agentId)
+  if (list.length === 0)
     return
-  all[agentId] = list.filter(m => m.id !== messageId)
-  if (all[agentId].length === 0)
-    delete all[agentId]
-  safeSetJson(LOCAL_MSG_KEY, all)
+  const filtered = list.filter(m => m.id !== messageId)
+  if (filtered.length === 0) {
+    safeRemoveItem(`${LOCAL_MSG_KEY_PREFIX}${agentId}`)
+  }
+  else {
+    safeSetJson(`${LOCAL_MSG_KEY_PREFIX}${agentId}`, filtered)
+  }
 }
 
 function extractUserMessagePayload(message: AgentChatMessage): { content: string, attachments?: Array<{ filename?: string, mime_type?: string }> } | null {
@@ -434,9 +434,8 @@ export function createChatStore() {
 
     /** Load persisted local messages from localStorage and add them to the store. */
     loadLocalMessages(agentId: string) {
-      const all = getPersistedLocalMessages()
-      const list = all[agentId]
-      if (!list || list.length === 0)
+      const list = getPersistedLocalMessages(agentId)
+      if (list.length === 0)
         return
       for (const p of list) {
         const msg = hydrateLocalMessage(p)
