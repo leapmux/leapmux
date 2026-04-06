@@ -240,47 +240,47 @@ This file lists the licenses of third-party dependencies used by LeapMux.
 
 ### JavaScript Dependencies
 
-- [@bufbuild/protobuf 2.11.0](#bufbuildprotobuf-2110)
-- [@connectrpc/connect 2.1.1](#connectrpcconnect-211)
-- [@connectrpc/connect-web 2.1.1](#connectrpcconnect-web-211)
-- [@corvu/resizable 0.2.5](#corvuresizable-025)
-- [@knadh/oat 0.5.1](#knadhoat-051)
-- [@milkdown/core 7.20.0](#milkdowncore-7200)
-- [@milkdown/ctx 7.20.0](#milkdownctx-7200)
-- [@milkdown/plugin-clipboard 7.20.0](#milkdownplugin-clipboard-7200)
-- [@milkdown/plugin-highlight 7.20.0](#milkdownplugin-highlight-7200)
-- [@milkdown/plugin-history 7.20.0](#milkdownplugin-history-7200)
-- [@milkdown/plugin-listener 7.20.0](#milkdownplugin-listener-7200)
-- [@milkdown/preset-gfm 7.20.0](#milkdownpreset-gfm-7200)
-- [@milkdown/prose 7.20.0](#milkdownprose-7200)
-- [@milkdown/utils 7.20.0](#milkdownutils-7200)
-- [@noble/ciphers 2.1.1](#nobleciphers-211)
-- [@noble/curves 2.0.1](#noblecurves-201)
-- [@noble/hashes 2.0.1](#noblehashes-201)
-- [@noble/post-quantum 0.6.0](#noblepost-quantum-060)
-- [@shikijs/rehype 4.0.2](#shikijsrehype-402)
-- [@solidjs/router 0.16.1](#solidjsrouter-0161)
-- [@solidjs/start 1.3.2](#solidjsstart-132)
-- [@thisbeyond/solid-dnd 0.7.5](#thisbeyondsolid-dnd-075)
-- [@types/diff 8.0.0](#typesdiff-800)
-- [@vanilla-extract/css 1.20.1](#vanilla-extractcss-1201)
-- [@xterm/addon-fit 0.11.0](#xtermaddon-fit-0110)
-- [@xterm/addon-webgl 0.19.0](#xtermaddon-webgl-0190)
-- [@xterm/xterm 6.0.0](#xtermxterm-600)
-- [diff 8.0.4](#diff-804)
-- [fracturedjsonjs 5.0.1](#fracturedjsonjs-501)
-- [fzstd 0.1.1](#fzstd-011)
-- [lucide-solid 1.7.0](#lucide-solid-170)
-- [random-word-slugs 0.1.7](#random-word-slugs-017)
-- [rehype-stringify 10.0.1](#rehype-stringify-1001)
-- [remark-gfm 4.0.1](#remark-gfm-401)
-- [remark-parse 11.0.0](#remark-parse-1100)
-- [remark-rehype 11.1.2](#remark-rehype-1112)
-- [shiki 4.0.2](#shiki-402)
-- [solid-js 1.9.12](#solid-js-1912)
-- [source-map-js 1.2.1](#source-map-js-121)
-- [unified 11.0.5](#unified-1105)
-- [vinxi 0.5.11](#vinxi-0511)
+- [@bufbuild/protobuf 2.11.0 ((Apache-2.0 AND BSD-3-Clause))](#bufbuildprotobuf-2110-apache-20-and-bsd-3-clause)
+- [@connectrpc/connect 2.1.1 (Apache-2.0)](#connectrpcconnect-211-apache-20)
+- [@connectrpc/connect-web 2.1.1 (Apache-2.0)](#connectrpcconnect-web-211-apache-20)
+- [@corvu/resizable 0.2.5 (MIT)](#corvuresizable-025-mit)
+- [@knadh/oat 0.5.1 (MIT)](#knadhoat-051-mit)
+- [@milkdown/core 7.20.0 (MIT)](#milkdowncore-7200-mit)
+- [@milkdown/ctx 7.20.0 (MIT)](#milkdownctx-7200-mit)
+- [@milkdown/plugin-clipboard 7.20.0 (MIT)](#milkdownplugin-clipboard-7200-mit)
+- [@milkdown/plugin-highlight 7.20.0 (MIT)](#milkdownplugin-highlight-7200-mit)
+- [@milkdown/plugin-history 7.20.0 (MIT)](#milkdownplugin-history-7200-mit)
+- [@milkdown/plugin-listener 7.20.0 (MIT)](#milkdownplugin-listener-7200-mit)
+- [@milkdown/preset-gfm 7.20.0 (MIT)](#milkdownpreset-gfm-7200-mit)
+- [@milkdown/prose 7.20.0 (MIT)](#milkdownprose-7200-mit)
+- [@milkdown/utils 7.20.0 (MIT)](#milkdownutils-7200-mit)
+- [@noble/ciphers 2.1.1 (MIT)](#nobleciphers-211-mit)
+- [@noble/curves 2.0.1 (MIT)](#noblecurves-201-mit)
+- [@noble/hashes 2.0.1 (MIT)](#noblehashes-201-mit)
+- [@noble/post-quantum 0.6.0 (MIT)](#noblepost-quantum-060-mit)
+- [@shikijs/rehype 4.0.2 (MIT)](#shikijsrehype-402-mit)
+- [@solidjs/router 0.16.1 (MIT)](#solidjsrouter-0161-mit)
+- [@solidjs/start 1.3.2 (MIT)](#solidjsstart-132-mit)
+- [@thisbeyond/solid-dnd 0.7.5 (MIT)](#thisbeyondsolid-dnd-075-mit)
+- [@types/diff 8.0.0 (MIT)](#typesdiff-800-mit)
+- [@vanilla-extract/css 1.20.1 (MIT)](#vanilla-extractcss-1201-mit)
+- [@xterm/addon-fit 0.11.0 (MIT)](#xtermaddon-fit-0110-mit)
+- [@xterm/addon-webgl 0.19.0 (MIT)](#xtermaddon-webgl-0190-mit)
+- [@xterm/xterm 6.0.0 (MIT)](#xtermxterm-600-mit)
+- [diff 8.0.4 (BSD-3-Clause)](#diff-804-bsd-3-clause)
+- [fracturedjsonjs 5.0.1 (MIT)](#fracturedjsonjs-501-mit)
+- [fzstd 0.1.1 (MIT)](#fzstd-011-mit)
+- [lucide-solid 1.7.0 (ISC)](#lucide-solid-170-isc)
+- [random-word-slugs 0.1.7 (MIT)](#random-word-slugs-017-mit)
+- [rehype-stringify 10.0.1 (MIT)](#rehype-stringify-1001-mit)
+- [remark-gfm 4.0.1 (MIT)](#remark-gfm-401-mit)
+- [remark-parse 11.0.0 (MIT)](#remark-parse-1100-mit)
+- [remark-rehype 11.1.2 (MIT)](#remark-rehype-1112-mit)
+- [shiki 4.0.2 (MIT)](#shiki-402-mit)
+- [solid-js 1.9.12 (MIT)](#solid-js-1912-mit)
+- [source-map-js 1.2.1 (BSD-3-Clause)](#source-map-js-121-bsd-3-clause)
+- [unified 11.0.5 (MIT)](#unified-1105-mit)
+- [vinxi 0.5.11 (MIT)](#vinxi-0511-mit)
 
 ---
 
@@ -367,7 +367,6 @@ SOFTWARE.
 ### cloud.google.com/go/compute/metadata v0.3.0
 
 ```
-
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -1846,7 +1845,6 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ### github.com/containerd/console v1.0.3
 
 ```
-
                                  Apache License
                            Version 2.0, January 2004
                         https://www.apache.org/licenses/
@@ -2042,7 +2040,6 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ### github.com/containerd/errdefs v1.0.0
 
 ```
-
                                  Apache License
                            Version 2.0, January 2004
                         https://www.apache.org/licenses/
@@ -2238,7 +2235,6 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ### github.com/containerd/errdefs/pkg v0.3.0
 
 ```
-
                                  Apache License
                            Version 2.0, January 2004
                         https://www.apache.org/licenses/
@@ -2953,7 +2949,6 @@ SOFTWARE.
 ### github.com/docker/go-connections v0.6.0
 
 ```
-
                                  Apache License
                            Version 2.0, January 2004
                         https://www.apache.org/licenses/
@@ -3149,7 +3144,6 @@ SOFTWARE.
 ### github.com/docker/go-units v0.5.0
 
 ```
-
                                  Apache License
                            Version 2.0, January 2004
                         https://www.apache.org/licenses/
@@ -4020,7 +4014,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ### github.com/go-jose/go-jose/v4 v4.1.3
 
 ```
-
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -5125,7 +5118,6 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ### github.com/golang-sql/civil v0.0.0-20220223132316-b832511892a9
 
 ```
-
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -5624,7 +5616,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ### github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e
 
 ```
-
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -5831,7 +5822,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ### github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
 
 ```
-
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -6709,7 +6699,6 @@ SOFTWARE.
 ### github.com/jaypipes/ghw v0.21.3
 
 ```
-
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -8019,7 +8008,6 @@ THE SOFTWARE.
 ### github.com/kylelemons/godebug v1.1.0
 
 ```
-
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -9071,7 +9059,6 @@ THE SOFTWARE.
 ### github.com/moby/moby/api v1.53.0
 
 ```
-
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -9278,7 +9265,6 @@ THE SOFTWARE.
 ### github.com/moby/moby/client v0.2.2
 
 ```
-
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -10235,7 +10221,6 @@ THIS SOFTWARE.
 ### github.com/opencontainers/go-digest v1.0.0
 
 ```
-
                                  Apache License
                            Version 2.0, January 2004
                         https://www.apache.org/licenses/
@@ -10432,7 +10417,6 @@ THIS SOFTWARE.
 ### github.com/opencontainers/image-spec v1.1.1
 
 ```
-
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -12075,7 +12059,6 @@ DEALINGS IN THE SOFTWARE.
 ### github.com/sethvargo/go-retry v0.3.0
 
 ```
-
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -12733,7 +12716,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ### github.com/tkrajina/go-reflector v0.5.8
 
 ```
-
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -15543,7 +15525,6 @@ THE SOFTWARE.
 ### go.yaml.in/yaml/v3 v3.0.4
 
 ```
-
 This project is covered by two different licenses: MIT and Apache.
 
 #### MIT License ####
@@ -15982,7 +15963,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ### google.golang.org/genproto/googleapis/rpc v0.0.0-20260217215200-42d3e9bedb6d
 
 ```
-
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -16189,7 +16169,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ### google.golang.org/grpc v1.79.1
 
 ```
-
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -16487,7 +16466,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ### gopkg.in/yaml.v3 v3.0.1
 
 ```
-
 This project is covered by two different licenses: MIT and Apache.
 
 #### MIT License ####
@@ -17168,7 +17146,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## JavaScript Dependencies
 
-### @bufbuild/protobuf 2.11.0
+### @bufbuild/protobuf 2.11.0 ((Apache-2.0 AND BSD-3-Clause))
 
 ```
                                  Apache License
@@ -17374,7 +17352,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
    limitations under the License.
 ```
 
-### @connectrpc/connect 2.1.1
+### @connectrpc/connect 2.1.1 (Apache-2.0)
 
 ```
                                  Apache License
@@ -17580,7 +17558,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
    limitations under the License.
 ```
 
-### @connectrpc/connect-web 2.1.1
+### @connectrpc/connect-web 2.1.1 (Apache-2.0)
 
 ```
                                  Apache License
@@ -17786,7 +17764,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
    limitations under the License.
 ```
 
-### @corvu/resizable 0.2.5
+### @corvu/resizable 0.2.5 (MIT)
 
 ```
 MIT License
@@ -17812,7 +17790,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @knadh/oat 0.5.1
+### @knadh/oat 0.5.1 (MIT)
 
 ```
 The MIT License
@@ -17838,7 +17816,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @milkdown/core 7.20.0
+### @milkdown/core 7.20.0 (MIT)
 
 ```
 The MIT License (MIT)
@@ -17864,7 +17842,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @milkdown/ctx 7.20.0
+### @milkdown/ctx 7.20.0 (MIT)
 
 ```
 The MIT License (MIT)
@@ -17890,7 +17868,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @milkdown/plugin-clipboard 7.20.0
+### @milkdown/plugin-clipboard 7.20.0 (MIT)
 
 ```
 The MIT License (MIT)
@@ -17916,7 +17894,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @milkdown/plugin-highlight 7.20.0
+### @milkdown/plugin-highlight 7.20.0 (MIT)
 
 ```
 The MIT License (MIT)
@@ -17942,7 +17920,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @milkdown/plugin-history 7.20.0
+### @milkdown/plugin-history 7.20.0 (MIT)
 
 ```
 The MIT License (MIT)
@@ -17968,7 +17946,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @milkdown/plugin-listener 7.20.0
+### @milkdown/plugin-listener 7.20.0 (MIT)
 
 ```
 The MIT License (MIT)
@@ -17994,7 +17972,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @milkdown/preset-gfm 7.20.0
+### @milkdown/preset-gfm 7.20.0 (MIT)
 
 ```
 The MIT License (MIT)
@@ -18020,7 +17998,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @milkdown/prose 7.20.0
+### @milkdown/prose 7.20.0 (MIT)
 
 ```
 The MIT License (MIT)
@@ -18046,7 +18024,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @milkdown/utils 7.20.0
+### @milkdown/utils 7.20.0 (MIT)
 
 ```
 The MIT License (MIT)
@@ -18072,7 +18050,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @noble/ciphers 2.1.1
+### @noble/ciphers 2.1.1 (MIT)
 
 ```
 The MIT License (MIT)
@@ -18099,7 +18077,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @noble/curves 2.0.1
+### @noble/curves 2.0.1 (MIT)
 
 ```
 The MIT License (MIT)
@@ -18125,7 +18103,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @noble/hashes 2.0.1
+### @noble/hashes 2.0.1 (MIT)
 
 ```
 The MIT License (MIT)
@@ -18151,7 +18129,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @noble/post-quantum 0.6.0
+### @noble/post-quantum 0.6.0 (MIT)
 
 ```
 The MIT License (MIT)
@@ -18177,7 +18155,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @shikijs/rehype 4.0.2
+### @shikijs/rehype 4.0.2 (MIT)
 
 ```
 MIT License
@@ -18204,7 +18182,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @solidjs/router 0.16.1
+### @solidjs/router 0.16.1 (MIT)
 
 ```
 MIT License
@@ -18230,7 +18208,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @solidjs/start 1.3.2
+### @solidjs/start 1.3.2 (MIT)
 
 ```
 MIT License
@@ -18256,7 +18234,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @thisbeyond/solid-dnd 0.7.5
+### @thisbeyond/solid-dnd 0.7.5 (MIT)
 
 ```
 MIT License
@@ -18281,7 +18259,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### @types/diff 8.0.0
+### @types/diff 8.0.0 (MIT)
 
 ```
     MIT License
@@ -18307,7 +18285,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
     SOFTWARE
 ```
 
-### @vanilla-extract/css 1.20.1
+### @vanilla-extract/css 1.20.1 (MIT)
 
 ```
 MIT License
@@ -18333,7 +18311,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @xterm/addon-fit 0.11.0
+### @xterm/addon-fit 0.11.0 (MIT)
 
 ```
 Copyright (c) 2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
@@ -18357,7 +18335,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @xterm/addon-webgl 0.19.0
+### @xterm/addon-webgl 0.19.0 (MIT)
 
 ```
 Copyright (c) 2018, The xterm.js authors (https://github.com/xtermjs/xterm.js)
@@ -18381,7 +18359,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @xterm/xterm 6.0.0
+### @xterm/xterm 6.0.0 (MIT)
 
 ```
 Copyright (c) 2017-2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
@@ -18407,7 +18385,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### diff 8.0.4
+### diff 8.0.4 (BSD-3-Clause)
 
 ```
 BSD 3-Clause License
@@ -18441,7 +18419,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### fracturedjsonjs 5.0.1
+### fracturedjsonjs 5.0.1 (MIT)
 
 ```
 MIT License
@@ -18467,7 +18445,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### fzstd 0.1.1
+### fzstd 0.1.1 (MIT)
 
 ```
 MIT License
@@ -18493,7 +18471,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### lucide-solid 1.7.0
+### lucide-solid 1.7.0 (ISC)
 
 ```
 ISC License
@@ -18541,7 +18519,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### random-word-slugs 0.1.7
+### random-word-slugs 0.1.7 (MIT)
 
 ```
 MIT License
@@ -18567,7 +18545,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### rehype-stringify 10.0.1
+### rehype-stringify 10.0.1 (MIT)
 
 ```
 (The MIT License)
@@ -18593,7 +18571,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### remark-gfm 4.0.1
+### remark-gfm 4.0.1 (MIT)
 
 ```
 (The MIT License)
@@ -18620,7 +18598,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### remark-parse 11.0.0
+### remark-parse 11.0.0 (MIT)
 
 ```
 (The MIT License)
@@ -18646,7 +18624,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### remark-rehype 11.1.2
+### remark-rehype 11.1.2 (MIT)
 
 ```
 (The MIT License)
@@ -18673,7 +18651,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### shiki 4.0.2
+### shiki 4.0.2 (MIT)
 
 ```
 MIT License
@@ -18700,7 +18678,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### solid-js 1.9.12
+### solid-js 1.9.12 (MIT)
 
 ```
 MIT License
@@ -18726,10 +18704,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### source-map-js 1.2.1
+### source-map-js 1.2.1 (BSD-3-Clause)
 
 ```
-
 Copyright (c) 2009-2011, Mozilla Foundation and contributors
 All rights reserved.
 
@@ -18759,7 +18736,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### unified 11.0.5
+### unified 11.0.5 (MIT)
 
 ```
 (The MIT License)
@@ -18785,7 +18762,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### vinxi 0.5.11
+### vinxi 0.5.11 (MIT)
 
 ```
 MIT License

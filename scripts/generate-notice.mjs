@@ -50,6 +50,21 @@ function findLicenseFile(dir, stopAt) {
   return null
 }
 
+/** Strip leading and trailing blank (empty or whitespace-only) lines. */
+function trimBlankLines(text) {
+  const lines = text.split('\n')
+  let start = 0
+  while (start < lines.length && lines[start].trim() === '') start++
+  let end = lines.length - 1
+  while (end >= start && lines[end].trim() === '') end--
+  return lines.slice(start, end + 1).join('\n')
+}
+
+/** Format a JS dependency heading with license name. */
+function jsHeading(dep) {
+  return dep.license ? `${dep.name} ${dep.version} (${dep.license})` : `${dep.name} ${dep.version}`
+}
+
 /** Slugify a heading for use as a markdown anchor. */
 function toAnchor(heading) {
   return heading
@@ -119,7 +134,7 @@ function collectGoDeps() {
     deps.set(key, {
       name: mod.Path,
       version: mod.Version,
-      licenseText: readFileSync(licFile, 'utf-8').trimEnd(),
+      licenseText: trimBlankLines(readFileSync(licFile, 'utf-8')),
     })
   }
 
@@ -211,7 +226,8 @@ function collectJsDeps() {
     deps.push({
       name: pkgName,
       version,
-      licenseText: readFileSync(licFile, 'utf-8').trimEnd(),
+      license: licenseField,
+      licenseText: trimBlankLines(readFileSync(licFile, 'utf-8')),
     })
   }
 
@@ -247,7 +263,7 @@ function buildMarkdown(goDeps, jsDeps) {
     lines.push('### JavaScript Dependencies')
     lines.push('')
     for (const dep of jsDeps) {
-      const heading = `${dep.name} ${dep.version}`
+      const heading = jsHeading(dep)
       lines.push(`- [${heading}](#${toAnchor(heading)})`)
     }
     lines.push('')
@@ -276,7 +292,7 @@ function buildMarkdown(goDeps, jsDeps) {
     lines.push('## JavaScript Dependencies')
     lines.push('')
     for (const dep of jsDeps) {
-      lines.push(`### ${dep.name} ${dep.version}`)
+      lines.push(`### ${jsHeading(dep)}`)
       lines.push('')
       lines.push('```')
       lines.push(dep.licenseText)
