@@ -339,6 +339,15 @@ task prepare-frontend   # Install frontend dependencies (bun install)
 
 Note: Build targets automatically run their required preparation steps, so `task build` works without running `task prepare` first.
 
+### Third-Party License Notice
+
+Generate `NOTICE.md` and `NOTICE.html` with all third-party dependency licenses:
+```bash
+task generate-notice
+```
+
+The build pipeline runs this automatically before building the frontend. The task fails if any dependency is missing a license file or if a vendored override's license identifier no longer matches the upstream package.
+
 ### Cleaning
 
 Remove all build artifacts and generated code:
@@ -517,7 +526,10 @@ leapmux/
 │   └── tests/               # Unit tests (Vitest) and E2E tests (Playwright)
 │
 ├── icons/                   # SVG icons (app logo and agent provider icons)
+├── NOTICE.md                # Third-party dependency licenses (generated)
 ├── scripts/                 # Utility scripts
+│   ├── generate-notice.mjs  # License collection and NOTICE.md/HTML generation
+│   └── license-overrides/   # Vendored licenses for packages missing them
 │
 ├── proto/                   # Protocol Buffer definitions
 │   └── leapmux/v1/          # Service and message definitions
