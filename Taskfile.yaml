@@ -119,6 +119,33 @@ tasks:
     cmds:
       - cd frontend && bun install
 
+  # --- Notice ---
+
+  generate-notice:
+    desc: Generate NOTICE.md with third-party licenses
+    deps: [prepare]
+    sources:
+      - backend/go.mod
+      - backend/go.sum
+      - desktop/go.mod
+      - desktop/go.sum
+      - frontend/package.json
+      - frontend/bun.lock
+    generates:
+      - NOTICE.md
+    cmds:
+      - bun scripts/generate-notice.mjs
+
+  copy-notice:
+    desc: Copy NOTICE.md to frontend public dir for static serving
+    deps: [generate-notice]
+    sources:
+      - NOTICE.md
+    generates:
+      - frontend/public/NOTICE.md
+    cmds:
+      - cp NOTICE.md frontend/public/NOTICE.md
+
   # --- Build ---
 
   build:
@@ -206,7 +233,7 @@ tasks:
 
   build-frontend:
     desc: Build frontend assets
-    deps: [prepare-frontend, generate-web-icons]
+    deps: [prepare-frontend, generate-web-icons, copy-notice]
     sources:
       - frontend/package.json
       - frontend/bun.lock

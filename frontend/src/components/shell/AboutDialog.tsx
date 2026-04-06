@@ -6,6 +6,7 @@ import { formatVersionLine, getBackendBuildInfo, getFrontendBuildInfo } from '~/
 
 interface AboutDialogProps {
   onClose: () => void
+  onShowNotice?: () => void
 }
 
 export const AboutDialog: Component<AboutDialogProps> = (props) => {
@@ -54,7 +55,13 @@ export const AboutDialog: Component<AboutDialogProps> = (props) => {
           </div>
           <div>
             <div class={labelRow}>Third-party licenses</div>
-            <a href="https://github.com/leapmux/leapmux/blob/main/NOTICE.md" target="_blank" rel="noopener noreferrer">
+            <a
+              href="#"
+              onClick={(e) => {
+                e.preventDefault()
+                props.onShowNotice?.()
+              }}
+            >
               NOTICE.md
             </a>
           </div>
