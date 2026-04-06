@@ -20,7 +20,7 @@ UPDATE workspaces SET title = ? WHERE id = ? AND owner_user_id = ?;
 UPDATE workspaces SET is_deleted = 1, deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND owner_user_id = ?;
 
 -- name: SoftDeleteAllWorkspacesByUser :exec
-UPDATE workspaces SET is_deleted = 1, deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE owner_user_id = ?;
+UPDATE workspaces SET is_deleted = 1, deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE owner_user_id = ? AND is_deleted = 0;
 
 -- name: HardDeleteWorkspacesBefore :execresult
 DELETE FROM workspaces WHERE rowid IN (SELECT w.rowid FROM workspaces w WHERE w.deleted_at IS NOT NULL AND w.deleted_at < ? LIMIT 1000);

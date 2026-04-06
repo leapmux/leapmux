@@ -49,32 +49,32 @@ UPDATE workers SET public_key = ?, mlkem_public_key = ?, slhdsa_public_key = ? W
 SELECT public_key, mlkem_public_key, slhdsa_public_key FROM workers WHERE id = ?;
 
 -- name: ListWorkersAdminAll :many
-SELECT w.*, u.username AS owner_username
+SELECT w.*, COALESCE(u.username, '(deleted)') AS owner_username
 FROM workers w
-JOIN users u ON w.registered_by = u.id
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
 ORDER BY w.created_at DESC
 LIMIT sqlc.arg(limit) OFFSET sqlc.arg(offset);
 
 -- name: ListWorkersAdminByStatus :many
-SELECT w.*, u.username AS owner_username
+SELECT w.*, COALESCE(u.username, '(deleted)') AS owner_username
 FROM workers w
-JOIN users u ON w.registered_by = u.id
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
 WHERE w.status = sqlc.arg(status)
 ORDER BY w.created_at DESC
 LIMIT sqlc.arg(limit) OFFSET sqlc.arg(offset);
 
 -- name: ListWorkersAdminByUser :many
-SELECT w.*, u.username AS owner_username
+SELECT w.*, COALESCE(u.username, '(deleted)') AS owner_username
 FROM workers w
-JOIN users u ON w.registered_by = u.id
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
 WHERE w.registered_by = sqlc.arg(user_id)
 ORDER BY w.created_at DESC
 LIMIT sqlc.arg(limit) OFFSET sqlc.arg(offset);
 
 -- name: ListWorkersAdminByUserAndStatus :many
-SELECT w.*, u.username AS owner_username
+SELECT w.*, COALESCE(u.username, '(deleted)') AS owner_username
 FROM workers w
-JOIN users u ON w.registered_by = u.id
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
 WHERE w.registered_by = sqlc.arg(user_id) AND w.status = sqlc.arg(status)
 ORDER BY w.created_at DESC
 LIMIT sqlc.arg(limit) OFFSET sqlc.arg(offset);
