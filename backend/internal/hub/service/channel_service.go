@@ -307,6 +307,10 @@ func (s *ChannelService) verifyWorkerAccess(ctx context.Context, user *auth.User
 		return db.Worker{}, connect.NewError(connect.CodeInternal, err)
 	}
 
+	if worker.Status != leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE {
+		return db.Worker{}, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
+	}
+
 	// Owner always has access.
 	if worker.RegisteredBy == user.ID {
 		return worker, nil

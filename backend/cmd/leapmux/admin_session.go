@@ -71,7 +71,7 @@ func runSessionList(args []string) error {
 		// Print next-page cursor hint.
 		last := sessions[len(sessions)-1]
 		if int64(len(sessions)) == *limit {
-			fmt.Printf("\nNext page: --cursor %s\n", last.LastActiveAt.Format(time.RFC3339Nano))
+			fmt.Printf("\nNext page: --cursor %s\n", timefmt.Format(last.LastActiveAt))
 		}
 		return nil
 	})

@@ -37,7 +37,7 @@ UPDATE workers SET status = 2 WHERE id = ? AND status = 1;
 UPDATE workers SET status = 3, deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?;
 
 -- name: MarkAllWorkersDeletedByUser :exec
-UPDATE workers SET status = 3, deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE registered_by = ?;
+UPDATE workers SET status = 3, deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE registered_by = ? AND status != 3;
 
 -- name: UpdateWorkerLastSeen :exec
 UPDATE workers SET last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?;
