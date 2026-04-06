@@ -52,4 +52,11 @@ func runCleanup(ctx context.Context, queries *db.Queries) {
 	} else if n, _ := termResult.RowsAffected(); n > 0 {
 		slog.Info("cleanup: deleted old terminals", "count", n)
 	}
+
+	wtResult, err := queries.HardDeleteWorktreesBefore(ctx, cutoff)
+	if err != nil {
+		slog.Error("cleanup: failed to delete old worktrees", "error", err)
+	} else if n, _ := wtResult.RowsAffected(); n > 0 {
+		slog.Info("cleanup: deleted old worktrees", "count", n)
+	}
 }

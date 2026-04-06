@@ -2,13 +2,16 @@
 INSERT INTO worktrees (id, worktree_path, repo_root, branch_name) VALUES (?, ?, ?, ?);
 
 -- name: GetWorktreeByPath :one
-SELECT * FROM worktrees WHERE worktree_path = ?;
+SELECT * FROM worktrees WHERE worktree_path = ? AND deleted_at IS NULL;
 
 -- name: GetWorktreeByID :one
 SELECT * FROM worktrees WHERE id = ?;
 
 -- name: DeleteWorktree :exec
-DELETE FROM worktrees WHERE id = ?;
+UPDATE worktrees SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?;
+
+-- name: HardDeleteWorktreesBefore :execresult
+DELETE FROM worktrees WHERE deleted_at IS NOT NULL AND deleted_at < ?;
 
 -- name: AddWorktreeTab :exec
 INSERT INTO worktree_tabs (worktree_id, tab_type, tab_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING;
@@ -20,7 +23,7 @@ DELETE FROM worktree_tabs WHERE worktree_id = ? AND tab_type = ? AND tab_id = ?;
 SELECT COUNT(*) FROM worktree_tabs WHERE worktree_id = ?;
 
 -- name: GetWorktreeForTab :one
-SELECT w.* FROM worktrees w JOIN worktree_tabs wt ON wt.worktree_id = w.id WHERE wt.tab_type = ? AND wt.tab_id = ?;
+SELECT w.* FROM worktrees w JOIN worktree_tabs wt ON wt.worktree_id = w.id WHERE wt.tab_type = ? AND wt.tab_id = ? AND w.deleted_at IS NULL;
 
 -- name: DeleteWorktreeTabsByTabID :exec
 DELETE FROM worktree_tabs WHERE tab_type = ? AND tab_id = ?;

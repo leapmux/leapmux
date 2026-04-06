@@ -63,7 +63,8 @@ CREATE TABLE worktrees (
     worktree_path   TEXT NOT NULL,
     repo_root       TEXT NOT NULL,
     branch_name     TEXT NOT NULL,
-    created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    deleted_at      DATETIME
 );
 CREATE UNIQUE INDEX idx_worktrees_path ON worktrees(worktree_path);
 
