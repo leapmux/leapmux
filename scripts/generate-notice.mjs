@@ -74,12 +74,26 @@ function toAnchor(heading) {
 // ---------------------------------------------------------------------------
 
 function collectGoDeps() {
-  // Ensure all modules are downloaded so Dir fields are populated.
+  // Find Go module directories. Use go.work if present (covers backend + desktop),
+  // otherwise fall back to individual module dirs (e.g. Docker builds).
+  const goModDirs = []
+  if (existsSync(join(ROOT, 'go.work'))) {
+    goModDirs.push(ROOT)
+  } else {
+    for (const dir of ['backend', 'desktop']) {
+      if (existsSync(join(ROOT, dir, 'go.mod')))
+        goModDirs.push(join(ROOT, dir))
+    }
+  }
+
   console.log('Downloading Go modules …')
-  execSync('go mod download', { cwd: ROOT, stdio: 'inherit' })
+  for (const dir of goModDirs)
+    execSync('go mod download', { cwd: dir, stdio: 'inherit' })
 
   console.log('Listing Go modules …')
-  const raw = execSync('go list -m -json all', { cwd: ROOT, encoding: 'utf-8' })
+  let raw = ''
+  for (const dir of goModDirs)
+    raw += execSync('go list -m -json all', { cwd: dir, encoding: 'utf-8' })
 
   // Parse the concatenated JSON objects.
   const modules = []
