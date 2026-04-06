@@ -91,6 +91,9 @@ func (s *OrgService) GetOrg(
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if org.DeletedAt.Valid {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("organization not found"))
+	}
 
 	return connect.NewResponse(&leapmuxv1.GetOrgResponse{
 		Org: orgToProto(&org),

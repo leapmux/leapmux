@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
+	"github.com/leapmux/leapmux/internal/hub/cleanup"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	"github.com/leapmux/leapmux/internal/hub/frontend"
@@ -327,6 +328,9 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	// Start background OAuth token refresh.
 	s.oauthHandler.StartTokenRefresh(ctx)
+
+	// Start periodic cleanup of soft-deleted records.
+	cleanup.StartLoop(ctx, s.queries)
 
 	shutdownDone := make(chan struct{})
 	go func() {

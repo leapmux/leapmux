@@ -628,16 +628,18 @@ func TestCLI_UserDelete_ByID(t *testing.T) {
 	err := runUserDelete([]string{"--id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
 
-	// Verify user is gone.
+	// Verify user is soft-deleted.
 	sqlDB, q := openTestDB(t, dir)
 	defer func() { _ = sqlDB.Close() }()
 
-	_, err = q.GetUserByID(context.Background(), user.ID)
-	assert.ErrorIs(t, err, sql.ErrNoRows)
+	deletedUser, err := q.GetUserByID(context.Background(), user.ID)
+	require.NoError(t, err)
+	assert.True(t, deletedUser.DeletedAt.Valid, "user should be soft-deleted")
 
-	// Verify personal org is gone.
-	_, err = q.GetOrgByID(context.Background(), user.OrgID)
-	assert.ErrorIs(t, err, sql.ErrNoRows)
+	// Verify personal org is soft-deleted.
+	deletedOrg, err := q.GetOrgByID(context.Background(), user.OrgID)
+	require.NoError(t, err)
+	assert.True(t, deletedOrg.DeletedAt.Valid, "org should be soft-deleted")
 }
 
 func TestCLI_UserDelete_ByUsername(t *testing.T) {
@@ -650,8 +652,9 @@ func TestCLI_UserDelete_ByUsername(t *testing.T) {
 	sqlDB, q := openTestDB(t, dir)
 	defer func() { _ = sqlDB.Close() }()
 
-	_, err = q.GetUserByID(context.Background(), user.ID)
-	assert.ErrorIs(t, err, sql.ErrNoRows)
+	deletedUser, err := q.GetUserByID(context.Background(), user.ID)
+	require.NoError(t, err)
+	assert.True(t, deletedUser.DeletedAt.Valid, "user should be soft-deleted")
 }
 
 func TestCLI_UserResetPassword(t *testing.T) {

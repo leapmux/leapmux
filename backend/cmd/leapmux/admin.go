@@ -267,11 +267,6 @@ func runUserUpdate(args []string) error {
 			if err := validate.ValidateEmail(*email); err != nil {
 				return err
 			}
-			if *email != user.Email {
-				if err := service.CheckEmailAvailable(ctx, q, *email, user.ID); err != nil {
-					return err
-				}
-			}
 		}
 
 		// Wrap all updates in a transaction for atomicity.
@@ -299,7 +294,7 @@ func runUserUpdate(args []string) error {
 				verified = ptrconv.BoolToInt64(*emailVerifiedFlag)
 			}
 			if err := service.SetEmailAndClearCompeting(ctx, txq, user.ID, *email, verified); err != nil {
-				return fmt.Errorf("update email: %w", err)
+				return friendlyConstraintError(err, user.Username, *email)
 			}
 		} else if updateEmailVerified {
 			if err := txq.UpdateUserEmailVerified(ctx, gendb.UpdateUserEmailVerifiedParams{

@@ -15,6 +15,9 @@ UPDATE worker_registrations
 SET status = 4
 WHERE status = 1 AND expires_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
 
+-- name: HardDeleteExpiredRegistrationsBefore :execresult
+DELETE FROM worker_registrations WHERE status = 4 AND created_at < ?;
+
 -- name: CreateUserSession :exec
 INSERT INTO user_sessions (id, user_id, expires_at, user_agent, ip_address) VALUES (?, ?, ?, ?, ?);
 
@@ -34,7 +37,7 @@ DELETE FROM user_sessions WHERE id = ?;
 SELECT u.id, u.org_id, u.username, u.is_admin, u.email_verified
 FROM user_sessions s
 JOIN users u ON s.user_id = u.id
-WHERE s.id = ? AND s.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+WHERE s.id = ? AND s.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AND u.deleted_at IS NULL;
 
 -- name: DeleteExpiredUserSessions :execresult
 DELETE FROM user_sessions WHERE expires_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now');

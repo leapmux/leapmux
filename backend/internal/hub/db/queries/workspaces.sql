@@ -17,7 +17,10 @@ ORDER BY w.created_at DESC;
 UPDATE workspaces SET title = ? WHERE id = ? AND owner_user_id = ?;
 
 -- name: SoftDeleteWorkspace :execresult
-UPDATE workspaces SET is_deleted = 1 WHERE id = ? AND owner_user_id = ?;
+UPDATE workspaces SET is_deleted = 1, deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND owner_user_id = ?;
 
 -- name: SoftDeleteAllWorkspacesByUser :exec
-UPDATE workspaces SET is_deleted = 1 WHERE owner_user_id = ?;
+UPDATE workspaces SET is_deleted = 1, deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE owner_user_id = ?;
+
+-- name: HardDeleteWorkspacesBefore :execresult
+DELETE FROM workspaces WHERE deleted_at IS NOT NULL AND deleted_at < ?;

@@ -5,7 +5,8 @@ CREATE TABLE orgs (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,
     is_personal INTEGER NOT NULL DEFAULT 0,
-    created_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    created_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    deleted_at  DATETIME
 );
 
 -- Users
@@ -24,7 +25,8 @@ CREATE TABLE users (
     is_admin                 INTEGER NOT NULL DEFAULT 0,
     prefs          TEXT NOT NULL DEFAULT '{}',
     created_at     DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    updated_at     DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    updated_at     DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    deleted_at     DATETIME
 );
 CREATE INDEX idx_users_org_id ON users(org_id);
 CREATE UNIQUE INDEX idx_users_email ON users(email) WHERE email != '';
@@ -62,7 +64,8 @@ CREATE TABLE workers (
     last_seen_at  DATETIME,
     public_key    BLOB NOT NULL DEFAULT '',
     mlkem_public_key  BLOB NOT NULL DEFAULT '',
-    slhdsa_public_key BLOB NOT NULL DEFAULT ''
+    slhdsa_public_key BLOB NOT NULL DEFAULT '',
+    deleted_at    DATETIME
 );
 
 -- Worker notifications (persistent queue for reliable delivery)
@@ -134,7 +137,8 @@ CREATE TABLE workspaces (
     owner_user_id TEXT NOT NULL REFERENCES users(id),
     title         TEXT NOT NULL DEFAULT '',
     is_deleted    INTEGER NOT NULL DEFAULT 0,
-    created_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    created_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    deleted_at    DATETIME
 );
 
 -- Workspace read-only sharing ACL
